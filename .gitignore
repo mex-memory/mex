@@ -9,3 +9,8 @@ dist/
 
 # OS
 Thumbs.db
+
+# AI Tools
+.claw/
+.sandbox-home/
+.sandbox-tmp/
