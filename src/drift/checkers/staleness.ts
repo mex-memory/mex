@@ -1,40 +1,51 @@
 import { daysSinceLastChange, commitsSinceLastChange } from "../../git.js";
-import type { DriftIssue, Severity } from "../../types.js";
+import type { DriftIssue, Severity, StalenessThresholds } from "../../types.js";
 
-const WARN_DAYS = 30;
-const ERROR_DAYS = 90;
-const WARN_COMMITS = 50;
-const ERROR_COMMITS = 200;
+/** Default thresholds. Overridden via MexConfig.stalenessThresholds / CLI flags. */
+export const DEFAULT_STALENESS_THRESHOLDS: StalenessThresholds = {
+  warnDays: 30,
+  errorDays: 90,
+  warnCommits: 50,
+  errorCommits: 200,
+};
 
 type StaleSignal = { severity: Severity; message: string };
 
-function daysSignal(days: number): StaleSignal | null {
-  if (days >= ERROR_DAYS) {
+function daysSignal(
+  days: number,
+  warnDays: number,
+  errorDays: number
+): StaleSignal | null {
+  if (days >= errorDays) {
     return {
       severity: "error",
-      message: `File hasn't been updated in ${days} days (threshold: ${ERROR_DAYS}d)`,
+      message: `File hasn't been updated in ${days} days (threshold: ${errorDays}d)`,
     };
   }
-  if (days >= WARN_DAYS) {
+  if (days >= warnDays) {
     return {
       severity: "warning",
-      message: `File hasn't been updated in ${days} days (threshold: ${WARN_DAYS}d)`,
+      message: `File hasn't been updated in ${days} days (threshold: ${warnDays}d)`,
     };
   }
   return null;
 }
 
-function commitsSignal(commits: number): StaleSignal | null {
-  if (commits >= ERROR_COMMITS) {
+function commitsSignal(
+  commits: number,
+  warnCommits: number,
+  errorCommits: number
+): StaleSignal | null {
+  if (commits >= errorCommits) {
     return {
       severity: "error",
-      message: `${commits} commits since file was last updated (threshold: ${ERROR_COMMITS})`,
+      message: `${commits} commits since file was last updated (threshold: ${errorCommits})`,
     };
   }
-  if (commits >= WARN_COMMITS) {
+  if (commits >= warnCommits) {
     return {
       severity: "warning",
-      message: `${commits} commits since file was last updated (threshold: ${WARN_COMMITS})`,
+      message: `${commits} commits since file was last updated (threshold: ${warnCommits})`,
     };
   }
   return null;
@@ -57,18 +68,21 @@ const SEVERITY_RANK: Record<Severity, number> = {
 export async function checkStaleness(
   filePath: string,
   source: string,
-  cwd: string
+  cwd: string,
+  thresholds: StalenessThresholds = DEFAULT_STALENESS_THRESHOLDS
 ): Promise<DriftIssue[]> {
+  const { warnDays, errorDays, warnCommits, errorCommits } = thresholds;
+
   const days = await daysSinceLastChange(filePath, cwd);
   const commits = await commitsSinceLastChange(filePath, cwd);
 
   const signals: StaleSignal[] = [];
   if (days !== null) {
-    const s = daysSignal(days);
+    const s = daysSignal(days, warnDays, errorDays);
     if (s) signals.push(s);
   }
   if (commits !== null) {
-    const s = commitsSignal(commits);
+    const s = commitsSignal(commits, warnCommits, errorCommits);
     if (s) signals.push(s);
   }
 

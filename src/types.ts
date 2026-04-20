@@ -22,6 +22,17 @@ export const AI_TOOLS: Record<AiTool, AiToolMeta> = {
 
 // ── Config ──
 
+export interface StalenessThresholds {
+  /** Days since last change that trigger a warning */
+  warnDays: number;
+  /** Days since last change that trigger an error */
+  errorDays: number;
+  /** Commits since last change that trigger a warning */
+  warnCommits: number;
+  /** Commits since last change that trigger an error */
+  errorCommits: number;
+}
+
 export interface MexConfig {
   /** Absolute path to project root (where .git lives) */
   projectRoot: string;
@@ -29,6 +40,8 @@ export interface MexConfig {
   scaffoldRoot: string;
   /** Which AI tool(s) the user selected during setup */
   aiTools: AiTool[];
+  /** Staleness thresholds (warn/error for days and commits). Optional. */
+  stalenessThresholds?: StalenessThresholds;
 }
 
 // ── Claims (extracted from markdown) ──

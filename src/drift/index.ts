@@ -44,7 +44,12 @@ export async function runDriftCheck(
     allIssues.push(...edgeIssues);
 
     // Staleness check
-    const stalenessIssues = await checkStaleness(source, source, projectRoot);
+    const stalenessIssues = await checkStaleness(
+      source,
+      source,
+      projectRoot,
+      config.stalenessThresholds,
+    );
     allIssues.push(...stalenessIssues);
 
     checkerIssueCounts.push([`edges:${source}`, edgeIssues.length]);

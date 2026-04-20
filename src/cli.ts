@@ -1,7 +1,15 @@
 import chalk from "chalk";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { findConfig } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
+
+function parseIntArg(raw: string): number {
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new InvalidArgumentError(`Expected a non-negative integer, got "${raw}".`);
+  }
+  return n;
+}
 
 const program = new Command();
 
@@ -33,11 +41,27 @@ program
   .option("--quiet", "Single-line summary only")
   .option("--fix", "Run sync to fix any issues found")
   .option("--verbose", "Show detailed diagnostic output")
+  .option("--stale-warn-days <n>", "Warn when a file hasn't changed in N days (default 30)", parseIntArg)
+  .option("--stale-error-days <n>", "Error when a file hasn't changed in N days (default 90)", parseIntArg)
+  .option("--stale-warn-commits <n>", "Warn when a file has N commits since its last change (default 50)", parseIntArg)
+  .option("--stale-error-commits <n>", "Error when a file has N commits since its last change (default 200)", parseIntArg)
   .action(async (opts) => {
     try {
       const config = findConfig();
       const { runDriftCheck } = await import("./drift/index.js");
-      const report = await runDriftCheck(config, { verbose: opts.verbose });
+      const { DEFAULT_STALENESS_THRESHOLDS } = await import("./drift/checkers/staleness.js");
+
+      const stalenessThresholds = {
+        warnDays: opts.staleWarnDays ?? config.stalenessThresholds?.warnDays ?? DEFAULT_STALENESS_THRESHOLDS.warnDays,
+        errorDays: opts.staleErrorDays ?? config.stalenessThresholds?.errorDays ?? DEFAULT_STALENESS_THRESHOLDS.errorDays,
+        warnCommits: opts.staleWarnCommits ?? config.stalenessThresholds?.warnCommits ?? DEFAULT_STALENESS_THRESHOLDS.warnCommits,
+        errorCommits: opts.staleErrorCommits ?? config.stalenessThresholds?.errorCommits ?? DEFAULT_STALENESS_THRESHOLDS.errorCommits,
+      };
+
+      const report = await runDriftCheck(
+        { ...config, stalenessThresholds },
+        { verbose: opts.verbose },
+      );
 
       if (opts.json) {
         reportJSON(report, { verbose: opts.verbose });
