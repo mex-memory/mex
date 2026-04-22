@@ -84,6 +84,80 @@ describe("findConfig", () => {
   });
 });
 
+describe("findConfig — stalenessThresholds", () => {
+  function setupScaffold(staleness: unknown): void {
+    mkdirSync(join(tmpDir, ".git"));
+    const mexPath = join(tmpDir, ".mex");
+    mkdirSync(mexPath);
+    writeFileSync(join(mexPath, "ROUTER.md"), "");
+    writeFileSync(join(mexPath, "config.json"), JSON.stringify({ staleness }));
+  }
+
+  it("loads full thresholds from config.json", () => {
+    setupScaffold({ warnDays: 14, errorDays: 60, warnCommits: 25, errorCommits: 100 });
+    const config = findConfig(tmpDir);
+    expect(config.stalenessThresholds).toEqual({
+      warnDays: 14,
+      errorDays: 60,
+      warnCommits: 25,
+      errorCommits: 100,
+    });
+  });
+
+  it("fills missing fields from the checker defaults", () => {
+    setupScaffold({ warnDays: 14 });
+    const config = findConfig(tmpDir);
+    expect(config.stalenessThresholds).toEqual({
+      warnDays: 14,
+      errorDays: 90,
+      warnCommits: 50,
+      errorCommits: 200,
+    });
+  });
+
+  it("warns and falls back to defaults when warn exceeds error", () => {
+    setupScaffold({ warnDays: 90, errorDays: 30 });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+    try {
+      const config = findConfig(tmpDir);
+      expect(config.stalenessThresholds).toEqual({
+        warnDays: 30,
+        errorDays: 90,
+        warnCommits: 50,
+        errorCommits: 200,
+      });
+      expect(warnings.some((w) => w.includes("invert warn/error"))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("warns when commit invariant is violated too", () => {
+    setupScaffold({ warnCommits: 500, errorCommits: 100 });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+    try {
+      const config = findConfig(tmpDir);
+      expect(config.stalenessThresholds).toEqual({
+        warnDays: 30,
+        errorDays: 90,
+        warnCommits: 50,
+        errorCommits: 200,
+      });
+      expect(warnings).toHaveLength(1);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+});
+
 describe("saveAiTools", () => {
   it("creates config.json with aiTools", () => {
     const mexPath = join(tmpDir, ".mex");

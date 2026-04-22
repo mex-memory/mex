@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import type { MexConfig, AiTool, StalenessThresholds } from "./types.js";
+import { DEFAULT_STALENESS_THRESHOLDS } from "./drift/checkers/staleness.js";
 
 /**
  * Walk up from startDir looking for .git to find project root,
@@ -103,12 +104,28 @@ function loadStalenessThresholds(scaffoldRoot: string): StalenessThresholds | un
     if (warnDays === undefined && errorDays === undefined && warnCommits === undefined && errorCommits === undefined) {
       return undefined;
     }
-    return {
-      warnDays: warnDays ?? 30,
-      errorDays: errorDays ?? 90,
-      warnCommits: warnCommits ?? 50,
-      errorCommits: errorCommits ?? 200,
+    const resolved: StalenessThresholds = {
+      warnDays: warnDays ?? DEFAULT_STALENESS_THRESHOLDS.warnDays,
+      errorDays: errorDays ?? DEFAULT_STALENESS_THRESHOLDS.errorDays,
+      warnCommits: warnCommits ?? DEFAULT_STALENESS_THRESHOLDS.warnCommits,
+      errorCommits: errorCommits ?? DEFAULT_STALENESS_THRESHOLDS.errorCommits,
     };
+
+    // Reject inverted warn/error pairs. A misconfigured
+    // warnDays: 90, errorDays: 30 silently makes the warn path unreachable,
+    // so surface it and fall back to defaults rather than honoring a
+    // config that disables half of the checker.
+    if (resolved.errorDays < resolved.warnDays || resolved.errorCommits < resolved.warnCommits) {
+      console.warn(
+        `[mex] staleness thresholds in ${configPath} invert warn/error ` +
+          `(warnDays=${resolved.warnDays}, errorDays=${resolved.errorDays}, ` +
+          `warnCommits=${resolved.warnCommits}, errorCommits=${resolved.errorCommits}); ` +
+          `falling back to defaults.`
+      );
+      return { ...DEFAULT_STALENESS_THRESHOLDS };
+    }
+
+    return resolved;
   } catch {
     return undefined;
   }
