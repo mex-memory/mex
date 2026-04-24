@@ -13,6 +13,7 @@ import { checkCommands } from "./checkers/command.js";
 import { checkDependencies } from "./checkers/dependency.js";
 import { checkCrossFile } from "./checkers/cross-file.js";
 import { checkScriptCoverage } from "./checkers/script-coverage.js";
+import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 
 /** Run full drift detection across all scaffold files */
 export async function runDriftCheck(
@@ -82,6 +83,10 @@ export async function runDriftCheck(
   const scriptCoverageIssues = checkScriptCoverage(scaffoldFiles, projectRoot);
   allIssues.push(...scriptCoverageIssues);
   checkerIssueCounts.push(["script-coverage", scriptCoverageIssues.length]);
+
+  const toolConfigSyncIssues = checkToolConfigSync(projectRoot);
+  allIssues.push(...toolConfigSyncIssues);
+  checkerIssueCounts.push(["tool-config-sync", toolConfigSyncIssues.length]);
 
   const score = computeScore(allIssues);
   const verboseLog = opts.verbose

@@ -75,7 +75,8 @@ export type IssueCode =
   | "DEAD_EDGE"
   | "INDEX_MISSING_ENTRY"
   | "INDEX_ORPHAN_ENTRY"
-  | "UNDOCUMENTED_SCRIPT";
+  | "UNDOCUMENTED_SCRIPT"
+  | "TOOL_CONFIG_DRIFT";
 
 export interface DriftIssue {
   code: IssueCode;

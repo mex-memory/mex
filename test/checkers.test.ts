@@ -13,6 +13,7 @@ import { checkCommands } from "../src/drift/checkers/command.js";
 import { checkDependencies } from "../src/drift/checkers/dependency.js";
 import { checkCrossFile } from "../src/drift/checkers/cross-file.js";
 import { checkIndexSync } from "../src/drift/checkers/index-sync.js";
+import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
 import type { Claim, ScaffoldFrontmatter } from "../src/types.js";
 
 vi.mock("../src/git.js", () => ({
@@ -366,5 +367,60 @@ describe("checkStaleness", () => {
     commitsFn.mockResolvedValue(null);
     const issues = await checkStaleness("file.md", "source.md", ".");
     expect(issues).toHaveLength(0);
+  });
+});
+
+// ── Tool Config Sync Checker ──
+
+describe("checkToolConfigSync", () => {
+  it("returns empty when no tool configs are installed", () => {
+    const issues = checkToolConfigSync(tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("returns empty when only one tool config is installed", () => {
+    writeFileSync(join(tmpDir, "CLAUDE.md"), "pointer to ROUTER.md");
+    const issues = checkToolConfigSync(tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("returns empty when installed tool configs all match", () => {
+    const body = "pointer to ROUTER.md\nsame for every tool\n";
+    writeFileSync(join(tmpDir, "CLAUDE.md"), body);
+    writeFileSync(join(tmpDir, ".cursorrules"), body);
+    writeFileSync(join(tmpDir, ".windsurfrules"), body);
+    const issues = checkToolConfigSync(tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("flags drift between two installed tool configs", () => {
+    writeFileSync(join(tmpDir, "CLAUDE.md"), "original\n");
+    writeFileSync(join(tmpDir, ".cursorrules"), "original\nedited\n");
+    const issues = checkToolConfigSync(tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("TOOL_CONFIG_DRIFT");
+    expect(issues[0].severity).toBe("warning");
+    expect(issues[0].file).toBe(".cursorrules");
+    expect(issues[0].message).toContain("CLAUDE.md");
+  });
+
+  it("flags each drifted file separately and leaves matching files alone", () => {
+    writeFileSync(join(tmpDir, "CLAUDE.md"), "v1\n");
+    writeFileSync(join(tmpDir, "AGENTS.md"), "v1\n");           // matches CLAUDE.md
+    writeFileSync(join(tmpDir, ".cursorrules"), "v2 drifted\n"); // drifted
+    writeFileSync(join(tmpDir, ".windsurfrules"), "v3 also\n");  // drifted
+    const issues = checkToolConfigSync(tmpDir);
+    const files = issues.map((i) => i.file).sort();
+    expect(files).toEqual([".cursorrules", ".windsurfrules"]);
+    expect(issues.every((i) => i.code === "TOOL_CONFIG_DRIFT")).toBe(true);
+  });
+
+  it("picks up the Copilot config nested under .github", () => {
+    mkdirSync(join(tmpDir, ".github"), { recursive: true });
+    writeFileSync(join(tmpDir, "CLAUDE.md"), "shared\n");
+    writeFileSync(join(tmpDir, ".github/copilot-instructions.md"), "changed\n");
+    const issues = checkToolConfigSync(tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].file).toBe(".github/copilot-instructions.md");
   });
 });
