@@ -86,6 +86,14 @@ Install globally later at any time:
 npm install -g mex-agent
 ```
 
+### Windows
+
+The recommended `npx mex-agent setup` flow runs in any terminal (Command Prompt, PowerShell, or WSL) and does not need bash, so most Windows users do not have to think about this section.
+
+If you previously installed via the legacy `setup.sh` script, do not mix environments. Building inside WSL and then running the CLI from a native Windows terminal causes "module not found" errors because `node_modules` and path resolution differ between the two filesystems. Run install, build, and CLI commands inside the same environment: either entirely in WSL / Git Bash, or entirely in native Windows via `npx mex-agent`.
+
+See [issue #10](https://github.com/theDakshJaitly/mex/issues/10) for context.
+
 ## How It Works
 
 ![mex context routing flow](docs/diagrams/context-routing.svg)
