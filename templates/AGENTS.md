@@ -35,7 +35,13 @@ last_updated: [YYYY-MM-DD]
      - Build: `npm run build` -->
 
 ## Scaffold Growth
-After every task: if no pattern exists for the task type you just completed, create one. If a pattern or context file is now out of date, update it. The scaffold grows from real work, not just setup. See the GROW step in `ROUTER.md` for details.
+After meaningful work, run GROW:
+- Ground: what changed in reality?
+- Record: update `ROUTER.md` and relevant `context/` files
+- Orient: create or update a `patterns/` runbook if this can recur
+- Write: bump `last_updated` on changed scaffold files and run `mex log` when rationale matters
+
+The scaffold grows from real work, not just setup. See the GROW step in `ROUTER.md` for details.
 
 ## Navigation
 At the start of every session, read `ROUTER.md` before doing anything else.

@@ -2,6 +2,7 @@ import { writeFileSync, readFileSync, existsSync, chmodSync, unlinkSync } from "
 import { resolve } from "node:path";
 import chalk from "chalk";
 import type { MexConfig } from "./types.js";
+import { runHeartbeat } from "./heartbeat.js";
 
 const HOOK_MARKER = "# mex-drift-check";
 
@@ -26,8 +27,13 @@ esac
 
 export async function manageHook(
   config: MexConfig,
-  opts: { uninstall?: boolean }
+  opts: { uninstall?: boolean; intervalMinutes?: number }
 ): Promise<void> {
+  if (opts.intervalMinutes) {
+    await runWatchInterval(config, opts.intervalMinutes);
+    return;
+  }
+
   const hookPath = resolve(config.projectRoot, ".git", "hooks", "post-commit");
 
   if (opts.uninstall) {
@@ -36,6 +42,19 @@ export async function manageHook(
   }
 
   installHook(hookPath, config);
+}
+
+export async function runWatchInterval(config: MexConfig, intervalMinutes: number): Promise<void> {
+  console.log(chalk.green(`mex heartbeat running every ${intervalMinutes} minute${intervalMinutes === 1 ? "" : "s"}. Press Ctrl+C to stop.`));
+  const run = async () => {
+    try {
+      await runHeartbeat(config);
+    } catch (err) {
+      console.error((err as Error).message);
+    }
+  };
+  await run();
+  setInterval(run, intervalMinutes * 60_000);
 }
 
 function installHook(hookPath: string, config: MexConfig): void {

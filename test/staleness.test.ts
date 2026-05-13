@@ -7,7 +7,7 @@ vi.mock("../src/git.js", () => ({
 }));
 
 const { daysSinceLastChange, commitsSinceLastChange } = await import("../src/git.js");
-const { checkStaleness, DEFAULT_STALENESS_THRESHOLDS } = await import("../src/drift/checkers/staleness.js");
+const { checkStaleness, DEFAULT_STALENESS_THRESHOLDS, daysSinceFrontmatterDate } = await import("../src/drift/checkers/staleness.js");
 
 const asMock = <T extends (...args: unknown[]) => unknown>(fn: T) =>
   fn as unknown as ReturnType<typeof vi.fn>;
@@ -116,5 +116,33 @@ describe("checkStaleness — custom thresholds", () => {
       errorCommits: 500,
     });
     expect(issues).toEqual([]);
+  });
+});
+
+describe("checkStaleness — last_updated frontmatter", () => {
+  it("ignores missing or placeholder last_updated values", () => {
+    const now = new Date("2026-05-14T12:00:00Z");
+    expect(daysSinceFrontmatterDate(undefined, now)).toBeNull();
+    expect(daysSinceFrontmatterDate("[YYYY-MM-DD]", now)).toBeNull();
+  });
+
+  it("computes days since a concrete frontmatter date", () => {
+    const now = new Date("2026-05-14T12:00:00Z");
+    expect(daysSinceFrontmatterDate("2026-05-07", now)).toBe(7);
+  });
+
+  it("adds last_updated staleness to the combined issue", async () => {
+    asMock(daysSinceLastChange).mockResolvedValue(0);
+    asMock(commitsSinceLastChange).mockResolvedValue(0);
+
+    const issues = await checkStaleness("a.md", "a.md", "/tmp/repo", {
+      warnDays: 7,
+      errorDays: 30,
+      warnCommits: 999,
+      errorCommits: 9999,
+    }, { lastUpdated: "2020-01-01" });
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("last_updated");
   });
 });

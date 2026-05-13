@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import type { MexConfig, AiTool, StalenessThresholds } from "./types.js";
+import type { MexConfig, AiTool, StalenessThresholds, WatchConfig, HeartbeatConfig } from "./types.js";
 import { DEFAULT_STALENESS_THRESHOLDS } from "./drift/checkers/staleness.js";
 
 /**
@@ -38,7 +38,9 @@ export function findConfig(startDir?: string): MexConfig {
 
   const aiTools = loadAiTools(scaffoldRoot);
   const stalenessThresholds = loadStalenessThresholds(scaffoldRoot);
-  return { projectRoot, scaffoldRoot, aiTools, stalenessThresholds };
+  const watch = loadWatchConfig(scaffoldRoot);
+  const heartbeat = loadHeartbeatConfig(scaffoldRoot);
+  return { projectRoot, scaffoldRoot, aiTools, stalenessThresholds, watch, heartbeat };
 }
 
 function findProjectRoot(dir: string): string | null {
@@ -60,6 +62,8 @@ const CONFIG_FILE = "config.json";
 interface MexPersistedConfig {
   aiTools?: unknown;
   staleness?: unknown;
+  watch?: unknown;
+  heartbeat?: unknown;
   [key: string]: unknown;
 }
 
@@ -80,12 +84,11 @@ function loadAiTools(scaffoldRoot: string): AiTool[] {
 }
 
 function loadStalenessThresholds(scaffoldRoot: string): StalenessThresholds | undefined {
+  const raw = loadPersistedConfig(scaffoldRoot);
   const configPath = resolve(scaffoldRoot, CONFIG_FILE);
-  if (!existsSync(configPath)) return undefined;
+  if (!raw) return undefined;
   try {
-    const raw = JSON.parse(readFileSync(configPath, "utf-8"));
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
-    const staleness = (raw as MexPersistedConfig).staleness;
+    const staleness = raw.staleness;
     if (typeof staleness !== "object" || staleness === null || Array.isArray(staleness)) return undefined;
     const s = staleness as Record<string, unknown>;
 
@@ -128,6 +131,49 @@ function loadStalenessThresholds(scaffoldRoot: string): StalenessThresholds | un
     return resolved;
   } catch {
     return undefined;
+  }
+}
+
+function loadWatchConfig(scaffoldRoot: string): WatchConfig | undefined {
+  const raw = loadPersistedConfig(scaffoldRoot);
+  if (!raw || typeof raw.watch !== "object" || raw.watch === null || Array.isArray(raw.watch)) {
+    return undefined;
+  }
+  const w = raw.watch as Record<string, unknown>;
+  const intervalMinutes = readPositiveNumber(w.intervalMinutes);
+  return intervalMinutes === undefined ? undefined : { intervalMinutes };
+}
+
+function loadHeartbeatConfig(scaffoldRoot: string): HeartbeatConfig | undefined {
+  const raw = loadPersistedConfig(scaffoldRoot);
+  if (!raw || typeof raw.heartbeat !== "object" || raw.heartbeat === null || Array.isArray(raw.heartbeat)) {
+    return undefined;
+  }
+  const h = raw.heartbeat as Record<string, unknown>;
+  const out: HeartbeatConfig = {};
+  const staleDays = readPositiveNumber(h.staleDays);
+  const memoryCleanupDays = readPositiveNumber(h.memoryCleanupDays);
+  const dailyMemoryRetentionDays = readPositiveNumber(h.dailyMemoryRetentionDays);
+  if (staleDays !== undefined) out.staleDays = staleDays;
+  if (memoryCleanupDays !== undefined) out.memoryCleanupDays = memoryCleanupDays;
+  if (dailyMemoryRetentionDays !== undefined) out.dailyMemoryRetentionDays = dailyMemoryRetentionDays;
+  return Object.keys(out).length ? out : undefined;
+}
+
+function readPositiveNumber(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+  return undefined;
+}
+
+function loadPersistedConfig(scaffoldRoot: string): MexPersistedConfig | null {
+  const configPath = resolve(scaffoldRoot, CONFIG_FILE);
+  if (!existsSync(configPath)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+    return raw as MexPersistedConfig;
+  } catch {
+    return null;
   }
 }
 

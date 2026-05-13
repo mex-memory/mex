@@ -33,6 +33,20 @@ export interface StalenessThresholds {
   errorCommits: number;
 }
 
+export interface WatchConfig {
+  /** Default interval, in minutes, for `mex watch --interval` */
+  intervalMinutes?: number;
+}
+
+export interface HeartbeatConfig {
+  /** Days since `last_updated` before heartbeat reports stale context */
+  staleDays?: number;
+  /** Days since memory cleanup before heartbeat reports cleanup due */
+  memoryCleanupDays?: number;
+  /** Daily memory files older than this are considered cleanup candidates */
+  dailyMemoryRetentionDays?: number;
+}
+
 export interface MexConfig {
   /** Absolute path to project root (where .git lives) */
   projectRoot: string;
@@ -42,6 +56,10 @@ export interface MexConfig {
   aiTools: AiTool[];
   /** Staleness thresholds (warn/error for days and commits). Optional. */
   stalenessThresholds?: StalenessThresholds;
+  /** Scheduled check defaults. Optional. */
+  watch?: WatchConfig;
+  /** Agent heartbeat defaults. Optional. */
+  heartbeat?: HeartbeatConfig;
 }
 
 // ── Claims (extracted from markdown) ──

@@ -20,19 +20,27 @@ export function reportConsole(report: DriftReport): void {
     console.log();
   }
 
-  const grouped = groupByFile(report.issues);
+  const grouped = groupBySeverityThenFile(report.issues);
 
-  for (const [file, issues] of Object.entries(grouped)) {
-    console.log(chalk.bold.underline(file));
-    for (const issue of issues) {
+  for (const severity of ["error", "warning", "info"] as Severity[]) {
+    const files = grouped[severity];
+    if (!files || Object.keys(files).length === 0) continue;
+    console.log(chalk.bold(severity.toUpperCase()));
+    console.log();
+    for (const [file, issues] of Object.entries(files)) {
+      console.log(chalk.bold.underline(file));
+      for (const issue of issues) {
       const color = severityColor[issue.severity];
       const icon = severityIcon[issue.severity];
       const loc = issue.line ? `:${issue.line}` : "";
       console.log(
         `  ${color(`${icon} ${issue.code}`)}${loc} ${issue.message}`
       );
+      const remediation = remediationFor(issue.code);
+      if (remediation) console.log(chalk.dim(`    → ${remediation}`));
+      }
+      console.log();
     }
-    console.log();
   }
 
   printSummary(report);
@@ -91,13 +99,41 @@ function printSummary(report: DriftReport): void {
   console.log(chalk.dim(`${report.filesChecked} files checked`));
 }
 
-function groupByFile(
+function groupBySeverityThenFile(
   issues: DriftIssue[]
-): Record<string, DriftIssue[]> {
-  const grouped: Record<string, DriftIssue[]> = {};
+): Record<Severity, Record<string, DriftIssue[]>> {
+  const grouped: Record<Severity, Record<string, DriftIssue[]>> = {
+    error: {},
+    warning: {},
+    info: {},
+  };
   for (const issue of issues) {
-    if (!grouped[issue.file]) grouped[issue.file] = [];
-    grouped[issue.file].push(issue);
+    if (!grouped[issue.severity][issue.file]) grouped[issue.severity][issue.file] = [];
+    grouped[issue.severity][issue.file].push(issue);
   }
   return grouped;
+}
+
+function remediationFor(code: DriftIssue["code"]): string | null {
+  switch (code) {
+    case "STALE_FILE":
+      return "Review the file against reality, update it if needed, then bump last_updated.";
+    case "MISSING_PATH":
+      return "Fix the referenced path or remove stale documentation.";
+    case "DEAD_COMMAND":
+      return "Update the command in the scaffold or restore the missing script.";
+    case "DEPENDENCY_MISSING":
+      return "Remove the dependency claim or add the dependency to the manifest.";
+    case "DEAD_EDGE":
+      return "Update or remove the frontmatter edge target.";
+    case "INDEX_MISSING_ENTRY":
+    case "INDEX_ORPHAN_ENTRY":
+      return "Update patterns/INDEX.md to match the pattern files on disk.";
+    case "UNDOCUMENTED_SCRIPT":
+      return "Document the script in AGENTS.md, SETUP.md, or context/setup.md.";
+    case "TOOL_CONFIG_DRIFT":
+      return "Copy the intended tool config text across installed agent config files.";
+    default:
+      return null;
+  }
 }

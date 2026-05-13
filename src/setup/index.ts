@@ -41,6 +41,11 @@ const SCAFFOLD_FILES = [
   "patterns/INDEX.md",
 ];
 
+const AGENT_MEMORY_FILES = [
+  ...SCAFFOLD_FILES,
+  "HEARTBEAT.md",
+];
+
 const TOOL_CONFIGS: Record<string, { src: string; dest: string }> = {
   "1": { src: ".tool-configs/CLAUDE.md", dest: "CLAUDE.md" },
   "2": { src: ".tool-configs/.cursorrules", dest: ".cursorrules" },
@@ -95,8 +100,11 @@ function banner() {
 
 type ProjectState = "existing" | "fresh" | "partial";
 
-export async function runSetup(opts: { dryRun?: boolean } = {}): Promise<void> {
+type SetupMode = "code-repo" | "agent-memory";
+
+export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): Promise<void> {
   const { dryRun = false } = opts;
+  const mode = normalizeMode(opts.mode);
 
   banner();
   console.log();
@@ -133,7 +141,10 @@ export async function runSetup(opts: { dryRun?: boolean } = {}): Promise<void> {
 
   const state = detectProjectState(projectRoot, mexDir);
 
-  switch (state) {
+  if (mode === "agent-memory") {
+    info("Detected: agent-memory workspace");
+    info("Mode: persistent-agent operational memory");
+  } else switch (state) {
     case "existing":
       info("Detected: existing codebase with source files");
       info("Mode: populate scaffold from code");
@@ -154,8 +165,12 @@ export async function runSetup(opts: { dryRun?: boolean } = {}): Promise<void> {
   header("Creating .mex/ scaffold...");
   console.log();
 
-  for (const file of SCAFFOLD_FILES) {
-    const src = resolve(TEMPLATES_DIR, file);
+  const scaffoldFiles = mode === "agent-memory" ? AGENT_MEMORY_FILES : SCAFFOLD_FILES;
+  for (const file of scaffoldFiles) {
+    const agentMemorySrc = resolve(TEMPLATES_DIR, "agent-memory", file);
+    const src = mode === "agent-memory" && existsSync(agentMemorySrc)
+      ? agentMemorySrc
+      : resolve(TEMPLATES_DIR, file);
     const dest = resolve(mexDir, file);
 
     if (existsSync(dest)) {
@@ -195,7 +210,7 @@ export async function runSetup(opts: { dryRun?: boolean } = {}): Promise<void> {
 
   let scannerBrief: string | null = null;
 
-  if (state !== "fresh") {
+  if (mode !== "agent-memory" && state !== "fresh") {
     try {
       info("Scanning codebase...");
       const { runScan } = await import("../scanner/index.js");
@@ -211,7 +226,10 @@ export async function runSetup(opts: { dryRun?: boolean } = {}): Promise<void> {
   // ── Step 5: Build population prompt ──
 
   let prompt: string;
-  if (state === "fresh") {
+  if (mode === "agent-memory") {
+    const { buildAgentMemoryPrompt } = await import("./prompts.js");
+    prompt = buildAgentMemoryPrompt();
+  } else if (state === "fresh") {
     prompt = buildFreshPrompt();
   } else if (scannerBrief) {
     prompt = buildExistingWithBriefPrompt(scannerBrief);
@@ -269,6 +287,12 @@ export async function runSetup(opts: { dryRun?: boolean } = {}): Promise<void> {
   }
 
   await promptGlobalInstall();
+}
+
+function normalizeMode(raw: string | undefined): SetupMode {
+  const mode = raw ?? "code-repo";
+  if (mode === "code-repo" || mode === "agent-memory") return mode;
+  throw new Error(`Unknown setup mode "${mode}". Use code-repo or agent-memory.`);
 }
 
 // ── Step functions ──

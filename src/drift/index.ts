@@ -50,6 +50,7 @@ export async function runDriftCheck(
       source,
       projectRoot,
       config.stalenessThresholds,
+      { lastUpdated: typeof frontmatter?.last_updated === "string" ? frontmatter.last_updated : undefined },
     );
     allIssues.push(...stalenessIssues);
 
@@ -123,6 +124,7 @@ function findScaffoldFiles(
     const matches = globSync(pattern, {
       cwd: scaffoldRoot,
       absolute: true,
+      follow: true,
       ignore: ["node_modules/**"],
     });
     files.push(...matches);

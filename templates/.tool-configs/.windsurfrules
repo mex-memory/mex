@@ -32,7 +32,11 @@ last_updated: [YYYY-MM-DD]
      - Build: `npm run build` -->
 
 ## After Every Task
-After completing any task: update `.mex/ROUTER.md` project state and any `.mex/` files that are now out of date. If no pattern existed for the task you just completed, create one in `.mex/patterns/`.
+After meaningful work, run GROW:
+- Ground: what changed in reality?
+- Record: update `.mex/ROUTER.md` and relevant `.mex/context/` files
+- Orient: create or update a `.mex/patterns/` runbook if this can recur
+- Write: bump `last_updated` on changed scaffold files and run `mex log` when rationale matters
 
 ## Navigation
 At the start of every session, read `.mex/ROUTER.md` before doing anything else.
