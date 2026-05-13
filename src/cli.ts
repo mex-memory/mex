@@ -21,10 +21,25 @@ function parsePositiveIntArg(raw: string): number {
 
 const program = new Command();
 
+async function runTuiCommand(): Promise<void> {
+  const { launchTui } = await import("./tui.js");
+  launchTui();
+}
+
 program
   .name("mex")
   .description("CLI engine for mex scaffold — drift detection, pre-analysis, and targeted sync")
-  .version("0.3.3");
+  .version("0.3.3")
+  .action(async () => {
+    await runTuiCommand();
+  });
+
+program
+  .command("tui")
+  .description("Open the interactive mex dashboard")
+  .action(async () => {
+    await runTuiCommand();
+  });
 
 // ── Setup (npx entry point) ──
 program
@@ -273,6 +288,7 @@ program
     console.log("  mex timeline           Show recent event log entries");
     console.log("  mex heartbeat          Run lightweight agent-memory health checks");
     console.log("  mex doctor             Friendly scaffold health summary");
+    console.log("  mex tui                Open the interactive mex dashboard");
     console.log("  mex pattern add <name> Create a new pattern file");
     console.log("  mex watch              Install post-commit hook for auto drift score");
     console.log("  mex watch --interval   Run heartbeat every 30 minutes (or config value)");
@@ -287,7 +303,7 @@ program.parse();
 function buildCompletion(shell: string): string {
   const commands = [
     "setup", "check", "init", "sync", "pattern", "log", "timeline",
-    "heartbeat", "doctor", "watch", "commands", "completion",
+    "heartbeat", "doctor", "watch", "tui", "commands", "completion",
   ];
   if (shell === "bash") {
     return `_mex_completion() {

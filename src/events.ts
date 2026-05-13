@@ -33,6 +33,11 @@ export function eventLogPath(config: MexConfig): string {
 }
 
 export async function runLog(config: MexConfig, message: string, opts: LogOpts = {}): Promise<void> {
+  const entry = appendEvent(config, message, opts);
+  console.log(chalk.green(`Logged ${entry.kind}: ${message}`));
+}
+
+export function appendEvent(config: MexConfig, message: string, opts: LogOpts = {}): EventEntry {
   const kind = normalizeKind(opts.kind);
   const files = (opts.files ?? []).map((f) => relative(config.projectRoot, resolve(config.projectRoot, f)));
   const entry: EventEntry = {
@@ -45,7 +50,7 @@ export async function runLog(config: MexConfig, message: string, opts: LogOpts =
   const file = eventLogPath(config);
   mkdirSync(dirname(file), { recursive: true });
   appendFileSync(file, JSON.stringify(entry) + "\n");
-  console.log(chalk.green(`Logged ${kind}: ${message}`));
+  return entry;
 }
 
 export async function runTimeline(config: MexConfig, opts: TimelineOpts = {}): Promise<void> {
