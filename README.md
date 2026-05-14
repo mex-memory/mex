@@ -97,6 +97,8 @@ All commands run from your **project root**. If you didn't install globally, rep
 
 | Command | What it does |
 |---------|-------------|
+| `mex` | Open the interactive terminal dashboard |
+| `mex tui` | Open the interactive terminal dashboard explicitly |
 | `mex setup` | First-time setup — create `.mex/` scaffold and populate with AI |
 | `mex setup --mode agent-memory` | Create templates for persistent-agent / homelab memory workspaces |
 | `mex setup --dry-run` | Preview what setup would do without making changes |

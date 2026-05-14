@@ -41,6 +41,15 @@ const MENU = [
 ] as const;
 
 const EVENT_KINDS: EventKind[] = ["note", "decision", "risk", "todo"];
+const COLORS = {
+  shell: "#5B8C5A",
+  shellDark: "#4A7A49",
+  crab: "#E8845C",
+  ink: "#3D3D3D",
+  scroll: "#F5E6C8",
+};
+const BAR_WIDTH = 18;
+const ACTIVITY_DAYS = 7;
 
 export function launchTui(): void {
   if (!stdin.isTTY || !stdout.isTTY) {
@@ -105,6 +114,10 @@ function TuiApp({ config }: { config: MexConfig }) {
         setState((s) => ({ ...s, selected: Math.max(0, s.selected - 1) }));
       } else if (key.downArrow) {
         setState((s) => ({ ...s, selected: Math.min(MENU.length - 1, s.selected + 1) }));
+      } else if (input === "r") {
+        void refresh("dashboard", "Dashboard refreshed");
+      } else if (input === "l") {
+        setState((s) => ({ ...s, view: "log-kind", notice: null }));
       } else if (key.return) {
         const action = MENU[state.selected];
         if (action === "Refresh dashboard") void refresh("dashboard", "Dashboard refreshed");
@@ -162,7 +175,7 @@ function TuiApp({ config }: { config: MexConfig }) {
         h(ViewPanel, { state, data: state.data }),
       ),
     ),
-    h(Box, { marginTop: 1 }, h(Text, { dimColor: true }, "↑/↓ navigate · enter select · esc dashboard · q quit")),
+    h(Box, { marginTop: 1 }, h(Text, { dimColor: true }, "↑/↓ choose · enter run · r refresh · l log · esc dashboard · q quit")),
   );
 }
 
@@ -176,8 +189,7 @@ export function ErrorScreen({ message }: { message: string }) {
 
 function Frame({ config, children }: { config: MexConfig; children?: React.ReactNode }) {
   return h(Box, { flexDirection: "column", paddingX: 1 },
-    h(Text, { bold: true, color: "cyan" }, "mex"),
-    h(Text, { dimColor: true }, `Scaffold: ${config.scaffoldRoot}`),
+    h(BrandHeader, { scaffoldRoot: config.scaffoldRoot }),
     h(Box, { marginTop: 1, flexDirection: "column" }, children),
   );
 }
@@ -186,18 +198,99 @@ export function Summary({ data, notice }: { data: DashboardData; notice: string 
   const errors = data.report.issues.filter((i) => i.severity === "error").length;
   const warnings = data.report.issues.filter((i) => i.severity === "warning").length;
   const scoreColor = data.report.score >= 80 ? "green" : data.report.score >= 50 ? "yellow" : "red";
+  const heartbeatColor = data.heartbeat.ok ? "green" : "yellow";
+  const heartbeatValue = data.heartbeat.ok ? 100 : Math.max(10, 100 - data.heartbeat.staleFiles.length * 25);
+  const activity = eventActivityBars(data.events);
   return h(Box, { flexDirection: "column" },
     notice ? h(Text, { color: "green" }, notice) : null,
+    h(StatusLine, {
+      label: "Drift",
+      value: `${data.report.score}/100`,
+      bar: progressBar(data.report.score),
+      color: scoreColor,
+      detail: `${errors} errors · ${warnings} warnings · ${data.report.filesChecked} files`,
+    }),
+    h(StatusLine, {
+      label: "Heartbeat",
+      value: data.heartbeat.ok ? "OK" : "Attention",
+      bar: progressBar(heartbeatValue),
+      color: heartbeatColor,
+      detail: `${data.heartbeat.staleFiles.length} stale files`,
+    }),
     h(Text, null,
-      h(Text, { color: scoreColor, bold: true }, `Drift ${data.report.score}/100`),
-      `  ${errors} errors, ${warnings} warnings, ${data.report.filesChecked} files checked`,
+      h(Text, { color: COLORS.shell, bold: true }, "Events    "),
+      h(Text, { bold: true }, String(data.events.length).padEnd(9)),
+      h(Text, { color: COLORS.crab }, activity),
+      `  last 7d · latest ${latestEvent(data.events)}`,
     ),
-    h(Text, null,
-      h(Text, { color: data.heartbeat.ok ? "green" : "yellow", bold: true }, data.heartbeat.ok ? "Heartbeat OK" : "Heartbeat needs attention"),
-      `  ${data.heartbeat.staleFiles.length} stale files`,
-    ),
-    h(Text, null, `Events ${data.events.length} logged · latest ${latestEvent(data.events)}`),
   );
+}
+
+function BrandHeader({ scaffoldRoot }: { scaffoldRoot: string }) {
+  return h(Box, { flexDirection: "row" },
+    h(Mascot, null),
+    h(Box, { marginLeft: 2, flexDirection: "column" },
+      h(Text, null,
+        h(Text, { bold: true, color: COLORS.shell }, "mex"),
+        h(Text, { color: COLORS.crab }, " operational memory"),
+      ),
+      h(Text, { dimColor: true }, "drift, heartbeat, and event log at a glance"),
+      h(Text, { dimColor: true }, `Scaffold: ${scaffoldRoot}`),
+    ),
+  );
+}
+
+export function Mascot() {
+  return h(Box, { flexDirection: "column" },
+    h(Text, null, h(Text, { color: COLORS.shell }, "   ██████")),
+    h(Text, null, h(Text, { color: COLORS.shell }, " ██████████")),
+    h(Text, null,
+      h(Text, { color: COLORS.crab }, "████████████"),
+      h(Text, { color: COLORS.scroll }, " ▐"),
+    ),
+    h(Text, null,
+      h(Text, { color: COLORS.crab }, "██"),
+      h(Text, { color: COLORS.ink }, "▣"),
+      h(Text, { color: COLORS.crab }, "━━"),
+      h(Text, { color: COLORS.ink }, "▣"),
+      h(Text, { color: COLORS.crab }, "████"),
+      h(Text, { color: COLORS.scroll }, " ▐"),
+    ),
+    h(Text, null, h(Text, { color: COLORS.crab }, "  ████████")),
+  );
+}
+
+function StatusLine({ label, value, bar, color, detail }: { label: string; value: string; bar: string; color: string; detail: string }) {
+  return h(Text, null,
+    h(Text, { color, bold: true }, label.padEnd(10)),
+    h(Text, { bold: true }, value.padEnd(9)),
+    h(Text, { color }, bar),
+    `  ${detail}`,
+  );
+}
+
+export function progressBar(value: number, width = BAR_WIDTH): string {
+  const clamped = Math.max(0, Math.min(100, value));
+  const filled = Math.round((clamped / 100) * width);
+  return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
+}
+
+export function eventActivityBars(events: EventEntry[], days = ACTIVITY_DAYS, now = new Date()): string {
+  const counts = Array.from({ length: days }, () => 0);
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  start.setUTCDate(start.getUTCDate() - (days - 1));
+
+  for (const event of events) {
+    const timestamp = new Date(event.timestamp);
+    if (Number.isNaN(timestamp.getTime())) continue;
+    const day = new Date(Date.UTC(timestamp.getUTCFullYear(), timestamp.getUTCMonth(), timestamp.getUTCDate()));
+    const offset = Math.floor((day.getTime() - start.getTime()) / 86_400_000);
+    if (offset >= 0 && offset < days) counts[offset] += 1;
+  }
+
+  const max = Math.max(...counts, 1);
+  const levels = "▁▂▃▄▅▆▇█";
+  return counts.map((count) => levels[Math.ceil((count / max) * (levels.length - 1))] ?? levels[0]).join("");
 }
 
 function Menu({ selected, active }: { selected: number; active: boolean }) {
@@ -228,7 +321,7 @@ function CheckPanel({ data }: { data: DashboardData }) {
   return h(Box, { flexDirection: "column" },
     h(Text, { bold: true }, "Check summary"),
     issues.length === 0
-      ? h(Text, { color: "green" }, "No drift issues found.")
+      ? h(Text, { color: "green" }, "No drift issues found. Scaffold is calm.")
       : issues.map((i, idx) => h(Text, { key: `${i.file}-${idx}` }, `${i.severity.toUpperCase()} ${i.code} ${i.file}: ${i.message}`)),
   );
 }
@@ -236,7 +329,7 @@ function CheckPanel({ data }: { data: DashboardData }) {
 export function HeartbeatPanel({ data }: { data: DashboardData }) {
   return h(Box, { flexDirection: "column" },
     h(Text, { bold: true }, "Heartbeat"),
-    data.heartbeat.ok ? h(Text, { color: "green" }, "HEARTBEAT_OK") : null,
+    data.heartbeat.ok ? h(Text, { color: "green" }, "HEARTBEAT_OK · scaffold is fresh") : null,
     ...data.heartbeat.staleFiles.map((f) => h(Text, { key: f.file }, `Stale ${f.file} (${f.days} days)`)),
     data.heartbeat.memoryCleanupDue ? h(Text, null, "Memory cleanup is due.") : null,
     ...data.heartbeat.oldDailyMemoryFiles.map((f) => h(Text, { key: f }, `Old memory ${f}`)),
@@ -261,7 +354,7 @@ export function TimelinePanel({ data }: { data: DashboardData }) {
   return h(Box, { flexDirection: "column" },
     h(Text, { bold: true }, "Timeline"),
     events.length === 0
-      ? h(Text, { dimColor: true }, "No events logged yet.")
+      ? h(Text, { dimColor: true }, "No events yet. Use Log event when the why matters.")
       : events.map((e) => h(Text, { key: `${e.timestamp}-${e.message}` }, `${e.timestamp.slice(0, 10)} ${e.kind} ${e.message}`)),
   );
 }

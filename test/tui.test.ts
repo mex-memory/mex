@@ -1,7 +1,15 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
-import { ErrorScreen, HeartbeatPanel, Summary, TimelinePanel, type DashboardData } from "../src/tui.js";
+import {
+  ErrorScreen,
+  HeartbeatPanel,
+  Summary,
+  TimelinePanel,
+  eventActivityBars,
+  progressBar,
+  type DashboardData,
+} from "../src/tui.js";
 
 const h = React.createElement;
 
@@ -27,8 +35,10 @@ function data(overrides: Partial<DashboardData> = {}): DashboardData {
 describe("TUI components", () => {
   it("renders healthy dashboard summary", () => {
     const app = render(h(Summary, { data: data(), notice: null }));
-    expect(app.lastFrame()).toContain("Drift 100/100");
+    expect(app.lastFrame()).toContain("Drift");
+    expect(app.lastFrame()).toContain("100/100");
     expect(app.lastFrame()).toContain("Heartbeat OK");
+    expect(app.lastFrame()).toContain("████");
   });
 
   it("renders drift warnings and errors in summary", () => {
@@ -46,7 +56,7 @@ describe("TUI components", () => {
       }),
       notice: null,
     }));
-    expect(app.lastFrame()).toContain("1 errors, 1 warnings");
+    expect(app.lastFrame()).toContain("1 errors · 1 warnings");
   });
 
   it("renders heartbeat stale files", () => {
@@ -75,6 +85,25 @@ describe("TUI components", () => {
     }));
     const frame = app.lastFrame() ?? "";
     expect(frame.indexOf("newer")).toBeLessThan(frame.indexOf("older"));
+  });
+
+  it("renders timeline empty state", () => {
+    const app = render(h(TimelinePanel, { data: data() }));
+    expect(app.lastFrame()).toContain("No events yet");
+  });
+
+  it("builds progress bars for status rows", () => {
+    expect(progressBar(50, 10)).toBe("█████░░░░░");
+    expect(progressBar(200, 4)).toBe("████");
+  });
+
+  it("builds event activity bars oldest to newest", () => {
+    const bars = eventActivityBars([
+      { timestamp: "2026-05-12T10:00:00.000Z", kind: "decision", message: "one", files: [], cwd: "." },
+      { timestamp: "2026-05-14T10:00:00.000Z", kind: "note", message: "two", files: [], cwd: "." },
+      { timestamp: "2026-05-14T11:00:00.000Z", kind: "risk", message: "three", files: [], cwd: "." },
+    ], 3, new Date("2026-05-14T12:00:00.000Z"));
+    expect(bars).toBe("▅▁█");
   });
 
   it("renders no-scaffold error screen", () => {
