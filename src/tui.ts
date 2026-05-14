@@ -43,9 +43,7 @@ const MENU = [
 const EVENT_KINDS: EventKind[] = ["note", "decision", "risk", "todo"];
 const COLORS = {
   shell: "#5B8C5A",
-  shellDark: "#4A7A49",
   crab: "#E8845C",
-  ink: "#3D3D3D",
   royal: "#1944F1",
 };
 const BAR_WIDTH = 18;
@@ -171,7 +169,15 @@ function TuiApp({ config }: { config: MexConfig }) {
     h(Summary, { data: state.data, notice: state.notice }),
     h(Box, { marginTop: 1 },
       h(Menu, { selected: state.selected, active: state.view === "dashboard" }),
-      h(Box, { marginLeft: 4, flexDirection: "column" },
+      h(Box, {
+        borderStyle: "single",
+        borderColor: COLORS.royal,
+        flexDirection: "column",
+        marginLeft: 2,
+        minWidth: 46,
+        paddingX: 1,
+        paddingY: 0,
+      },
         h(ViewPanel, { state, data: state.data }),
       ),
     ),
@@ -239,38 +245,9 @@ function BrandHeader({ scaffoldRoot }: { scaffoldRoot: string }) {
 
 export function SetupBanner() {
   return h(Box, { flexDirection: "column" },
-    h(Text, null,
-      h(Text, { color: COLORS.shell }, "     ████      "),
-      h(Text, { color: COLORS.royal }, "███╗   ███╗███████╗██╗  ██╗"),
-    ),
-    h(Text, null,
-      h(Text, { color: COLORS.shell }, "    █"),
-      h(Text, { color: COLORS.shellDark }, "█"),
-      h(Text, { color: COLORS.shell }, "██"),
-      h(Text, { color: COLORS.shellDark }, "█"),
-      h(Text, { color: COLORS.shell }, "█     "),
-      h(Text, { color: COLORS.royal }, "████╗ ████║██╔════╝╚██╗██╔╝"),
-    ),
-    h(Text, null,
-      h(Text, { color: COLORS.crab }, "  ██████████   "),
-      h(Text, { color: COLORS.royal }, "██╔████╔██║█████╗   ╚███╔╝"),
-    ),
-    h(Text, null,
-      h(Text, { color: COLORS.crab }, "█ ██"),
-      h(Text, { color: COLORS.ink }, "██"),
-      h(Text, { color: COLORS.crab }, "██"),
-      h(Text, { color: COLORS.ink }, "██"),
-      h(Text, { color: COLORS.crab }, "██ █ "),
-      h(Text, { color: COLORS.royal }, "██║╚██╔╝██║██╔══╝   ██╔██╗"),
-    ),
-    h(Text, null,
-      h(Text, { color: COLORS.crab }, "█ ██████████ █ "),
-      h(Text, { color: COLORS.royal }, "██║ ╚═╝ ██║███████╗██╔╝ ██╗"),
-    ),
-    h(Text, null,
-      h(Text, { color: COLORS.crab }, "   █ █  █ █    "),
-      h(Text, { color: COLORS.royal }, "╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝"),
-    ),
+    h(Text, { color: COLORS.royal }, "╔╦╗ ╔═╗ ═╗ ╦"),
+    h(Text, { color: COLORS.royal }, "║║║ ║╣  ╔╩╦╝"),
+    h(Text, { color: COLORS.royal }, "╩ ╩ ╚═╝ ╩ ╚═"),
   );
 }
 
