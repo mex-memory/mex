@@ -46,7 +46,7 @@ const COLORS = {
   shellDark: "#4A7A49",
   crab: "#E8845C",
   ink: "#3D3D3D",
-  scroll: "#F5E6C8",
+  royal: "#1944F1",
 };
 const BAR_WIDTH = 18;
 const ACTIVITY_DAYS = 7;
@@ -227,36 +227,50 @@ export function Summary({ data, notice }: { data: DashboardData; notice: string 
 }
 
 function BrandHeader({ scaffoldRoot }: { scaffoldRoot: string }) {
-  return h(Box, { flexDirection: "row" },
-    h(Mascot, null),
-    h(Box, { marginLeft: 2, flexDirection: "column" },
-      h(Text, null,
-        h(Text, { bold: true, color: COLORS.shell }, "mex"),
-        h(Text, { color: COLORS.crab }, " operational memory"),
-      ),
-      h(Text, { dimColor: true }, "drift, heartbeat, and event log at a glance"),
-      h(Text, { dimColor: true }, `Scaffold: ${scaffoldRoot}`),
+  return h(Box, { flexDirection: "column" },
+    h(SetupBanner, null),
+    h(Text, null,
+      h(Text, { bold: true }, "operational memory dashboard"),
+      h(Text, { dimColor: true }, " · drift, heartbeat, and events"),
     ),
+    h(Text, { dimColor: true }, `Scaffold: ${scaffoldRoot}`),
   );
 }
 
-export function Mascot() {
+export function SetupBanner() {
   return h(Box, { flexDirection: "column" },
-    h(Text, null, h(Text, { color: COLORS.shell }, "   ██████")),
-    h(Text, null, h(Text, { color: COLORS.shell }, " ██████████")),
     h(Text, null,
-      h(Text, { color: COLORS.crab }, "████████████"),
-      h(Text, { color: COLORS.scroll }, " ▐"),
+      h(Text, { color: COLORS.shell }, "     ████      "),
+      h(Text, { color: COLORS.royal }, "███╗   ███╗███████╗██╗  ██╗"),
     ),
     h(Text, null,
+      h(Text, { color: COLORS.shell }, "    █"),
+      h(Text, { color: COLORS.shellDark }, "█"),
+      h(Text, { color: COLORS.shell }, "██"),
+      h(Text, { color: COLORS.shellDark }, "█"),
+      h(Text, { color: COLORS.shell }, "█     "),
+      h(Text, { color: COLORS.royal }, "████╗ ████║██╔════╝╚██╗██╔╝"),
+    ),
+    h(Text, null,
+      h(Text, { color: COLORS.crab }, "  ██████████   "),
+      h(Text, { color: COLORS.royal }, "██╔████╔██║█████╗   ╚███╔╝"),
+    ),
+    h(Text, null,
+      h(Text, { color: COLORS.crab }, "█ ██"),
+      h(Text, { color: COLORS.ink }, "██"),
       h(Text, { color: COLORS.crab }, "██"),
-      h(Text, { color: COLORS.ink }, "▣"),
-      h(Text, { color: COLORS.crab }, "━━"),
-      h(Text, { color: COLORS.ink }, "▣"),
-      h(Text, { color: COLORS.crab }, "████"),
-      h(Text, { color: COLORS.scroll }, " ▐"),
+      h(Text, { color: COLORS.ink }, "██"),
+      h(Text, { color: COLORS.crab }, "██ █ "),
+      h(Text, { color: COLORS.royal }, "██║╚██╔╝██║██╔══╝   ██╔██╗"),
     ),
-    h(Text, null, h(Text, { color: COLORS.crab }, "  ████████")),
+    h(Text, null,
+      h(Text, { color: COLORS.crab }, "█ ██████████ █ "),
+      h(Text, { color: COLORS.royal }, "██║ ╚═╝ ██║███████╗██╔╝ ██╗"),
+    ),
+    h(Text, null,
+      h(Text, { color: COLORS.crab }, "   █ █  █ █    "),
+      h(Text, { color: COLORS.royal }, "╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝"),
+    ),
   );
 }
 
