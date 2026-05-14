@@ -61,8 +61,8 @@ For every task, follow this loop:
 2. **BUILD** — Do the work. If a pattern exists, follow its Steps. If you are about to deviate from an established pattern, say so before writing any code — state the deviation and why.
 3. **VERIFY** — Load `context/conventions.md` and run the Verify Checklist item by item. State each item and whether the output passes. Do not summarise — enumerate explicitly.
 4. **DEBUG** — If verification fails or something breaks, check `patterns/INDEX.md` for a debug pattern. Follow it. Fix the issue and re-run VERIFY.
-5. **GROW** — After completing the task:
-   - If no pattern exists for this task type, create one in `patterns/` using the format in `patterns/README.md`. Add it to `patterns/INDEX.md`. Flag it: "Created `patterns/<name>.md` from this session."
-   - If a pattern exists but you deviated from it or discovered a new gotcha, update it with what you learned.
-   - If any `context/` file is now out of date because of this work, update it surgically — do not rewrite entire files.
-   - Update the "Current Project State" section above if the work was significant.
+5. **GROW** — After meaningful work, run this binary checklist:
+   - **Ground:** What changed in reality? Name the changed behavior, system, command, dependency, or workflow.
+   - **Record:** If project state changed, update the "Current Project State" section above. If documented facts changed, update the relevant `context/` file surgically.
+   - **Orient:** If this task can recur and no pattern exists, create one in `patterns/` using `patterns/README.md`, then add it to `patterns/INDEX.md`. If a pattern exists but you learned a gotcha, update it.
+   - **Write:** Bump `last_updated` in every scaffold file you changed. If the why matters, run `mex log --type decision "<what changed and why>"` or `mex log "<note>"`.

@@ -2,7 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.4.0] - 2026-04-07
+## [0.3.5] - 2026-05-14
+
+### Added
+- **Agent memory mode** — `mex setup --mode agent-memory` creates templates for persistent-agent, homelab, OpenClaw-style, and operational-memory workspaces.
+- **Heartbeat checks** — `mex heartbeat` runs lightweight scheduled health checks over optional `last_updated` frontmatter, stale context, memory cleanup metadata, and old daily memory files.
+- **Scheduled heartbeat loop** — `mex watch --interval` runs heartbeat repeatedly in the foreground while preserving the existing post-commit hook behavior for plain `mex watch`.
+- **Event log** — `mex log` appends notes, decisions, risks, and todos to `.mex/events/decisions.jsonl`.
+- **Timeline** — `mex timeline` reads recent event entries, with `--json` for scripting.
+- **Doctor command** — `mex doctor` summarizes scaffold health across drift, heartbeat, config, and events.
+- **Interactive TUI** — bare `mex` and `mex tui` open an Ink terminal dashboard with drift score, heartbeat status, event activity, timeline/log actions, and a bordered action panel.
+- **Shell completions** — `mex completion bash|zsh|fish` prints completion scripts.
+- **Config tuning** — optional `.mex/config.json` supports staleness thresholds, heartbeat thresholds, and watch interval defaults.
+
+### Changed
+- `mex check` output is grouped by severity with clearer remediation hints.
+- `mex check --json` provides a script-friendly report shape.
+- Scaffold templates now include `last_updated` frontmatter guidance and a GROW loop that encourages logging rationale with `mex log`.
+- Agent-memory templates frame mex as three-layer memory: state memory in scaffold files, procedural memory in patterns, and event memory in JSONL logs.
+- README documents the TUI, agent-memory mode, heartbeat, config, and the OpenClaw/persistent-agent use case.
+
+### Compatibility
+- No scaffold migration is required.
+- `last_updated` is optional; files without it are ignored by heartbeat staleness checks.
+- `.mex/config.json` is optional; missing values use defaults.
+- `.mex/events/` is created only when events are logged.
+- The TUI is additive; all existing CLI commands remain available and script-friendly.
+
+### Deferred
+- Context routing command.
+- Full schema migration with ids/requires fields.
+- Federation / hierarchical scaffolds.
+- Bidirectional state-event references.
+- Dynamic domain nodes via Tree-sitter.
+
+## [0.3.4] - 2026-04-07
 
 ### Changed
 - **Simplified install flow** — `npx promexeus setup` now offers to install globally at the end, so `mex check` and `mex sync` just work

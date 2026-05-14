@@ -158,6 +158,39 @@ describe("findConfig — stalenessThresholds", () => {
   });
 });
 
+describe("findConfig — watch and heartbeat config", () => {
+  function setupConfig(config: unknown): void {
+    mkdirSync(join(tmpDir, ".git"));
+    const mexPath = join(tmpDir, ".mex");
+    mkdirSync(mexPath);
+    writeFileSync(join(mexPath, "ROUTER.md"), "");
+    writeFileSync(join(mexPath, "config.json"), JSON.stringify(config));
+  }
+
+  it("loads watch interval from config.json", () => {
+    setupConfig({ watch: { intervalMinutes: 45 } });
+    const config = findConfig(tmpDir);
+    expect(config.watch).toEqual({ intervalMinutes: 45 });
+  });
+
+  it("loads heartbeat thresholds from config.json", () => {
+    setupConfig({ heartbeat: { staleDays: 5, memoryCleanupDays: 8, dailyMemoryRetentionDays: 21 } });
+    const config = findConfig(tmpDir);
+    expect(config.heartbeat).toEqual({
+      staleDays: 5,
+      memoryCleanupDays: 8,
+      dailyMemoryRetentionDays: 21,
+    });
+  });
+
+  it("ignores non-positive watch and heartbeat values", () => {
+    setupConfig({ watch: { intervalMinutes: 0 }, heartbeat: { staleDays: -1 } });
+    const config = findConfig(tmpDir);
+    expect(config.watch).toBeUndefined();
+    expect(config.heartbeat).toBeUndefined();
+  });
+});
+
 describe("saveAiTools", () => {
   it("creates config.json with aiTools", () => {
     const mexPath = join(tmpDir, ".mex");

@@ -69,7 +69,8 @@ export async function checkStaleness(
   filePath: string,
   source: string,
   cwd: string,
-  thresholds: StalenessThresholds = DEFAULT_STALENESS_THRESHOLDS
+  thresholds: StalenessThresholds = DEFAULT_STALENESS_THRESHOLDS,
+  opts: { lastUpdated?: string } = {}
 ): Promise<DriftIssue[]> {
   const { warnDays, errorDays, warnCommits, errorCommits } = thresholds;
 
@@ -84,6 +85,18 @@ export async function checkStaleness(
   if (commits !== null) {
     const s = commitsSignal(commits, warnCommits, errorCommits);
     if (s) signals.push(s);
+  }
+  const fieldDays = daysSinceFrontmatterDate(opts.lastUpdated);
+  if (fieldDays !== null) {
+    const s = daysSignal(fieldDays, warnDays, errorDays);
+    if (s) {
+      signals.push({
+        severity: s.severity,
+        message: `last_updated is ${fieldDays} days old (threshold: ${
+          s.severity === "error" ? errorDays : warnDays
+        }d)`,
+      });
+    }
   }
 
   if (signals.length === 0) return [];
@@ -103,4 +116,15 @@ export async function checkStaleness(
       message,
     },
   ];
+}
+
+export function daysSinceFrontmatterDate(value: string | undefined, now = new Date()): number | null {
+  if (!value || value.includes("[") || value.includes("]")) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const dateUtc = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const days = Math.floor((todayUtc - dateUtc) / 86_400_000);
+  return days < 0 ? null : days;
 }

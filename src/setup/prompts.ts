@@ -198,3 +198,41 @@ PASS 1 — Populate knowledge files:
 ${EXISTING_PASS_1}
 ${EXISTING_PASSES_2_3}`;
 }
+
+export function buildAgentMemoryPrompt(): string {
+  return `You are going to populate a mex scaffold for a persistent AI agent workspace.
+This is not primarily a code repository. The scaffold describes an operational
+environment, the agent's working memory, recurring maintenance routines, and
+the patterns the agent should reuse across sessions.
+
+Read these files first:
+1. .mex/AGENTS.md — compact operating contract and GROW checklist
+2. .mex/ROUTER.md — session bootstrap and routing table
+3. .mex/HEARTBEAT.md — lightweight periodic health checks
+4. .mex/context/*.md — fill the annotated context files
+5. .mex/patterns/README.md — pattern format
+
+Populate the scaffold for the agent-memory use case:
+- ROUTER.md: current operational state, active systems, known issues, routing table
+- context/architecture.md: services, machines, containers, automations, data flows
+- context/stack.md: models, tools, runtimes, storage, important versions
+- context/conventions.md: naming, safety rules, operational habits
+- context/decisions.md: key decisions and rationale that should not be re-litigated
+- context/setup.md: how to inspect, run, restart, and recover the environment
+- HEARTBEAT.md: concrete checks the agent should run when polled on a heartbeat
+- patterns/: 3-5 operational runbooks for recurring maintenance/debug tasks
+
+Use the GROW loop exactly:
+G — Ground: identify what changed in reality.
+R — Record: update ROUTER.md and relevant context files with current truth.
+O — Orient: create or update a pattern when the task can recur.
+W — Write: bump last_updated on changed scaffold files and run mex log for rationale.
+
+Event guidance:
+- Use state files for current truth.
+- Use mex log for decisions, risks, todos, and notes about why something changed.
+- Do not rewrite history out of decisions.md; supersede old decisions instead.
+
+Do not invent cloud services, servers, models, or schedules. If something is
+unknown, write [TO DETERMINE] and say what needs to be inspected.`;
+}

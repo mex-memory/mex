@@ -97,9 +97,12 @@ All commands run from your **project root**. If you didn't install globally, rep
 
 | Command | What it does |
 |---------|-------------|
+| `mex` | Open the interactive terminal dashboard |
+| `mex tui` | Open the interactive terminal dashboard explicitly |
 | `mex setup` | First-time setup — create `.mex/` scaffold and populate with AI |
+| `mex setup --mode agent-memory` | Create templates for persistent-agent / homelab memory workspaces |
 | `mex setup --dry-run` | Preview what setup would do without making changes |
-| `mex check` | Run all 8 checkers, output drift score and issues |
+| `mex check` | Run drift checkers, output drift score and categorized issues |
 | `mex check --quiet` | One-liner: `mex: drift score 92/100 (1 warning)` |
 | `mex check --json` | Full report as JSON for programmatic use |
 | `mex check --fix` | Check and jump straight to sync if errors found |
@@ -108,8 +111,14 @@ All commands run from your **project root**. If you didn't install globally, rep
 | `mex sync --warnings` | Include warning-only files in sync |
 | `mex init` | Pre-scan codebase, build structured brief for AI |
 | `mex init --json` | Raw scanner brief as JSON |
+| `mex log <message>` | Append a note, decision, risk, or todo to `.mex/events/decisions.jsonl` |
+| `mex timeline` | View recent event log entries |
+| `mex heartbeat` | Run lightweight persistent-agent health checks once |
+| `mex doctor` | Friendly scaffold health summary |
 | `mex watch` | Install post-commit hook (silent on perfect score) |
+| `mex watch --interval` | Run heartbeat repeatedly in the foreground |
 | `mex watch --uninstall` | Remove the hook |
+| `mex completion <shell>` | Print bash, zsh, or fish completions |
 | `mex commands` | List all commands and scripts with descriptions |
 
 
@@ -190,12 +199,46 @@ context file → points to pattern file if task-specific guidance exists
     ↓
 Agent executes with full project context, minimal token cost
     ↓
-After task: agent updates scaffold (GROW step)
+After task: agent runs GROW
     ↓
 New patterns, updated project state — scaffold grows from real work
 ```
 
-CLAUDE.md stays at ~120 tokens. The agent navigates to only what it needs. After every task, the agent updates the scaffold — creating patterns from new task types, updating project state, fixing stale context. The scaffold compounds over time.
+CLAUDE.md stays small. The agent navigates to only what it needs. After meaningful work, it runs GROW: Ground what changed, Record current truth in the scaffold, Orient by creating or refining a pattern, and Write `last_updated` plus `mex log` entries when rationale matters.
+
+## Agent Memory Mode
+
+`mex setup --mode agent-memory` creates a scaffold for persistent agents whose "project" is an operational environment rather than a code repo. It adds a `HEARTBEAT.md` contract and templates that frame mex as structured, task-routed memory:
+
+- `ROUTER.md` tracks current operational state and routes the agent to the right memory files.
+- `context/` stores architecture, stack, conventions, setup, and decisions.
+- `patterns/` stores recurring runbooks.
+- `.mex/events/decisions.jsonl` stores append-only notes and rationale via `mex log`.
+
+`mex heartbeat` is intentionally lighter than `mex check`: it reads `last_updated` frontmatter and memory cleanup metadata, prints `HEARTBEAT_OK` when clean, and reports only when the agent needs to review stale context or memory files. Use `mex watch --interval` to run heartbeat repeatedly in a persistent-agent workspace.
+
+## Configuration
+
+Optional settings live in `.mex/config.json`. Missing values fall back to defaults.
+
+```json
+{
+  "staleness": {
+    "warnDays": 30,
+    "errorDays": 90,
+    "warnCommits": 50,
+    "errorCommits": 200
+  },
+  "heartbeat": {
+    "staleDays": 7,
+    "memoryCleanupDays": 7,
+    "dailyMemoryRetentionDays": 14
+  },
+  "watch": {
+    "intervalMinutes": 30
+  }
+}
+```
 
 ## File Structure
 
@@ -205,6 +248,9 @@ your-project/
 ├── .mex/
 │   ├── ROUTER.md          ← routing table, session bootstrap
 │   ├── AGENTS.md          ← always-loaded anchor (~150 tokens)
+│   ├── HEARTBEAT.md       ← agent-memory heartbeat contract (agent-memory mode)
+│   ├── events/
+│   │   └── decisions.jsonl   # append-only notes/decisions from mex log
 │   ├── context/
 │   │   ├── architecture.md   # how components connect
 │   │   ├── stack.md           # technology choices and reasoning

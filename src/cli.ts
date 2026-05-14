@@ -11,22 +11,47 @@ function parseIntArg(raw: string): number {
   return n;
 }
 
+function parsePositiveIntArg(raw: string): number {
+  const n = parseIntArg(raw);
+  if (n <= 0) {
+    throw new InvalidArgumentError(`Expected a positive integer, got "${raw}".`);
+  }
+  return n;
+}
+
 const program = new Command();
+
+async function runTuiCommand(): Promise<void> {
+  const { launchTui } = await import("./tui.js");
+  launchTui();
+}
 
 program
   .name("mex")
   .description("CLI engine for mex scaffold — drift detection, pre-analysis, and targeted sync")
-  .version("0.4.0");
+  .version("0.3.5")
+  .showHelpAfterError()
+  .action(async () => {
+    await runTuiCommand();
+  });
+
+program
+  .command("tui")
+  .description("Open the interactive mex dashboard")
+  .action(async () => {
+    await runTuiCommand();
+  });
 
 // ── Setup (npx entry point) ──
 program
   .command("setup")
   .description("First-time setup — create .mex/ scaffold and populate with AI")
+  .option("--mode <mode>", "Template mode: code-repo (default) or agent-memory", "code-repo")
   .option("--dry-run", "Show what would happen without making changes")
   .action(async (opts) => {
     try {
       const { runSetup } = await import("./setup/index.js");
-      await runSetup({ dryRun: opts.dryRun });
+      await runSetup({ dryRun: opts.dryRun, mode: opts.mode });
     } catch (err) {
       console.error((err as Error).message);
       process.exit(1);
@@ -109,6 +134,70 @@ program
     }
   });
 
+// ── Agent Memory Events ──
+program
+  .command("log <message>")
+  .description("Append a decision, note, risk, or todo to the mex event log")
+  .option("--type <type>", "Event type: decision, note, risk, todo", "note")
+  .option("--file <path>", "Related file path (repeatable)", (value, prev: string[]) => [...prev, value], [])
+  .action(async (message, opts) => {
+    try {
+      const config = findConfig();
+      const { runLog } = await import("./events.js");
+      await runLog(config, message, { kind: opts.type, files: opts.file });
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("timeline")
+  .description("Show recent mex event log entries")
+  .option("--json", "Output events as JSON")
+  .option("--since <date>", "Filter from YYYY-MM-DD or relative Nd, e.g. 30d")
+  .option("--type <type>", "Filter by event type")
+  .option("--limit <n>", "Maximum number of entries", parsePositiveIntArg)
+  .action(async (opts) => {
+    try {
+      const config = findConfig();
+      const { runTimeline } = await import("./events.js");
+      await runTimeline(config, opts);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("heartbeat")
+  .description("Run lightweight agent-memory health checks once")
+  .option("--json", "Output heartbeat report as JSON")
+  .action(async (opts) => {
+    try {
+      const config = findConfig();
+      const { runHeartbeat } = await import("./heartbeat.js");
+      await runHeartbeat(config, { json: opts.json });
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("doctor")
+  .description("Run a friendly scaffold health diagnostic")
+  .action(async () => {
+    try {
+      const config = findConfig();
+      const { runDoctor } = await import("./doctor.js");
+      await runDoctor(config);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
 // ── Layer 3: Targeted Sync ──
 program
   .command("sync")
@@ -148,13 +237,31 @@ patternCmd
 // ── Git Hook ──
 program
   .command("watch")
-  .description("Install/uninstall post-commit hook for automatic drift checking")
+  .description("Install/uninstall post-commit hook, or run heartbeat on an interval")
   .option("--uninstall", "Remove the post-commit hook")
+  .option("--interval [minutes]", "Run mex heartbeat repeatedly instead of installing a hook", (v) => v === undefined ? true : parsePositiveIntArg(v))
   .action(async (opts) => {
     try {
       const config = findConfig();
       const { manageHook } = await import("./watch.js");
-      await manageHook(config, { uninstall: opts.uninstall });
+      const intervalMinutes = opts.interval === true
+        ? config.watch?.intervalMinutes ?? 30
+        : typeof opts.interval === "number"
+          ? opts.interval
+          : undefined;
+      await manageHook(config, { uninstall: opts.uninstall, intervalMinutes });
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("completion <shell>")
+  .description("Print shell completion script for bash, zsh, or fish")
+  .action((shell) => {
+    try {
+      console.log(buildCompletion(shell));
     } catch (err) {
       console.error((err as Error).message);
       process.exit(1);
@@ -178,8 +285,14 @@ program
     console.log("  mex sync --warnings    Include warning-only files in sync");
     console.log("  mex init               Pre-scan codebase, build brief for AI");
     console.log("  mex init --json        Scanner brief as JSON");
+    console.log("  mex log <message>      Append a note/decision/risk/todo to the event log");
+    console.log("  mex timeline           Show recent event log entries");
+    console.log("  mex heartbeat          Run lightweight agent-memory health checks");
+    console.log("  mex doctor             Friendly scaffold health summary");
+    console.log("  mex tui                Open the interactive mex dashboard");
     console.log("  mex pattern add <name> Create a new pattern file");
     console.log("  mex watch              Install post-commit hook for auto drift score");
+    console.log("  mex watch --interval   Run heartbeat every 30 minutes (or config value)");
     console.log("  mex watch --uninstall  Remove the post-commit hook");
     console.log();
     console.log(chalk.dim("Not installed globally? Replace 'mex' with 'npx promexeus'."));
@@ -187,3 +300,24 @@ program
   });
 
 program.parse();
+
+function buildCompletion(shell: string): string {
+  const commands = [
+    "setup", "check", "init", "sync", "pattern", "log", "timeline",
+    "heartbeat", "doctor", "watch", "tui", "commands", "completion",
+  ];
+  if (shell === "bash") {
+    return `_mex_completion() {
+  COMPREPLY=($(compgen -W "${commands.join(" ")}" -- "\${COMP_WORDS[COMP_CWORD]}"))
+}
+complete -F _mex_completion mex`;
+  }
+  if (shell === "zsh") {
+    return `#compdef mex
+_arguments '1:command:(${commands.join(" ")})'`;
+  }
+  if (shell === "fish") {
+    return commands.map((cmd) => `complete -c mex -f -a ${cmd}`).join("\n");
+  }
+  throw new Error(`Unknown shell "${shell}". Use bash, zsh, or fish.`);
+}
