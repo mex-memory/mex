@@ -15,14 +15,30 @@ export interface HeartbeatResult {
 
 export interface HeartbeatOpts {
   json?: boolean;
+  /** Override the glob patterns used to discover heartbeat files (relative to
+   *  `config.scaffoldRoot`). Defaults to {@link DEFAULT_HEARTBEAT_PATTERNS}. */
+  scaffoldPatterns?: readonly string[];
 }
+
+/**
+ * Default glob patterns used by the heartbeat checker, relative to
+ * `MexConfig.scaffoldRoot`. NOT a stable contract — mex may add to this list
+ * between minor versions. Pass `scaffoldPatterns` explicitly when exact
+ * behavior matters.
+ */
+export const DEFAULT_HEARTBEAT_PATTERNS = [
+  "ROUTER.md",
+  "AGENTS.md",
+  "context/*.md",
+  "patterns/*.md",
+] as const;
 
 const DEFAULT_STALE_DAYS = 7;
 const DEFAULT_MEMORY_CLEANUP_DAYS = 7;
 const DEFAULT_DAILY_MEMORY_RETENTION_DAYS = 14;
 
 export async function runHeartbeat(config: MexConfig, opts: HeartbeatOpts = {}): Promise<HeartbeatResult> {
-  const result = checkHeartbeat(config);
+  const result = checkHeartbeat(config, new Date(), { scaffoldPatterns: opts.scaffoldPatterns });
   if (opts.json) {
     console.log(JSON.stringify(result, null, 2));
     return result;
@@ -31,12 +47,22 @@ export async function runHeartbeat(config: MexConfig, opts: HeartbeatOpts = {}):
   return result;
 }
 
-export function checkHeartbeat(config: MexConfig, now = new Date()): HeartbeatResult {
+export interface CheckHeartbeatOpts {
+  /** Override the glob patterns used to discover heartbeat files (relative to
+   *  `config.scaffoldRoot`). Defaults to {@link DEFAULT_HEARTBEAT_PATTERNS}. */
+  scaffoldPatterns?: readonly string[];
+}
+
+export function checkHeartbeat(
+  config: MexConfig,
+  now = new Date(),
+  opts: CheckHeartbeatOpts = {}
+): HeartbeatResult {
   const staleDays = config.heartbeat?.staleDays ?? DEFAULT_STALE_DAYS;
   const memoryCleanupDays = config.heartbeat?.memoryCleanupDays ?? DEFAULT_MEMORY_CLEANUP_DAYS;
   const dailyRetentionDays = config.heartbeat?.dailyMemoryRetentionDays ?? DEFAULT_DAILY_MEMORY_RETENTION_DAYS;
 
-  const staleFiles = scaffoldHeartbeatFiles(config.scaffoldRoot)
+  const staleFiles = scaffoldHeartbeatFiles(config.scaffoldRoot, opts.scaffoldPatterns)
     .map((file) => {
       const fm = parseFrontmatter(file);
       const days = daysSinceFrontmatterDate(
@@ -60,8 +86,10 @@ export function checkHeartbeat(config: MexConfig, now = new Date()): HeartbeatRe
   };
 }
 
-function scaffoldHeartbeatFiles(scaffoldRoot: string): string[] {
-  const patterns = ["ROUTER.md", "AGENTS.md", "context/*.md", "patterns/*.md"];
+function scaffoldHeartbeatFiles(
+  scaffoldRoot: string,
+  patterns: readonly string[] = DEFAULT_HEARTBEAT_PATTERNS,
+): string[] {
   return patterns.flatMap((pattern) =>
     globSync(pattern, {
       cwd: scaffoldRoot,

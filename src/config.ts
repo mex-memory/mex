@@ -1,7 +1,50 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, isAbsolute } from "node:path";
 import type { MexConfig, AiTool, StalenessThresholds, WatchConfig, HeartbeatConfig } from "./types.js";
 import { DEFAULT_STALENESS_THRESHOLDS } from "./drift/checkers/staleness.js";
+
+/**
+ * Inputs accepted by {@link createConfig}. Only the two roots are required —
+ * everything else mirrors the optional fields on {@link MexConfig} so callers
+ * can opt in field by field.
+ */
+export interface CreateConfigInput {
+  /** Absolute path to the project root (e.g. where .git lives). */
+  projectRoot: string;
+  /** Absolute path to the scaffold root (the directory holding ROUTER.md, etc.). */
+  scaffoldRoot: string;
+  aiTools?: AiTool[];
+  stalenessThresholds?: StalenessThresholds;
+  watch?: WatchConfig;
+  heartbeat?: HeartbeatConfig;
+}
+
+/**
+ * Build a {@link MexConfig} from explicit inputs, bypassing the on-disk
+ * discovery that {@link findConfig} performs. Intended for embedders that
+ * already know where the project and scaffold live — for example, tools that
+ * use a non-default scaffold directory name and therefore can't rely on
+ * findConfig's `.mex/` lookup.
+ *
+ * Defaults `aiTools` to an empty array. Other optional fields are passed
+ * through untouched.
+ */
+export function createConfig(input: CreateConfigInput): MexConfig {
+  if (!isAbsolute(input.projectRoot)) {
+    throw new Error(`createConfig: projectRoot must be an absolute path, got "${input.projectRoot}"`);
+  }
+  if (!isAbsolute(input.scaffoldRoot)) {
+    throw new Error(`createConfig: scaffoldRoot must be an absolute path, got "${input.scaffoldRoot}"`);
+  }
+  return {
+    projectRoot: input.projectRoot,
+    scaffoldRoot: input.scaffoldRoot,
+    aiTools: input.aiTools ?? [],
+    stalenessThresholds: input.stalenessThresholds,
+    watch: input.watch,
+    heartbeat: input.heartbeat,
+  };
+}
 
 /**
  * Walk up from startDir looking for .git to find project root,

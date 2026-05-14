@@ -15,15 +15,45 @@ import { checkCrossFile } from "./checkers/cross-file.js";
 import { checkScriptCoverage } from "./checkers/script-coverage.js";
 import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 
+/**
+ * Default glob patterns used to locate scaffold markdown files, relative to
+ * `MexConfig.scaffoldRoot`. Exported so consumers can extend rather than
+ * replace the list, e.g.
+ *
+ * ```ts
+ * runDriftCheck(config, {
+ *   scaffoldPatterns: [...DEFAULT_SCAFFOLD_PATTERNS, "traces/**\/*.md"],
+ * });
+ * ```
+ *
+ * NOT a stable contract — mex may add to this list between minor versions.
+ * If exact behavior matters, pass `scaffoldPatterns` explicitly.
+ */
+export const DEFAULT_SCAFFOLD_PATTERNS = [
+  "context/*.md",
+  "patterns/*.md",
+  "ROUTER.md",
+  "AGENTS.md",
+  "SETUP.md",
+  "SYNC.md",
+] as const;
+
+export interface RunDriftCheckOpts {
+  verbose?: boolean;
+  /** Override the glob patterns used to discover scaffold files (relative to
+   *  `config.scaffoldRoot`). Defaults to {@link DEFAULT_SCAFFOLD_PATTERNS}. */
+  scaffoldPatterns?: readonly string[];
+}
+
 /** Run full drift detection across all scaffold files */
 export async function runDriftCheck(
   config: MexConfig,
-  opts: { verbose?: boolean } = {}
+  opts: RunDriftCheckOpts = {}
 ): Promise<DriftReport> {
   const { projectRoot, scaffoldRoot } = config;
 
   // Find all markdown files in scaffold
-  const scaffoldFiles = findScaffoldFiles(projectRoot, scaffoldRoot);
+  const scaffoldFiles = findScaffoldFiles(projectRoot, scaffoldRoot, opts.scaffoldPatterns);
   const allClaims: Claim[] = [];
   const allIssues: DriftIssue[] = [];
   const checkerIssueCounts: Array<[string, number]> = [];
@@ -106,16 +136,10 @@ export async function runDriftCheck(
 /** Find all markdown files that are part of the scaffold */
 function findScaffoldFiles(
   projectRoot: string,
-  scaffoldRoot: string
+  scaffoldRoot: string,
+  patterns: readonly string[] = DEFAULT_SCAFFOLD_PATTERNS
 ): string[] {
-  const scaffoldPatterns = [
-    "context/*.md",
-    "patterns/*.md",
-    "ROUTER.md",
-    "AGENTS.md",
-    "SETUP.md",
-    "SYNC.md",
-  ];
+  const scaffoldPatterns = patterns;
 
   const files: string[] = [];
 

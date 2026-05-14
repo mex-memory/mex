@@ -3,7 +3,11 @@ import { dirname, resolve, relative } from "node:path";
 import chalk from "chalk";
 import type { MexConfig } from "./types.js";
 
-export type EventKind = "decision" | "note" | "risk" | "todo";
+/** Runtime list of valid event kinds. Re-exported as part of the public API so
+ *  consumers can validate user-supplied kinds against the same source of truth. */
+export const EVENT_KINDS = ["decision", "note", "risk", "todo"] as const;
+
+export type EventKind = (typeof EVENT_KINDS)[number];
 
 export interface EventEntry {
   timestamp: string;
@@ -25,7 +29,7 @@ export interface TimelineOpts {
   limit?: number;
 }
 
-const VALID_KINDS = new Set<EventKind>(["decision", "note", "risk", "todo"]);
+const VALID_KINDS = new Set<EventKind>(EVENT_KINDS);
 const EVENT_FILE = "events/decisions.jsonl";
 
 export function eventLogPath(config: MexConfig): string {
