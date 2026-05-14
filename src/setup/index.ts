@@ -144,19 +144,21 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   if (mode === "agent-memory") {
     info("Detected: agent-memory workspace");
     info("Mode: persistent-agent operational memory");
-  } else switch (state) {
-    case "existing":
-      info("Detected: existing codebase with source files");
-      info("Mode: populate scaffold from code");
-      break;
-    case "fresh":
-      info("Detected: fresh project (no source files yet)");
-      info("Mode: populate scaffold from intent");
-      break;
-    case "partial":
-      info("Detected: existing codebase with partially populated scaffold");
-      info("Mode: will populate empty slots, skip what's already filled");
-      break;
+  } else {
+    switch (state) {
+      case "existing":
+        info("Detected: existing codebase with source files");
+        info("Mode: populate scaffold from code");
+        break;
+      case "fresh":
+        info("Detected: fresh project (no source files yet)");
+        info("Mode: populate scaffold from intent");
+        break;
+      case "partial":
+        info("Detected: existing codebase with partially populated scaffold");
+        info("Mode: will populate empty slots, skip what's already filled");
+        break;
+    }
   }
   console.log();
 

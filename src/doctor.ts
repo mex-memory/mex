@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import chalk from "chalk";
 import type { MexConfig } from "./types.js";
 import { runDriftCheck } from "./drift/index.js";
@@ -18,7 +20,8 @@ export async function runDoctor(config: MexConfig): Promise<void> {
   printLine("Drift", report.score >= 80 && errors === 0, `${report.score}/100 (${errors} errors, ${warnings} warnings)`);
   printLine("Heartbeat", heartbeat.ok, heartbeat.ok ? "HEARTBEAT_OK" : `${heartbeat.staleFiles.length} stale files, ${heartbeat.oldDailyMemoryFiles.length} old memory files`);
   printLine("Events", true, `${events.length} logged event${events.length === 1 ? "" : "s"}`);
-  printLine("Config", true, ".mex/config.json loaded with defaults for missing values");
+  const hasConfig = existsSync(resolve(config.scaffoldRoot, "config.json"));
+  printLine("Config", true, hasConfig ? ".mex/config.json loaded with defaults for missing values" : "using defaults; no .mex/config.json found");
 
   if (errors || warnings || !heartbeat.ok) {
     console.log();

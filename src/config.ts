@@ -36,10 +36,11 @@ export function findConfig(startDir?: string): MexConfig {
     );
   }
 
-  const aiTools = loadAiTools(scaffoldRoot);
-  const stalenessThresholds = loadStalenessThresholds(scaffoldRoot);
-  const watch = loadWatchConfig(scaffoldRoot);
-  const heartbeat = loadHeartbeatConfig(scaffoldRoot);
+  const persistedConfig = loadPersistedConfig(scaffoldRoot);
+  const aiTools = loadAiTools(persistedConfig);
+  const stalenessThresholds = loadStalenessThresholds(scaffoldRoot, persistedConfig);
+  const watch = loadWatchConfig(persistedConfig);
+  const heartbeat = loadHeartbeatConfig(persistedConfig);
   return { projectRoot, scaffoldRoot, aiTools, stalenessThresholds, watch, heartbeat };
 }
 
@@ -69,22 +70,13 @@ interface MexPersistedConfig {
 
 const VALID_AI_TOOLS = new Set<string>(["claude", "cursor", "windsurf", "copilot", "opencode", "codex"]);
 
-function loadAiTools(scaffoldRoot: string): AiTool[] {
-  const configPath = resolve(scaffoldRoot, CONFIG_FILE);
-  if (!existsSync(configPath)) return [];
-  try {
-    const raw = JSON.parse(readFileSync(configPath, "utf-8"));
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
-    const arr = (raw as MexPersistedConfig).aiTools;
-    if (!Array.isArray(arr)) return [];
-    return arr.filter((v): v is AiTool => typeof v === "string" && VALID_AI_TOOLS.has(v));
-  } catch {
-    return [];
-  }
+function loadAiTools(raw: MexPersistedConfig | null): AiTool[] {
+  const arr = raw?.aiTools;
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((v): v is AiTool => typeof v === "string" && VALID_AI_TOOLS.has(v));
 }
 
-function loadStalenessThresholds(scaffoldRoot: string): StalenessThresholds | undefined {
-  const raw = loadPersistedConfig(scaffoldRoot);
+function loadStalenessThresholds(scaffoldRoot: string, raw: MexPersistedConfig | null): StalenessThresholds | undefined {
   const configPath = resolve(scaffoldRoot, CONFIG_FILE);
   if (!raw) return undefined;
   try {
@@ -134,8 +126,7 @@ function loadStalenessThresholds(scaffoldRoot: string): StalenessThresholds | un
   }
 }
 
-function loadWatchConfig(scaffoldRoot: string): WatchConfig | undefined {
-  const raw = loadPersistedConfig(scaffoldRoot);
+function loadWatchConfig(raw: MexPersistedConfig | null): WatchConfig | undefined {
   if (!raw || typeof raw.watch !== "object" || raw.watch === null || Array.isArray(raw.watch)) {
     return undefined;
   }
@@ -144,8 +135,7 @@ function loadWatchConfig(scaffoldRoot: string): WatchConfig | undefined {
   return intervalMinutes === undefined ? undefined : { intervalMinutes };
 }
 
-function loadHeartbeatConfig(scaffoldRoot: string): HeartbeatConfig | undefined {
-  const raw = loadPersistedConfig(scaffoldRoot);
+function loadHeartbeatConfig(raw: MexPersistedConfig | null): HeartbeatConfig | undefined {
   if (!raw || typeof raw.heartbeat !== "object" || raw.heartbeat === null || Array.isArray(raw.heartbeat)) {
     return undefined;
   }

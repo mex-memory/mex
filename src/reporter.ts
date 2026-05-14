@@ -30,14 +30,14 @@ export function reportConsole(report: DriftReport): void {
     for (const [file, issues] of Object.entries(files)) {
       console.log(chalk.bold.underline(file));
       for (const issue of issues) {
-      const color = severityColor[issue.severity];
-      const icon = severityIcon[issue.severity];
-      const loc = issue.line ? `:${issue.line}` : "";
-      console.log(
-        `  ${color(`${icon} ${issue.code}`)}${loc} ${issue.message}`
-      );
-      const remediation = remediationFor(issue.code);
-      if (remediation) console.log(chalk.dim(`    → ${remediation}`));
+        const color = severityColor[issue.severity];
+        const icon = severityIcon[issue.severity];
+        const loc = issue.line ? `:${issue.line}` : "";
+        console.log(
+          `  ${color(`${icon} ${issue.code}`)}${loc} ${issue.message}`
+        );
+        const remediation = remediationFor(issue.code);
+        if (remediation) console.log(chalk.dim(`    → ${remediation}`));
       }
       console.log();
     }

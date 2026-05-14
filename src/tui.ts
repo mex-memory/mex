@@ -142,21 +142,36 @@ function TuiApp({ config }: { config: MexConfig }) {
     }
 
     if (state.view === "log-message" || state.view === "log-file") {
-      const field = state.view === "log-message" ? "logMessage" : "logFile";
       if (key.backspace || key.delete) {
-        setState((s) => ({ ...s, [field]: s[field].slice(0, -1) }));
+        if (state.view === "log-message") {
+          setState((s) => ({ ...s, logMessage: s.logMessage.slice(0, -1) }));
+        } else {
+          setState((s) => ({ ...s, logFile: s.logFile.slice(0, -1) }));
+        }
       } else if (key.return) {
         if (state.view === "log-message") {
           if (state.logMessage.trim().length > 0) setState((s) => ({ ...s, view: "log-file" }));
         } else {
-          appendEvent(config, state.logMessage.trim(), {
-            kind: state.logKind,
-            files: state.logFile.trim() ? [state.logFile.trim()] : [],
-          });
-          void refresh("log-done", `Logged ${state.logKind}`);
+          try {
+            appendEvent(config, state.logMessage.trim(), {
+              kind: state.logKind,
+              files: state.logFile.trim() ? [state.logFile.trim()] : [],
+            });
+            void refresh("log-done", `Logged ${state.logKind}`);
+          } catch (err) {
+            setState((s) => ({
+              ...s,
+              view: "dashboard",
+              notice: `Log failed: ${(err as Error).message}`,
+            }));
+          }
         }
       } else if (input && !key.ctrl && !key.meta) {
-        setState((s) => ({ ...s, [field]: s[field] + input }));
+        if (state.view === "log-message") {
+          setState((s) => ({ ...s, logMessage: s.logMessage + input }));
+        } else {
+          setState((s) => ({ ...s, logFile: s.logFile + input }));
+        }
       }
     }
   });
@@ -214,14 +229,14 @@ export function Summary({ data, notice }: { data: DashboardData; notice: string 
       value: `${data.report.score}/100`,
       bar: progressBar(data.report.score),
       color: scoreColor,
-      detail: `${errors} errors · ${warnings} warnings · ${data.report.filesChecked} files`,
+      detail: `${formatCount(errors, "error")} · ${formatCount(warnings, "warning")} · ${formatCount(data.report.filesChecked, "file")}`,
     }),
     h(StatusLine, {
       label: "Heartbeat",
       value: data.heartbeat.ok ? "OK" : "Attention",
       bar: progressBar(heartbeatValue),
       color: heartbeatColor,
-      detail: `${data.heartbeat.staleFiles.length} stale files`,
+      detail: `${formatCount(data.heartbeat.staleFiles.length, "stale file")}`,
     }),
     h(Text, null,
       h(Text, { color: COLORS.shell, bold: true }, "Events    "),
@@ -261,6 +276,10 @@ function StatusLine({ label, value, bar, color, detail }: { label: string; value
     h(Text, { color }, bar),
     `  ${detail}`,
   );
+}
+
+function formatCount(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 export function progressBar(value: number, width = BAR_WIDTH): string {

@@ -56,7 +56,7 @@ describe("TUI components", () => {
       }),
       notice: null,
     }));
-    expect(app.lastFrame()).toContain("1 errors · 1 warnings");
+    expect(app.lastFrame()).toContain("1 error · 1 warning");
   });
 
   it("renders heartbeat stale files", () => {

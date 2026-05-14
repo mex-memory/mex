@@ -46,6 +46,8 @@ export async function manageHook(
 
 export async function runWatchInterval(config: MexConfig, intervalMinutes: number): Promise<void> {
   console.log(chalk.green(`mex heartbeat running every ${intervalMinutes} minute${intervalMinutes === 1 ? "" : "s"}. Press Ctrl+C to stop.`));
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const run = async () => {
     try {
       await runHeartbeat(config);
@@ -53,8 +55,26 @@ export async function runWatchInterval(config: MexConfig, intervalMinutes: numbe
       console.error((err as Error).message);
     }
   };
+
+  const stop = () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    console.log(chalk.dim("mex heartbeat stopped."));
+    process.exit(0);
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+
+  const scheduleNext = () => {
+    if (stopped) return;
+    timer = setTimeout(async () => {
+      await run();
+      scheduleNext();
+    }, intervalMinutes * 60_000);
+  };
+
   await run();
-  setInterval(run, intervalMinutes * 60_000);
+  scheduleNext();
 }
 
 function installHook(hookPath: string, config: MexConfig): void {

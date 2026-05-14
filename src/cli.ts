@@ -30,6 +30,7 @@ program
   .name("mex")
   .description("CLI engine for mex scaffold — drift detection, pre-analysis, and targeted sync")
   .version("0.3.5")
+  .showHelpAfterError()
   .action(async () => {
     await runTuiCommand();
   });

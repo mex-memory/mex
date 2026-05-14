@@ -36,7 +36,7 @@ All notable changes to this project will be documented in this file.
 - Bidirectional state-event references.
 - Dynamic domain nodes via Tree-sitter.
 
-## [0.4.0] - 2026-04-07
+## [0.3.4] - 2026-04-07
 
 ### Changed
 - **Simplified install flow** — `npx promexeus setup` now offers to install globally at the end, so `mex check` and `mex sync` just work
