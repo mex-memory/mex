@@ -15,7 +15,7 @@
 
 [![CI](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![npm version](https://img.shields.io/npm/v/mex-cli.svg)](https://www.npmjs.com/package/mex-cli)
+[![npm version](https://img.shields.io/npm/v/mex-agent.svg)](https://www.npmjs.com/package/mex-agent)
 
 </div>
 
@@ -41,10 +41,10 @@ Works with any stack — JavaScript, Python, Go, Rust, and more.
 
 ## Install
 
-The npm package is named `mex-cli` (`mex` was taken on npm). The CLI command is `mex`.
+The npm package is named `mex-agent` (`mex` was taken on npm). The CLI command is `mex`.
 
 ```bash
-npx mex-cli setup
+npx mex-agent setup
 ```
 
 That's it. The setup command creates the `.mex/` scaffold, asks which AI tool you use, pre-scans your codebase, and generates a targeted prompt to populate everything. Takes about 5 minutes.
@@ -59,14 +59,14 @@ mex sync         # fix drift
 If you skip global install, everything still works via npx:
 
 ```bash
-npx mex-cli check        # drift score
-npx mex-cli sync         # fix drift
+npx mex-agent check        # drift score
+npx mex-agent sync         # fix drift
 ```
 
 You can install globally later at any time:
 
 ```bash
-npm install -g mex-cli
+npm install -g mex-agent
 ```
 
 ## Drift Detection
@@ -91,7 +91,7 @@ Scoring: starts at 100. Deducts -10 per error, -3 per warning, -1 per info.
 
 ## CLI
 
-All commands run from your **project root**. If you didn't install globally, replace `mex` with `npx mex-cli`.
+All commands run from your **project root**. If you didn't install globally, replace `mex` with `npx mex-agent`.
 
 ### Commands
 

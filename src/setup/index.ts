@@ -117,7 +117,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   // Verify templates directory exists (sanity check for npm package integrity)
   if (!existsSync(TEMPLATES_DIR)) {
     throw new Error(
-      `Templates directory not found at ${TEMPLATES_DIR}. The mex-cli package may be corrupted — try reinstalling.`
+      `Templates directory not found at ${TEMPLATES_DIR}. The mex-agent package may be corrupted — try reinstalling.`
     );
   }
 
@@ -465,23 +465,23 @@ async function promptGlobalInstall(): Promise<void> {
 
     if (answer === "" || answer === "y" || answer === "yes") {
       console.log();
-      info("Installing mex-cli globally...");
+      info("Installing mex-agent globally...");
       try {
-        execSync("npm install -g mex-cli", { stdio: "inherit" });
+        execSync("npm install -g mex-agent", { stdio: "inherit" });
         console.log();
         ok("Installed globally. `mex check` and `mex sync` work from anywhere now.");
         printNextSteps(true);
       } catch {
         console.log();
         warn("Global install failed. You can retry manually:");
-        console.log("    npm install -g mex-cli");
+        console.log("    npm install -g mex-agent");
         console.log();
         printNextSteps(false);
       }
     } else {
       console.log();
       info("No problem. You can always install later:");
-      console.log("    npm install -g mex-cli");
+      console.log("    npm install -g mex-agent");
       console.log();
       printNextSteps(false);
     }
@@ -505,13 +505,13 @@ function printNextSteps(globalInstalled: boolean) {
     console.log("    mex watch              Auto-check drift after every commit");
   } else {
     info("Ongoing commands (via npx):");
-    console.log("    npx mex-cli check                Drift score — are scaffold files still accurate?");
-    console.log("    npx mex-cli check --quiet        One-liner drift score");
-    console.log("    npx mex-cli sync                 Fix drift — AI updates only what's broken");
-    console.log("    npx mex-cli watch                Auto-check drift after every commit");
+    console.log("    npx mex-agent check                Drift score — are scaffold files still accurate?");
+    console.log("    npx mex-agent check --quiet        One-liner drift score");
+    console.log("    npx mex-agent sync                 Fix drift — AI updates only what's broken");
+    console.log("    npx mex-agent watch                Auto-check drift after every commit");
     console.log();
     info("Or install globally to use the shorter `mex` command:");
-    console.log("    npm install -g mex-cli");
+    console.log("    npm install -g mex-agent");
   }
   console.log();
 }

@@ -4,9 +4,9 @@ This release turns mex from a drift-aware scaffold CLI into a small operational 
 
 The original goal of mex is still the same: keep agent context useful, navigable, and honest without dumping an entire project into the prompt. v0.3 keeps the stable v0.2 scaffold architecture, then adds the pieces that make mex work better for persistent agents, homelabs, OpenClaw-style operational workspaces, and long-running project memory.
 
-npm package: `mex-cli@0.3.5`
+npm package: `mex-agent@0.3.5`
 
-Package rename: the npm package is now `mex-cli`. The binary command remains `mex`.
+Package rename: the npm package is now `mex-agent`. The binary command remains `mex`.
 
 ## Highlights
 
@@ -23,7 +23,7 @@ Package rename: the npm package is now `mex-cli`. The binary command remains `me
 v0.3 adds a first-class agent-memory setup mode:
 
 ```bash
-npx mex-cli setup --mode agent-memory
+npx mex-agent setup --mode agent-memory
 ```
 
 This is for projects where the "codebase" is not necessarily the main thing being remembered. Examples:
@@ -251,13 +251,13 @@ Those need a bigger architecture story and are not part of this stable v0.3 rele
 Install or update:
 
 ```bash
-npm install -g mex-cli@latest
+npm install -g mex-agent@latest
 ```
 
 Or use directly:
 
 ```bash
-npx mex-cli@latest setup
+npx mex-agent@latest setup
 ```
 
 For an existing project, no scaffold reset is needed. Update the package, then run:
@@ -270,6 +270,6 @@ mex check
 For an agent-memory workspace:
 
 ```bash
-npx mex-cli@latest setup --mode agent-memory
+npx mex-agent@latest setup --mode agent-memory
 mex heartbeat
 ```

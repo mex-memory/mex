@@ -295,7 +295,7 @@ program
     console.log("  mex watch --interval   Run heartbeat every 30 minutes (or config value)");
     console.log("  mex watch --uninstall  Remove the post-commit hook");
     console.log();
-    console.log(chalk.dim("Not installed globally? Replace 'mex' with 'npx mex-cli'."));
+    console.log(chalk.dim("Not installed globally? Replace 'mex' with 'npx mex-agent'."));
     console.log();
   });
 

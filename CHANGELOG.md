@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [0.3.5] - 2026-05-14
 
 ### Added
-- **Package rename** — the npm package is now `mex-cli`; the installed binary command remains `mex`.
+- **Package rename** — the npm package is now `mex-agent`; the installed binary command remains `mex`.
 - **Agent memory mode** — `mex setup --mode agent-memory` creates templates for persistent-agent, homelab, OpenClaw-style, and operational-memory workspaces.
 - **Heartbeat checks** — `mex heartbeat` runs lightweight scheduled health checks over optional `last_updated` frontmatter, stale context, memory cleanup metadata, and old daily memory files.
 - **Scheduled heartbeat loop** — `mex watch --interval` runs heartbeat repeatedly in the foreground while preserving the existing post-commit hook behavior for plain `mex watch`.
