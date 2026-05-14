@@ -245,9 +245,12 @@ function BrandHeader({ scaffoldRoot }: { scaffoldRoot: string }) {
 
 export function SetupBanner() {
   return h(Box, { flexDirection: "column" },
-    h(Text, { color: COLORS.royal }, "╔╦╗ ╔═╗ ═╗ ╦"),
-    h(Text, { color: COLORS.royal }, "║║║ ║╣  ╔╩╦╝"),
-    h(Text, { color: COLORS.royal }, "╩ ╩ ╚═╝ ╩ ╚═"),
+    h(Text, { color: COLORS.royal }, "███╗   ███╗███████╗██╗  ██╗"),
+    h(Text, { color: COLORS.royal }, "████╗ ████║██╔════╝╚██╗██╔╝"),
+    h(Text, { color: COLORS.royal }, "██╔████╔██║█████╗   ╚███╔╝"),
+    h(Text, { color: COLORS.royal }, "██║╚██╔╝██║██╔══╝   ██╔██╗"),
+    h(Text, { color: COLORS.royal }, "██║ ╚═╝ ██║███████╗██╔╝ ██╗"),
+    h(Text, { color: COLORS.royal }, "╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝"),
   );
 }
 
