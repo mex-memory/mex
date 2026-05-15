@@ -139,12 +139,10 @@ function findScaffoldFiles(
   scaffoldRoot: string,
   patterns: readonly string[] = DEFAULT_SCAFFOLD_PATTERNS
 ): string[] {
-  const scaffoldPatterns = patterns;
-
   const files: string[] = [];
 
   // Search inside scaffold root (handles both .mex/ and root layouts)
-  for (const pattern of scaffoldPatterns) {
+  for (const pattern of patterns) {
     const matches = globSync(pattern, {
       cwd: scaffoldRoot,
       absolute: true,

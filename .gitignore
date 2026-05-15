@@ -12,3 +12,6 @@ result
 
 # OS
 Thumbs.db
+
+# Per-user Claude Code config
+.claude/

@@ -3,11 +3,8 @@
  *
  * This file imports ONLY from src/index.ts — the same surface that
  * package.json's `exports` field publishes. Its job is to fail when someone
- * accidentally renames, removes, or reshapes a public-facing export.
- *
- * See COMPATIBILITY.md for the contract this test enforces. If you need to
- * change something this test asserts, that's a breaking change — bump the
- * major version and update the doc.
+ * accidentally renames, removes, or reshapes a public-facing export. If you
+ * need to change something this test asserts, that's a breaking change.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";

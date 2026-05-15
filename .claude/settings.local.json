@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git stash *)",
-      "Bash(npm test *)",
-      "Bash(npm run *)"
-    ]
-  }
-}
