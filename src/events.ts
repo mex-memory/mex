@@ -15,11 +15,20 @@ export interface EventEntry {
   message: string;
   files: string[];
   cwd: string;
+  /** Optional pointer to a long-form trace document for this event. Free-form
+   *  string — typically a path under `.mex/traces/` (e.g.
+   *  `.mex/traces/2026-05-15-jwt.md`) but no format is enforced. Intended for
+   *  embedders that capture richer context than the short `message` field
+   *  can hold. Omitted on entries that don't reference a trace. */
+  trace?: string;
 }
 
 export interface LogOpts {
   kind?: string;
   files?: string[];
+  /** Optional pointer to a long-form trace document — persisted as
+   *  `EventEntry.trace`. See that field for the contract. */
+  trace?: string;
 }
 
 export interface TimelineOpts {
@@ -51,6 +60,7 @@ export function appendEvent(config: MexConfig, message: string, opts: LogOpts = 
     files,
     cwd: relative(config.projectRoot, process.cwd()) || ".",
   };
+  if (opts.trace !== undefined) entry.trace = opts.trace;
   const file = eventLogPath(config);
   mkdirSync(dirname(file), { recursive: true });
   appendFileSync(file, JSON.stringify(entry) + "\n");
@@ -99,13 +109,15 @@ export function readEvents(config: MexConfig): EventEntry[] {
         typeof raw.message === "string" &&
         Array.isArray(raw.files)
       ) {
-        entries.push({
+        const entry: EventEntry = {
           timestamp: raw.timestamp,
           kind: raw.kind,
           message: raw.message,
           files: raw.files.filter((f: unknown): f is string => typeof f === "string"),
           cwd: typeof raw.cwd === "string" ? raw.cwd : ".",
-        });
+        };
+        if (typeof raw.trace === "string") entry.trace = raw.trace;
+        entries.push(entry);
       }
     } catch {
       // Ignore malformed historical lines; timeline should remain usable.

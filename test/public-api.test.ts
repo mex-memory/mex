@@ -3,8 +3,11 @@
  *
  * This file imports ONLY from src/index.ts — the same surface that
  * package.json's `exports` field publishes. Its job is to fail when someone
- * accidentally renames, removes, or reshapes a public-facing export. If you
- * need to change something this test asserts, that's a breaking change.
+ * accidentally renames, removes, or reshapes a public-facing export.
+ *
+ * See COMPATIBILITY.md at the repo root for the contract this test enforces.
+ * Any change here is a breaking change — bump the major version and update
+ * the doc.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -58,7 +61,7 @@ afterEach(() => {
 });
 
 describe("public API — function exports", () => {
-  it("exports the functions T-Rex (and other embedders) depend on", () => {
+  it("exports the functions embedders depend on", () => {
     expect(typeof appendEvent).toBe("function");
     expect(typeof readEvents).toBe("function");
     expect(typeof eventLogPath).toBe("function");
@@ -149,6 +152,28 @@ describe("public API — appendEvent / readEvents round-trip", () => {
       appendEvent(config, `event for ${k}`, { kind: k });
     }
     expect(readEvents(config)).toHaveLength(EVENT_KINDS.length);
+  });
+
+  it("persists and reads back the optional trace field", () => {
+    const tracePath = ".mex/traces/2026-05-15-jwt.md";
+    const written = appendEvent(config, "Use JWT over sessions", {
+      kind: "decision",
+      trace: tracePath,
+    });
+    expect(written.trace).toBe(tracePath);
+
+    const events = readEvents(config);
+    expect(events).toHaveLength(1);
+    expect(events[0].trace).toBe(tracePath);
+  });
+
+  it("omits the trace field when not provided", () => {
+    const written = appendEvent(config, "Plain note", { kind: "note" });
+    expect(written.trace).toBeUndefined();
+
+    const events = readEvents(config);
+    expect(events).toHaveLength(1);
+    expect(events[0].trace).toBeUndefined();
   });
 });
 
