@@ -36,6 +36,7 @@ import {
   type MexConfig,
   type EventEntry,
   type EventKind,
+  type LogOpts,
   type DriftReport,
   type HeartbeatResult,
   type CreateConfigInput,
@@ -156,10 +157,11 @@ describe("public API — appendEvent / readEvents round-trip", () => {
 
   it("persists and reads back the optional trace field", () => {
     const tracePath = ".mex/traces/2026-05-15-jwt.md";
-    const written = appendEvent(config, "Use JWT over sessions", {
+    const opts: LogOpts = {
       kind: "decision",
       trace: tracePath,
-    });
+    };
+    const written = appendEvent(config, "Use JWT over sessions", opts);
     expect(written.trace).toBe(tracePath);
 
     const events = readEvents(config);

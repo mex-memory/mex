@@ -21,7 +21,7 @@ export {
   eventLogPath,
   EVENT_KINDS,
 } from "./events.js";
-export type { EventEntry, EventKind } from "./events.js";
+export type { EventEntry, EventKind, LogOpts } from "./events.js";
 
 // ── Drift detection ──────────────────────────────────────────────────────────
 export {
