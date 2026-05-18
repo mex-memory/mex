@@ -3,7 +3,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { findConfig } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
 
-function parseIntArg(raw: string): number {
+export function parseIntArg(raw: string): number {
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 0) {
     throw new InvalidArgumentError(`Expected a non-negative integer, got "${raw}".`);
@@ -11,7 +11,7 @@ function parseIntArg(raw: string): number {
   return n;
 }
 
-function parsePositiveIntArg(raw: string): number {
+export function parsePositiveIntArg(raw: string): number {
   const n = parseIntArg(raw);
   if (n <= 0) {
     throw new InvalidArgumentError(`Expected a positive integer, got "${raw}".`);
@@ -20,6 +20,7 @@ function parsePositiveIntArg(raw: string): number {
 }
 
 const program = new Command();
+export { program };
 
 async function runTuiCommand(): Promise<void> {
   const { launchTui } = await import("./tui.js");
@@ -299,7 +300,17 @@ program
     console.log();
   });
 
-program.parse();
+// Skip auto-parse when imported (e.g. by tests). The bin entry is built by
+// tsup as ./dist/cli.js with a shebang banner; only run program.parse() when
+// this module is the script being invoked.
+if (
+  import.meta.url ===
+  (typeof process !== "undefined" && process.argv[1]
+    ? new URL(`file://${process.argv[1]}`).href
+    : undefined)
+) {
+  program.parse();
+}
 
 function buildCompletion(shell: string): string {
   const commands = [
