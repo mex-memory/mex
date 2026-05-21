@@ -23,3 +23,4 @@ Lookup table for all pattern files in this directory. Check here before starting
 
 | Pattern | Use when |
 |---------|----------|
+| [cli-option-parsing-tests.md](cli-option-parsing-tests.md) | Adding or updating Commander option parsing tests without invoking the real CLI entrypoint |
