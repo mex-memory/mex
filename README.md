@@ -2,72 +2,97 @@
 
 <img src="mascot/mex-mascot.svg" alt="mex mascot" width="80">
 
-```
-  ███╗   ███╗███████╗██╗  ██╗
-  ████╗ ████║██╔════╝╚██╗██╔╝
-  ██╔████╔██║█████╗   ╚███╔╝
-  ██║╚██╔╝██║██╔══╝   ██╔██╗
-  ██║ ╚═╝ ██║███████╗██╔╝ ██╗
-  ╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝
-```
+<br>
 
-**mex**
+<img src="mascot/mex-ascii.svg" alt="MEX ASCII logo" width="520">
 
-[![CI](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+**Persistent project memory for AI coding agents.**
+
 [![npm version](https://img.shields.io/npm/v/mex-agent.svg)](https://www.npmjs.com/package/mex-agent)
+[![npm downloads](https://img.shields.io/npm/dm/mex-agent.svg)](https://www.npmjs.com/package/mex-agent)
+[![GitHub stars](https://img.shields.io/badge/stars-700%2B-111111)](https://github.com/theDakshJaitly/mex/stargazers)
+[![Website](https://img.shields.io/badge/website-launchx.page%2Fmex-4f7cff)](https://launchx.page/mex)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml)
+[![Node.js >=20](https://img.shields.io/badge/node-%3E%3D20-339933)](package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](package.json)
+[![Agent memory](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](README.md)
 
 </div>
 
 ---
 
-AI agents forget everything between sessions. mex gives them permanent, navigable project memory.
-
-Every session starts cold:
-
-- The agent has **no idea** what it built yesterday
-- It forgets the conventions you agreed on
-- It doesn't know what broke last week
-
-Developers compensate by stuffing everything into CLAUDE.md — but that floods the context window, burns tokens, and degrades attention. Meanwhile, the project changes and nobody updates the docs. The agent's understanding drifts from reality.
-
-mex is a structured markdown scaffold with a CLI that keeps it honest. The scaffold gives agents persistent project knowledge through navigable files — architecture, conventions, decisions, patterns. The CLI detects when those files drift from the actual codebase, and targets AI to fix only what's broken. The scaffold grows automatically — after every task, the agent updates project state and creates patterns from real work.
-
-Works with any stack — JavaScript, Python, Go, Rust, and more.
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=theDakshJaitly/mex&type=Timeline)](https://star-history.com/#theDakshJaitly/mex&Timeline)
-
-## Install
-
-The npm package is named `mex-agent` (`mex` was taken on npm). The CLI command is `mex`.
+AI agents forget everything between sessions. mex gives them permanent, navigable project memory so every session starts with the right context instead of a cold prompt dump.
 
 ```bash
 npx mex-agent setup
 ```
 
-That's it. The setup command creates the `.mex/` scaffold, asks which AI tool you use, pre-scans your codebase, and generates a targeted prompt to populate everything. Takes about 5 minutes.
+<p align="center">
+  <img src="screenshots/mex-DashNew.jpg" alt="mex operational memory dashboard" width="640">
+</p>
 
-At the end of setup, you'll be asked to install mex globally. If you accept:
+## Why mex?
+
+Most agent memory setups become one giant instruction file. That works for a while, then it floods the context window, burns tokens, and drifts away from the real codebase.
+
+| Without mex | With mex |
+|-------------|----------|
+| Giant `CLAUDE.md` / rules files | Small anchor file plus routed context |
+| Agents forget decisions and conventions | Decisions, patterns, and project state persist |
+| Docs silently drift from code | `mex check` catches stale or broken scaffold claims |
+| Every session starts cold | Agents load only the files relevant to the task |
+| Repeated work stays tribal | New patterns grow from real tasks |
+
+## What It Does
+
+mex creates a structured markdown scaffold for agent memory:
+
+- `AGENTS.md` / `CLAUDE.md` — tiny tool-loaded anchor
+- `ROUTER.md` — routing table for task-specific context
+- `context/` — architecture, stack, setup, decisions, conventions
+- `patterns/` — reusable task guides with gotchas and verification steps
+- `.mex/events/decisions.jsonl` — append-only notes through `mex log`
+
+The CLI keeps that scaffold honest. It checks paths, commands, dependencies, pattern indexes, staleness, and script coverage without spending AI tokens. When drift appears, `mex sync` builds targeted prompts so the agent fixes only the stale pieces.
+
+## Quick Start
+
+The npm package is named `mex-agent` because `mex` was already taken. The CLI command is still `mex`.
+
+```bash
+npx mex-agent setup
+```
+
+Setup creates the `.mex/` scaffold, asks which AI tool you use, pre-scans your codebase, and generates a targeted prompt to populate the memory files. It takes about five minutes.
+
+At the end of setup, you can install mex globally:
 
 ```bash
 mex check        # drift score
 mex sync         # fix drift
 ```
 
-If you skip global install, everything still works via npx:
+If you skip global install, use npx:
 
 ```bash
-npx mex-agent check        # drift score
-npx mex-agent sync         # fix drift
+npx mex-agent check
+npx mex-agent sync
 ```
 
-You can install globally later at any time:
+Install globally later at any time:
 
 ```bash
 npm install -g mex-agent
 ```
+
+## How It Works
+
+![mex context routing flow](docs/diagrams/context-routing.svg)
+
+The agent starts with a tiny auto-loaded file. That file points to `ROUTER.md`, and the router loads only the context needed for the current task. After meaningful work, the GROW step updates project state, decisions, and task patterns so the scaffold becomes more useful over time.
+
+Editable source: [docs/diagrams/context-routing.excalidraw](docs/diagrams/context-routing.excalidraw)
 
 ## Drift Detection
 
@@ -75,64 +100,72 @@ Eight checkers validate your scaffold against the real codebase. Zero tokens, ze
 
 | Checker | What it catches |
 |---------|----------------|
-| **path** | Referenced file paths that don't exist on disk |
+| **path** | Referenced file paths that do not exist on disk |
 | **edges** | YAML frontmatter edge targets pointing to missing files |
 | **index-sync** | `patterns/INDEX.md` out of sync with actual pattern files |
 | **staleness** | Scaffold files not updated in 30+ days or 50+ commits |
-| **command** | `npm run X` / `make X` referencing scripts that don't exist |
+| **command** | `npm run X` / `make X` references scripts that do not exist |
 | **dependency** | Claimed dependencies missing from `package.json` |
 | **cross-file** | Same dependency with different versions across files |
 | **script-coverage** | `package.json` scripts not mentioned in any scaffold file |
 
-Scoring: starts at 100. Deducts -10 per error, -3 per warning, -1 per info.
+Scoring starts at 100. mex deducts 10 per error, 3 per warning, and 1 per info.
 
-<!-- TODO: Add screenshot of `mex check` terminal output here -->
-![mex check output](screenshots/mex-check.jpg) 
+![mex drift detection and sync loop](docs/diagrams/drift-sync.svg)
 
-## CLI
+Editable source: [docs/diagrams/drift-sync.excalidraw](docs/diagrams/drift-sync.excalidraw)
 
-All commands run from your **project root**. If you didn't install globally, replace `mex` with `npx mex-agent`.
+## Commands
 
-### Commands
+All commands run from your project root. If you did not install globally, replace `mex` with `npx mex-agent`.
 
 | Command | What it does |
 |---------|-------------|
 | `mex` | Open the interactive terminal dashboard |
 | `mex tui` | Open the interactive terminal dashboard explicitly |
-| `mex setup` | First-time setup — create `.mex/` scaffold and populate with AI |
+| `mex setup` | First-time setup: create `.mex/` scaffold and populate with AI |
 | `mex setup --mode agent-memory` | Create templates for persistent-agent / homelab memory workspaces |
 | `mex setup --dry-run` | Preview what setup would do without making changes |
-| `mex check` | Run drift checkers, output drift score and categorized issues |
+| `mex check` | Run drift checkers and output a scored report |
 | `mex check --quiet` | One-liner: `mex: drift score 92/100 (1 warning)` |
-| `mex check --json` | Full report as JSON for programmatic use |
-| `mex check --fix` | Check and jump straight to sync if errors found |
-| `mex sync` | Detect drift → choose mode → AI fixes → verify → repeat |
+| `mex check --json` | Full report as JSON |
+| `mex check --fix` | Check and jump straight to sync if errors are found |
+| `mex sync` | Detect drift, choose mode, let AI fix, verify, repeat |
 | `mex sync --dry-run` | Preview targeted prompts without executing |
 | `mex sync --warnings` | Include warning-only files in sync |
-| `mex init` | Pre-scan codebase, build structured brief for AI |
+| `mex init` | Pre-scan codebase and build a structured brief for AI |
 | `mex init --json` | Raw scanner brief as JSON |
-| `mex log <message>` | Append a note, decision, risk, or todo to `.mex/events/decisions.jsonl` |
+| `mex log <message>` | Append a note, decision, risk, or todo |
 | `mex timeline` | View recent event log entries |
 | `mex heartbeat` | Run lightweight persistent-agent health checks once |
 | `mex doctor` | Friendly scaffold health summary |
-| `mex watch` | Install post-commit hook (silent on perfect score) |
+| `mex watch` | Install post-commit hook |
 | `mex watch --interval` | Run heartbeat repeatedly in the foreground |
 | `mex watch --uninstall` | Remove the hook |
-| `mex completion <shell>` | Print bash, zsh, or fish completions |
-| `mex commands` | List all commands and scripts with descriptions |
+| `mex completion <shell>` | Print shell completions |
+| `mex commands` | List commands and scripts with descriptions |
 
+## Supported Tools
 
-![mex sync output](screenshots/mex-sync.jpg)
+`mex setup` asks which tool you use and creates the right config file.
 
-Running check after drift is fixed by sync
+| Tool | Config file |
+|------|-------------|
+| Claude Code | `CLAUDE.md` |
+| Cursor | `.cursorrules` |
+| Windsurf | `.windsurfrules` |
+| GitHub Copilot | `.github/copilot-instructions.md` |
+| OpenCode | `.opencode/opencode.json` |
+| Codex | `AGENTS.md` |
 
-![mex check after](screenshots/mex-check1.jpg)
+Neovim users can use [docs/vim-neovim.md](docs/vim-neovim.md) for Claude Code, Avante.nvim, Copilot.vim, and generic plugin setups.
 
 ## Before / After
 
-Real output from testing mex on Agrow, an AI-powered agricultural voice helpline (Python/Flask, Twilio, multi-provider pipeline).
+Real output from testing mex on Agrow, an AI-powered agricultural voice helpline.
 
 **Scaffold before setup:**
+
 ```markdown
 ## Current Project State
 <!-- What is working. What is not yet built. Known issues.
@@ -140,13 +173,14 @@ Real output from testing mex on Agrow, an AI-powered agricultural voice helpline
 ```
 
 **Scaffold after setup:**
+
 ```markdown
 ## Current Project State
 
 **Working:**
-- Voice call pipeline (Twilio → STT → LLM → TTS → response)
-- Multi-provider STT (ElevenLabs, Deepgram) with configurable selection
-- RAG system with Supabase pgvector for agricultural knowledge retrieval
+- Voice call pipeline (Twilio -> STT -> LLM -> TTS -> response)
+- Multi-provider STT with configurable selection
+- RAG system with Supabase pgvector
 - Streaming pipeline with barge-in support
 
 **Not yet built:**
@@ -155,56 +189,31 @@ Real output from testing mex on Agrow, an AI-powered agricultural voice helpline
 - Multi-turn conversation memory across calls
 
 **Known issues:**
-- Sarvam AI STT bypass active — routing to ElevenLabs as fallback
+- Sarvam AI STT bypass active; ElevenLabs fallback in use
 ```
 
 **Patterns directory after setup:**
-```
+
+```text
 patterns/
-├── add-api-client.md       # Steps, gotchas, verify checklist for new service clients
-├── add-language-support.md  # How to extend the 8-language voice pipeline
-├── debug-pipeline.md        # Where to look when a call fails at each stage
-└── add-rag-documents.md     # How to ingest new agricultural knowledge
+├── add-api-client.md
+├── add-language-support.md
+├── debug-pipeline.md
+└── add-rag-documents.md
 ```
 
 ## Real World Results
 
-Independently tested by a community member on **OpenClaw** across 10 structured scenarios on a homelab setup (Ubuntu 24.04, Kubernetes, Docker, Ansible, Terraform, networking, monitoring). 10/10 tests passed. Drift score: 100/100.
-
-**Token usage before vs after mex:**
+Independently tested by a community member on **OpenClaw** across 10 structured homelab scenarios covering Ubuntu 24.04, Kubernetes, Docker, Ansible, Terraform, networking, and monitoring. 10/10 tests passed. Drift score: 100/100.
 
 | Scenario | Without mex | With mex | Saved |
-|----------|------------|---------|-------|
+|----------|-------------|----------|-------|
 | "How does K8s work?" | ~3,300 tokens | ~1,450 tokens | 56% |
 | "Open UFW port" | ~3,300 tokens | ~1,050 tokens | 68% |
 | "Explain Docker" | ~3,300 tokens | ~1,100 tokens | 67% |
 | Multi-context query | ~3,300 tokens | ~1,650 tokens | 50% |
 
 **~60% average token reduction per session.**
-
-Context is no longer all-or-nothing — loaded on demand, only what's relevant.
-
-## How It Works
-
-```
-Session starts
-    ↓
-Agent loads CLAUDE.md (auto-loaded, lives at project root)
-    ↓
-CLAUDE.md says "Read .mex/ROUTER.md before doing anything"
-    ↓
-ROUTER.md routing table → loads relevant context file for this task
-    ↓
-context file → points to pattern file if task-specific guidance exists
-    ↓
-Agent executes with full project context, minimal token cost
-    ↓
-After task: agent runs GROW
-    ↓
-New patterns, updated project state — scaffold grows from real work
-```
-
-CLAUDE.md stays small. The agent navigates to only what it needs. After meaningful work, it runs GROW: Ground what changed, Record current truth in the scaffold, Orient by creating or refining a pattern, and Write `last_updated` plus `mex log` entries when rationale matters.
 
 ## Agent Memory Mode
 
@@ -213,7 +222,7 @@ CLAUDE.md stays small. The agent navigates to only what it needs. After meaningf
 - `ROUTER.md` tracks current operational state and routes the agent to the right memory files.
 - `context/` stores architecture, stack, conventions, setup, and decisions.
 - `patterns/` stores recurring runbooks.
-- `.mex/events/decisions.jsonl` stores append-only notes and rationale via `mex log`.
+- `.mex/events/decisions.jsonl` stores append-only notes and rationale through `mex log`.
 
 `mex heartbeat` is intentionally lighter than `mex check`: it reads `last_updated` frontmatter and memory cleanup metadata, prints `HEARTBEAT_OK` when clean, and reports only when the agent needs to review stale context or memory files. Use `mex watch --interval` to run heartbeat repeatedly in a persistent-agent workspace.
 
@@ -240,47 +249,13 @@ Optional settings live in `.mex/config.json`. Missing values fall back to defaul
 }
 ```
 
-## File Structure
+## Ecosystem
 
-```
-your-project/
-├── CLAUDE.md              ← auto-loaded by tool, points to .mex/
-├── .mex/
-│   ├── ROUTER.md          ← routing table, session bootstrap
-│   ├── AGENTS.md          ← always-loaded anchor (~150 tokens)
-│   ├── HEARTBEAT.md       ← agent-memory heartbeat contract (agent-memory mode)
-│   ├── events/
-│   │   └── decisions.jsonl   # append-only notes/decisions from mex log
-│   ├── context/
-│   │   ├── architecture.md   # how components connect
-│   │   ├── stack.md           # technology choices and reasoning
-│   │   ├── conventions.md     # naming, structure, patterns
-│   │   ├── decisions.md       # append-only decision log
-│   │   └── setup.md           # how to run locally
-│   └── patterns/
-│       ├── INDEX.md           # pattern registry
-│       └── *.md               # task-specific guides with gotchas + verify checklists
-└── src/
-```
-
-## Multi-Tool Compatibility
-
-| Tool | Config file |
-|------|------------|
-| Claude Code | `CLAUDE.md` |
-| Cursor | `.cursorrules` |
-| Windsurf | `.windsurfrules` |
-| GitHub Copilot | `.github/copilot-instructions.md` |
-| OpenCode | `.opencode/opencode.json` |
-| Codex (OpenAI) | `AGENTS.md` |
-
-Most config files embed the same instructions directly. OpenCode is the exception — `.opencode/opencode.json` references `.mex/AGENTS.md` instead of embedding content. `mex setup` asks which tool you use and creates the appropriate config.
-
-Neovim users have their own guide: see [docs/vim-neovim.md](docs/vim-neovim.md) for Claude Code, Avante.nvim, Copilot.vim, and generic-plugin setups.
+mex is provider-neutral. Integration guides, sponsored examples, and community recipes should be useful on their own, clearly labeled, and live in docs rather than silently changing the default experience.
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and guidelines.
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and guidelines.
 
 ## Changelog
 

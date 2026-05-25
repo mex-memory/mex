@@ -1,0 +1,66 @@
+<svg width="980" height="940" viewBox="0 0 980 940" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">mex context routing flow</title>
+  <desc id="desc">A flowchart showing how mex routes an agent from an auto-loaded tool config to ROUTER.md, task-specific context, pattern files, execution, and the GROW step.</desc>
+  <rect width="980" height="940" fill="#111111"/>
+  <style>
+    .box{fill:#1d1d1d;stroke:#e7e7e7;stroke-width:2}
+    .pill{fill:#111111;stroke:#f0f0f0;stroke-width:2}
+    .diamond{fill:#1d1d1d;stroke:#f0f0f0;stroke-width:2}
+    .tag{fill:#3a3a3a}
+    .label{font-family:"Virgil","Comic Sans MS",ui-monospace,monospace;font-size:23px;fill:#f4f4f4;text-anchor:middle}
+    .small{font-size:18px;fill:#cfcfcf}
+    .tiny{font-size:15px;fill:#aaa}
+    .edge{stroke:#4f7cff;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#4f7cff"/>
+    </marker>
+  </defs>
+
+  <rect class="pill" x="378" y="34" width="224" height="56" rx="28"/>
+  <text class="label" x="490" y="69">Session starts</text>
+
+  <path class="edge" d="M490 92C490 116 490 132 490 152" marker-end="url(#arrow)"/>
+  <rect class="box" x="292" y="154" width="396" height="96" rx="6"/>
+  <text class="label small" x="490" y="194">Tool auto-loads config</text>
+  <text class="label tiny" x="490" y="223">AGENTS.md / CLAUDE.md / .cursorrules</text>
+
+  <path class="edge" d="M490 252C490 276 490 292 490 312" marker-end="url(#arrow)"/>
+  <rect class="box" x="330" y="314" width="320" height="82" rx="6"/>
+  <text class="label small" x="490" y="350">Config says read</text>
+  <text class="label tiny" x="490" y="374">.mex/ROUTER.md</text>
+
+  <path class="edge" d="M490 398C490 420 490 436 490 456" marker-end="url(#arrow)"/>
+  <rect class="box" x="342" y="458" width="296" height="84" rx="6"/>
+  <text class="label small" x="490" y="493">ROUTER.md</text>
+  <text class="label tiny" x="490" y="518">checks routing table</text>
+
+  <path class="edge" d="M490 544C490 568 490 582 490 602" marker-end="url(#arrow)"/>
+  <path class="diamond" d="M490 604L568 682L490 760L412 682Z"/>
+  <text class="label small" x="490" y="688">Task type?</text>
+
+  <rect class="tag" x="146" y="642" width="150" height="26"/>
+  <text class="label tiny" x="221" y="661">matching task</text>
+  <path class="edge" d="M434 724C374 752 300 750 222 692" marker-end="url(#arrow)"/>
+  <rect class="box" x="74" y="698" width="300" height="92" rx="6"/>
+  <text class="label small" x="224" y="737">Load relevant</text>
+  <text class="label small" x="224" y="765">context file</text>
+
+  <rect class="tag" x="686" y="642" width="150" height="26"/>
+  <text class="label tiny" x="761" y="661">match pattern</text>
+  <path class="edge" d="M546 724C608 754 682 750 760 692" marker-end="url(#arrow)"/>
+  <rect class="box" x="638" y="708" width="270" height="72" rx="6"/>
+  <text class="label small" x="773" y="751">patterns/INDEX.md</text>
+
+  <path class="edge" d="M224 792C258 835 336 845 406 832" marker-end="url(#arrow)"/>
+  <path class="edge" d="M773 782C736 834 646 846 574 832" marker-end="url(#arrow)"/>
+  <rect class="box" x="350" y="794" width="280" height="82" rx="6"/>
+  <text class="label small" x="490" y="827">Agent works with</text>
+  <text class="label small" x="490" y="854">focused context</text>
+
+  <path class="edge" d="M490 878C490 894 490 902 490 914" marker-end="url(#arrow)"/>
+  <rect class="pill" x="352" y="884" width="276" height="52" rx="26"/>
+  <text class="label small" x="490" y="906">GROW updates</text>
+  <text class="label tiny" x="490" y="926">state, decisions, patterns</text>
+</svg>
