@@ -1,7 +1,22 @@
 import chalk from "chalk";
 import { Command, InvalidArgumentError } from "commander";
+import { readFileSync } from "node:fs";
 import { findConfig } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
+
+function readPackageVersion(): string {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version?: unknown };
+
+  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
+    throw new Error("package.json is missing a valid version field.");
+  }
+
+  return packageJson.version;
+}
+
+export const CLI_VERSION = readPackageVersion();
 
 export function parseIntArg(raw: string): number {
   const n = Number.parseInt(raw, 10);
@@ -29,7 +44,7 @@ async function runTuiCommand(): Promise<void> {
 program
   .name("mex")
   .description("CLI engine for mex scaffold — drift detection, pre-analysis, and targeted sync")
-  .version("0.3.5")
+  .version(CLI_VERSION)
   .showHelpAfterError()
   .action(async () => {
     await runTuiCommand();

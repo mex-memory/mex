@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { Command, InvalidArgumentError } from "commander";
+import { readFileSync } from "node:fs";
 import { runLog, runTimeline } from "../src/events.js";
 import type { MexConfig } from "../src/types.js";
 
@@ -10,6 +11,9 @@ vi.mock("../src/events.js", () => ({
 
 let parseIntArg: typeof import("../src/cli.js").parseIntArg;
 let parsePositiveIntArg: typeof import("../src/cli.js").parsePositiveIntArg;
+let CLI_VERSION: typeof import("../src/cli.js").CLI_VERSION;
+
+const packageVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 const config: MexConfig = {
   projectRoot: process.cwd(),
@@ -22,7 +26,7 @@ beforeAll(async () => {
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
   process.argv = ["node", "mex", "completion", "bash"];
   try {
-    ({ parseIntArg, parsePositiveIntArg } = await import("../src/cli.js"));
+    ({ parseIntArg, parsePositiveIntArg, CLI_VERSION } = await import("../src/cli.js"));
   } finally {
     process.argv = originalArgv;
     logSpy.mockRestore();
@@ -84,6 +88,23 @@ function buildProgram(): Command {
 }
 
 describe("CLI argument parsers", () => {
+  it("reports the package.json version for --version", () => {
+    let output = "";
+    const program = new Command()
+      .name("mex")
+      .version(CLI_VERSION)
+      .exitOverride()
+      .configureOutput({
+        writeOut: (value) => {
+          output += value;
+        },
+        writeErr: () => {},
+      });
+
+    expect(() => program.parse(["node", "mex", "--version"])).toThrow();
+    expect(output.trim()).toBe(packageVersion);
+  });
+
   it("parses non-negative integers", () => {
     expect(parseIntArg("0")).toBe(0);
     expect(parseIntArg("12")).toBe(12);
