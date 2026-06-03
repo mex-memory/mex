@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **todo-fixme drift checker** — flags unresolved `TODO` / `FIXME` markers in scaffold markdown.
+
+### Changed
+- README and CONTRIBUTING now list all 10 drift checkers (including `tool-config-sync` and `todo-fixme`).
+
 ## [0.3.5] - 2026-05-14
 
 ### Added

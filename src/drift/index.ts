@@ -14,6 +14,7 @@ import { checkDependencies } from "./checkers/dependency.js";
 import { checkCrossFile } from "./checkers/cross-file.js";
 import { checkScriptCoverage } from "./checkers/script-coverage.js";
 import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
+import { checkTodoFixme } from "./checkers/todo-fixme.js";
 
 /**
  * Default glob patterns used to locate scaffold markdown files, relative to
@@ -118,6 +119,10 @@ export async function runDriftCheck(
   const toolConfigSyncIssues = checkToolConfigSync(projectRoot);
   allIssues.push(...toolConfigSyncIssues);
   checkerIssueCounts.push(["tool-config-sync", toolConfigSyncIssues.length]);
+
+  const todoFixmeIssues = checkTodoFixme(scaffoldFiles, projectRoot);
+  allIssues.push(...todoFixmeIssues);
+  checkerIssueCounts.push(["todo-fixme", todoFixmeIssues.length]);
 
   const score = computeScore(allIssues);
   const verboseLog = opts.verbose

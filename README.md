@@ -96,7 +96,7 @@ Editable source: [docs/diagrams/context-routing.excalidraw](docs/diagrams/contex
 
 ## Drift Detection
 
-Eight checkers validate your scaffold against the real codebase. Zero tokens, zero AI.
+Ten checkers validate your scaffold against the real codebase. Zero tokens, zero AI.
 
 | Checker | What it catches |
 |---------|----------------|
@@ -108,6 +108,8 @@ Eight checkers validate your scaffold against the real codebase. Zero tokens, ze
 | **dependency** | Claimed dependencies missing from `package.json` |
 | **cross-file** | Same dependency with different versions across files |
 | **script-coverage** | `package.json` scripts not mentioned in any scaffold file |
+| **tool-config-sync** | Installed AI tool config files (e.g. `CLAUDE.md`, `.cursorrules`) out of sync with each other |
+| **todo-fixme** | Unresolved `TODO` / `FIXME` markers left in scaffold markdown |
 
 Scoring starts at 100. mex deducts 10 per error, 3 per warning, and 1 per info.
 

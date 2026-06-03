@@ -133,6 +133,8 @@ function remediationFor(code: DriftIssue["code"]): string | null {
       return "Document the script in AGENTS.md, SETUP.md, or context/setup.md.";
     case "TOOL_CONFIG_DRIFT":
       return "Copy the intended tool config text across installed agent config files.";
+    case "TODO_FIXME":
+      return "Resolve the TODO/FIXME or remove the marker from the scaffold.";
     default:
       return null;
   }

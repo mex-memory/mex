@@ -14,6 +14,7 @@ import { checkDependencies } from "../src/drift/checkers/dependency.js";
 import { checkCrossFile } from "../src/drift/checkers/cross-file.js";
 import { checkIndexSync } from "../src/drift/checkers/index-sync.js";
 import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
+import { checkTodoFixme } from "../src/drift/checkers/todo-fixme.js";
 import type { Claim, ScaffoldFrontmatter } from "../src/types.js";
 
 vi.mock("../src/git.js", () => ({
@@ -422,5 +423,48 @@ describe("checkToolConfigSync", () => {
     const issues = checkToolConfigSync(tmpDir);
     expect(issues).toHaveLength(1);
     expect(issues[0].file).toBe(".github/copilot-instructions.md");
+  });
+});
+
+// ── TODO/FIXME Checker ──
+
+describe("checkTodoFixme", () => {
+  it("flags TODO and FIXME with file and line", () => {
+    const file = join(tmpDir, "context/notes.md");
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(
+      file,
+      "# Notes\n\n- TODO: wire auth\n\n## Later\n\nFIXME: broken link in ROUTER\n"
+    );
+    const issues = checkTodoFixme([file], tmpDir);
+    expect(issues).toHaveLength(2);
+    expect(issues[0]).toMatchObject({
+      code: "TODO_FIXME",
+      severity: "warning",
+      file: "context/notes.md",
+      line: 3,
+      message: "Unresolved TODO marker in scaffold",
+    });
+    expect(issues[1]).toMatchObject({
+      code: "TODO_FIXME",
+      file: "context/notes.md",
+      line: 7,
+      message: "Unresolved FIXME marker in scaffold",
+    });
+  });
+
+  it("returns empty when scaffold files have no markers", () => {
+    const file = join(tmpDir, "ROUTER.md");
+    writeFileSync(file, "# Router\n\nAll tasks done.\n");
+    const issues = checkTodoFixme([file], tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("flags multiple markers on the same line separately", () => {
+    const file = join(tmpDir, "SETUP.md");
+    writeFileSync(file, "TODO: a FIXME: b\n");
+    const issues = checkTodoFixme([file], tmpDir);
+    expect(issues).toHaveLength(2);
+    expect(issues.map((i) => i.line)).toEqual([1, 1]);
   });
 });
