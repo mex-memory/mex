@@ -16,6 +16,7 @@ import { checkIndexSync } from "../src/drift/checkers/index-sync.js";
 import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
 import { checkTodoFixme } from "../src/drift/checkers/todo-fixme.js";
 import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
+import { checkStalePatterns } from "../src/drift/checkers/stale-pattern.js";
 import type { Claim, ScaffoldFrontmatter } from "../src/types.js";
 
 vi.mock("../src/git.js", () => ({
@@ -594,5 +595,40 @@ describe("checkBrokenLinks", () => {
     const issues = checkBrokenLinks([file], tmpDir, tmpDir);
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe("warning");
+  });
+});
+
+// ── Stale Pattern Checker ──
+
+describe("checkStalePatterns", () => {
+  it("flags pattern files not linked from ROUTER or context", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(join(tmpDir, "ROUTER.md"), "# Router\n\nSee [linked](patterns/linked.md)\n");
+    writeFileSync(join(tmpDir, "patterns/linked.md"), "# Linked\n");
+    writeFileSync(join(tmpDir, "patterns/orphan.md"), "# Orphan\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: "STALE_PATTERN",
+      severity: "warning",
+      file: "patterns/orphan.md",
+    });
+  });
+
+  it("accepts backtick references in context files", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(join(tmpDir, "ROUTER.md"), "# Router\n");
+    writeFileSync(join(tmpDir, "context/guide.md"), "Use `cited.md` for citations.\n");
+    writeFileSync(join(tmpDir, "patterns/cited.md"), "# Cited\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("returns empty when patterns directory is missing", () => {
+    writeFileSync(join(tmpDir, "ROUTER.md"), "# Router\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
   });
 });
