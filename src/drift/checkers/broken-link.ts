@@ -43,9 +43,10 @@ export function checkBrokenLinks(
         if (!target || isExternalOrAnchor(target)) continue;
 
         if (!linkTargetExists(target, fileDir, projectRoot, scaffoldRoot)) {
+          const isPattern = source.includes("patterns/");
           issues.push({
             code: "BROKEN_LINK",
-            severity: "error",
+            severity: isPattern ? "warning" : "error",
             file: source,
             line: i + 1,
             message: `Markdown link target does not exist: ${target}`,
@@ -62,6 +63,7 @@ function normalizeLinkTarget(raw: string): string {
   let target = raw.replace(/^<|>$/g, "").trim();
   const titleSplit = target.match(/^([^\s]+)(?:\s+["'].+["'])?$/);
   if (titleSplit) target = titleSplit[1];
+  target = target.replace(/[#?].*$/, "");
   return target;
 }
 

@@ -516,4 +516,22 @@ describe("checkBrokenLinks", () => {
     const issues = checkBrokenLinks([file], tmpDir, tmpDir);
     expect(issues).toHaveLength(0);
   });
+
+  it("resolves links with fragment or query to the base file", () => {
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(join(tmpDir, "context/target.md"), "# Target\n");
+    const file = join(tmpDir, "context/guide.md");
+    writeFileSync(file, "See [install](./target.md#install).\n");
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("downgrades broken links in patterns/ to warning", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    const file = join(tmpDir, "patterns/example.md");
+    writeFileSync(file, "[x](./missing.md)\n");
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe("warning");
+  });
 });
