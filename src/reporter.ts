@@ -135,6 +135,8 @@ function remediationFor(code: DriftIssue["code"]): string | null {
       return "Copy the intended tool config text across installed agent config files.";
     case "TODO_FIXME":
       return "Resolve the TODO/FIXME or remove the marker from the scaffold.";
+    case "BROKEN_LINK":
+      return "Fix the link target path or remove the broken Markdown link.";
     default:
       return null;
   }

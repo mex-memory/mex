@@ -95,7 +95,8 @@ export type IssueCode =
   | "INDEX_ORPHAN_ENTRY"
   | "UNDOCUMENTED_SCRIPT"
   | "TOOL_CONFIG_DRIFT"
-  | "TODO_FIXME";
+  | "TODO_FIXME"
+  | "BROKEN_LINK";
 
 export interface DriftIssue {
   code: IssueCode;

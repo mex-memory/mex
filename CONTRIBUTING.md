@@ -2,7 +2,7 @@
 
 Thanks for your interest in contributing! Here's how to get started.
 
-**New here?** The best starting point is an issue labeled [`good first issue`](https://github.com/theDakshJaitly/mex/labels/good%20first%20issue) — most are self-contained drift checkers, and there are 10 existing checkers to copy from. See [Adding a drift checker](#adding-a-drift-checker) below.
+**New here?** The best starting point is an issue labeled [`good first issue`](https://github.com/theDakshJaitly/mex/labels/good%20first%20issue) — most are self-contained drift checkers, and there are 11 existing checkers to copy from. See [Adding a drift checker](#adding-a-drift-checker) below.
 
 ## Setup
 
@@ -50,7 +50,7 @@ test/                 # Vitest tests
 
 ## Adding a drift checker
 
-New checkers are the most newcomer-friendly contribution. A checker is a small function that inspects scaffold files (or extracted claims) and returns `DriftIssue[]`. There are 10 existing checkers in `src/drift/checkers/` — pick the closest as a template.
+New checkers are the most newcomer-friendly contribution. A checker is a small function that inspects scaffold files (or extracted claims) and returns `DriftIssue[]`. There are 11 existing checkers in `src/drift/checkers/` — pick the closest as a template.
 
 1. **Create `src/drift/checkers/<name>.ts`.** There are two shapes:
    - **Claim-based** — operates on extracted claims, e.g. `checkPaths(claims, projectRoot, scaffoldRoot)` in `path.ts`.

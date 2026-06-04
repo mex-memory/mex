@@ -15,6 +15,7 @@ import { checkCrossFile } from "../src/drift/checkers/cross-file.js";
 import { checkIndexSync } from "../src/drift/checkers/index-sync.js";
 import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
 import { checkTodoFixme } from "../src/drift/checkers/todo-fixme.js";
+import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
 import type { Claim, ScaffoldFrontmatter } from "../src/types.js";
 
 vi.mock("../src/git.js", () => ({
@@ -466,5 +467,53 @@ describe("checkTodoFixme", () => {
     const issues = checkTodoFixme([file], tmpDir);
     expect(issues).toHaveLength(2);
     expect(issues.map((i) => i.line)).toEqual([1, 1]);
+  });
+});
+
+// ── Broken Link Checker ──
+
+describe("checkBrokenLinks", () => {
+  it("flags a broken relative Markdown link", () => {
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    const file = join(tmpDir, "context/guide.md");
+    writeFileSync(file, "# Guide\n\nSee [setup](./missing.md).\n");
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: "BROKEN_LINK",
+      severity: "error",
+      file: "context/guide.md",
+      line: 3,
+      message: "Markdown link target does not exist: ./missing.md",
+    });
+  });
+
+  it("passes when the linked file exists", () => {
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(join(tmpDir, "context/target.md"), "# Target\n");
+    const file = join(tmpDir, "context/guide.md");
+    writeFileSync(file, "Link [here](./target.md).\n");
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("ignores external links and anchors", () => {
+    const file = join(tmpDir, "ROUTER.md");
+    writeFileSync(
+      file,
+      "[web](https://example.com) [mail](mailto:a@b.com) [section](#intro)\n"
+    );
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("does not scan links inside fenced or inline code", () => {
+    const file = join(tmpDir, "SETUP.md");
+    writeFileSync(
+      file,
+      "```md\n[fake](./nowhere.md)\n```\n\nInline `[x](./also-missing.md)` ok.\n"
+    );
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
   });
 });
