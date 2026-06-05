@@ -16,6 +16,7 @@ import { checkIndexSync } from "../src/drift/checkers/index-sync.js";
 import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
 import { checkTodoFixme } from "../src/drift/checkers/todo-fixme.js";
 import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
+import { checkFrontmatterCompleteness } from "../src/drift/checkers/frontmatter-completeness.js";
 import type { Claim, ScaffoldFrontmatter } from "../src/types.js";
 
 vi.mock("../src/git.js", () => ({
@@ -594,5 +595,41 @@ describe("checkBrokenLinks", () => {
     const issues = checkBrokenLinks([file], tmpDir, tmpDir);
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe("warning");
+  });
+});
+
+// ── Frontmatter completeness ──
+
+describe("checkFrontmatterCompleteness", () => {
+  it("warns on missing recommended fields in context/", () => {
+    const issues = checkFrontmatterCompleteness(
+      { name: "Auth" },
+      "context/auth.md"
+    );
+    expect(issues).toHaveLength(2);
+    expect(issues.every((i) => i.severity === "warning")).toBe(true);
+    expect(issues.map((i) => i.message)).toEqual(
+      expect.arrayContaining([
+        "Missing recommended frontmatter field: description",
+        "Missing recommended frontmatter field: last_updated",
+      ])
+    );
+  });
+
+  it("passes when all recommended fields are present", () => {
+    const issues = checkFrontmatterCompleteness(
+      {
+        name: "Auth",
+        description: "Authentication overview",
+        last_updated: "2026-06-01",
+      },
+      "patterns/auth.md"
+    );
+    expect(issues).toHaveLength(0);
+  });
+
+  it("ignores ROUTER.md and other scaffold files", () => {
+    const issues = checkFrontmatterCompleteness(null, "ROUTER.md");
+    expect(issues).toHaveLength(0);
   });
 });

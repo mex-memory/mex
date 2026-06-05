@@ -7,9 +7,10 @@ All notable changes to this project will be documented in this file.
 ### Added
 - **Scaffold identity** — `.mex/config.json` now carries a stable `scaffold_id` (UUID v4), `scaffold_name`, and nullable `origin`/`upstream`. Generated at `mex setup` and silently backfilled for existing scaffolds on the next CLI invocation. New `getScaffoldIdentity()` export on the public API.
 - **broken-link drift checker** — flags Markdown links in scaffold files whose local target file does not exist.
+- **frontmatter-completeness drift checker** — warns when `context/` or `patterns/` files lack recommended `name`, `description`, or `last_updated` frontmatter.
 
 ### Changed
-- README and CONTRIBUTING now list all 11 drift checkers (including `tool-config-sync`, `todo-fixme`, and `broken-link`).
+- README and CONTRIBUTING now list all 12 drift checkers (including `broken-link` and `frontmatter-completeness`).
 
 ## [0.3.5] - 2026-05-14
 
