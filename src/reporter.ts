@@ -137,6 +137,8 @@ function remediationFor(code: DriftIssue["code"]): string | null {
       return "Resolve the TODO/FIXME or remove the marker from the scaffold.";
     case "BROKEN_LINK":
       return "Fix the link target path or remove the broken Markdown link.";
+    case "STALE_PATTERN":
+      return "Link the pattern from ROUTER.md or a context/*.md file so agents can discover it.";
     default:
       return null;
   }

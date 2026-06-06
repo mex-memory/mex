@@ -631,4 +631,17 @@ describe("checkStalePatterns", () => {
     const issues = checkStalePatterns(tmpDir, tmpDir);
     expect(issues).toHaveLength(0);
   });
+
+  it("still flags patterns only listed in INDEX.md (index-sync covers INDEX ↔ files)", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(join(tmpDir, "ROUTER.md"), "# Router\n");
+    writeFileSync(
+      join(tmpDir, "patterns/INDEX.md"),
+      "| [indexed-only.md](indexed-only.md) | Indexed |\n",
+    );
+    writeFileSync(join(tmpDir, "patterns/indexed-only.md"), "# Indexed only\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].file).toBe("patterns/indexed-only.md");
+  });
 });

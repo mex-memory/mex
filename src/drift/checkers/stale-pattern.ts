@@ -11,7 +11,11 @@ export function checkStalePatterns(
   projectRoot: string,
   scaffoldRoot: string,
 ): DriftIssue[] {
-  const patternsDir = resolve(scaffoldRoot, "patterns");
+  // Try scaffold root first (deployed as .mex/), then project root
+  let patternsDir = resolve(scaffoldRoot, "patterns");
+  if (!existsSync(patternsDir)) {
+    patternsDir = resolve(projectRoot, "patterns");
+  }
   if (!existsSync(patternsDir)) return [];
 
   const patternFiles = globSync("*.md", { cwd: patternsDir }).filter(
@@ -20,12 +24,11 @@ export function checkStalePatterns(
   if (patternFiles.length === 0) return [];
 
   const referenced = new Set<string>();
-  const sources = [
-    resolve(scaffoldRoot, "ROUTER.md"),
-    ...globSync("*.md", { cwd: resolve(scaffoldRoot, "context") }).map((f) =>
-      resolve(scaffoldRoot, "context", f),
-    ),
-  ];
+  const contextDir = resolve(scaffoldRoot, "context");
+  const contextSources = existsSync(contextDir)
+    ? globSync("*.md", { cwd: contextDir }).map((f) => resolve(contextDir, f))
+    : [];
+  const sources = [resolve(scaffoldRoot, "ROUTER.md"), ...contextSources];
 
   for (const filePath of sources) {
     if (!existsSync(filePath)) continue;
