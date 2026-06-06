@@ -12,19 +12,31 @@ const pkg = JSON.parse(
   readFileSync(join(here, "..", "package.json"), "utf8"),
 ) as { version: string };
 
-let projectRoot: string;
+let projectRoot: string | undefined;
 
-function runMex(args: string[]): { status: number | null; stdout: string; stderr: string } {
+function runMex(args: string[]): {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  output: string;
+} {
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd: projectRoot,
     encoding: "utf8",
     env: { ...process.env, NO_COLOR: "1" },
   });
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
   return {
     status: result.status,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
+    stdout,
+    stderr,
+    output: [stdout, stderr].filter(Boolean).join("\n"),
   };
+}
+
+function expectSuccess(result: ReturnType<typeof runMex>): void {
+  expect(result.status, result.output).toBe(0);
 }
 
 beforeAll(() => {
@@ -38,81 +50,81 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  rmSync(projectRoot, { recursive: true, force: true });
+  if (projectRoot) {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
 });
 
 describe("CLI smoke", () => {
   it("--version matches package.json", () => {
-    const { status, stdout } = runMex(["--version"]);
-    expect(status).toBe(0);
-    expect(stdout.trim()).toBe(pkg.version);
+    const result = runMex(["--version"]);
+    expectSuccess(result);
+    expect(result.stdout.trim()).toBe(pkg.version);
   });
 
   it("commands lists top-level commands", () => {
-    const { status, stdout } = runMex(["commands"]);
-    expect(status).toBe(0);
-    expect(stdout).toContain("CLI Commands");
-    expect(stdout).toContain("mex check");
+    const result = runMex(["commands"]);
+    expectSuccess(result);
+    expect(result.stdout).toContain("CLI Commands");
+    expect(result.stdout).toContain("mex check");
   });
 
   it("check --quiet exits successfully on fixture", () => {
-    const { status, stdout } = runMex(["check", "--quiet"]);
-    expect(status).toBe(0);
-    expect(stdout.length).toBeGreaterThan(0);
+    const result = runMex(["check", "--quiet"]);
+    expectSuccess(result);
+    expect(result.stdout.length).toBeGreaterThan(0);
   });
 
   it("doctor prints health summary", () => {
-    const { status, stdout } = runMex(["doctor"]);
-    expect(status).toBe(0);
-    expect(stdout).toContain("mex doctor");
-    expect(stdout).toContain("Drift");
+    const result = runMex(["doctor"]);
+    expectSuccess(result);
+    expect(result.stdout).toContain("mex doctor");
+    expect(result.stdout).toContain("Drift");
   });
 
   it("log and timeline round-trip", () => {
     const log = runMex(["log", "smoke test note", "--type", "note"]);
-    expect(log.status).toBe(0);
+    expectSuccess(log);
     const timeline = runMex(["timeline", "--limit", "1"]);
-    expect(timeline.status).toBe(0);
+    expectSuccess(timeline);
     expect(timeline.stdout).toContain("smoke test note");
   });
 
   it("heartbeat --json reports status", () => {
-    const { status, stdout } = runMex(["heartbeat", "--json"]);
-    expect(status).toBe(0);
-    expect(stdout).toContain("{");
+    const result = runMex(["heartbeat", "--json"]);
+    expectSuccess(result);
+    expect(result.stdout).toContain("{");
   });
 
   it("completion bash emits script", () => {
-    const { status, stdout } = runMex(["completion", "bash"]);
-    expect(status).toBe(0);
-    expect(stdout).toContain("complete");
+    const result = runMex(["completion", "bash"]);
+    expectSuccess(result);
+    expect(result.stdout).toContain("complete");
   });
 
   it("sync --dry-run runs without error", () => {
-    const { status } = runMex(["sync", "--dry-run"]);
-    expect(status).toBe(0);
+    expectSuccess(runMex(["sync", "--dry-run"]));
   });
 
   it("setup --dry-run previews scaffold", () => {
-    const { status, stdout } = runMex(["setup", "--dry-run"]);
-    expect(status).toBe(0);
-    expect(stdout.length).toBeGreaterThan(0);
+    const result = runMex(["setup", "--dry-run"]);
+    expectSuccess(result);
+    expect(result.stdout.length).toBeGreaterThan(0);
   });
 
   it("init --json emits scanner brief", () => {
-    const { status, stdout } = runMex(["init", "--json"]);
-    expect(status).toBe(0);
-    expect(stdout.trim().startsWith("{")).toBe(true);
+    const result = runMex(["init", "--json"]);
+    expectSuccess(result);
+    expect(result.stdout.trim().startsWith("{")).toBe(true);
   });
 
   it("watch --uninstall is a no-op success", () => {
-    const { status } = runMex(["watch", "--uninstall"]);
-    expect(status).toBe(0);
+    expectSuccess(runMex(["watch", "--uninstall"]));
   });
 
   it("pattern add creates a scaffold file", () => {
-    const { status, stdout } = runMex(["pattern", "add", "smoke-pattern"]);
-    expect(status).toBe(0);
-    expect(stdout).toContain("smoke-pattern.md");
+    const result = runMex(["pattern", "add", "smoke-pattern"]);
+    expectSuccess(result);
+    expect(result.stdout).toContain("smoke-pattern.md");
   });
 });
