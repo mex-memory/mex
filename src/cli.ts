@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { Command, InvalidArgumentError } from "commander";
+import { pathToFileURL } from "node:url";
 import { findConfig } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
 import { VERSION } from "./version.js";
@@ -300,7 +301,12 @@ program
     console.log();
   });
 
-program.parse();
+// Skip auto-parse when imported (e.g. by tests). The bin entry is built by
+// tsup as ./dist/cli.js with a shebang banner; only run program.parse() when
+// this module is the script being invoked.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  program.parse();
+}
 
 function buildCompletion(shell: string): string {
   const commands = [
