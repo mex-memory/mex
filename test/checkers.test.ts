@@ -16,6 +16,7 @@ import { checkIndexSync } from "../src/drift/checkers/index-sync.js";
 import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
 import { checkTodoFixme } from "../src/drift/checkers/todo-fixme.js";
 import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
+import { checkFrontmatterCompleteness } from "../src/drift/checkers/frontmatter-completeness.js";
 import type { Claim, ScaffoldFrontmatter } from "../src/types.js";
 
 vi.mock("../src/git.js", () => ({
@@ -227,6 +228,87 @@ describe("checkEdges", () => {
 
   it("returns empty for no edges", () => {
     expect(checkEdges({ name: "test" }, "f", "f", tmpDir, tmpDir)).toEqual([]);
+  });
+});
+
+// ── Frontmatter Completeness Checker ──
+
+describe("checkFrontmatterCompleteness", () => {
+  it("warns for missing required frontmatter fields in context files", () => {
+    const file = join(tmpDir, "context/architecture.md");
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(file, "# Architecture\n");
+
+    const issues = checkFrontmatterCompleteness(file, tmpDir, tmpDir);
+
+    expect(issues).toHaveLength(3);
+    expect(issues.map((i) => i.code)).toEqual([
+      "FRONTMATTER_MISSING_FIELD",
+      "FRONTMATTER_MISSING_FIELD",
+      "FRONTMATTER_MISSING_FIELD",
+    ]);
+    expect(issues.map((i) => i.message)).toEqual([
+      "Required frontmatter field is missing or blank: name",
+      "Required frontmatter field is missing or blank: description",
+      "Required frontmatter field is missing or blank: last_updated",
+    ]);
+    expect(issues.every((i) => i.severity === "warning")).toBe(true);
+  });
+
+  it("passes when context frontmatter has all required fields", () => {
+    const file = join(tmpDir, "context/architecture.md");
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(
+      file,
+      "---\nname: Architecture\ndescription: System map\nlast_updated: 2026-06-06\n---\n# Architecture\n"
+    );
+
+    const issues = checkFrontmatterCompleteness(file, tmpDir, tmpDir);
+
+    expect(issues).toHaveLength(0);
+  });
+
+  it("warns for blank required frontmatter fields in pattern files", () => {
+    const file = join(tmpDir, "patterns/auth.md");
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(
+      file,
+      "---\nname: Auth\ndescription: \"\"\nlast_updated: \"   \"\n---\n# Auth\n"
+    );
+
+    const issues = checkFrontmatterCompleteness(file, tmpDir, tmpDir);
+
+    expect(issues.map((i) => i.message)).toEqual([
+      "Required frontmatter field is missing or blank: description",
+      "Required frontmatter field is missing or blank: last_updated",
+    ]);
+  });
+
+  it("ignores non-context and non-pattern scaffold files", () => {
+    const file = join(tmpDir, "AGENTS.md");
+    writeFileSync(file, "# Agents\n");
+
+    const issues = checkFrontmatterCompleteness(file, tmpDir, tmpDir);
+
+    expect(issues).toHaveLength(0);
+  });
+
+  it("checks files relative to scaffoldRoot when scaffold lives under .mex", () => {
+    const mexDir = join(tmpDir, ".mex");
+    const file = join(mexDir, "context/architecture.md");
+    mkdirSync(join(mexDir, "context"), { recursive: true });
+    writeFileSync(file, "---\nname: Architecture\n---\n# Architecture\n");
+
+    const issues = checkFrontmatterCompleteness(file, tmpDir, mexDir);
+
+    expect(issues.map((i) => i.file)).toEqual([
+      ".mex/context/architecture.md",
+      ".mex/context/architecture.md",
+    ]);
+    expect(issues.map((i) => i.message)).toEqual([
+      "Required frontmatter field is missing or blank: description",
+      "Required frontmatter field is missing or blank: last_updated",
+    ]);
   });
 });
 
