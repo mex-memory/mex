@@ -657,6 +657,17 @@ describe("checkStalePatterns", () => {
     expect(issues[0].file).toBe("patterns/commented.md");
   });
 
+  it("accepts markdown links with anchor fragments and relative paths", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "ROUTER.md"),
+      "# Router\n\nSee [anchored](./patterns/anchored.md#section)\n",
+    );
+    writeFileSync(join(tmpDir, "patterns/anchored.md"), "# Anchored\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
   it("resolves patterns from project root when scaffold has no patterns/", () => {
     const scaffold = join(tmpDir, ".mex");
     mkdirSync(scaffold, { recursive: true });

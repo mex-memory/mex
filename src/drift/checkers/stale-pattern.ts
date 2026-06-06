@@ -3,7 +3,7 @@ import { resolve, relative } from "node:path";
 import { globSync } from "glob";
 import type { DriftIssue } from "../../types.js";
 
-const LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
+const LINK_RE = /\[.*?\]\((.+?\.md(?:#[\w-]+)?)\)/g;
 const BACKTICK_MD_RE = /`([\w-]+\.md)`/g;
 
 /** Pattern files not linked from ROUTER.md or context/*.md (orphans in nav graph). */
@@ -62,11 +62,9 @@ function collectPatternRefs(content: string, out: Set<string>): void {
   let match: RegExpExecArray | null;
   LINK_RE.lastIndex = 0;
   while ((match = LINK_RE.exec(content)) !== null) {
-    const target = match[2].replace(/#.*$/, "").trim();
-    if (target.endsWith(".md")) {
-      out.add(target.replace(/^\.\//, ""));
-      out.add(target.split("/").pop()!);
-    }
+    const target = match[1].replace(/#.*$/, "").replace(/^\.\//, "");
+    out.add(target);
+    out.add(target.split("/").pop()!);
   }
   BACKTICK_MD_RE.lastIndex = 0;
   while ((match = BACKTICK_MD_RE.exec(content)) !== null) {
