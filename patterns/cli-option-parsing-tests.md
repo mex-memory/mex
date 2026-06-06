@@ -15,7 +15,7 @@ last_updated: 2026-05-21
 # CLI Option Parsing Tests
 
 ## Context
-`src/cli.ts` calls `program.parse()` at import time. Do not import its `program` object in tests. If parser helpers must be imported from `src/cli.ts`, control `process.argv` during a dynamic import and suppress console output.
+`src/cli.ts` auto-parses only when invoked as the main script (`import.meta.url === pathToFileURL(process.argv[1]).href`). Do not import its `program` object in tests. If parser helpers must be imported from `src/cli.ts`, set `process.argv[1]` to a non-matching path during the dynamic import and suppress console output so the guard stays false.
 
 ## Steps
 1. Export narrow parser helpers from `src/cli.ts` when direct unit coverage is needed.
