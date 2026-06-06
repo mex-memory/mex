@@ -607,10 +607,37 @@ describe("checkFrontmatterCompleteness", () => {
       "context/auth.md"
     );
     expect(issues).toHaveLength(2);
+    expect(issues.every((i) => i.code === "INCOMPLETE_FRONTMATTER")).toBe(true);
     expect(issues.every((i) => i.severity === "warning")).toBe(true);
     expect(issues.map((i) => i.message)).toEqual(
       expect.arrayContaining([
         "Missing recommended frontmatter field: description",
+        "Missing recommended frontmatter field: last_updated",
+      ])
+    );
+  });
+
+  it("warns on all fields when frontmatter is missing", () => {
+    const issues = checkFrontmatterCompleteness(null, "context/auth.md");
+    expect(issues).toHaveLength(3);
+    expect(issues.map((i) => i.message)).toEqual(
+      expect.arrayContaining([
+        "Missing recommended frontmatter field: name",
+        "Missing recommended frontmatter field: description",
+        "Missing recommended frontmatter field: last_updated",
+      ])
+    );
+  });
+
+  it("treats whitespace-only values as missing", () => {
+    const issues = checkFrontmatterCompleteness(
+      { name: "  ", description: "ok", last_updated: "\t" },
+      "patterns/auth.md"
+    );
+    expect(issues).toHaveLength(2);
+    expect(issues.map((i) => i.message)).toEqual(
+      expect.arrayContaining([
+        "Missing recommended frontmatter field: name",
         "Missing recommended frontmatter field: last_updated",
       ])
     );
