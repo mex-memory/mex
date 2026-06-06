@@ -29,5 +29,6 @@ export function checkFrontmatterCompleteness(
 }
 
 function isContextOrPatternFile(source: string): boolean {
-  return source.startsWith("context/") || source.startsWith("patterns/");
+  // Match both root-layout (context/foo.md) and deployed (.mex/context/foo.md) paths.
+  return /(^|\/)context\//.test(source) || /(^|\/)patterns\//.test(source);
 }
