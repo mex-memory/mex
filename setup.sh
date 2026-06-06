@@ -119,6 +119,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo ""
 fi
 
+# Windows + WSL: warn when the project lives on a Windows-mounted drive.
+if grep -qi microsoft /proc/version 2>/dev/null && [[ "$PROJECT_DIR" == /mnt/* ]]; then
+  info "Windows filesystem detected — bundled CLI runs from PowerShell after setup."
+  info "On Windows, prefer: npx mex-agent setup   or   .mex/setup.ps1"
+  info "Do not mix WSL npm install with native Windows Node in the same .mex folder."
+  echo ""
+fi
+
 # ─────────────────────────────────────────────────────────────
 # Step 1 — Build CLI engine (if Node available)
 # ─────────────────────────────────────────────────────────────
@@ -148,6 +156,7 @@ elif command -v node &>/dev/null; then
     if [ -f "$SCRIPT_DIR/dist/cli.js" ]; then
       MEX_CMD="node $SCRIPT_DIR/dist/cli.js"
       ok "CLI engine built — drift detection, pre-analysis, and targeted sync ready"
+      info "Bundled CLI runs without .mex/node_modules (safe to use from Windows terminals)"
     fi
   fi
 else

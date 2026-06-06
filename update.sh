@@ -68,6 +68,7 @@ banner() {
 # These are owned by mex, not the user's populated content
 INFRA_FILES=(
   "setup.sh"
+  "setup.ps1"
   "update.sh"
   "sync.sh"
   "visualize.sh"
@@ -190,6 +191,7 @@ done
 
 # Preserve executable permissions on scripts
 chmod +x "$SCRIPT_DIR/setup.sh" 2>/dev/null || true
+chmod +x "$SCRIPT_DIR/setup.ps1" 2>/dev/null || true
 chmod +x "$SCRIPT_DIR/update.sh" 2>/dev/null || true
 chmod +x "$SCRIPT_DIR/sync.sh" 2>/dev/null || true
 chmod +x "$SCRIPT_DIR/visualize.sh" 2>/dev/null || true
