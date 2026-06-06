@@ -137,6 +137,8 @@ function remediationFor(code: DriftIssue["code"]): string | null {
       return "Resolve the TODO/FIXME or remove the marker from the scaffold.";
     case "BROKEN_LINK":
       return "Fix the link target path or remove the broken Markdown link.";
+    case "INCOMPLETE_FRONTMATTER":
+      return "Add the missing name, description, or last_updated field to the YAML frontmatter.";
     default:
       return null;
   }
