@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CLI = join(here, "..", "dist", "cli.js");
@@ -36,6 +35,10 @@ beforeAll(() => {
   execSync('git -c user.email=smoke@test -c user.name=smoke commit -q -m "init"', {
     cwd: projectRoot,
   });
+});
+
+afterAll(() => {
+  rmSync(projectRoot, { recursive: true, force: true });
 });
 
 describe("CLI smoke", () => {
@@ -105,5 +108,11 @@ describe("CLI smoke", () => {
   it("watch --uninstall is a no-op success", () => {
     const { status } = runMex(["watch", "--uninstall"]);
     expect(status).toBe(0);
+  });
+
+  it("pattern add creates a scaffold file", () => {
+    const { status, stdout } = runMex(["pattern", "add", "smoke-pattern"]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("smoke-pattern.md");
   });
 });
