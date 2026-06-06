@@ -18,9 +18,10 @@ export function checkStalePatterns(
   }
   if (!existsSync(patternsDir)) return [];
 
-  const patternFiles = globSync("*.md", { cwd: patternsDir }).filter(
-    (f) => f !== "INDEX.md" && f !== "README.md",
-  );
+  const patternFiles = globSync("*.md", {
+    cwd: patternsDir,
+    ignore: ["node_modules/**"],
+  }).filter((f) => f !== "INDEX.md" && f !== "README.md");
   if (patternFiles.length === 0) return [];
 
   const referenced = new Set<string>();
@@ -38,7 +39,7 @@ export function checkStalePatterns(
     } catch {
       continue;
     }
-    collectPatternRefs(content, referenced);
+    collectPatternRefs(content.replace(/<!--[\s\S]*?-->/g, ""), referenced);
   }
 
   const issues: DriftIssue[] = [];

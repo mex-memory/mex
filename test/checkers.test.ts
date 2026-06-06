@@ -644,4 +644,28 @@ describe("checkStalePatterns", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].file).toBe("patterns/indexed-only.md");
   });
+
+  it("ignores pattern references inside HTML comments in ROUTER", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "ROUTER.md"),
+      "# Router\n\n<!-- See [commented.md](patterns/commented.md) -->\n",
+    );
+    writeFileSync(join(tmpDir, "patterns/commented.md"), "# Commented\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].file).toBe("patterns/commented.md");
+  });
+
+  it("resolves patterns from project root when scaffold has no patterns/", () => {
+    const scaffold = join(tmpDir, ".mex");
+    mkdirSync(scaffold, { recursive: true });
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(join(scaffold, "ROUTER.md"), "# Router\n\nSee [linked](patterns/linked.md)\n");
+    writeFileSync(join(tmpDir, "patterns/linked.md"), "# Linked\n");
+    writeFileSync(join(tmpDir, "patterns/orphan.md"), "# Orphan\n");
+    const issues = checkStalePatterns(tmpDir, scaffold);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].file).toBe("patterns/orphan.md");
+  });
 });
