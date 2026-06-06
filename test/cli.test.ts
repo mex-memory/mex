@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { Command, InvalidArgumentError } from "commander";
-import { readFileSync } from "node:fs";
+import { execSync, spawnSync } from "node:child_process";
+import { readFileSync, symlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { runLog, runTimeline } from "../src/events.js";
 import type { MexConfig } from "../src/types.js";
@@ -205,6 +207,43 @@ describe("mex timeline parsing", () => {
       since: "30d",
       type: "risk",
     });
+  });
+});
+
+describe("built CLI main-module guard", () => {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const cliPath = join(repoRoot, "dist", "cli.js");
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string };
+
+  beforeAll(() => {
+    execSync("npm run build", { cwd: repoRoot, stdio: "pipe" });
+  });
+
+  it("parses argv when invoked through a symlinked bin (npm/npx layout)", () => {
+    const binDir = mkdtempSync(join(tmpdir(), "mex-bin-"));
+    const symlinkedCli = join(binDir, "mex");
+    try {
+      symlinkSync(cliPath, symlinkedCli);
+      const result = spawnSync(process.execPath, [symlinkedCli, "--version"], {
+        encoding: "utf8",
+        env: { ...process.env, NO_COLOR: "1" },
+      });
+      expect(result.status).toBe(0);
+      expect((result.stdout ?? "").trim()).toBe(pkg.version);
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not auto-parse when dist/cli.js is imported as a module", () => {
+    const result = spawnSync(
+      process.execPath,
+      ["-e", "import('./dist/cli.js').then(() => console.log('imported'))"],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("imported");
+    expect(result.stdout).not.toContain(pkg.version);
   });
 });
 
