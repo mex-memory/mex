@@ -1,0 +1,49 @@
+<svg width="980" height="520" viewBox="0 0 980 520" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">mex drift detection and sync loop</title>
+  <desc id="desc">A loop showing codebase changes, mex check, drift report, mex sync, targeted AI repair, and scaffold updates.</desc>
+  <rect width="980" height="520" fill="#111111"/>
+  <style>
+    .box{fill:#1d1d1d;stroke:#e8e8e8;stroke-width:2}
+    .accent{fill:#18234a;stroke:#6f8cff;stroke-width:2}
+    .label{font-family:"Virgil","Comic Sans MS",ui-monospace,monospace;font-size:23px;fill:#f4f4f4;text-anchor:middle}
+    .small{font-size:17px;fill:#cfcfcf}
+    .edge{stroke:#4f7cff;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+    .muted{fill:#a8a8a8}
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#4f7cff"/>
+    </marker>
+  </defs>
+
+  <text class="label small muted" x="490" y="82">mex keeps agent memory aligned with the repo</text>
+
+  <rect class="box" x="56" y="175" width="185" height="110" rx="10"/>
+  <text class="label" x="148" y="220">Codebase</text>
+  <text class="label small" x="148" y="250">changes over time</text>
+
+  <path class="edge" d="M244 230C282 230 299 230 334 230" marker-end="url(#arrow)"/>
+  <rect class="accent" x="338" y="165" width="170" height="130" rx="10"/>
+  <text class="label" x="423" y="218">mex check</text>
+  <text class="label small" x="423" y="250">zero-token</text>
+  <text class="label small" x="423" y="274">drift scan</text>
+
+  <path class="edge" d="M512 230C550 230 568 230 605 230" marker-end="url(#arrow)"/>
+  <rect class="box" x="610" y="172" width="180" height="116" rx="10"/>
+  <text class="label" x="700" y="216">Drift report</text>
+  <text class="label small" x="700" y="248">paths, commands,</text>
+  <text class="label small" x="700" y="272">deps, stale files</text>
+
+  <path class="edge" d="M700 291C700 330 662 352 610 356" marker-end="url(#arrow)"/>
+  <rect class="accent" x="390" y="324" width="220" height="116" rx="10"/>
+  <text class="label" x="500" y="370">mex sync</text>
+  <text class="label small" x="500" y="401">targeted</text>
+  <text class="label small" x="500" y="425">AI repair prompt</text>
+
+  <path class="edge" d="M388 382C330 382 292 350 252 294" marker-end="url(#arrow)"/>
+  <rect class="box" x="100" y="342" width="220" height="104" rx="10"/>
+  <text class="label" x="210" y="384">Scaffold</text>
+  <text class="label small" x="210" y="414">updated in place</text>
+
+  <path class="edge" d="M148 342C126 312 124 302 136 288" marker-end="url(#arrow)"/>
+</svg>

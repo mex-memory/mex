@@ -1,0 +1,75 @@
+{
+  "name": "mex-agent",
+  "version": "0.5.1",
+  "description": "CLI engine for mex scaffold — drift detection, pre-analysis, and targeted sync",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "mex": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "templates",
+    "LICENSE",
+    "README.md",
+    "COMPATIBILITY.md"
+  ],
+  "keywords": [
+    "ai",
+    "agents",
+    "scaffold",
+    "drift-detection",
+    "documentation",
+    "cli",
+    "claude",
+    "cursor",
+    "copilot"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/theDakshJaitly/mex.git"
+  },
+  "author": "Daksh Jaitly",
+  "license": "MIT",
+  "homepage": "https://github.com/theDakshJaitly/mex#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "glob": "^11.0.1",
+    "ink": "^7.0.3",
+    "react": "^19.2.6",
+    "remark-frontmatter": "^5.0.0",
+    "remark-parse": "^11.0.0",
+    "simple-git": "^3.27.0",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.0.0",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.14",
+    "ink-testing-library": "^4.0.0",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

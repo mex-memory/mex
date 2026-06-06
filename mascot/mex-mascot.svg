@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160">
+  <!--
+    mex mascot: pixel-art hermit crab
+    Grid: 10px per block (16x16 grid)
+    Style: matches Clawd's blocky, minimal aesthetic
+  -->
+
+  <!-- Shell (the scaffold) - sits on top/back of the crab -->
+  <!-- Shell main body -->
+  <rect x="50" y="10" width="60" height="10" fill="#5B8C5A"/>
+  <rect x="40" y="20" width="80" height="10" fill="#5B8C5A"/>
+  <rect x="40" y="30" width="80" height="10" fill="#5B8C5A"/>
+  <rect x="50" y="40" width="70" height="10" fill="#5B8C5A"/>
+
+  <!-- Shell detail lines (scaffold/filing cabinet look) -->
+  <rect x="60" y="20" width="10" height="30" fill="#4A7A49"/>
+  <rect x="90" y="20" width="10" height="30" fill="#4A7A49"/>
+
+  <!-- Crab body -->
+  <rect x="30" y="50" width="100" height="10" fill="#E8845C"/>
+  <rect x="20" y="60" width="120" height="10" fill="#E8845C"/>
+  <rect x="20" y="70" width="120" height="10" fill="#E8845C"/>
+  <rect x="30" y="80" width="100" height="10" fill="#E8845C"/>
+  <rect x="30" y="90" width="100" height="10" fill="#E8845C"/>
+
+  <!-- Eyes (square, like Clawd) -->
+  <rect x="50" y="65" width="12" height="12" fill="#1A1A1A"/>
+  <rect x="90" y="65" width="12" height="12" fill="#1A1A1A"/>
+
+  <!-- Glasses frames around eyes -->
+  <rect x="45" y="60" width="22" height="3" fill="#3D3D3D"/>
+  <rect x="45" y="60" width="3" height="22" fill="#3D3D3D"/>
+  <rect x="45" y="79" width="22" height="3" fill="#3D3D3D"/>
+  <rect x="64" y="60" width="3" height="22" fill="#3D3D3D"/>
+
+  <rect x="85" y="60" width="22" height="3" fill="#3D3D3D"/>
+  <rect x="85" y="60" width="3" height="22" fill="#3D3D3D"/>
+  <rect x="85" y="79" width="22" height="3" fill="#3D3D3D"/>
+  <rect x="104" y="60" width="3" height="22" fill="#3D3D3D"/>
+
+  <!-- Glasses bridge -->
+  <rect x="67" y="67" width="18" height="3" fill="#3D3D3D"/>
+
+  <!-- Claws/pincers -->
+  <!-- Left claw -->
+  <rect x="0" y="60" width="10" height="10" fill="#E8845C"/>
+  <rect x="0" y="70" width="10" height="10" fill="#E8845C"/>
+  <rect x="10" y="70" width="10" height="10" fill="#E8845C"/>
+
+  <!-- Right claw holding a tiny map/scroll -->
+  <rect x="150" y="60" width="10" height="10" fill="#E8845C"/>
+  <rect x="140" y="70" width="20" height="10" fill="#E8845C"/>
+  <!-- Map in right claw -->
+  <rect x="148" y="52" width="12" height="16" fill="#F5E6C8"/>
+  <rect x="150" y="56" width="8" height="2" fill="#C4A67A"/>
+  <rect x="150" y="60" width="6" height="2" fill="#C4A67A"/>
+
+  <!-- Legs (4 legs like Clawd's style) -->
+  <rect x="40" y="100" width="10" height="20" fill="#E8845C"/>
+  <rect x="60" y="100" width="10" height="20" fill="#E8845C"/>
+  <rect x="90" y="100" width="10" height="20" fill="#E8845C"/>
+  <rect x="110" y="100" width="10" height="20" fill="#E8845C"/>
+</svg>
