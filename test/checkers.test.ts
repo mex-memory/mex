@@ -125,6 +125,67 @@ describe("checkPaths", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe("error");
   });
+
+  it("skips URL values instead of reporting missing paths", () => {
+    const claims = [
+      claim({ kind: "path", value: "https://example.com/docs" }),
+      claim({ kind: "path", value: "http://localhost:3000/api" }),
+      claim({ kind: "path", value: "ftp://files.example.com/readme.txt" }),
+      claim({ kind: "path", value: "file:///etc/hosts" }),
+      claim({ kind: "path", value: "//cdn.example.com/assets/app.js" }),
+    ];
+    const issues = checkPaths(claims, tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("resolves workspace package aliases from package.json workspaces", () => {
+    mkdirSync(join(tmpDir, "packages/ui"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ workspaces: ["packages/*"] })
+    );
+    writeFileSync(
+      join(tmpDir, "packages/ui/package.json"),
+      JSON.stringify({ name: "@acme/ui" })
+    );
+    const claims = [
+      claim({ kind: "path", value: "@acme/ui/button" }),
+      claim({ kind: "path", value: "@acme/ui" }),
+    ];
+    const issues = checkPaths(claims, tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("resolves workspace package aliases from pnpm-workspace.yaml", () => {
+    mkdirSync(join(tmpDir, "packages/shared"), { recursive: true });
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "root" }));
+    writeFileSync(
+      join(tmpDir, "pnpm-workspace.yaml"),
+      "packages:\n  - 'packages/*'\n"
+    );
+    writeFileSync(
+      join(tmpDir, "packages/shared/package.json"),
+      JSON.stringify({ name: "@acme/shared" })
+    );
+    const claims = [claim({ kind: "path", value: "@acme/shared/types" })];
+    const issues = checkPaths(claims, tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("resolves installed scoped packages via require.resolve", () => {
+    const pkgDir = join(tmpDir, "node_modules/@scope/pkg");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(
+      join(pkgDir, "package.json"),
+      JSON.stringify({ name: "@scope/pkg", main: "index.js" })
+    );
+    writeFileSync(join(pkgDir, "index.js"), "module.exports = {};\n");
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test-root" }));
+
+    const claims = [claim({ kind: "path", value: "@scope/pkg/lib" })];
+    const issues = checkPaths(claims, tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
 });
 
 // ── Edges Checker ──

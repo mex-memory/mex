@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { globSync } from "glob";
+import YAML from "yaml";
 import type { Claim, DriftIssue } from "../../types.js";
 
 const PLACEHOLDER_WORDS = /(?:^|[/_-])(?:new|example|your|sample|my|foo|bar|placeholder|template)(?:[/_.-]|$)/i;
@@ -10,7 +11,7 @@ const PLACEHOLDER_WORDS = /(?:^|[/_-])(?:new|example|your|sample|my|foo|bar|plac
 const SCOPED_PACKAGE = /^@([\w-]+)\/([\w-]+)(\/.*)?$/;
 
 /** URLs are not filesystem paths */
-const URL_PATTERN = /^https?:\/\//;
+const URL_PATTERN = /^(?:https?|ftp|file):\/\/|^\/\//;
 
 /** Check that all claimed paths exist on disk */
 export function checkPaths(
@@ -53,26 +54,12 @@ export function checkPaths(
 
 /**
  * Collect the `name` field from each workspace's package.json.
- * Works with any package manager (npm, yarn, pnpm, bun) since it reads
- * the standard `workspaces` field from the root manifest.
+ * Reads the root `workspaces` field (npm, yarn, bun) or falls back to
+ * `pnpm-workspace.yaml` when that field is absent (pnpm monorepos).
  */
 function collectWorkspaceNames(projectRoot: string): Set<string> {
   const names = new Set<string>();
-
-  const rootPkgPath = resolve(projectRoot, "package.json");
-  if (!existsSync(rootPkgPath)) return names;
-
-  let rootPkg: { workspaces?: string[] | { packages?: string[] } };
-  try {
-    rootPkg = JSON.parse(readFileSync(rootPkgPath, "utf-8"));
-  } catch {
-    return names;
-  }
-
-  // Normalize workspaces field (array or { packages: [...] })
-  const patterns: string[] = Array.isArray(rootPkg.workspaces)
-    ? rootPkg.workspaces
-    : rootPkg.workspaces?.packages ?? [];
+  const patterns = collectWorkspacePatterns(projectRoot);
 
   for (const pattern of patterns) {
     const dirs = globSync(pattern, {
@@ -92,6 +79,35 @@ function collectWorkspaceNames(projectRoot: string): Set<string> {
   }
 
   return names;
+}
+
+function collectWorkspacePatterns(projectRoot: string): string[] {
+  const rootPkgPath = resolve(projectRoot, "package.json");
+  if (existsSync(rootPkgPath)) {
+    try {
+      const rootPkg: { workspaces?: string[] | { packages?: string[] } } = JSON.parse(
+        readFileSync(rootPkgPath, "utf-8")
+      );
+      const patterns = Array.isArray(rootPkg.workspaces)
+        ? rootPkg.workspaces
+        : rootPkg.workspaces?.packages ?? [];
+      if (patterns.length > 0) return patterns;
+    } catch {
+      // Fall through to pnpm-workspace.yaml
+    }
+  }
+
+  const pnpmWorkspacePath = resolve(projectRoot, "pnpm-workspace.yaml");
+  if (!existsSync(pnpmWorkspacePath)) return [];
+
+  try {
+    const doc = YAML.parse(readFileSync(pnpmWorkspacePath, "utf-8")) as {
+      packages?: string[];
+    } | null;
+    return Array.isArray(doc?.packages) ? doc.packages : [];
+  } catch {
+    return [];
+  }
 }
 
 function pathExists(
@@ -122,7 +138,7 @@ function pathExists(
 
     // Try Node's module resolution first (works for installed npm packages)
     try {
-      const req = createRequire(resolve(projectRoot, "package.json"));
+      const req = createRequire(resolve(projectRoot, "noop.js"));
       req.resolve(`${pkgName}/package.json`);
       return true;
     } catch {
