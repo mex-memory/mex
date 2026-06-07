@@ -219,11 +219,20 @@ describe("built CLI main-module guard", () => {
     execSync("npm run build", { cwd: repoRoot, stdio: "pipe" });
   });
 
-  it("parses argv when invoked through a symlinked bin (npm/npx layout)", () => {
+  it("parses argv when invoked through a symlinked bin (npm/npx layout)", (ctx) => {
     const binDir = mkdtempSync(join(tmpdir(), "mex-bin-"));
     const symlinkedCli = join(binDir, "mex");
     try {
-      symlinkSync(cliPath, symlinkedCli);
+      try {
+        symlinkSync(cliPath, symlinkedCli);
+      } catch (error) {
+        if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") {
+          // Windows can deny symlink creation without Developer Mode or elevated rights.
+          ctx.skip();
+          return;
+        }
+        throw error;
+      }
       const result = spawnSync(process.execPath, [symlinkedCli, "--version"], {
         encoding: "utf8",
         env: { ...process.env, NO_COLOR: "1" },
