@@ -69,6 +69,12 @@ describe("CLI smoke", () => {
     expect(result.stdout).toContain("mex check");
   });
 
+  it("check prints drift summary on fixture", () => {
+    const result = runMex(["check"]);
+    expectSuccess(result);
+    expect(result.stdout).toContain("Drift score");
+  });
+
   it("check --quiet exits successfully on fixture", () => {
     const result = runMex(["check", "--quiet"]);
     expectSuccess(result);
