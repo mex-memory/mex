@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { resolve, dirname, isAbsolute } from "node:path";
-import type { MexConfig, AiTool, StalenessThresholds, WatchConfig, HeartbeatConfig } from "./types.js";
+import { resolve, dirname, isAbsolute, basename } from "node:path";
+import { randomUUID } from "node:crypto";
+import type { MexConfig, AiTool, StalenessThresholds, WatchConfig, HeartbeatConfig, ScaffoldIdentity } from "./types.js";
 import { DEFAULT_STALENESS_THRESHOLDS } from "./drift/checkers/staleness.js";
 
 /**
@@ -84,7 +85,8 @@ export function findConfig(startDir?: string): MexConfig {
   const stalenessThresholds = loadStalenessThresholds(scaffoldRoot, persistedConfig);
   const watch = loadWatchConfig(persistedConfig);
   const heartbeat = loadHeartbeatConfig(persistedConfig);
-  return { projectRoot, scaffoldRoot, aiTools, stalenessThresholds, watch, heartbeat };
+  const identity = loadScaffoldIdentity(persistedConfig);
+  return { projectRoot, scaffoldRoot, aiTools, stalenessThresholds, watch, heartbeat, identity };
 }
 
 function findProjectRoot(dir: string): string | null {
@@ -108,6 +110,10 @@ interface MexPersistedConfig {
   staleness?: unknown;
   watch?: unknown;
   heartbeat?: unknown;
+  scaffold_id?: unknown;
+  scaffold_name?: unknown;
+  origin?: unknown;
+  upstream?: unknown;
   [key: string]: unknown;
 }
 
@@ -198,6 +204,20 @@ function readPositiveNumber(v: unknown): number | undefined {
   return undefined;
 }
 
+function loadScaffoldIdentity(raw: MexPersistedConfig | null): ScaffoldIdentity | undefined {
+  if (!raw) return undefined;
+  const id = raw.scaffold_id;
+  // Identity exists only once a scaffold_id is present. Everything else is
+  // optional and falls back to a safe default.
+  if (typeof id !== "string" || id.length === 0) return undefined;
+  return {
+    scaffold_id: id,
+    scaffold_name: typeof raw.scaffold_name === "string" ? raw.scaffold_name : "",
+    origin: typeof raw.origin === "string" ? raw.origin : null,
+    upstream: typeof raw.upstream === "string" ? raw.upstream : null,
+  };
+}
+
 function loadPersistedConfig(scaffoldRoot: string): MexPersistedConfig | null {
   const configPath = resolve(scaffoldRoot, CONFIG_FILE);
   if (!existsSync(configPath)) return null;
@@ -210,7 +230,12 @@ function loadPersistedConfig(scaffoldRoot: string): MexPersistedConfig | null {
   }
 }
 
-export function saveAiTools(scaffoldRoot: string, tools: AiTool[]): void {
+/**
+ * Read config.json, shallow-merge `patch` into it, and write it back. Preserves
+ * any keys not named in the patch, so independent writers (aiTools, identity,
+ * …) never clobber each other.
+ */
+function mergeIntoConfig(scaffoldRoot: string, patch: Record<string, unknown>): void {
   const configPath = resolve(scaffoldRoot, CONFIG_FILE);
   let existing: Record<string, unknown> = {};
   if (existsSync(configPath)) {
@@ -221,9 +246,59 @@ export function saveAiTools(scaffoldRoot: string, tools: AiTool[]): void {
       }
     } catch { /* start fresh */ }
   }
-  existing.aiTools = [...new Set(tools)];
+  Object.assign(existing, patch);
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(existing, null, 2) + "\n");
+}
+
+export function saveAiTools(scaffoldRoot: string, tools: AiTool[]): void {
+  mergeIntoConfig(scaffoldRoot, { aiTools: [...new Set(tools)] });
+}
+
+export function saveScaffoldIdentity(scaffoldRoot: string, identity: ScaffoldIdentity): void {
+  mergeIntoConfig(scaffoldRoot, {
+    scaffold_id: identity.scaffold_id,
+    scaffold_name: identity.scaffold_name,
+    origin: identity.origin,
+    upstream: identity.upstream,
+  });
+}
+
+/**
+ * Return the scaffold's identity, minting and persisting one if it does not yet
+ * exist. Reads config.json fresh so it is idempotent regardless of what the
+ * in-memory config knows — re-running setup never regenerates an existing id.
+ *
+ * The persist is best-effort: a write failure (read-only FS, perms) is
+ * swallowed and the in-memory identity is returned, so this can never break or
+ * change the exit code of a command.
+ */
+export function ensureScaffoldIdentity(scaffoldRoot: string, projectRoot: string): ScaffoldIdentity {
+  const existing = loadScaffoldIdentity(loadPersistedConfig(scaffoldRoot));
+  if (existing) return existing;
+
+  const identity: ScaffoldIdentity = {
+    scaffold_id: randomUUID(),
+    scaffold_name: basename(projectRoot),
+    origin: null,
+    upstream: null,
+  };
+  try {
+    saveScaffoldIdentity(scaffoldRoot, identity);
+  } catch { /* best-effort: never break a command on a telemetry-id write */ }
+  return identity;
+}
+
+/**
+ * Public accessor for a scaffold's identity. Returns the already-loaded
+ * identity when present, otherwise mints and persists one. See E1 in
+ * COMPATIBILITY.md — part of the public API surface.
+ */
+export function getScaffoldIdentity(config: MexConfig): ScaffoldIdentity {
+  if (config.identity) return config.identity;
+  const identity = ensureScaffoldIdentity(config.scaffoldRoot, config.projectRoot);
+  config.identity = identity;
+  return identity;
 }
 
 function findScaffoldRoot(projectRoot: string): string | null {

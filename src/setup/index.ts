@@ -11,7 +11,7 @@ import {
   buildExistingWithBriefPrompt,
   buildExistingNoBriefPrompt,
 } from "./prompts.js";
-import { saveAiTools } from "../config.js";
+import { saveAiTools, ensureScaffoldIdentity } from "../config.js";
 import type { AiTool } from "../types.js";
 
 // ── Constants ──
@@ -207,6 +207,12 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     rl.close();
   }
   console.log();
+
+  // Mint a stable scaffold identity. Independent of tool selection so a setup
+  // that picks no AI tool still gets a scaffold_id written to config.json.
+  if (!dryRun) {
+    ensureScaffoldIdentity(mexDir, projectRoot);
+  }
 
   // ── Step 4: Run scanner (if not fresh) ──
 

@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Scaffold identity** — `.mex/config.json` now carries a stable `scaffold_id` (UUID v4), `scaffold_name`, and nullable `origin`/`upstream`. Generated at `mex setup` and silently backfilled for existing scaffolds on the next CLI invocation. New `getScaffoldIdentity()` export on the public API.
 - **broken-link drift checker** — flags Markdown links in scaffold files whose local target file does not exist.
 
 ### Changed

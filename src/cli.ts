@@ -2,9 +2,21 @@ import chalk from "chalk";
 import { Command, InvalidArgumentError } from "commander";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { findConfig } from "./config.js";
+import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
 import { VERSION } from "./version.js";
+
+/**
+ * Load config for a CLI command and backfill scaffold identity on the way.
+ * Centralises the E1 migration: any command that loads config mints a
+ * scaffold_id if one is missing (silent, cheap, best-effort). Keeps findConfig
+ * itself a pure read for embedders.
+ */
+function loadConfig(): ReturnType<typeof findConfig> {
+  const config = findConfig();
+  getScaffoldIdentity(config);
+  return config;
+}
 
 export function parseIntArg(raw: string): number {
   const n = Number.parseInt(raw, 10);
@@ -75,7 +87,7 @@ program
   .option("--stale-error-commits <n>", "Error when a file has N commits since its last change (default 200)", parseIntArg)
   .action(async (opts) => {
     try {
-      const config = findConfig();
+      const config = loadConfig();
       const { runDriftCheck } = await import("./drift/index.js");
       const { DEFAULT_STALENESS_THRESHOLDS } = await import("./drift/checkers/staleness.js");
 
@@ -122,7 +134,7 @@ program
   .option("--json", "Output scanner brief as JSON")
   .action(async (opts) => {
     try {
-      const config = findConfig();
+      const config = loadConfig();
       const { runScan } = await import("./scanner/index.js");
       const result = await runScan(config, { jsonOnly: opts.json });
 
@@ -145,7 +157,7 @@ program
   .option("--file <path>", "Related file path (repeatable)", (value, prev: string[]) => [...prev, value], [])
   .action(async (message, opts) => {
     try {
-      const config = findConfig();
+      const config = loadConfig();
       const { runLog } = await import("./events.js");
       await runLog(config, message, { kind: opts.type, files: opts.file });
     } catch (err) {
@@ -163,7 +175,7 @@ program
   .option("--limit <n>", "Maximum number of entries", parsePositiveIntArg)
   .action(async (opts) => {
     try {
-      const config = findConfig();
+      const config = loadConfig();
       const { runTimeline } = await import("./events.js");
       await runTimeline(config, opts);
     } catch (err) {
@@ -178,7 +190,7 @@ program
   .option("--json", "Output heartbeat report as JSON")
   .action(async (opts) => {
     try {
-      const config = findConfig();
+      const config = loadConfig();
       const { runHeartbeat } = await import("./heartbeat.js");
       await runHeartbeat(config, { json: opts.json });
     } catch (err) {
@@ -192,7 +204,7 @@ program
   .description("Run a friendly scaffold health diagnostic")
   .action(async () => {
     try {
-      const config = findConfig();
+      const config = loadConfig();
       const { runDoctor } = await import("./doctor.js");
       await runDoctor(config);
     } catch (err) {
@@ -209,7 +221,7 @@ program
   .option("--warnings", "Include warning-only files (by default only errors are synced)")
   .action(async (opts) => {
     try {
-      const config = findConfig();
+      const config = loadConfig();
       const { runSync } = await import("./sync/index.js");
       await runSync(config, { dryRun: opts.dryRun, includeWarnings: opts.warnings });
     } catch (err) {
@@ -228,7 +240,7 @@ patternCmd
   .description("Create a new pattern file and add it to the index")
   .action(async (name) => {
     try {
-      const config = findConfig();
+      const config = loadConfig();
       const { runPatternAdd } = await import("./pattern/index.js");
       await runPatternAdd(config, name);
     } catch (err) {
@@ -245,7 +257,7 @@ program
   .option("--interval [minutes]", "Run mex heartbeat repeatedly instead of installing a hook", (v) => v === undefined ? true : parsePositiveIntArg(v))
   .action(async (opts) => {
     try {
-      const config = findConfig();
+      const config = loadConfig();
       const { manageHook } = await import("./watch.js");
       const intervalMinutes = opts.interval === true
         ? config.watch?.intervalMinutes ?? 30

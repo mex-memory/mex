@@ -47,6 +47,22 @@ export interface HeartbeatConfig {
   dailyMemoryRetentionDays?: number;
 }
 
+/**
+ * Stable identity for a mex scaffold. Persisted in `.mex/config.json` and used
+ * as the grouping key for anonymous telemetry (one scaffold = one project).
+ * `scaffold_id` is a random UUID v4 — never derived from path, repo, or git.
+ */
+export interface ScaffoldIdentity {
+  /** Random UUID v4. Stable for the life of the scaffold. */
+  scaffold_id: string;
+  /** Human-readable name. Defaults to the project directory basename. */
+  scaffold_name: string;
+  /** Where this scaffold originated from, if known. Nullable. */
+  origin: string | null;
+  /** Upstream this scaffold tracks, if any. Nullable. */
+  upstream: string | null;
+}
+
 export interface MexConfig {
   /** Absolute path to project root (where .git lives) */
   projectRoot: string;
@@ -60,6 +76,8 @@ export interface MexConfig {
   watch?: WatchConfig;
   /** Agent heartbeat defaults. Optional. */
   heartbeat?: HeartbeatConfig;
+  /** Scaffold identity, when present in config.json. See {@link getScaffoldIdentity}. */
+  identity?: ScaffoldIdentity;
 }
 
 // ── Claims (extracted from markdown) ──

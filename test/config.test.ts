@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
-import { findConfig, saveAiTools } from "../src/config.js";
+import { findConfig, saveAiTools, ensureScaffoldIdentity, getScaffoldIdentity } from "../src/config.js";
+
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 let tmpDir: string;
 
@@ -188,6 +190,116 @@ describe("findConfig — watch and heartbeat config", () => {
     const config = findConfig(tmpDir);
     expect(config.watch).toBeUndefined();
     expect(config.heartbeat).toBeUndefined();
+  });
+});
+
+describe("scaffold identity", () => {
+  function makeMex(): string {
+    const mexPath = join(tmpDir, ".mex");
+    mkdirSync(mexPath, { recursive: true });
+    return mexPath;
+  }
+
+  it("mints a v4 scaffold_id, names it after the project dir, and persists it", () => {
+    const mexPath = makeMex();
+    const id = ensureScaffoldIdentity(mexPath, tmpDir);
+
+    expect(id.scaffold_id).toMatch(UUID_V4);
+    expect(id.scaffold_name).toBe(basename(tmpDir));
+    expect(id.origin).toBeNull();
+    expect(id.upstream).toBeNull();
+
+    const raw = JSON.parse(readFileSync(join(mexPath, "config.json"), "utf-8"));
+    expect(raw.scaffold_id).toBe(id.scaffold_id);
+    expect(raw.scaffold_name).toBe(id.scaffold_name);
+    expect(raw.origin).toBeNull();
+    expect(raw.upstream).toBeNull();
+  });
+
+  it("is idempotent — never regenerates an existing id", () => {
+    const mexPath = makeMex();
+    const first = ensureScaffoldIdentity(mexPath, tmpDir);
+    const second = ensureScaffoldIdentity(mexPath, tmpDir);
+    expect(second.scaffold_id).toBe(first.scaffold_id);
+  });
+
+  it("preserves existing config keys when minting identity", () => {
+    const mexPath = makeMex();
+    writeFileSync(join(mexPath, "config.json"), JSON.stringify({ aiTools: ["claude"], someOther: true }));
+    ensureScaffoldIdentity(mexPath, tmpDir);
+    const raw = JSON.parse(readFileSync(join(mexPath, "config.json"), "utf-8"));
+    expect(raw.aiTools).toEqual(["claude"]);
+    expect(raw.someOther).toBe(true);
+    expect(raw.scaffold_id).toMatch(UUID_V4);
+  });
+
+  it("mints distinct ids for distinct scaffolds (id is random, not path-derived)", () => {
+    const a = join(tmpDir, "a", ".mex");
+    const b = join(tmpDir, "b", ".mex");
+    mkdirSync(a, { recursive: true });
+    mkdirSync(b, { recursive: true });
+    const idA = ensureScaffoldIdentity(a, join(tmpDir, "a"));
+    const idB = ensureScaffoldIdentity(b, join(tmpDir, "b"));
+    expect(idA.scaffold_id).not.toBe(idB.scaffold_id);
+  });
+
+  it("swallows a write failure and still returns an identity", () => {
+    // Put a file where a directory needs to be so the config write throws.
+    const blocker = join(tmpDir, "blocker");
+    writeFileSync(blocker, "not a directory");
+    const scaffoldRoot = join(blocker, ".mex");
+    const id = ensureScaffoldIdentity(scaffoldRoot, tmpDir);
+    expect(id.scaffold_id).toMatch(UUID_V4);
+    expect(existsSync(join(scaffoldRoot, "config.json"))).toBe(false);
+  });
+
+  it("findConfig surfaces an existing identity without minting", () => {
+    mkdirSync(join(tmpDir, ".git"));
+    const mexPath = join(tmpDir, ".mex");
+    mkdirSync(mexPath);
+    writeFileSync(join(mexPath, "ROUTER.md"), "");
+    writeFileSync(join(mexPath, "config.json"), JSON.stringify({
+      scaffold_id: "11111111-1111-4111-8111-111111111111",
+      scaffold_name: "demo",
+      origin: null,
+      upstream: null,
+    }));
+    const config = findConfig(tmpDir);
+    expect(config.identity).toEqual({
+      scaffold_id: "11111111-1111-4111-8111-111111111111",
+      scaffold_name: "demo",
+      origin: null,
+      upstream: null,
+    });
+  });
+
+  it("findConfig stays a pure read — does not write config.json", () => {
+    mkdirSync(join(tmpDir, ".git"));
+    const mexPath = join(tmpDir, ".mex");
+    mkdirSync(mexPath);
+    writeFileSync(join(mexPath, "ROUTER.md"), "");
+    const config = findConfig(tmpDir);
+    expect(config.identity).toBeUndefined();
+    expect(existsSync(join(mexPath, "config.json"))).toBe(false);
+  });
+
+  it("getScaffoldIdentity migrates a scaffold missing scaffold_id", () => {
+    mkdirSync(join(tmpDir, ".git"));
+    const mexPath = join(tmpDir, ".mex");
+    mkdirSync(mexPath);
+    writeFileSync(join(mexPath, "ROUTER.md"), "");
+    writeFileSync(join(mexPath, "config.json"), JSON.stringify({ aiTools: ["claude"] }));
+
+    const config = findConfig(tmpDir);
+    expect(config.identity).toBeUndefined(); // not minted by the read
+
+    const id = getScaffoldIdentity(config);
+    expect(id.scaffold_id).toMatch(UUID_V4);
+    expect(config.identity).toEqual(id); // accessor backfills the in-memory config
+
+    const raw = JSON.parse(readFileSync(join(mexPath, "config.json"), "utf-8"));
+    expect(raw.scaffold_id).toBe(id.scaffold_id);
+    expect(raw.aiTools).toEqual(["claude"]); // existing keys untouched
   });
 });
 
