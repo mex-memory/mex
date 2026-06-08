@@ -144,7 +144,7 @@ export async function runDriftCheck(
 }
 
 /** Find all markdown files that are part of the scaffold */
-function findScaffoldFiles(
+export function findScaffoldFiles(
   projectRoot: string,
   scaffoldRoot: string,
   patterns: readonly string[] = DEFAULT_SCAFFOLD_PATTERNS
