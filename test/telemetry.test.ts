@@ -368,12 +368,13 @@ describe("first-run notice (AC9)", () => {
 // ── AC10: no I/O at import time ──
 
 describe("no I/O at import time (AC10)", () => {
-  it("importing the module does not create files or make network calls", () => {
-    // The module is already imported — check that no ~/.mex/ was created
-    // in a fresh temp home before any explicit call
-    const freshHome = mkdtempSync(join(tmpdir(), "mex-import-"));
-    expect(existsSync(join(freshHome, ".mex"))).toBe(false);
-    rmSync(freshHome, { recursive: true, force: true });
+  it("re-importing the telemetry module creates nothing under HOME", async () => {
+    // HOME is a fresh temp dir (beforeEach). Force a full re-evaluation of the
+    // module and assert it touched no disk — guards against someone adding a
+    // getMachineId()/readGlobalConfig() call at module top-level.
+    vi.resetModules();
+    await import("../src/telemetry/index.js");
+    expect(existsSync(join(tempHome, ".mex"))).toBe(false);
   });
 });
 

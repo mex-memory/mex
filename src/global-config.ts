@@ -7,7 +7,7 @@
  * Completely separate from the per-scaffold config in `src/config.ts`.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, constants } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -107,7 +107,8 @@ export function setGlobalConfigKey(key: string, value: unknown): void {
  * Checks: `MEX_DEV` env var, or `package.json` name matches the mex package.
  *
  * Generalized from `setup/index.ts:127-138` — checks the real package name
- * `mex-agent` plus legacy names `promexeus` and `mex` for safety.
+ * `mex-agent` plus the legacy name `promexeus`. The bare `mex` name is
+ * intentionally excluded (too generic — see the inline note below).
  */
 export function isDevRepo(): boolean {
   if (process.env.MEX_DEV) return true;

@@ -53,8 +53,7 @@ Telemetry is automatically disabled — no event sent, no ID file created — wh
 
 - any opt-out below is active, **or**
 - mex is run from a clone of the mex repository itself (so the maintainer's own
-  development never pollutes the data), **or**
-- the command is run in a non-interactive context where it would be noise.
+  development never pollutes the data).
 
 A telemetry failure (offline, firewall, ad-blocker) never blocks, slows, or
 changes the exit code of any command. It is fire-and-forget and fully ignored on

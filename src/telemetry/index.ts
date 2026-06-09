@@ -196,19 +196,23 @@ export function captureCommand(command: string, scaffoldId?: string): void {
  * interval timer so the Node.js process can exit promptly.
  */
 export async function flush(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     if (customTransport || !client) {
       // No real client to flush — nothing to do.
       return;
     }
 
-    const timeoutPromise = new Promise<void>((resolve) =>
-      setTimeout(resolve, FLUSH_TIMEOUT_MS),
-    );
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, FLUSH_TIMEOUT_MS);
+    });
     await Promise.race([client.flush(), timeoutPromise]);
   } catch {
     // Swallow — delivery is best-effort.
   } finally {
+    // Clear the race timer so a fast flush doesn't leave it pending and delay
+    // process exit.
+    if (timer) clearTimeout(timer);
     try {
       if (client) {
         await client.shutdown();

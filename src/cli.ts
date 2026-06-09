@@ -53,6 +53,12 @@ async function runTuiCommand(): Promise<void> {
 // scaffold_id is resolved read-only (never mints). Telemetry never throws here.
 program.hook("preAction", (_thisCommand, actionCommand) => {
   try {
+    // Never count the telemetry/config meta-commands. In particular,
+    // `telemetry inspect` must have zero side effects — no event sent, no
+    // machine-id file created — so it stays a pure audit surface.
+    const parentName = actionCommand.parent?.name();
+    if (parentName === "telemetry" || parentName === "config") return;
+
     let scaffoldId: string | undefined;
     try {
       scaffoldId = readScaffoldId(findConfig().scaffoldRoot);
