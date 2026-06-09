@@ -213,6 +213,21 @@ program
     }
   });
 
+program
+  .command("export")
+  .description("Bundle scaffold files into a single Markdown document")
+  .option("-o, --output <path>", "Write bundled markdown to a file (default: stdout)")
+  .action(async (opts) => {
+    try {
+      const config = findConfig();
+      const { runExport } = await import("./export/index.js");
+      await runExport(config, { output: opts.output });
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
 // ── Layer 3: Targeted Sync ──
 program
   .command("sync")
@@ -304,6 +319,8 @@ program
     console.log("  mex timeline           Show recent event log entries");
     console.log("  mex heartbeat          Run lightweight agent-memory health checks");
     console.log("  mex doctor             Friendly scaffold health summary");
+    console.log("  mex export             Bundle scaffold into one Markdown file");
+    console.log("  mex export -o <path>   Write bundled markdown to a file");
     console.log("  mex tui                Open the interactive mex dashboard");
     console.log("  mex pattern add <name> Create a new pattern file");
     console.log("  mex watch              Install post-commit hook for auto drift score");
@@ -333,7 +350,7 @@ if (isMainModule) {
 function buildCompletion(shell: string): string {
   const commands = [
     "setup", "check", "init", "sync", "pattern", "log", "timeline",
-    "heartbeat", "doctor", "watch", "tui", "commands", "completion",
+    "heartbeat", "doctor", "export", "watch", "tui", "commands", "completion",
   ];
   if (shell === "bash") {
     return `_mex_completion() {
