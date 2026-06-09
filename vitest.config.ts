@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    globalSetup: ["./test/global-setup.ts"],
     // Tests must NEVER emit real telemetry to PostHog. The dev-repo guard only
     // catches commands run from inside this repo; tests spawn the built CLI in
     // temp dirs where that guard does not fire, so disable telemetry globally.
