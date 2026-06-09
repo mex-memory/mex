@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-09
+
 ### Added
 - **Feedback command** — `mex feedback` opens a hosted form for users to opt in to maintainer user-research calls. A quiet, dismissible one-line invite appears after a successful `check`/`sync` and in the `mex` TUI (TTY-only, shown a few times then stops). The CLI never reads or transmits an email — it only opens the URL. Hide it with `mex config set feedback off`. Kept fully separate from telemetry.
 - **Anonymous telemetry** — opt-out usage counting via PostHog. Each command sends one event with only `machine_id`, `scaffold_id`, `command` name, `mex_version`, `os`, and `node_version` — no args, paths, file contents, repo names, IP, or location. Opt out with `DO_NOT_TRACK=1`, `MEX_TELEMETRY=0`, or `mex config set telemetry off`. Audit the exact payload with `mex telemetry inspect`; check state with `mex telemetry status`. Telemetry is disabled automatically when running from a clone of the mex repo. See [TELEMETRY.md](TELEMETRY.md).
