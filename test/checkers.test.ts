@@ -671,4 +671,30 @@ describe("checkFrontmatterCompleteness", () => {
     const issues = checkFrontmatterCompleteness(null, "ROUTER.md");
     expect(issues).toHaveLength(0);
   });
+
+  it("ignores structural pattern meta-files (INDEX.md, README.md)", () => {
+    for (const source of [
+      "patterns/INDEX.md",
+      "patterns/README.md",
+      ".mex/patterns/INDEX.md",
+      ".mex/patterns/README.md",
+    ]) {
+      const issues = checkFrontmatterCompleteness(null, source);
+      expect(issues).toHaveLength(0);
+    }
+  });
+
+  it("treats non-string YAML values as missing", () => {
+    const issues = checkFrontmatterCompleteness(
+      { name: 123, description: "ok", last_updated: ["YYYY-MM-DD"] },
+      "context/auth.md"
+    );
+    expect(issues).toHaveLength(2);
+    expect(issues.map((i) => i.message)).toEqual(
+      expect.arrayContaining([
+        "Missing recommended frontmatter field: name",
+        "Missing recommended frontmatter field: last_updated",
+      ])
+    );
+  });
 });

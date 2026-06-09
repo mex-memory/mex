@@ -1,6 +1,8 @@
+import { basename } from "node:path";
 import type { DriftIssue, ScaffoldFrontmatter } from "../../types.js";
 
 const RECOMMENDED_FIELDS = ["name", "description", "last_updated"] as const;
+const EXCLUDED_PATTERN_FILES = new Set(["INDEX.md", "README.md"]);
 
 /** Warn when context/ or patterns/ files lack recommended frontmatter fields. */
 export function checkFrontmatterCompleteness(
@@ -29,6 +31,7 @@ export function checkFrontmatterCompleteness(
 }
 
 function isContextOrPatternFile(source: string): boolean {
+  if (EXCLUDED_PATTERN_FILES.has(basename(source))) return false;
   // Match both root-layout (context/foo.md) and deployed (.mex/context/foo.md) paths.
   return /(^|\/)context\//.test(source) || /(^|\/)patterns\//.test(source);
 }
