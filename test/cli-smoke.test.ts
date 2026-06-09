@@ -90,6 +90,19 @@ describe("CLI smoke", () => {
     expect(result.stdout.length).toBeGreaterThan(0);
   });
 
+  it("check --json reports clean drift on fixture scaffold", () => {
+    const result = runMex(["check", "--json"]);
+    expectSuccess(result);
+    const report = JSON.parse(result.stdout) as {
+      score: number;
+      issues: Array<{ code?: string; file?: string }>;
+      filesChecked: number;
+    };
+    expect(report.score).toBe(100);
+    expect(report.issues).toEqual([]);
+    expect(report.filesChecked).toBeGreaterThanOrEqual(8);
+  });
+
   it("doctor prints health summary", () => {
     const result = runMex(["doctor"]);
     expectSuccess(result);
@@ -111,10 +124,18 @@ describe("CLI smoke", () => {
     expect(result.stdout).toContain("{");
   });
 
-  it("completion bash emits script", () => {
-    const result = runMex(["completion", "bash"]);
-    expectSuccess(result);
-    expect(result.stdout).toContain("complete");
+  it("completion emits scripts for bash, zsh, and fish", () => {
+    const bash = runMex(["completion", "bash"]);
+    expectSuccess(bash);
+    expect(bash.stdout).toContain("complete");
+
+    const zsh = runMex(["completion", "zsh"]);
+    expectSuccess(zsh);
+    expect(zsh.stdout).toContain("#compdef mex");
+
+    const fish = runMex(["completion", "fish"]);
+    expectSuccess(fish);
+    expect(fish.stdout).toContain("complete -c mex");
   });
 
   it("sync --dry-run runs without error", () => {
