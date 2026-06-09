@@ -230,6 +230,20 @@ describe("public API — runDriftCheck", () => {
     const report = await runDriftCheck(config, opts);
     expect(report).toBeDefined();
   });
+
+  it("flags stale patterns via the drift pipeline", async () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".mex/ROUTER.md"),
+      "# Router\n\nSee [linked](patterns/linked.md)\n",
+    );
+    writeFileSync(join(tmpDir, "patterns/linked.md"), "# Linked\n");
+    writeFileSync(join(tmpDir, "patterns/orphan.md"), "# Orphan\n");
+    const report = await runDriftCheck(config);
+    const stale = report.issues.filter((i) => i.code === "STALE_PATTERN");
+    expect(stale).toHaveLength(1);
+    expect(stale[0].file).toBe("patterns/orphan.md");
+  });
 });
 
 describe("public API — heartbeat", () => {

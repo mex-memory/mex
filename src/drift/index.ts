@@ -16,6 +16,7 @@ import { checkScriptCoverage } from "./checkers/script-coverage.js";
 import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
+import { checkStalePatterns } from "./checkers/stale-pattern.js";
 
 /**
  * Default glob patterns used to locate scaffold markdown files, relative to
@@ -111,6 +112,10 @@ export async function runDriftCheck(
   const indexSyncIssues = checkIndexSync(projectRoot, scaffoldRoot);
   allIssues.push(...indexSyncIssues);
   checkerIssueCounts.push(["index-sync", indexSyncIssues.length]);
+
+  const stalePatternIssues = checkStalePatterns(projectRoot, scaffoldRoot);
+  allIssues.push(...stalePatternIssues);
+  checkerIssueCounts.push(["stale-pattern", stalePatternIssues.length]);
 
   // Run coverage checkers (reality → scaffold direction)
   const scriptCoverageIssues = checkScriptCoverage(scaffoldFiles, projectRoot);

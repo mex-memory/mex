@@ -16,6 +16,7 @@ import { checkIndexSync } from "../src/drift/checkers/index-sync.js";
 import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
 import { checkTodoFixme } from "../src/drift/checkers/todo-fixme.js";
 import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
+import { checkStalePatterns } from "../src/drift/checkers/stale-pattern.js";
 import type { Claim, ScaffoldFrontmatter } from "../src/types.js";
 
 vi.mock("../src/git.js", () => ({
@@ -594,5 +595,88 @@ describe("checkBrokenLinks", () => {
     const issues = checkBrokenLinks([file], tmpDir, tmpDir);
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe("warning");
+  });
+});
+
+// ── Stale Pattern Checker ──
+
+describe("checkStalePatterns", () => {
+  it("flags pattern files not linked from ROUTER or context", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(join(tmpDir, "ROUTER.md"), "# Router\n\nSee [linked](patterns/linked.md)\n");
+    writeFileSync(join(tmpDir, "patterns/linked.md"), "# Linked\n");
+    writeFileSync(join(tmpDir, "patterns/orphan.md"), "# Orphan\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: "STALE_PATTERN",
+      severity: "warning",
+      file: "patterns/orphan.md",
+    });
+  });
+
+  it("accepts backtick references in context files", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(join(tmpDir, "ROUTER.md"), "# Router\n");
+    writeFileSync(join(tmpDir, "context/guide.md"), "Use `cited.md` for citations.\n");
+    writeFileSync(join(tmpDir, "patterns/cited.md"), "# Cited\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("returns empty when patterns directory is missing", () => {
+    writeFileSync(join(tmpDir, "ROUTER.md"), "# Router\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("still flags patterns only listed in INDEX.md (index-sync covers INDEX ↔ files)", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(join(tmpDir, "ROUTER.md"), "# Router\n");
+    writeFileSync(
+      join(tmpDir, "patterns/INDEX.md"),
+      "| [indexed-only.md](indexed-only.md) | Indexed |\n",
+    );
+    writeFileSync(join(tmpDir, "patterns/indexed-only.md"), "# Indexed only\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].file).toBe("patterns/indexed-only.md");
+  });
+
+  it("ignores pattern references inside HTML comments in ROUTER", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "ROUTER.md"),
+      "# Router\n\n<!-- See [commented.md](patterns/commented.md) -->\n",
+    );
+    writeFileSync(join(tmpDir, "patterns/commented.md"), "# Commented\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].file).toBe("patterns/commented.md");
+  });
+
+  it("accepts markdown links with anchor fragments and relative paths", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "ROUTER.md"),
+      "# Router\n\nSee [anchored](./patterns/anchored.md#section)\n",
+    );
+    writeFileSync(join(tmpDir, "patterns/anchored.md"), "# Anchored\n");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("resolves patterns from project root when scaffold has no patterns/", () => {
+    const scaffold = join(tmpDir, ".mex");
+    mkdirSync(scaffold, { recursive: true });
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(join(scaffold, "ROUTER.md"), "# Router\n\nSee [linked](patterns/linked.md)\n");
+    writeFileSync(join(tmpDir, "patterns/linked.md"), "# Linked\n");
+    writeFileSync(join(tmpDir, "patterns/orphan.md"), "# Orphan\n");
+    const issues = checkStalePatterns(tmpDir, scaffold);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].file).toBe("patterns/orphan.md");
   });
 });
