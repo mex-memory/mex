@@ -244,6 +244,23 @@ describe("public API — runDriftCheck", () => {
     expect(stale).toHaveLength(1);
     expect(stale[0].file).toBe("patterns/orphan.md");
   });
+
+  it("uses project-root ROUTER when scaffold has no nav files", async () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "ROUTER.md"),
+      "# Router\n\nSee [linked](patterns/linked.md)\n",
+    );
+    writeFileSync(join(tmpDir, "context/guide.md"), "Also cites `cited.md`.\n");
+    writeFileSync(join(tmpDir, "patterns/linked.md"), "# Linked\n");
+    writeFileSync(join(tmpDir, "patterns/cited.md"), "# Cited\n");
+    writeFileSync(join(tmpDir, "patterns/orphan.md"), "# Orphan\n");
+    const report = await runDriftCheck(config);
+    const stale = report.issues.filter((i) => i.code === "STALE_PATTERN");
+    expect(stale).toHaveLength(1);
+    expect(stale[0].file).toBe("patterns/orphan.md");
+  });
 });
 
 describe("public API — heartbeat", () => {
