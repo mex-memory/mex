@@ -37,7 +37,7 @@ function runMex(args: string[]): {
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd: projectRoot,
     encoding: "utf8",
-    env: { ...process.env, NO_COLOR: "1" },
+    env: { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" },
   });
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
