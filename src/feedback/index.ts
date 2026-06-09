@@ -110,6 +110,20 @@ export function shouldShowInvite(): boolean {
 }
 
 /**
+ * Record that the invite was surfaced (bumps the counter toward
+ * INVITE_MAX_SHOWS). Best-effort, no output — safe to call from any surface
+ * (CLI or TUI) so the show-cap applies consistently.
+ */
+export function recordInviteShown(): void {
+  try {
+    const count = readGlobalConfig().feedbackInviteCount;
+    setGlobalConfigKey("feedbackInviteCount", (typeof count === "number" ? count : 0) + 1);
+  } catch {
+    // Best-effort.
+  }
+}
+
+/**
  * Print the invite to **stderr** (so it never corrupts machine-readable stdout
  * like `check --json`) and record that it was shown. No-op when the invite
  * should not show. Returns true if it was printed.
@@ -118,8 +132,7 @@ export function maybeShowInvite(): boolean {
   if (!shouldShowInvite()) return false;
   try {
     process.stderr.write(`\n  ${INVITE_TEXT}\n  (hide: mex config set feedback off)\n\n`);
-    const count = readGlobalConfig().feedbackInviteCount;
-    setGlobalConfigKey("feedbackInviteCount", (typeof count === "number" ? count : 0) + 1);
+    recordInviteShown();
     return true;
   } catch {
     return false;

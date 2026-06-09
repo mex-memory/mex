@@ -162,10 +162,11 @@ program
         return;
       }
 
-      // Warm moment — the user just got a drift result. Quietly invite feedback.
-      maybeShowInvite();
-
       if (hasErrors) process.exit(1);
+
+      // Warm moment — a clean check just gave the user value. Quietly invite
+      // feedback (only on success, never right before an error exit).
+      maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);
       process.exit(1);

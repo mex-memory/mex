@@ -6,7 +6,7 @@ import { findConfig } from "./config.js";
 import { runDriftCheck } from "./drift/index.js";
 import { checkHeartbeat, type HeartbeatResult } from "./heartbeat.js";
 import { appendEvent, readEvents, type EventEntry, type EventKind } from "./events.js";
-import { isInviteDismissed, INVITE_TEXT } from "./feedback/index.js";
+import { shouldShowInvite, recordInviteShown, INVITE_TEXT } from "./feedback/index.js";
 
 const h = React.createElement;
 
@@ -83,6 +83,7 @@ function TuiApp({ config }: { config: MexConfig }) {
     logFile: "",
     notice: null,
   });
+  const [inviteVisible, setInviteVisible] = useState(false);
 
   const refresh = async (view: View = "dashboard", notice: string | null = null) => {
     setState((s) => ({ ...s, view, loadState: "loading", error: null, notice }));
@@ -96,6 +97,16 @@ function TuiApp({ config }: { config: MexConfig }) {
 
   useEffect(() => {
     void refresh();
+  }, []);
+
+  // Surface the feedback invite once per TUI session, respecting the same cap
+  // and dismissal rules as the CLI nudge (recording the show in a effect, never
+  // during render).
+  useEffect(() => {
+    if (shouldShowInvite()) {
+      recordInviteShown();
+      setInviteVisible(true);
+    }
   }, []);
 
   useInput((input, key) => {
@@ -198,9 +209,9 @@ function TuiApp({ config }: { config: MexConfig }) {
       ),
     ),
     h(Box, { marginTop: 1 }, h(Text, { dimColor: true }, "↑/↓ choose · enter run · r refresh · l log · esc dashboard · q quit")),
-    isInviteDismissed()
-      ? null
-      : h(Box, { marginTop: 1 }, h(Text, { color: COLORS.crab }, `✨ ${INVITE_TEXT}`)),
+    inviteVisible
+      ? h(Box, { marginTop: 1 }, h(Text, { color: COLORS.crab }, `✨ ${INVITE_TEXT}`))
+      : null,
   );
 }
 
