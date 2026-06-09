@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execSync, spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const CLI = join(here, "..", "dist", "cli.js");
+const repoRoot = join(here, "..");
+const CLI = join(repoRoot, "dist", "cli.js");
 const FIXTURE_SRC = join(here, "fixtures", "smoke-project");
 const pkg = JSON.parse(
   readFileSync(join(here, "..", "package.json"), "utf8"),
@@ -14,12 +15,19 @@ const pkg = JSON.parse(
 
 let projectRoot: string | undefined;
 
+function ensureCliBuilt(): void {
+  if (!existsSync(CLI)) {
+    execSync("npm run build", { cwd: repoRoot, stdio: "pipe" });
+  }
+}
+
 function runMex(args: string[]): {
   status: number | null;
   stdout: string;
   stderr: string;
   output: string;
 } {
+  ensureCliBuilt();
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd: projectRoot,
     encoding: "utf8",
@@ -40,6 +48,7 @@ function expectSuccess(result: ReturnType<typeof runMex>): void {
 }
 
 beforeAll(() => {
+  execSync("npm run build", { cwd: repoRoot, stdio: "pipe" });
   projectRoot = mkdtempSync(join(tmpdir(), "mex-smoke-"));
   cpSync(FIXTURE_SRC, projectRoot, { recursive: true });
   execSync("git init -q", { cwd: projectRoot });
