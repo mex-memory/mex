@@ -19,6 +19,9 @@ function ensureCliBuilt(): void {
   if (!existsSync(CLI)) {
     execSync("npm run build", { cwd: repoRoot, stdio: "pipe" });
   }
+  if (!existsSync(CLI)) {
+    throw new Error(`CLI executable not found at ${CLI} after build`);
+  }
 }
 
 function runMex(args: string[]): {
@@ -28,6 +31,9 @@ function runMex(args: string[]): {
   output: string;
 } {
   ensureCliBuilt();
+  if (!existsSync(CLI)) {
+    throw new Error(`CLI executable not found at ${CLI}`);
+  }
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd: projectRoot,
     encoding: "utf8",
@@ -49,6 +55,9 @@ function expectSuccess(result: ReturnType<typeof runMex>): void {
 
 beforeAll(() => {
   execSync("npm run build", { cwd: repoRoot, stdio: "pipe" });
+  if (!existsSync(CLI)) {
+    throw new Error(`CLI build failed: ${CLI} not found`);
+  }
   projectRoot = mkdtempSync(join(tmpdir(), "mex-smoke-"));
   cpSync(FIXTURE_SRC, projectRoot, { recursive: true });
   execSync("git init -q", { cwd: projectRoot });
