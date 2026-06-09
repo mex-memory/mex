@@ -230,6 +230,42 @@ describe("public API — runDriftCheck", () => {
     const report = await runDriftCheck(config, opts);
     expect(report).toBeDefined();
   });
+
+  it("surfaces INCOMPLETE_FRONTMATTER for context files missing recommended fields", async () => {
+    writeFileSync(join(tmpDir, ".mex/ROUTER.md"), "# Router\n");
+    mkdirSync(join(tmpDir, ".mex/context"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".mex/context/auth.md"),
+      "---\nname: Auth\n---\n\n# Auth\n",
+    );
+    const report = await runDriftCheck(config);
+    const frontmatterIssues = report.issues.filter(
+      (issue) => issue.code === "INCOMPLETE_FRONTMATTER",
+    );
+    expect(frontmatterIssues.length).toBeGreaterThanOrEqual(2);
+    expect(
+      frontmatterIssues.every((issue) => issue.severity === "warning"),
+    ).toBe(true);
+    expect(
+      frontmatterIssues.some((issue) => issue.message.includes("description")),
+    ).toBe(true);
+    expect(
+      frontmatterIssues.some((issue) => issue.message.includes("last_updated")),
+    ).toBe(true);
+  });
+
+  it("skips structural pattern meta-files in frontmatter-completeness checks", async () => {
+    writeFileSync(join(tmpDir, ".mex/ROUTER.md"), "# Router\n");
+    mkdirSync(join(tmpDir, ".mex/patterns"), { recursive: true });
+    writeFileSync(join(tmpDir, ".mex/patterns/INDEX.md"), "# Patterns\n");
+    const report = await runDriftCheck(config);
+    const indexIssues = report.issues.filter(
+      (issue) =>
+        issue.code === "INCOMPLETE_FRONTMATTER" &&
+        issue.file.endsWith("patterns/INDEX.md"),
+    );
+    expect(indexIssues).toHaveLength(0);
+  });
 });
 
 describe("public API — heartbeat", () => {
