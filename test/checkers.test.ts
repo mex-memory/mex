@@ -661,6 +661,12 @@ describe("checkFrontmatterCompleteness", () => {
     expect(issues.every((i) => i.code === "INCOMPLETE_FRONTMATTER")).toBe(true);
   });
 
+  it("warns on .mex/patterns/ paths (deployed scaffold layout)", () => {
+    const issues = checkFrontmatterCompleteness(null, ".mex/patterns/auth.md");
+    expect(issues).toHaveLength(3);
+    expect(issues.every((i) => i.code === "INCOMPLETE_FRONTMATTER")).toBe(true);
+  });
+
   it("ignores ROUTER.md and other scaffold files", () => {
     const issues = checkFrontmatterCompleteness(null, "ROUTER.md");
     expect(issues).toHaveLength(0);
