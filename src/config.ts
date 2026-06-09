@@ -314,3 +314,15 @@ function findScaffoldRoot(projectRoot: string): string | null {
 
   return null;
 }
+
+/**
+ * Read-only scaffold_id lookup. Returns the scaffold_id string if it exists
+ * in config.json, or `undefined` if not. **Never mints or writes anything.**
+ *
+ * Used by telemetry inspect to show the payload without side-effects.
+ */
+export function readScaffoldId(scaffoldRoot: string): string | undefined {
+  const raw = loadPersistedConfig(scaffoldRoot);
+  const identity = loadScaffoldIdentity(raw);
+  return identity?.scaffold_id;
+}

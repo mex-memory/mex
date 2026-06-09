@@ -56,6 +56,7 @@
     "commander": "^13.1.0",
     "glob": "^11.0.1",
     "ink": "^7.0.3",
+    "posthog-node": "^5.21.2",
     "react": "^19.2.6",
     "remark-frontmatter": "^5.0.0",
     "remark-parse": "^11.0.0",

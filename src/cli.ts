@@ -2,9 +2,11 @@ import chalk from "chalk";
 import { Command, InvalidArgumentError } from "commander";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { findConfig, getScaffoldIdentity } from "./config.js";
+import { findConfig, getScaffoldIdentity, readScaffoldId } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
 import { VERSION } from "./version.js";
+import { captureCommand, flush, isEnabled, getPayloadPreview, showFirstRunNotice } from "./telemetry/index.js";
+import { readMachineId, setGlobalConfigKey } from "./global-config.js";
 
 /**
  * Load config for a CLI command and backfill scaffold identity on the way.
@@ -40,6 +42,39 @@ async function runTuiCommand(): Promise<void> {
   const { launchTui } = await import("./tui.js");
   launchTui();
 }
+
+// ── Telemetry hooks ──
+
+// preAction: fire the event at the START of the command. Two reasons:
+//  - the async request gets the whole command runtime to land in the background
+//  - commands that call process.exit() (e.g. `check` on drift) are still
+//    counted; a postAction hook would never run after process.exit and would
+//    systematically miss every error/drift outcome.
+// scaffold_id is resolved read-only (never mints). Telemetry never throws here.
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  try {
+    let scaffoldId: string | undefined;
+    try {
+      scaffoldId = readScaffoldId(findConfig().scaffoldRoot);
+    } catch {
+      // No scaffold (or not in one) — omit scaffold_id.
+    }
+    captureCommand(actionCommand.name(), scaffoldId);
+  } catch {
+    // Telemetry must never affect command behaviour.
+  }
+});
+
+// postAction: best-effort bounded flush for commands that exit naturally.
+// Commands that process.exit() skip this, but their event was already sent
+// from preAction (flushAt:1 fires the request immediately).
+program.hook("postAction", async () => {
+  try {
+    await flush();
+  } catch {
+    // Telemetry must never affect command behaviour.
+  }
+});
 
 program
   .name("mex")
@@ -283,6 +318,74 @@ program
     }
   });
 
+// ── Telemetry ──
+const telemetryCmd = program
+  .command("telemetry")
+  .description("Telemetry transparency commands");
+
+telemetryCmd
+  .command("inspect")
+  .description("Print the exact JSON payload that would be sent (without sending it)")
+  .action(() => {
+    try {
+      // Read-only: use readScaffoldId (never mints), not getScaffoldIdentity
+      let scaffoldId: string | undefined;
+      try {
+        const config = findConfig();
+        scaffoldId = readScaffoldId(config.scaffoldRoot);
+      } catch { /* no scaffold — omit scaffold_id */ }
+
+      // Read-only: show the machine_id only if it already exists. Auditing the
+      // payload must never plant the tracking file on disk.
+      const machineId = readMachineId();
+
+      const payload = getPayloadPreview("inspect", scaffoldId, machineId);
+      console.log(JSON.stringify(payload, null, 2));
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
+telemetryCmd
+  .command("status")
+  .description("Show whether telemetry is enabled and the active opt-out reason")
+  .action(() => {
+    const result = isEnabled();
+    if (result.enabled) {
+      console.log("Telemetry: enabled");
+    } else {
+      console.log(`Telemetry: disabled (reason: ${result.reason})`);
+    }
+  });
+
+// ── Config ──
+const configCmd = program
+  .command("config")
+  .description("Manage global mex configuration");
+
+configCmd
+  .command("set <key> <value>")
+  .description("Set a global config value (e.g. telemetry on|off)")
+  .action((key: string, value: string) => {
+    try {
+      if (key === "telemetry") {
+        if (value !== "on" && value !== "off") {
+          console.error(`Invalid value "${value}" for telemetry. Use "on" or "off".`);
+          process.exit(1);
+        }
+        setGlobalConfigKey("telemetry", value);
+        console.log(`Telemetry set to "${value}" in ~/.mex/config.json`);
+      } else {
+        console.error(`Unknown config key "${key}". Supported keys: telemetry`);
+        process.exit(1);
+      }
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
 // ── Quick Reference ──
 program
   .command("commands")
@@ -309,15 +412,23 @@ program
     console.log("  mex watch              Install post-commit hook for auto drift score");
     console.log("  mex watch --interval   Run heartbeat every 30 minutes (or config value)");
     console.log("  mex watch --uninstall  Remove the post-commit hook");
+    console.log("  mex telemetry inspect  Show the exact telemetry payload (without sending)");
+    console.log("  mex telemetry status   Show telemetry enabled/disabled and reason");
+    console.log("  mex config set <k> <v> Set a global config value (e.g. telemetry off)");
     console.log();
     console.log(chalk.dim("Not installed globally? Replace 'mex' with 'npx mex-agent'."));
     console.log();
   });
 
 // Skip auto-parse when imported (e.g. by tests). The bin entry is built by
-// tsup as ./dist/cli.js with a shebang banner; only run program.parse() when
-// this module is the script being invoked. Resolve argv[1] so symlinked bins
-// (npm global, npx, node_modules/.bin) match import.meta.url.
+// tsup as ./dist/cli.js with a shebang banner; only run program.parseAsync()
+// when this module is the script being invoked. Resolve argv[1] so symlinked
+// bins (npm global, npx, node_modules/.bin) match import.meta.url.
+//
+// Critical: use parseAsync(), not parse(). Commander's sync parse() does not
+// await the promise chain built by hooks and async actions — preAction/
+// postAction hooks would silently never execute and telemetry events would
+// never flush.
 let isMainModule = false;
 if (process.argv[1]) {
   try {
@@ -327,13 +438,18 @@ if (process.argv[1]) {
   }
 }
 if (isMainModule) {
-  program.parse();
+  showFirstRunNotice();
+  program.parseAsync().catch((err: Error) => {
+    console.error(err.message);
+    process.exit(1);
+  });
 }
 
 function buildCompletion(shell: string): string {
   const commands = [
     "setup", "check", "init", "sync", "pattern", "log", "timeline",
     "heartbeat", "doctor", "watch", "tui", "commands", "completion",
+    "telemetry", "config",
   ];
   if (shell === "bash") {
     return `_mex_completion() {

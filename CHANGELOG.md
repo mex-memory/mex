@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Anonymous telemetry** — opt-out usage counting via PostHog. Each command sends one event with only `machine_id`, `scaffold_id`, `command` name, `mex_version`, `os`, and `node_version` — no args, paths, file contents, repo names, IP, or location. Opt out with `DO_NOT_TRACK=1`, `MEX_TELEMETRY=0`, or `mex config set telemetry off`. Audit the exact payload with `mex telemetry inspect`; check state with `mex telemetry status`. Telemetry is disabled automatically when running from a clone of the mex repo. See [TELEMETRY.md](TELEMETRY.md).
 - **Scaffold identity** — `.mex/config.json` now carries a stable `scaffold_id` (UUID v4), `scaffold_name`, and nullable `origin`/`upstream`. Generated at `mex setup` and silently backfilled for existing scaffolds on the next CLI invocation. New `getScaffoldIdentity()` export on the public API.
 - **broken-link drift checker** — flags Markdown links in scaffold files whose local target file does not exist.
 
