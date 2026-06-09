@@ -25,11 +25,7 @@ export function checkStalePatterns(
   if (patternFiles.length === 0) return [];
 
   const referenced = new Set<string>();
-  const contextDir = resolve(scaffoldRoot, "context");
-  const contextSources = existsSync(contextDir)
-    ? globSync("*.md", { cwd: contextDir }).map((f) => resolve(contextDir, f))
-    : [];
-  const sources = [resolve(scaffoldRoot, "ROUTER.md"), ...contextSources];
+  const sources = navSources(projectRoot, scaffoldRoot);
 
   for (const filePath of sources) {
     if (!existsSync(filePath)) continue;
@@ -56,6 +52,23 @@ export function checkStalePatterns(
     }
   }
   return issues;
+}
+
+function navSources(projectRoot: string, scaffoldRoot: string): string[] {
+  let router = resolve(scaffoldRoot, "ROUTER.md");
+  if (!existsSync(router) && scaffoldRoot !== projectRoot) {
+    router = resolve(projectRoot, "ROUTER.md");
+  }
+
+  let contextDir = resolve(scaffoldRoot, "context");
+  if (!existsSync(contextDir) && scaffoldRoot !== projectRoot) {
+    contextDir = resolve(projectRoot, "context");
+  }
+  const contextSources = existsSync(contextDir)
+    ? globSync("*.md", { cwd: contextDir }).map((f) => resolve(contextDir, f))
+    : [];
+
+  return [router, ...contextSources];
 }
 
 function collectPatternRefs(content: string, out: Set<string>): void {

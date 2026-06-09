@@ -679,4 +679,19 @@ describe("checkStalePatterns", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].file).toBe("patterns/orphan.md");
   });
+
+  it("falls back to project-root ROUTER and context when scaffold lacks them", () => {
+    const scaffold = join(tmpDir, ".mex");
+    mkdirSync(scaffold, { recursive: true });
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(join(tmpDir, "ROUTER.md"), "# Router\n\nSee [linked](patterns/linked.md)\n");
+    writeFileSync(join(tmpDir, "context/guide.md"), "Also cites `cited.md`.\n");
+    writeFileSync(join(tmpDir, "patterns/linked.md"), "# Linked\n");
+    writeFileSync(join(tmpDir, "patterns/cited.md"), "# Cited\n");
+    writeFileSync(join(tmpDir, "patterns/orphan.md"), "# Orphan\n");
+    const issues = checkStalePatterns(tmpDir, scaffold);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].file).toBe("patterns/orphan.md");
+  });
 });
