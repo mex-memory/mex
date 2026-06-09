@@ -6,6 +6,7 @@ import { findConfig } from "./config.js";
 import { runDriftCheck } from "./drift/index.js";
 import { checkHeartbeat, type HeartbeatResult } from "./heartbeat.js";
 import { appendEvent, readEvents, type EventEntry, type EventKind } from "./events.js";
+import { isInviteDismissed, INVITE_TEXT } from "./feedback/index.js";
 
 const h = React.createElement;
 
@@ -197,6 +198,9 @@ function TuiApp({ config }: { config: MexConfig }) {
       ),
     ),
     h(Box, { marginTop: 1 }, h(Text, { dimColor: true }, "↑/↓ choose · enter run · r refresh · l log · esc dashboard · q quit")),
+    isInviteDismissed()
+      ? null
+      : h(Box, { marginTop: 1 }, h(Text, { color: COLORS.crab }, `✨ ${INVITE_TEXT}`)),
   );
 }
 

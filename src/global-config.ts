@@ -70,6 +70,8 @@ export function getMachineId(): string {
 interface GlobalConfig {
   telemetry?: "on" | "off";
   firstRunNoticeShown?: boolean;
+  feedbackDismissed?: boolean;
+  feedbackInviteCount?: number;
   [key: string]: unknown;
 }
 

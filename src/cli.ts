@@ -7,6 +7,7 @@ import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporte
 import { VERSION } from "./version.js";
 import { captureCommand, flush, isEnabled, getPayloadPreview, showFirstRunNotice } from "./telemetry/index.js";
 import { readMachineId, setGlobalConfigKey } from "./global-config.js";
+import { runFeedback, maybeShowInvite, dismissInvite, enableInvite } from "./feedback/index.js";
 
 /**
  * Load config for a CLI command and backfill scaffold identity on the way.
@@ -161,6 +162,9 @@ program
         return;
       }
 
+      // Warm moment — the user just got a drift result. Quietly invite feedback.
+      maybeShowInvite();
+
       if (hasErrors) process.exit(1);
     } catch (err) {
       console.error((err as Error).message);
@@ -265,6 +269,7 @@ program
       const config = loadConfig();
       const { runSync } = await import("./sync/index.js");
       await runSync(config, { dryRun: opts.dryRun, includeWarnings: opts.warnings });
+      maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);
       process.exit(1);
@@ -382,14 +387,31 @@ configCmd
         }
         setGlobalConfigKey("telemetry", value);
         console.log(`Telemetry set to "${value}" in ~/.mex/config.json`);
+      } else if (key === "feedback") {
+        if (value !== "on" && value !== "off") {
+          console.error(`Invalid value "${value}" for feedback. Use "on" or "off".`);
+          process.exit(1);
+        }
+        // "off" hides the invite; "on" re-enables it.
+        if (value === "off") dismissInvite();
+        else enableInvite();
+        console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback`);
         process.exit(1);
       }
     } catch (err) {
       console.error((err as Error).message);
       process.exit(1);
     }
+  });
+
+// ── Feedback ──
+program
+  .command("feedback")
+  .description("Open the mex feedback form (the maintainer is doing user research calls)")
+  .action(() => {
+    runFeedback();
   });
 
 // ── Quick Reference ──
@@ -421,6 +443,7 @@ program
     console.log("  mex telemetry inspect  Show the exact telemetry payload (without sending)");
     console.log("  mex telemetry status   Show telemetry enabled/disabled and reason");
     console.log("  mex config set <k> <v> Set a global config value (e.g. telemetry off)");
+    console.log("  mex feedback           Open the feedback form (the maintainer does user calls)");
     console.log();
     console.log(chalk.dim("Not installed globally? Replace 'mex' with 'npx mex-agent'."));
     console.log();
@@ -455,7 +478,7 @@ function buildCompletion(shell: string): string {
   const commands = [
     "setup", "check", "init", "sync", "pattern", "log", "timeline",
     "heartbeat", "doctor", "watch", "tui", "commands", "completion",
-    "telemetry", "config",
+    "telemetry", "config", "feedback",
   ];
   if (shell === "bash") {
     return `_mex_completion() {

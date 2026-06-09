@@ -301,6 +301,23 @@ describe("scaffold identity", () => {
     expect(raw.scaffold_id).toBe(id.scaffold_id);
     expect(raw.aiTools).toEqual(["claude"]); // existing keys untouched
   });
+
+  it("backfills an empty scaffold_name without regenerating the id", () => {
+    mkdirSync(join(tmpDir, ".git"));
+    const mexPath = join(tmpDir, ".mex");
+    mkdirSync(mexPath);
+    writeFileSync(join(mexPath, "ROUTER.md"), "");
+    // scaffold_id present but no scaffold_name (e.g. hand-edited / partial write)
+    writeFileSync(join(mexPath, "config.json"), JSON.stringify({ scaffold_id: "keep-this-id" }));
+
+    const id = getScaffoldIdentity(findConfig(tmpDir));
+    expect(id.scaffold_id).toBe("keep-this-id"); // id preserved, never regenerated
+    expect(id.scaffold_name).toBe(basename(tmpDir)); // name backfilled to the default
+
+    const raw = JSON.parse(readFileSync(join(mexPath, "config.json"), "utf-8"));
+    expect(raw.scaffold_id).toBe("keep-this-id");
+    expect(raw.scaffold_name).toBe(basename(tmpDir));
+  });
 });
 
 describe("saveAiTools", () => {

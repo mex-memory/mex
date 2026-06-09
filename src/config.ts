@@ -275,13 +275,16 @@ export function saveScaffoldIdentity(scaffoldRoot: string, identity: ScaffoldIde
  */
 export function ensureScaffoldIdentity(scaffoldRoot: string, projectRoot: string): ScaffoldIdentity {
   const existing = loadScaffoldIdentity(loadPersistedConfig(scaffoldRoot));
-  if (existing) return existing;
+  // A complete identity needs both an id and a name. If a prior write or a
+  // hand-edited config left scaffold_name empty, keep the existing id and
+  // backfill only the missing name — never regenerate the id.
+  if (existing && existing.scaffold_name) return existing;
 
   const identity: ScaffoldIdentity = {
-    scaffold_id: randomUUID(),
+    scaffold_id: existing?.scaffold_id ?? randomUUID(),
     scaffold_name: basename(projectRoot),
-    origin: null,
-    upstream: null,
+    origin: existing?.origin ?? null,
+    upstream: existing?.upstream ?? null,
   };
   try {
     saveScaffoldIdentity(scaffoldRoot, identity);
@@ -295,7 +298,7 @@ export function ensureScaffoldIdentity(scaffoldRoot: string, projectRoot: string
  * COMPATIBILITY.md — part of the public API surface.
  */
 export function getScaffoldIdentity(config: MexConfig): ScaffoldIdentity {
-  if (config.identity) return config.identity;
+  if (config.identity && config.identity.scaffold_name) return config.identity;
   const identity = ensureScaffoldIdentity(config.scaffoldRoot, config.projectRoot);
   config.identity = identity;
   return identity;

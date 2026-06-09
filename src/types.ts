@@ -48,7 +48,7 @@ export interface HeartbeatConfig {
 }
 
 /**
- * Stable identity for a mex scaffold. Persisted in `.mex/config.json` and used
+ * Stable identity for a mex scaffold. Persisted in the scaffold's `config.json` and used
  * as the grouping key for anonymous telemetry (one scaffold = one project).
  * `scaffold_id` is a random UUID v4 — never derived from path, repo, or git.
  */
