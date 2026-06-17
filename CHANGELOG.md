@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **checkBrokenLinks false positives from HTML comments** — `checkBrokenLinks` now skips links inside HTML comments (`<!-- ... -->`), both single-line and multi-line. Previously, template examples in comments (e.g., in `patterns/INDEX.md`) were flagged as broken links.
+
 ## [0.6.1] - 2026-06-14
 
 ### Added

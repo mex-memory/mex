@@ -22,7 +22,9 @@ export function checkBrokenLinks(
     }
 
     const fileDir = dirname(filePath);
-    const lines = content.split("\n");
+    // Strip complete HTML comments before line processing. Unclosed <!-- stays
+    // as plain text (matches checkIndexSync behavior).
+    const lines = content.replace(/<!--[\s\S]*?-->/g, "").split("\n");
     let inFence = false;
 
     for (let i = 0; i < lines.length; i++) {
