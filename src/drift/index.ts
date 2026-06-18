@@ -16,6 +16,7 @@ import { checkScriptCoverage } from "./checkers/script-coverage.js";
 import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
+import { checkFrontmatterCompleteness } from "./checkers/frontmatter-completeness.js";
 
 /**
  * Default glob patterns used to locate scaffold markdown files, relative to
@@ -76,6 +77,9 @@ export async function runDriftCheck(
     const edgeIssues = checkEdges(frontmatter, filePath, source, projectRoot, scaffoldRoot);
     allIssues.push(...edgeIssues);
 
+    const frontmatterIssues = checkFrontmatterCompleteness(frontmatter, source);
+    allIssues.push(...frontmatterIssues);
+
     // Staleness check
     const stalenessIssues = await checkStaleness(
       source,
@@ -87,6 +91,7 @@ export async function runDriftCheck(
     allIssues.push(...stalenessIssues);
 
     checkerIssueCounts.push([`edges:${source}`, edgeIssues.length]);
+    checkerIssueCounts.push([`frontmatter-completeness:${source}`, frontmatterIssues.length]);
     checkerIssueCounts.push([`staleness:${source}`, stalenessIssues.length]);
   }
 

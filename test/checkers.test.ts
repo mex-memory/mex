@@ -16,6 +16,7 @@ import { checkIndexSync } from "../src/drift/checkers/index-sync.js";
 import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
 import { checkTodoFixme } from "../src/drift/checkers/todo-fixme.js";
 import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
+import { checkFrontmatterCompleteness } from "../src/drift/checkers/frontmatter-completeness.js";
 import type { Claim, ScaffoldFrontmatter } from "../src/types.js";
 
 vi.mock("../src/git.js", () => ({
@@ -594,5 +595,106 @@ describe("checkBrokenLinks", () => {
     const issues = checkBrokenLinks([file], tmpDir, tmpDir);
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe("warning");
+  });
+});
+
+// ── Frontmatter completeness ──
+
+describe("checkFrontmatterCompleteness", () => {
+  it("warns on missing recommended fields in context/", () => {
+    const issues = checkFrontmatterCompleteness(
+      { name: "Auth" },
+      "context/auth.md"
+    );
+    expect(issues).toHaveLength(2);
+    expect(issues.every((i) => i.code === "INCOMPLETE_FRONTMATTER")).toBe(true);
+    expect(issues.every((i) => i.severity === "warning")).toBe(true);
+    expect(issues.map((i) => i.message)).toEqual(
+      expect.arrayContaining([
+        "Missing recommended frontmatter field: description",
+        "Missing recommended frontmatter field: last_updated",
+      ])
+    );
+  });
+
+  it("warns on all fields when frontmatter is missing", () => {
+    const issues = checkFrontmatterCompleteness(null, "context/auth.md");
+    expect(issues).toHaveLength(3);
+    expect(issues.map((i) => i.message)).toEqual(
+      expect.arrayContaining([
+        "Missing recommended frontmatter field: name",
+        "Missing recommended frontmatter field: description",
+        "Missing recommended frontmatter field: last_updated",
+      ])
+    );
+  });
+
+  it("treats whitespace-only values as missing", () => {
+    const issues = checkFrontmatterCompleteness(
+      { name: "  ", description: "ok", last_updated: "\t" },
+      "patterns/auth.md"
+    );
+    expect(issues).toHaveLength(2);
+    expect(issues.map((i) => i.message)).toEqual(
+      expect.arrayContaining([
+        "Missing recommended frontmatter field: name",
+        "Missing recommended frontmatter field: last_updated",
+      ])
+    );
+  });
+
+  it("passes when all recommended fields are present", () => {
+    const issues = checkFrontmatterCompleteness(
+      {
+        name: "Auth",
+        description: "Authentication overview",
+        last_updated: "2026-06-01",
+      },
+      "patterns/auth.md"
+    );
+    expect(issues).toHaveLength(0);
+  });
+
+  it("warns on .mex/context/ paths (deployed scaffold layout)", () => {
+    const issues = checkFrontmatterCompleteness(null, ".mex/context/auth.md");
+    expect(issues).toHaveLength(3);
+    expect(issues.every((i) => i.code === "INCOMPLETE_FRONTMATTER")).toBe(true);
+  });
+
+  it("warns on .mex/patterns/ paths (deployed scaffold layout)", () => {
+    const issues = checkFrontmatterCompleteness(null, ".mex/patterns/auth.md");
+    expect(issues).toHaveLength(3);
+    expect(issues.every((i) => i.code === "INCOMPLETE_FRONTMATTER")).toBe(true);
+  });
+
+  it("ignores ROUTER.md and other scaffold files", () => {
+    const issues = checkFrontmatterCompleteness(null, "ROUTER.md");
+    expect(issues).toHaveLength(0);
+  });
+
+  it("ignores structural pattern meta-files (INDEX.md, README.md)", () => {
+    for (const source of [
+      "patterns/INDEX.md",
+      "patterns/README.md",
+      ".mex/patterns/INDEX.md",
+      ".mex/patterns/README.md",
+    ]) {
+      const issues = checkFrontmatterCompleteness(null, source);
+      expect(issues).toHaveLength(0);
+    }
+  });
+
+  it("treats non-string YAML values as missing", () => {
+    const issues = checkFrontmatterCompleteness(
+      { name: 123, description: "ok", last_updated: ["YYYY-MM-DD"] },
+      "context/auth.md"
+    );
+    expect(issues).toHaveLength(2);
+    expect(issues.map((i) => i.message)).toEqual(
+      expect.arrayContaining([
+        "Missing recommended frontmatter field: name",
+        "Missing recommended frontmatter field: last_updated",
+      ])
+    );
   });
 });
