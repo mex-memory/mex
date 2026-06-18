@@ -114,7 +114,8 @@ export type IssueCode =
   | "UNDOCUMENTED_SCRIPT"
   | "TOOL_CONFIG_DRIFT"
   | "TODO_FIXME"
-  | "BROKEN_LINK";
+  | "BROKEN_LINK"
+  | "FRONTMATTER_MISSING_FIELD";
 
 export interface DriftIssue {
   code: IssueCode;

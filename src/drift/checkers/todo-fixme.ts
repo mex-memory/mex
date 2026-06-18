@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import type { DriftIssue } from "../../types.js";
+import { toPosixPath } from "../../path-utils.js";
 
 const MARKER_RE = /\b(TODO|FIXME)\b/g;
 
@@ -12,7 +13,7 @@ export function checkTodoFixme(
   const issues: DriftIssue[] = [];
 
   for (const filePath of scaffoldFiles) {
-    const source = relative(projectRoot, filePath);
+    const source = toPosixPath(relative(projectRoot, filePath));
     let content: string;
     try {
       content = readFileSync(filePath, "utf-8");

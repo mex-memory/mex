@@ -1,5 +1,6 @@
 import { globSync } from "glob";
 import type { EntryPoint } from "../types.js";
+import { toPosixPath } from "../path-utils.js";
 
 const MAIN_PATTERNS = [
   "src/index.{ts,js,tsx,jsx}",
@@ -44,7 +45,8 @@ export function scanEntryPoints(projectRoot: string): EntryPoint[] {
         cwd: projectRoot,
         ignore: ["node_modules/**", "dist/**", "build/**", ".git/**"],
       });
-      for (const path of matches) {
+      for (const match of matches) {
+        const path = toPosixPath(match);
         if (seen.has(path)) continue;
         seen.add(path);
         entries.push({ path, type });
