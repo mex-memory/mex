@@ -2,6 +2,19 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** Read and validate the package.json version string. */
+export function readVersionFromPackageJson(packageJsonPath: string): string {
+  const pkg = JSON.parse(
+    readFileSync(packageJsonPath, "utf8"),
+  ) as { version?: unknown };
+
+  if (typeof pkg.version !== "string" || pkg.version.trim().length === 0) {
+    throw new Error("package.json is missing a valid version field.");
+  }
+
+  return pkg.version;
+}
+
 /**
  * CLI version, read from package.json at runtime so it can never drift from the
  * published version (see #48 — this used to be a hard-coded literal that fell
@@ -15,8 +28,5 @@ import { fileURLToPath } from "node:url";
  * plain runtime read instead of a copied asset.
  */
 const here = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(
-  readFileSync(join(here, "..", "package.json"), "utf8"),
-) as { version: string };
 
-export const VERSION = pkg.version;
+export const VERSION = readVersionFromPackageJson(join(here, "..", "package.json"));
