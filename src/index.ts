@@ -11,7 +11,7 @@
  */
 
 // ── Config ───────────────────────────────────────────────────────────────────
-export { findConfig, createConfig } from "./config.js";
+export { findConfig, createConfig, getScaffoldIdentity } from "./config.js";
 export type { CreateConfigInput } from "./config.js";
 
 // ── Events (append-only JSONL log) ───────────────────────────────────────────
@@ -48,6 +48,7 @@ export type {
 export type {
   AiTool,
   MexConfig,
+  ScaffoldIdentity,
   StalenessThresholds,
   WatchConfig,
   HeartbeatConfig,

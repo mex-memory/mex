@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { Command, InvalidArgumentError } from "commander";
 import { execSync, spawnSync } from "node:child_process";
-import { readFileSync, symlinkSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, symlinkSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -244,6 +244,33 @@ describe("built CLI main-module guard", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("imported");
     expect(result.stdout).not.toContain(pkg.version);
+  });
+
+  it("backfills scaffold_id on an existing scaffold when a command loads config", () => {
+    const fixture = mkdtempSync(join(tmpdir(), "mex-migrate-"));
+    try {
+      const mexPath = join(fixture, ".mex");
+      mkdirSync(mexPath, { recursive: true });
+      writeFileSync(join(mexPath, "ROUTER.md"), "");
+      writeFileSync(join(mexPath, "config.json"), JSON.stringify({ aiTools: ["claude"] }));
+
+      // timeline reads config (via loadConfig) and returns [] on an empty log.
+      const result = spawnSync(process.execPath, [cliPath, "timeline", "--json"], {
+        cwd: fixture,
+        encoding: "utf8",
+        env: { ...process.env, NO_COLOR: "1" },
+      });
+      expect(result.status).toBe(0);
+
+      const raw = JSON.parse(readFileSync(join(mexPath, "config.json"), "utf8")) as {
+        aiTools: string[];
+        scaffold_id?: string;
+      };
+      expect(raw.scaffold_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(raw.aiTools).toEqual(["claude"]); // existing keys preserved
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });
 

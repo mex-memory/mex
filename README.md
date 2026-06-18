@@ -262,6 +262,10 @@ Optional settings live in `.mex/config.json`. Missing values fall back to defaul
 }
 ```
 
+## Telemetry
+
+mex collects anonymous, opt-out usage data (command name, version, OS — never paths, args, file contents, IP, or personal data) to understand how the tool is used. Audit the exact payload with `mex telemetry inspect`, and opt out any time with `DO_NOT_TRACK=1`, `MEX_TELEMETRY=0`, or `mex config set telemetry off`. Full details: [TELEMETRY.md](TELEMETRY.md).
+
 ## Ecosystem
 
 mex is provider-neutral. Integration guides, sponsored examples, and community recipes should be useful on their own, clearly labeled, and live in docs rather than silently changing the default experience.

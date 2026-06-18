@@ -25,6 +25,7 @@ import {
   parseFrontmatter,
   findConfig,
   createConfig,
+  getScaffoldIdentity,
 
   // runtime constants
   EVENT_KINDS,
@@ -43,6 +44,7 @@ import {
   type RunDriftCheckOpts,
   type StalenessThresholds,
   type ScaffoldFrontmatter,
+  type ScaffoldIdentity,
 } from "../src/index.js";
 
 let tmpDir: string;
@@ -72,6 +74,18 @@ describe("public API — function exports", () => {
     expect(typeof parseFrontmatter).toBe("function");
     expect(typeof findConfig).toBe("function");
     expect(typeof createConfig).toBe("function");
+    expect(typeof getScaffoldIdentity).toBe("function");
+  });
+});
+
+describe("public API — getScaffoldIdentity", () => {
+  it("mints and returns a ScaffoldIdentity with the documented shape", () => {
+    const identity: ScaffoldIdentity = getScaffoldIdentity(config);
+    expect(typeof identity.scaffold_id).toBe("string");
+    expect(identity.scaffold_id.length).toBeGreaterThan(0);
+    expect(typeof identity.scaffold_name).toBe("string");
+    expect(identity.origin).toBeNull();
+    expect(identity.upstream).toBeNull();
   });
 });
 

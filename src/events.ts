@@ -21,6 +21,16 @@ export interface EventEntry {
    *  embedders that capture richer context than the short `message` field
    *  can hold. Omitted on entries that don't reference a trace. */
   trace?: string;
+  /** Optional provenance marker — where the event originated (e.g. "meeting",
+   *  "manual", "agent"). Free-form string, no enum. Absent means the event was
+   *  authored manually, the same as every pre-existing entry. Intended for
+   *  external tools (e.g. mex-call) that write events on a human's behalf. */
+  source?: string;
+  /** Optional lifecycle marker for a decision (e.g. "decided", "implemented").
+   *  Free-form string — deliberately NOT an enum so the reader never drops a
+   *  line over an unrecognized value the way it does for `kind`. Omitted on
+   *  entries that don't track a lifecycle. */
+  status?: string;
 }
 
 export interface LogOpts {
@@ -29,6 +39,12 @@ export interface LogOpts {
   /** Optional pointer to a long-form trace document — persisted as
    *  `EventEntry.trace`. See that field for the contract. */
   trace?: string;
+  /** Optional provenance marker — persisted as `EventEntry.source`. See that
+   *  field for the contract. */
+  source?: string;
+  /** Optional lifecycle marker — persisted as `EventEntry.status`. See that
+   *  field for the contract. */
+  status?: string;
 }
 
 export interface TimelineOpts {
@@ -61,6 +77,8 @@ export function appendEvent(config: MexConfig, message: string, opts: LogOpts = 
     cwd: relative(config.projectRoot, process.cwd()) || ".",
   };
   if (opts.trace !== undefined) entry.trace = opts.trace;
+  if (opts.source !== undefined) entry.source = opts.source;
+  if (opts.status !== undefined) entry.status = opts.status;
   const file = eventLogPath(config);
   mkdirSync(dirname(file), { recursive: true });
   appendFileSync(file, JSON.stringify(entry) + "\n");
@@ -117,6 +135,8 @@ export function readEvents(config: MexConfig): EventEntry[] {
           cwd: typeof raw.cwd === "string" ? raw.cwd : ".",
         };
         if (typeof raw.trace === "string") entry.trace = raw.trace;
+        if (typeof raw.source === "string") entry.source = raw.source;
+        if (typeof raw.status === "string") entry.status = raw.status;
         entries.push(entry);
       }
     } catch {

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runLog, readEvents, runTimeline } from "../src/events.js";
+import { appendEvent, runLog, readEvents, runTimeline } from "../src/events.js";
 import type { MexConfig } from "../src/types.js";
 
 let tmpDir: string;
@@ -29,6 +29,30 @@ describe("events", () => {
       message: "captured a decision",
       files: ["ROUTER.md"],
     });
+  });
+
+  it("round-trips source and status through appendEvent -> readEvents", () => {
+    const written = appendEvent(config, "captured a call decision", {
+      kind: "decision",
+      source: "meeting",
+      status: "decided",
+    });
+    expect(written).toMatchObject({ source: "meeting", status: "decided" });
+
+    const [entry] = readEvents(config);
+    expect(entry).toMatchObject({
+      kind: "decision",
+      message: "captured a call decision",
+      source: "meeting",
+      status: "decided",
+    });
+  });
+
+  it("omits source and status when not provided (backward compatible)", () => {
+    appendEvent(config, "plain note", {});
+    const [entry] = readEvents(config);
+    expect(entry).not.toHaveProperty("source");
+    expect(entry).not.toHaveProperty("status");
   });
 
   it("reads valid events and skips malformed lines", () => {
