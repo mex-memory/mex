@@ -16,6 +16,7 @@ import { checkScriptCoverage } from "./checkers/script-coverage.js";
 import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
+import { toPosix } from "../paths.js";
 
 /**
  * Default glob patterns used to locate scaffold markdown files, relative to
@@ -62,14 +63,14 @@ export async function runDriftCheck(
 
   // Extract claims from all files
   for (const filePath of scaffoldFiles) {
-    const source = relative(projectRoot, filePath);
+    const source = toPosix(relative(projectRoot, filePath));
     const claims = extractClaims(filePath, source);
     allClaims.push(...claims);
   }
 
   // Run checkers that work on individual files
   for (const filePath of scaffoldFiles) {
-    const source = relative(projectRoot, filePath);
+    const source = toPosix(relative(projectRoot, filePath));
 
     // Frontmatter edge check
     const frontmatter = parseFrontmatter(filePath);

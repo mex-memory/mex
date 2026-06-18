@@ -3,14 +3,15 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-// We test via the module's public exports. Each test gets a fresh $HOME
-// so the global config / telemetry-id files are isolated.
+// We test via the module's public exports. Each test gets a fresh MEX_HOME
+// so the global config / telemetry-id files are isolated. We use MEX_HOME (not
+// $HOME) because Node's homedir() ignores $HOME on Windows — see mexHomeDir().
 //
 // Important: tests run from the mex repo, so isDevRepo() returns true by
 // default. Tests that need telemetry ENABLED must chdir to a temp dir that
 // has no mex-agent package.json.
 
-let originalHome: string | undefined;
+let originalMexHome: string | undefined;
 let originalDoNotTrack: string | undefined;
 let originalMexTelemetry: string | undefined;
 let originalMexDev: string | undefined;
@@ -19,7 +20,7 @@ let tempHome: string;
 
 function setTempHome(): string {
   tempHome = mkdtempSync(join(tmpdir(), "mex-tel-"));
-  process.env.HOME = tempHome;
+  process.env.MEX_HOME = tempHome;
   return tempHome;
 }
 
@@ -34,7 +35,7 @@ function restoreCwd(): void {
 }
 
 beforeEach(() => {
-  originalHome = process.env.HOME;
+  originalMexHome = process.env.MEX_HOME;
   originalDoNotTrack = process.env.DO_NOT_TRACK;
   originalMexTelemetry = process.env.MEX_TELEMETRY;
   originalMexDev = process.env.MEX_DEV;
@@ -47,7 +48,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   restoreCwd();
-  process.env.HOME = originalHome;
+  if (originalMexHome !== undefined) process.env.MEX_HOME = originalMexHome;
+  else delete process.env.MEX_HOME;
   if (originalDoNotTrack !== undefined) process.env.DO_NOT_TRACK = originalDoNotTrack;
   else delete process.env.DO_NOT_TRACK;
   if (originalMexTelemetry !== undefined) process.env.MEX_TELEMETRY = originalMexTelemetry;
@@ -193,9 +195,14 @@ describe("machine_id (AC5)", () => {
     const filePath = join(tempHome, ".mex", "telemetry-id");
     expect(existsSync(filePath)).toBe(true);
 
-    const stat = statSync(filePath);
-    // 0o600 = owner read+write only
-    expect(stat.mode & 0o777).toBe(0o600);
+    // POSIX mode bits aren't enforced on Windows (NTFS ignores the `mode`
+    // option and statSync reports 0o666), so only assert owner-only perms
+    // where the OS actually honors them.
+    if (process.platform !== "win32") {
+      const stat = statSync(filePath);
+      // 0o600 = owner read+write only
+      expect(stat.mode & 0o777).toBe(0o600);
+    }
   });
 
   it("returns the same id on subsequent calls", async () => {
@@ -248,6 +255,8 @@ describe("dev-repo guard (AC7)", () => {
       const { isDevRepo } = await import("../src/global-config.js");
       expect(isDevRepo()).toBe(true);
     } finally {
+      // Windows can't remove the directory while it's still the cwd.
+      restoreCwd();
       rmSync(fakeRepo, { recursive: true, force: true });
     }
   });
@@ -264,6 +273,8 @@ describe("dev-repo guard (AC7)", () => {
       const { isDevRepo } = await import("../src/global-config.js");
       expect(isDevRepo()).toBe(false);
     } finally {
+      // Windows can't remove the directory while it's still the cwd.
+      restoreCwd();
       rmSync(fakeRepo, { recursive: true, force: true });
     }
   });

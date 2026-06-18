@@ -18,9 +18,18 @@ const MEX_HOME_DIR_NAME = ".mex";
 const TELEMETRY_ID_FILE = "telemetry-id";
 const GLOBAL_CONFIG_FILE = "config.json";
 
-/** Absolute path to `~/.mex`. Respects `$HOME`. */
+/**
+ * Absolute path to `~/.mex`.
+ *
+ * `MEX_HOME` overrides the base directory when set — used by tests to isolate
+ * the global config/telemetry-id from the real home, and lets users relocate
+ * the dir. We can't rely on `$HOME` for this: Node's `homedir()` ignores `$HOME`
+ * on Windows (it reads `USERPROFILE`), so an explicit override is the only
+ * cross-platform seam.
+ */
 export function mexHomeDir(): string {
-  return join(homedir(), MEX_HOME_DIR_NAME);
+  const base = process.env.MEX_HOME?.trim() || homedir();
+  return join(base, MEX_HOME_DIR_NAME);
 }
 
 /** Create `~/.mex/` if it doesn't exist. */

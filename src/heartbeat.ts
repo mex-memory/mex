@@ -4,6 +4,7 @@ import { globSync } from "glob";
 import chalk from "chalk";
 import { parseFrontmatter } from "./drift/frontmatter.js";
 import { daysSinceFrontmatterDate } from "./drift/checkers/staleness.js";
+import { toPosix } from "./paths.js";
 import type { MexConfig } from "./types.js";
 
 export interface HeartbeatResult {
@@ -70,7 +71,7 @@ export function checkHeartbeat(
         now,
       );
       return days !== null && days > staleDays
-        ? { file: relative(config.scaffoldRoot, file), days }
+        ? { file: toPosix(relative(config.scaffoldRoot, file)), days }
         : null;
     })
     .filter((v): v is { file: string; days: number } => Boolean(v));
