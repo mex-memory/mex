@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve, relative } from "node:path";
+import { toPosix } from "../../paths.js";
 import type { DriftIssue } from "../../types.js";
 
 const LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
@@ -13,7 +14,7 @@ export function checkBrokenLinks(
   const issues: DriftIssue[] = [];
 
   for (const filePath of scaffoldFiles) {
-    const source = relative(projectRoot, filePath);
+    const source = toPosix(relative(projectRoot, filePath));
     let content: string;
     try {
       content = readFileSync(filePath, "utf-8");

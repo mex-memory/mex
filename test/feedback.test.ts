@@ -3,10 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-// Each test gets a fresh $HOME so the global config (invite state) is isolated,
-// and controls process.stdout.isTTY for the gating checks.
+// Each test gets a fresh MEX_HOME so the global config (invite state) is
+// isolated, and controls process.stdout.isTTY for the gating checks. We use
+// MEX_HOME (not $HOME) because Node's homedir() ignores $HOME on Windows.
 
-let originalHome: string | undefined;
+let originalMexHome: string | undefined;
 let tempHome: string;
 let originalIsTTY: boolean | undefined;
 
@@ -15,14 +16,15 @@ function setTTY(value: boolean): void {
 }
 
 beforeEach(() => {
-  originalHome = process.env.HOME;
+  originalMexHome = process.env.MEX_HOME;
   originalIsTTY = process.stdout.isTTY;
   tempHome = mkdtempSync(join(tmpdir(), "mex-fb-"));
-  process.env.HOME = tempHome;
+  process.env.MEX_HOME = tempHome;
 });
 
 afterEach(async () => {
-  process.env.HOME = originalHome;
+  if (originalMexHome !== undefined) process.env.MEX_HOME = originalMexHome;
+  else delete process.env.MEX_HOME;
   Object.defineProperty(process.stdout, "isTTY", { value: originalIsTTY, configurable: true });
   const fb = await import("../src/feedback/index.js");
   fb.__setOpener(null);

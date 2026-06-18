@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, appendFileSync, readFileSync } from "node:fs";
 import { dirname, resolve, relative } from "node:path";
 import chalk from "chalk";
+import { toPosix } from "./paths.js";
 import type { MexConfig } from "./types.js";
 
 /** Runtime list of valid event kinds. Re-exported as part of the public API so
@@ -68,13 +69,13 @@ export async function runLog(config: MexConfig, message: string, opts: LogOpts =
 
 export function appendEvent(config: MexConfig, message: string, opts: LogOpts = {}): EventEntry {
   const kind = normalizeKind(opts.kind);
-  const files = (opts.files ?? []).map((f) => relative(config.projectRoot, resolve(config.projectRoot, f)));
+  const files = (opts.files ?? []).map((f) => toPosix(relative(config.projectRoot, resolve(config.projectRoot, f))));
   const entry: EventEntry = {
     timestamp: new Date().toISOString(),
     kind,
     message,
     files,
-    cwd: relative(config.projectRoot, process.cwd()) || ".",
+    cwd: toPosix(relative(config.projectRoot, process.cwd())) || ".",
   };
   if (opts.trace !== undefined) entry.trace = opts.trace;
   if (opts.source !== undefined) entry.source = opts.source;

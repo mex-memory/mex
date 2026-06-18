@@ -232,6 +232,52 @@ describe("public API — runDriftCheck", () => {
   });
 });
 
+describe("public API — runDriftCheck scopes checkPaths to ROUTER.md", () => {
+  it("does not produce MISSING_PATH issues from non-ROUTER.md files", async () => {
+    mkdirSync(join(tmpDir, ".mex/context"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".mex/ROUTER.md"),
+      "---\nedges:\n  - target: context/architecture.md\n---\n# Router\n\nSee [architecture](context/architecture.md).\n",
+    );
+    // architecture.md has inline code that looks like paths but isn't real files
+    writeFileSync(
+      join(tmpDir, ".mex/context/architecture.md"),
+      "# Architecture\n\nUse `csi.kubeletRootDir: /var/lib/kubelet` and `192.168.5.0/24`.\n",
+    );
+    const report = await runDriftCheck(config);
+    const pathIssues = report.issues.filter((i) => i.code === "MISSING_PATH");
+    // These non-path inline codes should NOT produce MISSING_PATH errors
+    expect(pathIssues).toHaveLength(0);
+  });
+
+  it("still produces MISSING_PATH issues from ROUTER.md", async () => {
+    writeFileSync(
+      join(tmpDir, ".mex/ROUTER.md"),
+      "# Router\n\nSee `src/totally/missing.ts` for details.\n",
+    );
+    const report = await runDriftCheck(config);
+    const pathIssues = report.issues.filter((i) => i.code === "MISSING_PATH");
+    expect(pathIssues).toHaveLength(1);
+    expect(pathIssues[0].message).toContain("src/totally/missing.ts");
+  });
+
+  it("only flags ROUTER.md paths when both ROUTER.md and AGENTS.md have missing paths", async () => {
+    writeFileSync(
+      join(tmpDir, ".mex/ROUTER.md"),
+      "# Router\n\nSee `src/missing.ts`.\n",
+    );
+    writeFileSync(
+      join(tmpDir, ".mex/AGENTS.md"),
+      "# Agents\n\nSee `lib/also/missing.py`.\n",
+    );
+    const report = await runDriftCheck(config);
+    const pathIssues = report.issues.filter((i) => i.code === "MISSING_PATH");
+    // Only the ROUTER.md path should be flagged
+    expect(pathIssues).toHaveLength(1);
+    expect(pathIssues[0].message).toContain("src/missing.ts");
+  });
+});
+
 describe("public API — heartbeat", () => {
   it("checkHeartbeat returns the documented HeartbeatResult shape", () => {
     const result: HeartbeatResult = checkHeartbeat(config);

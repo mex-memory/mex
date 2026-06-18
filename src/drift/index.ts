@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolve, relative } from "node:path";
+import { resolve, relative, basename } from "node:path";
 import { globSync } from "glob";
 import type { MexConfig, DriftReport, DriftIssue, Claim } from "../types.js";
 import { extractClaims } from "./claims.js";
@@ -16,6 +16,7 @@ import { checkScriptCoverage } from "./checkers/script-coverage.js";
 import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
+import { toPosix } from "../paths.js";
 
 /**
  * Default glob patterns used to locate scaffold markdown files, relative to
@@ -62,14 +63,14 @@ export async function runDriftCheck(
 
   // Extract claims from all files
   for (const filePath of scaffoldFiles) {
-    const source = relative(projectRoot, filePath);
+    const source = toPosix(relative(projectRoot, filePath));
     const claims = extractClaims(filePath, source);
     allClaims.push(...claims);
   }
 
   // Run checkers that work on individual files
   for (const filePath of scaffoldFiles) {
-    const source = relative(projectRoot, filePath);
+    const source = toPosix(relative(projectRoot, filePath));
 
     // Frontmatter edge check
     const frontmatter = parseFrontmatter(filePath);
@@ -91,7 +92,11 @@ export async function runDriftCheck(
   }
 
   // Run checkers that work on claims
-  const pathIssues = checkPaths(allClaims, projectRoot, scaffoldRoot);
+  // Only check paths in ROUTER.md — other scaffold files use backticks for
+  // non-path content (config values, IPs, annotation keys) that produces
+  // false MISSING_PATH errors. See https://github.com/theDakshJaitly/mex/issues/79
+  const routerClaims = allClaims.filter((c) => basename(c.source) === "ROUTER.md");
+  const pathIssues = checkPaths(routerClaims, projectRoot, scaffoldRoot);
   allIssues.push(...pathIssues);
   checkerIssueCounts.push(["paths", pathIssues.length]);
 
