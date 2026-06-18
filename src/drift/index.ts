@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolve, relative } from "node:path";
+import { resolve, relative, basename } from "node:path";
 import { globSync } from "glob";
 import type { MexConfig, DriftReport, DriftIssue, Claim } from "../types.js";
 import { extractClaims } from "./claims.js";
@@ -91,7 +91,11 @@ export async function runDriftCheck(
   }
 
   // Run checkers that work on claims
-  const pathIssues = checkPaths(allClaims, projectRoot, scaffoldRoot);
+  // Only check paths in ROUTER.md — other scaffold files use backticks for
+  // non-path content (config values, IPs, annotation keys) that produces
+  // false MISSING_PATH errors. See https://github.com/theDakshJaitly/mex/issues/79
+  const routerClaims = allClaims.filter((c) => basename(c.source) === "ROUTER.md");
+  const pathIssues = checkPaths(routerClaims, projectRoot, scaffoldRoot);
   allIssues.push(...pathIssues);
   checkerIssueCounts.push(["paths", pathIssues.length]);
 

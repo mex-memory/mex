@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **checkPaths false positives** — `checkPaths` now only validates inline code paths from `ROUTER.md`, not all scaffold files. Eliminates false `MISSING_PATH` errors from context docs, pattern files, and tool config files where backtick-wrapped strings are config values, IPs, annotation keys, or other non-path content. [#79](https://github.com/theDakshJaitly/mex/issues/79)
+
 ## [0.6.1] - 2026-06-14
 
 ### Added
