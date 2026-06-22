@@ -2,7 +2,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from
 import { resolve, dirname, relative, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
-import { execSync, spawn } from "node:child_process";
+import { execSync } from "node:child_process";
+import crossSpawn from "cross-spawn";
 import { stdin, stdout } from "node:process";
 import { globSync } from "glob";
 import chalk from "chalk";
@@ -12,6 +13,7 @@ import {
   buildExistingNoBriefPrompt,
 } from "./prompts.js";
 import { saveAiTools, ensureScaffoldIdentity } from "../config.js";
+import { isCliAvailable } from "../cli-tools.js";
 import type { AiTool } from "../types.js";
 
 // ── Constants ──
@@ -433,19 +435,15 @@ async function selectToolConfig(
 }
 
 function hasClaudeCli(): boolean {
-  try {
-    execSync("which claude", { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
+  return isCliAvailable("claude");
 }
 
 function launchClaude(prompt: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", [prompt], {
+    // cross-spawn resolves the Windows `claude.cmd` wrapper and escapes the
+    // prompt correctly. Plain spawn threw ENOENT on Windows (issue #85).
+    const child = crossSpawn("claude", [prompt], {
       stdio: "inherit",
-      shell: false,
     });
 
     child.on("close", (code) => {
