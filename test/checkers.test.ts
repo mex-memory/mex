@@ -594,5 +594,77 @@ describe("checkBrokenLinks", () => {
     const issues = checkBrokenLinks([file], tmpDir, tmpDir);
     expect(issues).toHaveLength(1);
     expect(issues[0].severity).toBe("warning");
+    expect(issues[0].line).toBe(1);
+  });
+
+  it("ignores links inside HTML comments", () => {
+    const file = join(tmpDir, "INDEX.md");
+    writeFileSync(
+      file,
+      "# Index\n\n<!-- Example: [foo.md](foo.md) -->\n\n| Pattern | Use |\n|---|---|\n",
+    );
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("ignores links inside multi-line HTML comments", () => {
+    const file = join(tmpDir, "INDEX.md");
+    writeFileSync(
+      file,
+      "# Index\n\n<!--\n[foo.md](foo.md)\n[bar.md](bar.md)\n-->\n\nReal content.\n",
+    );
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("scans links after an unclosed HTML comment as plain text", () => {
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    const file = join(tmpDir, "guide.md");
+    // Unclosed <!-- stays as plain text; link after it should still be checked
+    writeFileSync(
+      file,
+      "# Guide\n\n<!-- this comment never closes\n\nSee [missing](./context/nowhere.md).\n",
+    );
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("nowhere.md");
+    expect(issues[0].line).toBe(5);
+  });
+
+  it("scans links on lines with inline HTML comments", () => {
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(join(tmpDir, "context/target.md"), "# Target\n");
+    const file = join(tmpDir, "guide.md");
+    // Link before comment should be scanned; link inside comment should not
+    writeFileSync(
+      file,
+      "[real](./context/target.md) <!-- [fake](./missing.md) -->\n",
+    );
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("reports correct line numbers for broken links after multi-line HTML comments", () => {
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    const file = join(tmpDir, "guide.md");
+    writeFileSync(
+      file,
+      "# Doc\n\n<!--\ncomment body\n-->\n\n[broken](./context/nowhere.md)\n",
+    );
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].line).toBe(7);
+  });
+
+  it("reports correct line numbers for broken links after single-line HTML comments", () => {
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    const file = join(tmpDir, "guide.md");
+    writeFileSync(
+      file,
+      "# Doc\n\n<!-- some note -->\n\n[broken](./context/nowhere.md)\n",
+    );
+    const issues = checkBrokenLinks([file], tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].line).toBe(5);
   });
 });
