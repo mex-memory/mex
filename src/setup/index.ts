@@ -265,10 +265,18 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     info("You'll see the agent working in real-time.");
     console.log();
 
-    await launchClaude(prompt);
-
-    console.log();
-    ok("Setup complete.");
+    try {
+      await launchClaude(prompt);
+      console.log();
+      ok("Setup complete.");
+    } catch (err) {
+      // A launch/exit failure must not crash setup with an unhandled
+      // rejection — report it and fall back to the manual-paste prompt.
+      console.log();
+      warn(`Couldn't run Claude Code automatically: ${(err as Error).message}`);
+      info("Paste the prompt below into your AI tool to populate the scaffold instead.");
+      printPromptForManualPaste(prompt);
+    }
     await promptGlobalInstall();
     return;
   } else {
@@ -286,14 +294,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
       info("The agent will read your codebase and fill every scaffold file.");
     }
 
-    console.log();
-    console.log("─────────────────── COPY BELOW THIS LINE ───────────────────");
-    console.log();
-    console.log(prompt);
-    console.log();
-    console.log("─────────────────── COPY ABOVE THIS LINE ───────────────────");
-    console.log();
-    ok("Paste the prompt above into your agent to populate the scaffold.");
+    printPromptForManualPaste(prompt);
   }
 
   await promptGlobalInstall();
@@ -432,6 +433,17 @@ async function selectToolConfig(
   }
 
   return selectedClaude;
+}
+
+function printPromptForManualPaste(prompt: string): void {
+  console.log();
+  console.log("─────────────────── COPY BELOW THIS LINE ───────────────────");
+  console.log();
+  console.log(prompt);
+  console.log();
+  console.log("─────────────────── COPY ABOVE THIS LINE ───────────────────");
+  console.log();
+  ok("Paste the prompt above into your agent to populate the scaffold.");
 }
 
 function hasClaudeCli(): boolean {

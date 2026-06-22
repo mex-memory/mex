@@ -17,7 +17,7 @@ function askUser(question: string): Promise<string> {
   });
 }
 
-function runToolInteractive(tool: AiTool, brief: string, cwd: string): boolean {
+export function runToolInteractive(tool: AiTool, brief: string, cwd: string): boolean {
   const meta = AI_TOOLS[tool];
   if (!meta.cli) return false;
 
