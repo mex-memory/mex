@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { findConfig, appendEvent, readEvents, EVENT_KINDS } from "mex-agent";
-import type { EventKind } from "mex-agent";
 
 export function registerLogTool(server: McpServer) {
   server.tool(
@@ -22,13 +21,15 @@ export function registerLogTool(server: McpServer) {
     },
     async ({ projectRoot, action, kind, summary, limit }) => {
       const root = projectRoot ?? process.cwd();
-      const config = await findConfig(root);
-      if (!config) {
+      let config;
+      try {
+        config = findConfig(root);
+      } catch (e) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: "No mex config found", projectRoot: root }),
+              text: JSON.stringify({ error: (e as Error).message, projectRoot: root }),
             },
           ],
         };
@@ -41,10 +42,10 @@ export function registerLogTool(server: McpServer) {
             ],
           };
         }
-        await appendEvent(config, { kind: kind as EventKind, summary });
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true, kind, summary }) }] };
+        const entry = appendEvent(config, summary, { kind });
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, kind: entry.kind, summary }) }] };
       }
-      const events = await readEvents(config, { limit });
+      const events = readEvents(config).slice(-limit);
       return { content: [{ type: "text", text: JSON.stringify(events, null, 2) }] };
     }
   );

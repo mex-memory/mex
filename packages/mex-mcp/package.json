@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "mex-agent": "workspace:*",
+    "mex-agent": "*",
     "zod": "^3.23.0"
   },
   "devDependencies": {

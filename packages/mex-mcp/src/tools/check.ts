@@ -14,13 +14,15 @@ export function registerCheckTool(server: McpServer) {
     },
     async ({ projectRoot }) => {
       const root = projectRoot ?? process.cwd();
-      const config = await findConfig(root);
-      if (!config) {
+      let config;
+      try {
+        config = findConfig(root);
+      } catch (e) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: "No mex config found", projectRoot: root }),
+              text: JSON.stringify({ error: (e as Error).message, projectRoot: root }),
             },
           ],
         };

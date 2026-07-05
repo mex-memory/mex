@@ -23,24 +23,26 @@ export function registerTimelineTool(server: McpServer) {
     },
     async ({ projectRoot, kind, since, limit }) => {
       const root = projectRoot ?? process.cwd();
-      const config = await findConfig(root);
-      if (!config) {
+      let config;
+      try {
+        config = findConfig(root);
+      } catch (e) {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ error: "No mex config found", projectRoot: root }),
+              text: JSON.stringify({ error: (e as Error).message, projectRoot: root }),
             },
           ],
         };
       }
-      // over-fetch to allow client-side filtering without multiple round-trips
-      let events = await readEvents(config, { limit: limit * 4 });
+      let events = readEvents(config);
       if (kind) events = events.filter((e) => e.kind === kind);
       if (since) {
         const sinceMs = new Date(since).getTime();
         events = events.filter((e) => new Date(e.timestamp).getTime() >= sinceMs);
       }
+      events = events.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
       return {
         content: [{ type: "text", text: JSON.stringify(events.slice(0, limit), null, 2) }],
       };
