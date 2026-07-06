@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-07-06
+
+### Added
+- **MCP server** — new `packages/mex-mcp` package exposes mex to AI agents over the Model Context Protocol as native tool calls: `mex_check`, `mex_log`, `mex_timeline`, `mex_heartbeat`, and `mex_read_file`. It imports the `mex-agent` public API directly (no subprocess) and returns structured JSON, so agents in Claude Code, Cursor, and other MCP clients call mex as first-class tools instead of shelling out. Every tool takes an optional `projectRoot` (defaults to cwd) and `mex_read_file` is sandboxed to the `.mex/` scaffold. `mex_sync` is deferred until its structured return shape is settled. [#84](https://github.com/theDakshJaitly/mex/pull/84) [#81](https://github.com/theDakshJaitly/mex/issues/81)
+
+### Changed
+- README documents the MCP server, its five tools, and client (`.mcp.json`) configuration.
+
+### Compatibility
+- No changes to the published `mex-agent` package surface or the `.mex/` scaffold. `packages/mex-mcp` is not yet published to npm; build it from the repo with `npm run build --workspace mex-mcp` and point your MCP client at `packages/mex-mcp/dist/index.js`.
+
 ## [0.6.2] - 2026-06-22
 
 ### Fixed
