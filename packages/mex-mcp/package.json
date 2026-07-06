@@ -1,0 +1,30 @@
+{
+  "name": "mex-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for mex-agent — exposes check/log/timeline/heartbeat/read-file as native MCP tools",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "mex-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "mex-agent": "file:../..",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.0"
+  }
+}
