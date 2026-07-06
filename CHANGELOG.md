@@ -4,8 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-06-22
+
 ### Fixed
+- **Windows AI-CLI detection and launch** — `mex sync` and `mex setup` now detect an installed AI CLI on Windows and launch it correctly. Detection used `which` (absent on Windows), so every tool reported as not installed and interactive mode silently fell back to copy-paste even when Claude Code/Codex were present; it now probes with `where` on Windows. Launch used `spawn`/`spawnSync`, which threw `ENOENT` on the `claude.cmd` wrapper; it now uses `cross-spawn`. `runToolInteractive` also no longer treats a spawn failure or timeout as a successful session. [#85](https://github.com/theDakshJaitly/mex/issues/85)
+- **Cross-platform path output and global config** — drift issue paths, heartbeat stale files, scanner entries, and event-log paths are normalized to forward slashes on Windows (new `toPosix()` boundary), fixing a `patterns/` severity check that silently misfired; global config and telemetry id now respect Windows `USERPROFILE`, with a new `MEX_HOME` override. [#78](https://github.com/theDakshJaitly/mex/pull/78)
 - **checkPaths false positives** — `checkPaths` now only validates inline code paths from `ROUTER.md`, not all scaffold files. Eliminates false `MISSING_PATH` errors from context docs, pattern files, and tool config files where backtick-wrapped strings are config values, IPs, annotation keys, or other non-path content. [#79](https://github.com/theDakshJaitly/mex/issues/79)
+- **Package version metadata guard** — the CLI validates that `package.json` contains a non-empty string `version` before reading it at runtime. [#58](https://github.com/theDakshJaitly/mex/issues/58)
 
 ## [0.6.1] - 2026-06-14
 

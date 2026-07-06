@@ -2,7 +2,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from
 import { resolve, dirname, relative, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
-import { execSync, spawn } from "node:child_process";
+import { execSync } from "node:child_process";
+import crossSpawn from "cross-spawn";
 import { stdin, stdout } from "node:process";
 import { globSync } from "glob";
 import chalk from "chalk";
@@ -12,6 +13,7 @@ import {
   buildExistingNoBriefPrompt,
 } from "./prompts.js";
 import { saveAiTools, ensureScaffoldIdentity } from "../config.js";
+import { isCliAvailable } from "../cli-tools.js";
 import type { AiTool } from "../types.js";
 
 // ── Constants ──
@@ -263,10 +265,18 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     info("You'll see the agent working in real-time.");
     console.log();
 
-    await launchClaude(prompt);
-
-    console.log();
-    ok("Setup complete.");
+    try {
+      await launchClaude(prompt);
+      console.log();
+      ok("Setup complete.");
+    } catch (err) {
+      // A launch/exit failure must not crash setup with an unhandled
+      // rejection — report it and fall back to the manual-paste prompt.
+      console.log();
+      warn(`Couldn't run Claude Code automatically: ${(err as Error).message}`);
+      info("Paste the prompt below into your AI tool to populate the scaffold instead.");
+      printPromptForManualPaste(prompt);
+    }
     await promptGlobalInstall();
     return;
   } else {
@@ -284,14 +294,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
       info("The agent will read your codebase and fill every scaffold file.");
     }
 
-    console.log();
-    console.log("─────────────────── COPY BELOW THIS LINE ───────────────────");
-    console.log();
-    console.log(prompt);
-    console.log();
-    console.log("─────────────────── COPY ABOVE THIS LINE ───────────────────");
-    console.log();
-    ok("Paste the prompt above into your agent to populate the scaffold.");
+    printPromptForManualPaste(prompt);
   }
 
   await promptGlobalInstall();
@@ -432,20 +435,27 @@ async function selectToolConfig(
   return selectedClaude;
 }
 
+function printPromptForManualPaste(prompt: string): void {
+  console.log();
+  console.log("─────────────────── COPY BELOW THIS LINE ───────────────────");
+  console.log();
+  console.log(prompt);
+  console.log();
+  console.log("─────────────────── COPY ABOVE THIS LINE ───────────────────");
+  console.log();
+  ok("Paste the prompt above into your agent to populate the scaffold.");
+}
+
 function hasClaudeCli(): boolean {
-  try {
-    execSync("which claude", { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
+  return isCliAvailable("claude");
 }
 
 function launchClaude(prompt: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", [prompt], {
+    // cross-spawn resolves the Windows `claude.cmd` wrapper and escapes the
+    // prompt correctly. Plain spawn threw ENOENT on Windows (issue #85).
+    const child = crossSpawn("claude", [prompt], {
       stdio: "inherit",
-      shell: false,
     });
 
     child.on("close", (code) => {

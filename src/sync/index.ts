@@ -1,9 +1,10 @@
 import chalk from "chalk";
-import { spawnSync, execSync } from "node:child_process";
+import crossSpawn from "cross-spawn";
 import { createInterface } from "node:readline";
 import type { MexConfig, SyncTarget, DriftIssue, AiTool } from "../types.js";
 import { AI_TOOLS } from "../types.js";
 import { runDriftCheck } from "../drift/index.js";
+import { isCliAvailable } from "../cli-tools.js";
 import { buildSyncBrief, buildCombinedBrief } from "./brief-builder.js";
 
 function askUser(question: string): Promise<string> {
@@ -16,26 +17,23 @@ function askUser(question: string): Promise<string> {
   });
 }
 
-function hasCliTool(cmd: string): boolean {
-  try {
-    execSync(`which ${cmd}`, { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function runToolInteractive(tool: AiTool, brief: string, cwd: string): boolean {
+export function runToolInteractive(tool: AiTool, brief: string, cwd: string): boolean {
   const meta = AI_TOOLS[tool];
   if (!meta.cli) return false;
 
   const args = [...meta.promptFlag, brief];
-  const result = spawnSync(meta.cli, args, {
+  // cross-spawn resolves Windows `.cmd`/`.bat` wrappers (npm installs `claude`
+  // as `claude.cmd`) and escapes args correctly — plain spawnSync throws ENOENT
+  // on Windows, and `shell: true` mangles the multi-line prompt (issue #85).
+  const result = crossSpawn.sync(meta.cli, args, {
     cwd,
     stdio: "inherit",
     timeout: 300_000,
   });
-  return result.status === 0 || result.status === null;
+  // A spawn failure (ENOENT, etc.) sets `error` and leaves `status` null — don't
+  // mistake that for success, or launch problems get silently swallowed.
+  if (result.error) return false;
+  return result.status === 0;
 }
 
 /** Pick which AI tool to use for interactive sync */
@@ -43,14 +41,14 @@ async function pickSyncTool(configuredTools: AiTool[]): Promise<AiTool | null> {
   // Filter to tools that have a CLI and are installed
   let available = configuredTools.filter((t) => {
     const meta = AI_TOOLS[t];
-    return meta.cli && hasCliTool(meta.cli);
+    return meta.cli && isCliAvailable(meta.cli);
   });
 
   // If no configured tools matched, scan for any installed CLI and ask user
   if (available.length === 0) {
     const detected = (Object.keys(AI_TOOLS) as AiTool[]).filter((t) => {
       const meta = AI_TOOLS[t];
-      return meta.cli && hasCliTool(meta.cli);
+      return meta.cli && isCliAvailable(meta.cli);
     });
 
     if (detected.length === 0) return null;
