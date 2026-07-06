@@ -10,13 +10,14 @@
 
 [![npm version](https://img.shields.io/npm/v/mex-agent.svg)](https://www.npmjs.com/package/mex-agent)
 [![npm downloads](https://img.shields.io/npm/dm/mex-agent.svg)](https://www.npmjs.com/package/mex-agent)
-[![GitHub stars](https://img.shields.io/badge/stars-700%2B-111111)](https://github.com/theDakshJaitly/mex/stargazers)
-[![Website](https://img.shields.io/badge/website-launchx.page%2Fmex-4f7cff)](https://launchx.page/mex)
+[![GitHub stars](https://img.shields.io/badge/stars-1.2K%2B-111111)](https://github.com/theDakshJaitly/mex/stargazers)
+[![Website](https://img.shields.io/badge/website-mexmemory.com-4f7cff)](https://mexmemory.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml)
 [![Node.js >=20](https://img.shields.io/badge/node-%3E%3D20-339933)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](package.json)
 [![Agent memory](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](README.md)
+[![MCP](https://img.shields.io/badge/MCP-compatible-6f8cff)](#mcp-server)
 
 </div>
 
@@ -172,6 +173,42 @@ All commands run from your project root. If you did not install globally, replac
 | Codex | `AGENTS.md` |
 
 Neovim users can use [docs/vim-neovim.md](docs/vim-neovim.md) for Claude Code, Avante.nvim, Copilot.vim, and generic plugin setups.
+
+## MCP Server
+
+`packages/mex-mcp` exposes mex to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io) as native tool calls — no shelling out, structured JSON back. It imports `mex-agent` directly, so the tools run the same code as the CLI and never drift from it.
+
+| Tool | Equivalent CLI | Returns |
+|------|----------------|---------|
+| `mex_check` | `mex check --json` | Drift report — score, issues, files checked |
+| `mex_log` | `mex log` / `mex timeline` | Appends an event (`decision`/`note`/`risk`/`todo`) or reads recent ones |
+| `mex_timeline` | `mex timeline` | Events filtered by kind/date, newest first |
+| `mex_heartbeat` | `mex heartbeat` | Health check — stale files, memory cleanup due |
+| `mex_read_file` | — | A scaffold file's contents, sandboxed to `.mex/` |
+
+Every tool takes an optional `projectRoot` (defaults to the current directory), so one server can target any project. Run `mex setup` first — the tools need a `.mex/` scaffold.
+
+Configure your client (Claude Code / Cursor `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "mex": {
+      "command": "node",
+      "args": ["packages/mex-mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+Build it with `npm run build --workspace mex-mcp` first. Once published, this becomes `"command": "npx", "args": ["mex-mcp"]`.
+
+At session start an agent orients with two calls:
+
+```
+mex_check()                   # is the scaffold drifting?
+mex_read_file("ROUTER.md")    # load the router, then pull only the context it needs
+```
 
 ## Before / After
 
