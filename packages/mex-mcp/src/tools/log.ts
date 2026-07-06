@@ -13,7 +13,7 @@ export function registerLogTool(server: McpServer) {
         .describe("Absolute path to the project root. Defaults to cwd."),
       action: z.enum(["read", "write"]).default("read"),
       kind: z
-        .string()
+        .enum(EVENT_KINDS)
         .optional()
         .describe(`Event kind for write (one of: ${EVENT_KINDS.join(", ")}).`),
       summary: z.string().optional().describe("Human-readable event summary for write."),
