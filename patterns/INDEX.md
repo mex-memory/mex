@@ -23,4 +23,3 @@ Lookup table for all pattern files in this directory. Check here before starting
 
 | Pattern | Use when |
 |---------|----------|
-| [codegraph-parallel-track.md](codegraph-parallel-track.md) | Implementing a code-graph track against frozen contracts in parallel |
