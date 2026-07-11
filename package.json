@@ -44,7 +44,7 @@
   "license": "MIT",
   "homepage": "https://github.com/theDakshJaitly/mex#readme",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.5"
   },
   "scripts": {
     "build": "tsup",

@@ -114,7 +114,13 @@ export type IssueCode =
   | "UNDOCUMENTED_SCRIPT"
   | "TOOL_CONFIG_DRIFT"
   | "TODO_FIXME"
-  | "BROKEN_LINK";
+  | "BROKEN_LINK"
+  // ── Code-graph grounding (checker #12; emitted by src/drift/checkers/grounding.ts) ──
+  // Added in Phase 0 so the grounding-checker contract typechecks and Track B
+  // never has to reopen this shared union. See src/graph/grounding.ts.
+  | "GROUNDING_GONE" //      grounded node deleted / unrecoverable (error)
+  | "GROUNDING_DRIFT" //     grounded node still exists but its body changed (warning)
+  | "GROUNDING_AMBIGUOUS"; // reconciler found an uncertain move candidate (warning)
 
 export interface DriftIssue {
   code: IssueCode;
@@ -136,11 +142,36 @@ export interface DriftReport {
 
 // ── Frontmatter ──
 
+/**
+ * A code-graph grounding: a scaffold prose block asserting against a specific
+ * code node (not just a file path). Net-new in 0.7.0 (spec §5), AGENT-AUTHORED
+ * ONLY — written by the agent during setup + sync, never hand-written. The
+ * grounding checker (#12) resolves each entry against the graph and reports
+ * drift when the node changes, moves, or vanishes.
+ *
+ * ```yaml
+ * grounds_to:
+ *   - node: "function:a3f8...c21"
+ *     fingerprint: "mh:64:9f2a..."
+ * ```
+ */
+export interface Grounding {
+  /** The grounded node's Tier-1 id, `${kind}:sha256(filePath:kind:name)[:32]`. */
+  node: string;
+  /** Serialized Tier-2 fingerprint (`mh:<K>:<hex>`) captured when grounded. */
+  fingerprint: string;
+}
+
 export interface ScaffoldFrontmatter {
   name?: string;
   description?: string;
   edges?: FrontmatterEdge[];
   last_updated?: string;
+  /**
+   * Code nodes this scaffold grounds to (spec §5). Net-new, backward-compatible:
+   * files without it skip the grounding checker entirely. Agent-authored only.
+   */
+  grounds_to?: Grounding[];
   [key: string]: unknown;
 }
 
