@@ -196,7 +196,7 @@ program
   });
 
 // ── Code Graph ──
-program
+const graphCommand = program
   .command("graph")
   .description("Build/rebuild the code knowledge graph into .mex/graph.db")
   .option("--json", "Output the build summary as JSON")
@@ -209,6 +209,20 @@ program
       console.error((err as Error).message);
       process.exit(1);
     }
+  });
+
+graphCommand
+  .command("query <relation> <target>")
+  .description("Query graph structure: who-calls, what-calls, or where-defined")
+  .action((relation, target) => {
+    return import("./graph/cli-agent.js").then(({ runGraphQuery }) => runGraphQuery(relation, target));
+  });
+
+program
+  .command("impact <target>")
+  .description("Show transitive code and scaffold blast radius for a symbol or file")
+  .action((target) => {
+    return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target));
   });
 
 // ── Agent Memory Events ──
@@ -452,6 +466,8 @@ program
     console.log("  mex init --json        Scanner brief as JSON");
     console.log("  mex graph              Build the code knowledge graph into .mex/graph.db");
     console.log("  mex graph --json       Graph build summary as JSON");
+    console.log("  mex graph query <relation> <target>  Structural lookup as JSONL");
+    console.log("  mex impact <symbol|file>              Blast radius as JSONL");
     console.log("  mex log <message>      Append a note/decision/risk/todo to the event log");
     console.log("  mex timeline           Show recent event log entries");
     console.log("  mex heartbeat          Run lightweight agent-memory health checks");
@@ -497,7 +513,7 @@ if (isMainModule) {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "check", "init", "graph", "sync", "pattern", "log", "timeline",
+    "setup", "check", "init", "graph", "impact", "sync", "pattern", "log", "timeline",
     "heartbeat", "doctor", "watch", "tui", "commands", "completion",
     "telemetry", "config", "feedback",
   ];
