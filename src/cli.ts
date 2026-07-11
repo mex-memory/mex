@@ -195,6 +195,22 @@ program
     }
   });
 
+// ── Code Graph ──
+program
+  .command("graph")
+  .description("Build/rebuild the code knowledge graph into .mex/graph.db")
+  .option("--json", "Output the build summary as JSON")
+  .option("--root <dir>", "Project root to index (defaults to current directory)")
+  .action(async (opts) => {
+    try {
+      const { runGraph } = await import("./graph/cli-graph.js");
+      await runGraph({ root: opts.root, json: opts.json });
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
 // ── Agent Memory Events ──
 program
   .command("log <message>")
@@ -434,6 +450,8 @@ program
     console.log("  mex sync --warnings    Include warning-only files in sync");
     console.log("  mex init               Pre-scan codebase, build brief for AI");
     console.log("  mex init --json        Scanner brief as JSON");
+    console.log("  mex graph              Build the code knowledge graph into .mex/graph.db");
+    console.log("  mex graph --json       Graph build summary as JSON");
     console.log("  mex log <message>      Append a note/decision/risk/todo to the event log");
     console.log("  mex timeline           Show recent event log entries");
     console.log("  mex heartbeat          Run lightweight agent-memory health checks");
@@ -479,7 +497,7 @@ if (isMainModule) {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "check", "init", "sync", "pattern", "log", "timeline",
+    "setup", "check", "init", "graph", "sync", "pattern", "log", "timeline",
     "heartbeat", "doctor", "watch", "tui", "commands", "completion",
     "telemetry", "config", "feedback",
   ];
