@@ -4,6 +4,8 @@ import {
   extractFrontmatter,
   getHeadingAtLine,
   isNegatedSection,
+  extractGroundings,
+  writeGroundings,
 } from "../src/markdown.js";
 
 describe("parseMarkdown", () => {
@@ -12,6 +14,21 @@ describe("parseMarkdown", () => {
     expect(tree.type).toBe("root");
     expect(tree.children.length).toBeGreaterThan(0);
     expect(tree.children[0].type).toBe("heading");
+  });
+});
+
+describe("grounds_to frontmatter", () => {
+  it("round-trips validated groundings while preserving other fields and body", () => {
+    const original = "---\nname: context\n---\n\n# Context\n";
+    const groundings = [{ node: "function:abc", fingerprint: "mh:64:abcd" }];
+    const written = writeGroundings(original, groundings);
+    expect(extractGroundings(written)).toEqual(groundings);
+    expect(extractFrontmatter(written)?.name).toBe("context");
+    expect(written).toContain("# Context");
+  });
+
+  it("rejects malformed grounds_to entries", () => {
+    expect(extractGroundings("---\ngrounds_to:\n  - node: function:abc\n---\n")).toEqual([]);
   });
 });
 

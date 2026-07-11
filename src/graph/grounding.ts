@@ -29,7 +29,7 @@
 import type { DriftIssue, ScaffoldFrontmatter, Grounding } from "../types.js";
 import type { GraphEngine } from "./engine.js";
 import type { Reconciler } from "./reconcile.js";
-import { NotImplementedError } from "./errors.js";
+import { makeGroundingChecker } from "../drift/checkers/grounding.js";
 
 export type { Grounding };
 
@@ -82,9 +82,5 @@ export function createGroundingChecker(
   graph: GraphEngine,
   reconciler: Reconciler,
 ): GroundingChecker {
-  void graph;
-  void reconciler;
-  return () => {
-    throw new NotImplementedError("groundingChecker");
-  };
+  return makeGroundingChecker(graph, reconciler);
 }
