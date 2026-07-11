@@ -3,7 +3,7 @@ import remarkParse from "remark-parse";
 import remarkFrontmatter from "remark-frontmatter";
 import { visit } from "unist-util-visit";
 import YAML from "yaml";
-import type { ScaffoldFrontmatter } from "./types.js";
+import type { Grounding, ScaffoldFrontmatter } from "./types.js";
 import type { Root, Content } from "mdast";
 
 const parser = unified().use(remarkParse).use(remarkFrontmatter, ["yaml"]);
@@ -29,6 +29,38 @@ export function extractFrontmatter(
   });
 
   return frontmatter;
+}
+
+/** Return validated code-graph groundings; malformed entries are rejected as a set. */
+export function extractGroundings(content: string): Grounding[] {
+  const value = extractFrontmatter(content)?.grounds_to;
+  return isGroundingArray(value) ? value : [];
+}
+
+export function isGroundingArray(value: unknown): value is Grounding[] {
+  return Array.isArray(value) && value.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const grounding = entry as Partial<Grounding>;
+    return typeof grounding.node === "string" && grounding.node.length > 0
+      && typeof grounding.fingerprint === "string" && grounding.fingerprint.length > 0;
+  });
+}
+
+/** Add or replace grounds_to while preserving the markdown body and other frontmatter keys. */
+export function writeGroundings(content: string, groundings: Grounding[]): string {
+  if (!isGroundingArray(groundings)) throw new Error("Invalid grounds_to entries");
+  const tree = parseMarkdown(content);
+  const yamlNode = tree.children.find((node) => node.type === "yaml");
+  const frontmatter = extractFrontmatter(content) ?? {};
+  frontmatter.grounds_to = groundings;
+  const yaml = YAML.stringify(frontmatter).trimEnd();
+  const block = `---\n${yaml}\n---`;
+  const start = yamlNode?.position?.start.offset;
+  const end = yamlNode?.position?.end.offset;
+  if (start !== undefined && end !== undefined) {
+    return content.slice(0, start) + block + content.slice(end);
+  }
+  return `${block}\n\n${content}`;
 }
 
 /** Get the current heading context for a given line position */

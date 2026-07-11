@@ -56,6 +56,15 @@ export type {
   Fingerprint,
 } from "./reconcile.js";
 export { notImplementedReconciler, FINGERPRINT_PREFIX } from "./reconcile.js";
+export { MinHashReconciler } from "./reconcile-engine.js";
+export { FingerprintStore } from "./fingerprint-store.js";
+export type { SqliteDatabase } from "./fingerprint-store.js";
+export {
+  bandHashes,
+  createFingerprint,
+  deserializeFingerprint,
+  serializeFingerprint,
+} from "./fingerprint.js";
 
 // --- Grounding checker contract (spec §5 / §6) ------------------------------
 export type {
