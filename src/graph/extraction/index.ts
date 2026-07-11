@@ -8,7 +8,7 @@
 // front for the languages it finds). Pure and deterministic per file.
 
 import type { Language } from "../types.js";
-import type { ExtractedEdge, ExtractedNode } from "./types.js";
+import type { ExtractedEdge, ExtractedNode, TSNode } from "./types.js";
 import { detectLanguage, parse } from "./grammars.js";
 import { getExtractor } from "./languages/index.js";
 
@@ -39,4 +39,33 @@ export function extractFile(
   if (!tree) return null;
   const { nodes, edges } = extractor.extract(tree, filePath, source);
   return { language, nodes, edges };
+}
+
+/**
+ * Return normalized AST leaf kinds for body-bearing node ranges. Identifier and
+ * literal spellings are intentionally represented by grammar kinds, making the
+ * Tier-2 fingerprint resilient to renames while retaining structural syntax.
+ */
+export function normalizedAstTokens(
+  filePath: string,
+  source: string,
+  ranges: ReadonlyArray<{ id: string; startLine: number; endLine: number }>,
+): Map<string, string[]> {
+  const tree = parse(source, detectLanguage(filePath));
+  if (!tree) return new Map();
+  const leaves: Array<{ line: number; endLine: number; type: string }> = [];
+  const visit = (node: TSNode): void => {
+    if (node.childCount === 0) {
+      leaves.push({ line: node.startPosition.row + 1, endLine: node.endPosition.row + 1, type: node.type });
+      return;
+    }
+    for (const child of node.children) visit(child);
+  };
+  visit(tree.rootNode);
+  return new Map(ranges.map((range) => [
+    range.id,
+    leaves
+      .filter((leaf) => leaf.line >= range.startLine && leaf.endLine <= range.endLine)
+      .map((leaf) => leaf.type),
+  ]));
 }

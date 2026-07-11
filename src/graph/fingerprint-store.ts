@@ -96,6 +96,12 @@ export class FingerprintStore {
          body_hash=excluded.body_hash, fingerprint=excluded.fingerprint`,
     ).run(source.scaffoldFile, source.nodeId, source.source, source.bodyHash, source.fingerprint);
   }
+
+  deleteGroundedSource(scaffoldFile: string, nodeId: string): void {
+    this.db.prepare(
+      "DELETE FROM _mex_grounded_source WHERE scaffold_file = ? AND node_id = ?",
+    ).run(scaffoldFile, nodeId);
+  }
 }
 
 function decodeRow(row: FingerprintRow): Fingerprint {

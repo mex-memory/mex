@@ -233,6 +233,25 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     }
   }
 
+  // Fresh installs get the additive code graph by default. A missing runtime,
+  // grammar, or SQLite capability must never make scaffold setup unusable.
+  if (mode === "code-repo" && !dryRun) {
+    try {
+      info("Building code graph...");
+      const { createGraphEngine } = await import("../graph/index.js");
+      const graph = createGraphEngine({ rootDir: projectRoot });
+      try {
+        await graph.build();
+        ok("Code graph ready");
+      } finally {
+        graph.close();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warn(`Code graph unavailable — setup will continue: ${message}`);
+    }
+  }
+
   // ── Step 5: Build population prompt ──
 
   let prompt: string;

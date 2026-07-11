@@ -17,6 +17,9 @@ import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
 import { toPosix } from "../paths.js";
+import { loadGroundingRuntime, type GroundingRuntime } from "../graph/runtime.js";
+
+let graphUpgradeNudgeShown = false;
 
 /**
  * Default glob patterns used to locate scaffold markdown files, relative to
@@ -46,6 +49,9 @@ export interface RunDriftCheckOpts {
   /** Override the glob patterns used to discover scaffold files (relative to
    *  `config.scaffoldRoot`). Defaults to {@link DEFAULT_SCAFFOLD_PATTERNS}. */
   scaffoldPatterns?: readonly string[];
+  /** Internal seam used to verify graph-load graceful degradation. */
+  groundingRuntimeLoader?: (config: MexConfig) => Promise<GroundingRuntime | null>;
+  graphWarning?: (message: string) => void;
 }
 
 /** Run full drift detection across all scaffold files */
@@ -60,6 +66,22 @@ export async function runDriftCheck(
   const allClaims: Claim[] = [];
   const allIssues: DriftIssue[] = [];
   const checkerIssueCounts: Array<[string, number]> = [];
+  const hasGroundings = scaffoldFiles.some((filePath) => Boolean(parseFrontmatter(filePath)?.grounds_to));
+  let groundingRuntime: GroundingRuntime | null = null;
+  if (hasGroundings) {
+    try {
+      groundingRuntime = await (opts.groundingRuntimeLoader ?? loadGroundingRuntime)(config);
+      if (!groundingRuntime && !graphUpgradeNudgeShown) {
+        graphUpgradeNudgeShown = true;
+        (opts.graphWarning ?? console.warn)(
+          "A code graph unlocks sharper drift detection. Run `mex graph`.",
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      (opts.graphWarning ?? console.warn)(`Code graph unavailable; grounding checks skipped: ${message}`);
+    }
+  }
 
   // Extract claims from all files
   for (const filePath of scaffoldFiles) {
@@ -89,6 +111,14 @@ export async function runDriftCheck(
 
     checkerIssueCounts.push([`edges:${source}`, edgeIssues.length]);
     checkerIssueCounts.push([`staleness:${source}`, stalenessIssues.length]);
+
+    if (groundingRuntime) {
+      const groundingIssues = groundingRuntime.checker(
+        frontmatter, filePath, source, projectRoot, scaffoldRoot,
+      );
+      allIssues.push(...groundingIssues);
+      checkerIssueCounts.push([`grounding:${source}`, groundingIssues.length]);
+    }
   }
 
   // Run checkers that work on claims
@@ -139,17 +169,19 @@ export async function runDriftCheck(
     ? buildVerboseLog(scaffoldFiles.length, allClaims, checkerIssueCounts)
     : undefined;
 
-  return {
+  const report = {
     score,
     issues: allIssues,
     filesChecked: scaffoldFiles.length,
     timestamp: new Date().toISOString(),
     verboseLog,
   };
+  groundingRuntime?.close();
+  return report;
 }
 
 /** Find all markdown files that are part of the scaffold */
-function findScaffoldFiles(
+export function findScaffoldFiles(
   projectRoot: string,
   scaffoldRoot: string,
   patterns: readonly string[] = DEFAULT_SCAFFOLD_PATTERNS

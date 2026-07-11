@@ -3,16 +3,20 @@ import { resolve, dirname, basename } from "node:path";
 import { globSync } from "glob";
 import { getGitDiff } from "../git.js";
 import type { SyncTarget } from "../types.js";
+import type { MexConfig } from "../types.js";
+import type { GroundingRuntime } from "../graph/runtime.js";
+import { groundingPromptContext } from "../graph/runtime.js";
 
 /** Build a single combined prompt covering all targets */
 export async function buildCombinedBrief(
   targets: SyncTarget[],
-  projectRoot: string
+  projectRoot: string,
+  grounding?: { config: MexConfig; runtime: GroundingRuntime },
 ): Promise<string> {
   const sections: string[] = [];
 
   for (const target of targets) {
-    sections.push(await buildFileSection(target, projectRoot));
+    sections.push(await buildFileSection(target, projectRoot, grounding));
   }
 
   return `The following scaffold files have drift issues that need fixing. Fix all of them in one pass.
@@ -41,7 +45,8 @@ When a referenced path no longer exists, find the correct current path from the 
 /** Build the content section for a single target (no wrapper instructions) */
 async function buildFileSection(
   target: SyncTarget,
-  projectRoot: string
+  projectRoot: string,
+  grounding?: { config: MexConfig; runtime: GroundingRuntime },
 ): Promise<string> {
   const filePath = resolve(projectRoot, target.file);
   let fileContent: string;
@@ -93,7 +98,28 @@ ${diff}
 \`\`\``;
   }
 
+  const groundingContext = grounding ? buildGroundingContext(target, grounding.config, grounding.runtime) : "";
+  if (groundingContext) section += `\n\n**Grounded node scope (use this exact old/new body):**\n${groundingContext}`;
+
   return section;
+}
+
+function buildGroundingContext(target: SyncTarget, config: MexConfig, runtime: GroundingRuntime): string {
+  const rows: string[] = [];
+  for (const issue of target.issues) {
+    if (!issue.code.startsWith("GROUNDING_")) continue;
+    const nodeId = issue.message.match(/(?:changed|exists|moved): ([^;]+)/)?.[1];
+    const candidateId = issue.message.match(/candidate: (\S+)/)?.[1];
+    if (!nodeId) continue;
+    const context = groundingPromptContext(config, target.file, nodeId, runtime, candidateId);
+    if (!context) continue;
+    rows.push([
+      `Node: ${context.nodeId}${context.candidateId ? ` (candidate: ${context.candidateId})` : ""}`,
+      "Old body:", "```", context.oldBody, "```",
+      "New body:", "```", context.newBody, "```",
+    ].join("\n"));
+  }
+  return rows.join("\n\n");
 }
 
 /** For missing path issues, list actual files in the relevant directories */

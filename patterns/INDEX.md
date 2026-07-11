@@ -23,3 +23,4 @@ Lookup table for all pattern files in this directory. Check here before starting
 
 | Pattern | Use when |
 |---------|----------|
+| [code-graph-integration.md](code-graph-integration.md) | Wiring or changing graph build, grounding check, reconciliation, or sync repair |

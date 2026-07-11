@@ -22,9 +22,11 @@ import type { BuildResult, GraphEngine, NodeSearchOptions } from "./engine.js";
 import { openGraphDatabase } from "./db/database.js";
 import { GraphStore, type FileRecord, type UnresolvedRefRecord } from "./db/store.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
-import { detectLanguage, extractFile, isSupportedSourceFile, loadGrammars } from "./extraction/index.js";
+import { detectLanguage, extractFile, isSupportedSourceFile, loadGrammars, normalizedAstTokens } from "./extraction/index.js";
 import { resolveReferences } from "./resolution/resolver.js";
 import { getCallees, getCallers } from "./traversal/traversal.js";
+import { FingerprintStore } from "./fingerprint-store.js";
+import { createFingerprint } from "./fingerprint.js";
 
 /** Directories never worth indexing. */
 const IGNORE_GLOBS = [
@@ -112,6 +114,7 @@ class GraphEngineImpl implements GraphEngine {
 
     // Second pass: bind every parked cross-file reference to a node id.
     const refEdges = this.resolveAll(store);
+    this.refreshFingerprints(store, root);
 
     return {
       filesIndexed: files.length,
@@ -162,6 +165,7 @@ class GraphEngineImpl implements GraphEngine {
     // so incoming edges cascade-cleared by the delete above are restored.
     store.clearReferenceEdges();
     const refEdges = this.resolveAll(store);
+    this.refreshFingerprints(store, this.rootDir);
 
     return {
       filesIndexed: rels.length,
@@ -240,6 +244,27 @@ class GraphEngineImpl implements GraphEngine {
       for (const edge of edges) store.insertEdge(edge);
     });
     return edges.length;
+  }
+
+  /** Refresh every body-bearing node after resolution so neighbor ids are final. */
+  private refreshFingerprints(store: GraphStore, root: string): void {
+    const fingerprints = new FingerprintStore(this.db!);
+    const byFile = new Map<string, GraphNode[]>();
+    for (const node of store.getAllNodes().filter((entry) => entry.bodyHash)) {
+      const nodes = byFile.get(node.filePath) ?? [];
+      nodes.push(node);
+      byFile.set(node.filePath, nodes);
+    }
+    for (const [filePath, nodes] of byFile) {
+      let source: string;
+      try { source = readFileSync(resolve(root, filePath), "utf-8"); } catch { continue; }
+      const tokens = normalizedAstTokens(filePath, source, nodes);
+      for (const node of nodes) {
+        const callers = getCallers(store, node.id).map((entry) => entry.id);
+        const callees = getCallees(store, node.id).map((entry) => entry.id);
+        fingerprints.upsert(node.id, createFingerprint(tokens.get(node.id) ?? [], callers, callees));
+      }
+    }
   }
 
   // --- Reads (synchronous SQL — no grammar work) ----------------------------

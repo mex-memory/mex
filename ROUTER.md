@@ -24,21 +24,17 @@ If you haven't already read `AGENTS.md`, read it now — it contains the project
 Then read this file fully before doing anything else in this session.
 
 ## Current Project State
-<!-- What is working. What is not yet built. Known issues.
-     Update this section whenever significant work is completed.
-     This is the primary drift prevention mechanism — it re-grounds the agent every session.
-     Length: 3 sections (Working / Not Built / Known Issues), 3-7 items each.
-     Example:
-     **Working:**
-     - User authentication and session management
-     - Core CRUD operations for all main entities
+**Working:**
+- TS/JS graph build, cross-file resolution, body hashes, and MinHash/LSH fingerprints
+- Grounding checker #12 with graph freshness and graceful degradation
+- Sync grounding repair: exact-node prompts, baseline refresh, and durable MOVED write-back
 
-     **Not yet built:**
-     - Email notification system
-     - Admin dashboard
+**Not Built:**
+- Graph-native `impact` and `graph query` commands (Phase 3)
+- Additional language extractors beyond TS/JS/TSX
 
-     **Known issues:**
-     - Pagination breaks on filtered queries with more than 1000 results -->
+**Known Issues:**
+- Reconciler thresholds remain evaluation-tuned placeholders from `src/graph/config.ts`
 
 ## Routing Table
 

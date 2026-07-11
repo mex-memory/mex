@@ -18,16 +18,11 @@ last_updated: [YYYY-MM-DD]
 # Architecture
 
 ## System Overview
-<!-- Describe how the major pieces connect.
-     Focus on FLOW not technology — how does a request/action move through the system?
-     Use the actual names of components, services, and modules from this codebase.
-     Format: a simple text flow diagram or short prose description.
-     Length: 5-15 lines. Minimum 5 lines. Should be readable in 30 seconds.
-     Example:
-     "Request comes in via Express router → validated by middleware →
-     passed to service layer → service calls repository for data →
-     repository queries PostgreSQL → result returned up the chain →
-     formatted by serializer → sent as JSON response." -->
+`mex graph` extracts TS/JS nodes → resolves edges → writes SQLite → refreshes fingerprints.
+`mex check` always runs eleven filesystem/lexical checkers independently.
+When `grounds_to` exists, the graph runtime incrementally syncs changed source files and adds checker #12.
+Missing or broken graph loading skips checker #12 without aborting the legacy pipeline.
+`mex sync` persists confident MOVED repairs, scopes prompts to old/new node bodies, then refreshes grounding baselines after a successful agent pass.
 
 ## Key Components
 <!-- List the major components, modules, or services in this project.
