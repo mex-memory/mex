@@ -34,6 +34,11 @@ last_updated: [YYYY-MM-DD]
      - Lint: `npm run lint`
      - Build: `npm run build` -->
 
+## Code Graph
+Before editing a symbol, run `mex impact <symbol|file>` to see affected callers and scaffold memory.
+Use `mex graph query <who-calls|what-calls|where-defined> <symbol>` for structural lookups instead of grepping the codebase.
+During `mex sync`, adjudicate any AMBIGUOUS grounding; after repairs, ensure the refreshed grounding is re-emitted.
+
 ## Scaffold Growth
 After meaningful work, run GROW:
 - Ground: what changed in reality?
