@@ -47,7 +47,7 @@
     "node": ">=22.5"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/copy-graph-assets.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -67,6 +67,7 @@
     "simple-git": "^3.27.0",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.0.0",
+    "web-tree-sitter": "^0.25.10",
     "yaml": "^2.7.0"
   },
   "devDependencies": {
@@ -74,6 +75,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.14",
     "ink-testing-library": "^4.0.0",
+    "tree-sitter-wasms": "^0.1.12",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

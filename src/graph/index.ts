@@ -83,3 +83,10 @@ export type { ReconcilerParams } from "./config.js";
 
 // --- Shared stub error -------------------------------------------------------
 export { NotImplementedError } from "./errors.js";
+
+// --- Real engine implementation (Track A, Phase 1) ---------------------------
+// Additive: the concrete `GraphEngine` that replaces `notImplementedGraphEngine`.
+// No frozen type/interface signature changes — `createGraphEngine` returns the
+// frozen `GraphEngine`, so Track B and Phase-2 integration keep their contract.
+export { createGraphEngine } from "./engine-impl.js";
+export type { GraphEngineOptions } from "./engine-impl.js";
