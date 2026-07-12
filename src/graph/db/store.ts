@@ -7,14 +7,14 @@
 // edges), and the bulk reads resolution uses. Rows are snake_case in SQLite and
 // decoded to the camelCase `GraphNode`/`GraphEdge` value types here.
 
-import type { EdgeKind, GraphEdge, GraphNode, Language, NodeKind } from "../types.js";
+import type { EdgeKind, GraphEdge, GraphNode, Language, NodeKind, ReferenceKind } from "../types.js";
 import type { SqliteDatabase } from "./sqlite.js";
 
 /** An unresolved reference row: a name a node points at, bound after indexing. */
 export interface UnresolvedRefRecord {
   fromNodeId: string;
   referenceName: string;
-  referenceKind: string;
+  referenceKind: ReferenceKind;
   filePath: string;
   language: Language;
   line?: number;
@@ -277,7 +277,7 @@ export class GraphStore {
     return rows.map((r) => ({
       fromNodeId: r.from_node_id,
       referenceName: r.reference_name,
-      referenceKind: r.reference_kind,
+      referenceKind: r.reference_kind as ReferenceKind,
       line: r.line,
       column: r.col,
       candidates: parseJson<string[]>(r.candidates),

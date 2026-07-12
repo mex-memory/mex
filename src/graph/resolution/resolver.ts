@@ -15,6 +15,7 @@
 
 import type { EdgeKind, GraphEdge, GraphNode, NodeKind } from "../types.js";
 import type { UnresolvedRefRecord } from "../db/store.js";
+import type { FrameworkResolver, ResolutionContext } from "./types.js";
 
 /** Module-file extensions tried when resolving a relative import specifier. */
 const MODULE_EXTENSIONS = [
@@ -46,6 +47,7 @@ const TARGET_KINDS: Record<string, NodeKind[]> = {
 export function resolveReferences(
   nodes: GraphNode[],
   refs: UnresolvedRefRecord[],
+  framework: { resolvers: readonly FrameworkResolver[]; context: ResolutionContext } | null = null,
 ): GraphEdge[] {
   const byId = new Map<string, GraphNode>();
   const byName = new Map<string, GraphNode[]>();
@@ -65,7 +67,13 @@ export function resolveReferences(
   const seen = new Set<string>(); // dedup (source|target|kind)
   const importsByFile = new Map<string, Set<string>>(); // file → imported file paths
 
-  const push = (source: string, target: string, kind: EdgeKind, ref: UnresolvedRefRecord) => {
+  const push = (
+    source: string,
+    target: string,
+    kind: EdgeKind,
+    ref: UnresolvedRefRecord,
+    provenance: GraphEdge["provenance"] = "tree-sitter",
+  ) => {
     const key = `${source}|${target}|${kind}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -75,7 +83,7 @@ export function resolveReferences(
       kind,
       line: ref.line,
       column: ref.column,
-      provenance: "tree-sitter",
+      provenance,
     });
   };
 
@@ -85,6 +93,7 @@ export function resolveReferences(
     if (ref.referenceKind !== "imports") continue;
     const fromNode = byId.get(ref.fromNodeId);
     if (!fromNode) continue;
+
     const targetPath = resolveModulePath(fromNode.filePath, ref.referenceName, fileNodeByPath);
     if (!targetPath) continue;
     const targetFileId = fileNodeByPath.get(targetPath);
@@ -100,6 +109,18 @@ export function resolveReferences(
     if (ref.referenceKind === "imports") continue;
     const fromNode = byId.get(ref.fromNodeId);
     if (!fromNode) continue;
+
+    const frameworkResolution = framework?.resolvers
+      .filter((resolver) => !resolver.languages || resolver.languages.includes(ref.language))
+      .map((resolver) => resolver.resolve(ref, framework.context))
+      .find((result) => result !== null);
+    if (frameworkResolution) {
+      const kind = ref.referenceKind === "function_ref"
+        ? "references"
+        : ref.referenceKind as EdgeKind;
+      push(ref.fromNodeId, frameworkResolution.targetNodeId, kind, ref, "heuristic");
+      continue;
+    }
 
     // A `recv.method` callee resolves on its method name (last segment).
     const simpleName = lastSegment(ref.referenceName);

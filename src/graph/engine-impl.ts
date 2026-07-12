@@ -24,6 +24,8 @@ import { GraphStore, type FileRecord, type UnresolvedRefRecord } from "./db/stor
 import type { SqliteDatabase } from "./db/sqlite.js";
 import { detectLanguage, extractFile, isSupportedSourceFile, loadGrammars, normalizedAstTokens } from "./extraction/index.js";
 import { resolveReferences } from "./resolution/resolver.js";
+import { createResolutionContext } from "./resolution/context.js";
+import { FRAMEWORK_RESOLVERS } from "./resolution/frameworks/index.js";
 import { getCallees, getCallers } from "./traversal/traversal.js";
 import { FingerprintStore } from "./fingerprint-store.js";
 import { createFingerprint } from "./fingerprint.js";
@@ -112,8 +114,9 @@ class GraphEngineImpl implements GraphEngine {
       }
     });
 
-    // Second pass: bind every parked cross-file reference to a node id.
-    const refEdges = this.resolveAll(store);
+    this.extractFrameworkNodes(store, root, files.map((file) => file.relPath));
+    // Second pass: bind every parked cross-file/framework reference to a node id.
+    const refEdges = this.resolveAll(store, root);
     this.refreshFingerprints(store, root);
 
     return {
@@ -161,10 +164,11 @@ class GraphEngineImpl implements GraphEngine {
       }
     });
 
+    this.extractFrameworkNodes(store, this.rootDir, rels);
     // Rebuild ALL reference edges from unresolved_refs (contains edges untouched)
     // so incoming edges cascade-cleared by the delete above are restored.
     store.clearReferenceEdges();
-    const refEdges = this.resolveAll(store);
+    const refEdges = this.resolveAll(store, this.rootDir);
     this.refreshFingerprints(store, this.rootDir);
 
     return {
@@ -236,14 +240,48 @@ class GraphEngineImpl implements GraphEngine {
   }
 
   /** Resolve every parked reference to a node id and persist the edges. */
-  private resolveAll(store: GraphStore): number {
+  private resolveAll(store: GraphStore, root: string): number {
     const nodes = store.getAllNodes();
     const refs = store.getAllUnresolvedRefs();
-    const edges = resolveReferences(nodes, refs);
+    const context = createResolutionContext(store, root);
+    const resolvers = FRAMEWORK_RESOLVERS.filter((resolver) => resolver.detect(context));
+    const edges = resolveReferences(nodes, refs, { resolvers, context });
     store.transaction(() => {
       for (const edge of edges) store.insertEdge(edge);
     });
     return edges.length;
+  }
+
+  /** Run optional framework extraction after language nodes exist. */
+  private extractFrameworkNodes(store: GraphStore, root: string, filePaths: readonly string[]): void {
+    const context = createResolutionContext(store, root);
+    const resolvers = FRAMEWORK_RESOLVERS.filter((resolver) => resolver.detect(context));
+    for (const filePath of filePaths) {
+      let content: string;
+      try { content = readFileSync(resolve(root, filePath), "utf-8"); } catch { continue; }
+      const language = detectLanguage(filePath);
+      for (const resolver of resolvers) {
+        if (!resolver.extract || (resolver.languages && !resolver.languages.includes(language))) continue;
+        const extracted = resolver.extract(filePath, content);
+        for (const node of extracted.nodes) {
+          store.insertNode(node);
+          const fileNode = store.getNodeById(`file:${filePath}`);
+          if (fileNode) store.insertEdge({ source: fileNode.id, target: node.id, kind: "contains", provenance: "heuristic" });
+        }
+        for (const ref of extracted.references) {
+          store.insertUnresolvedRef({
+            fromNodeId: ref.fromNodeId,
+            referenceName: ref.referenceName,
+            referenceKind: ref.referenceKind,
+            filePath: ref.filePath,
+            language: ref.language,
+            line: ref.line,
+            column: ref.column,
+            candidates: ref.candidates,
+          });
+        }
+      }
+    }
   }
 
   /** Refresh every body-bearing node after resolution so neighbor ids are final. */

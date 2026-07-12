@@ -32,6 +32,12 @@ beforeAll(async () => {
       `export function run(): number {\n  return helper(41);\n}\n` +
       `export class App {\n  start(): number { return run(); }\n}\n`,
   );
+  writeFileSync(join(root, "package.json"), JSON.stringify({ dependencies: { express: "^5.0.0" } }));
+  writeFileSync(
+    join(root, "routes.ts"),
+    `import express from "express";\nconst app = express();\n` +
+      `export function healthHandler(): void {}\napp.get("/health", healthHandler);\n`,
+  );
   engine = createGraphEngine({ rootDir: root });
   await engine.build(root);
 });
@@ -86,6 +92,17 @@ describe("GraphEngine build + reads", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("activates the Express resolver and links a route to its handler", () => {
+    const route = engine.searchNodes("health").find((node) => node.kind === "route");
+    const handlerId = findId("healthHandler");
+    expect(route).toBeDefined();
+    const db = openSqlite(join(root, ".mex", "graph.db"));
+    try {
+      expect(db.prepare("SELECT kind, provenance FROM edges WHERE source = ? AND target = ?")
+        .get(route!.id, handlerId)).toMatchObject({ kind: "references", provenance: "heuristic" });
+    } finally { db.close(); }
   });
 });
 
