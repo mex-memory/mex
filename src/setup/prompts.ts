@@ -2,9 +2,52 @@
  * Population prompt templates for mex setup.
  * Three variants based on project state:
  *   - fresh: no source files, ask user questions
- *   - existing with scanner brief: AI reasons from pre-analyzed data
- *   - existing without brief: AI explores filesystem directly
+ *   - existing with scanner brief: AI gets structure from pre-analysis and code facts from the graph
+ *   - existing without brief: AI gets code facts from the graph, with narrow high-level discovery
  */
+
+const GRAPH_GROUNDING_WORKFLOW = `
+CODE-GRAPH WORKFLOW — use this for all implementation understanding:
+
+The setup step has already built .mex/graph.db. Do not walk the source tree or
+open representative implementation files to learn what code does. Use the
+agent-facing graph commands from this project root instead:
+
+- \`mex graph scope "<task or domain>"\` — primary tool. It returns JSONL facts
+  for FTS seeds plus their one-hop callers/callees, including source, signatures,
+  node ids, and serialized fingerprints.
+- \`mex graph query where-defined <symbol>\` — resolve an exact symbol.
+- \`mex graph query who-calls <symbol>\` / \`what-calls <symbol>\` — follow calls.
+- \`mex impact <symbol|file>\` — inspect transitive blast radius when useful.
+
+Use the pre-analyzed brief only for high-level structure: folders, tooling,
+dependencies, and entry points. Use hydrated graph output for claims about
+specific code behavior. If a graph command returns GRAPH_UNAVAILABLE, report
+that setup cannot author trustworthy grounding; never invent ids or fingerprints.
+
+The governing rule is: READ BROAD, GROUND TIGHT.
+
+1. Read the whole \`mex graph scope\` neighborhood needed to understand a task.
+2. In each scaffold file that makes a specific behavioral claim, replace its
+   empty \`grounds_to\` with only the functions/methods that embody that claim:
+
+   grounds_to:
+     - node: "<exact id from graph JSONL>"
+       fingerprint: "<exact fingerprint from the same graph fact>"
+
+   Never ground every node returned by scope. Callers/callees provide reading
+   context; they are not automatically grounding targets. Do not ground file,
+   import, parameter, or vague component nodes.
+3. When prose names a load-bearing function, method, or class that you looked
+   up in the graph, make the readable symbol mention a navigation anchor:
+   [\`symbolName()\`](mex://<exact-node-id>). Anchor where a future agent would
+   plausibly jump to code, not every incidental mention. Inline anchors contain
+   the node id only; never put a fingerprint in the URI.
+4. Broad architecture/stack/conventions files should ground sparsely or remain
+   \`grounds_to: []\`. Pattern files and deep domain files should ground tightly
+   to the few symbols that implement their documented behavior. Grounding must
+   follow actual prose claims—never add grounding merely so every file has some.
+`;
 
 /** Shared pass 2+3 instructions appended to existing-project prompts */
 const EXISTING_PASSES_2_3 = `
@@ -21,6 +64,9 @@ types in this project. Focus on:
 Each pattern should be specific to this project — real file paths, real gotchas,
 real verify steps derived from the code you read in Pass 1.
 Use the format in .mex/patterns/README.md. Name descriptively (e.g., add-endpoint.md).
+Before writing each pattern, run \`mex graph scope "<pattern task>"\`. Use the
+broad neighborhood for understanding, then author tight \`grounds_to\` entries
+and load-bearing inline \`mex://\` anchors from the exact returned facts.
 
 Do NOT try to generate a pattern for every possible task type. The scaffold
 grows incrementally — the behavioural contract (step 5: GROW) will create
@@ -62,6 +108,9 @@ For each slot:
 - Do not leave any slot empty — if you cannot determine the answer,
   write "[TO DETERMINE]" and explain what information is needed
 - Keep length within the guidance given in each annotation
+- Preserve the grounding shape and apply the code-graph workflow above: specific
+  behavioral claims get tight grounds_to entries and useful symbol anchors;
+  broad inventory or conceptual prose stays sparse or ungrounded
 
 Then assess: does this project have domains complex enough that cramming
 them into architecture.md would make it too long or too shallow?
@@ -162,10 +211,12 @@ Read the following files in order before doing anything else:
 5. .mex/context/decisions.md — same
 6. .mex/context/setup.md — same
 
+${GRAPH_GROUNDING_WORKFLOW}
+
 Here is a pre-analyzed brief of the codebase — do NOT explore the filesystem
 yourself for basic structure. Reason from this brief for dependencies, entry
-points, tooling, and folder layout. You may still read specific files when
-you need to understand implementation details for patterns or architecture.
+points, tooling, and folder layout. For implementation details, use the graph
+workflow above rather than opening source files.
 
 <brief>
 ${briefJson}
@@ -188,11 +239,11 @@ Read the following files in order before doing anything else:
 5. .mex/context/decisions.md — same
 6. .mex/context/setup.md — same
 
-Then explore this codebase:
-- Read the main entry point(s)
-- Read the folder structure
-- Read 2-3 representative files from each major layer
-- Read any existing README or documentation
+${GRAPH_GROUNDING_WORKFLOW}
+
+No scanner brief is available. You may inspect manifests, README documentation,
+and folder names for high-level structure only. Do not sample implementation
+files. Use \`mex graph scope\` and the query/impact commands for code behavior.
 
 PASS 1 — Populate knowledge files:
 ${EXISTING_PASS_1}

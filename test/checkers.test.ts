@@ -558,11 +558,12 @@ describe("checkBrokenLinks", () => {
     expect(issues).toHaveLength(0);
   });
 
-  it("ignores external links and anchors", () => {
+  it("ignores external links, document anchors, and mex graph pointers", () => {
     const file = join(tmpDir, "ROUTER.md");
     writeFileSync(
       file,
-      "[web](https://example.com) [mail](mailto:a@b.com) [section](#intro)\n"
+      "[web](https://example.com) [mail](mailto:a@b.com) [section](#intro) " +
+      "[`run()`](mex://function:0123456789abcdef)\n"
     );
     const issues = checkBrokenLinks([file], tmpDir, tmpDir);
     expect(issues).toHaveLength(0);

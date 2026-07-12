@@ -72,6 +72,7 @@ function isExternalOrAnchor(target: string): boolean {
   return (
     /^https?:\/\//i.test(target) ||
     /^mailto:/i.test(target) ||
+    /^mex:\/\//i.test(target) ||
     target.startsWith("#")
   );
 }
