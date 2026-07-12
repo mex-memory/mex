@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-12
+
+### Added
+- Deterministic local SQLite code graph for TypeScript, TSX, JavaScript, and JSX, including cross-file resolution, body hashes, MinHash fingerprints, and LSH reconciliation.
+- Twelfth drift checker for `grounds_to` code-node grounding, with drift, gone, ambiguous, and durable moved-node repair behavior.
+- `mex graph`, `mex graph query`, and `mex impact` commands for graph building, structural lookup, and blast-radius analysis.
+- Express reference resolver that links route registrations to handler nodes.
+- Fresh setup now builds the graph by default; missing or broken graph support degrades to the original eleven checkers.
+
+### Changed
+- Minimum Node.js version is now 22.5 because the graph uses the built-in `node:sqlite` module.
+- The mex repository's own scaffold moved from the legacy root layout into `.mex/`; published user scaffolds continue to come from `templates/`.
+- Agent tool-config templates now explain graph queries, impact analysis, and ambiguous-grounding adjudication.
+- Telemetry delivery failures are silent so offline analytics cannot pollute JSON or JSONL command output.
+
+### Compatibility
+- Existing scaffolds without `grounds_to` or `.mex/graph.db` continue to run the original filesystem and lexical checks unchanged.
+- Graph interfaces are source-level contribution seams, not public npm API exports.
+
 ## [0.6.3] - 2026-07-06
 
 ### Added

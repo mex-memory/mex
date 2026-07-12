@@ -15,7 +15,7 @@
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/KV5u8yuBp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml)
-[![Node.js >=20](https://img.shields.io/badge/node-%3E%3D20-339933)](package.json)
+[![Node.js >=22.5](https://img.shields.io/badge/node-%3E%3D22.5-339933)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](package.json)
 [![Agent memory](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](README.md)
 [![MCP](https://img.shields.io/badge/MCP-compatible-6f8cff)](#mcp-server)
@@ -56,9 +56,11 @@ mex creates a structured markdown scaffold for agent memory:
 - `patterns/` — reusable task guides with gotchas and verification steps
 - `.mex/events/decisions.jsonl` — append-only notes through `mex log`
 
-The CLI keeps that scaffold honest. It checks paths, commands, dependencies, pattern indexes, staleness, and script coverage without spending AI tokens. When drift appears, `mex sync` builds targeted prompts so the agent fixes only the stale pieces.
+The CLI keeps that scaffold honest. It checks paths, commands, dependencies, pattern indexes, staleness, script coverage, and code-node grounding without spending AI tokens. A deterministic SQLite code graph lets scaffold memory point at exact symbols and survive refactors through fingerprint reconciliation.
 
 ## Quick Start
+
+Requires Node.js 22.5 or newer (`node:sqlite` powers the local graph database).
 
 The npm package is named `mex-agent` because `mex` was already taken. The CLI command is still `mex`.
 
@@ -66,7 +68,7 @@ The npm package is named `mex-agent` because `mex` was already taken. The CLI co
 npx mex-agent setup
 ```
 
-Setup creates the `.mex/` scaffold, asks which AI tool you use, pre-scans your codebase, and generates a targeted prompt to populate the memory files. It takes about five minutes.
+Setup creates the `.mex/` scaffold, builds the code graph by default, asks which AI tool you use, pre-scans your codebase, and generates a targeted prompt to populate the memory files. It takes about five minutes.
 
 At the end of setup, you can install mex globally:
 
@@ -108,7 +110,7 @@ Editable source: [docs/diagrams/context-routing.excalidraw](docs/diagrams/contex
 
 ## Drift Detection
 
-Eleven checkers validate your scaffold against the real codebase. Zero tokens, zero AI.
+Twelve checkers validate your scaffold against the real codebase. Zero tokens, zero AI.
 
 | Checker | What it catches |
 |---------|----------------|
@@ -123,6 +125,7 @@ Eleven checkers validate your scaffold against the real codebase. Zero tokens, z
 | **tool-config-sync** | Installed AI tool config files (e.g. `CLAUDE.md`, `.cursorrules`) out of sync with each other |
 | **todo-fixme** | Unresolved `TODO` / `FIXME` markers left in scaffold markdown |
 | **broken-link** | Markdown links to local files that do not exist on disk |
+| **grounding** | Grounded code nodes whose body changed, moved ambiguously, or disappeared |
 
 Scoring starts at 100. mex deducts 10 per error, 3 per warning, and 1 per info.
 
@@ -150,6 +153,10 @@ All commands run from your project root. If you did not install globally, replac
 | `mex sync --warnings` | Include warning-only files in sync |
 | `mex init` | Pre-scan codebase and build a structured brief for AI |
 | `mex init --json` | Raw scanner brief as JSON |
+| `mex graph` | Build or rebuild the TS/JS code graph in `.mex/graph.db` |
+| `mex graph --json` | Emit the graph build summary as JSON |
+| `mex graph query <relation> <symbol>` | JSONL structural lookup: `who-calls`, `what-calls`, or `where-defined` |
+| `mex impact <symbol\|file>` | JSONL transitive caller and scaffold-memory blast radius |
 | `mex log <message>` | Append a note, decision, risk, or todo |
 | `mex timeline` | View recent event log entries |
 | `mex heartbeat` | Run lightweight persistent-agent health checks once |
@@ -159,6 +166,24 @@ All commands run from your project root. If you did not install globally, replac
 | `mex watch --uninstall` | Remove the hook |
 | `mex completion <shell>` | Print shell completions |
 | `mex commands` | List commands and scripts with descriptions |
+
+## Code Graph and Grounding
+
+0.7.0 graphs TypeScript, TSX, JavaScript, and JSX with tree-sitter. Express route registrations receive framework-aware route-to-handler edges. More languages and framework resolvers will follow through the 0.7.x contributor program after this base release.
+
+Scaffold files can ground memory to exact graph nodes:
+
+```yaml
+---
+grounds_to:
+  - node: "function:a3f8...c21"
+    fingerprint: "mh:64:9f2a..."
+---
+```
+
+`mex check` compares each grounding with its saved body and fingerprint. A body edit produces `GROUNDING_DRIFT`; a confident rename or move is reconciled and durably re-grounded by `mex sync`; uncertain matches produce `GROUNDING_AMBIGUOUS` for the agent to adjudicate.
+
+Existing installations remain compatible. If no graph exists, the eleven filesystem/lexical checkers still run and mex emits a one-time suggestion to run `mex graph`. If SQLite or a grammar cannot load, graph checks are skipped with a warning while the rest of the CLI continues normally. Unsupported-language files are skipped rather than failing the build.
 
 ## Supported Tools
 

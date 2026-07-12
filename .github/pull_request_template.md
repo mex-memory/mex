@@ -17,7 +17,7 @@
 ## How to test
 
 <!-- Steps to verify the change works, e.g. -->
-<!-- 1. Run `mex drift` on a test project -->
+<!-- 1. Run `mex check` on a test project -->
 <!-- 2. Verify output shows... -->
 
 ## Checklist

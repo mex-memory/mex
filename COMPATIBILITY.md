@@ -1,5 +1,9 @@
 # Compatibility & versioning
 
+## Runtime requirement
+
+mex 0.7.0 requires Node.js 22.5 or newer. The code graph uses the built-in `node:sqlite` module; older Node releases are unsupported.
+
 This document defines `mex-agent`'s public contract: what's stable, what isn't,
 and what counts as a breaking change. It is intended for embedders — tools that
 depend on `mex-agent` as a library — and for `mex-agent` maintainers when
@@ -87,6 +91,20 @@ list. They are not a contract on the list's contents.
 
 ## Scaffold-directory ownership
 
+### Code-node grounding
+
+Scaffold frontmatter may include an optional `grounds_to` array. Each entry stores a graph node id and serialized fingerprint:
+
+```yaml
+grounds_to:
+  - node: "function:a3f8...c21"
+    fingerprint: "mh:64:9f2a..."
+```
+
+Files without `grounds_to` retain their previous behavior. The graph database and grounding baselines under `.mex/` are internal mex data and should not be edited directly.
+
+The `LanguageExtractor` and `FrameworkResolver` interfaces are source-level contribution seams, not part of the public npm API, and may change between minor versions. They are intentionally not exported from `src/index.ts`.
+
 Inside the `.mex/` scaffold directory, some paths are owned by `mex-agent`
 itself, and some are reserved for embedders.
 
@@ -97,6 +115,7 @@ itself, and some are reserved for embedders.
 - `patterns/*.md` — pattern documents (scanned by drift checkers).
 - `events/decisions.jsonl` — append-only event log.
 - `config.json` — persisted scaffold configuration.
+- `graph.db` (plus SQLite sidecar files) — generated code graph, fingerprints, and grounding baselines.
 
 Embedders should not write to these paths.
 
