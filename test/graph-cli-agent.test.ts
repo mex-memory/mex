@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { runGraphQuery, runImpact, type AgentCommandDeps } from "../src/graph/cli-agent.js";
 import type { GraphEngine } from "../src/graph/engine.js";
 import type { GraphNode } from "../src/graph/types.js";
+import { __setTransport, captureCommand, flush } from "../src/telemetry/index.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function node(id: string, name: string, file = "src/a.ts", line = 1): GraphNode {
   return { id, name, kind: "function", qualifiedName: name, filePath: file, language: "typescript", startLine: line, endLine: line + 1, startColumn: 0, endColumn: 1, updatedAt: 1 };
@@ -79,5 +83,39 @@ describe("agent graph commands", () => {
     });
     runGraphQuery("where-defined", "leaf", "/repo", fixture.deps);
     expect(JSON.parse(fixture.output[0])).toMatchObject({ type: "error", code: "GRAPH_UNAVAILABLE", message: "sqlite unavailable" });
+  });
+
+  it("keeps JSONL and stderr clean when telemetry delivery fails", async () => {
+    const fixture = deps();
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const cwd = process.cwd();
+    const home = process.env.MEX_HOME;
+    const env = { dnt: process.env.DO_NOT_TRACK, telemetry: process.env.MEX_TELEMETRY, dev: process.env.MEX_DEV };
+    const isolated = mkdtempSync(join(tmpdir(), "mex-offline-command-"));
+    const attempted = vi.fn(() => { throw new Error("offline"); });
+    try {
+      process.chdir(isolated);
+      process.env.MEX_HOME = isolated;
+      delete process.env.DO_NOT_TRACK;
+      delete process.env.MEX_TELEMETRY;
+      delete process.env.MEX_DEV;
+      __setTransport(attempted);
+      captureCommand("graph query");
+      runGraphQuery("where-defined", "leaf", "/repo", fixture.deps);
+      await flush();
+      expect(attempted).toHaveBeenCalledOnce();
+      expect(stderr).not.toHaveBeenCalled();
+      expect(fixture.output).toHaveLength(1);
+      expect(JSON.parse(fixture.output[0])).toMatchObject({ type: "result", relation: "where-defined", name: "leaf" });
+    } finally {
+      __setTransport(null);
+      process.chdir(cwd);
+      if (home === undefined) delete process.env.MEX_HOME;
+      else process.env.MEX_HOME = home;
+      if (env.dnt === undefined) delete process.env.DO_NOT_TRACK; else process.env.DO_NOT_TRACK = env.dnt;
+      if (env.telemetry === undefined) delete process.env.MEX_TELEMETRY; else process.env.MEX_TELEMETRY = env.telemetry;
+      if (env.dev === undefined) delete process.env.MEX_DEV; else process.env.MEX_DEV = env.dev;
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 });
