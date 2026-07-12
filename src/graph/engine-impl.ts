@@ -118,6 +118,9 @@ class GraphEngineImpl implements GraphEngine {
     // Second pass: bind every parked cross-file/framework reference to a node id.
     const refEdges = this.resolveAll(store, root);
     this.refreshFingerprints(store, root);
+    // Insurance for the external-content FTS table: the trigger-safe writes
+    // above maintain it incrementally, then rebuild from the final node state.
+    store.rebuildSearchIndex();
 
     return {
       filesIndexed: files.length,

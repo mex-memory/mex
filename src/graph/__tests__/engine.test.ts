@@ -32,6 +32,13 @@ beforeAll(async () => {
       `export function run(): number {\n  return helper(41);\n}\n` +
       `export class App {\n  start(): number { return run(); }\n}\n`,
   );
+  // Both methods intentionally map to the same line-independent node id. This
+  // exercises the duplicate-id write path that formerly orphaned FTS rowids.
+  writeFileSync(
+    join(root, "duplicate-methods.ts"),
+    `export class First {\n  execute(): number { return 1; }\n}\n` +
+      `export class Second {\n  execute(): number { return 2; }\n}\n`,
+  );
   writeFileSync(join(root, "package.json"), JSON.stringify({ dependencies: { express: "^5.0.0" } }));
   writeFileSync(
     join(root, "routes.ts"),
@@ -58,6 +65,25 @@ describe("GraphEngine build + reads", () => {
     expect(engine.searchNodes("helper").some((n) => n.name === "helper")).toBe(true);
     expect(engine.searchNodes("run").some((n) => n.name === "run")).toBe(true);
     expect(engine.searchNodes("App").some((n) => n.name === "App")).toBe(true);
+    expect(engine.searchNodes("execute").some((n) => n.name === "execute")).toBe(true);
+  });
+
+  it("keeps the external-content FTS index consistent after duplicate node ids", () => {
+    const db = openSqlite(join(root, ".mex", "graph.db"));
+    try {
+      const nodes = db.prepare("SELECT COUNT(*) AS count FROM nodes").get() as { count: number };
+      const indexed = db.prepare("SELECT COUNT(*) AS count FROM nodes_fts_docsize").get() as { count: number };
+      const orphans = db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM nodes_fts_docsize AS fts
+         LEFT JOIN nodes ON nodes.rowid = fts.id
+         WHERE nodes.rowid IS NULL`,
+      ).get() as { count: number };
+      expect(indexed.count).toBe(nodes.count);
+      expect(orphans.count).toBe(0);
+    } finally {
+      db.close();
+    }
   });
 
   it("getNode returns a node and populates body_hash for body kinds", () => {

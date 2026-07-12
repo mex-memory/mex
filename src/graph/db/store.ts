@@ -145,13 +145,35 @@ export class GraphStore {
   insertNode(node: GraphNode): void {
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO nodes (
+        `INSERT INTO nodes (
            id, kind, name, qualified_name, file_path, language,
            start_line, end_line, start_column, end_column,
            docstring, signature, visibility,
            is_exported, is_async, is_static, is_abstract,
            decorators, type_parameters, return_type, body_hash, updated_at
-         ) VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?,?)`,
+         ) VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET
+           kind = excluded.kind,
+           name = excluded.name,
+           qualified_name = excluded.qualified_name,
+           file_path = excluded.file_path,
+           language = excluded.language,
+           start_line = excluded.start_line,
+           end_line = excluded.end_line,
+           start_column = excluded.start_column,
+           end_column = excluded.end_column,
+           docstring = excluded.docstring,
+           signature = excluded.signature,
+           visibility = excluded.visibility,
+           is_exported = excluded.is_exported,
+           is_async = excluded.is_async,
+           is_static = excluded.is_static,
+           is_abstract = excluded.is_abstract,
+           decorators = excluded.decorators,
+           type_parameters = excluded.type_parameters,
+           return_type = excluded.return_type,
+           body_hash = excluded.body_hash,
+           updated_at = excluded.updated_at`,
       )
       .run(
         node.id,
@@ -177,6 +199,11 @@ export class GraphStore {
         node.bodyHash ?? null,
         node.updatedAt,
       );
+  }
+
+  /** Rebuild the external-content FTS index from the final nodes table. */
+  rebuildSearchIndex(): void {
+    this.db.exec("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')");
   }
 
   /** Insert an edge, skipping it unless both endpoints exist (FK safety). */
