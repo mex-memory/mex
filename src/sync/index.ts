@@ -186,7 +186,7 @@ export async function runSync(
         case "1":
           if (!syncTool) {
             console.log(chalk.yellow("No supported AI CLI detected. Falling back to prompts mode."));
-            console.log(chalk.dim("Supported CLIs: claude, opencode, codex"));
+            console.log(chalk.dim("Supported CLIs: claude, opencode, codex, pi"));
             console.log();
             mode = "prompts";
           } else {

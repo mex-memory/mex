@@ -55,6 +55,7 @@ const TOOL_CONFIGS: Record<string, { src: string; dest: string }> = {
   "4": { src: ".tool-configs/copilot-instructions.md", dest: ".github/copilot-instructions.md" },
   "5": { src: ".tool-configs/opencode.json", dest: ".opencode/opencode.json" },
   "6": { src: ".tool-configs/CLAUDE.md", dest: "AGENTS.md" },  // Codex reads AGENTS.md at root
+  "7": { src: ".tool-configs/CLAUDE.md", dest: "AGENTS.md" },  // Pi reads AGENTS.md at startup
 };
 
 // ── Helpers ──
@@ -346,6 +347,7 @@ const TOOL_CHOICE_MAP: Record<string, AiTool> = {
   "4": "copilot",
   "5": "opencode",
   "6": "codex",
+  "7": "pi",
 };
 
 async function selectToolConfig(
@@ -361,11 +363,12 @@ async function selectToolConfig(
   console.log("  4) GitHub Copilot");
   console.log("  5) OpenCode");
   console.log("  6) Codex (OpenAI)");
-  console.log("  7) Multiple (select next)");
-  console.log("  8) None / skip");
+  console.log("  7) Pi");
+  console.log("  8) Multiple (select next)");
+  console.log("  9) None / skip");
   console.log();
 
-  const choice = (await rl.question("Choice [1-8] (default: 1): ")).trim() || "1";
+  const choice = (await rl.question("Choice [1-9] (default: 1): ")).trim() || "1";
 
   let selectedClaude = false;
   const selectedTools: AiTool[] = [];
@@ -409,16 +412,17 @@ async function selectToolConfig(
     case "4":
     case "5":
     case "6":
+    case "7":
       copyConfig(choice);
       break;
-    case "7": {
-      const multi = (await rl.question("Enter tool numbers separated by spaces (e.g. 1 2 5): ")).trim();
+    case "8": {
+      const multi = (await rl.question("Enter tool numbers separated by spaces (e.g. 1 2 5 7): ")).trim();
       for (const c of multi.split(/\s+/)) {
         copyConfig(c);
       }
       break;
     }
-    case "8":
+    case "9":
       info("Skipped tool config — AGENTS.md in .mex/ works with any tool that can read files");
       break;
     default:
