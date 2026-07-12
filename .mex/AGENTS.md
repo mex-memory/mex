@@ -1,10 +1,10 @@
 ---
 name: agents
 description: Always-loaded project anchor. Read this first. Contains project identity, non-negotiables, commands, and pointer to ROUTER.md for full context.
-last_updated: [YYYY-MM-DD]
+last_updated: "2026-07-12"
 ---
 
-# [Project Name]
+# mex
 
 ## What This Is
 <!-- One sentence. What does this project do?
@@ -22,17 +22,10 @@ last_updated: [YYYY-MM-DD]
      - Always handle errors explicitly — no silent failures -->
 
 ## Commands
-<!-- The exact commands needed to work on this project.
-     Include: run dev server, run tests, run linter, build.
-     Use the actual commands from this codebase — not placeholders.
-     For monorepos or projects with separate frontend/backend, group by area.
-     Target: keep this entire file under 150 tokens. For full-stack projects
-     with separate command sets, up to 200 tokens is acceptable.
-     Example:
-     - Dev: `npm run dev`
-     - Test: `npm test`
-     - Lint: `npm run lint`
-     - Build: `npm run build` -->
+- Dev: `npm run dev`
+- Test: `npm test`
+- Typecheck: `npm run typecheck`
+- Build: `npm run build`
 
 ## Scaffold Growth
 After every task: if no pattern exists for the task type you just completed, create one. If a pattern or context file is now out of date, update it. The scaffold grows from real work, not just setup. See the GROW step in `ROUTER.md` for details.

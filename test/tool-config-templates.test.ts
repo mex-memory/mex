@@ -22,12 +22,12 @@ describe("shipped code-graph agent guidance", () => {
   });
 
   it("keeps maintained equivalents aligned and OpenCode delegated to guided AGENTS.md", () => {
-    const maintained = embedded.map((name) => readFileSync(join(".tool-configs", name), "utf-8"));
+    const maintained = embedded.map((name) => readFileSync(join(".mex/.tool-configs", name), "utf-8"));
     expect(new Set(maintained).size).toBe(1);
     expect(maintained[0]).toContain("mex impact <symbol|file>");
     const agents = readFileSync("templates/AGENTS.md", "utf-8");
     expect(agents).toContain("mex graph query <who-calls|what-calls|where-defined> <symbol>");
-    for (const file of ["templates/.tool-configs/opencode.json", ".tool-configs/opencode.json"]) {
+    for (const file of ["templates/.tool-configs/opencode.json", ".mex/.tool-configs/opencode.json"]) {
       expect(JSON.parse(readFileSync(file, "utf-8")).instructions).toContain(".mex/AGENTS.md");
     }
   });
