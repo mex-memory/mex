@@ -6,6 +6,9 @@ import {
   isNegatedSection,
   extractGroundings,
   writeGroundings,
+  extractMexAnchorIds,
+  findMexAnchors,
+  rewriteMexAnchor,
 } from "../src/markdown.js";
 
 describe("parseMarkdown", () => {
@@ -14,6 +17,22 @@ describe("parseMarkdown", () => {
     expect(tree.type).toBe("root");
     expect(tree.children.length).toBeGreaterThan(0);
     expect(tree.children[0].type).toBe("heading");
+  });
+});
+
+describe("mex inline anchors", () => {
+  it("round-trips through MDAST parsing and a no-op rewrite byte-identically", () => {
+    const original = "Call [`wrapOpenAI()`](mex://function:56363d) and [docs](https://example.com).\n";
+    const anchors = findMexAnchors(original);
+    expect(anchors).toHaveLength(1);
+    expect(extractMexAnchorIds(original)).toEqual(["function:56363d"]);
+    expect(rewriteMexAnchor(original, anchors[0], anchors[0].nodeId)).toBe(original);
+  });
+
+  it("rewrites one specific anchor without changing visible text or other links", () => {
+    const original = "[`same()`](mex://function:old) then [`same()`](mex://function:old).";
+    const rewritten = rewriteMexAnchor(original, findMexAnchors(original)[1], "function:new");
+    expect(rewritten).toBe("[`same()`](mex://function:old) then [`same()`](mex://function:new).");
   });
 });
 

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { globSync } from "glob";
 import type { MexConfig, Grounding } from "../types.js";
-import { extractGroundings, writeGroundings } from "../markdown.js";
+import { extractGroundings, findMexAnchors, rewriteMexAnchor, writeGroundings } from "../markdown.js";
 import { createGroundingChecker, type GroundingChecker, type GroundedSource } from "./grounding.js";
 import { createGraphEngine } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
@@ -11,6 +11,7 @@ import type { SqliteDatabase } from "./db/sqlite.js";
 import { FingerprintStore } from "./fingerprint-store.js";
 import { deserializeFingerprint, serializeFingerprint } from "./fingerprint.js";
 import { MinHashReconciler } from "./reconcile-engine.js";
+import type { Fingerprint, Reconciler } from "./reconcile.js";
 
 const SOURCE_GLOB = "**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs}";
 const SOURCE_IGNORE = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/build/**", "**/.mex/**", "**/coverage/**", "**/.next/**", "**/out/**"];
@@ -20,6 +21,8 @@ export interface GroundingRuntime {
   reconciler: MinHashReconciler;
   checker: GroundingChecker;
   fingerprints: FingerprintStore;
+  /** Pre-sync fingerprints for inline ids that may disappear during a rename. */
+  anchorFingerprints: ReadonlyMap<string, Fingerprint>;
   close(): void;
 }
 
@@ -30,15 +33,22 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
   let db: SqliteDatabase | null = null;
   try {
     db = openGraphDatabase(dbPath);
+    const fingerprints = new FingerprintStore(db);
+    const anchorFingerprints = snapshotAnchorFingerprints(config, fingerprints);
     const changed = findChangedSourceFiles(config.projectRoot, db);
     if (changed.length > 0) await graph.sync(changed);
-    const fingerprints = new FingerprintStore(db);
     const reconciler = new MinHashReconciler(fingerprints);
+    const checkerReconciler: Reconciler & GroundingReconcilerCapabilities = {
+      reconcile: (nodeId, baseline) => reconciler.reconcile(nodeId, baseline),
+      getFingerprint: (nodeId) => anchorFingerprints.get(nodeId) ?? reconciler.getFingerprint(nodeId),
+      getGroundedSource: (file, nodeId) => reconciler.getGroundedSource(file, nodeId),
+    };
     return {
       graph,
       reconciler,
-      checker: createGroundingChecker(graph, reconciler),
+      checker: createGroundingChecker(graph, checkerReconciler),
       fingerprints,
+      anchorFingerprints,
       close: () => { graph.close(); db?.close(); db = null; },
     };
   } catch (error) {
@@ -77,7 +87,6 @@ export function persistMovedGroundings(
   for (const filePath of scaffoldFiles) {
     const content = readFileSync(filePath, "utf-8");
     const groundings = extractGroundings(content);
-    if (groundings.length === 0) continue;
     const scaffoldFile = relative(config.projectRoot, filePath).replaceAll("\\", "/");
     let dirty = false;
     for (const grounding of groundings) {
@@ -97,9 +106,47 @@ export function persistMovedGroundings(
       dirty = true;
       moved += 1;
     }
-    if (dirty) writeFileSync(filePath, writeGroundings(content, groundings), "utf-8");
+    const groundedContent = dirty ? writeGroundings(content, groundings) : content;
+    let anchoredContent = groundedContent;
+    const anchors = findMexAnchors(anchoredContent);
+    for (const anchor of [...anchors].reverse()) {
+      if (runtime.graph.getNode(anchor.nodeId)) continue;
+      const baselineSource = runtime.reconciler.getGroundedSource(scaffoldFile, anchor.nodeId);
+      const baseline = runtime.anchorFingerprints.get(anchor.nodeId)
+        ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
+      if (!baseline) continue;
+      const resolution = runtime.reconciler.reconcile(anchor.nodeId, baseline);
+      if (resolution.kind !== "MOVED") continue;
+      anchoredContent = rewriteMexAnchor(anchoredContent, anchor, resolution.nodeId);
+      moved += 1;
+    }
+    if (anchoredContent !== content) writeFileSync(filePath, anchoredContent, "utf-8");
   }
   return moved;
+}
+
+interface GroundingReconcilerCapabilities {
+  getGroundedSource(scaffoldFile: string, nodeId: string): GroundedSource | null;
+  getFingerprint(nodeId: string): Fingerprint | null;
+}
+
+function snapshotAnchorFingerprints(config: MexConfig, store: FingerprintStore): Map<string, Fingerprint> {
+  const snapshots = new Map<string, Fingerprint>();
+  const files = [
+    ...globSync("**/*.md", { cwd: config.scaffoldRoot, absolute: true, nodir: true }),
+    ...["CLAUDE.md", ".cursorrules", ".windsurfrules"]
+      .map((file) => resolve(config.projectRoot, file))
+      .filter(existsSync),
+  ];
+  for (const file of files) {
+    let content: string;
+    try { content = readFileSync(file, "utf-8"); } catch { continue; }
+    for (const anchor of findMexAnchors(content)) {
+      const fingerprint = store.get(anchor.nodeId);
+      if (fingerprint) snapshots.set(anchor.nodeId, fingerprint);
+    }
+  }
+  return snapshots;
 }
 
 /** Close the sync loop after an agent pass by refreshing ids' fingerprints and snapshots. */

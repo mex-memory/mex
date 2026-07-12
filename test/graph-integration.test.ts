@@ -47,7 +47,7 @@ describe("code-graph grounding integration", () => {
     writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), [{
       node: node.id,
       fingerprint: "mh:64:" + Buffer.from(JSON.stringify(fingerprint)).toString("hex"),
-    }]));
+    }]) + `\n[\`calculateOrderTotal()\`](mex://${node.id})\n`);
     refreshGroundingBaselines(config, [scaffold], runtime!);
     runtime!.close();
 
@@ -77,10 +77,13 @@ describe("code-graph grounding integration", () => {
     expect(ambiguousBrief).toContain("New body:");
     const moved = persistMovedGroundings(config, [scaffold], runtime!);
     runtime!.close();
-    expect(moved).toBe(1);
+    expect(moved).toBe(2);
     const persisted = extractGroundings(readFileSync(scaffold, "utf-8"));
     expect(persisted[0].node).not.toBe(node.id);
     expect(persisted[0].node).toContain("function:");
+    const persistedContent = readFileSync(scaffold, "utf-8");
+    expect(persistedContent).not.toContain(`mex://${node.id}`);
+    expect(persistedContent).toContain(`mex://${persisted[0].node}`);
     report = await runDriftCheck(config);
     expect(report.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toHaveLength(0);
   });

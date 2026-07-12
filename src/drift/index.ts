@@ -18,6 +18,7 @@ import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
 import { toPosix } from "../paths.js";
 import { loadGroundingRuntime, type GroundingRuntime } from "../graph/runtime.js";
+import { findMexAnchors } from "../markdown.js";
 
 let graphUpgradeNudgeShown = false;
 
@@ -66,7 +67,10 @@ export async function runDriftCheck(
   const allClaims: Claim[] = [];
   const allIssues: DriftIssue[] = [];
   const checkerIssueCounts: Array<[string, number]> = [];
-  const hasGroundings = scaffoldFiles.some((filePath) => Boolean(parseFrontmatter(filePath)?.grounds_to));
+  const hasGroundings = scaffoldFiles.some((filePath) => {
+    if (parseFrontmatter(filePath)?.grounds_to) return true;
+    try { return findMexAnchors(readFileSync(filePath, "utf-8")).length > 0; } catch { return false; }
+  });
   let groundingRuntime: GroundingRuntime | null = null;
   if (hasGroundings) {
     try {

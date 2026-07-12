@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import {
@@ -150,5 +152,31 @@ describe("grounding checker", () => {
     expect(check({ reconcile: () => ({ kind: "AMBIGUOUS", candidate: "maybe" }) })).toMatchObject([{ code: "GROUNDING_AMBIGUOUS", severity: "warning" }]);
     expect(check({ reconcile: () => ({ kind: "MOVED", nodeId: "new-id" }) })).toEqual([]);
     expect(grounding.node).toBe("new-id");
+  });
+
+  it("handles inline anchor hit, MOVED, GONE, and AMBIGUOUS as warning-only navigation drift", () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-anchor-check-"));
+    const file = join(root, "context.md");
+    const baseline = fingerprint(64);
+    const check = (nodes: GraphNode[], resolution: ReturnType<Reconciler["reconcile"]>) => {
+      writeFileSync(file, "[`symbol()`](mex://function:old)\n");
+      const reconciler = {
+        reconcile: () => resolution,
+        getFingerprint: () => baseline,
+      };
+      return createGroundingChecker(graph(nodes), reconciler)(null, file, "context.md", root, root);
+    };
+    try {
+      expect(check([node("function:old", "hash")], { kind: "GONE" })).toEqual([]);
+      expect(check([], { kind: "MOVED", nodeId: "function:new" })).toMatchObject([{
+        code: "GROUNDING_DRIFT", severity: "warning", message: expect.stringContaining("candidate: function:new"),
+      }]);
+      expect(check([], { kind: "GONE" })).toMatchObject([{ code: "GROUNDING_GONE", severity: "warning" }]);
+      expect(check([], { kind: "AMBIGUOUS", candidate: "function:maybe" })).toMatchObject([{
+        code: "GROUNDING_AMBIGUOUS", severity: "warning", message: expect.stringContaining("function:maybe"),
+      }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
