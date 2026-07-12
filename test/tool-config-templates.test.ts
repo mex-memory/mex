@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
+import { extractFrontmatter, findMexAnchors } from "../src/markdown.js";
 
 const roots: string[] = [];
 const embedded = ["CLAUDE.md", ".cursorrules", ".windsurfrules", "copilot-instructions.md"];
@@ -12,6 +13,22 @@ afterEach(() => {
 });
 
 describe("shipped code-graph agent guidance", () => {
+  it("models grounding slots and inert inline-anchor examples in templates and dogfood", () => {
+    for (const area of ["templates", ".mex"]) {
+      for (const name of ["architecture", "conventions", "decisions", "setup", "stack"]) {
+        const content = readFileSync(join(area, "context", `${name}.md`), "utf-8");
+        expect(extractFrontmatter(content)?.grounds_to, `${area}/${name}`).toEqual([]);
+        expect(content, `${area}/${name}`).toContain("[`someFunction()`](mex://function:<tier-1-id>)");
+        expect(findMexAnchors(content), `${area}/${name} examples must stay inert`).toEqual([]);
+      }
+      const patterns = readFileSync(join(area, "patterns/README.md"), "utf-8");
+      expect(patterns).toContain("grounds_to:");
+      expect(patterns).toContain('fingerprint: "mh:64:<hex-fingerprint>"');
+      expect(patterns).toContain("[`someFunction()`](mex://function:<tier-1-id>)");
+      expect(findMexAnchors(patterns), `${area}/patterns examples must stay inert`).toEqual([]);
+    }
+  });
+
   it("is identical across embedded tool configs and covers all agent responsibilities", () => {
     const contents = embedded.map((name) => readFileSync(join("templates/.tool-configs", name), "utf-8"));
     expect(new Set(contents).size).toBe(1);

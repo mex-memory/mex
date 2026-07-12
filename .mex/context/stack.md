@@ -12,10 +12,19 @@ edges:
     condition: when the reasoning behind a tech choice is needed
   - target: context/conventions.md
     condition: when understanding how to use a technology in this codebase
+# Broad inventory: ground only claims embodied by a small number of symbols.
+# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
+grounds_to: []
 last_updated: [YYYY-MM-DD]
 ---
 
 # Stack
+
+<!-- Keep grounding sparse here. For a concrete wrapper or adapter mention, use:
+```markdown
+[`someFunction()`](mex://function:<tier-1-id>)
+```
+-->
 
 ## Core Technologies
 <!-- List the primary language, framework, and runtime.

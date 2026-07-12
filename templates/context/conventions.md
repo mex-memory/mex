@@ -11,10 +11,21 @@ triggers:
 edges:
   - target: context/architecture.md
     condition: when a convention depends on understanding the system structure
+# Add only nodes that embody the documented convention; do not ground examples broadly.
+# grounds_to:
+#   - node: "function:<tier-1-id>"
+#     fingerprint: "mh:64:<hex>"
+grounds_to: []
 last_updated: [YYYY-MM-DD]
 ---
 
 # Conventions
+
+<!-- Read broad, ground tight. Anchor concrete symbols while keeping prose readable:
+```markdown
+[`someFunction()`](mex://function:<tier-1-id>)
+```
+-->
 
 ## Naming
 <!-- How things are named in this codebase.

@@ -37,6 +37,9 @@ triggers:
 edges:
   - target: "[related file path, e.g. context/conventions.md]"
     condition: "[when to follow this edge]"
+grounds_to:
+  - node: "function:<tier-1-id>"
+    fingerprint: "mh:64:<hex-fingerprint>"
 last_updated: [YYYY-MM-DD]
 ---
 
@@ -44,6 +47,9 @@ last_updated: [YYYY-MM-DD]
 
 ## Context
 [What to load or know before starting this task type]
+
+[Anchor concrete symbols in prose, e.g. [`someFunction()`](mex://function:<tier-1-id>).
+Read the broad task neighborhood, but ground only nodes that embody this pattern.]
 
 ## Steps
 [The workflow — what to do, in what order]
@@ -77,6 +83,9 @@ triggers:
 edges:
   - target: "[related file path]"
     condition: "[when to follow this edge]"
+grounds_to:
+  - node: "function:<tier-1-id>"
+    fingerprint: "mh:64:<hex-fingerprint>"
 last_updated: [YYYY-MM-DD]
 ---
 
@@ -84,6 +93,9 @@ last_updated: [YYYY-MM-DD]
 
 ## Context
 [Shared context for all tasks in this file]
+
+[Anchor concrete symbols in prose, e.g. [`someFunction()`](mex://function:<tier-1-id>).
+Ground only the nodes that embody the documented behavior.]
 
 ## Task: [First Task Name]
 

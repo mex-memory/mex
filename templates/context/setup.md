@@ -13,10 +13,19 @@ edges:
     condition: when specific technology versions or library details are needed
   - target: context/architecture.md
     condition: when understanding how components connect during setup
+# Ground only setup behavior implemented by specific code symbols.
+# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
+grounds_to: []
 last_updated: [YYYY-MM-DD]
 ---
 
 # Setup
+
+<!-- Commands and environment facts need no code grounding. For a concrete symbol:
+```markdown
+[`someFunction()`](mex://function:<tier-1-id>)
+```
+-->
 
 ## Prerequisites
 <!-- What must be installed before anything else.

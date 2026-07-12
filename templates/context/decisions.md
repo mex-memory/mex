@@ -12,10 +12,20 @@ edges:
     condition: when a decision relates to system structure
   - target: context/stack.md
     condition: when a decision relates to technology choice
+# Decisions usually ground sparsely; add only symbols that implement the decision.
+# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
+grounds_to: []
 last_updated: [YYYY-MM-DD]
 ---
 
 # Decisions
+
+<!-- If a decision names its concrete implementation point, link it as below;
+     do not anchor vague concepts:
+```markdown
+[`someFunction()`](mex://function:<tier-1-id>)
+```
+-->
 
 <!-- HOW TO USE THIS FILE:
      Each decision follows the format below.

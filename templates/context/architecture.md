@@ -12,10 +12,20 @@ edges:
     condition: when specific technology details are needed
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
+# Broad overview: keep this empty unless a claim depends on a few specific symbols.
+# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
+grounds_to: []
 last_updated: [YYYY-MM-DD]
 ---
 
 # Architecture
+
+<!-- Read broad, ground tight. Architecture usually grounds sparsely. When a
+     specific symbol is worth navigating to, use this inline form:
+```markdown
+[`someFunction()`](mex://function:<tier-1-id>)
+```
+-->
 
 ## System Overview
 <!-- Describe how the major pieces connect.
