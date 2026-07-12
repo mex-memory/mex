@@ -4,6 +4,7 @@ import { createGraphEngine } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
 import type { GraphNode } from "./types.js";
+import { clusterFacts, scopeSelect, type NodeFacts } from "./scope.js";
 
 type QueryRelation = "who-calls" | "what-calls" | "where-defined";
 
@@ -38,14 +39,14 @@ export function runImpact(target: string, rootDir = process.cwd(), deps: AgentCo
     writeJson(write, { type: "target", targetType: fileNodes.length > 0 ? "file" : "symbol", value: target });
     const impacted = new Map<string, { node: GraphNode; depth: number; root: string }>();
     for (const root of roots.sort(byId)) {
-      writeJson(write, { type: "defines", ...nodeRef(root) });
+      writeJson(write, { type: "defines", ...hydrate(session.graph, root, rootDir) });
       for (const entry of transitiveCallers(session.graph, root)) {
         const current = impacted.get(entry.node.id);
         if (!current || entry.depth < current.depth) impacted.set(entry.node.id, { ...entry, root: root.id });
       }
     }
     for (const entry of [...impacted.values()].sort((a, b) => a.depth - b.depth || a.node.id.localeCompare(b.node.id))) {
-      writeJson(write, { type: "caller", depth: entry.depth, root: entry.root, ...nodeRef(entry.node) });
+      writeJson(write, { type: "caller", depth: entry.depth, root: entry.root, ...hydrate(session.graph, entry.node, rootDir) });
     }
     const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])];
     for (const grounding of groundedFiles(session.db, affectedIds)) {
@@ -80,13 +81,30 @@ export function runGraphQuery(
     }
     for (const node of nodes.sort(byId)) {
       if (relation === "where-defined") {
-        writeJson(write, { type: "result", relation, target: node.id, ...nodeRef(node) });
+        writeJson(write, { type: "result", relation, target: node.id, ...hydrate(session.graph, node, rootDir) });
         continue;
       }
       const related = relation === "who-calls" ? session.graph.getCallers(node.id) : session.graph.getCallees(node.id);
       for (const result of related.sort(byId)) {
-        writeJson(write, { type: "result", relation, target: node.id, ...nodeRef(result) });
+        writeJson(write, { type: "result", relation, target: node.id, ...hydrate(session.graph, result, rootDir) });
       }
+    }
+  } catch (error) {
+    unavailable(write, error);
+  } finally {
+    try { session.close(); } catch { /* best-effort degradation cleanup */ }
+  }
+}
+
+/** Broad graph retrieval for an agent task. Output is hydrated JSONL. */
+export function runGraphScope(task: string, rootDir = process.cwd(), deps: AgentCommandDeps = {}): void {
+  const write = deps.write ?? console.log;
+  const session = openSession(rootDir, deps, write);
+  if (!session) return;
+  try {
+    const ids = scopeSelect(session.graph, task);
+    for (const fact of clusterFacts(session.graph, ids, rootDir)) {
+      writeJson(write, { type: "fact", ...fact });
     }
   } catch (error) {
     unavailable(write, error);
@@ -154,6 +172,10 @@ function groundedFiles(db: SqliteDatabase, nodeIds: string[]): Array<{ scaffold_
 
 function nodeRef(node: GraphNode): Record<string, string | number> {
   return { id: node.id, kind: node.kind, name: node.name, file: node.filePath, line: node.startLine };
+}
+
+function hydrate(graph: GraphEngine, node: GraphNode, rootDir: string): NodeFacts {
+  return clusterFacts(graph, [node.id], rootDir)[0]!;
 }
 
 function byId(left: GraphNode, right: GraphNode): number { return left.id.localeCompare(right.id); }

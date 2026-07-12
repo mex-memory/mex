@@ -218,6 +218,13 @@ graphCommand
     return import("./graph/cli-agent.js").then(({ runGraphQuery }) => runGraphQuery(relation, target));
   });
 
+graphCommand
+  .command("scope <task...>")
+  .description("Retrieve a hydrated code neighborhood for a task as JSONL")
+  .action((task: string[]) => {
+    return import("./graph/cli-agent.js").then(({ runGraphScope }) => runGraphScope(task.join(" ")));
+  });
+
 program
   .command("impact <target>")
   .description("Show transitive code and scaffold blast radius for a symbol or file")
@@ -466,6 +473,7 @@ program
     console.log("  mex init --json        Scanner brief as JSON");
     console.log("  mex graph              Build the code knowledge graph into .mex/graph.db");
     console.log("  mex graph --json       Graph build summary as JSON");
+    console.log("  mex graph scope <task>               Hydrated task neighborhood as JSONL");
     console.log("  mex graph query <relation> <target>  Structural lookup as JSONL");
     console.log("  mex impact <symbol|file>              Blast radius as JSONL");
     console.log("  mex log <message>      Append a note/decision/risk/todo to the event log");

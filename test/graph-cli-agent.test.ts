@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runGraphQuery, runImpact, type AgentCommandDeps } from "../src/graph/cli-agent.js";
+import { runGraphQuery, runGraphScope, runImpact, type AgentCommandDeps } from "../src/graph/cli-agent.js";
 import type { GraphEngine } from "../src/graph/engine.js";
 import type { GraphNode } from "../src/graph/types.js";
 import { __setTransport, captureCommand, flush } from "../src/telemetry/index.js";
@@ -61,6 +61,28 @@ describe("agent graph commands", () => {
       const rows = fixture.output.map((line) => JSON.parse(line));
       if (expected) expect(rows[0].name).toBe(expected);
       else expect(rows).toEqual([]);
+    }
+  });
+
+  it("scope emits seeds and their one-hop neighborhood as hydrated facts", () => {
+    const fixture = deps();
+    runGraphScope("leaf", "/repo", fixture.deps);
+    const rows = fixture.output.map((line) => JSON.parse(line));
+    expect(rows.map((row) => row.id)).toEqual(["function:leaf", "function:parent"]);
+    expect(rows[0]).toMatchObject({
+      type: "fact", kind: "function", name: "leaf", qualifiedName: "leaf",
+      filePath: "src/a.ts", callers: ["function:parent"], callees: [], source: "",
+    });
+  });
+
+  it("scope degrades to a machine-readable error when the graph is absent", () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-no-graph-"));
+    const output: string[] = [];
+    try {
+      runGraphScope("anything", root, { write: (line) => output.push(line) });
+      expect(JSON.parse(output[0])).toMatchObject({ type: "error", code: "GRAPH_UNAVAILABLE" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
