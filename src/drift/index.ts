@@ -21,6 +21,7 @@ import { loadGroundingRuntime, type GroundingRuntime } from "../graph/runtime.js
 import { findMexAnchors } from "../markdown.js";
 
 let graphUpgradeNudgeShown = false;
+let graphMigrationNudgeShown = false;
 
 /**
  * Default glob patterns used to locate scaffold markdown files, relative to
@@ -68,17 +69,24 @@ export async function runDriftCheck(
   const allIssues: DriftIssue[] = [];
   const checkerIssueCounts: Array<[string, number]> = [];
   const hasGroundings = scaffoldFiles.some((filePath) => {
-    if (parseFrontmatter(filePath)?.grounds_to) return true;
+    const groundsTo = parseFrontmatter(filePath)?.grounds_to;
+    if (Array.isArray(groundsTo) && groundsTo.length > 0) return true;
     try { return findMexAnchors(readFileSync(filePath, "utf-8")).length > 0; } catch { return false; }
   });
+  const needsGroundingMigration = !hasGroundings && scaffoldFiles.some(isPopulatedGroundingCandidate);
   let groundingRuntime: GroundingRuntime | null = null;
-  if (hasGroundings) {
+  if (hasGroundings || needsGroundingMigration) {
     try {
       groundingRuntime = await (opts.groundingRuntimeLoader ?? loadGroundingRuntime)(config);
       if (!groundingRuntime && !graphUpgradeNudgeShown) {
         graphUpgradeNudgeShown = true;
         (opts.graphWarning ?? console.warn)(
-          "A code graph unlocks sharper drift detection. Run `mex graph`.",
+          "A code graph unlocks sharper drift detection. Run `mex graph`, then `mex graph ground`.",
+        );
+      } else if (groundingRuntime && needsGroundingMigration && !graphMigrationNudgeShown) {
+        graphMigrationNudgeShown = true;
+        (opts.graphWarning ?? console.warn)(
+          "Existing scaffold has no code grounding. Run `mex graph ground` to connect it.",
         );
       }
     } catch (error) {
@@ -182,6 +190,18 @@ export async function runDriftCheck(
   };
   groundingRuntime?.close();
   return report;
+}
+
+function isPopulatedGroundingCandidate(filePath: string): boolean {
+  const normalized = filePath.replaceAll("\\", "/");
+  if (!normalized.includes("/context/") && !normalized.includes("/patterns/")) return false;
+  if (normalized.endsWith("/patterns/README.md") || normalized.endsWith("/patterns/INDEX.md")) return false;
+  try {
+    const content = readFileSync(filePath, "utf-8");
+    return !content.includes("[YYYY-MM-DD]") && content.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Find all markdown files that are part of the scaffold */

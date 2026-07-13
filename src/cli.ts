@@ -225,6 +225,21 @@ graphCommand
     return import("./graph/cli-agent.js").then(({ runGraphScope }) => runGraphScope(task.join(" ")));
   });
 
+graphCommand
+  .command("ground")
+  .description("Retro-ground an existing pre-0.7 scaffold using the code graph")
+  .option("--dry-run", "Print the migration prompt without launching an agent")
+  .action(async (opts) => {
+    try {
+      const config = loadConfig();
+      const { runGraphGround } = await import("./graph/cli-ground.js");
+      runGraphGround(config, opts);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
 program
   .command("impact <target>")
   .description("Show transitive code and scaffold blast radius for a symbol or file")
@@ -474,6 +489,7 @@ program
     console.log("  mex graph              Build the code knowledge graph into .mex/graph.db");
     console.log("  mex graph --json       Graph build summary as JSON");
     console.log("  mex graph scope <task>               Hydrated task neighborhood as JSONL");
+    console.log("  mex graph ground                     Ground an existing pre-0.7 scaffold");
     console.log("  mex graph query <relation> <target>  Structural lookup as JSONL");
     console.log("  mex impact <symbol|file>              Blast radius as JSONL");
     console.log("  mex log <message>      Append a note/decision/risk/todo to the event log");
