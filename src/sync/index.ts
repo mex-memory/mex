@@ -9,6 +9,8 @@ import { buildSyncBrief, buildCombinedBrief } from "./brief-builder.js";
 import { findScaffoldFiles } from "../drift/index.js";
 import { captureGroundingBaselines, loadGroundingRuntime, persistMovedGroundings } from "../graph/runtime.js";
 
+const INTERACTIVE_AI_TIMEOUT_MS = 15 * 60_000;
+
 function askUser(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
@@ -30,7 +32,7 @@ export function runToolInteractive(tool: AiTool, brief: string, cwd: string): bo
   const result = crossSpawn.sync(meta.cli, args, {
     cwd,
     stdio: "inherit",
-    timeout: 300_000,
+    timeout: INTERACTIVE_AI_TIMEOUT_MS,
   });
   // A spawn failure (ENOENT, etc.) sets `error` and leaves `status` null — don't
   // mistake that for success, or launch problems get silently swallowed.
