@@ -132,9 +132,9 @@ export async function runSync(
     const relevantIssues = opts.includeWarnings
       ? report.issues
       : report.issues.filter((i) => {
-          // Grounding warnings are the graph repair path itself: drift needs a
-          // re-render and AMBIGUOUS needs adjudication, even without --warnings.
-          if (i.code === "GROUNDING_DRIFT" || i.code === "GROUNDING_AMBIGUOUS") return true;
+          // Every grounding outcome is a repair path, including warning-only
+          // inline GONE anchors; do not require --warnings to maintain pointers.
+          if (i.code.startsWith("GROUNDING_")) return true;
           const fileHasError = report.issues.some(
             (other) => other.file === i.file && other.severity === "error"
           );

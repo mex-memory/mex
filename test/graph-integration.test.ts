@@ -8,6 +8,7 @@ import { createGraphEngine } from "../src/graph/engine-impl.js";
 import { loadGroundingRuntime, persistMovedGroundings, refreshGroundingBaselines } from "../src/graph/runtime.js";
 import { extractGroundings, writeGroundings } from "../src/markdown.js";
 import { buildCombinedBrief } from "../src/sync/brief-builder.js";
+import { serializeFingerprint } from "../src/graph/fingerprint.js";
 
 const roots: string[] = [];
 
@@ -46,18 +47,32 @@ describe("code-graph grounding integration", () => {
     expect(fingerprint?.minhash).toHaveLength(64);
     writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), [{
       node: node.id,
-      fingerprint: "mh:64:" + Buffer.from(JSON.stringify(fingerprint)).toString("hex"),
+      fingerprint: serializeFingerprint(fingerprint!),
     }]) + `\n[\`calculateOrderTotal()\`](mex://${node.id})\n`);
     refreshGroundingBaselines(config, [scaffold], runtime!);
     runtime!.close();
+    const initialFingerprint = extractGroundings(readFileSync(scaffold, "utf-8"))[0].fingerprint;
 
-    writeFileSync(source, original.replace("subtotal * 0.18", "subtotal * 0.20"));
+    writeFileSync(source, original.replace(
+      "subtotal > 1000 ? 0 : 75",
+      "Math.max(0, 75 - subtotal * 0.05)",
+    ));
     let report = await runDriftCheck(config);
     expect(report.issues.filter((issue) => issue.code === "GROUNDING_DRIFT")).toHaveLength(1);
 
     runtime = await loadGroundingRuntime(config);
+    const bodyRepairBrief = await buildCombinedBrief([{
+      file: ".mex/context/architecture.md", gitDiff: null,
+      issues: report.issues.filter((issue) => issue.code === "GROUNDING_DRIFT"),
+    }], root, { config, runtime: runtime! });
+    expect(bodyRepairBrief).toContain("GROUNDING REPAIR");
+    expect(bodyRepairBrief).toContain("refresh that grounds_to entry");
+    expect(bodyRepairBrief).toContain('mex graph scope "<behavior being repaired>"');
+    expect(bodyRepairBrief).toContain("fingerprints belong ONLY in grounds_to");
     refreshGroundingBaselines(config, [scaffold], runtime!);
     runtime!.close();
+    const refreshedContent = readFileSync(scaffold, "utf-8");
+    expect(extractGroundings(refreshedContent)[0].fingerprint).not.toBe(initialFingerprint);
     report = await runDriftCheck(config);
     expect(report.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toHaveLength(0);
 
@@ -75,6 +90,19 @@ describe("code-graph grounding integration", () => {
     expect(ambiguousBrief).toContain(`Node: ${node.id} (candidate: ${candidate.id})`);
     expect(ambiguousBrief).toContain("Old body:");
     expect(ambiguousBrief).toContain("New body:");
+    const anchorAmbiguousBrief = await buildCombinedBrief([{
+      file: ".mex/context/architecture.md",
+      gitDiff: null,
+      issues: [{
+        code: "GROUNDING_AMBIGUOUS", severity: "warning", file: ".mex/context/architecture.md", line: null,
+        message: `Inline anchor may have moved: ${node.id}; candidate: ${candidate.id}`,
+      }],
+    }], root, { config, runtime: runtime! });
+    expect(anchorAmbiguousBrief).toContain(`candidate: ${candidate.id}`);
+    expect(anchorAmbiguousBrief).toContain("Old body:");
+    expect(anchorAmbiguousBrief).toContain("New body:");
+    expect(anchorAmbiguousBrief).toContain("AMBIGUOUS: adjudicate the surfaced candidate");
+    expect(anchorAmbiguousBrief).toContain("any matching inline anchor");
     const moved = persistMovedGroundings(config, [scaffold], runtime!);
     runtime!.close();
     expect(moved).toBe(2);

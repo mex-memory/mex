@@ -19,9 +19,12 @@ export async function buildCombinedBrief(
     sections.push(await buildFileSection(target, projectRoot, grounding));
   }
 
+  const groundingInstructions = buildGroundingRepairInstructions(targets);
   return `The following scaffold files have drift issues that need fixing. Fix all of them in one pass.
 
 ${sections.map((s, i) => `━━━ File ${i + 1}/${sections.length} ━━━\n\n${s}`).join("\n\n")}
+
+${groundingInstructions}
 
 Update each file to fix its issues. Only change what's necessary — do not rewrite sections that are correct.
 When a referenced path no longer exists, find the correct current path from the filesystem context above and update the reference.`;
@@ -33,13 +36,47 @@ export async function buildSyncBrief(
   projectRoot: string
 ): Promise<string> {
   const section = await buildFileSection(target, projectRoot);
+  const groundingInstructions = buildGroundingRepairInstructions([target]);
 
   return `The following scaffold file has drift issues that need fixing:
 
 ${section}
 
+${groundingInstructions}
+
 Update the file to fix these issues. Only change what's necessary — do not rewrite sections that are correct.
 When a referenced path no longer exists, find the correct current path from the filesystem context above and update the reference.`;
+}
+
+function buildGroundingRepairInstructions(targets: SyncTarget[]): string {
+  if (!targets.some((target) => target.issues.some((issue) => issue.code.startsWith("GROUNDING_")))) return "";
+  return `GROUNDING REPAIR — repair the prose and both pointer mechanisms together:
+
+Use the code graph for implementation context; do not sample source files. Start
+with \`mex graph scope "<behavior being repaired>"\`, then use \`mex graph query
+where-defined <symbol>\`, who-calls/what-calls, or \`mex impact <symbol|file>\`
+to resolve exact behavior and candidates. READ BROAD, GROUND TIGHT: read the
+whole useful neighborhood, but ground only functions/methods that embody claims
+the repaired prose actually makes. Keep broad files sparse.
+
+- GROUNDING_DRIFT/body change: decide whether the claim changed from the supplied
+  old/new body. Repair only affected prose, then refresh that grounds_to entry
+  with the current node id and the exact current \`fingerprint\` from graph JSONL.
+- MOVED: sync may have already durably rebound a high-confidence move. Verify the
+  grounds_to id and every inline mex:// anchor for that symbol use the new id,
+  and refresh the frontmatter fingerprint from the same new-node graph fact.
+- AMBIGUOUS: adjudicate the surfaced candidate with scope/query/impact. If it is
+  the same behavior, update grounds_to and any matching inline anchor to that id;
+  otherwise choose the correct graph node or remove the stale grounding/anchor.
+- GONE: update prose that still describes the deleted symbol. Remove obsolete
+  grounds_to entries and inline anchors; if replacement behavior exists, ground
+  and anchor the replacement using exact graph facts.
+
+Frontmatter entries are \`{ node, fingerprint }\`. Inline navigation is exactly
+\`mex://<nodeId>\`: fingerprints belong ONLY in grounds_to and never in an URI.
+Anchor only load-bearing symbol mentions, without changing their visible text.
+Before finishing, re-read each changed file and verify ids/fingerprints resolve,
+no grounding or anchor is duplicated, and unrelated prose remains untouched.`;
 }
 
 /** Build the content section for a single target (no wrapper instructions) */
