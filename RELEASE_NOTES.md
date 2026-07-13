@@ -10,7 +10,9 @@ The graph is local, zero-AI infrastructure: tree-sitter extraction writes SQLite
 - Cross-file calls, imports, inheritance, containment, and reference edges.
 - An Express reference resolver linking route registrations to handler nodes.
 - Grounding checker #12 for changed, moved, ambiguous, or removed code nodes.
-- Durable re-grounding during `mex sync` after a confident move or completed repair.
+- Query-time task neighborhoods through `mex graph scope`, hydrated with signatures, callers, callees, source, ids, and fingerprints.
+- Setup-time grounding plus an idempotent migration path for existing scaffolds.
+- Durable re-grounding of frontmatter and inline anchors during `mex sync`.
 - A contributor-facing extractor test pattern in the source repository.
 
 ## New commands
@@ -18,17 +20,21 @@ The graph is local, zero-AI infrastructure: tree-sitter extraction writes SQLite
 ```bash
 mex graph
 mex graph --json
+mex graph scope <task>
+mex graph ground
 mex graph query where-defined <symbol>
 mex graph query who-calls <symbol>
 mex graph query what-calls <symbol>
 mex impact <symbol-or-file>
 ```
 
-`mex graph query` and `mex impact` emit compact JSONL intended for coding agents to call during a task.
+`mex graph scope`, `mex graph query`, and `mex impact` emit compact hydrated JSONL intended for coding agents to call during setup, repair, and implementation tasks.
 
 ## Grounded scaffold memory
 
-Agents may add optional grounding frontmatter:
+Setup now authors grounding as it populates memory. It follows **read broad, ground tight**: read the relevant scope neighborhood, then ground only prose claims that depend on specific behavior. Broad architecture, stack, and convention files remain sparse; pattern and deep-domain files ground tightly.
+
+Behavioral assertions use frontmatter with both a node id and fingerprint:
 
 ```yaml
 grounds_to:
@@ -36,19 +42,28 @@ grounds_to:
     fingerprint: "mh:64:9f2a..."
 ```
 
-An unchanged node is clean. A body edit produces a grounding warning with old/new source for sync. A high-confidence rename is rebound automatically during sync; an uncertain candidate is surfaced for agent adjudication; a deleted node is an error.
+Load-bearing symbol mentions use readable inline navigation anchors containing only the node id:
+
+```markdown
+[`calculateCheckoutTotal()`](mex://function:a3f8...c21)
+```
+
+An unchanged node is clean. A body edit produces a grounding warning with old/new source for sync. Sync repairs the prose when needed, refreshes the frontmatter fingerprint, and updates or removes stale anchors. A high-confidence rename is rebound automatically; an uncertain candidate is surfaced for agent adjudication. Broken inline navigation remains warning-only.
 
 ## Installation and upgrades
 
 0.7.0 requires Node.js 22.5 or newer because the graph uses Node's built-in SQLite module.
 
-Fresh `mex setup` runs build the graph automatically. Existing users do not need a scaffold migration: without a graph, the original eleven filesystem and lexical checkers keep working and mex shows a one-time suggestion to run:
+Fresh `mex setup` runs build the graph before population, and the setup agent consumes it through the hydrated retrieval commands while authoring grounding.
+
+Existing populated scaffolds remain valid, but need a one-time pointer migration to participate in graph drift detection:
 
 ```bash
 mex graph
+mex graph ground
 ```
 
-Scaffolds without `grounds_to` behave exactly as before.
+`mex graph ground` preserves the existing prose and adds tight `grounds_to` entries plus load-bearing `mex://` anchors. It is safe to rerun. Scaffolds that have not migrated continue to behave as before under the original eleven checkers.
 
 ## Graceful degradation
 

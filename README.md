@@ -68,7 +68,7 @@ The npm package is named `mex-agent` because `mex` was already taken. The CLI co
 npx mex-agent setup
 ```
 
-Setup creates the `.mex/` scaffold, builds the code graph by default, asks which AI tool you use, pre-scans your codebase, and generates a targeted prompt to populate the memory files. It takes about five minutes.
+Setup creates the `.mex/` scaffold, builds the code graph by default, asks which AI tool you use, and populates memory from hydrated graph facts. The setup agent reads broad graph neighborhoods for context, then grounds only the specific claims it writes. It takes about five minutes.
 
 At the end of setup, you can install mex globally:
 
@@ -155,6 +155,8 @@ All commands run from your project root. If you did not install globally, replac
 | `mex init --json` | Raw scanner brief as JSON |
 | `mex graph` | Build or rebuild the TS/JS code graph in `.mex/graph.db` |
 | `mex graph --json` | Emit the graph build summary as JSON |
+| `mex graph scope <task>` | Retrieve hydrated FTS seeds plus their one-hop callers and callees as JSONL |
+| `mex graph ground` | Retro-ground an existing populated pre-0.7 scaffold without rewriting its prose |
 | `mex graph query <relation> <symbol>` | JSONL structural lookup: `who-calls`, `what-calls`, or `where-defined` |
 | `mex impact <symbol\|file>` | JSONL transitive caller and scaffold-memory blast radius |
 | `mex log <message>` | Append a note, decision, risk, or todo |
@@ -171,7 +173,9 @@ All commands run from your project root. If you did not install globally, replac
 
 0.7.0 graphs TypeScript, TSX, JavaScript, and JSX with tree-sitter. Express route registrations receive framework-aware route-to-handler edges. More languages and framework resolvers will follow through the 0.7.x contributor program after this base release.
 
-Scaffold files can ground memory to exact graph nodes:
+Fresh setup uses the graph while populating the scaffold. The authoring rule is **read broad, ground tight**: an agent reads the complete `mex graph scope` neighborhood needed to understand a behavior, but points prose only at the few symbols that actually embody its claims. Broad architecture, stack, and convention files stay sparse or ungrounded; patterns and deep-domain files carry tighter grounding.
+
+There are two complementary pointers. Frontmatter `grounds_to` records tight behavioral assertions with a node id and fingerprint, allowing checker #12 to detect body drift:
 
 ```yaml
 ---
@@ -181,9 +185,24 @@ grounds_to:
 ---
 ```
 
-`mex check` compares each grounding with its saved body and fingerprint. A body edit produces `GROUNDING_DRIFT`; a confident rename or move is reconciled and durably re-grounded by `mex sync`; uncertain matches produce `GROUNDING_AMBIGUOUS` for the agent to adjudicate.
+Inline anchors make load-bearing symbol mentions navigable without putting fingerprints into prose:
 
-Existing installations remain compatible. If no graph exists, the eleven filesystem/lexical checkers still run and mex emits a one-time suggestion to run `mex graph`. If SQLite or a grammar cannot load, graph checks are skipped with a warning while the rest of the CLI continues normally. Unsupported-language files are skipped rather than failing the build.
+```markdown
+[`calculateCheckoutTotal()`](mex://function:a3f8...c21)
+```
+
+`mex check` compares authored grounding with its saved body and fingerprint. A body edit produces `GROUNDING_DRIFT`; `mex sync` repairs the prose when needed, refreshes `grounds_to`, and updates or removes stale inline anchors. Confident renames and moves are durably rebound, while uncertain matches produce `GROUNDING_AMBIGUOUS` for agent adjudication. Check remains read-only; sync performs durable re-grounding.
+
+For an existing populated scaffold created before 0.7.0, connect it without regenerating its prose:
+
+```bash
+mex graph
+mex graph ground
+```
+
+The migration agent preserves existing content, adds tight `grounds_to` entries and load-bearing `mex://` anchors, and is safe to rerun. After either setup or migration, `mex graph scope`, `mex graph query`, and `mex impact` provide hydrated signatures, callers/callees, source, ids, and fingerprints as terse JSONL for coding agents.
+
+Existing installations remain compatible. If no graph exists, the eleven filesystem/lexical checkers still run and mex suggests building the graph and running `mex graph ground`. If SQLite or a grammar cannot load, graph checks are skipped with a warning while the rest of the CLI continues normally. Unsupported-language files are skipped rather than failing the build.
 
 ## Supported Tools
 
