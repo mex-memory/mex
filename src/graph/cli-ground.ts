@@ -1,9 +1,12 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
+import { stdin, stdout } from "node:process";
 import type { MexConfig } from "../types.js";
 import { AI_TOOLS } from "../types.js";
 import { isCliAvailable } from "../cli-tools.js";
 import { runToolInteractive } from "../sync/index.js";
+import { captureGroundingBaselines } from "./runtime.js";
 
 export interface GroundMigrationOptions {
   dryRun?: boolean;
@@ -12,6 +15,7 @@ export interface GroundMigrationOptions {
 export interface GroundMigrationDeps {
   runAgent?: (prompt: string, cwd: string) => boolean;
   write?: (line: string) => void;
+  confirmAuthored?: () => Promise<boolean>;
 }
 
 /** Prompt for agent-authored, prose-preserving migration of pre-0.7 scaffolds. */
@@ -72,11 +76,11 @@ which broad files were intentionally left sparse or ungrounded.`;
 }
 
 /** Run or print the migration prompt. All grounding judgments remain agent-authored. */
-export function runGraphGround(
+export async function runGraphGround(
   config: MexConfig,
   options: GroundMigrationOptions = {},
   deps: GroundMigrationDeps = {},
-): "ran" | "prompted" {
+): Promise<"ran" | "prompted"> {
   if (!existsSync(resolve(config.projectRoot, ".mex", "graph.db"))) {
     throw new Error("Code graph unavailable. Run `mex graph` before `mex graph ground`.");
   }
@@ -88,11 +92,40 @@ export function runGraphGround(
   }
 
   const runAgent = deps.runAgent ?? configuredAgent(config);
-  if (runAgent && runAgent(prompt, config.projectRoot)) return "ran";
+  if (runAgent && runAgent(prompt, config.projectRoot)) {
+    const result = await captureGroundingBaselines(config, {
+      warn: (message) => write(`Warning: ${message}`),
+    });
+    if (result.captured > 0) write(`Captured ${result.captured} grounding baseline(s).`);
+    else write("Warning: no grounding baselines were captured; verify the migration authored grounding.");
+    return "ran";
+  }
 
   write("No configured AI CLI is available. Paste this prompt into your agent:\n");
   write(prompt);
+  const confirmAuthored = deps.confirmAuthored ?? confirmManualMigration;
+  if (await confirmAuthored()) {
+    const result = await captureGroundingBaselines(config, {
+      warn: (message) => write(`Warning: ${message}`),
+    });
+    if (result.captured > 0) write(`Captured ${result.captured} grounding baseline(s).`);
+    else write("Warning: no grounding baselines were captured; verify the migration authored grounding.");
+    return "ran";
+  }
   return "prompted";
+}
+
+async function confirmManualMigration(): Promise<boolean> {
+  if (!stdin.isTTY) return false;
+  const rl = createInterface({ input: stdin, output: stdout });
+  try {
+    const answer = (await rl.question(
+      "\nAfter the agent finishes retro-grounding, capture baselines now? [y/N] ",
+    )).trim().toLowerCase();
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
 }
 
 function configuredAgent(config: MexConfig): GroundMigrationDeps["runAgent"] {

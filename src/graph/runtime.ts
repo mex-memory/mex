@@ -26,6 +26,17 @@ export interface GroundingRuntime {
   close(): void;
 }
 
+export interface GroundingBaselineCaptureResult {
+  captured: number;
+  skipped: number;
+}
+
+export interface GroundingBaselineCaptureOptions {
+  /** Sync may normalize an agent's stale fingerprint to the current graph fact. */
+  updateFingerprints?: boolean;
+  warn?: (message: string) => void;
+}
+
 export async function loadGroundingRuntime(config: MexConfig): Promise<GroundingRuntime | null> {
   const dbPath = resolve(config.projectRoot, ".mex", "graph.db");
   if (!existsSync(dbPath)) return null;
@@ -55,6 +66,31 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
     graph.close();
     db?.close();
     throw error;
+  }
+}
+
+/** Capture authored grounding against the current graph, shared by setup/migrate/sync. */
+export async function captureGroundingBaselines(
+  config: MexConfig,
+  options: GroundingBaselineCaptureOptions = {},
+): Promise<GroundingBaselineCaptureResult> {
+  const runtime = await loadGroundingRuntime(config);
+  if (!runtime) {
+    options.warn?.("Code graph unavailable; grounding baselines were not captured.");
+    return { captured: 0, skipped: 0 };
+  }
+  try {
+    const scaffoldFiles = globSync("**/*.md", {
+      cwd: config.scaffoldRoot,
+      absolute: true,
+      nodir: true,
+    });
+    return refreshGroundingBaselines(config, scaffoldFiles, runtime, {
+      ...options,
+      updateFingerprints: options.updateFingerprints ?? false,
+    });
+  } finally {
+    runtime.close();
   }
 }
 
@@ -101,7 +137,7 @@ export function persistMovedGroundings(
       grounding.node = resolution.nodeId;
       const fingerprint = runtime.reconciler.getFingerprint(resolution.nodeId);
       if (fingerprint) grounding.fingerprint = serializeFingerprint(fingerprint);
-      saveCurrentBaseline(config, scaffoldFile, grounding, runtime);
+      saveCurrentBaseline(config, scaffoldFile, grounding.node, grounding.fingerprint, runtime);
       runtime.fingerprints.deleteGroundedSource(scaffoldFile, oldId);
       dirty = true;
       moved += 1;
@@ -154,22 +190,50 @@ export function refreshGroundingBaselines(
   config: MexConfig,
   scaffoldFiles: readonly string[],
   runtime: GroundingRuntime,
-): void {
+  options: GroundingBaselineCaptureOptions = {},
+): GroundingBaselineCaptureResult {
+  let captured = 0;
+  let skipped = 0;
   for (const filePath of scaffoldFiles) {
     const content = readFileSync(filePath, "utf-8");
     const groundings = extractGroundings(content);
-    if (groundings.length === 0) continue;
+    const anchors = findMexAnchors(content);
+    if (groundings.length === 0 && anchors.length === 0) continue;
     const scaffoldFile = relative(config.projectRoot, filePath).replaceAll("\\", "/");
     let dirty = false;
-    for (const grounding of groundings) {
-      const fingerprint = runtime.reconciler.getFingerprint(grounding.node);
-      if (!fingerprint || !runtime.graph.getNode(grounding.node)) continue;
+    const groundingByNode = new Map(groundings.map((grounding) => [grounding.node, grounding]));
+    const nodeIds = new Set([
+      ...groundingByNode.keys(),
+      ...anchors.map((anchor) => anchor.nodeId),
+    ]);
+    for (const nodeId of nodeIds) {
+      const grounding = groundingByNode.get(nodeId);
+      const fingerprint = runtime.reconciler.getFingerprint(nodeId);
+      if (!fingerprint || !runtime.graph.getNode(nodeId)) {
+        skipped += 1;
+        options.warn?.(`Skipped grounding baseline for unavailable node ${nodeId} in ${scaffoldFile}.`);
+        continue;
+      }
       const serialized = serializeFingerprint(fingerprint);
-      if (grounding.fingerprint !== serialized) { grounding.fingerprint = serialized; dirty = true; }
-      saveCurrentBaseline(config, scaffoldFile, grounding, runtime);
+      if (grounding && grounding.fingerprint !== serialized) {
+        if (options.updateFingerprints === false) {
+          skipped += 1;
+          options.warn?.(`Skipped grounding baseline for changed node ${nodeId} in ${scaffoldFile}.`);
+          continue;
+        }
+        grounding.fingerprint = serialized;
+        dirty = true;
+      }
+      if (saveCurrentBaseline(config, scaffoldFile, nodeId, serialized, runtime)) {
+        captured += 1;
+      } else {
+        skipped += 1;
+        options.warn?.(`Skipped grounding baseline for non-body node ${nodeId} in ${scaffoldFile}.`);
+      }
     }
     if (dirty) writeFileSync(filePath, writeGroundings(content, groundings), "utf-8");
   }
+  return { captured, skipped };
 }
 
 export function groundingPromptContext(
@@ -190,17 +254,24 @@ export function groundingPromptContext(
   };
 }
 
-function saveCurrentBaseline(config: MexConfig, scaffoldFile: string, grounding: Grounding, runtime: GroundingRuntime): void {
-  const node = runtime.graph.getNode(grounding.node);
-  if (!node?.bodyHash) return;
+function saveCurrentBaseline(
+  config: MexConfig,
+  scaffoldFile: string,
+  nodeId: string,
+  fingerprint: string,
+  runtime: GroundingRuntime,
+): boolean {
+  const node = runtime.graph.getNode(nodeId);
+  if (!node?.bodyHash) return false;
   const source: GroundedSource = {
     scaffoldFile,
     nodeId: node.id,
     source: readNodeBody(config.projectRoot, node.filePath, node.startLine, node.endLine),
     bodyHash: node.bodyHash,
-    fingerprint: grounding.fingerprint,
+    fingerprint,
   };
   runtime.fingerprints.saveGroundedSource(source);
+  return true;
 }
 
 function readNodeBody(root: string, filePath: string, startLine: number, endLine: number): string {

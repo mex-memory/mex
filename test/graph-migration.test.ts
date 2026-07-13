@@ -8,6 +8,7 @@ import { createGraphEngine } from "../src/graph/engine-impl.js";
 import { runGraphScope } from "../src/graph/cli-agent.js";
 import { extractGroundings, findMexAnchors, writeGroundings } from "../src/markdown.js";
 import { runDriftCheck } from "../src/drift/index.js";
+import { loadGroundingRuntime } from "../src/graph/runtime.js";
 
 const roots: string[] = [];
 
@@ -88,7 +89,7 @@ describe("pre-0.7 graph grounding migration", () => {
       return true;
     };
 
-    expect(runGraphGround(config, {}, { runAgent: deterministicAgent })).toBe("ran");
+    expect(await runGraphGround(config, {}, { runAgent: deterministicAgent })).toBe("ran");
     const migrated = readFileSync(scaffold, "utf-8");
     const groundings = extractGroundings(migrated);
     const anchors = findMexAnchors(migrated);
@@ -104,13 +105,27 @@ describe("pre-0.7 graph grounding migration", () => {
       .replace(/\[(`[^`]+`)\]\(mex:\/\/[^)]+\)/g, "$1");
     expect(visibleMigrated).toBe(originalProse);
 
-    expect(runGraphGround(config, {}, { runAgent: deterministicAgent })).toBe("ran");
+    expect(await runGraphGround(config, {}, { runAgent: deterministicAgent })).toBe("ran");
     expect(readFileSync(scaffold, "utf-8")).toBe(migrated);
+
+    const runtime = await loadGroundingRuntime(config);
+    expect(runtime!.fingerprints.getGroundedSource(".mex/patterns/checkout.md", groundings[0].node))
+      .not.toBeNull();
+    runtime!.close();
+
+    const source = join(root, "src", "checkout.ts");
+    writeFileSync(source, readFileSync(source, "utf-8")
+      .replace("subtotal >= 100 ? 0 : 12", "subtotal >= 125 ? 0 : 15"));
+    const drift = await runDriftCheck(config);
+    expect(drift.issues).toContainEqual(expect.objectContaining({
+      code: "GROUNDING_DRIFT",
+      file: ".mex/patterns/checkout.md",
+    }));
   });
 
-  it("requires a built graph", () => {
+  it("requires a built graph", async () => {
     const { config } = fixture();
-    expect(() => runGraphGround(config, { dryRun: true })).toThrow(
+    await expect(runGraphGround(config, { dryRun: true })).rejects.toThrow(
       "Run `mex graph` before `mex graph ground`",
     );
   });

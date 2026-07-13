@@ -233,7 +233,7 @@ graphCommand
     try {
       const config = loadConfig();
       const { runGraphGround } = await import("./graph/cli-ground.js");
-      runGraphGround(config, opts);
+      await runGraphGround(config, opts);
     } catch (err) {
       console.error((err as Error).message);
       process.exit(1);

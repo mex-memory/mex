@@ -8,6 +8,8 @@ import { runGraphScope } from "../src/graph/cli-agent.js";
 import { deserializeFingerprint } from "../src/graph/fingerprint.js";
 import { extractGroundings, findMexAnchors, writeGroundings } from "../src/markdown.js";
 import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
+import { runDriftCheck } from "../src/drift/index.js";
+import { captureGroundingBaselines, loadGroundingRuntime } from "../src/graph/runtime.js";
 
 const roots: string[] = [];
 
@@ -79,5 +81,53 @@ export function calculateCheckoutTotal(items: number[], member: boolean): number
     expect(verifier.getNode(anchors[0].nodeId)).not.toBeNull();
     verifier.close();
     expect(checkBrokenLinks([pattern], root, join(root, ".mex"))).toEqual([]);
+
+    const navigation = join(patternDir, "navigation.md");
+    writeFileSync(navigation, `# Navigation\n\n[\`calculateCheckoutTotal()\`](mex://${groundings[0].node})\n`);
+
+    const config = { projectRoot: root, scaffoldRoot: join(root, ".mex"), aiTools: [] };
+    const captured = await captureGroundingBaselines(config);
+    expect(captured).toEqual({ captured: 2, skipped: 0 });
+    const runtime = await loadGroundingRuntime(config);
+    expect(runtime!.fingerprints.getGroundedSource(".mex/patterns/calculate-checkout.md", groundings[0].node))
+      .not.toBeNull();
+    expect(runtime!.fingerprints.getGroundedSource(".mex/patterns/navigation.md", groundings[0].node))
+      .not.toBeNull();
+    runtime!.close();
+
+    writeFileSync(join(sourceDir, "checkout.ts"), readFileSync(join(sourceDir, "checkout.ts"), "utf-8")
+      .replace("subtotal >= 100 ? 0 : 12", "subtotal >= 125 ? 0 : 15"));
+    const drift = await runDriftCheck(config);
+    expect(drift.issues).toContainEqual(expect.objectContaining({
+      code: "GROUNDING_DRIFT",
+      file: ".mex/patterns/calculate-checkout.md",
+    }));
+
+    // Same shared post-authoring routine used by sync: refresh, then check clean.
+    expect(await captureGroundingBaselines(config, { updateFingerprints: true }))
+      .toEqual({ captured: 2, skipped: 0 });
+    const clean = await runDriftCheck(config);
+    expect(clean.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toEqual([]);
+  });
+
+  it("skips and warns when authored grounding no longer resolves", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-setup-grounding-miss-"));
+    roots.push(root);
+    const scaffoldRoot = join(root, ".mex");
+    mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(join(scaffoldRoot, "patterns"), { recursive: true });
+    writeFileSync(join(root, "src", "service.ts"), "export function liveService(): number { return 1; }\n");
+    writeFileSync(join(scaffoldRoot, "patterns", "missing.md"),
+      "# Missing\n\n[`removedService()`](mex://function:missing)\n");
+    const engine = createGraphEngine({ rootDir: root });
+    await engine.build();
+    engine.close();
+    const warnings: string[] = [];
+    const result = await captureGroundingBaselines(
+      { projectRoot: root, scaffoldRoot, aiTools: [] },
+      { warn: (message) => warnings.push(message) },
+    );
+    expect(result).toEqual({ captured: 0, skipped: 1 });
+    expect(warnings).toContainEqual(expect.stringContaining("function:missing"));
   });
 });

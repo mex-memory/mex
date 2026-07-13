@@ -7,7 +7,7 @@ import { runDriftCheck } from "../drift/index.js";
 import { isCliAvailable } from "../cli-tools.js";
 import { buildSyncBrief, buildCombinedBrief } from "./brief-builder.js";
 import { findScaffoldFiles } from "../drift/index.js";
-import { loadGroundingRuntime, persistMovedGroundings, refreshGroundingBaselines } from "../graph/runtime.js";
+import { captureGroundingBaselines, loadGroundingRuntime, persistMovedGroundings } from "../graph/runtime.js";
 
 function askUser(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -243,11 +243,7 @@ export async function runSync(
       console.log(chalk.red(`  ✗ ${toolLabel} session failed`));
     } else {
       try {
-        const refreshedRuntime = await loadGroundingRuntime(config);
-        if (refreshedRuntime) {
-          refreshGroundingBaselines(config, scaffoldFiles, refreshedRuntime);
-          refreshedRuntime.close();
-        }
+        await captureGroundingBaselines(config, { updateFingerprints: true });
       } catch {
         // The following drift check reports graph degradation without crashing sync.
       }
