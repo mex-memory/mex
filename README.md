@@ -12,7 +12,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/mex-agent.svg)](https://www.npmjs.com/package/mex-agent)
 [![GitHub stars](https://img.shields.io/badge/stars-1.2K%2B-111111)](https://github.com/theDakshJaitly/mex/stargazers)
 [![Website](https://img.shields.io/badge/website-mexmemory.com-4f7cff)](https://mexmemory.com)
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/KV5u8yuBp)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/VG7ySSMQM)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml)
 [![Node.js >=22.5](https://img.shields.io/badge/node-%3E%3D22.5-339933)](package.json)
@@ -25,6 +25,12 @@
 ---
 
 AI agents forget everything between sessions. mex gives them permanent, navigable project memory so every session starts with the right context instead of a cold prompt dump.
+
+> **Release status:** npm and `main` remain on stable v0.6.3. The AST/Tree-sitter code graph described below is an unreleased v0.7.0 developer preview on `code-graph-preview`; it is not published to npm yet.
+
+💬 **Join the Mex community on Discord** — discuss ideas, get help, share feedback, and contribute to the project.
+
+[Join the Discord →](https://discord.gg/VG7ySSMQM)
 
 ```bash
 npx mex-agent setup
@@ -60,7 +66,7 @@ The CLI keeps that scaffold honest. It checks paths, commands, dependencies, pat
 
 ## Quick Start
 
-Requires Node.js 22.5 or newer (`node:sqlite` powers the local graph database).
+The stable npm release is v0.6.3. Install it with Node.js 20 or newer:
 
 The npm package is named `mex-agent` because `mex` was already taken. The CLI command is still `mex`.
 
@@ -68,7 +74,17 @@ The npm package is named `mex-agent` because `mex` was already taken. The CLI co
 npx mex-agent setup
 ```
 
-Setup creates the `.mex/` scaffold, builds the code graph by default, asks which AI tool you use, and populates memory from hydrated graph facts. The setup agent reads broad graph neighborhoods for context, then grounds only the specific claims it writes. It takes about five minutes.
+To test or contribute to the code-graph preview, use Node.js 22.5 or newer and build `code-graph-preview` from source:
+
+```bash
+git clone https://github.com/theDakshJaitly/mex.git
+cd mex
+git switch code-graph-preview
+npm install
+npm run build
+```
+
+Stable setup creates the `.mex/` scaffold and asks which AI tool you use. On the source-built code-graph preview, setup also builds the graph by default and populates memory from hydrated graph facts. The setup agent reads broad graph neighborhoods for context, then grounds only the specific claims it writes. It takes about five minutes.
 
 At the end of setup, you can install mex globally:
 
@@ -171,7 +187,7 @@ All commands run from your project root. If you did not install globally, replac
 
 ## Code Graph and Grounding
 
-0.7.0 graphs TypeScript, TSX, JavaScript, and JSX with tree-sitter. Express route registrations receive framework-aware route-to-handler edges. More languages and framework resolvers will follow through the 0.7.x contributor program after this base release.
+The upcoming 0.7.0 preview graphs TypeScript, TSX, JavaScript, and JSX with tree-sitter. Express route registrations receive framework-aware route-to-handler edges. More languages and framework resolvers are planned as the preview matures through its contributor program.
 
 Fresh setup uses the graph while populating the scaffold. The authoring rule is **read broad, ground tight**: an agent reads the complete `mex graph scope` neighborhood needed to understand a behavior, but points prose only at the few symbols that actually embody its claims. Broad architecture, stack, and convention files stay sparse or ungrounded; patterns and deep-domain files carry tighter grounding.
 

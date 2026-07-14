@@ -1,10 +1,12 @@
-# mex 0.7.0 — Code-aware project memory
+# mex 0.7.0 Developer Preview — Code-aware project memory
 
-mex 0.7.0 adds a deterministic code knowledge graph beneath the existing markdown scaffold. Memory can now ground itself to exact code nodes instead of relying only on file paths, so mex can tell an agent precisely which symbol changed and which surrounding code or scaffold memory is affected.
+> **Unreleased:** These are preview notes for `code-graph-preview`. npm and `main` remain on stable v0.6.3. Do not use this document as an announcement of a GitHub or npm release.
+
+The upcoming mex 0.7.0 adds a deterministic code knowledge graph beneath the existing markdown scaffold. Memory can now ground itself to exact code nodes instead of relying only on file paths, so mex can tell an agent precisely which symbol changed and which surrounding code or scaffold memory is affected.
 
 The graph is local, zero-AI infrastructure: tree-sitter extraction writes SQLite in `.mex/graph.db`, body hashes detect edits, and MinHash fingerprints reconcile confident renames and moves.
 
-## What ships
+## What is in the preview
 
 - TypeScript, TSX, JavaScript, and JSX extraction.
 - Cross-file calls, imports, inheritance, containment, and reference edges.
@@ -52,7 +54,7 @@ An unchanged node is clean. A body edit produces a grounding warning with old/ne
 
 ## Installation and upgrades
 
-0.7.0 requires Node.js 22.5 or newer because the graph uses Node's built-in SQLite module.
+The preview is not published to npm. Test it by building the `code-graph-preview` branch from source. The upcoming 0.7.0 requires Node.js 22.5 or newer because the graph uses Node's built-in SQLite module.
 
 Fresh `mex setup` runs build the graph before population, and the setup agent consumes it through the hydrated retrieval commands while authoring grounding.
 
@@ -71,4 +73,4 @@ The graph is additive. If no graph exists, a grammar is unavailable, or SQLite c
 
 ## What comes next
 
-The 0.7.x series is intended to broaden language and framework coverage through bounded extractor and resolver contributions. 0.7.0 deliberately ships a thin complete base—TS/JS plus Express—before that contributor program begins.
+The 0.7.x series is intended to broaden language and framework coverage through bounded extractor and resolver contributions. The developer preview starts with a thin complete base—TS/JS plus Express—so that contributor testing can improve it before the stable 0.7.0 release.

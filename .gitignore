@@ -6,6 +6,7 @@
 # Node
 node_modules/
 dist/
+*.tgz
 
 # Nix
 result
@@ -19,3 +20,4 @@ Thumbs.db
 #misc
 claude-talks
 .demo
+MEX_NATIVE_CODE_GRAPH_BENCHMARK_REPORT.md

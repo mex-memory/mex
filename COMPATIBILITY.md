@@ -2,7 +2,7 @@
 
 ## Runtime requirement
 
-mex 0.7.0 requires Node.js 22.5 or newer. The code graph uses the built-in `node:sqlite` module; older Node releases are unsupported.
+The unreleased mex 0.7.0 developer preview requires Node.js 22.5 or newer. The code graph uses the built-in `node:sqlite` module; older Node releases are unsupported. Stable mex v0.6.3 remains available on npm and supports Node.js 20 or newer.
 
 This document defines `mex-agent`'s public contract: what's stable, what isn't,
 and what counts as a breaking change. It is intended for embedders — tools that
