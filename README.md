@@ -12,7 +12,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/mex-agent.svg)](https://www.npmjs.com/package/mex-agent)
 [![GitHub stars](https://img.shields.io/badge/stars-1.2K%2B-111111)](https://github.com/theDakshJaitly/mex/stargazers)
 [![Website](https://img.shields.io/badge/website-mexmemory.com-4f7cff)](https://mexmemory.com)
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/KV5u8yuBp)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/VG7ySSMQM)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/theDakshJaitly/mex/actions/workflows/ci.yml)
 [![Node.js >=20](https://img.shields.io/badge/node-%3E%3D20-339933)](package.json)
@@ -25,6 +25,12 @@
 ---
 
 AI agents forget everything between sessions. mex gives them permanent, navigable project memory so every session starts with the right context instead of a cold prompt dump.
+
+> **Release status:** npm and `main` remain on stable v0.6.3. The AST/Tree-sitter code graph is an unreleased v0.7.0 developer preview on `code-graph-preview`; it is not published to npm yet.
+
+💬 **Join the Mex community on Discord** — discuss ideas, get help, share feedback, and contribute to the project.
+
+[Join the Discord →](https://discord.gg/VG7ySSMQM)
 
 ```bash
 npx mex-agent setup
@@ -60,10 +66,22 @@ The CLI keeps that scaffold honest. It checks paths, commands, dependencies, pat
 
 ## Quick Start
 
+The stable npm release is v0.6.3. Install it with Node.js 20 or newer:
+
 The npm package is named `mex-agent` because `mex` was already taken. The CLI command is still `mex`.
 
 ```bash
 npx mex-agent setup
+```
+
+To test or contribute to the code-graph preview, use Node.js 22.5 or newer and build `code-graph-preview` from source:
+
+```bash
+git clone https://github.com/theDakshJaitly/mex.git
+cd mex
+git switch code-graph-preview
+npm install
+npm run build
 ```
 
 Setup creates the `.mex/` scaffold, asks which AI tool you use, pre-scans your codebase, and generates a targeted prompt to populate the memory files. It takes about five minutes.
