@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { globSync } from "glob";
 import YAML from "yaml";
@@ -136,13 +135,9 @@ function pathExists(
   if (scopedMatch) {
     const pkgName = `@${scopedMatch[1]}/${scopedMatch[2]}`;
 
-    // Try Node's module resolution first (works for installed npm packages)
-    try {
-      const req = createRequire(resolve(projectRoot, "noop.js"));
-      req.resolve(`${pkgName}/package.json`);
+    // Check node_modules (works for installed npm packages and most workspace layouts)
+    if (existsSync(resolve(projectRoot, "node_modules", pkgName, "package.json"))) {
       return true;
-    } catch {
-      // Fall through to workspace check
     }
 
     // Check workspace names (handles package managers that don't symlink

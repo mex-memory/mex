@@ -90,13 +90,21 @@ npm install -g mex-agent
 
 ### Windows
 
-The recommended `npx mex-agent setup` flow runs in any terminal (Command Prompt, PowerShell, or WSL) and does not need bash, so most Windows users do not have to think about this section.
+**Recommended:** use one environment end-to-end — WSL, Git Bash, or the cross-platform npm installer:
 
-> **Windows users (legacy `setup.sh` flow):** Run all commands inside WSL or Git Bash. Do not mix environments.
+```bash
+npx mex-agent setup
+```
 
-If you previously installed via the legacy `setup.sh` script, building inside WSL and then running the CLI from a native Windows terminal causes "module not found" errors because `node_modules` and path resolution differ between the two filesystems. Run install, build, and CLI commands inside the same environment: either entirely in WSL / Git Bash, or entirely in native Windows via `npx mex-agent`.
+For git-clone installs, run **either** `.mex/setup.sh` (WSL/Git Bash) **or** `.mex/setup.ps1` (PowerShell). Do not mix WSL `npm install` with native Windows Node in the same `.mex` folder; symlinks in `node_modules` break across environments.
 
-See [issue #10](https://github.com/theDakshJaitly/mex/issues/10) for context.
+After setup, the CLI is bundled into `.mex/dist/cli.js` and does not need `.mex/node_modules` at runtime, so commands like `node .mex/dist/cli.js check` work from PowerShell/CMD even when the scaffold was built in WSL.
+
+If you already hit a module-not-found error, rebuild natively:
+
+```powershell
+.\.mex\setup.ps1
+```
 
 ## How It Works
 
