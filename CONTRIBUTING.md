@@ -27,6 +27,8 @@ Do not target `main` with code-graph work. `main` remains the stable v0.6.3 line
 
 Changes to graph identity, reconciliation, schema, or drift semantics are core changes. Open an issue and agree on the approach before implementing them.
 
+Language extractor and framework resolver contributors should read [Extending the code graph](docs/extractors.md) before starting. It documents the frozen interfaces, registration points, fixtures, tests, and required proof for a pull request.
+
 ## Setup
 
 ```bash

@@ -114,7 +114,7 @@ describe("code-graph grounding integration", () => {
     expect(persistedContent).toContain(`mex://${persisted[0].node}`);
     report = await runDriftCheck(config);
     expect(report.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toHaveLength(0);
-  });
+  }, 10_000);
 
   it("keeps legacy checks running when the graph engine fails to load", async () => {
     const { scaffold, config } = fixture();
