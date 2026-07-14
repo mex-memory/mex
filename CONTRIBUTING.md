@@ -4,6 +4,31 @@ Thanks for your interest in contributing! Here's how to get started.
 
 **New here?** The best starting point is an issue labeled [`good first issue`](https://github.com/theDakshJaitly/mex/labels/good%20first%20issue) — most are self-contained drift checkers, and there are 11 existing checkers to copy from. See [Adding a drift checker](#adding-a-drift-checker) below.
 
+## Code-graph developer preview
+
+The upcoming mex 0.7.0 code graph is being developed on `code-graph-preview`. It is not the stable release and is not published to npm. Issues for this work should be labeled `code-graph` and `developer-preview` and must state:
+
+> Target branch: `code-graph-preview`
+
+For any code-graph issue, create your branch from the preview branch:
+
+```bash
+git switch code-graph-preview
+git pull
+git switch -c <feature-or-fix-branch>
+```
+
+When opening the pull request, set:
+
+- **Base branch:** `code-graph-preview`
+- **Compare branch:** your feature or fix branch
+
+Do not target `main` with code-graph work. `main` remains the stable v0.6.3 line until the preview has been tested, documented, and approved for release.
+
+Changes to graph identity, reconciliation, schema, or drift semantics are core changes. Open an issue and agree on the approach before implementing them.
+
+Language extractor and framework resolver contributors should read [Extending the code graph](https://github.com/mex-memory/mex/blob/code-graph-preview/docs/extractors.md) before starting. It documents the frozen interfaces, registration points, fixtures, tests, and required proof for a pull request.
+
 ## Setup
 
 ```bash
