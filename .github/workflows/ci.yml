@@ -26,7 +26,7 @@ jobs:
         if: matrix.node-version == 22
         shell: bash
         run: |
-          TARBALL="$(npm pack --silent)"
+          TARBALL="$(npm pack --silent | tail -n 1)"
           FIXTURE="$(mktemp -d)"
           mkdir -p "$FIXTURE/project/src"
           cd "$FIXTURE/project"
