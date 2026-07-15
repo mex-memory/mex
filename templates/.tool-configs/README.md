@@ -13,6 +13,7 @@ Most embed the same content — a pointer to `.mex/ROUTER.md`. OpenCode uses a J
 | GitHub Copilot | `copilot-instructions.md` → copy to `.github/` in project root |
 | OpenCode | `opencode.json` → copy to `.opencode/` in project root |
 | Codex (OpenAI) | Copy `CLAUDE.md` as `AGENTS.md` to project root |
+| Pi | Copy `CLAUDE.md` as `AGENTS.md` to project root |
 | Any other tool | Point agent to `.mex/AGENTS.md` |
 
 ## Setup
@@ -36,6 +37,9 @@ mkdir -p .github && cp .tool-configs/copilot-instructions.md ./.github/copilot-i
 mkdir -p .opencode && cp .tool-configs/opencode.json ./.opencode/opencode.json
 
 # Codex (OpenAI)
+cp .tool-configs/CLAUDE.md ./AGENTS.md
+
+# Pi
 cp .tool-configs/CLAUDE.md ./AGENTS.md
 ```
 
