@@ -191,6 +191,8 @@ All commands run from your project root. If you did not install globally, replac
 
 The upcoming 0.7.0 preview graphs TypeScript, TSX, JavaScript, and JSX with tree-sitter. Express route registrations receive framework-aware route-to-handler edges. More languages and framework resolvers are planned as the preview matures through its contributor program.
 
+See [Code graph preview support](docs/code-graph-support.md) for the tested language and relationship matrix, graceful-degradation behavior, and current limitations.
+
 Fresh setup uses the graph while populating the scaffold. The authoring rule is **read broad, ground tight**: an agent reads the complete `mex graph scope` neighborhood needed to understand a behavior, but points prose only at the few symbols that actually embody its claims. Broad architecture, stack, and convention files stay sparse or ungrounded; patterns and deep-domain files carry tighter grounding.
 
 There are two complementary pointers. Frontmatter `grounds_to` records tight behavioral assertions with a node id and fingerprint, allowing checker #12 to detect body drift:
