@@ -8,6 +8,8 @@
 
 **Persistent project memory for AI coding agents.**
 
+**English** | [简体中文](README.zh-CN.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md)
+
 [![npm version](https://img.shields.io/npm/v/mex-agent.svg)](https://www.npmjs.com/package/mex-agent)
 [![npm downloads](https://img.shields.io/npm/dm/mex-agent.svg)](https://www.npmjs.com/package/mex-agent)
 [![GitHub stars](https://img.shields.io/badge/stars-1.2K%2B-111111)](https://github.com/theDakshJaitly/mex/stargazers)
@@ -188,6 +190,8 @@ All commands run from your project root. If you did not install globally, replac
 ## Code Graph and Grounding
 
 The upcoming 0.7.0 preview graphs TypeScript, TSX, JavaScript, and JSX with tree-sitter. Express route registrations receive framework-aware route-to-handler edges. More languages and framework resolvers are planned as the preview matures through its contributor program.
+
+See [Code graph preview support](docs/code-graph-support.md) for the tested language and relationship matrix, graceful-degradation behavior, and current limitations.
 
 Fresh setup uses the graph while populating the scaffold. The authoring rule is **read broad, ground tight**: an agent reads the complete `mex graph scope` neighborhood needed to understand a behavior, but points prose only at the few symbols that actually embody its claims. Broad architecture, stack, and convention files stay sparse or ungrounded; patterns and deep-domain files carry tighter grounding.
 

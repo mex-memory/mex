@@ -5,6 +5,8 @@ The v0.7.0 developer preview exposes two source-level contribution seams:
 - `LanguageExtractor` turns one parsed source file into normalized graph nodes and references.
 - `FrameworkResolver` adds framework-specific nodes and relationships that a plain syntax walk cannot infer.
 
+The [code graph preview support reference](code-graph-support.md) records which language and framework behavior is fixture-backed today, which wiring is only partially covered, and which work remains unsupported.
+
 These interfaces are frozen for the 0.7.x contributor program. They are not public npm exports. Contributions target `code-graph-preview`; do not open code-graph pull requests against `main`.
 
 ## Before starting
