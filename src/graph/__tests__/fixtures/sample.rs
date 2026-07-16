@@ -39,7 +39,7 @@ static GLOBAL_FLAG: bool = true;
 
 pub mod admin {
     use super::*;
-    
+
     pub fn is_admin(role: &Role) -> bool {
         match role {
             Role::Admin => true,
@@ -71,7 +71,7 @@ pub fn consume<T>(val: T) {}
 pub fn create_user(name: String) -> User {
     let mut map = HashMap::new();
     map.insert(name.clone(), 1);
-    
+
     admin::is_admin(&Role::Member);
 
     // 5. Duplicate call edges test
@@ -84,4 +84,13 @@ pub fn create_user(name: String) -> User {
         name,
         age: 30,
     }
+}
+
+// 6. Generic instantiation normalization test – target must be `Boxed`, not `Boxed::<u8>`
+pub struct Boxed<T> {
+    pub inner: T,
+}
+
+pub fn make_boxed() -> Boxed<u8> {
+    Boxed::<u8> { inner: 42 }
 }

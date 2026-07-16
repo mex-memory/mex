@@ -38,7 +38,7 @@ class RustWalker {
   private readonly nodes: ExtractedNode[] = [];
   private readonly edges: ExtractedEdge[] = [];
   private scopeStack: string[] = [];
-  private readonly deferredImpls: { node: TSNode, stack: string[] }[] = [];
+  private readonly deferredImpls: { node: TSNode; stack: string[] }[] = [];
 
   constructor(
     private readonly filePath: string,
@@ -63,22 +63,22 @@ class RustWalker {
     });
 
     this.scopeStack.push(fileId);
-    
+
     // Pass 1: Extract everything except impl_item which are deferred to avoid order bugs
     for (const child of root.namedChildren) {
       if (child.type === "impl_item") {
-         this.deferredImpls.push({ node: child, stack: [...this.scopeStack] });
+        this.deferredImpls.push({ node: child, stack: [...this.scopeStack] });
       } else {
-         this.visit(child);
+        this.visit(child);
       }
     }
-    
+
     // Pass 2: Extract all impls, binding them to their types
     for (const { node, stack } of this.deferredImpls) {
-       const oldStack = this.scopeStack;
-       this.scopeStack = stack;
-       this.extractImpl(node);
-       this.scopeStack = oldStack;
+      const oldStack = this.scopeStack;
+      this.scopeStack = stack;
+      this.extractImpl(node);
+      this.scopeStack = oldStack;
     }
 
     this.scopeStack.pop();
@@ -93,8 +93,8 @@ class RustWalker {
     if (CLASS_TYPES.has(type)) return this.extractClassOrEnum(node);
     if (type === "trait_item") return this.extractTrait(node);
     if (type === "impl_item") {
-       this.deferredImpls.push({ node, stack: [...this.scopeStack] });
-       return;
+      this.deferredImpls.push({ node, stack: [...this.scopeStack] });
+      return;
     }
     if (type === "mod_item") return this.extractModule(node);
     if (type === "const_item") return this.extractConst(node);
@@ -112,7 +112,10 @@ class RustWalker {
     extra?: Partial<ExtractedNode>,
   ): string | null {
     if (!name) return null;
-    const id = generateNodeId(this.filePath, kind, name);
+    // For methods, use the qualified name (e.g. User::greet) as the ID basis to
+    // avoid collisions between same-named methods on different types.
+    const idName = kind === "method" ? this.qualify(name) : name;
+    const id = generateNodeId(this.filePath, kind, idName);
     this.nodes.push({
       id,
       kind,
@@ -149,13 +152,18 @@ class RustWalker {
   private extractFunction(node: TSNode, isMethod = false): void {
     const name = nameOf(node, this.source);
     if (!name) return;
+    const returnType = returnTypeOf(node, this.source);
     const id = this.createNode(isMethod ? "method" : "function", name, node, {
       signature: signatureOf(node, this.source),
-      returnType: returnTypeOf(node, this.source),
+      returnType,
       visibility: visibilityOf(node),
       typeParameters: typeParametersOf(node, this.source),
     });
     if (!id) return;
+    // Emit a `returns` reference when the return type is a named type.
+    if (returnType) {
+      this.addRef(id, returnType, "returns", node);
+    }
     const body = getChildByField(node, "body");
     if (body) this.walkBody(body, id);
   }
@@ -170,18 +178,36 @@ class RustWalker {
     });
     if (!id) return;
 
-    const body = getChildByField(node, "body") ?? node.namedChildren.find(c => c.type === "field_declaration_list" || c.type === "enum_variant_list");
+    const body =
+      getChildByField(node, "body") ??
+      node.namedChildren.find(
+        (c) =>
+          c.type === "field_declaration_list" || c.type === "enum_variant_list",
+      );
     if (body) {
       this.scopeStack.push(id);
       for (const member of body.namedChildren) {
         if (member.type === "enum_variant") {
-          const variantName = nameOf(member, this.source) || getNodeText(member, this.source);
+          const variantName =
+            nameOf(member, this.source) || getNodeText(member, this.source);
           if (variantName) this.createNode("enum_member", variantName, member);
         } else if (member.type === "field_declaration") {
           const fieldName = nameOf(member, this.source);
-          if (fieldName) this.createNode("property", fieldName, member, {
-              visibility: visibilityOf(member)
-          });
+          if (fieldName) {
+            const fieldId = this.createNode("property", fieldName, member, {
+              visibility: visibilityOf(member),
+            });
+            // Emit a `type_of` reference for the field's declared type.
+            if (fieldId) {
+              const fieldTypeNode = getChildByField(member, "type");
+              if (fieldTypeNode) {
+                const fieldTypeName = baseTypeName(fieldTypeNode, this.source);
+                if (fieldTypeName) {
+                  this.addRef(fieldId, fieldTypeName, "type_of", member);
+                }
+              }
+            }
+          }
         }
       }
       this.scopeStack.pop();
@@ -201,7 +227,7 @@ class RustWalker {
     this.scopeStack.push(id);
     for (const member of body.namedChildren) {
       if (FUNCTION_TYPES.has(member.type)) {
-         this.extractFunction(member, true);
+        this.extractFunction(member, true);
       }
     }
     this.scopeStack.pop();
@@ -211,23 +237,27 @@ class RustWalker {
     // Inherent impl (impl Foo) or trait impl (impl Trait for Foo)
     const typeNode = getChildByField(node, "type");
     const traitNode = getChildByField(node, "trait");
-    
+
     // baseTypeName resolves e.g. Box<T> to Box
     const typeName = typeNode ? baseTypeName(typeNode, this.source) : "";
     if (!typeName) return;
 
-    let ownerId: string | null | undefined = this.nodes.find(n => n.name === typeName && (n.kind === "class" || n.kind === "enum" || n.kind === "interface"))?.id;
-    
+    let ownerId: string | null | undefined = this.nodes.find(
+      (n) =>
+        n.name === typeName &&
+        (n.kind === "class" || n.kind === "enum" || n.kind === "interface"),
+    )?.id;
+
     if (!ownerId) {
-       ownerId = this.createNode("namespace", typeName, node);
+      ownerId = this.createNode("namespace", typeName, node);
     }
-    
+
     if (!ownerId) return;
 
     if (traitNode) {
       const traitName = baseTypeName(traitNode, this.source);
       if (traitName) {
-         this.addRef(ownerId, traitName, "implements", node);
+        this.addRef(ownerId, traitName, "implements", node);
       }
     }
 
@@ -237,9 +267,9 @@ class RustWalker {
     this.scopeStack.push(ownerId);
     for (const member of body.namedChildren) {
       if (FUNCTION_TYPES.has(member.type)) {
-         this.extractFunction(member, true);
+        this.extractFunction(member, true);
       } else {
-         this.visit(member);
+        this.visit(member);
       }
     }
     this.scopeStack.pop();
@@ -252,7 +282,7 @@ class RustWalker {
       visibility: visibilityOf(node),
     });
     if (!id) return;
-    
+
     const body = getChildByField(node, "body");
     if (body) {
       this.scopeStack.push(id);
@@ -263,20 +293,22 @@ class RustWalker {
 
   private extractConst(node: TSNode): void {
     const name = nameOf(node, this.source);
-    if (name) this.createNode("constant", name, node, {
-       visibility: visibilityOf(node)
-    });
+    if (name)
+      this.createNode("constant", name, node, {
+        visibility: visibilityOf(node),
+      });
   }
 
   private extractStatic(node: TSNode): void {
     const name = nameOf(node, this.source);
-    if (name) this.createNode("variable", name, node, {
-       visibility: visibilityOf(node)
-    });
+    if (name)
+      this.createNode("variable", name, node, {
+        visibility: visibilityOf(node),
+      });
   }
 
   private extractUse(node: TSNode): void {
-    const arg = node.namedChild(0); 
+    const arg = node.namedChild(0);
     if (!arg) return;
     const path = getNodeText(arg, this.source);
     if (path) {
@@ -285,10 +317,10 @@ class RustWalker {
   }
 
   private extractMacro(node: TSNode): void {
-    const tokenTree = node.namedChildren.find(c => c.type === "token_tree");
+    const tokenTree = node.namedChildren.find((c) => c.type === "token_tree");
     if (tokenTree) {
       for (const child of tokenTree.namedChildren) {
-         this.visit(child);
+        this.visit(child);
       }
     }
   }
@@ -335,7 +367,10 @@ class RustWalker {
   private extractInstantiation(node: TSNode, ownerId: string): void {
     const nameNode = getChildByField(node, "name") ?? node.namedChild(0);
     if (nameNode) {
-      const structName = getNodeText(nameNode, this.source);
+      // Strip generic turbofish syntax (`::<...>`) and angle-bracket generics
+      // so `Boxed::<u8> { ... }` resolves to `Boxed`, not `Boxed::<u8>`.
+      const rawName = getNodeText(nameNode, this.source);
+      const structName = rawName.replace(/::<[^>]*>/g, "").replace(/<[^>]*>/g, "").trim();
       if (structName) this.addRef(ownerId, structName, "instantiates", node);
     }
     // Fields are traversed naturally by walkBody via child traversal loop.
@@ -404,16 +439,25 @@ function baseTypeName(node: TSNode, source: string): string {
 function typeParametersOf(node: TSNode, source: string): string[] | undefined {
   const typeParams = getChildByField(node, "type_parameters");
   if (!typeParams) return undefined;
-  
+
   const params: string[] = [];
   for (let i = 0; i < typeParams.namedChildCount; i++) {
     const child = typeParams.namedChild(i);
     if (!child) continue;
-    
-    if (child.type === "type_identifier" || child.type === "identifier" || child.type === "lifetime") {
+
+    if (
+      child.type === "type_identifier" ||
+      child.type === "identifier" ||
+      child.type === "lifetime"
+    ) {
       params.push(getNodeText(child, source));
     } else {
-      const idNode = child.namedChildren.find(c => c.type === "type_identifier" || c.type === "identifier" || c.type === "lifetime");
+      const idNode = child.namedChildren.find(
+        (c) =>
+          c.type === "type_identifier" ||
+          c.type === "identifier" ||
+          c.type === "lifetime",
+      );
       if (idNode) params.push(getNodeText(idNode, source));
       else params.push(getNodeText(child, source));
     }
@@ -422,7 +466,7 @@ function typeParametersOf(node: TSNode, source: string): string[] | undefined {
 }
 
 function baseName(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
+  const normalized = filePath.replace(/\\/g, "/");
   const slash = normalized.lastIndexOf("/");
   return slash < 0 ? normalized : normalized.slice(slash + 1);
 }

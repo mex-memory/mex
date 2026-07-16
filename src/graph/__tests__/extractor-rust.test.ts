@@ -32,10 +32,10 @@ describe("Rust extractor", () => {
     expect(user).toBeDefined();
     expect(user!.isExported).toBe(true);
     expect(user!.docstring).toContain("A simple user struct");
-    
+
     expect(node("property", "name")).toBeDefined();
     expect(node("property", "age")).toBeDefined();
-    
+
     const role = node("enum", "Role");
     expect(role).toBeDefined();
     expect(node("enum_member", "Admin")).toBeDefined();
@@ -69,10 +69,12 @@ describe("Rust extractor", () => {
     expect(hasEdge("calls", "insert")).toBe(true);
     expect(hasEdge("calls", "admin::is_admin")).toBe(true);
   });
-  
+
   it("nests methods under their class via contains edges", () => {
     const userClass = node("class", "User")!;
-    const greet = node("method", "greet")!;
+    const greet = result.nodes.find(
+      (n) => n.kind === "method" && n.qualifiedName === "User::greet",
+    )!;
     expect(
       result.edges.some(
         (e) => e.kind === "contains" && e.source === userClass.id && e.target === greet.id,
@@ -80,25 +82,35 @@ describe("Rust extractor", () => {
     ).toBe(true);
   });
 
-  // NEW REGRESSION TESTS
+  // REGRESSION TESTS
 
   it("extracts traits and trait methods (1)", () => {
     const greeter = node("interface", "Greeter");
     expect(greeter).toBeDefined();
-    
-    // Trait method without body
-    const traitMethod = node("method", "greet");
-    expect(traitMethod).toBeDefined();
 
-    const methods = result.nodes.filter(n => n.kind === "method" && n.name === "greet");
+    const methods = result.nodes.filter((n) => n.kind === "method" && n.name === "greet");
     expect(methods.length).toBe(2);
-    expect(methods.some(m => m.qualifiedName === "Greeter::greet")).toBe(true);
-    expect(methods.some(m => m.qualifiedName === "User::greet")).toBe(true);
+    expect(methods.some((m) => m.qualifiedName === "Greeter::greet")).toBe(true);
+    expect(methods.some((m) => m.qualifiedName === "User::greet")).toBe(true);
+  });
+
+  it("method IDs are unique even when names collide across types (1b)", () => {
+    const greeterGreet = result.nodes.find(
+      (n) => n.kind === "method" && n.qualifiedName === "Greeter::greet",
+    )!;
+    const userGreet = result.nodes.find(
+      (n) => n.kind === "method" && n.qualifiedName === "User::greet",
+    )!;
+    expect(greeterGreet).toBeDefined();
+    expect(userGreet).toBeDefined();
+    expect(greeterGreet.id).not.toBe(userGreet.id);
   });
 
   it("extracts struct instantiation references (2)", () => {
     // Should emit instantiates -> User exactly once
-    const instantiatesUser = result.edges.filter(e => e.kind === "instantiates" && e.targetName === "User");
+    const instantiatesUser = result.edges.filter(
+      (e) => e.kind === "instantiates" && e.targetName === "User",
+    );
     expect(instantiatesUser.length).toBe(1);
   });
 
@@ -118,15 +130,14 @@ describe("Rust extractor", () => {
 
   it("handles declaration order independently (4)", () => {
     // Order: impl Order then struct Order
-    // The impl's `process` method should be attached to the class `Order`.
     const orderClass = node("class", "Order");
     expect(orderClass).toBeDefined();
 
-    const processMethod = node("method", "process")!;
+    const processMethod = result.nodes.find(
+      (n) => n.kind === "method" && n.qualifiedName === "Order::process",
+    )!;
     expect(processMethod).toBeDefined();
-    expect(processMethod.qualifiedName).toBe("Order::process");
 
-    // Check containment edge
     expect(
       result.edges.some(
         (e) => e.kind === "contains" && e.source === orderClass!.id && e.target === processMethod.id,
@@ -139,12 +150,52 @@ describe("Rust extractor", () => {
   });
 
   it("avoids duplicate call edges (5)", () => {
-    // consume(make::<i32>())
-    // Should have exactly one `calls` to `consume` and exactly one to `make` (or `make::<i32>`).
-    const callsConsume = result.edges.filter(e => e.kind === "calls" && e.targetName === "consume");
+    const callsConsume = result.edges.filter(
+      (e) => e.kind === "calls" && e.targetName === "consume",
+    );
     expect(callsConsume.length).toBe(1);
 
-    const callsMake = result.edges.filter(e => e.kind === "calls" && (e.targetName === "make" || e.targetName === "make::<i32>"));
+    const callsMake = result.edges.filter(
+      (e) =>
+        e.kind === "calls" &&
+        (e.targetName === "make" || e.targetName === "make::<i32>"),
+    );
     expect(callsMake.length).toBe(1);
+  });
+
+  it("normalizes generic struct instantiation to base name (6)", () => {
+    // `Boxed::<u8> { inner: 42 }` must resolve to `Boxed`, not `Boxed::<u8>`
+    const instantiatesBoxed = result.edges.filter(
+      (e) => e.kind === "instantiates" && e.targetName === "Boxed",
+    );
+    expect(instantiatesBoxed.length).toBe(1);
+
+    const badTarget = result.edges.filter(
+      (e) => e.kind === "instantiates" && (e.targetName ?? "").includes("<"),
+    );
+    expect(badTarget.length).toBe(0);
+  });
+
+  it("emits `returns` edge for functions with a named return type", () => {
+    // create_user returns User
+    const createUser = node("function", "create_user")!;
+    expect(
+      result.edges.some(
+        (e) => e.kind === "returns" && e.source === createUser.id && e.targetName === "User",
+      ),
+    ).toBe(true);
+  });
+
+  it("emits `type_of` edge for struct fields", () => {
+    // User.name: String  →  type_of -> String
+    const nameField = result.nodes.find(
+      (n) => n.kind === "property" && n.name === "name",
+    )!;
+    expect(nameField).toBeDefined();
+    expect(
+      result.edges.some(
+        (e) => e.kind === "type_of" && e.source === nameField.id && e.targetName === "String",
+      ),
+    ).toBe(true);
   });
 });
