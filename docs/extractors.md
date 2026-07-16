@@ -107,6 +107,16 @@ The resolver's language extractor must already be merged before a framework issu
 
 Use [`src/graph/__tests__/resolver-express.test.ts`](../src/graph/__tests__/resolver-express.test.ts) as the test pattern. Test positive and negative detection, the framework-specific node/reference shape, successful binding, and ambiguous or missing-target behavior.
 
+## Vendored Grammars
+
+When adding a language, document the grammar source and version.
+
+### Rust
+- **Official source:** `tree-sitter-wasms` package
+- **Exact version:** `0.2.2` (via `node_modules/tree-sitter-wasms/out/tree-sitter-rust.wasm`)
+- **Upstream grammar:** [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust)
+- **License:** MIT
+
 ## Pull request proof
 
 Before opening a pull request, run:

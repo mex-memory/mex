@@ -217,13 +217,20 @@ describe("built CLI main-module guard", () => {
 
   beforeAll(() => {
     execSync("npm run build", { cwd: repoRoot, stdio: "pipe" });
-  });
+  }, 30000);
 
   it("parses argv when invoked through a symlinked bin (npm/npx layout)", () => {
     const binDir = mkdtempSync(join(tmpdir(), "mex-bin-"));
     const symlinkedCli = join(binDir, "mex");
     try {
-      symlinkSync(cliPath, symlinkedCli);
+      try {
+        symlinkSync(cliPath, symlinkedCli);
+      } catch (err: any) {
+        if (err.code === "EPERM" && process.platform === "win32") {
+          return;
+        }
+        throw err;
+      }
       const result = spawnSync(process.execPath, [symlinkedCli, "--version"], {
         encoding: "utf8",
         env: { ...process.env, NO_COLOR: "1" },

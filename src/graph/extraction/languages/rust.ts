@@ -12,9 +12,10 @@ import {
   getNodeText,
 } from "../node-id.js";
 
-const FUNCTION_TYPES = new Set(["function_item"]);
+const FUNCTION_TYPES = new Set(["function_item", "function_signature_item"]);
 const CLASS_TYPES = new Set(["struct_item", "enum_item"]);
 const CALL_TYPES = new Set(["call_expression"]);
+const INSTANTIATION_TYPES = new Set(["struct_expression"]);
 
 /**
  * Extract docstrings. Rust uses `line_comment` or `block_comment`.
@@ -36,7 +37,8 @@ function getRustDocstring(node: TSNode, source: string): string | undefined {
 class RustWalker {
   private readonly nodes: ExtractedNode[] = [];
   private readonly edges: ExtractedEdge[] = [];
-  private readonly scopeStack: string[] = [];
+  private scopeStack: string[] = [];
+  private readonly deferredImpls: { node: TSNode, stack: string[] }[] = [];
 
   constructor(
     private readonly filePath: string,
@@ -61,7 +63,24 @@ class RustWalker {
     });
 
     this.scopeStack.push(fileId);
-    for (const child of root.namedChildren) this.visit(child);
+    
+    // Pass 1: Extract everything except impl_item which are deferred to avoid order bugs
+    for (const child of root.namedChildren) {
+      if (child.type === "impl_item") {
+         this.deferredImpls.push({ node: child, stack: [...this.scopeStack] });
+      } else {
+         this.visit(child);
+      }
+    }
+    
+    // Pass 2: Extract all impls, binding them to their types
+    for (const { node, stack } of this.deferredImpls) {
+       const oldStack = this.scopeStack;
+       this.scopeStack = stack;
+       this.extractImpl(node);
+       this.scopeStack = oldStack;
+    }
+
     this.scopeStack.pop();
 
     return { nodes: this.nodes, edges: this.edges };
@@ -73,7 +92,10 @@ class RustWalker {
     if (FUNCTION_TYPES.has(type)) return this.extractFunction(node);
     if (CLASS_TYPES.has(type)) return this.extractClassOrEnum(node);
     if (type === "trait_item") return this.extractTrait(node);
-    if (type === "impl_item") return this.extractImpl(node);
+    if (type === "impl_item") {
+       this.deferredImpls.push({ node, stack: [...this.scopeStack] });
+       return;
+    }
     if (type === "mod_item") return this.extractModule(node);
     if (type === "const_item") return this.extractConst(node);
     if (type === "static_item") return this.extractStatic(node);
@@ -131,6 +153,7 @@ class RustWalker {
       signature: signatureOf(node, this.source),
       returnType: returnTypeOf(node, this.source),
       visibility: visibilityOf(node),
+      typeParameters: typeParametersOf(node, this.source),
     });
     if (!id) return;
     const body = getChildByField(node, "body");
@@ -143,6 +166,7 @@ class RustWalker {
     const kind = node.type === "struct_item" ? "class" : "enum";
     const id = this.createNode(kind, name, node, {
       visibility: visibilityOf(node),
+      typeParameters: typeParametersOf(node, this.source),
     });
     if (!id) return;
 
@@ -169,13 +193,14 @@ class RustWalker {
     if (!name) return;
     const id = this.createNode("interface", name, node, {
       visibility: visibilityOf(node),
+      typeParameters: typeParametersOf(node, this.source),
     });
     if (!id) return;
     const body = getChildByField(node, "body");
     if (!body) return;
     this.scopeStack.push(id);
     for (const member of body.namedChildren) {
-      if (member.type === "function_item") {
+      if (FUNCTION_TYPES.has(member.type)) {
          this.extractFunction(member, true);
       }
     }
@@ -187,27 +212,20 @@ class RustWalker {
     const typeNode = getChildByField(node, "type");
     const traitNode = getChildByField(node, "trait");
     
-    const typeName = typeNode ? getNodeText(typeNode, this.source) : "";
+    // baseTypeName resolves e.g. Box<T> to Box
+    const typeName = typeNode ? baseTypeName(typeNode, this.source) : "";
     if (!typeName) return;
 
-    // We don't create a node for `impl` blocks themselves. They extend the type.
-    // Instead we map containment to the type if we can, but since target is just
-    // a name, we'll nest methods under a pseudo-scope so their qualified name is
-    // correct (e.g. `Foo::method`). 
-    
-    // Check if the struct/enum is already in the file.
     let ownerId: string | null | undefined = this.nodes.find(n => n.name === typeName && (n.kind === "class" || n.kind === "enum" || n.kind === "interface"))?.id;
     
     if (!ownerId) {
-       // If type is not in this file (e.g. adding methods to foreign type),
-       // we create a namespace node to hold them.
        ownerId = this.createNode("namespace", typeName, node);
     }
     
     if (!ownerId) return;
 
     if (traitNode) {
-      const traitName = getNodeText(traitNode, this.source);
+      const traitName = baseTypeName(traitNode, this.source);
       if (traitName) {
          this.addRef(ownerId, traitName, "implements", node);
       }
@@ -218,7 +236,7 @@ class RustWalker {
 
     this.scopeStack.push(ownerId);
     for (const member of body.namedChildren) {
-      if (member.type === "function_item") {
+      if (FUNCTION_TYPES.has(member.type)) {
          this.extractFunction(member, true);
       } else {
          this.visit(member);
@@ -258,10 +276,7 @@ class RustWalker {
   }
 
   private extractUse(node: TSNode): void {
-    // A use statement might import multiple things.
-    // e.g., `use std::collections::{HashMap, HashSet};`
-    // We can just add a reference to the textual path for simplicity.
-    const arg = node.namedChild(0); // use_clause or scoped_identifier
+    const arg = node.namedChild(0); 
     if (!arg) return;
     const path = getNodeText(arg, this.source);
     if (path) {
@@ -270,12 +285,8 @@ class RustWalker {
   }
 
   private extractMacro(node: TSNode): void {
-    // Try to parse the token tree of the macro for any functions/structs inside.
-    // Only descend if it looks like a block macro: `macro! { ... }`.
     const tokenTree = node.namedChildren.find(c => c.type === "token_tree");
     if (tokenTree) {
-      // Very conservative degradation: we just visit children to find items
-      // if they parse correctly within the token tree.
       for (const child of tokenTree.namedChildren) {
          this.visit(child);
       }
@@ -287,6 +298,8 @@ class RustWalker {
 
     if (CALL_TYPES.has(type)) {
       this.extractCall(body, ownerId);
+    } else if (INSTANTIATION_TYPES.has(type)) {
+      this.extractInstantiation(body, ownerId);
     } else if (FUNCTION_TYPES.has(type)) {
       this.scopeStack.push(ownerId);
       this.extractFunction(body);
@@ -316,9 +329,16 @@ class RustWalker {
       }
     }
     if (calleeName) this.addRef(ownerId, calleeName, "calls", node);
-    
-    const args = getChildByField(node, "arguments");
-    if (args) for (const child of args.namedChildren) this.walkBody(child, ownerId);
+    // Arguments are traversed naturally by walkBody via child traversal loop, avoiding duplication.
+  }
+
+  private extractInstantiation(node: TSNode, ownerId: string): void {
+    const nameNode = getChildByField(node, "name") ?? node.namedChild(0);
+    if (nameNode) {
+      const structName = getNodeText(nameNode, this.source);
+      if (structName) this.addRef(ownerId, structName, "instantiates", node);
+    }
+    // Fields are traversed naturally by walkBody via child traversal loop.
   }
 
   private addRef(
@@ -373,9 +393,38 @@ function visibilityOf(node: TSNode): ExtractedNode["visibility"] {
   return undefined;
 }
 
+function baseTypeName(node: TSNode, source: string): string {
+  if (node.type === "generic_type") {
+    const base = node.namedChild(0);
+    return base ? getNodeText(base, source) : getNodeText(node, source);
+  }
+  return getNodeText(node, source);
+}
+
+function typeParametersOf(node: TSNode, source: string): string[] | undefined {
+  const typeParams = getChildByField(node, "type_parameters");
+  if (!typeParams) return undefined;
+  
+  const params: string[] = [];
+  for (let i = 0; i < typeParams.namedChildCount; i++) {
+    const child = typeParams.namedChild(i);
+    if (!child) continue;
+    
+    if (child.type === "type_identifier" || child.type === "identifier" || child.type === "lifetime") {
+      params.push(getNodeText(child, source));
+    } else {
+      const idNode = child.namedChildren.find(c => c.type === "type_identifier" || c.type === "identifier" || c.type === "lifetime");
+      if (idNode) params.push(getNodeText(idNode, source));
+      else params.push(getNodeText(child, source));
+    }
+  }
+  return params.length > 0 ? params : undefined;
+}
+
 function baseName(filePath: string): string {
-  const slash = filePath.lastIndexOf("/");
-  return slash < 0 ? filePath : filePath.slice(slash + 1);
+  const normalized = filePath.replace(/\\/g, '/');
+  const slash = normalized.lastIndexOf("/");
+  return slash < 0 ? normalized : normalized.slice(slash + 1);
 }
 
 export const rustExtractor: LanguageExtractor = {
