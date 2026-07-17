@@ -13,6 +13,18 @@ const TEMPLATE_PLACEHOLDER = /[<>\[\]{}]/;
 /** HTTP methods that indicate an API route, not a file path */
 const HTTP_METHOD_PREFIX = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\//;
 
+/** IP addresses and CIDR ranges are network values, not filesystem paths. */
+const IP_OR_CIDR = /^(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?$/;
+
+/** Inline file extension references like `.yaml` describe a type, not a file. */
+const EXTENSION_ONLY = /^\.[A-Za-z0-9]+$/;
+
+/** Common shell commands that can contain path-like arguments. */
+const SHELL_COMMAND_PREFIX = /^(?:sudo\s+)?(?:ls|cd|cat|grep|find|kubectl|helm|docker|git)\s+/;
+
+/** Dotted config keys or annotations can contain slashes but are not paths. */
+const DOTTED_KEY_WITH_SLASH = /^[A-Za-z0-9_.-]*\.[A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+$/;
+
 /** Things that look like paths but are actually code snippets, URL routes, or other non-path content */
 function isNotAPath(value: string): boolean {
   // URL routes: /voice/incoming, /api/users — start with / but have no file extension
@@ -20,6 +32,18 @@ function isNotAPath(value: string): boolean {
 
   // HTTP method + route: GET /api/bookmarks, POST /users/:id
   if (HTTP_METHOD_PREFIX.test(value)) return true;
+
+  // IP addresses and CIDR ranges: 192.168.5.0/24, 10.0.0.0/8
+  if (IP_OR_CIDR.test(value)) return true;
+
+  // File extensions: .yaml, .yml
+  if (EXTENSION_ONLY.test(value)) return true;
+
+  // Shell commands with path-like arguments: sudo ls /var/lib/kubelet
+  if (SHELL_COMMAND_PREFIX.test(value)) return true;
+
+  // Annotation/config keys with slash-separated namespaces: argocd.argoproj.io/sync-wave
+  if (DOTTED_KEY_WITH_SLASH.test(value)) return true;
 
   // Code snippets: contains =, (), ;, or other code-like characters
   if (/[=();,]/.test(value)) return true;
