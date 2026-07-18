@@ -223,16 +223,7 @@ describe("built CLI main-module guard", () => {
     const binDir = mkdtempSync(join(tmpdir(), "mex-bin-"));
     const symlinkedCli = join(binDir, "mex");
     try {
-      try {
-        symlinkSync(cliPath, symlinkedCli);
-      } catch (err: any) {
-        if (err.code === "EPERM" && process.platform === "win32") {
-          // Windows requires Developer Mode or Admin rights to create file symlinks.
-          // Skip rather than fail if they are unavailable.
-          return;
-        }
-        throw err;
-      }
+      symlinkSync(cliPath, symlinkedCli);
       const result = spawnSync(process.execPath, [symlinkedCli, "--version"], {
         encoding: "utf8",
         env: { ...process.env, NO_COLOR: "1" },

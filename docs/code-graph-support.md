@@ -24,7 +24,8 @@ extractor registry lives in
 | **Partial** | TSX | `.tsx` | The TSX grammar and extractor are registered, but there is no dedicated TSX fixture in the current branch. |
 | **Partial** | JavaScript | `.js`, `.mjs`, `.cjs` | The JavaScript extractor reuses the TypeScript-family walker and the JavaScript grammar is registered, but there is no dedicated JavaScript fixture in the current branch. |
 | **Partial** | JSX | `.jsx` | JSX uses the registered JavaScript grammar and shared walker, but there is no dedicated JSX fixture in the current branch. |
-| **Unsupported** | Python, Go, Rust, and other languages | All other extensions | These names are reserved in [`src/graph/types.ts`](../src/graph/types.ts), but no grammar or extractor is registered for them. Unsupported files are skipped rather than failing a graph build. |
+| **Supported** | Python | `.py` | [`sample.py`](../src/graph/__tests__/fixtures/sample.py), [`extractor-python.test.ts`](../src/graph/__tests__/extractor-python.test.ts), and the [`python-package`](../src/graph/__tests__/fixtures/python-package) integration fixture cover extraction and cross-file package resolution. |
+| **Unsupported** | Go, Rust, and other languages | All other extensions | These names are reserved in [`src/graph/types.ts`](../src/graph/types.ts), but no grammar or extractor is registered for them. Unsupported files are skipped rather than failing a graph build. |
 
 `src/graph/types.ts` contains a wider future-facing language vocabulary. A name
 in that type union is not a support promise; the grammar and extractor

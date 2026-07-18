@@ -351,7 +351,7 @@ interface DiscoveredFile {
 
 /** Every indexable source file under `root`, as project-relative posix paths. */
 function discoverSourceFiles(root: string): DiscoveredFile[] {
-  const matches = globSync("**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs}", {
+  const matches = globSync("**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs,py}", {
     cwd: root,
     ignore: IGNORE_GLOBS,
     nodir: true,

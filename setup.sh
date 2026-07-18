@@ -10,7 +10,6 @@ DRY_RUN=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
-    
     --help|-h)
       echo "Usage: .mex/setup.sh [--dry-run]"
       echo ""

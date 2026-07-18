@@ -1,5 +1,11 @@
 import type { Language, NodeKind } from "../../types.js";
-import type { ExtractedEdge, ExtractedNode, LanguageExtractor, TSNode, TSTree } from "../types.js";
+import type {
+  ExtractedEdge,
+  ExtractedNode,
+  LanguageExtractor,
+  TSNode,
+  TSTree,
+} from "../types.js";
 import { generateNodeId, getChildByField, getNodeText } from "../node-id.js";
 
 const FUNCTION_TYPES = new Set(["function_definition"]);
@@ -46,7 +52,9 @@ class PythonWalker {
     const type = node.type;
 
     if (DECORATED_TYPES.has(type)) {
-      const def = node.namedChildren.find(c => FUNCTION_TYPES.has(c.type) || CLASS_TYPES.has(c.type));
+      const def = node.namedChildren.find(
+        (child) => FUNCTION_TYPES.has(child.type) || CLASS_TYPES.has(child.type),
+      );
       if (def) return this.visit(def);
       return;
     }
@@ -56,7 +64,7 @@ class PythonWalker {
     if (ASSIGNMENT_TYPES.has(type) && this.atModuleOrClassScope()) {
       return this.extractVariable(node);
     }
-    
+
     if (type === "import_statement" || type === "import_from_statement") {
       return this.extractImport(node);
     }
@@ -116,20 +124,18 @@ class PythonWalker {
   private extractFunction(node: TSNode): void {
     const name = nameOf(node, this.source);
     if (!name) return;
-    
+
     const parentId = this.scopeStack[this.scopeStack.length - 1];
-    const parent = parentId ? this.nodes.find(n => n.id === parentId) : null;
+    const parent = parentId ? this.nodes.find((node) => node.id === parentId) : null;
     const isMethod = parent && parent.kind === "class";
-    
-    const isAsyncFunc = isAsync(node);
 
     const id = this.createNode(isMethod ? "method" : "function", name, node, {
       signature: signatureOf(node, this.source),
       returnType: returnTypeOf(node, this.source),
-      isAsync: isAsyncFunc,
+      isAsync: isAsync(node),
     });
     if (!id) return;
-    
+
     const body = getChildByField(node, "body");
     if (body) this.walkBody(body, id);
   }
@@ -152,29 +158,29 @@ class PythonWalker {
   private extractVariable(node: TSNode): void {
     const left = getChildByField(node, "left") ?? node.namedChild(0);
     if (!left) return;
-    
+
     let name = "";
     if (left.type === "identifier") {
       name = getNodeText(left, this.source);
     } else if (left.type === "pattern_list" || left.type === "tuple") {
-        // complex assignment, skip for simplicity unless we want to iterate
-        return;
+      // Complex assignment: skip until every target can be represented reliably.
+      return;
     }
-    
+
     if (!name) return;
 
     // By convention in Python, uppercase variables at module scope are constants.
     const parentId = this.scopeStack[this.scopeStack.length - 1];
-    const parent = parentId ? this.nodes.find(n => n.id === parentId) : null;
+    const parent = parentId ? this.nodes.find((node) => node.id === parentId) : null;
     const isTopLevel = parent && parent.kind === "file";
-    
+
     const isConst = isTopLevel && /^[A-Z0-9_]+$/.test(name);
-    
+
     const right = getChildByField(node, "right");
     const id = this.createNode(isConst ? "constant" : "variable", name, node, {
       signature: right ? getNodeText(right, this.source).slice(0, 200) : undefined,
     });
-    
+
     if (id && right) this.walkBody(right, id);
   }
 
@@ -182,7 +188,9 @@ class PythonWalker {
     const superclasses = getChildByField(node, "superclasses");
     if (!superclasses) return;
     for (const child of superclasses.namedChildren) {
-       this.addRef(fromId, getNodeText(child, this.source), "extends", child);
+      // `metaclass=Meta` configures class creation; it is not a base class.
+      if (child.type === "keyword_argument") continue;
+      this.addRef(fromId, getNodeText(child, this.source), "extends", child);
     }
   }
 
@@ -190,17 +198,29 @@ class PythonWalker {
     if (node.type === "import_statement") {
       for (const child of node.namedChildren) {
         if (child.type === "dotted_name" || child.type === "aliased_import") {
-          const specifier = child.type === "aliased_import" 
-              ? getNodeText(child.namedChild(0)!, this.source)
-              : getNodeText(child, this.source);
+          const specifier = importName(child, this.source);
           this.addRef(`file:${this.filePath}`, specifier, "imports", node);
         }
       }
     } else if (node.type === "import_from_statement") {
       const moduleNameNode = getChildByField(node, "module_name") ?? node.namedChild(0);
-      if (moduleNameNode) {
-          const specifier = getNodeText(moduleNameNode, this.source);
-          this.addRef(`file:${this.filePath}`, specifier, "imports", node);
+      if (!moduleNameNode) return;
+
+      const moduleName = getNodeText(moduleNameNode, this.source);
+      this.addRef(`file:${this.filePath}`, moduleName, "imports", node);
+
+      // `from . import models` names the package as the module field and the
+      // actual sibling module separately. Preserve `.models` as another
+      // candidate so the resolver can bind it to `models.py`.
+      if (/^\.+$/.test(moduleName)) {
+        for (const child of node.namedChildren) {
+          if (child === moduleNameNode) continue;
+          if (child.type !== "dotted_name" && child.type !== "aliased_import") continue;
+          const importedName = importName(child, this.source);
+          if (importedName) {
+            this.addRef(`file:${this.filePath}`, `${moduleName}${importedName}`, "imports", child);
+          }
+        }
       }
     }
   }
@@ -238,13 +258,17 @@ class PythonWalker {
         calleeName = getNodeText(fn, this.source);
       }
     }
-    // We treat all calls as 'calls', since Python has no 'new' keyword to distinguish 'instantiates'.
-    if (calleeName) this.addRef(ownerId, calleeName, "calls", node);
-    
-    const args = getChildByField(node, "arguments");
-    if (args) {
-        for (const child of args.namedChildren) this.walkBody(child, ownerId);
+    if (calleeName) {
+      // Python has no `new` keyword. Follow the language's class naming
+      // convention so constructor-shaped calls can bind to class nodes.
+      const kind: ExtractedEdge["kind"] = isConstructorName(calleeName)
+        ? "instantiates"
+        : "calls";
+      this.addRef(ownerId, calleeName, kind, node);
     }
+
+    // `walkBody` continues through this call's children, including arguments.
+    // Do not descend here as well or nested calls (`outer(inner())`) duplicate.
   }
 
   private addRef(
@@ -271,6 +295,18 @@ class PythonWalker {
 function nameOf(node: TSNode, source: string): string {
   const nameNode = getChildByField(node, "name");
   return nameNode ? getNodeText(nameNode, source) : "";
+}
+
+function importName(node: TSNode, source: string): string {
+  const imported = node.type === "aliased_import"
+    ? getChildByField(node, "name") ?? node.namedChild(0)
+    : node;
+  return imported ? getNodeText(imported, source) : "";
+}
+
+function isConstructorName(name: string): boolean {
+  const simpleName = name.slice(name.lastIndexOf(".") + 1);
+  return /^[A-Z]/.test(simpleName);
 }
 
 function signatureOf(node: TSNode, source: string): string | undefined {
@@ -303,7 +339,7 @@ function isAsync(node: TSNode): boolean {
 function getPythonDocstring(node: TSNode, source: string): string | undefined {
   const body = getChildByField(node, "body");
   if (!body || body.type !== "block") return undefined;
-  
+
   const firstStmt = body.namedChild(0);
   if (firstStmt && firstStmt.type === "expression_statement") {
     const expr = firstStmt.namedChild(0);
@@ -318,7 +354,7 @@ function getPythonDocstring(node: TSNode, source: string): string | undefined {
 }
 
 function baseName(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
+  const normalized = filePath.replace(/\\/g, "/");
   const slash = normalized.lastIndexOf("/");
   return slash < 0 ? normalized : normalized.slice(slash + 1);
 }

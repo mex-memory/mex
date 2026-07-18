@@ -13,7 +13,7 @@
 // framework-specific edges. Kept pure (nodes + refs in → edges out) so it is
 // trivially unit-testable and reused unchanged by both `build` and `sync`.
 
-import type { EdgeKind, GraphEdge, GraphNode, NodeKind } from "../types.js";
+import type { EdgeKind, GraphEdge, GraphNode, Language, NodeKind } from "../types.js";
 import type { UnresolvedRefRecord } from "../db/store.js";
 import type { FrameworkResolver, ResolutionContext } from "./types.js";
 
@@ -94,7 +94,12 @@ export function resolveReferences(
     const fromNode = byId.get(ref.fromNodeId);
     if (!fromNode) continue;
 
-    const targetPath = resolveModulePath(fromNode.filePath, ref.referenceName, fileNodeByPath);
+    const targetPath = resolveModulePath(
+      fromNode.filePath,
+      ref.referenceName,
+      ref.language,
+      fileNodeByPath,
+    );
     if (!targetPath) continue;
     const targetFileId = fileNodeByPath.get(targetPath);
     if (!targetFileId) continue;
@@ -189,8 +194,12 @@ function lastSegment(name: string): string {
 function resolveModulePath(
   fromFile: string,
   specifier: string,
+  language: Language,
   fileNodeByPath: Map<string, string>,
 ): string | null {
+  if (language === "python") {
+    return resolvePythonModulePath(fromFile, specifier, fileNodeByPath);
+  }
   if (!specifier.startsWith(".")) return null; // external package
   const base = posixJoin(posixDirname(fromFile), specifier);
   const candidates = [
@@ -198,6 +207,38 @@ function resolveModulePath(
     ...MODULE_EXTENSIONS.map((ext) => base + ext),
     ...MODULE_EXTENSIONS.map((ext) => posixJoin(base, "index") + ext),
   ];
+  for (const candidate of candidates) {
+    if (fileNodeByPath.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** Resolve Python's dotted absolute and package-relative module syntax. */
+function resolvePythonModulePath(
+  fromFile: string,
+  specifier: string,
+  fileNodeByPath: Map<string, string>,
+): string | null {
+  const leadingDots = specifier.match(/^\.+/)?.[0].length ?? 0;
+  const moduleName = specifier.slice(leadingDots);
+  const modulePath = moduleName.replace(/\./g, "/");
+
+  let base: string;
+  if (leadingDots > 0) {
+    // One dot means the current package; each additional dot ascends once.
+    let packageDir = posixDirname(fromFile);
+    for (let level = 1; level < leadingDots; level++) {
+      packageDir = posixDirname(packageDir);
+    }
+    base = modulePath ? posixJoin(packageDir, modulePath) : packageDir;
+  } else {
+    // Absolute Python imports are rooted at the indexed project. Runtime
+    // sys.path customization is intentionally outside static graph extraction.
+    base = modulePath;
+  }
+
+  if (!base) return null;
+  const candidates = [base, `${base}.py`, posixJoin(base, "__init__.py")];
   for (const candidate of candidates) {
     if (fileNodeByPath.has(candidate)) return candidate;
   }

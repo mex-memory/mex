@@ -33,7 +33,7 @@ describe("Python extractor", () => {
       kind: "class",
       qualifiedName: expect.stringContaining("Vehicle"),
       docstring: "Base class for vehicles.",
-      isExported: true, // Exported by default in Python
+      isExported: true,
     });
 
     const car = result.nodes.find((n) => n.name === "Car");
@@ -43,7 +43,6 @@ describe("Python extractor", () => {
       isExported: true,
     });
 
-    // Check containment: Vehicle should be contained in the file
     const fileNode = result.nodes.find((n) => n.kind === "file")!;
     expect(result.edges).toContainEqual({
       source: fileNode.id,
@@ -67,10 +66,9 @@ describe("Python extractor", () => {
       kind: "method",
       signature: "(self) -> bool",
       returnType: "bool",
-      isAsync: true, // Extracted async modifier
+      isAsync: true,
     });
-    
-    // Containment: start_engine is inside Car
+
     const car = result.nodes.find((n) => n.name === "Car")!;
     expect(result.edges).toContainEqual({
       source: car.id,
@@ -92,14 +90,14 @@ describe("Python extractor", () => {
     const priv = result.nodes.find((n) => n.name === "_private_func");
     expect(priv).toMatchObject({
       kind: "function",
-      isExported: false, // Stars with '_'
+      isExported: false,
     });
   });
 
   it("extracts top-level variables and constants", () => {
     const globalConst = result.nodes.find((n) => n.name === "GLOBAL_CONSTANT");
     expect(globalConst).toMatchObject({
-      kind: "constant", // uppercase
+      kind: "constant",
       signature: "42",
       isExported: true,
     });
@@ -108,10 +106,9 @@ describe("Python extractor", () => {
     expect(internalVar).toMatchObject({
       kind: "variable",
       signature: '"hidden"',
-      isExported: false, // starts with '_'
+      isExported: false,
     });
-    
-    // Class-level variables
+
     const wheels = result.nodes.find((n) => n.name === "wheels");
     expect(wheels).toMatchObject({
       kind: "variable",
@@ -127,7 +124,7 @@ describe("Python extractor", () => {
         source: car.id,
         targetName: "Vehicle",
         kind: "extends",
-      })
+      }),
     );
   });
 
@@ -138,50 +135,80 @@ describe("Python extractor", () => {
         source: fileNode.id,
         targetName: "os",
         kind: "imports",
-      })
+      }),
     );
     expect(result.edges).toContainEqual(
       expect.objectContaining({
         source: fileNode.id,
         targetName: "sys",
         kind: "imports",
-      })
+      }),
     );
   });
 
-  it("extracts unresolved calls", () => {
+  it("extracts unresolved calls and instantiations", () => {
     const startEngine = result.nodes.find((n) => n.name === "start_engine")!;
     const standalone = result.nodes.find((n) => n.name === "standalone_function")!;
-    
-    // self.drive() inside start_engine
+
     expect(result.edges).toContainEqual(
       expect.objectContaining({
         source: startEngine.id,
         targetName: "drive",
         kind: "calls",
-      })
+      }),
     );
-    // asyncio.sleep(1) inside start_engine
     expect(result.edges).toContainEqual(
       expect.objectContaining({
         source: startEngine.id,
         targetName: "sleep",
         kind: "calls",
-      })
+      }),
     );
-    // Car("Toyota", "Corolla") inside standalone_function
+
     expect(result.edges).toContainEqual(
       expect.objectContaining({
         source: standalone.id,
         targetName: "Car",
-        kind: "calls",
-      })
+        kind: "instantiates",
+      }),
     );
+  });
+
+  it("handles relative imports, metaclasses, and nested calls without duplicates", () => {
+    const source = [
+      "from . import models",
+      "class Base: pass",
+      "class Child(Base, metaclass=type): pass",
+      "def helper(): pass",
+      "def build():",
+      "    return Child(helper())",
+      "",
+    ].join("\n");
+    const extracted = extractFile("pkg/service.py", source, "python")!;
+    const fileNode = extracted.nodes.find((node) => node.kind === "file")!;
+    const child = extracted.nodes.find((node) => node.name === "Child")!;
+    const build = extracted.nodes.find((node) => node.name === "build")!;
+
+    expect(extracted.edges).toContainEqual(expect.objectContaining({
+      source: fileNode.id,
+      targetName: ".models",
+      kind: "imports",
+    }));
+    expect(extracted.edges.filter((edge) => edge.source === child.id && edge.kind === "extends"))
+      .toEqual([expect.objectContaining({ targetName: "Base" })]);
+    expect(extracted.edges).toContainEqual(expect.objectContaining({
+      source: build.id,
+      targetName: "Child",
+      kind: "instantiates",
+    }));
+    expect(extracted.edges.filter((edge) => (
+      edge.source === build.id && edge.kind === "calls" && edge.targetName === "helper"
+    ))).toHaveLength(1);
   });
 
   it("produces deterministic, line-independent node ids", () => {
     const vehicle = result.nodes.find((n) => n.name === "Vehicle")!;
-    expect(vehicle.id).toMatch(/^[\w-:]+$/); // base64url or similar
+    expect(vehicle.id).toMatch(/^[\w-:]+$/);
     const func = result.nodes.find((n) => n.name === "standalone_function")!;
     expect(func.id).toMatch(/^[\w-:]+$/);
   });
