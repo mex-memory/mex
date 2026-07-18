@@ -13,7 +13,7 @@ import { deserializeFingerprint, serializeFingerprint } from "./fingerprint.js";
 import { MinHashReconciler } from "./reconcile-engine.js";
 import type { Fingerprint, Reconciler } from "./reconcile.js";
 
-const SOURCE_GLOB = "**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs}";
+const SOURCE_GLOB = "**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs,py}";
 const SOURCE_IGNORE = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/build/**", "**/.mex/**", "**/coverage/**", "**/.next/**", "**/out/**"];
 
 export interface GroundingRuntime {
