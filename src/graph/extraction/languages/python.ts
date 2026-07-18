@@ -345,9 +345,14 @@ function getPythonDocstring(node: TSNode, source: string): string | undefined {
     const expr = firstStmt.namedChild(0);
     if (expr && expr.type === "string") {
       const text = getNodeText(expr, source);
-      // Remove surrounding quotes (either single or triple quotes)
-      const unquoted = text.replace(/^("""|'''|"|')/, "").replace(/("""|'''|"|')$/, "");
-      return unquoted.trim();
+      // Python docstrings may use a raw/unicode prefix and single or triple
+      // quotes. Strip a matched delimiter pair without interpreting escapes.
+      const unprefixed = text.replace(/^[rRuU]{1,2}(?=["'])/, "");
+      const delimiter = ["\"\"\"", "'''", "\"", "'"]
+        .find((quote) => unprefixed.startsWith(quote) && unprefixed.endsWith(quote));
+      if (delimiter) {
+        return unprefixed.slice(delimiter.length, -delimiter.length).trim();
+      }
     }
   }
   return undefined;

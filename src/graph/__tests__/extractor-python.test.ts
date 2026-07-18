@@ -206,6 +206,21 @@ describe("Python extractor", () => {
     ))).toHaveLength(1);
   });
 
+  it("captures prefixed docstrings and degrades safely on malformed syntax", () => {
+    const prefixed = extractFile(
+      "docs.py",
+      'def documented():\n    r"""Raw documentation."""\n    pass\n',
+      "python",
+    )!;
+    expect(prefixed.nodes.find((node) => node.name === "documented")?.docstring)
+      .toBe("Raw documentation.");
+
+    expect(() => extractFile("broken.py", "def broken(:\n    pass\n", "python"))
+      .not.toThrow();
+    expect(extractFile("broken.py", "def broken(:\n    pass\n", "python")?.nodes)
+      .toContainEqual(expect.objectContaining({ kind: "file", name: "broken.py" }));
+  });
+
   it("produces deterministic, line-independent node ids", () => {
     const vehicle = result.nodes.find((n) => n.name === "Vehicle")!;
     expect(vehicle.id).toMatch(/^[\w-:]+$/);
