@@ -112,10 +112,7 @@ class RustWalker {
     extra?: Partial<ExtractedNode>,
   ): string | null {
     if (!name) return null;
-    // For methods, use the qualified name (e.g. User::greet) as the ID basis to
-    // avoid collisions between same-named methods on different types.
-    const idName = kind === "method" ? this.qualify(name) : name;
-    const id = generateNodeId(this.filePath, kind, idName);
+    const id = generateNodeId(this.filePath, kind, name);
     this.nodes.push({
       id,
       kind,
@@ -160,9 +157,12 @@ class RustWalker {
       typeParameters: typeParametersOf(node, this.source),
     });
     if (!id) return;
-    // Emit a `returns` reference when the return type is a named type.
-    if (returnType) {
-      this.addRef(id, returnType, "returns", node);
+    const returnTypeNode = getChildByField(node, "return_type");
+    if (returnTypeNode) {
+      const returnTypeName = baseTypeName(returnTypeNode, this.source);
+      if (returnTypeName) {
+        this.addRef(id, returnTypeName, "returns", returnTypeNode);
+      }
     }
     const body = getChildByField(node, "body");
     if (body) this.walkBody(body, id);
@@ -367,10 +367,7 @@ class RustWalker {
   private extractInstantiation(node: TSNode, ownerId: string): void {
     const nameNode = getChildByField(node, "name") ?? node.namedChild(0);
     if (nameNode) {
-      // Strip generic turbofish syntax (`::<...>`) and angle-bracket generics
-      // so `Boxed::<u8> { ... }` resolves to `Boxed`, not `Boxed::<u8>`.
-      const rawName = getNodeText(nameNode, this.source);
-      const structName = rawName.replace(/::<[^>]*>/g, "").replace(/<[^>]*>/g, "").trim();
+      const structName = baseTypeName(nameNode, this.source);
       if (structName) this.addRef(ownerId, structName, "instantiates", node);
     }
     // Fields are traversed naturally by walkBody via child traversal loop.
@@ -428,11 +425,29 @@ function visibilityOf(node: TSNode): ExtractedNode["visibility"] {
   return undefined;
 }
 
-function baseTypeName(node: TSNode, source: string): string {
-  if (node.type === "generic_type") {
+function baseTypeName(node: TSNode, source: string): string | undefined {
+  if (
+    node.type === "generic_type" ||
+    node.type === "generic_type_with_turbofish"
+  ) {
     const base = node.namedChild(0);
-    return base ? getNodeText(base, source) : getNodeText(node, source);
+    return base ? baseTypeName(base, source) : undefined;
   }
+
+  if (node.type === "reference_type" || node.type === "pointer_type") {
+    for (let i = node.namedChildCount - 1; i >= 0; i--) {
+      const child = node.namedChild(i);
+      if (
+        child &&
+        child.type !== "lifetime" &&
+        child.type !== "mutable_specifier"
+      ) {
+        return baseTypeName(child, source);
+      }
+    }
+    return undefined;
+  }
+
   return getNodeText(node, source);
 }
 

@@ -86,11 +86,15 @@ pub fn create_user(name: String) -> User {
     }
 }
 
-// 6. Generic instantiation normalization test – target must be `Boxed`, not `Boxed::<u8>`
+// 6. Nested generic instantiation normalization test – target must be `Boxed`
 pub struct Boxed<T> {
     pub inner: T,
 }
 
-pub fn make_boxed() -> Boxed<u8> {
-    Boxed::<u8> { inner: 42 }
+pub fn make_boxed() -> Boxed<Vec<u8>> {
+    Boxed::<Vec<u8>> { inner: Vec::new() }
+}
+
+pub struct Borrowed<'a> {
+    pub user: &'a User,
 }

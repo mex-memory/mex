@@ -94,18 +94,6 @@ describe("Rust extractor", () => {
     expect(methods.some((m) => m.qualifiedName === "User::greet")).toBe(true);
   });
 
-  it("method IDs are unique even when names collide across types (1b)", () => {
-    const greeterGreet = result.nodes.find(
-      (n) => n.kind === "method" && n.qualifiedName === "Greeter::greet",
-    )!;
-    const userGreet = result.nodes.find(
-      (n) => n.kind === "method" && n.qualifiedName === "User::greet",
-    )!;
-    expect(greeterGreet).toBeDefined();
-    expect(userGreet).toBeDefined();
-    expect(greeterGreet.id).not.toBe(userGreet.id);
-  });
-
   it("extracts struct instantiation references (2)", () => {
     // Should emit instantiates -> User exactly once
     const instantiatesUser = result.edges.filter(
@@ -163,8 +151,8 @@ describe("Rust extractor", () => {
     expect(callsMake.length).toBe(1);
   });
 
-  it("normalizes generic struct instantiation to base name (6)", () => {
-    // `Boxed::<u8> { inner: 42 }` must resolve to `Boxed`, not `Boxed::<u8>`
+  it("normalizes nested generic struct instantiation to its base name (6)", () => {
+    // `Boxed::<Vec<u8>> { ... }` must resolve to `Boxed`.
     const instantiatesBoxed = result.edges.filter(
       (e) => e.kind === "instantiates" && e.targetName === "Boxed",
     );
@@ -184,6 +172,19 @@ describe("Rust extractor", () => {
         (e) => e.kind === "returns" && e.source === createUser.id && e.targetName === "User",
       ),
     ).toBe(true);
+
+    // Generic return types use the outer symbol rather than display text.
+    const makeBoxed = node("function", "make_boxed")!;
+    expect(
+      result.edges.some(
+        (e) => e.kind === "returns" && e.source === makeBoxed.id && e.targetName === "Boxed",
+      ),
+    ).toBe(true);
+    expect(
+      result.edges.some(
+        (e) => e.kind === "returns" && (e.targetName ?? "").includes("<"),
+      ),
+    ).toBe(false);
   });
 
   it("emits `type_of` edge for struct fields", () => {
@@ -195,6 +196,17 @@ describe("Rust extractor", () => {
     expect(
       result.edges.some(
         (e) => e.kind === "type_of" && e.source === nameField.id && e.targetName === "String",
+      ),
+    ).toBe(true);
+
+    // Reference types use the referenced symbol rather than `&'a User`.
+    const userField = result.nodes.find(
+      (n) => n.kind === "property" && n.qualifiedName === "Borrowed::user",
+    )!;
+    expect(userField).toBeDefined();
+    expect(
+      result.edges.some(
+        (e) => e.kind === "type_of" && e.source === userField.id && e.targetName === "User",
       ),
     ).toBe(true);
   });

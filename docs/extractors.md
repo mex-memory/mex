@@ -112,11 +112,12 @@ Use [`src/graph/__tests__/resolver-express.test.ts`](../src/graph/__tests__/reso
 When adding a language, document the grammar source and version.
 
 ### Rust
-- **Official source:** `tree-sitter-wasms` package, version `0.1.12`
+- **Binary source:** `tree-sitter-wasms` package, version `0.1.12`
 - **Vendored path:** `src/graph/wasm/tree-sitter-rust.wasm`
 - **SHA-256:** matches `node_modules/tree-sitter-wasms@0.1.12/out/tree-sitter-rust.wasm` exactly
+- **Binary package license:** Unlicense
 - **Upstream grammar:** [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust)
-- **License:** MIT
+- **Upstream grammar license:** MIT
 
 ## Pull request proof
 
