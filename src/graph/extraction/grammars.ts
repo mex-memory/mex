@@ -28,6 +28,7 @@ const WASM_GRAMMAR_FILES: Partial<Record<Language, string>> = {
   javascript: "tree-sitter-javascript.wasm",
   jsx: "tree-sitter-javascript.wasm",
   python: "tree-sitter-python.wasm",
+  rust: "tree-sitter-rust.wasm",
 };
 
 /** File extension → language. The single source of truth for "index this file?". */
@@ -41,6 +42,7 @@ const EXTENSION_MAP: Record<string, Language> = {
   ".cjs": "javascript",
   ".jsx": "jsx",
   ".py": "python",
+  ".rs": "rust",
 };
 
 const parserCache = new Map<Language, Parser>();
