@@ -51,6 +51,7 @@
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "eval": "node evaluate/index.mjs",
     "typecheck": "tsc --noEmit",
     "prepare": "npm run build"
   },
