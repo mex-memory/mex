@@ -13,9 +13,11 @@ The setup step has already built .mex/graph.db. Do not walk the source tree or
 open representative implementation files to learn what code does. Use the
 agent-facing graph commands from this project root instead:
 
-- \`mex graph scope "<task or domain>"\` — primary tool. It returns JSONL facts
-  for FTS seeds plus their one-hop callers/callees, including source, signatures,
-  node ids, and serialized fingerprints.
+- \`mex graph scope "<task or domain>" --fingerprint\` — primary discovery tool. It
+  returns a compact JSONL manifest (meta, facts with node ids + signatures +
+  serialized fingerprints, summary). \`--fingerprint\` attaches the exact serialized
+  fingerprint you must copy into \`grounds_to\`.
+- \`mex graph get <id> --detail source\` — read the body of a node you intend to ground.
 - \`mex graph query where-defined <symbol>\` — resolve an exact symbol.
 - \`mex graph query who-calls <symbol>\` / \`what-calls <symbol>\` — follow calls.
 - \`mex impact <symbol|file>\` — inspect transitive blast radius when useful.
@@ -27,7 +29,8 @@ that setup cannot author trustworthy grounding; never invent ids or fingerprints
 
 The governing rule is: READ BROAD, GROUND TIGHT.
 
-1. Read the whole \`mex graph scope\` neighborhood needed to understand a task.
+1. Read the relevant \`mex graph scope\` neighborhood, expanding node bodies with
+   \`mex graph get <id> --detail source\` as needed to understand a task.
 2. In each scaffold file that makes a specific behavioral claim, replace its
    empty \`grounds_to\` with only the functions/methods that embody that claim:
 
