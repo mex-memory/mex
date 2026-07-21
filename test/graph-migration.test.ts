@@ -69,7 +69,7 @@ describe("pre-0.7 graph grounding migration", () => {
 
     const deterministicAgent = (_prompt: string, cwd: string): boolean => {
       const rows: string[] = [];
-      runGraphScope("calculateCheckoutTotal", cwd, { write: (line) => rows.push(line) });
+      runGraphScope("calculateCheckoutTotal", cwd, { write: (line) => rows.push(line) }, { fingerprint: true });
       const fact = rows.map((line) => JSON.parse(line) as Record<string, unknown>)
         .find((row) => row.name === "calculateCheckoutTotal")!;
       let content = readFileSync(scaffold, "utf-8");

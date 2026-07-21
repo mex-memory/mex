@@ -33,7 +33,9 @@ Do not create or delete scaffold files. The only permitted content edits are:
 2. Wrap an existing load-bearing symbol mention in a mex:// Markdown link.
 
 Use the graph for all code lookup:
-- mex graph scope "<behavior described by this file>" for broad hydrated context
+- mex graph scope "<behavior described by this file>" --fingerprint for broad context
+  (--fingerprint attaches the exact serialized fingerprint you must copy into grounds_to)
+- mex graph get <id> --detail source to read the body of a node you intend to ground
 - mex graph query where-defined <symbol> to resolve an exact mention
 - mex graph query who-calls <symbol> / what-calls <symbol> when call context matters
 - mex impact <symbol|file> when blast radius helps disambiguate
