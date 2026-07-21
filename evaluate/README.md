@@ -48,6 +48,27 @@ an idealized token baseline but cannot reveal Read/Grep fallback — plug a real
 model with `--driver <module>` (default-exports `(variant) => driver`) for a
 correctness/fallback verdict.
 
+**Real-model runner** (`agent-e2e-model.mjs`, `node evaluate/agent-e2e-model.mjs`):
+drives a real headless agent (`claude -p`) per variant×task using the actual graph
+CLI, and parses the stream-json transcript for tool calls, fallbacks, cost, turns,
+and rubric correctness. Requires the `claude` CLI on PATH. Flags: `--root`,
+`--limit <n>`, `--model <name>`.
+
+Real-model result (opus-4-8, 5 NL tasks, this repo):
+
+| variant | correct | mean cost | mean turns | mean get | mean Read/Grep fallback |
+|---|---|---|---|---|---|
+| minimal | 5/5 | $0.20 | 4.4 | 2.2 | 0.0 |
+| source  | 5/5 | $0.17 | 3.0 | 0.0 | 1.0 |
+
+Both variants answered every task correctly — the real model navigates the compact
+manifest fine (the scripted driver's ~0.6 NL "recall" was a grading artifact, not a
+real recall gap). `source` is answer-ready (fewer turns, marginally cheaper) but
+falls back to Read/Grep ~once/task when its inline source is insufficient;
+`minimal` is self-sufficient (zero fallback) at the cost of extra `get` round-trips.
+Cost numbers are cache-dominated and noisy at N=5 — treat correctness/fallback as
+the robust signals and re-run on a larger fixture set before freezing the default.
+
 Findings so far (scripted driver, this repo): `minimal` mean ~1870 tok/task with
 one `get` round-trip; `source` mean ~1430 tok/task in one shot — for these tasks
 the one-shot `source` variant is *cheaper* because the compact manifest is nearly
