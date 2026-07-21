@@ -33,9 +33,30 @@ prior ad-hoc benchmark so numbers stay comparable (see
 and rank (the committed gate); who-calls / what-calls fan-out counts for
 visibility. Labeled caller/callee recall + MRR are a documented follow-up.
 
-**Category 3 — end-to-end agent (variants A–D)** is planned (`agent-e2e.mjs`,
-`fixtures/nl-tasks.json`) and settles the default `--detail` level on accumulated
-task cost. Not yet built.
+**Category 3 — end-to-end agent** (`agent-e2e.mjs`, `npm run eval:e2e`). Runs each
+variant against the natural-language tasks and measures accumulated tokens across
+ALL tool calls, follow-up `graph get` calls, Read/Grep fallbacks, and rubric
+correctness. Winner = best correctness at lowest total tokens (NOT smallest first
+response). Reduced from the plan's A–D: variant A (old all-source scope) was
+removed in the M2 redesign, and C/D (flow-spine source, skeletonization) were
+deferred — so the buildable comparison is `minimal` vs `source`, which is the
+decision that actually sets the shipped default `--detail`.
+
+Model-agnostic: the default **scripted reference driver** is a perfectly
+disciplined agent (scope first; expand ids via `graph get`; never grep). It gives
+an idealized token baseline but cannot reveal Read/Grep fallback — plug a real
+model with `--driver <module>` (default-exports `(variant) => driver`) for a
+correctness/fallback verdict.
+
+Findings so far (scripted driver, this repo): `minimal` mean ~1870 tok/task with
+one `get` round-trip; `source` mean ~1430 tok/task in one shot — for these tasks
+the one-shot `source` variant is *cheaper* because the compact manifest is nearly
+as large as the source the task needs, then `get` pays again. **NL-query recall is
+~0.6**, materially below the ~1.0 symbol recall: FTS-keyword selection misses
+symbols whose names don't appear in the question (e.g. "how does scope decide
+which nodes to return" surfaces the legacy `scopeSelect`, not `selectScope`). That
+gap is a candidate for a future semantic-selection improvement, and the reason the
+default-detail call should be re-run with a real model driver before it's frozen.
 
 ## Gates
 
