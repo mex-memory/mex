@@ -27,6 +27,21 @@ export interface CompactFact {
   bodyHash?: string;
   /** Full serialized minhash fingerprint. Opt-in (--fingerprint); used by grounding. */
   fingerprint?: string;
+  /** Relevance score in [0,1]. Present on `scope` facts only. */
+  score?: number;
+  /** Why this node was selected (e.g. "exact-name-match"). Scope facts only. */
+  selectionReasons?: string[];
+}
+
+/** Quota bucket for scope selection diversity. */
+export type SelectionCategory = "direct" | "neighbor" | "test";
+
+/** A ranked scope candidate with its reasons and quota bucket. */
+export interface ScopedCandidate {
+  id: string;
+  score: number;
+  reasons: string[];
+  category: SelectionCategory;
 }
 
 /** One node's source body, read on demand and line-capped. */
@@ -47,6 +62,87 @@ export function scopeSelect(graph: GraphEngine, task: string): string[] {
     for (const callee of graph.getCallees(seed.id)) ids.add(callee.id);
   }
   return [...ids];
+}
+
+const QUOTA: Record<SelectionCategory, number> = { direct: 5, neighbor: 4, test: 2 };
+const HOP_CAP = 3;
+
+interface Candidate {
+  node: GraphNode;
+  score: number;
+  reasons: Set<string>;
+  category: SelectionCategory;
+}
+
+function isTestNode(node: GraphNode): boolean {
+  return /(^|\/)(__tests__|tests?)\//.test(node.filePath) || /\.(test|spec)\./.test(node.filePath);
+}
+
+/** Identifier-like tokens in a task string (drops trivial 1-char fragments). */
+function taskTokens(task: string): string[] {
+  return [...new Set(task.split(/[^A-Za-z0-9_$]+/).filter((t) => t.length >= 2))];
+}
+
+/**
+ * Scored, quota-limited scope selection. Combines whole-task semantic search,
+ * exact identifier matches (which are boosted so explicitly named symbols survive
+ * trimming), and a capped one-hop neighborhood, then applies per-category quotas
+ * under `maxNodes`. Deterministic: ties break by node id.
+ *
+ * Returns the picked candidates plus `matchedCount`, the size of the candidate
+ * pool before the cap (so callers can report truncation).
+ */
+export function selectScope(
+  graph: GraphEngine,
+  task: string,
+  maxNodes: number,
+): { candidates: ScopedCandidate[]; matchedCount: number } {
+  const pool = new Map<string, Candidate>();
+  const add = (node: GraphNode, score: number, reason: string, bucket: SelectionCategory): void => {
+    const category = isTestNode(node) ? "test" : bucket;
+    const existing = pool.get(node.id);
+    if (existing) {
+      existing.score = Math.max(existing.score, score);
+      existing.reasons.add(reason);
+      if (category === "direct") existing.category = "direct";
+    } else {
+      pool.set(node.id, { node, score, reasons: new Set([reason]), category });
+    }
+  };
+
+  graph.searchNodes(task, { limit: 10 }).forEach((node, i) => add(node, 0.6 - i * 0.03, "semantic-match", "direct"));
+  for (const token of taskTokens(task)) {
+    for (const match of graph.searchNodes(token, { limit: 20 })) {
+      if (match.name === token || match.qualifiedName === token || match.qualifiedName.endsWith(`::${token}`)) {
+        add(match, 1, "exact-name-match", "direct");
+      }
+    }
+  }
+
+  const directSeeds = [...pool.values()]
+    .filter((c) => c.category === "direct")
+    .sort((a, b) => b.score - a.score || a.node.id.localeCompare(b.node.id))
+    .slice(0, 6);
+  for (const seed of directSeeds) {
+    for (const caller of graph.getCallers(seed.node.id).slice(0, HOP_CAP)) add(caller, 0.3, "caller-of-seed", "neighbor");
+    for (const callee of graph.getCallees(seed.node.id).slice(0, HOP_CAP)) add(callee, 0.3, "callee-of-seed", "neighbor");
+  }
+
+  const ranked = [...pool.values()].sort((a, b) => b.score - a.score || a.node.id.localeCompare(b.node.id));
+  const used: Record<SelectionCategory, number> = { direct: 0, neighbor: 0, test: 0 };
+  const candidates: ScopedCandidate[] = [];
+  for (const candidate of ranked) {
+    if (candidates.length >= maxNodes) break;
+    if (used[candidate.category] >= QUOTA[candidate.category]) continue;
+    used[candidate.category] += 1;
+    candidates.push({
+      id: candidate.node.id,
+      score: Number(candidate.score.toFixed(2)),
+      reasons: [...candidate.reasons].sort(),
+      category: candidate.category,
+    });
+  }
+  return { candidates, matchedCount: pool.size };
 }
 
 /**

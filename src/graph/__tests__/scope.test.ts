@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { GraphEngine } from "../engine.js";
-import { compactFact, groupByFile, readNodeSource, scopeSelect } from "../scope.js";
+import { compactFact, groupByFile, readNodeSource, scopeSelect, selectScope } from "../scope.js";
 import type { GraphNode } from "../types.js";
 
 function node(id: string, name: string, line: number, extra: Partial<GraphNode> = {}): GraphNode {
@@ -83,5 +83,37 @@ describe("query-time graph scope", () => {
     const groups = groupByFile([a1, b1, a2]);
     expect([...groups.keys()]).toEqual(["a.ts", "b.ts"]);
     expect(groups.get("a.ts")).toEqual([a1, a2]);
+  });
+});
+
+describe("scored scope selection", () => {
+  it("ranks an exact identifier match first with reasons and category", () => {
+    const { graph } = fixture();
+    const { candidates, matchedCount } = selectScope(graph, "seed task", 10);
+    expect(matchedCount).toBe(3);
+    expect(candidates[0]).toMatchObject({ id: "function:seed", score: 1, category: "direct" });
+    expect(candidates[0].reasons).toEqual(["exact-name-match", "semantic-match"]);
+    const neighbors = candidates.filter((c) => c.category === "neighbor").map((c) => c.id).sort();
+    expect(neighbors).toEqual(["function:callee", "function:caller"]);
+  });
+
+  it("caps returned candidates at maxNodes while reporting the full match count", () => {
+    const { graph } = fixture();
+    const { candidates, matchedCount } = selectScope(graph, "seed", 1);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].id).toBe("function:seed");
+    expect(matchedCount).toBeGreaterThan(1);
+  });
+
+  it("routes test-file nodes into the test quota bucket", () => {
+    const testNode = node("function:seed", "seed", 2, { filePath: "src/__tests__/seed.test.ts", signature: "s" });
+    const graph: GraphEngine = {
+      build: vi.fn(), sync: vi.fn(), close: vi.fn(),
+      searchNodes: vi.fn(() => [testNode]),
+      getNode: (id) => id === testNode.id ? testNode : null,
+      getCallers: () => [], getCallees: () => [],
+    };
+    const { candidates } = selectScope(graph, "seed", 10);
+    expect(candidates[0].category).toBe("test");
   });
 });

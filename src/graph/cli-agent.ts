@@ -5,7 +5,7 @@ import type { GraphEngine } from "./engine.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
 import type { GraphNode } from "./types.js";
 import {
-  compactFact, groupByFile, readNodeSource, scopeSelect,
+  compactFact, groupByFile, readNodeSource, selectScope,
   type CompactFact, type DetailLevel, type SourceRange,
 } from "./scope.js";
 import { FingerprintStore } from "./fingerprint-store.js";
@@ -172,20 +172,19 @@ export function runGraphScope(
   const session = openSession(rootDir, deps, write);
   if (!session) return;
   try {
-    const candidateIds = scopeSelect(session.graph, task);
+    const { candidates, matchedCount } = selectScope(session.graph, task, opts.maxNodes);
     const emitter = new BudgetedEmitter(write, opts.maxOutputTokens);
     emitter.force(metaRecord("graph scope", opts, task));
 
     const returnedIds = new Set<string>();
     const returnedNodes: GraphNode[] = [];
-    let truncated = false;
-    for (const id of candidateIds) {
-      if (returnedNodes.length >= opts.maxNodes) { truncated = true; break; }
-      const fact = factFor(session, id, opts.detail, opts.fingerprint);
+    let truncated = candidates.length < matchedCount;
+    for (const candidate of candidates) {
+      const fact = factFor(session, candidate.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
-      if (!emitter.offer({ type: "fact", ...fact })) { truncated = true; break; }
-      returnedIds.add(id);
-      const node = session.graph.getNode(id);
+      if (!emitter.offer({ type: "fact", ...fact, score: candidate.score, selectionReasons: candidate.reasons })) { truncated = true; break; }
+      returnedIds.add(candidate.id);
+      const node = session.graph.getNode(candidate.id);
       if (node) returnedNodes.push(node);
     }
 
@@ -194,7 +193,7 @@ export function runGraphScope(
     if (opts.detail === "source" && !emitSourceGrouped(emitter, returnedNodes, rootDir, opts.maxSourceLines)) truncated = true;
 
     emitter.force(summaryRecord(emitter, opts, {
-      matchedNodes: candidateIds.length,
+      matchedNodes: matchedCount,
       returnedNodes: returnedNodes.length,
       returnedEdges,
       truncated,

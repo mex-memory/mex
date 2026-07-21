@@ -61,6 +61,8 @@ describe("runGraphScope", () => {
       expect(fact).not.toHaveProperty("callers");
       expect(fact.sourceIncluded).toBe(false);
       expect(typeof fact.callerCount).toBe("number");
+      expect(typeof fact.score).toBe("number");
+      expect(Array.isArray(fact.selectionReasons)).toBe(true);
     }
     const summary = records.at(-1)!;
     expect(summary).toMatchObject({ type: "summary" });
