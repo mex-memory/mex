@@ -35,9 +35,13 @@ last_updated: [YYYY-MM-DD]
      - Build: `npm run build` -->
 
 ## Code Graph
-Before editing a symbol, run `mex impact <symbol|file>` to see affected callers and scaffold memory.
-Use `mex graph query <who-calls|what-calls|where-defined> <symbol>` for structural lookups instead of grepping the codebase.
-During `mex sync`, adjudicate any AMBIGUOUS grounding; after repairs, ensure the refreshed grounding is re-emitted.
+The repo is indexed into `.mex/graph.db`. Prefer graph commands over grepping or reading files.
+- Explore a task with `mex graph scope "<task>"` first — it returns a compact JSONL manifest (`meta`, `fact`s, `summary`). Treat any source the graph returns as ALREADY READ; do not re-open those files.
+- Pick 1-3 relevant node ids from the manifest and expand only those with `mex graph get <id> --detail source`.
+- If you already know the symbol, skip scope: use `mex graph query <who-calls|what-calls|where-defined> <symbol>`, or `mex graph get <id>`.
+- Before editing a symbol, run `mex impact <symbol|file>` to see affected callers and scaffold memory.
+- If a result is `truncated`, do NOT repeat the broad query — narrow the task or use the summary's `suggestedNextCommands`. Scale through a few focused calls, never one giant response.
+- During `mex sync`, adjudicate any AMBIGUOUS grounding; after repairs, ensure the refreshed grounding is re-emitted.
 
 ## Scaffold Growth
 After meaningful work, run GROW:

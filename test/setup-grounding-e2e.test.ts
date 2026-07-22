@@ -56,7 +56,7 @@ export function calculateCheckoutTotal(items: number[], member: boolean): number
     builder.close();
 
     const jsonl: string[] = [];
-    runGraphScope("calculateCheckoutTotal", root, { write: (line) => jsonl.push(line) });
+    runGraphScope("calculateCheckoutTotal", root, { write: (line) => jsonl.push(line) }, { fingerprint: true });
     const fact = jsonl.map((line) => JSON.parse(line) as Record<string, unknown>)
       .find((row) => row.type === "fact" && row.name === "calculateCheckoutTotal");
     expect(fact).toBeDefined();

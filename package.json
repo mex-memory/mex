@@ -51,6 +51,8 @@
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "eval": "node evaluate/index.mjs",
+    "eval:e2e": "node evaluate/agent-e2e.mjs",
     "typecheck": "tsc --noEmit",
     "prepare": "npm run build"
   },

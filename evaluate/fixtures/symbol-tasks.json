@@ -1,0 +1,8 @@
+[
+  { "id": "score", "query": "computeScore", "expected": ["computeScore"] },
+  { "id": "scan", "query": "runScan", "expected": ["runScan"] },
+  { "id": "scope", "query": "runGraphScope", "expected": ["runGraphScope"] },
+  { "id": "impact", "query": "runImpact", "expected": ["runImpact"] },
+  { "id": "sync-brief", "query": "buildSyncBrief", "expected": ["buildSyncBrief"] },
+  { "id": "drift", "query": "runDriftCheck", "expected": ["runDriftCheck"] }
+]

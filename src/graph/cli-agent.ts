@@ -4,9 +4,13 @@ import { createGraphEngine } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
 import type { GraphNode } from "./types.js";
-import { clusterFacts, scopeSelect, type NodeFacts } from "./scope.js";
+import {
+  compactFact, groupByFile, readNodeSource, selectScope,
+  type CompactFact, type DetailLevel, type SourceRange,
+} from "./scope.js";
 import { FingerprintStore } from "./fingerprint-store.js";
 import { serializeFingerprint } from "./fingerprint.js";
+import { BudgetLedger, estimateTokens, resolveOptions, SCHEMA_VERSION, type AgentOptions } from "./agent-protocol.js";
 
 type QueryRelation = "who-calls" | "what-calls" | "where-defined";
 
@@ -21,9 +25,18 @@ export interface AgentCommandDeps {
   write?: (line: string) => void;
 }
 
+type RawOptions = Partial<Record<keyof AgentOptions, unknown>>;
+type Rec = Record<string, unknown>;
+
 /** Agent-facing blast radius. Output is newline-delimited JSON (JSONL). */
-export function runImpact(target: string, rootDir = process.cwd(), deps: AgentCommandDeps = {}): void {
+export function runImpact(
+  target: string,
+  rootDir = process.cwd(),
+  deps: AgentCommandDeps = {},
+  rawOptions: RawOptions = {},
+): void {
   const write = deps.write ?? console.log;
+  const opts = resolveOptions(rawOptions);
   const session = openSession(rootDir, deps, write);
   if (!session) return;
   try {
@@ -38,22 +51,66 @@ export function runImpact(target: string, rootDir = process.cwd(), deps: AgentCo
       return;
     }
 
-    writeJson(write, { type: "target", targetType: fileNodes.length > 0 ? "file" : "symbol", value: target });
+    // Definitions (roots) and transitive callers share one `maxNodes` cap on returned nodes.
+    const rootsSorted = roots.sort(byId);
+    const ctx = beginResponse("impact", opts, undefined,
+      rootsSorted.length > 0 ? [`mex graph get ${rootsSorted[0]!.id} --detail source`] : []);
+    const ledger = ctx.ledger;
+    const meta = ctx.meta;
+
+    const headRecords: Rec[] = [];  // `target` — data, but not a graph fact
+    const factRecords: Rec[] = [];  // `defines` + `caller` — real facts, eligible for source
+    const emittedNodes: GraphNode[] = [];
+    let truncated = false;
+
+    const targetRecord: Rec = { type: "target", targetType: fileNodes.length > 0 ? "file" : "symbol", value: target };
+    if (ledger.tryAdd(targetRecord)) headRecords.push(targetRecord); else truncated = true;
+
+    for (const root of rootsSorted) {
+      if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
+      const fact = factFor(session, root.id, opts.detail, opts.fingerprint);
+      if (!fact) continue;
+      const record: Rec = { type: "defines", ...fact };
+      if (!ledger.tryAdd(record)) { truncated = true; break; }
+      factRecords.push(record);
+      emittedNodes.push(root);
+    }
+
     const impacted = new Map<string, { node: GraphNode; depth: number; root: string }>();
-    for (const root of roots.sort(byId)) {
-      writeJson(write, { type: "defines", ...hydrate(session, root, rootDir) });
-      for (const entry of transitiveCallers(session.graph, root)) {
+    for (const root of rootsSorted) {
+      for (const entry of transitiveCallers(session.graph, root, opts.depth)) {
         const current = impacted.get(entry.node.id);
         if (!current || entry.depth < current.depth) impacted.set(entry.node.id, { ...entry, root: root.id });
       }
     }
-    for (const entry of [...impacted.values()].sort((a, b) => a.depth - b.depth || a.node.id.localeCompare(b.node.id))) {
-      writeJson(write, { type: "caller", depth: entry.depth, root: entry.root, ...hydrate(session, entry.node, rootDir) });
+    const ordered = [...impacted.values()].sort((a, b) => a.depth - b.depth || a.node.id.localeCompare(b.node.id));
+    for (const entry of ordered) {
+      if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
+      const fact = factFor(session, entry.node.id, opts.detail, opts.fingerprint);
+      if (!fact) continue;
+      const record: Rec = { type: "caller", depth: entry.depth, root: entry.root, ...fact };
+      if (!ledger.tryAdd(record)) { truncated = true; break; }
+      factRecords.push(record);
+      emittedNodes.push(entry.node);
     }
+
+    const sourceRecords = planSource(ledger, emittedNodes, rootDir, opts, factRecords);
+
     const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])];
+    const groundingRecords: Rec[] = [];
     for (const grounding of groundedFiles(session.db, affectedIds)) {
-      writeJson(write, { type: "grounding", node: grounding.node_id, file: grounding.scaffold_file });
+      const record: Rec = { type: "grounding", node: grounding.node_id, file: grounding.scaffold_file };
+      if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
     }
+
+    emitAll(write, meta, [...headRecords, ...factRecords, ...sourceRecords, ...groundingRecords]);
+    write(JSON.stringify(summaryRecord(ctx, {
+      matchedNodes: roots.length + impacted.size,
+      returnedNodes: emittedNodes.length,
+      returnedEdges: 0,
+      truncated,
+      suggestedNextCommands: emittedNodes.length > 0 ? [`mex graph get ${emittedNodes[0]!.id} --detail source`] : [],
+    })));
   } catch (error) {
     unavailable(write, error);
   } finally {
@@ -67,12 +124,14 @@ export function runGraphQuery(
   target: string,
   rootDir = process.cwd(),
   deps: AgentCommandDeps = {},
+  rawOptions: RawOptions = {},
 ): void {
   const write = deps.write ?? console.log;
   if (!isRelation(relation)) {
     writeJson(write, { type: "error", code: "INVALID_QUERY", relation, expected: ["who-calls", "what-calls", "where-defined"] });
     return;
   }
+  const opts = resolveOptions(rawOptions);
   const session = openSession(rootDir, deps, write);
   if (!session) return;
   try {
@@ -81,16 +140,49 @@ export function runGraphQuery(
       writeJson(write, { type: "error", code: "TARGET_NOT_FOUND", target });
       return;
     }
-    for (const node of nodes.sort(byId)) {
-      if (relation === "where-defined") {
-        writeJson(write, { type: "result", relation, target: node.id, ...hydrate(session, node, rootDir) });
-        continue;
-      }
-      const related = relation === "who-calls" ? session.graph.getCallers(node.id) : session.graph.getCallees(node.id);
-      for (const result of related.sort(byId)) {
-        writeJson(write, { type: "result", relation, target: node.id, ...hydrate(session, result, rootDir) });
+
+    // Preserve (queried target, result) pairs; dedupe by that pair, not by result id alone.
+    const pairs: Array<{ targetId: string; node: GraphNode }> = [];
+    const seen = new Set<string>();
+    for (const queried of nodes.sort(byId)) {
+      const related = relation === "where-defined"
+        ? [queried]
+        : (relation === "who-calls" ? session.graph.getCallers(queried.id) : session.graph.getCallees(queried.id)).sort(byId);
+      for (const node of related) {
+        const key = `${queried.id} ${node.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pairs.push({ targetId: queried.id, node });
       }
     }
+
+    const anticipated = pairs.length > 0 && opts.detail !== "source"
+      ? [`mex graph get ${pairs[0]!.node.id} --detail source`] : [];
+    const ctx = beginResponse(`graph query ${relation}`, opts, undefined, anticipated);
+    const ledger = ctx.ledger;
+    const meta = ctx.meta;
+
+    const entries: Array<{ record: Rec; node: GraphNode }> = [];
+    let truncated = false;
+    for (const pair of pairs) {
+      if (entries.length >= opts.maxNodes) { truncated = true; break; }
+      const fact = factFor(session, pair.node.id, opts.detail, opts.fingerprint);
+      if (!fact) continue;
+      const record: Rec = { type: "result", relation, target: pair.targetId, ...fact };
+      if (!ledger.tryAdd(record)) { truncated = true; break; }
+      entries.push({ record, node: pair.node });
+    }
+
+    const sourceRecords = planSource(ledger, entries.map((e) => e.node), rootDir, opts, entries.map((e) => e.record));
+
+    emitAll(write, meta, [...entries.map((e) => e.record), ...sourceRecords]);
+    write(JSON.stringify(summaryRecord(ctx, {
+      matchedNodes: pairs.length,
+      returnedNodes: entries.length,
+      returnedEdges: 0,
+      truncated,
+      suggestedNextCommands: entries.length > 0 && opts.detail !== "source" ? [`mex graph get ${entries[0]!.node.id} --detail source`] : [],
+    })));
   } catch (error) {
     unavailable(write, error);
   } finally {
@@ -98,21 +190,255 @@ export function runGraphQuery(
   }
 }
 
-/** Broad graph retrieval for an agent task. Output is hydrated JSONL. */
-export function runGraphScope(task: string, rootDir = process.cwd(), deps: AgentCommandDeps = {}): void {
+/** Broad graph retrieval for an agent task. Compact JSONL manifest by default. */
+export function runGraphScope(
+  task: string,
+  rootDir = process.cwd(),
+  deps: AgentCommandDeps = {},
+  rawOptions: RawOptions = {},
+): void {
   const write = deps.write ?? console.log;
+  const opts = resolveOptions(rawOptions);
   const session = openSession(rootDir, deps, write);
   if (!session) return;
   try {
-    const ids = scopeSelect(session.graph, task);
-    for (const fact of clusterFacts(session.graph, ids, rootDir)) {
-      writeJson(write, { type: "fact", ...withFingerprint(fact, session.db) });
+    const { candidates, matchedCount } = selectScope(session.graph, task, opts.maxNodes);
+    const firstNode = candidates.length > 0 ? session.graph.getNode(candidates[0]!.id) : null;
+    const ctx = beginResponse("graph scope", opts, task, buildScopeSuggestions(firstNode ? [firstNode] : [], opts.detail));
+    const ledger = ctx.ledger;
+    const meta = ctx.meta;
+
+    const facts: Array<{ record: Rec; node: GraphNode }> = [];
+    const returnedIds = new Set<string>();
+    let truncated = candidates.length < matchedCount;
+    for (const candidate of candidates) {
+      const fact = factFor(session, candidate.id, opts.detail, opts.fingerprint);
+      if (!fact) continue;
+      const node = session.graph.getNode(candidate.id);
+      if (!node) continue;
+      const record: Rec = { type: "fact", ...fact, score: candidate.score, selectionReasons: candidate.reasons };
+      if (!ledger.tryAdd(record)) { truncated = true; break; }
+      facts.push({ record, node });
+      returnedIds.add(candidate.id);
     }
+
+    const edgeRecords: Rec[] = [];
+    if (opts.detail !== "minimal") {
+      for (const { node } of facts) {
+        for (const callee of session.graph.getCallees(node.id)) {
+          if (!returnedIds.has(callee.id)) continue;
+          const record: Rec = { type: "edge", kind: "calls", source: node.id, target: callee.id, provenance: "static" };
+          if (ledger.tryAdd(record)) edgeRecords.push(record); else truncated = true;
+        }
+      }
+    }
+
+    const sourceRecords = planSource(ledger, facts.map((f) => f.node), rootDir, opts, facts.map((f) => f.record));
+
+    emitAll(write, meta, [...facts.map((f) => f.record), ...edgeRecords, ...sourceRecords]);
+    write(JSON.stringify(summaryRecord(ctx, {
+      matchedNodes: matchedCount,
+      returnedNodes: facts.length,
+      returnedEdges: edgeRecords.length,
+      truncated,
+      suggestedNextCommands: buildScopeSuggestions(facts.map((f) => f.node), opts.detail),
+    })));
   } catch (error) {
     unavailable(write, error);
   } finally {
     try { session.close(); } catch { /* best-effort degradation cleanup */ }
   }
+}
+
+/** Targeted source expansion by node id. Output is JSONL source records. */
+export function runGraphGet(
+  ids: string[],
+  rootDir = process.cwd(),
+  deps: AgentCommandDeps = {},
+  rawOptions: RawOptions = {},
+): void {
+  const write = deps.write ?? console.log;
+  const opts = resolveOptions({ ...rawOptions, detail: "source" });
+  const session = openSession(rootDir, deps, write);
+  if (!session) return;
+  try {
+    const requested = opts.maxOutputTokens;
+    const reserve = estimateTokens(summarySkeleton([])) + RESERVE_PAD;
+    const buildMeta = (max: number): Rec => ({
+      type: "meta", schemaVersion: SCHEMA_VERSION, command: "graph get",
+      detail: "source", maxNodes: ids.length, maxOutputTokens: max,
+    });
+    const effectiveMax = Math.max(requested, estimateTokens(buildMeta(SIZE_PROBE)) + reserve);
+    const meta = buildMeta(effectiveMax);
+    const ledger = new BudgetLedger(effectiveMax, reserve);
+    ledger.frame(meta);
+    const ctx: ResponseCtx = { ledger, meta, effectiveMax, requested };
+
+    const nodes: GraphNode[] = [];
+    const errorRecords: Rec[] = [];
+    let truncated = false;
+    for (const id of ids) {
+      const node = session.graph.getNode(id);
+      if (!node) {
+        const record: Rec = { type: "error", code: "NODE_NOT_FOUND", id };
+        if (ledger.tryAdd(record)) errorRecords.push(record); else truncated = true;
+        continue;
+      }
+      nodes.push(node);
+    }
+    const sourceRecords = planSource(ledger, nodes, rootDir, opts);
+    const sourcedIds = new Set(
+      sourceRecords.flatMap((record) => (record.ranges as SourceRange[]).flatMap((range) => range.nodeIds)),
+    );
+
+    emitAll(write, meta, [...errorRecords, ...sourceRecords]);
+    write(JSON.stringify(summaryRecord(ctx, {
+      matchedNodes: ids.length,
+      returnedNodes: sourcedIds.size,
+      returnedEdges: 0,
+      truncated,
+      suggestedNextCommands: [],
+    })));
+  } catch (error) {
+    unavailable(write, error);
+  } finally {
+    try { session.close(); } catch { /* best-effort degradation cleanup */ }
+  }
+}
+
+// ── shared helpers ──────────────────────────────────────────────────────────
+
+/** Stable worst-case width for numeric summary fields, so the reserve covers them. */
+const SIZE_PROBE = 9_999_999;
+/** Slack over the anticipated summary size (covers node-id/name length variance). */
+const RESERVE_PAD = 16;
+
+interface ResponseCtx {
+  ledger: BudgetLedger;
+  meta: Rec;
+  effectiveMax: number;
+  requested: number;
+}
+
+/**
+ * Set up a response so the token ceiling is genuinely hard. The summary reserve is
+ * sized from the ACTUAL summary shape (its suggested commands can carry long node
+ * ids/names), and the ceiling is clamped up to a framing floor (one meta + one
+ * summary) so mandatory framing can never silently exceed the reported budget.
+ * `anticipatedSuggestions` sizes the reserve; the final summary recomputes them
+ * from what was actually returned (same fixed-width ids, so the reserve holds).
+ * A clamp is surfaced as truncation.
+ */
+function beginResponse(command: string, opts: AgentOptions, task: string | undefined, anticipatedSuggestions: string[]): ResponseCtx {
+  const requested = opts.maxOutputTokens;
+  const reserve = estimateTokens(summarySkeleton(anticipatedSuggestions)) + RESERVE_PAD;
+  const framingFloor = estimateTokens(metaRecord(command, { ...opts, maxOutputTokens: SIZE_PROBE }, task)) + reserve;
+  const effectiveMax = Math.max(requested, framingFloor);
+  const meta = metaRecord(command, { ...opts, maxOutputTokens: effectiveMax }, task);
+  const ledger = new BudgetLedger(effectiveMax, reserve);
+  ledger.frame(meta);
+  return { ledger, meta, effectiveMax, requested };
+}
+
+function summarySkeleton(suggestions: string[]): Rec {
+  return {
+    type: "summary", matchedNodes: SIZE_PROBE, returnedNodes: SIZE_PROBE, returnedEdges: SIZE_PROBE,
+    maxOutputTokens: SIZE_PROBE, truncated: true, suggestedNextCommands: suggestions, estimatedOutputTokens: SIZE_PROBE,
+  };
+}
+
+function metaRecord(command: string, opts: AgentOptions, task?: string): Rec {
+  return {
+    type: "meta", schemaVersion: SCHEMA_VERSION, command,
+    ...(task !== undefined ? { task } : {}),
+    detail: opts.detail, maxNodes: opts.maxNodes, maxOutputTokens: opts.maxOutputTokens,
+  };
+}
+
+function summaryRecord(
+  ctx: ResponseCtx,
+  fields: { matchedNodes: number; returnedNodes: number; returnedEdges: number; truncated: boolean; suggestedNextCommands: string[] },
+): Rec {
+  const base: Rec = {
+    type: "summary",
+    matchedNodes: fields.matchedNodes,
+    returnedNodes: fields.returnedNodes,
+    returnedEdges: fields.returnedEdges,
+    maxOutputTokens: ctx.effectiveMax,
+    truncated: fields.truncated || ctx.ledger.droppedAny || ctx.ledger.overBudget || ctx.effectiveMax > ctx.requested,
+    suggestedNextCommands: fields.suggestedNextCommands,
+  };
+  return { ...base, estimatedOutputTokens: ctx.ledger.estimatedTokens + estimateTokens({ ...base, estimatedOutputTokens: SIZE_PROBE }) };
+}
+
+/**
+ * Plan grouped-per-file source records for `nodes` (deduped by id) under the
+ * ledger, only when detail is "source". Sets `sourceIncluded` on the already-built
+ * `facts` records to reflect whether each node's source actually fit the budget.
+ * Returns the source records to emit.
+ */
+function planSource(
+  ledger: BudgetLedger,
+  nodes: GraphNode[],
+  rootDir: string,
+  opts: AgentOptions,
+  facts: Rec[] = [],
+): Rec[] {
+  if (opts.detail !== "source") {
+    for (const fact of facts) fact.sourceIncluded = false;
+    return [];
+  }
+  const sourceRecords: Rec[] = [];
+  const sourcedIds = new Set<string>();
+  const emit = (record: Rec, ids: string[]): void => {
+    if (!ledger.tryAdd(record)) return;
+    sourceRecords.push(record);
+    for (const id of ids) sourcedIds.add(id);
+  };
+  for (const [filePath, fileNodes] of groupByFile(dedupeById(nodes))) {
+    const ranges = fileNodes
+      .map((node) => readNodeSource(node, rootDir, opts.maxSourceLines))
+      .filter((range): range is SourceRange => range !== null);
+    if (ranges.length === 0) continue;
+    const grouped: Rec = { type: "source", filePath, ranges };
+    // Prefer one grouped record per file (dedups shared context); if it doesn't
+    // fit, degrade to per-range records so partial source still lands.
+    if (ledger.fits(grouped)) emit(grouped, ranges.flatMap((range) => range.nodeIds));
+    else for (const range of ranges) emit({ type: "source", filePath, ranges: [range] }, range.nodeIds);
+  }
+  for (const fact of facts) fact.sourceIncluded = typeof fact.id === "string" && sourcedIds.has(fact.id);
+  return sourceRecords;
+}
+
+function emitAll(write: (line: string) => void, meta: Rec, records: Rec[]): void {
+  write(JSON.stringify(meta));
+  for (const record of records) write(JSON.stringify(record));
+}
+
+function buildScopeSuggestions(nodes: GraphNode[], detail: DetailLevel): string[] {
+  if (nodes.length === 0) return [];
+  const suggestions: string[] = [];
+  if (detail !== "source") suggestions.push(`mex graph get ${nodes[0]!.id} --detail source`);
+  suggestions.push(`mex graph query who-calls ${nodes[0]!.name}`);
+  return suggestions;
+}
+
+function factFor(session: AgentGraphSession, id: string, detail: DetailLevel, includeFingerprint: boolean): CompactFact | null {
+  const fact = compactFact(session.graph, id, detail);
+  if (!fact || !includeFingerprint) return fact;
+  const fingerprint = new FingerprintStore(session.db).get(id);
+  return fingerprint ? { ...fact, fingerprint: serializeFingerprint(fingerprint) } : fact;
+}
+
+function dedupeById(nodes: GraphNode[]): GraphNode[] {
+  const seen = new Set<string>();
+  const out: GraphNode[] = [];
+  for (const node of nodes) {
+    if (seen.has(node.id)) continue;
+    seen.add(node.id);
+    out.push(node);
+  }
+  return out;
 }
 
 function openSession(rootDir: string, deps: AgentCommandDeps, write: (line: string) => void): AgentGraphSession | null {
@@ -147,12 +473,13 @@ function nodesForFile(session: AgentGraphSession, rootDir: string, target: strin
   return rows.map((row) => session.graph.getNode(row.id)).filter((node): node is GraphNode => node !== null);
 }
 
-function transitiveCallers(graph: GraphEngine, root: GraphNode): Array<{ node: GraphNode; depth: number }> {
+function transitiveCallers(graph: GraphEngine, root: GraphNode, maxDepth: number): Array<{ node: GraphNode; depth: number }> {
   const seen = new Set([root.id]);
   const queue: Array<{ node: GraphNode; depth: number }> = [{ node: root, depth: 0 }];
   const results: Array<{ node: GraphNode; depth: number }> = [];
   while (queue.length > 0) {
     const current = queue.shift()!;
+    if (current.depth >= maxDepth) continue;
     for (const caller of graph.getCallers(current.node.id).sort(byId)) {
       if (seen.has(caller.id)) continue;
       seen.add(caller.id);
@@ -174,15 +501,6 @@ function groundedFiles(db: SqliteDatabase, nodeIds: string[]): Array<{ scaffold_
 
 function nodeRef(node: GraphNode): Record<string, string | number> {
   return { id: node.id, kind: node.kind, name: node.name, file: node.filePath, line: node.startLine };
-}
-
-function hydrate(session: AgentGraphSession, node: GraphNode, rootDir: string): NodeFacts & { fingerprint?: string } {
-  return withFingerprint(clusterFacts(session.graph, [node.id], rootDir)[0]!, session.db);
-}
-
-function withFingerprint(fact: NodeFacts, db: SqliteDatabase): NodeFacts & { fingerprint?: string } {
-  const fingerprint = new FingerprintStore(db).get(fact.id);
-  return fingerprint ? { ...fact, fingerprint: serializeFingerprint(fingerprint) } : fact;
 }
 
 function byId(left: GraphNode, right: GraphNode): number { return left.id.localeCompare(right.id); }

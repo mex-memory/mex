@@ -42,37 +42,40 @@ describe("agent graph commands", () => {
     const fixture = deps();
     runImpact("leaf", "/repo", fixture.deps);
     const rows = fixture.output.map((line) => JSON.parse(line));
-    expect(rows.map((row) => row.type)).toEqual(["target", "defines", "caller", "caller", "grounding"]);
+    expect(rows.map((row) => row.type)).toEqual(["meta", "target", "defines", "caller", "caller", "grounding", "summary"]);
     expect(rows.filter((row) => row.type === "caller").map((row) => row.depth)).toEqual([1, 2]);
-    expect(rows.at(-1)).toMatchObject({ file: ".mex/context/architecture.md", node: "function:leaf" });
+    expect(rows.find((row) => row.type === "grounding")).toMatchObject({ file: ".mex/context/architecture.md", node: "function:leaf" });
     expect(fixture.close).toHaveBeenCalledOnce();
   });
 
   it("impact accepts a file and reports each node it defines", () => {
     const fixture = deps();
     runImpact("src/a.ts", "/repo", fixture.deps);
-    expect(fixture.output.map((line) => JSON.parse(line))[0]).toMatchObject({ type: "target", targetType: "file" });
+    const rows = fixture.output.map((line) => JSON.parse(line));
+    expect(rows.find((row) => row.type === "target")).toMatchObject({ type: "target", targetType: "file" });
   });
 
   it("supports all three structural query relations", () => {
     for (const [relation, expected] of [["who-calls", "parent"], ["what-calls", undefined], ["where-defined", "leaf"]] as const) {
       const fixture = deps();
       runGraphQuery(relation, "leaf", "/repo", fixture.deps);
-      const rows = fixture.output.map((line) => JSON.parse(line));
-      if (expected) expect(rows[0].name).toBe(expected);
-      else expect(rows).toEqual([]);
+      const results = fixture.output.map((line) => JSON.parse(line)).filter((row) => row.type === "result");
+      if (expected) expect(results[0].name).toBe(expected);
+      else expect(results).toEqual([]);
     }
   });
 
   it("scope emits seeds and their one-hop neighborhood as hydrated facts", () => {
     const fixture = deps();
     runGraphScope("leaf", "/repo", fixture.deps);
-    const rows = fixture.output.map((line) => JSON.parse(line));
-    expect(rows.map((row) => row.id)).toEqual(["function:leaf", "function:parent"]);
-    expect(rows[0]).toMatchObject({
+    const facts = fixture.output.map((line) => JSON.parse(line)).filter((row) => row.type === "fact");
+    expect(facts.map((row) => row.id)).toEqual(["function:leaf", "function:parent"]);
+    expect(facts[0]).toMatchObject({
       type: "fact", kind: "function", name: "leaf", qualifiedName: "leaf",
-      filePath: "src/a.ts", callers: ["function:parent"], callees: [], source: "",
+      filePath: "src/a.ts", callerCount: 1, calleeCount: 0, sourceIncluded: false,
     });
+    expect(facts[0]).not.toHaveProperty("source");
+    expect(facts[0]).not.toHaveProperty("callers");
   });
 
   it("scope degrades to a machine-readable error when the graph is absent", () => {
@@ -127,8 +130,9 @@ describe("agent graph commands", () => {
       await flush();
       expect(attempted).toHaveBeenCalledOnce();
       expect(stderr).not.toHaveBeenCalled();
-      expect(fixture.output).toHaveLength(1);
-      expect(JSON.parse(fixture.output[0])).toMatchObject({ type: "result", relation: "where-defined", name: "leaf" });
+      const results = fixture.output.map((line) => JSON.parse(line)).filter((row) => row.type === "result");
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({ type: "result", relation: "where-defined", name: "leaf" });
     } finally {
       __setTransport(null);
       process.chdir(cwd);

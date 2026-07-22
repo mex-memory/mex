@@ -341,26 +341,30 @@ export class GraphStore {
     if (kinds && kinds.length > 0) {
       const placeholders = kinds.map(() => "?").join(",");
       const rows = this.db
-        .prepare(`SELECT * FROM edges WHERE target = ? AND kind IN (${placeholders})`)
+        .prepare(`SELECT * FROM edges WHERE target = ? AND kind IN (${placeholders}) ORDER BY source, target, kind`)
         .all(targetId, ...kinds) as EdgeRow[];
       return rows.map(rowToEdge);
     }
-    return (this.db.prepare("SELECT * FROM edges WHERE target = ?").all(targetId) as EdgeRow[]).map(
-      rowToEdge,
-    );
+    return (
+      this.db
+        .prepare("SELECT * FROM edges WHERE target = ? ORDER BY source, target, kind")
+        .all(targetId) as EdgeRow[]
+    ).map(rowToEdge);
   }
 
   getOutgoingEdges(sourceId: string, kinds?: EdgeKind[]): GraphEdge[] {
     if (kinds && kinds.length > 0) {
       const placeholders = kinds.map(() => "?").join(",");
       const rows = this.db
-        .prepare(`SELECT * FROM edges WHERE source = ? AND kind IN (${placeholders})`)
+        .prepare(`SELECT * FROM edges WHERE source = ? AND kind IN (${placeholders}) ORDER BY source, target, kind`)
         .all(sourceId, ...kinds) as EdgeRow[];
       return rows.map(rowToEdge);
     }
-    return (this.db.prepare("SELECT * FROM edges WHERE source = ?").all(sourceId) as EdgeRow[]).map(
-      rowToEdge,
-    );
+    return (
+      this.db
+        .prepare("SELECT * FROM edges WHERE source = ? ORDER BY source, target, kind")
+        .all(sourceId) as EdgeRow[]
+    ).map(rowToEdge);
   }
 
   /** Batch node lookup by id (one round-trip), keyed by id. */
@@ -417,7 +421,7 @@ export class GraphStore {
           `SELECT nodes.* FROM nodes_fts
              JOIN nodes ON nodes_fts.id = nodes.id
              WHERE nodes_fts MATCH ?${filterClause}
-             ORDER BY bm25(nodes_fts, 0, 20, 5, 1, 2) LIMIT ?`,
+             ORDER BY bm25(nodes_fts, 0, 20, 5, 1, 2), nodes.id LIMIT ?`,
         )
         .all(ftsQuery, ...filterParams, limit) as NodeRow[];
     }
@@ -428,7 +432,7 @@ export class GraphStore {
         .prepare(
           `SELECT * FROM nodes
              WHERE (name LIKE ? OR qualified_name LIKE ?)${filterClause}
-             ORDER BY length(name) LIMIT ?`,
+             ORDER BY length(name), name, id LIMIT ?`,
         )
         .all(like, like, ...filterParams, limit) as NodeRow[];
     }
