@@ -98,6 +98,15 @@ describe("runGraphGet", () => {
     expect(records.some((r) => r.type === "source" && JSON.stringify(r).includes("helper(41)"))).toBe(true);
     expect(records.some((r) => r.type === "error" && r.code === "NODE_NOT_FOUND")).toBe(true);
   });
+
+  it("never exceeds the token ceiling silently — reports honest overage and truncation", () => {
+    const records = capture(() => runGraphGet(["missing:a", "missing:b", "missing:c"], root, deps, { maxOutputTokens: 20 }));
+    const summary = records.at(-1)!;
+    expect(summary.type).toBe("summary");
+    // framing alone exceeds a 20-token budget: must be flagged truncated with an honest count.
+    expect(summary.truncated).toBe(true);
+    expect(summary.estimatedOutputTokens as number).toBeGreaterThan(20);
+  });
 });
 
 describe("runGraphQuery", () => {
@@ -106,6 +115,13 @@ describe("runGraphQuery", () => {
     const results = records.filter((r) => r.type === "result");
     expect(results.length).toBeGreaterThan(0);
     for (const result of results) expect(result).not.toHaveProperty("source");
+  });
+
+  it("preserves the queried target on each result", () => {
+    const records = capture(() => runGraphQuery("who-calls", "helper", root, deps, {}));
+    const results = records.filter((r) => r.type === "result");
+    expect(results.length).toBeGreaterThan(0);
+    for (const result of results) expect(result.target).toBe(idOf("helper"));
   });
 });
 
@@ -116,5 +132,35 @@ describe("runImpact", () => {
     expect(shallow.at(-1)).toMatchObject({ type: "summary" });
     const callers = shallow.filter((r) => r.type === "caller");
     for (const caller of callers) expect(caller.depth).toBeLessThanOrEqual(1);
+  });
+
+  it("caps total returned nodes (defines + callers) at maxNodes", () => {
+    const records = capture(() => runImpact("helper", root, deps, { maxNodes: 1 }));
+    const nodeRecords = records.filter((r) => r.type === "defines" || r.type === "caller");
+    expect(nodeRecords.length).toBeLessThanOrEqual(1);
+    expect((records.at(-1)!.returnedNodes as number)).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("budget accounting honesty", () => {
+  it("flags truncation when edges are budget-dropped in standard detail", () => {
+    const full = capture(() => runGraphScope("run", root, deps, { detail: "standard" }));
+    const fullEdges = full.filter((r) => r.type === "edge").length;
+    expect(fullEdges).toBeGreaterThan(0);
+    // A budget that fits the facts but not the edges must report truncated, not silently drop them.
+    const tight = capture(() => runGraphScope("run", root, deps, { detail: "standard", maxOutputTokens: 260 }));
+    const summary = tight.at(-1)!;
+    if ((summary.returnedEdges as number) < fullEdges) expect(summary.truncated).toBe(true);
+  });
+
+  it("only claims sourceIncluded on facts whose source was actually emitted", () => {
+    const records = capture(() => runGraphScope("run", root, deps, { detail: "source" }));
+    const facts = records.filter((r) => r.type === "fact");
+    const sourcedNodeIds = new Set(
+      records.filter((r) => r.type === "source").flatMap((r) => (r.ranges as Array<{ nodeIds: string[] }>).flatMap((x) => x.nodeIds)),
+    );
+    for (const fact of facts) {
+      expect(fact.sourceIncluded).toBe(sourcedNodeIds.has(fact.id as string));
+    }
   });
 });

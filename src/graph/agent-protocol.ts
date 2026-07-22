@@ -94,33 +94,55 @@ export interface SummaryRecord {
 
 export type FactRecord = CompactFact & { type: "fact" };
 
+/** Tokens reserved for the mandatory trailing `summary` record. */
+export const FRAMING_RESERVE = 140;
+
 /**
- * Streams JSONL records under a hard token budget. `force` always writes (meta,
- * summary); `offer` writes only if the record fits under the budget minus a
- * reserve kept for the trailing summary, returning false when it would overflow.
+ * Plan-then-emit token accounting. A command first accounts its mandatory framing
+ * (`meta`) with {@link frame}, then reserves each data record with {@link tryAdd}
+ * (which returns false — and remembers it — when the record would push past the
+ * budget minus the summary reserve). The command writes only the records that fit,
+ * then frames the `summary`. Because every record is accounted — framing included —
+ * `estimatedTokens` is honest and `overBudget` is true iff mandatory framing alone
+ * exceeded the ceiling. `droppedAny` OR `overBudget` means the response is truncated.
  */
-export class BudgetedEmitter {
-  private used = 0;
+export class BudgetLedger {
+  private usedTokens = 0;
+  private dropped = false;
   constructor(
-    private readonly write: (line: string) => void,
     private readonly maxOutputTokens: number,
-    private readonly summaryReserve = 80,
+    private readonly reserve = FRAMING_RESERVE,
   ) {}
 
-  force(record: unknown): void {
-    this.write(JSON.stringify(record));
-    this.used += estimateTokens(record);
+  /** Account a mandatory framing record (meta/summary). Always counted. */
+  frame(record: unknown): void {
+    this.usedTokens += estimateTokens(record);
   }
 
-  offer(record: unknown): boolean {
-    const cost = estimateTokens(record);
-    if (this.used + cost + this.summaryReserve > this.maxOutputTokens) return false;
-    this.write(JSON.stringify(record));
-    this.used += cost;
+  /** Whether a record would fit — no side effects, does not mark truncation. */
+  fits(record: unknown): boolean {
+    return this.usedTokens + estimateTokens(record) <= this.maxOutputTokens - this.reserve;
+  }
+
+  /** Reserve budget for a data record; true (and reserved) iff it fits under the ceiling. */
+  tryAdd(record: unknown): boolean {
+    if (!this.fits(record)) {
+      this.dropped = true;
+      return false;
+    }
+    this.usedTokens += estimateTokens(record);
     return true;
   }
 
+  get droppedAny(): boolean {
+    return this.dropped;
+  }
+
+  get overBudget(): boolean {
+    return this.usedTokens > this.maxOutputTokens;
+  }
+
   get estimatedTokens(): number {
-    return this.used;
+    return this.usedTokens;
   }
 }

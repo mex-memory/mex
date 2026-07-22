@@ -237,6 +237,7 @@ graphCommand
 graphCommand
   .command("get <id...>")
   .description("Expand source for specific node ids as JSONL")
+  .option("--detail <level>", "source (get always returns source)", "source")
   .option("--max-source-lines <n>", "per-node source line cap")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .action((ids: string[], options) => {

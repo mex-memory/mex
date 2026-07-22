@@ -10,7 +10,7 @@ import {
 } from "./scope.js";
 import { FingerprintStore } from "./fingerprint-store.js";
 import { serializeFingerprint } from "./fingerprint.js";
-import { BudgetedEmitter, resolveOptions, SCHEMA_VERSION, type AgentOptions } from "./agent-protocol.js";
+import { BudgetLedger, estimateTokens, resolveOptions, SCHEMA_VERSION, type AgentOptions } from "./agent-protocol.js";
 
 type QueryRelation = "who-calls" | "what-calls" | "where-defined";
 
@@ -26,6 +26,7 @@ export interface AgentCommandDeps {
 }
 
 type RawOptions = Partial<Record<keyof AgentOptions, unknown>>;
+type Rec = Record<string, unknown>;
 
 /** Agent-facing blast radius. Output is newline-delimited JSON (JSONL). */
 export function runImpact(
@@ -50,49 +51,64 @@ export function runImpact(
       return;
     }
 
-    const emitter = new BudgetedEmitter(write, opts.maxOutputTokens);
-    emitter.force(metaRecord("impact", opts));
-    emitter.force({ type: "target", targetType: fileNodes.length > 0 ? "file" : "symbol", value: target });
+    const ledger = new BudgetLedger(opts.maxOutputTokens);
+    const meta = metaRecord("impact", opts);
+    ledger.frame(meta);
 
-    const emitted: GraphNode[] = [];
-    for (const root of roots.sort(byId)) {
+    const records: Rec[] = [];
+    const emittedNodes: GraphNode[] = [];
+    let truncated = false;
+
+    const targetRecord: Rec = { type: "target", targetType: fileNodes.length > 0 ? "file" : "symbol", value: target };
+    if (ledger.tryAdd(targetRecord)) records.push(targetRecord); else truncated = true;
+
+    // Definitions (roots) and transitive callers share one `maxNodes` cap on returned nodes.
+    const rootsSorted = roots.sort(byId);
+    for (const root of rootsSorted) {
+      if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
       const fact = factFor(session, root.id, opts.detail, opts.fingerprint);
-      if (fact) emitter.offer({ type: "defines", ...fact });
-      emitted.push(root);
+      if (!fact) continue;
+      const record: Rec = { type: "defines", ...fact };
+      if (!ledger.tryAdd(record)) { truncated = true; break; }
+      records.push(record);
+      emittedNodes.push(root);
     }
 
     const impacted = new Map<string, { node: GraphNode; depth: number; root: string }>();
-    for (const root of roots.sort(byId)) {
+    for (const root of rootsSorted) {
       for (const entry of transitiveCallers(session.graph, root, opts.depth)) {
         const current = impacted.get(entry.node.id);
         if (!current || entry.depth < current.depth) impacted.set(entry.node.id, { ...entry, root: root.id });
       }
     }
-
     const ordered = [...impacted.values()].sort((a, b) => a.depth - b.depth || a.node.id.localeCompare(b.node.id));
-    let truncated = false;
     for (const entry of ordered) {
-      if (emitted.length - roots.length >= opts.maxNodes) { truncated = true; break; }
+      if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
       const fact = factFor(session, entry.node.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
-      if (!emitter.offer({ type: "caller", depth: entry.depth, root: entry.root, ...fact })) { truncated = true; break; }
-      emitted.push(entry.node);
+      const record: Rec = { type: "caller", depth: entry.depth, root: entry.root, ...fact };
+      if (!ledger.tryAdd(record)) { truncated = true; break; }
+      records.push(record);
+      emittedNodes.push(entry.node);
     }
 
-    if (opts.detail === "source" && !emitSourceGrouped(emitter, emitted, rootDir, opts.maxSourceLines)) truncated = true;
+    const sourceRecords = planSource(ledger, emittedNodes, rootDir, opts, records);
 
     const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])];
+    const groundingRecords: Rec[] = [];
     for (const grounding of groundedFiles(session.db, affectedIds)) {
-      emitter.offer({ type: "grounding", node: grounding.node_id, file: grounding.scaffold_file });
+      const record: Rec = { type: "grounding", node: grounding.node_id, file: grounding.scaffold_file };
+      if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
     }
 
-    emitter.force(summaryRecord(emitter, opts, {
+    emitAll(write, meta, [...records, ...sourceRecords, ...groundingRecords]);
+    write(JSON.stringify(summaryRecord(ledger, opts, {
       matchedNodes: roots.length + impacted.size,
-      returnedNodes: emitted.length,
+      returnedNodes: emittedNodes.length,
       returnedEdges: 0,
       truncated,
-      suggestedNextCommands: emitted.length > 0 ? [`mex graph get ${emitted[0]!.id} --detail source`] : [],
-    }));
+      suggestedNextCommands: emittedNodes.length > 0 ? [`mex graph get ${emittedNodes[0]!.id} --detail source`] : [],
+    })));
   } catch (error) {
     unavailable(write, error);
   } finally {
@@ -123,36 +139,46 @@ export function runGraphQuery(
       return;
     }
 
-    const resultNodes: GraphNode[] = [];
-    for (const node of nodes.sort(byId)) {
-      if (relation === "where-defined") { resultNodes.push(node); continue; }
-      const related = relation === "who-calls" ? session.graph.getCallers(node.id) : session.graph.getCallees(node.id);
-      for (const entry of related.sort(byId)) resultNodes.push(entry);
+    // Preserve (queried target, result) pairs; dedupe by that pair, not by result id alone.
+    const pairs: Array<{ targetId: string; node: GraphNode }> = [];
+    const seen = new Set<string>();
+    for (const queried of nodes.sort(byId)) {
+      const related = relation === "where-defined"
+        ? [queried]
+        : (relation === "who-calls" ? session.graph.getCallers(queried.id) : session.graph.getCallees(queried.id)).sort(byId);
+      for (const node of related) {
+        const key = `${queried.id} ${node.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pairs.push({ targetId: queried.id, node });
+      }
     }
-    const unique = dedupeById(resultNodes);
 
-    const emitter = new BudgetedEmitter(write, opts.maxOutputTokens);
-    emitter.force(metaRecord(`graph query ${relation}`, opts));
+    const ledger = new BudgetLedger(opts.maxOutputTokens);
+    const meta = metaRecord(`graph query ${relation}`, opts);
+    ledger.frame(meta);
 
-    const emitted: GraphNode[] = [];
+    const entries: Array<{ record: Rec; node: GraphNode }> = [];
     let truncated = false;
-    for (const node of unique) {
-      if (emitted.length >= opts.maxNodes) { truncated = true; break; }
-      const fact = factFor(session, node.id, opts.detail, opts.fingerprint);
+    for (const pair of pairs) {
+      if (entries.length >= opts.maxNodes) { truncated = true; break; }
+      const fact = factFor(session, pair.node.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
-      if (!emitter.offer({ type: "result", relation, ...fact })) { truncated = true; break; }
-      emitted.push(node);
+      const record: Rec = { type: "result", relation, target: pair.targetId, ...fact };
+      if (!ledger.tryAdd(record)) { truncated = true; break; }
+      entries.push({ record, node: pair.node });
     }
 
-    if (opts.detail === "source" && !emitSourceGrouped(emitter, emitted, rootDir, opts.maxSourceLines)) truncated = true;
+    const sourceRecords = planSource(ledger, entries.map((e) => e.node), rootDir, opts, entries.map((e) => e.record));
 
-    emitter.force(summaryRecord(emitter, opts, {
-      matchedNodes: unique.length,
-      returnedNodes: emitted.length,
+    emitAll(write, meta, [...entries.map((e) => e.record), ...sourceRecords]);
+    write(JSON.stringify(summaryRecord(ledger, opts, {
+      matchedNodes: pairs.length,
+      returnedNodes: entries.length,
       returnedEdges: 0,
       truncated,
-      suggestedNextCommands: emitted.length > 0 && opts.detail !== "source" ? [`mex graph get ${emitted[0]!.id} --detail source`] : [],
-    }));
+      suggestedNextCommands: entries.length > 0 && opts.detail !== "source" ? [`mex graph get ${entries[0]!.node.id} --detail source`] : [],
+    })));
   } catch (error) {
     unavailable(write, error);
   } finally {
@@ -173,32 +199,45 @@ export function runGraphScope(
   if (!session) return;
   try {
     const { candidates, matchedCount } = selectScope(session.graph, task, opts.maxNodes);
-    const emitter = new BudgetedEmitter(write, opts.maxOutputTokens);
-    emitter.force(metaRecord("graph scope", opts, task));
+    const ledger = new BudgetLedger(opts.maxOutputTokens);
+    const meta = metaRecord("graph scope", opts, task);
+    ledger.frame(meta);
 
+    const facts: Array<{ record: Rec; node: GraphNode }> = [];
     const returnedIds = new Set<string>();
-    const returnedNodes: GraphNode[] = [];
     let truncated = candidates.length < matchedCount;
     for (const candidate of candidates) {
       const fact = factFor(session, candidate.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
-      if (!emitter.offer({ type: "fact", ...fact, score: candidate.score, selectionReasons: candidate.reasons })) { truncated = true; break; }
-      returnedIds.add(candidate.id);
       const node = session.graph.getNode(candidate.id);
-      if (node) returnedNodes.push(node);
+      if (!node) continue;
+      const record: Rec = { type: "fact", ...fact, score: candidate.score, selectionReasons: candidate.reasons };
+      if (!ledger.tryAdd(record)) { truncated = true; break; }
+      facts.push({ record, node });
+      returnedIds.add(candidate.id);
     }
 
-    let returnedEdges = 0;
-    if (opts.detail !== "minimal") returnedEdges = emitInSetEdges(emitter, session.graph, returnedIds);
-    if (opts.detail === "source" && !emitSourceGrouped(emitter, returnedNodes, rootDir, opts.maxSourceLines)) truncated = true;
+    const edgeRecords: Rec[] = [];
+    if (opts.detail !== "minimal") {
+      for (const { node } of facts) {
+        for (const callee of session.graph.getCallees(node.id)) {
+          if (!returnedIds.has(callee.id)) continue;
+          const record: Rec = { type: "edge", kind: "calls", source: node.id, target: callee.id, provenance: "static" };
+          if (ledger.tryAdd(record)) edgeRecords.push(record); else truncated = true;
+        }
+      }
+    }
 
-    emitter.force(summaryRecord(emitter, opts, {
+    const sourceRecords = planSource(ledger, facts.map((f) => f.node), rootDir, opts, facts.map((f) => f.record));
+
+    emitAll(write, meta, [...facts.map((f) => f.record), ...edgeRecords, ...sourceRecords]);
+    write(JSON.stringify(summaryRecord(ledger, opts, {
       matchedNodes: matchedCount,
-      returnedNodes: returnedNodes.length,
-      returnedEdges,
+      returnedNodes: facts.length,
+      returnedEdges: edgeRecords.length,
       truncated,
-      suggestedNextCommands: buildScopeSuggestions(returnedNodes, opts.detail),
-    }));
+      suggestedNextCommands: buildScopeSuggestions(facts.map((f) => f.node), opts.detail),
+    })));
   } catch (error) {
     unavailable(write, error);
   } finally {
@@ -218,27 +257,38 @@ export function runGraphGet(
   const session = openSession(rootDir, deps, write);
   if (!session) return;
   try {
-    const emitter = new BudgetedEmitter(write, opts.maxOutputTokens);
-    emitter.force({
+    const ledger = new BudgetLedger(opts.maxOutputTokens);
+    const meta: Rec = {
       type: "meta", schemaVersion: SCHEMA_VERSION, command: "graph get",
       detail: "source", maxNodes: ids.length, maxOutputTokens: opts.maxOutputTokens,
-    });
+    };
+    ledger.frame(meta);
 
     const nodes: GraphNode[] = [];
+    const errorRecords: Rec[] = [];
+    let truncated = false;
     for (const id of ids) {
       const node = session.graph.getNode(id);
-      if (!node) { emitter.force({ type: "error", code: "NODE_NOT_FOUND", id }); continue; }
+      if (!node) {
+        const record: Rec = { type: "error", code: "NODE_NOT_FOUND", id };
+        if (ledger.tryAdd(record)) errorRecords.push(record); else truncated = true;
+        continue;
+      }
       nodes.push(node);
     }
-    const truncated = !emitSourceGrouped(emitter, nodes, rootDir, opts.maxSourceLines);
+    const sourceRecords = planSource(ledger, nodes, rootDir, opts);
+    const sourcedIds = new Set(
+      sourceRecords.flatMap((record) => (record.ranges as SourceRange[]).flatMap((range) => range.nodeIds)),
+    );
 
-    emitter.force(summaryRecord(emitter, opts, {
+    emitAll(write, meta, [...errorRecords, ...sourceRecords]);
+    write(JSON.stringify(summaryRecord(ledger, opts, {
       matchedNodes: ids.length,
-      returnedNodes: nodes.length,
+      returnedNodes: sourcedIds.size,
       returnedEdges: 0,
       truncated,
       suggestedNextCommands: [],
-    }));
+    })));
   } catch (error) {
     unavailable(write, error);
   } finally {
@@ -248,7 +298,7 @@ export function runGraphGet(
 
 // ── shared helpers ──────────────────────────────────────────────────────────
 
-function metaRecord(command: string, opts: AgentOptions, task?: string): Record<string, unknown> {
+function metaRecord(command: string, opts: AgentOptions, task?: string): Rec {
   return {
     type: "meta", schemaVersion: SCHEMA_VERSION, command,
     ...(task !== undefined ? { task } : {}),
@@ -257,44 +307,64 @@ function metaRecord(command: string, opts: AgentOptions, task?: string): Record<
 }
 
 function summaryRecord(
-  emitter: BudgetedEmitter,
+  ledger: BudgetLedger,
   opts: AgentOptions,
   fields: { matchedNodes: number; returnedNodes: number; returnedEdges: number; truncated: boolean; suggestedNextCommands: string[] },
-): Record<string, unknown> {
-  return {
+): Rec {
+  const base: Rec = {
     type: "summary",
     matchedNodes: fields.matchedNodes,
     returnedNodes: fields.returnedNodes,
     returnedEdges: fields.returnedEdges,
-    estimatedOutputTokens: emitter.estimatedTokens,
     maxOutputTokens: opts.maxOutputTokens,
-    truncated: fields.truncated,
+    truncated: fields.truncated || ledger.droppedAny || ledger.overBudget,
     suggestedNextCommands: fields.suggestedNextCommands,
   };
+  return { ...base, estimatedOutputTokens: ledger.estimatedTokens + estimateTokens({ ...base, estimatedOutputTokens: 0 }) };
 }
 
-/** Emit `calls` edges whose endpoints are both in the returned set. Returns the count. */
-function emitInSetEdges(emitter: BudgetedEmitter, graph: GraphEngine, returnedIds: Set<string>): number {
-  let count = 0;
-  for (const sourceId of returnedIds) {
-    for (const callee of graph.getCallees(sourceId)) {
-      if (!returnedIds.has(callee.id)) continue;
-      if (emitter.offer({ type: "edge", kind: "calls", source: sourceId, target: callee.id, provenance: "static" })) count++;
-    }
+/**
+ * Plan grouped-per-file source records for `nodes` (deduped by id) under the
+ * ledger, only when detail is "source". Sets `sourceIncluded` on the already-built
+ * `facts` records to reflect whether each node's source actually fit the budget.
+ * Returns the source records to emit.
+ */
+function planSource(
+  ledger: BudgetLedger,
+  nodes: GraphNode[],
+  rootDir: string,
+  opts: AgentOptions,
+  facts: Rec[] = [],
+): Rec[] {
+  if (opts.detail !== "source") {
+    for (const fact of facts) fact.sourceIncluded = false;
+    return [];
   }
-  return count;
-}
-
-/** Emit source once per file for the given nodes. Returns false if a record was budget-dropped. */
-function emitSourceGrouped(emitter: BudgetedEmitter, nodes: GraphNode[], rootDir: string, maxSourceLines: number): boolean {
-  for (const [filePath, fileNodes] of groupByFile(nodes)) {
+  const sourceRecords: Rec[] = [];
+  const sourcedIds = new Set<string>();
+  const emit = (record: Rec, ids: string[]): void => {
+    if (!ledger.tryAdd(record)) return;
+    sourceRecords.push(record);
+    for (const id of ids) sourcedIds.add(id);
+  };
+  for (const [filePath, fileNodes] of groupByFile(dedupeById(nodes))) {
     const ranges = fileNodes
-      .map((node) => readNodeSource(node, rootDir, maxSourceLines))
+      .map((node) => readNodeSource(node, rootDir, opts.maxSourceLines))
       .filter((range): range is SourceRange => range !== null);
     if (ranges.length === 0) continue;
-    if (!emitter.offer({ type: "source", filePath, ranges })) return false;
+    const grouped: Rec = { type: "source", filePath, ranges };
+    // Prefer one grouped record per file (dedups shared context); if it doesn't
+    // fit, degrade to per-range records so partial source still lands.
+    if (ledger.fits(grouped)) emit(grouped, ranges.flatMap((range) => range.nodeIds));
+    else for (const range of ranges) emit({ type: "source", filePath, ranges: [range] }, range.nodeIds);
   }
-  return true;
+  for (const fact of facts) fact.sourceIncluded = typeof fact.id === "string" && sourcedIds.has(fact.id);
+  return sourceRecords;
+}
+
+function emitAll(write: (line: string) => void, meta: Rec, records: Rec[]): void {
+  write(JSON.stringify(meta));
+  for (const record of records) write(JSON.stringify(record));
 }
 
 function buildScopeSuggestions(nodes: GraphNode[], detail: DetailLevel): string[] {
