@@ -1,0 +1,32 @@
+[
+  {
+    "id": "scope-select",
+    "query": "How does graph scope decide which nodes to return?",
+    "expected": ["selectScope"],
+    "rubric": ["selectScope"]
+  },
+  {
+    "id": "impact-walk",
+    "query": "How is transitive blast radius computed for a symbol?",
+    "expected": ["runImpact", "transitiveCallers"],
+    "rubric": ["transitiveCallers"]
+  },
+  {
+    "id": "budget",
+    "query": "How is the output token budget enforced during graph retrieval?",
+    "expected": ["BudgetedEmitter"],
+    "rubric": ["BudgetedEmitter"]
+  },
+  {
+    "id": "compact-fact",
+    "query": "What fields does a compact graph fact contain?",
+    "expected": ["compactFact"],
+    "rubric": ["compactFact"]
+  },
+  {
+    "id": "source-expand",
+    "query": "How does the agent expand source for a specific node?",
+    "expected": ["runGraphGet", "readNodeSource"],
+    "rubric": ["readNodeSource"]
+  }
+]

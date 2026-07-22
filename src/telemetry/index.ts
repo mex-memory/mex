@@ -120,6 +120,7 @@ type TransportFn = (event: string, properties: Record<string, unknown>) => void;
 
 let client: PostHog | null = null;
 let customTransport: TransportFn | null = null;
+const pendingCaptures = new Set<Promise<void>>();
 
 function getClient(): PostHog {
   if (!client) {
@@ -163,7 +164,10 @@ export function capture(event: string, command: string, scaffoldId?: string): vo
     }
 
     const ph = getClient();
-    ph.capture({
+    // captureImmediate returns the delivery promise to us, so we can swallow
+    // failures ourselves. The SDK's queued/background flush path logs rejected
+    // requests to console.error before callers can catch them, corrupting JSONL.
+    const pending = ph.captureImmediate({
       distinctId: machineId,
       event,
       properties: payload,
@@ -173,7 +177,9 @@ export function capture(event: string, command: string, scaffoldId?: string): vo
       // (posthog-node still adds $lib / $lib_version library metadata — not
       // user data; disclosed in TELEMETRY.md.)
       disableGeoip: true,
-    });
+    }).catch(() => undefined);
+    pendingCaptures.add(pending);
+    void pending.finally(() => pendingCaptures.delete(pending));
   } catch {
     // Swallow everything — telemetry must never throw.
   }
@@ -206,7 +212,10 @@ export async function flush(): Promise<void> {
     const timeoutPromise = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, FLUSH_TIMEOUT_MS);
     });
-    await Promise.race([client.flush(), timeoutPromise]);
+    await Promise.race([
+      Promise.allSettled([...pendingCaptures]).then(() => client!.flush()),
+      timeoutPromise,
+    ]);
   } catch {
     // Swallow — delivery is best-effort.
   } finally {

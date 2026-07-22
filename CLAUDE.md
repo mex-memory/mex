@@ -1,7 +1,7 @@
 ---
 name: agents
 description: Always-loaded project anchor. Read this first. Contains project identity, non-negotiables, commands, and pointer to ROUTER.md for full context.
-last_updated: [YYYY-MM-DD]
+last_updated: "2026-07-12"
 ---
 
 # [Project Name]

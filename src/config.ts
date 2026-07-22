@@ -49,7 +49,7 @@ export function createConfig(input: CreateConfigInput): MexConfig {
 
 /**
  * Walk up from startDir looking for .git to find project root,
- * then look for scaffold root (.mex/ or context/ directory).
+ * then require the current `.mex/` scaffold layout.
  */
 export function findConfig(startDir?: string): MexConfig {
   const dir = startDir ?? process.cwd();
@@ -305,17 +305,8 @@ export function getScaffoldIdentity(config: MexConfig): ScaffoldIdentity {
 }
 
 function findScaffoldRoot(projectRoot: string): string | null {
-  // Prefer .mex/ directory
   const mexDir = resolve(projectRoot, ".mex");
-  if (existsSync(mexDir)) {
-    return mexDir;
-  }
-
-  // Fall back to context/ directory (current mex layout)
-  const contextDir = resolve(projectRoot, "context");
-  if (existsSync(contextDir)) return projectRoot;
-
-  return null;
+  return existsSync(mexDir) ? mexDir : null;
 }
 
 /**

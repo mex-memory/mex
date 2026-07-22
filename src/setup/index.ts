@@ -14,6 +14,7 @@ import {
 } from "./prompts.js";
 import { saveAiTools, ensureScaffoldIdentity } from "../config.js";
 import { isCliAvailable } from "../cli-tools.js";
+import { captureGroundingBaselines } from "../graph/runtime.js";
 import type { AiTool } from "../types.js";
 
 // ── Constants ──
@@ -233,6 +234,25 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     }
   }
 
+  // Fresh installs get the additive code graph by default. A missing runtime,
+  // grammar, or SQLite capability must never make scaffold setup unusable.
+  if (mode === "code-repo" && !dryRun) {
+    try {
+      info("Building code graph...");
+      const { createGraphEngine } = await import("../graph/index.js");
+      const graph = createGraphEngine({ rootDir: projectRoot });
+      try {
+        await graph.build();
+        ok("Code graph ready");
+      } finally {
+        graph.close();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warn(`Code graph unavailable — setup will continue: ${message}`);
+    }
+  }
+
   // ── Step 5: Build population prompt ──
 
   let prompt: string;
@@ -267,6 +287,19 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
 
     try {
       await launchClaude(prompt);
+      if (mode === "code-repo") {
+        try {
+          const result = await captureGroundingBaselines(
+            { projectRoot, scaffoldRoot: mexDir, aiTools: [] },
+            { warn },
+          );
+          if (result.captured > 0) ok(`Captured ${result.captured} grounding baseline(s)`);
+          else warn("No grounding baselines were captured; verify the agent authored grounding.");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          warn(`Grounding baselines unavailable — setup will continue: ${message}`);
+        }
+      }
       console.log();
       ok("Setup complete.");
     } catch (err) {
@@ -276,6 +309,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
       warn(`Couldn't run Claude Code automatically: ${(err as Error).message}`);
       info("Paste the prompt below into your AI tool to populate the scaffold instead.");
       printPromptForManualPaste(prompt);
+      await confirmAndCaptureGrounding(projectRoot, mexDir, mode);
     }
     await promptGlobalInstall();
     return;
@@ -295,6 +329,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     }
 
     printPromptForManualPaste(prompt);
+    await confirmAndCaptureGrounding(projectRoot, mexDir, mode);
   }
 
   await promptGlobalInstall();
@@ -444,6 +479,32 @@ function printPromptForManualPaste(prompt: string): void {
   console.log("─────────────────── COPY ABOVE THIS LINE ───────────────────");
   console.log();
   ok("Paste the prompt above into your agent to populate the scaffold.");
+}
+
+async function confirmAndCaptureGrounding(
+  projectRoot: string,
+  mexDir: string,
+  mode: SetupMode,
+): Promise<void> {
+  if (mode !== "code-repo" || !stdin.isTTY) return;
+  const rl = createInterface({ input: stdin, output: stdout });
+  try {
+    console.log();
+    info("After the agent finishes populating, return here to capture grounding baselines.");
+    const answer = (await rl.question("  Has population finished? [y/N] ")).trim().toLowerCase();
+    if (answer !== "y" && answer !== "yes") return;
+    const result = await captureGroundingBaselines(
+      { projectRoot, scaffoldRoot: mexDir, aiTools: [] },
+      { warn },
+    );
+    if (result.captured > 0) ok(`Captured ${result.captured} grounding baseline(s)`);
+    else warn("No grounding baselines were captured; verify the agent authored grounding.");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    warn(`Grounding baselines unavailable — setup will continue: ${message}`);
+  } finally {
+    rl.close();
+  }
 }
 
 function hasClaudeCli(): boolean {

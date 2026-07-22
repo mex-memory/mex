@@ -195,6 +195,82 @@ program
     }
   });
 
+// ── Code Graph ──
+const graphCommand = program
+  .command("graph")
+  .description("Build/rebuild the code knowledge graph into .mex/graph.db")
+  .option("--json", "Output the build summary as JSON")
+  .option("--root <dir>", "Project root to index (defaults to current directory)")
+  .action(async (opts) => {
+    try {
+      const { runGraph } = await import("./graph/cli-graph.js");
+      await runGraph({ root: opts.root, json: opts.json });
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
+graphCommand
+  .command("query <relation> <target>")
+  .description("Query graph structure: who-calls, what-calls, or where-defined")
+  .option("--detail <level>", "minimal | standard | source", "minimal")
+  .option("--max-nodes <n>", "maximum results to return")
+  .option("--max-output-tokens <n>", "hard output token ceiling")
+  .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
+  .action((relation, target, options) => {
+    return import("./graph/cli-agent.js").then(({ runGraphQuery }) => runGraphQuery(relation, target, process.cwd(), {}, options));
+  });
+
+graphCommand
+  .command("scope <task...>")
+  .description("Retrieve a compact code neighborhood for a task as JSONL")
+  .option("--detail <level>", "minimal | standard | source", "minimal")
+  .option("--max-nodes <n>", "maximum nodes to return")
+  .option("--max-output-tokens <n>", "hard output token ceiling")
+  .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
+  .option("--fingerprint", "attach serialized node fingerprints (grounding workflow)")
+  .action((task: string[], options) => {
+    return import("./graph/cli-agent.js").then(({ runGraphScope }) => runGraphScope(task.join(" "), process.cwd(), {}, options));
+  });
+
+graphCommand
+  .command("get <id...>")
+  .description("Expand source for specific node ids as JSONL")
+  .option("--detail <level>", "source (get always returns source)", "source")
+  .option("--max-source-lines <n>", "per-node source line cap")
+  .option("--max-output-tokens <n>", "hard output token ceiling")
+  .action((ids: string[], options) => {
+    return import("./graph/cli-agent.js").then(({ runGraphGet }) => runGraphGet(ids, process.cwd(), {}, options));
+  });
+
+graphCommand
+  .command("ground")
+  .description("Retro-ground an existing pre-0.7 scaffold using the code graph")
+  .option("--dry-run", "Print the migration prompt without launching an agent")
+  .action(async (opts) => {
+    try {
+      const config = loadConfig();
+      const { runGraphGround } = await import("./graph/cli-ground.js");
+      await runGraphGround(config, opts);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("impact <target>")
+  .description("Show transitive code and scaffold blast radius for a symbol or file")
+  .option("--detail <level>", "minimal | standard | source", "minimal")
+  .option("--depth <n>", "transitive caller depth", "2")
+  .option("--max-nodes <n>", "maximum impacted nodes to return")
+  .option("--max-output-tokens <n>", "hard output token ceiling")
+  .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
+  .action((target, options) => {
+    return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), {}, options));
+  });
+
 // ── Agent Memory Events ──
 program
   .command("log <message>")
@@ -434,6 +510,13 @@ program
     console.log("  mex sync --warnings    Include warning-only files in sync");
     console.log("  mex init               Pre-scan codebase, build brief for AI");
     console.log("  mex init --json        Scanner brief as JSON");
+    console.log("  mex graph              Build the code knowledge graph into .mex/graph.db");
+    console.log("  mex graph --json       Graph build summary as JSON");
+    console.log("  mex graph scope <task>               Compact task neighborhood as JSONL");
+    console.log("  mex graph get <id...>                Expand source for node ids as JSONL");
+    console.log("  mex graph ground                     Ground an existing pre-0.7 scaffold");
+    console.log("  mex graph query <relation> <target>  Structural lookup as JSONL");
+    console.log("  mex impact <symbol|file>              Blast radius as JSONL");
     console.log("  mex log <message>      Append a note/decision/risk/todo to the event log");
     console.log("  mex timeline           Show recent event log entries");
     console.log("  mex heartbeat          Run lightweight agent-memory health checks");
@@ -479,7 +562,7 @@ if (isMainModule) {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "check", "init", "sync", "pattern", "log", "timeline",
+    "setup", "check", "init", "graph", "impact", "sync", "pattern", "log", "timeline",
     "heartbeat", "doctor", "watch", "tui", "commands", "completion",
     "telemetry", "config", "feedback",
   ];

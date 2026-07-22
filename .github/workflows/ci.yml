@@ -4,14 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, code-graph-preview]
 
 jobs:
   check:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [20, 22]
+        node-version: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,3 +22,16 @@ jobs:
       - run: npm run typecheck
       - run: npm run test
       - run: npm run build
+      - name: Smoke test packed graph CLI
+        if: matrix.node-version == 22
+        shell: bash
+        run: |
+          TARBALL="$(npm pack --silent | tail -n 1)"
+          FIXTURE="$(mktemp -d)"
+          mkdir -p "$FIXTURE/project/src"
+          cd "$FIXTURE/project"
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE/$TARBALL" --ignore-scripts >/dev/null
+          printf 'export function greet(name: string): string { return `hello ${name}`; }\n' > src/sample.ts
+          MEX_TELEMETRY=0 ./node_modules/.bin/mex graph --json | grep '"nodesCreated"'
+          MEX_TELEMETRY=0 ./node_modules/.bin/mex graph query where-defined greet | grep '"type":"result"'

@@ -6,6 +6,10 @@ import { AI_TOOLS } from "../types.js";
 import { runDriftCheck } from "../drift/index.js";
 import { isCliAvailable } from "../cli-tools.js";
 import { buildSyncBrief, buildCombinedBrief } from "./brief-builder.js";
+import { findScaffoldFiles } from "../drift/index.js";
+import { captureGroundingBaselines, loadGroundingRuntime, persistMovedGroundings } from "../graph/runtime.js";
+
+const INTERACTIVE_AI_TIMEOUT_MS = 15 * 60_000;
 
 function askUser(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -28,7 +32,7 @@ export function runToolInteractive(tool: AiTool, brief: string, cwd: string): bo
   const result = crossSpawn.sync(meta.cli, args, {
     cwd,
     stdio: "inherit",
-    timeout: 300_000,
+    timeout: INTERACTIVE_AI_TIMEOUT_MS,
   });
   // A spawn failure (ENOENT, etc.) sets `error` and leaves `status` null — don't
   // mistake that for success, or launch problems get silently swallowed.
@@ -101,6 +105,18 @@ export async function runSync(
       console.log(chalk.bold("\nRe-checking for remaining drift..."));
     }
 
+    const scaffoldFiles = findScaffoldFiles(config.projectRoot, config.scaffoldRoot);
+    if (!opts.dryRun) {
+      try {
+        const repairRuntime = await loadGroundingRuntime(config);
+        if (repairRuntime) {
+          persistMovedGroundings(config, scaffoldFiles, repairRuntime);
+          repairRuntime.close();
+        }
+      } catch {
+        // Drift check owns the user-facing degradation warning; sync continues.
+      }
+    }
     const report = await runDriftCheck(config);
 
     if (report.issues.length === 0) {
@@ -118,6 +134,9 @@ export async function runSync(
     const relevantIssues = opts.includeWarnings
       ? report.issues
       : report.issues.filter((i) => {
+          // Every grounding outcome is a repair path, including warning-only
+          // inline GONE anchors; do not require --warnings to maintain pointers.
+          if (i.code.startsWith("GROUNDING_")) return true;
           const fileHasError = report.issues.some(
             (other) => other.file === i.file && other.severity === "error"
           );
@@ -156,7 +175,7 @@ export async function runSync(
       console.log(
         chalk.dim("\n--dry-run: showing prompt without executing\n")
       );
-      const brief = await buildCombinedBrief(targets, config.projectRoot);
+      const brief = await buildGroundingAwareBrief(targets, config);
       console.log(brief);
       console.log();
       return;
@@ -208,7 +227,7 @@ export async function runSync(
 
     // Show prompts mode — print combined prompt and exit
     if (mode === "prompts") {
-      const brief = await buildCombinedBrief(targets, config.projectRoot);
+      const brief = await buildGroundingAwareBrief(targets, config);
       console.log(brief);
       console.log();
       return;
@@ -219,11 +238,17 @@ export async function runSync(
     const toolLabel = activeTool ? AI_TOOLS[activeTool].name : "AI";
     console.log(chalk.bold(`\nSending all ${targets.length} file(s) to ${toolLabel} in one session...\n`));
 
-    const brief = await buildCombinedBrief(targets, config.projectRoot);
+    const brief = await buildGroundingAwareBrief(targets, config);
     const ok = runToolInteractive(activeTool!, brief, config.projectRoot);
 
     if (!ok) {
       console.log(chalk.red(`  ✗ ${toolLabel} session failed`));
+    } else {
+      try {
+        await captureGroundingBaselines(config, { updateFingerprints: true });
+      } catch {
+        // The following drift check reports graph degradation without crashing sync.
+      }
     }
 
     // Step 4: Verify
@@ -281,6 +306,20 @@ export async function runSync(
       console.log(chalk.dim("Stopped. Run mex sync again anytime."));
       return;
     }
+  }
+}
+
+async function buildGroundingAwareBrief(targets: SyncTarget[], config: MexConfig): Promise<string> {
+  try {
+    const runtime = await loadGroundingRuntime(config);
+    if (!runtime) return buildCombinedBrief(targets, config.projectRoot);
+    try {
+      return await buildCombinedBrief(targets, config.projectRoot, { config, runtime });
+    } finally {
+      runtime.close();
+    }
+  } catch {
+    return buildCombinedBrief(targets, config.projectRoot);
   }
 }
 

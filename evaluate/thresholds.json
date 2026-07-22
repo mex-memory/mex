@@ -1,0 +1,10 @@
+{
+  "note": "Hard CI gates for the deterministic eval categories. Historical baseline from the prior ad-hoc benchmark (cg-main): medianBaselineToGraphRatio 1.35, medianCorpusToGraphRatio 120.55, meanExpectedRecall 1.0, runDriftCheck 32 facts. Numbers drift as the codebase evolves; gates below are floors, not exact-match assertions.",
+  "efficiency": {
+    "medianGrepTop3ToScope": { "min": 1.0 },
+    "scopeExpectedRecall": { "min": 0.85 }
+  },
+  "searchQuality": {
+    "whereDefinedFoundRate": { "min": 0.95 }
+  }
+}

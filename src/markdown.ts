@@ -3,8 +3,8 @@ import remarkParse from "remark-parse";
 import remarkFrontmatter from "remark-frontmatter";
 import { visit } from "unist-util-visit";
 import YAML from "yaml";
-import type { ScaffoldFrontmatter } from "./types.js";
-import type { Root, Content } from "mdast";
+import type { Grounding, ScaffoldFrontmatter } from "./types.js";
+import type { Root, Content, Link } from "mdast";
 
 const parser = unified().use(remarkParse).use(remarkFrontmatter, ["yaml"]);
 
@@ -29,6 +29,74 @@ export function extractFrontmatter(
   });
 
   return frontmatter;
+}
+
+/** Return validated code-graph groundings; malformed entries are rejected as a set. */
+export function extractGroundings(content: string): Grounding[] {
+  const value = extractFrontmatter(content)?.grounds_to;
+  return isGroundingArray(value) ? value : [];
+}
+
+export function isGroundingArray(value: unknown): value is Grounding[] {
+  return Array.isArray(value) && value.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const grounding = entry as Partial<Grounding>;
+    return typeof grounding.node === "string" && grounding.node.length > 0
+      && typeof grounding.fingerprint === "string" && grounding.fingerprint.length > 0;
+  });
+}
+
+/** Add or replace grounds_to while preserving the markdown body and other frontmatter keys. */
+export function writeGroundings(content: string, groundings: Grounding[]): string {
+  if (!isGroundingArray(groundings)) throw new Error("Invalid grounds_to entries");
+  const tree = parseMarkdown(content);
+  const yamlNode = tree.children.find((node) => node.type === "yaml");
+  const frontmatter = extractFrontmatter(content) ?? {};
+  frontmatter.grounds_to = groundings;
+  const yaml = YAML.stringify(frontmatter).trimEnd();
+  const block = `---\n${yaml}\n---`;
+  const start = yamlNode?.position?.start.offset;
+  const end = yamlNode?.position?.end.offset;
+  if (start !== undefined && end !== undefined) {
+    return content.slice(0, start) + block + content.slice(end);
+  }
+  return `${block}\n\n${content}`;
+}
+
+export interface MexAnchor {
+  nodeId: string;
+  /** Offsets of the complete markdown link, used for precise durable rewrites. */
+  start: number;
+  end: number;
+}
+
+/** Find standard markdown links whose destination is exactly `mex://<nodeId>`. */
+export function findMexAnchors(content: string): MexAnchor[] {
+  const anchors: MexAnchor[] = [];
+  visit(parseMarkdown(content), "link", (node: Link) => {
+    if (!node.url.startsWith("mex://") || node.url.length === "mex://".length) return;
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (start === undefined || end === undefined) return;
+    anchors.push({ nodeId: node.url.slice("mex://".length), start, end });
+  });
+  return anchors;
+}
+
+/** Extract inline anchor node ids in document order. */
+export function extractMexAnchorIds(content: string): string[] {
+  return findMexAnchors(content).map((anchor) => anchor.nodeId);
+}
+
+/** Rewrite one parsed anchor while preserving its visible text and surrounding markdown byte-for-byte. */
+export function rewriteMexAnchor(content: string, anchor: MexAnchor, nodeId: string): string {
+  if (!nodeId) throw new Error("Invalid mex anchor node id");
+  const link = content.slice(anchor.start, anchor.end);
+  const oldUri = `mex://${anchor.nodeId}`;
+  const uriOffset = link.indexOf(oldUri);
+  if (uriOffset < 0) throw new Error("mex anchor no longer matches markdown content");
+  const start = anchor.start + uriOffset;
+  return content.slice(0, start) + `mex://${nodeId}` + content.slice(start + oldUri.length);
 }
 
 /** Get the current heading context for a given line position */

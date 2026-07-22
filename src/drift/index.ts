@@ -17,6 +17,11 @@ import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
 import { toPosix } from "../paths.js";
+import { loadGroundingRuntime, type GroundingRuntime } from "../graph/runtime.js";
+import { findMexAnchors } from "../markdown.js";
+
+let graphUpgradeNudgeShown = false;
+let graphMigrationNudgeShown = false;
 
 /**
  * Default glob patterns used to locate scaffold markdown files, relative to
@@ -46,6 +51,9 @@ export interface RunDriftCheckOpts {
   /** Override the glob patterns used to discover scaffold files (relative to
    *  `config.scaffoldRoot`). Defaults to {@link DEFAULT_SCAFFOLD_PATTERNS}. */
   scaffoldPatterns?: readonly string[];
+  /** Internal seam used to verify graph-load graceful degradation. */
+  groundingRuntimeLoader?: (config: MexConfig) => Promise<GroundingRuntime | null>;
+  graphWarning?: (message: string) => void;
 }
 
 /** Run full drift detection across all scaffold files */
@@ -60,6 +68,32 @@ export async function runDriftCheck(
   const allClaims: Claim[] = [];
   const allIssues: DriftIssue[] = [];
   const checkerIssueCounts: Array<[string, number]> = [];
+  const hasGroundings = scaffoldFiles.some((filePath) => {
+    const groundsTo = parseFrontmatter(filePath)?.grounds_to;
+    if (Array.isArray(groundsTo) && groundsTo.length > 0) return true;
+    try { return findMexAnchors(readFileSync(filePath, "utf-8")).length > 0; } catch { return false; }
+  });
+  const needsGroundingMigration = !hasGroundings && scaffoldFiles.some(isPopulatedGroundingCandidate);
+  let groundingRuntime: GroundingRuntime | null = null;
+  if (hasGroundings || needsGroundingMigration) {
+    try {
+      groundingRuntime = await (opts.groundingRuntimeLoader ?? loadGroundingRuntime)(config);
+      if (!groundingRuntime && !graphUpgradeNudgeShown) {
+        graphUpgradeNudgeShown = true;
+        (opts.graphWarning ?? console.warn)(
+          "A code graph unlocks sharper drift detection. Run `mex graph`, then `mex graph ground`.",
+        );
+      } else if (groundingRuntime && needsGroundingMigration && !graphMigrationNudgeShown) {
+        graphMigrationNudgeShown = true;
+        (opts.graphWarning ?? console.warn)(
+          "Existing scaffold has no code grounding. Run `mex graph ground` to connect it.",
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      (opts.graphWarning ?? console.warn)(`Code graph unavailable; grounding checks skipped: ${message}`);
+    }
+  }
 
   // Extract claims from all files
   for (const filePath of scaffoldFiles) {
@@ -89,6 +123,14 @@ export async function runDriftCheck(
 
     checkerIssueCounts.push([`edges:${source}`, edgeIssues.length]);
     checkerIssueCounts.push([`staleness:${source}`, stalenessIssues.length]);
+
+    if (groundingRuntime) {
+      const groundingIssues = groundingRuntime.checker(
+        frontmatter, filePath, source, projectRoot, scaffoldRoot,
+      );
+      allIssues.push(...groundingIssues);
+      checkerIssueCounts.push([`grounding:${source}`, groundingIssues.length]);
+    }
   }
 
   // Run checkers that work on claims
@@ -139,17 +181,31 @@ export async function runDriftCheck(
     ? buildVerboseLog(scaffoldFiles.length, allClaims, checkerIssueCounts)
     : undefined;
 
-  return {
+  const report = {
     score,
     issues: allIssues,
     filesChecked: scaffoldFiles.length,
     timestamp: new Date().toISOString(),
     verboseLog,
   };
+  groundingRuntime?.close();
+  return report;
+}
+
+function isPopulatedGroundingCandidate(filePath: string): boolean {
+  const normalized = filePath.replaceAll("\\", "/");
+  if (!normalized.includes("/context/") && !normalized.includes("/patterns/")) return false;
+  if (normalized.endsWith("/patterns/README.md") || normalized.endsWith("/patterns/INDEX.md")) return false;
+  try {
+    const content = readFileSync(filePath, "utf-8");
+    return !content.includes("[YYYY-MM-DD]") && content.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Find all markdown files that are part of the scaffold */
-function findScaffoldFiles(
+export function findScaffoldFiles(
   projectRoot: string,
   scaffoldRoot: string,
   patterns: readonly string[] = DEFAULT_SCAFFOLD_PATTERNS

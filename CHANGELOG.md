@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 0.7.0 developer preview
+
+This work is available from the `code-graph-preview` branch for contributor testing. It has not been released on GitHub or published to npm.
+
+#### Added
+- Deterministic local SQLite code graph for TypeScript, TSX, JavaScript, and JSX, including cross-file resolution, body hashes, MinHash fingerprints, and LSH reconciliation.
+- Twelfth drift checker for `grounds_to` code-node grounding, with drift, gone, ambiguous, and durable moved-node repair behavior.
+- Inline `mex://<node-id>` anchors for navigable symbol mentions, including warning-only drift detection and durable sync repair.
+- `mex graph`, hydrated `mex graph scope`, `mex graph query`, and `mex impact` commands for graph building, task-neighborhood retrieval, structural lookup, and blast-radius analysis.
+- `mex graph ground` for idempotently retro-grounding populated pre-0.7 scaffolds while preserving their prose.
+- Express reference resolver that links route registrations to handler nodes.
+- Fresh setup now builds and consumes the graph, authors tight `grounds_to` entries and load-bearing inline anchors, and captures grounding baselines immediately.
+
+#### Changed
+- Minimum Node.js version is now 22.5 because the graph uses the built-in `node:sqlite` module.
+- The mex repository's own scaffold moved from the legacy root layout into `.mex/`; published user scaffolds continue to come from `templates/`.
+- Agent tool-config templates now explain graph queries, impact analysis, and ambiguous-grounding adjudication.
+- Setup, migration, and sync follow “read broad, ground tight”: broad context stays sparse while behavioral patterns ground to the specific implementing symbols.
+- Sync repairs prose and refreshes both frontmatter grounding and inline anchors after body drift, moves, deletions, or ambiguous reconciliation.
+- Telemetry delivery failures are silent so offline analytics cannot pollute JSON or JSONL command output.
+
+#### Fixed
+- External-content FTS5 indexing remains consistent across duplicate node ids and clean installed-package builds, preventing graph-build corruption seen during real setup testing.
+- Grounding baselines are captured after setup and migration as well as sync, so the first post-authoring body edit emits `GROUNDING_DRIFT` without a hand-seeded snapshot.
+
+#### Compatibility
+- Existing scaffolds without grounding or `.mex/graph.db` continue to run the original filesystem and lexical checks unchanged; upgrade with `mex graph` followed by `mex graph ground`.
+- Graph interfaces are source-level contribution seams, not public npm API exports.
+
 ## [0.6.3] - 2026-07-06
 
 ### Added

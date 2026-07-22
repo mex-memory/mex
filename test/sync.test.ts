@@ -19,6 +19,9 @@ describe("runToolInteractive return-value logic", () => {
   it("treats a clean exit (status 0) as success", () => {
     mockSync.mockReturnValue({ status: 0 });
     expect(runToolInteractive("claude", "brief", process.cwd())).toBe(true);
+    expect(mockSync).toHaveBeenCalledWith("claude", ["brief"], expect.objectContaining({
+      timeout: 15 * 60_000,
+    }));
   });
 
   it("treats a non-zero exit (status 1) as failure", () => {

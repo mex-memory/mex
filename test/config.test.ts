@@ -48,15 +48,13 @@ describe("findConfig", () => {
     expect(config.scaffoldRoot).toBe(mexPath);
   });
 
-  it("finds scaffold with context/ directory", () => {
+  it("does not treat the removed root context/ layout as a scaffold", () => {
     mkdirSync(join(tmpDir, ".git"));
     mkdirSync(join(tmpDir, "context"));
-    const config = findConfig(tmpDir);
-    expect(config.projectRoot).toBe(tmpDir);
-    expect(config.scaffoldRoot).toBe(tmpDir);
+    expect(() => findConfig(tmpDir)).toThrow("No .mex/ scaffold found");
   });
 
-  it("prefers .mex/ over context/", () => {
+  it("uses .mex/ even when an unrelated context/ directory exists", () => {
     mkdirSync(join(tmpDir, ".git"));
     const mexPath = join(tmpDir, ".mex");
     mkdirSync(mexPath);

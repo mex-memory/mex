@@ -1,6 +1,6 @@
 {
   "name": "mex-agent",
-  "version": "0.6.3",
+  "version": "0.7.0-dev.0",
   "description": "CLI engine for mex scaffold — drift detection, pre-analysis, and targeted sync",
   "type": "module",
   "main": "./dist/index.js",
@@ -44,13 +44,15 @@
   "license": "MIT",
   "homepage": "https://github.com/theDakshJaitly/mex#readme",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.5"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/copy-graph-assets.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "eval": "node evaluate/index.mjs",
+    "eval:e2e": "node evaluate/agent-e2e.mjs",
     "typecheck": "tsc --noEmit",
     "prepare": "npm run build"
   },
@@ -67,6 +69,7 @@
     "simple-git": "^3.27.0",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.0.0",
+    "web-tree-sitter": "^0.25.10",
     "yaml": "^2.7.0"
   },
   "devDependencies": {
@@ -74,6 +77,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.14",
     "ink-testing-library": "^4.0.0",
+    "tree-sitter-wasms": "^0.1.12",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
