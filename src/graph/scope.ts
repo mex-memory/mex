@@ -165,7 +165,10 @@ export function compactFact(graph: GraphEngine, id: string, detail: DetailLevel)
     callerCount: graph.getCallers(id).length,
     calleeCount: graph.getCallees(id).length,
     detail,
-    sourceIncluded: detail === "source",
+    // False at build time; the emitter flips it true only for facts whose source
+    // record actually fit the budget (see planSource). Defaulting false keeps the
+    // accounted record shape >= the emitted one, so the token ceiling stays hard.
+    sourceIncluded: false,
     bodyHash: node.bodyHash,
   };
 }

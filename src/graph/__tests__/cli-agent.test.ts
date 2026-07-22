@@ -99,13 +99,14 @@ describe("runGraphGet", () => {
     expect(records.some((r) => r.type === "error" && r.code === "NODE_NOT_FOUND")).toBe(true);
   });
 
-  it("never exceeds the token ceiling silently — reports honest overage and truncation", () => {
+  it("keeps a hard ceiling: an undersized budget is clamped to the framing floor and flagged", () => {
     const records = capture(() => runGraphGet(["missing:a", "missing:b", "missing:c"], root, deps, { maxOutputTokens: 20 }));
     const summary = records.at(-1)!;
     expect(summary.type).toBe("summary");
-    // framing alone exceeds a 20-token budget: must be flagged truncated with an honest count.
     expect(summary.truncated).toBe(true);
-    expect(summary.estimatedOutputTokens as number).toBeGreaterThan(20);
+    // Clamped up from the impossible 20 to a framing floor, and honored as a real ceiling.
+    expect(summary.maxOutputTokens as number).toBeGreaterThan(20);
+    expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(summary.maxOutputTokens as number);
   });
 });
 
@@ -161,6 +162,23 @@ describe("budget accounting honesty", () => {
     );
     for (const fact of facts) {
       expect(fact.sourceIncluded).toBe(sourcedNodeIds.has(fact.id as string));
+    }
+  });
+
+  it("never stamps sourceIncluded on non-fact records (e.g. impact target)", () => {
+    const records = capture(() => runImpact("helper", root, deps, { detail: "source" }));
+    const targetRecord = records.find((r) => r.type === "target");
+    expect(targetRecord).toBeDefined();
+    expect(targetRecord).not.toHaveProperty("sourceIncluded");
+  });
+
+  it("does not under-report tokens: estimate covers the actually emitted bytes and stays under the ceiling", () => {
+    for (const maxOutputTokens of [200, 1500]) {
+      const records = capture(() => runGraphScope("run", root, deps, { detail: "source", maxOutputTokens }));
+      const summary = records.at(-1)!;
+      const actual = records.reduce((sum, r) => sum + Math.ceil(JSON.stringify(r).length / 4), 0);
+      expect(summary.estimatedOutputTokens as number).toBeGreaterThanOrEqual(actual);
+      expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(summary.maxOutputTokens as number);
     }
   });
 });

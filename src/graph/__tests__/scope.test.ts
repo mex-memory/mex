@@ -45,9 +45,10 @@ describe("query-time graph scope", () => {
     });
   });
 
-  it("marks sourceIncluded when detail is source", () => {
+  it("defaults sourceIncluded to false — the emitter flips it only when source fits", () => {
     const { graph, seed } = fixture();
-    expect(compactFact(graph, seed.id, "source")?.sourceIncluded).toBe(true);
+    expect(compactFact(graph, seed.id, "source")?.sourceIncluded).toBe(false);
+    expect(compactFact(graph, seed.id, "source")?.detail).toBe("source");
   });
 
   it("returns null for a missing node", () => {

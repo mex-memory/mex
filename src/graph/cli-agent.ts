@@ -51,26 +51,28 @@ export function runImpact(
       return;
     }
 
-    const ledger = new BudgetLedger(opts.maxOutputTokens);
-    const meta = metaRecord("impact", opts);
-    ledger.frame(meta);
+    // Definitions (roots) and transitive callers share one `maxNodes` cap on returned nodes.
+    const rootsSorted = roots.sort(byId);
+    const ctx = beginResponse("impact", opts, undefined,
+      rootsSorted.length > 0 ? [`mex graph get ${rootsSorted[0]!.id} --detail source`] : []);
+    const ledger = ctx.ledger;
+    const meta = ctx.meta;
 
-    const records: Rec[] = [];
+    const headRecords: Rec[] = [];  // `target` — data, but not a graph fact
+    const factRecords: Rec[] = [];  // `defines` + `caller` — real facts, eligible for source
     const emittedNodes: GraphNode[] = [];
     let truncated = false;
 
     const targetRecord: Rec = { type: "target", targetType: fileNodes.length > 0 ? "file" : "symbol", value: target };
-    if (ledger.tryAdd(targetRecord)) records.push(targetRecord); else truncated = true;
+    if (ledger.tryAdd(targetRecord)) headRecords.push(targetRecord); else truncated = true;
 
-    // Definitions (roots) and transitive callers share one `maxNodes` cap on returned nodes.
-    const rootsSorted = roots.sort(byId);
     for (const root of rootsSorted) {
       if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
       const fact = factFor(session, root.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
       const record: Rec = { type: "defines", ...fact };
       if (!ledger.tryAdd(record)) { truncated = true; break; }
-      records.push(record);
+      factRecords.push(record);
       emittedNodes.push(root);
     }
 
@@ -88,11 +90,11 @@ export function runImpact(
       if (!fact) continue;
       const record: Rec = { type: "caller", depth: entry.depth, root: entry.root, ...fact };
       if (!ledger.tryAdd(record)) { truncated = true; break; }
-      records.push(record);
+      factRecords.push(record);
       emittedNodes.push(entry.node);
     }
 
-    const sourceRecords = planSource(ledger, emittedNodes, rootDir, opts, records);
+    const sourceRecords = planSource(ledger, emittedNodes, rootDir, opts, factRecords);
 
     const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])];
     const groundingRecords: Rec[] = [];
@@ -101,8 +103,8 @@ export function runImpact(
       if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
     }
 
-    emitAll(write, meta, [...records, ...sourceRecords, ...groundingRecords]);
-    write(JSON.stringify(summaryRecord(ledger, opts, {
+    emitAll(write, meta, [...headRecords, ...factRecords, ...sourceRecords, ...groundingRecords]);
+    write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: roots.length + impacted.size,
       returnedNodes: emittedNodes.length,
       returnedEdges: 0,
@@ -154,9 +156,11 @@ export function runGraphQuery(
       }
     }
 
-    const ledger = new BudgetLedger(opts.maxOutputTokens);
-    const meta = metaRecord(`graph query ${relation}`, opts);
-    ledger.frame(meta);
+    const anticipated = pairs.length > 0 && opts.detail !== "source"
+      ? [`mex graph get ${pairs[0]!.node.id} --detail source`] : [];
+    const ctx = beginResponse(`graph query ${relation}`, opts, undefined, anticipated);
+    const ledger = ctx.ledger;
+    const meta = ctx.meta;
 
     const entries: Array<{ record: Rec; node: GraphNode }> = [];
     let truncated = false;
@@ -172,7 +176,7 @@ export function runGraphQuery(
     const sourceRecords = planSource(ledger, entries.map((e) => e.node), rootDir, opts, entries.map((e) => e.record));
 
     emitAll(write, meta, [...entries.map((e) => e.record), ...sourceRecords]);
-    write(JSON.stringify(summaryRecord(ledger, opts, {
+    write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: pairs.length,
       returnedNodes: entries.length,
       returnedEdges: 0,
@@ -199,9 +203,10 @@ export function runGraphScope(
   if (!session) return;
   try {
     const { candidates, matchedCount } = selectScope(session.graph, task, opts.maxNodes);
-    const ledger = new BudgetLedger(opts.maxOutputTokens);
-    const meta = metaRecord("graph scope", opts, task);
-    ledger.frame(meta);
+    const firstNode = candidates.length > 0 ? session.graph.getNode(candidates[0]!.id) : null;
+    const ctx = beginResponse("graph scope", opts, task, buildScopeSuggestions(firstNode ? [firstNode] : [], opts.detail));
+    const ledger = ctx.ledger;
+    const meta = ctx.meta;
 
     const facts: Array<{ record: Rec; node: GraphNode }> = [];
     const returnedIds = new Set<string>();
@@ -231,7 +236,7 @@ export function runGraphScope(
     const sourceRecords = planSource(ledger, facts.map((f) => f.node), rootDir, opts, facts.map((f) => f.record));
 
     emitAll(write, meta, [...facts.map((f) => f.record), ...edgeRecords, ...sourceRecords]);
-    write(JSON.stringify(summaryRecord(ledger, opts, {
+    write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: matchedCount,
       returnedNodes: facts.length,
       returnedEdges: edgeRecords.length,
@@ -257,12 +262,17 @@ export function runGraphGet(
   const session = openSession(rootDir, deps, write);
   if (!session) return;
   try {
-    const ledger = new BudgetLedger(opts.maxOutputTokens);
-    const meta: Rec = {
+    const requested = opts.maxOutputTokens;
+    const reserve = estimateTokens(summarySkeleton([])) + RESERVE_PAD;
+    const buildMeta = (max: number): Rec => ({
       type: "meta", schemaVersion: SCHEMA_VERSION, command: "graph get",
-      detail: "source", maxNodes: ids.length, maxOutputTokens: opts.maxOutputTokens,
-    };
+      detail: "source", maxNodes: ids.length, maxOutputTokens: max,
+    });
+    const effectiveMax = Math.max(requested, estimateTokens(buildMeta(SIZE_PROBE)) + reserve);
+    const meta = buildMeta(effectiveMax);
+    const ledger = new BudgetLedger(effectiveMax, reserve);
     ledger.frame(meta);
+    const ctx: ResponseCtx = { ledger, meta, effectiveMax, requested };
 
     const nodes: GraphNode[] = [];
     const errorRecords: Rec[] = [];
@@ -282,7 +292,7 @@ export function runGraphGet(
     );
 
     emitAll(write, meta, [...errorRecords, ...sourceRecords]);
-    write(JSON.stringify(summaryRecord(ledger, opts, {
+    write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: ids.length,
       returnedNodes: sourcedIds.size,
       returnedEdges: 0,
@@ -298,6 +308,45 @@ export function runGraphGet(
 
 // ── shared helpers ──────────────────────────────────────────────────────────
 
+/** Stable worst-case width for numeric summary fields, so the reserve covers them. */
+const SIZE_PROBE = 9_999_999;
+/** Slack over the anticipated summary size (covers node-id/name length variance). */
+const RESERVE_PAD = 16;
+
+interface ResponseCtx {
+  ledger: BudgetLedger;
+  meta: Rec;
+  effectiveMax: number;
+  requested: number;
+}
+
+/**
+ * Set up a response so the token ceiling is genuinely hard. The summary reserve is
+ * sized from the ACTUAL summary shape (its suggested commands can carry long node
+ * ids/names), and the ceiling is clamped up to a framing floor (one meta + one
+ * summary) so mandatory framing can never silently exceed the reported budget.
+ * `anticipatedSuggestions` sizes the reserve; the final summary recomputes them
+ * from what was actually returned (same fixed-width ids, so the reserve holds).
+ * A clamp is surfaced as truncation.
+ */
+function beginResponse(command: string, opts: AgentOptions, task: string | undefined, anticipatedSuggestions: string[]): ResponseCtx {
+  const requested = opts.maxOutputTokens;
+  const reserve = estimateTokens(summarySkeleton(anticipatedSuggestions)) + RESERVE_PAD;
+  const framingFloor = estimateTokens(metaRecord(command, { ...opts, maxOutputTokens: SIZE_PROBE }, task)) + reserve;
+  const effectiveMax = Math.max(requested, framingFloor);
+  const meta = metaRecord(command, { ...opts, maxOutputTokens: effectiveMax }, task);
+  const ledger = new BudgetLedger(effectiveMax, reserve);
+  ledger.frame(meta);
+  return { ledger, meta, effectiveMax, requested };
+}
+
+function summarySkeleton(suggestions: string[]): Rec {
+  return {
+    type: "summary", matchedNodes: SIZE_PROBE, returnedNodes: SIZE_PROBE, returnedEdges: SIZE_PROBE,
+    maxOutputTokens: SIZE_PROBE, truncated: true, suggestedNextCommands: suggestions, estimatedOutputTokens: SIZE_PROBE,
+  };
+}
+
 function metaRecord(command: string, opts: AgentOptions, task?: string): Rec {
   return {
     type: "meta", schemaVersion: SCHEMA_VERSION, command,
@@ -307,8 +356,7 @@ function metaRecord(command: string, opts: AgentOptions, task?: string): Rec {
 }
 
 function summaryRecord(
-  ledger: BudgetLedger,
-  opts: AgentOptions,
+  ctx: ResponseCtx,
   fields: { matchedNodes: number; returnedNodes: number; returnedEdges: number; truncated: boolean; suggestedNextCommands: string[] },
 ): Rec {
   const base: Rec = {
@@ -316,11 +364,11 @@ function summaryRecord(
     matchedNodes: fields.matchedNodes,
     returnedNodes: fields.returnedNodes,
     returnedEdges: fields.returnedEdges,
-    maxOutputTokens: opts.maxOutputTokens,
-    truncated: fields.truncated || ledger.droppedAny || ledger.overBudget,
+    maxOutputTokens: ctx.effectiveMax,
+    truncated: fields.truncated || ctx.ledger.droppedAny || ctx.ledger.overBudget || ctx.effectiveMax > ctx.requested,
     suggestedNextCommands: fields.suggestedNextCommands,
   };
-  return { ...base, estimatedOutputTokens: ledger.estimatedTokens + estimateTokens({ ...base, estimatedOutputTokens: 0 }) };
+  return { ...base, estimatedOutputTokens: ctx.ledger.estimatedTokens + estimateTokens({ ...base, estimatedOutputTokens: SIZE_PROBE }) };
 }
 
 /**
