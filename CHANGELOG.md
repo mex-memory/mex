@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-05
+
+### Changed
+- Agent guidance in the shipped tool configs now describes when to use each graph command, rather than preferring graph commands over text search in all cases. `mex graph query` and `mex graph get` lead when a symbol name is known — they are exact and typically 200-500 output tokens. `mex graph scope` is positioned as a starting point for unfamiliar tasks, with an explicit note that it matches on words rather than meaning, so a task phrased in vocabulary the code does not use will return weak results.
+- Agents are now told to fall back to Grep/Glob when a scope manifest does not contain what they need, and to rephrase a scope task at most once. The previous wording discouraged text search, which could lead an agent to spend additional calls expanding a manifest that was not going to answer the question.
+- Applied to `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.windsurfrules`, and `.github/copilot-instructions.md`.
+
+### Note for existing scaffolds
+Upgrading does not modify an existing `.mex/` scaffold. To pick up the new guidance, replace the `## Code Graph` section of your tool config files with the version in `templates/AGENTS.md`.
+
 ## [0.7.0] - 2026-07-25
 
 ### Added
