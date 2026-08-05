@@ -26,6 +26,7 @@ extractor registry lives in
 | **Supported** | JSX | `.jsx` | [`jsx-component.jsx`](../src/graph/__tests__/fixtures/jsx-component.jsx) and [`extraction-regression.test.ts`](../src/graph/__tests__/extraction-regression.test.ts) cover components, imports, calls, and construction. |
 | **Supported** | Python | `.py` | [`sample.py`](../src/graph/__tests__/fixtures/sample.py), [`extractor-python.test.ts`](../src/graph/__tests__/extractor-python.test.ts), and the [`python-package`](../src/graph/__tests__/fixtures/python-package) integration fixture cover extraction and cross-file package resolution. |
 | **Supported** | Rust | `.rs` | [`sample.rs`](../src/graph/__tests__/fixtures/sample.rs) and [`extractor-rust.test.ts`](../src/graph/__tests__/extractor-rust.test.ts) cover structs, traits, enums, modules, functions, methods, generics, imports, calls, implementations, construction, returns, and field types. |
+| **Supported** | Java | `.java` | [`spring-order-service.java`](../src/graph/__tests__/fixtures/spring-order-service.java), [`extractor-java.test.ts`](../src/graph/__tests__/extractor-java.test.ts), [`resolver-spring.test.ts`](../src/graph/__tests__/resolver-spring.test.ts), and [`engine-spring.test.ts`](../src/graph/__tests__/engine-spring.test.ts) cover classes, interfaces, fields, methods, constructors, annotations, imports, inheritance, calls, construction, return/type references, and Spring DI references. |
 | **Unsupported** | Go and other languages | All other extensions | These names may be reserved in [`src/graph/types.ts`](../src/graph/types.ts), but no grammar or extractor is registered for them. Unsupported files are skipped rather than failing a graph build. |
 
 `src/graph/types.ts` contains a wider future-facing language vocabulary. A name
@@ -77,9 +78,11 @@ nodes in
 The Express fixture separately proves the framework-specific `route` node and
 resolved `references` relationship below.
 
-## Express route resolution
+## Framework Resolution
 
-Express is the only framework resolver included in v0.7.0. It activates
+### Express route resolution
+
+Express activates
 when `express` appears in `dependencies` or `devDependencies`, recognizes a
 literal route registered through `app` or `router`, emits a `route` node, and
 links an identifier handler when it can resolve that handler confidently.
@@ -99,10 +102,34 @@ and same-file handler binding. The end-to-end persistence path is covered by
 the “activates the Express resolver and links a route to its handler” case in
 [`engine.test.ts`](../src/graph/__tests__/engine.test.ts).
 
-This resolver does not promise general framework or dynamic-dispatch analysis.
+The Express resolver does not promise general framework or dynamic-dispatch analysis.
 Computed route strings, inline callbacks, handler arrays, middleware chains,
 and registrations hidden behind arbitrary helper functions are outside the
 fixture-backed shape. NestJS and Next.js resolvers are not included.
+
+### Spring annotation and DI resolution
+
+Spring activates when Maven/Gradle files or indexed Java sources contain Spring
+or JSR/Jakarta injection evidence. Java extraction stores annotation names in
+`decorators`, emits `decorates` references for annotation usages, and captures
+field, parameter, return, inheritance, call, and construction relationships.
+
+The Spring resolver adds framework-specific `references` edges for dependency
+injection:
+
+- `@Autowired`, `@Inject`, and `@Resource` field, constructor, and method
+  injection.
+- Single-constructor injection on Spring components.
+- Lombok `@RequiredArgsConstructor` / `@AllArgsConstructor` final-field
+  dependencies on Spring components.
+- `@Bean` method parameter dependencies.
+- `@Qualifier`, `@Named`, and `@Resource` name hints.
+
+Resolution prefers a uniquely matching Spring bean class or `@Bean` factory
+method. Qualifiers bind by explicit bean name, `@Primary` breaks otherwise
+ambiguous matches, and unresolved/ambiguous dependencies are left unlinked
+rather than guessed. The end-to-end persistence path is covered by
+[`engine-spring.test.ts`](../src/graph/__tests__/engine-spring.test.ts).
 
 ## Graceful degradation
 
@@ -135,8 +162,10 @@ not make the rest of setup or drift checking fail.
   guessing; see
   [`src/graph/resolution/resolver.ts`](../src/graph/resolution/resolver.ts).
 - **Dynamic dispatch is not general-purpose.** Tree-sitter extraction and the
-  narrow Express resolver cover statically recognizable shapes, not runtime
-  reflection, dependency injection, monkey-patching, or computed calls.
+  narrow framework resolvers cover statically recognizable shapes, not runtime
+  reflection, monkey-patching, or computed calls. Spring DI support covers common
+  annotation-driven wiring but does not execute configuration code or resolve
+  profiles/conditions.
 - **Generated code is path-filtered, not identified semantically.** Common
   output trees such as `node_modules`, `dist`, `build`, `.next`, `out`,
   `coverage`, and `.mex` are excluded by the source globs in
@@ -144,8 +173,8 @@ not make the rest of setup or drift checking fail.
   [`runtime.ts`](../src/graph/runtime.ts). Generated files outside those paths
   may still be indexed.
 - **Framework behavior is opt-in and narrow.** Express route-to-handler binding
-  is the only framework fixture in v0.7.0. Other frameworks remain unsupported
-  until their language extractor and resolver work merges.
+  and Spring Java DI binding are fixture-backed. Other frameworks remain
+  unsupported until their language extractor and resolver work merges.
 - **Support claims are fixture-bounded.** This page describes behavior exercised
   in v0.7.0. It does not promise complete semantic analysis for every construct
   in a supported language or support for unmerged Go, NestJS, or Next.js work.

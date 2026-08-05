@@ -103,6 +103,16 @@ The resolver's language extractor must already be merged before a framework issu
 
 Use [`src/graph/__tests__/resolver-express.test.ts`](../src/graph/__tests__/resolver-express.test.ts) as the test pattern. Test positive and negative detection, the framework-specific node/reference shape, successful binding, and ambiguous or missing-target behavior.
 
+For Spring Java DI, keep framework-specific wiring inside
+[`src/graph/resolution/frameworks/spring.ts`](../src/graph/resolution/frameworks/spring.ts).
+The Java extractor should emit general syntax facts only: annotations in
+`decorators`, `decorates` references, type references, inheritance, calls, and
+construction. The Spring resolver owns component detection, injection-site
+extraction, qualifier/name handling, and bean-provider selection. New Spring
+shapes should be fixture-backed in
+[`resolver-spring.test.ts`](../src/graph/__tests__/resolver-spring.test.ts) or
+[`engine-spring.test.ts`](../src/graph/__tests__/engine-spring.test.ts).
+
 ## Vendored Grammars
 
 When adding a language, document the grammar source and version.
@@ -113,6 +123,13 @@ When adding a language, document the grammar source and version.
 - **SHA-256:** matches `node_modules/tree-sitter-wasms@0.1.12/out/tree-sitter-rust.wasm` exactly
 - **Binary package license:** Unlicense
 - **Upstream grammar:** [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust)
+- **Upstream grammar license:** MIT
+
+### Java
+- **Binary source:** `tree-sitter-wasms` package, version `0.1.12`
+- **Vendored path:** `src/graph/wasm/tree-sitter-java.wasm`
+- **Binary package license:** Unlicense
+- **Upstream grammar:** [tree-sitter/tree-sitter-java](https://github.com/tree-sitter/tree-sitter-java)
 - **Upstream grammar license:** MIT
 
 ## Pull request proof
