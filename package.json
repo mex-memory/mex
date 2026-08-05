@@ -1,6 +1,6 @@
 {
   "name": "mex-agent",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Persistent project memory and deterministic local code graphs for AI coding agents",
   "type": "module",
   "main": "./dist/index.js",

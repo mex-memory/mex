@@ -32,10 +32,12 @@ last_updated: [YYYY-MM-DD]
      - Build: `npm run build` -->
 
 ## Code Graph
-The repo is indexed into `.mex/graph.db`. Prefer graph commands over grepping or reading files.
-- Explore a task with `mex graph scope "<task>"` first — it returns a compact JSONL manifest (`meta`, `fact`s, `summary`). Treat any source the graph returns as ALREADY READ; do not re-open those files.
+The repo is indexed into `.mex/graph.db`. Use it to avoid re-reading code you already have — it is one tool alongside Grep/Glob, not a replacement for them.
+- If you know the symbol name, go straight to it: `mex graph query <who-calls|what-calls|where-defined> <symbol>` and `mex graph get <id>` are exact and cheap. This is the strongest part of the graph. Give it exact names — an approximate name can return a confident wrong match.
+- Exploring an unfamiliar task? `mex graph scope "<task>"` returns a compact JSONL manifest (`meta`, `fact`s, `summary`). Scope matches on words, not meaning: if your phrasing does not share vocabulary with the code, results will be weak. Treat it as a starting point, never as a complete answer.
+- If the manifest does not clearly contain what you need, use Grep/Glob instead. Do not expand node ids that look irrelevant, and do not re-run `scope` with reworded phrasing more than once — that costs more than searching directly.
+- Treat any source the graph DOES return as ALREADY READ; do not re-open those files.
 - Pick 1-3 relevant node ids from the manifest and expand only those with `mex graph get <id> --detail source`.
-- If you already know the symbol, skip scope: use `mex graph query <who-calls|what-calls|where-defined> <symbol>`, or `mex graph get <id>`.
 - Before editing a symbol, run `mex impact <symbol|file>` to see affected callers and scaffold memory.
 - If a result is `truncated`, do NOT repeat the broad query — narrow the task or use the summary's `suggestedNextCommands`. Scale through a few focused calls, never one giant response.
 - During `mex sync`, adjudicate any AMBIGUOUS grounding; after repairs, ensure the refreshed grounding is re-emitted.
