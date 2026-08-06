@@ -106,6 +106,19 @@ describe("scored scope selection", () => {
     expect(matchedCount).toBeGreaterThan(1);
   });
 
+  it("does not let stopword tokens in the task phrasing win an exact-match boost", () => {
+    const onNode = node("function:on", "on", 1);
+    const graph: GraphEngine = {
+      build: vi.fn(), sync: vi.fn(), close: vi.fn(),
+      searchNodes: vi.fn((query: string) => (query === "on" ? [onNode] : [])),
+      getNode: (id) => (id === onNode.id ? onNode : null),
+      getCallers: () => [], getCallees: () => [],
+    };
+    const { candidates } = selectScope(graph, "find every call site that invokes mark_failed on a model", 10);
+    const onCandidate = candidates.find((c) => c.id === "function:on");
+    expect(onCandidate).toBeUndefined();
+  });
+
   it("routes test-file nodes into the test quota bucket", () => {
     const testNode = node("function:seed", "seed", 2, { filePath: "src/__tests__/seed.test.ts", signature: "s" });
     const graph: GraphEngine = {
