@@ -26,6 +26,7 @@ extractor registry lives in
 | **Supported** | JSX | `.jsx` | [`jsx-component.jsx`](../src/graph/__tests__/fixtures/jsx-component.jsx) and [`extraction-regression.test.ts`](../src/graph/__tests__/extraction-regression.test.ts) cover components, imports, calls, and construction. |
 | **Supported** | Python | `.py` | [`sample.py`](../src/graph/__tests__/fixtures/sample.py), [`extractor-python.test.ts`](../src/graph/__tests__/extractor-python.test.ts), and the [`python-package`](../src/graph/__tests__/fixtures/python-package) integration fixture cover extraction and cross-file package resolution. |
 | **Supported** | Rust | `.rs` | [`sample.rs`](../src/graph/__tests__/fixtures/sample.rs) and [`extractor-rust.test.ts`](../src/graph/__tests__/extractor-rust.test.ts) cover structs, traits, enums, modules, functions, methods, generics, imports, calls, implementations, construction, returns, and field types. |
+| **Supported** | Java | `.java` | [`sample.java`](../src/graph/__tests__/fixtures/sample.java), [`module-info.java`](../src/graph/__tests__/fixtures/module-info.java), [`extractor-java.test.ts`](../src/graph/__tests__/extractor-java.test.ts), and the [`java-package`](../src/graph/__tests__/fixtures/java-package) engine fixture cover classes, interfaces, enums, records, annotation types, nested types, constructors, fields, packages, imports (including static and star), extends/implements, calls, instantiations, method references, module-info, Javadoc, and package-path cross-file resolution. |
 | **Unsupported** | Go and other languages | All other extensions | These names may be reserved in [`src/graph/types.ts`](../src/graph/types.ts), but no grammar or extractor is registered for them. Unsupported files are skipped rather than failing a graph build. |
 
 `src/graph/types.ts` contains a wider future-facing language vocabulary. A name
@@ -146,9 +147,17 @@ not make the rest of setup or drift checking fail.
 - **Framework behavior is opt-in and narrow.** Express route-to-handler binding
   is the only framework fixture in v0.7.0. Other frameworks remain unsupported
   until their language extractor and resolver work merges.
+- **Java overload and constructor identity are coarse.** Tier-1 node ids use
+  `kind` + `name` only, so overloaded methods collapse and constructors share
+  the synthetic name `<init>` (same limitation class as other languages).
+- **Java package resolution is path-suffix only.** Imports bind when an indexed
+  file path ends with `com/foo/Bar.java` for `com.foo.Bar`. Platform packages
+  (`java.*`, `javax.*`, `jakarta.*`, …), jars, and multi-module source-root
+  heuristics are outside the fixture-backed shape.
 - **Support claims are fixture-bounded.** This page describes behavior exercised
-  in v0.7.0. It does not promise complete semantic analysis for every construct
-  in a supported language or support for unmerged Go, NestJS, or Next.js work.
+  by the current release fixtures. It does not promise complete semantic analysis
+  for every construct in a supported language or support for unmerged Go, NestJS,
+  or Next.js work.
 
 For contributor interfaces, fixture requirements, and registration points, see
 [Extending the code graph](extractors.md).

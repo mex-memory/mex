@@ -30,7 +30,7 @@ mex mapeia seu código, transforma o que os agentes aprendem em Markdown estrutu
 
 Cada sessão de programação começa com o contexto arquitetural relevante, e não com mais uma varredura completa do repositório.
 
-> **Novidade na v0.7.0:** grafos de código locais e determinísticos, conhecimento vinculado a símbolos, recuperação compacta para agentes e suporte a Python e Rust além de TypeScript e JavaScript.
+> **Novidade na v0.7.0:** grafos de código locais e determinísticos, conhecimento vinculado a símbolos, recuperação compacta para agentes e suporte a Python, Rust e Java além de TypeScript e JavaScript.
 
 💬 **Entre na comunidade do mex no Discord** — discuta ideias, peça ajuda, compartilhe feedback e contribua com o projeto.
 
@@ -73,7 +73,7 @@ O código continua sendo a fonte da verdade. A wiki se torna sua explicação co
 
 ### 1. Mapeie o código
 
-mex constrói um grafo de código local e determinístico com Tree-sitter e SQLite. Ele indexa símbolos e relações em TypeScript, TSX, JavaScript, JSX, Python e Rust, incluindo relações de rotas a handlers do Express.
+mex constrói um grafo de código local e determinístico com Tree-sitter e SQLite. Ele indexa símbolos e relações em TypeScript, TSX, JavaScript, JSX, Python, Rust e Java, incluindo relações de rotas a handlers do Express.
 
 ```bash
 mex graph

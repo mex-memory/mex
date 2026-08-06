@@ -200,6 +200,9 @@ function resolveModulePath(
   if (language === "python") {
     return resolvePythonModulePath(fromFile, specifier, fileNodeByPath);
   }
+  if (language === "java") {
+    return resolveJavaModulePath(fromFile, specifier, fileNodeByPath);
+  }
   if (!specifier.startsWith(".")) return null; // external package
   const base = posixJoin(posixDirname(fromFile), specifier);
   const candidates = [
@@ -211,6 +214,68 @@ function resolveModulePath(
     if (fileNodeByPath.has(candidate)) return candidate;
   }
   return null;
+}
+
+/** External JDK / platform packages — never bound to project sources. */
+const JAVA_EXTERNAL_PREFIXES = [
+  "java.",
+  "javax.",
+  "jakarta.",
+  "sun.",
+  "jdk.",
+  "com.sun.",
+];
+
+/**
+ * Resolve a Java import FQN to an indexed `.java` file path.
+ * `com.example.Foo` → path ending in `com/example/Foo.java`.
+ * Star imports and platform packages stay unresolved.
+ */
+function resolveJavaModulePath(
+  fromFile: string,
+  specifier: string,
+  fileNodeByPath: Map<string, string>,
+): string | null {
+  let name = specifier.trim();
+  if (name.startsWith("static ")) name = name.slice(7).trim();
+  if (!name || name.endsWith(".*") || name.endsWith("*")) return null;
+  if (JAVA_EXTERNAL_PREFIXES.some((p) => name.startsWith(p))) return null;
+
+  const segments = name.split(".").filter(Boolean);
+  if (segments.length === 0) return null;
+
+  // Try full FQN as type file, then drop trailing nested-type segments.
+  for (let len = segments.length; len >= 1; len--) {
+    const rel = `${segments.slice(0, len).join("/")}.java`;
+    const matches = [...fileNodeByPath.keys()].filter(
+      (path) => path === rel || path.endsWith(`/${rel}`),
+    );
+    if (matches.length === 0) continue;
+    if (matches.length === 1) return matches[0]!;
+
+    // Prefer longest common path prefix with the importing file.
+    let best: string | null = null;
+    let bestScore = -1;
+    for (const m of matches) {
+      const score = commonPathPrefixLength(fromFile, m);
+      if (score > bestScore) {
+        bestScore = score;
+        best = m;
+      } else if (score === bestScore) {
+        best = null; // ambiguous at same score
+      }
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
+function commonPathPrefixLength(a: string, b: string): number {
+  const as = a.split("/");
+  const bs = b.split("/");
+  let i = 0;
+  while (i < as.length && i < bs.length && as[i] === bs[i]) i++;
+  return i;
 }
 
 /** Resolve Python's dotted absolute and package-relative module syntax. */

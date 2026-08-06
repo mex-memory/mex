@@ -30,7 +30,7 @@ mex maps your code, turns what agents learn into structured Markdown, and keeps 
 
 Every coding session starts with relevant architectural context instead of another full-repository scan.
 
-> **New in v0.7.0:** deterministic local code graphs, symbol-grounded knowledge, compact agent retrieval, and Python/Rust support alongside TypeScript and JavaScript.
+> **New in v0.7.0:** deterministic local code graphs, symbol-grounded knowledge, compact agent retrieval, and Python/Rust/Java support alongside TypeScript and JavaScript.
 
 💬 **Join the mex community on Discord** — discuss ideas, get help, share feedback, and contribute to the project.
 
@@ -73,7 +73,7 @@ The code remains the source of truth. The wiki becomes its maintained explanatio
 
 ### 1. Map the codebase
 
-mex builds a deterministic local code graph using Tree-sitter and SQLite. It indexes symbols and relationships across TypeScript, TSX, JavaScript, JSX, Python, and Rust, including framework-aware Express route-to-handler relationships.
+mex builds a deterministic local code graph using Tree-sitter and SQLite. It indexes symbols and relationships across TypeScript, TSX, JavaScript, JSX, Python, Rust, and Java, including framework-aware Express route-to-handler relationships.
 
 ```bash
 mex graph

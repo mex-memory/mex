@@ -3,10 +3,10 @@
 // ============================================================================
 //
 // Wraps web-tree-sitter (WASM) — the same universal, native-build-free runtime
-// CodeGraph used. 0.7.0 ships five vendored grammars for TypeScript/TSX,
-// JavaScript/JSX, Python, and Rust. The lazy-load infrastructure is deliberately
-// general (a `Language → wasm` map) so the 0.7.x contributor program can slot
-// new grammars in without touching the core.
+// CodeGraph used. Ships vendored grammars for TypeScript/TSX, JavaScript/JSX,
+// Python, Rust, and Java. The lazy-load infrastructure is deliberately general
+// (a `Language → wasm` map) so the 0.7.x contributor program can slot new
+// grammars in without touching the core.
 //
 // Grammars are loaded on demand — only languages actually present in the project
 // are compiled — keeping WASM heap pressure low on large repos.
@@ -28,6 +28,7 @@ const WASM_GRAMMAR_FILES: Partial<Record<Language, string>> = {
   jsx: "tree-sitter-javascript.wasm",
   python: "tree-sitter-python.wasm",
   rust: "tree-sitter-rust.wasm",
+  java: "tree-sitter-java.wasm",
 };
 
 /** File extension → language. The single source of truth for "index this file?". */
@@ -42,6 +43,7 @@ const EXTENSION_MAP: Record<string, Language> = {
   ".jsx": "jsx",
   ".py": "python",
   ".rs": "rust",
+  ".java": "java",
 };
 
 /** Glob pattern for every extension registered above. */

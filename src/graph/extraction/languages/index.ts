@@ -2,9 +2,9 @@
 // mex code-graph — extractor registry
 // ============================================================================
 //
-// The single place a language id maps to its `LanguageExtractor`. 0.7.0 wires
-// TypeScript/TSX, JavaScript/JSX, Python, and Rust. A 0.7.x contributor adds a
-// language by importing its extractor and adding one line here.
+// The single place a language id maps to its `LanguageExtractor`. Wires
+// TypeScript/TSX, JavaScript/JSX, Python, Rust, and Java. A 0.7.x contributor
+// adds a language by importing its extractor and adding one line here.
 
 import type { Language } from "../../types.js";
 import type { LanguageExtractor } from "../types.js";
@@ -12,6 +12,7 @@ import { typescriptExtractor, tsxExtractor } from "./typescript.js";
 import { javascriptExtractor, jsxExtractor } from "./javascript.js";
 import { pythonExtractor } from "./python.js";
 import { rustExtractor } from "./rust.js";
+import { javaExtractor } from "./java.js";
 
 /** Registered extractors, keyed by the language id they emit. */
 export const EXTRACTORS: Partial<Record<Language, LanguageExtractor>> = {
@@ -21,6 +22,7 @@ export const EXTRACTORS: Partial<Record<Language, LanguageExtractor>> = {
   jsx: jsxExtractor,
   python: pythonExtractor,
   rust: rustExtractor,
+  java: javaExtractor,
 };
 
 /** The extractor for a language, or undefined if unsupported in this release. */

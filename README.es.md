@@ -30,7 +30,7 @@ mex crea un mapa de tu código, convierte lo que aprenden los agentes en Markdow
 
 Cada sesión de programación comienza con el contexto arquitectónico relevante, no con otro escaneo completo del repositorio.
 
-> **Nuevo en v0.7.0:** grafos de código locales y deterministas, conocimiento vinculado a símbolos, recuperación compacta para agentes y compatibilidad con Python y Rust además de TypeScript y JavaScript.
+> **Nuevo en v0.7.0:** grafos de código locales y deterministas, conocimiento vinculado a símbolos, recuperación compacta para agentes y compatibilidad con Python, Rust y Java además de TypeScript y JavaScript.
 
 💬 **Únete a la comunidad de mex en Discord** — comenta ideas, obtén ayuda, comparte tus opiniones y contribuye al proyecto.
 
@@ -73,7 +73,7 @@ El código sigue siendo la fuente de verdad. La wiki se convierte en su explicac
 
 ### 1. Crea un mapa del código
 
-mex construye un grafo de código local y determinista con Tree-sitter y SQLite. Indexa símbolos y relaciones en TypeScript, TSX, JavaScript, JSX, Python y Rust, incluidas relaciones de rutas a manejadores de Express.
+mex construye un grafo de código local y determinista con Tree-sitter y SQLite. Indexa símbolos y relaciones en TypeScript, TSX, JavaScript, JSX, Python, Rust y Java, incluidas relaciones de rutas a manejadores de Express.
 
 ```bash
 mex graph

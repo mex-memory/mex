@@ -115,6 +115,14 @@ When adding a language, document the grammar source and version.
 - **Upstream grammar:** [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust)
 - **Upstream grammar license:** MIT
 
+### Java
+- **Binary source:** `tree-sitter-wasms` package, version `0.1.12`
+- **Vendored path:** `src/graph/wasm/tree-sitter-java.wasm`
+- **SHA-256:** `637aac4415fb39a211a4f4292d63c66b5ce9c32fa2cd35464af4f681d91b9a1f` (matches `node_modules/tree-sitter-wasms@0.1.12/out/tree-sitter-java.wasm`)
+- **Binary package license:** Unlicense
+- **Upstream grammar:** [tree-sitter/tree-sitter-java](https://github.com/tree-sitter/tree-sitter-java)
+- **Upstream grammar license:** MIT
+
 ## Pull request proof
 
 Before opening a pull request, run:

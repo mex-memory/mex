@@ -18,3 +18,17 @@ a grammar is added or replaced.
 
 The checksum matches `out/tree-sitter-python.wasm` in the published
 `tree-sitter-wasms@0.1.12` package.
+
+## Java
+
+- File: `tree-sitter-java.wasm`
+- Binary source: [`tree-sitter-wasms@0.1.12`](https://www.npmjs.com/package/tree-sitter-wasms/v/0.1.12),
+  source commit [`df1bed5`](https://github.com/Gregoor/tree-sitter-wasms/commit/df1bed5f46a27c4cb7e707a2c9d15d6979fa48bb)
+- Upstream grammar: [`tree-sitter-java`](https://github.com/tree-sitter/tree-sitter-java)
+- Licenses: the prebuilt `tree-sitter-wasms` distribution is
+  [Unlicense](https://github.com/Gregoor/tree-sitter-wasms/blob/df1bed5f46a27c4cb7e707a2c9d15d6979fa48bb/LICENSE);
+  the Java grammar is [MIT](https://github.com/tree-sitter/tree-sitter-java/blob/master/LICENSE)
+- SHA-256: `637aac4415fb39a211a4f4292d63c66b5ce9c32fa2cd35464af4f681d91b9a1f`
+
+The checksum matches `out/tree-sitter-java.wasm` in the published
+`tree-sitter-wasms@0.1.12` package.

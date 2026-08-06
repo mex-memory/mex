@@ -30,7 +30,7 @@ mex 为代码建立地图，把代理学到的知识整理成结构化 Markdown�
 
 每次编程会话都从相关的架构上下文开始，而不是重新扫描整个仓库。
 
-> **v0.7.0 新功能：** 确定性的本地代码图谱、符号级知识锚定、面向代理的紧凑检索，以及在 TypeScript 和 JavaScript 之外新增的 Python 与 Rust 支持。
+> **v0.7.0 新功能：** 确定性的本地代码图谱、符号级知识锚定、面向代理的紧凑检索，以及在 TypeScript 和 JavaScript 之外新增的 Python、Rust 与 Java 支持。
 
 💬 **加入 mex Discord 社区** — 讨论想法、获取帮助、分享反馈并参与项目贡献。
 
@@ -73,7 +73,7 @@ mex 创建一个位于仓库内、持续演进的 Wiki，并随代理的工作�
 
 ### 1. 为代码库建立地图
 
-mex 使用 Tree-sitter 和 SQLite 构建确定性的本地代码图谱。它索引 TypeScript、TSX、JavaScript、JSX、Python 和 Rust 中的符号及关系，并支持识别 Express 路由到处理器的框架级关系。
+mex 使用 Tree-sitter 和 SQLite 构建确定性的本地代码图谱。它索引 TypeScript、TSX、JavaScript、JSX、Python、Rust 和 Java 中的符号及关系，并支持识别 Express 路由到处理器的框架级关系。
 
 ```bash
 mex graph
