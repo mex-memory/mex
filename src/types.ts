@@ -2,7 +2,7 @@
 
 // ── AI Tool ──
 
-export type AiTool = "claude" | "cursor" | "windsurf" | "copilot" | "opencode" | "codex";
+export type AiTool = "claude" | "cursor" | "windsurf" | "copilot" | "opencode" | "codex" | "pi";
 
 export interface AiToolMeta {
   name: string;
@@ -18,6 +18,7 @@ export const AI_TOOLS: Record<AiTool, AiToolMeta> = {
   copilot:  { name: "Copilot",     cli: null,       promptFlag: [] },
   opencode: { name: "OpenCode",    cli: "opencode", promptFlag: ["run"] },
   codex:    { name: "Codex",       cli: "codex",    promptFlag: [] },
+  pi:       { name: "Pi",          cli: "pi",       promptFlag: ["-p"] },
 };
 
 // ── Config ──
