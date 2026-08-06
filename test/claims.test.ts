@@ -94,6 +94,20 @@ describe("extractClaims — paths", () => {
     expect(paths).toHaveLength(0);
   });
 
+  it("skips non-path inline code values", () => {
+    const path = writeFixture(
+      "test.md",
+      "# Notes\n\n" +
+        "The cluster subnet is `192.168.5.0/24`. " +
+        "The ArgoCD annotation `argocd.argoproj.io/sync-wave` controls ordering. " +
+        "Use `sudo ls /var/lib/kubelet/plugins_registry/` to inspect plugins. " +
+        "YAML files can use `.yaml` or `.yml`."
+    );
+    const claims = extractClaims(path, "test.md");
+    const paths = claims.filter((c) => c.kind === "path");
+    expect(paths).toHaveLength(0);
+  });
+
   it("extracts bare filenames as path claims", () => {
     const path = writeFixture(
       "test.md",
