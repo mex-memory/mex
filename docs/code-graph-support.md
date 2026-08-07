@@ -105,6 +105,90 @@ Computed route strings, inline callbacks, handler arrays, middleware chains,
 and registrations hidden behind arbitrary helper functions are outside the
 fixture-backed shape. NestJS and Next.js resolvers are not included.
 
+## Spring Boot 4 route and constructor-injection resolution
+
+Spring Boot is the second framework resolver. It activates only when project
+build files evidence **Spring Boot 4.x** (Maven `pom.xml` and/or Gradle
+`build.gradle` / `build.gradle.kts` / `libs.versions.toml`). Boot 3.x and
+versionless Spring Framework-only projects do not activate the resolver.
+
+It emits `route` nodes from mapping annotations and `references` edges from
+controller classes to constructor-injected types when binding is unambiguous.
+
+```java
+@RestController
+@RequestMapping("/api")
+public class WidgetController {
+  public WidgetController(WidgetService service) { ... }
+
+  @GetMapping("/widgets")
+  public String list() { ... }
+}
+```
+
+[`spring-boot-app`](../src/graph/__tests__/fixtures/spring-boot-app) plus
+[`resolver-spring-boot.test.ts`](../src/graph/__tests__/resolver-spring-boot.test.ts)
+and [`engine-spring-boot.test.ts`](../src/graph/__tests__/engine-spring-boot.test.ts)
+prove Boot 4 detection (and Boot 3 rejection), the `GET /api/widgets` route node,
+route→handler binding, and `WidgetController`→`WidgetService` constructor
+injection when the target class is unique.
+
+**Supported (fixture-backed):**
+
+- Detection via Boot 4 parent/BOM/plugin/coordinates (Maven and Gradle)
+- `@GetMapping` / `@PostMapping` / `@PutMapping` / `@PatchMapping` /
+  `@DeleteMapping` / `@RequestMapping` with string path literals
+- Class-level `@RequestMapping` path composition
+- Route → controller method (`references`)
+- Single-constructor injection and `@Autowired` / `@Inject` constructors →
+  unique `class` target
+
+**Deferred:** field/setter injection, `@Bean` methods, WebFlux functional routes,
+Kotlin, Boot 3, `@Qualifier`, multi-candidate type names, path constants, SpEL.
+
+## Hibernate 7 / Spring Data JPA (Spring Boot 4)
+
+Hibernate is the third framework resolver. It activates only when the project is
+**Spring Boot 4.x** and build files evidence **Hibernate 7** or
+`spring-boot-starter-data-jpa` (Boot-managed). Explicit Hibernate **6.x** / **5.x**
+pins disable the resolver even on Boot 4.
+
+It emits `references` edges from:
+
+- `@Entity` classes with association fields (`@ManyToOne`, `@OneToOne`,
+  `@OneToMany`, `@ManyToMany`) to the target entity class type; and
+- Spring Data repository interfaces (`JpaRepository`, `CrudRepository`, …)
+  to the entity type argument.
+
+```java
+@Entity
+public class Order {
+  @ManyToOne
+  private Widget widget;
+}
+
+public interface OrderRepository extends JpaRepository<Order, Long> {}
+```
+
+[`hibernate-boot4-app`](../src/graph/__tests__/fixtures/hibernate-boot4-app),
+[`resolver-hibernate.test.ts`](../src/graph/__tests__/resolver-hibernate.test.ts),
+and [`engine-hibernate.test.ts`](../src/graph/__tests__/engine-hibernate.test.ts)
+prove Boot4+data-jpa detection, Boot3 rejection, Hibernate 6 pin rejection,
+`Order`→`Widget` / `LineItem`→`Order` associations, and
+`OrderRepository`→`Order` binding when the target class is unique.
+
+**Supported (fixture-backed):**
+
+- Detection: Boot 4 ∧ (data-jpa starter or hibernate-core 7.x)
+- Field associations with collection unwrap (`List`/`Set`/`Collection`)
+- `targetEntity = Foo.class` override
+- `JpaRepository` / `CrudRepository` / `PagingAndSortingRepository` /
+  `ListCrudRepository` / `ListPagingAndSortingRepository`
+
+**Deferred:** `@Query`/HQL parse, embeddables, Session/EntityManager call
+binding, property-access getters, Kotlin, Boot 3, Hibernate 6, intermediate
+generic base repository interfaces.
+
 ## Graceful degradation
 
 The code graph requires Node.js 22.5 or newer because it uses the built-in
@@ -144,9 +228,11 @@ not make the rest of setup or drift checking fail.
   [`engine-impl.ts`](../src/graph/engine-impl.ts) and
   [`runtime.ts`](../src/graph/runtime.ts). Generated files outside those paths
   may still be indexed.
-- **Framework behavior is opt-in and narrow.** Express route-to-handler binding
-  is the only framework fixture in v0.7.0. Other frameworks remain unsupported
-  until their language extractor and resolver work merges.
+- **Framework behavior is opt-in and narrow.** Express route-to-handler binding,
+  Spring Boot 4 route + constructor-injection edges, and Hibernate 7 entity
+  association + Spring Data JPA repository edges (Boot 4 only) are the
+  fixture-backed framework resolvers. Other frameworks remain unsupported until
+  their language extractor and resolver work merges.
 - **Java overload and constructor identity are coarse.** Tier-1 node ids use
   `kind` + `name` only, so overloaded methods collapse and constructors share
   the synthetic name `<init>` (same limitation class as other languages).

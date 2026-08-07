@@ -88,7 +88,7 @@ Use [`src/graph/__tests__/extractor.test.ts`](../src/graph/__tests__/extractor.t
 
 ## Framework resolvers
 
-The frozen interface is [`src/graph/resolution/types.ts`](../src/graph/resolution/types.ts). The Express implementation in [`src/graph/resolution/frameworks/express.ts`](../src/graph/resolution/frameworks/express.ts) is the reference resolver.
+The frozen interface is [`src/graph/resolution/types.ts`](../src/graph/resolution/types.ts). The Express implementation in [`src/graph/resolution/frameworks/express.ts`](../src/graph/resolution/frameworks/express.ts) is the reference resolver. Spring Boot 4 (`src/graph/resolution/frameworks/spring-boot.ts`) and Hibernate 7 (`src/graph/resolution/frameworks/hibernate.ts`) are additional fixture-backed Java framework examples.
 
 A resolver should add only relationships that require framework knowledge. It must detect the framework from project evidence and return `null` when it cannot resolve a reference confidently.
 
