@@ -1,0 +1,7 @@
+# Code owners are requested for review automatically when a pull request
+# touches a matching path. Patterns are gitignore-style; the LAST matching
+# rule wins. Owners must have write access to the repository, otherwise the
+# rule is silently ignored.
+
+# Default owner for everything in the repo.
+*       @theDakshJaitly
