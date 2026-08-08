@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/mex-memory-mex-badge.png)](https://mseep.ai/app/mex-memory-mex)
+
 <div align="center">
 
 <img src="mascot/mex-mascot.svg" alt="mex mascot" width="80">
