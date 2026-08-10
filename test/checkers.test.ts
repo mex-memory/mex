@@ -457,8 +457,8 @@ describe("checkToolConfigSync", () => {
   });
 
   it("flags drift between two installed tool configs", () => {
-    writeFileSync(join(tmpDir, "CLAUDE.md"), "original\n");
-    writeFileSync(join(tmpDir, ".cursorrules"), "original\nedited\n");
+    writeFileSync(join(tmpDir, "CLAUDE.md"), "read ROUTER.md first\noriginal\n");
+    writeFileSync(join(tmpDir, ".cursorrules"), "read ROUTER.md first\noriginal\nedited\n");
     const issues = checkToolConfigSync(tmpDir);
     expect(issues).toHaveLength(1);
     expect(issues[0].code).toBe("TOOL_CONFIG_DRIFT");
@@ -468,10 +468,10 @@ describe("checkToolConfigSync", () => {
   });
 
   it("flags each drifted file separately and leaves matching files alone", () => {
-    writeFileSync(join(tmpDir, "CLAUDE.md"), "v1\n");
-    writeFileSync(join(tmpDir, "AGENTS.md"), "v1\n");           // matches CLAUDE.md
-    writeFileSync(join(tmpDir, ".cursorrules"), "v2 drifted\n"); // drifted
-    writeFileSync(join(tmpDir, ".windsurfrules"), "v3 also\n");  // drifted
+    writeFileSync(join(tmpDir, "CLAUDE.md"), "read ROUTER.md\nv1\n");
+    writeFileSync(join(tmpDir, "AGENTS.md"), "read ROUTER.md\nv1\n");           // matches CLAUDE.md
+    writeFileSync(join(tmpDir, ".cursorrules"), "read ROUTER.md\nv2 drifted\n"); // drifted
+    writeFileSync(join(tmpDir, ".windsurfrules"), "read ROUTER.md\nv3 also\n");  // drifted
     const issues = checkToolConfigSync(tmpDir);
     const files = issues.map((i) => i.file).sort();
     expect(files).toEqual([".cursorrules", ".windsurfrules"]);
@@ -480,11 +480,30 @@ describe("checkToolConfigSync", () => {
 
   it("picks up the Copilot config nested under .github", () => {
     mkdirSync(join(tmpDir, ".github"), { recursive: true });
-    writeFileSync(join(tmpDir, "CLAUDE.md"), "shared\n");
-    writeFileSync(join(tmpDir, ".github/copilot-instructions.md"), "changed\n");
+    writeFileSync(join(tmpDir, "CLAUDE.md"), "read ROUTER.md\nshared\n");
+    writeFileSync(join(tmpDir, ".github/copilot-instructions.md"), "read ROUTER.md\nchanged\n");
     const issues = checkToolConfigSync(tmpDir);
     expect(issues).toHaveLength(1);
     expect(issues[0].file).toBe(".github/copilot-instructions.md");
+  });
+
+  it("ignores tool config files that are not scaffold copies", () => {
+    // A hand-written CLAUDE.md and a generated AGENTS.md (e.g. a managed skill
+    // pack) coexist without ever having been copied from .tool-configs/.
+    writeFileSync(join(tmpDir, "CLAUDE.md"), "# Project Context\nhand-written\n");
+    writeFileSync(join(tmpDir, "AGENTS.md"), "# Managed skill pack\ngenerated\n");
+    const issues = checkToolConfigSync(tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("compares only the scaffold copies when non-copies are present", () => {
+    writeFileSync(join(tmpDir, "CLAUDE.md"), "# Project Context\nhand-written\n"); // not a copy
+    writeFileSync(join(tmpDir, ".cursorrules"), "read ROUTER.md\nv1\n");
+    writeFileSync(join(tmpDir, ".windsurfrules"), "read ROUTER.md\nv1 edited\n");
+    const issues = checkToolConfigSync(tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].file).toBe(".windsurfrules");
+    expect(issues[0].message).toContain(".cursorrules");
   });
 });
 
