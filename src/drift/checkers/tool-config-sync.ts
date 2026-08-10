@@ -17,6 +17,14 @@ const TOOL_CONFIG_FILES: ReadonlyArray<string> = [
 	".github/copilot-instructions.md",
 ];
 
+/**
+ * A file only participates in the sync check when it is actually a copy of the
+ * mex tool config -- recognised by the scaffold pointer every template carries.
+ * Repos commonly have a hand-written CLAUDE.md or a generated AGENTS.md that
+ * never came from `.tool-configs/`; comparing those is a false positive.
+ */
+const SCAFFOLD_MARKER = "ROUTER.md";
+
 /** Check that all installed tool config files hold identical content. */
 export function checkToolConfigSync(projectRoot: string): DriftIssue[] {
 	const present: Array<{ path: string; content: string }> = [];
@@ -24,7 +32,9 @@ export function checkToolConfigSync(projectRoot: string): DriftIssue[] {
 		const abs = resolve(projectRoot, rel);
 		if (!existsSync(abs)) continue;
 		try {
-			present.push({ path: rel, content: readFileSync(abs, "utf-8") });
+			const content = readFileSync(abs, "utf-8");
+			if (!content.includes(SCAFFOLD_MARKER)) continue;
+			present.push({ path: rel, content });
 		} catch {
 			// Unreadable file -- ignore rather than reporting a checker-internal error.
 		}
