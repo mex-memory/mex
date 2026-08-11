@@ -7,12 +7,12 @@ export function checkFrontmatterCompleteness(
   frontmatter: ScaffoldFrontmatter | null,
   source: string
 ): DriftIssue[] {
-  if (!frontmatter) return [];
   if (!/(^|\/)(context|patterns)\/[^/]+\.md$/.test(source)) return [];
 
+  const fm = frontmatter ?? {};
   const issues: DriftIssue[] = [];
   for (const field of RECOMMENDED_FIELDS) {
-    if (!frontmatter[field]) {
+    if (!fm[field]) {
       issues.push({
         code: "MISSING_FRONTMATTER_FIELD",
         severity: "warning",

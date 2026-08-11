@@ -265,8 +265,14 @@ describe("checkFrontmatterCompleteness", () => {
     expect(issues).toHaveLength(0);
   });
 
-  it("returns empty when the file has no frontmatter", () => {
-    expect(checkFrontmatterCompleteness(null, "context/stack.md")).toEqual([]);
+  it("ignores files with no frontmatter outside context/ and patterns/", () => {
+    expect(checkFrontmatterCompleteness(null, "ROUTER.md")).toEqual([]);
+  });
+
+  it("flags all three fields when an in-scope file has no frontmatter at all", () => {
+    const issues = checkFrontmatterCompleteness(null, "context/stack.md");
+    expect(issues).toHaveLength(3);
+    expect(issues.every((i) => i.code === "MISSING_FRONTMATTER_FIELD")).toBe(true);
   });
 });
 
@@ -454,6 +460,18 @@ describe("checkStalePatterns", () => {
     mkdirSync(join(tmpDir, "patterns"), { recursive: true });
     writeFileSync(join(tmpDir, "patterns/INDEX.md"), "# Index");
     writeFileSync(join(tmpDir, "patterns/README.md"), "# Readme");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("passes when a context file references the pattern via a frontmatter edge", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(join(tmpDir, "patterns/auth.md"), "# Auth");
+    writeFileSync(
+      join(tmpDir, "context/architecture.md"),
+      '---\nedges:\n  - target: "patterns/auth.md"\n---\n\n# Architecture\n'
+    );
     const issues = checkStalePatterns(tmpDir, tmpDir);
     expect(issues).toHaveLength(0);
   });

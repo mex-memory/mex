@@ -2,6 +2,9 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { globSync } from "glob";
 import type { DriftIssue } from "../../types.js";
+import { parseFrontmatter } from "../frontmatter.js";
+
+const EDGE_TARGET_PATTERN = /(?:^|\/)patterns\/([^/]+\.md)$/;
 
 /**
  * Flag pattern files with no inbound reference from ROUTER.md or context/*.md.
@@ -53,6 +56,12 @@ export function checkStalePatterns(projectRoot: string, scaffoldRoot: string): D
     const backtickPattern = /`([\w-]+\.md)`/g;
     while ((match = backtickPattern.exec(content)) !== null) {
       referencedFiles.add(match[1]);
+    }
+
+    const frontmatter = parseFrontmatter(filePath);
+    for (const edge of frontmatter?.edges ?? []) {
+      const edgeMatch = edge.target ? EDGE_TARGET_PATTERN.exec(edge.target) : null;
+      if (edgeMatch) referencedFiles.add(edgeMatch[1]);
     }
   }
 
