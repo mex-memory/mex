@@ -115,6 +115,8 @@ export type IssueCode =
   | "TOOL_CONFIG_DRIFT"
   | "TODO_FIXME"
   | "BROKEN_LINK"
+  | "MISSING_FRONTMATTER_FIELD"
+  | "STALE_PATTERN"
   // ── Code-graph grounding (checker #12; emitted by src/drift/checkers/grounding.ts) ──
   // Added in Phase 0 so the grounding-checker contract typechecks and Track B
   // never has to reopen this shared union. See src/graph/grounding.ts.

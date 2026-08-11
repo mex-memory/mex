@@ -13,6 +13,8 @@ import { checkCommands } from "../src/drift/checkers/command.js";
 import { checkDependencies } from "../src/drift/checkers/dependency.js";
 import { checkCrossFile } from "../src/drift/checkers/cross-file.js";
 import { checkIndexSync } from "../src/drift/checkers/index-sync.js";
+import { checkStalePatterns } from "../src/drift/checkers/stale-pattern.js";
+import { checkFrontmatterCompleteness } from "../src/drift/checkers/frontmatter-completeness.js";
 import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
 import { checkTodoFixme } from "../src/drift/checkers/todo-fixme.js";
 import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
@@ -230,6 +232,44 @@ describe("checkEdges", () => {
   });
 });
 
+// ── Frontmatter Completeness Checker ──
+
+describe("checkFrontmatterCompleteness", () => {
+  it("flags missing recommended fields in a context file", () => {
+    const fm: ScaffoldFrontmatter = { name: "stack" };
+    const issues = checkFrontmatterCompleteness(fm, "context/stack.md");
+    expect(issues).toHaveLength(2);
+    expect(issues.map((i) => i.code)).toEqual(["MISSING_FRONTMATTER_FIELD", "MISSING_FRONTMATTER_FIELD"]);
+    expect(issues[0].severity).toBe("warning");
+  });
+
+  it("flags missing recommended fields in a pattern file", () => {
+    const fm: ScaffoldFrontmatter = { name: "auth", description: "Auth pattern" };
+    const issues = checkFrontmatterCompleteness(fm, "patterns/auth.md");
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("last_updated");
+  });
+
+  it("passes when all recommended fields exist", () => {
+    const fm: ScaffoldFrontmatter = {
+      name: "stack",
+      description: "Tech stack",
+      last_updated: "2026-01-01",
+    };
+    const issues = checkFrontmatterCompleteness(fm, "context/stack.md");
+    expect(issues).toHaveLength(0);
+  });
+
+  it("ignores files outside context/ and patterns/", () => {
+    const issues = checkFrontmatterCompleteness({}, "ROUTER.md");
+    expect(issues).toHaveLength(0);
+  });
+
+  it("returns empty when the file has no frontmatter", () => {
+    expect(checkFrontmatterCompleteness(null, "context/stack.md")).toEqual([]);
+  });
+});
+
 // ── Command Checker ──
 
 describe("checkCommands", () => {
@@ -367,6 +407,59 @@ describe("checkIndexSync", () => {
       "<!-- [example.md](example.md) is a template -->\n\n| Pattern | Use when |\n|---|---|"
     );
     const issues = checkIndexSync(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+});
+
+// ── Stale Pattern Checker ──
+
+describe("checkStalePatterns", () => {
+  it("flags a pattern file with no inbound reference", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(join(tmpDir, "patterns/orphan.md"), "# Orphan");
+    writeFileSync(join(tmpDir, "ROUTER.md"), "# Router\n\nNo pattern links here.");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: "STALE_PATTERN",
+      severity: "warning",
+      file: "patterns/orphan.md",
+    });
+  });
+
+  it("passes when ROUTER.md links to the pattern", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(join(tmpDir, "patterns/auth.md"), "# Auth");
+    writeFileSync(
+      join(tmpDir, "ROUTER.md"),
+      "See [patterns/auth.md](patterns/auth.md) for the auth pattern."
+    );
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("passes when a context file links to the pattern", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    mkdirSync(join(tmpDir, "context"), { recursive: true });
+    writeFileSync(join(tmpDir, "patterns/auth.md"), "# Auth");
+    writeFileSync(
+      join(tmpDir, "context/architecture.md"),
+      "Auth details live in `auth.md`."
+    );
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("does not flag INDEX.md or README.md as patterns needing references", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(join(tmpDir, "patterns/INDEX.md"), "# Index");
+    writeFileSync(join(tmpDir, "patterns/README.md"), "# Readme");
+    const issues = checkStalePatterns(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("returns empty when there is no patterns directory", () => {
+    const issues = checkStalePatterns(tmpDir, tmpDir);
     expect(issues).toHaveLength(0);
   });
 });

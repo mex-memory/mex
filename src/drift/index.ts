@@ -8,6 +8,8 @@ import { computeScore } from "./scoring.js";
 import { checkPaths } from "./checkers/path.js";
 import { checkEdges } from "./checkers/edges.js";
 import { checkIndexSync } from "./checkers/index-sync.js";
+import { checkStalePatterns } from "./checkers/stale-pattern.js";
+import { checkFrontmatterCompleteness } from "./checkers/frontmatter-completeness.js";
 import { checkStaleness } from "./checkers/staleness.js";
 import { checkCommands } from "./checkers/command.js";
 import { checkDependencies } from "./checkers/dependency.js";
@@ -111,6 +113,10 @@ export async function runDriftCheck(
     const edgeIssues = checkEdges(frontmatter, filePath, source, projectRoot, scaffoldRoot);
     allIssues.push(...edgeIssues);
 
+    // Frontmatter completeness check
+    const frontmatterCompletenessIssues = checkFrontmatterCompleteness(frontmatter, source);
+    allIssues.push(...frontmatterCompletenessIssues);
+
     // Staleness check
     const stalenessIssues = await checkStaleness(
       source,
@@ -122,6 +128,7 @@ export async function runDriftCheck(
     allIssues.push(...stalenessIssues);
 
     checkerIssueCounts.push([`edges:${source}`, edgeIssues.length]);
+    checkerIssueCounts.push([`frontmatter-completeness:${source}`, frontmatterCompletenessIssues.length]);
     checkerIssueCounts.push([`staleness:${source}`, stalenessIssues.length]);
 
     if (groundingRuntime) {
@@ -158,6 +165,10 @@ export async function runDriftCheck(
   const indexSyncIssues = checkIndexSync(projectRoot, scaffoldRoot);
   allIssues.push(...indexSyncIssues);
   checkerIssueCounts.push(["index-sync", indexSyncIssues.length]);
+
+  const stalePatternIssues = checkStalePatterns(projectRoot, scaffoldRoot);
+  allIssues.push(...stalePatternIssues);
+  checkerIssueCounts.push(["stale-pattern", stalePatternIssues.length]);
 
   // Run coverage checkers (reality → scaffold direction)
   const scriptCoverageIssues = checkScriptCoverage(scaffoldFiles, projectRoot);
