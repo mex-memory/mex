@@ -2,12 +2,20 @@ import type { DriftIssue, ScaffoldFrontmatter } from "../../types.js";
 
 const RECOMMENDED_FIELDS = ["name", "description", "last_updated"] as const;
 
+const IN_SCOPE = /(^|\/)(context|patterns)\/([^/]+\.md)$/;
+
+/** Navigational files, not content — shipped without frontmatter by the
+ *  templates, and excluded from the pattern checkers for the same reason. */
+const EXEMPT_FILES = new Set(["INDEX.md", "README.md"]);
+
 /** Flag context/ and patterns/ scaffold files missing recommended frontmatter fields */
 export function checkFrontmatterCompleteness(
   frontmatter: ScaffoldFrontmatter | null,
   source: string
 ): DriftIssue[] {
-  if (!/(^|\/)(context|patterns)\/[^/]+\.md$/.test(source)) return [];
+  const scope = IN_SCOPE.exec(source);
+  if (!scope) return [];
+  if (EXEMPT_FILES.has(scope[3])) return [];
 
   const fm = frontmatter ?? {};
   const issues: DriftIssue[] = [];

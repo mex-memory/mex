@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { globSync } from "glob";
 import type { DriftIssue } from "../../types.js";
-import { parseFrontmatter } from "../frontmatter.js";
+import { extractFrontmatter } from "../../markdown.js";
 
 const EDGE_TARGET_PATTERN = /(?:^|\/)patterns\/([^/]+\.md)$/;
 
@@ -58,9 +58,12 @@ export function checkStalePatterns(projectRoot: string, scaffoldRoot: string): D
       referencedFiles.add(match[1]);
     }
 
-    const frontmatter = parseFrontmatter(filePath);
-    for (const edge of frontmatter?.edges ?? []) {
-      const edgeMatch = edge.target ? EDGE_TARGET_PATTERN.exec(edge.target) : null;
+    // Frontmatter edges are mex's canonical navigation, so a pattern reached
+    // only through an edge is not orphaned. Parsed from the content already
+    // read above rather than re-reading the file.
+    const edges = extractFrontmatter(rawContent)?.edges;
+    for (const edge of Array.isArray(edges) ? edges : []) {
+      const edgeMatch = edge?.target ? EDGE_TARGET_PATTERN.exec(edge.target) : null;
       if (edgeMatch) referencedFiles.add(edgeMatch[1]);
     }
   }

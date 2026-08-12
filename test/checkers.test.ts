@@ -274,6 +274,12 @@ describe("checkFrontmatterCompleteness", () => {
     expect(issues).toHaveLength(3);
     expect(issues.every((i) => i.code === "MISSING_FRONTMATTER_FIELD")).toBe(true);
   });
+
+  it("exempts patterns/INDEX.md and patterns/README.md, which ship without frontmatter", () => {
+    expect(checkFrontmatterCompleteness(null, "patterns/INDEX.md")).toEqual([]);
+    expect(checkFrontmatterCompleteness(null, "patterns/README.md")).toEqual([]);
+    expect(checkFrontmatterCompleteness(null, ".mex/patterns/INDEX.md")).toEqual([]);
+  });
 });
 
 // ── Command Checker ──
