@@ -8,6 +8,7 @@
 // decoded to the camelCase `GraphNode`/`GraphEdge` value types here.
 
 import type { EdgeKind, GraphEdge, GraphNode, Language, NodeKind, ReferenceKind } from "../types.js";
+import { extractQueryTerms, identifierComponents, nameMatchQuality, normalizeIdentifier } from "../query-terms.js";
 import type { SqliteDatabase } from "./sqlite.js";
 
 /** An unresolved reference row: a name a node points at, bound after indexing. */
@@ -385,8 +386,10 @@ export class GraphStore {
 
   /**
    * Full-text search over node name/qualified-name/docstring/signature (FTS5),
-   * with a LIKE fallback for substrings FTS's prefix match misses. Backs
-   * `searchNodes` on the engine surface.
+   * supplemented by boundary-aware identifier-component matches. Backs
+   * `searchNodes` on the engine surface. The component channel is deliberately
+   * independent of FTS so a signature mention cannot hide a stronger symbol-name
+   * match (for example, `ledger` -> `BudgetLedger`).
    */
   search(
     query: string,
@@ -426,17 +429,47 @@ export class GraphStore {
         .all(ftsQuery, ...filterParams, limit) as NodeRow[];
     }
 
-    if (rows.length === 0 && query.trim().length >= 2) {
-      const like = `%${query.trim()}%`;
-      rows = this.db
+    const componentMatches = new Map<string, { row: NodeRow; score: number }>();
+    const terms = extractQueryTerms(query).slice(0, 12);
+    const componentLimit = Math.max(limit * 3, 30);
+    for (const [index, term] of terms.entries()) {
+      const escaped = term.replace(/[\\%_]/g, "\\$&");
+      const like = `%${escaped}%`;
+      const candidates = this.db
         .prepare(
           `SELECT * FROM nodes
-             WHERE (name LIKE ? OR qualified_name LIKE ?)${filterClause}
+             WHERE (name LIKE ? ESCAPE '\\' OR qualified_name LIKE ? ESCAPE '\\')${filterClause}
              ORDER BY length(name), name, id LIMIT ?`,
         )
-        .all(like, like, ...filterParams, limit) as NodeRow[];
+        .all(like, like, ...filterParams, componentLimit) as NodeRow[];
+
+      for (const row of candidates) {
+        const nameQuality = nameMatchQuality(row.name, term);
+        const qualifiedExact = normalizeIdentifier(row.qualified_name) === normalizeIdentifier(term);
+        const qualifiedComponent = identifierComponents(row.qualified_name).includes(normalizeIdentifier(term));
+        const base =
+          nameQuality === "exact"
+            ? 400
+            : nameQuality === "component"
+              ? 300
+              : qualifiedExact
+                ? 250
+                : qualifiedComponent
+                  ? 200
+                  : 0;
+        if (base === 0) continue;
+        const score = base + Math.max(0, 20 - index);
+        const previous = componentMatches.get(row.id);
+        if (!previous || previous.score < score) componentMatches.set(row.id, { row, score });
+      }
     }
 
-    return rows.map(rowToNode);
+    const directRows = [...componentMatches.values()]
+      .sort((a, b) => b.score - a.score || a.row.name.length - b.row.name.length || a.row.id.localeCompare(b.row.id))
+      .map(({ row }) => row);
+    const merged = new Map<string, NodeRow>();
+    for (const row of directRows) merged.set(row.id, row);
+    for (const row of rows) if (!merged.has(row.id)) merged.set(row.id, row);
+    return [...merged.values()].slice(0, limit).map(rowToNode);
   }
 }

@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: [YYYY-MM-DD]
+last_updated: "2026-08-05"
 ---
 
 # Session Bootstrap
@@ -24,21 +24,22 @@ If you haven't already read `AGENTS.md`, read it now — it contains the project
 Then read this file fully before doing anything else in this session.
 
 ## Current Project State
-<!-- What is working. What is not yet built. Known issues.
-     Update this section whenever significant work is completed.
-     This is the primary drift prevention mechanism — it re-grounds the agent every session.
-     Length: 3 sections (Working / Not Built / Known Issues), 3-7 items each.
-     Example:
-     **Working:**
-     - User authentication and session management
-     - Core CRUD operations for all main entities
 
-     **Not yet built:**
-     - Email notification system
-     - Admin dashboard
+**Working:**
+- Code-graph extraction, structural queries, source expansion, impact traversal, and grounding
+- Lexical scope retrieval with camel/snake identifier components, stopword filtering, frequency damping, and one-hop expansion
+- Compact schema-v2 agent payloads with hard token accounting and source-on-demand
+- `mex graph vocab` plus a single vocabulary-constrained retry for synonym gaps
 
-     **Known issues:**
-     - Pagination breaks on filtered queries with more than 1000 results -->
+**Not built:**
+- Local embedding/vector retrieval; scope intentionally remains deterministic and lexical
+- A persistent split-token FTS schema column; bounded query-time component lookup is currently sufficient
+- A committed real-model graph-versus-grep evaluation gate
+
+**Known issues:**
+- Model-backed end-to-end evaluation is optional and may incur external model cost; the deterministic driver is the CI-safe baseline
+- Existing projects created before updated tool-config templates are not automatically rewritten on package upgrade
+- Broad lexical words can still be ambiguous; exact `graph query`/`graph get` remains the preferred path once a symbol is known
 
 ## Routing Table
 

@@ -14,8 +14,8 @@
   {
     "id": "budget",
     "query": "How is the output token budget enforced during graph retrieval?",
-    "expected": ["BudgetedEmitter"],
-    "rubric": ["BudgetedEmitter"]
+    "expected": ["BudgetLedger"],
+    "rubric": ["BudgetLedger"]
   },
   {
     "id": "compact-fact",

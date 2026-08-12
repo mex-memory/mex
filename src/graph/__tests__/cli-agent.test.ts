@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createGraphEngine } from "../index.js";
 import type { GraphEngine } from "../engine.js";
 import { openSqlite } from "../db/sqlite.js";
-import { runGraphGet, runGraphQuery, runGraphScope, runImpact, type AgentCommandDeps } from "../cli-agent.js";
+import { runGraphGet, runGraphQuery, runGraphScope, runGraphVocab, runImpact, type AgentCommandDeps } from "../cli-agent.js";
 
 let root: string;
 let engine: GraphEngine;
@@ -53,16 +53,18 @@ afterAll(() => {
 describe("runGraphScope", () => {
   it("frames output with meta and summary and omits source by default", () => {
     const records = capture(() => runGraphScope("run", root, deps, {}));
-    expect(records[0]).toMatchObject({ type: "meta", schemaVersion: 1, command: "graph scope", detail: "minimal" });
+    expect(records[0]).toMatchObject({ type: "meta", schemaVersion: 2, command: "graph scope", detail: "minimal" });
     const facts = records.filter((r) => r.type === "fact");
     expect(facts.length).toBeGreaterThan(0);
     for (const fact of facts) {
       expect(fact).not.toHaveProperty("source");
       expect(fact).not.toHaveProperty("callers");
-      expect(fact.sourceIncluded).toBe(false);
+      expect(fact).not.toHaveProperty("sourceIncluded");
+      expect(fact).not.toHaveProperty("detail");
+      expect(fact).not.toHaveProperty("bodyHash");
       expect(typeof fact.callerCount).toBe("number");
       expect(typeof fact.score).toBe("number");
-      expect(Array.isArray(fact.selectionReasons)).toBe(true);
+      expect(fact).not.toHaveProperty("selectionReasons");
     }
     const summary = records.at(-1)!;
     expect(summary).toMatchObject({ type: "summary" });
@@ -89,6 +91,29 @@ describe("runGraphScope", () => {
   it("caps the number of returned facts at maxNodes", () => {
     const records = capture(() => runGraphScope("run", root, deps, { maxNodes: 1 }));
     expect(records.filter((r) => r.type === "fact")).toHaveLength(1);
+  });
+
+  it("emits a vocabulary mismatch hint instead of suggesting expansion of weak results", () => {
+    const records = capture(() => runGraphScope("unrelated phrase nowhere", root, deps, {}));
+    expect(records).toContainEqual(expect.objectContaining({ type: "hint", code: "VOCABULARY_MISMATCH" }));
+    expect(records.at(-1)?.suggestedNextCommands).toEqual(["mex graph vocab"]);
+  });
+});
+
+describe("runGraphVocab", () => {
+  it("publishes a bounded vocabulary derived from symbol names", () => {
+    const records = capture(() => runGraphVocab(root, deps, 1000));
+    expect(records[0]).toMatchObject({ type: "meta", schemaVersion: 2, command: "graph vocab" });
+    const vocabulary = records.find((record) => record.type === "vocabulary")!;
+    expect(vocabulary.terms).toEqual(expect.arrayContaining(["helper", "run", "start"]));
+    expect(records.at(-1)).toMatchObject({ type: "summary", truncated: false });
+  });
+
+  it("honors the maximum term count", () => {
+    const records = capture(() => runGraphVocab(root, deps, 2));
+    const vocabulary = records.find((record) => record.type === "vocabulary")!;
+    expect(vocabulary.terms).toHaveLength(2);
+    expect(records.at(-1)).toMatchObject({ type: "summary", returnedTerms: 2, truncated: true });
   });
 });
 
@@ -154,14 +179,16 @@ describe("budget accounting honesty", () => {
     if ((summary.returnedEdges as number) < fullEdges) expect(summary.truncated).toBe(true);
   });
 
-  it("only claims sourceIncluded on facts whose source was actually emitted", () => {
+  it("uses source range nodeIds instead of repeating sourceIncluded on facts", () => {
     const records = capture(() => runGraphScope("run", root, deps, { detail: "source" }));
     const facts = records.filter((r) => r.type === "fact");
     const sourcedNodeIds = new Set(
       records.filter((r) => r.type === "source").flatMap((r) => (r.ranges as Array<{ nodeIds: string[] }>).flatMap((x) => x.nodeIds)),
     );
+    expect(sourcedNodeIds.size).toBeGreaterThan(0);
     for (const fact of facts) {
-      expect(fact.sourceIncluded).toBe(sourcedNodeIds.has(fact.id as string));
+      expect(fact).not.toHaveProperty("sourceIncluded");
+      expect(fact).not.toHaveProperty("selectionReasons");
     }
   });
 

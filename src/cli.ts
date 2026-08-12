@@ -235,6 +235,15 @@ graphCommand
   });
 
 graphCommand
+  .command("vocab")
+  .description("List bounded graph identifier vocabulary for one scope retry")
+  .option("--max-terms <n>", "maximum vocabulary terms to return", "2000")
+  .action((options) => {
+    return import("./graph/cli-agent.js").then(({ runGraphVocab }) =>
+      runGraphVocab(process.cwd(), {}, options.maxTerms));
+  });
+
+graphCommand
   .command("get <id...>")
   .description("Expand source for specific node ids as JSONL")
   .option("--detail <level>", "source (get always returns source)", "source")
@@ -514,6 +523,7 @@ program
     console.log("  mex graph --json       Graph build summary as JSON");
     console.log("  mex graph scope <task>               Compact task neighborhood as JSONL");
     console.log("  mex graph get <id...>                Expand source for node ids as JSONL");
+    console.log("  mex graph vocab                      Identifier vocabulary for one retry");
     console.log("  mex graph ground                     Ground an existing pre-0.7 scaffold");
     console.log("  mex graph query <relation> <target>  Structural lookup as JSONL");
     console.log("  mex impact <symbol|file>              Blast radius as JSONL");

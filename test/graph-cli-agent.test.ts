@@ -72,7 +72,7 @@ describe("agent graph commands", () => {
     expect(facts.map((row) => row.id)).toEqual(["function:leaf", "function:parent"]);
     expect(facts[0]).toMatchObject({
       type: "fact", kind: "function", name: "leaf", qualifiedName: "leaf",
-      filePath: "src/a.ts", callerCount: 1, calleeCount: 0, sourceIncluded: false,
+      filePath: "src/a.ts", callerCount: 1, calleeCount: 0,
     });
     expect(facts[0]).not.toHaveProperty("source");
     expect(facts[0]).not.toHaveProperty("callers");

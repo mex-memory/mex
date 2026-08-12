@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { GraphEngine } from "./engine.js";
+import {
+  extractQueryTerms,
+  identifierComponents,
+  isStopWord,
+  nameMatchQuality,
+} from "./query-terms.js";
 import type { GraphNode, NodeKind } from "./types.js";
 
 export type DetailLevel = "minimal" | "standard" | "source";
@@ -21,8 +27,6 @@ export interface CompactFact {
   signature?: string;
   callerCount: number;
   calleeCount: number;
-  detail: DetailLevel;
-  sourceIncluded: boolean;
   /** Short content hash (node body sha256) for cache-aware source expansion. */
   bodyHash?: string;
   /** Full serialized minhash fingerprint. Opt-in (--fingerprint); used by grounding. */
@@ -71,6 +75,7 @@ interface Candidate {
   node: GraphNode;
   score: number;
   reasons: Set<string>;
+  matchedTerms: Set<string>;
   category: SelectionCategory;
 }
 
@@ -78,16 +83,26 @@ function isTestNode(node: GraphNode): boolean {
   return /(^|\/)(__tests__|tests?)\//.test(node.filePath) || /\.(test|spec)\./.test(node.filePath);
 }
 
-/** Identifier-like tokens in a task string (drops trivial 1-char fragments). */
-function taskTokens(task: string): string[] {
-  return [...new Set(task.split(/[^A-Za-z0-9_$]+/).filter((t) => t.length >= 2))];
+function distinctiveQueryTerms(task: string): Set<string> {
+  const terms = new Set<string>();
+  for (const raw of task.split(/\s+/)) {
+    if (!/[_$!]|[a-z0-9][A-Z]/.test(raw)) continue;
+    const [full] = identifierComponents(raw);
+    if (full) terms.add(full);
+  }
+  return terms;
+}
+
+function kindBonus(kind: NodeKind): number {
+  if (kind === "function" || kind === "method") return 0.03;
+  if (["class", "struct", "interface", "trait", "protocol", "route", "component"].includes(kind)) return 0.02;
+  return 0;
 }
 
 /**
- * Scored, quota-limited scope selection. Combines whole-task semantic search,
- * exact identifier matches (which are boosted so explicitly named symbols survive
- * trimming), and a capped one-hop neighborhood, then applies per-category quotas
- * under `maxNodes`. Deterministic: ties break by node id.
+ * Scored, quota-limited scope selection. Combines whole-task lexical search,
+ * exact/component identifier matches, and a capped one-hop neighborhood, then
+ * applies per-category quotas under `maxNodes`. Deterministic: ties break by id.
  *
  * Returns the picked candidates plus `matchedCount`, the size of the candidate
  * pool before the cap (so callers can report truncation).
@@ -98,37 +113,100 @@ export function selectScope(
   maxNodes: number,
 ): { candidates: ScopedCandidate[]; matchedCount: number } {
   const pool = new Map<string, Candidate>();
-  const add = (node: GraphNode, score: number, reason: string, bucket: SelectionCategory): void => {
+  const add = (
+    node: GraphNode,
+    score: number,
+    reason: string,
+    bucket: SelectionCategory,
+    matchedTerm?: string,
+  ): void => {
     const category = isTestNode(node) ? "test" : bucket;
     const existing = pool.get(node.id);
     if (existing) {
       existing.score = Math.max(existing.score, score);
       existing.reasons.add(reason);
+      if (matchedTerm) existing.matchedTerms.add(matchedTerm);
       if (category === "direct") existing.category = "direct";
     } else {
-      pool.set(node.id, { node, score, reasons: new Set([reason]), category });
+      pool.set(node.id, {
+        node,
+        score,
+        reasons: new Set([reason]),
+        matchedTerms: new Set(matchedTerm ? [matchedTerm] : []),
+        category,
+      });
     }
   };
 
-  graph.searchNodes(task, { limit: 10 }).forEach((node, i) => add(node, 0.6 - i * 0.03, "semantic-match", "direct"));
-  for (const token of taskTokens(task)) {
-    for (const match of graph.searchNodes(token, { limit: 20 })) {
-      if (match.name === token || match.qualifiedName === token || match.qualifiedName.endsWith(`::${token}`)) {
-        add(match, 1, "exact-name-match", "direct");
+  const terms = extractQueryTerms(task);
+  const distinctiveTerms = distinctiveQueryTerms(task);
+  const hasMeaningfulTerms = terms.some((term) => !isStopWord(term));
+  // Candidate generation is deliberately wider than the emitted scope. Ranking
+  // and the token ledger still enforce the small response; the wider pool keeps
+  // a relevant symbol from disappearing behind many generic exact-name hits.
+  graph.searchNodes(task, { limit: 30 }).forEach((node, i) => {
+    // FTS can rank a parameter literally named "on" above the symbol named in a
+    // sentence. It remains searchable directly, but must not seed NL expansion.
+    if (hasMeaningfulTerms && isStopWord(node.name)) return;
+    add(node, 0.6 - i * 0.03, "lexical-match", "direct");
+  });
+  for (const term of terms) {
+    const matches = graph.searchNodes(term, { limit: 50 });
+    // A component shared by dozens of symbols (for example `graph`, `node`, or
+    // `source`) carries less evidence than a rarer project term. The floor stays
+    // high enough that multi-term coverage can still identify readNodeSource-like
+    // names without an embedding model.
+    const componentScore = matches.length >= 40 ? 0.76 : matches.length >= 20 ? 0.81 : matches.length >= 10 ? 0.85 : 0.88;
+    for (const match of matches) {
+      const nameQuality = nameMatchQuality(match.name, term);
+      const qualifiedQuality = nameMatchQuality(match.qualifiedName, term);
+      if (nameQuality === "exact") {
+        const distinctive = terms.length === 1 || distinctiveTerms.has(term);
+        add(match, distinctive ? 1 : 0.78, distinctive ? "exact-name-match" : "generic-name-match", "direct", term);
+      } else if (nameQuality === "component" || qualifiedQuality !== "none") {
+        add(match, componentScore, "component-name-match", "direct", term);
       }
     }
   }
 
+  // Once a symbol has earned a name match, use its signature/doc/path only as
+  // corroborating evidence for additional task terms. Context can strengthen a
+  // real candidate (`selectScope(graph, ..., maxNodes)`) but can never recreate
+  // the original bug where an incidental signature mention became the seed.
+  for (const candidate of pool.values()) {
+    if (candidate.category !== "direct" || candidate.matchedTerms.size === 0) continue;
+    const contextTerms = new Set(identifierComponents([
+      candidate.node.signature ?? "",
+      candidate.node.docstring ?? "",
+      candidate.node.filePath,
+    ].join(" ")));
+    let addedContext = false;
+    for (const term of terms) {
+      if (term.length < 3 || candidate.matchedTerms.has(term) || !contextTerms.has(term)) continue;
+      candidate.matchedTerms.add(term);
+      addedContext = true;
+    }
+    if (addedContext) candidate.reasons.add("context-term-match");
+  }
+
+  const rankScore = (candidate: Candidate): number => {
+    const coverage = Math.min(0.12, Math.max(0, candidate.matchedTerms.size - 1) * 0.04);
+    const corroborated = candidate.matchedTerms.size > 0 && candidate.reasons.has("lexical-match") ? 0.05 : 0;
+    const kind = candidate.matchedTerms.size > 0 ? kindBonus(candidate.node.kind) : 0;
+    return Math.min(1, candidate.score + coverage + corroborated + kind);
+  };
   const directSeeds = [...pool.values()]
     .filter((c) => c.category === "direct")
-    .sort((a, b) => b.score - a.score || a.node.id.localeCompare(b.node.id))
+    .sort((a, b) => rankScore(b) - rankScore(a) || a.node.id.localeCompare(b.node.id))
     .slice(0, 6);
   for (const seed of directSeeds) {
     for (const caller of graph.getCallers(seed.node.id).slice(0, HOP_CAP)) add(caller, 0.3, "caller-of-seed", "neighbor");
     for (const callee of graph.getCallees(seed.node.id).slice(0, HOP_CAP)) add(callee, 0.3, "callee-of-seed", "neighbor");
   }
 
-  const ranked = [...pool.values()].sort((a, b) => b.score - a.score || a.node.id.localeCompare(b.node.id));
+  const ranked = [...pool.values()].sort(
+    (a, b) => rankScore(b) - rankScore(a) || a.node.id.localeCompare(b.node.id),
+  );
   const used: Record<SelectionCategory, number> = { direct: 0, neighbor: 0, test: 0 };
   const candidates: ScopedCandidate[] = [];
   for (const candidate of ranked) {
@@ -137,7 +215,7 @@ export function selectScope(
     used[candidate.category] += 1;
     candidates.push({
       id: candidate.node.id,
-      score: Number(candidate.score.toFixed(2)),
+      score: Number(rankScore(candidate).toFixed(2)),
       reasons: [...candidate.reasons].sort(),
       category: candidate.category,
     });
@@ -147,10 +225,10 @@ export function selectScope(
 
 /**
  * Build a compact fact (structure + relationship counts) for a node id, or null
- * if the node no longer exists. `sourceIncluded` reflects whether the caller
- * intends to emit a companion source record (detail === "source").
+ * if the node no longer exists. Body hashes are opt-in for grounding/fingerprint
+ * workflows; ordinary retrieval should not spend its budget on them.
  */
-export function compactFact(graph: GraphEngine, id: string, detail: DetailLevel): CompactFact | null {
+export function compactFact(graph: GraphEngine, id: string, includeBodyHash = false): CompactFact | null {
   const node = graph.getNode(id);
   if (!node) return null;
   return {
@@ -164,12 +242,7 @@ export function compactFact(graph: GraphEngine, id: string, detail: DetailLevel)
     signature: node.signature,
     callerCount: graph.getCallers(id).length,
     calleeCount: graph.getCallees(id).length,
-    detail,
-    // False at build time; the emitter flips it true only for facts whose source
-    // record actually fit the budget (see planSource). Defaulting false keeps the
-    // accounted record shape >= the emitted one, so the token ceiling stays hard.
-    sourceIncluded: false,
-    bodyHash: node.bodyHash,
+    ...(includeBodyHash && node.bodyHash ? { bodyHash: node.bodyHash } : {}),
   };
 }
 

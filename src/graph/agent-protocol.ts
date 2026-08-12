@@ -10,7 +10,7 @@
 
 import type { CompactFact, DetailLevel, SourceRange } from "./scope.js";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 const CHARS_PER_TOKEN = 4;
 
 /** Tunable retrieval controls shared by every agent command. */

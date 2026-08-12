@@ -10,6 +10,7 @@ import {
 } from "./scope.js";
 import { FingerprintStore } from "./fingerprint-store.js";
 import { serializeFingerprint } from "./fingerprint.js";
+import { identifierComponents, isStopWord } from "./query-terms.js";
 import { BudgetLedger, estimateTokens, resolveOptions, SCHEMA_VERSION, type AgentOptions } from "./agent-protocol.js";
 
 type QueryRelation = "who-calls" | "what-calls" | "where-defined";
@@ -68,7 +69,7 @@ export function runImpact(
 
     for (const root of rootsSorted) {
       if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
-      const fact = factFor(session, root.id, opts.detail, opts.fingerprint);
+      const fact = factFor(session, root.id, opts.fingerprint);
       if (!fact) continue;
       const record: Rec = { type: "defines", ...fact };
       if (!ledger.tryAdd(record)) { truncated = true; break; }
@@ -86,7 +87,7 @@ export function runImpact(
     const ordered = [...impacted.values()].sort((a, b) => a.depth - b.depth || a.node.id.localeCompare(b.node.id));
     for (const entry of ordered) {
       if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
-      const fact = factFor(session, entry.node.id, opts.detail, opts.fingerprint);
+      const fact = factFor(session, entry.node.id, opts.fingerprint);
       if (!fact) continue;
       const record: Rec = { type: "caller", depth: entry.depth, root: entry.root, ...fact };
       if (!ledger.tryAdd(record)) { truncated = true; break; }
@@ -94,7 +95,7 @@ export function runImpact(
       emittedNodes.push(entry.node);
     }
 
-    const sourceRecords = planSource(ledger, emittedNodes, rootDir, opts, factRecords);
+    const sourceRecords = planSource(ledger, emittedNodes, rootDir, opts);
 
     const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])];
     const groundingRecords: Rec[] = [];
@@ -166,14 +167,14 @@ export function runGraphQuery(
     let truncated = false;
     for (const pair of pairs) {
       if (entries.length >= opts.maxNodes) { truncated = true; break; }
-      const fact = factFor(session, pair.node.id, opts.detail, opts.fingerprint);
+      const fact = factFor(session, pair.node.id, opts.fingerprint);
       if (!fact) continue;
       const record: Rec = { type: "result", relation, target: pair.targetId, ...fact };
       if (!ledger.tryAdd(record)) { truncated = true; break; }
       entries.push({ record, node: pair.node });
     }
 
-    const sourceRecords = planSource(ledger, entries.map((e) => e.node), rootDir, opts, entries.map((e) => e.record));
+    const sourceRecords = planSource(ledger, entries.map((e) => e.node), rootDir, opts);
 
     emitAll(write, meta, [...entries.map((e) => e.record), ...sourceRecords]);
     write(JSON.stringify(summaryRecord(ctx, {
@@ -203,20 +204,43 @@ export function runGraphScope(
   if (!session) return;
   try {
     const { candidates, matchedCount } = selectScope(session.graph, task, opts.maxNodes);
+    const vocabularyMismatch = !candidates.some((candidate) =>
+      candidate.reasons.includes("exact-name-match") || candidate.reasons.includes("component-name-match"),
+    );
     const firstNode = candidates.length > 0 ? session.graph.getNode(candidates[0]!.id) : null;
-    const ctx = beginResponse("graph scope", opts, task, buildScopeSuggestions(firstNode ? [firstNode] : [], opts.detail));
+    const ctx = beginResponse(
+      "graph scope",
+      opts,
+      task,
+      buildScopeSuggestions(firstNode ? [firstNode] : [], opts.detail, vocabularyMismatch),
+    );
     const ledger = ctx.ledger;
     const meta = ctx.meta;
+
+    const hintRecords: Rec[] = [];
+    if (vocabularyMismatch) {
+      const hint: Rec = {
+        type: "hint",
+        code: "VOCABULARY_MISMATCH",
+        message: "No exact or component symbol-name match. Run `mex graph vocab`, then retry scope once with 1-12 exact vocabulary terms.",
+      };
+      if (ledger.tryAdd(hint)) hintRecords.push(hint);
+    }
 
     const facts: Array<{ record: Rec; node: GraphNode }> = [];
     const returnedIds = new Set<string>();
     let truncated = candidates.length < matchedCount;
     for (const candidate of candidates) {
-      const fact = factFor(session, candidate.id, opts.detail, opts.fingerprint);
+      const fact = factFor(session, candidate.id, opts.fingerprint);
       if (!fact) continue;
       const node = session.graph.getNode(candidate.id);
       if (!node) continue;
-      const record: Rec = { type: "fact", ...fact, score: candidate.score, selectionReasons: candidate.reasons };
+      const record: Rec = {
+        type: "fact",
+        ...fact,
+        score: candidate.score,
+        ...(opts.detail === "standard" ? { selectionReasons: candidate.reasons } : {}),
+      };
       if (!ledger.tryAdd(record)) { truncated = true; break; }
       facts.push({ record, node });
       returnedIds.add(candidate.id);
@@ -233,16 +257,61 @@ export function runGraphScope(
       }
     }
 
-    const sourceRecords = planSource(ledger, facts.map((f) => f.node), rootDir, opts, facts.map((f) => f.record));
+    const sourceRecords = planSource(ledger, facts.map((f) => f.node), rootDir, opts);
 
-    emitAll(write, meta, [...facts.map((f) => f.record), ...edgeRecords, ...sourceRecords]);
+    emitAll(write, meta, [...hintRecords, ...facts.map((f) => f.record), ...edgeRecords, ...sourceRecords]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: matchedCount,
       returnedNodes: facts.length,
       returnedEdges: edgeRecords.length,
       truncated,
-      suggestedNextCommands: buildScopeSuggestions(facts.map((f) => f.node), opts.detail),
+      suggestedNextCommands: buildScopeSuggestions(facts.map((f) => f.node), opts.detail, vocabularyMismatch),
     })));
+  } catch (error) {
+    unavailable(write, error);
+  } finally {
+    try { session.close(); } catch { /* best-effort degradation cleanup */ }
+  }
+}
+
+/** Publish the graph's own bounded identifier vocabulary for one agent-side retry. */
+export function runGraphVocab(
+  rootDir = process.cwd(),
+  deps: AgentCommandDeps = {},
+  rawMaxTerms: unknown = 2000,
+): void {
+  const write = deps.write ?? console.log;
+  const parsed = Number.parseInt(String(rawMaxTerms), 10);
+  const maxTerms = Number.isFinite(parsed) && parsed > 0 ? parsed : 2000;
+  const session = openSession(rootDir, deps, write);
+  if (!session) return;
+  try {
+    const rows = session.db.prepare("SELECT name FROM nodes ORDER BY name").all() as Array<{ name: string }>;
+    const counts = new Map<string, number>();
+    for (const { name } of rows) {
+      const components = identifierComponents(name);
+      // The retry needs words the lexical engine can act on, not duplicate
+      // concatenations (`readnodesource` plus read/node/source). Keeping only
+      // split components preserves the useful noun at the end of an identifier.
+      const vocabularyTerms = components.length > 1 ? components.slice(1) : components;
+      for (const term of vocabularyTerms) {
+        if (term.length < 2 || isStopWord(term)) continue;
+        counts.set(term, (counts.get(term) ?? 0) + 1);
+      }
+    }
+    const allTerms = [...counts]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([term]) => term);
+    const terms = allTerms.slice(0, maxTerms);
+    writeJson(write, { type: "meta", schemaVersion: SCHEMA_VERSION, command: "graph vocab", maxTerms });
+    writeJson(write, { type: "vocabulary", terms });
+    writeJson(write, {
+      type: "summary",
+      matchedTerms: allTerms.length,
+      returnedTerms: terms.length,
+      truncated: terms.length < allTerms.length,
+      instruction: "Choose 1-12 exact terms and retry `mex graph scope` once; use Grep/Glob if it still misses.",
+    });
   } catch (error) {
     unavailable(write, error);
   } finally {
@@ -373,27 +442,20 @@ function summaryRecord(
 
 /**
  * Plan grouped-per-file source records for `nodes` (deduped by id) under the
- * ledger, only when detail is "source". Sets `sourceIncluded` on the already-built
- * `facts` records to reflect whether each node's source actually fit the budget.
- * Returns the source records to emit.
+ * ledger, only when detail is "source". Source records carry the authoritative
+ * node-id list, so facts do not repeat per-record source bookkeeping.
  */
 function planSource(
   ledger: BudgetLedger,
   nodes: GraphNode[],
   rootDir: string,
   opts: AgentOptions,
-  facts: Rec[] = [],
 ): Rec[] {
-  if (opts.detail !== "source") {
-    for (const fact of facts) fact.sourceIncluded = false;
-    return [];
-  }
+  if (opts.detail !== "source") return [];
   const sourceRecords: Rec[] = [];
-  const sourcedIds = new Set<string>();
-  const emit = (record: Rec, ids: string[]): void => {
+  const emit = (record: Rec): void => {
     if (!ledger.tryAdd(record)) return;
     sourceRecords.push(record);
-    for (const id of ids) sourcedIds.add(id);
   };
   for (const [filePath, fileNodes] of groupByFile(dedupeById(nodes))) {
     const ranges = fileNodes
@@ -403,10 +465,9 @@ function planSource(
     const grouped: Rec = { type: "source", filePath, ranges };
     // Prefer one grouped record per file (dedups shared context); if it doesn't
     // fit, degrade to per-range records so partial source still lands.
-    if (ledger.fits(grouped)) emit(grouped, ranges.flatMap((range) => range.nodeIds));
-    else for (const range of ranges) emit({ type: "source", filePath, ranges: [range] }, range.nodeIds);
+    if (ledger.fits(grouped)) emit(grouped);
+    else for (const range of ranges) emit({ type: "source", filePath, ranges: [range] });
   }
-  for (const fact of facts) fact.sourceIncluded = typeof fact.id === "string" && sourcedIds.has(fact.id);
   return sourceRecords;
 }
 
@@ -415,7 +476,8 @@ function emitAll(write: (line: string) => void, meta: Rec, records: Rec[]): void
   for (const record of records) write(JSON.stringify(record));
 }
 
-function buildScopeSuggestions(nodes: GraphNode[], detail: DetailLevel): string[] {
+function buildScopeSuggestions(nodes: GraphNode[], detail: DetailLevel, vocabularyMismatch = false): string[] {
+  if (vocabularyMismatch) return ["mex graph vocab"];
   if (nodes.length === 0) return [];
   const suggestions: string[] = [];
   if (detail !== "source") suggestions.push(`mex graph get ${nodes[0]!.id} --detail source`);
@@ -423,8 +485,8 @@ function buildScopeSuggestions(nodes: GraphNode[], detail: DetailLevel): string[
   return suggestions;
 }
 
-function factFor(session: AgentGraphSession, id: string, detail: DetailLevel, includeFingerprint: boolean): CompactFact | null {
-  const fact = compactFact(session.graph, id, detail);
+function factFor(session: AgentGraphSession, id: string, includeFingerprint: boolean): CompactFact | null {
+  const fact = compactFact(session.graph, id, includeFingerprint);
   if (!fact || !includeFingerprint) return fact;
   const fingerprint = new FingerprintStore(session.db).get(id);
   return fingerprint ? { ...fact, fingerprint: serializeFingerprint(fingerprint) } : fact;

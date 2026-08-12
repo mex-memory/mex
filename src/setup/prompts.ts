@@ -20,12 +20,16 @@ agent-facing graph commands from this project root instead:
 - \`mex graph get <id> --detail source\` — read the body of a node you intend to ground.
 - \`mex graph query where-defined <symbol>\` — resolve an exact symbol.
 - \`mex graph query who-calls <symbol>\` / \`what-calls <symbol>\` — follow calls.
+- \`mex graph vocab\` — bounded project vocabulary for one lexical scope retry.
 - \`mex impact <symbol|file>\` — inspect transitive blast radius when useful.
 
 Use the pre-analyzed brief only for high-level structure: folders, tooling,
 dependencies, and entry points. Use hydrated graph output for claims about
 specific code behavior. If a graph command returns GRAPH_UNAVAILABLE, report
 that setup cannot author trustworthy grounding; never invent ids or fingerprints.
+If scope reports VOCABULARY_MISMATCH, run \`mex graph vocab\`, choose 1-12 exact
+terms that express the task, and retry scope once. If it still misses, use
+Grep/Glob instead of repeatedly rephrasing the graph query.
 
 The governing rule is: READ BROAD, GROUND TIGHT.
 

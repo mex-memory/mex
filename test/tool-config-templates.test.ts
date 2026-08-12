@@ -33,6 +33,7 @@ describe("shipped code-graph agent guidance", () => {
     const contents = embedded.map((name) => readFileSync(join("templates/.tool-configs", name), "utf-8"));
     expect(new Set(contents).size).toBe(1);
     expect(contents[0]).toContain("mex impact <symbol|file>");
+    expect(contents[0]).toContain("mex graph vocab");
     expect(contents[0]).toContain("mex graph query <who-calls|what-calls|where-defined> <symbol>");
     expect(contents[0]).toContain("adjudicate any AMBIGUOUS grounding");
     expect(contents[0]).toContain("refreshed grounding is re-emitted");
@@ -42,6 +43,7 @@ describe("shipped code-graph agent guidance", () => {
     const maintained = embedded.map((name) => readFileSync(join(".mex/.tool-configs", name), "utf-8"));
     expect(new Set(maintained).size).toBe(1);
     expect(maintained[0]).toContain("mex impact <symbol|file>");
+    expect(maintained[0]).toContain("mex graph vocab");
     const agents = readFileSync("templates/AGENTS.md", "utf-8");
     expect(agents).toContain("mex graph query <who-calls|what-calls|where-defined> <symbol>");
     for (const file of ["templates/.tool-configs/opencode.json", ".mex/.tool-configs/opencode.json"]) {

@@ -54,4 +54,49 @@ describe("GraphStore FTS maintenance", () => {
       db.close();
     }
   });
+
+  it("ranks an internal identifier component above an incidental signature mention", () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-store-components-"));
+    roots.push(root);
+    const db = openGraphDatabase(join(root, "graph.db"));
+    const store = new GraphStore(db);
+    const base: Omit<GraphNode, "id" | "name" | "qualifiedName" | "kind" | "signature"> = {
+      filePath: "retrieval.ts",
+      language: "typescript",
+      startLine: 1,
+      endLine: 1,
+      startColumn: 0,
+      endColumn: 1,
+      isExported: true,
+      isAsync: false,
+      isStatic: false,
+      isAbstract: false,
+      updatedAt: 1,
+    };
+
+    try {
+      store.insertNode({
+        ...base,
+        id: "class:budget-ledger",
+        kind: "class",
+        name: "BudgetLedger",
+        qualifiedName: "BudgetLedger",
+        signature: "class BudgetLedger",
+      });
+      store.insertNode({
+        ...base,
+        id: "function:plan-source",
+        kind: "function",
+        name: "planSource",
+        qualifiedName: "planSource",
+        signature: "planSource(ledger: BudgetLedger): void",
+      });
+
+      const matches = store.search("ledger", { limit: 10 });
+      expect(matches.map((match) => match.name)).toContain("BudgetLedger");
+      expect(matches[0]?.name).toBe("BudgetLedger");
+    } finally {
+      db.close();
+    }
+  });
 });

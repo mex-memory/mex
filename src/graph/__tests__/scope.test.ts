@@ -38,22 +38,23 @@ describe("query-time graph scope", () => {
 
   it("builds a compact fact with relationship counts and no source", () => {
     const { graph, seed } = fixture();
-    expect(compactFact(graph, seed.id, "minimal")).toEqual({
+    expect(compactFact(graph, seed.id)).toEqual({
       id: seed.id, kind: "function", name: "seed", qualifiedName: "module.seed",
       filePath: "src/sample.ts", lineStart: 2, lineEnd: 2, signature: "function seed(): string",
-      callerCount: 1, calleeCount: 1, detail: "minimal", sourceIncluded: false,
+      callerCount: 1, calleeCount: 1,
     });
   });
 
-  it("defaults sourceIncluded to false — the emitter flips it only when source fits", () => {
+  it("includes bodyHash only for grounding/fingerprint workflows", () => {
     const { graph, seed } = fixture();
-    expect(compactFact(graph, seed.id, "source")?.sourceIncluded).toBe(false);
-    expect(compactFact(graph, seed.id, "source")?.detail).toBe("source");
+    seed.bodyHash = "abc123";
+    expect(compactFact(graph, seed.id)).not.toHaveProperty("bodyHash");
+    expect(compactFact(graph, seed.id, true)?.bodyHash).toBe("abc123");
   });
 
   it("returns null for a missing node", () => {
     const { graph } = fixture();
-    expect(compactFact(graph, "function:gone", "minimal")).toBeNull();
+    expect(compactFact(graph, "function:gone")).toBeNull();
   });
 
   it("reads a node's source body from disk, capping at maxLines", () => {
@@ -90,10 +91,10 @@ describe("query-time graph scope", () => {
 describe("scored scope selection", () => {
   it("ranks an exact identifier match first with reasons and category", () => {
     const { graph } = fixture();
-    const { candidates, matchedCount } = selectScope(graph, "seed task", 10);
+    const { candidates, matchedCount } = selectScope(graph, "seed", 10);
     expect(matchedCount).toBe(3);
     expect(candidates[0]).toMatchObject({ id: "function:seed", score: 1, category: "direct" });
-    expect(candidates[0].reasons).toEqual(["exact-name-match", "semantic-match"]);
+    expect(candidates[0].reasons).toEqual(["exact-name-match", "lexical-match"]);
     const neighbors = candidates.filter((c) => c.category === "neighbor").map((c) => c.id).sort();
     expect(neighbors).toEqual(["function:callee", "function:caller"]);
   });
@@ -116,5 +117,77 @@ describe("scored scope selection", () => {
     };
     const { candidates } = selectScope(graph, "seed", 10);
     expect(candidates[0].category).toBe("test");
+  });
+
+  it("does not let a natural-language stopword become an expansion seed", () => {
+    const target = node("method:mark-failed", "mark_failed!", 10);
+    const stopword = node("parameter:on", "on", 20, { kind: "parameter" });
+    const relevantCaller = node("method:fail-session", "fail_session", 30);
+    const pollutedNeighbor = node("method:on-neighbor", "on_neighbor", 40);
+    const nodes = [target, stopword, relevantCaller, pollutedNeighbor];
+    const graph: GraphEngine = {
+      build: vi.fn(), sync: vi.fn(), close: vi.fn(),
+      searchNodes: vi.fn((query: string) => {
+        if (query.includes(" ")) return [stopword];
+        if (query === "mark_failed") return [target];
+        if (query === "on") return [stopword];
+        return [];
+      }),
+      getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
+      getCallers: (id) => id === target.id ? [relevantCaller] : id === stopword.id ? [pollutedNeighbor] : [],
+      getCallees: () => [],
+    };
+
+    const { candidates } = selectScope(
+      graph,
+      "find every call site that invokes mark_failed! on a model",
+      10,
+    );
+
+    expect(candidates[0]?.id).toBe(target.id);
+    expect(candidates.map((candidate) => candidate.id)).toContain(relevantCaller.id);
+    expect(candidates.map((candidate) => candidate.id)).not.toContain(pollutedNeighbor.id);
+  });
+
+  it("ranks a symbol component above generic exact words in a sentence", () => {
+    const target = node("function:select-scope", "selectScope", 10);
+    const generic = node("constant:nodes", "nodes", 20, { kind: "constant" });
+    const graph: GraphEngine = {
+      build: vi.fn(), sync: vi.fn(), close: vi.fn(),
+      searchNodes: vi.fn((query: string) => {
+        if (query.includes(" ")) return [generic];
+        if (query === "scope") return [target];
+        if (query === "nodes") return [generic];
+        return [];
+      }),
+      getNode: (id) => id === target.id ? target : id === generic.id ? generic : null,
+      getCallers: () => [], getCallees: () => [],
+    };
+
+    const { candidates } = selectScope(graph, "How does graph scope decide which nodes to return?", 10);
+    expect(candidates[0]).toMatchObject({ id: target.id, reasons: ["component-name-match"] });
+    expect(candidates.find((candidate) => candidate.id === generic.id)?.reasons).toContain("generic-name-match");
+  });
+
+  it("boosts a symbol that covers multiple task terms", () => {
+    const target = node("function:read-node-source", "readNodeSource", 10);
+    const sourceOnly = node("function:enumerate-source", "enumerateSource", 20);
+    const nodeOnly = node("function:node-ref", "nodeRef", 30);
+    const nodes = [target, sourceOnly, nodeOnly];
+    const graph: GraphEngine = {
+      build: vi.fn(), sync: vi.fn(), close: vi.fn(),
+      searchNodes: vi.fn((query: string) => {
+        if (query.includes(" ")) return [];
+        if (query === "source") return [sourceOnly, target];
+        if (query === "node") return [nodeOnly, target];
+        return [];
+      }),
+      getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
+      getCallers: () => [], getCallees: () => [],
+    };
+
+    const { candidates } = selectScope(graph, "How does the agent expand source for a specific node?", 10);
+    expect(candidates[0]?.id).toBe(target.id);
+    expect(candidates[0]?.score).toBeGreaterThan(candidates[1]?.score ?? 0);
   });
 });
