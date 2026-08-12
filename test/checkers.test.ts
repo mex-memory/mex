@@ -280,6 +280,14 @@ describe("checkFrontmatterCompleteness", () => {
     expect(checkFrontmatterCompleteness(null, "patterns/README.md")).toEqual([]);
     expect(checkFrontmatterCompleteness(null, ".mex/patterns/INDEX.md")).toEqual([]);
   });
+
+  it("still checks same-named files under context/, which the exemption must not cover", () => {
+    for (const source of ["context/README.md", "context/INDEX.md", ".mex/context/README.md"]) {
+      const issues = checkFrontmatterCompleteness(null, source);
+      expect(issues).toHaveLength(3);
+      expect(issues.every((i) => i.code === "MISSING_FRONTMATTER_FIELD")).toBe(true);
+    }
+  });
 });
 
 // ── Command Checker ──

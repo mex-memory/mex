@@ -4,9 +4,11 @@ const RECOMMENDED_FIELDS = ["name", "description", "last_updated"] as const;
 
 const IN_SCOPE = /(^|\/)(context|patterns)\/([^/]+\.md)$/;
 
-/** Navigational files, not content — shipped without frontmatter by the
- *  templates, and excluded from the pattern checkers for the same reason. */
-const EXEMPT_FILES = new Set(["INDEX.md", "README.md"]);
+/** Navigational files under `patterns/`, not patterns themselves — shipped
+ *  without frontmatter by the templates, and excluded from index-sync and
+ *  stale-pattern for the same reason. Deliberately scoped to `patterns/`:
+ *  every `context/*.md` is in scope, same-named files included. */
+const EXEMPT_PATTERN_FILES = new Set(["INDEX.md", "README.md"]);
 
 /** Flag context/ and patterns/ scaffold files missing recommended frontmatter fields */
 export function checkFrontmatterCompleteness(
@@ -15,7 +17,8 @@ export function checkFrontmatterCompleteness(
 ): DriftIssue[] {
   const scope = IN_SCOPE.exec(source);
   if (!scope) return [];
-  if (EXEMPT_FILES.has(scope[3])) return [];
+  const [, , dir, filename] = scope;
+  if (dir === "patterns" && EXEMPT_PATTERN_FILES.has(filename)) return [];
 
   const fm = frontmatter ?? {};
   const issues: DriftIssue[] = [];
