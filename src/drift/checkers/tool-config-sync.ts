@@ -19,11 +19,13 @@ const TOOL_CONFIG_FILES: ReadonlyArray<string> = [
 
 /**
  * A file only participates in the sync check when it is actually a copy of the
- * mex tool config -- recognised by the scaffold pointer every template carries.
- * Repos commonly have a hand-written CLAUDE.md or a generated AGENTS.md that
- * never came from `.tool-configs/`; comparing those is a false positive.
+ * mex tool config -- recognised by the sentinel comment every generated
+ * template carries. Repos commonly have a hand-written CLAUDE.md or a
+ * generated AGENTS.md that never came from `.tool-configs/`; those may still
+ * mention ROUTER.md in ordinary guidance, so only the dedicated sentinel is
+ * proof of scaffold origin.
  */
-const SCAFFOLD_MARKER = "ROUTER.md";
+const SCAFFOLD_MARKER = "<!-- mex-tool-config";
 
 /** Check that all installed tool config files hold identical content. */
 export function checkToolConfigSync(projectRoot: string): DriftIssue[] {
