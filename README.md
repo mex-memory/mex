@@ -34,7 +34,7 @@ Every coding session starts with relevant architectural context instead of anoth
 
 💬 **Join the mex community on Discord** — discuss ideas, get help, share feedback, and contribute to the project.
 
-[Join the Discord →](https://discord.gg/VG7ySSMQM)
+[Join the Discord →](https://discord.gg/FEdNsQ4Qt4)
 
 ```bash
 npx mex-agent setup
