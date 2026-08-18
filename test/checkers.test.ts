@@ -517,6 +517,36 @@ describe("checkToolConfigSync", () => {
     expect(issues[0].file).toBe(".windsurfrules");
     expect(issues[0].message).toContain(".cursorrules");
   });
+
+  // Frontmatter line every tool config template has carried since the initial
+  // commit. Copies installed before the sentinel shipped are recognised by it,
+  // since `mex setup` never rewrites an anchor that already exists.
+  const legacy =
+    "---\nname: agents\ndescription: Always-loaded project anchor. Read this first. " +
+    "Contains project identity, non-negotiables, commands, and pointer to ROUTER.md for full context.\n---\n";
+
+  it("still flags drift between copies installed before the sentinel shipped", () => {
+    writeFileSync(join(tmpDir, "CLAUDE.md"), `${legacy}original\n`);
+    writeFileSync(join(tmpDir, ".cursorrules"), `${legacy}original\nedited\n`);
+    const issues = checkToolConfigSync(tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("TOOL_CONFIG_DRIFT");
+    expect(issues[0].file).toBe(".cursorrules");
+  });
+
+  it("leaves matching pre-sentinel copies alone", () => {
+    writeFileSync(join(tmpDir, "CLAUDE.md"), `${legacy}same\n`);
+    writeFileSync(join(tmpDir, ".cursorrules"), `${legacy}same\n`);
+    expect(checkToolConfigSync(tmpDir)).toHaveLength(0);
+  });
+
+  it("does not treat a file that merely quotes the sentinel as a copy", () => {
+    // Documentation about mex is not a managed copy of it.
+    const quoting = "# Notes\nCopies carry `<!-- mex-tool-config -->` after the frontmatter.\n";
+    writeFileSync(join(tmpDir, "CLAUDE.md"), quoting);
+    writeFileSync(join(tmpDir, "AGENTS.md"), `${quoting}and something else\n`);
+    expect(checkToolConfigSync(tmpDir)).toHaveLength(0);
+  });
 });
 
 // ── TODO/FIXME Checker ──

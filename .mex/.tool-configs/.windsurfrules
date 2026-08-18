@@ -4,7 +4,7 @@ description: Always-loaded project anchor. Read this first. Contains project ide
 last_updated: [YYYY-MM-DD]
 ---
 
-<!-- mex-tool-config: managed copy from .tool-configs/ -- keep this line so `mex drift` can detect out-of-sync copies -->
+<!-- mex-tool-config: managed copy from .tool-configs/ -- keep this line so `mex check` can detect out-of-sync copies -->
 
 # [Project Name]
 

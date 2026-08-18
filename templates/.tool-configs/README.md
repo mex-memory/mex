@@ -3,6 +3,8 @@
 These files make the scaffold work with specific AI coding tools.
 Most embed the same content — a pointer to `.mex/ROUTER.md`. OpenCode uses a JSON config that references `.mex/AGENTS.md` instead.
 
+The markdown files carry a `<!-- mex-tool-config -->` marker on the line after the frontmatter. `mex check` compares only the files carrying it, so a `CLAUDE.md` or `AGENTS.md` you wrote yourself is left alone. Keep the marker when you edit a copy; remove it and that file drops out of the sync check.
+
 ## Which file does your tool use?
 
 | Tool | File to use |
