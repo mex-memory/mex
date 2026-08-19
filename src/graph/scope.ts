@@ -78,9 +78,28 @@ function isTestNode(node: GraphNode): boolean {
   return /(^|\/)(__tests__|tests?)\//.test(node.filePath) || /\.(test|spec)\./.test(node.filePath);
 }
 
-/** Identifier-like tokens in a task string (drops trivial 1-char fragments). */
+// Exact-name-match tokens get a flat 1.0 score (see selectScope) so an
+// explicitly named symbol survives trimming. Without this list, English
+// function words and generic task-instruction verbs collide with real but
+// semantically empty identifiers (Ruby `on:`/`to:` DSL params, ActiveRecord
+// `find`) and outrank the actually relevant symbol in the task phrasing.
+const TASK_STOPWORDS = new Set([
+  "a", "an", "the", "of", "to", "in", "on", "at", "by", "for", "with", "from",
+  "up", "so", "is", "it", "as", "be", "or", "and", "not", "no", "do", "if",
+  "that", "this", "which", "into", "over", "out", "its", "every", "each",
+  "all", "any", "some", "find", "list", "trace", "locate", "show", "get",
+  "invoke", "invokes", "call", "calls",
+]);
+
+/** Identifier-like tokens in a task string (drops trivial fragments and stopwords). */
 function taskTokens(task: string): string[] {
-  return [...new Set(task.split(/[^A-Za-z0-9_$]+/).filter((t) => t.length >= 2))];
+  return [
+    ...new Set(
+      task
+        .split(/[^A-Za-z0-9_$]+/)
+        .filter((t) => t.length >= 2 && !TASK_STOPWORDS.has(t.toLowerCase())),
+    ),
+  ];
 }
 
 /**
