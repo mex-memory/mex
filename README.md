@@ -191,13 +191,26 @@ Agent-facing graph commands use deterministic JSONL envelopes so tools can relia
 
 ## Results
 
-On the mex repository benchmark:
+### What the graph catches that grep does not
+
+The graph resolves call sites structurally, so it finds calls whose syntax a regex would have to anticipate. In an independent blind evaluation on a 1,600-file Rails codebase, mex enumerated 23/23 call sites of a method where a `\.method_name` regex found 15/23 — the eight it missed were bare self-calls with no explicit receiver, and nothing in the grep output signalled the answer was incomplete ([#115](https://github.com/mex-memory/mex/issues/115)). That is the failure mode the graph exists to prevent.
+
+### Retrieval payload size
+
+`graph scope` returns a compact fact set instead of whole files. On the mex repository, across six symbol-lookup tasks:
 
 | Measurement | Result |
 |---|---:|
-| Full repository corpus ÷ graph scope | **916.38×** |
-| Grep top-3 output ÷ graph scope | **10.74×** |
+| ÷ full repository corpus | **916.38×** smaller |
+| ÷ entire contents of grep's top-3 files | **10.74×** smaller |
 | Expected-symbol recall | **100%** |
+
+Both ratios measure **retrieval output size only**. The denominator is the complete text of the files an agent would otherwise open — not the token cost of a real agent session, which these numbers do not measure. See the caveat below.
+
+### Real-agent task completion
+
+| Measurement | Result |
+|---|---:|
 | Minimal-context agent tasks completed | **5/5** |
 | Minimal-context tasks requiring fallback Read/Grep | **0/5** |
 | Inline-source tasks requiring fallback Read/Grep | **4/5** |
@@ -211,7 +224,9 @@ The measured repository contained:
 - 2,892 relationships
 - approximately 7.2 seconds to build the graph
 
-These are directional results from one repository, six scripted retrieval tasks, and five real-agent tasks. They demonstrate compact retrieval behavior, not a universal end-to-end graph-versus-no-graph token-savings claim.
+These are directional results from one repository, six scripted retrieval tasks, and five real-agent tasks.
+
+**What these numbers do not show.** The harness does not run an agent with the graph against the same agent using only Read/Grep/Glob, so none of the above supports an end-to-end graph-versus-no-graph token-savings claim. Independent measurement on a large Rails codebase found mex spending 1.3–1.7× grep's total session tokens across three real tasks — winning decisively on the call-site enumeration above, and tying on the other two ([#115](https://github.com/mex-memory/mex/issues/115)). A smaller payload per call does not automatically recover the cost of extra round-trips. The controlled three-arm experiment that would settle this is specified in [`evaluate/README.md`](evaluate/README.md).
 
 See the [benchmark results](evaluate/RESULTS.md) and [evaluation harness](evaluate/README.md) for the methodology, raw results, caveats, and reproduction commands.
 
