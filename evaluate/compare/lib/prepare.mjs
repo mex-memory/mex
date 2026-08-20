@@ -43,8 +43,12 @@ export function worktreeDiffHash(root) {
 }
 
 function findSymbol(root, symbol) {
-  const result = runSync("rg", ["--line-number", "--column", "--no-heading", "--color", "never", "--fixed-strings", "--glob", "!.git/**", "--glob", "!.mex/**", symbol, "."], { cwd: root });
-  if (![0, 1].includes(result.code)) throw new Error(`rg failed while locating ${symbol}: ${result.stderr.trim()}`);
+  const result = runSync("git", [
+    "grep", "--no-index", "--line-number", "--column", "--no-color",
+    "--fixed-strings", "--exclude-standard", "-e", symbol,
+    "--", ".", ":(exclude).git/**", ":(exclude).mex/**",
+  ], { cwd: root });
+  if (![0, 1].includes(result.code)) throw new Error(`git grep failed while locating ${symbol}: ${result.stderr.trim()}`);
   const rows = result.stdout.split("\n").filter(Boolean).map((line) => {
     const match = line.match(/^(.+?):(\d+):(\d+):(.*)$/);
     if (!match) return null;
