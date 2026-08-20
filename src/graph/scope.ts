@@ -293,7 +293,9 @@ export function selectScope(
         && (nodeMatchesConceptInIdentity(target, pair.left)
           || nodeMatchesConceptInIdentity(target, pair.right))
         && (plan.asksForTests || !isLowValueGraphPath(target.filePath)))
-      .map(({ node: target, edge }) => ({ source, target, edge, sourceRank, phraseIndex: pair.index }))));
+      .map(({ node: target, edge }) => ({
+        source, target, edge, sourceRank, phraseIndex: pair.index, left: pair.left, right: pair.right,
+      }))));
   const semanticPhraseBridges: SemanticPhraseBridge[] = [];
   const semanticPhraseTargetPaths = new Set<string>();
   for (const bridge of phraseBridgeCandidates.sort((left, right) => left.sourceRank - right.sourceRank
@@ -314,7 +316,7 @@ export function selectScope(
     target.reasons.add(`graph:${bridge.edge.kind}`);
     target.reasons.add("query-phrase-flow");
     target.reliable = true;
-    for (const concept of [adjacentConceptPairs[bridge.phraseIndex]!.left, adjacentConceptPairs[bridge.phraseIndex]!.right]) {
+    for (const concept of [bridge.left, bridge.right]) {
       addConceptEvidence(source, concept);
       addConceptEvidence(target, concept);
     }

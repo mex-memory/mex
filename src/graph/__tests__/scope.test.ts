@@ -615,6 +615,40 @@ describe("scored scope selection", () => {
     expect(selection.flows[0]?.steps).toEqual([edge]);
   });
 
+  it("keeps filtered phrase concepts attached to their compiler-proven bridge", () => {
+    const source = node("function:file-resolution-dispatcher", "fileResolutionDispatcher", 10, {
+      filePath: "src/dispatcher.ts",
+    });
+    const target = node("function:file-resolution-handler", "fileResolutionHandler", 20, {
+      filePath: "src/handler.ts",
+    });
+    const edge: GraphEdge = {
+      source: source.id, target: target.id, kind: "calls", line: 12, column: 2,
+      confidence: 1, resolutionMethod: "typescript-signature", provenance: "typescript-compiler",
+    };
+    const nodes = [source, target];
+    const graph: GraphEngine = {
+      build: vi.fn(), sync: vi.fn(), close: vi.fn(),
+      searchNodes: vi.fn((query) => query.toLowerCase() === "file resolution" ? [source] : []),
+      getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
+      getCallers: () => [], getCallees: () => [], getIncoming: () => [],
+      getOutgoing: (id) => id === source.id ? [{ node: target, edge }] : [],
+      getIndexedFiles: () => nodes.map((entry) => ({
+        path: entry.filePath, contentHash: entry.id, parseStatus: "ok" as const,
+        diagnosticCount: 0, errorCoverage: 0, nodeCount: 1,
+      })),
+      searchSource: () => [],
+    };
+
+    // The first three pairs are filtered as low-signal. The surviving pair's
+    // original index is 3, even though it occupies index 0 in the filtered list.
+    const selection = selectScope(graph, "graph node source file resolution", 12, 2);
+    expect(selection.candidates.find((candidate) => candidate.id === target.id)?.reasons)
+      .toContain("query-phrase-flow");
+    expect(selection.coveredTerms).toEqual(["file", "resolution"]);
+    expect(selection.flows[0]?.steps).toEqual([edge]);
+  });
+
   it.each([
     {
       phrase: "graph retrieval",
