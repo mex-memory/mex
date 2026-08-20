@@ -366,6 +366,53 @@ describe("graph construction integration", () => {
     fingerprintDb.close();
   });
 
+  it("does not alias a deleted symbol to a newly added differently named signature match", async () => {
+    const root = temporaryRoot("mex-signature-name-guard-");
+    mkdirSync(join(root, "src"), { recursive: true });
+    const removedPath = join(root, "src", "removed.ts");
+    const replacementPath = join(root, "src", "replacement.ts");
+    writeFileSync(removedPath, "export function removed(value: number): number { return value + 1; }\n");
+    const dbPath = join(root, ".mex", "graph.db");
+    const engine = createGraphEngine({ rootDir: root });
+    await engine.build();
+    const oldId = engine.searchNodes("removed").find((entry) => entry.name === "removed")!.id;
+
+    unlinkSync(removedPath);
+    writeFileSync(replacementPath, "export function replacement(value: number): number { return value * 2; }\n");
+    await engine.sync(["src/removed.ts", "src/replacement.ts"]);
+    expect(engine.getNode(oldId)).toBeNull();
+    engine.close();
+
+    const db = openGraphDatabase(dbPath);
+    expect(rows(db, "SELECT alias_id FROM node_aliases")).not.toContainEqual({ alias_id: oldId });
+    db.close();
+  });
+
+  it("does not alias one of two old same-name signatures to the sole survivor", async () => {
+    const root = temporaryRoot("mex-signature-old-ambiguity-");
+    mkdirSync(join(root, "src"), { recursive: true });
+    const removedPath = join(root, "src", "first.ts");
+    writeFileSync(removedPath, "export function shared(value: number): number { return value + 1; }\n");
+    writeFileSync(
+      join(root, "src", "second.ts"),
+      "export function shared(value: number): number { return value * 2; }\n",
+    );
+    const dbPath = join(root, ".mex", "graph.db");
+    const engine = createGraphEngine({ rootDir: root });
+    await engine.build();
+    const oldId = engine.searchNodes("shared", { limit: 10 })
+      .find((entry) => entry.filePath === "src/first.ts")!.id;
+
+    unlinkSync(removedPath);
+    await engine.sync(["src/first.ts"]);
+    expect(engine.getNode(oldId)).toBeNull();
+    engine.close();
+
+    const db = openGraphDatabase(dbPath);
+    expect(rows(db, "SELECT alias_id FROM node_aliases")).not.toContainEqual({ alias_id: oldId });
+    db.close();
+  });
+
   it("never guesses a fingerprint alias when equally strong candidates exist", async () => {
     const root = temporaryRoot("mex-ambiguous-alias-");
     mkdirSync(join(root, "src"), { recursive: true });

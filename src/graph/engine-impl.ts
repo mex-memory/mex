@@ -748,9 +748,13 @@ function createCompatibilityAliases(
   const freshIds = new Set(fresh.map((node) => node.id));
   const freshById = new Map(fresh.map((node) => [node.id, node]));
   const byQualified = groupUnique(fresh, (node) => `${node.filePath}\0${node.kind}\0${node.qualifiedName}`);
+  const oldBySignature = groupUnique(
+    oldNodes.filter((node) => normalizedSignature(node.signature).length > 0),
+    compatibilitySignatureKey,
+  );
   const bySignature = groupUnique(
     fresh.filter((node) => normalizedSignature(node.signature).length > 0),
-    (node) => `${node.kind}\0${normalizedSignature(node.signature)}`,
+    compatibilitySignatureKey,
   );
   const byBody = groupUnique(fresh.filter((node) => node.bodyHash), (node) => `${node.kind}\0${node.bodyHash}`);
   const canonicalMap = new Map<string, string>();
@@ -760,8 +764,10 @@ function createCompatibilityAliases(
       continue;
     }
     const qualified = byQualified.get(`${old.filePath}\0${old.kind}\0${old.qualifiedName}`);
-    const signatureKey = normalizedSignature(old.signature);
-    const signature = signatureKey ? bySignature.get(`${old.kind}\0${signatureKey}`) : undefined;
+    const signatureKey = normalizedSignature(old.signature) ? compatibilitySignatureKey(old) : undefined;
+    const oldSignature = signatureKey ? oldBySignature.get(signatureKey) : undefined;
+    const signature = oldSignature?.length === 1 && signatureKey
+      ? bySignature.get(signatureKey) : undefined;
     const body = old.bodyHash ? byBody.get(`${old.kind}\0${old.bodyHash}`) : undefined;
     const match = qualified?.length === 1 ? { node: qualified[0]!, method: "qualified-name", confidence: 1 }
       : signature?.length === 1 ? { node: signature[0]!, method: "signature", confidence: 0.98 }
@@ -779,6 +785,11 @@ function createCompatibilityAliases(
 
 function normalizedSignature(signature: string | undefined): string {
   return signature?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+/** Signature-only moves require the same unambiguous symbol in both snapshots. */
+function compatibilitySignatureKey(node: GraphNode): string {
+  return `${node.kind}\0${node.name}\0${normalizedSignature(node.signature)}`;
 }
 
 function fingerprintAliasMatch(
