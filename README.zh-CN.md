@@ -18,7 +18,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/mex-memory/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/mex-memory/mex/actions/workflows/ci.yml)
 [![Node.js >=22.5](https://img.shields.io/badge/node-%3E%3D22.5-339933)](package.json)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](package.json)
 [![Agent memory](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](#代理记忆模式)
 [![MCP](https://img.shields.io/badge/MCP-compatible-6f8cff)](#mcp-服务器)
 
@@ -30,7 +30,7 @@ mex 为代码建立地图，把代理学到的知识整理成结构化 Markdown�
 
 每次编程会话都从相关的架构上下文开始，而不是重新扫描整个仓库。
 
-> **v0.7.0 新功能：** 确定性的本地代码图谱、符号级知识锚定、面向代理的紧凑检索，以及在 TypeScript 和 JavaScript 之外新增的 Python 与 Rust 支持。
+> **v0.7.2 新功能：** 一次调用即可获得带源码的图谱检索、由编译器解析的 TypeScript 执行流、确定性证据以及严格的输出预算。
 
 💬 **加入 mex Discord 社区** — 讨论想法、获取帮助、分享反馈并参与项目贡献。
 
@@ -170,9 +170,9 @@ grounds_to:
 mex graph scope "追踪身份验证流程"
 ```
 
-mex 不会返回大段源代码，而是在严格的估算 token 预算内给出经过评分的相关符号邻域。默认结果包含紧凑签名、关系、节点 ID 和选择理由。
+mex 不会返回整个仓库，而是在严格的估算 token 预算内优先返回最可能回答任务的声明和真实执行流。默认响应包含源码，并使用确定性的 `meta`、`source`、`flow` 和 `summary` JSONL 记录。
 
-代理随后只需展开真正需要的符号：
+返回的源码应视为已经阅读。当摘要状态为 `ok` 时，即使低优先级的可选上下文被截断，代理也可以直接作答。仅在缺少某个声明或摘要建议继续时才需要精确展开：
 
 ```bash
 mex graph get <node-id>
@@ -191,27 +191,19 @@ mex impact requireSession
 
 ## 测试结果
 
-在 mex 仓库基准测试中：
+一项包含 24 个会话的试验，在 12 个 Hono 和 MEX 任务上比较了 0.7.2 候选版本与仅文件搜索：
 
 | 指标 | 结果 |
 |---|---:|
-| 完整仓库语料 ÷ 图谱 scope | **916.38×** |
-| grep 前 3 条输出 ÷ 图谱 scope | **10.74×** |
-| 预期符号召回率 | **100%** |
-| 最小上下文模式完成的代理任务 | **5/5** |
-| 最小上下文模式需要回退到 Read/Grep 的任务 | **0/5** |
-| 内联源代码模式需要回退到 Read/Grep 的任务 | **4/5** |
+| 盲审正确答案 | **候选版本 7/12，对照组 6/12** |
+| 新增 token 变化 | **-54.5%** |
+| 处理 token 变化 | **-72.5%** |
+| 估算成本变化 | **-56.6%** |
+| 平均延迟变化 | **-22.9%** |
+| 返回的必需源码区间 | **22/23（95.7%）** |
+| 返回的 Hono 必需执行流 | **6/6（100%）** |
 
-被测仓库包含：
-
-- 252 个语料文件
-- 约 733,605 个估算 token
-- 154 个进入图谱索引的源文件
-- 1,867 个代码节点
-- 2,892 条关系
-- 构建图谱约需 7.2 秒
-
-这些是来自单个仓库、六个脚本化检索任务和五个真实代理任务的方向性结果。它们验证的是紧凑检索行为，而不是普遍适用的端到端“有图谱与无图谱”token 节省结论。
+每个任务都使用 Claude Sonnet 为每个方案运行一次。这是一项小样本描述性试验，对照组仅搜索文件；它既不是与已发布 `main` 的比较，也不能证明普遍的 token 节省。方法和限制详见[基准测试报告](evaluate/RESULTS.md)。
 
 请参阅[基准测试结果](evaluate/RESULTS.md)和[评估工具](evaluate/README.md)，了解方法、原始结果、局限及复现命令。
 
@@ -307,7 +299,7 @@ MCP 包尚未发布。本地开发时请运行：
 npm run build --workspace mex-mcp
 ```
 
-v0.7.0 的主要发布内容仍然是 `mex-agent` CLI。
+v0.7.2 的主要发布内容仍然是 `mex-agent` CLI。
 
 ## 代理记忆模式
 

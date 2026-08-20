@@ -128,6 +128,10 @@ export interface GraphNode {
   kind: NodeKind;
   name: string;
   qualifiedName: string;
+  /** Canonical lexical owner (class/function/module) when one exists. */
+  containerId?: string;
+  /** Stable, unhashed identity material used to detect accidental id collisions. */
+  identityKey?: string;
   filePath: string;
   language: Language;
   startLine: number;
@@ -162,7 +166,13 @@ export interface GraphEdge {
   target: string;
   kind: EdgeKind;
   metadata?: Record<string, unknown>;
+  /** Resolver confidence. Only edges at or above 0.8 are eligible for flows. */
+  confidence?: number;
+  /** Stable resolver identifier (for example `typescript-compiler`). */
+  resolutionMethod?: string;
+  /** All independent pieces of evidence which support this semantic callsite. */
+  evidence?: Array<Record<string, unknown>>;
   line?: number;
   column?: number;
-  provenance?: "tree-sitter" | "heuristic";
+  provenance?: "tree-sitter" | "typescript-compiler" | "callback-synthesis" | "lexical" | "framework" | "heuristic";
 }

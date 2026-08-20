@@ -2,6 +2,11 @@
   "schemaVersion": 1,
   "id": "mex-graph-agent-pilot",
   "description": "Repeated files-only versus main versus active-checkout agent comparison for graph retrieval.",
+  "requiredRepetitions": 3,
+  "releaseGates": {
+    "maxDistinctScopeQueries": 1,
+    "firstResponseFileHitAt5": 0.9
+  },
   "subject": { "name": "mex" },
   "arms": {
     "files": {
@@ -19,15 +24,13 @@
         "commands": [["npm", "run", "build"]],
         "cli": "dist/cli.js",
         "shareNodeModules": true
-      },
-      "vocabRetry": false
+      }
     },
     "candidate": {
       "kind": "graph",
       "role": "patched",
       "label": "active checkout",
-      "cli": ["node", "{harnessRoot}/dist/cli.js"],
-      "vocabRetry": false
+      "cli": ["node", "{harnessRoot}/dist/cli.js"]
     }
   },
   "tasks": [

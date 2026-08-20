@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-20
+
+### Added
+- Compiler-backed TypeScript extraction now resolves calls, imports, inheritance, containment, and callback flow with stable declaration identities, while retaining bounded Tree-sitter support for TypeScript, JavaScript, Python, and Rust.
+- Source-chunk search, parser-health metadata, graph-integrity reporting, and deterministic native holdouts for Hono, TypeScript's compiler subtree, MEX, and mixed-language fixtures.
+- Evidence-aware JSONL protocol v3 records for source ranges, directed execution flows, summaries, omissions, and trustworthy fallback guidance.
+
+### Changed
+- `mex graph scope` now defaults to bounded source-backed retrieval instead of a minimal manifest, prioritizing the most relevant declarations and real high-confidence execution paths in the first response.
+- Scope budgets adapt to repository size, enforce file/node/flow/source ceilings, and distinguish mandatory evidence from optional truncation.
+- TypeScript 5.9.3 is now an exact runtime dependency because graph construction uses the compiler API.
+- CI verifies Node.js 22 and 24, runs the evaluator tests on Node 22, and uses Node 24-based GitHub Actions.
+- Tool-config sync ignores unmarked user-authored files and reports the actual managed config that moved.
+
+### Fixed
+- Stale or unreadable source files can no longer silently erase trusted graph state; changed-file failures abort publication and preserve the last good graph.
+- Callback synthesis no longer maps extra arguments onto a non-rest final parameter, and rest callbacks are linked only when the corresponding indexed element is invoked.
+- Retrieval now preserves compiler-proven cross-file flows, source-aligned declarations, whole primary answers, and fair source allocation without manufacturing relationships or exceeding the output ledger.
+- Deterministic identity, duplicate/dangling-edge, FTS, confidence, parser-loss, and production-to-test integrity checks fail closed in the evaluation harness.
+- Headless comparison runs now enforce exact command permissions, subject/bundle identity, rate-limit-safe resume semantics, and blind answer grading.
+
+### Performance
+- In a descriptive 24-session, 12-task Claude Sonnet pilot against a files-only baseline, the candidate answered 7/12 tasks correctly versus 6/12 while reducing new tokens by 54.5%, processed tokens by 72.5%, estimated cost by 56.6%, and mean latency by 22.9%.
+- First responses returned 22/23 required source spans, all required Hono flows, and graph evidence for all 12 tasks. The pilot used one repetition per task and did not include the released `main` implementation as an arm.
+
+### Compatibility
+- Node.js 22.5 or newer remains required.
+- Existing schema-v1 `.mex/graph.db` files require a one-time `mex graph` rebuild; the Markdown scaffold itself does not need to be reset.
+- The richer graph currently uses more disk than 0.7.1. Incremental/no-op rebuild and storage optimization are deferred to a follow-up release.
+
 ## [0.7.1] - 2026-08-05
 
 ### Changed

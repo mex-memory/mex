@@ -14,11 +14,27 @@
   "tasksFile": "./mex-tasks.json",
   "gates": {
     "systems": ["current"],
-    "floors": { "recallAt5": 0.43, "mrr": 0.34, "completeEvidenceRate": 0.5, "budgetComplianceRate": 1, "negativeAccuracy": 1 },
-    "categoryFloors": {
-      "exact-symbol": { "recallAt5": 1 },
-      "natural-language-symbol": { "recallAt5": 0.33 },
-      "relationship-where-defined": { "recallAt5": 1 }
+    "floors": {
+      "topFiveFileHitRate": 0.9,
+      "returnedRequiredSourceSpanRecall": 0.8,
+      "budgetComplianceRate": 1,
+      "negativeAccuracy": 1
+    },
+    "integrityFloors": { "schemaVersion": 2 },
+    "integrityCeilings": {
+      "extractedToStoredLoss": 0,
+      "buildToStoredDelta": 0,
+      "duplicateEdges": 0,
+      "danglingEdges": 0,
+      "danglingContainers": 0,
+      "duplicateIdentityKeys": 0,
+      "missingIdentityKeys": 0,
+      "ftsRowDelta": 0,
+      "sourceChunkFtsRowDelta": 0,
+      "danglingImportTargets": 0,
+      "danglingAliases": 0,
+      "invalidConfidenceEdges": 0,
+      "suspiciousProductionToTestEdges": 0
     },
     "ceilings": { "invalidRuns": 0, "prohibitedHitRate": 0 }
   }

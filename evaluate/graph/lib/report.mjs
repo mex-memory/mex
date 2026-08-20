@@ -53,7 +53,10 @@ function paraphraseSummary(rows) {
   }));
 }
 
-const PAIRED_METRICS = ["recallAt5", "reciprocalRank", "ndcgAt10", "completeEvidence", "outputTokensApprox", "elapsedMs", "returned"];
+const PAIRED_METRICS = [
+  "fileRecallAt5", "fileReciprocalRank", "returnedSourceSpanRecall", "directedFlowCoverage",
+  "recallAt5", "reciprocalRank", "ndcgAt10", "completeEvidence", "outputTokensApprox", "elapsedMs", "returned",
+];
 
 function pairedComparisons(rows, systemIds) {
   const byTask = groupBy(rows, (row) => row.taskId);
@@ -87,6 +90,18 @@ function pairedComparisons(rows, systemIds) {
   return comparisons;
 }
 
+function integrityMetric(prepared, systemId, metric) {
+  const integrity = prepared.systems[systemId]?.rebuilds?.at(-1)?.integrity;
+  if (!integrity || !Object.prototype.hasOwnProperty.call(integrity, metric)) {
+    return { valid: false, failure: `integrity:${systemId}:${metric} is missing from final prepared rebuild` };
+  }
+  const value = integrity[metric];
+  if (!Number.isFinite(value)) {
+    return { valid: false, failure: `integrity:${systemId}:${metric}=${String(value)} is not finite` };
+  }
+  return { valid: true, value };
+}
+
 function gateReport(suite, rows, bySystem, byCategory, prepared, runManifest, executionIdentityValid) {
   const failures = [];
   const expectedRuns = suite.tasks.length * Object.keys(suite.systems).length;
@@ -107,6 +122,16 @@ function gateReport(suite, rows, bySystem, byCategory, prepared, runManifest, ex
     }
     for (const [metric, ceiling] of Object.entries(gates.ceilings ?? {})) {
       if (!Number.isFinite(summary[metric]) || summary[metric] > ceiling) failures.push(`quality:${systemId}:${metric} ${summary[metric]} > ${ceiling}`);
+    }
+    for (const [metric, floor] of Object.entries(gates.integrityFloors ?? {})) {
+      const measured = integrityMetric(prepared, systemId, metric);
+      if (!measured.valid) failures.push(measured.failure);
+      else if (measured.value < floor) failures.push(`integrity:${systemId}:${metric} ${measured.value} < floor ${floor}`);
+    }
+    for (const [metric, ceiling] of Object.entries(gates.integrityCeilings ?? {})) {
+      const measured = integrityMetric(prepared, systemId, metric);
+      if (!measured.valid) failures.push(measured.failure);
+      else if (measured.value > ceiling) failures.push(`integrity:${systemId}:${metric} ${measured.value} > ceiling ${ceiling}`);
     }
     for (const [category, floors] of Object.entries(gates.categoryFloors ?? {})) {
       const categoryRow = byCategory[systemId]?.[category];
@@ -175,11 +200,11 @@ function markdownReport(report) {
     "",
     `Gate: **${report.gate.passed ? "PASS" : "FAIL"}**`,
     "",
-    "| system | valid | R@1 | R@5 | R@10 | MRR | complete | miss | negative | p50 tokens | p95 ms |",
+    "| system | valid | file@5 | source span | flow | graph coverage | R@5 | MRR | p50 tokens | p95 ms |",
     "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
   ];
   for (const [systemId, row] of Object.entries(report.bySystem)) {
-    lines.push(`| ${systemId} | ${row.validRuns}/${row.runs} | ${row.recallAt1 ?? "-"} | ${row.recallAt5 ?? "-"} | ${row.recallAt10 ?? "-"} | ${row.mrr ?? "-"} | ${row.completeEvidenceRate ?? "-"} | ${row.missRate ?? "-"} | ${row.negativeAccuracy ?? "-"} | ${row.outputTokensApprox.p50 ?? "-"} | ${row.latencyMs.p95 ?? "-"} |`);
+    lines.push(`| ${systemId} | ${row.validRuns}/${row.runs} | ${row.topFiveFileHitRate ?? "-"} | ${row.returnedRequiredSourceSpanRecall ?? "-"} | ${row.meanDirectedFlowCoverage ?? "-"} | ${row.graphEvidenceCoverage ?? "-"} | ${row.recallAt5 ?? "-"} | ${row.mrr ?? "-"} | ${row.outputTokensApprox.p50 ?? "-"} | ${row.latencyMs.p95 ?? "-"} |`);
   }
   if (report.gate.failures.length) {
     lines.push("", "## Gate failures", "");
@@ -224,8 +249,8 @@ export function generateGraphReport({ suite, outputDir, suppliedRows = null }) {
   report.gate = gateReport(suite, rows, bySystem, byCategory, prepared, runManifest, executionIdentityValid);
   writeFileSync(join(outputDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(outputDir, "report.md"), markdownReport(report));
-  const header = ["runId", "system", "taskId", "category", "valid", "recallAt1", "recallAt5", "recallAt10", "reciprocalRank", "completeEvidence", "firstRelevantRank", "returned", "outputTokensApprox", "elapsedMs", "violations"];
-  const csvRows = rows.map((row) => [row.runId, row.system, row.taskId, row.task.category, row.valid, row.metrics.recallAt1, row.metrics.recallAt5, row.metrics.recallAt10, row.metrics.reciprocalRank, row.metrics.completeEvidence, row.metrics.firstRelevantRank, row.metrics.returned, row.metrics.outputTokensApprox, row.metrics.elapsedMs, row.violations.join("; ")]);
+  const header = ["runId", "system", "taskId", "category", "valid", "fileRecallAt5", "returnedSourceSpanRecall", "directedFlowCoverage", "graphEvidenceCoverage", "recallAt5", "reciprocalRank", "returned", "outputTokensApprox", "elapsedMs", "violations"];
+  const csvRows = rows.map((row) => [row.runId, row.system, row.taskId, row.task.category, row.valid, row.metrics.fileRecallAt5, row.metrics.returnedSourceSpanRecall, row.metrics.directedFlowCoverage, row.metrics.graphEvidenceCoverage, row.metrics.recallAt5, row.metrics.reciprocalRank, row.metrics.returned, row.metrics.outputTokensApprox, row.metrics.elapsedMs, row.violations.join("; ")]);
   writeFileSync(join(outputDir, "rows.csv"), `${[header, ...csvRows].map((line) => line.map(csv).join(",")).join("\n")}\n`);
   return report;
 }

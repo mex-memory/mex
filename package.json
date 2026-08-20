@@ -1,6 +1,6 @@
 {
   "name": "mex-agent",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Persistent project memory and deterministic local code graphs for AI coding agents",
   "type": "module",
   "main": "./dist/index.js",
@@ -76,6 +76,7 @@
     "remark-frontmatter": "^5.0.0",
     "remark-parse": "^11.0.0",
     "simple-git": "^3.27.0",
+    "typescript": "5.9.3",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.0.0",
     "web-tree-sitter": "^0.25.10",
@@ -88,7 +89,6 @@
     "ink-testing-library": "^4.0.0",
     "tree-sitter-wasms": "^0.1.12",
     "tsup": "^8.4.0",
-    "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   }
 }

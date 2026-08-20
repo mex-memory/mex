@@ -13,27 +13,66 @@ function hash32(value: string, seed: number): number {
   return digest.readUInt32BE(0);
 }
 
+export interface FingerprintBuilder {
+  create(
+    normalizedTokens: readonly string[],
+    callers?: readonly string[],
+    callees?: readonly string[],
+  ): Fingerprint;
+}
+
+/**
+ * Create a corpus-scoped builder that memoizes the 64 seed hashes for each
+ * normalized syntax trigram. Extractor tokens intentionally discard identifier
+ * and literal spellings, so the same small trigram vocabulary recurs throughout
+ * a repository; sharing those hashes avoids repeating identical SHA-256 work
+ * without changing a single MinHash value.
+ */
+export function createFingerprintBuilder(): FingerprintBuilder {
+  const trigramHashes = new Map<string, Uint32Array>();
+  return {
+    create(normalizedTokens, callers = [], callees = []) {
+      return createFingerprintInternal(normalizedTokens, callers, callees, trigramHashes);
+    },
+  };
+}
+
 /** Build a Tier-2 fingerprint from an extractor-provided normalized AST token stream. */
 export function createFingerprint(
   normalizedTokens: readonly string[],
   callers: readonly string[] = [],
   callees: readonly string[] = [],
 ): Fingerprint {
+  return createFingerprintInternal(normalizedTokens, callers, callees);
+}
+
+function createFingerprintInternal(
+  normalizedTokens: readonly string[],
+  callers: readonly string[],
+  callees: readonly string[],
+  trigramHashes?: Map<string, Uint32Array>,
+): Fingerprint {
   const trigrams = new Set<string>();
   for (let index = 0; index <= normalizedTokens.length - 3; index += 1) {
     trigrams.add(normalizedTokens.slice(index, index + 3).join("\0"));
   }
 
-  const minhash = Array.from({ length: K }, (_, seed) => {
-    let minimum = UINT32_MAX;
-    for (const trigram of trigrams) {
-      minimum = Math.min(minimum, hash32(trigram, seed));
+  const minima = new Uint32Array(K);
+  minima.fill(UINT32_MAX);
+  for (const trigram of trigrams) {
+    let hashes = trigramHashes?.get(trigram);
+    if (!hashes) {
+      hashes = new Uint32Array(K);
+      for (let seed = 0; seed < K; seed += 1) hashes[seed] = hash32(trigram, seed);
+      trigramHashes?.set(trigram, hashes);
     }
-    return minimum;
-  });
+    for (let seed = 0; seed < K; seed += 1) {
+      if (hashes[seed]! < minima[seed]!) minima[seed] = hashes[seed]!;
+    }
+  }
 
   return {
-    minhash,
+    minhash: Array.from(minima),
     neighbors: [...new Set([...callers, ...callees])].sort(),
     tokenCount: normalizedTokens.length,
   };

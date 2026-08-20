@@ -1,10 +1,10 @@
 const prompt = process.argv.at(-1) ?? "";
 const graphPrefix = prompt.match(/Start with `(.+?) graph scope/);
-const answer = { answer: "FakeSymbol does it.", symbols: ["FakeSymbol"], evidence: [{ path: "a", line: 1 }], complete: true };
+const answer = { answer: "FakeSymbol is declared in the cited source and implements the requested behavior.", symbols: ["FakeSymbol"], evidence: [{ path: "a", line: 1 }], complete: true };
 process.stdout.write(`${JSON.stringify({ type: "thread.started", thread_id: "fake" })}\n`);
 process.stdout.write(`${JSON.stringify({ type: "turn.started" })}\n`);
 const command = graphPrefix ? `${graphPrefix[1]} graph scope "fake question"` : "rg FakeSymbol .";
 process.stdout.write(`${JSON.stringify({ type: "item.started", item: { id: "c1", type: "command_execution", command, status: "in_progress" } })}\n`);
-process.stdout.write(`${JSON.stringify({ type: "item.completed", item: { id: "c1", type: "command_execution", command, aggregated_output: graphPrefix ? '{"type":"fact","name":"FakeSymbol"}\n' : "a:1:FakeSymbol", exit_code: 0, status: "completed" } })}\n`);
+process.stdout.write(`${JSON.stringify({ type: "item.completed", item: { id: "c1", type: "command_execution", command, aggregated_output: graphPrefix ? '{"type":"fact","name":"FakeSymbol"}\n{"type":"summary","status":"ok"}\n' : "a:1:FakeSymbol", exit_code: 0, status: "completed" } })}\n`);
 process.stdout.write(`${JSON.stringify({ type: "item.completed", item: { id: "a1", type: "agent_message", text: JSON.stringify(answer) } })}\n`);
 process.stdout.write(`${JSON.stringify({ type: "turn.completed", usage: { input_tokens: 100, cached_input_tokens: 60, output_tokens: 10, reasoning_output_tokens: 4 } })}\n`);

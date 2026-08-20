@@ -2,7 +2,7 @@
 
 ## Runtime requirement
 
-mex 0.7.0 requires Node.js 22.5 or newer. The code graph uses the built-in `node:sqlite` module; older Node releases are unsupported. Users who cannot upgrade Node can remain on mex v0.6.3, which supports Node.js 20 or newer.
+mex 0.7.x requires Node.js 22.5 or newer. The code graph uses the built-in `node:sqlite` module; older Node releases are unsupported. Users who cannot upgrade Node can remain on mex v0.6.3, which supports Node.js 20 or newer.
 
 This document defines `mex-agent`'s public contract: what's stable, what isn't,
 and what counts as a breaking change. It is intended for embedders — tools that
@@ -23,17 +23,17 @@ import { /* … */ } from "mex-agent";
 Concretely, that's everything re-exported from
 [`src/index.ts`](./src/index.ts):
 
-- **Functions** — `findConfig`, `createConfig`, `appendEvent`, `readEvents`,
-  `eventLogPath`, `runDriftCheck`, `parseFrontmatter`, `checkHeartbeat`,
-  `runHeartbeat`.
+- **Functions** — `findConfig`, `createConfig`, `getScaffoldIdentity`,
+  `appendEvent`, `readEvents`, `eventLogPath`, `runDriftCheck`,
+  `parseFrontmatter`, `checkHeartbeat`, `runHeartbeat`.
 - **Runtime constants** — `EVENT_KINDS`, `DEFAULT_STALENESS_THRESHOLDS`,
   `DEFAULT_SCAFFOLD_PATTERNS`, `DEFAULT_HEARTBEAT_PATTERNS`.
 - **Types** — `MexConfig`, `CreateConfigInput`, `EventEntry`, `EventKind`,
   `LogOpts`, `DriftReport`, `DriftIssue`, `RunDriftCheckOpts`,
   `HeartbeatResult`, `HeartbeatOpts`, `CheckHeartbeatOpts`,
   `StalenessThresholds`, `WatchConfig`, `HeartbeatConfig`, `AiTool`,
-  `IssueCode`, `Severity`, `ScaffoldFrontmatter`, `FrontmatterEdge`, `Claim`,
-  `ClaimKind`.
+  `ScaffoldIdentity`, `IssueCode`, `Severity`, `ScaffoldFrontmatter`,
+  `FrontmatterEdge`, `Claim`, `ClaimKind`.
 
 The CI smoke test at [`test/public-api.test.ts`](./test/public-api.test.ts)
 asserts the existence and basic shape of these exports. Any change that breaks

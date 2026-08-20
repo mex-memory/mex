@@ -5,18 +5,22 @@
 // The agent-facing commands (`graph scope` / `query` / `get`, `impact`) stream
 // newline-delimited JSON. Every stream is framed by a `meta` record first and a
 // `summary` record last, with `fact` / `edge` / `source` data records between.
-// Source is opt-in; the default `minimal` detail returns structure + relationship
-// counts only. A hard token budget is enforced WHILE emitting, not after.
+// Scope is source-bearing by default so one response can replace a Grep/Read
+// loop. A hard token budget is enforced while planning and emitting.
 
 import type { CompactFact, DetailLevel, SourceRange } from "./scope.js";
 
-export const SCHEMA_VERSION = 1;
+export const AGENT_PROTOCOL_VERSION = 3;
+/** @deprecated Prefer AGENT_PROTOCOL_VERSION; this is not the DB schema. */
+export const SCHEMA_VERSION = AGENT_PROTOCOL_VERSION;
 const CHARS_PER_TOKEN = 4;
 
 /** Tunable retrieval controls shared by every agent command. */
 export interface AgentOptions {
   detail: DetailLevel;
   maxNodes: number;
+  maxFiles: number;
+  maxFlowSteps: number;
   maxOutputTokens: number;
   maxSourceLines: number;
   depth: number;
@@ -27,6 +31,8 @@ export interface AgentOptions {
 export const DEFAULT_OPTIONS: AgentOptions = {
   detail: "minimal",
   maxNodes: 10,
+  maxFiles: 4,
+  maxFlowSteps: 8,
   maxOutputTokens: 1500,
   maxSourceLines: 120,
   depth: 2,
@@ -43,11 +49,34 @@ export function resolveOptions(raw: Partial<Record<keyof AgentOptions, unknown>>
   return {
     detail,
     maxNodes: num(raw.maxNodes, DEFAULT_OPTIONS.maxNodes),
+    maxFiles: num(raw.maxFiles, DEFAULT_OPTIONS.maxFiles),
+    maxFlowSteps: num(raw.maxFlowSteps, DEFAULT_OPTIONS.maxFlowSteps),
     maxOutputTokens: num(raw.maxOutputTokens, DEFAULT_OPTIONS.maxOutputTokens),
     maxSourceLines: num(raw.maxSourceLines, DEFAULT_OPTIONS.maxSourceLines),
     depth: num(raw.depth, DEFAULT_OPTIONS.depth),
     fingerprint: raw.fingerprint === true || raw.fingerprint === "true",
   };
+}
+
+/** Adaptive one-call defaults used only by broad Scope retrieval. */
+export function resolveScopeOptions(
+  raw: Partial<Record<keyof AgentOptions, unknown>> = {},
+  indexedFiles: number,
+): AgentOptions {
+  const adaptive = indexedFiles < 150
+    ? { maxOutputTokens: 3500, maxFiles: 4 }
+    : indexedFiles < 500
+      ? { maxOutputTokens: 4500, maxFiles: 5 }
+      : { maxOutputTokens: 6000, maxFiles: 6 };
+  return resolveOptions({
+    ...raw,
+    detail: raw.detail ?? "source",
+    maxNodes: raw.maxNodes ?? 24,
+    maxFiles: raw.maxFiles ?? adaptive.maxFiles,
+    maxFlowSteps: raw.maxFlowSteps ?? 8,
+    maxOutputTokens: raw.maxOutputTokens ?? adaptive.maxOutputTokens,
+    maxSourceLines: raw.maxSourceLines ?? 200,
+  });
 }
 
 /** Deterministic, model-agnostic token estimate. Conservative, labeled "estimated". */
@@ -59,11 +88,15 @@ export function estimateTokens(value: unknown): number {
 
 export interface MetaRecord {
   type: "meta";
+  protocolVersion: number;
+  /** Compatibility mirror for older preview clients; this is not the DB schema. */
   schemaVersion: number;
   command: string;
   task?: string;
   detail: DetailLevel;
   maxNodes: number;
+  maxFiles: number;
+  maxFlowSteps: number;
   maxOutputTokens: number;
 }
 
@@ -72,7 +105,42 @@ export interface EdgeRecord {
   kind: string;
   source: string;
   target: string;
-  provenance: "static";
+  line?: number;
+  column?: number;
+  confidence?: number;
+  resolutionMethod?: string;
+  provenance?: string;
+}
+
+export interface HealthRecord {
+  type: "health";
+  indexedFiles: number;
+  okFiles: number;
+  partialFiles: number;
+  failedFiles: number;
+  staleFiles: string[];
+}
+
+export interface FlowRecord {
+  type: "flow";
+  /**
+   * Compact endpoint metadata makes a flow independently interpretable even
+   * when lower-priority fact records do not fit the response budget.
+   */
+  nodes: Array<{
+    id: string;
+    name: string;
+    filePath: string;
+  }>;
+  steps: Array<{
+    source: string;
+    target: string;
+    kind: string;
+    line?: number;
+    confidence: number;
+    resolutionMethod?: string;
+    provenance?: string;
+  }>;
 }
 
 export interface SourceRecord {
@@ -90,9 +158,24 @@ export interface SummaryRecord {
   maxOutputTokens: number;
   truncated: boolean;
   suggestedNextCommands: string[];
+  status: "ok" | "partial" | "degraded" | "no-match";
+  evidenceStrength: "strong" | "moderate" | "weak" | "none";
+  coveredTerms: string[];
+  returnedFiles: string[];
+  sourceBackedNodes: string[];
+  textFallbackFiles: string[];
+  warnings: string[];
+  omittedCounts: Partial<Record<
+    "sourceBackedNodes" | "coveredTerms" | "returnedFiles" | "textFallbackFiles" | "suggestedNextCommands" | "warnings",
+    number
+  >>;
 }
 
-export type FactRecord = CompactFact & { type: "fact" };
+export type FactRecord = Omit<CompactFact, "detail" | "sourceIncluded" | "bodyHash" | "qualifiedName"> & {
+  type: "fact";
+  qualifiedName?: string;
+  bodyHash?: string;
+};
 
 /** Tokens reserved for the mandatory trailing `summary` record. */
 export const FRAMING_RESERVE = 140;

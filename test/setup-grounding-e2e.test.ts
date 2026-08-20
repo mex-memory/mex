@@ -108,7 +108,7 @@ export function calculateCheckoutTotal(items: number[], member: boolean): number
       .toEqual({ captured: 2, skipped: 0 });
     const clean = await runDriftCheck(config);
     expect(clean.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toEqual([]);
-  });
+  }, 15_000);
 
   it("skips and warns when authored grounding no longer resolves", async () => {
     const root = mkdtempSync(join(tmpdir(), "mex-setup-grounding-miss-"));

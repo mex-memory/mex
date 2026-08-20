@@ -56,9 +56,19 @@ function git(root, args, optional = false) {
   return result.code === 0 ? String(result.stdout).trim() : null;
 }
 
+const GRAPH_DB_PATHS = [".mex/graph.db", ".mex/graph.db-shm", ".mex/graph.db-wal"];
+
+function graphDbExclusionPathspecs() {
+  return GRAPH_DB_PATHS.map((path) => `:(exclude)${path}`);
+}
+
 export function gitTreeStateHash(root) {
-  const tracked = git(root, ["diff", "--binary", "HEAD"], true) ?? "";
-  const untracked = (git(root, ["ls-files", "--others", "--exclude-standard"], true) ?? "")
+  // GraphDbGuard intentionally swaps and opens these generated files while an
+  // evaluation is running. They are execution artifacts, not subject source,
+  // even when the target repository does not ignore `.mex/` itself.
+  const pathspec = ["--", ".", ...graphDbExclusionPathspecs()];
+  const tracked = git(root, ["diff", "--binary", "HEAD", ...pathspec], true) ?? "";
+  const untracked = (git(root, ["ls-files", "--others", "--exclude-standard", ...pathspec], true) ?? "")
     .split("\n").filter(Boolean).sort();
   const hash = createHash("sha256").update(tracked);
   for (const path of untracked) {
@@ -81,7 +91,7 @@ export function repositoryIdentity(root) {
       remote: null,
       dirty: null,
       dirtyEntries: [],
-      treeStateSha256: directoryHash(absolute, { exclude: [".mex/graph.db", ".mex/graph.db-shm", ".mex/graph.db-wal"] }),
+      treeStateSha256: directoryHash(absolute, { exclude: GRAPH_DB_PATHS }),
     };
   }
   const sha = git(absolute, ["rev-parse", "HEAD"], true);

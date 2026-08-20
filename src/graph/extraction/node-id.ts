@@ -31,12 +31,30 @@ export function generateNodeId(
   filePath: string,
   kind: NodeKind,
   name: string,
+  qualifiedName = name,
+  declarationRole: string = kind,
+  signature = "",
 ): string {
+  const identity = canonicalNodeIdentity(filePath, kind, qualifiedName, declarationRole, signature);
   const hash = createHash("sha256")
-    .update(`${filePath}:${kind}:${name}`)
+    .update(identity)
     .digest("hex")
     .substring(0, 32);
   return `${kind}:${hash}`;
+}
+
+export function canonicalNodeIdentity(
+  filePath: string,
+  kind: NodeKind,
+  qualifiedName: string,
+  declarationRole: string = kind,
+  signature = "",
+): string {
+  return [
+    filePath.replaceAll("\\", "/"), kind,
+    qualifiedName.replace(/\s+/g, " ").trim(), declarationRole,
+    signature.replace(/\s+/g, " ").trim(),
+  ].join("\0");
 }
 
 /** Source text spanned by a syntax node (its byte range into `source`). */

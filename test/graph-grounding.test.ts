@@ -24,10 +24,10 @@ function database(): DatabaseSync {
 
 function insertNode(db: DatabaseSync, id: string, bodyHash = "hash"): void {
   db.prepare(
-    `INSERT INTO nodes (id, kind, name, qualified_name, file_path, language,
+    `INSERT INTO nodes (id, kind, name, qualified_name, identity_key, file_path, language,
       start_line, end_line, start_column, end_column, body_hash, updated_at)
-     VALUES (?, 'function', ?, ?, 'src/a.ts', 'typescript', 1, 2, 0, 1, ?, 1)`,
-  ).run(id, id, id, bodyHash);
+     VALUES (?, 'function', ?, ?, ?, 'src/a.ts', 'typescript', 1, 2, 0, 1, ?, 1)`,
+  ).run(id, id, id, id, bodyHash);
 }
 
 function fingerprint(matches: number, neighbors: string[] = ["neighbor"], tokenCount = 40): Fingerprint {
@@ -66,6 +66,25 @@ describe("FingerprintStore and MinHashReconciler", () => {
     store.upsert("candidate", value);
     expect(store.get("candidate")).toEqual(value);
     expect(store.lookup(value).map((entry) => entry.nodeId)).toEqual(["candidate"]);
+    db.close();
+  });
+
+  it("resolves legacy aliases for fingerprints and grounding baselines", () => {
+    const db = database();
+    insertNode(db, "canonical");
+    db.prepare(
+      `INSERT INTO node_aliases (alias_id, canonical_node_id, match_method, confidence, created_at)
+       VALUES ('legacy', 'canonical', 'body-hash', 0.95, 1)`,
+    ).run();
+    const store = new FingerprintStore(db);
+    const value = fingerprint(64);
+    store.upsert("canonical", value);
+    store.saveGroundedSource({
+      scaffoldFile: "docs/unit.md", nodeId: "legacy", source: "old", bodyHash: "hash",
+      fingerprint: serializeFingerprint(value),
+    });
+    expect(store.get("legacy")).toEqual(value);
+    expect(store.getGroundedSource("docs/unit.md", "canonical")).toMatchObject({ nodeId: "legacy", source: "old" });
     db.close();
   });
 
@@ -122,6 +141,7 @@ function graph(nodes: GraphNode[]): GraphEngine {
     searchNodes: () => [],
     getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
     getCallers: () => [], getCallees: () => [], close: () => {},
+    getIncoming: () => [], getOutgoing: () => [],
   };
 }
 

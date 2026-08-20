@@ -47,7 +47,9 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
     const fingerprints = new FingerprintStore(db);
     const anchorFingerprints = snapshotAnchorFingerprints(config, fingerprints);
     const changed = findChangedSourceFiles(config.projectRoot, db);
-    if (changed.length > 0) await graph.sync(changed);
+    // sync also checks the persisted compiler/config/grammar manifest, so it
+    // must run even when source mtimes are unchanged.
+    await graph.sync(changed);
     const reconciler = new MinHashReconciler(fingerprints);
     const checkerReconciler: Reconciler & GroundingReconcilerCapabilities = {
       reconcile: (nodeId, baseline) => reconciler.reconcile(nodeId, baseline),
@@ -126,7 +128,19 @@ export function persistMovedGroundings(
     const scaffoldFile = relative(config.projectRoot, filePath).replaceAll("\\", "/");
     let dirty = false;
     for (const grounding of groundings) {
-      if (runtime.graph.getNode(grounding.node)) continue;
+      const aliasedNode = runtime.graph.getNode(grounding.node);
+      if (aliasedNode) {
+        if (aliasedNode.id === grounding.node) continue;
+        const oldId = grounding.node;
+        grounding.node = aliasedNode.id;
+        const fingerprint = runtime.reconciler.getFingerprint(aliasedNode.id);
+        if (fingerprint) grounding.fingerprint = serializeFingerprint(fingerprint);
+        saveCurrentBaseline(config, scaffoldFile, grounding.node, grounding.fingerprint, runtime);
+        runtime.fingerprints.deleteGroundedSource(scaffoldFile, oldId);
+        dirty = true;
+        moved += 1;
+        continue;
+      }
       const baselineSource = runtime.reconciler.getGroundedSource(scaffoldFile, grounding.node);
       const baseline = deserializeFingerprint(grounding.fingerprint)
         ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
@@ -146,7 +160,13 @@ export function persistMovedGroundings(
     let anchoredContent = groundedContent;
     const anchors = findMexAnchors(anchoredContent);
     for (const anchor of [...anchors].reverse()) {
-      if (runtime.graph.getNode(anchor.nodeId)) continue;
+      const aliasedNode = runtime.graph.getNode(anchor.nodeId);
+      if (aliasedNode) {
+        if (aliasedNode.id === anchor.nodeId) continue;
+        anchoredContent = rewriteMexAnchor(anchoredContent, anchor, aliasedNode.id);
+        moved += 1;
+        continue;
+      }
       const baselineSource = runtime.reconciler.getGroundedSource(scaffoldFile, anchor.nodeId);
       const baseline = runtime.anchorFingerprints.get(anchor.nodeId)
         ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);

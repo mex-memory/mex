@@ -2,6 +2,10 @@
   "schemaVersion": 1,
   "id": "typescript-pinned-pilot",
   "description": "Six-task n=1 pilot. The runner is generic; this suite preserves the original TypeScript experiment.",
+  "requiredRepetitions": 1,
+  "releaseGates": {
+    "maxDistinctScopeQueries": 1
+  },
   "subject": {
     "name": "microsoft/TypeScript",
     "repository": "https://github.com/microsoft/TypeScript.git",
@@ -24,15 +28,13 @@
         "commands": [["npm", "run", "build"]],
         "cli": "dist/cli.js",
         "shareNodeModules": true
-      },
-      "vocabRetry": false
+      }
     },
     "patched": {
       "kind": "graph",
       "role": "patched",
       "label": "patched mex",
-      "cli": ["node", "{harnessRoot}/dist/cli.js"],
-      "vocabRetry": true
+      "cli": ["node", "{harnessRoot}/dist/cli.js"]
     }
   },
   "tasks": [

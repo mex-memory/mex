@@ -11,6 +11,8 @@
 // Grammars are loaded on demand — only languages actually present in the project
 // are compiled — keeping WASM heap pressure low on large repos.
 
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Parser, Language as WasmLanguage } from "web-tree-sitter";
 import type { Language } from "../types.js";
 import type { TSTree } from "./types.js";
@@ -29,6 +31,25 @@ const WASM_GRAMMAR_FILES: Partial<Record<Language, string>> = {
   python: "tree-sitter-python.wasm",
   rust: "tree-sitter-rust.wasm",
 };
+let grammarHashCache: string | null = null;
+
+/**
+ * Content hash of the exact grammar assets this build can use. Persisting the
+ * asset bytes (rather than package versions) makes copied/bundled installs and
+ * local development obey the same rebuild contract.
+ */
+export function grammarManifestHash(): string {
+  if (grammarHashCache) return grammarHashCache;
+  const hash = createHash("sha256");
+  for (const wasmFile of [...new Set(Object.values(WASM_GRAMMAR_FILES))].sort()) {
+    hash.update(wasmFile);
+    hash.update("\0");
+    hash.update(readFileSync(grammarWasmPath(wasmFile)));
+    hash.update("\0");
+  }
+  grammarHashCache = hash.digest("hex");
+  return grammarHashCache;
+}
 
 /** File extension → language. The single source of truth for "index this file?". */
 const EXTENSION_MAP: Record<string, Language> = {

@@ -224,9 +224,10 @@ graphCommand
 
 graphCommand
   .command("scope <task...>")
-  .description("Retrieve a compact code neighborhood for a task as JSONL")
-  .option("--detail <level>", "minimal | standard | source", "minimal")
+  .description("Retrieve source-backed code context and execution flow for a task as JSONL")
+  .option("--detail <level>", "minimal | standard | source", "source")
   .option("--max-nodes <n>", "maximum nodes to return")
+  .option("--max-files <n>", "maximum source files to return")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
   .option("--fingerprint", "attach serialized node fingerprints (grounding workflow)")

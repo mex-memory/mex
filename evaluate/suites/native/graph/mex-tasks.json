@@ -20,7 +20,7 @@
       "family": "scope-selection",
       "critical": true,
       "operation": "scope",
-      "query": "How does graph retrieval decide which code declarations belong in a task neighborhood?",
+      "query": "Where does Scope fuse symbol, path, node BM25, and source-chunk candidates into cohesive ranked files?",
       "gold": [{ "symbol": "selectScope", "kind": "function", "path": "src/graph/scope.ts" }],
       "mustNotReturn": [{ "symbol": "runImpact", "kind": "function", "path": "src/graph/cli-agent.ts" }]
     },
@@ -37,8 +37,8 @@
       "category": "paraphrase",
       "family": "scope-selection",
       "operation": "scope",
-      "query": "Where should I debug irrelevant declarations being chosen for a natural language code search?",
-      "gold": [{ "symbol": "selectScope", "kind": "function", "path": "src/graph/scope.ts" }]
+      "query": "Where does a natural-language graph request become exact identifiers and normalized path terms?",
+      "gold": [{ "symbol": "planGraphQuery", "kind": "function", "path": "src/graph/retrieval/query.ts" }]
     },
     {
       "id": "budget-enforcement-plain",
@@ -62,19 +62,16 @@
       "category": "paraphrase",
       "family": "budget-enforcement",
       "operation": "scope",
-      "query": "What prevents a retrieval payload from overflowing the agent context allowance?",
-      "gold": [{ "symbol": "BudgetLedger", "kind": "class", "path": "src/graph/agent-protocol.ts" }]
+      "query": "What enforces the hard output token budget when source and flow records compete for response space?",
+      "gold": [{ "symbol": "beginResponse", "kind": "function", "path": "src/graph/cli-agent.ts" }]
     },
     {
       "id": "source-expansion-flow",
       "category": "multi-symbol-flow",
       "critical": true,
       "operation": "scope",
-      "query": "How does an agent expand selected graph node identifiers into bounded source code?",
-      "gold": [
-        { "symbol": "runGraphGet", "kind": "function", "path": "src/graph/cli-agent.ts" },
-        { "symbol": "readNodeSource", "kind": "function", "path": "src/graph/scope.ts" }
-      ]
+      "query": "How does Scope plan bounded source windows for selected symbols and query hits?",
+      "gold": [{ "symbol": "planFileSource", "kind": "function", "path": "src/graph/scope.ts" }]
     },
     {
       "id": "impact-walk",
@@ -87,11 +84,11 @@
       ]
     },
     {
-      "id": "compact-fact-shape",
+      "id": "source-share-admission",
       "category": "natural-language-symbol",
       "operation": "scope",
-      "query": "Where is the compact agent-facing representation of a graph declaration assembled?",
-      "gold": [{ "symbol": "compactFact", "kind": "function", "path": "src/graph/scope.ts" }]
+      "query": "Where are selected source ranges admitted within the response's reserved source share?",
+      "gold": [{ "symbol": "admitSourceWithinShare", "kind": "function", "path": "src/graph/cli-agent.ts" }]
     },
     {
       "id": "where-budget-defined",

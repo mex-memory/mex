@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS schema_versions (
 );
 
 INSERT OR IGNORE INTO schema_versions (version, applied_at, description)
-VALUES (1, strftime('%s', 'now') * 1000, 'Initial mex code-graph schema (CG base + node.body_hash + fingerprints + grounded source)');
+VALUES (2, strftime('%s', 'now') * 1000, 'Trustworthy graph identity, health, references, aliases, and source chunks');
 
 -- =============================================================================
 -- Core tables (ported from CodeGraph — kept as-is except node.body_hash)
@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     kind TEXT NOT NULL,
     name TEXT NOT NULL,
     qualified_name TEXT NOT NULL,
+    container_id TEXT,
+    identity_key TEXT NOT NULL,
     file_path TEXT NOT NULL,
     language TEXT NOT NULL,
     start_line INTEGER NOT NULL,
@@ -95,6 +97,9 @@ CREATE TABLE IF NOT EXISTS edges (
     line INTEGER,
     col INTEGER,
     provenance TEXT DEFAULT NULL,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    resolution_method TEXT,
+    evidence TEXT,
     FOREIGN KEY (source) REFERENCES nodes(id) ON DELETE CASCADE,
     FOREIGN KEY (target) REFERENCES nodes(id) ON DELETE CASCADE
 );
@@ -109,13 +114,19 @@ CREATE TABLE IF NOT EXISTS files (
     modified_at INTEGER NOT NULL,
     indexed_at INTEGER NOT NULL,
     node_count INTEGER DEFAULT 0,
-    errors TEXT               -- JSON array
+    errors TEXT,              -- JSON array
+    parse_status TEXT NOT NULL DEFAULT 'ok' CHECK(parse_status IN ('ok','partial','failed')),
+    diagnostic_count INTEGER NOT NULL DEFAULT 0,
+    missing_count INTEGER NOT NULL DEFAULT 0,
+    error_coverage REAL NOT NULL DEFAULT 0,
+    extractor_version TEXT NOT NULL DEFAULT 'unknown'
 );
 
 -- Unresolved references: parked during single-file extraction, resolved after a
 -- full index pass (two-phase extract -> resolve). Kept so cross-file edges work.
 CREATE TABLE IF NOT EXISTS unresolved_refs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ref_key TEXT NOT NULL UNIQUE,
     from_node_id TEXT NOT NULL,
     reference_name TEXT NOT NULL,
     reference_kind TEXT NOT NULL,
@@ -124,7 +135,65 @@ CREATE TABLE IF NOT EXISTS unresolved_refs (
     candidates TEXT,          -- JSON array
     file_path TEXT NOT NULL DEFAULT '',
     language TEXT NOT NULL DEFAULT 'unknown',
+    receiver TEXT,
+    qualifier TEXT,
+    import_source TEXT,
+    metadata TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved','ambiguous','unresolved')),
+    target_id TEXT,
+    confidence REAL,
+    resolver TEXT,
     FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+
+-- Compiler/fallback import binding evidence. This is deliberately separate
+-- from graph edges: an import may be valid even when its target is outside the
+-- indexed corpus.
+CREATE TABLE IF NOT EXISTS import_bindings (
+    binding_key TEXT PRIMARY KEY,
+    file_path TEXT NOT NULL,
+    local_name TEXT NOT NULL,
+    imported_name TEXT NOT NULL,
+    module_specifier TEXT NOT NULL,
+    resolved_file_path TEXT,
+    target_id TEXT,
+    is_type_only INTEGER NOT NULL DEFAULT 0,
+    metadata TEXT,
+    FOREIGN KEY (target_id) REFERENCES nodes(id) ON DELETE SET NULL
+);
+
+-- Compatibility aliases survive rebuilds. Readers accept alias ids, while all
+-- discovery APIs emit only the canonical node id.
+CREATE TABLE IF NOT EXISTS node_aliases (
+    alias_id TEXT PRIMARY KEY,
+    canonical_node_id TEXT NOT NULL,
+    match_method TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (canonical_node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+
+-- Source retrieval is indexed in overlapping windows. The FTS table is
+-- contentless: response source is always re-read from disk.
+CREATE TABLE IF NOT EXISTS source_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    path_terms TEXT NOT NULL,
+    identifier_terms TEXT NOT NULL,
+    comment_terms TEXT NOT NULL,
+    UNIQUE(file_path, start_line, end_line)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS source_chunks_fts USING fts5(
+    path_terms,
+    identifier_terms,
+    comment_terms,
+    source_text,
+    content='',
+    contentless_delete=1
 );
 
 -- =============================================================================
@@ -167,6 +236,8 @@ CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
 CREATE INDEX IF NOT EXISTS idx_nodes_language ON nodes(language);
 CREATE INDEX IF NOT EXISTS idx_nodes_file_line ON nodes(file_path, start_line);
 CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_identity_key ON nodes(identity_key);
+CREATE INDEX IF NOT EXISTS idx_nodes_container_id ON nodes(container_id);
 
 -- Edge indexes. Narrow source-only / target-only indexes are intentionally
 -- omitted; the (source, kind) / (target, kind) composites cover them via
@@ -175,6 +246,9 @@ CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
+CREATE INDEX IF NOT EXISTS idx_edges_confidence ON edges(confidence);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_semantic_callsite
+ON edges(source, target, kind, IFNULL(line, -1), IFNULL(col, -1));
 
 CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 CREATE INDEX IF NOT EXISTS idx_files_modified_at ON files(modified_at);
@@ -183,6 +257,11 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_from_node ON unresolved_refs(from_node
 CREATE INDEX IF NOT EXISTS idx_unresolved_name ON unresolved_refs(reference_name);
 CREATE INDEX IF NOT EXISTS idx_unresolved_file_path ON unresolved_refs(file_path);
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_name ON unresolved_refs(from_node_id, reference_name);
+CREATE INDEX IF NOT EXISTS idx_unresolved_status ON unresolved_refs(status);
+CREATE INDEX IF NOT EXISTS idx_import_bindings_file ON import_bindings(file_path);
+CREATE INDEX IF NOT EXISTS idx_import_bindings_local ON import_bindings(file_path, local_name);
+CREATE INDEX IF NOT EXISTS idx_aliases_canonical ON node_aliases(canonical_node_id);
+CREATE INDEX IF NOT EXISTS idx_source_chunks_file ON source_chunks(file_path, start_line);
 
 -- =============================================================================
 -- Project metadata (ported from CG — small key/value store for build metadata,

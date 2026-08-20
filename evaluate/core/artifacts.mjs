@@ -112,3 +112,9 @@ export class GraphDbGuard {
     });
   }
 }
+
+/** Remove recovery scratch only after the guarded graph has been restored. */
+export function restoreGraphDbAndRemoveScratch(guard, scratchRoot) {
+  guard.restore();
+  rmSync(scratchRoot, { recursive: true, force: true });
+}

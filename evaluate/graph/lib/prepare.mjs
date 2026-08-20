@@ -6,6 +6,7 @@ import { GraphDbGuard } from "../../core/artifacts.mjs";
 import { assertProcessSucceeded, runProcessSync } from "../../core/process.mjs";
 import { validateSubjectFixture } from "./fixture.mjs";
 import { inspectGraphDatabase } from "./integrity.mjs";
+import { inspectGoldCoverage } from "./coverage.mjs";
 
 function parseBuildSummary(stdout, systemId) {
   try {
@@ -75,6 +76,12 @@ export function prepareGraphEvaluation({ suite, subjectRoot, harnessRoot, output
         index: { path: snapshot, sha256: fileHash(snapshot), normalizedSha256: normalizedHashes.at(-1) },
         rebuilds,
         deterministic: new Set(normalizedHashes).size === 1,
+        goldCoverage: inspectGoldCoverage(snapshot, fixture.tasks.map((task) => ({
+          ...suite.tasks.find((entry) => entry.id === task.taskId),
+          gold: task.gold,
+          acceptableAlternates: task.acceptableAlternates,
+          mustNotReturn: task.mustNotReturn,
+        }))),
       };
     }
   } finally {
@@ -82,7 +89,7 @@ export function prepareGraphEvaluation({ suite, subjectRoot, harnessRoot, output
     rmSync(scratch, { recursive: true, force: true });
   }
   const identity = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     suiteId: suite.id,
     suiteSha256,
     subject: fixture.subject,
@@ -102,6 +109,7 @@ export function prepareGraphEvaluation({ suite, subjectRoot, harnessRoot, output
     runIdentity: objectHash(identity),
     preparedAt: new Date().toISOString(),
     goldEvidence: fixture.tasks,
+    graphCoverage: Object.fromEntries(Object.entries(systems).map(([id, system]) => [id, system.goldCoverage])),
     systems,
   };
   writeFileSync(join(outputDir, "prepare.json"), `${JSON.stringify(manifest, null, 2)}\n`);

@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -42,6 +43,17 @@ else if (mode === "failure") {
 } else if (mode === "malformed") {
   process.stdout.write("not-json\n");
 } else if (args[0] === "graph" && args[1] === "scope") {
+  const mutateThisQuery = !process.env.FAKE_GRAPH_MUTATE_QUERY
+    || process.env.FAKE_GRAPH_MUTATE_QUERY === args[2];
+  if (mutateThisQuery && process.env.FAKE_GRAPH_MUTATE_SUBJECT === "1") {
+    appendFileSync(join("src", "subject.ts"), "// concurrent source drift\n");
+  }
+  if (mutateThisQuery && process.env.FAKE_GRAPH_MUTATE_BUNDLE === "1") {
+    appendFileSync(fileURLToPath(import.meta.url), "\n// concurrent bundle drift\n");
+  }
+  if (mutateThisQuery && process.env.FAKE_GRAPH_MUTATE_HARNESS_PATH) {
+    appendFileSync(process.env.FAKE_GRAPH_MUTATE_HARNESS_PATH, "\n// concurrent evaluator drift\n");
+  }
   emit({ type: "meta", schemaVersion: 1, command: "graph scope", task: args[2], detail: "minimal", maxNodes: 10, maxOutputTokens: 1_000 });
   if (mode !== "miss") emit({ type: "fact", id: "function:target", kind: "function", name: "TargetSymbol", qualifiedName: "TargetSymbol", filePath: "src/subject.ts", language: "typescript", startLine: 1, endLine: 1 });
   emit({ type: "summary", matchedNodes: mode === "miss" ? 0 : 1, returnedNodes: mode === "miss" ? 0 : 1, returnedEdges: 0, maxOutputTokens: 1_000, truncated: false, suggestedNextCommands: [], estimatedOutputTokens: 100 });

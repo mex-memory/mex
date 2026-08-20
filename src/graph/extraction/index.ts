@@ -18,16 +18,49 @@ export {
   loadGrammars,
   supportedLanguages,
   disposeParsers,
+  grammarManifestHash,
   SUPPORTED_SOURCE_GLOB,
 } from "./grammars.js";
 export { getExtractor, EXTRACTORS } from "./languages/index.js";
-export { generateNodeId } from "./node-id.js";
+export { canonicalNodeIdentity, generateNodeId } from "./node-id.js";
+export {
+  buildTypeScriptExtraction,
+  canonicalCompilerIdentity,
+  discoverTypeScriptProjects,
+  generateCanonicalCompilerNodeId,
+  normalizedCompilerTokens,
+  TYPESCRIPT_COMPILER_EXTRACTOR_VERSION,
+  TYPESCRIPT_COMPILER_VERSION,
+} from "./compiler.js";
+export type {
+  CompilerDiagnosticSummary,
+  CompilerExtractedNode,
+  CompilerExtractionOptions,
+  CompilerExtractionResult,
+  CompilerFileExtraction,
+  CompilerImportBinding,
+  CompilerNodeKind,
+  CompilerParseStatus,
+  CompilerReference,
+  CompilerReferenceKind,
+  CompilerResolutionStatus,
+  CompilerSourceHealth,
+  CompilerSourceLanguage,
+  DiscoveredTypeScriptProject,
+} from "./compiler.js";
 
 /** What one file's extraction yields, before the engine resolves/persists it. */
 export interface FileExtraction {
   language: Language;
   nodes: ExtractedNode[];
   edges: ExtractedEdge[];
+  health: {
+    status: "ok" | "partial" | "failed";
+    diagnosticCount: number;
+    missingCount: number;
+    errorCoverage: number;
+    diagnostics: Array<{ type: string; startLine: number; endLine: number }>;
+  };
 }
 
 /**
@@ -44,8 +77,57 @@ export function extractFile(
   if (!extractor) return null;
   const tree = parse(source, language);
   if (!tree) return null;
-  const { nodes, edges } = extractor.extract(tree, filePath, source);
-  return { language, nodes, edges };
+  const health = treeHealth(tree.rootNode, source);
+  if (health.status === "failed") return { language, nodes: [], edges: [], health };
+  const extracted = extractor.extract(tree, filePath, source);
+  if (health.status === "partial" && extracted.nodes.every((node) => node.kind === "file")) {
+    return { language, nodes: [], edges: [], health: { ...health, status: "failed" } };
+  }
+  const excluded = new Set(extracted.nodes.filter((node) => node.kind !== "file" && health.diagnostics.some((diagnostic) =>
+    diagnostic.startLine <= node.endLine && diagnostic.endLine >= node.startLine,
+  )).map((node) => node.id));
+  const nodes = extracted.nodes.filter((node) => !excluded.has(node.id));
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = extracted.edges.filter((edge) => nodeIds.has(edge.source) && (!edge.target || nodeIds.has(edge.target)));
+  return { language, nodes, edges, health };
+}
+
+function treeHealth(root: TSNode, source: string): FileExtraction["health"] {
+  const errors: TSNode[] = [];
+  const missing: TSNode[] = [];
+  let missingCount = 0;
+  const visit = (node: TSNode): void => {
+    if (node.type === "ERROR" || node.isError) errors.push(node);
+    if (node.isMissing) {
+      missingCount++;
+      missing.push(node);
+    }
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  const issueNodes = [...errors, ...missing];
+  const ranges = issueNodes.map((node) => ({ start: node.startIndex, end: Math.max(node.startIndex + 1, node.endIndex) }))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of ranges) {
+    const prior = merged.at(-1);
+    if (prior && range.start <= prior.end) prior.end = Math.max(prior.end, range.end);
+    else merged.push({ ...range });
+  }
+  const covered = merged.reduce((sum, range) => sum + Math.max(0, range.end - range.start), 0);
+  const coverage = Math.min(1, covered / Math.max(1, Buffer.byteLength(source, "utf8")));
+  const failed = root.type === "ERROR" || Boolean(root.isError) || coverage > 0.25;
+  return {
+    status: failed ? "failed" : errors.length > 0 || missingCount > 0 ? "partial" : "ok",
+    diagnosticCount: errors.length,
+    missingCount,
+    errorCoverage: coverage,
+    diagnostics: issueNodes.slice(0, 100).map((node) => ({
+      type: node.isMissing ? `MISSING:${node.type}` : node.type,
+      startLine: node.startPosition.row + 1,
+      endLine: node.endPosition.row + 1,
+    })),
+  };
 }
 
 /**

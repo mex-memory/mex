@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 2,
+  "id": "hono-native-graph",
+  "description": "Pinned Hono construction, first-response file, source-span, flow, and budget gate.",
+  "subject": {
+    "name": "honojs/hono",
+    "repository": "https://github.com/honojs/hono.git",
+    "revision": "0293343dbf8f0bca52b210a98bcef31cc61395ee",
+    "requireClean": false
+  },
+  "determinismRebuilds": 2,
+  "systems": {
+    "current": {
+      "role": "candidate",
+      "label": "active checkout",
+      "command": ["node", "{harnessRoot}/dist/cli.js"]
+    }
+  },
+  "tasks": [
+    {
+      "id": "request-dispatch",
+      "category": "natural-language-flow",
+      "critical": true,
+      "operation": "scope",
+      "query": "How does an incoming Request enter a Hono application, get matched to routes, and dispatch through one or multiple handlers?",
+      "gold": [
+        { "symbol": "#dispatch", "kind": "method", "path": "src/hono-base.ts", "startLine": 407, "endLine": 467 },
+        { "symbol": "fetch", "kind": "property", "path": "src/hono-base.ts", "startLine": 480, "endLine": 486 }
+      ],
+      "requiredFlows": [
+        { "from": { "symbol": "fetch", "path": "src/hono-base.ts" }, "to": { "symbol": "#dispatch", "path": "src/hono-base.ts" }, "kinds": ["calls", "references"] }
+      ]
+    },
+    {
+      "id": "smart-router-selection",
+      "category": "natural-language-symbol",
+      "critical": true,
+      "operation": "scope",
+      "query": "How does Hono's smart router choose the first router that supports all registered paths and then reuse it for later matches?",
+      "gold": [
+        { "symbol": "SmartRouter", "kind": "class", "path": "src/router/smart-router/router.ts", "startLine": 4, "endLine": 70 },
+        { "symbol": "match", "kind": "method", "path": "src/router/smart-router/router.ts", "startLine": 21, "endLine": 61 }
+      ]
+    },
+    {
+      "id": "middleware-composition",
+      "category": "natural-language-flow",
+      "critical": true,
+      "operation": "scope",
+      "query": "How are Hono middleware handlers composed so next advances exactly once while errors and not-found responses are handled?",
+      "gold": [
+        { "symbol": "compose", "kind": "variable", "path": "src/compose.ts", "startLine": 15, "endLine": 73 },
+        { "symbol": "dispatch", "kind": "function", "path": "src/compose.ts", "startLine": 32, "endLine": 71 }
+      ],
+      "requiredFlows": [
+        { "from": { "symbol": "compose", "path": "src/compose.ts" }, "to": { "symbol": "dispatch", "path": "src/compose.ts" }, "kinds": ["calls", "references", "contains"] }
+      ]
+    },
+    {
+      "id": "request-validation",
+      "category": "natural-language-flow",
+      "critical": true,
+      "operation": "scope",
+      "query": "How does request validation extract JSON, form, query, parameter, header, or cookie input and make the validated value available to later handlers?",
+      "gold": [
+        { "symbol": "validator", "kind": "variable", "path": "src/validator/validator.ts", "startLine": 46, "endLine": 172 },
+        { "symbol": "addValidatedData", "kind": "method", "path": "src/request.ts", "startLine": 335, "endLine": 337 }
+      ],
+      "requiredFlows": [
+        { "from": { "symbol": "validator", "path": "src/validator/validator.ts" }, "to": { "symbol": "addValidatedData", "path": "src/request.ts" }, "kinds": ["calls", "references"] }
+      ]
+    },
+    {
+      "id": "context-response-construction",
+      "category": "natural-language-flow",
+      "critical": true,
+      "operation": "scope",
+      "query": "How does a Hono Context construct a Response while combining prepared headers, explicit headers, cookies, and status values?",
+      "gold": [
+        { "symbol": "Context", "kind": "class", "path": "src/context.ts", "startLine": 293, "endLine": 293 },
+        { "symbol": "#newResponse", "kind": "method", "path": "src/context.ts", "startLine": 608, "endLine": 656 },
+        { "symbol": "createResponseInstance", "kind": "variable", "path": "src/context.ts", "startLine": 288, "endLine": 291 }
+      ],
+      "requiredFlows": [
+        { "from": { "symbol": "#newResponse", "path": "src/context.ts" }, "to": { "symbol": "createResponseInstance", "path": "src/context.ts" }, "kinds": ["calls", "references"] }
+      ]
+    },
+    {
+      "id": "query-cache-key",
+      "category": "natural-language-flow",
+      "critical": true,
+      "operation": "scope",
+      "query": "How does Hono build safe cache keys for QUERY requests using a bounded body digest, representation metadata, and Vary headers?",
+      "gold": [
+        { "symbol": "cache", "kind": "variable", "path": "src/middleware/cache/index.ts", "startLine": 183, "endLine": 324 },
+        { "symbol": "createQueryDigest", "kind": "variable", "path": "src/middleware/cache/index.ts", "startLine": 95, "endLine": 153 },
+        { "symbol": "createCacheKey", "kind": "variable", "path": "src/middleware/cache/index.ts", "startLine": 51, "endLine": 70 }
+      ],
+      "requiredFlows": [
+        { "from": { "symbol": "cache", "path": "src/middleware/cache/index.ts" }, "to": { "symbol": "createQueryDigest", "path": "src/middleware/cache/index.ts" }, "kinds": ["calls", "references"] },
+        { "from": { "symbol": "cache", "path": "src/middleware/cache/index.ts" }, "to": { "symbol": "createCacheKey", "path": "src/middleware/cache/index.ts" }, "kinds": ["calls", "references"] }
+      ]
+    }
+  ],
+  "gates": {
+    "systems": ["current"],
+    "floors": {
+      "topFiveFileHitRate": 1,
+      "returnedRequiredSourceSpanRecall": 0.8,
+      "meanDirectedFlowCoverage": 1,
+      "graphEvidenceCoverage": 1,
+      "budgetComplianceRate": 1
+    },
+    "integrityFloors": { "schemaVersion": 2 },
+    "integrityCeilings": {
+      "extractedToStoredLoss": 0,
+      "buildToStoredDelta": 0,
+      "duplicateEdges": 0,
+      "danglingEdges": 0,
+      "danglingContainers": 0,
+      "duplicateIdentityKeys": 0,
+      "missingIdentityKeys": 0,
+      "ftsRowDelta": 0,
+      "sourceChunkFtsRowDelta": 0,
+      "danglingImportTargets": 0,
+      "danglingAliases": 0,
+      "invalidConfidenceEdges": 0,
+      "suspiciousProductionToTestEdges": 0
+    },
+    "ceilings": { "invalidRuns": 0 },
+    "criticalMustPass": false
+  }
+}

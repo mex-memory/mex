@@ -23,32 +23,80 @@ export class FingerprintStore {
   constructor(private readonly db: SqliteDatabase) {}
 
   upsert(nodeId: string, fingerprint: Fingerprint): void {
-    const buckets = bandHashes(fingerprint);
-    this.db.exec("SAVEPOINT mex_fingerprint_upsert");
+    this.upsertMany([{ nodeId, fingerprint }]);
+  }
+
+  /**
+   * Persist a corpus of fingerprints with one savepoint and one set of
+   * prepared statements. Each node still replaces exactly the same fingerprint
+   * and LSH rows as {@link upsert}; batching only removes statement preparation,
+   * savepoint, and per-band insert overhead from full graph builds.
+   */
+  upsertMany(entries: Iterable<{ nodeId: string; fingerprint: Fingerprint }>): void {
+    const latestByNode = new Map<string, { nodeId: string; fingerprint: Fingerprint }>();
+    for (const entry of entries) latestByNode.set(entry.nodeId, entry);
+    const ordered = [...latestByNode.values()].sort((left, right) => left.nodeId.localeCompare(right.nodeId));
+    if (ordered.length === 0) return;
+
+    const upsertFingerprint = this.db.prepare(
+      `INSERT INTO node_fingerprints (node_id, minhash, neighbors, token_count)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(node_id) DO UPDATE SET minhash=excluded.minhash,
+         neighbors=excluded.neighbors, token_count=excluded.token_count`,
+    );
+    const bucketCount = bandHashes(ordered[0]!.fingerprint).length;
+    const insertBuckets = this.db.prepare(
+      `INSERT INTO lsh_buckets (band, band_hash, node_id) VALUES ${
+        Array.from({ length: bucketCount }, () => "(?, ?, ?)").join(", ")
+      }`,
+    );
+
+    this.db.exec("SAVEPOINT mex_fingerprint_upsert_many");
     try {
-      this.db.prepare("DELETE FROM lsh_buckets WHERE node_id = ?").run(nodeId);
-      this.db.prepare(
-        `INSERT INTO node_fingerprints (node_id, minhash, neighbors, token_count)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(node_id) DO UPDATE SET minhash=excluded.minhash,
-           neighbors=excluded.neighbors, token_count=excluded.token_count`,
-      ).run(nodeId, JSON.stringify(fingerprint.minhash), JSON.stringify(fingerprint.neighbors), fingerprint.tokenCount);
-      const insert = this.db.prepare(
-        "INSERT INTO lsh_buckets (band, band_hash, node_id) VALUES (?, ?, ?)",
-      );
-      buckets.forEach((bandHash, band) => insert.run(band, bandHash, nodeId));
-      this.db.exec("RELEASE mex_fingerprint_upsert");
+      // Delete prior buckets before inserting any replacements. Without a
+      // node_id-oriented LSH index, deleting once per node degenerates into a
+      // full-table scan for every fingerprint as this table grows. Chunked IN
+      // deletes scan the old table only a bounded number of times and produce
+      // the identical final rows (the last entry for a duplicate node wins).
+      const deleteChunkSize = 500;
+      for (let offset = 0; offset < ordered.length; offset += deleteChunkSize) {
+        const nodeIds = ordered.slice(offset, offset + deleteChunkSize).map((entry) => entry.nodeId);
+        this.db.prepare(
+          `DELETE FROM lsh_buckets WHERE node_id IN (${nodeIds.map(() => "?").join(",")})`,
+        ).run(...nodeIds);
+      }
+      for (const { nodeId, fingerprint } of ordered) {
+        const buckets = bandHashes(fingerprint);
+        if (buckets.length !== bucketCount) {
+          throw new Error(`Inconsistent fingerprint band count for ${nodeId}.`);
+        }
+        upsertFingerprint.run(
+          nodeId,
+          JSON.stringify(fingerprint.minhash),
+          JSON.stringify(fingerprint.neighbors),
+          fingerprint.tokenCount,
+        );
+        insertBuckets.run(...buckets.flatMap((bandHash, band) => [band, bandHash, nodeId]));
+      }
+      this.db.exec("RELEASE mex_fingerprint_upsert_many");
     } catch (error) {
-      this.db.exec("ROLLBACK TO mex_fingerprint_upsert");
-      this.db.exec("RELEASE mex_fingerprint_upsert");
+      this.db.exec("ROLLBACK TO mex_fingerprint_upsert_many");
+      this.db.exec("RELEASE mex_fingerprint_upsert_many");
       throw error;
     }
   }
 
   get(nodeId: string): Fingerprint | null {
     const row = this.db.prepare(
-      "SELECT node_id, minhash, neighbors, token_count FROM node_fingerprints WHERE node_id = ?",
-    ).get(nodeId) as FingerprintRow | undefined;
+      `SELECT node_id, minhash, neighbors, token_count
+       FROM node_fingerprints WHERE node_id = ?
+       UNION ALL
+       SELECT fingerprints.node_id, fingerprints.minhash, fingerprints.neighbors, fingerprints.token_count
+       FROM node_aliases aliases
+       JOIN node_fingerprints fingerprints ON fingerprints.node_id = aliases.canonical_node_id
+       WHERE aliases.alias_id = ?
+       LIMIT 1`,
+    ).get(nodeId, nodeId) as FingerprintRow | undefined;
     return row ? decodeRow(row) : null;
   }
 
@@ -71,8 +119,14 @@ export class FingerprintStore {
   getGroundedSource(scaffoldFile: string, nodeId: string): GroundedSource | null {
     const row = this.db.prepare(
       `SELECT scaffold_file, node_id, source, body_hash, fingerprint
-       FROM _mex_grounded_source WHERE scaffold_file = ? AND node_id = ?`,
-    ).get(scaffoldFile, nodeId) as {
+       FROM _mex_grounded_source WHERE scaffold_file = ? AND node_id = ?
+       UNION ALL
+       SELECT grounded.scaffold_file, grounded.node_id, grounded.source, grounded.body_hash, grounded.fingerprint
+       FROM node_aliases aliases
+       JOIN _mex_grounded_source grounded ON grounded.node_id = aliases.alias_id
+       WHERE grounded.scaffold_file = ? AND aliases.canonical_node_id = ?
+       LIMIT 1`,
+    ).get(scaffoldFile, nodeId, scaffoldFile, nodeId) as {
       scaffold_file: string;
       node_id: string;
       source: string;

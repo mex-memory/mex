@@ -151,6 +151,25 @@ describe("Rust extractor", () => {
     expect(callsMake.length).toBe(1);
   });
 
+  it("assigns deterministic occurrence identities to same-scope duplicate declarations", () => {
+    const duplicate = extractFile(
+      "duplicates.rs",
+      "fn repeated() -> u8 { 1 }\nfn repeated() -> u8 { 2 }\n",
+      "rust",
+    )!;
+    const repeated = duplicate.nodes.filter((entry) => entry.kind === "function" && entry.name === "repeated");
+    expect(repeated).toHaveLength(2);
+    expect(new Set(repeated.map((entry) => entry.id)).size).toBe(2);
+    expect(new Set(repeated.map((entry) => entry.identityKey)).size).toBe(2);
+    expect(repeated.map((entry) => entry.id)).toEqual(
+      extractFile(
+        "duplicates.rs",
+        "fn repeated() -> u8 { 1 }\nfn repeated() -> u8 { 2 }\n",
+        "rust",
+      )!.nodes.filter((entry) => entry.kind === "function" && entry.name === "repeated").map((entry) => entry.id),
+    );
+  });
+
   it("normalizes nested generic struct instantiation to its base name (6)", () => {
     // `Boxed::<Vec<u8>> { ... }` must resolve to `Boxed`.
     const instantiatesBoxed = result.edges.filter(

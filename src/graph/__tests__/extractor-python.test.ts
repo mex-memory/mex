@@ -206,6 +206,18 @@ describe("Python extractor", () => {
     ))).toHaveLength(1);
   });
 
+  it("assigns deterministic occurrence identities to same-scope duplicate declarations", () => {
+    const extracted = extractFile(
+      "duplicates.py",
+      "def repeated():\n    return 1\n\ndef repeated():\n    return 2\n",
+      "python",
+    )!;
+    const repeated = extracted.nodes.filter((node) => node.name === "repeated");
+    expect(repeated).toHaveLength(2);
+    expect(new Set(repeated.map((node) => node.id)).size).toBe(2);
+    expect(new Set(repeated.map((node) => node.identityKey)).size).toBe(2);
+  });
+
   it("captures prefixed docstrings and degrades safely on malformed syntax", () => {
     const prefixed = extractFile(
       "docs.py",

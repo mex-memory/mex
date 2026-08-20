@@ -42,3 +42,43 @@ export function createResolutionContext(store: GraphStore, projectRoot: string):
     getAllFiles: () => [...new Set(allNodes().map((node) => node.filePath))].sort(),
   };
 }
+
+/**
+ * Read-only resolver view over a staged corpus. This is used before the publish
+ * transaction so framework detection and cross-file resolution cannot hold the
+ * WAL writer lock while reading/parsing project files.
+ */
+export function createStagedResolutionContext(
+  stagedNodes: readonly GraphNode[],
+  projectRoot: string,
+  stagedSources: ReadonlyMap<string, string> = new Map(),
+): ResolutionContext {
+  const nodes = [...stagedNodes];
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const index = (key: (node: GraphNode) => string): Map<string, GraphNode[]> => {
+    const map = new Map<string, GraphNode[]>();
+    for (const node of nodes) {
+      const value = key(node);
+      const bucket = map.get(value) ?? [];
+      bucket.push(node);
+      map.set(value, bucket);
+    }
+    return map;
+  };
+  const byFile = index((node) => node.filePath);
+  const byName = index((node) => node.name);
+  const byQualifiedName = index((node) => node.qualifiedName);
+  const byKind = index((node) => node.kind);
+  return {
+    getNodesInFile: (path) => byFile.get(path) ?? [],
+    getNodesByName: (name) => byName.get(name) ?? [],
+    getNodesByQualifiedName: (name) => byQualifiedName.get(name) ?? [],
+    getNodesByKind: (kind) => byKind.get(kind) ?? [],
+    getNodeById: (id) => byId.get(id) ?? null,
+    fileExists: (path) => stagedSources.has(path) || existsSync(resolve(projectRoot, path)),
+    readFile: (path) => stagedSources.get(path)
+      ?? (() => { try { return readFileSync(resolve(projectRoot, path), "utf-8"); } catch { return null; } })(),
+    getProjectRoot: () => projectRoot,
+    getAllFiles: () => [...new Set([...stagedSources.keys(), ...nodes.map((node) => node.filePath)])].sort(),
+  };
+}

@@ -133,12 +133,13 @@ class TsFamilyWalker {
     extra?: Partial<ExtractedNode>,
   ): string | null {
     if (!name) return null;
-    const id = generateNodeId(this.filePath, kind, name);
+    const qualifiedName = this.qualify(name);
+    const id = generateNodeId(this.filePath, kind, name, qualifiedName, kind, extra?.signature);
     this.nodes.push({
       id,
       kind,
       name,
-      qualifiedName: this.qualify(name),
+      qualifiedName,
       filePath: this.filePath,
       language: this.language,
       startLine: node.startPosition.row + 1,

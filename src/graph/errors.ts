@@ -12,3 +12,14 @@ export class NotImplementedError extends Error {
     this.name = "NotImplementedError";
   }
 }
+
+/** A derived graph database exists, but was produced by an incompatible engine. */
+export class GraphRebuildRequiredError extends Error {
+  readonly code = "GRAPH_REBUILD_REQUIRED";
+  readonly recoveryCommand = "mex graph";
+
+  constructor(message = "The code graph was built with an incompatible schema or extractor.") {
+    super(`${message} Run \`mex graph\` to rebuild it.`);
+    this.name = "GraphRebuildRequiredError";
+  }
+}

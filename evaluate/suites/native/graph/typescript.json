@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 2,
+  "id": "typescript-native-graph-holdout",
+  "description": "Frozen TypeScript holdout preserving the original six questions while grading first-response files and verified source spans.",
+  "subject": {
+    "name": "microsoft/TypeScript",
+    "repository": "https://github.com/microsoft/TypeScript.git",
+    "revision": "b465fdbfe175304d9b977da137b2c178ae1091d3",
+    "requireClean": false
+  },
+  "determinismRebuilds": 2,
+  "systems": {
+    "current": {
+      "role": "candidate",
+      "label": "active checkout",
+      "command": ["node", "{harnessRoot}/dist/cli.js"]
+    }
+  },
+  "tasks": [
+    {
+      "id": "supported-extensions",
+      "category": "natural-language-symbol",
+      "operation": "scope",
+      "query": "Which routine decides what source-file suffixes count as supported for the current compiler options?",
+      "gold": [
+        { "symbol": "getSupportedExtensions", "kind": "function", "path": "src/compiler/utilities.ts", "startLine": 9989, "endLine": 10008 }
+      ]
+    },
+    {
+      "id": "common-source-root",
+      "category": "natural-language-symbol",
+      "operation": "scope",
+      "query": "How is the common source root chosen for emitted files?",
+      "gold": [
+        { "symbol": "getCommonSourceDirectory", "kind": "function", "path": "src/compiler/emitter.ts", "startLine": 636, "endLine": 665 }
+      ]
+    },
+    {
+      "id": "module-resolution",
+      "category": "natural-language-symbol",
+      "operation": "scope",
+      "query": "How does the compiler locate an imported package or source file?",
+      "gold": [
+        { "symbol": "resolveModuleName", "kind": "function", "path": "src/compiler/moduleNameResolver.ts", "startLine": 1406, "endLine": 1483 }
+      ]
+    },
+    {
+      "id": "config-search",
+      "category": "natural-language-symbol",
+      "operation": "scope",
+      "query": "Where does command-line compilation search upward for a project configuration?",
+      "gold": [
+        { "symbol": "findConfigFile", "kind": "function", "path": "src/compiler/program.ts", "startLine": 328, "endLine": 333 }
+      ]
+    },
+    {
+      "id": "watch-program",
+      "category": "natural-language-symbol",
+      "operation": "scope",
+      "query": "What entry point starts and maintains a watch-mode compilation?",
+      "gold": [
+        { "symbol": "createWatchProgram", "kind": "function", "path": "src/compiler/watchPublic.ts", "startLine": 415, "endLine": 420 }
+      ]
+    },
+    {
+      "id": "colored-diagnostics",
+      "category": "natural-language-symbol",
+      "operation": "scope",
+      "query": "How are compiler errors rendered with color and surrounding source lines?",
+      "gold": [
+        { "symbol": "formatDiagnosticsWithColorAndContext", "kind": "function", "path": "src/compiler/program.ts", "startLine": 779, "endLine": 811 }
+      ]
+    }
+  ],
+  "gates": {
+    "systems": ["current"],
+    "floors": {
+      "topFiveFileHitRate": 0.9,
+      "returnedRequiredSourceSpanRecall": 0.8,
+      "graphEvidenceCoverage": 1,
+      "budgetComplianceRate": 1
+    },
+    "integrityFloors": { "schemaVersion": 2 },
+    "integrityCeilings": {
+      "extractedToStoredLoss": 0,
+      "buildToStoredDelta": 0,
+      "duplicateEdges": 0,
+      "danglingEdges": 0,
+      "danglingContainers": 0,
+      "duplicateIdentityKeys": 0,
+      "missingIdentityKeys": 0,
+      "ftsRowDelta": 0,
+      "sourceChunkFtsRowDelta": 0,
+      "danglingImportTargets": 0,
+      "danglingAliases": 0,
+      "invalidConfidenceEdges": 0,
+      "suspiciousProductionToTestEdges": 0
+    },
+    "ceilings": { "invalidRuns": 0 }
+  }
+}

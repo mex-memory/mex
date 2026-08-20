@@ -79,7 +79,7 @@ Branch artifacts are produced with `git archive` into the ignored output directo
 worktree is not switched, reset, or overwritten. Existing `node_modules` may be shared read-only by
 the archived builds.
 
-### Strict task evidence
+### Source-grounded task evidence
 
 Every non-negative task uses exact evidence:
 
@@ -93,16 +93,18 @@ Every non-negative task uses exact evidence:
     {
       "symbol": "BudgetLedger",
       "kind": "class",
-      "path": "src/graph/agent-protocol.ts"
+      "path": "src/graph/agent-protocol.ts",
+      "startLine": 174,
+      "endLine": 213
     }
   ]
 }
 ```
 
-Preparation fails for missing files, stale declarations, duplicate task IDs, ambiguous declarations,
-empty fixtures, absolute paths, or paths escaping the subject repository. Matching is exact on
-symbol, graph kind, and normalized repository-relative path. A substring in `qualifiedName` or
-serialized JSON is not a match.
+Preparation fails for missing files, stale source spans, duplicate task IDs, ambiguous declarations,
+empty fixtures, absolute paths, or paths escaping the subject repository. Evidence identity is the
+exact symbol, normalized repository-relative path, and source span. Extractor node kind is retained
+as an advisory diagnostic but cannot make valid source evidence impossible.
 
 Supported task operations are:
 
@@ -119,7 +121,10 @@ make a run invalid rather than an empty successful result.
 
 The report includes:
 
-- exact evidence Recall@1, Recall@5, and Recall@10;
+- first-response top-five file hit rate and file MRR;
+- returned required source-span recall and directed-flow coverage;
+- graph-construction coverage, reported separately from retrieval misses;
+- source-identity Recall@1, Recall@5, and Recall@10 for covered graph evidence;
 - MRR with every miss scored as zero;
 - nDCG@10, Precision@5, irrelevant-result rate, and complete-evidence rate;
 - negative-query accuracy and prohibited-result hits;
@@ -191,6 +196,33 @@ npm run eval:compare -- --run \
   --repetitions 3
 ```
 
+For a tuning pilot that compares only repository files with the active candidate, select the same
+two arms during preparation and execution:
+
+```bash
+npm run eval:compare -- --prepare \
+  --suite evaluate/compare/suites/mex-graph.json \
+  --repo . \
+  --output .mex/eval-results/compare/mex-graph-two-arm \
+  --arms files,candidate
+
+npm run eval:compare -- --run \
+  --suite evaluate/compare/suites/mex-graph.json \
+  --repo . \
+  --output .mex/eval-results/compare/mex-graph-two-arm \
+  --arms files,candidate \
+  --agent claude \
+  --model <model-name> \
+  --policy forced-first \
+  --repetitions 1
+```
+
+The run manifest records the selected arms, and `--report` reads that selection automatically.
+Use a fresh output directory when changing the arm set. With the six-task MEX and Hono suites,
+one repetition of `files,candidate` is 12 sessions per suite, or 24 sessions total. This two-arm
+report computes the candidate-versus-files efficiency and correctness gate but remains a
+descriptive tuning pilot; the final release decision still uses all three arms.
+
 Or use the locally authenticated Codex CLI:
 
 ```bash
@@ -222,10 +254,19 @@ Report the policies separately; they answer different questions.
 
 Each session starts in a fresh neutral temporary directory. The subject repository is added as a
 readable directory, graph commands pass through a fixed wrapper into the prepared subject index,
-and the agent never inherits conversation state. Claude safe mode/no-session-persistence and Codex
-ephemeral/read-only modes are used. Policy validation distinguishes attempted, executed, failed,
-and denied tool calls and rejects raw SQLite, cross-arm binaries, shell composition, or an invalid
-forced-first sequence.
+and the agent never inherits conversation state. Claude uses empty user/project/local setting
+sources, one harness-owned Bash guard, and no session persistence; Codex uses ephemeral/read-only
+mode. Policy validation distinguishes attempted, executed, failed, and denied tool calls and rejects
+executed raw SQLite, cross-arm binaries, shell composition, or an invalid forced-first sequence.
+Run the evaluation as the sole graph writer for its subject repository: preparation and execution
+temporarily swap `.mex/graph.db` and restore the startup copy, so a concurrent external `mex graph`
+process is outside the supported execution model. Source, evaluator, CLI-bundle, snapshot, prepare,
+or active-manifest drift aborts the run instead of persisting a graded row.
+Claude runs in isolated `dontAsk` mode: both arms receive the same
+Read/Grep/Glob capabilities, while graph arms additionally pre-approve only their own fixed graph
+wrapper. The PreToolUse guard denies every other Bash command before Claude's built-in read-only
+auto-allow can run. A denied, read-only file-shell attempt is recorded separately and may recover through
+Read/Grep/Glob; an executed file-shell fallback or any unexplained denial invalidates the row.
 
 ### Token and prompt-cache accounting
 
@@ -243,6 +284,10 @@ and maps only established fields into:
   "reportedCostUsd": null,
   "newTokens": 0,
   "cacheUseRatio": 0,
+  "accountingValid": true,
+  "accountingReason": null,
+  "terminal": {},
+  "perMessage": {},
   "raw": []
 }
 ```
@@ -250,6 +295,12 @@ and maps only established fields into:
 Unavailable fields remain `null`. In particular, Codex does not currently expose a cache-write
 count in its JSONL usage event, so the adapter preserves `cacheWrite: null` while computing new
 tokens from uncached input plus output. Claude reports cache creation/write separately.
+
+Claude stream-json can repeat the same assistant message. The harness deduplicates usage by
+`message.id`, sums the unique messages, and accepts the terminal cumulative token totals only when
+terminal uncached input, cache-write, and cache-read values exactly agree with those unique-message
+totals. A mismatch remains available for correctness review and preserves both observations, but is
+marked accounting-invalid and excluded from every paired token decision.
 
 The primary comparison is paired within the same task and repetition:
 
@@ -264,17 +315,18 @@ Absolute uncached input, cache writes, cache reads, output, totals, cost, and ca
 visible per arm. Reports include distributions, totals, paired means, and deterministic bootstrap
 95% intervals. Missing fields never become zero-cost claims.
 
-Arm order is balanced across tasks and repetitions using all six three-arm permutations. This
-prevents one arm from always running after another has warmed a provider cache. Shared prompt text
-appears in the same prefix where the experiment permits, but the report does not assume cache reads
-cancel between arms.
+Arm order is balanced across tasks and repetitions using both two-arm orders or all six three-arm
+permutations. This prevents one arm from always running after another has warmed a provider cache.
+Shared prompt text appears in the same prefix where the experiment permits, but the report does not
+assume cache reads cancel between arms.
 
 ### Agent outcomes
 
 The agent report records:
 
 - exact structured answer symbols and evidence paths;
-- initial scope rank, Recall@5, MRR, and miss rate without dropping misses;
+- first-response file rank/hit rate, returned source-span recall, and directed-flow coverage;
+- per-arm graph-construction coverage, kept separate from retrieval misses;
 - scope calls, semantically distinct scope retries, graph follow-ups, file-search fallbacks, tool
   errors, denials, turns, latency, and tool-result characters;
 - complete absolute cache/token composition; and
@@ -295,8 +347,9 @@ npm run eval:test
 
 The tests use fake graph, Claude, and Codex processes. They cover nonzero exits, timeouts, malformed
 and empty JSONL, stale/ambiguous gold, exact identity matching, partial multi-symbol evidence,
-miss-preserving MRR, output and cache accounting, balanced repetitions, resume identity, stale
-manual reviews, graph loss metrics, index restoration, and policy violations.
+miss-preserving MRR, terminal-versus-unique-message cache accounting, balanced repetitions, resume identity, stale
+manual reviews, graph loss metrics, index restoration, the exact-wrapper Bash guard, denial recovery,
+and policy violations.
 
 ## Historical scripts
 

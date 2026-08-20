@@ -7,6 +7,7 @@ import type {
   TSTree,
 } from "../types.js";
 import {
+  canonicalNodeIdentity,
   generateNodeId,
   getChildByField,
   getNodeText,
@@ -39,6 +40,7 @@ class RustWalker {
   private readonly edges: ExtractedEdge[] = [];
   private scopeStack: string[] = [];
   private readonly deferredImpls: { node: TSNode; stack: string[] }[] = [];
+  private readonly identityOccurrences = new Map<string, number>();
 
   constructor(
     private readonly filePath: string,
@@ -47,11 +49,13 @@ class RustWalker {
   ) {}
 
   run(root: TSNode): { nodes: ExtractedNode[]; edges: ExtractedEdge[] } {
-    const fileId = `file:${this.filePath}`;
+    const fileName = baseName(this.filePath);
+    const fileId = generateNodeId(this.filePath, "file", fileName, this.filePath, "source-file");
     this.nodes.push({
       id: fileId,
+      identityKey: canonicalNodeIdentity(this.filePath, "file", this.filePath, "source-file"),
       kind: "file",
-      name: baseName(this.filePath),
+      name: fileName,
       qualifiedName: this.filePath,
       filePath: this.filePath,
       language: this.language,
@@ -112,12 +116,19 @@ class RustWalker {
     extra?: Partial<ExtractedNode>,
   ): string | null {
     if (!name) return null;
-    const id = generateNodeId(this.filePath, kind, name);
+    const qualifiedName = this.qualify(name);
+    const baseIdentity = canonicalNodeIdentity(this.filePath, kind, qualifiedName, kind, extra?.signature);
+    const ordinal = this.identityOccurrences.get(baseIdentity) ?? 0;
+    this.identityOccurrences.set(baseIdentity, ordinal + 1);
+    const declarationRole = ordinal === 0 ? kind : `${kind}:ordinal:${ordinal}`;
+    const identityKey = canonicalNodeIdentity(this.filePath, kind, qualifiedName, declarationRole, extra?.signature);
+    const id = generateNodeId(this.filePath, kind, name, qualifiedName, declarationRole, extra?.signature);
     this.nodes.push({
       id,
+      identityKey,
       kind,
       name,
-      qualifiedName: this.qualify(name),
+      qualifiedName,
       filePath: this.filePath,
       language: this.language,
       startLine: node.startPosition.row + 1,
@@ -311,8 +322,13 @@ class RustWalker {
     const arg = node.namedChild(0);
     if (!arg) return;
     const path = getNodeText(arg, this.source);
-    if (path) {
-      this.addRef(`file:${this.filePath}`, path, "imports", node);
+    const fileId = this.scopeStack[0];
+    if (path && fileId) {
+      for (const binding of rustUseBindings(path)) {
+        this.addRef(fileId, binding.moduleSpecifier, "imports", node, {
+          bindings: [{ localName: binding.localName, importedName: binding.importedName }],
+        });
+      }
     }
   }
 
@@ -378,6 +394,7 @@ class RustWalker {
     targetName: string,
     kind: ExtractedEdge["kind"],
     node: TSNode,
+    metadata?: Record<string, unknown>,
   ): void {
     if (!targetName) return;
     this.edges.push({
@@ -386,8 +403,30 @@ class RustWalker {
       kind,
       line: node.startPosition.row,
       column: node.startPosition.column,
+      metadata,
     });
   }
+}
+
+function rustUseBindings(path: string): Array<{
+  moduleSpecifier: string; importedName: string; localName: string;
+}> {
+  const normalized = path.trim();
+  const open = normalized.indexOf("{");
+  if (open >= 0) {
+    const prefix = normalized.slice(0, open).replace(/::$/, "");
+    const close = normalized.lastIndexOf("}");
+    const inner = normalized.slice(open + 1, close >= 0 ? close : undefined);
+    return inner.split(",").map((entry) => entry.trim()).filter(Boolean).map((entry) => {
+      const [memberPath, alias] = entry.split(/\s+as\s+/);
+      const full = [prefix, memberPath!.trim()].filter(Boolean).join("::");
+      const importedName = memberPath!.trim().split("::").at(-1)!;
+      return { moduleSpecifier: full, importedName, localName: alias?.trim() || importedName };
+    });
+  }
+  const [memberPath, alias] = normalized.split(/\s+as\s+/);
+  const importedName = memberPath!.trim().split("::").at(-1)!;
+  return [{ moduleSpecifier: memberPath!.trim(), importedName, localName: alias?.trim() || importedName }];
 }
 
 function nameOf(node: TSNode, source: string): string {

@@ -53,8 +53,8 @@ export interface ResolvedRef {
   targetNodeId: string;
   /** Confidence in the resolution, 0–1. */
   confidence: number;
-  /** How it was resolved — `"framework"` for a `FrameworkResolver` hit. */
-  resolvedBy: "framework" | "import" | "exact-match" | "qualified-name" | "fuzzy";
+  /** Stable resolver name (for example `express-route-handler`). */
+  resolvedBy: string;
 }
 
 /**

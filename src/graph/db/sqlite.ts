@@ -12,6 +12,7 @@
 // process warning untouched.
 
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 
@@ -55,9 +56,12 @@ class NodeSqliteAdapter implements SqliteDatabase {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: { readOnly?: boolean; immutable?: boolean } = {}) {
     const { DatabaseSync } = require("node:sqlite");
-    this.db = new DatabaseSync(dbPath);
+    const location = options.immutable
+      ? `${pathToFileURL(dbPath).href}?mode=ro&immutable=1`
+      : dbPath;
+    this.db = new DatabaseSync(location, { readOnly: options.readOnly === true });
   }
 
   get open(): boolean {
@@ -109,9 +113,12 @@ class NodeSqliteAdapter implements SqliteDatabase {
  * Open (creating if needed) a SQLite database backed by `node:sqlite`. Throws a
  * clear message if the built-in module is unavailable (Node < 22.5).
  */
-export function openSqlite(dbPath: string): SqliteDatabase {
+export function openSqlite(
+  dbPath: string,
+  options: { readOnly?: boolean; immutable?: boolean } = {},
+): SqliteDatabase {
   try {
-    return new NodeSqliteAdapter(dbPath);
+    return new NodeSqliteAdapter(dbPath, options);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error(

@@ -18,7 +18,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/mex-memory/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/mex-memory/mex/actions/workflows/ci.yml)
 [![Node.js >=22.5](https://img.shields.io/badge/node-%3E%3D22.5-339933)](package.json)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](package.json)
 [![Agent memory](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](#agent-memory-mode)
 [![MCP](https://img.shields.io/badge/MCP-compatible-6f8cff)](#mcp-server)
 
@@ -30,7 +30,7 @@ mex maps your code, turns what agents learn into structured Markdown, and keeps 
 
 Every coding session starts with relevant architectural context instead of another full-repository scan.
 
-> **New in v0.7.0:** deterministic local code graphs, symbol-grounded knowledge, compact agent retrieval, and Python/Rust support alongside TypeScript and JavaScript.
+> **New in v0.7.2:** source-backed one-call graph retrieval with compiler-resolved TypeScript flows, deterministic evidence, and hard output budgets.
 
 💬 **Join the mex community on Discord** — discuss ideas, get help, share feedback, and contribute to the project.
 
@@ -170,9 +170,9 @@ The graph is also a compact agent-retrieval layer:
 mex graph scope "trace the authentication flow"
 ```
 
-Instead of returning a large source dump, mex produces a scored neighborhood of relevant symbols under a hard estimated-token budget. The default response contains compact signatures, relationships, node IDs, and selection reasons.
+Instead of returning a repository-sized source dump, mex prioritizes the declarations and real execution flows most likely to answer the task under a hard estimated-token budget. The default response is source-backed and uses deterministic `meta`, `source`, `flow`, and `summary` JSONL records.
 
-Agents can then expand only the symbols they need:
+Returned source is already read. When the summary is `ok`, an agent can answer directly even if lower-priority optional context was truncated. Exact expansion remains available when a declaration is missing or the summary recommends a follow-up:
 
 ```bash
 mex graph get <node-id>
@@ -191,27 +191,19 @@ Agent-facing graph commands use deterministic JSONL envelopes so tools can relia
 
 ## Results
 
-On the mex repository benchmark:
+A 24-session pilot compared the 0.7.2 candidate with files-only search across 12 Hono and MEX tasks:
 
 | Measurement | Result |
 |---|---:|
-| Full repository corpus ÷ graph scope | **916.38×** |
-| Grep top-3 output ÷ graph scope | **10.74×** |
-| Expected-symbol recall | **100%** |
-| Minimal-context agent tasks completed | **5/5** |
-| Minimal-context tasks requiring fallback Read/Grep | **0/5** |
-| Inline-source tasks requiring fallback Read/Grep | **4/5** |
+| Blind-correct answers | **7/12 candidate vs 6/12 files** |
+| New-token change | **-54.5%** |
+| Processed-token change | **-72.5%** |
+| Estimated-cost change | **-56.6%** |
+| Mean-latency change | **-22.9%** |
+| Required source spans returned | **22/23 (95.7%)** |
+| Required Hono flows returned | **6/6 (100%)** |
 
-The measured repository contained:
-
-- 252 corpus files
-- approximately 733,605 estimated tokens
-- 154 graph-indexed source files
-- 1,867 code nodes
-- 2,892 relationships
-- approximately 7.2 seconds to build the graph
-
-These are directional results from one repository, six scripted retrieval tasks, and five real-agent tasks. They demonstrate compact retrieval behavior, not a universal end-to-end graph-versus-no-graph token-savings claim.
+Each task ran once per arm with Claude Sonnet. These are descriptive small-N results against a files-only baseline, not a released-`main` comparison or a universal token-savings claim. See the [benchmark report](evaluate/RESULTS.md) for methodology and limitations.
 
 See the [benchmark results](evaluate/RESULTS.md) and [evaluation harness](evaluate/README.md) for the methodology, raw results, caveats, and reproduction commands.
 
@@ -307,7 +299,7 @@ The MCP package is not published yet. For local development, build it with:
 npm run build --workspace mex-mcp
 ```
 
-The primary v0.7.0 release remains the `mex-agent` CLI.
+The primary v0.7.2 release remains the `mex-agent` CLI.
 
 ## Agent memory mode
 

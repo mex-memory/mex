@@ -22,6 +22,10 @@ const TELEMETRY_KEY = "phc_wdwbBPQMrM6vKWMzz5yqWT357i2hSjMhnAvCuofJdMpg";
 const HOST = "https://us.i.posthog.com";
 const EVENT = "command_run";
 const FLUSH_TIMEOUT_MS = 800;
+// A short-lived CLI must never inherit the SDK's 10 second request timeout.
+// Keep the network attempt inside the command-level flush deadline so an
+// offline endpoint cannot dominate graph/eval latency.
+const REQUEST_TIMEOUT_MS = 650;
 
 // ── Opt-out check ──
 
@@ -117,17 +121,24 @@ export function getPayloadPreview(
 // ── PostHog client (lazy, with test seam) ──
 
 type TransportFn = (event: string, properties: Record<string, unknown>) => void;
+type TelemetryClient = Pick<PostHog, "captureImmediate" | "flush" | "shutdown">;
 
-let client: PostHog | null = null;
+let client: TelemetryClient | null = null;
 let customTransport: TransportFn | null = null;
 const pendingCaptures = new Set<Promise<void>>();
 
-function getClient(): PostHog {
+function getClient(): TelemetryClient {
   if (!client) {
     client = new PostHog(TELEMETRY_KEY, {
       host: HOST,
       flushAt: 1,       // flush after every event (short-lived CLI)
       flushInterval: 0, // don't auto-flush on interval — we call flush() explicitly
+      requestTimeout: REQUEST_TIMEOUT_MS,
+      // Retries are appropriate for a daemon, but their default three-second
+      // backoff keeps a one-shot CLI alive after our flush deadline. A future
+      // invocation is the retry for anonymous command-count telemetry.
+      fetchRetryCount: 0,
+      fetchRetryDelay: 0,
     });
   }
   return client;
@@ -139,6 +150,12 @@ function getClient(): PostHog {
  */
 export function __setTransport(fn: TransportFn | null): void {
   customTransport = fn;
+}
+
+/** Test seam for proving a non-responsive SDK client cannot hold the CLI open. */
+export function __setClientForTest(next: TelemetryClient | null): void {
+  client = next;
+  pendingCaptures.clear();
 }
 
 // ── Capture + flush ──
@@ -202,34 +219,56 @@ export function captureCommand(command: string, scaffoldId?: string): void {
  * interval timer so the Node.js process can exit promptly.
  */
 export async function flush(): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const activeClient = client;
+  const deadline = Date.now() + FLUSH_TIMEOUT_MS;
   try {
-    if (customTransport || !client) {
+    if (customTransport || !activeClient) {
       // No real client to flush — nothing to do.
       return;
     }
 
-    const timeoutPromise = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, FLUSH_TIMEOUT_MS);
-    });
-    await Promise.race([
-      Promise.allSettled([...pendingCaptures]).then(() => client!.flush()),
-      timeoutPromise,
-    ]);
+    await settleByDeadline(
+      Promise.allSettled([...pendingCaptures]).then(() => activeClient.flush()),
+      deadline,
+    );
   } catch {
     // Swallow — delivery is best-effort.
   } finally {
-    // Clear the race timer so a fast flush doesn't leave it pending and delay
-    // process exit.
-    if (timer) clearTimeout(timer);
     try {
-      if (client) {
-        await client.shutdown();
-        client = null;
+      if (activeClient) {
+        // PostHog otherwise defaults shutdown to 30 seconds. Pass the remaining
+        // command deadline to the SDK *and* guard it ourselves so alternate or
+        // future clients cannot make telemetry command-blocking.
+        const remaining = Math.max(1, deadline - Date.now());
+        await settleByDeadline(Promise.resolve(activeClient.shutdown(remaining)), deadline);
       }
     } catch {
       // Swallow shutdown errors too.
+    } finally {
+      if (client === activeClient) client = null;
+      pendingCaptures.clear();
     }
+  }
+}
+
+async function settleByDeadline(work: Promise<unknown>, deadline: number): Promise<void> {
+  // Attach the rejection handler even when the deadline has already elapsed.
+  // The SDK's own bounded shutdown rejects on timeout; leaving that late
+  // rejection detached would corrupt JSONL commands with an unhandled error.
+  const settled = work.then(() => undefined, () => undefined);
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    void settled;
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      settled,
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, remaining); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

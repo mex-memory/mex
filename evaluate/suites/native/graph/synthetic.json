@@ -26,7 +26,7 @@
       "category": "paraphrase",
       "family": "budget",
       "operation": "scope",
-      "query": "cap graph payload size",
+      "query": "bound output token spending",
       "gold": [{ "symbol": "OutputBudgetLedger", "kind": "class", "path": "src/retrieval.ts" }]
     },
     {
@@ -82,7 +82,13 @@
       "category": "language-rust",
       "operation": "scope",
       "query": "Which Rust routine resolves a symbol into a call path?",
-      "gold": [{ "symbol": "resolve_call_path", "kind": "function", "path": "pipeline.rs" }]
+      "gold": [{
+        "symbol": "resolve_call_path",
+        "kind": "function",
+        "path": "pipeline.rs",
+        "startLine": 1,
+        "endLine": 3
+      }]
     },
     {
       "id": "negative-symbol",
@@ -96,7 +102,31 @@
   ],
   "gates": {
     "systems": ["current"],
-    "floors": { "recallAt5": 0.75, "mrr": 0.65, "completeEvidenceRate": 0.62, "budgetComplianceRate": 1, "negativeAccuracy": 1 },
+    "floors": {
+      "recallAt5": 0.75,
+      "mrr": 0.65,
+      "completeEvidenceRate": 0.62,
+      "topFiveFileHitRate": 0.9,
+      "returnedRequiredSourceSpanRecall": 0.8,
+      "budgetComplianceRate": 1,
+      "negativeAccuracy": 1
+    },
+    "integrityFloors": { "schemaVersion": 2 },
+    "integrityCeilings": {
+      "extractedToStoredLoss": 0,
+      "buildToStoredDelta": 0,
+      "duplicateEdges": 0,
+      "danglingEdges": 0,
+      "danglingContainers": 0,
+      "duplicateIdentityKeys": 0,
+      "missingIdentityKeys": 0,
+      "ftsRowDelta": 0,
+      "sourceChunkFtsRowDelta": 0,
+      "danglingImportTargets": 0,
+      "danglingAliases": 0,
+      "invalidConfidenceEdges": 0,
+      "suspiciousProductionToTestEdges": 0
+    },
     "ceilings": { "invalidRuns": 0, "prohibitedHitRate": 0 }
   }
 }

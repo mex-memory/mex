@@ -6,7 +6,7 @@ import type {
   TSNode,
   TSTree,
 } from "../types.js";
-import { generateNodeId, getChildByField, getNodeText } from "../node-id.js";
+import { canonicalNodeIdentity, generateNodeId, getChildByField, getNodeText } from "../node-id.js";
 
 const FUNCTION_TYPES = new Set(["function_definition"]);
 const CLASS_TYPES = new Set(["class_definition"]);
@@ -18,6 +18,7 @@ class PythonWalker {
   private readonly nodes: ExtractedNode[] = [];
   private readonly edges: ExtractedEdge[] = [];
   private readonly scopeStack: string[] = [];
+  private readonly identityOccurrences = new Map<string, number>();
 
   constructor(
     private readonly filePath: string,
@@ -26,11 +27,13 @@ class PythonWalker {
   ) {}
 
   run(root: TSNode): { nodes: ExtractedNode[]; edges: ExtractedEdge[] } {
-    const fileId = `file:${this.filePath}`;
+    const fileName = baseName(this.filePath);
+    const fileId = generateNodeId(this.filePath, "file", fileName, this.filePath, "source-file");
     this.nodes.push({
       id: fileId,
+      identityKey: canonicalNodeIdentity(this.filePath, "file", this.filePath, "source-file"),
       kind: "file",
-      name: baseName(this.filePath),
+      name: fileName,
       qualifiedName: this.filePath,
       filePath: this.filePath,
       language: this.language,
@@ -80,12 +83,19 @@ class PythonWalker {
     extra?: Partial<ExtractedNode>,
   ): string | null {
     if (!name) return null;
-    const id = generateNodeId(this.filePath, kind, name);
+    const qualifiedName = this.qualify(name);
+    const baseIdentity = canonicalNodeIdentity(this.filePath, kind, qualifiedName, kind, extra?.signature);
+    const ordinal = this.identityOccurrences.get(baseIdentity) ?? 0;
+    this.identityOccurrences.set(baseIdentity, ordinal + 1);
+    const declarationRole = ordinal === 0 ? kind : `${kind}:ordinal:${ordinal}`;
+    const identityKey = canonicalNodeIdentity(this.filePath, kind, qualifiedName, declarationRole, extra?.signature);
+    const id = generateNodeId(this.filePath, kind, name, qualifiedName, declarationRole, extra?.signature);
     this.nodes.push({
       id,
+      identityKey,
       kind,
       name,
-      qualifiedName: this.qualify(name),
+      qualifiedName,
       filePath: this.filePath,
       language: this.language,
       startLine: node.startPosition.row + 1,
@@ -195,33 +205,16 @@ class PythonWalker {
   }
 
   private extractImport(node: TSNode): void {
-    if (node.type === "import_statement") {
-      for (const child of node.namedChildren) {
-        if (child.type === "dotted_name" || child.type === "aliased_import") {
-          const specifier = importName(child, this.source);
-          this.addRef(`file:${this.filePath}`, specifier, "imports", node);
-        }
-      }
-    } else if (node.type === "import_from_statement") {
-      const moduleNameNode = getChildByField(node, "module_name") ?? node.namedChild(0);
-      if (!moduleNameNode) return;
-
-      const moduleName = getNodeText(moduleNameNode, this.source);
-      this.addRef(`file:${this.filePath}`, moduleName, "imports", node);
-
-      // `from . import models` names the package as the module field and the
-      // actual sibling module separately. Preserve `.models` as another
-      // candidate so the resolver can bind it to `models.py`.
-      if (/^\.+$/.test(moduleName)) {
-        for (const child of node.namedChildren) {
-          if (child === moduleNameNode) continue;
-          if (child.type !== "dotted_name" && child.type !== "aliased_import") continue;
-          const importedName = importName(child, this.source);
-          if (importedName) {
-            this.addRef(`file:${this.filePath}`, `${moduleName}${importedName}`, "imports", child);
-          }
-        }
-      }
+    const fileId = this.scopeStack[0];
+    if (!fileId) return;
+    const grouped = new Map<string, Array<{ localName: string; importedName: string }>>();
+    for (const binding of pythonImportBindings(getNodeText(node, this.source))) {
+      const entries = grouped.get(binding.moduleSpecifier) ?? [];
+      entries.push({ localName: binding.localName, importedName: binding.importedName });
+      grouped.set(binding.moduleSpecifier, entries);
+    }
+    for (const [moduleSpecifier, bindings] of grouped) {
+      this.addRef(fileId, moduleSpecifier, "imports", node, { bindings });
     }
   }
 
@@ -276,6 +269,7 @@ class PythonWalker {
     targetName: string,
     kind: ExtractedEdge["kind"],
     node: TSNode,
+    metadata?: Record<string, unknown>,
   ): void {
     if (!targetName) return;
     this.edges.push({
@@ -284,6 +278,7 @@ class PythonWalker {
       kind,
       line: node.startPosition.row,
       column: node.startPosition.column,
+      metadata,
     });
   }
 }
@@ -297,11 +292,38 @@ function nameOf(node: TSNode, source: string): string {
   return nameNode ? getNodeText(nameNode, source) : "";
 }
 
-function importName(node: TSNode, source: string): string {
-  const imported = node.type === "aliased_import"
-    ? getChildByField(node, "name") ?? node.namedChild(0)
-    : node;
-  return imported ? getNodeText(imported, source) : "";
+function pythonImportBindings(statement: string): Array<{
+  moduleSpecifier: string; importedName: string; localName: string;
+}> {
+  const normalized = statement.replace(/[()]/g, " ").replace(/\\\s*\n/g, " ").trim();
+  const direct = normalized.match(/^import\s+(.+)$/s);
+  if (direct) {
+    return direct[1]!.split(",").map((entry) => entry.trim()).filter(Boolean).map((entry) => {
+      const [moduleSpecifier, alias] = entry.split(/\s+as\s+/);
+      return {
+        moduleSpecifier: moduleSpecifier!.trim(),
+        importedName: "*",
+        localName: alias?.trim() || moduleSpecifier!.trim().split(".")[0]!,
+      };
+    });
+  }
+  const from = normalized.match(/^from\s+([^\s]+)\s+import\s+(.+)$/s);
+  if (!from) return [];
+  const moduleName = from[1]!;
+  return from[2]!.split(",").map((entry) => entry.trim()).filter(Boolean).flatMap((entry) => {
+    const [importedName, alias] = entry.split(/\s+as\s+/);
+    const imported = importedName!.trim();
+    const importsSiblingModule = /^\.+$/.test(moduleName);
+    const localName = alias?.trim() || imported;
+    if (!importsSiblingModule) return [{ moduleSpecifier: moduleName, importedName: imported, localName }];
+    // `from . import name` can mean a symbol from __init__.py or a sibling
+    // module. Preserve both explicit candidates; later binding resolves only
+    // the one(s) backed by indexed files/symbols.
+    return [
+      { moduleSpecifier: moduleName, importedName: imported, localName },
+      { moduleSpecifier: `${moduleName}${imported}`, importedName: "*", localName },
+    ];
+  });
 }
 
 function isConstructorName(name: string): boolean {

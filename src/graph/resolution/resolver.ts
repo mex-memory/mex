@@ -7,11 +7,11 @@
 // project is indexed, this pass binds each reference to a concrete node and
 // produces the persisted reference edges (calls / imports / extends / …).
 //
-// This is the 0.7.0 BASE resolver: name-based, with import-awareness for
-// disambiguation. It deliberately ships NO framework resolvers — the frozen
-// `FrameworkResolver` seam (`./types.ts`) is where the 0.7.x community adds
-// framework-specific edges. Kept pure (nodes + refs in → edges out) so it is
-// trivially unit-testable and reused unchanged by both `build` and `sync`.
+// Fallback-language bindings are intentionally conservative: lexical scope and
+// explicit import/use evidence only. Framework resolvers may add relationships
+// through their frozen seam, but repository-global name uniqueness is never
+// treated as proof. Kept pure (nodes + refs in → edges out) so build and sync
+// share the exact same deterministic resolution pass.
 
 import type { EdgeKind, GraphEdge, GraphNode, Language, NodeKind } from "../types.js";
 import type { UnresolvedRefRecord } from "../db/store.js";
@@ -64,19 +64,29 @@ export function resolveReferences(
   }
 
   const edges: GraphEdge[] = [];
-  const seen = new Set<string>(); // dedup (source|target|kind)
+  const seen = new Set<string>(); // dedup one semantic callsite
   const importsByFile = new Map<string, Set<string>>(); // file → imported file paths
+  const bindingsByFile = new Map<string, Map<string, Array<{
+    importedName: string; targetPath: string;
+  }>>>();
 
   const push = (
     source: string,
     target: string,
     kind: EdgeKind,
     ref: UnresolvedRefRecord,
-    provenance: GraphEdge["provenance"] = "tree-sitter",
+    provenance: GraphEdge["provenance"] = "lexical",
+    confidence = 1,
+    resolutionMethod = "lexical",
+    evidence?: Record<string, unknown>,
   ) => {
-    const key = `${source}|${target}|${kind}`;
+    const key = `${source}|${target}|${kind}|${ref.line ?? -1}|${ref.column ?? -1}`;
     if (seen.has(key)) return;
     seen.add(key);
+    ref.status = "resolved";
+    ref.targetId = target;
+    ref.confidence = confidence;
+    ref.resolver = resolutionMethod;
     edges.push({
       source,
       target,
@@ -84,6 +94,9 @@ export function resolveReferences(
       line: ref.line,
       column: ref.column,
       provenance,
+      confidence,
+      resolutionMethod,
+      evidence: evidence ? [evidence] : undefined,
     });
   };
 
@@ -103,10 +116,19 @@ export function resolveReferences(
     if (!targetPath) continue;
     const targetFileId = fileNodeByPath.get(targetPath);
     if (!targetFileId) continue;
-    push(ref.fromNodeId, targetFileId, "imports", ref);
+    push(ref.fromNodeId, targetFileId, "imports", ref, "lexical", 1, "explicit-import", {
+      moduleSpecifier: ref.referenceName,
+    });
     let set = importsByFile.get(fromNode.filePath);
     if (!set) importsByFile.set(fromNode.filePath, (set = new Set()));
     set.add(targetPath);
+    for (const binding of importBindings(ref)) {
+      let byLocal = bindingsByFile.get(fromNode.filePath);
+      if (!byLocal) bindingsByFile.set(fromNode.filePath, (byLocal = new Map()));
+      const entries = byLocal.get(binding.localName) ?? [];
+      entries.push({ importedName: binding.importedName, targetPath });
+      byLocal.set(binding.localName, entries);
+    }
   }
 
   // Pass 2: symbol references (calls, extends, implements, instantiates, …).
@@ -123,12 +145,34 @@ export function resolveReferences(
       const kind = ref.referenceKind === "function_ref"
         ? "references"
         : ref.referenceKind as EdgeKind;
-      push(ref.fromNodeId, frameworkResolution.targetNodeId, kind, ref, "heuristic");
+      push(
+        ref.fromNodeId,
+        frameworkResolution.targetNodeId,
+        kind,
+        ref,
+        "framework",
+        frameworkResolution.confidence,
+        frameworkResolution.resolvedBy,
+        {
+          resolver: frameworkResolution.resolvedBy,
+          wiringSite: { filePath: ref.filePath, line: ref.line, column: ref.column },
+        },
+      );
       continue;
     }
 
     // A `recv.method` callee resolves on its method name (last segment).
-    const simpleName = lastSegment(ref.referenceName);
+    const referencedName = lastSegment(ref.referenceName);
+    const qualifier = firstQualifier(ref.referenceName);
+    const directBindings = bindingsByFile.get(fromNode.filePath)?.get(referencedName) ?? [];
+    const qualifierBindings = qualifier
+      ? bindingsByFile.get(fromNode.filePath)?.get(qualifier) ?? []
+      : [];
+    const symbolBindings = directBindings.filter((binding) => binding.importedName !== "*");
+    const uniqueDirect = symbolBindings.length === 1
+      ? symbolBindings[0]
+      : undefined;
+    const simpleName = uniqueDirect?.importedName ?? referencedName;
     const candidates = byName.get(simpleName);
     if (!candidates || candidates.length === 0) continue;
 
@@ -139,14 +183,37 @@ export function resolveReferences(
         : candidates.filter((n) => allowedKinds.includes(n.kind) && n.id !== ref.fromNodeId);
     if (filtered.length === 0) continue;
 
-    const target = pickBest(filtered, fromNode.filePath, importsByFile.get(fromNode.filePath));
+    const provenFiles = new Set([
+      ...directBindings.map((binding) => binding.targetPath),
+      ...qualifierBindings.map((binding) => binding.targetPath),
+    ]);
+    const target = pickBest(
+      filtered,
+      fromNode,
+      ref,
+      provenFiles.size > 0 ? provenFiles : importsByFile.get(fromNode.filePath),
+    );
     if (!target) continue;
 
     const edgeKind: EdgeKind =
       ref.referenceKind === "function_ref" ? "references" : (ref.referenceKind as EdgeKind);
-    push(ref.fromNodeId, target.id, edgeKind, ref);
+    push(
+      ref.fromNodeId,
+      target.id,
+      edgeKind,
+      ref,
+      "lexical",
+      1,
+      target.filePath === fromNode.filePath ? "lexical-scope" : "explicit-import",
+    );
   }
 
+  for (const ref of refs) {
+    if (ref.status === "pending" || ref.status === undefined) {
+      ref.status = (ref.candidates?.length ?? 0) > 1 ? "ambiguous" : "unresolved";
+      ref.confidence = ref.status === "ambiguous" ? 0.75 : 0;
+    }
+  }
   return edges;
 }
 
@@ -154,36 +221,59 @@ export function resolveReferences(
  * Choose the best target among same-named candidates:
  *   1. one defined in the SAME file as the reference,
  *   2. one in a file the reference's file IMPORTS,
- *   3. the sole candidate, or a unique exported candidate,
  *   otherwise null (ambiguous — better no edge than a wrong one).
  */
 function pickBest(
   candidates: GraphNode[],
-  fromFile: string,
+  fromNode: GraphNode,
+  ref: UnresolvedRefRecord,
   importedFiles: Set<string> | undefined,
 ): GraphNode | null {
-  const sameFile = candidates.find((n) => n.filePath === fromFile);
-  if (sameFile) return sameFile;
+  const sameFile = candidates.filter((n) => n.filePath === fromNode.filePath);
+  if (sameFile.length > 0) {
+    // `this`/`super` and unqualified names may bind only inside the lexical
+    // container. Never pick the first same-named method in the file.
+    const receiver = ref.receiver ?? ref.referenceName.split(".").slice(0, -1).join(".");
+    const lexical = sameFile.filter((node) =>
+      node.containerId === fromNode.containerId
+      || node.containerId === fromNode.id
+      || (receiver === "this" && node.containerId === fromNode.containerId),
+    );
+    if (lexical.length === 1) return lexical[0]!;
+    if (lexical.length > 1) return null;
+    const moduleLevel = sameFile.filter((node) => !node.containerId);
+    if (!receiver && moduleLevel.length === 1) return moduleLevel[0]!;
+    return null;
+  }
 
   if (importedFiles) {
     const imported = candidates.filter((n) => importedFiles.has(n.filePath));
     if (imported.length === 1) return imported[0]!;
-    if (imported.length > 1) {
-      const exported = imported.filter((n) => n.isExported);
-      if (exported.length === 1) return exported[0]!;
-    }
   }
-
-  if (candidates.length === 1) return candidates[0]!;
-  const exported = candidates.filter((n) => n.isExported);
-  if (exported.length === 1) return exported[0]!;
   return null;
 }
 
 /** The segment after the last `.` (`obj.method` → `method`; `free` → `free`). */
 function lastSegment(name: string): string {
   const dot = name.lastIndexOf(".");
-  return dot < 0 ? name : name.slice(dot + 1);
+  const rust = name.lastIndexOf("::");
+  const index = Math.max(dot, rust);
+  return index < 0 ? name : name.slice(index + (index === rust ? 2 : 1));
+}
+
+function firstQualifier(name: string): string | undefined {
+  const match = name.match(/^([A-Za-z_$][\w$]*)(?:(?:::)|\.)/);
+  return match?.[1];
+}
+
+function importBindings(ref: UnresolvedRefRecord): Array<{ localName: string; importedName: string }> {
+  const raw = ref.metadata?.bindings;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry): entry is { localName: string; importedName: string } => {
+    if (!entry || typeof entry !== "object") return false;
+    const candidate = entry as Record<string, unknown>;
+    return typeof candidate.localName === "string" && typeof candidate.importedName === "string";
+  });
 }
 
 /**
@@ -200,6 +290,9 @@ function resolveModulePath(
   if (language === "python") {
     return resolvePythonModulePath(fromFile, specifier, fileNodeByPath);
   }
+  if (language === "rust") {
+    return resolveRustModulePath(fromFile, specifier, fileNodeByPath);
+  }
   if (!specifier.startsWith(".")) return null; // external package
   const base = posixJoin(posixDirname(fromFile), specifier);
   const candidates = [
@@ -211,6 +304,55 @@ function resolveModulePath(
     if (fileNodeByPath.has(candidate)) return candidate;
   }
   return null;
+}
+
+/** Resolve a local Rust `use` path to the module file which owns its symbols. */
+function resolveRustModulePath(
+  fromFile: string,
+  specifier: string,
+  fileNodeByPath: Map<string, string>,
+): string | null {
+  const normalized = specifier.replace(/^\s*pub\s+/, "").replace(/\s+as\s+[^:,{]+$/, "").trim();
+  const bracePrefix = normalized.includes("{") ? normalized.slice(0, normalized.indexOf("{")).replace(/::$/, "") : normalized;
+  const parts = bracePrefix.split("::").map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+
+  const fromDir = posixDirname(fromFile);
+  const sourceRoot = fromFile.includes("/") ? fromFile.split("/", 1)[0]! : "";
+  let base = fromDir;
+  if (parts[0] === "crate") {
+    parts.shift();
+    base = sourceRoot;
+  } else if (parts[0] === "self") {
+    parts.shift();
+    base = rustModuleDirectory(fromFile);
+  } else {
+    while (parts[0] === "super") {
+      parts.shift();
+      base = posixDirname(base);
+    }
+  }
+
+  const bases = [...new Set([base, sourceRoot].filter((entry) => entry !== undefined))];
+  // A use path may end in either a module or a symbol. Try longest module path
+  // first, then peel symbol segments until an indexed local module is proven.
+  for (let length = parts.length; length > 0; length -= 1) {
+    const moduleParts = parts.slice(0, length);
+    for (const candidateBase of bases) {
+      const moduleBase = posixJoin(candidateBase, ...moduleParts);
+      for (const candidate of [`${moduleBase}.rs`, posixJoin(moduleBase, "mod.rs")]) {
+        if (fileNodeByPath.has(candidate)) return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+function rustModuleDirectory(fromFile: string): string {
+  const dir = posixDirname(fromFile);
+  const file = fromFile.slice(fromFile.lastIndexOf("/") + 1);
+  if (file === "mod.rs" || file === "lib.rs" || file === "main.rs") return dir;
+  return posixJoin(dir, file.replace(/\.rs$/, ""));
 }
 
 /** Resolve Python's dotted absolute and package-relative module syntax. */

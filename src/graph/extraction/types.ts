@@ -68,6 +68,9 @@ export interface TSNode {
   readonly namedChildren: TSNode[];
   readonly previousNamedSibling: TSNode | null;
   readonly nextNamedSibling: TSNode | null;
+  readonly isError?: boolean;
+  readonly isMissing?: boolean;
+  readonly hasError?: boolean;
   child(index: number): TSNode | null;
   namedChild(index: number): TSNode | null;
   childForFieldName(fieldName: string): TSNode | null;

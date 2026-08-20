@@ -1,5 +1,5 @@
 // Express FrameworkResolver — reference implementation for contributors.
-import { generateNodeId } from "../../extraction/node-id.js";
+import { canonicalNodeIdentity, generateNodeId } from "../../extraction/node-id.js";
 import type { GraphNode, Language } from "../../types.js";
 import type { FrameworkExtractionResult, FrameworkResolver, ResolvedRef, UnresolvedRef } from "../types.js";
 
@@ -22,14 +22,20 @@ export const expressResolver: FrameworkResolver = {
     const references: UnresolvedRef[] = [];
     const language = languageFor(filePath);
     if (!language) return { nodes, references };
+    const occurrences = new Map<string, number>();
     for (const match of content.matchAll(ROUTE)) {
       const name = `${match[1]!.toUpperCase()} ${match[3]!}`;
       const handler = match[4]!;
       const line = content.slice(0, match.index).split("\n").length;
-      const id = generateNodeId(filePath, "route", name);
-      nodes.push({ id, kind: "route", name, qualifiedName: name, filePath, language,
+      const ordinal = occurrences.get(name) ?? 0;
+      occurrences.set(name, ordinal + 1);
+      const role = `express-route:${ordinal}`;
+      const signature = `${name} -> ${handler}`;
+      const id = generateNodeId(filePath, "route", name, name, role, signature);
+      nodes.push({ id, identityKey: canonicalNodeIdentity(filePath, "route", name, role, signature),
+        kind: "route", name, qualifiedName: name, filePath, language,
         startLine: line, endLine: line, startColumn: 0, endColumn: match[0].length,
-        isExported: false, updatedAt: 0 });
+        signature, isExported: false, updatedAt: 0 });
       references.push({ fromNodeId: id, referenceName: handler, referenceKind: "function_ref",
         filePath, language, line: line - 1, column: 0 });
     }
@@ -40,8 +46,13 @@ export const expressResolver: FrameworkResolver = {
     const candidates = context.getNodesByName(ref.referenceName)
       .filter((node) => node.kind === "function" || node.kind === "method");
     const sameFile = candidates.filter((node) => node.filePath === ref.filePath);
-    const target = sameFile.length === 1 ? sameFile[0] : candidates.length === 1 ? candidates[0] : null;
-    return target ? { original: ref, targetNodeId: target.id, confidence: 1, resolvedBy: "framework" } : null;
+    // The route syntax proves the handler name, not a repository-global target.
+    // Imported handlers need an explicit compiler import binding; abstain here
+    // rather than connecting to a coincidentally unique same-named declaration.
+    const target = sameFile.length === 1 ? sameFile[0] : null;
+    return target
+      ? { original: ref, targetNodeId: target.id, confidence: 0.8, resolvedBy: "express-route-handler" }
+      : null;
   },
 };
 

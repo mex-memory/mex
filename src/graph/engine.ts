@@ -17,7 +17,7 @@
 // Synchronous reads are what let the grounding checker match the existing
 // (synchronous) drift-checker signature exactly (`src/graph/grounding.ts`).
 
-import type { GraphNode, NodeKind, Language } from "./types.js";
+import type { EdgeKind, GraphEdge, GraphNode, NodeKind, Language } from "./types.js";
 import { NotImplementedError } from "./errors.js";
 
 // ----------------------------------------------------------------------------
@@ -30,6 +30,11 @@ export interface BuildResult {
   nodesCreated: number;
   edgesCreated: number;
   durationMs: number;
+  health?: {
+    ok: number;
+    partial: number;
+    failed: number;
+  };
 }
 
 /** Options for {@link GraphEngine.searchNodes}. */
@@ -40,6 +45,32 @@ export interface NodeSearchOptions {
   languages?: Language[];
   /** Cap the number of results. */
   limit?: number;
+}
+
+/** One typed graph edge and the node at its opposite endpoint. */
+export interface GraphNeighbor {
+  node: GraphNode;
+  edge: GraphEdge;
+}
+
+export interface IndexedFileInfo {
+  path: string;
+  contentHash: string;
+  parseStatus: "ok" | "partial" | "failed";
+  diagnosticCount: number;
+  errorCoverage: number;
+  nodeCount: number;
+}
+
+export interface SourceChunkMatch {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  contentHash: string;
+  rank: number;
+  matchedTerms?: string[];
+  /** Named structural declarations overlapping this source window, in deterministic relevance order. */
+  nodeIds?: string[];
 }
 
 // ----------------------------------------------------------------------------
@@ -88,6 +119,18 @@ export interface GraphEngine {
   /** Nodes with an outgoing `calls` edge from `id` (its callees). Synchronous. */
   getCallees(id: string): GraphNode[];
 
+  /** Incoming relationships of any requested kinds, preserving edge metadata. */
+  getIncoming(id: string, kinds?: EdgeKind[]): GraphNeighbor[];
+
+  /** Outgoing relationships of any requested kinds, preserving edge metadata. */
+  getOutgoing(id: string, kinds?: EdgeKind[]): GraphNeighbor[];
+
+  /** File-level lexical evidence used by one-call retrieval and parser fallback. */
+  searchSource?(query: string, limit?: number): SourceChunkMatch[];
+
+  /** Indexed file health and hashes. */
+  getIndexedFiles?(): IndexedFileInfo[];
+
   /** Release the underlying database handle. */
   close(): void;
 }
@@ -115,6 +158,18 @@ export const notImplementedGraphEngine: GraphEngine = {
   },
   getCallees(): GraphNode[] {
     throw new NotImplementedError("GraphEngine.getCallees");
+  },
+  getIncoming(): GraphNeighbor[] {
+    throw new NotImplementedError("GraphEngine.getIncoming");
+  },
+  getOutgoing(): GraphNeighbor[] {
+    throw new NotImplementedError("GraphEngine.getOutgoing");
+  },
+  searchSource(): SourceChunkMatch[] {
+    throw new NotImplementedError("GraphEngine.searchSource");
+  },
+  getIndexedFiles(): IndexedFileInfo[] {
+    throw new NotImplementedError("GraphEngine.getIndexedFiles");
   },
   close(): void {
     throw new NotImplementedError("GraphEngine.close");

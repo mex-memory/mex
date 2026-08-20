@@ -18,7 +18,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/mex-memory/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/mex-memory/mex/actions/workflows/ci.yml)
 [![Node.js >=22.5](https://img.shields.io/badge/node-%3E%3D22.5-339933)](package.json)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](package.json)
 [![Agent memory](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](#modo-de-memória-do-agente)
 [![MCP](https://img.shields.io/badge/MCP-compatible-6f8cff)](#servidor-mcp)
 
@@ -30,7 +30,7 @@ mex mapeia seu código, transforma o que os agentes aprendem em Markdown estrutu
 
 Cada sessão de programação começa com o contexto arquitetural relevante, e não com mais uma varredura completa do repositório.
 
-> **Novidade na v0.7.0:** grafos de código locais e determinísticos, conhecimento vinculado a símbolos, recuperação compacta para agentes e suporte a Python e Rust além de TypeScript e JavaScript.
+> **Novidade na v0.7.2:** recuperação do grafo com código-fonte em uma única chamada, fluxos de TypeScript resolvidos pelo compilador, evidência determinística e limites rígidos de saída.
 
 💬 **Entre na comunidade do mex no Discord** — discuta ideias, peça ajuda, compartilhe feedback e contribua com o projeto.
 
@@ -170,9 +170,9 @@ O grafo também funciona como uma camada compacta de recuperação:
 mex graph scope "rastrear o fluxo de autenticação"
 ```
 
-Em vez de retornar grandes blocos de código, mex produz uma vizinhança pontuada de símbolos relevantes sob um limite rígido de tokens estimados. A resposta padrão contém assinaturas compactas, relações, IDs de nós e motivos de seleção.
+Em vez de retornar todo o repositório, o mex prioriza as declarações e os fluxos de execução reais mais prováveis de responder à tarefa, sob um limite rígido de tokens estimados. A resposta padrão inclui código-fonte em registros JSONL determinísticos `meta`, `source`, `flow` e `summary`.
 
-O agente expande somente os símbolos necessários:
+O código-fonte retornado já deve ser considerado lido. Quando o resumo é `ok`, o agente pode responder diretamente mesmo que contexto opcional de menor prioridade tenha sido truncado. A expansão exata continua disponível quando falta uma declaração ou o resumo recomenda uma próxima etapa:
 
 ```bash
 mex graph get <node-id>
@@ -191,20 +191,19 @@ Os comandos voltados a agentes usam envelopes JSONL determinísticos para separa
 
 ## Resultados
 
-No benchmark do repositório do mex:
+Um piloto de 24 sessões comparou o candidato 0.7.2 com busca apenas em arquivos em 12 tarefas de Hono e MEX:
 
 | Medição | Resultado |
 |---|---:|
-| Corpus completo ÷ escopo do grafo | **916,38×** |
-| Saída dos 3 primeiros resultados do grep ÷ escopo | **10,74×** |
-| Recuperação dos símbolos esperados | **100%** |
-| Tarefas concluídas com contexto mínimo | **5/5** |
-| Tarefas mínimas que exigiram Read/Grep | **0/5** |
-| Tarefas com fonte embutida que exigiram Read/Grep | **4/5** |
+| Respostas corretas em revisão cega | **7/12 candidato contra 6/12 arquivos** |
+| Mudança em novos tokens | **-54,5%** |
+| Mudança em tokens processados | **-72,5%** |
+| Mudança no custo estimado | **-56,6%** |
+| Mudança na latência média | **-22,9%** |
+| Trechos de código obrigatórios retornados | **22/23 (95,7%)** |
+| Fluxos obrigatórios do Hono retornados | **6/6 (100%)** |
 
-O repositório medido continha 252 arquivos de corpus, cerca de 733.605 tokens estimados, 154 arquivos indexados, 1.867 nós e 2.892 relações. O grafo levou aproximadamente 7,2 segundos para ser construído.
-
-São resultados direcionais de um repositório, seis tarefas automatizadas de recuperação e cinco tarefas com agentes reais. Eles demonstram recuperação compacta, não uma economia universal de tokens de ponta a ponta em comparação com não usar um grafo.
+Cada tarefa foi executada uma vez por variante com Claude Sonnet. São resultados descritivos de uma amostra pequena contra uma linha de base que pesquisa apenas arquivos; não comparam com o `main` publicado nem provam economia universal de tokens. Consulte o [relatório do benchmark](evaluate/RESULTS.md) para metodologia e limitações.
 
 Consulte os [resultados do benchmark](evaluate/RESULTS.md) e o [sistema de avaliação](evaluate/README.md) para metodologia, dados, limitações e comandos de reprodução.
 
@@ -296,7 +295,7 @@ O pacote MCP ainda não foi publicado. Para desenvolvimento local:
 npm run build --workspace mex-mcp
 ```
 
-O lançamento principal da v0.7.0 continua sendo a CLI `mex-agent`.
+O lançamento principal da v0.7.2 continua sendo a CLI `mex-agent`.
 
 ## Modo de memória do agente
 

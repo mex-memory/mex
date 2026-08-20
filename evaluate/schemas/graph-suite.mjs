@@ -6,9 +6,6 @@ export const GRAPH_SUITE_SCHEMA_VERSION = 2;
 const OPERATIONS = new Set(["scope", "query", "impact"]);
 const RELATIONS = new Set(["where-defined", "who-calls", "what-calls"]);
 const DETAIL_LEVELS = new Set(["minimal", "standard", "source"]);
-const EVIDENCE_KINDS = new Set([
-  "class", "struct", "interface", "trait", "function", "variable", "constant", "enum", "type_alias", "component",
-]);
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -36,19 +33,48 @@ function commandArray(value, label) {
   return stringArray(value, label, 1);
 }
 
+function finiteMetricMap(value, label) {
+  if (value === undefined) return;
+  object(value, label);
+  for (const [metric, threshold] of Object.entries(value)) {
+    string(metric, `${label} metric`);
+    if (!Number.isFinite(threshold)) throw new Error(`${label}.${metric} must be a finite number`);
+  }
+}
+
 function validateEvidence(value, label) {
   object(value, label);
   string(value.symbol, `${label}.symbol`);
-  string(value.kind, `${label}.kind`);
-  if (!EVIDENCE_KINDS.has(value.kind)) throw new Error(`${label}.kind is unsupported: ${value.kind}`);
+  if (value.kind !== undefined) string(value.kind, `${label}.kind`);
   string(value.path, `${label}.path`);
   if (isAbsolute(value.path)) throw new Error(`${label}.path must be repository-relative`);
   if (value.line !== undefined && (!Number.isInteger(value.line) || value.line < 1)) {
     throw new Error(`${label}.line must be a positive integer`);
   }
-  const allowed = new Set(["symbol", "kind", "path", "line"]);
+  if (value.startLine !== undefined && (!Number.isInteger(value.startLine) || value.startLine < 1)) {
+    throw new Error(`${label}.startLine must be a positive integer`);
+  }
+  if (value.endLine !== undefined && (!Number.isInteger(value.endLine) || value.endLine < (value.startLine ?? value.line ?? 1))) {
+    throw new Error(`${label}.endLine must not precede its source span`);
+  }
+  const allowed = new Set(["symbol", "kind", "path", "line", "startLine", "endLine"]);
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`${label}.${key} is not supported`);
   return value;
+}
+
+function validateFlows(value, label) {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  value.forEach((flow, index) => {
+    object(flow, `${label}[${index}]`);
+    for (const endpoint of ["from", "to"]) {
+      const selector = object(flow[endpoint], `${label}[${index}].${endpoint}`);
+      string(selector.symbol, `${label}[${index}].${endpoint}.symbol`);
+      string(selector.path, `${label}[${index}].${endpoint}.path`);
+      if (isAbsolute(selector.path)) throw new Error(`${label}[${index}].${endpoint}.path must be repository-relative`);
+    }
+    if (flow.kinds !== undefined) stringArray(flow.kinds, `${label}[${index}].kinds`, 1);
+  });
 }
 
 function evidenceArray(value, label, min = 0) {
@@ -56,7 +82,7 @@ function evidenceArray(value, label, min = 0) {
   const keys = new Set();
   value.forEach((entry, index) => {
     validateEvidence(entry, `${label}[${index}]`);
-    const key = `${entry.symbol}\0${entry.kind}\0${entry.path}\0${entry.line ?? ""}`;
+    const key = `${entry.symbol}\0${entry.path}\0${entry.startLine ?? entry.line ?? ""}\0${entry.endLine ?? entry.line ?? ""}`;
     if (keys.has(key)) throw new Error(`${label}[${index}] duplicates evidence ${entry.symbol} in ${entry.path}`);
     keys.add(key);
   });
@@ -66,11 +92,11 @@ function evidenceArray(value, label, min = 0) {
 function validateOptions(value, label) {
   if (value === undefined) return;
   object(value, label);
-  const allowed = new Set(["detail", "maxNodes", "maxOutputTokens", "maxSourceLines", "depth", "fingerprint"]);
+  const allowed = new Set(["detail", "maxNodes", "maxFiles", "maxOutputTokens", "maxSourceLines", "depth", "fingerprint"]);
   for (const [key, option] of Object.entries(value)) {
     if (!allowed.has(key)) throw new Error(`${label}.${key} is not supported`);
     if (key === "detail" && !DETAIL_LEVELS.has(option)) throw new Error(`${label}.detail is invalid`);
-    if (["maxNodes", "maxOutputTokens", "maxSourceLines", "depth"].includes(key) && (!Number.isInteger(option) || option < 1)) {
+    if (["maxNodes", "maxFiles", "maxOutputTokens", "maxSourceLines", "depth"].includes(key) && (!Number.isInteger(option) || option < 1)) {
       throw new Error(`${label}.${key} must be a positive integer`);
     }
     if (key === "fingerprint") boolean(option, `${label}.fingerprint`);
@@ -98,6 +124,14 @@ function validateTask(task, label) {
   evidenceArray(task.gold ?? [], `${label}.gold`, noResult ? 0 : 1);
   evidenceArray(task.acceptableAlternates ?? [], `${label}.acceptableAlternates`);
   evidenceArray(task.mustNotReturn ?? [], `${label}.mustNotReturn`);
+  validateFlows(task.requiredFlows, `${label}.requiredFlows`);
+  for (const [flowIndex, flow] of (task.requiredFlows ?? []).entries()) {
+    for (const endpoint of ["from", "to"]) {
+      if (!(task.gold ?? []).some((entry) => entry.symbol === flow[endpoint].symbol && entry.path === flow[endpoint].path)) {
+        throw new Error(`${label}.requiredFlows[${flowIndex}].${endpoint} must identify task gold evidence`);
+      }
+    }
+  }
   if (noResult && (task.gold?.length ?? 0) > 0) throw new Error(`${label} cannot combine expect.noResult with gold evidence`);
   if (task.operation === "scope" && expectation.errorCodes?.length) {
     throw new Error(`${label}.expect.errorCodes is not supported for scope tasks`);
@@ -153,7 +187,11 @@ export function validateGraphSuite(raw, source = "graph suite") {
     if (taskIds.has(task.id)) throw new Error(`${source}.tasks[${index}].id is duplicated: ${task.id}`);
     taskIds.add(task.id);
   });
-  if (raw.gates !== undefined) object(raw.gates, `${source}.gates`);
+  if (raw.gates !== undefined) {
+    const gates = object(raw.gates, `${source}.gates`);
+    finiteMetricMap(gates.integrityFloors, `${source}.gates.integrityFloors`);
+    finiteMetricMap(gates.integrityCeilings, `${source}.gates.integrityCeilings`);
+  }
   return raw;
 }
 
@@ -216,6 +254,7 @@ export function graphTaskArgs(task) {
   const options = task.options ?? {};
   if (options.detail) args.push("--detail", options.detail);
   if (options.maxNodes) args.push("--max-nodes", String(options.maxNodes));
+  if (options.maxFiles) args.push("--max-files", String(options.maxFiles));
   if (options.maxOutputTokens) args.push("--max-output-tokens", String(options.maxOutputTokens));
   if (options.maxSourceLines) args.push("--max-source-lines", String(options.maxSourceLines));
   if (options.depth) args.push("--depth", String(options.depth));

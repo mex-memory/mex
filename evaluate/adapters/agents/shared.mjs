@@ -1,6 +1,7 @@
 import { parseJsonLines } from "../../core/jsonl.mjs";
 import { round } from "../../core/stats.mjs";
-import { evidenceKey, recordEvidenceKey } from "../../graders/retrieval.mjs";
+import { evidenceMatchesRecord } from "../../core/evidence.mjs";
+import { firstResponseMetrics } from "../../graders/retrieval.mjs";
 
 const FILE_SHELL = /(?:^|\s)(?:rg|grep|find|fd|cat|head|tail|sed|awk|ls)(?:\s|$)/;
 
@@ -10,7 +11,7 @@ export function contentText(content) {
   return content == null ? "" : JSON.stringify(content);
 }
 
-export function usageRecord(fields, raw) {
+export function usageRecord(fields, raw, audit = {}) {
   const uncachedInput = Number.isFinite(fields.uncachedInput) ? fields.uncachedInput : null;
   const cacheWrite = Number.isFinite(fields.cacheWrite) ? fields.cacheWrite : null;
   const cacheRead = Number.isFinite(fields.cacheRead) ? fields.cacheRead : null;
@@ -33,6 +34,10 @@ export function usageRecord(fields, raw) {
     reportedCostUsd,
     newTokens,
     cacheUseRatio: cacheRead !== null && cacheDenominator ? round(cacheRead / cacheDenominator) : null,
+    accountingValid: fields.accountingValid !== false,
+    accountingReason: fields.accountingReason ?? null,
+    terminal: audit.terminal ?? null,
+    perMessage: audit.perMessage ?? null,
     raw,
   };
 }
@@ -42,8 +47,7 @@ export function initialScopeRank(payload, task) {
   const facts = records.filter((record) => record.type === "fact");
   const gold = task.gold ?? [];
   if (gold.length) {
-    const keys = new Set(gold.map(evidenceKey));
-    const index = facts.findIndex((fact) => keys.has(recordEvidenceKey(fact)));
+    const index = facts.findIndex((fact) => gold.some((evidence) => evidenceMatchesRecord(evidence, fact)));
     return index < 0 ? null : index + 1;
   }
   const expected = task.expectedSymbols ?? [];
@@ -51,11 +55,16 @@ export function initialScopeRank(payload, task) {
   return index < 0 ? null : index + 1;
 }
 
+export function initialScopeEvidence(payload, task) {
+  const { records, errors } = parseJsonLines(payload, "scope tool result");
+  const metrics = firstResponseMetrics(task, records);
+  return { ...metrics, parseErrors: errors };
+}
+
 function graphKind(command) {
   if (/\bgraph\s+scope\b/.test(command)) return "scope";
   if (/\bgraph\s+get\b/.test(command)) return "get";
   if (/\bgraph\s+query\b/.test(command)) return "query";
-  if (/\bgraph\s+vocab\b/.test(command)) return "vocab";
   if (/\bimpact\b/.test(command)) return "impact";
   return null;
 }
@@ -66,7 +75,11 @@ function scopeQuery(command) {
 }
 
 export function toolMetrics(toolCalls, task) {
-  const graph = { scope: 0, get: 0, query: 0, vocab: 0, impact: 0, calls: 0, distinctScopeQueries: 0, fallbacks: 0, initialScopeRank: null };
+  const graph = {
+    scope: 0, get: 0, query: 0, impact: 0, calls: 0, distinctScopeQueries: 0, fallbacks: 0,
+    initialScopeRank: null, initialFileRank: null, initialFileRecallAt5: null, initialFileHitAt5: null,
+    initialSourceSpanRecall: null, initialDirectedFlowCoverage: null, initialReturnedFiles: [],
+  };
   const scopeQueries = new Set();
   let toolErrors = 0;
   let permissionDenials = 0;
@@ -75,8 +88,9 @@ export function toolMetrics(toolCalls, task) {
     if (call.status === "error") toolErrors += 1;
     if (call.status === "denied") permissionDenials += 1;
     if (typeof call.output === "string") toolResultChars += call.output.length;
-    if (["Read", "Grep", "Glob"].includes(call.name)) graph.fallbacks += 1;
+    if (call.status !== "denied" && ["Read", "Grep", "Glob"].includes(call.name)) graph.fallbacks += 1;
     if (call.name !== "Bash") continue;
+    if (call.status === "denied") continue;
     const command = String(call.input?.command ?? "");
     const kind = graphKind(command);
     if (kind) {
@@ -84,7 +98,16 @@ export function toolMetrics(toolCalls, task) {
       graph.calls += 1;
       if (kind === "scope") {
         scopeQueries.add(scopeQuery(command));
-        if (graph.initialScopeRank === null && typeof call.output === "string") graph.initialScopeRank = initialScopeRank(call.output, task);
+        if (graph.scope === 1 && typeof call.output === "string") {
+          graph.initialScopeRank = initialScopeRank(call.output, task);
+          const evidence = initialScopeEvidence(call.output, task);
+          graph.initialFileRank = evidence.firstRelevantFileRank;
+          graph.initialFileRecallAt5 = evidence.fileRecallAt5;
+          graph.initialFileHitAt5 = evidence.fileHitAt5;
+          graph.initialSourceSpanRecall = evidence.returnedSourceSpanRecall;
+          graph.initialDirectedFlowCoverage = evidence.directedFlowCoverage;
+          graph.initialReturnedFiles = evidence.returnedFiles;
+        }
       }
     } else if (FILE_SHELL.test(command)) graph.fallbacks += 1;
   }

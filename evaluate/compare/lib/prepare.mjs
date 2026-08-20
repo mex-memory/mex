@@ -2,10 +2,11 @@ import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { runSync } from "./process.mjs";
-import { expandToken, suiteHash } from "./suite.mjs";
+import { expandToken, resolveSelectedArmIds, suiteHash } from "./suite.mjs";
 import { validateEvidenceInSource } from "../../graph/lib/fixture.mjs";
 import { commandBundleIdentity } from "../../core/hash.mjs";
 import { inspectGraphDatabase } from "../../graph/lib/integrity.mjs";
+import { inspectGoldCoverage } from "../../graph/lib/coverage.mjs";
 
 function sha256(value) { return createHash("sha256").update(value).digest("hex"); }
 
@@ -78,12 +79,13 @@ export function validateSubjectFixture(suite, subjectRoot) {
 }
 
 /** Build configured control CLIs from local git objects. This uses git archive, never clone. */
-export function buildConfiguredArmArtifacts({ suite, context, outputDir, overrides }) {
+export function buildConfiguredArmArtifacts({ suite, context, outputDir, overrides, selectedArmIds = null }) {
   const generated = { ...overrides };
   const metadata = {};
   const artifactsDir = join(outputDir, "artifacts");
   mkdirSync(artifactsDir, { recursive: true });
-  for (const [armId, arm] of Object.entries(suite.arms)) {
+  for (const armId of resolveSelectedArmIds(suite, selectedArmIds)) {
+    const arm = suite.arms[armId];
     if (arm.kind !== "graph" || !arm.buildFromGit) continue;
     const build = arm.buildFromGit;
     const sourceRoot = resolve(expandToken(build.root, context));
@@ -142,14 +144,16 @@ export class GraphDbGuard {
   }
 }
 
-export function buildArmIndices({ suite, subjectRoot, armCommands, outputDir }) {
+export function buildArmIndices({ suite, subjectRoot, armCommands, outputDir, goldEvidence = [], selectedArmIds = null }) {
+  const armIds = resolveSelectedArmIds(suite, selectedArmIds);
   const indexDir = join(outputDir, "indices");
   const scratch = join(outputDir, ".prepare-scratch");
   mkdirSync(indexDir, { recursive: true });
   const guard = new GraphDbGuard(subjectRoot, scratch);
   const indices = {};
   try {
-    for (const [armId, arm] of Object.entries(suite.arms)) {
+    for (const armId of armIds) {
+      const arm = suite.arms[armId];
       if (arm.kind !== "graph") continue;
       guard.clear();
       const [command, ...prefix] = armCommands[armId];
@@ -167,6 +171,10 @@ export function buildArmIndices({ suite, subjectRoot, armCommands, outputDir }) 
         buildOutput: result.stdout.trim(),
         buildSummary,
         integrity: sqlite ? inspectGraphDatabase(snapshot, buildSummary) : null,
+        goldCoverage: sqlite ? inspectGoldCoverage(snapshot, goldEvidence.map((task) => ({
+          ...suite.tasks.find((entry) => entry.id === task.taskId),
+          gold: task.symbols,
+        }))) : { status: "unavailable", reason: "graph index is not SQLite", tasks: [] },
       };
     }
   } finally {
@@ -176,11 +184,16 @@ export function buildArmIndices({ suite, subjectRoot, armCommands, outputDir }) 
   return indices;
 }
 
-export function prepareEvaluation({ suite, subjectRoot, harnessRoot, armCommands, outputDir, index = true, subjectFixture, artifactMetadata = {} }) {
+export function prepareEvaluation({
+  suite, subjectRoot, harnessRoot, armCommands, outputDir, index = true,
+  subjectFixture, artifactMetadata = {}, selectedArmIds = null,
+}) {
+  const armIds = resolveSelectedArmIds(suite, selectedArmIds);
   mkdirSync(outputDir, { recursive: true });
   const { subject, goldEvidence } = subjectFixture ?? validateSubjectFixture(suite, subjectRoot);
   const harness = repositoryIdentity(harnessRoot);
-  const cli = Object.fromEntries(Object.entries(armCommands).map(([armId, command]) => {
+  const cli = Object.fromEntries(armIds.filter((armId) => armCommands[armId]).map((armId) => {
+    const command = armCommands[armId];
     const bundle = commandBundleIdentity(command);
     const script = bundle.entrypoint;
     return [armId, {
@@ -192,10 +205,18 @@ export function prepareEvaluation({ suite, subjectRoot, harnessRoot, armCommands
       revision: artifactMetadata[armId]?.revision ?? suite.arms[armId].revision ?? null,
     }];
   }));
-  const indices = index ? buildArmIndices({ suite, subjectRoot, armCommands, outputDir }) : {};
+  const indices = index
+    ? buildArmIndices({ suite, subjectRoot, armCommands, outputDir, goldEvidence, selectedArmIds: armIds })
+    : {};
+  const graphCoverage = Object.fromEntries(armIds.map((armId) => [armId,
+    suite.arms[armId].kind === "graph"
+      ? (indices[armId]?.goldCoverage ?? { status: "not_prepared", tasks: [] })
+      : { status: "not_applicable", reason: "files-only arm has no graph", tasks: [] },
+  ]));
   const manifest = {
-    schemaVersion: 2, suiteId: suite.id, suiteSha256: suiteHash(suite), preparedAt: new Date().toISOString(),
-    subject, harness: { ...harness, diffSha256: worktreeDiffHash(harnessRoot) }, cli, indices, goldEvidence,
+    schemaVersion: 3, suiteId: suite.id, suiteSha256: suiteHash(suite), preparedAt: new Date().toISOString(),
+    selectedArmIds: armIds,
+    subject, harness: { ...harness, diffSha256: worktreeDiffHash(harnessRoot) }, cli, indices, goldEvidence, graphCoverage,
   };
   writeFileSync(join(outputDir, "prepare.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;

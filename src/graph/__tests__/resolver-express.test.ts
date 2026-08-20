@@ -24,9 +24,16 @@ describe("Express reference resolver", () => {
     const ref = expressResolver.extract!("src/express-app.ts", source).references[0]!;
     expect(expressResolver.resolve(ref, context)).toMatchObject({
       targetNodeId: handler.id,
-      confidence: 1,
-      resolvedBy: "framework",
+      confidence: 0.8,
+      resolvedBy: "express-route-handler",
     });
+  });
+
+  it("never uses a repository-global sole-name fallback for a handler", () => {
+    const elsewhere = { ...node("function:handler", "healthHandler"), filePath: "src/other.ts" };
+    const context = fakeContext([elsewhere]);
+    const ref = expressResolver.extract!("src/express-app.ts", source).references[0]!;
+    expect(expressResolver.resolve(ref, context)).toBeNull();
   });
 });
 
