@@ -8,6 +8,7 @@ import { VERSION } from "./version.js";
 import { captureCommand, flush, isEnabled, getPayloadPreview, showFirstRunNotice } from "./telemetry/index.js";
 import { readMachineId, setGlobalConfigKey } from "./global-config.js";
 import { runFeedback, maybeShowInvite, dismissInvite, enableInvite } from "./feedback/index.js";
+import { DEFAULT_UI_HOST, DEFAULT_UI_PORT } from "./ui/defaults.js";
 
 /**
  * Load config for a CLI command and backfill scaffold identity on the way.
@@ -44,6 +45,14 @@ async function runTuiCommand(): Promise<void> {
   launchTui();
 }
 
+/**
+ * Commands that must not touch machine-level state just by being run. Opening
+ * the web dashboard is an observation, and a telemetry capture would create
+ * `~/.mex/telemetry-id` as a side effect of looking at a project — so `ui` gets
+ * the same zero-side-effect treatment as `telemetry inspect`.
+ */
+export const SIDE_EFFECT_FREE_COMMANDS = new Set(["ui", "dashboard"]);
+
 // ── Telemetry hooks ──
 
 // preAction: fire the event at the START of the command. Two reasons:
@@ -59,6 +68,7 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
     // machine-id file created — so it stays a pure audit surface.
     const parentName = actionCommand.parent?.name();
     if (parentName === "telemetry" || parentName === "config") return;
+    if (SIDE_EFFECT_FREE_COMMANDS.has(actionCommand.name())) return;
 
     let scaffoldId: string | undefined;
     try {
@@ -97,6 +107,28 @@ program
   .description("Open the interactive mex dashboard")
   .action(async () => {
     await runTuiCommand();
+  });
+
+// ── Web UI ──
+// Reading the dashboard is a pure observation of project state: it uses
+// findConfig (never loadConfig), so no scaffold identity is minted and no
+// config is written. See SIDE_EFFECT_FREE_COMMANDS for the telemetry guard.
+program
+  .command("ui")
+  .alias("dashboard")
+  .description("Open the mex web dashboard in your browser")
+  .option("--port <n>", `Port to listen on (default ${DEFAULT_UI_PORT})`, parsePositiveIntArg)
+  .option("--host <host>", `Interface to bind (default ${DEFAULT_UI_HOST})`)
+  .option("--root <dir>", "Project root to inspect (defaults to current directory)")
+  .option("--no-open", "Start the server without opening a browser")
+  .action(async (opts) => {
+    try {
+      const { runUi } = await import("./ui/index.js");
+      await runUi({ root: opts.root, port: opts.port, host: opts.host, open: opts.open });
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
   });
 
 // ── Setup (npx entry point) ──
@@ -522,6 +554,9 @@ program
     console.log("  mex timeline           Show recent event log entries");
     console.log("  mex heartbeat          Run lightweight agent-memory health checks");
     console.log("  mex doctor             Friendly scaffold health summary");
+    console.log("  mex ui                 Open the mex web dashboard in your browser");
+    console.log("  mex ui --port <n>      Serve the dashboard on a specific port");
+    console.log("  mex ui --no-open       Start the dashboard without opening a browser");
     console.log("  mex tui                Open the interactive mex dashboard");
     console.log("  mex pattern add <name> Create a new pattern file");
     console.log("  mex watch              Install post-commit hook for auto drift score");
@@ -554,7 +589,13 @@ if (process.argv[1]) {
   }
 }
 if (isMainModule) {
-  showFirstRunNotice();
+  // The notice persists `firstRunNoticeShown` to ~/.mex/config.json, so it runs
+  // before parse for every command except the side-effect-free ones. argv[2] is
+  // the subcommand name — good enough here, since the guarded commands take no
+  // positional arguments that could shadow it.
+  if (!SIDE_EFFECT_FREE_COMMANDS.has(process.argv[2] ?? "")) {
+    showFirstRunNotice();
+  }
   program.parseAsync().catch((err: Error) => {
     console.error(err.message);
     process.exit(1);
@@ -564,7 +605,7 @@ if (isMainModule) {
 function buildCompletion(shell: string): string {
   const commands = [
     "setup", "check", "init", "graph", "impact", "sync", "pattern", "log", "timeline",
-    "heartbeat", "doctor", "watch", "tui", "commands", "completion",
+    "heartbeat", "doctor", "watch", "ui", "dashboard", "tui", "commands", "completion",
     "telemetry", "config", "feedback",
   ];
   if (shell === "bash") {

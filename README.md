@@ -244,6 +244,7 @@ All commands run from the project root. Replace `mex` with `npx mex-agent` if it
 | Command | What it does |
 |---|---|
 | `mex` / `mex tui` | Open the interactive terminal dashboard |
+| `mex ui` / `mex dashboard` | Open the local web dashboard in a browser |
 | `mex setup` | Create and populate the living wiki |
 | `mex check` | Check wiki health and calculate a drift score |
 | `mex sync` | Repair stale or inconsistent knowledge |
@@ -258,6 +259,30 @@ All commands run from the project root. Replace `mex` with `npx mex-agent` if it
 | `mex heartbeat` | Run persistent-agent health checks |
 | `mex completion <shell>` | Print shell completions |
 | `mex commands` | List every command and script |
+
+## Web dashboard
+
+`mex ui` serves a local dashboard for the same engine the CLI uses. It needs nothing installed in the project, so it works as a starting point too:
+
+```bash
+npx mex-agent ui       # no install, no .mex/ required
+mex ui                 # if mex is installed globally
+```
+
+It binds `127.0.0.1:3847`, opens your browser, and reads `.mex/` and `.mex/graph.db` directly. Nothing leaves the machine and no account is involved.
+
+The dashboard is a companion panel meant to stay open while you code. A persistent sidebar switches between **Dashboard** (stats and what to do next), **Setup** (scaffold coverage, grounding coverage, and the wizard), **Health** (drift and heartbeat), **Graph** (index totals; the explorer is still CLI-only), **Activity** (recent `mex log` events), and **Settings**. In a project without a `.mex/` directory the Dashboard leads into a guided setup wizard that creates the scaffold, installs the agent anchors you select, builds the code graph, and hands you the population prompt to paste into your agent.
+
+Because population happens in your agent rather than in the browser, the wizard ends on an explicit **capture grounding** step: once your agent has anchored its claims to real symbols, that records the code fingerprints drift detection compares against. It stays available on Setup, and the Dashboard raises it whenever the wiki references symbols with no baseline.
+
+| Flag | Effect |
+|---|---|
+| `--port <n>` | Listen on a specific port instead of 3847 |
+| `--host <host>` | Bind another loopback interface |
+| `--root <dir>` | Inspect a project other than the current directory |
+| `--no-open` | Start the server without opening a browser |
+
+See [Web dashboard](docs/web-ui.md) for the architecture, API surface, and development workflow.
 
 ## Existing mex projects
 

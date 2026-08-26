@@ -215,9 +215,11 @@ describe("built CLI main-module guard", () => {
   const cliPath = join(repoRoot, "dist", "cli.js");
   const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string };
 
+  // Only dist/cli.js is under test here, so skip the frontend bundle that the
+  // full `npm run build` also produces.
   beforeAll(() => {
-    execSync("npm run build", { cwd: repoRoot, stdio: "pipe" });
-  });
+    execSync("npm run build:cli", { cwd: repoRoot, stdio: "pipe" });
+  }, 120_000);
 
   it("parses argv when invoked through a symlinked bin (npm/npx layout)", () => {
     const binDir = mkdtempSync(join(tmpdir(), "mex-bin-"));

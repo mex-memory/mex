@@ -14,7 +14,7 @@ edges:
     condition: when setting up the dev environment or running the project for the first time
   - target: patterns/INDEX.md
     condition: when starting a task — check the pattern index for a matching pattern file
-last_updated: [YYYY-MM-DD]
+last_updated: 2026-08-25
 ---
 
 # Session Bootstrap
@@ -39,6 +39,21 @@ Then read this file fully before doing anything else in this session.
 
      **Known issues:**
      - Pagination breaks on filtered queries with more than 1000 results -->
+
+**Working:**
+- `mex ui` / `mex dashboard`: local web companion on `127.0.0.1:3847` with a persistent sidebar (Dashboard, Setup, Health, Graph, Activity, Settings) over drift, graph stats, activity, heartbeat, scaffold coverage, grounding coverage, and identity from the real engine
+- Visual setup wizard that takes a project from no `.mex/` to a populated scaffold plus a built graph, with per-step progress over SSE. The finish screen is an ordered journey: scaffold → code graph → agent population (prompt locked until the graph exists) → capture grounding. After the agent populates, **capture grounding** fingerprints authored `grounds_to` / `mex://` references via the same `captureGroundingBaselines` the CLI uses
+- `npm run sandbox` / `npm run sandbox:populate`: throwaway order-service project at `.sandbox/orders` so the wizard can be re-run from zero, then stand in for the agent when capturing grounding
+- `src/setup/steps.ts`: the disk-touching setup steps as headless functions, shared by the interactive CLI wizard and the web wizard
+
+**Not yet built:**
+- Interactive code-graph explorer in the web UI (symbol browsing stays in `mex graph query` / `mex graph scope`)
+- Visual drift repair — the dashboard reports drift and points at `mex sync`
+- Editing scaffold Markdown from the browser
+- Job persistence across a server restart
+
+**Known issues:**
+- On Windows, several graph integration tests fail on temp-directory cleanup (`EPERM`) because SQLite file handles outlive the test, and `test/graph-integration.test.ts` has a hardcoded 10s timeout that tree-sitter work exceeds on slower machines. Both predate the web UI work.
 
 ## Routing Table
 

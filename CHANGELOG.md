@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `mex ui` (alias `mex dashboard`) serves a local web companion on `127.0.0.1:3847` with `--port`, `--host`, `--root`, and `--no-open`. A persistent sidebar switches between Dashboard, Setup, Health, Graph, Activity, and Settings. Dashboard is the glanceable overview (stats and next actions); drift, graph stats, activity, and scaffold coverage each have their own view. The graph can be built or rebuilt from Dashboard or Graph.
+- A visual setup wizard takes a project with no `.mex/` to a populated scaffold and built graph, streaming per-step progress and ending on the population prompt to paste into an agent. After the agent authors `grounds_to` entries and `mex://` anchors, **capture grounding** records the code fingerprints drift detection compares against — the same `captureGroundingBaselines` call `mex setup` makes after its agent session. The action stays on Setup for when the tab was closed mid-population, and Dashboard raises it whenever authored references have no baseline.
+- `npm run sandbox` recreates a throwaway TypeScript project and serves the UI against it, so the wizard can be re-run from zero without pointing mex at a real repo. `npm run sandbox:populate` stands in for the agent: it fills the scaffold and authors real grounding from `mex graph scope --fingerprint`.
+- `packages/mex-ui`: the React + Vite frontend, bundled into `dist/ui/` by `npm run build` and served by the CLI.
+- `src/setup/steps.ts` exposes the disk-touching parts of setup — template resolution, project-state detection, scaffold and tool-config writing, population-prompt selection — as headless functions shared by the interactive CLI wizard and the web wizard.
+
+### Changed
+- `npm run build` now builds the CLI and the frontend. `npm run build:cli` builds the CLI alone.
+- `mex ui` and `mex dashboard` emit no telemetry and skip the first-run notice. Dashboard reads use `findConfig`, so opening the UI never mints a scaffold identity or rewrites config.
+- Graph build progress in the web UI streams live phase detail (discover → compile → extract → write), file counts, throughput, and a progress bar on the running step instead of a silent spinner.
+- Web setup is an ordered journey: scaffold → code graph → agent population → capture grounding. Code-repo setup always builds the graph; the agent prompt stays locked until `graph.db` exists so population cannot run “blind.”
+
 ## [0.7.2] - 2026-08-20
 
 ### Added

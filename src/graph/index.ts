@@ -98,4 +98,4 @@ export { NotImplementedError } from "./errors.js";
 // No frozen type/interface signature changes — `createGraphEngine` returns the
 // frozen `GraphEngine`, so Track B and Phase-2 integration keep their contract.
 export { createGraphEngine } from "./engine-impl.js";
-export type { GraphEngineOptions } from "./engine-impl.js";
+export type { GraphEngineOptions, GraphBuildProgress, GraphBuildPhase } from "./engine-impl.js";

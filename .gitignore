@@ -25,6 +25,9 @@ Thumbs.db
 .mex/eval-results/
 evaluate/results/
 
+# Throwaway projects created by `npm run sandbox` to exercise the setup wizard
+.sandbox/
+
 #misc
 claude-talks
 .demo

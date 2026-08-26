@@ -36,6 +36,7 @@ export type {
   CompilerDiagnosticSummary,
   CompilerExtractedNode,
   CompilerExtractionOptions,
+  CompilerExtractionProgress,
   CompilerExtractionResult,
   CompilerFileExtraction,
   CompilerImportBinding,

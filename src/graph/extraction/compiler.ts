@@ -184,6 +184,19 @@ export interface CompilerExtractionResult {
 export interface CompilerExtractionOptions {
   /** Additional options used only by the inferred program. */
   inferredCompilerOptions?: ts.CompilerOptions;
+  /**
+   * Optional progress hook. When provided, extraction becomes cooperative:
+   * the caller can await between batches so UI/SSE work can flush.
+   */
+  onProgress?: (event: CompilerExtractionProgress) => void | Promise<void>;
+}
+
+export interface CompilerExtractionProgress {
+  phase: "program" | "extract";
+  /** Human-readable status for the current phase. */
+  message: string;
+  done?: number;
+  total?: number;
 }
 
 interface ParsedProject {
@@ -302,23 +315,50 @@ export function discoverTypeScriptProjects(
  * Build compiler programs and extract a complete staged TS/JS graph corpus.
  * Nothing is persisted here: callers can validate every invariant before a DB
  * transaction publishes the result.
+ *
+ * Async so large projects can report progress and yield the event loop between
+ * batches — otherwise a multi-minute build freezes SSE/job updates.
  */
-export function buildTypeScriptExtraction(
+export async function buildTypeScriptExtraction(
   rootDir: string,
   candidateFiles?: readonly string[],
   options: CompilerExtractionOptions = {},
-): CompilerExtractionResult {
+): Promise<CompilerExtractionResult> {
   const root = resolve(rootDir);
   const candidates = collectCandidates(root, candidateFiles);
   const parsedProjects = parseProjects(root, new Set(candidates));
-  const runtimeProjects: RuntimeProject[] = parsedProjects.map((project) => {
+  const report = async (event: CompilerExtractionProgress) => {
+    await options.onProgress?.(event);
+  };
+  const cooperative = typeof options.onProgress === "function";
+  const maybeYield = async () => {
+    if (cooperative) await yieldExtractionLoop();
+  };
+
+  await report({
+    phase: "program",
+    message: `Compiling TypeScript (${candidates.length.toLocaleString()} files, ${parsedProjects.length} project${parsedProjects.length === 1 ? "" : "s"})…`,
+    done: 0,
+    total: Math.max(parsedProjects.length, 1),
+  });
+
+  const runtimeProjects: RuntimeProject[] = [];
+  for (let index = 0; index < parsedProjects.length; index++) {
+    const project = parsedProjects[index]!;
+    await report({
+      phase: "program",
+      message: `Compiling ${relativePath(root, project.configPath) || "tsconfig"} (${index + 1}/${parsedProjects.length})…`,
+      done: index,
+      total: parsedProjects.length,
+    });
     const program = ts.createProgram({
       rootNames: project.parsed.fileNames,
       options: project.parsed.options,
       projectReferences: project.parsed.projectReferences,
     });
-    return { ...project, program, checker: program.getTypeChecker() };
-  });
+    runtimeProjects.push({ ...project, program, checker: program.getTypeChecker() });
+    await maybeYield();
+  }
 
   const ownership = new Map<string, RuntimeProject>();
   for (const file of candidates) {
@@ -334,6 +374,12 @@ export function buildTypeScriptExtraction(
   const uncovered = candidates.filter((file) => !ownership.has(file));
   let inferred: RuntimeProject | undefined;
   if (uncovered.length > 0) {
+    await report({
+      phase: "program",
+      message: `Compiling inferred program for ${uncovered.length.toLocaleString()} files outside tsconfig…`,
+      done: parsedProjects.length,
+      total: parsedProjects.length + 1,
+    });
     const inferredOptions: ts.CompilerOptions = {
       allowJs: true,
       checkJs: false,
@@ -360,13 +406,27 @@ export function buildTypeScriptExtraction(
     };
     runtimeProjects.push(inferred);
     for (const file of uncovered) ownership.set(file, inferred);
+    await maybeYield();
   }
 
   const contexts: FileContext[] = [];
-  for (const absoluteFile of candidates) {
+  const extractTotal = candidates.length;
+  for (let index = 0; index < candidates.length; index++) {
+    const absoluteFile = candidates[index]!;
     const project = ownership.get(absoluteFile);
     const sourceFile = project?.program.getSourceFile(absoluteFile);
-    if (!project || !sourceFile) continue;
+    if (!project || !sourceFile) {
+      if (cooperative && (index === 0 || (index + 1) % 25 === 0 || index + 1 === extractTotal)) {
+        await report({
+          phase: "extract",
+          message: `Extracting symbols — ${(index + 1).toLocaleString()}/${extractTotal.toLocaleString()}`,
+          done: index + 1,
+          total: extractTotal,
+        });
+        await maybeYield();
+      }
+      continue;
+    }
     const filePath = relativePath(root, absoluteFile);
     const { health, ranges } = sourceHealth(project.program, sourceFile);
     const context: FileContext = {
@@ -393,6 +453,16 @@ export function buildTypeScriptExtraction(
       }
     }
     contexts.push(context);
+
+    if (cooperative && (index === 0 || (index + 1) % 25 === 0 || index + 1 === extractTotal)) {
+      await report({
+        phase: "extract",
+        message: `Extracting symbols — ${(index + 1).toLocaleString()}/${extractTotal.toLocaleString()}`,
+        done: index + 1,
+        total: extractTotal,
+      });
+      await maybeYield();
+    }
   }
 
   assignCanonicalIdentities(contexts);
@@ -443,6 +513,10 @@ export function buildTypeScriptExtraction(
     projects: projectSummaries,
     files,
   };
+}
+
+function yieldExtractionLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 /** Stable identity input shared with migration/invariant tests. */

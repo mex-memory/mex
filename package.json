@@ -50,8 +50,13 @@
     "node": ">=22.5"
   },
   "scripts": {
-    "build": "tsup && node scripts/copy-graph-assets.mjs",
+    "build": "npm run build:cli && npm run build:ui && node scripts/copy-ui-assets.mjs",
+    "build:cli": "tsup && node scripts/copy-graph-assets.mjs",
+    "build:ui": "npm run build --workspace mex-ui",
     "dev": "tsup --watch",
+    "dev:ui": "npm run dev --workspace mex-ui",
+    "sandbox": "node scripts/ui-sandbox.mjs",
+    "sandbox:populate": "node scripts/ui-sandbox.mjs --populate",
     "test": "vitest run",
     "test:watch": "vitest",
     "eval": "node evaluate/graph/index.mjs",

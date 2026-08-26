@@ -320,3 +320,13 @@ export function readScaffoldId(scaffoldRoot: string): string | undefined {
   const identity = loadScaffoldIdentity(raw);
   return identity?.scaffold_id;
 }
+
+/**
+ * Read-only full-identity lookup. Returns the persisted {@link ScaffoldIdentity}
+ * or `undefined` when config.json has no `scaffold_id` yet. **Never mints or
+ * writes anything** — the read-only counterpart of {@link getScaffoldIdentity},
+ * for surfaces that display identity without claiming one (e.g. the web UI).
+ */
+export function readScaffoldIdentity(scaffoldRoot: string): ScaffoldIdentity | undefined {
+  return loadScaffoldIdentity(loadPersistedConfig(scaffoldRoot));
+}

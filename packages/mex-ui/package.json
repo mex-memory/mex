@@ -1,0 +1,24 @@
+{
+  "name": "mex-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local web dashboard for mex-agent — a read-only lens over .mex/ and the code graph",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^5.1.1",
+    "typescript": "5.9.3",
+    "vite": "^7.2.7"
+  }
+}

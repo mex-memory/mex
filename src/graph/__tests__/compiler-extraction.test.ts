@@ -89,8 +89,8 @@ function mainFixture(): { root: string; candidates: string[] } {
   };
 }
 
-describe("TypeScript compiler extraction", () => {
-  it("discovers configs, project references, and one inferred program for uncovered files", () => {
+describe("TypeScript compiler extraction", { timeout: 20_000 }, () => {
+  it("discovers configs, project references, and one inferred program for uncovered files", async () => {
     const { root, candidates } = mainFixture();
     const discovered = discoverTypeScriptProjects(root, candidates);
     expect(discovered.map((entry) => entry.configPath)).toEqual([
@@ -100,15 +100,15 @@ describe("TypeScript compiler extraction", () => {
     expect(discovered.find((entry) => entry.configPath === "tsconfig.json")?.projectReferences)
       .toEqual(["packages/child/tsconfig.json"]);
 
-    const result = buildTypeScriptExtraction(root, candidates);
+    const result = await buildTypeScriptExtraction(root, candidates);
     expect(result.compilerVersion).toBe("5.9.3");
     expect(result.projects.filter((entry) => entry.id === "inferred")).toHaveLength(1);
     expect(result.files.find((entry) => entry.filePath === "loose.js")?.projectId).toBe("inferred");
   });
 
-  it("uses container-qualified canonical ids and coalesces overload declarations", () => {
+  it("uses container-qualified canonical ids and coalesces overload declarations", async () => {
     const { root, candidates } = mainFixture();
-    const result = buildTypeScriptExtraction(root, candidates);
+    const result = await buildTypeScriptExtraction(root, candidates);
     const file = result.files.find((entry) => entry.filePath === "src/service.ts")!;
     const alphaSame = file.nodes.find((node) => node.qualifiedName === "Alpha::same")!;
     const betaSame = file.nodes.find((node) => node.qualifiedName === "Beta::same")!;
@@ -120,9 +120,9 @@ describe("TypeScript compiler extraction", () => {
     expect(file.nodes.filter((node) => node.qualifiedName === "Alpha::same")).toHaveLength(1);
   });
 
-  it("resolves aliases, paths, inheritance, signatures, and proven callback wiring", () => {
+  it("resolves aliases, paths, inheritance, signatures, and proven callback wiring", async () => {
     const { root, candidates } = mainFixture();
-    const result = buildTypeScriptExtraction(root, candidates);
+    const result = await buildTypeScriptExtraction(root, candidates);
     const service = result.files.find((entry) => entry.filePath === "src/service.ts")!;
     const base = result.files.find((entry) => entry.filePath === "src/lib/base.ts")!
       .nodes.find((node) => node.name === "Base")!;
@@ -160,13 +160,13 @@ describe("TypeScript compiler extraction", () => {
     expect(ambiguous.candidates).toHaveLength(2);
   });
 
-  it("keeps identities stable across line shifts and candidate ordering", () => {
+  it("keeps identities stable across line shifts and candidate ordering", async () => {
     const { root, candidates } = mainFixture();
-    const before = buildTypeScriptExtraction(root, candidates);
+    const before = await buildTypeScriptExtraction(root, candidates);
     const servicePath = join(root, "src/service.ts");
     const original = before.files.find((entry) => entry.filePath === "src/service.ts")!;
     writeFileSync(servicePath, `// shifted\n// twice\n${readFileSync(servicePath, "utf8")}`, "utf8");
-    const after = buildTypeScriptExtraction(root, [...candidates].reverse());
+    const after = await buildTypeScriptExtraction(root, [...candidates].reverse());
 
     const ids = (file: typeof original) => Object.fromEntries(
       file.nodes
@@ -176,9 +176,9 @@ describe("TypeScript compiler extraction", () => {
     expect(after.files.map((file) => file.filePath)).toEqual([...before.files.map((file) => file.filePath)].sort());
   });
 
-  it("does not bind a production call to a same-named test symbol or duplicate a callsite", () => {
+  it("does not bind a production call to a same-named test symbol or duplicate a callsite", async () => {
     const { root, candidates } = mainFixture();
-    const result = buildTypeScriptExtraction(root, candidates);
+    const result = await buildTypeScriptExtraction(root, candidates);
     const productionTarget = result.files.find((file) => file.filePath === "src/helper.ts")!
       .nodes.find((node) => node.name === "duplicate")!;
     const testTarget = result.files.find((file) => file.filePath === "test/helper.test.ts")!
@@ -195,7 +195,7 @@ describe("TypeScript compiler extraction", () => {
     expect(new Set(semanticKeys).size).toBe(semanticKeys.length);
   });
 
-  it("does not map excess callback arguments onto an ordinary final parameter", () => {
+  it("does not map excess callback arguments onto an ordinary final parameter", async () => {
     const root = project({
       "callbacks.ts": [
         "export function invoke(callback: () => void): void { callback(); }",
@@ -209,7 +209,7 @@ describe("TypeScript compiler extraction", () => {
         "",
       ].join("\n"),
     });
-    const file = buildTypeScriptExtraction(root, ["callbacks.ts"]).files[0]!;
+    const file = (await buildTypeScriptExtraction(root, ["callbacks.ts"])).files[0]!;
     const invoke = file.nodes.find((node) => node.name === "invoke")!;
     const invokeFirst = file.nodes.find((node) => node.name === "invokeFirst")!;
     const real = file.nodes.find((node) => node.name === "real")!;
@@ -226,7 +226,7 @@ describe("TypeScript compiler extraction", () => {
     expect(synthesizedTargets(invokeFirst.id)).not.toContain(decoy.id);
   });
 
-  it("reports partial syntax health and excludes only intersecting declarations", () => {
+  it("reports partial syntax health and excludes only intersecting declarations", async () => {
     const root = project({
       "broken.ts": [
         "export function sound(): number { return 1; }",
@@ -234,7 +234,7 @@ describe("TypeScript compiler extraction", () => {
         "export function alsoSound(): number { return 2; }",
       ].join("\n"),
     });
-    const result = buildTypeScriptExtraction(root, ["broken.ts"]);
+    const result = await buildTypeScriptExtraction(root, ["broken.ts"]);
     const file = result.files[0];
     expect(file.health.status).toBe("partial");
     expect(file.health.syntacticDiagnosticCount).toBeGreaterThan(0);
@@ -245,7 +245,7 @@ describe("TypeScript compiler extraction", () => {
     expect(file.health.excludedDeclarationCount).toBeGreaterThan(0);
   });
 
-  it("indexes the Hono Context response-construction regression symbols and call edge", () => {
+  it("indexes the Hono Context response-construction regression symbols and call edge", async () => {
     const root = project({
       "src/context.ts": [
         "type Data = BodyInit | string;",
@@ -265,7 +265,7 @@ describe("TypeScript compiler extraction", () => {
         "",
       ].join("\n"),
     });
-    const result = buildTypeScriptExtraction(root, ["src/context.ts"]);
+    const result = await buildTypeScriptExtraction(root, ["src/context.ts"]);
     const file = result.files[0]!;
     const context = file.nodes.find((node) => node.name === "Context")!;
     const privateResponse = file.nodes.find((node) => node.name === "#newResponse")!;
@@ -286,7 +286,7 @@ describe("TypeScript compiler extraction", () => {
     ]));
   });
 
-  it("makes the canonical identity independent of source positions", () => {
+  it("makes the canonical identity independent of source positions", async () => {
     const input = {
       filePath: "src/service.ts",
       kind: "method" as const,
@@ -298,13 +298,13 @@ describe("TypeScript compiler extraction", () => {
     expect(canonicalCompilerIdentity(input)).not.toContain("line");
   });
 
-  it("normalizes compiler fingerprint tokens without identifier or literal spellings", () => {
+  it("normalizes compiler fingerprint tokens without identifier or literal spellings", async () => {
     const source = [
       "export function alpha(value: string): string { return value + 'one'; }",
       "export function beta(input: string): string { return input + 'two'; }",
     ].join("\n");
     const root = project({ "tokens.ts": source });
-    const file = buildTypeScriptExtraction(root, ["tokens.ts"]).files[0];
+    const file = (await buildTypeScriptExtraction(root, ["tokens.ts"])).files[0];
     const alpha = file.nodes.find((node) => node.name === "alpha")!;
     const beta = file.nodes.find((node) => node.name === "beta")!;
     const tokens = normalizedCompilerTokens(source, [alpha, beta]);

@@ -63,6 +63,25 @@ export interface GraphEngineOptions {
   readOnly?: boolean;
   /** Injectable source-file access for embedders and deterministic fault tests. */
   sourceFileAccess?: Partial<GraphSourceFileAccess>;
+  /** Live progress for long builds (UI jobs / SSE). */
+  onProgress?: (event: GraphBuildProgress) => void | Promise<void>;
+}
+
+/** Phases reported while staging and publishing a code graph. */
+export type GraphBuildPhase =
+  | "discover"
+  | "compile"
+  | "extract"
+  | "parse"
+  | "resolve"
+  | "publish";
+
+export interface GraphBuildProgress {
+  phase: GraphBuildPhase;
+  message: string;
+  done?: number;
+  total?: number;
+  elapsedMs: number;
 }
 
 export interface GraphSourceFileAccess {
@@ -129,6 +148,7 @@ class GraphEngineImpl implements GraphEngine {
   private readonly dbPath: string;
   private readonly readOnly: boolean;
   private readonly sourceFileAccess: GraphSourceFileAccess;
+  private readonly onProgress?: GraphEngineOptions["onProgress"];
   private db: SqliteDatabase | null = null;
   private store: GraphStore | null = null;
 
@@ -137,6 +157,7 @@ class GraphEngineImpl implements GraphEngine {
     this.dbPath = options.dbPath ?? resolve(this.rootDir, ".mex", "graph.db");
     this.readOnly = options.readOnly ?? false;
     this.sourceFileAccess = { ...NODE_SOURCE_FILE_ACCESS, ...options.sourceFileAccess };
+    this.onProgress = options.onProgress;
   }
 
   private getStore(allowRebuild = false): GraphStore {
@@ -151,8 +172,20 @@ class GraphEngineImpl implements GraphEngine {
     if (this.readOnly) throw new Error("A read-only graph engine cannot build an index.");
     const started = Date.now();
     const root = rootDir ? resolve(rootDir) : this.rootDir;
-    const staged = await stageCorpus(root, undefined, this.sourceFileAccess);
+    const staged = await stageCorpus(root, undefined, this.sourceFileAccess, this.onProgress, started);
+    await reportProgress(this.onProgress, started, {
+      phase: "publish",
+      message: `Writing graph.db (${staged.files.length.toLocaleString()} files)…`,
+      done: 0,
+      total: staged.files.length,
+    });
     const result = this.publish(staged);
+    await reportProgress(this.onProgress, started, {
+      phase: "publish",
+      message: `Wrote ${result.nodesCreated.toLocaleString()} nodes, ${result.edgesCreated.toLocaleString()} edges`,
+      done: staged.files.length,
+      total: staged.files.length,
+    });
     return { ...result, durationMs: Date.now() - started };
   }
 
@@ -172,7 +205,7 @@ class GraphEngineImpl implements GraphEngine {
 
     // Re-stage the whole semantic corpus. This makes an arbitrary sync sequence
     // converge to the same graph as a clean build and re-resolves cross-file refs.
-    const staged = await stageCorpus(this.rootDir, manifest, this.sourceFileAccess);
+    const staged = await stageCorpus(this.rootDir, manifest, this.sourceFileAccess, this.onProgress, started);
     const stagedByPath = new Map(staged.files.map((file) => [file.record.path, file]));
     const unstagedExisting = changedSources.filter((file) => (
       !deletedChangedSources.has(file) && !stagedByPath.has(file)
@@ -286,24 +319,93 @@ async function stageCorpus(
   root: string,
   manifest = graphManifest(root),
   sourceFileAccess: GraphSourceFileAccess = NODE_SOURCE_FILE_ACCESS,
+  onProgress?: GraphEngineOptions["onProgress"],
+  started = Date.now(),
 ): Promise<StagedCorpus> {
+  await reportProgress(onProgress, started, {
+    phase: "discover",
+    message: "Discovering source files…",
+  });
   const discovered = discoverSourceFiles(root, sourceFileAccess);
+  await reportProgress(onProgress, started, {
+    phase: "discover",
+    message: `Found ${discovered.length.toLocaleString()} source files`,
+    done: discovered.length,
+    total: discovered.length,
+  });
+  await yieldStagingLoop();
+
   const compilerPaths = discovered.filter((file) => COMPILER_LANGUAGES.has(detectLanguage(file.relPath)))
     .map((file) => file.relPath);
-  const compiler = buildTypeScriptExtraction(root, compilerPaths);
+  const treeCount = discovered.length - compilerPaths.length;
+
+  const compiler = await buildTypeScriptExtraction(root, compilerPaths, {
+    onProgress: async (event) => {
+      await reportProgress(onProgress, started, {
+        phase: event.phase === "program" ? "compile" : "extract",
+        message: event.message,
+        done: event.done,
+        total: event.total,
+      });
+    },
+  });
   const compilerByPath = new Map(compiler.files.map((file) => [file.filePath, file]));
   const treeLanguages = [...new Set(discovered.map((file) => detectLanguage(file.relPath))
     .filter((language) => !COMPILER_LANGUAGES.has(language)))];
   await loadGrammars(treeLanguages);
 
-  const files = discovered.map((file) => {
-    const compilerFile = compilerByPath.get(file.relPath);
-    return compilerFile ? stageCompilerFile(file, compilerFile) : stageTreeFile(file);
+  await reportProgress(onProgress, started, {
+    phase: "parse",
+    message: treeCount > 0
+      ? `Parsing ${treeCount.toLocaleString()} non-TypeScript files…`
+      : "Staging extracted files…",
+    done: 0,
+    total: discovered.length,
   });
+
+  const files: StagedFile[] = [];
+  const cooperative = typeof onProgress === "function";
+  for (let index = 0; index < discovered.length; index++) {
+    const file = discovered[index]!;
+    const compilerFile = compilerByPath.get(file.relPath);
+    files.push(compilerFile ? stageCompilerFile(file, compilerFile) : stageTreeFile(file));
+    if (cooperative && (index === 0 || (index + 1) % 50 === 0 || index + 1 === discovered.length)) {
+      await reportProgress(onProgress, started, {
+        phase: "parse",
+        message: `Staging files — ${(index + 1).toLocaleString()}/${discovered.length.toLocaleString()}`,
+        done: index + 1,
+        total: discovered.length,
+      });
+      await yieldStagingLoop();
+    }
+  }
+
+  if (cooperative) {
+    await reportProgress(onProgress, started, {
+      phase: "resolve",
+      message: "Resolving cross-file references…",
+      done: files.length,
+      total: files.length,
+    });
+  }
   stageFrameworkAndFallbackResolution(root, files);
   validateStagedCorpus(files);
   const fingerprints = stageFingerprints(files);
+  if (cooperative) await yieldStagingLoop();
   return { files, compiler, fingerprints, ...manifest };
+}
+
+async function reportProgress(
+  onProgress: GraphEngineOptions["onProgress"] | undefined,
+  started: number,
+  event: Omit<GraphBuildProgress, "elapsedMs">,
+): Promise<void> {
+  if (!onProgress) return;
+  await onProgress({ ...event, elapsedMs: Date.now() - started });
+}
+
+function yieldStagingLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 function stageFrameworkAndFallbackResolution(root: string, files: StagedFile[]): void {

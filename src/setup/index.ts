@@ -1,62 +1,24 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
-import { resolve, dirname, relative, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { execSync } from "node:child_process";
 import crossSpawn from "cross-spawn";
 import { stdin, stdout } from "node:process";
-import { globSync } from "glob";
 import chalk from "chalk";
-import {
-  buildFreshPrompt,
-  buildExistingWithBriefPrompt,
-  buildExistingNoBriefPrompt,
-} from "./prompts.js";
 import { saveAiTools, ensureScaffoldIdentity } from "../config.js";
 import { isCliAvailable } from "../cli-tools.js";
 import { captureGroundingBaselines } from "../graph/runtime.js";
+import {
+  assertNotMexRepo,
+  buildPopulationPrompt,
+  detectProjectState,
+  findProjectRoot,
+  normalizeMode,
+  templatesDir,
+  writeScaffold,
+  writeToolConfigs,
+  type SetupMode,
+} from "./steps.js";
 import type { AiTool } from "../types.js";
-
-// ── Constants ──
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const TEMPLATES_DIR = resolve(__dirname, "../templates");
-
-const SOURCE_EXTENSIONS = [
-  "*.py", "*.js", "*.ts", "*.tsx", "*.jsx", "*.go", "*.rs", "*.java",
-  "*.kt", "*.swift", "*.rb", "*.php", "*.c", "*.cpp", "*.cs", "*.ex",
-  "*.exs", "*.zig", "*.lua", "*.dart", "*.scala", "*.clj", "*.erl",
-  "*.hs", "*.ml", "*.vue", "*.svelte",
-];
-
-const SCAFFOLD_FILES = [
-  "ROUTER.md",
-  "AGENTS.md",
-  "SETUP.md",
-  "SYNC.md",
-  "context/architecture.md",
-  "context/stack.md",
-  "context/conventions.md",
-  "context/decisions.md",
-  "context/setup.md",
-  "patterns/README.md",
-  "patterns/INDEX.md",
-];
-
-const AGENT_MEMORY_FILES = [
-  ...SCAFFOLD_FILES,
-  "HEARTBEAT.md",
-];
-
-const TOOL_CONFIGS: Record<string, { src: string; dest: string }> = {
-  "1": { src: ".tool-configs/CLAUDE.md", dest: "CLAUDE.md" },
-  "2": { src: ".tool-configs/.cursorrules", dest: ".cursorrules" },
-  "3": { src: ".tool-configs/.windsurfrules", dest: ".windsurfrules" },
-  "4": { src: ".tool-configs/copilot-instructions.md", dest: ".github/copilot-instructions.md" },
-  "5": { src: ".tool-configs/opencode.json", dest: ".opencode/opencode.json" },
-  "6": { src: ".tool-configs/CLAUDE.md", dest: "AGENTS.md" },  // Codex reads AGENTS.md at root
-};
 
 // ── Helpers ──
 
@@ -64,20 +26,6 @@ const ok = (msg: string) => console.log(`${chalk.green("✓")} ${msg}`);
 const info = (msg: string) => console.log(`${chalk.blue("→")} ${msg}`);
 const warn = (msg: string) => console.log(`${chalk.yellow("!")} ${msg}`);
 const header = (msg: string) => console.log(`\n${chalk.bold(msg)}`);
-
-function findProjectRoot(): string {
-  let current = resolve(process.cwd());
-  while (true) {
-    if (existsSync(resolve(current, ".git"))) return current;
-    const parent = dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
-  }
-}
-
-function isTemplateContent(content: string): boolean {
-  return content.includes("[Project Name]") || content.includes("[YYYY-MM-DD]");
-}
 
 function banner() {
   const GRN = "\x1b[38;2;91;140;90m";
@@ -101,10 +49,6 @@ function banner() {
 
 // ── Main ──
 
-type ProjectState = "existing" | "fresh" | "partial";
-
-type SetupMode = "code-repo" | "agent-memory";
-
 export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): Promise<void> {
   const { dryRun = false } = opts;
   const mode = normalizeMode(opts.mode);
@@ -117,28 +61,13 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     console.log();
   }
 
-  // Verify templates directory exists (sanity check for npm package integrity)
-  if (!existsSync(TEMPLATES_DIR)) {
-    throw new Error(
-      `Templates directory not found at ${TEMPLATES_DIR}. The mex-agent package may be corrupted — try reinstalling.`
-    );
-  }
+  // Sanity check for npm package integrity — throws if templates are missing.
+  templatesDir();
 
   const projectRoot = findProjectRoot();
   const mexDir = resolve(projectRoot, ".mex");
 
-  // Guard: don't run inside the mex repo itself
-  if (existsSync(resolve(projectRoot, "src", "setup", "index.ts"))) {
-    const pkg = resolve(projectRoot, "package.json");
-    if (existsSync(pkg)) {
-      const pkgContent = readFileSync(pkg, "utf-8");
-      if (pkgContent.includes('"promexeus"') || pkgContent.includes('"mex"')) {
-        throw new Error(
-          "You're inside the mex repository itself. Run this from your project root instead."
-        );
-      }
-    }
-  }
+  assertNotMexRepo(projectRoot);
 
   // ── Step 1: Detect project state ──
 
@@ -170,32 +99,10 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   header("Creating .mex/ scaffold...");
   console.log();
 
-  const scaffoldFiles = mode === "agent-memory" ? AGENT_MEMORY_FILES : SCAFFOLD_FILES;
-  for (const file of scaffoldFiles) {
-    const agentMemorySrc = resolve(TEMPLATES_DIR, "agent-memory", file);
-    const src = mode === "agent-memory" && existsSync(agentMemorySrc)
-      ? agentMemorySrc
-      : resolve(TEMPLATES_DIR, file);
-    const dest = resolve(mexDir, file);
-
-    if (existsSync(dest)) {
-      const existingContent = readFileSync(dest, "utf-8");
-      const templateContent = readFileSync(src, "utf-8");
-
-      // Skip if file has been populated (no longer matches template markers)
-      if (!isTemplateContent(existingContent) && existingContent !== templateContent) {
-        info(`Skipped .mex/${file} (already populated)`);
-        continue;
-      }
-    }
-
-    if (dryRun) {
-      ok(`(dry run) Would copy .mex/${file}`);
-    } else {
-      mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(src, dest);
-      ok(`Copied .mex/${file}`);
-    }
+  for (const result of writeScaffold({ projectRoot, mode, dryRun })) {
+    if (result.action === "skipped") info(`Skipped .mex/${result.file} (already populated)`);
+    else if (result.action === "would-copy") ok(`(dry run) Would copy .mex/${result.file}`);
+    else ok(`Copied .mex/${result.file}`);
   }
   console.log();
 
@@ -255,17 +162,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
 
   // ── Step 5: Build population prompt ──
 
-  let prompt: string;
-  if (mode === "agent-memory") {
-    const { buildAgentMemoryPrompt } = await import("./prompts.js");
-    prompt = buildAgentMemoryPrompt();
-  } else if (state === "fresh") {
-    prompt = buildFreshPrompt();
-  } else if (scannerBrief) {
-    prompt = buildExistingWithBriefPrompt(scannerBrief);
-  } else {
-    prompt = buildExistingNoBriefPrompt();
-  }
+  const prompt = buildPopulationPrompt({ mode, state, scannerBrief });
 
   // ── Step 6: Run or print ──
 
@@ -335,44 +232,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   await promptGlobalInstall();
 }
 
-function normalizeMode(raw: string | undefined): SetupMode {
-  const mode = raw ?? "code-repo";
-  if (mode === "code-repo" || mode === "agent-memory") return mode;
-  throw new Error(`Unknown setup mode "${mode}". Use code-repo or agent-memory.`);
-}
-
 // ── Step functions ──
-
-function detectProjectState(projectRoot: string, mexDir: string): ProjectState {
-  // Check if scaffold is already partially populated
-  const agentsMd = resolve(mexDir, "AGENTS.md");
-  let scaffoldPopulated = false;
-  if (existsSync(agentsMd)) {
-    const content = readFileSync(agentsMd, "utf-8");
-    if (!content.includes("[Project Name]")) {
-      scaffoldPopulated = true;
-    }
-  }
-
-  // Count source files
-  const patterns = SOURCE_EXTENSIONS.map(
-    (ext) => `**/${ext}`
-  );
-  const sourceFiles = globSync(patterns, {
-    cwd: projectRoot,
-    ignore: ["**/node_modules/**", "**/.mex/**", "**/vendor/**", "**/.git/**"],
-    maxDepth: 4,
-    nodir: true,
-  });
-
-  if (scaffoldPopulated && sourceFiles.length > 0) {
-    return "partial";
-  } else if (sourceFiles.length > 3) {
-    return "existing";
-  } else {
-    return "fresh";
-  }
-}
 
 const TOOL_CHOICE_MAP: Record<string, AiTool> = {
   "1": "claude",
@@ -402,40 +262,7 @@ async function selectToolConfig(
 
   const choice = (await rl.question("Choice [1-8] (default: 1): ")).trim() || "1";
 
-  let selectedClaude = false;
-  const selectedTools: AiTool[] = [];
-
-  const copyConfig = (key: string) => {
-    const config = TOOL_CONFIGS[key];
-    if (!config) return;
-
-    if (key === "1") selectedClaude = true;
-    const tool = TOOL_CHOICE_MAP[key];
-    if (tool) selectedTools.push(tool);
-
-    const src = resolve(TEMPLATES_DIR, config.src);
-    const dest = resolve(projectRoot, config.dest);
-
-    if (dryRun) {
-      if (existsSync(dest)) {
-        warn(`(dry run) Would overwrite ${config.dest}`);
-      } else {
-        ok(`(dry run) Would copy ${config.dest}`);
-      }
-      return;
-    }
-
-    if (existsSync(dest)) {
-      // Can't ask interactively here since we already have rl,
-      // so just warn and skip
-      warn(`${config.dest} already exists — skipped (delete it first to replace)`);
-      return;
-    }
-
-    mkdirSync(dirname(dest), { recursive: true });
-    copyFileSync(src, dest);
-    ok(`Copied ${config.dest}`);
-  };
+  let selectedTools: AiTool[] = [];
 
   switch (choice) {
     case "1":
@@ -444,13 +271,14 @@ async function selectToolConfig(
     case "4":
     case "5":
     case "6":
-      copyConfig(choice);
+      selectedTools = [TOOL_CHOICE_MAP[choice]];
       break;
     case "7": {
       const multi = (await rl.question("Enter tool numbers separated by spaces (e.g. 1 2 5): ")).trim();
-      for (const c of multi.split(/\s+/)) {
-        copyConfig(c);
-      }
+      selectedTools = multi
+        .split(/\s+/)
+        .map((c) => TOOL_CHOICE_MAP[c])
+        .filter((tool): tool is AiTool => Boolean(tool));
       break;
     }
     case "8":
@@ -461,13 +289,29 @@ async function selectToolConfig(
       break;
   }
 
-  // Persist tool selection
-  if (selectedTools.length > 0 && !dryRun) {
-    const mexDir = resolve(projectRoot, ".mex");
-    saveAiTools(mexDir, selectedTools);
+  for (const result of writeToolConfigs({ projectRoot, tools: selectedTools, dryRun })) {
+    switch (result.action) {
+      case "would-overwrite":
+        warn(`(dry run) Would overwrite ${result.dest}`);
+        break;
+      case "would-copy":
+        ok(`(dry run) Would copy ${result.dest}`);
+        break;
+      case "exists":
+        warn(`${result.dest} already exists — skipped (delete it first to replace)`);
+        break;
+      case "copied":
+        ok(`Copied ${result.dest}`);
+        break;
+    }
   }
 
-  return selectedClaude;
+  // Persist tool selection
+  if (selectedTools.length > 0 && !dryRun) {
+    saveAiTools(resolve(projectRoot, ".mex"), selectedTools);
+  }
+
+  return selectedTools.includes("claude");
 }
 
 function printPromptForManualPaste(prompt: string): void {
