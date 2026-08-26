@@ -15,8 +15,9 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Parser, Language as WasmLanguage } from "web-tree-sitter";
 import type { Language } from "../types.js";
-import type { TSTree } from "./types.js";
+import type { TSNode, TSTree } from "./types.js";
 import { grammarWasmPath } from "../assets.js";
+import { isPrismLoaded, loadPrismRuntime, parseRubySource } from "./prism-runtime.js";
 
 /**
  * Languages 0.7.0 can parse, mapped to the vendored grammar WASM basename.
@@ -63,6 +64,34 @@ const EXTENSION_MAP: Record<string, Language> = {
   ".jsx": "jsx",
   ".py": "python",
   ".rs": "rust",
+  ".rb": "ruby",
+};
+
+/**
+ * Placeholder root node for the `TSTree` `parse()` must return for Ruby, whose
+ * grammar-less path (below) never walks it: `rubyExtractor` re-parses `source`
+ * with Prism directly, since Prism's AST has no tree-sitter shape to adapt.
+ * `parse()` still returns a real `TSTree` so `extractFile`'s generic
+ * `if (!tree) return null` gate behaves the same for every language.
+ */
+const NULL_TS_NODE: TSNode = {
+  type: "program",
+  text: "",
+  startIndex: 0,
+  endIndex: 0,
+  startPosition: { row: 0, column: 0 },
+  endPosition: { row: 0, column: 0 },
+  parent: null,
+  childCount: 0,
+  namedChildCount: 0,
+  children: [],
+  namedChildren: [],
+  previousNamedSibling: null,
+  nextNamedSibling: null,
+  child: () => null,
+  namedChild: () => null,
+  childForFieldName: () => null,
+  descendantsOfType: () => [],
 };
 
 /** Glob pattern for every extension registered above. */
@@ -90,14 +119,19 @@ export async function initRuntime(): Promise<void> {
  * documented WASM-heap race when grammars load concurrently on Node.
  */
 export async function loadGrammars(languages: Language[]): Promise<void> {
-  await initRuntime();
-  const toLoad = [...new Set(languages)].filter(
-    (lang) => lang in WASM_GRAMMAR_FILES && !languageCache.has(lang),
-  );
-  for (const lang of toLoad) {
-    const wasmFile = WASM_GRAMMAR_FILES[lang]!;
-    const grammar = await WasmLanguage.load(grammarWasmPath(wasmFile));
-    languageCache.set(lang, grammar);
+  const unique = [...new Set(languages)];
+  const treeSitterLangs = unique.filter((lang) => lang in WASM_GRAMMAR_FILES);
+  if (treeSitterLangs.length > 0) {
+    await initRuntime();
+    const toLoad = treeSitterLangs.filter((lang) => !languageCache.has(lang));
+    for (const lang of toLoad) {
+      const wasmFile = WASM_GRAMMAR_FILES[lang]!;
+      const grammar = await WasmLanguage.load(grammarWasmPath(wasmFile));
+      languageCache.set(lang, grammar);
+    }
+  }
+  if (unique.includes("ruby") && !isPrismLoaded()) {
+    await loadPrismRuntime();
   }
 }
 
@@ -129,7 +163,7 @@ export function detectLanguage(filePath: string): Language {
 
 /** Every language 0.7.0 ships a grammar for. */
 export function supportedLanguages(): Language[] {
-  return Object.keys(WASM_GRAMMAR_FILES) as Language[];
+  return [...(Object.keys(WASM_GRAMMAR_FILES) as Language[]), "ruby"];
 }
 
 /**
@@ -141,6 +175,11 @@ export function supportedLanguages(): Language[] {
  * web-tree-sitter directly.
  */
 export function parse(source: string, language: Language): TSTree | null {
+  if (language === "ruby") {
+    if (!isPrismLoaded()) return null;
+    const result = parseRubySource(source);
+    return result ? { rootNode: NULL_TS_NODE } : null;
+  }
   const parser = getParser(language);
   if (!parser) return null;
   const tree = parser.parse(source);

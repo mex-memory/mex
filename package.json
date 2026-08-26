@@ -66,6 +66,7 @@
     "prepare": "npm run build"
   },
   "dependencies": {
+    "@ruby/prism": "^1.9.0",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "cross-spawn": "^7.0.6",

@@ -115,6 +115,14 @@ When adding a language, document the grammar source and version.
 - **Upstream grammar:** [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust)
 - **Upstream grammar license:** MIT
 
+### Ruby
+- **Parser source:** `@ruby/prism` npm package, version `^1.9.0` — not tree-sitter. Prism is Ruby core's own parser (the one CRuby 3.3+ uses), shipped as a WASM build maintained by the Ruby core team; it is more semantically accurate for Ruby than the community-maintained `tree-sitter-ruby` grammar.
+- **No vendored `.wasm`:** it ships inside the npm package itself (`node_modules/@ruby/prism/src/prism.wasm`), loaded lazily by `src/graph/extraction/prism-runtime.ts` rather than through `grammars.ts`'s tree-sitter `WASM_GRAMMAR_FILES` map.
+- **Package license:** MIT
+- **Upstream parser:** [ruby/prism](https://github.com/ruby/prism)
+- **Upstream parser license:** MIT
+- **Deviation note:** `rubyExtractor.extract()` ignores the `tree: TSTree` parameter and re-parses `source` with Prism directly — Prism's typed AST has no tree-sitter node shape to adapt into. `grammars.ts#parse()` still returns a placeholder `TSTree` for Ruby so `extractFile`'s generic null-check behaves the same across languages.
+
 ## Pull request proof
 
 Before opening a pull request, run:
