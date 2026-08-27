@@ -30,6 +30,7 @@ const WASM_GRAMMAR_FILES: Partial<Record<Language, string>> = {
   jsx: "tree-sitter-javascript.wasm",
   python: "tree-sitter-python.wasm",
   rust: "tree-sitter-rust.wasm",
+  java: "tree-sitter-java.wasm",
 };
 let grammarHashCache: string | null = null;
 
@@ -63,6 +64,7 @@ const EXTENSION_MAP: Record<string, Language> = {
   ".jsx": "jsx",
   ".py": "python",
   ".rs": "rust",
+  ".java": "java",
 };
 
 /** Glob pattern for every extension registered above. */
