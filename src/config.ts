@@ -117,7 +117,7 @@ interface MexPersistedConfig {
   [key: string]: unknown;
 }
 
-const VALID_AI_TOOLS = new Set<string>(["claude", "cursor", "windsurf", "copilot", "opencode", "codex"]);
+const VALID_AI_TOOLS = new Set<string>(["claude", "cursor", "windsurf", "copilot", "opencode", "codex", "pi"]);
 
 function loadAiTools(raw: MexPersistedConfig | null): AiTool[] {
   const arr = raw?.aiTools;
