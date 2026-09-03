@@ -170,6 +170,18 @@ Then read this file fully before doing anything else in this session.
   Both degrade silently rather than failing; the validate notice now reports
   that the pass had no graph instead of asserting the checkout has none.
 
+**Working:**
+- Code graph extraction for TypeScript, TSX, JavaScript, JSX, Python, Rust, and Go
+- Go language support with tree-sitter-go grammar (structs, interfaces, type aliases, functions, methods, generics, imports, calls, struct fields)
+- Cross-file reference resolution and grounding
+
+**Not yet built:**
+- Framework resolvers for Go (e.g., Gin, Echo, Chi)
+- Additional language extractors (Java, C#, etc.)
+
+**Known issues:**
+- None for Go extractor in current scope
+
 ## Routing Table
 
 Load the relevant file based on the current task. Always load `context/architecture.md` first if not already in context this session.
