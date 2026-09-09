@@ -58,6 +58,8 @@ export interface LogOpts {
 
 export interface TimelineOpts {
   json?: boolean;
+  /** `"md"` renders a Markdown table instead of the terminal output (#55). */
+  format?: string;
   since?: string;
   kind?: string;
   limit?: number;
@@ -143,6 +145,11 @@ export async function runTimeline(config: MexConfig, opts: TimelineOpts = {}): P
     return;
   }
 
+  if (opts.format === "md") {
+    printTimelineMarkdown(selected, truncated, sourceTruncated);
+    return;
+  }
+
   if (selected.length === 0 && !truncated) {
     console.log(chalk.dim("No events found."));
   }
@@ -153,6 +160,32 @@ export async function runTimeline(config: MexConfig, opts: TimelineOpts = {}): P
   }
   if (truncated) console.log(chalk.dim("Some matching events were omitted by the entry or output limit; narrow the filters."));
   if (sourceTruncated) console.log(chalk.dim("Searched only the latest 8 MiB / 10,000 non-empty log lines; older history was not scanned."));
+}
+
+/**
+ * Markdown rendering for `timeline --format md` — valid inside reports and
+ * standup notes. Pipes and line breaks are escaped so a message cannot break
+ * the table; omission notes mirror the terminal output in italics. The default
+ * terminal rendering is untouched (#55).
+ */
+function printTimelineMarkdown(
+  selected: EventEntry[],
+  truncated: boolean,
+  sourceTruncated: boolean,
+): void {
+  if (selected.length === 0) {
+    console.log("_No events found._");
+    return;
+  }
+  console.log("| Date | Type | Event | Files |");
+  console.log("|---|---|---|---|");
+  for (const e of selected) {
+    const message = e.message.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+    const files = e.files.length ? e.files.map((f) => `\`${f}\``).join(", ") : "—";
+    console.log(`| ${e.timestamp.slice(0, 10)} | ${e.kind} | ${message} | ${files} |`);
+  }
+  if (truncated) console.log("_Some matching events were omitted by the entry or output limit; narrow the filters._");
+  if (sourceTruncated) console.log("_Searched only the latest 8 MiB / 10,000 non-empty log lines; older history was not scanned._");
 }
 
 export function readEvents(config: MexConfig): EventEntry[] {
