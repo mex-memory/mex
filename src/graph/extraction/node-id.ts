@@ -59,6 +59,7 @@ export function canonicalNodeIdentity(
 
 /** Source text spanned by a syntax node (its byte range into `source`). */
 export function getNodeText(node: TSNode, source: string): string {
+  if (!node || typeof node.startIndex !== "number" || typeof node.endIndex !== "number") return "";
   return source.substring(node.startIndex, node.endIndex);
 }
 
