@@ -16,7 +16,9 @@ edges:
     condition: when starting a task — check the pattern index for a matching pattern file
   - target: patterns/release-readme-visuals.md
     condition: when refreshing the release README, badges, community links, or architecture illustrations
-last_updated: 2026-09-11
+  - target: patterns/hub-first-run-onboarding.md
+    condition: when adding or changing the Hub first-run tour or its browser-local completion state
+last_updated: 2026-09-12
 ---
 
 # Session Bootstrap
@@ -41,6 +43,11 @@ Then read this file fully before doing anything else in this session.
   and honest quiet periods. Commands, arguments, paths, and tool results are
   omitted from the tool stream. History stays in process memory and reconnects
   through cursor pages.
+  After promotion, the full Hub shows a browser-local first-run spotlight
+  tour once per device. It overlays the live sidebar and points at Search,
+  Project, Teamwork, System, and Overview. Skip and completion stay in
+  `localStorage`; Settings can replay the tour. The setup wizard is unchanged
+  and never hosts it.
   Mode and empty tool choices survive refresh. New code projects show a bounded
   setup-file diff with numbered, highlighted additions/removals and an explicit
   local commit action before in-place Hub promotion; the commit preserves

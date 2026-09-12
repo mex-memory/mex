@@ -1,10 +1,16 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
-import { afterEach } from "vitest";
+import { afterEach, beforeEach } from "vitest";
+import { ONBOARDING_STORAGE_KEY, writeOnboardingState } from "../lib/onboarding-state";
+
+beforeEach(() => {
+  writeOnboardingState({ completed: true });
+});
 
 afterEach(() => {
   cleanup();
   window.localStorage.removeItem("mex.hub.team-access.v1");
+  window.localStorage.removeItem(ONBOARDING_STORAGE_KEY);
 });
 
 afterEach(() => {

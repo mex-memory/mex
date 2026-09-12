@@ -20,10 +20,12 @@ describe("Checkout logging settings", () => {
     const api = createFixtureApi();
     const save = vi.spyOn(api, "setLoggingPolicy");
     renderSettings(api);
+    expect(await screen.findByRole("heading", { level: 1, name: "Settings" }, { timeout: 5_000 })).toBeVisible();
     expect(await screen.findByRole("radio", { name: "Significant events" })).toBeChecked();
     expect(screen.getAllByRole("radio")).toHaveLength(3);
     expect(screen.getByRole("button", { name: "Save preference" })).toBeDisabled();
     expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "Replay Hub tour" })).toBeVisible();
     expect(screen.getByRole("link", { name: /Read project notes/ })).toHaveAttribute("href", "/activity?source=legacy");
     expect(save).not.toHaveBeenCalled();
   });
