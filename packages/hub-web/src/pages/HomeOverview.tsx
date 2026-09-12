@@ -246,9 +246,22 @@ function contextReadiness(context: OverviewResponse["context"]): ReadinessView {
   };
 }
 
+const BLOCKED_WIKI_STATUSES = new Set([
+  "missing",
+  "rebuild_required",
+  "corrupt",
+  "migration_required",
+]);
+
+function knowledgeBrowsable(context: OverviewResponse["context"]): boolean {
+  if (context.availability !== "available" || context.wiki.availability !== "available") return false;
+  return !BLOCKED_WIKI_STATUSES.has(context.wiki.details.indexStatus);
+}
+
 function buildFocusItems(data: OverviewResponse): FocusItemView[] {
   const items: FocusItemView[] = [];
   const focus = data.focus.availability === "available" ? data.focus : null;
+  const readiness = contextReadiness(data.context);
 
   if (
     data.identity.availability === "unavailable"
@@ -262,6 +275,25 @@ function buildFocusItems(data: OverviewResponse): FocusItemView[] {
       action: "Review identity",
       route: "/members",
       icon: UserRound,
+    });
+  }
+  if (readiness.state === "preparing") {
+    items.push({
+      id: "context-prepare",
+      title: "Prepare local project context",
+      action: "Open Health",
+      route: "/health",
+      icon: Wrench,
+    });
+  }
+  if (knowledgeBrowsable(data.context)) {
+    items.push({
+      id: "context-memory",
+      title: "Your project memory",
+      description: "This checkout already has shared knowledge. Open Context to see how it connects.",
+      action: "Open Context",
+      route: "/knowledge",
+      icon: Network,
     });
   }
   if (focus?.relays.availability === "available" && focus.relays.readyToTakeCount > 0) {
@@ -284,18 +316,15 @@ function buildFocusItems(data: OverviewResponse): FocusItemView[] {
       icon: RadioTower,
     });
   }
-
-  const readiness = contextReadiness(data.context);
-  if (readiness.state !== "ready") {
+  if (readiness.state === "attention") {
     items.push({
-      id: "context",
-      title: readiness.state === "preparing" ? "Prepare local project context" : "Review local context health",
+      id: "context-health",
+      title: "Review local context health",
       action: "Open Health",
       route: "/health",
       icon: Wrench,
     });
   }
-
   if (data.operation.availability === "available" && data.operation.latestRelevantFailure !== null) {
     const failure = data.operation.latestRelevantFailure;
     items.push({
@@ -430,12 +459,12 @@ function FocusCard({ data, onRetry }: { data: OverviewResponse; onRetry: () => v
           <Empty className={homeStyles.focusEmpty}>
             <EmptyMedia variant="icon"><CheckCircle2 aria-hidden="true" /></EmptyMedia>
             <EmptyHeader>
-              <EmptyTitle>You’re caught up</EmptyTitle>
+              <EmptyTitle>Your project memory</EmptyTitle>
             </EmptyHeader>
             <EmptyContent>
               <Button nativeButton={false} render={<Link to="/knowledge" />} size="sm" variant="outline">
                 <Network aria-hidden="true" data-icon="inline-start" />
-                Browse shared knowledge
+                Open Context
               </Button>
             </EmptyContent>
           </Empty>

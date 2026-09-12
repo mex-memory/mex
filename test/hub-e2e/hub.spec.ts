@@ -104,8 +104,10 @@ test.describe("populated development fixture", () => {
     const focus = page.getByRole("region", { name: "Attention", exact: true });
     await expect(page.getByRole("button", { name: "Explore Context" })).toHaveAttribute("href", "/knowledge");
     await expect(focus.getByRole("button", { name: "View Relays" })).toHaveAttribute("href", "/relays");
-    await expect(focus.getByRole("heading", { name: "Take the handoff waiting for you" })).toBeVisible();
-    await expect(focus.getByRole("button", { name: "Open handoff" })).toHaveAttribute(
+    await expect(focus.getByRole("heading", { name: "Your project memory" })).toBeVisible();
+    await expect(focus.getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
+    await expect(focus.getByText("Take the handoff waiting for you", { exact: true })).toBeVisible();
+    await expect(focus.locator("a", { hasText: "Take the handoff waiting for you" })).toHaveAttribute(
       "href",
       `/relays?view=mine&state=open&relay=${readyRelayId}`,
     );
@@ -140,14 +142,14 @@ test.describe("populated development fixture", () => {
 
     await page.goto("/?fixture=populated&overviewFixture=relay-ready");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
-    await expect(page.getByRole("region", { name: "Attention", exact: true }).getByRole("button", { name: "Open handoff" })).toHaveAttribute(
+    await expect(page.getByRole("region", { name: "Attention", exact: true }).locator("a", { hasText: "Take the handoff waiting for you" })).toHaveAttribute(
       "href",
       `/relays?view=mine&state=open&relay=${readyRelayId}`,
     );
 
     await page.goto("/?fixture=populated&overviewFixture=relay-in-hand");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
-    await expect(page.getByRole("region", { name: "Attention", exact: true }).getByRole("button", { name: "Continue handoff" })).toHaveAttribute(
+    await expect(page.getByRole("region", { name: "Attention", exact: true }).locator("a", { hasText: "Continue the handoff you took" })).toHaveAttribute(
       "href",
       `/relays?view=mine&state=open&relay=${claimedRelayId}`,
     );
@@ -162,8 +164,9 @@ test.describe("populated development fixture", () => {
     await page.goto("/?fixture=populated&overviewFixture=failure");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     const failureFocus = page.getByRole("region", { name: "Attention", exact: true });
-    await expect(failureFocus.getByRole("heading", { name: "Review the failed Graph refresh" })).toBeVisible();
-    await expect(failureFocus.getByRole("button", { name: "View operation" })).toHaveAttribute(
+    await expect(failureFocus.getByRole("heading", { name: "Your project memory" })).toBeVisible();
+    await expect(failureFocus.getByText("Review the failed Graph refresh", { exact: true })).toBeVisible();
+    await expect(failureFocus.locator("a", { hasText: "Review the failed Graph refresh" })).toHaveAttribute(
       "href",
       "/jobs?job=job_01K39R3X4A5BC6DE7FGHJKMNPQ",
     );
@@ -175,8 +178,8 @@ test.describe("populated development fixture", () => {
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
     const caughtUp = page.getByRole("region", { name: "Attention", exact: true });
-    await expect(caughtUp.getByText("You’re caught up", { exact: true })).toBeVisible();
-    await expect(caughtUp.getByRole("button", { name: "Browse shared knowledge" })).toHaveAttribute("href", "/knowledge");
+    await expect(caughtUp.getByText("Your project memory", { exact: true })).toBeVisible();
+    await expect(caughtUp.getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
     await expect(page.getByRole("region", { name: "Active operation" })).toHaveCount(0);
 
     await page.goto("/?fixture=populated&overviewFixture=indexes-missing");

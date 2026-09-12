@@ -69,10 +69,13 @@
   min-width: 0;
 }
 
+.activityCard .panelHeader h2 {
+  font-size: clamp(17px, 1.55vw, 21px);
+}
+
 .focusCard,
 .readinessCard,
 .activityCard,
-.updatesCard,
 .operationCard {
   --card-spacing: 18px;
   min-width: 0;
@@ -80,23 +83,33 @@
 }
 
 /*
- * Team invite in the right rail. It sits with the other Overview cards instead
- * of reading as a footnote that this Hub is not for teams yet.
+ * Team invite in the right rail. Keep it quieter than Activity so the product
+ * memory sits first and the waitlist reads as a close, not a peer hero.
  */
 .updatesCard {
+  --card-spacing: 14px;
+  min-width: 0;
+  border-radius: 14px;
   background: var(--card);
+}
+
+.updatesCard .panelHeader h2 {
+  color: var(--muted-foreground);
+  font-size: 14px;
+  font-weight: 580;
+  letter-spacing: -0.01em;
 }
 
 .updatesContent {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .updatesLead {
   margin: 0;
-  color: var(--foreground);
-  font-size: 13px;
-  font-weight: 520;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
   line-height: 1.45;
 }
 
