@@ -45,7 +45,7 @@ Then read this file fully before doing anything else in this session.
   through cursor pages.
   After promotion, the full Hub shows a browser-local first-run spotlight
   tour once per device. It overlays the live sidebar and points at Search,
-  Project, Teamwork, System, and Overview. Skip and completion stay in
+  Project, Teamwork, System, Settings (replay), and Context. Skip and completion stay in
   `localStorage`; Settings can replay the tour. The setup wizard is unchanged
   and never hosts it.
   Mode and empty tool choices survive refresh. New code projects show a bounded

@@ -54,7 +54,7 @@ describe("Hub first-run onboarding", () => {
     renderHub("/");
     const first = await tourDialog();
     const steps = hubOnboardingSteps("mex");
-    expect(steps).toHaveLength(6);
+    expect(steps).toHaveLength(7);
 
     await user.click(first.getByRole("button", { name: "Show me around" }));
     expect(await screen.findByRole("dialog", { name: "Read the project, then add to it" })).toBeVisible();
@@ -67,6 +67,9 @@ describe("Hub first-run onboarding", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     expect(await screen.findByRole("dialog", { name: "Stay oriented" })).toBeVisible();
     expect(screen.getByRole("button", { name: /^System/u })).toHaveAttribute("aria-expanded", "true");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(await screen.findByRole("dialog", { name: "Rewatch this tour anytime" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Settings" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Next" }));
 
     const ready = within(await screen.findByRole("dialog", { name: "You’re set" }));
