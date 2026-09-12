@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MexConfig } from "../src/types.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
+import { rebuildGraph } from "../src/graph/maintenance.js";
 import {
   loadGroundingRuntime,
   loadReadOnlyGroundingRuntime,
@@ -865,4 +866,53 @@ describe("code-graph grounding integration", () => {
       process.exitCode = previousExitCode;
     }
   }, 15_000);
+
+  it("persists NestJS versioned routes through a real build without duplicate-id failures (#102)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-nestjs-integration-"));
+    roots.push(root);
+    const controller = join(root, "src", "users.controller.ts");
+    mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(join(root, ".mex"), { recursive: true });
+    writeFileSync(join(root, ".mex", "ROUTER.md"), "# Router\n");
+    writeFileSync(join(root, "package.json"), JSON.stringify({
+      name: "fixture", dependencies: { "@nestjs/common": "^10.0.0" },
+    }));
+    writeFileSync(controller, [
+      "import { Controller, Get, Version } from '@nestjs/common';",
+      "",
+      "@Controller('users')",
+      "export class UsersController {",
+      "  @Version('1')",
+      "  @Get()",
+      "  findAllV1() { return ['v1']; }",
+      "",
+      "  @Version('2')",
+      "  @Get()",
+      "  findAllV2() { return ['v2']; }",
+      "}",
+      "",
+      "// @Get('legacy')",
+      "// legacyRoute() {}",
+      "",
+    ].join("\n"));
+
+    const result = await rebuildGraph(root);
+    expect(result.status.status).toBe("fresh");
+
+    const db = openSqlite(join(root, ".mex", "graph.db"));
+    try {
+      const routes = db.prepare(
+        "SELECT name, signature FROM nodes WHERE kind = 'route' ORDER BY name",
+      ).all() as Array<{ name: string; signature: string }>;
+      // Both versioned routes persist with distinct ids; the commented-out
+      // decorator produces no phantom route.
+      expect(routes.map((route) => route.name)).toEqual(["GET /users", "GET /users"]);
+      expect(new Set(routes.map((route) => route.signature))).toEqual(
+        new Set(["GET /users -> findAllV1", "GET /users -> findAllV2"]),
+      );
+      expect(routes.some((route) => route.signature.includes("legacy"))).toBe(false);
+    } finally {
+      db.close();
+    }
+  }, 20_000);
 });

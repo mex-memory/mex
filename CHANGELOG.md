@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - A bounded Next.js App Router resolver turning `app/**/route.ts|js` modules (including `src/app` roots) into route nodes: one per exported HTTP handler (`GET` through `HEAD`), with the URL path derived from the route file's directory, dynamic segments such as `[id]` and catch-alls preserved verbatim, and route groups `(marketing)` excluded the way Next resolves them. Same-file handlers resolve only when unambiguous; Pages Router, layouts, and pages stay out of scope (#95).
+- A bounded NestJS controller route resolver: `@Controller()` prefixes combine with `@Get`/`@Post`/`@Put`/`@Patch`/`@Delete`/`@Options`/`@Head`/`@All` method paths into `METHOD /path` route nodes, with the handler in the signature and an ordinal in the role so versioned duplicates (`@Version('1')`/`@Version('2')`) keep distinct ids. Controller arguments are read from string literals and `{ path: '…' }` objects; unreadable forms (constants, arrays) skip rather than guess. Comments are blanked before scanning, routes resolve to same-file handlers — disambiguating between controllers in one file via the owning class — and edge resolution is labeled `nestjs-route-handler` (#98).
 
 ### Fixed
 
