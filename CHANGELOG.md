@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - A bounded Next.js App Router resolver turning `app/**/route.ts|js` modules (including `src/app` roots) into route nodes: one per exported HTTP handler (`GET` through `HEAD`), with the URL path derived from the route file's directory, dynamic segments such as `[id]` and catch-alls preserved verbatim, and route groups `(marketing)` excluded the way Next resolves them. Same-file handlers resolve only when unambiguous; Pages Router, layouts, and pages stay out of scope (#95).
+- A bounded Flask framework resolver connecting `@app.route()` and shortcut decorators (`@app.get()`, `@app.post()`, and their Blueprint equivalents) to their handler functions. One stable route node is emitted per explicitly declared HTTP method — with an ordinal in the role so a route declared twice in one file cannot collide ids and fail the build — Flask path converters such as `<int:user_id>` are preserved verbatim, `methods=` is read from list or tuple literals (unreadable values skip the route rather than guessing `GET`), receiver names include Blueprint instances carrying a static `url_prefix` and Flask/Blueprint objects imported from other modules, docstrings and comments are blanked before scanning, same-file handlers resolve only when unambiguous, and detection keys on a staged Python module actually importing flask — the reliable observable, since dependency manifests are not staged corpus files (#112).
 
 ### Fixed
 
