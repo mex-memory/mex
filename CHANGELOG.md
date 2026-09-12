@@ -7,6 +7,10 @@ All notable changes to this project will be documented in this file.
 ### Added
 - A bounded Next.js App Router resolver turning `app/**/route.ts|js` modules (including `src/app` roots) into route nodes: one per exported HTTP handler (`GET` through `HEAD`), with the URL path derived from the route file's directory, dynamic segments such as `[id]` and catch-alls preserved verbatim, and route groups `(marketing)` excluded the way Next resolves them. Same-file handlers resolve only when unambiguous; Pages Router, layouts, and pages stay out of scope (#95).
 
+### Changed
+
+- Project Hub Overview now opens with a compact Context card above the atlas instead of a header button. It links to Context when the Wiki index is fresh and to Health otherwise, so a stale or unavailable index no longer leads to a page that cannot load.
+
 ### Fixed
 
 - `mex sync` now migrates an inline `mex://` anchor together with a `grounds_to` entry for the same moved node. The anchor used to reconcile on its own against the stored baseline instead of the refreshed frontmatter fingerprint. When that baseline was missing, or still listed a neighbour that had since been re-identified, the anchor was skipped or scored `AMBIGUOUS`, sync moved the shared baseline row anyway, and the next `mex check` reported `GROUNDING_GONE` until the link was edited by hand (#128).
