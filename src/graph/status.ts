@@ -8,11 +8,10 @@ import {
   lstatSync,
   openSync,
   readFileSync,
-  realpathSync,
   statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
-import { isSameResolvedPath } from "../paths.js";
+import { isSameResolvedPath, resolveRealPath } from "../paths.js";
 import { promisify } from "node:util";
 import type {
   GraphParseHealth,
@@ -224,6 +223,16 @@ export interface InspectGraphStatusOptions {
   now?: Date | (() => Date);
   /** One shared cap across added, modified, deleted, and failed path lists. */
   maxChangedPaths?: number;
+  /**
+   * @internal The database an earlier inspection in this same read already
+   * passed through the SQLite quick-check and persisted-invariant audit.
+   *
+   * Only a read revalidating its own bound observation passes this. The audit
+   * is skipped when the database statted around this inspection's immutable
+   * open is still exactly that file; every other check still runs. Nothing is
+   * cached or written: the caller carries it for one read.
+   */
+  auditedDatabase?: Pick<InternalGraphFreshObservationToken, "canonicalDbPath" | "databaseIdentity">;
   /** @internal Deterministic observation-race seam for conformance tests. */
   internal?: {
     beforeFreshValidation?: (attempt: number) => void | Promise<void>;
@@ -719,7 +728,15 @@ async function inspectGraphStatusAttempt(
         }));
     }
 
-    const integrity = quickCheck(db);
+    // Revalidating a read re-audits nothing it could learn from: SQLite holds
+    // this file open immutable, and a changed identity fails the caller's
+    // observation comparison regardless. Any doubt runs the full audit.
+    const structureAudited = isAuditedDatabase(
+      context.options.auditedDatabase,
+      database.canonicalPath,
+      databaseFileIdentity(fileStat),
+    );
+    const integrity = structureAudited ? [] : quickCheck(db);
     if (integrity.length > 0) {
       diagnostics.push({
         code: "GRAPH_INDEX_CORRUPT",
@@ -737,7 +754,7 @@ async function inspectGraphStatusAttempt(
         }));
     }
 
-    const coreInvariantFailures = inspectCoreInvariants(db);
+    const coreInvariantFailures = structureAudited ? [] : inspectCoreInvariants(db);
     if (coreInvariantFailures.length > 0) {
       diagnostics.push({
         code: "GRAPH_INDEX_INVARIANT_FAILED",
@@ -1145,7 +1162,7 @@ function resolveContainedDatabasePath(
   }
   let projectRootRealPath: string;
   try {
-    projectRootRealPath = realpathSync(projectRoot);
+    projectRootRealPath = resolveRealPath(projectRoot);
   } catch {
     return {
       database: undefined,
@@ -1162,7 +1179,7 @@ function resolveContainedDatabasePath(
     const requestedStats = lstatSync(requestedPath);
     if (requestedStats.isSymbolicLink()) {
       try {
-        canonicalPath = realpathSync(requestedPath);
+        canonicalPath = resolveRealPath(requestedPath);
       } catch {
         return {
           database: undefined,
@@ -1174,7 +1191,7 @@ function resolveContainedDatabasePath(
         };
       }
     } else {
-      canonicalPath = realpathSync(requestedPath);
+      canonicalPath = resolveRealPath(requestedPath);
     }
   } catch (error) {
     if (errorCode(error) !== "ENOENT") {
@@ -1219,7 +1236,7 @@ function canonicalizeMissingPath(path: string): string {
     if (parent === ancestor) throw new Error("No existing path ancestor");
     ancestor = parent;
     try {
-      return resolve(realpathSync(ancestor), relative(ancestor, path));
+      return resolve(resolveRealPath(ancestor), relative(ancestor, path));
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;
     }
@@ -1281,6 +1298,26 @@ function sidecarDiagnostic(probe: GraphSidecarProbe): Diagnostic {
 
 function databaseFileIdentity(stats: NonNullable<ReturnType<typeof statSync>>): string {
   return JSON.stringify([stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.ctimeMs]);
+}
+
+/**
+ * True only when the audited database is provably the one this inspection
+ * opened: same canonical path, and the identity statted both before and after
+ * the immutable open equals the audited identity.
+ */
+function isAuditedDatabase(
+  audited: InspectGraphStatusOptions["auditedDatabase"],
+  canonicalPath: string,
+  identityBeforeOpen: string,
+): boolean {
+  if (!audited
+    || audited.canonicalDbPath !== canonicalPath
+    || audited.databaseIdentity !== identityBeforeOpen) return false;
+  try {
+    return databaseFileIdentity(statSync(canonicalPath)) === audited.databaseIdentity;
+  } catch {
+    return false;
+  }
 }
 
 function stabilizeDatabaseResult(
@@ -1688,7 +1725,7 @@ function readStableContainedUtf8File(
       "The repository-relative path escapes the project root.",
     );
   }
-  const canonicalPath = realpathSync(absolutePath);
+  const canonicalPath = resolveRealPath(absolutePath);
   if (!isPathContained(projectRootRealPath, canonicalPath)) {
     throw containedFileError(
       "GRAPH_CONTAINED_FILE_OUTSIDE_PROJECT",
@@ -1720,7 +1757,7 @@ function readStableContainedUtf8File(
     const content = readFileSync(fd, "utf8");
     afterRead?.();
     const after = fstatSync(fd);
-    const resolvedAfter = realpathSync(absolutePath);
+    const resolvedAfter = resolveRealPath(absolutePath);
     const pathAfter = lstatSync(resolvedAfter);
     if (databaseFileIdentity(opened) !== databaseFileIdentity(after)
       || !isSameResolvedPath(resolvedAfter, canonicalPath)
@@ -1765,7 +1802,7 @@ function assertSecurelyContainedMissingPath(
   let ancestor = dirname(absolutePath);
   for (;;) {
     try {
-      const canonicalAncestor = realpathSync(ancestor);
+      const canonicalAncestor = resolveRealPath(ancestor);
       if (!isPathContained(projectRootRealPath, canonicalAncestor)) {
         throw containedFileError(
           "GRAPH_CONTAINED_FILE_OUTSIDE_PROJECT",
@@ -2168,21 +2205,15 @@ function inspectCoreInvariants(db: SqliteDatabase): string[] {
       LEFT JOIN nodes n ON n.id = b.target_id
       WHERE b.target_id IS NOT NULL AND n.id IS NULL
     `],
+    // A bucket whose fingerprint has no node implies that fingerprint has no
+    // node, which this check reports. A bucket with no fingerprint at all is
+    // counted as a malformed owner by the ordered walk in
+    // inspectFingerprintInvariants. Joining lsh_buckets here re-derived both
+    // faults and was most of the audit's cost on a large store.
     ["fingerprint(s) without a node", `
       SELECT COUNT(*) AS count FROM node_fingerprints f
       LEFT JOIN nodes n ON n.id = f.node_id
       WHERE n.id IS NULL
-    `],
-    ["LSH bucket(s) without a node", `
-      SELECT COUNT(*) AS count FROM lsh_buckets b
-      LEFT JOIN node_fingerprints f ON f.ref = b.ref
-      LEFT JOIN nodes n ON n.id = f.node_id
-      WHERE n.id IS NULL
-    `],
-    ["LSH bucket(s) without a fingerprint", `
-      SELECT COUNT(*) AS count FROM lsh_buckets b
-      LEFT JOIN node_fingerprints f ON f.ref = b.ref
-      WHERE f.ref IS NULL
     `],
     ["node(s) missing from full-text search", `
       SELECT COUNT(*) AS count FROM nodes n

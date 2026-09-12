@@ -6,11 +6,10 @@ import {
   lstatSync,
   openSync,
   readFileSync,
-  realpathSync,
   statSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { isSameResolvedPath } from "../paths.js";
+import { isSameResolvedPath, resolveRealPath } from "../paths.js";
 import type { GraphStatus } from "../team/contracts/graph.js";
 import { GRAPH_CORPUS_LIMITS, GraphCorpusLimitError } from "./corpus-policy.js";
 import { openGraphDatabase } from "./db/database.js";
@@ -437,7 +436,17 @@ export async function loadFreshGraphReadSession(
       validate: () => ownedBase.validate(),
       revalidateFreshness: async () => {
         const before = session.validate();
-        const finalInspection = await inspectObservation({ projectRoot, dbPath });
+        // The bound observation already passed the structural audit. Handing
+        // its identity back lets the final inspection skip re-auditing that
+        // exact file while still re-proving sources, Git, snapshot and sidecars.
+        const finalInspection = await inspectObservation({
+          projectRoot,
+          dbPath,
+          auditedDatabase: {
+            canonicalDbPath: freshObservation.canonicalDbPath,
+            databaseIdentity: freshObservation.databaseIdentity,
+          },
+        });
         // Output is committed under the class it was labelled with. A store
         // that changed class mid-read — drifted while being read as fresh, or
         // repaired while being read as drifted — carries a label the buffered
@@ -541,12 +550,12 @@ function createIndexedSourceReader(
 /** Read one exact byte buffer through a contained, identity-stable file descriptor. */
 function readStableContainedSource(projectRoot: string, filePath: string): Buffer {
   const lexicalRoot = resolve(projectRoot);
-  const canonicalRoot = realpathSync(lexicalRoot);
+  const canonicalRoot = resolveRealPath(lexicalRoot);
   const absolutePath = resolve(lexicalRoot, filePath);
   if (!isContainedPath(lexicalRoot, absolutePath)) {
     throw new Error("Indexed source path escapes the project root.");
   }
-  const canonicalPath = realpathSync(absolutePath);
+  const canonicalPath = resolveRealPath(absolutePath);
   if (!isContainedPath(canonicalRoot, canonicalPath)) {
     throw new Error("Indexed source target escapes the project root.");
   }
@@ -568,7 +577,7 @@ function readStableContainedSource(projectRoot: string, filePath: string): Buffe
     }
     const bytes = readFileSync(fd);
     const after = fstatSync(fd);
-    const resolvedAfter = realpathSync(absolutePath);
+    const resolvedAfter = resolveRealPath(absolutePath);
     const pathAfter = lstatSync(resolvedAfter);
     if (!sameFileIdentity(opened, after)
       || !isSameResolvedPath(resolvedAfter, canonicalPath)
@@ -712,7 +721,7 @@ function bindDatabaseFile(dbPath: string, afterClose?: () => void): BoundDatabas
   };
   try {
     const opened = fstatSync(fd);
-    const resolvedAfter = realpathSync(dbPath);
+    const resolvedAfter = resolveRealPath(dbPath);
     const pathAfter = lstatSync(resolvedAfter);
     if (!opened.isFile()
       || !isSameResolvedPath(resolvedAfter, dbPath)
