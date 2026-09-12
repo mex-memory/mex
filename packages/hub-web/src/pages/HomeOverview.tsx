@@ -125,10 +125,6 @@ function HomeHeader({
       description={data ? `Last checked ${formatDate(data.observedAt)}` : undefined}
       actions={(
         <div className={homeStyles.headerActions}>
-          <Button nativeButton={false} render={<Link to="/knowledge" />} size="sm">
-            <Network aria-hidden="true" data-icon="inline-start" />
-            Explore Context
-          </Button>
           <Button disabled={refreshing} onClick={onRefresh} size="sm" type="button" variant="outline">
             <RefreshCw
               aria-hidden="true"
@@ -258,10 +254,45 @@ function knowledgeBrowsable(context: OverviewResponse["context"]): boolean {
   return !BLOCKED_WIKI_STATUSES.has(context.wiki.details.indexStatus);
 }
 
+function memoryHero(context: OverviewResponse["context"]): {
+  description: string;
+  action: string;
+  route: string;
+} {
+  if (knowledgeBrowsable(context)) {
+    return {
+      description: "Notes for this repo, linked to the code.",
+      action: "Open Context",
+      route: "/knowledge",
+    };
+  }
+  return {
+    description: "The local index isn’t ready to browse yet.",
+    action: "Open Health",
+    route: "/health",
+  };
+}
+
+function MemoryHero({ context }: { context: OverviewResponse["context"] }) {
+  const hero = memoryHero(context);
+  return (
+    <section className={homeStyles.memoryHero} role="region" aria-labelledby="overview-memory-hero-heading">
+      <span className={homeStyles.memoryHeroIcon}><Network aria-hidden="true" /></span>
+      <div className={homeStyles.memoryHeroCopy}>
+        <h2 id="overview-memory-hero-heading">Context</h2>
+        <p>{hero.description}</p>
+      </div>
+      <Button nativeButton={false} render={<Link to={hero.route} />} size="sm">
+        {hero.action}
+        <ArrowRight aria-hidden="true" data-icon="inline-end" />
+      </Button>
+    </section>
+  );
+}
+
 function buildFocusItems(data: OverviewResponse): FocusItemView[] {
   const items: FocusItemView[] = [];
   const focus = data.focus.availability === "available" ? data.focus : null;
-  const readiness = contextReadiness(data.context);
 
   if (
     data.identity.availability === "unavailable"
@@ -275,25 +306,6 @@ function buildFocusItems(data: OverviewResponse): FocusItemView[] {
       action: "Review identity",
       route: "/members",
       icon: UserRound,
-    });
-  }
-  if (readiness.state === "preparing") {
-    items.push({
-      id: "context-prepare",
-      title: "Prepare local project context",
-      action: "Open Health",
-      route: "/health",
-      icon: Wrench,
-    });
-  }
-  if (knowledgeBrowsable(data.context)) {
-    items.push({
-      id: "context-memory",
-      title: "Your project memory",
-      description: "This checkout already has shared knowledge. Open Context to see how it connects.",
-      action: "Open Context",
-      route: "/knowledge",
-      icon: Network,
     });
   }
   if (focus?.relays.availability === "available" && focus.relays.readyToTakeCount > 0) {
@@ -316,15 +328,18 @@ function buildFocusItems(data: OverviewResponse): FocusItemView[] {
       icon: RadioTower,
     });
   }
-  if (readiness.state === "attention") {
+
+  const readiness = contextReadiness(data.context);
+  if (readiness.state !== "ready") {
     items.push({
-      id: "context-health",
-      title: "Review local context health",
+      id: "context",
+      title: readiness.state === "preparing" ? "Prepare local project context" : "Review local context health",
       action: "Open Health",
       route: "/health",
       icon: Wrench,
     });
   }
+
   if (data.operation.availability === "available" && data.operation.latestRelevantFailure !== null) {
     const failure = data.operation.latestRelevantFailure;
     items.push({
@@ -459,12 +474,12 @@ function FocusCard({ data, onRetry }: { data: OverviewResponse; onRetry: () => v
           <Empty className={homeStyles.focusEmpty}>
             <EmptyMedia variant="icon"><CheckCircle2 aria-hidden="true" /></EmptyMedia>
             <EmptyHeader>
-              <EmptyTitle>Your project memory</EmptyTitle>
+              <EmptyTitle>You’re caught up</EmptyTitle>
             </EmptyHeader>
             <EmptyContent>
               <Button nativeButton={false} render={<Link to="/knowledge" />} size="sm" variant="outline">
                 <Network aria-hidden="true" data-icon="inline-start" />
-                Open Context
+                Browse shared knowledge
               </Button>
             </EmptyContent>
           </Empty>
@@ -926,6 +941,7 @@ function OverviewLoading({ onRefresh }: { onRefresh: () => void }) {
     <div className={homeStyles.page}>
       <HomeHeader onRefresh={onRefresh} refreshing={false} />
       <p className="sr-only" role="status">Loading project overview</p>
+      <PanelSkeleton label="Context" />
       <div className={homeStyles.atlasGrid}>
         <div className={homeStyles.primaryColumn}>
           <PanelSkeleton label="Attention" />
@@ -985,6 +1001,7 @@ export function HomeOverview() {
     <div className={homeStyles.page} data-overview-workbench="ready">
       <HomeHeader data={data} onRefresh={() => void refresh()} refreshing={refreshing} />
       <div className={homeStyles.liveStatus} aria-live="polite" role="status">{refreshStatus}</div>
+      <MemoryHero context={data.context} />
       <div className={homeStyles.atlasGrid}>
         <div className={homeStyles.primaryColumn}>
           <FocusCard data={data} onRetry={() => void refresh()} />

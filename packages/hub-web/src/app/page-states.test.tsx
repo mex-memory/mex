@@ -53,6 +53,7 @@ describe("Home states", () => {
     renderRoute("/", apiWith({ getOverview: () => pending<OverviewResponse>() }));
 
     expect(await screen.findByText("Loading project overview", undefined, { timeout: 10_000 })).toBeVisible();
+    expect(screen.getByLabelText("Loading Context")).toBeVisible();
     expect(screen.getByLabelText("Loading Attention")).toBeVisible();
     expect(screen.getByLabelText("Loading Latest team memory")).toBeVisible();
     expect(screen.getByLabelText("Loading Context readiness")).toBeVisible();
@@ -61,14 +62,14 @@ describe("Home states", () => {
   it("renders established focus, semantic team memory, stale context, and an exact active operation", async () => {
     renderRoute("/", createFixtureApi({ overviewFixture: "established" }));
 
-    expect(await screen.findByRole("heading", { name: "Your project memory" }, { timeout: 10_000 })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
-    expect(screen.getByText("Take the handoff waiting for you")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Context", exact: true }, { timeout: 10_000 })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context", exact: true }))
+      .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
+    expect(await screen.findByRole("heading", { name: "Take the handoff waiting for you" })).toBeVisible();
     expect(screen.queryByText("Review 3 proposed Spec changes")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Attention" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Explore Context" })).toHaveAttribute("href", "/knowledge");
     expect(screen.getByRole("button", { name: "View Relays" })).toHaveAttribute("href", "/relays");
-    expect(screen.getByText("Take the handoff waiting for you").closest("a")).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Open handoff" })).toHaveAttribute(
       "href",
       "/relays?view=mine&state=open&relay=relay_01000000000000000000000001",
     );
@@ -194,9 +195,12 @@ describe("Home states", () => {
   it("renders the caught-up state without permanent job furniture", async () => {
     renderRoute("/", createFixtureApi({ overviewFixture: "caught-up" }));
 
-    expect(await screen.findByText("Your project memory")).toBeVisible();
+    expect(await screen.findByText("You’re caught up")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Overview" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
+    expect(screen.getByRole("heading", { name: "Context", exact: true })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Browse shared knowledge" })).toHaveAttribute("href", "/knowledge");
+    expect(within(screen.getByRole("region", { name: "Context", exact: true }))
+      .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
     expect(screen.getAllByText("Fresh", { selector: "dd" })).toHaveLength(2);
     expect(screen.getAllByText("Fresh", { selector: "strong" })).toHaveLength(2);
     expect(screen.queryByRole("heading", { name: "Active operation" })).not.toBeInTheDocument();
@@ -208,6 +212,9 @@ describe("Home states", () => {
 
     expect(await screen.findByText("Prepare local project context")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Overview" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Context", exact: true })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context", exact: true }))
+      .getByRole("button", { name: "Open Health" })).toHaveAttribute("href", "/health");
     expect(screen.getByRole("button", { name: "Open full Health details" })).toHaveAttribute("href", "/health");
     expect(screen.getByText("No team memory yet")).toBeVisible();
   });
@@ -298,9 +305,11 @@ describe("Home states", () => {
   it("shows only the bounded relevant failed operation when no newer success supersedes it", async () => {
     renderRoute("/", createFixtureApi({ overviewFixture: "failure" }));
 
-    expect(await screen.findByRole("heading", { name: "Your project memory" }, { timeout: 10_000 })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
-    expect(screen.getByText("Review the failed Graph refresh").closest("a")).toHaveAttribute(
+    expect(await screen.findByRole("heading", { name: "Review the failed Graph refresh" }, { timeout: 10_000 })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context", exact: true }))
+      .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
+    expect(within(screen.getByRole("region", { name: "Attention" }))
+      .getByRole("button", { name: "View operation" })).toHaveAttribute(
       "href",
       "/jobs?job=job_01K39R3X4A5BC6DE7FGHJKMNPQ",
     );
@@ -355,7 +364,7 @@ describe("Home states", () => {
     const user = userEvent.setup();
     renderRoute("/", api, queryClient);
 
-    expect(await screen.findByText("Your project memory")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Context", exact: true })).toBeVisible();
     expect(getOverview).toHaveBeenCalledTimes(1);
     expect(getHome).not.toHaveBeenCalled();
     expect(getCurrentActor).not.toHaveBeenCalled();

@@ -36,6 +36,68 @@
   to { transform: rotate(360deg); }
 }
 
+.memoryHero {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  padding: 18px 20px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.memoryHeroIcon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border: 1px solid var(--primary-border);
+  border-radius: 11px;
+  place-items: center;
+}
+
+.memoryHeroIcon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.memoryHeroCopy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.memoryHeroCopy h2 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: clamp(17px, 1.55vw, 21px);
+  font-weight: 630;
+  letter-spacing: -0.025em;
+  line-height: 1.16;
+}
+
+.memoryHeroCopy p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (max-width: 720px) {
+  .memoryHero {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .memoryHero > :last-child {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
 .atlasGrid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
