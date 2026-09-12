@@ -242,16 +242,12 @@ function contextReadiness(context: OverviewResponse["context"]): ReadinessView {
   };
 }
 
-const BLOCKED_WIKI_STATUSES = new Set([
-  "missing",
-  "rebuild_required",
-  "corrupt",
-  "migration_required",
-]);
-
+// Context reads refuse every Wiki index that is not fresh, so only offer the
+// doorway when the page behind it can load.
 function knowledgeBrowsable(context: OverviewResponse["context"]): boolean {
-  if (context.availability !== "available" || context.wiki.availability !== "available") return false;
-  return !BLOCKED_WIKI_STATUSES.has(context.wiki.details.indexStatus);
+  return context.availability === "available"
+    && context.wiki.availability === "available"
+    && context.wiki.details.indexStatus === "fresh";
 }
 
 function memoryHero(context: OverviewResponse["context"]): {

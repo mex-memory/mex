@@ -62,8 +62,8 @@ describe("Home states", () => {
   it("renders established focus, semantic team memory, stale context, and an exact active operation", async () => {
     renderRoute("/", createFixtureApi({ overviewFixture: "established" }));
 
-    expect(await screen.findByRole("heading", { name: "Context", exact: true }, { timeout: 10_000 })).toBeVisible();
-    expect(within(screen.getByRole("region", { name: "Context", exact: true }))
+    expect(await screen.findByRole("heading", { name: "Context" }, { timeout: 10_000 })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context" }))
       .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
     expect(await screen.findByRole("heading", { name: "Take the handoff waiting for you" })).toBeVisible();
     expect(screen.queryByText("Review 3 proposed Spec changes")).not.toBeInTheDocument();
@@ -197,9 +197,9 @@ describe("Home states", () => {
 
     expect(await screen.findByText("You’re caught up")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Overview" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Context", exact: true })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Context" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Browse shared knowledge" })).toHaveAttribute("href", "/knowledge");
-    expect(within(screen.getByRole("region", { name: "Context", exact: true }))
+    expect(within(screen.getByRole("region", { name: "Context" }))
       .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
     expect(screen.getAllByText("Fresh", { selector: "dd" })).toHaveLength(2);
     expect(screen.getAllByText("Fresh", { selector: "strong" })).toHaveLength(2);
@@ -212,8 +212,8 @@ describe("Home states", () => {
 
     expect(await screen.findByText("Prepare local project context")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Overview" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Context", exact: true })).toBeVisible();
-    expect(within(screen.getByRole("region", { name: "Context", exact: true }))
+    expect(screen.getByRole("heading", { name: "Context" })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context" }))
       .getByRole("button", { name: "Open Health" })).toHaveAttribute("href", "/health");
     expect(screen.getByRole("button", { name: "Open full Health details" })).toHaveAttribute("href", "/health");
     expect(screen.getByText("No team memory yet")).toBeVisible();
@@ -231,6 +231,8 @@ describe("Home states", () => {
     const staleRender = renderRoute("/", apiWith({ getOverview: () => Promise.resolve(stale) }));
     expect(await screen.findByText("Stale", { selector: "dd" })).toBeVisible();
     expect(screen.getByText("Fresh", { selector: "dd" })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context" }))
+      .getByRole("button", { name: "Open Health" })).toHaveAttribute("href", "/health");
     staleRender.unmount();
 
     const degraded = structuredClone(await fixture.getOverview());
@@ -243,6 +245,8 @@ describe("Home states", () => {
     renderRoute("/", apiWith({ getOverview: () => Promise.resolve(degraded) }));
     expect(await screen.findByText("Degraded", { selector: "dd" })).toBeVisible();
     expect(screen.getByText("Fresh", { selector: "dd" })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Context" }))
+      .getByRole("button", { name: "Open Health" })).toHaveAttribute("href", "/health");
   });
 
   it("prioritizes unresolved identity and preserves personal Relay unavailability", async () => {
@@ -306,7 +310,7 @@ describe("Home states", () => {
     renderRoute("/", createFixtureApi({ overviewFixture: "failure" }));
 
     expect(await screen.findByRole("heading", { name: "Review the failed Graph refresh" }, { timeout: 10_000 })).toBeVisible();
-    expect(within(screen.getByRole("region", { name: "Context", exact: true }))
+    expect(within(screen.getByRole("region", { name: "Context" }))
       .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
     expect(within(screen.getByRole("region", { name: "Attention" }))
       .getByRole("button", { name: "View operation" })).toHaveAttribute(
@@ -364,7 +368,7 @@ describe("Home states", () => {
     const user = userEvent.setup();
     renderRoute("/", api, queryClient);
 
-    expect(await screen.findByRole("heading", { name: "Context", exact: true })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Context" })).toBeVisible();
     expect(getOverview).toHaveBeenCalledTimes(1);
     expect(getHome).not.toHaveBeenCalled();
     expect(getCurrentActor).not.toHaveBeenCalled();

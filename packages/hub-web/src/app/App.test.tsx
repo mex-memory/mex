@@ -423,9 +423,9 @@ describe("Project Hub routes", () => {
 
   it("links Overview focus, team memory, context, and active operation to exact supported routes", async () => {
     renderRoute("/");
-    await screen.findByRole("heading", { name: "Context", exact: true }, { timeout: 10_000 });
+    await screen.findByRole("heading", { name: "Context" }, { timeout: 10_000 });
     const focus = await screen.findByRole("region", { name: "Attention" }, { timeout: 10_000 });
-    expect(within(screen.getByRole("region", { name: "Context", exact: true }))
+    expect(within(screen.getByRole("region", { name: "Context" }))
       .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
     expect(within(focus).getByRole("button", { name: "View Relays" })).toHaveAttribute("href", "/relays");
     expect(within(focus).queryByRole("button", { name: "Open Inbox" })).not.toBeInTheDocument();
