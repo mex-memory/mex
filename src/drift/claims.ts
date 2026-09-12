@@ -38,6 +38,24 @@ const DOTTED_KEY_WITH_SLASH = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+\/[A-Za-z0-9_
  */
 const PACKAGE_NAME = /^@?[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
+/**
+ * Architectural/descriptive terms that pass PACKAGE_NAME but are not
+ * installable packages — the blocklist complement to the structural
+ * heuristics above. One word per label; real packages never collide
+ * (npm names "api" or "database" are far rarer than the false positives
+ * these labels cause in stack docs).
+ */
+const ARCHITECTURAL_LABELS = new Set([
+  "frontend", "backend", "fullstack", "full-stack",
+  "database", "database layer", "storage layer", "data layer",
+  "api", "api layer", "service layer",
+  "middleware", "infrastructure", "infra", "platform",
+  "auth", "authentication", "authorization",
+  "caching", "queue", "queues", "scheduler", "workers",
+  "server", "client", "monorepo", "tooling", "observability",
+  "testing", "deployment", "orchestration", "gateway", "firewall",
+]);
+
 /** Things that look like paths but are actually code snippets, URL routes, or other non-path content */
 function isNotAPath(value: string): boolean {
   // URL routes: /voice/incoming, /api/users — start with / but have no file extension
@@ -225,6 +243,15 @@ export function extractClaims(filePath: string, source: string): Claim[] {
     // carries that name, so checking it against a manifest only ever produces
     // a warning the author cannot act on.
     if (!PACKAGE_NAME.test(name)) return;
+
+    // Package-name heuristics (#4): a name that survives PACKAGE_NAME can
+    // still be a label no manifest could ever satisfy. Acronyms ("AWS",
+    // "REST") and multi-word descriptive phrases ("REST API", "Frontend
+    // Layer") are not packages; scoped names ("@mex/core") keep their slash.
+    const lower = name.toLowerCase();
+    if (name === name.toUpperCase() && /[A-Z]/.test(name)) return;
+    if (/\s/.test(name) && !name.startsWith("@")) return;
+    if (ARCHITECTURAL_LABELS.has(lower)) return;
 
     claims.push({
       kind: "dependency",

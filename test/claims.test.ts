@@ -322,3 +322,41 @@ describe("extractClaims — returns empty for missing file", () => {
     expect(claims).toEqual([]);
   });
 });
+
+describe("extractClaims — non-package dependency filtering (#4)", () => {
+  it("drops all-caps acronyms from dependency sections", () => {
+    const path = writeFixture(
+      "acronyms.md",
+      "## Stack\n\n- **AWS** — cloud provider\n- **REST** — interface style\n- **JWT** — auth tokens\n"
+    );
+    const deps = extractClaims(path, "acronyms.md").filter((c) => c.kind === "dependency");
+    expect(deps).toEqual([]);
+  });
+
+  it("drops multi-word descriptive phrases", () => {
+    const path = writeFixture(
+      "phrases.md",
+      "## Tech Stack\n\n- **REST API** — external interface\n- **Database Layer** — persistence\n"
+    );
+    const deps = extractClaims(path, "phrases.md").filter((c) => c.kind === "dependency");
+    expect(deps).toEqual([]);
+  });
+
+  it("drops common architectural labels but keeps real packages", () => {
+    const path = writeFixture(
+      "labels.md",
+      "## Dependencies\n\n- **Frontend** — the UI\n- **Middleware** — request pipeline\n- **Express** — web framework\n- **@scope/pkg** — internal\n"
+    );
+    const deps = extractClaims(path, "labels.md").filter((c) => c.kind === "dependency");
+    expect(deps.map((d) => d.value)).toEqual(["Express", "@scope/pkg"]);
+  });
+
+  it("keeps mixed-case package names with digits", () => {
+    const path = writeFixture(
+      "packages.md",
+      "## Stack\n\n- **YouTube.js** — client\n- **pino-http** — logging\n"
+    );
+    const deps = extractClaims(path, "packages.md").filter((c) => c.kind === "dependency");
+    expect(deps.map((d) => d.value)).toContain("pino-http");
+  });
+});
