@@ -2168,21 +2168,15 @@ function inspectCoreInvariants(db: SqliteDatabase): string[] {
       LEFT JOIN nodes n ON n.id = b.target_id
       WHERE b.target_id IS NOT NULL AND n.id IS NULL
     `],
+    // A bucket whose fingerprint has no node implies that fingerprint has no
+    // node, which this check reports. A bucket with no fingerprint at all is
+    // counted as a malformed owner by the ordered walk in
+    // inspectFingerprintInvariants. Joining lsh_buckets here re-derived both
+    // faults and was most of the audit's cost on a large store.
     ["fingerprint(s) without a node", `
       SELECT COUNT(*) AS count FROM node_fingerprints f
       LEFT JOIN nodes n ON n.id = f.node_id
       WHERE n.id IS NULL
-    `],
-    ["LSH bucket(s) without a node", `
-      SELECT COUNT(*) AS count FROM lsh_buckets b
-      LEFT JOIN node_fingerprints f ON f.ref = b.ref
-      LEFT JOIN nodes n ON n.id = f.node_id
-      WHERE n.id IS NULL
-    `],
-    ["LSH bucket(s) without a fingerprint", `
-      SELECT COUNT(*) AS count FROM lsh_buckets b
-      LEFT JOIN node_fingerprints f ON f.ref = b.ref
-      WHERE f.ref IS NULL
     `],
     ["node(s) missing from full-text search", `
       SELECT COUNT(*) AS count FROM nodes n

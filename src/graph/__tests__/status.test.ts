@@ -994,8 +994,7 @@ describe("inspectGraphStatus", () => {
     expect(diagnostic?.message).toContain("unresolved reference(s) with a dangling target");
     expect(diagnostic?.message).toContain("import binding(s) without an owning file");
     expect(diagnostic?.message).toContain("import binding(s) with a dangling target");
-    expect(diagnostic?.message).toContain("LSH bucket(s) without a node");
-    expect(diagnostic?.message).toContain("LSH bucket(s) without a fingerprint");
+    expect(diagnostic?.message).toContain("malformed LSH bucket owner row(s)");
   });
 
   it("rejects malformed reachable fingerprints before the reconciler can decode them", async () => {
@@ -1080,6 +1079,47 @@ describe("inspectGraphStatus", () => {
     expect(diagnostic?.message).toContain("out-of-range fingerprint LSH bucket row(s)");
     expect(diagnostic?.message).toContain("fingerprint LSH bucket hash mismatch(es)");
     expect(diagnostic?.remediation).toBeUndefined();
+    expect(executableRemediations(status)).toContain("mex graph rebuild");
+  });
+
+  it.each([
+    {
+      name: "a fingerprint deleted with its LSH buckets left behind",
+      corrupt: "DELETE FROM node_fingerprints WHERE ref = ?",
+      expected: "malformed LSH bucket owner row(s)",
+    },
+    {
+      name: "a bucketed fingerprint whose node is missing",
+      corrupt: "UPDATE node_fingerprints SET node_id = 'missing-node' WHERE ref = ?",
+      expected: "fingerprint(s) without a node",
+    },
+  ])("classifies $name as corrupt", async ({ corrupt, expected }) => {
+    const root = temporaryRoot("mex-graph-orphan-buckets-");
+    source(root, "src/a.ts", `
+      export function alpha(value: number): number { return value + 1; }
+      export function beta(value: number): number { return value * 2; }
+    `);
+    const dbPath = await build(root);
+    const db = openSqlite(dbPath);
+    try {
+      db.exec("PRAGMA foreign_keys = OFF");
+      const row = db.prepare(
+        "SELECT CAST(ref AS TEXT) AS ref FROM node_fingerprints ORDER BY node_id LIMIT 1",
+      ).get() as { ref: string } | undefined;
+      expect(row).toBeDefined();
+      const ref = BigInt(row!.ref);
+      const buckets = db.prepare("SELECT COUNT(*) AS count FROM lsh_buckets WHERE ref = ?")
+        .get(ref) as { count: number };
+      expect(buckets.count).toBe(BANDS);
+      db.prepare(corrupt).run(ref);
+    } finally {
+      db.close();
+    }
+
+    const status = await inspect(root);
+    expect(status.status).toBe("corrupt");
+    const diagnostic = status.diagnostics.find((entry) => entry.code === "GRAPH_INDEX_INVARIANT_FAILED");
+    expect(diagnostic?.message).toContain(expected);
     expect(executableRemediations(status)).toContain("mex graph rebuild");
   });
 
