@@ -39,11 +39,21 @@ export interface WatchConfig {
 }
 
 export interface HeartbeatConfig {
-  /** Days since `last_updated` before heartbeat reports stale context */
+  /**
+   * Days since `last_updated` before heartbeat reports stale context. `0`
+   * means stale as soon as a file is older than today (#42); negatives and
+   * other garbage fall back to the default.
+   */
   staleDays?: number;
-  /** Days since memory cleanup before heartbeat reports cleanup due */
+  /**
+   * Days since memory cleanup before heartbeat reports cleanup due. `0`
+   * means due every day; negatives fall back to the default.
+   */
   memoryCleanupDays?: number;
-  /** Daily memory files older than this are considered cleanup candidates */
+  /**
+   * Daily memory files older than this are considered cleanup candidates.
+   * `0` flags yesterday's file; negatives fall back to the default.
+   */
   dailyMemoryRetentionDays?: number;
 }
 

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { globSync } from "glob";
 import chalk from "chalk";
@@ -12,6 +12,15 @@ export interface HeartbeatResult {
   staleFiles: Array<{ file: string; days: number }>;
   memoryCleanupDue: boolean;
   oldDailyMemoryFiles: string[];
+  /**
+   * Additive: number of scaffold files the heartbeat scanned that carry no
+   * parseable `last_updated` at all. When every scanned file lacks one,
+   * staleness checks are silently inert — the CLI surfaces a hint instead of
+   * reporting a healthy-looking sweep that checked nothing. Absent (0) for
+   * scaffolds where at least one file opts in, so existing JSON consumers
+   * see no change.
+   */
+  filesWithoutLastUpdated?: number;
 }
 
 export interface HeartbeatOpts {
@@ -63,9 +72,13 @@ export function checkHeartbeat(
   const memoryCleanupDays = config.heartbeat?.memoryCleanupDays ?? DEFAULT_MEMORY_CLEANUP_DAYS;
   const dailyRetentionDays = config.heartbeat?.dailyMemoryRetentionDays ?? DEFAULT_DAILY_MEMORY_RETENTION_DAYS;
 
+  let scanned = 0;
+  let withLastUpdated = 0;
   const staleFiles = scaffoldHeartbeatFiles(config.scaffoldRoot, opts.scaffoldPatterns)
     .map((file) => {
       const fm = parseFrontmatter(file);
+      scanned++;
+      if (typeof fm?.last_updated === "string") withLastUpdated++;
       const days = daysSinceFrontmatterDate(
         typeof fm?.last_updated === "string" ? fm.last_updated : undefined,
         now,
@@ -84,6 +97,7 @@ export function checkHeartbeat(
     staleFiles,
     memoryCleanupDue,
     oldDailyMemoryFiles,
+    ...(scanned > 0 && withLastUpdated === 0 ? { filesWithoutLastUpdated: scanned } : {}),
   };
 }
 
@@ -91,14 +105,31 @@ function scaffoldHeartbeatFiles(
   scaffoldRoot: string,
   patterns: readonly string[] = DEFAULT_HEARTBEAT_PATTERNS,
 ): string[] {
-  return patterns.flatMap((pattern) =>
+  // follow: true supports symlinked scaffold content, and deduplicating by
+  // real path keeps a file reached through two links a single heartbeat
+  // entry; glob itself bounds symlink loops, so runaway scans stay off the
+  // table (#40).
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const file of patterns.flatMap((pattern) =>
     globSync(pattern, {
       cwd: scaffoldRoot,
       absolute: true,
       follow: true,
       nodir: true,
     }),
-  );
+  )) {
+    let real: string;
+    try {
+      real = realpathSync(file);
+    } catch {
+      real = file;
+    }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    files.push(file);
+  }
+  return files;
 }
 
 function isMemoryCleanupDue(projectRoot: string, thresholdDays: number, now: Date): boolean {
@@ -137,11 +168,27 @@ function daysSinceIsoDate(value: string, now: Date): number | null {
 
 function printHeartbeat(result: HeartbeatResult, config: MexConfig): void {
   if (result.ok) {
+    if (result.filesWithoutLastUpdated) {
+      console.log("HEARTBEAT_OK");
+      console.log();
+      console.log(
+        chalk.dim(`No scaffold files include last_updated; staleness checks are currently skipped. `
+          + `Add last_updated: YYYY-MM-DD to frontmatter to opt files in.`),
+      );
+      return;
+    }
     console.log("HEARTBEAT_OK");
     return;
   }
 
   console.log(chalk.bold("Heartbeat needs attention"));
+  if (result.filesWithoutLastUpdated) {
+    console.log();
+    console.log(
+      chalk.dim(`No scaffold files include last_updated; staleness checks are currently skipped. `
+        + `Add last_updated: YYYY-MM-DD to frontmatter to opt files in.`),
+    );
+  }
   if (result.staleFiles.length) {
     console.log();
     console.log(chalk.yellow("Stale scaffold files:"));

@@ -28,7 +28,11 @@ export async function runDoctor(config: MexConfig): Promise<void> {
 
   printLine("Drift", report.score >= 80 && errors === 0, `${report.score}/100 (${errors} errors, ${warnings} warnings)`);
   printLine("Graph", graph.status === "fresh", graphStatusDetail(graph));
-  printLine("Heartbeat", heartbeat.ok, heartbeat.ok ? "HEARTBEAT_OK" : `${heartbeat.staleFiles.length} stale files, ${heartbeat.oldDailyMemoryFiles.length} old memory files`);
+  printLine("Heartbeat", heartbeat.ok, heartbeat.ok
+    ? (heartbeat.filesWithoutLastUpdated
+      ? "HEARTBEAT_OK (staleness checks inactive: no last_updated fields)"
+      : "HEARTBEAT_OK")
+    : `${heartbeat.staleFiles.length} stale files, ${heartbeat.oldDailyMemoryFiles.length} old memory files`);
   printLine("Events", true, `${events.length} logged event${events.length === 1 ? "" : "s"}`);
   const hasConfig = existsSync(resolve(config.scaffoldRoot, "config.json"));
   printLine("Config", true, hasConfig ? ".mex/config.json loaded with defaults for missing values" : "using defaults; no .mex/config.json found");

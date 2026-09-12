@@ -193,7 +193,13 @@ describe("findConfig — watch and heartbeat config", () => {
     });
   });
 
-  it("ignores non-positive watch and heartbeat values", () => {
+  it("accepts zero for day-based heartbeat thresholds but rejects negatives (#42)", () => {
+    setupConfig({ heartbeat: { staleDays: 0, memoryCleanupDays: 0, dailyMemoryRetentionDays: -3 } });
+    const config = findConfig(tmpDir);
+    expect(config.heartbeat).toEqual({ staleDays: 0, memoryCleanupDays: 0 });
+  });
+
+  it("ignores negative watch and heartbeat values", () => {
     setupConfig({ watch: { intervalMinutes: 0 }, heartbeat: { staleDays: -1 } });
     const config = findConfig(tmpDir);
     expect(config.watch).toBeUndefined();
