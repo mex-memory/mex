@@ -452,6 +452,40 @@ describe("checkDependencies", () => {
     const issues = checkDependencies(claims, tmpDir);
     expect(issues).toHaveLength(0);
   });
+
+  it("checks claims against pyproject.toml [project] dependencies (#3)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[project]",
+      'name = "svc"',
+      'dependencies = ["fastapi>=0.115", "celery[redis]==5.4.0"]',
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "FastAPI" }),
+      claim({ kind: "dependency", value: "celery" }),
+      claim({ kind: "dependency", value: "boto3" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].claim.value).toBe("boto3");
+  });
+
+  it("reads pyproject optional-dependencies and poetry tables", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[project.optional-dependencies]",
+      'dev = ["pytest>=8.0", "httpx"]',
+      "",
+      "[tool.poetry.dependencies]",
+      'python = "^3.12"',
+      'SQLAlchemy = "^2.0"',
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "pytest" }),
+      claim({ kind: "dependency", value: "httpx" }),
+      claim({ kind: "dependency", value: "SQLAlchemy" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(0);
+  });
 });
 
 // ── Cross-file Checker ──

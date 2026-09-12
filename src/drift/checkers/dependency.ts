@@ -125,6 +125,16 @@ function loadAllDependencies(projectRoot: string): DepEntry[] | null {
     }
   }
 
+  // pyproject.toml (#3): [project] dependencies and optional-dependencies,
+  // plus [tool.poetry.dependencies]. Python claims ("FastAPI", "Celery") were
+  // reported missing whenever the project declared them here instead of a
+  // package.json. Version specifiers are kept verbatim — the version-claims
+  // checker treats them as substrings, and PEP 508 names are the identity.
+  const pyprojectPath = resolve(projectRoot, "pyproject.toml");
+  if (existsSync(pyprojectPath)) {
+    entries.push(...parsePyprojectDependencies(readFileSync(pyprojectPath, "utf-8")));
+  }
+
   // A repository often keeps a second application in a subdirectory without
   // declaring workspaces, and that application's packages are declared in its
   // own manifest. Reading only the root one reported every dependency the
@@ -147,4 +157,62 @@ function loadAllDependencies(projectRoot: string): DepEntry[] | null {
   }
 
   return entries.length ? entries : null;
+}
+
+/**
+ * Extract dependency names from a pyproject.toml without a TOML dependency.
+ *
+ * Bounded line-scan over the shapes the drift checker cares about: the
+ * `dependencies` array inside `[project]`, the per-extra arrays inside
+ * `[project.optional-dependencies]`, and the key-value pairs inside
+ * `[tool.poetry.dependencies]`. The package name is the identity; the raw
+ * version specifier is kept as evidence. Dynamic declarations
+ * (`dynamic = ["dependencies"]`) and everything outside these tables are out
+ * of scope for a checker that only needs name identity.
+ */
+export function parsePyprojectDependencies(content: string): DepEntry[] {
+  const entries: DepEntry[] = [];
+  let table = "";
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const header = /^\[([^\]]+)\]\s*(?:#.*)?$/.exec(line);
+    if (header) {
+      table = header[1]!.trim();
+      continue;
+    }
+    if (!line || line.startsWith("#") || line.startsWith("[")) continue;
+
+    const keyValue = /^["']?([A-Za-z0-9][\w.-]*)["']?\s*=\s*(.*)$/.exec(line);
+    if (!keyValue) continue;
+    const key = keyValue[1]!;
+    const value = keyValue[2]!.trim();
+
+    if (table === "project" && key === "dependencies") {
+      for (const { name, version } of parseDependencyArray(value)) entries.push({ name, version });
+      continue;
+    }
+    if (table === "project.optional-dependencies") {
+      for (const { name, version } of parseDependencyArray(value)) entries.push({ name, version });
+      continue;
+    }
+    if (table === "tool.poetry.dependencies") {
+      // `python = "^3.12"` is the interpreter constraint, not a package.
+      if (key.toLowerCase() === "python") continue;
+      entries.push({ name: key, version: value.replace(/^["']|["'],?\s*$/g, "") || "*" });
+      continue;
+    }
+  }
+  return entries;
+}
+
+/** Names out of `["pkg>=1", "pkg2"]`-style arrays (PEP 508 specs included). */
+function parseDependencyArray(value: string): Array<{ name: string; version: string }> {
+  const inner = /\[\s*(.*)\]/.exec(value)?.[1] ?? value;
+  const out: Array<{ name: string; version: string }> = [];
+  for (const item of inner.matchAll(/["']([^"']+)["']/g)) {
+    const spec = item[1]!;
+    const name = /^([A-Za-z0-9][\w.-]*)/.exec(spec)?.[1];
+    if (name) out.push({ name, version: spec.slice(name.length) || "*" });
+  }
+  return out;
 }
