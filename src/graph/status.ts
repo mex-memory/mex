@@ -224,6 +224,16 @@ export interface InspectGraphStatusOptions {
   now?: Date | (() => Date);
   /** One shared cap across added, modified, deleted, and failed path lists. */
   maxChangedPaths?: number;
+  /**
+   * @internal The database an earlier inspection in this same read already
+   * passed through the SQLite quick-check and persisted-invariant audit.
+   *
+   * Only a read revalidating its own bound observation passes this. The audit
+   * is skipped when the database statted around this inspection's immutable
+   * open is still exactly that file; every other check still runs. Nothing is
+   * cached or written: the caller carries it for one read.
+   */
+  auditedDatabase?: Pick<InternalGraphFreshObservationToken, "canonicalDbPath" | "databaseIdentity">;
   /** @internal Deterministic observation-race seam for conformance tests. */
   internal?: {
     beforeFreshValidation?: (attempt: number) => void | Promise<void>;
@@ -719,7 +729,15 @@ async function inspectGraphStatusAttempt(
         }));
     }
 
-    const integrity = quickCheck(db);
+    // Revalidating a read re-audits nothing it could learn from: SQLite holds
+    // this file open immutable, and a changed identity fails the caller's
+    // observation comparison regardless. Any doubt runs the full audit.
+    const structureAudited = isAuditedDatabase(
+      context.options.auditedDatabase,
+      database.canonicalPath,
+      databaseFileIdentity(fileStat),
+    );
+    const integrity = structureAudited ? [] : quickCheck(db);
     if (integrity.length > 0) {
       diagnostics.push({
         code: "GRAPH_INDEX_CORRUPT",
@@ -737,7 +755,7 @@ async function inspectGraphStatusAttempt(
         }));
     }
 
-    const coreInvariantFailures = inspectCoreInvariants(db);
+    const coreInvariantFailures = structureAudited ? [] : inspectCoreInvariants(db);
     if (coreInvariantFailures.length > 0) {
       diagnostics.push({
         code: "GRAPH_INDEX_INVARIANT_FAILED",
@@ -1281,6 +1299,26 @@ function sidecarDiagnostic(probe: GraphSidecarProbe): Diagnostic {
 
 function databaseFileIdentity(stats: NonNullable<ReturnType<typeof statSync>>): string {
   return JSON.stringify([stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.ctimeMs]);
+}
+
+/**
+ * True only when the audited database is provably the one this inspection
+ * opened: same canonical path, and the identity statted both before and after
+ * the immutable open equals the audited identity.
+ */
+function isAuditedDatabase(
+  audited: InspectGraphStatusOptions["auditedDatabase"],
+  canonicalPath: string,
+  identityBeforeOpen: string,
+): boolean {
+  if (!audited
+    || audited.canonicalDbPath !== canonicalPath
+    || audited.databaseIdentity !== identityBeforeOpen) return false;
+  try {
+    return databaseFileIdentity(statSync(canonicalPath)) === audited.databaseIdentity;
+  } catch {
+    return false;
+  }
 }
 
 function stabilizeDatabaseResult(

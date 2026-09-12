@@ -35,7 +35,12 @@ import {
   serializeGraphSnapshot,
   type GraphSnapshot,
 } from "../snapshot.js";
-import { inspectGraphSidecars, inspectGraphStatus } from "../status.js";
+import {
+  inspectGraphSidecars,
+  inspectGraphStatus,
+  inspectGraphStatusWithFreshObservation,
+  resolveContainedGraphDatabasePath,
+} from "../status.js";
 
 const NOW = new Date("2026-08-22T12:00:00.000Z");
 const roots: string[] = [];
@@ -1121,6 +1126,41 @@ describe("inspectGraphStatus", () => {
     const diagnostic = status.diagnostics.find((entry) => entry.code === "GRAPH_INDEX_INVARIANT_FAILED");
     expect(diagnostic?.message).toContain(expected);
     expect(executableRemediations(status)).toContain("mex graph rebuild");
+  });
+
+  it("skips the structural audit only for the exact audited database path and identity", async () => {
+    const root = temporaryRoot("mex-graph-audited-database-");
+    source(root, "src/a.ts", "export function a(): number { return 1; }\n");
+    const dbPath = await build(root);
+    const db = openSqlite(dbPath);
+    try {
+      db.exec("PRAGMA foreign_keys = OFF");
+      db.prepare("INSERT INTO lsh_buckets (band, band_hash, ref) VALUES (?, ?, ?)")
+        .run(0, 0n, 9_999_999n);
+    } finally {
+      db.close();
+    }
+    for (const suffix of ["-wal", "-shm"]) {
+      const sidecar = `${dbPath}${suffix}`;
+      if (existsSync(sidecar) && statSync(sidecar).size === 0) rmSync(sidecar, { force: true });
+    }
+    const canonicalDbPath = resolveContainedGraphDatabasePath(root, dbPath)!;
+    const stats = statSync(dbPath);
+    const databaseIdentity = JSON.stringify([stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.ctimeMs]);
+    const inspectWith = async (auditedDatabase?: { canonicalDbPath: string; databaseIdentity: string }) =>
+      (await inspectGraphStatusWithFreshObservation({ projectRoot: root, now: NOW, auditedDatabase })).graphStatus;
+
+    expect((await inspectWith()).status).toBe("corrupt");
+    // Vouching for this exact file is what skips the audit; anything else re-audits.
+    expect((await inspectWith({ canonicalDbPath, databaseIdentity })).status).toBe("fresh");
+    expect((await inspectWith({
+      canonicalDbPath,
+      databaseIdentity: JSON.stringify([stats.dev, stats.ino, stats.size + 1, stats.mtimeMs, stats.ctimeMs]),
+    })).status).toBe("corrupt");
+    expect((await inspectWith({
+      canonicalDbPath: join(dirname(canonicalDbPath), "other.db"),
+      databaseIdentity,
+    })).status).toBe("corrupt");
   });
 
   it("cross-checks node and source-chunk FTS row parity", async () => {

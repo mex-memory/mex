@@ -437,7 +437,17 @@ export async function loadFreshGraphReadSession(
       validate: () => ownedBase.validate(),
       revalidateFreshness: async () => {
         const before = session.validate();
-        const finalInspection = await inspectObservation({ projectRoot, dbPath });
+        // The bound observation already passed the structural audit. Handing
+        // its identity back lets the final inspection skip re-auditing that
+        // exact file while still re-proving sources, Git, snapshot and sidecars.
+        const finalInspection = await inspectObservation({
+          projectRoot,
+          dbPath,
+          auditedDatabase: {
+            canonicalDbPath: freshObservation.canonicalDbPath,
+            databaseIdentity: freshObservation.databaseIdentity,
+          },
+        });
         // Output is committed under the class it was labelled with. A store
         // that changed class mid-read — drifted while being read as fresh, or
         // repaired while being read as drifted — carries a label the buffered
