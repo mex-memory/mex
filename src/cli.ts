@@ -894,6 +894,21 @@ program
   });
 
 program
+  .command("export")
+  .description("Bundle the whole scaffold into a single Markdown document")
+  .option("--out <path>", "Write to a file instead of stdout")
+  .action(async (opts) => {
+    try {
+      const config = loadConfig();
+      const { runExport } = await import("./export.js");
+      await runExport(config, opts);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
+program
   .command("timeline")
   .description("Read bounded recent project notes (latest 8 MiB / 10,000 log lines)")
   .option("--json", "Output events as JSON")

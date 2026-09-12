@@ -764,6 +764,7 @@ describe("no unscoped scaffold writes", () => {
       "src/config.ts": "writes config.json",
       "src/global-config.ts": "writes the global config and telemetry id",
       "src/events.ts": "appends to events/decisions.jsonl",
+      "src/export.ts": "writes one export bundle to a user-specified path — a brand-new file, never scaffold bytes",
       "src/pattern/index.ts": "creates a new pattern file from a template",
       "src/setup/anchor.ts": "edits root tool configs only, never .mex/, and only inside its own markers",
       "src/setup/ignore.ts": "creates or appends only the setup-managed .mex/.gitignore rules",
