@@ -311,6 +311,32 @@ Upgrading does not modify an existing `.mex/` scaffold. To pick up the new guida
 ### Changed
 - README and CONTRIBUTING now list all 11 drift checkers (including `tool-config-sync`, `todo-fixme`, and `broken-link`).
 
+## [0.5.1] - 2026-06-02
+
+### Fixed
+- **`--version` derived from package.json** — `mex --version` was hard-coded to `"0.3.5"` in `src/cli.ts` while `package.json` had advanced to 0.5.0, so the CLI reported a version two releases behind itself. The version is now read from `package.json` at runtime (new `src/version.ts`) so it can never drift again, with a regression test asserting the program's configured version matches `package.json`. [#48](https://github.com/mex-memory/mex/issues/48)
+
+### Changed
+- CLI-level test coverage for `log` and `timeline` option parsing, so flag regressions surface before release. [#47](https://github.com/mex-memory/mex/pull/47)
+- Documentation: a drift-checker contribution guide, and the bug-report template corrected for the CLI.
+
+## [0.5.0] - 2026-05-18
+
+### Added
+- **Compatibility contract** — [COMPATIBILITY.md](COMPATIBILITY.md) now defines the package's public contract for embedders: the stable surface is exactly what `src/index.ts` re-exports (functions, runtime constants, types), CLI flags are best-effort, and what counts as a breaking change is spelled out. [#45](https://github.com/mex-memory/mex/pull/45)
+- **Event trace field** — `EventEntry` and `LogOpts` accept an optional free-form `trace` string, typically a path under `.mex/traces/`, for embedders that capture richer context than the short `message` field holds. Written only when provided; `mex timeline` (including `--json`) preserves it.
+
+### Compatibility
+- The `trace` field is additive and optional — existing event logs and JSONL consumers are unaffected, and no scaffold migration is required.
+
+## [0.4.0] - 2026-05-16
+
+### Added
+- **Stable public API surface** — the package now exposes a documented, contract-tested programmatic API from its entry point (`findConfig`, `createConfig`, `appendEvent`, `readEvents`, `eventLogPath`, `runDriftCheck`, `parseFrontmatter`, `checkHeartbeat`, `runHeartbeat`, the `DEFAULT_*` runtime constants, and their types), wired through the package `exports` field so embedders get one stable import path. [#44](https://github.com/mex-memory/mex/pull/44)
+
+### Compatibility
+- The npm package name changed to `mex-agent` in this window (the installed binary command remains `mex`); see the 0.3.5 notes for the user-facing rename summary.
+
 ## [0.3.5] - 2026-05-14
 
 ### Added
