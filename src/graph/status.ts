@@ -8,11 +8,10 @@ import {
   lstatSync,
   openSync,
   readFileSync,
-  realpathSync,
   statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
-import { isSameResolvedPath } from "../paths.js";
+import { isSameResolvedPath, resolveRealPath } from "../paths.js";
 import { promisify } from "node:util";
 import type {
   GraphParseHealth,
@@ -1163,7 +1162,7 @@ function resolveContainedDatabasePath(
   }
   let projectRootRealPath: string;
   try {
-    projectRootRealPath = realpathSync(projectRoot);
+    projectRootRealPath = resolveRealPath(projectRoot);
   } catch {
     return {
       database: undefined,
@@ -1180,7 +1179,7 @@ function resolveContainedDatabasePath(
     const requestedStats = lstatSync(requestedPath);
     if (requestedStats.isSymbolicLink()) {
       try {
-        canonicalPath = realpathSync(requestedPath);
+        canonicalPath = resolveRealPath(requestedPath);
       } catch {
         return {
           database: undefined,
@@ -1192,7 +1191,7 @@ function resolveContainedDatabasePath(
         };
       }
     } else {
-      canonicalPath = realpathSync(requestedPath);
+      canonicalPath = resolveRealPath(requestedPath);
     }
   } catch (error) {
     if (errorCode(error) !== "ENOENT") {
@@ -1237,7 +1236,7 @@ function canonicalizeMissingPath(path: string): string {
     if (parent === ancestor) throw new Error("No existing path ancestor");
     ancestor = parent;
     try {
-      return resolve(realpathSync(ancestor), relative(ancestor, path));
+      return resolve(resolveRealPath(ancestor), relative(ancestor, path));
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;
     }
@@ -1726,7 +1725,7 @@ function readStableContainedUtf8File(
       "The repository-relative path escapes the project root.",
     );
   }
-  const canonicalPath = realpathSync(absolutePath);
+  const canonicalPath = resolveRealPath(absolutePath);
   if (!isPathContained(projectRootRealPath, canonicalPath)) {
     throw containedFileError(
       "GRAPH_CONTAINED_FILE_OUTSIDE_PROJECT",
@@ -1758,7 +1757,7 @@ function readStableContainedUtf8File(
     const content = readFileSync(fd, "utf8");
     afterRead?.();
     const after = fstatSync(fd);
-    const resolvedAfter = realpathSync(absolutePath);
+    const resolvedAfter = resolveRealPath(absolutePath);
     const pathAfter = lstatSync(resolvedAfter);
     if (databaseFileIdentity(opened) !== databaseFileIdentity(after)
       || !isSameResolvedPath(resolvedAfter, canonicalPath)
@@ -1803,7 +1802,7 @@ function assertSecurelyContainedMissingPath(
   let ancestor = dirname(absolutePath);
   for (;;) {
     try {
-      const canonicalAncestor = realpathSync(ancestor);
+      const canonicalAncestor = resolveRealPath(ancestor);
       if (!isPathContained(projectRootRealPath, canonicalAncestor)) {
         throw containedFileError(
           "GRAPH_CONTAINED_FILE_OUTSIDE_PROJECT",

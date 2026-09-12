@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { graphRemediationCommand } from "../../reporter.js";
 import { DB_SCHEMA_VERSION } from "../db/database.js";
@@ -132,6 +132,10 @@ function treeState(root: string): Array<Record<string, string | number>> {
   };
   visit(root);
   return entries;
+}
+
+function swapCase(value: string): string {
+  return [...value].map((char) => char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase()).join("");
 }
 
 function git(root: string, ...args: string[]): string {
@@ -1232,6 +1236,62 @@ describe("inspectGraphStatus", () => {
     expect(status.diagnostics).toContainEqual(expect.objectContaining({
       code: "GRAPH_SOURCE_INSPECTION_INCOMPLETE",
     }));
+  });
+
+  it("hashes a supported source symlink whose target stays inside the project", async () => {
+    const root = temporaryRoot("mex-graph-internal-source-link-");
+    source(root, "src/impl/real.ts", "export const real = true;\n");
+    source(root, "src/alias.ts", "export const real = true;\n");
+    await build(root);
+    unlinkSync(join(root, "src", "alias.ts"));
+    symlinkSync(join(root, "src", "impl", "real.ts"), join(root, "src", "alias.ts"));
+
+    const status = await inspect(root);
+    expect(status.status).toBe("fresh");
+    expect(status.diagnostics.map((diagnostic) => diagnostic.code))
+      .not.toContain("GRAPH_SOURCE_PATH_OUTSIDE_PROJECT");
+  });
+
+  it("refuses a graph index whose .mex directory junction leads out of the project", async () => {
+    const root = temporaryRoot("mex-graph-junction-index-");
+    const externalRoot = temporaryRoot("mex-graph-junction-index-external-");
+    source(root, "src/a.ts", "export const a = 1;\n");
+    await build(root);
+    renameSync(join(root, ".mex"), join(externalRoot, ".mex"));
+    // "junction" is a Windows directory junction; other platforms ignore the
+    // type and create an ordinary directory symlink.
+    symlinkSync(join(externalRoot, ".mex"), join(root, ".mex"), "junction");
+
+    const status = await inspect(root);
+    expect(status.status).toBe("degraded");
+    expect(status.diagnostics).toContainEqual(expect.objectContaining({
+      code: "GRAPH_INDEX_PATH_OUTSIDE_PROJECT",
+    }));
+  });
+
+  it("inspects a graph index whose .mex directory junction stays inside the project", async () => {
+    const root = temporaryRoot("mex-graph-contained-junction-index-");
+    source(root, "src/a.ts", "export const a = 1;\n");
+    await build(root);
+    mkdirSync(join(root, "cache"), { recursive: true });
+    renameSync(join(root, ".mex"), join(root, "cache", "mex-index"));
+    symlinkSync(join(root, "cache", "mex-index"), join(root, ".mex"), "junction");
+
+    const status = await inspect(root);
+    expect(status.status).toBe("fresh");
+  });
+
+  it("inspects a case-variant project root as the same contained root on a case-insensitive volume", async (context) => {
+    const root = temporaryRoot("mex-graph-case-root-");
+    source(root, "src/a.ts", "export const a = 1;\n");
+    await build(root);
+    const variant = join(dirname(root), swapCase(basename(root)));
+    if (!existsSync(variant) || statSync(variant).ino !== statSync(root).ino) {
+      context.skip();
+    }
+
+    const status = await inspectGraphStatus({ projectRoot: variant, now: NOW });
+    expect(status.status).toBe("fresh");
   });
 
   it("suppresses every graph command when branch and rebuild findings coexist with an unsafe source", async () => {

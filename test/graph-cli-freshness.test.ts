@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentCommandDeps } from "../src/graph/cli-agent.js";
 import { GRAPH_CORPUS_LIMITS } from "../src/graph/corpus-policy.js";
@@ -251,6 +251,65 @@ describe("agent graph freshness-bound readers", () => {
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({ type: "error", code: "GRAPH_UNAVAILABLE" });
     expect(JSON.stringify(records)).not.toContain("return \\\"old\\\"");
+  });
+
+  it("refuses an indexed source swapped for a symlink out of the project during a targeted read", async () => {
+    const built = await fixture("mex-cli-source-escape-");
+    const externalRoot = mkdtempSync(join(tmpdir(), "mex-cli-source-escape-external-"));
+    roots.push(externalRoot);
+    const outside = join(externalRoot, "service.ts");
+    writeFileSync(outside, built.original);
+    const output: string[] = [];
+    let swapped = false;
+    const deps = internalDeps(output, {
+      freshRead: {
+        hooks: {
+          beforeIndexedSourceRead() {
+            if (swapped) return;
+            swapped = true;
+            unlinkSync(built.sourcePath);
+            symlinkSync(outside, built.sourcePath);
+          },
+        },
+      },
+    });
+
+    await runGraphGet([built.nodeId], built.root, deps);
+
+    const records = output.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(swapped).toBe(true);
+    expectUnavailableOnly(records, "GRAPH_INDEX_READER_SOURCE_READ_FAILED");
+    expect(JSON.stringify(records)).not.toContain("return \\\"old\\\"");
+  });
+
+  it("answers a targeted read whose .mex directory junction stays inside the project", async () => {
+    const built = await fixture("mex-cli-contained-junction-index-");
+    mkdirSync(join(built.root, "cache"), { recursive: true });
+    renameSync(join(built.root, ".mex"), join(built.root, "cache", "mex-index"));
+    // "junction" is a Windows directory junction; other platforms ignore the
+    // type and create an ordinary directory symlink.
+    symlinkSync(join(built.root, "cache", "mex-index"), join(built.root, ".mex"), "junction");
+
+    const records = await capture((deps) => runGraphGet([built.nodeId], built.root, deps));
+
+    expect(records.some((record) => record.type === "error")).toBe(false);
+    expect(JSON.stringify(records)).toContain("stableFact");
+  });
+
+  it("answers a targeted read through a case-variant project root on a case-insensitive volume", async (context) => {
+    const built = await fixture("mex-cli-case-root-");
+    const name = basename(built.root);
+    const variant = join(dirname(built.root), [...name]
+      .map((char) => char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase())
+      .join(""));
+    if (!existsSync(variant) || statSync(variant).ino !== statSync(built.root).ino) {
+      context.skip();
+    }
+
+    const records = await capture((deps) => runGraphGet([built.nodeId], variant, deps));
+
+    expect(records.some((record) => record.type === "error")).toBe(false);
+    expect(JSON.stringify(records)).toContain("stableFact");
   });
 
   it("rejects a source that crosses the per-file ceiling before the read-session buffer is allocated", async () => {

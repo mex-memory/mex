@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { sep } from "node:path";
 
 /**
@@ -12,6 +13,24 @@ import { sep } from "node:path";
  */
 export function toPosix(p: string): string {
   return sep === "/" ? p : p.split(sep).join("/");
+}
+
+/**
+ * Resolve a path to its canonical, symlink-free form with the OS resolver.
+ *
+ * Graph freshness resolves every indexed source path before and after reading
+ * it, on every pass. Node's JavaScript `realpathSync` walks the path one
+ * `lstat` per component, which can be several times slower than
+ * `realpathSync.native` on Windows while giving the same answer.
+ *
+ * The two implementations do not agree on case: the native resolver returns
+ * the casing on disk, the JavaScript one the casing it was handed. A root and
+ * a file resolved by different implementations can therefore disagree, so
+ * every path a containment or identity check compares against another must
+ * come from this one function.
+ */
+export function resolveRealPath(path: string): string {
+  return realpathSync.native(path);
 }
 
 /**

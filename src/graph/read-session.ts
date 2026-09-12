@@ -6,11 +6,10 @@ import {
   lstatSync,
   openSync,
   readFileSync,
-  realpathSync,
   statSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { isSameResolvedPath } from "../paths.js";
+import { isSameResolvedPath, resolveRealPath } from "../paths.js";
 import type { GraphStatus } from "../team/contracts/graph.js";
 import { GRAPH_CORPUS_LIMITS, GraphCorpusLimitError } from "./corpus-policy.js";
 import { openGraphDatabase } from "./db/database.js";
@@ -551,12 +550,12 @@ function createIndexedSourceReader(
 /** Read one exact byte buffer through a contained, identity-stable file descriptor. */
 function readStableContainedSource(projectRoot: string, filePath: string): Buffer {
   const lexicalRoot = resolve(projectRoot);
-  const canonicalRoot = realpathSync(lexicalRoot);
+  const canonicalRoot = resolveRealPath(lexicalRoot);
   const absolutePath = resolve(lexicalRoot, filePath);
   if (!isContainedPath(lexicalRoot, absolutePath)) {
     throw new Error("Indexed source path escapes the project root.");
   }
-  const canonicalPath = realpathSync(absolutePath);
+  const canonicalPath = resolveRealPath(absolutePath);
   if (!isContainedPath(canonicalRoot, canonicalPath)) {
     throw new Error("Indexed source target escapes the project root.");
   }
@@ -578,7 +577,7 @@ function readStableContainedSource(projectRoot: string, filePath: string): Buffe
     }
     const bytes = readFileSync(fd);
     const after = fstatSync(fd);
-    const resolvedAfter = realpathSync(absolutePath);
+    const resolvedAfter = resolveRealPath(absolutePath);
     const pathAfter = lstatSync(resolvedAfter);
     if (!sameFileIdentity(opened, after)
       || !isSameResolvedPath(resolvedAfter, canonicalPath)
@@ -722,7 +721,7 @@ function bindDatabaseFile(dbPath: string, afterClose?: () => void): BoundDatabas
   };
   try {
     const opened = fstatSync(fd);
-    const resolvedAfter = realpathSync(dbPath);
+    const resolvedAfter = resolveRealPath(dbPath);
     const pathAfter = lstatSync(resolvedAfter);
     if (!opened.isFile()
       || !isSameResolvedPath(resolvedAfter, dbPath)
