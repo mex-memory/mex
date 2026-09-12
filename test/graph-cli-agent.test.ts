@@ -96,11 +96,18 @@ describe("agent graph commands", () => {
   });
 
   it("abstains when a targeted symbol lookup has only fuzzy matches", () => {
-    const fixture = deps();
-    runGraphQuery("where-defined", "lea", "/repo", fixture.deps);
-    expect(fixture.output.map((line) => JSON.parse(line))).toEqual([
-      { type: "error", code: "TARGET_NOT_FOUND", target: "lea" },
-    ]);
+    // A real empty root: an empty store legitimately adds `filesIndexed: 0`
+    // coverage context to the abstention, and the walk needs a readable cwd.
+    const root = mkdtempSync(join(tmpdir(), "mex-query-abstain-"));
+    try {
+      const fixture = deps();
+      runGraphQuery("where-defined", "lea", root, fixture.deps);
+      expect(fixture.output.map((line) => JSON.parse(line))).toEqual([
+        { type: "error", code: "TARGET_NOT_FOUND", target: "lea", filesIndexed: 0 },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("minimal Scope pins a named seed and hydrates its reliable typed neighborhood", () => {

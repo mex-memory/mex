@@ -5,6 +5,7 @@ import { graphManifest, graphManifestDiffersOnlyByConfig } from "./engine-impl.j
 import type { GraphEngine, GraphNeighbor, IndexedFileInfo } from "./engine.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
 import { isSupportedSourceFile, SUPPORTED_SOURCE_GLOB } from "./extraction/index.js";
+import { unindexedExtensionHistogram } from "./corpus-policy.js";
 import type { GraphEdge, GraphNode } from "./types.js";
 import {
   compactFact, groupByFile, planFileSource, readNodeSource, selectScope, sourceHash,
@@ -82,7 +83,10 @@ export function runImpact(
     const roots = fileNodes.length > 0 ? fileNodes : resolveSymbol(session.graph, target);
     if (roots.length === 0) {
       for (const record of configDriftRecords(session)) writeJson(write, record);
-      writeJson(write, { type: "error", code: "TARGET_NOT_FOUND", target });
+      writeJson(write, {
+        type: "error", code: "TARGET_NOT_FOUND", target,
+        ...targetNotFoundCoverage(session.graph, rootDir),
+      });
       return;
     }
     if (emitTargetSourceDrifted(session, write, target, roots)) return;
@@ -184,7 +188,10 @@ export function runGraphQuery(
       if (relation === "who-calls"
         && emitUnresolvedCallers(session, write, target, opts)) return;
       for (const record of configDriftRecords(session)) writeJson(write, record);
-      writeJson(write, { type: "error", code: "TARGET_NOT_FOUND", target });
+      writeJson(write, {
+        type: "error", code: "TARGET_NOT_FOUND", target,
+        ...targetNotFoundCoverage(session.graph, rootDir),
+      });
       return;
     }
 
@@ -2519,6 +2526,33 @@ function liveUnindexedFiles(indexedFiles: IndexedFileInfo[], rootDir: string): s
   }).map((file) => file.replaceAll("\\", "/"))
     .filter((file) => isSupportedSourceFile(file) && !indexed.has(file))
     .sort();
+}
+
+/**
+ * Coverage context for a `TARGET_NOT_FOUND` record.
+ *
+ * A miss and a typo currently emit the identical record, so an agent cannot
+ * tell "this symbol does not exist" from "this symbol lives in a file no
+ * extractor indexes". The context is emitted only when it changes the
+ * record's meaning — the store indexed nothing, or recognized source files
+ * were left unindexed — so ordinary misses in a healthy repository keep
+ * their exact prior shape. Absent otherwise, because this reporting must
+ * never fail the command that carries it.
+ */
+function targetNotFoundCoverage(graph: GraphEngine, rootDir: string): Record<string, unknown> {
+  const indexedFiles = graph.getIndexedFiles?.() ?? [];
+  const coverage = unindexedExtensionHistogram(rootDir);
+  if (coverage.total === 0 && indexedFiles.length > 0) return {};
+  const context: Record<string, unknown> = { filesIndexed: indexedFiles.length };
+  if (coverage.total > 0) {
+    context.unindexedSources = {
+      total: coverage.total,
+      byExtension: Object.fromEntries(
+        coverage.entries.map((entry) => [entry.extension, entry.files]),
+      ),
+    };
+  }
+  return context;
 }
 
 function nodeRef(node: GraphNode): Record<string, string | number> {

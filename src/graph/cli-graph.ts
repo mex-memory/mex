@@ -9,6 +9,10 @@ import {
   type GraphMaintenanceResult,
 } from "./maintenance.js";
 import { inspectGraphStatus } from "./status.js";
+import {
+  unindexedExtensionHistogram,
+  type GraphCoverageHistogram,
+} from "./corpus-policy.js";
 
 export interface GraphCommandOptions {
   /** Project root to inspect or maintain (defaults to cwd). */
@@ -45,6 +49,7 @@ export async function runGraphRebuild(options: GraphCommandOptions = {}): Promis
 export async function runGraph(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
   const result = await rebuildGraph(rootDir);
+  const coverage = unindexedExtensionHistogram(rootDir);
   if (options.json) {
     console.log(JSON.stringify({
       filesIndexed: result.filesIndexed,
@@ -56,6 +61,15 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
         partial: result.status.parseHealth.partial,
         failed: result.status.parseHealth.failed,
       },
+      ...(coverage.total > 0
+        ? {
+            unindexedSources: {
+              total: coverage.total,
+              byExtension: Object.fromEntries(coverage.entries.map((e) => [e.extension, e.files])),
+              truncated: coverage.truncated,
+            },
+          }
+        : {}),
       ...(result.skipped && result.skipped.length > 0 ? { skipped: result.skipped } : {}),
       ...(result.declinedInputs && result.declinedInputs.length > 0
         ? { declinedInputs: result.declinedInputs }
@@ -67,8 +81,34 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
     `Code graph built: ${result.nodesCreated} nodes, ${result.edgesCreated} edges `
       + `across ${result.filesIndexed} files in ${result.durationMs}ms → .mex/graph.db`,
   );
+  printUnindexedSources(coverage);
   printSkippedSources(result.skipped);
   printDeclinedInputs(result.declinedInputs);
+}
+
+/**
+ * Name the source files no extractor handles, grouped by extension.
+ *
+ * `filesIndexed` alone cannot distinguish "nothing to index" from "everything
+ * except the languages we don't support" — the second looks identical to the
+ * first from `Code graph built: 0 nodes`, and an agent asking about a symbol
+ * that exists in a `.svelte` or `.go` file gets the same `TARGET_NOT_FOUND`
+ * a typo gets. Absent when the histogram found nothing, so existing outputs
+ * (and every script consuming them) are unchanged for fully supported repos.
+ */
+function printUnindexedSources(coverage: GraphCoverageHistogram): void {
+  if (coverage.total === 0) return;
+  const shown = coverage.entries.slice(0, MAX_SKIPPED_PATHS_SHOWN);
+  const breakdown = shown.map((entry) => `${entry.extension} (${entry.files})`).join(", ");
+  console.log(
+    `Not indexed: ${coverage.total} source file(s) have extensions no extractor handles: ${breakdown}`,
+  );
+  if (coverage.entries.length > shown.length) {
+    console.log("  …and more extensions (use --json for the full breakdown)");
+  }
+  if (coverage.truncated) {
+    console.log("  (count may be higher: the repository walk stopped early)");
+  }
 }
 
 /**

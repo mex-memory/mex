@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - A bounded Next.js App Router resolver turning `app/**/route.ts|js` modules (including `src/app` roots) into route nodes: one per exported HTTP handler (`GET` through `HEAD`), with the URL path derived from the route file's directory, dynamic segments such as `[id]` and catch-alls preserved verbatim, and route groups `(marketing)` excluded the way Next resolves them. Same-file handlers resolve only when unambiguous; Pages Router, layouts, and pages stay out of scope (#95).
+- Coverage reporting for source files no extractor indexes. `mex graph` now prints the recognized-but-unindexed file count grouped by extension after the build summary, with the full histogram behind `--json` as `unindexedSources`; `mex graph query` and `mex impact` add `filesIndexed` and `unindexedSources` coverage context to `TARGET_NOT_FOUND` records (only when it changes the record's meaning, so misses in fully covered repositories are unchanged); and `mex doctor` shows a Coverage line. A mixed repository used to build a complete-looking graph while every `.svelte`, `.vue` or `.go` file was silently absent, indistinguishable from an empty one (#163).
 
 ### Fixed
 

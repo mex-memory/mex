@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { globIterateSync, type GlobOptions } from "glob";
-import { SUPPORTED_SOURCE_GLOB } from "./extraction/grammars.js";
+import { isSupportedSourceFile, SUPPORTED_SOURCE_GLOB } from "./extraction/grammars.js";
 
 /** One source of truth for repository files that participate in graph identity. */
 export const GRAPH_CORPUS_IGNORE_GLOBS = Object.freeze([
@@ -326,4 +326,110 @@ export function graphCorpusPolicyHash(root: string): string {
     base: GRAPH_CORPUS_POLICY_HASH,
     configuredIgnoreGlobs: configured,
   })).digest("hex");
+}
+
+/**
+ * Extensions of programming-language source files no extractor indexes yet.
+ *
+ * Reporting filters through this list rather than counting every non-indexed
+ * extension, so READMEs, lockfiles, assets and configs do not drown the
+ * signal — the field report was about `.go`, `.svelte` and `.vue` files, not
+ * about `.md` or `.png`. Each extension stops being reported the moment an
+ * extractor claims it, because candidates are checked with
+ * {@link isSupportedSourceFile} against the live extension map, never against
+ * this list alone.
+ */
+export const OTHER_KNOWN_SOURCE_EXTENSIONS: ReadonlySet<string> = new Set([
+  ".astro", ".bash", ".c", ".cc", ".clj", ".cljs", ".coffee", ".cpp", ".cr",
+  ".cs", ".cxx", ".d", ".dart", ".elm", ".erl", ".ex", ".exs", ".f90", ".f95",
+  ".go", ".gradle", ".groovy", ".h", ".hh", ".hpp", ".hrl", ".hs", ".hxx",
+  ".java", ".jl", ".kt", ".kts", ".lua", ".m", ".mm", ".nim", ".pas", ".php",
+  ".pl", ".pm", ".proto", ".ps1", ".r", ".rb", ".scala", ".sol", ".sql",
+  ".svelte", ".swift", ".tcl", ".vim", ".vue", ".zsh", ".zig",
+] as const);
+
+/** One line of the coverage histogram: an extension and how many files use it. */
+export interface GraphUnindexedExtension {
+  /** Lowercased extension including the leading dot, e.g. `".go"`. */
+  extension: string;
+  /** Non-ignored repository files with this extension. */
+  files: number;
+}
+
+/** Bounded reporting: the highest-count extensions survive, never the run. */
+export const GRAPH_COVERAGE_LIMITS: GraphCoverageLimits = Object.freeze({
+  maxUnindexedFiles: 20_000,
+  maxUnindexedEntries: 24,
+} as const);
+
+export interface GraphCoverageLimits {
+  /** Cap on files the complementary walk may scan before it stops, truncated. */
+  maxUnindexedFiles: number;
+  /** Cap on distinct extensions kept in the reported histogram. */
+  maxUnindexedEntries: number;
+}
+
+export interface GraphCoverageHistogram {
+  /** Total known-source files outside the indexed extensions (exact unless truncated). */
+  total: number;
+  /** Most common first, capped at {@link GRAPH_COVERAGE_LIMITS.maxUnindexedEntries}. */
+  entries: GraphUnindexedExtension[];
+  /** True when the walk cap stopped the scan before the repository was finished. */
+  truncated: boolean;
+}
+
+/**
+ * Count the repository's recognized-but-unindexed source files, by extension.
+ *
+ * The walk complements {@link discoverBoundedGraphPaths}: same glob options and
+ * ignore list (so a repository's own `graph.ignore` config shapes the answer),
+ * but globbing every file and keeping only known-source extensions
+ * {@link isSupportedSourceFile} rejects. Dot-directories stay invisible, as
+ * they are to source discovery itself.
+ *
+ * Best-effort by contract: an unreadable tree yields an empty histogram rather
+ * than an error, because this reporting must never fail the command that
+ * carries it.
+ */
+export function unindexedExtensionHistogram(
+  root: string,
+  limits: GraphCoverageLimits = GRAPH_COVERAGE_LIMITS,
+): GraphCoverageHistogram {
+  const counts = new Map<string, number>();
+  let total = 0;
+  let scanned = 0;
+  let truncated = false;
+  try {
+    for (const match of globIterateSync("**/*", {
+      ...GRAPH_CORPUS_GLOB_OPTIONS,
+      cwd: root,
+      ignore: graphCorpusIgnoreGlobs(root),
+    })) {
+      // The cap bounds the whole walk, not only counted files: a repository of
+      // a hundred thousand uninteresting files must not scan forever either.
+      scanned++;
+      if (scanned > limits.maxUnindexedFiles) {
+        truncated = true;
+        break;
+      }
+      const relPath = String(match).split("\\").join("/");
+      if (isSupportedSourceFile(relPath)) continue;
+      const segment = relPath.slice(relPath.lastIndexOf("/") + 1);
+      const dot = segment.lastIndexOf(".");
+      // No extension, a dotfile, or a trailing dot is not a language signal.
+      if (dot <= 0 || dot === segment.length - 1) continue;
+      const extension = segment.slice(dot).toLowerCase();
+      if (!OTHER_KNOWN_SOURCE_EXTENSIONS.has(extension)) continue;
+      total++;
+      counts.set(extension, (counts.get(extension) ?? 0) + 1);
+    }
+  } catch {
+    // Coverage reporting must never fail a build; a partial or empty report
+    // reads as "nothing observed", which is what an unreadable tree tells.
+  }
+  const entries = [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || (left[0] < right[0] ? -1 : 1))
+    .slice(0, limits.maxUnindexedEntries)
+    .map(([extension, files]) => ({ extension, files }));
+  return { total, entries, truncated };
 }
