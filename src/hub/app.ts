@@ -141,6 +141,12 @@ import {
 import { OverviewResponseSchema } from "@mex/hub-contracts/overview";
 import {
   SetupRunSchema,
+  SetupInstallationSchema,
+  ContactPreferenceSchema,
+  ContactPreferenceRequestSchema,
+  SetupContactRequestSchema,
+  SetupContactResponseSchema,
+  type SetupInstallation,
   SetupStartRequestSchema,
   SetupCancelRequestSchema,
   SetupStatusSchema,
@@ -161,6 +167,7 @@ import {
   type SetupCommitRequest,
   type SetupCommitResponse,
 } from "@mex/hub-contracts/setup";
+import { readContactPreference, rememberContactPreference, submitSetupContact } from "../setup/contact.js";
 import { Hono, type Context } from "hono";
 import { getCookie, generateCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
@@ -226,6 +233,8 @@ export interface HubSetupService {
   previewCommit?(): Promise<SetupCommitPreview>;
   commitDiff?(request: SetupCommitDiffRequest): SetupCommitDiff | Promise<SetupCommitDiff>;
   commitSetup?(request: SetupCommitRequest): Promise<SetupCommitResponse>;
+  installation?(): SetupInstallation;
+  installGlobally?(): Promise<SetupInstallation>;
 }
 
 export interface HubReadServices {
@@ -824,6 +833,38 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
   app.get("/api/v1/setup/run", async (context) => {
     readStrictQuery(context.req.raw, []);
     return resourceResponse(SetupRunSchema, requireSetup(options.setup).snapshot());
+  });
+
+  app.get("/api/v1/setup/installation", (context) => {
+    readStrictQuery(context.req.raw, []);
+    const setup = requireSetup(options.setup);
+    if (!setup.installation) throw unavailable("Global installation is unavailable in this build.");
+    return resourceResponse(SetupInstallationSchema, setup.installation());
+  });
+
+  app.post("/api/v1/setup/installation", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    parseInput(SetupCancelRequestSchema, await readBoundedJson(context.req.raw));
+    const setup = requireSetup(options.setup);
+    if (!setup.installGlobally) throw unavailable("Global installation is unavailable in this build.");
+    return resourceResponse(SetupInstallationSchema, await setup.installGlobally(), 202);
+  });
+
+  app.get("/api/v1/contact", (context) => {
+    readStrictQuery(context.req.raw, []);
+    return resourceResponse(ContactPreferenceSchema, readContactPreference());
+  });
+
+  app.post("/api/v1/contact/preference", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(ContactPreferenceRequestSchema, await readBoundedJson(context.req.raw));
+    return resourceResponse(ContactPreferenceSchema, await rememberContactPreference(request));
+  });
+
+  app.post("/api/v1/contact", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(SetupContactRequestSchema, await readBoundedJson(context.req.raw));
+    return resourceResponse(SetupContactResponseSchema, await submitSetupContact(request, { signal: context.req.raw.signal }));
   });
 
   app.post("/api/v1/setup", async (context) => {

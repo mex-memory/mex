@@ -4,15 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.2] - Unreleased
+
 ### Added
+- Setup completion guide with fresh-session verification, optional version-pinned global installation, and optional embedded email/name contact submission through Web3Forms. Only submitted/skipped contact markers are saved per computer; contact details stay out of project files and telemetry.
 - A bounded Next.js App Router resolver turning `app/**/route.ts|js` modules (including `src/app` roots) into route nodes: one per exported HTTP handler (`GET` through `HEAD`), with the URL path derived from the route file's directory, dynamic segments such as `[id]` and catch-alls preserved verbatim, and route groups `(marketing)` excluded the way Next resolves them. Same-file handlers resolve only when unambiguous; Pages Router, layouts, and pages stay out of scope (#95).
 - A first-run Project Hub tour that spotlights the live sidebar (Search, Project, Teamwork, System, Settings, and Context) once per checkout. Completion is recorded in `.mex/local/hub-onboarding.json`, so it survives Hub relaunches; Settings can replay it, and the setup wizard never shows it.
 
 ### Changed
+- `mex setup` now opens browser setup by default; `mex setup --cli` retains terminal setup and `--dry-run` stays a read-only terminal preview. Bare `mex` opens the Hub or setup, while `mex tui` retains the terminal dashboard.
+- The Hub stays on completion after a setup commit and opens the full dashboard only on **Open Hub**. Global installation in both flows pins the running release and verifies the installed version.
 
 - Project Hub Overview now opens with a compact Context card above the atlas instead of a header button. It links to Context when the Wiki index is fresh and to Health otherwise, so a stale or unavailable index no longer leads to a page that cannot load.
 
 ### Fixed
+- Agent population failures retain the real copyable manual prompt for retry or manual continuation. Integration pointer notes are visible as non-blocking guidance.
+- Setup and Overview share the computer's contact preference so completing or skipping the invitation does not immediately trigger another request.
 
 - `mex sync` now migrates an inline `mex://` anchor together with a `grounds_to` entry for the same moved node. The anchor used to reconcile on its own against the stored baseline instead of the refreshed frontmatter fingerprint. When that baseline was missing, or still listed a neighbour that had since been re-identified, the anchor was skipped or scored `AMBIGUOUS`, sync moved the shared baseline row anyway, and the next `mex check` reported `GROUNDING_GONE` until the link was edited by hand (#128).
 

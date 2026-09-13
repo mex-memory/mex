@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHubApp } from "../../app.js";
 import { HubSessionManager } from "../../security/session.js";
 import { createSetupHubServices } from "../services.js";
@@ -11,8 +11,12 @@ const HOST = "127.0.0.1:48123";
 const BOOTSTRAP = Buffer.alloc(32, 7).toString("base64url");
 
 const roots: string[] = [];
+beforeEach(() => vi.stubEnv("MEX_HOME", fixture()));
 
 afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     try { rmSync(root, { recursive: true, force: true }); }
     catch { /* Windows can hold a sqlite handle briefly. */ }
@@ -20,6 +24,35 @@ afterEach(() => {
 });
 
 describe("Hub setup HTTP", () => {
+  it("keeps completion reads empty and protects installation and contact actions", async () => {
+    const root = fixture();
+    const { services, setup } = createSetupHubServices(root);
+    const install = vi.spyOn(setup, "installGlobally").mockResolvedValue({ ...setup.installation(), state: "running" });
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response('{"success":true}'));
+    vi.stubGlobal("fetch", fetch);
+    const app = appWith({ services, setup });
+    const { cookie, csrfToken } = await authenticatedSession(app);
+    const headers = { host: HOST, origin: ORIGIN, cookie, "content-type": "application/json", "x-mex-csrf": csrfToken };
+    for (const path of ["contact", "setup/installation"]) {
+      expect((await app.request(`${ORIGIN}/api/v1/${path}`, { headers: { host: HOST } })).status).toBe(401);
+      expect((await app.request(`${ORIGIN}/api/v1/${path}`, { headers: { host: HOST, cookie } })).status).toBe(200);
+    }
+    expect(existsSync(join(process.env.MEX_HOME!, ".mex"))).toBe(false);
+    for (const [path, body] of [["contact", { email: "person@example.com" }], ["contact/preference", { status: "skipped" }], ["setup/installation", {}]] as const) {
+      for (const bad of [{ ...headers, "x-mex-csrf": "" }, { ...headers, origin: "https://example.com" }]) {
+        expect((await app.request(`${ORIGIN}/api/v1/${path}`, { method: "POST", headers: bad, body: JSON.stringify(body) })).status).toBe(403);
+      }
+      expect((await app.request(`${ORIGIN}/api/v1/${path}?extra=true`, { method: "POST", headers, body: JSON.stringify(body) })).status).toBe(400);
+      expect((await app.request(`${ORIGIN}/api/v1/${path}`, { method: "POST", headers, body: JSON.stringify({ ...body, command: "arbitrary" }) })).status).toBe(400);
+    }
+    expect(fetch).not.toHaveBeenCalled(); expect(install).not.toHaveBeenCalled();
+    const started = await app.request(`${ORIGIN}/api/v1/setup/installation`, { method: "POST", headers, body: "{}" });
+    expect(started.status).toBe(202); expect(install).toHaveBeenCalledOnce();
+    const sent = await app.request(`${ORIGIN}/api/v1/contact`, { method: "POST", headers, body: '{"email":"person@example.com"}' });
+    expect(sent.status).toBe(200); expect(await sent.json()).toMatchObject({ ok: true, status: "submitted" });
+    expect(fetch).toHaveBeenCalledOnce();
+    await setup.shutdown();
+  });
   it("hides setup routes when the process is not in setup mode", async () => {
     const app = appWith();
     const { cookie } = await authenticatedSession(app);

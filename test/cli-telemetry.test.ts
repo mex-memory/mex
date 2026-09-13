@@ -107,6 +107,7 @@ describe("CLI invocation telemetry", () => {
 
   it.each(["setup", "init"])("observes newly saved configuration when %s completes", async (name) => {
     const command = new Command("mex").command(name);
+    if (name === "setup") command.setOptionValue("cli", true);
     const readContext = vi.fn().mockReturnValueOnce({}).mockReturnValueOnce({ configured_ai_tools: ["claude", "codex"] });
     const capture = vi.fn();
     const telemetry = createCliTelemetry(capture, async () => {}, () => 0, readContext);

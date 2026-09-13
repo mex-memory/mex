@@ -26,7 +26,7 @@ O MEX mantém a arquitetura, as decisões, os requisitos e as passagens de conte
 
 </div>
 
-> A descrição principal desta tradução ainda corresponde à versão 0.8.0. Os comandos de instalação e as orientações de atualização foram ajustados para 0.8.1; as mudanças do produto estão documentadas no [README em inglês](README.md) e nas [notas de lançamento da versão 0.8.1](RELEASE_NOTES.md).
+> A descrição principal desta tradução ainda corresponde à versão 0.8.0. Os comandos de instalação e as orientações de atualização foram ajustados para 0.8.2; as mudanças do produto estão documentadas no [README em inglês](README.md) e nas [notas de lançamento da versão 0.8.2](RELEASE_NOTES.md).
 
 ---
 
@@ -102,28 +102,19 @@ O MEX requer **Node.js 22.5 ou mais recente** e um repositório Git. O fluxo nor
 Execute na raiz do repositório:
 
 ```bash
-npx mex-agent@0.8.1 setup
+npx mex-agent@0.8.2 setup
 ```
 
-A configuração preserva as instruções existentes, constrói o Code Graph local e instala as integrações selecionadas. Ela pode iniciar uma CLI disponível do Claude Code ou do Codex entre as selecionadas para preencher a memória; se esse preenchimento permanecer incompleto, a configuração exibe o prompt e pausa. Depois que a memória está preenchida, a configuração captura o grounding, constrói o índice da Wiki, valida o resultado e exibe o ponto de verificação do Git. Os agentes conectados têm seus próprios requisitos de instalação, conta e rede.
+O comando abre a configuração no navegador local. Escolha as ferramentas de IA, crie o scaffold e os índices e use uma CLI disponível do Claude Code ou Codex para preencher a memória. Se o agente estiver indisponível ou falhar, copie o prompt e continue após o preenchimento manual. As instruções existentes são preservadas; orientações de integração manual não bloqueiam a configuração.
 
-Em seguida, examine os arquivos gerados:
+Revise o diff exato no Hub e escolha **Commit setup** para criar um commit local; o ponto de verificação manual do Git continua disponível. A tela final explica como iniciar uma nova sessão e verificar a memória. Ela oferece instalar globalmente a versão em execução e, opcionalmente, deixar um e-mail e um nome opcional. O formulário integrado envia esses dados ao Web3Forms; eles não entram no repositório nem na telemetria. O computador guarda apenas se você enviou ou pulou o convite. Escolha **Open Hub** para abrir o Hub completo e o tour inicial.
 
-```bash
-git status --short
-```
-
-Revise e execute os comandos `git add` com escopo exato exibidos pela configuração. Depois de fazer commit desse ponto de verificação, abra o Hub:
-
-```bash
-git commit -m "chore: initialize MEX"
-npx mex-agent@0.8.1 hub
-```
+Para usar o terminal ou SSH: `npx mex-agent@0.8.2 setup --cli`. `setup --dry-run` continua sendo uma prévia de terminal sem alterações; `--no-open` imprime o link e `--port <n>` escolhe a porta local. Após instalar, `mex` abre o Hub ou a configuração e `mex tui` abre o painel de terminal. Os agentes têm seus próprios requisitos de instalação, conta e rede.
 
 ![Três etapas para preparar o projeto: executar a configuração, preencher a memória e revisar e fazer commit do ponto de verificação antes de abrir o Hub.](docs/diagrams/readme/setup.svg)
 
 > [!NOTE]
-> O Hub só inicia quando o `.mex/config.json` atual está incluído no commit em `HEAD`. O MEX nunca adiciona arquivos à área de staging nem faz commit, push ou pull.
+> O Hub completo exige que o `.mex/config.json` atual esteja incluído em `HEAD`. Ele só cria um commit local de configuração após sua revisão e escolha explícita, preservando alterações não relacionadas em staging. O MEX nunca faz push nem pull.
 
 Faça push do commit de configuração revisado pelo fluxo Git normal da equipe para que os colegas recebam a mesma memória de projeto e as instruções dos agentes selecionados. Na página Team/Members do Hub, adicione as pessoas que vão participar e escolha sua identidade local. Revise e aplique essas ações explicitamente; faça commit e push dos novos registros de Member também. A seleção do membro atual permanece local.
 
@@ -134,9 +125,9 @@ Faça push do commit de configuração revisado pelo fluxo Git normal da equipe 
 Clone o repositório da equipe ou faça pull da branch pelo Git. Se a configuração da versão 0.8 estiver concluída e incluída em um commit, construa os índices derivados no seu próprio checkout e abra o Hub:
 
 ```bash
-npx mex-agent@0.8.1 graph rebuild
-npx mex-agent@0.8.1 wiki rebuild-index
-npx mex-agent@0.8.1 hub
+npx mex-agent@0.8.2 graph rebuild
+npx mex-agent@0.8.2 wiki rebuild-index
+npx mex-agent@0.8.2 hub
 ```
 
 Reutilize a memória compartilhada do projeto; não a gere novamente só para entrar na equipe. Em Team/Members, confira a identidade efetiva e, se necessário, selecione seu registro de Member existente para defini-lo localmente. Se você ainda não tiver um registro, crie um explicitamente pelo fluxo com revisão e compartilhe seus arquivos canônicos. Members servem para atribuição, não para login ou controle de permissões.
@@ -149,13 +140,13 @@ Configurações antigas ou incompletas devem seguir primeiro a seção de [atual
 <summary><strong>Prefere uma instalação global?</strong></summary>
 
 ```bash
-npm install -g mex-agent@0.8.1
+npm install -g mex-agent@0.8.2
 mex setup
 ```
 
 O pacote npm se chama `mex-agent`; o comando instalado é `mex`. Conclua a revisão e o commit do ponto de verificação acima antes de executar `mex hub`.
 
-A oferta interativa de instalação global ao final da configuração usa a versão `latest` atual do npm. Recuse essa oferta quando for importante reproduzir exatamente a versão 0.8 e use o comando com versão fixa acima.
+A instalação global opcional, no Hub e no terminal, fixa a versão de MEX em execução. Se falhar, a configuração continua concluída; você pode tentar novamente ou usar o comando acima.
 
 </details>
 
@@ -164,14 +155,14 @@ A oferta interativa de instalação global ao final da configuração usa a vers
 <summary><strong>Vai usar o MEX com um agente operacional persistente?</strong></summary>
 
 ```bash
-npx mex-agent@0.8.1 setup --mode agent-memory
+npx mex-agent@0.8.2 setup --mode agent-memory
 ```
 
 Esse template separado aplica o modelo de roteamento e manutenção do MEX a ambientes de homelab, infraestrutura e agentes de longa duração. Ele adiciona um contrato `HEARTBEAT.md` e convenções de limpeza; o fluxo de Code Graph, Wiki e Hub de equipe descrito neste README corresponde ao modo padrão `code-repo`.
 
 </details>
 
-Os exemplos usam `mex` para facilitar a leitura. Instale-o globalmente como indicado acima ou substitua-o por `npx mex-agent@0.8.1`.
+Os exemplos usam `mex` para facilitar a leitura. Instale-o globalmente como indicado acima ou substitua-o por `npx mex-agent@0.8.2`.
 
 <a id="how-mex-works"></a>
 
@@ -359,7 +350,7 @@ Use `mex capabilities --json` para descobrir capacidades em formato legível por
 Para uma instalação global, atualize a CLI e as cópias das skills selecionadas do Claude Code/Codex:
 
 ```bash
-npm install -g mex-agent@0.8.1
+npm install -g mex-agent@0.8.2
 mex skills sync --dry-run
 mex skills sync
 ```

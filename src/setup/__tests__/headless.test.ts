@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { inspectSetupStatus, runHeadlessSetup } from "../headless.js";
 import * as population from "../headless-population.js";
 import { runSetup } from "../index.js";
+import { MEX_ANCHOR_START } from "../anchor.js";
 import { loadConfiguredAiTools, loadConfiguredSetupMode, hasConfiguredAiTools } from "../../config.js";
 
 const roots: string[] = [];
@@ -59,6 +60,24 @@ describe("headless setup status", () => {
 });
 
 describe("headless setup run", () => {
+  it("delivers the real manual prompt and integration guidance before a population failure", async () => {
+    const root = fixture();
+    const authoredRules = `My existing agent rules.\n${MEX_ANCHOR_START}\n`;
+    writeFileSync(join(root, ".cursorrules"), authoredRules);
+    const prompt = vi.fn();
+    const notes = vi.fn();
+    vi.spyOn(population, "launchHeadlessSetupPopulation").mockImplementation(async options => {
+      expect(prompt).toHaveBeenCalledExactlyOnceWith(options.prompt);
+      expect(options.prompt.length).toBeGreaterThan(100);
+      expect(notes).toHaveBeenCalledOnce();
+      throw new Error("Simulated agent failure");
+    });
+    await expect(runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: ["cursor"],
+      onPopulationPrompt: prompt, onAnchorNotes: notes })).rejects.toThrow("Simulated agent failure");
+    expect(notes.mock.calls[0][0].join(" ")).toContain(".cursorrules");
+    expect(readFileSync(join(root, ".cursorrules"), "utf8")).toBe(authoredRules);
+  });
+
   it("builds a code-repo graph through the isolated worker and pauses without committing", async () => {
     const root = gitRepo();
     const steps: string[] = [];

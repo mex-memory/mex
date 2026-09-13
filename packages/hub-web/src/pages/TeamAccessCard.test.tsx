@@ -97,7 +97,7 @@ describe("TeamAccessCard", () => {
     expect(within(dialog).getByLabelText("Company")).toHaveValue("Analytical Engines");
     await user.click(within(dialog).getByRole("button", { name: "Skip" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByText("You’re on the list. Keep using this Hub with your team.")).toBeVisible();
+    expect(screen.getByText("Thanks for sharing your details. Keep using this Hub with your team.")).toBeVisible();
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -181,7 +181,7 @@ describe("TeamAccessCard", () => {
 
     expect(fetch).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByText("You’re on the list. Keep using this Hub with your team.")).toBeVisible();
+    expect(screen.getByText("Thanks for sharing your details. Keep using this Hub with your team.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Request access" })).not.toBeInTheDocument();
   });
 
@@ -198,7 +198,7 @@ describe("TeamAccessCard", () => {
 
     expect(fetch).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByText("You’re on the list. Keep using this Hub with your team.")).toBeVisible();
+    expect(screen.getByText("Thanks for sharing your details. Keep using this Hub with your team.")).toBeVisible();
     expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
   });
 
@@ -253,7 +253,7 @@ describe("TeamAccessCard", () => {
     view.unmount();
 
     render(<TeamAccessCard />);
-    expect(screen.getByText("You’re on the list. Keep using this Hub with your team.")).toBeVisible();
+    expect(screen.getByText("Thanks for sharing your details. Keep using this Hub with your team.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Request access" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
     expect(screen.queryByText("Help shape MEX")).not.toBeInTheDocument();

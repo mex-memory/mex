@@ -163,7 +163,19 @@ async function waitForSubscription(harness: ReturnType<typeof setupHarness>, tim
 }
 
 describe("Hub setup wizard", () => {
-  it("reviews an exact setup commit and follows the returned run into the promoted Hub", async () => {
+  it("shows integration pointers as advisory guidance without turning completion into failure", async () => {
+    const harness = setupHarness({ stage: "ready", ready: true, hasScaffold: true, populated: true }, {
+      stage: "ready", ready: true, status: "succeeded", anchorNotes: ["Add .mex/ROUTER.md to your existing .cursorrules."],
+    });
+    renderSetup(harness.api);
+    const guidance = await screen.findByLabelText("Integration guidance");
+    expect(guidance).toHaveTextContent("Your project setup can continue.");
+    expect(guidance).toHaveTextContent(".cursorrules");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Open Hub" })).toBeEnabled();
+  });
+
+  it("reviews an exact setup commit, shows completion, and opens the Hub only on request", async () => {
     const user = userEvent.setup();
     const harness = setupHarness({ hasScaffold: true, populated: true, graphReady: true, wikiReady: true, stage: "needs_commit", commitCommands }, {
       status: "paused", stage: "needs_commit", populated: true, commitCommands,
@@ -172,15 +184,19 @@ describe("Hub setup wizard", () => {
     const api = Object.assign(harness.api, {
       previewSetupCommit: vi.fn(async () => preview),
       setupCommitDiff: commitDiff,
-      commitSetup: vi.fn(async () => ({ commit: "a".repeat(40), files: [".mex/config.json"], message: "Setup committed locally.", run: { ...idleRun, status: "running" as const, populated: true, stage: "ready" as const } })),
+      commitSetup: vi.fn(async () => ({ commit: "a".repeat(40), files: [".mex/config.json"], message: "Setup committed locally.", run: { ...idleRun, status: "succeeded" as const, ready: true, populated: true, stage: "ready" as const } })),
     });
     renderSetup(api);
     await user.click(await screen.findByRole("button", { name: "Review setup changes" }, { timeout: 5_000 }));
     expect(screen.getByText("Commit manually")).toBeVisible();
     expect(screen.getByText("Commit manually").closest("details")).not.toHaveAttribute("open");
-    await user.click(await screen.findByRole("button", { name: "Commit setup and open Hub" }));
+    await user.click(await screen.findByRole("button", { name: "Commit setup" }));
     expect(api.commitSetup).toHaveBeenCalledExactlyOnceWith({ revision: preview.revision, message: preview.defaultMessage });
     expect(api.startSetup).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", { name: "You’re ready" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Start a fresh agent session" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Open Hub" }));
+    expect(api.startSetup).toHaveBeenCalledExactlyOnceWith({ mode: "code-repo", tools: [], confirmPopulation: true, openHub: true });
     await waitForSubscription(harness, 1);
     act(() => harness.complete({ status: "succeeded", stage: "ready", ready: true }, { stage: "ready", ready: true }, true));
     expect(await screen.findByRole("heading", { name: "Overview", level: 1 }, { timeout: 5_000 })).toBeVisible();
@@ -198,11 +214,11 @@ describe("Hub setup wizard", () => {
     });
     renderSetup(api);
     await user.click(await screen.findByRole("button", { name: "Review setup changes" }, { timeout: 5_000 }));
-    await user.click(await screen.findByRole("button", { name: "Commit setup and open Hub" }));
+    await user.click(await screen.findByRole("button", { name: "Commit setup" }));
     await user.click(await screen.findByRole("button", { name: "Retry opening Hub" }));
-    expect(api.startSetup).toHaveBeenCalledExactlyOnceWith({ mode: "code-repo", tools: [], confirmPopulation: true });
+    expect(api.startSetup).toHaveBeenCalledExactlyOnceWith({ mode: "code-repo", tools: [], confirmPopulation: true, openHub: true });
     expect(api.commitSetup).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("button", { name: "Commit setup and open Hub" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Commit setup" })).toBeNull();
   });
 
   it("keeps Git recovery prominent after a durable commit even when refreshed setup reports ready", async () => {
@@ -221,15 +237,15 @@ describe("Hub setup wizard", () => {
     });
     renderSetup(api);
     await user.click(await screen.findByRole("button", { name: "Review setup changes" }, { timeout: 5_000 }));
-    await user.click(await screen.findByRole("button", { name: "Commit setup and open Hub" }));
+    await user.click(await screen.findByRole("button", { name: "Commit setup" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(warning);
     expect(screen.getByRole("alert")).toHaveTextContent("Setup committed; Git needs attention");
     expect(screen.getByText("Your setup commit is saved. Resolve the Git issue above, then check again.")).toBeVisible();
     expect(api.startSetup).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Commit setup and open Hub" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Commit setup" })).toBeNull();
     expect(screen.queryByText("Commit manually")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Check recovery and open Hub" }));
-    expect(api.startSetup).toHaveBeenCalledExactlyOnceWith({ mode: "code-repo", tools: [], confirmPopulation: true });
+    expect(api.startSetup).toHaveBeenCalledExactlyOnceWith({ mode: "code-repo", tools: [], confirmPopulation: true, openHub: true });
     expect(api.commitSetup).toHaveBeenCalledOnce();
   });
 
@@ -296,7 +312,7 @@ describe("Hub setup wizard", () => {
     act(() => harness.complete({ status: "paused", stage: "needs_commit", populated: true, commitCommands }, {
       stage: "needs_commit", populated: true, commitCommands,
     }));
-    expect(await screen.findByRole("button", { name: "Check commit and open Hub" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Check commit and continue" })).toBeVisible();
     expect(screen.queryByRole("list", { name: "Recent agent activity" })).toBeNull();
     expect(harness.close).toHaveBeenCalledTimes(1);
   });
@@ -350,7 +366,7 @@ describe("Hub setup wizard", () => {
     await user.click(screen.getByRole("button", { name: "Copy commands" }));
     expect(copy).toHaveBeenCalledWith(commitCommands.join("\n"));
 
-    await user.click(screen.getByRole("button", { name: "Check commit and open Hub" }));
+    await user.click(screen.getByRole("button", { name: "Check commit and continue" }));
     await waitForSubscription(harness, 3);
     act(() => harness.complete({ status: "succeeded", stage: "ready", ready: true }, { stage: "ready", ready: true }, true));
     expect(await screen.findByRole("heading", { level: 1, name: "Overview" }, { timeout: 5_000 })).toBeVisible();
@@ -363,7 +379,7 @@ describe("Hub setup wizard", () => {
     const user = userEvent.setup();
     const harness = setupHarness({ hasScaffold: true, populated: true, graphReady: true, wikiReady: true, stage: "ready", ready: true });
     renderSetup(harness.api);
-    await user.click(await screen.findByRole("button", { name: "Open Project Hub" }, { timeout: 5_000 }));
+    await user.click(await screen.findByRole("button", { name: "Open Hub" }, { timeout: 5_000 }));
     await waitForSubscription(harness, 1);
     expect(screen.getByRole("heading", { name: "Running setup" })).toBeVisible();
     // The POST returned running, but /setup/events now belongs to the promoted
@@ -395,14 +411,14 @@ describe("Hub setup wizard", () => {
     const user = userEvent.setup();
     const harness = setupHarness({ hasScaffold: true, populated: true, graphReady: true, wikiReady: true, stage: "ready", ready: true });
     renderSetup(harness.api);
-    expect(await screen.findByRole("button", { name: "Open Project Hub" }, { timeout: 5_000 })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Open Hub" }, { timeout: 5_000 })).toBeEnabled();
     expect(screen.queryByRole("heading", { level: 1, name: "Overview" })).toBeNull();
     const reads = harness.api.getSetupStatus.mock.calls.length;
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 500)); });
     expect(harness.api.getSetupStatus).toHaveBeenCalledTimes(reads);
     expect(harness.api.startSetup).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Open Project Hub" }));
-    expect(harness.api.startSetup).toHaveBeenCalledWith({ mode: "code-repo", tools: [], confirmPopulation: true });
+    await user.click(screen.getByRole("button", { name: "Open Hub" }));
+    expect(harness.api.startSetup).toHaveBeenCalledWith({ mode: "code-repo", tools: [], confirmPopulation: true, openHub: true });
   });
 
   it("restores a paused Agent memory run after reload and preserves its empty tool selection", async () => {
@@ -526,7 +542,7 @@ describe("Hub setup wizard", () => {
     expect(screen.getByRole("button", { name: "Retry opening Hub" })).toBeEnabled();
     expect(screen.queryByText("Opening the Project Hub")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Retry opening Hub" }));
-    expect(harness.api.startSetup).toHaveBeenCalledWith({ mode: "code-repo", tools: [], confirmPopulation: true });
+    expect(harness.api.startSetup).toHaveBeenCalledWith({ mode: "code-repo", tools: [], confirmPopulation: true, openHub: true });
   });
 
   it("reloads a failed run read before allowing setup to continue", async () => {

@@ -34,7 +34,7 @@ beforeEach(() => {
 });
 
 describe("setup commit orchestration", () => {
-  it("reviews configured setup files and promotes after commit without repeating population", async () => {
+  it("reviews and commits setup, then waits for explicit Hub opening without repeating population", async () => {
     const onReady = vi.fn();
     const runner = new HubSetupRunner({ projectRoot: "/test", onReady });
     expect(await runner.previewCommit()).toEqual({ revision });
@@ -42,7 +42,10 @@ describe("setup commit orchestration", () => {
     const response = await runner.commitSetup(request);
     expect(mocks.commit).toHaveBeenCalledExactlyOnceWith(request);
     expect(response).toMatchObject({ ...receipt, run: { status: "succeeded", ready: true, stage: "ready", error: null } });
-    expect(onReady).toHaveBeenCalledOnce();
+    expect(onReady).not.toHaveBeenCalled();
+    mocks.inspect.mockReturnValue(ready);
+    runner.start({ mode: "code-repo", tools: ["codex"], confirmPopulation: true, openHub: true });
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledOnce());
     expect(mocks.execute).not.toHaveBeenCalled();
     await runner.shutdown();
   });
@@ -51,8 +54,11 @@ describe("setup commit orchestration", () => {
     const runner = new HubSetupRunner({ projectRoot: "/test", onReady: async () => { throw new Error("private root and stack"); } });
     const response = await runner.commitSetup(request);
     expect(response.commit).toBe(receipt.commit);
-    expect(response.run).toMatchObject({ status: "failed", ready: true });
-    expect(response.run.error).toContain("commit is already saved");
+    expect(response.run).toMatchObject({ status: "succeeded", ready: true });
+    mocks.inspect.mockReturnValue(ready);
+    runner.start({ mode: "code-repo", tools: ["codex"], confirmPopulation: true, openHub: true });
+    await vi.waitFor(() => expect(runner.snapshot().status).toBe("failed"));
+    expect(runner.snapshot().error).not.toContain("private root");
     expect(JSON.stringify(response)).not.toContain("private root");
     await expect(runner.commitSetup(request)).resolves.toEqual(response);
     await expect(runner.commitSetup({ ...request, message: "Different message" })).rejects.toMatchObject({ code: "REVISION_CONFLICT" });

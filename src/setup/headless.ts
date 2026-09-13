@@ -83,6 +83,8 @@ export interface HeadlessSetupOptions {
   readonly onProgress?: (update: HeadlessSetupProgress) => void;
   readonly onPopulationActivity?: (activity: HeadlessPopulationActivity) => void;
   readonly onPopulationTranscript?: (entry: HeadlessPopulationTranscript) => void;
+  readonly onPopulationPrompt?: (prompt: string) => void;
+  readonly onAnchorNotes?: (notes: readonly string[]) => void;
 }
 
 export interface HeadlessSetupProgress {
@@ -198,6 +200,7 @@ export async function runHeadlessSetup(
   const requestedTools = uniqueTools(options.tools ?? loadConfiguredAiTools(mexDir));
   const selectedTools = requestedTools;
   const anchorNotes = ensureToolAnchors(projectRoot, templatesDir, selectedTools, false);
+  options.onAnchorNotes?.(anchorNotes);
   saveAiTools(mexDir, selectedTools);
 
   const selectedAgentClients = selectedTools.filter((tool) => tool === "claude" || tool === "codex");
@@ -232,6 +235,7 @@ export async function runHeadlessSetup(
   }
 
   const prompt = await buildSetupPopulationPrompt(mode, state, scannerBrief);
+  options.onPopulationPrompt?.(prompt);
   report("population");
 
   let populationFinished = scaffoldPopulatedAtStart;

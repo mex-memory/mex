@@ -13,12 +13,12 @@ edges:
     condition: "when distinguishing canonical artifacts from local projections"
   - target: "patterns/release-performance-gate.md"
     condition: "when the change also affects packed-install or release gates"
-last_updated: 2026-09-03
+last_updated: 2026-09-13
 mex:
   id: mx_01M1M0CJJD2AQZ6XKHV4VKYTGJ
   type: pattern
   status: promoted
-  revision: 4
+  revision: 5
   title: dogfood-mex-setup
   grounds_to:
     - node: function:9055347f917caf8721a2f6d4e18bcc9a
@@ -51,7 +51,7 @@ global `mex`.
 2. Confirm Node.js is at least 22.5, then run `npm run build:node`.
 3. Review `node dist/cli.js setup --dry-run` from the repository root.
 4. Run [`runSetup()`](mex://function:9055347f917caf8721a2f6d4e18bcc9a)
-   through `node dist/cli.js setup`. If no supported agent CLI is available,
+   through `node dist/cli.js setup --cli`. If no supported agent CLI is available,
    use the emitted prompt to fill only incomplete slots and rerun setup.
 5. Preserve substantive context and patterns. Repair stale claims and broken
    `.mex/`-root-relative edges; create a pattern only for a genuine coverage gap.
@@ -63,6 +63,16 @@ global `mex`.
    workflow; setup must not invent a Member or mutate canonical Team records.
 
 ## Gotchas
+
+- From 0.8.2, unflagged `setup` opens the browser. Terminal drivers and scripts
+  must pass `--cli`; `--dry-run` remains a read-only terminal preview.
+- Test completion without a real global installation or contact submission.
+  Isolate `MEX_HOME` in disposable fixtures and inject the npm/form transport.
+  Successful contact delivery stores only a submitted marker; skipping stores
+  only a skipped marker. Neither contains contact data or analytics identifiers.
+- Build before browser testing, and do not rebuild a running Hub's asset tree.
+  `test/cli.test.ts` also builds production assets in its setup hook; run the
+  packaged browser scenarios after that suite so manifests cannot outlive files.
 
 - A global CLI can report the same version while containing different bytes;
   use the built checkout when validating uncommitted setup changes.

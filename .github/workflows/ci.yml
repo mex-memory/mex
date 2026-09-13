@@ -111,6 +111,9 @@ jobs:
           test/telemetry-project-context.test.ts
           test/telemetry-project-capture.test.ts
           src/logging/__tests__/policy.test.ts
+          src/setup/__tests__/contact.test.ts
+          src/setup/__tests__/global-install.test.ts
+          src/setup/__tests__/global-install-process.test.ts
           src/wiki/operations/__tests__/durability.test.ts
           src/wiki/operations/__tests__/identity-precision.test.ts
           src/wiki/operations/__tests__/integrity.test.ts

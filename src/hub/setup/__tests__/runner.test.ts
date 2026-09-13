@@ -30,6 +30,30 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("setup run lifecycle", () => {
+  it("honors an explicit mode on both idle reads without reusing another mode's commit checkpoint", async () => {
+    const completedCode = { ...status, populated: true, stage: "needs_commit" };
+    mocks.initial.mockReturnValue(completedCode);
+    mocks.status.mockResolvedValue({ ...completedCode, stage: "ready", ready: true });
+    const runner = new HubSetupRunner({ projectRoot: "/test", initialMode: "agent-memory" });
+    expect(runner.snapshot()).toMatchObject({ mode: "agent-memory", stage: "needs_setup", ready: false });
+    expect(await runner.status()).toMatchObject({ mode: "agent-memory", stage: "needs_setup", ready: false });
+    expect(mocks.execute).not.toHaveBeenCalled();
+    await runner.shutdown();
+  });
+
+  it("refuses a global install before setup is complete and rechecks shutdown after awaiting status", async () => {
+    const runner = new HubSetupRunner({ projectRoot: "/test" });
+    await expect(runner.installGlobally()).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    let finish!: (value: unknown) => void;
+    mocks.status.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const installing = runner.installGlobally();
+    const rejected = expect(installing).rejects.toMatchObject({ code: "JOB_ALREADY_RUNNING" });
+    await runner.shutdown();
+    finish({ ...status, stage: "ready", ready: true });
+    await rejected;
+    expect(runner.installation().state).toBe("idle");
+  });
+
   it("retains separate transcript pages, batches notifications, and isolates new runs and late output", async () => {
     vi.useFakeTimers();
     let report!: NonNullable<HeadlessSetupOptions["onPopulationTranscript"]>;
@@ -158,7 +182,7 @@ describe("setup run lifecycle", () => {
     let finishPromotion!: () => void;
     const onReady = vi.fn(() => new Promise<void>((resolve) => { finishPromotion = resolve; }));
     const runner = new HubSetupRunner({ projectRoot: "/test", onReady });
-    expect(runner.start({ mode: "code-repo", tools: ["codex"] }).status).toBe("running");
+    expect(runner.start({ mode: "code-repo", tools: ["codex"], openHub: true }).status).toBe("running");
     expect(() => runner.start({ mode: "code-repo", tools: [] })).toThrow("already in progress");
     await vi.waitFor(() => expect(mocks.execute).toHaveBeenCalledOnce());
     finish(result);
@@ -170,11 +194,15 @@ describe("setup run lifecycle", () => {
   });
 
   it("reports failed population as failure with safe diagnostics", async () => {
-    mocks.execute.mockRejectedValue(new SetupPopulationError("Codex could not authenticate. Sign in to Codex and retry setup."));
+    mocks.execute.mockImplementation(async (options) => {
+      options.onPopulationPrompt("Read the project and populate its MEX scaffold.");
+      options.onAnchorNotes(["Add a MEX pointer to your existing instructions."]);
+      throw new SetupPopulationError("Codex could not authenticate. Sign in to Codex and retry setup.");
+    });
     const runner = new HubSetupRunner({ projectRoot: "/test" });
     runner.start({ mode: "code-repo", tools: ["codex"] });
     await vi.waitFor(() => expect(runner.snapshot().status).toBe("failed"));
-    expect(runner.snapshot()).toMatchObject({ prompt: null, error: expect.stringContaining("authenticate") });
+    expect(runner.snapshot()).toMatchObject({ prompt: "Read the project and populate its MEX scaffold.", anchorNotes: ["Add a MEX pointer to your existing instructions."], error: expect.stringContaining("authenticate") });
     await runner.shutdown();
   });
 
@@ -220,7 +248,10 @@ describe("setup run lifecycle", () => {
     runner.start({ mode: "code-repo", tools: ["codex"], confirmPopulation: true });
     await vi.waitFor(() => expect(runner.snapshot().status).toBe("succeeded"));
     expect(mocks.execute).not.toHaveBeenCalled();
-    expect(onReady).toHaveBeenCalledOnce();
+    expect(onReady).not.toHaveBeenCalled();
+    runner.start({ mode: "code-repo", tools: ["codex"], confirmPopulation: true, openHub: true });
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledOnce());
+    expect(mocks.execute).not.toHaveBeenCalled();
     await runner.shutdown();
   });
 
@@ -247,7 +278,7 @@ describe("setup run lifecycle", () => {
       return new Promise<void>((resolve) => { release = resolve; });
     });
     const runner = new HubSetupRunner({ projectRoot: "/test", onReady });
-    runner.start({ mode: "code-repo", tools: ["codex"] });
+    runner.start({ mode: "code-repo", tools: ["codex"], openHub: true });
     await vi.waitFor(() => expect(onReady).toHaveBeenCalledOnce());
     runner.cancel();
     expect(promotionSignal.aborted).toBe(true);
@@ -287,7 +318,7 @@ describe("setup run lifecycle", () => {
     mocks.execute.mockResolvedValue(result);
     mocks.status.mockResolvedValue({ ...status, ready: true, stage: "ready" });
     const runner = new HubSetupRunner({ projectRoot: "/test", onReady: async () => { throw new Error("private failure"); } });
-    runner.start({ mode: "code-repo", tools: ["codex"] });
+    runner.start({ mode: "code-repo", tools: ["codex"], openHub: true });
     await vi.waitFor(() => expect(runner.snapshot().status).toBe("failed"));
     expect(runner.snapshot().ready).toBe(false);
     await runner.shutdown();

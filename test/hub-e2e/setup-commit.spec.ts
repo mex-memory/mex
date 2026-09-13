@@ -15,6 +15,7 @@ const architectureContext = "The repository keeps project memory beside the code
 const architectureRemoved = "Setup population requires copying a prompt into a terminal.";
 const architectureAdded = "Setup population runs in a background session with readable live activity.";
 const architectureExtra = "Review generated files before creating a local setup commit.";
+const scaffoldFiles = ["AGENTS.md", "ROUTER.md", "context/architecture.md", "context/stack.md", "context/conventions.md", "context/decisions.md", "context/setup.md"];
 const architectureBefore = ["# Architecture", "", "## Setup workflow", "", architectureContext,
   architectureRemoved, "", "Project knowledge remains Markdown tracked in Git.", ""].join("\n");
 const architectureAfter = architectureBefore.replace(architectureRemoved, `${architectureAdded}\n${architectureExtra}`);
@@ -77,7 +78,9 @@ test.describe("built setup commit checkpoint", () => {
   });
 
   test("rejects stale reviewed bytes and requires a fresh review before committing", async ({ page }, testInfo) => {
-    const fixture = createFixture();
+    // The full new-scaffold diff is covered above. Keep this scenario focused
+    // on reviewing a changed architecture file in an existing scaffold twice.
+    const fixture = createFixture({ existingScaffold: true });
     let hub: ChildProcess | undefined;
     try {
       const opened = await openFixtureHub(page, fixture);
@@ -88,14 +91,14 @@ test.describe("built setup commit checkpoint", () => {
       await page.getByLabel("Commit message", { exact: true }).fill("Initialize reviewed MEX setup after refresh");
       const rejectedResponse = page.waitForResponse((response) =>
         new URL(response.url()).pathname === "/api/v1/setup/commit" && response.request().method() === "POST");
-      await page.getByRole("button", { name: "Commit setup and open Hub", exact: true }).click();
+      await page.getByRole("button", { name: "Commit setup", exact: true }).click();
       const rejected = await rejectedResponse;
       expect(rejected.status()).toBe(409);
       expect(await rejected.json()).toMatchObject({ code: "REVISION_CONFLICT" });
       expect(git(fixture, "rev-parse", "HEAD").trim()).toBe(fixture.initialHead);
       assertUnrelatedPreserved(fixture);
       await expect(page.getByRole("button", { name: "Refresh review", exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Commit setup and open Hub", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Commit setup", exact: true })).toHaveCount(0);
       await page.screenshot({ path: testInfo.outputPath("setup-commit-stale-review.png"), fullPage: true });
       const refreshed = await reviewAllFiles(page, "Refresh review", fixture.setupPaths);
       expect(refreshed.revision).not.toBe(first.revision);
@@ -121,7 +124,7 @@ async function reviewAllFiles(page: Page, action: string, expectedPaths: string[
   expect(response.status()).toBe(200);
   const preview = await response.json() as CommitPreview;
   expect(preview.files.map((file) => file.path).sort()).toEqual([...expectedPaths].sort());
-  const commit = page.getByRole("button", { name: "Commit setup and open Hub", exact: true });
+  const commit = page.getByRole("button", { name: "Commit setup", exact: true });
   for (const file of preview.files) {
     const diff = page.getByLabel(`Diff for ${file.path}`, { exact: true });
     const details = page.locator("details").filter({ has: diff });
@@ -140,19 +143,26 @@ async function reviewAllFiles(page: Page, action: string, expectedPaths: string[
     const box = (await button.boundingBox())!;
     expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
   }
-  const stack = page.getByRole("region", { name: "Diff for .mex/context/stack.md", exact: true });
-  expect(await stack.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+  if (preview.files.some(file => file.path === ".mex/context/stack.md")) {
+    const stack = page.getByRole("region", { name: "Diff for .mex/context/stack.md", exact: true });
+    expect(await stack.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+  }
   return preview;
 }
 
 async function commitAndOpenHub(page: Page, origin: string): Promise<{ commit: string }> {
   const responsePromise = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/v1/setup/commit" && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Commit setup and open Hub", exact: true }).click();
+  await page.getByRole("button", { name: "Commit setup", exact: true }).click();
   const response = await responsePromise;
   expect(response.status()).toBe(200);
   const result = await response.json() as { commit: string; run: { ready: boolean } };
   expect(result.run.ready).toBe(true);
+  await expect(page.getByRole("heading", { name: "You’re ready", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Start a fresh agent session", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(`${origin}/setup`);
+  await page.getByRole("button", { name: "Open Hub", exact: true }).click();
   await expect(page).toHaveURL(`${origin}/`);
   await expect(page.getByRole("link", { name: "Context", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Code", exact: true })).toBeVisible();
@@ -161,7 +171,7 @@ async function commitAndOpenHub(page: Page, origin: string): Promise<{ commit: s
   return result;
 }
 
-function createFixture() {
+function createFixture({ existingScaffold = false }: { existingScaffold?: boolean } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "mex-setup-commit-browser-")));
   const project = join(root, "project");
   const bin = join(root, "bin");
@@ -182,11 +192,13 @@ function createFixture() {
   writeFileSync(join(project, ".gitignore"), "node_modules/\n# Original ignore rules\n");
   writeFileSync(join(project, ".mex/.gitignore"), "# Original local index exclusions\n");
   writeFileSync(join(project, architecturePath), architectureBefore);
+  const existingPaths = existingScaffold ? scaffoldFiles.map(name => `.mex/${name}`).filter(path => path !== architecturePath) : [];
+  for (const path of existingPaths) writeFileSync(join(project, path), scaffoldContent(path));
   git(fixtureBase, "init", "--quiet", "--initial-branch", branch);
   git(fixtureBase, "config", "user.name", "Setup Browser Fixture");
   git(fixtureBase, "config", "user.email", "setup-browser@example.test");
   git(fixtureBase, "config", "commit.gpgsign", "false");
-  git(fixtureBase, "add", "--", ".gitignore", ".mex/.gitignore", architecturePath, ...unrelatedPaths);
+  git(fixtureBase, "add", "--", ".gitignore", ".mex/.gitignore", architecturePath, ...existingPaths, ...unrelatedPaths);
   git(fixtureBase, "commit", "--quiet", "-m", "Initial disposable fixture");
   const initialHead = git(fixtureBase, "rev-parse", "HEAD").trim();
   git(fixtureBase, "init", "--bare", "--quiet", remote);
@@ -205,13 +217,10 @@ function createFixture() {
   const indexEntries = git(fixtureBase, "ls-files", "--stage", "--", ...unrelatedPaths);
   const setupPaths = [".mex/.gitignore", ".mex/config.json", "AGENTS.md", "CLAUDE.md"];
   mkdirSync(join(project, ".mex/context"), { recursive: true });
-  for (const name of ["AGENTS.md", "ROUTER.md", "context/architecture.md", "context/stack.md", "context/conventions.md", "context/decisions.md", "context/setup.md"]) {
+  for (const name of scaffoldFiles) {
     const path = `.mex/${name}`;
-    writeFileSync(join(project, path), path === architecturePath ? architectureAfter
-      // One unwrapped line far wider than the review card, as real populated prose often is.
-      : path === ".mex/context/stack.md" ? `# Setup review fixture\n\n${"Populated stack detail without a break. ".repeat(60)}\n`
-      : "# Setup review fixture\n\nPopulated project fixture content.\n");
-    setupPaths.push(path);
+    writeFileSync(join(project, path), scaffoldContent(path));
+    if (!existingPaths.includes(path)) setupPaths.push(path);
   }
   writeFileSync(join(project, ".mex/config.json"), JSON.stringify({ scaffold_id: randomUUID(), scaffold_name: "Setup commit fixture", setupMode: "code-repo", aiTools: ["codex", "claude"] }, null, 2) + "\n");
   writeFileSync(join(project, "AGENTS.md"), "# Codex project instructions\n\nRead .mex/AGENTS.md and .mex/ROUTER.md before project work.\n");
@@ -236,6 +245,13 @@ function createFixture() {
     }
   }
   return { ...fixtureBase, remote, remoteRefs, initialHead, setupPaths, unrelated, indexEntries };
+}
+
+function scaffoldContent(path: string): string {
+  if (path === architecturePath) return architectureAfter;
+  // One unwrapped line far wider than the review card, as real populated prose often is.
+  if (path === ".mex/context/stack.md") return `# Setup review fixture\n\n${"Populated stack detail without a break. ".repeat(60)}\n`;
+  return "# Setup review fixture\n\nPopulated project fixture content.\n";
 }
 
 type Fixture = ReturnType<typeof createFixture>;
@@ -278,7 +294,7 @@ function git(fixture: GitFixture, ...args: string[]): string { return gitBytes(f
 function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
 
 async function openFixtureHub(page: Page, fixture: Fixture) {
-  const hub = spawn(process.execPath, [join(repositoryRoot, "dist/cli.js"), "hub", "--no-open"], {
+  const hub = spawn(process.execPath, [join(repositoryRoot, "dist/cli.js"), "setup", "--no-open"], {
     cwd: fixture.project, env: fixture.env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
   try {

@@ -148,8 +148,15 @@ be shared through Git. `MEX_HOME` relocates the global `.mex` directory.
 
 ## Voluntary feedback and contact
 
-`mex feedback` and the Hub's **Help shape MEX** card open the same
-[hosted feedback form](https://tally.so/r/KYjv4k). MEX does not collect contact
-details in its telemetry or append an installation ID to the form URL. Any
-contact details voluntarily provided to that form are handled separately from
-usage analytics. The form is managed outside this repository.
+`mex feedback` opens the separate [hosted feedback form](https://tally.so/r/KYjv4k).
+The Hub's **Request access** dialog and the optional setup contact step use
+Web3Forms while keeping the user in the Hub. Terminal setup offers the same
+optional contact submission. Submitting setup contact requires an email; name
+is optional, and skipping never blocks setup.
+
+Contact details go only to the form service, without an installation or
+scaffold ID. They are not recorded in telemetry, project files, or the local
+contact preference. The only saved contact state is a submitted/skipped marker
+under `~/.mex/setup/` (or the relocated `MEX_HOME` directory), shared across
+projects and Hub ports. A failed submission remains retryable. This preference
+is independent of the telemetry opt-out.

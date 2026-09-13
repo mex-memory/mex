@@ -150,7 +150,7 @@ export const program = new Command();
 
 /** Commands whose machine/read-only contract must precede any global notice. */
 export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
-  return commandName === "hub"
+  return commandName === undefined || commandName === "setup" || commandName === "hub"
     || commandName === "telemetry"
     || commandName === "config"
     || commandName === "logging"
@@ -170,6 +170,11 @@ async function runTuiCommand(): Promise<void> {
   launchTui();
 }
 
+async function runBrowserCommand(options: { port?: number; open: boolean; mode?: string; setup?: boolean }): Promise<void> {
+  const { launchHub } = await import("./hub/command.js");
+  await launchHub({ port: options.port, openBrowser: options.open, mode: options.mode, setup: options.setup });
+}
+
 // ── Telemetry hooks ──
 
 const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command) => {
@@ -181,11 +186,13 @@ program.hook("postAction", () => cliTelemetry.finish(process.exitCode));
 
 program
   .name("mex")
-  .description("CLI engine for mex scaffold — drift detection, pre-analysis, and targeted sync")
+  .description("Project memory for your agents — open the Hub or use a CLI command")
   .version(VERSION)
   .showHelpAfterError()
-  .action(async () => {
-    await runTuiCommand();
+  .option("--port <n>", "Bind a specific loopback port", parsePortArg)
+  .option("--no-open", "Print the Hub link without opening a browser")
+  .action(async (opts: { port?: number; open: boolean }) => {
+    await runBrowserCommand(opts);
   });
 
 program
@@ -200,7 +207,8 @@ program
   .description("Launch the local Project Hub")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
   .option("--no-open", "Do not open the browser automatically")
-  .action(async (opts: { port?: number; open: boolean }) => {
+  .action(async (_opts: { port?: number; open: boolean }, command: Command) => {
+    const opts = command.optsWithGlobals();
     try {
       const { launchHub } = await import("./hub/command.js");
       await launchHub({ port: opts.port, openBrowser: opts.open });
@@ -293,16 +301,25 @@ program.addCommand(buildSpecCommand({
   io: processTeamCommandIo(),
 }));
 
-// ── Setup (npx entry point) ──
+// ── Setup (browser by default; explicit terminal and read-only paths) ──
 program
   .command("setup")
-  .description("First-time setup — create .mex/ scaffold and populate with AI")
-  .option("--mode <mode>", "Template mode: code-repo (default) or agent-memory", "code-repo")
+  .description("Set up MEX in the local Hub; use --cli for terminal setup")
+  .option("--cli", "Run setup in the terminal")
+  .option("--mode <mode>", "Template mode: code-repo or agent-memory (preserves saved mode)")
   .option("--dry-run", "Show what would happen without making changes")
-  .action(async (opts) => {
+  .option("--port <n>", "Bind a specific loopback port", parsePortArg)
+  .option("--no-open", "Print the setup link without opening a browser")
+  .action(async (_opts, command: Command) => {
+    const opts = command.optsWithGlobals<{ cli?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean }>();
     try {
-      const { runSetup } = await import("./setup/index.js");
-      await runSetup({ dryRun: opts.dryRun, mode: opts.mode });
+      if (opts.cli || opts.dryRun) {
+        if (opts.port !== undefined || opts.open === false) throw new Error("--port and --no-open apply to browser setup. Omit them with --cli or --dry-run.");
+        const { runSetup } = await import("./setup/index.js");
+        await runSetup({ dryRun: opts.dryRun, mode: opts.mode });
+      } else {
+        await runBrowserCommand({ ...opts, setup: true });
+      }
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
@@ -1196,7 +1213,9 @@ program
   .description("List all available commands and scripts")
   .action(() => {
     console.log(chalk.bold("\nCLI Commands") + chalk.dim("  (run from project root)\n"));
-    console.log("  mex setup              First-time setup — create .mex/ scaffold");
+    console.log("  mex                    Open the local Hub (or setup for a new project)");
+    console.log("  mex setup              Set up MEX in the local browser Hub");
+    console.log("  mex setup --cli        Use the terminal setup flow");
     console.log("  mex setup --dry-run    Preview setup without making changes");
     console.log("  mex skills sync        Install/update official skills for configured agents");
     console.log("  mex skills sync --dry-run --json  Preview skill and instruction changes as JSON");

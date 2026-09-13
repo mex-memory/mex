@@ -1,5 +1,31 @@
 import { z } from "zod";
 import { HUB_LIMITS } from "./index.js";
+export { WEB3FORMS_ACCESS_KEY, WEB3FORMS_SUBMIT_URL, CONTACT_SUBMIT_ERROR, submitContactPayload } from "./setup-contact.js";
+
+export const ContactPreferenceSchema = z.object({
+  status: z.enum(["unasked", "skipped", "submitted", "unavailable"]),
+}).strict();
+export const ContactPreferenceRequestSchema = z.object({ status: z.enum(["skipped", "submitted"]) }).strict();
+export const SetupContactRequestSchema = z.object({
+  email: z.string().trim().min(1).max(320).email(),
+  name: z.string().trim().max(200).default(""),
+}).strict();
+export const SetupContactResponseSchema = z.object({
+  ok: z.boolean(),
+  status: ContactPreferenceSchema.shape.status,
+  message: z.string().min(1).max(512),
+}).strict();
+export const SetupInstallationSchema = z.object({
+  state: z.enum(["idle", "running", "succeeded", "failed"]),
+  version: z.string().min(1).max(64),
+  command: z.string().min(1).max(160),
+  message: z.string().min(1).max(512),
+}).strict();
+export type ContactPreference = z.infer<typeof ContactPreferenceSchema>;
+export type ContactPreferenceRequest = z.infer<typeof ContactPreferenceRequestSchema>;
+export type SetupContactRequest = z.infer<typeof SetupContactRequestSchema>;
+export type SetupContactResponse = z.infer<typeof SetupContactResponseSchema>;
+export type SetupInstallation = z.infer<typeof SetupInstallationSchema>;
 
 const isoTimestamp = z.string().datetime({ offset: true });
 const boundedReason = z.string().min(1).max(512);
@@ -58,6 +84,7 @@ export const SetupStartRequestSchema = z.object({
   mode: SetupModeSchema.default("code-repo"),
   tools: z.array(aiTool).max(8).default([]),
   confirmPopulation: z.boolean().optional(),
+  openHub: z.boolean().optional(),
 }).strict();
 
 export const SetupCancelRequestSchema = z.object({}).strict();

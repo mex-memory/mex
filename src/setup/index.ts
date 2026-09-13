@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { execSync } from "node:child_process";
 import { stdin, stdout } from "node:process";
 import { globSync } from "glob";
 import chalk from "chalk";
@@ -240,7 +239,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   const mode = resolveSetupMode(mexDir, opts.mode);
 
   if (mode === "code-repo" && !existsSync(resolve(projectRoot, ".git"))) {
-    throw new Error("No Git repository found. Run `git init` first, then rerun mex setup.");
+    throw new Error("No Git repository found. Run `git init` first, then rerun mex setup --cli.");
   }
 
   // ── Step 1: Detect project state ──
@@ -409,7 +408,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
 
   if (!populationFinished || !isScaffoldPopulated(mexDir)) {
     console.log();
-    info("Setup paused at population. After the agent finishes, rerun `mex setup` to finalize Graph and Wiki readiness.");
+    info("Setup paused at population. After the agent finishes, rerun `mex setup --cli` to finalize Graph and Wiki readiness.");
     // The anchors were written before population, so an unlinked one is just
     // as true on this path -- and this is the last output the user sees.
     printAnchorNotes(anchorNotes);
@@ -428,6 +427,8 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
 
   printAnchorNotes(anchorNotes);
   await promptGlobalInstall();
+  if (process.exitCode === 130 || process.exitCode === 143) return;
+  await promptSetupContact();
 }
 
 // ── Step functions ──
@@ -690,7 +691,7 @@ export async function finalizeCodeRepoSetup(projectRoot: string, mexDir: string)
   if (!wiki.ready) {
     const codes = [...new Set(wiki.diagnostics.map((entry) => entry.code))].join(", ");
     const suffix = codes.length === 0 ? "" : ` (${codes})`;
-    throw new SetupFinalizationError(`${wiki.reason ?? "Wiki setup did not finish."}${suffix} Fix the issue and rerun mex setup.`);
+    throw new SetupFinalizationError(`${wiki.reason ?? "Wiki setup did not finish."}${suffix} Fix the issue and rerun mex setup --cli.`);
   }
   ok(`Wiki ready with ${wiki.indexedEntities} indexed entit${wiki.indexedEntities === 1 ? "y" : "ies"}`);
 }
@@ -751,27 +752,62 @@ async function promptGlobalInstall(): Promise<void> {
       console.log();
       info("Installing mex-agent globally...");
       try {
-        execSync("npm install -g mex-agent", { stdio: "inherit" });
+        const { SetupGlobalInstaller } = await import("./global-install.js");
+        const installer = new SetupGlobalInstaller();
+        const interrupt = () => { process.exitCode = 130; void installer.shutdown(); };
+        const terminate = () => { process.exitCode = 143; void installer.shutdown(); };
+        process.once("SIGINT", interrupt);
+        process.once("SIGTERM", terminate);
+        let result;
+        try { installer.start(); result = await installer.wait(); }
+        finally { process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate); }
+        if (result.state !== "succeeded") throw new Error(result.message);
         console.log();
-        ok("Installed globally. `mex check` and `mex sync` work from anywhere now.");
+        ok(result.message);
         printNextSteps(true);
       } catch {
         console.log();
         warn("Global install failed. You can retry manually:");
-        console.log("    npm install -g mex-agent");
+        console.log(`    npm install -g mex-agent@${VERSION}`);
         console.log();
         printNextSteps(false);
       }
     } else {
       console.log();
       info("No problem. You can always install later:");
-      console.log("    npm install -g mex-agent");
+      console.log(`    npm install -g mex-agent@${VERSION}`);
       console.log();
       printNextSteps(false);
     }
   } finally {
     rl.close();
   }
+}
+
+async function promptSetupContact(): Promise<void> {
+  if (!stdin.isTTY) return;
+  const { readContactPreference, rememberContactPreference, submitSetupContact } = await import("./contact.js");
+  if (readContactPreference().status !== "unasked") return;
+  const rl = createInterface({ input: stdin, output: stdout });
+  try {
+    header("Help shape MEX (optional)");
+    info("Leave your email if we may follow up about your experience with MEX. Your details are sent through Web3Forms, separately from usage telemetry.");
+    const answer = (await rl.question("  May we contact you? [y/N] ")).trim().toLowerCase();
+    if (answer !== "y" && answer !== "yes") {
+      await rememberContactPreference({ status: "skipped" });
+      return;
+    }
+    const email = (await rl.question("  Email (leave empty to skip): ")).trim();
+    if (!email) { await rememberContactPreference({ status: "skipped" }); return; }
+    const name = (await rl.question("  Name (optional): ")).trim();
+    const { SetupContactRequestSchema } = await import("@mex/hub-contracts/setup");
+    const parsed = SetupContactRequestSchema.safeParse({ email, name });
+    if (!parsed.success) { warn("The contact details were not valid, so nothing was sent. Setup is complete."); return; }
+    const result = await submitSetupContact(parsed.data);
+    if (result.ok) ok(result.message); else warn(result.message);
+  } catch {
+    warn("The optional contact step could not finish. Setup is complete; you can continue using MEX.");
+  } finally { rl.close(); }
 }
 
 function printNextSteps(globalInstalled: boolean) {
@@ -789,13 +825,13 @@ function printNextSteps(globalInstalled: boolean) {
     console.log("    mex watch              Auto-check drift after every commit");
   } else {
     info("Ongoing commands (via npx):");
-    console.log("    npx mex-agent check                Drift score — are scaffold files still accurate?");
-    console.log("    npx mex-agent check --quiet        One-liner drift score");
-    console.log("    npx mex-agent sync                 Fix drift — AI updates only what's broken");
-    console.log("    npx mex-agent watch                Auto-check drift after every commit");
+    console.log(`    npx mex-agent@${VERSION} check                Drift score — are scaffold files still accurate?`);
+    console.log(`    npx mex-agent@${VERSION} check --quiet        One-liner drift score`);
+    console.log(`    npx mex-agent@${VERSION} sync                 Fix drift — AI updates only what's broken`);
+    console.log(`    npx mex-agent@${VERSION} watch                Auto-check drift after every commit`);
     console.log();
     info("Or install globally to use the shorter `mex` command:");
-    console.log("    npm install -g mex-agent");
+    console.log(`    npm install -g mex-agent@${VERSION}`);
   }
   console.log();
 }

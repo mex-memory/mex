@@ -27,6 +27,7 @@ import { PageViewObserver } from "../app/PageViewObserver";
 import { SetupPopulationActivity } from "./SetupPopulationActivity";
 import { SetupTranscript } from "./SetupTranscript";
 import { SetupCommitReview } from "./SetupCommitReview";
+import { SetupCompletion } from "./SetupCompletion";
 import mexMascot from "../../../../mascot/mex-mascot.svg?no-inline";
 import styles from "../styles/setup.module.css";
 
@@ -251,6 +252,11 @@ export function SetupPage() {
           </div>
         </div>
         <div className={styles.body}>
+          {currentRun.anchorNotes.length > 0 ? <aside className={styles.integrationAdvisory} aria-label="Integration guidance">
+            <strong>A small update for your agent</strong>
+            <p>These instruction files need a manual pointer to MEX. Your project setup can continue.</p>
+            <ul>{currentRun.anchorNotes.map(note => <li key={note}>{note}</li>)}</ul>
+          </aside> : null}
           {view === "git" ? (
             <GitRequiredNotice onCopy={copy} copied={copied} refreshing={refresh.isPending} onRefresh={() => refresh.mutate()} />
           ) : null}
@@ -348,7 +354,7 @@ export function SetupPage() {
                 onContinue={() => start.mutate({ mode, tools: tools as SetupStartRequest["tools"], confirmPopulation: true })}
               />
             </details>
-          </> : view === "commit" || view === "ready" ? (
+          </> : view === "commit" || (view === "ready" && (currentRun.status === "failed" || recoveryWarning)) ? (
             <CommitPanel
               commands={status.commitCommands.length > 0 ? status.commitCommands : currentRun.commitCommands}
               committed={view === "ready"}
@@ -357,14 +363,12 @@ export function SetupPage() {
               retry={view === "ready" && currentRun.status === "failed"}
               recovery={Boolean(recoveryWarning)}
               onCopy={copy}
-              onContinue={() => start.mutate({ mode, tools: tools as SetupStartRequest["tools"], confirmPopulation: true })}
+              onContinue={() => start.mutate({ mode, tools: tools as SetupStartRequest["tools"], confirmPopulation: true, ...(view === "ready" ? { openHub: true } : {}) })}
             />
           ) : null}
-          {view === "complete" ? (
-            <p className={styles.notice} role="status">
-              <strong>Agent memory is ready</strong>
-              Your .mex/ memory and selected tool instructions are ready to use. You can close this tab and continue with your agent.
-            </p>
+          {(view === "ready" && currentRun.status !== "failed" && !recoveryWarning) || view === "complete" ? (
+            <SetupCompletion api={api} agentMemory={view === "complete"} pending={start.isPending}
+              onOpen={() => start.mutate({ mode, tools: tools as SetupStartRequest["tools"], confirmPopulation: true, openHub: true })} />
           ) : null}
           {cancel.isError ? (
             <p className={styles.notice} data-tone="danger" role="alert">
@@ -724,7 +728,7 @@ function CommitPanel({ commands, committed, copied, pending, retry = false, reco
       <div className={styles.footer}>
         <p>{committed ? "Your existing browser session will continue in the Hub." : "Review and commit these files locally. Share them when you’re ready to push."}</p>
         <Button type="button" size="sm" disabled={pending} onClick={onContinue}>
-          {pending ? "Checking…" : recovery ? "Check recovery and open Hub" : retry ? "Retry opening Hub" : committed ? "Open Project Hub" : "Check commit and open Hub"}
+          {pending ? "Checking…" : recovery ? "Check recovery and open Hub" : retry ? "Retry opening Hub" : committed ? "Open Project Hub" : "Check commit and continue"}
         </Button>
       </div>
     </>

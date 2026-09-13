@@ -52,14 +52,21 @@ shipping new versions.
 If you only use the `mex` CLI, most of this still applies, but CLI flags
 themselves are best-effort (see [CLI surface](#cli-surface) below).
 
-## Upgrading to 0.8.1
+## Upgrading to 0.8.2
 
-Install `mex-agent@0.8.1`, then run `mex skills sync --dry-run` and
+Install `mex-agent@0.8.2`, then run `mex skills sync --dry-run` and
 `mex skills sync` in each project whose managed agent skills and instructions
 you want to update. Review conflicts with locally edited instructions and start
-a new agent session afterward. An already completed 0.8.0 setup does not need
+a new agent session afterward. An already completed 0.8.0 or 0.8.1 setup does not need
 to run setup again just for this package upgrade. Installing the package alone
 does not change the repository.
+
+In 0.8.2, `mex setup` opens the browser setup wizard and bare `mex` opens
+Hub (or setup when incomplete). Terminal users and scripts should use
+`mex setup --cli`; `mex tui` keeps the terminal dashboard. `setup --dry-run`
+remains a read-only terminal preview. `--no-open` and `--port` apply to browser
+launches. Optional global installation pins the running version. No public
+package exports or Graph/Wiki/Relay storage formats change in this release.
 
 New **open-to-team Relays use artifact schema v4**. Upgrade teammates to 0.8.1
 before exchanging these handoffs; 0.8.0 cannot read the new format. Existing
@@ -86,7 +93,7 @@ limits. Existing opt-out preferences remain effective.
 The source `flake.nix` takes its version from `package.json`, but its fixed
 `npmDepsHash` predates the current dependency lockfile and needs regeneration
 and a successful `nix build` before that package can be considered verified.
-The 0.8.1 release checks cover the npm installation path; they do not establish
+The release checks cover the npm installation path; they do not establish
 Nix build support. The helper `prefetch-npm-deps package-lock.json` can compute
 the dependency hash in an environment where it is available.
 

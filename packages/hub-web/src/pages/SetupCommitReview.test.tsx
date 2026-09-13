@@ -59,7 +59,7 @@ function harness(preview = makePreview()) {
 
 async function review(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "Review setup changes" }));
-  return await screen.findByRole("button", { name: "Commit setup and open Hub" });
+  return await screen.findByRole("button", { name: "Commit setup" });
 }
 
 describe("setup commit review", () => {
@@ -89,7 +89,7 @@ describe("setup commit review", () => {
     expect(screen.getByRole("textbox", { name: "Commit message" })).toBeDisabled();
     await act(async () => { resolveCommit(result); });
     await waitFor(() => expect(h.onCommitted).toHaveBeenCalledExactlyOnceWith(result));
-    expect(screen.queryByRole("button", { name: "Commit setup and open Hub" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Commit setup" })).toBeNull();
   });
 
   it("invalidates a stale review and requires a fresh revision before another commit", async () => {
@@ -101,10 +101,10 @@ describe("setup commit review", () => {
     await user.click(await review(user));
     expect(await screen.findByRole("alert")).toHaveTextContent("Refresh the review before trying again");
     expect(h.onReviewInvalid).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("button", { name: "Commit setup and open Hub" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Commit setup" })).toBeNull();
     h.api.serve(makePreview({ revision: renewedRevision }));
     await user.click(screen.getByRole("button", { name: "Refresh review" }));
-    await user.click(await screen.findByRole("button", { name: "Commit setup and open Hub" }));
+    await user.click(await screen.findByRole("button", { name: "Commit setup" }));
     expect(h.api.commitSetup).toHaveBeenLastCalledWith({ revision: renewedRevision, message: "chore: initialize MEX" });
   });
 
@@ -168,7 +168,7 @@ describe("setup commit review", () => {
     await user.click(h.container.querySelector("summary")!);
     h.api.serve(makePreview({ revision: renewedRevision }));
     await user.click(screen.getByRole("button", { name: "Refresh review" }));
-    await screen.findByRole("button", { name: "Commit setup and open Hub" });
+    await screen.findByRole("button", { name: "Commit setup" });
     await act(async () => { late({ revision, path: ".mex/config.json", diff: "+stale text\n", truncated: false }); });
     expect(screen.queryByText("stale text")).toBeNull();
     expect(screen.getByText("Viewed 0 of 2 files")).toBeVisible();
@@ -176,7 +176,7 @@ describe("setup commit review", () => {
     h.api.setupCommitDiff.mockRejectedValueOnce(new HubApiError({ type: "about:blank", title: "Review changed", status: 409, code: "REVISION_CONFLICT", detail: "The setup files changed after review.", requestId: "diff-stale" }));
     await user.click(h.container.querySelector("summary")!);
     expect(await screen.findByText("This review expired. Refresh it before committing.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Commit setup and open Hub" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Commit setup" })).toBeDisabled();
   });
 
   it("rechecks expiry at the explicit commit action and disables empty messages", async () => {
@@ -201,7 +201,7 @@ describe("setup commit review", () => {
     h.api.commitSetup.mockResolvedValueOnce({ ...result, run: { ...result.run, status: "failed", error: "The Hub could not open." } });
     await user.click(await review(user));
     expect(await screen.findByText("Setup committed locally")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Commit setup and open Hub" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Commit setup" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Retry opening Hub" }));
     expect(h.onOpenHub).toHaveBeenCalledOnce();
     expect(h.api.commitSetup).toHaveBeenCalledOnce();

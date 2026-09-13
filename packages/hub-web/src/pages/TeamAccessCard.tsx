@@ -1,4 +1,5 @@
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type { HubApi } from "../api/client";
 import { Button } from "../components/primitives/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/primitives/card";
 import { readTeamAccessState, writeTeamAccessState } from "../lib/team-access-state";
@@ -6,16 +7,28 @@ import homeStyles from "../styles/home.module.css";
 
 const TeamAccessDialog = lazy(() => import("./TeamAccessDialog"));
 
-export function TeamAccessCard() {
+export function TeamAccessCard({ api }: { api?: HubApi }) {
   const [contactSent, setContactSent] = useState(() => readTeamAccessState()?.contactSent === true);
+  const [dismissed, setDismissed] = useState(false);
   const [open, setOpen] = useState(false);
   const [hasOpened, setHasOpened] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const requestButtonRef = useRef<HTMLButtonElement>(null);
 
+  useEffect(() => {
+    let active = true;
+    if (api?.getContactPreference) void api.getContactPreference().then(preference => {
+      if (!active) return;
+      if (preference.status === "submitted") setContactSent(true);
+      if (preference.status === "skipped" || preference.status === "unavailable") setDismissed(true);
+    }).catch(() => { /* The local browser preference still applies. */ });
+    return () => { active = false; };
+  }, [api]);
+
   const rememberContactSent = () => {
     writeTeamAccessState({ contactSent: true });
     setContactSent(true);
+    if (api?.rememberContactPreference) void api.rememberContactPreference({ status: "submitted" }).catch(() => undefined);
   };
 
   return (
@@ -27,8 +40,8 @@ export function TeamAccessCard() {
           </div>
         </CardHeader>
         <CardContent className={homeStyles.updatesContent}>
-          {contactSent ? (
-            <p className={homeStyles.updatesBody}>You’re on the list. Keep using this Hub with your team.</p>
+          {contactSent || dismissed ? (
+            <p className={homeStyles.updatesBody}>{contactSent ? "Thanks for sharing your details. Keep using this Hub with your team." : "Keep using this Hub with your team."}</p>
           ) : (
             <>
               <p className={homeStyles.updatesLead}>This Hub already works with your team.</p>

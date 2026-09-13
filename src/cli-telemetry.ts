@@ -20,7 +20,7 @@ export function telemetryProjectLocation(command: Command, cwd = process.cwd()):
 
 export function isTelemetryExemptCommand(commandName: string, parentName?: string, fullPath?: string): boolean {
   const path = fullPath ?? (parentName && parentName !== "mex" ? `${parentName}.${commandName}` : commandName);
-  return !(TELEMETRY_COMMANDS as readonly string[]).includes(path);
+  return path === "mex" || !(TELEMETRY_COMMANDS as readonly string[]).includes(path);
 }
 
 function telemetryStage(command: Command, path: string): TelemetryAttributes["stage"] {
@@ -47,6 +47,7 @@ export function createCliTelemetry(
     start(command: Command): void {
       try {
         const path = telemetryCommandPath(command);
+        if (path === "setup" && !command.opts().cli && !command.opts().dryRun) return;
         if (isTelemetryExemptCommand(command.name(), command.parent?.name(), path)) return;
         const context = (): TelemetryProjectContext => {
           try { return readProjectContext?.(command) ?? {}; } catch { return {}; }
