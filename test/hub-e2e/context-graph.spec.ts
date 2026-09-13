@@ -1,13 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
-// Run as a returning browser so the first-run Hub tour does not intercept clicks.
-test.beforeEach(async ({ context }) => {
-  await context.addInitScript(() => {
-    window.localStorage.setItem("mex.hub.onboarding.v1", JSON.stringify({ completed: true }));
-  });
-});
-
 test("Context graph preserves knowledge positions while revealing direct code", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

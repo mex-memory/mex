@@ -152,28 +152,6 @@
   line-height: 1.45;
 }
 
-.locality {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  margin: 0;
-  padding: 9px 11px;
-  color: var(--muted-foreground);
-  background: var(--surface-subtle);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.locality svg {
-  width: 14px;
-  height: 14px;
-  margin-top: 1px;
-  color: var(--text-tertiary);
-}
-
 .footer {
   display: flex;
   flex-wrap: wrap;

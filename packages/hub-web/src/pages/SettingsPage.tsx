@@ -94,10 +94,10 @@ function OnboardingPreference() {
           <h2 id="onboarding-title">Hub tour</h2>
           <p>The first-run walkthrough of Context, Code, Inbox, Relays, and Health.</p>
         </div>
-        <span className={styles.scope}>This browser</span>
+        <span className={styles.scope}>This checkout</span>
       </div>
       <div className={styles.footer}>
-        <p>Shown once on this device. Teammates and other browsers still see it on their first visit.</p>
+        <p>Shown once in this checkout. Teammates see it in their own checkouts.</p>
         <div className={styles.actions}>
           <Button onClick={() => onboarding.replay()} size="sm" type="button" variant="outline">
             Replay Hub tour
@@ -113,7 +113,7 @@ export function SettingsPage() {
   const policy = useQuery({ queryKey: QUERY_KEY, queryFn: () => api.getLoggingPolicy(), staleTime: 0 });
   return (
     <div className={styles.page}>
-      <PageHeader title="Settings" description="Preferences for this checkout and this browser." />
+      <PageHeader title="Settings" description="Preferences for this checkout." />
       <div className={styles.stack}>
         <OnboardingPreference />
         {policy.isPending ? <StatePanel state="loading" title="Loading preferences" detail="Reading this checkout’s agent logging policy." />

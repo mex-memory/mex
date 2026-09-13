@@ -3,6 +3,7 @@ import type { FixtureApiOptions, HubApi, JobSubscription } from "../api/client";
 import type {
   AgentLoggingPolicy,
   AgentLoggingUpdateRequest,
+  HubOnboardingState,
   ActivityItem,
   ActivityRequest,
   ActivityResponse,
@@ -2052,6 +2053,18 @@ class FixtureHubApi implements HubApi {
     };
     return structuredClone(this.#loggingPolicy);
   }
+
+  // Existing flows run as a returning checkout; onboarding tests opt into a first run.
+  #onboardingCompleted = true;
+
+  getOnboardingState(): Promise<HubOnboardingState> {
+    return Promise.resolve({ completed: this.#onboardingCompleted });
+  }
+
+  completeOnboarding(): Promise<HubOnboardingState> {
+    this.#onboardingCompleted = true;
+    return Promise.resolve({ completed: true });
+  }
   readonly #jobs = structuredClone(jobs);
   readonly #members: TeamMember[];
   readonly #workstreams = structuredClone(fixtureWorkstreams);
@@ -2070,6 +2083,7 @@ class FixtureHubApi implements HubApi {
   #previewSequence = 0;
 
   constructor(options: FixtureApiOptions = {}) {
+    this.#onboardingCompleted = options.onboardingFixture !== "first-run";
     this.#inboxFixture = options.inboxFixture;
     this.#relayFixture = options.relayFixture;
     this.#activityFixture = options.activityFixture;

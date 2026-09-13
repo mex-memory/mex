@@ -2,6 +2,7 @@ export type {
   AgentLoggingMode,
   AgentLoggingPolicy,
   AgentLoggingUpdateRequest,
+  HubOnboardingState,
   ActivityActor,
   ActivityDiagnostic,
   ActivityItem,

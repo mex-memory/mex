@@ -3,6 +3,9 @@ import {
   AgentLoggingUpdateRequestSchema,
   type AgentLoggingPolicy,
   type AgentLoggingUpdateRequest,
+  HubOnboardingCompleteRequestSchema,
+  HubOnboardingStateSchema,
+  type HubOnboardingState,
   ActivityRequestSchema,
   ActivityResponseSchema,
   BootstrapRequestSchema,
@@ -228,6 +231,8 @@ export interface HubSetupService {
 export interface HubReadServices {
   loggingPolicy?(): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
   setLoggingPolicy?(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
+  onboardingState?(): Promise<HubOnboardingState> | HubOnboardingState;
+  completeOnboarding?(): Promise<HubOnboardingState> | HubOnboardingState;
   capabilities(): Promise<HubCapabilities> | HubCapabilities;
   home(): Promise<HomeResponse> | HomeResponse;
   overview?(): Promise<OverviewResponse> | OverviewResponse;
@@ -791,6 +796,19 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     const request = parseInput(AgentLoggingUpdateRequestSchema, await readBoundedJson(context.req.raw));
     return telemetry.action("settings.logging.update", "direct", async () =>
       resourceResponse(AgentLoggingPolicySchema, await options.services.setLoggingPolicy!(request)));
+  });
+
+  app.get("/api/v1/settings/onboarding", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.onboardingState) throw unavailable("The Hub tour state is unavailable in this build.");
+    return resourceResponse(HubOnboardingStateSchema, await options.services.onboardingState());
+  });
+
+  app.post("/api/v1/settings/onboarding", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.completeOnboarding) throw unavailable("The Hub tour state is unavailable in this build.");
+    parseInput(HubOnboardingCompleteRequestSchema, await readBoundedJson(context.req.raw));
+    return resourceResponse(HubOnboardingStateSchema, await options.services.completeOnboarding());
   });
 
   app.get("/api/v1/health", async () => resourceResponse(

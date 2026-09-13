@@ -25,14 +25,6 @@ const inactiveMemberId = "member_01K35Z2A3B4C5D6E7FGHJKMNPQ";
 // pinned Ubuntu 24.04 baselines can be captured and reviewed as a complete set.
 const hasReviewedHubVisualBaselines = process.platform === "darwin";
 
-// Existing Hub flows run as a returning browser; the first-run tour otherwise
-// overlays the dashboard and intercepts every click.
-test.beforeEach(async ({ context }) => {
-  await context.addInitScript(() => {
-    window.localStorage.setItem("mex.hub.onboarding.v1", JSON.stringify({ completed: true }));
-  });
-});
-
 function watchBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("console", (message) => {
@@ -2403,6 +2395,13 @@ test.describe("built production Hub", () => {
       const result = spawnSync(command, args, { cwd: projectRoot, encoding: "utf8" });
       if (result.status !== 0) throw new Error(result.stderr);
     }
+    // Browse as a returning checkout; the first-run tour would otherwise
+    // overlay the dashboard and intercept every click.
+    mkdirSync(join(projectRoot, ".mex", "local"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, ".mex", "local", "hub-onboarding.json"),
+      `${JSON.stringify({ schemaVersion: 1, completed: true })}\n`,
+    );
     processHandle = spawn(process.execPath, [join(root, "dist", "cli.js"), "hub", "--no-open"], {
       cwd: projectRoot,
       env: { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" },

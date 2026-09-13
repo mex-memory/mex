@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ShieldCheck, X } from "lucide-react";
+import { X } from "lucide-react";
 import mexMascot from "../../../../mascot/mex-mascot.svg?no-inline";
 import { hubOnboardingSteps, type OnboardingStep } from "../app/onboarding";
 import { Button } from "../components/primitives/button";
@@ -183,10 +183,5 @@ function OnboardingStepBody({ step }: { step: OnboardingStep }) {
     );
   }
 
-  return (
-    <p className={styles.locality}>
-      <ShieldCheck aria-hidden="true" />
-      The highlighted control stays visible. The rest of the Hub is only dimmed.
-    </p>
-  );
+  return null;
 }

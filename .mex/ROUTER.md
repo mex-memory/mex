@@ -17,7 +17,7 @@ edges:
   - target: patterns/release-readme-visuals.md
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
-    condition: when adding or changing the Hub first-run tour or its browser-local completion state
+    condition: when adding or changing the Hub first-run tour or its checkout-local completion state
 last_updated: 2026-09-12
 ---
 
@@ -43,11 +43,12 @@ Then read this file fully before doing anything else in this session.
   and honest quiet periods. Commands, arguments, paths, and tool results are
   omitted from the tool stream. History stays in process memory and reconnects
   through cursor pages.
-  After promotion, the full Hub shows a browser-local first-run spotlight
-  tour once per device. It overlays the live sidebar and points at Search,
-  Project, Teamwork, System, Settings (replay), and Context. Skip and completion stay in
-  `localStorage`; Settings can replay the tour. The setup wizard is unchanged
-  and never hosts it.
+  After promotion, the full Hub shows a first-run spotlight tour once per
+  checkout. It overlays the live sidebar and points at Search, Project,
+  Teamwork, System, Settings (replay), and Context. Skip and completion are
+  recorded in `.mex/local/hub-onboarding.json` through
+  `/api/v1/settings/onboarding`, so they survive relaunches on new loopback
+  ports; Settings can replay the tour. The setup wizard never hosts it.
   Mode and empty tool choices survive refresh. New code projects show a bounded
   setup-file diff with numbered, highlighted additions/removals and an explicit
   local commit action before in-place Hub promotion; the commit preserves

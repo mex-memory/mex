@@ -115,7 +115,7 @@ export function hubOnboardingSteps(projectName?: string): readonly OnboardingSte
       icon: Settings2,
       targets: ["settings"],
       revealGroups: ["system"],
-      description: "Open Settings — this link in System. The Hub tour section has Replay Hub tour. Completion stays in this browser, so teammates and other devices still see the walkthrough on their first visit.",
+      description: "Open Settings — this link in System. The Hub tour section has Replay Hub tour. Completion is saved for this checkout, so each teammate still sees the walkthrough in their own.",
       primary: "Next",
       secondary: "Skip tour",
     },

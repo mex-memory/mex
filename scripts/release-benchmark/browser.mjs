@@ -51,11 +51,6 @@ export async function measureWorkbenchHeap({
           if (url.origin !== server.origin) outbound.add(request.url());
         });
         await addApiCookie(context, server.origin, auth.cookie);
-        // Measure a returning browser: the first-run Hub tour overlays the
-        // dashboard and would otherwise intercept every route interaction.
-        await context.addInitScript(() => {
-          window.localStorage.setItem("mex.hub.onboarding.v1", JSON.stringify({ completed: true }));
-        });
         const page = await context.newPage();
         try {
           const response = await page.goto(`${server.origin}${path}`, {

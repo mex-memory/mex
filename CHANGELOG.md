@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - A bounded Next.js App Router resolver turning `app/**/route.ts|js` modules (including `src/app` roots) into route nodes: one per exported HTTP handler (`GET` through `HEAD`), with the URL path derived from the route file's directory, dynamic segments such as `[id]` and catch-alls preserved verbatim, and route groups `(marketing)` excluded the way Next resolves them. Same-file handlers resolve only when unambiguous; Pages Router, layouts, and pages stay out of scope (#95).
-- A first-run Project Hub tour that spotlights the live sidebar (Search, Project, Teamwork, System, Settings, and Context) once per browser. Completion stays in `localStorage`, Settings can replay it, and the setup wizard never shows it.
+- A first-run Project Hub tour that spotlights the live sidebar (Search, Project, Teamwork, System, Settings, and Context) once per checkout. Completion is recorded in `.mex/local/hub-onboarding.json`, so it survives Hub relaunches; Settings can replay it, and the setup wizard never shows it.
 
 ### Changed
 
