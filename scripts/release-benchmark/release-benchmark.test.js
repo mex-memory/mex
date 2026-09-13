@@ -57,8 +57,19 @@ const PRE_GRAPH_TIMING_LIMITS = {
   large: { graph_rebuild: 1229 },
 };
 
-function beforeGraphTimingCalibration(value) {
+const PRE_SETTINGS_ROUTE_JS_BYTES = 8035;
+
+// Restores the Settings route JS limit that PR #195 recalibrated, so every
+// earlier frozen-budget guard keeps hashing its original state.
+function beforeSettingsRouteJsCalibration(value) {
   const projected = structuredClone(value);
+  projected.calibration.status = "pinned-A-G-Settings-34286120355-Graph-timing-34288560611";
+  projected.assets.routes.settings.jsBytes = PRE_SETTINGS_ROUTE_JS_BYTES;
+  return projected;
+}
+
+function beforeGraphTimingCalibration(value) {
+  const projected = beforeSettingsRouteJsCalibration(value);
   projected.calibration.status = "pinned-checkpoints-A-G-and-Settings-34286120355";
   for (const [profile, operations] of Object.entries(PRE_GRAPH_TIMING_LIMITS)) {
     Object.assign(projected.runtime.maintenanceMs[profile], operations);
@@ -135,7 +146,7 @@ describe("release benchmark contract", () => {
     // Settings assets use the deterministic build; heap limits come from the
     // retained pinned Linux report, with every unrelated limit still frozen.
     expect(Object.keys(budgets.assets.routes)).toEqual(RELEASE_ROUTE_KEYS);
-    expect(budgets.assets.routes.settings).toEqual({ jsBytes: 8035, cssBytes: 2910, fontBytes: 0 });
+    expect(budgets.assets.routes.settings).toEqual({ jsBytes: 8978, cssBytes: 2910, fontBytes: 0 });
     expect(Object.keys(releaseWorkbenchPaths({
       knowledgeEntityId: "mx_knowledge",
       specEntityId: "mx_spec",
@@ -330,6 +341,22 @@ describe("release benchmark contract", () => {
       expect(budgets.runtime.browserHeapBytes[profile].settings).toBe(measured.budgetBytes);
       delete beforeSettings.runtime.browserHeapBytes[profile].settings;
     }
+    expect(createHash("sha256").update(JSON.stringify(beforeSettings)).digest("hex"))
+      .toBe(evidence.unownedBudgetSha256);
+  });
+
+  it("pins Settings route JS to the retained runner build without changing existing budgets", () => {
+    const evidence = JSON.parse(readFileSync(new URL("../../docs/design/settings-route-js-calibration.json", import.meta.url), "utf8"));
+    expect(evidence.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
+    expect(evidence.formula).toBe(budgets.calibration.assetFormula);
+    expect(evidence.metric).toBe("assets.routes.settings.jsBytes");
+    expect(evidence.previousBudgetBytes).toBe(PRE_SETTINGS_ROUTE_JS_BYTES);
+    expect(evidence.files.reduce((total, file) => total + file.bytes, 0)).toBe(evidence.measuredBytes);
+    expect(assetBudgetCandidate(evidence.measuredBytes)).toBe(evidence.budgetBytes);
+    expect(budgets.assets.routes.settings.jsBytes).toBe(evidence.budgetBytes);
+    const beforeSettings = structuredClone(budgets);
+    beforeSettings.calibration.status = evidence.previousCalibrationStatus;
+    delete beforeSettings.assets.routes.settings.jsBytes;
     expect(createHash("sha256").update(JSON.stringify(beforeSettings)).digest("hex"))
       .toBe(evidence.unownedBudgetSha256);
   });

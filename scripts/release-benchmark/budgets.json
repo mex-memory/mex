@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "provisional": false,
   "calibration": {
-    "status": "pinned-A-G-Settings-34286120355-Graph-timing-34288560611",
+    "status": "pinned-A-G-Settings-34286120355-Graph-timing-34288560611-Settings-JS-34739467180",
     "runtimeFormula": "ceil(measured p95 * 1.15)",
     "assetFormula": "ceil(built bytes * 1.05)"
   },
@@ -41,7 +41,7 @@
       "activity": { "jsBytes": 66663, "cssBytes": 19437, "fontBytes": 0 },
       "jobs": { "jsBytes": 29416, "cssBytes": 14641, "fontBytes": 0 },
       "health": { "jsBytes": 30410, "cssBytes": 16736, "fontBytes": 0 },
-      "settings": { "jsBytes": 8035, "cssBytes": 2910, "fontBytes": 0 },
+      "settings": { "jsBytes": 8978, "cssBytes": 2910, "fontBytes": 0 },
       "notFound": { "jsBytes": 7095, "cssBytes": 3510, "fontBytes": 0 }
     }
   },
