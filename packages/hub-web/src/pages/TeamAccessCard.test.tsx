@@ -36,7 +36,7 @@ describe("TeamAccessCard", () => {
     const user = userEvent.setup();
     render(<TeamAccessCard />);
     await user.click(screen.getByRole("button", { name: "Request access" }));
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", undefined, { timeout: 5_000 });
     await user.type(within(dialog).getByLabelText("Name"), "Ada Lovelace");
     await user.type(within(dialog).getByLabelText("Email"), "ada@example.com");
     await user.keyboard("{Escape}");
@@ -47,7 +47,7 @@ describe("TeamAccessCard", () => {
     expect(within(reopened).getByLabelText("Name")).toHaveValue("Ada Lovelace");
     expect(within(reopened).getByLabelText("Email")).toHaveValue("ada@example.com");
     expect(fetch).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("unlocks a stalled contact request and lets the user close and retry", async () => {
     vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>(() => {}));

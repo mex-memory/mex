@@ -36,7 +36,7 @@ export function TeamAccessCard() {
                 Design-partner access is open for shared team memory.
               </p>
               <div className={homeStyles.updatesActions}>
-                <Button ref={requestButtonRef} onClick={() => { setHasOpened(true); setOpen(true); }} size="sm" type="button">
+                <Button ref={requestButtonRef} onClick={() => { setHasOpened(true); setOpen(true); }} size="sm" type="button" variant="outline">
                   Request access
                 </Button>
               </div>

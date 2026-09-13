@@ -115,7 +115,11 @@ Then read this file fully before doing anything else in this session.
   readable. Bounded private graph/code projections never maintain indexes;
   completed Graph/Wiki jobs invalidate the Context caches. Home and primary
   navigation now emphasize Context, Code, Relays, and Activity while legacy
-  workflow routes remain readable. Local verification is recorded in the
+  workflow routes remain readable. Overview keeps the two-column atlas and
+  original Attention queue. A compact Context doorway sits above the atlas
+  for everyday return visits; first-run welcome stays on Setup. The From mex
+  waitlist remains under Latest team memory. Local
+  verification is recorded in the
   same release plan; this is local implementation, not a published release.
 - Phase 2b extends Inbox into an explicit contribution workflow for existing
   Wiki knowledge: architecture, component, convention, decision, pattern, and

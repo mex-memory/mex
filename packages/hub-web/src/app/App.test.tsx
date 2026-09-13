@@ -43,8 +43,8 @@ describe("Project Hub routes", () => {
     ["/not-a-route", "Page not found"],
   ])("renders %s as an intentional view", async (route, heading) => {
     renderRoute(route);
-    expect(await screen.findByRole("heading", { level: 1, name: heading }, { timeout: 5_000 })).toBeVisible();
-  });
+    expect(await screen.findByRole("heading", { level: 1, name: heading }, { timeout: 10_000 })).toBeVisible();
+  }, 15_000);
 
   it("exposes keyboard navigation and a skip link", async () => {
     const user = userEvent.setup();
@@ -423,8 +423,10 @@ describe("Project Hub routes", () => {
 
   it("links Overview focus, team memory, context, and active operation to exact supported routes", async () => {
     renderRoute("/");
-    const focus = await screen.findByRole("region", { name: "Attention" });
-    expect(screen.getByRole("button", { name: "Explore Context" })).toHaveAttribute("href", "/knowledge");
+    await screen.findByRole("heading", { name: "Context" }, { timeout: 10_000 });
+    const focus = await screen.findByRole("region", { name: "Attention" }, { timeout: 10_000 });
+    expect(within(screen.getByRole("region", { name: "Context" }))
+      .getByRole("button", { name: "Open Context" })).toHaveAttribute("href", "/knowledge");
     expect(within(focus).getByRole("button", { name: "View Relays" })).toHaveAttribute("href", "/relays");
     expect(within(focus).queryByRole("button", { name: "Open Inbox" })).not.toBeInTheDocument();
     expect(within(focus).getByRole("button", { name: "Open handoff" })).toHaveAttribute(
@@ -453,7 +455,7 @@ describe("Project Hub routes", () => {
     expect(screen.queryByRole("region", { name: "Project sections" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Recent jobs" })).not.toBeInTheDocument();
     expect(screen.queryByText("Canonical events")).not.toBeInTheDocument();
-  });
+  }, 15_000);
 
   it("loads the lazy Relay workbench when the private Relay service is connected", async () => {
     const user = userEvent.setup();

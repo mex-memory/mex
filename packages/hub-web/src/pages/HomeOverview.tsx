@@ -125,10 +125,6 @@ function HomeHeader({
       description={data ? `Last checked ${formatDate(data.observedAt)}` : undefined}
       actions={(
         <div className={homeStyles.headerActions}>
-          <Button nativeButton={false} render={<Link to="/knowledge" />} size="sm">
-            <Network aria-hidden="true" data-icon="inline-start" />
-            Explore Context
-          </Button>
           <Button disabled={refreshing} onClick={onRefresh} size="sm" type="button" variant="outline">
             <RefreshCw
               aria-hidden="true"
@@ -244,6 +240,50 @@ function contextReadiness(context: OverviewResponse["context"]): ReadinessView {
     state: "attention",
     label: "Needs attention",
   };
+}
+
+// Context reads refuse every Wiki index that is not fresh, so only offer the
+// doorway when the page behind it can load.
+function knowledgeBrowsable(context: OverviewResponse["context"]): boolean {
+  return context.availability === "available"
+    && context.wiki.availability === "available"
+    && context.wiki.details.indexStatus === "fresh";
+}
+
+function memoryHero(context: OverviewResponse["context"]): {
+  description: string;
+  action: string;
+  route: string;
+} {
+  if (knowledgeBrowsable(context)) {
+    return {
+      description: "Notes for this repo, linked to the code.",
+      action: "Open Context",
+      route: "/knowledge",
+    };
+  }
+  return {
+    description: "The local index isn’t ready to browse yet.",
+    action: "Open Health",
+    route: "/health",
+  };
+}
+
+function MemoryHero({ context }: { context: OverviewResponse["context"] }) {
+  const hero = memoryHero(context);
+  return (
+    <section className={homeStyles.memoryHero} role="region" aria-labelledby="overview-memory-hero-heading">
+      <span className={homeStyles.memoryHeroIcon}><Network aria-hidden="true" /></span>
+      <div className={homeStyles.memoryHeroCopy}>
+        <h2 id="overview-memory-hero-heading">Context</h2>
+        <p>{hero.description}</p>
+      </div>
+      <Button nativeButton={false} render={<Link to={hero.route} />} size="sm">
+        {hero.action}
+        <ArrowRight aria-hidden="true" data-icon="inline-end" />
+      </Button>
+    </section>
+  );
 }
 
 function buildFocusItems(data: OverviewResponse): FocusItemView[] {
@@ -897,6 +937,7 @@ function OverviewLoading({ onRefresh }: { onRefresh: () => void }) {
     <div className={homeStyles.page}>
       <HomeHeader onRefresh={onRefresh} refreshing={false} />
       <p className="sr-only" role="status">Loading project overview</p>
+      <PanelSkeleton label="Context" />
       <div className={homeStyles.atlasGrid}>
         <div className={homeStyles.primaryColumn}>
           <PanelSkeleton label="Attention" />
@@ -956,6 +997,7 @@ export function HomeOverview() {
     <div className={homeStyles.page} data-overview-workbench="ready">
       <HomeHeader data={data} onRefresh={() => void refresh()} refreshing={refreshing} />
       <div className={homeStyles.liveStatus} aria-live="polite" role="status">{refreshStatus}</div>
+      <MemoryHero context={data.context} />
       <div className={homeStyles.atlasGrid}>
         <div className={homeStyles.primaryColumn}>
           <FocusCard data={data} onRetry={() => void refresh()} />
