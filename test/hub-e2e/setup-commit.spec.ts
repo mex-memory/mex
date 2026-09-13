@@ -20,6 +20,13 @@ const architectureBefore = ["# Architecture", "", "## Setup workflow", "", archi
 const architectureAfter = architectureBefore.replace(architectureRemoved, `${architectureAdded}\n${architectureExtra}`);
 interface CommitPreview { revision: string; files: Array<{ path: string; status: string }>; }
 
+// The promoted Hub would otherwise open its first-run tour over the dashboard.
+test.beforeEach(async ({ context }) => {
+  await context.addInitScript(() => {
+    window.localStorage.setItem("mex.hub.onboarding.v1", JSON.stringify({ completed: true }));
+  });
+});
+
 test.describe("built setup commit checkpoint", () => {
   test("reviews and commits only setup files while preserving unrelated staged work", async ({ page }, testInfo) => {
     const fixture = createFixture();

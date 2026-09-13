@@ -1,9 +1,11 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { OnboardingTour } from "../pages/OnboardingTour";
 import { readOnboardingState, writeOnboardingState } from "../lib/onboarding-state";
 import { hubOnboardingSteps } from "./onboarding";
 import type { NavigationGroupId } from "./navigation";
+
+// The shell mounts on every route; load the tour only when it opens.
+const OnboardingTour = lazy(async () => ({ default: (await import("../pages/OnboardingTour")).OnboardingTour }));
 
 interface HubOnboardingContextValue {
   active: boolean;
@@ -67,13 +69,15 @@ export function HubOnboarding({
     <HubOnboardingContext.Provider value={value}>
       {children}
       {open ? (
-        <OnboardingTour
-          projectName={projectName}
-          stepIndex={stepIndex}
-          onDismiss={dismiss}
-          onFinish={finish}
-          onStepChange={setStepIndex}
-        />
+        <Suspense fallback={null}>
+          <OnboardingTour
+            projectName={projectName}
+            stepIndex={stepIndex}
+            onDismiss={dismiss}
+            onFinish={finish}
+            onStepChange={setStepIndex}
+          />
+        </Suspense>
       ) : null}
     </HubOnboardingContext.Provider>
   );

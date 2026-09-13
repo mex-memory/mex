@@ -15,6 +15,13 @@ const literalHtml = '<img src=x onerror="globalThis.transcriptInjected = true">'
 const finalAssistantText = "Finished the synthetic tool activity. Continuing project memory setup.";
 type Provider = "claude" | "codex";
 
+// The promoted Hub would otherwise open its first-run tour over the dashboard.
+test.beforeEach(async ({ context }) => {
+  await context.addInitScript(() => {
+    window.localStorage.setItem("mex.hub.onboarding.v1", JSON.stringify({ completed: true }));
+  });
+});
+
 test.describe("built setup activity stream", () => {
   for (const provider of ["claude", "codex"] as const) {
     test(`${provider} streams real subprocess activity, survives reload, and cancels cleanly`, async ({ page }, testInfo) => {

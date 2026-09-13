@@ -45,9 +45,14 @@ Mount the tour from `HubOnboarding` inside `HubLayout`. Do not render it from
    clearing completion.
 5. Do not add a Hub API, checkout-local file, or telemetry event for this
    preference unless an explicit catalog/contract change is requested.
-6. Seed completed state in `packages/hub-web/src/test/setup.ts` so existing
-   dashboard tests keep a clean accessibility tree. First-run tests clear the
-   key in their own `beforeEach`.
+6. Seed completed state wherever an existing flow drives a fresh browser:
+   `packages/hub-web/src/test/setup.ts`, every `test/hub-e2e` spec (through
+   `context.addInitScript`, since setup specs promote on a random origin), and
+   the release benchmark's browser contexts. First-run tests clear the key in
+   their own `beforeEach`.
+7. Load `OnboardingTour` on demand. The shell mounts `HubOnboarding` on every
+   route, so a static import puts the tour's JS, CSS, and mascot in the frozen
+   initial-asset budget.
 
 ## Gotchas
 
@@ -57,8 +62,8 @@ Mount the tour from `HubOnboarding` inside `HubLayout`. Do not render it from
   items can be measured. Measure after that render, then again on resize.
 - Object-spreading `createFixtureApi()` drops class methods. Assign setup
   methods onto the instance when a test needs the wizard.
-- Last-step actions should stay distinct from Overview's "Explore Context"
-  control. Use "Open Context" / "Stay here".
+- Overview's Context card also offers "Open Context". While the tour is open
+  on Overview, scope last-step queries to the tour dialog.
 - This is per browser, not per Member. Teammates and other devices still see
   the tour. The same loopback origin reused for another checkout will not.
 

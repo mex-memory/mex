@@ -25,6 +25,14 @@ const inactiveMemberId = "member_01K35Z2A3B4C5D6E7FGHJKMNPQ";
 // pinned Ubuntu 24.04 baselines can be captured and reviewed as a complete set.
 const hasReviewedHubVisualBaselines = process.platform === "darwin";
 
+// Existing Hub flows run as a returning browser; the first-run tour otherwise
+// overlays the dashboard and intercepts every click.
+test.beforeEach(async ({ context }) => {
+  await context.addInitScript(() => {
+    window.localStorage.setItem("mex.hub.onboarding.v1", JSON.stringify({ completed: true }));
+  });
+});
+
 function watchBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("console", (message) => {
