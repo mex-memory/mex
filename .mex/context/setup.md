@@ -20,12 +20,12 @@ edges:
 # Ground only setup behavior implemented by specific code symbols.
 # Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
 grounds_to: []
-last_updated: 2026-09-06
+last_updated: 2026-09-13
 mex:
   id: mx_01M1M0CJGBPPFPWHY980PMTS2T
   type: guide
   status: promoted
-  revision: 5
+  revision: 6
   title: setup
   relations:
     - type: related_to
@@ -69,9 +69,9 @@ revision: 1
 2. `npm run typecheck`
 3. `npm test`
 4. `npm run build`
-5. For exact-checkout dogfooding, run `node dist/cli.js setup`; rerun the same command after population to capture grounding and finalize Wiki readiness.
-6. Review the canonical scaffold and selected agent files listed by setup, then commit them before opening Hub. Keep generated databases and `.mex/local/` ignored; MEX does not stage or commit automatically.
-7. Start the local product with `node dist/cli.js hub`, or use an installed `mex hub` after verifying its version matches the checkout.
+5. For exact-checkout browser setup, run `node dist/cli.js setup`. Use `node dist/cli.js setup --cli` for terminal dogfooding; rerun that terminal command after manual population to finalize grounding and Wiki readiness.
+6. Review the canonical scaffold and selected agent files in setup, then explicitly commit them through the Hub action or your Git client. Keep generated databases and `.mex/local/` ignored. The completion guide precedes **Open Hub** and offers optional version-pinned global install and contact details.
+7. Bare `node dist/cli.js` opens the Hub or setup; `node dist/cli.js hub` remains supported. Verify any installed global CLI matches the checkout. `mex tui` retains the terminal dashboard.
 
 <!-- mex:entity
 id: mx_01M1M0CJE778KMAJA005V2RWWN
@@ -115,6 +115,6 @@ revision: 1
 
 - **`node:sqlite` is unavailable:** confirm `node --version` is at least 22.5; older Node releases cannot run MEX 0.8.x.
 - **Graph reports migration/rebuild required after an upgrade:** run the exact checkout CLI with `node dist/cli.js graph rebuild`, or rerun setup; do not edit SQLite files manually.
-- **Wiki reports migration required:** finish scaffold population and rerun `node dist/cli.js setup` so migration, index rebuild, and validation happen in the supported order.
+- **Wiki reports migration required:** finish scaffold population and continue browser setup or rerun `node dist/cli.js setup --cli` so migration, index rebuild, and validation happen in the supported order.
 - **Tests become flaky while a build runs:** do not run the full test suite concurrently with tsup/Vite cleanup of generated output.
 - **Graph status is degraded:** inspect parse health and narrow graph queries; partial structural parsing is usable evidence, not permission to invent missing facts.

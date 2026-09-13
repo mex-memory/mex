@@ -17,6 +17,7 @@ import { findConfig, readScaffoldId } from "../config.js";
 import { hasCommittedHubIdentity } from "./setup/readiness.js";
 import { inspectSetupStatus } from "../setup/headless.js";
 import { findSetupProjectRoot } from "../setup/index.js";
+import { normalizeSetupMode, type SetupMode } from "../setup/phases.js";
 import { createProjectTelemetryCapture, startHubTelemetry } from "../telemetry/index.js";
 import { emitHubTelemetry } from "./telemetry.js";
 import { dirname, join } from "node:path";
@@ -34,12 +35,15 @@ export interface RunHubCommandOptions {
 export interface LaunchHubOptions {
   readonly port?: number;
   readonly openBrowser: boolean;
+  readonly mode?: string;
+  readonly setup?: boolean;
 }
 
 export interface RunSetupHubCommandOptions {
   readonly projectRoot: string;
   readonly port?: number;
   readonly openBrowser: boolean;
+  readonly initialMode?: SetupMode;
 }
 
 /**
@@ -50,9 +54,10 @@ export interface RunSetupHubCommandOptions {
  * checkpoint; the same listener can then become the full Hub.
  */
 export async function launchHub(options: LaunchHubOptions): Promise<void> {
+  const initialMode = options.mode === undefined ? undefined : normalizeSetupMode(options.mode);
   const projectRoot = findSetupProjectRoot();
   const status = inspectSetupStatus(projectRoot);
-  if (status.mode === "code-repo" && status.hasScaffold && await hasCommittedHubIdentity(projectRoot)) {
+  if (!options.setup && initialMode === undefined && status.mode === "code-repo" && status.hasScaffold && await hasCommittedHubIdentity(projectRoot)) {
     const config = findConfig(projectRoot);
     const scaffoldId = readScaffoldId(config.scaffoldRoot);
     if (!scaffoldId) throw new Error("The committed MEX project identity could not be read.");
@@ -70,6 +75,7 @@ export async function launchHub(options: LaunchHubOptions): Promise<void> {
     projectRoot,
     port: options.port,
     openBrowser: options.openBrowser,
+    initialMode,
   });
 }
 
@@ -181,6 +187,7 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
 
   const { services, setup } = createSetupHubServices(options.projectRoot, {
     onReady: promoteToProjectHub,
+    initialMode: options.initialMode,
   });
   try {
     const bootstrapToken = createBootstrapToken();

@@ -101,7 +101,7 @@ export function SetupCommitReview({ api, onCommitted, onReviewInvalid, onOpenHub
   if (committed) return (
     <div className={styles.notice} data-tone={committed.recoveryRequired ? "danger" : undefined} role={committed.recoveryRequired ? "alert" : "status"}>
       <strong>{committed.recoveryRequired ? "Setup committed; Git needs attention" : "Setup committed locally"}</strong>
-      {committed.recoveryRequired ? committed.run.error ?? committed.message : committed.run.status === "failed" ? "Your commit is saved. Retry opening the Hub." : "Opening the Project Hub…"}
+      {committed.recoveryRequired ? committed.run.error ?? committed.message : committed.run.status === "failed" ? "Your commit is saved. Retry opening the Hub." : "Your setup commit is saved. Continue to the completion guide."}
       {committed.run.status === "failed" || committed.recoveryRequired ? <Button type="button" size="sm" disabled={opening} onClick={onOpenHub}>{opening ? "Opening…" : committed.recoveryRequired ? "Check recovery and open Hub" : "Retry opening Hub"}</Button> : null}
     </div>
   );
@@ -115,7 +115,7 @@ export function SetupCommitReview({ api, onCommitted, onReviewInvalid, onOpenHub
       <div className={styles.commitReviewIntro}>
         <div>
           <h3>Review and commit setup</h3>
-          <p>Review the generated changes, then save a local commit and open the Hub.</p>
+          <p>Review the generated changes, then save a local commit to finish setup.</p>
         </div>
         <Button type="button" size="sm" variant="outline" disabled={review.isPending || commit.isPending} onClick={() => review.mutate()}>
           {review.isPending ? "Loading changes…" : attempted ? "Refresh review" : "Review setup changes"}
@@ -182,7 +182,7 @@ export function SetupCommitReview({ api, onCommitted, onReviewInvalid, onOpenHub
           </label>
           <div className={styles.footer}>
             <p>The reviewed setup files will be committed locally. You can push them later.</p>
-            <Button type="submit" size="sm" disabled={!ready}>{commit.isPending ? "Committing…" : "Commit setup and open Hub"}</Button>
+            <Button type="submit" size="sm" disabled={!ready}>{commit.isPending ? "Committing…" : "Commit setup"}</Button>
           </div>
         </form>
       ) : null}

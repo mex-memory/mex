@@ -22,6 +22,7 @@ import { SetupPopulationError } from "../../setup/population.js";
 import { initialSetupStatus, projectSetupStatus } from "./readiness.js";
 import { SetupTranscriptStore } from "./transcript.js";
 import { SetupCommitService } from "./commit.js";
+import { SetupGlobalInstaller } from "../../setup/global-install.js";
 
 const SETUP_UNAVAILABLE = "Finish MEX setup before using this Hub workbench.";
 const ACTIVITY_EMIT_INTERVAL_MS = 500;
@@ -31,6 +32,7 @@ export interface HubSetupRunnerOptions {
   readonly projectRoot: string;
   readonly now?: () => Date;
   readonly onReady?: (signal: AbortSignal) => void | Promise<void>;
+  readonly initialMode?: "code-repo" | "agent-memory";
 }
 
 export type HubSetupListener = (run: SetupRun) => void;
@@ -39,6 +41,7 @@ export class HubSetupRunner {
   private readonly projectRoot: string;
   private readonly now: () => Date;
   private readonly onReady?: (signal: AbortSignal) => void | Promise<void>;
+  private readonly initialMode?: "code-repo" | "agent-memory";
   private readonly listeners = new Set<HubSetupListener>();
   private run: SetupRun;
   private controller: AbortController | null = null;
@@ -51,22 +54,47 @@ export class HubSetupRunner {
   private commitService: SetupCommitService | null = null;
   private commitBusy = false;
   private commitOperation: Promise<unknown> | null = null;
-  private commitController: AbortController | null = null;
   private commitReceipt: { request: SetupCommitRequest; response: SetupCommitResponse } | null = null;
+  private readonly installer = new SetupGlobalInstaller();
 
   constructor(options: HubSetupRunnerOptions) {
     this.projectRoot = options.projectRoot;
     this.now = options.now ?? (() => new Date());
     this.onReady = options.onReady;
-    this.run = idleRun(initialSetupStatus(this.projectRoot), this.now());
+    this.initialMode = options.initialMode;
+    this.run = idleRun(this.withInitialMode(initialSetupStatus(this.projectRoot)), this.now());
   }
 
-  status(): Promise<SetupStatus> {
-    return projectSetupStatus(this.projectRoot);
+  async status(): Promise<SetupStatus> {
+    const status = await projectSetupStatus(this.projectRoot);
+    return this.run.status === "idle" ? this.withInitialMode(status) : status;
+  }
+
+  private withInitialMode(status: SetupStatus): SetupStatus {
+    return this.initialMode && status.mode !== this.initialMode
+      ? { ...status, mode: this.initialMode, ready: false,
+        stage: this.initialMode === "code-repo" && !status.hasGit ? "needs_git" : "needs_setup" }
+      : status;
   }
 
   snapshot(): SetupRun {
     return this.run;
+  }
+
+  installation() { return this.installer.snapshot(); }
+
+  async installGlobally() {
+    if (this.shuttingDown || this.run.status === "running" || this.commitBusy) {
+      throw new HubHttpError(409, "JOB_ALREADY_RUNNING", "Setup is busy", "Wait for setup to finish before installing the command.");
+    }
+    const status = await this.status();
+    if (this.shuttingDown || this.snapshot().status === "running" || this.commitBusy) {
+      throw new HubHttpError(409, "JOB_ALREADY_RUNNING", "Setup is busy", "Wait for setup to finish before installing the command.");
+    }
+    if (!status.ready && status.stage !== "complete") {
+      throw new HubHttpError(409, "REVISION_CONFLICT", "Setup is incomplete", "Complete setup and its commit checkpoint first.");
+    }
+    return this.installer.start();
   }
 
   subscribe(listener: HubSetupListener): () => void {
@@ -118,26 +146,19 @@ export class HubSetupRunner {
       }
       await this.requireCommitCheckpoint();
       const result = await this.commits().commit(request);
-      // Once Git has created the commit, promotion failure must still return
-      // that receipt. Retrying Hub startup must never repeat a successful commit.
+      // Retain the successful Git receipt even if readiness inspection fails.
+      // Opening the Hub is a separate action after the completion guide.
       let status: SetupStatus | null = null;
       let error: string | null = result.recoveryRequired ? result.message : null;
-      const controller = new AbortController();
-      this.commitController = controller;
       try {
         status = await this.status();
         if (result.recoveryRequired) {
           error = result.message;
         } else if (!status.ready) {
           error = "The setup files were committed, but setup readiness changed. Check the project and try opening the Hub again.";
-        } else if (!this.shuttingDown && this.onReady) {
-          await this.onReady(controller.signal);
-          if (controller.signal.aborted) throw new Error("Hub is stopping.");
         }
       } catch {
-        error ??= "The setup files were committed, but the Hub could not open. Retry opening the Hub; the commit is already saved.";
-      } finally {
-        if (this.commitController === controller) this.commitController = null;
+        error ??= "The setup files were committed, but readiness could not be checked. Check setup again; the commit is already saved.";
       }
       this.run = {
         ...this.run,
@@ -191,7 +212,7 @@ export class HubSetupRunner {
     if (this.shuttingDown) {
       throw new HubHttpError(503, "CAPABILITY_UNAVAILABLE", "Setup is stopping", "Restart the Hub before starting setup again.");
     }
-    if (this.run.status === "running" || this.commitBusy) {
+    if (this.run.status === "running" || this.commitBusy || this.installer.snapshot().state === "running") {
       throw new HubHttpError(
         409,
         "JOB_ALREADY_RUNNING",
@@ -210,6 +231,7 @@ export class HubSetupRunner {
       );
     }
 
+    const anchorNotes = this.run.anchorNotes;
     const startedAt = this.now().toISOString();
     const controller = new AbortController();
     this.controller = controller;
@@ -227,7 +249,7 @@ export class HubSetupRunner {
       populationCompleted: false,
       transcriptId,
       commitCommands: [],
-      anchorNotes: [],
+      anchorNotes,
       message: "Starting MEX setup…",
       progress: { step: "detect", label: "Detect project state" },
       error: null,
@@ -250,9 +272,9 @@ export class HubSetupRunner {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
-    this.commitController?.abort();
     this.cancel();
     await this.queue;
+    await this.installer.shutdown();
     await this.commitOperation?.catch(() => undefined);
     this.commitService?.clear();
     this.listeners.clear();
@@ -276,7 +298,7 @@ export class HubSetupRunner {
         populationTool: null,
         populationCompleted: true,
         commitCommands: current.mode === "code-repo" ? setupCommitCheckpointCommands(current.configuredTools) : [],
-        anchorNotes: [],
+        anchorNotes: this.run.anchorNotes,
         message: "Setup is complete.",
       } : await runHeadlessSetup({
         projectRoot: this.projectRoot,
@@ -284,6 +306,8 @@ export class HubSetupRunner {
         tools: request.tools,
         ...(request.confirmPopulation === undefined ? {} : { confirmPopulation: request.confirmPopulation }),
         signal,
+        onPopulationPrompt: (prompt) => { this.run = { ...this.run, prompt }; },
+        onAnchorNotes: (anchorNotes) => { this.run = { ...this.run, anchorNotes: [...anchorNotes] }; },
         onPopulationTranscript: (entry) => {
           if (signal.aborted || this.run.status !== "running" || this.controller?.signal !== signal) return;
           this.transcriptStore?.append({ kind: entry.kind, text: entry.text });
@@ -339,12 +363,12 @@ export class HubSetupRunner {
         },
       });
       if (signal.aborted) throw new Error("Setup was cancelled.");
-      await this.finishFromResult(result, signal);
+      await this.finishFromResult(result, signal, request.openHub === true);
     } catch (error) {
       // Child output and arbitrary filesystem exceptions are never a browser payload.
       const message = signal.aborted ? "Setup was cancelled. You can resume it when ready."
         : error instanceof SetupPopulationError || error instanceof SetupFinalizationError || error instanceof HubHttpError ? error.message
-        : "Setup could not finish. Run mex setup in this project for details, then retry.";
+        : "Setup could not finish. Run mex setup --cli in this project for details, then retry.";
       this.run = {
         ...this.run,
         status: signal.aborted ? "cancelled" : "failed",
@@ -360,10 +384,10 @@ export class HubSetupRunner {
     }
   }
 
-  private async finishFromResult(result: HeadlessSetupResult, signal: AbortSignal): Promise<void> {
+  private async finishFromResult(result: HeadlessSetupResult, signal: AbortSignal, openHub: boolean): Promise<void> {
     const status = await this.status();
     if (signal.aborted) throw new Error("Setup was cancelled.");
-    if (status.ready && this.onReady) {
+    if (status.ready && openHub && this.onReady) {
       await this.onReady(signal);
       if (signal.aborted) throw new Error("Setup was cancelled.");
     }

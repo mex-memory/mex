@@ -382,7 +382,7 @@ try {
   run("git", ["commit", "--quiet", "-m", "add packed wiki fixture"], project);
   run(process.execPath, [cli, "graph", "rebuild", "--root", project, "--json"], project);
   run(process.execPath, [cli, "wiki", "rebuild-index", "--json"], project);
-  child = spawn(process.execPath, [cli, "hub", "--no-open"], {
+  child = spawn(process.execPath, [cli, "--no-open"], {
     cwd: project,
     env: { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" },
     stdio: ["ignore", "pipe", "pipe"],
@@ -1154,7 +1154,7 @@ function runFreshCodeRepoSetup(cli, project, agentBin) {
     PATH: `${agentBin}${delimiter}${process.env.PATH ?? ""}`,
   };
   return new Promise((resolveOutput, reject) => {
-    const setup = spawn(process.execPath, [cli, "setup"], {
+    const setup = spawn(process.execPath, [cli, "setup", "--cli"], {
       cwd: project,
       env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -1211,7 +1211,7 @@ function runInteractiveAgentSetup(cli, project, workRoot) {
   verifyManualSetupEnvironment(project, env);
 
   return new Promise((resolveOutput, reject) => {
-    const setup = spawn(process.execPath, [cli, "setup", "--mode", "code-repo"], {
+    const setup = spawn(process.execPath, [cli, "setup", "--cli", "--mode", "code-repo"], {
       cwd: project,
       env,
       stdio: ["pipe", "pipe", "pipe"],

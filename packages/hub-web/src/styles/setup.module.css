@@ -3,6 +3,154 @@
   background: var(--background);
 }
 
+.completion {
+  display: grid;
+  gap: 28px;
+}
+
+.completionHeading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.completionHeading h3 {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: -0.04em;
+}
+
+.completionHeading p {
+  margin: 5px 0 0;
+  color: var(--muted-foreground);
+}
+
+.completionCheck {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: color-mix(in oklch, var(--primary) 12%, var(--background));
+  color: var(--primary);
+}
+
+.nextSession {
+  padding: 22px 24px;
+  border-left: 3px solid var(--primary);
+  background: var(--muted);
+  border-radius: 0 12px 12px 0;
+}
+
+.nextSession h4, .completionCard h4 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.nextSession p, .completionCard p {
+  margin: 8px 0 14px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.nextSession blockquote {
+  margin: 16px 0;
+  color: var(--foreground);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.nextSession code, .installCommand code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.completionCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
+  gap: 18px;
+}
+
+.completionCard {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+  min-width: 0;
+}
+
+.completionCard > svg {
+  width: 21px;
+  height: 21px;
+  color: var(--muted-foreground);
+  margin-bottom: 20px;
+}
+
+.optionalLabel {
+  position: absolute;
+  right: 24px;
+  top: 25px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.completionCard label {
+  display: block;
+  margin: 14px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.completionCard label span {
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+
+.completionCard .contactPrivacy {
+  font-size: 11px;
+  margin: 16px 0;
+}
+
+.installCommand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  background: var(--muted);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 16px 0;
+}
+
+.integrationAdvisory {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--muted-foreground);
+}
+
+.integrationAdvisory strong {
+  color: var(--foreground);
+}
+
+.integrationAdvisory p {
+  margin: 6px 0;
+}
+
+.integrationAdvisory ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+
+
 .topBar {
   position: sticky;
   top: 0;

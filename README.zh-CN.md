@@ -26,7 +26,7 @@ MEX 将团队的架构、决策、需求和交接信息与代码放在一起。�
 
 </div>
 
-> 此译文的主要产品介绍仍对应 0.8.0。安装命令和升级指引已调整为 0.8.1；产品变更请参阅[英文 README](README.md)和 [0.8.1 发行说明](RELEASE_NOTES.md)。
+> 此译文的主要产品介绍仍对应 0.8.0。安装命令和升级指引已调整为 0.8.2；产品变更请参阅[英文 README](README.md)和 [0.8.2 发行说明](RELEASE_NOTES.md)。
 
 ---
 
@@ -102,28 +102,19 @@ MEX 需要 **Node.js 22.5 或更高版本**，以及一个 Git 仓库。标准 n
 在仓库根目录运行：
 
 ```bash
-npx mex-agent@0.8.1 setup
+npx mex-agent@0.8.2 setup
 ```
 
-设置流程会保留现有指令、构建本地 Code Graph，并安装所选集成。它可以启动已选择且可用的 Claude Code 或 Codex CLI 来填充记忆；如果填充尚未完成，设置流程会打印提示词并暂停。填充完成后，它会采集代码关联信息、构建 Wiki 索引、验证结果，并输出 Git 提交检查点。所连接的智能体需要满足其自身的安装、账户和网络要求。
+此命令会在本地浏览器中打开设置向导。选择 AI 工具，构建脚手架和索引，并让可用的 Claude Code 或 Codex CLI 填充项目记忆。若智能体不可用或运行失败，可复制提示词，手动完成后继续。现有指令会保留；需要手动补充的集成指引不会阻止设置。
 
-然后检查生成的文件：
+在 Hub 中审阅确切的设置文件差异，点击 **Commit setup** 创建本地提交，也可以使用手动 Git 检查点。完成页面会说明如何开启新会话并验证项目记忆，还可选择安装当前版本的全局命令，或留下电子邮箱和可选姓名。联系信息通过内嵌 Web3Forms 服务发送，不写入仓库或使用遥测；本机只记录已提交或已跳过。点击 **Open Hub** 后进入完整 Hub 和首次使用导览。
 
-```bash
-git status --short
-```
-
-审阅并运行设置流程打印的、精确限定文件范围的 `git add` 命令。提交该设置检查点后，打开 Hub：
-
-```bash
-git commit -m "chore: initialize MEX"
-npx mex-agent@0.8.1 hub
-```
+若偏好终端或通过 SSH 操作，请运行 `npx mex-agent@0.8.2 setup --cli`。`setup --dry-run` 仍是只读终端预览；`--no-open` 只打印浏览器链接，`--port <n>` 指定本地端口。安装后，`mex` 打开 Hub 或设置，`mex tui` 打开终端面板。智能体仍需自行安装并满足账户和网络要求。
 
 ![准备好项目的三个步骤：运行设置、填充记忆，然后审阅并提交检查点，再打开 Hub。](docs/diagrams/readme/setup.svg)
 
 > [!NOTE]
-> 只有当前 `.mex/config.json` 已提交到 `HEAD` 时，Hub 才会启动。MEX 从不代为暂存、提交、推送或拉取。
+> 完整 Hub 需要当前 `.mex/config.json` 已提交到 `HEAD`。Hub 只会在你审阅并明确选择提交后创建本地设置提交，并保留无关的暂存内容。MEX 从不推送或拉取。
 
 通过团队常用的 Git 流程推送已审阅的设置提交，让队友获得相同的项目记忆和所选智能体指令。在 Hub 的 Team/Members 页面中添加参与者，并选择你的本地身份。明确审阅和应用这些操作；新的 Member 记录也需要提交和推送。你选择的当前成员身份仅保留在本地。
 
@@ -134,9 +125,9 @@ npx mex-agent@0.8.1 hub
 通过 Git 克隆或拉取团队的仓库和分支。如果 0.8 设置已完成并提交，在自己的检出目录中构建派生索引，然后打开 Hub：
 
 ```bash
-npx mex-agent@0.8.1 graph rebuild
-npx mex-agent@0.8.1 wiki rebuild-index
-npx mex-agent@0.8.1 hub
+npx mex-agent@0.8.2 graph rebuild
+npx mex-agent@0.8.2 wiki rebuild-index
+npx mex-agent@0.8.2 hub
 ```
 
 复用共享的项目记忆，不要仅为加入项目而重新生成。在 Team/Members 中检查实际生效的身份，并按需选择你已有的 Member 记录作为本地覆盖设置。如果尚无记录，请通过经过审阅的工作流明确创建一条，并共享其权威记录文件。Members 用于标明归属，不是登录或权限系统。
@@ -149,13 +140,13 @@ npx mex-agent@0.8.1 hub
 <summary><strong>更喜欢全局安装？</strong></summary>
 
 ```bash
-npm install -g mex-agent@0.8.1
+npm install -g mex-agent@0.8.2
 mex setup
 ```
 
 npm 包名为 `mex-agent`，安装后的命令为 `mex`。运行 `mex hub` 前，请先完成上面的审阅和提交检查点。
 
-设置结束时的交互式全局安装选项使用 npm 当前的 `latest` 版本。如果需要精确复现 0.8，请拒绝该选项，并使用上面固定版本的安装命令。
+浏览器和终端设置中的可选全局安装都会固定到当前运行的 MEX 版本。安装失败不会影响已完成的设置；可以重试或手动运行上面的命令。
 
 </details>
 
@@ -164,14 +155,14 @@ npm 包名为 `mex-agent`，安装后的命令为 `mex`。运行 `mex hub` 前�
 <summary><strong>想将 MEX 用于长期运行的运维智能体？</strong></summary>
 
 ```bash
-npx mex-agent@0.8.1 setup --mode agent-memory
+npx mex-agent@0.8.2 setup --mode agent-memory
 ```
 
 这个独立模板将 MEX 的路由与维护模型应用于家庭实验室、基础设施，以及长期运行的智能体工作空间。它增加了 `HEARTBEAT.md` 约定和清理规范；本 README 描述的 Code Graph、Wiki 和团队 Hub 流程属于默认的 `code-repo` 模式。
 
 </details>
 
-为便于阅读，示例使用 `mex`。你可以按上述方式全局安装，或将其替换为 `npx mex-agent@0.8.1`。
+为便于阅读，示例使用 `mex`。你可以按上述方式全局安装，或将其替换为 `npx mex-agent@0.8.2`。
 
 <a id="how-mex-works"></a>
 
@@ -359,7 +350,7 @@ Relay 是持久交接记录，不是聊天、实时通知、任务分配，也�
 如果使用全局安装，请升级 CLI 并刷新所选 Claude Code/Codex 技能副本：
 
 ```bash
-npm install -g mex-agent@0.8.1
+npm install -g mex-agent@0.8.2
 mex skills sync --dry-run
 mex skills sync
 ```

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "ok": true,
   "data": {
-    "mexVersion": "0.8.1",
+    "mexVersion": "0.8.2",
     "repository": {
       "initializationState": "not_git_repository",
       "graphIndexState": "unavailable",

@@ -6,9 +6,8 @@
  * VITE_WEB3FORMS_ACCESS_KEY. Web3Forms access keys are designed to ship in
  * frontend bundles; do not put SMTP passwords or other private secrets here.
  */
-export const WEB3FORMS_ACCESS_KEY = "20549db8-9c62-4da9-920a-f70a08c8ee44";
-
-export const WEB3FORMS_SUBMIT_URL = "https://api.web3forms.com/submit";
+import { WEB3FORMS_ACCESS_KEY, WEB3FORMS_SUBMIT_URL, submitContactPayload } from "@mex/hub-contracts/setup";
+export { WEB3FORMS_ACCESS_KEY, WEB3FORMS_SUBMIT_URL };
 export {
   TEAM_ACCESS_STORAGE_KEY,
   readTeamAccessState,
@@ -48,7 +47,6 @@ const NAME_MAX = 200;
 const EMAIL_MAX = 320;
 const COMPANY_MAX = 200;
 const MISSING_MAX = 240;
-const SUBMIT_TIMEOUT_MS = 15_000;
 
 let accessKeyOverride: string | null = null;
 
@@ -138,44 +136,6 @@ export async function submitTeamAccessPayload(
   payload: Record<string, string>,
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  if (payload.access_key.trim() === "") {
-    return { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR };
-  }
-  const controller = new AbortController();
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const expired = new Promise<false>((resolve) => {
-      timeout = setTimeout(() => {
-        controller.abort();
-        resolve(false);
-      }, SUBMIT_TIMEOUT_MS);
-    });
-    // Race the complete read so a stalled response body cannot lock the dialog.
-    const accepted = await Promise.race([
-      (async () => {
-        const response = await fetchImpl(WEB3FORMS_SUBMIT_URL, {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-        const body: unknown = await response.json().catch(() => null);
-        return response.ok && isWeb3FormsSuccess(body);
-      })(),
-      expired,
-    ]);
-    if (accepted) return { ok: true };
-    return { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR };
-  } catch {
-    return { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR };
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
-  }
-}
-
-function isWeb3FormsSuccess(body: unknown): boolean {
-  return typeof body === "object" && body !== null && "success" in body && body.success === true;
+  const result = await submitContactPayload(payload, fetchImpl);
+  return result.ok ? result : { ok: false, message: TEAM_ACCESS_SUBMIT_ERROR };
 }
