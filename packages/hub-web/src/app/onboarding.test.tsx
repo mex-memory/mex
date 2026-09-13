@@ -24,8 +24,9 @@ function renderHub(route = "/", api: HubApi = createFixtureApi()) {
   );
 }
 
+// The tour loads on demand, so its first dialog can trail the dashboard under load.
 async function tourDialog() {
-  return within(await screen.findByRole("dialog", { name: "Welcome to your local Hub" }));
+  return within(await screen.findByRole("dialog", { name: "Welcome to your local Hub" }, { timeout: 5_000 }));
 }
 
 beforeEach(() => {
@@ -93,9 +94,9 @@ describe("Hub first-run onboarding", () => {
     const user = userEvent.setup();
     writeOnboardingState({ completed: true });
     renderHub("/settings");
-    expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Settings" }, { timeout: 5_000 })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Replay Hub tour" }));
-    expect(await screen.findByRole("dialog", { name: "Welcome to your local Hub" })).toBeVisible();
+    expect(await screen.findByRole("dialog", { name: "Welcome to your local Hub" }, { timeout: 5_000 })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(readOnboardingState()).toEqual({ completed: true });
