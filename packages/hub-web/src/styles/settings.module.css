@@ -1,4 +1,5 @@
 .page { max-width: 920px; }
+.stack { display: grid; gap: 16px; }
 .surface { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); overflow: hidden; }
 .intro { display: flex; align-items: center; gap: 12px; padding: 22px 24px; border-bottom: 1px solid var(--border); }
 .icon { display: grid; place-items: center; color: var(--muted-foreground); }

@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { ArrowUpRight, NotebookPen } from "lucide-react";
+import { ArrowUpRight, Compass, NotebookPen } from "lucide-react";
 import { Link } from "react-router-dom";
 import { HubApiError } from "../api/client";
 import { useHubApi } from "../api/context";
+import { useHubOnboarding } from "../app/HubOnboarding";
 import type { AgentLoggingMode, AgentLoggingPolicy } from "../api/types";
 import { Button } from "../components/primitives/button";
 import { ErrorState, PageHeader, StatePanel } from "../components/ui";
@@ -82,15 +83,43 @@ function LoggingPreference({ policy }: { policy: AgentLoggingPolicy }) {
   );
 }
 
+function OnboardingPreference() {
+  const onboarding = useHubOnboarding();
+  if (onboarding === null) return null;
+  return (
+    <section className={styles.surface} aria-labelledby="onboarding-title">
+      <div className={styles.intro}>
+        <span className={styles.icon}><Compass aria-hidden="true" /></span>
+        <div>
+          <h2 id="onboarding-title">Hub tour</h2>
+          <p>The first-run walkthrough of Context, Code, Inbox, Relays, and Health.</p>
+        </div>
+        <span className={styles.scope}>This checkout</span>
+      </div>
+      <div className={styles.footer}>
+        <p>Shown once in this checkout. Teammates see it in their own checkouts.</p>
+        <div className={styles.actions}>
+          <Button onClick={() => onboarding.replay()} size="sm" type="button" variant="outline">
+            Replay Hub tour
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function SettingsPage() {
   const api = useHubApi();
   const policy = useQuery({ queryKey: QUERY_KEY, queryFn: () => api.getLoggingPolicy(), staleTime: 0 });
   return (
     <div className={styles.page}>
-      <PageHeader title="Settings" description="Preferences for agents working in this checkout." />
-      {policy.isPending ? <StatePanel state="loading" title="Loading preferences" detail="Reading this checkout’s agent logging policy." />
-        : policy.isError ? <ErrorState error={policy.error} retry={() => void policy.refetch()} />
-          : <LoggingPreference policy={policy.data} />}
+      <PageHeader title="Settings" description="Preferences for this checkout." />
+      <div className={styles.stack}>
+        <OnboardingPreference />
+        {policy.isPending ? <StatePanel state="loading" title="Loading preferences" detail="Reading this checkout’s agent logging policy." />
+          : policy.isError ? <ErrorState error={policy.error} retry={() => void policy.refetch()} />
+            : <LoggingPreference policy={policy.data} />}
+      </div>
     </div>
   );
 }

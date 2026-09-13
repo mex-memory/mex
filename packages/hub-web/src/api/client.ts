@@ -1,5 +1,6 @@
 import {
   AgentLoggingPolicySchema,
+  HubOnboardingStateSchema,
   ActivityResponseSchema,
   BootstrapResponseSchema,
   CodeKnowledgeResponseSchema,
@@ -55,6 +56,7 @@ import type {
 import type {
   AgentLoggingPolicy,
   AgentLoggingUpdateRequest,
+  HubOnboardingState,
   ActivityRequest,
   ActivityResponse,
   BootstrapResponse,
@@ -179,12 +181,15 @@ export interface FixtureApiOptions {
   activityFixture?: ActivityFixtureVariant;
   memberFixture?: MemberFixtureVariant;
   overviewFixture?: OverviewFixtureVariant;
+  onboardingFixture?: "completed" | "first-run";
 }
 
 export interface HubApi {
   recordPageView?(page: HubTelemetryPage): Promise<void>;
   getLoggingPolicy(): Promise<AgentLoggingPolicy>;
   setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy>;
+  getOnboardingState(): Promise<HubOnboardingState>;
+  completeOnboarding(): Promise<HubOnboardingState>;
   bootstrap(token: string): Promise<BootstrapResponse>;
   getSession(): Promise<SessionResponse>;
   getCapabilities(): Promise<CapabilitiesResponse>;
@@ -694,6 +699,15 @@ export class HttpHubApi implements HubApi {
   setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> {
     return this.#request("/settings/logging", AgentLoggingPolicySchema,
       { method: "POST", body: JSON.stringify(request) }, true);
+  }
+
+  getOnboardingState(): Promise<HubOnboardingState> {
+    return this.#request("/settings/onboarding", HubOnboardingStateSchema);
+  }
+
+  completeOnboarding(): Promise<HubOnboardingState> {
+    return this.#request("/settings/onboarding", HubOnboardingStateSchema,
+      { method: "POST", body: JSON.stringify({ completed: true }) }, true);
   }
 
   getJobs(cursor?: string): Promise<JobsResponse> {

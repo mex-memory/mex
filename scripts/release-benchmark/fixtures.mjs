@@ -82,6 +82,10 @@ export function createReleaseFixture({
       readOnly: ["team/**", "workstreams/**", "inbox/**", "relays/**"],
     },
   }, null, 2)}\n`);
+  // Measure a returning checkout: the first-run Hub tour would otherwise
+  // overlay the dashboard and intercept every route interaction.
+  mkdirSync(join(scaffold, "local"), { recursive: true });
+  writeFileSync(join(scaffold, "local", "hub-onboarding.json"), `${JSON.stringify({ schemaVersion: 1, completed: true })}\n`);
 
   for (let index = 0; index < profile.sourceFiles; index += 1) {
     const suffix = String(index).padStart(4, "0");

@@ -2395,6 +2395,13 @@ test.describe("built production Hub", () => {
       const result = spawnSync(command, args, { cwd: projectRoot, encoding: "utf8" });
       if (result.status !== 0) throw new Error(result.stderr);
     }
+    // Browse as a returning checkout; the first-run tour would otherwise
+    // overlay the dashboard and intercept every click.
+    mkdirSync(join(projectRoot, ".mex", "local"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, ".mex", "local", "hub-onboarding.json"),
+      `${JSON.stringify({ schemaVersion: 1, completed: true })}\n`,
+    );
     processHandle = spawn(process.execPath, [join(root, "dist", "cli.js"), "hub", "--no-open"], {
       cwd: projectRoot,
       env: { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" },

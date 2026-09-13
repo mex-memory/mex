@@ -24,6 +24,7 @@ import {
   type NavigationItem,
 } from "./navigation";
 import { SidebarTooltip } from "./SidebarTooltip";
+import { useHubOnboarding } from "./HubOnboarding";
 
 type ExpansionState = Record<NavigationGroupId, boolean>;
 
@@ -143,6 +144,7 @@ function NavigationLink({
         launcher ? styles.searchLauncher : styles.navLink,
         isActive && (launcher ? styles.searchLauncherActive : styles.navLinkActive),
       )}
+      data-onboarding={item.id}
       to={item.path}
     >
       {contents}
@@ -197,7 +199,7 @@ function DisclosureGroup({
   const count = groupCount(capabilities, group, home);
 
   return (
-    <section className={styles.navGroup} aria-labelledby={labelId}>
+    <section aria-labelledby={labelId} className={styles.navGroup} data-onboarding={`group-${group.id}`}>
       <h2 className={styles.groupHeading}>
         <Button
           aria-controls={contentId}
@@ -233,9 +235,14 @@ export function HubSidebar({
   home?: HomeResponse;
 }) {
   const location = useLocation();
+  const onboarding = useHubOnboarding();
   const [expanded, setExpanded] = useState<ExpansionState>(() => initialExpansion(location.pathname));
   const previousPath = useRef(location.pathname);
   const currentGroup = activeGroup(location.pathname);
+  const revealed: ExpansionState = {
+    ...expanded,
+    ...Object.fromEntries((onboarding?.revealGroups ?? []).map((id) => [id, true])),
+  };
   const launcher = navigationItemsForPlacement("launcher")[0];
   const topLevelItems = navigationItemsForPlacement("primary");
   const footerItems = navigationItemsForPlacement("footer");
@@ -257,9 +264,9 @@ export function HubSidebar({
   }
 
   return (
-    <aside className={styles.sidebar} aria-label="Project Hub navigation">
+    <aside aria-label="Project Hub navigation" className={styles.sidebar} data-onboarding="sidebar">
       <div className={styles.sidebarHeader}>
-        <div className={styles.brand}>
+        <div className={styles.brand} data-onboarding="brand">
           <span className={styles.brandMark} aria-hidden="true">
             <img alt="" height="32" src={mexMascot} width="32" />
           </span>
@@ -280,7 +287,7 @@ export function HubSidebar({
             <DisclosureGroup
               active={group.id === currentGroup}
               capabilities={capabilities}
-              expanded={expanded[group.id]}
+              expanded={revealed[group.id]}
               group={group}
               home={home}
               key={group.id}
@@ -305,7 +312,7 @@ export function HubSidebar({
             <DisclosureGroup
               active={group.id === currentGroup}
               capabilities={capabilities}
-              expanded={expanded[group.id]}
+              expanded={revealed[group.id]}
               group={group}
               home={home}
               key={group.id}
@@ -320,6 +327,7 @@ export function HubSidebar({
               aria-description={LOCALITY_EXPLANATION}
               aria-label="Runs locally. Shared records use Git."
               className={styles.locality}
+              data-onboarding="locality"
               role="note"
               tabIndex={0}
             >

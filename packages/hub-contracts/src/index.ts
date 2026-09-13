@@ -109,6 +109,10 @@ export const AgentLoggingUpdateRequestSchema = z.object({
 export type AgentLoggingMode = z.infer<typeof AgentLoggingModeSchema>;
 export type AgentLoggingPolicy = z.infer<typeof AgentLoggingPolicySchema>;
 export type AgentLoggingUpdateRequest = z.infer<typeof AgentLoggingUpdateRequestSchema>;
+export const HubOnboardingStateSchema = z.object({ completed: z.boolean() }).strict();
+export const HubOnboardingCompleteRequestSchema = z.object({ completed: z.literal(true) }).strict();
+export type HubOnboardingState = z.infer<typeof HubOnboardingStateSchema>;
+export type HubOnboardingCompleteRequest = z.infer<typeof HubOnboardingCompleteRequestSchema>;
 
 /** Shared primitives for route-private contract entry points. */
 export const HubIsoTimestampSchema = isoTimestamp;

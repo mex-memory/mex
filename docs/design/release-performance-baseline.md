@@ -184,6 +184,30 @@ the fixed startup cost using identical optimized code and parent validation;
 its Mac timings are not calibration inputs. A clean enforcing CI run on the
 new calibrated head remains required before release.
 
+### Settings route JS for the Hub tour replay
+
+PR #195 adds a "Replay Hub tour" section to Settings. Pinned run
+[`34739467180`](https://github.com/mex-memory/mex/actions/runs/34739467180)
+on PR head `b5ee04302b841e3e97a450f596f903c78aa2b057`, synthetic merge
+`baca280d56be22fac57f84c6867127416acf59a8`, built the Settings route at 8,550
+JS bytes against the 8,035-byte limit. That deterministic asset violation was
+the run's only hard failure. It suppressed runtime classification, so the
+report's first-pass runtime crossings are unassessed, not confirmed.
+
+The product decision accepts the replay control in Settings. Only that leaf is
+recalibrated, using the existing `ceil(built bytes * 1.05)` formula:
+
+| Budget | Prior limit | Built bytes | New limit |
+|---|---:|---:|---:|
+| Settings route JS | 8,035 | 8,550 | 8,978 |
+
+The [calibration record](settings-route-js-calibration.json) retains the
+runner identity, raw-report hash, the three measured files, and a hash of every
+unowned budget. The test projection restores the prior limit, so the earlier
+Settings heap and Graph timing guards keep their original hashes. Initial,
+Home, and every other route limit stay unchanged. A clean enforcing CI run on
+the calibrated head remains required.
+
 ## Runner contract
 
 `npm run benchmark:release` builds the package and writes the bounded JSON

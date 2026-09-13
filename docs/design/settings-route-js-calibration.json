@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "settings-route-js-calibration",
+  "source": {
+    "runUrl": "https://github.com/mex-memory/mex/actions/runs/34739467180",
+    "artifactUrl": "https://github.com/mex-memory/mex/actions/runs/34739467180/artifacts/10311538775",
+    "pullRequest": 195,
+    "pullRequestHead": "b5ee04302b841e3e97a450f596f903c78aa2b057",
+    "schemaVersion": 1,
+    "kind": "mex-release-benchmark-attempt",
+    "repositoryHead": "baca280d56be22fac57f84c6867127416acf59a8",
+    "github": {
+      "runId": "34739467180",
+      "runAttempt": "1",
+      "sha": "baca280d56be22fac57f84c6867127416acf59a8"
+    },
+    "runnerAllocation": {
+      "job": "release_performance_attempt_1",
+      "runnerName": "GitHub Actions 1000001348",
+      "runnerOs": "Linux",
+      "runnerArch": "X64"
+    },
+    "rawReportSha256": "e3996b467e9218b4df6fee283e4511166fe304fe5479f0e700cf9e2e0bbe6232",
+    "retryRequired": false,
+    "disposition": "hard_failure"
+  },
+  "environment": {
+    "os": "ubuntu-24.04",
+    "platform": "linux",
+    "architecture": "x64",
+    "node": "v22.22.0",
+    "pinnedBudgetEnvironment": true
+  },
+  "formula": "ceil(built bytes * 1.05)",
+  "previousCalibrationStatus": "pinned-A-G-Settings-34286120355-Graph-timing-34288560611",
+  "unownedBudgetSha256": "ea749b5b978a7c9ccae683dc4cebf7ea028d202316f7d16f2c0804fd0d8b5882",
+  "metric": "assets.routes.settings.jsBytes",
+  "previousBudgetBytes": 8035,
+  "measuredBytes": 8550,
+  "budgetBytes": 8978,
+  "files": [
+    { "file": "assets/SettingsPage-y4Ct-AI1.js", "bytes": 5912 },
+    { "file": "assets/arrow-up-right-CTE6uSPQ.js", "bytes": 335 },
+    { "file": "assets/useMutation-BqmjCLIE.js", "bytes": 2303 }
+  ],
+  "note": "The Hub tour replay section in Settings was the run's only deterministic asset violation. This calibrates only the Settings route JS limit; every other asset and runtime limit, formula, sample count, and confirmation rule remains frozen. The hard failure suppressed runtime classification, so a clean enforcing run on the calibrated head is still required."
+}

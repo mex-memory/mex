@@ -1,6 +1,8 @@
 import { readAgentLoggingPolicy, setAgentLoggingPolicy } from "../logging/policy.js";
+import { completeHubOnboarding, readHubOnboarding } from "./onboarding.js";
 import {
   AgentLoggingPolicySchema,
+  HubOnboardingStateSchema,
   HUB_LIMITS,
   type ActivityActor,
   type ActivityDiagnostic,
@@ -327,6 +329,12 @@ export function createLocalHubReadServices(
     },
     async setLoggingPolicy(request) {
       return AgentLoggingPolicySchema.parse(await setAgentLoggingPolicy(options.projectRoot, request));
+    },
+    onboardingState() {
+      return HubOnboardingStateSchema.parse(readHubOnboarding(options.projectRoot));
+    },
+    async completeOnboarding() {
+      return HubOnboardingStateSchema.parse(await completeHubOnboarding(options.projectRoot));
     },
     async capabilities(): Promise<HubCapabilities> {
       const gitStatus = await gitCapability(git);
