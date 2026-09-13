@@ -220,7 +220,7 @@ describe("release benchmark contract", () => {
     }
     expect(budgets.provisional).toBe(false);
     expect(budgets.calibration).toEqual({
-      status: "pinned-A-G-Settings-34286120355-Graph-timing-34288560611",
+      status: "pinned-A-G-Settings-34286120355-Graph-timing-34288560611-Settings-JS-34739467180",
       runtimeFormula: "ceil(measured p95 * 1.15)",
       assetFormula: "ceil(built bytes * 1.05)",
     });
