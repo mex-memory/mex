@@ -188,4 +188,32 @@ describe("events", () => {
     await runTimeline(config, { json: true });
     expect(spy.mock.calls.at(-1)?.[0]).toContain('"events"');
   });
+
+  it("timeline --format md emits a valid Markdown table (#55)", async () => {
+    await runLog(config, "chose | the | bounded resolver", { kind: "decision", files: ["ROUTER.md"] });
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runTimeline(config, { format: "md" });
+    const lines = spy.mock.calls.map((call) => String(call[0]));
+    expect(lines[0]).toBe("| Date | Type | Event | Files |");
+    expect(lines[1]).toBe("|---|---|---|---|");
+    const row = lines[2]!;
+    expect(row).toMatch(/^\| \d{4}-\d{2}-\d{2} \| decision \| /);
+    expect(row).toContain("chose \\| the \\| bounded resolver");
+    expect(row).toContain("`ROUTER.md`");
+  });
+
+  it("timeline --format md emits a placeholder for an empty log", async () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runTimeline(config, { format: "md" });
+    expect(spy.mock.calls.at(-1)?.[0]).toBe("_No events found._");
+  });
+
+  it("timeline default output is unchanged when --format is absent", async () => {
+    await runLog(config, "plain note", { kind: "note" });
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runTimeline(config, {});
+    const rendered = spy.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(rendered).toContain("plain note");
+    expect(rendered).not.toContain("|---");
+  });
 });
