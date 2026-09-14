@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { graphRemediationCommand } from "../../reporter.js";
 import { DB_SCHEMA_VERSION } from "../db/database.js";
@@ -35,7 +35,12 @@ import {
   serializeGraphSnapshot,
   type GraphSnapshot,
 } from "../snapshot.js";
-import { inspectGraphSidecars, inspectGraphStatus } from "../status.js";
+import {
+  inspectGraphSidecars,
+  inspectGraphStatus,
+  inspectGraphStatusWithFreshObservation,
+  resolveContainedGraphDatabasePath,
+} from "../status.js";
 
 const NOW = new Date("2026-08-22T12:00:00.000Z");
 const roots: string[] = [];
@@ -127,6 +132,10 @@ function treeState(root: string): Array<Record<string, string | number>> {
   };
   visit(root);
   return entries;
+}
+
+function swapCase(value: string): string {
+  return [...value].map((char) => char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase()).join("");
 }
 
 function git(root: string, ...args: string[]): string {
@@ -994,8 +1003,7 @@ describe("inspectGraphStatus", () => {
     expect(diagnostic?.message).toContain("unresolved reference(s) with a dangling target");
     expect(diagnostic?.message).toContain("import binding(s) without an owning file");
     expect(diagnostic?.message).toContain("import binding(s) with a dangling target");
-    expect(diagnostic?.message).toContain("LSH bucket(s) without a node");
-    expect(diagnostic?.message).toContain("LSH bucket(s) without a fingerprint");
+    expect(diagnostic?.message).toContain("malformed LSH bucket owner row(s)");
   });
 
   it("rejects malformed reachable fingerprints before the reconciler can decode them", async () => {
@@ -1083,6 +1091,82 @@ describe("inspectGraphStatus", () => {
     expect(executableRemediations(status)).toContain("mex graph rebuild");
   });
 
+  it.each([
+    {
+      name: "a fingerprint deleted with its LSH buckets left behind",
+      corrupt: "DELETE FROM node_fingerprints WHERE ref = ?",
+      expected: "malformed LSH bucket owner row(s)",
+    },
+    {
+      name: "a bucketed fingerprint whose node is missing",
+      corrupt: "UPDATE node_fingerprints SET node_id = 'missing-node' WHERE ref = ?",
+      expected: "fingerprint(s) without a node",
+    },
+  ])("classifies $name as corrupt", async ({ corrupt, expected }) => {
+    const root = temporaryRoot("mex-graph-orphan-buckets-");
+    source(root, "src/a.ts", `
+      export function alpha(value: number): number { return value + 1; }
+      export function beta(value: number): number { return value * 2; }
+    `);
+    const dbPath = await build(root);
+    const db = openSqlite(dbPath);
+    try {
+      db.exec("PRAGMA foreign_keys = OFF");
+      const row = db.prepare(
+        "SELECT CAST(ref AS TEXT) AS ref FROM node_fingerprints ORDER BY node_id LIMIT 1",
+      ).get() as { ref: string } | undefined;
+      expect(row).toBeDefined();
+      const ref = BigInt(row!.ref);
+      const buckets = db.prepare("SELECT COUNT(*) AS count FROM lsh_buckets WHERE ref = ?")
+        .get(ref) as { count: number };
+      expect(buckets.count).toBe(BANDS);
+      db.prepare(corrupt).run(ref);
+    } finally {
+      db.close();
+    }
+
+    const status = await inspect(root);
+    expect(status.status).toBe("corrupt");
+    const diagnostic = status.diagnostics.find((entry) => entry.code === "GRAPH_INDEX_INVARIANT_FAILED");
+    expect(diagnostic?.message).toContain(expected);
+    expect(executableRemediations(status)).toContain("mex graph rebuild");
+  });
+
+  it("skips the structural audit only for the exact audited database path and identity", async () => {
+    const root = temporaryRoot("mex-graph-audited-database-");
+    source(root, "src/a.ts", "export function a(): number { return 1; }\n");
+    const dbPath = await build(root);
+    const db = openSqlite(dbPath);
+    try {
+      db.exec("PRAGMA foreign_keys = OFF");
+      db.prepare("INSERT INTO lsh_buckets (band, band_hash, ref) VALUES (?, ?, ?)")
+        .run(0, 0n, 9_999_999n);
+    } finally {
+      db.close();
+    }
+    for (const suffix of ["-wal", "-shm"]) {
+      const sidecar = `${dbPath}${suffix}`;
+      if (existsSync(sidecar) && statSync(sidecar).size === 0) rmSync(sidecar, { force: true });
+    }
+    const canonicalDbPath = resolveContainedGraphDatabasePath(root, dbPath)!;
+    const stats = statSync(dbPath);
+    const databaseIdentity = JSON.stringify([stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.ctimeMs]);
+    const inspectWith = async (auditedDatabase?: { canonicalDbPath: string; databaseIdentity: string }) =>
+      (await inspectGraphStatusWithFreshObservation({ projectRoot: root, now: NOW, auditedDatabase })).graphStatus;
+
+    expect((await inspectWith()).status).toBe("corrupt");
+    // Vouching for this exact file is what skips the audit; anything else re-audits.
+    expect((await inspectWith({ canonicalDbPath, databaseIdentity })).status).toBe("fresh");
+    expect((await inspectWith({
+      canonicalDbPath,
+      databaseIdentity: JSON.stringify([stats.dev, stats.ino, stats.size + 1, stats.mtimeMs, stats.ctimeMs]),
+    })).status).toBe("corrupt");
+    expect((await inspectWith({
+      canonicalDbPath: join(dirname(canonicalDbPath), "other.db"),
+      databaseIdentity,
+    })).status).toBe("corrupt");
+  });
+
   it("cross-checks node and source-chunk FTS row parity", async () => {
     const root = temporaryRoot("mex-graph-fts-invariants-");
     source(root, "src/a.ts", "export function searchable(): number { return 1; }\n");
@@ -1152,6 +1236,62 @@ describe("inspectGraphStatus", () => {
     expect(status.diagnostics).toContainEqual(expect.objectContaining({
       code: "GRAPH_SOURCE_INSPECTION_INCOMPLETE",
     }));
+  });
+
+  it("hashes a supported source symlink whose target stays inside the project", async () => {
+    const root = temporaryRoot("mex-graph-internal-source-link-");
+    source(root, "src/impl/real.ts", "export const real = true;\n");
+    source(root, "src/alias.ts", "export const real = true;\n");
+    await build(root);
+    unlinkSync(join(root, "src", "alias.ts"));
+    symlinkSync(join(root, "src", "impl", "real.ts"), join(root, "src", "alias.ts"));
+
+    const status = await inspect(root);
+    expect(status.status).toBe("fresh");
+    expect(status.diagnostics.map((diagnostic) => diagnostic.code))
+      .not.toContain("GRAPH_SOURCE_PATH_OUTSIDE_PROJECT");
+  });
+
+  it("refuses a graph index whose .mex directory junction leads out of the project", async () => {
+    const root = temporaryRoot("mex-graph-junction-index-");
+    const externalRoot = temporaryRoot("mex-graph-junction-index-external-");
+    source(root, "src/a.ts", "export const a = 1;\n");
+    await build(root);
+    renameSync(join(root, ".mex"), join(externalRoot, ".mex"));
+    // "junction" is a Windows directory junction; other platforms ignore the
+    // type and create an ordinary directory symlink.
+    symlinkSync(join(externalRoot, ".mex"), join(root, ".mex"), "junction");
+
+    const status = await inspect(root);
+    expect(status.status).toBe("degraded");
+    expect(status.diagnostics).toContainEqual(expect.objectContaining({
+      code: "GRAPH_INDEX_PATH_OUTSIDE_PROJECT",
+    }));
+  });
+
+  it("inspects a graph index whose .mex directory junction stays inside the project", async () => {
+    const root = temporaryRoot("mex-graph-contained-junction-index-");
+    source(root, "src/a.ts", "export const a = 1;\n");
+    await build(root);
+    mkdirSync(join(root, "cache"), { recursive: true });
+    renameSync(join(root, ".mex"), join(root, "cache", "mex-index"));
+    symlinkSync(join(root, "cache", "mex-index"), join(root, ".mex"), "junction");
+
+    const status = await inspect(root);
+    expect(status.status).toBe("fresh");
+  });
+
+  it("inspects a case-variant project root as the same contained root on a case-insensitive volume", async (context) => {
+    const root = temporaryRoot("mex-graph-case-root-");
+    source(root, "src/a.ts", "export const a = 1;\n");
+    await build(root);
+    const variant = join(dirname(root), swapCase(basename(root)));
+    if (!existsSync(variant) || statSync(variant).ino !== statSync(root).ino) {
+      context.skip();
+    }
+
+    const status = await inspectGraphStatus({ projectRoot: variant, now: NOW });
+    expect(status.status).toBe("fresh");
   });
 
   it("suppresses every graph command when branch and rebuild findings coexist with an unsafe source", async () => {
