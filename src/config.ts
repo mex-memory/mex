@@ -310,13 +310,20 @@ function loadHeartbeatConfig(raw: MexPersistedConfig | null): HeartbeatConfig | 
   }
   const h = raw.heartbeat as Record<string, unknown>;
   const out: HeartbeatConfig = {};
-  const staleDays = readPositiveNumber(h.staleDays);
-  const memoryCleanupDays = readPositiveNumber(h.memoryCleanupDays);
-  const dailyMemoryRetentionDays = readPositiveNumber(h.dailyMemoryRetentionDays);
+  // Day-based heartbeat thresholds accept 0 ("stale as soon as older than
+  // today", #42) while still rejecting negatives and garbage.
+  const staleDays = readDayThreshold(h.staleDays);
+  const memoryCleanupDays = readDayThreshold(h.memoryCleanupDays);
+  const dailyMemoryRetentionDays = readDayThreshold(h.dailyMemoryRetentionDays);
   if (staleDays !== undefined) out.staleDays = staleDays;
   if (memoryCleanupDays !== undefined) out.memoryCleanupDays = memoryCleanupDays;
   if (dailyMemoryRetentionDays !== undefined) out.dailyMemoryRetentionDays = dailyMemoryRetentionDays;
   return Object.keys(out).length ? out : undefined;
+}
+
+function readDayThreshold(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+  return undefined;
 }
 
 function readPositiveNumber(v: unknown): number | undefined {

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { globSync } from "glob";
 import type { MexConfig, DriftReport, DriftIssue, Claim } from "../types.js";
@@ -419,15 +419,28 @@ export function findScaffoldFiles(
 ): string[] {
   const files: string[] = [];
 
-  // Search inside scaffold root (handles both .mex/ and root layouts)
+  // Search inside scaffold root (handles both .mex/ and root layouts).
+  // follow: true supports symlinked scaffold content; deduplicating by real
+  // path keeps one file reached through two links a single scan entry, and
+  // glob bounds symlink loops so runaway scans stay off the table (#40).
+  const seenReal = new Set<string>();
   for (const pattern of patterns) {
-    const matches = globSync(pattern, {
+    for (const match of globSync(pattern, {
       cwd: scaffoldRoot,
       absolute: true,
       follow: true,
       ignore: ["node_modules/**"],
-    });
-    files.push(...matches);
+    })) {
+      let real: string;
+      try {
+        real = realpathSync(match);
+      } catch {
+        real = match;
+      }
+      if (seenReal.has(real)) continue;
+      seenReal.add(real);
+      files.push(match);
+    }
   }
 
   // Also check project root for tool config files (CLAUDE.md, etc.)
