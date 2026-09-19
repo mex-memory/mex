@@ -21,8 +21,8 @@ const HTTP_METHOD_PREFIX = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\//;
 /** IP addresses and CIDR ranges are network values, not filesystem paths. */
 const IP_OR_CIDR = /^(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?$/;
 
-/** Inline file extension references like `.yaml` describe a type, not a file. */
-const EXTENSION_ONLY = /^\.[A-Za-z0-9]+$/;
+/** Inline file extension references like `.yaml` or compound `.d.ts` describe a type, not a file. */
+const EXTENSION_ONLY = /^\.[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$/;
 
 /** Common shell commands that can contain path-like arguments. */
 const SHELL_COMMAND_PREFIX = /^(?:sudo\s+)?(?:ls|cd|cat|grep|find|kubectl|helm|docker|git)\s+/;
@@ -54,7 +54,7 @@ function isNotAPath(value: string): boolean {
   // IP addresses and CIDR ranges: 192.168.5.0/24, 10.0.0.0/8
   if (IP_OR_CIDR.test(value)) return true;
 
-  // File extensions: .yaml, .yml
+  // File extensions: .yaml, .yml, compound .d.ts / .d.mts
   if (EXTENSION_ONLY.test(value)) return true;
 
   // Shell commands with path-like arguments: sudo ls /var/lib/kubelet
