@@ -37,6 +37,15 @@ const missingPaths = (markdown: string, extraFiles?: Record<string, string>) =>
     .filter((issue) => issue.code === "MISSING_PATH")
     .map((issue) => issue.claim?.value);
 
+const pathClaimValues = (markdown: string) => {
+  const dir = mkdtempSync(join(tmpdir(), "mex-drift-claims-"));
+  const docPath = join(dir, "ROUTER.md");
+  writeFileSync(docPath, markdown);
+  return extractClaims(docPath, ".mex/ROUTER.md")
+    .filter((claim) => claim.kind === "path")
+    .map((claim) => claim.value);
+};
+
 describe("MISSING_PATH false positives", () => {
   it("does not claim a file the document says was deleted (#143 defect 1)", () => {
     expect(
@@ -97,6 +106,15 @@ describe("MISSING_PATH false positives", () => {
     expect(
       missingPaths("# Cleanup\n\n- The helper was removed, so\n  `legacy_client.py` is gone\n")
     ).toEqual([]);
+  });
+
+  it("does not treat pipe-alternation shorthand as a path (#202 bullet 4)", () => {
+    const markdown =
+      "# Tests\n\n" +
+      "- The existing unit tests in `tests/grounding|traversal|edges|store.test.ts`\n" +
+      "- Coverage lives in `tests/store.test.ts`\n";
+    expect(pathClaimValues(markdown)).toEqual(["tests/store.test.ts"]);
+    expect(missingPaths(markdown)).toEqual(["tests/store.test.ts"]);
   });
 
   it("still checks a directory reference rooted at a directory that exists", () => {
