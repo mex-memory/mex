@@ -81,6 +81,10 @@ function isNotAPath(value: string): boolean {
   // describes a set of files rather than claiming one exists.
   if (/[*?]/.test(value)) return true;
 
+  // Pipe-alternation shorthand: tests/grounding|traversal|edges|store.test.ts.
+  // A token with | separating path segments or basenames is prose, not a file.
+  if (value.includes("|")) return true;
+
   // Anything with whitespace is a command or a sentence, not a path:
   // `nodemon src/index.ts` names a runner and its argument.
   if (/\s/.test(value)) return true;
