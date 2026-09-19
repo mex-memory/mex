@@ -36,6 +36,11 @@ import {
   type GraphSnapshot,
 } from "../snapshot.js";
 import {
+  formatGraphLastSuccessfulIndex,
+  formatGraphParseHealth,
+  formatGraphStatusSources,
+} from "../cli-graph.js";
+import {
   inspectGraphSidecars,
   inspectGraphStatus,
   inspectGraphStatusWithFreshObservation,
@@ -156,6 +161,7 @@ describe("inspectGraphStatus", () => {
 
     expect(status).toMatchObject({
       status: "missing",
+      inspected: true,
       observedAt: NOW.toISOString(),
       currentRepo: { branch: null, head: null, dirty: false, observedAt: NOW.toISOString() },
       schemaVersion: null,
@@ -277,8 +283,12 @@ describe("inspectGraphStatus", () => {
     const status = await inspect(root);
 
     expect(status.status).toBe("fresh");
+    expect(status.inspected).toBe(true);
     expect(status.schemaVersion).toBe(DB_SCHEMA_VERSION);
     expect(status.parseHealth).toMatchObject({ total: 1, ok: 1, partial: 0, failed: 0 });
+    expect(formatGraphParseHealth(status)).toBe("Parse health: 1 ok, 0 partial, 0 failed");
+    expect(formatGraphLastSuccessfulIndex(status)).toBe(`Last successful index: ${status.lastSuccessfulIndexAt}`);
+    expect(formatGraphStatusSources(status)).toBe("Sources: 0 changed (0 added, 0 modified, 0 deleted)");
     expect(status.changes).toMatchObject({
       total: 0,
       added: [],
@@ -524,6 +534,15 @@ describe("inspectGraphStatus", () => {
       expect(statSync(`${dbPath}-wal`).size).toBeGreaterThan(0);
       const transient = await inspect(transientRoot);
       expect(transient.status).toBe("degraded");
+      expect(transient.inspected).toBe(false);
+      expect(transient.parseHealth).toEqual({
+        total: 0,
+        ok: 0,
+        partial: 0,
+        failed: 0,
+        failedPaths: [],
+        failedPathsTruncated: false,
+      });
       expect(transient.changes.total).toBe(0);
       expect(transient.diagnostics).toContainEqual(expect.objectContaining({ code: "GRAPH_INDEX_SIDECAR_ACTIVE" }));
       expect(transient.diagnostics).not.toContainEqual(expect.objectContaining({ code: "GRAPH_INDEX_CORRUPT" }));
@@ -531,6 +550,40 @@ describe("inspectGraphStatus", () => {
     } finally {
       writer.close();
     }
+  });
+
+  it("does not treat a stranded WAL sidecar as a measured empty graph", async () => {
+    const root = temporaryRoot("mex-graph-stranded-wal-");
+    const dbPath = join(root, ".mex", "graph.db");
+    mkdirSync(dirname(dbPath), { recursive: true });
+    writeFileSync(dbPath, "untouched store bytes");
+    writeFileSync(`${dbPath}-wal`, "stranded wal");
+
+    const status = await inspect(root);
+
+    expect(status).toMatchObject({
+      status: "degraded",
+      inspected: false,
+      lastSuccessfulIndexAt: null,
+      schemaVersion: null,
+    });
+    expect(status.parseHealth).toEqual({
+      total: 0,
+      ok: 0,
+      partial: 0,
+      failed: 0,
+      failedPaths: [],
+      failedPathsTruncated: false,
+    });
+    expect(status.changes.total).toBe(0);
+    expect(status.diagnostics).toContainEqual(expect.objectContaining({
+      code: "GRAPH_INDEX_SIDECAR_ACTIVE",
+      message: expect.stringContaining("graph.db-wal"),
+    }));
+    expect(formatGraphParseHealth(status)).toBe("Parse health: not inspected (graph.db-wal present)");
+    expect(formatGraphParseHealth(status)).not.toMatch(/\b0 ok\b/);
+    expect(formatGraphLastSuccessfulIndex(status)).toBe("Last successful index: not inspected");
+    expect(formatGraphStatusSources(status)).toBe("Sources: not inspected");
   });
 
   it("reports sidecars deterministically and refuses immutable interpretation while one is active or unavailable", async () => {
@@ -546,7 +599,7 @@ describe("inspectGraphStatus", () => {
       paths: ["graph.db-journal"],
     });
     const active = await inspect(root);
-    expect(active).toMatchObject({ status: "degraded", schemaVersion: null });
+    expect(active).toMatchObject({ status: "degraded", schemaVersion: null, inspected: false });
     expect(active.diagnostics).toContainEqual(expect.objectContaining({
       code: "GRAPH_INDEX_SIDECAR_ACTIVE",
     }));
@@ -567,7 +620,7 @@ describe("inspectGraphStatus", () => {
       paths: ["graph.db-wal"],
     });
     const unavailable = await inspect(root);
-    expect(unavailable).toMatchObject({ status: "degraded", schemaVersion: null });
+    expect(unavailable).toMatchObject({ status: "degraded", schemaVersion: null, inspected: false });
     expect(unavailable.diagnostics).toContainEqual(expect.objectContaining({
       code: "GRAPH_INDEX_SIDECAR_UNAVAILABLE",
     }));
@@ -588,7 +641,7 @@ describe("inspectGraphStatus", () => {
       expect(statSync(`${dbPath}-journal`).size).toBeGreaterThan(0);
 
       const status = await inspect(root);
-      expect(status).toMatchObject({ status: "degraded", schemaVersion: null });
+      expect(status).toMatchObject({ status: "degraded", schemaVersion: null, inspected: false });
       expect(status.diagnostics).toContainEqual(expect.objectContaining({
         code: "GRAPH_INDEX_SIDECAR_ACTIVE",
       }));
@@ -1202,6 +1255,7 @@ describe("inspectGraphStatus", () => {
       now: NOW,
     });
     expect(lexical.status).toBe("degraded");
+    expect(lexical.inspected).toBe(false);
     expect(lexical.diagnostics).toContainEqual(expect.objectContaining({
       code: "GRAPH_INDEX_PATH_OUTSIDE_PROJECT",
     }));

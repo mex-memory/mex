@@ -396,6 +396,7 @@ function unavailableGraphStatus(message: string): GraphStatus {
       severity: "warning",
       message,
     }],
+    inspected: false,
   };
 }
 
