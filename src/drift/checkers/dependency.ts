@@ -162,23 +162,81 @@ function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined
   return deps.find((d) => d.normalizes && normalizeName(d.name) === normalized);
 }
 
+/**
+ * Same walk for every manifest this checker understands. A one-directory
+ * package.json glob found `backend/package.json` and missed
+ * `api/backend/package.json`; `pyproject.toml` was never walked at all,
+ * so `backend/pyproject.toml` produced false `DEPENDENCY_MISSING` while
+ * the identical file at the root — or a JS manifest at the same depth —
+ * passed (#206).
+ *
+ * Depth 5 matches the other bounded project walks (`path` checker,
+ * brief-builder). Ignore the obvious generated trees so an installed
+ * package's own manifest cannot satisfy a claim.
+ */
+const MANIFEST_MAX_DEPTH = 5;
+
+const MANIFEST_IGNORE = [
+  "**/node_modules/**",
+  "node_modules/**",
+  "**/.git/**",
+  ".git/**",
+  "**/dist/**",
+  "dist/**",
+  "**/build/**",
+  "build/**",
+  "**/.mex/**",
+  ".mex/**",
+  "**/.venv/**",
+  ".venv/**",
+  "**/venv/**",
+  "venv/**",
+  "**/__pycache__/**",
+  "**/vendor/**",
+  "vendor/**",
+  "**/coverage/**",
+] as const;
+
+function discoverManifests(
+  projectRoot: string,
+  filename: "package.json" | "pyproject.toml"
+): string[] {
+  return globSync(`**/${filename}`, {
+    cwd: projectRoot,
+    nodir: true,
+    ignore: [...MANIFEST_IGNORE],
+    maxDepth: MANIFEST_MAX_DEPTH,
+  });
+}
+
+function isRootManifest(rel: string, filename: string): boolean {
+  const normalized = rel.replace(/\\/g, "/");
+  return normalized === filename || normalized === `./${filename}`;
+}
+
+function collectPackageJsonEntries(absPath: string): DepEntry[] {
+  try {
+    const pkg = JSON.parse(readFileSync(absPath, "utf-8"));
+    const entries: DepEntry[] = [];
+    for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
+      entries.push({ name, version: String(version) });
+    }
+    for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
+      entries.push({ name, version: String(version) });
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
 function loadAllDependencies(projectRoot: string): DepEntry[] | null {
   const entries: DepEntry[] = [];
 
   // package.json
   const pkgPath = resolve(projectRoot, "package.json");
   if (existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-      for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
-        entries.push({ name, version: String(version) });
-      }
-      for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
-        entries.push({ name, version: String(version) });
-      }
-    } catch {
-      // skip
-    }
+    entries.push(...collectPackageJsonEntries(pkgPath));
   }
 
   // pyproject.toml (#3): [project] dependencies and optional-dependencies,
@@ -191,22 +249,20 @@ function loadAllDependencies(projectRoot: string): DepEntry[] | null {
     entries.push(...parsePyprojectDependencies(readFileSync(pyprojectPath, "utf-8")));
   }
 
-  // A repository often keeps a second application in a subdirectory without
-  // declaring workspaces, and that application's packages are declared in its
-  // own manifest. Reading only the root one reported every dependency the
-  // subproject documents as missing.
-  for (const nested of globSync("*/package.json", {
-    cwd: projectRoot,
-    ignore: ["node_modules/**"],
-  })) {
+  // Nested manifests share one depth and ignore list. A repository often
+  // keeps a second application in a subdirectory without declaring
+  // workspaces; reading only the root file — or only one-level JS
+  // manifests — reported every package that subproject documents as missing.
+  for (const nested of discoverManifests(projectRoot, "package.json")) {
+    if (isRootManifest(nested, "package.json")) continue;
+    entries.push(...collectPackageJsonEntries(resolve(projectRoot, nested)));
+  }
+  for (const nested of discoverManifests(projectRoot, "pyproject.toml")) {
+    if (isRootManifest(nested, "pyproject.toml")) continue;
     try {
-      const pkg = JSON.parse(readFileSync(resolve(projectRoot, nested), "utf-8"));
-      for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
-        entries.push({ name, version: String(version) });
-      }
-      for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
-        entries.push({ name, version: String(version) });
-      }
+      entries.push(
+        ...parsePyprojectDependencies(readFileSync(resolve(projectRoot, nested), "utf-8"))
+      );
     } catch {
       // skip
     }
