@@ -94,6 +94,24 @@ describe("extractClaims — paths", () => {
     expect(paths).toHaveLength(0);
   });
 
+  it("skips qualified-name symbol notation (#202 bullet 1)", () => {
+    const path = writeFixture(
+      "test.md",
+      "# Graph\n\n" +
+        "Store the `qualified_name` string (**e.g.** `src/auth/login.validateToken`). " +
+        "A similar example is `lib/user.authenticate`. " +
+        "The real module is `src/auth/login.ts`. " +
+        "Scaffold files stay claims: `.mex/ROUTER.md` and `package.json`."
+    );
+    const claims = extractClaims(path, "test.md");
+    const paths = claims.filter((c) => c.kind === "path").map((c) => c.value);
+    expect(paths).not.toContain("src/auth/login.validateToken");
+    expect(paths).not.toContain("lib/user.authenticate");
+    expect(paths).toContain("src/auth/login.ts");
+    expect(paths).toContain(".mex/ROUTER.md");
+    expect(paths).toContain("package.json");
+  });
+
   it("skips non-path inline code values", () => {
     const path = writeFixture(
       "test.md",

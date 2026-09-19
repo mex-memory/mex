@@ -106,4 +106,31 @@ describe("MISSING_PATH false positives", () => {
       ".mex/local/",
     ]);
   });
+
+  it("does not treat qualified-name symbol notation as a path (#202 bullet 1)", () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "mex-drift-"));
+    execFileSync("git", ["init", "-q"], { cwd: projectRoot });
+    const scaffoldRoot = join(projectRoot, ".mex");
+    mkdirSync(scaffoldRoot, { recursive: true });
+    const docPath = join(scaffoldRoot, "ROUTER.md");
+    writeFileSync(
+      docPath,
+      "# Graph\n\n" +
+        "- Store the `qualified_name` string (**e.g.** `src/auth/login.validateToken`).\n" +
+        "- A similar example is `lib/user.authenticate`.\n" +
+        "- The real module is `src/auth/login.ts`.\n"
+    );
+
+    const claims = extractClaims(docPath, ".mex/ROUTER.md");
+    const pathValues = claims.filter((c) => c.kind === "path").map((c) => c.value);
+    expect(pathValues).not.toContain("src/auth/login.validateToken");
+    expect(pathValues).not.toContain("lib/user.authenticate");
+    expect(pathValues).toContain("src/auth/login.ts");
+
+    expect(
+      checkPaths(claims, projectRoot, scaffoldRoot)
+        .filter((issue) => issue.code === "MISSING_PATH")
+        .map((issue) => issue.claim?.value)
+    ).toEqual(["src/auth/login.ts"]);
+  });
 });
