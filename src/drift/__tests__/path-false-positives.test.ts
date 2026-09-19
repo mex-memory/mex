@@ -106,4 +106,26 @@ describe("MISSING_PATH false positives", () => {
       ".mex/local/",
     ]);
   });
+
+  it("does not claim an installed scoped package that blocks ./package.json export (#202 bullet 5)", () => {
+    expect(
+      missingPaths("# Stack\n\n- Import helpers from `@scope/strict-exports`\n", {
+        "package.json": JSON.stringify({ name: "test-root" }),
+        "node_modules/@scope/strict-exports/package.json": JSON.stringify({
+          name: "@scope/strict-exports",
+          type: "module",
+          exports: { ".": "./index.js" },
+        }),
+        "node_modules/@scope/strict-exports/index.js": "export default {};\n",
+      })
+    ).toEqual([]);
+  });
+
+  it("still claims a scoped package name that is not installed (#202 bullet 5)", () => {
+    expect(
+      missingPaths("# Stack\n\n- Import helpers from `@scope/not-installed`\n", {
+        "package.json": JSON.stringify({ name: "test-root" }),
+      })
+    ).toEqual(["@scope/not-installed"]);
+  });
 });
