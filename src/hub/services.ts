@@ -1851,6 +1851,7 @@ function graphDiagnosticMessage(code: string): string {
     GRAPH_INDEX_REBUILD_REQUIRED: "The graph requires an explicit rebuild.",
     GRAPH_INDEX_CORRUPT: "The graph failed an integrity check.",
     GRAPH_INDEX_SIDECAR_ACTIVE: "Graph maintenance is currently publishing local changes.",
+    GRAPH_INDEX_ORPHAN_OWNED_DATABASE: "An interrupted graph rebuild left a leftover candidate, rollback, or recovery file.",
     GRAPH_STATUS_OBSERVATION_RACE: "Repository state changed during graph inspection.",
   };
   return messages[code] ?? "The graph reported a bounded local health diagnostic.";

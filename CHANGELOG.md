@@ -24,6 +24,7 @@ All notable changes to this project will be documented in this file.
 - Project Hub Overview now opens with a compact Context card above the atlas instead of a header button. It links to Context when the Wiki index is fresh and to Health otherwise, so a stale or unavailable index no longer leads to a page that cannot load.
 
 ### Fixed
+- Interrupted `mex graph rebuild` leftover `graph.db.candidate-*`, `graph.db.rollback-*`, and `graph.db.recovery-*` files are removed after the next leased refresh, repair, or rebuild. `mex graph status` warns while one is present and does not delete it (#205).
 - Agent population failures retain the real copyable manual prompt for retry or manual continuation. Integration pointer notes are visible as non-blocking guidance.
 - Setup and Overview share the computer's contact preference so completing or skipping the invitation does not immediately trigger another request.
 
