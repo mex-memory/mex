@@ -50,6 +50,12 @@ export interface GraphSourceChanges {
 
 export interface GraphStatus {
   status: GraphStatusKind;
+  /**
+   * False when the store could not be opened for immutable inspection, so
+   * `lastSuccessfulIndexAt`, `parseHealth` and `changes` are placeholders
+   * rather than measurements. Optional and additive.
+   */
+  inspected?: boolean;
   observedAt: string;
   currentRepo: RepoState;
   lastSuccessfulIndexAt: string | null;

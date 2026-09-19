@@ -24,6 +24,7 @@ All notable changes to this project will be documented in this file.
 - Project Hub Overview now opens with a compact Context card above the atlas instead of a header button. It links to Context when the Wiki index is fresh and to Health otherwise, so a stale or unavailable index no longer leads to a page that cannot load.
 
 ### Fixed
+- `mex graph status` no longer prints placeholder zeros as measurements when immutable inspection is skipped. While a stranded `graph.db-wal`, an unreadable sidecar, a containment failure or a failed invariant audit blocks the read, the text output now says `Last successful index: not inspected`, `Sources: not inspected` and `Parse health: not inspected` instead of `never` and `0 ok`, and `--json` carries an additive `inspected: false` so a consumer can tell an uninspected store from one that genuinely parsed nothing. `parseHealth` and `changes` keep their shape (#204).
 - Agent population failures retain the real copyable manual prompt for retry or manual continuation. Integration pointer notes are visible as non-blocking guidance.
 - Setup and Overview share the computer's contact preference so completing or skipping the invitation does not immediately trigger another request.
 

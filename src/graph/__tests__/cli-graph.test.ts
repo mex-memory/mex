@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { GraphSourceChanges } from "../../team/contracts/graph.js";
 import { runGraphScope } from "../cli-agent.js";
-import { formatGraphSourceChanges, runGraph, runGraphRefresh, runGraphRebuild } from "../cli-graph.js";
+import {
+  formatGraphSourceChanges,
+  runGraph,
+  runGraphRefresh,
+  runGraphRebuild,
+  runGraphStatus,
+} from "../cli-graph.js";
 
 function changes(overrides: Partial<GraphSourceChanges> = {}): GraphSourceChanges {
   return {
@@ -35,6 +41,32 @@ describe("graph CLI status formatting", () => {
     );
     expect(rendered).not.toContain("1 added, 2 modified, 0 deleted");
   });
+
+  it("prints not inspected instead of zeros while a stranded WAL blocks inspection", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-status-wal-cli-"));
+    const output: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((line) => output.push(String(line)));
+    try {
+      writeFileSync(join(root, "api.ts"), "export const api = true;");
+      await runGraph({ root, json: true });
+      writeFileSync(join(root, ".mex", "graph.db-wal"), "stranded");
+
+      output.length = 0;
+      await runGraphStatus({ root });
+      expect(output).toContain("Last successful index: not inspected");
+      expect(output).toContain("Sources: not inspected");
+      expect(output).toContain("Parse health: not inspected");
+      expect(output.some((line) => line.startsWith("WARNING GRAPH_INDEX_SIDECAR_ACTIVE"))).toBe(true);
+      expect(output.some((line) => line.includes("0 ok") || line.includes("never"))).toBe(false);
+
+      output.length = 0;
+      await runGraphStatus({ root, json: true });
+      expect(JSON.parse(output.join(""))).toMatchObject({ status: "degraded", inspected: false });
+    } finally {
+      log.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 

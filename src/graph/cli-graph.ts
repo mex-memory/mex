@@ -184,12 +184,18 @@ function printStatus(status: GraphStatus): void {
   const changes = status.changes;
   console.log(`Graph status: ${status.status}`);
   console.log(`Repository: ${branch} @ ${head}${status.currentRepo.dirty ? " (dirty)" : ""}`);
-  console.log(`Last successful index: ${status.lastSuccessfulIndexAt ?? "never"}`);
-  console.log(formatGraphSourceChanges(changes));
-  console.log(
-    `Parse health: ${status.parseHealth.ok} ok, ${status.parseHealth.partial} partial, `
-      + `${status.parseHealth.failed} failed`,
-  );
+  if (status.inspected === false) {
+    console.log("Last successful index: not inspected");
+    console.log("Sources: not inspected");
+    console.log("Parse health: not inspected");
+  } else {
+    console.log(`Last successful index: ${status.lastSuccessfulIndexAt ?? "never"}`);
+    console.log(formatGraphSourceChanges(changes));
+    console.log(
+      `Parse health: ${status.parseHealth.ok} ok, ${status.parseHealth.partial} partial, `
+        + `${status.parseHealth.failed} failed`,
+    );
+  }
   for (const diagnostic of status.diagnostics) {
     console.log(`${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}`);
   }
