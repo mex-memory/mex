@@ -94,7 +94,10 @@ function isUnrootedReference(
   const trimmed = value.replace(/\/+$/, "");
   const isDirectoryRef = trimmed !== value;
   if (!trimmed.includes("/") && !isDirectoryRef) return false;
-  if (/\.[A-Za-z0-9]+$/.test(trimmed)) return false;
+  // A trailing numeric-only segment is a version (`release/2.1.0`,
+  // `python/3.11`), not a file type. Require an alphabetic character so
+  // `.ts` still counts as an extension and those tokens reach the prose check.
+  if (/\.[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*$/.test(trimmed)) return false;
 
   const first = trimmed.split("/")[0];
   if (!first || first.startsWith("@") || first === "." || first === "..") return false;

@@ -60,13 +60,18 @@ describe("MISSING_PATH false positives", () => {
     ).toEqual([]);
   });
 
-  // Not part of #143. A trailing version number reads as a file extension to
-  // the guard above, so `release/2.1.0` never reaches the unrooted check and is
-  // reported as a missing path. Tracked separately; unskip with the fix.
-  it.skip("does not claim a version-shaped branch name", () => {
+  it("does not claim a version-shaped branch name", () => {
     expect(
-      missingPaths("# Release\n\n- Work landed on `release/2.1.0` and `python/3.11`\n")
+      missingPaths(
+        "# Release\n\n- Work landed on `release/2.1.0`, `python/3.11`, and `node/20.11`\n"
+      )
     ).toEqual([]);
+  });
+
+  it("still claims a missing file with an alphabetic extension", () => {
+    // Tightening the extension check must not treat `docs/foo.bar` as unrooted
+    // prose: `.bar` is a file type, so the claim stays a missing path.
+    expect(missingPaths("# Docs\n\n- See `docs/foo.bar`\n")).toEqual(["docs/foo.bar"]);
   });
 
   it("does not claim a pseudo-path pair such as overall/overall", () => {
