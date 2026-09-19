@@ -36,6 +36,11 @@ import {
   type GraphSnapshot,
 } from "../snapshot.js";
 import {
+  formatGraphLastSuccessfulIndex,
+  formatGraphParseHealth,
+  formatGraphStatusSources,
+} from "../cli-graph.js";
+import {
   inspectGraphSidecars,
   inspectGraphStatus,
   inspectGraphStatusWithFreshObservation,
@@ -281,6 +286,9 @@ describe("inspectGraphStatus", () => {
     expect(status.inspected).toBe(true);
     expect(status.schemaVersion).toBe(DB_SCHEMA_VERSION);
     expect(status.parseHealth).toMatchObject({ total: 1, ok: 1, partial: 0, failed: 0 });
+    expect(formatGraphParseHealth(status)).toBe("Parse health: 1 ok, 0 partial, 0 failed");
+    expect(formatGraphLastSuccessfulIndex(status)).toBe(`Last successful index: ${status.lastSuccessfulIndexAt}`);
+    expect(formatGraphStatusSources(status)).toBe("Sources: 0 changed (0 added, 0 modified, 0 deleted)");
     expect(status.changes).toMatchObject({
       total: 0,
       added: [],
@@ -542,6 +550,40 @@ describe("inspectGraphStatus", () => {
     } finally {
       writer.close();
     }
+  });
+
+  it("does not treat a stranded WAL sidecar as a measured empty graph", async () => {
+    const root = temporaryRoot("mex-graph-stranded-wal-");
+    const dbPath = join(root, ".mex", "graph.db");
+    mkdirSync(dirname(dbPath), { recursive: true });
+    writeFileSync(dbPath, "untouched store bytes");
+    writeFileSync(`${dbPath}-wal`, "stranded wal");
+
+    const status = await inspect(root);
+
+    expect(status).toMatchObject({
+      status: "degraded",
+      inspected: false,
+      lastSuccessfulIndexAt: null,
+      schemaVersion: null,
+    });
+    expect(status.parseHealth).toEqual({
+      total: 0,
+      ok: 0,
+      partial: 0,
+      failed: 0,
+      failedPaths: [],
+      failedPathsTruncated: false,
+    });
+    expect(status.changes.total).toBe(0);
+    expect(status.diagnostics).toContainEqual(expect.objectContaining({
+      code: "GRAPH_INDEX_SIDECAR_ACTIVE",
+      message: expect.stringContaining("graph.db-wal"),
+    }));
+    expect(formatGraphParseHealth(status)).toBe("Parse health: not inspected (graph.db-wal present)");
+    expect(formatGraphParseHealth(status)).not.toMatch(/\b0 ok\b/);
+    expect(formatGraphLastSuccessfulIndex(status)).toBe("Last successful index: not inspected");
+    expect(formatGraphStatusSources(status)).toBe("Sources: not inspected");
   });
 
   it("reports sidecars deterministically and refuses immutable interpretation while one is active or unavailable", async () => {
