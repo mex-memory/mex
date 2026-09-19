@@ -24,6 +24,7 @@ All notable changes to this project will be documented in this file.
 - Project Hub Overview now opens with a compact Context card above the atlas instead of a header button. It links to Context when the Wiki index is fresh and to Health otherwise, so a stale or unavailable index no longer leads to a page that cannot load.
 
 ### Fixed
+- `mex graph status` no longer prints placeholder zeros when immutable inspection is skipped (for example a stranded `graph.db-wal`). Text marks parse health, last index, and sources as not inspected, and `--json` adds an additive `inspected: false` flag while keeping the existing zero `parseHealth`/`changes` objects (#204).
 - Agent population failures retain the real copyable manual prompt for retry or manual continuation. Integration pointer notes are visible as non-blocking guidance.
 - Setup and Overview share the computer's contact preference so completing or skipping the invitation does not immediately trigger another request.
 

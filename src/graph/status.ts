@@ -487,7 +487,7 @@ async function inspectGraphStatusAttempt(
     const currentRepo = emptyRepoState(observedAt);
     return {
       retry: false,
-      status: graphStatus({
+      status: uninspectedGraphStatus({
         status: "degraded",
         observedAt,
         currentRepo,
@@ -544,7 +544,7 @@ async function inspectGraphStatusAttempt(
     diagnostics.push(classified.diagnostic);
     return {
       retry: false,
-      status: graphStatus({
+      status: uninspectedGraphStatus({
         status: classified.status,
         observedAt,
         currentRepo,
@@ -562,7 +562,7 @@ async function inspectGraphStatusAttempt(
     });
     return {
       retry: false,
-      status: graphStatus({
+      status: uninspectedGraphStatus({
         status: "corrupt",
         observedAt,
         currentRepo,
@@ -582,7 +582,7 @@ async function inspectGraphStatusAttempt(
     });
     return {
       retry: false,
-      status: graphStatus({
+      status: uninspectedGraphStatus({
         status: "degraded",
         observedAt,
         currentRepo,
@@ -598,7 +598,7 @@ async function inspectGraphStatusAttempt(
     diagnostics.push(sidecarDiagnostic(initialSidecars));
     return {
       retry: false,
-      status: graphStatus({
+      status: uninspectedGraphStatus({
         status: "degraded",
         observedAt,
         currentRepo,
@@ -663,7 +663,7 @@ async function inspectGraphStatusAttempt(
             message: "The versionless graph database already contains incompatible schema objects; automatic in-place repair is unsafe.",
           }
         : rebuildDiagnostic("The empty graph database has no schema version."));
-      return finishDatabaseResult(graphStatus({
+      return finishDatabaseResult(uninspectedGraphStatus({
           status: partialSchema ? "corrupt" : "rebuild_required",
           observedAt,
           currentRepo,
@@ -680,7 +680,7 @@ async function inspectGraphStatusAttempt(
         severity: "error",
         message: "The graph schema version table is empty or contains an invalid version; automatic in-place repair is unsafe.",
       });
-      return finishDatabaseResult(graphStatus({
+      return finishDatabaseResult(uninspectedGraphStatus({
           status: "corrupt",
           observedAt,
           currentRepo,
@@ -711,7 +711,7 @@ async function inspectGraphStatusAttempt(
           message: `The older graph schema is partial or unsafe to migrate: ${errorMessage(error)}`,
         });
       }
-      return finishDatabaseResult(graphStatus({
+      return finishDatabaseResult(uninspectedGraphStatus({
           status: diagnostics.at(-1)?.code === "GRAPH_INDEX_SCHEMA_INVALID" ? "corrupt" : "rebuild_required",
           observedAt,
           currentRepo,
@@ -732,7 +732,7 @@ async function inspectGraphStatusAttempt(
         severity: "error",
         message: "The current graph schema has incompatible column, key, or generated-table structure.",
       });
-      return finishDatabaseResult(graphStatus({
+      return finishDatabaseResult(uninspectedGraphStatus({
         status: "corrupt",
         observedAt,
         currentRepo,
@@ -750,7 +750,7 @@ async function inspectGraphStatusAttempt(
         severity: "error",
         message: `The current graph schema is missing required structure: ${schemaFailures.join("; ")}.`,
       });
-      return finishDatabaseResult(graphStatus({
+      return finishDatabaseResult(uninspectedGraphStatus({
           status: "corrupt",
           observedAt,
           currentRepo,
@@ -776,7 +776,7 @@ async function inspectGraphStatusAttempt(
         severity: "error",
         message: `SQLite quick-check failed: ${integrity.join("; ")}`,
       });
-      return finishDatabaseResult(graphStatus({
+      return finishDatabaseResult(uninspectedGraphStatus({
           status: "corrupt",
           observedAt,
           currentRepo,
@@ -796,7 +796,7 @@ async function inspectGraphStatusAttempt(
         severity: "error",
         message: `The graph violates persisted invariants: ${coreInvariantFailures.join("; ")}.`,
       });
-      return finishDatabaseResult(graphStatus({
+      return finishDatabaseResult(uninspectedGraphStatus({
           status: "corrupt",
           observedAt,
           currentRepo,
@@ -816,7 +816,7 @@ async function inspectGraphStatusAttempt(
         severity: "error",
         message: snapshotResult.error,
       });
-      return finishDatabaseResult(graphStatus({
+      return finishDatabaseResult(uninspectedGraphStatus({
           status: "corrupt",
           observedAt,
           currentRepo,
@@ -840,7 +840,7 @@ async function inspectGraphStatusAttempt(
         severity: "error",
         message: `Graph snapshot metadata records schema ${snapshot.schemaVersion}, but SQLite records ${schemaVersion}.`,
       });
-      return finishDatabaseResult(graphStatus({
+      return finishDatabaseResult(uninspectedGraphStatus({
           status: "corrupt",
           observedAt,
           currentRepo,
@@ -1117,7 +1117,7 @@ async function inspectGraphStatusAttempt(
   } catch (error) {
     const classified = classifyDatabaseError(error, "read");
     diagnostics.push(classified.diagnostic);
-    return finishDatabaseResult(graphStatus({
+    return finishDatabaseResult(uninspectedGraphStatus({
         status: classified.status,
         observedAt,
         currentRepo,
@@ -1151,6 +1151,7 @@ function graphStatus(input: {
   parseHealth: GraphParseHealth;
   changes: GraphSourceChanges;
   diagnostics: readonly Diagnostic[];
+  inspected?: boolean;
 }): GraphStatus {
   return {
     status: input.status,
@@ -1166,7 +1167,14 @@ function graphStatus(input: {
     parseHealth: input.parseHealth,
     changes: input.changes,
     diagnostics: input.diagnostics,
+    inspected: input.inspected ?? true,
   };
+}
+
+function uninspectedGraphStatus(
+  input: Omit<Parameters<typeof graphStatus>[0], "inspected">,
+): GraphStatus {
+  return graphStatus({ ...input, inspected: false });
 }
 
 function suppressExecutableGraphRemediations(status: GraphStatus): GraphStatus {

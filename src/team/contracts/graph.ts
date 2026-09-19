@@ -62,6 +62,13 @@ export interface GraphStatus {
   parseHealth: GraphParseHealth;
   changes: GraphSourceChanges;
   diagnostics: readonly Diagnostic[];
+  /**
+   * False when immutable inspection was skipped, so `parseHealth`, `changes`,
+   * and index timestamps are placeholders rather than measurements. Absent or
+   * true means those fields were produced from an inspected store or from a
+   * completed missing-index observation.
+   */
+  inspected?: boolean;
 }
 
 export interface GraphMaintenanceProgress {

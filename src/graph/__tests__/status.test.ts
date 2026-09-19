@@ -156,6 +156,7 @@ describe("inspectGraphStatus", () => {
 
     expect(status).toMatchObject({
       status: "missing",
+      inspected: true,
       observedAt: NOW.toISOString(),
       currentRepo: { branch: null, head: null, dirty: false, observedAt: NOW.toISOString() },
       schemaVersion: null,
@@ -277,6 +278,7 @@ describe("inspectGraphStatus", () => {
     const status = await inspect(root);
 
     expect(status.status).toBe("fresh");
+    expect(status.inspected).toBe(true);
     expect(status.schemaVersion).toBe(DB_SCHEMA_VERSION);
     expect(status.parseHealth).toMatchObject({ total: 1, ok: 1, partial: 0, failed: 0 });
     expect(status.changes).toMatchObject({
@@ -524,6 +526,15 @@ describe("inspectGraphStatus", () => {
       expect(statSync(`${dbPath}-wal`).size).toBeGreaterThan(0);
       const transient = await inspect(transientRoot);
       expect(transient.status).toBe("degraded");
+      expect(transient.inspected).toBe(false);
+      expect(transient.parseHealth).toEqual({
+        total: 0,
+        ok: 0,
+        partial: 0,
+        failed: 0,
+        failedPaths: [],
+        failedPathsTruncated: false,
+      });
       expect(transient.changes.total).toBe(0);
       expect(transient.diagnostics).toContainEqual(expect.objectContaining({ code: "GRAPH_INDEX_SIDECAR_ACTIVE" }));
       expect(transient.diagnostics).not.toContainEqual(expect.objectContaining({ code: "GRAPH_INDEX_CORRUPT" }));
@@ -546,7 +557,7 @@ describe("inspectGraphStatus", () => {
       paths: ["graph.db-journal"],
     });
     const active = await inspect(root);
-    expect(active).toMatchObject({ status: "degraded", schemaVersion: null });
+    expect(active).toMatchObject({ status: "degraded", schemaVersion: null, inspected: false });
     expect(active.diagnostics).toContainEqual(expect.objectContaining({
       code: "GRAPH_INDEX_SIDECAR_ACTIVE",
     }));
@@ -567,7 +578,7 @@ describe("inspectGraphStatus", () => {
       paths: ["graph.db-wal"],
     });
     const unavailable = await inspect(root);
-    expect(unavailable).toMatchObject({ status: "degraded", schemaVersion: null });
+    expect(unavailable).toMatchObject({ status: "degraded", schemaVersion: null, inspected: false });
     expect(unavailable.diagnostics).toContainEqual(expect.objectContaining({
       code: "GRAPH_INDEX_SIDECAR_UNAVAILABLE",
     }));
@@ -588,7 +599,7 @@ describe("inspectGraphStatus", () => {
       expect(statSync(`${dbPath}-journal`).size).toBeGreaterThan(0);
 
       const status = await inspect(root);
-      expect(status).toMatchObject({ status: "degraded", schemaVersion: null });
+      expect(status).toMatchObject({ status: "degraded", schemaVersion: null, inspected: false });
       expect(status.diagnostics).toContainEqual(expect.objectContaining({
         code: "GRAPH_INDEX_SIDECAR_ACTIVE",
       }));
@@ -1202,6 +1213,7 @@ describe("inspectGraphStatus", () => {
       now: NOW,
     });
     expect(lexical.status).toBe("degraded");
+    expect(lexical.inspected).toBe(false);
     expect(lexical.diagnostics).toContainEqual(expect.objectContaining({
       code: "GRAPH_INDEX_PATH_OUTSIDE_PROJECT",
     }));

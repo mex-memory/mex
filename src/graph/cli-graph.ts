@@ -181,15 +181,11 @@ const MAX_DIAGNOSTICS_SHOWN = 20;
 function printStatus(status: GraphStatus): void {
   const branch = status.currentRepo.branch ?? "detached/no branch";
   const head = status.currentRepo.head?.slice(0, 12) ?? "no HEAD";
-  const changes = status.changes;
   console.log(`Graph status: ${status.status}`);
   console.log(`Repository: ${branch} @ ${head}${status.currentRepo.dirty ? " (dirty)" : ""}`);
-  console.log(`Last successful index: ${status.lastSuccessfulIndexAt ?? "never"}`);
-  console.log(formatGraphSourceChanges(changes));
-  console.log(
-    `Parse health: ${status.parseHealth.ok} ok, ${status.parseHealth.partial} partial, `
-      + `${status.parseHealth.failed} failed`,
-  );
+  console.log(formatGraphLastSuccessfulIndex(status));
+  console.log(formatGraphStatusSources(status));
+  console.log(formatGraphParseHealth(status));
   for (const diagnostic of status.diagnostics) {
     console.log(`${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}`);
   }
@@ -197,6 +193,49 @@ function printStatus(status: GraphStatus): void {
     .flatMap((diagnostic) => diagnostic.remediation ?? [])
     .find((action) => action.command)?.command;
   if (command) console.log(`Next: ${command}`);
+}
+
+function graphWasInspected(status: GraphStatus): boolean {
+  return status.inspected !== false;
+}
+
+/** Internal human-output formatter; JSON output retains the complete contract. */
+export function formatGraphLastSuccessfulIndex(status: GraphStatus): string {
+  if (!graphWasInspected(status)) return "Last successful index: not inspected";
+  return `Last successful index: ${status.lastSuccessfulIndexAt ?? "never"}`;
+}
+
+/** Internal human-output formatter; JSON output retains the complete contract. */
+export function formatGraphStatusSources(status: GraphStatus): string {
+  if (!graphWasInspected(status)) return "Sources: not inspected";
+  return formatGraphSourceChanges(status.changes);
+}
+
+/** Internal human-output formatter; JSON output retains the complete contract. */
+export function formatGraphParseHealth(status: GraphStatus): string {
+  if (!graphWasInspected(status)) {
+    const detail = uninspectedParseHealthDetail(status);
+    return detail ? `Parse health: not inspected (${detail})` : "Parse health: not inspected";
+  }
+  return `Parse health: ${status.parseHealth.ok} ok, ${status.parseHealth.partial} partial, `
+    + `${status.parseHealth.failed} failed`;
+}
+
+function uninspectedParseHealthDetail(status: GraphStatus): string | undefined {
+  for (const diagnostic of status.diagnostics) {
+    if (
+      diagnostic.code !== "GRAPH_INDEX_SIDECAR_ACTIVE"
+      && diagnostic.code !== "GRAPH_INDEX_SIDECAR_UNAVAILABLE"
+    ) {
+      continue;
+    }
+    const listed = /\(([^)]+)\)/.exec(diagnostic.message)?.[1];
+    if (!listed) continue;
+    return diagnostic.code === "GRAPH_INDEX_SIDECAR_ACTIVE"
+      ? `${listed} present`
+      : `${listed} unavailable`;
+  }
+  return undefined;
 }
 
 /** Internal human-output formatter; JSON output retains the complete contract. */
