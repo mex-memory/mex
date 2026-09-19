@@ -68,6 +68,46 @@ describe("checkPaths", () => {
     expect(checkPaths(claims, tmpDir, tmpDir)).toHaveLength(0);
   });
 
+  it("skips an absent directory ignored by a trailing-slash rule", () => {
+    execFileSync("git", ["init", "-q"], { cwd: tmpDir });
+    mkdirSync(join(tmpDir, ".mex"), { recursive: true });
+    writeFileSync(join(tmpDir, ".mex/.gitignore"), "graph.db*\nwiki.db*\nlocal/\n");
+    const claims = [
+      claim({ kind: "path", value: ".mex/local" }),
+      claim({ kind: "path", value: ".mex/local/" }),
+      claim({ kind: "path", value: ".mex/local/hub-onboarding.json" }),
+    ];
+    expect(checkPaths(claims, tmpDir, join(tmpDir, ".mex"))).toHaveLength(0);
+  });
+
+  it("still skips a present ignored path", () => {
+    execFileSync("git", ["init", "-q"], { cwd: tmpDir });
+    mkdirSync(join(tmpDir, ".mex/local"), { recursive: true });
+    writeFileSync(join(tmpDir, ".mex/.gitignore"), "graph.db*\nwiki.db*\nlocal/\n");
+    writeFileSync(join(tmpDir, ".mex/local/.gitkeep"), "");
+    const claims = [claim({ kind: "path", value: ".mex/local" })];
+    expect(checkPaths(claims, tmpDir, join(tmpDir, ".mex"))).toHaveLength(0);
+  });
+
+  it("still reports a missing path that is not ignored", () => {
+    execFileSync("git", ["init", "-q"], { cwd: tmpDir });
+    mkdirSync(join(tmpDir, ".mex"), { recursive: true });
+    mkdirSync(join(tmpDir, "src"), { recursive: true });
+    writeFileSync(join(tmpDir, ".mex/.gitignore"), "graph.db*\nwiki.db*\nlocal/\n");
+    const claims = [claim({ kind: "path", value: "src/missing.ts" })];
+    const issues = checkPaths(claims, tmpDir, join(tmpDir, ".mex"));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("MISSING_PATH");
+  });
+
+  it("still exempts an absent graph.db glob ignore", () => {
+    execFileSync("git", ["init", "-q"], { cwd: tmpDir });
+    mkdirSync(join(tmpDir, ".mex"), { recursive: true });
+    writeFileSync(join(tmpDir, ".mex/.gitignore"), "graph.db*\nwiki.db*\nlocal/\n");
+    const claims = [claim({ kind: "path", value: ".mex/graph.db" })];
+    expect(checkPaths(claims, tmpDir, join(tmpDir, ".mex"))).toHaveLength(0);
+  });
+
   it("finds a scaffold file named from another scaffold file", () => {
     const mexDir = join(tmpDir, ".mex");
     mkdirSync(join(mexDir, "patterns"), { recursive: true });

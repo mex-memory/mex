@@ -110,36 +110,74 @@ function isUnrootedReference(
  * a clean checkout by design, so reporting it as a missing path is noise. One
  * batched call keeps this to a single subprocess per run; a checkout without
  * Git simply reports nothing ignored.
+ *
+ * Trailing-slash gitignore rules match directories only. Git cannot classify a
+ * path that does not exist, so `.mex/local` misses `local/` unless we also ask
+ * about the directory form and ignored parent prefixes. Globs without a
+ * trailing slash (`graph.db*`) already match absent files.
  */
 function collectIgnoredPaths(values: string[], projectRoot: string): Set<string> {
   const ignored = new Set<string>();
   const candidates = [...new Set(values)].filter((v) => v.length > 0);
   if (candidates.length === 0) return ignored;
 
+  const queries = [...new Set(candidates.flatMap(ignoreCheckQueries))];
+  const gitIgnored = queryGitIgnoredPaths(queries, projectRoot);
+  for (const candidate of candidates) {
+    if (ignoreCheckQueries(candidate).some((query) => gitIgnored.has(query))) {
+      ignored.add(candidate);
+    }
+  }
+
+  return ignored;
+}
+
+/**
+ * Forms Git can type as directories even when the path is absent: the value
+ * itself, a trailing-slash directory form, and each parent prefix.
+ */
+function ignoreCheckQueries(value: string): string[] {
+  const trimmed = value.replace(/\/+$/, "");
+  const queries = [value];
+  if (trimmed.length === 0) return queries;
+
+  queries.push(`${trimmed}/`);
+  const parts = trimmed.split("/").filter((part) => part !== "" && part !== ".");
+  for (let i = 1; i < parts.length; i++) {
+    queries.push(`${parts.slice(0, i).join("/")}/`);
+  }
+  return queries;
+}
+
+function queryGitIgnoredPaths(paths: string[], projectRoot: string): Set<string> {
+  const ignored = new Set<string>();
+  if (paths.length === 0) return ignored;
+
   try {
     const output = execFileSync("git", ["check-ignore", "--stdin"], {
       cwd: projectRoot,
-      input: candidates.join("\n"),
+      input: paths.join("\n"),
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "ignore"],
     });
-    for (const line of output.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed) ignored.add(trimmed);
-    }
+    addIgnoredLines(ignored, output);
   } catch (error) {
     // Exit code 1 means "nothing ignored" and carries partial stdout; any other
     // failure (no Git, not a repository) leaves the set empty.
     const stdout = (error as { stdout?: string | Buffer })?.stdout;
     if (typeof stdout === "string" || Buffer.isBuffer(stdout)) {
-      for (const line of stdout.toString().split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed) ignored.add(trimmed);
-      }
+      addIgnoredLines(ignored, stdout.toString());
     }
   }
 
   return ignored;
+}
+
+function addIgnoredLines(ignored: Set<string>, output: string): void {
+  for (const line of output.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed) ignored.add(trimmed);
+  }
 }
 
 /**

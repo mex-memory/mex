@@ -106,4 +106,46 @@ describe("MISSING_PATH false positives", () => {
       ".mex/local/",
     ]);
   });
+
+  it("does not claim an absent directory ignored by a trailing-slash rule (#202 bullet 6)", () => {
+    expect(
+      missingPaths("# State\n\n- Local state lives in `.mex/local`\n", {
+        ".mex/.gitignore": "graph.db*\nwiki.db*\nlocal/\n",
+      })
+    ).toEqual([]);
+  });
+
+  it("does not claim a file under an absent ignored directory (#202 bullet 6)", () => {
+    expect(
+      missingPaths("# State\n\n- Cursor is `.mex/local/hub-onboarding.json`\n", {
+        ".mex/.gitignore": "graph.db*\nwiki.db*\nlocal/\n",
+      })
+    ).toEqual([]);
+  });
+
+  it("still skips a present ignored path (#202 bullet 6)", () => {
+    expect(
+      missingPaths("# State\n\n- Local state lives in `.mex/local`\n", {
+        ".mex/.gitignore": "graph.db*\nwiki.db*\nlocal/\n",
+        ".mex/local/.gitkeep": "",
+      })
+    ).toEqual([]);
+  });
+
+  it("still reports a missing path that is not ignored (#202 bullet 6)", () => {
+    expect(
+      missingPaths("# Code\n\n- Handler is `src/auth/handler.ts`\n", {
+        ".mex/.gitignore": "graph.db*\nwiki.db*\nlocal/\n",
+        "src/.keep": "",
+      })
+    ).toEqual(["src/auth/handler.ts"]);
+  });
+
+  it("still exempts an absent graph.db glob ignore (#202 bullet 6)", () => {
+    expect(
+      missingPaths("# Indexes\n\n- Graph lives in `.mex/graph.db`\n", {
+        ".mex/.gitignore": "graph.db*\nwiki.db*\nlocal/\n",
+      })
+    ).toEqual([]);
+  });
 });
