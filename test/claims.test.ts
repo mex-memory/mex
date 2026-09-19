@@ -158,6 +158,24 @@ describe("extractClaims — paths", () => {
     expect(paths[0].value).toBe("api_clients/groq_client.py");
   });
 
+  it("skips hypothetical resolution stubs (#202 bullet 3)", () => {
+    const path = writeFixture(
+      "test.md",
+      "# Resolve\n\n" +
+        "The specifier (`./x` may be `x.ts` or `x/index.ts`); at most one really exists. " +
+        "The handler lives in `src/auth/login.ts`. " +
+        "Scaffold paths stay claims: `.mex/ROUTER.md` and `package.json`."
+    );
+    const claims = extractClaims(path, "test.md");
+    const paths = claims.filter((c) => c.kind === "path").map((c) => c.value);
+    expect(paths).not.toContain("./x");
+    expect(paths).not.toContain("x.ts");
+    expect(paths).not.toContain("x/index.ts");
+    expect(paths).toContain("src/auth/login.ts");
+    expect(paths).toContain(".mex/ROUTER.md");
+    expect(paths).toContain("package.json");
+  });
+
   it("marks paths under negated sections", () => {
     const path = writeFixture(
       "test.md",

@@ -43,6 +43,31 @@ const DOTTED_KEY_WITH_SLASH = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+\/[A-Za-z0-9_
  */
 const PACKAGE_NAME = /^@?[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
+/**
+ * Resolution-example stubs, not project files. Import docs write
+ * `./x` may be `x.ts` or `x/index.ts` to show how a specifier
+ * resolves; at most one of those names exists, and usually none
+ * of them name a real file in this repository.
+ *
+ * The class is a single-letter basename (optional `./`) alone, plus
+ * a known extension, or plus `/index` and a known extension. Extra
+ * dots (`x.d.ts`) are left to the compound-extension filter. Ordinary
+ * filenames and multi-segment paths (`src/auth/login.ts`,
+ * `.mex/ROUTER.md`, `package.json`) stay claims.
+ */
+function isResolutionStubPath(value: string): boolean {
+  const rest = value.startsWith("./") ? value.slice(2) : value;
+  if (rest.length === 0 || rest.startsWith(".")) return false;
+
+  if (rest.length === 1) return /[A-Za-z]/.test(rest);
+
+  if (/^[A-Za-z]\.[A-Za-z0-9]+$/.test(rest)) {
+    return KNOWN_EXTENSIONS.test(rest);
+  }
+
+  return /^[A-Za-z]\/index\.[A-Za-z0-9]+$/.test(rest) && KNOWN_EXTENSIONS.test(rest);
+}
+
 /** Things that look like paths but are actually code snippets, URL routes, or other non-path content */
 function isNotAPath(value: string): boolean {
   // URL routes: /voice/incoming, /api/users — start with / but have no file extension
@@ -84,6 +109,9 @@ function isNotAPath(value: string): boolean {
   // Anything with whitespace is a command or a sentence, not a path:
   // `nodemon src/index.ts` names a runner and its argument.
   if (/\s/.test(value)) return true;
+
+  // Hypothetical resolution alternatives: `./x`, `x.ts`, `x/index.ts`
+  if (isResolutionStubPath(value)) return true;
 
   return false;
 }

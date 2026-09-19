@@ -106,4 +106,38 @@ describe("MISSING_PATH false positives", () => {
       ".mex/local/",
     ]);
   });
+
+  it("does not claim hypothetical resolution alternatives (#202 bullet 3)", () => {
+    const markdown =
+      "# Resolve\n\n" +
+      "The specifier (`./x` may be `x.ts` or `x/index.ts`); at most one really exists.\n" +
+      "The handler lives in `src/auth/login.ts`.\n";
+
+    const projectRoot = mkdtempSync(join(tmpdir(), "mex-drift-"));
+    execFileSync("git", ["init", "-q"], { cwd: projectRoot });
+    const scaffoldRoot = join(projectRoot, ".mex");
+    mkdirSync(scaffoldRoot, { recursive: true });
+    const docPath = join(scaffoldRoot, "ROUTER.md");
+    writeFileSync(docPath, markdown);
+
+    const pathValues = extractClaims(docPath, ".mex/ROUTER.md")
+      .filter((claim) => claim.kind === "path")
+      .map((claim) => claim.value);
+    expect(pathValues).not.toContain("./x");
+    expect(pathValues).not.toContain("x.ts");
+    expect(pathValues).not.toContain("x/index.ts");
+    expect(pathValues).toContain("src/auth/login.ts");
+
+    const missing = checkPaths(
+      extractClaims(docPath, ".mex/ROUTER.md"),
+      projectRoot,
+      scaffoldRoot
+    )
+      .filter((issue) => issue.code === "MISSING_PATH")
+      .map((issue) => issue.claim?.value);
+    expect(missing).not.toContain("./x");
+    expect(missing).not.toContain("x.ts");
+    expect(missing).not.toContain("x/index.ts");
+    expect(missing).toEqual(["src/auth/login.ts"]);
+  });
 });
