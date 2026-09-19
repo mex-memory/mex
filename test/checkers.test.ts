@@ -670,6 +670,68 @@ describe("checkDependencies", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].code).toBe("VERSION_MISMATCH");
   });
+
+  it("reads a nested backend/pyproject.toml at the same depth as a JS manifest (#206)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ dependencies: { react: "^18.0.0" } })
+    );
+    mkdirSync(join(tmpDir, "backend"));
+    writeFileSync(join(tmpDir, "backend/pyproject.toml"), [
+      "[project]",
+      'name = "backend"',
+      'dependencies = ["fastapi>=0.115", "celery[redis]==5.4.0"]',
+      "",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "React" }),
+      claim({ kind: "dependency", value: "FastAPI" }),
+      claim({ kind: "dependency", value: "celery" }),
+      claim({ kind: "dependency", value: "boto3" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("DEPENDENCY_MISSING");
+    expect(issues[0].claim.value).toBe("boto3");
+  });
+
+  it("reads a package.json more than one directory down (#206)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ dependencies: { react: "^18.0.0" } })
+    );
+    mkdirSync(join(tmpDir, "api/backend"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "api/backend/package.json"),
+      JSON.stringify({ dependencies: { express: "^4.18.0" } })
+    );
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "React" }),
+      claim({ kind: "dependency", value: "Express" }),
+      claim({ kind: "dependency", value: "prisma" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("DEPENDENCY_MISSING");
+    expect(issues[0].claim.value).toBe("prisma");
+  });
+
+  it("does not treat packages declared only under node_modules as project deps (#206)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ dependencies: { express: "^4.18.0" } })
+    );
+    mkdirSync(join(tmpDir, "node_modules/decoy"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "node_modules/decoy/package.json"),
+      JSON.stringify({ dependencies: { leftpad: "1.0.0" } })
+    );
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "Express" }),
+      claim({ kind: "dependency", value: "leftpad" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("DEPENDENCY_MISSING");
+    expect(issues[0].claim.value).toBe("leftpad");
+  });
 });
 
 // ── Cross-file Checker ──

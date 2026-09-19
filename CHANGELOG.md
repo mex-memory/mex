@@ -28,6 +28,7 @@ All notable changes to this project will be documented in this file.
 - Setup and Overview share the computer's contact preference so completing or skipping the invitation does not immediately trigger another request.
 
 - `mex sync` now migrates an inline `mex://` anchor together with a `grounds_to` entry for the same moved node. The anchor used to reconcile on its own against the stored baseline instead of the refreshed frontmatter fingerprint. When that baseline was missing, or still listed a neighbour that had since been re-identified, the anchor was skipped or scored `AMBIGUOUS`, sync moved the shared baseline row anyway, and the next `mex check` reported `GROUNDING_GONE` until the link was edited by hand (#128).
+- Dependency discovery now walks `package.json` and `pyproject.toml` to the same bounded depth. A Python service in `backend/pyproject.toml`, or a JS app in `api/backend/package.json`, is read the same way as a root manifest, so those declared packages no longer produce false `DEPENDENCY_MISSING` warnings. `node_modules` and other generated trees stay ignored (#206).
 
 ## [0.8.1] - 2026-09-10
 
