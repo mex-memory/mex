@@ -163,11 +163,12 @@ function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined
 }
 
 /**
- * Same walk for every manifest this checker understands. `*/package.json`
- * found `backend/package.json` and missed `api/backend/package.json`;
- * `pyproject.toml` was never walked at all, so `backend/pyproject.toml`
- * produced false `DEPENDENCY_MISSING` while the identical file at the
- * root — or a JS manifest at the same depth — passed (#206).
+ * Same walk for every manifest this checker understands. A one-directory
+ * package.json glob found `backend/package.json` and missed
+ * `api/backend/package.json`; `pyproject.toml` was never walked at all,
+ * so `backend/pyproject.toml` produced false `DEPENDENCY_MISSING` while
+ * the identical file at the root — or a JS manifest at the same depth —
+ * passed (#206).
  *
  * Depth 5 matches the other bounded project walks (`path` checker,
  * brief-builder). Ignore the obvious generated trees so an installed
