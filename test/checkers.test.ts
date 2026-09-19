@@ -5,6 +5,7 @@ import {
   mkdirSync,
   rmSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -234,6 +235,45 @@ describe("checkPaths", () => {
     const claims = [claim({ kind: "path", value: "@scope/pkg/lib" })];
     const issues = checkPaths(claims, tmpDir, tmpDir);
     expect(issues).toHaveLength(0);
+  });
+
+  it("resolves a scoped package whose exports map blocks ./package.json (#202 bullet 5)", () => {
+    const pkgDir = join(tmpDir, "node_modules/@scope/strict-exports");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(
+      join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "@scope/strict-exports",
+        type: "module",
+        exports: { ".": "./index.js" },
+      })
+    );
+    writeFileSync(join(pkgDir, "index.js"), "export default {};\n");
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test-root" }));
+
+    const req = createRequire(join(tmpDir, "noop.js"));
+    expect(() => req.resolve("@scope/strict-exports/package.json")).toThrow(
+      /not defined by "exports"|ERR_PACKAGE_PATH_NOT_EXPORTED/
+    );
+    expect(req.resolve("@scope/strict-exports")).toMatch(/index\.js$/);
+
+    const claims = [
+      claim({ kind: "path", value: "@scope/strict-exports" }),
+      claim({ kind: "path", value: "@scope/strict-exports/utils" }),
+    ];
+    expect(checkPaths(claims, tmpDir, tmpDir)).toHaveLength(0);
+  });
+
+  it("still reports MISSING_PATH for a scoped package that is not installed", () => {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test-root" }));
+    const issues = checkPaths(
+      [claim({ kind: "path", value: "@scope/not-installed" })],
+      tmpDir,
+      tmpDir
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("MISSING_PATH");
+    expect(issues[0].claim?.value).toBe("@scope/not-installed");
   });
 });
 

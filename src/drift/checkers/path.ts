@@ -226,10 +226,13 @@ function pathExists(
   if (scopedMatch) {
     const pkgName = `@${scopedMatch[1]}/${scopedMatch[2]}`;
 
-    // Try Node's module resolution first (works for installed npm packages)
+    // Try Node's module resolution first (works for installed npm packages).
+    // Resolve the bare specifier: a strict `exports` map often omits
+    // `./package.json`, so `${pkgName}/package.json` throws
+    // ERR_PACKAGE_PATH_NOT_EXPORTED even when the package is installed.
     try {
       const req = createRequire(resolve(projectRoot, "noop.js"));
-      req.resolve(`${pkgName}/package.json`);
+      req.resolve(pkgName);
       return true;
     } catch {
       // Fall through to workspace check
