@@ -29,13 +29,18 @@ function runScaffold(markdown: string, extraFiles: Record<string, string> = {}) 
   writeFileSync(docPath, markdown);
 
   const claims = extractClaims(docPath, ".mex/ROUTER.md");
-  return checkPaths(claims, projectRoot, scaffoldRoot);
+  return { claims, issues: checkPaths(claims, projectRoot, scaffoldRoot) };
 }
 
 const missingPaths = (markdown: string, extraFiles?: Record<string, string>) =>
   runScaffold(markdown, extraFiles)
-    .filter((issue) => issue.code === "MISSING_PATH")
+    .issues.filter((issue) => issue.code === "MISSING_PATH")
     .map((issue) => issue.claim?.value);
+
+const pathClaimValues = (markdown: string, extraFiles?: Record<string, string>) =>
+  runScaffold(markdown, extraFiles)
+    .claims.filter((claim) => claim.kind === "path")
+    .map((claim) => claim.value);
 
 describe("MISSING_PATH false positives", () => {
   it("does not claim a file the document says was deleted (#143 defect 1)", () => {
@@ -105,5 +110,26 @@ describe("MISSING_PATH false positives", () => {
     expect(missingPaths("# State\n\n- Local state lives in `.mex/local/`\n")).toEqual([
       ".mex/local/",
     ]);
+  });
+
+  it("does not claim compound file-extension tokens such as .d.ts (#202 bullet 2)", () => {
+    const markdown =
+      "# SDK\n\n- Ship the SDK's CJS `.d.ts`, ESM `.d.mts`, and CJS `.d.cts`\n";
+    expect(pathClaimValues(markdown)).toEqual([]);
+    expect(missingPaths(markdown)).toEqual([]);
+  });
+
+  it("still checks real paths that include extensions", () => {
+    expect(missingPaths("# Entry\n\n- Boot from `src/index.ts`\n")).toEqual([
+      "src/index.ts",
+    ]);
+    expect(
+      missingPaths("# Nav\n\n- Routing lives in `.mex/ROUTER.md`\n")
+    ).toEqual([]);
+    expect(
+      missingPaths("# CI\n\n- The workflow is `.github/workflows/ci.yml`\n", {
+        ".github/workflows/ci.yml": "name: ci\n",
+      })
+    ).toEqual([]);
   });
 });
