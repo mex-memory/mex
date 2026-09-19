@@ -253,7 +253,7 @@ describe("checkPaths", () => {
 
     const req = createRequire(join(tmpDir, "noop.js"));
     expect(() => req.resolve("@scope/strict-exports/package.json")).toThrow(
-      /Package path \.\/package\.json is not exported/
+      /not defined by "exports"|ERR_PACKAGE_PATH_NOT_EXPORTED/
     );
     expect(req.resolve("@scope/strict-exports")).toMatch(/index\.js$/);
 
