@@ -28,6 +28,17 @@ const EXTENSION_ONLY = /^\.[A-Za-z0-9]+$/;
 const SHELL_COMMAND_PREFIX = /^(?:sudo\s+)?(?:ls|cd|cat|grep|find|kubectl|helm|docker|git)\s+/;
 
 /**
+ * Final slash-segment that is a JS/TS-style `identifier.identifier`
+ * (method or property), not a filename. Matches
+ * `src/auth/login.validateToken` / `lib/user.authenticate`.
+ * Real files keep a known extension (`src/auth/login.ts`, `.mex/ROUTER.md`,
+ * `package.json`) and stay claims. Extra dotted segments such as
+ * `foo.d.ts` are left for compound-extension handling (#216).
+ */
+const QUALIFIED_SYMBOL_SEGMENT =
+  /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
  * Dotted config keys or annotations can contain slashes but are not paths:
  * `argocd.argoproj.io/sync-wave`, `k8s.io/api`. The dotted segment must start
  * with a real character -- anchoring it any looser also matches a hidden
@@ -63,6 +74,10 @@ function isNotAPath(value: string): boolean {
   // Annotation/config keys with slash-separated namespaces: argocd.argoproj.io/sync-wave
   if (DOTTED_KEY_WITH_SLASH.test(value)) return true;
 
+  // Qualified-name / symbol notation: `src/auth/login.validateToken`.
+  // Drop before it becomes a path claim (#202 bullet 1).
+  if (isQualifiedSymbolNotation(value)) return true;
+
   // Code snippets: contains =, (), ;, or other code-like characters
   if (/[=();,]/.test(value)) return true;
 
@@ -86,6 +101,14 @@ function isNotAPath(value: string): boolean {
   if (/\s/.test(value)) return true;
 
   return false;
+}
+
+/** True when the last slash-segment looks like `file.method`, not a known file type. */
+function isQualifiedSymbolNotation(value: string): boolean {
+  if (KNOWN_EXTENSIONS.test(value)) return false;
+  const slash = value.lastIndexOf("/");
+  if (slash === -1) return false;
+  return QUALIFIED_SYMBOL_SEGMENT.test(value.slice(slash + 1));
 }
 
 /** Extract all claims from a markdown file */
