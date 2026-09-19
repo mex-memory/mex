@@ -2,6 +2,11 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { globSync } from "glob";
 import type { DriftIssue } from "../../types.js";
+import { extractFrontmatter } from "../../markdown.js";
+
+const EDGE_TARGET_PATTERN = /(?:^|\/)patterns\/([^/]+\.md)$/;
+/** INDEX.md lives in patterns/, so sibling edge targets omit the patterns/ prefix. */
+const INDEX_SIBLING_TARGET = /^(?:\.\/)?([^/]+\.md)$/;
 
 /** Cross-reference patterns/INDEX.md with actual pattern files */
 export function checkIndexSync(projectRoot: string, scaffoldRoot: string): DriftIssue[] {
@@ -36,6 +41,22 @@ export function checkIndexSync(projectRoot: string, scaffoldRoot: string): Drift
   const backtickPattern = /`([\w-]+\.md)`/g;
   while ((match = backtickPattern.exec(indexContent)) !== null) {
     referencedFiles.add(match[1]);
+  }
+
+  // Frontmatter edges are mex's canonical navigation, so a pattern reached
+  // only through an edge is not orphaned. Parsed from the content already
+  // read above rather than re-reading the file.
+  const edges = extractFrontmatter(rawContent)?.edges;
+  for (const edge of Array.isArray(edges) ? edges : []) {
+    const target = typeof edge?.target === "string" ? edge.target.replace(/#.*$/, "") : "";
+    if (!target) continue;
+    const fromPatterns = EDGE_TARGET_PATTERN.exec(target);
+    if (fromPatterns) {
+      referencedFiles.add(fromPatterns[1]);
+      continue;
+    }
+    const sibling = INDEX_SIBLING_TARGET.exec(target);
+    if (sibling) referencedFiles.add(basename(sibling[1]));
   }
 
   // Check: pattern files not in INDEX

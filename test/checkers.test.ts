@@ -421,6 +421,39 @@ describe("checkCommands", () => {
     const issues = checkCommands(claims, tmpDir);
     expect(issues).toHaveLength(0);
   });
+
+  it("does not treat yarn/pnpm builtins as missing scripts", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ scripts: { build: "tsc" } })
+    );
+    const claims = [
+      claim({ kind: "command", value: "pnpm install" }),
+      claim({ kind: "command", value: "yarn add" }),
+      claim({ kind: "command", value: "pnpm dlx" }),
+      claim({ kind: "command", value: "yarn ci" }),
+    ];
+    expect(checkCommands(claims, tmpDir)).toHaveLength(0);
+  });
+
+  it("still reports a missing yarn/pnpm script", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ scripts: { build: "tsc" } })
+    );
+    const issues = checkCommands(
+      [
+        claim({ kind: "command", value: "pnpm lint" }),
+        claim({ kind: "command", value: "yarn run missing" }),
+      ],
+      tmpDir
+    );
+    expect(issues).toHaveLength(2);
+    expect(issues.map((issue) => issue.message)).toEqual([
+      'Script "lint" not found in package.json scripts',
+      'Script "missing" not found in package.json scripts',
+    ]);
+  });
 });
 
 // ── Dependency Checker ──
@@ -737,6 +770,31 @@ describe("checkIndexSync", () => {
     );
     const issues = checkIndexSync(tmpDir, tmpDir);
     expect(issues).toHaveLength(0);
+  });
+
+  it("treats a frontmatter edge as an INDEX reference", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "patterns/INDEX.md"),
+      "---\nedges:\n  - target: syntax-extractor-review.md\n---\n\n# Index\n"
+    );
+    writeFileSync(join(tmpDir, "patterns/syntax-extractor-review.md"), "# Review");
+    const issues = checkIndexSync(tmpDir, tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("still reports a pattern with no INDEX link or edge", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "patterns/INDEX.md"),
+      "---\nedges:\n  - target: syntax-extractor-review.md\n---\n\n# Index\n"
+    );
+    writeFileSync(join(tmpDir, "patterns/syntax-extractor-review.md"), "# Review");
+    writeFileSync(join(tmpDir, "patterns/orphan.md"), "# Orphan");
+    const issues = checkIndexSync(tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("INDEX_MISSING_ENTRY");
+    expect(issues[0].message).toContain("patterns/orphan.md");
   });
 });
 
