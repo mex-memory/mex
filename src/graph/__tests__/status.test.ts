@@ -1595,4 +1595,37 @@ describe("inspectGraphStatus", () => {
       remediation: [{ label: "Republish graph for this branch", command: "mex graph refresh" }],
     }));
   });
+
+  it("warns about orphan owned-prefix files without mutating the tree", async () => {
+    const root = temporaryRoot("mex-graph-status-orphan-");
+    source(root, "src/service.ts", "export const service = 1;\n");
+    await build(root);
+    const mexDir = join(root, ".mex");
+    const candidate = join(mexDir, "graph.db.candidate-deadc0de");
+    const rollback = join(mexDir, "graph.db.rollback-deadc0de");
+    const recovery = join(mexDir, "graph.db.recovery-deadc0de");
+    writeFileSync(candidate, "orphan-candidate");
+    writeFileSync(rollback, "orphan-rollback");
+    writeFileSync(recovery, "orphan-recovery");
+    const before = treeState(root);
+
+    const status = await inspect(root);
+
+    expect(status.status).toBe("fresh");
+    expect(status.diagnostics).toContainEqual(expect.objectContaining({
+      code: "GRAPH_INDEX_ORPHAN_OWNED_DATABASE",
+      severity: "warning",
+      path: ".mex/graph.db.candidate-deadc0de",
+      message: expect.stringContaining("graph.db.candidate-deadc0de"),
+    }));
+    expect(status.diagnostics.find((entry) => entry.code === "GRAPH_INDEX_ORPHAN_OWNED_DATABASE")?.message)
+      .toEqual(expect.stringContaining("graph.db.rollback-deadc0de"));
+    expect(status.diagnostics.find((entry) => entry.code === "GRAPH_INDEX_ORPHAN_OWNED_DATABASE")?.message)
+      .toEqual(expect.stringContaining("graph.db.recovery-deadc0de"));
+    expect(executableRemediations(status)).toContain("mex graph refresh");
+    expect(treeState(root)).toEqual(before);
+    expect(existsSync(candidate)).toBe(true);
+    expect(existsSync(rollback)).toBe(true);
+    expect(existsSync(recovery)).toBe(true);
+  });
 });

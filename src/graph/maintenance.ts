@@ -36,6 +36,7 @@ import {
   inspectGraphStatus,
 } from "./status.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
+import { isOwnedDatabaseBasename, listOwnedDatabaseArtifacts } from "./owned-database.js";
 import { tryEnsureSetupIgnoreProtection } from "../setup/ignore.js";
 import { GraphCandidateProcessError, runGraphCandidateProcess, type GraphCandidateProcessOptions } from "./candidate-process.js";
 
@@ -43,11 +44,6 @@ const LOCK_FILE = "graph.db.lock";
 const LOCK_GATE_FILE = "graph.db.lock.gate";
 const MAX_LOCK_BYTES = 4 * 1024;
 const HASH_CHUNK_BYTES = 1024 * 1024;
-const OWNED_DATABASE_PREFIXES = [
-  "graph.db.candidate-",
-  "graph.db.rollback-",
-  "graph.db.recovery-",
-] as const;
 
 export type GraphMaintenanceErrorCode =
   | "GRAPH_INDEX_MISSING"
@@ -285,6 +281,8 @@ export function acquireGraphMaintenanceLease(
       } as InternalMaintenanceOptions;
       await merged.__internal?.afterLockAcquired?.();
       assertMaintenanceDirectoryUnchanged(paths);
+      // Exclusive owner only. Sweeping before the lease would race a live run.
+      sweepOrphanOwnedDatabases(paths);
       if (operation === "refresh") return await refreshGraphWithLease(paths, merged);
       if (operation === "repair") return await repairGraphWithLease(paths, merged);
       return await rebuildGraphWithLease(paths, merged);
@@ -2016,6 +2014,20 @@ function ownedPath(paths: MaintenancePaths, kind: "candidate" | "rollback" | "re
   return path;
 }
 
+function sweepOrphanOwnedDatabases(paths: MaintenancePaths, keepPath?: string | null): void {
+  assertMaintenanceDirectoryUnchanged(paths);
+  const keep = new Set<string>();
+  if (keepPath) {
+    const keepName = basename(keepPath);
+    keep.add(keepName);
+    for (const suffix of ["-wal", "-shm", "-journal"] as const) keep.add(`${keepName}${suffix}`);
+  }
+  for (const name of listOwnedDatabaseArtifacts(paths.mexDir)) {
+    if (keep.has(name)) continue;
+    cleanupOwnedDatabasePath(paths, join(paths.mexDir, name));
+  }
+}
+
 function cleanupOwnedDatabase(paths: MaintenancePaths, path: string): void {
   assertMaintenanceDirectoryUnchanged(paths);
   if (dirname(path) !== paths.mexDir) return;
@@ -2098,7 +2110,7 @@ function cleanupDiscardedOwnedSidecars(paths: MaintenancePaths, databasePath: st
 }
 
 function assertOwnedDatabasePath(path: string): void {
-  if (!OWNED_DATABASE_PREFIXES.some((prefix) => basename(path).startsWith(prefix))) {
+  if (!isOwnedDatabaseBasename(basename(path))) {
     throw new GraphMaintenanceError(
       "GRAPH_MAINTENANCE_PATH_UNSAFE",
       "Refusing to modify a path not owned by graph maintenance.",

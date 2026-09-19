@@ -88,6 +88,24 @@ function ownedArtifacts(root: string): string[] {
     .sort();
 }
 
+function plantOwnedPrefixOrphans(root: string): {
+  candidate: string;
+  rollback: string;
+  recovery: string;
+  keep: string;
+} {
+  const mexDir = join(root, ".mex");
+  const candidate = join(mexDir, "graph.db.candidate-orphan01");
+  const rollback = join(mexDir, "graph.db.rollback-orphan01");
+  const recovery = join(mexDir, "graph.db.recovery-orphan01");
+  const keep = join(mexDir, "unrelated-notes.txt");
+  writeFileSync(candidate, "leftover-candidate");
+  writeFileSync(rollback, "leftover-rollback");
+  writeFileSync(recovery, "leftover-recovery");
+  writeFileSync(keep, "do-not-delete");
+  return { candidate, rollback, recovery, keep };
+}
+
 function git(root: string, ...args: string[]): string {
   return execFileSync("git", args, {
     cwd: root,
@@ -1052,4 +1070,72 @@ describe("graph maintenance", () => {
     expect((await inspectGraphStatus({ projectRoot: root })).status).toBe("fresh");
     expect(ownedArtifacts(root)).toEqual([]);
   });
+
+  it.each([
+    ["refresh", refreshGraph],
+    ["repair", repairGraph],
+    ["rebuild", rebuildGraph],
+  ] as const)("removes orphan owned-prefix files after leased %s and leaves unrelated .mex files", async (_command, run) => {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export const service = 1;\n");
+    await buildBaseline(root);
+    const planted = plantOwnedPrefixOrphans(root);
+
+    const result = await run(root);
+
+    expect(result.state).toBe("succeeded");
+    expect(existsSync(planted.candidate)).toBe(false);
+    expect(existsSync(planted.rollback)).toBe(false);
+    expect(existsSync(planted.recovery)).toBe(false);
+    expect(readFileSync(planted.keep, "utf8")).toBe("do-not-delete");
+    expect(existsSync(join(root, ".mex", "graph.db"))).toBe(true);
+    expect((await inspectGraphStatus({ projectRoot: root })).diagnostics)
+      .not.toContainEqual(expect.objectContaining({ code: "GRAPH_INDEX_ORPHAN_OWNED_DATABASE" }));
+  }, 30_000);
+
+  it("sweeps orphans only after the maintenance lease is held", async () => {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export const service = 1;\n");
+    await buildBaseline(root);
+    const planted = plantOwnedPrefixOrphans(root);
+    const options = {
+      __internal: {
+        afterLockAcquired() {
+          expect(existsSync(planted.candidate)).toBe(true);
+          writeFileSync(join(root, ".mex", "graph.db.candidate-after-lock"), "planted-under-lease");
+        },
+      },
+    } as GraphMaintenanceOptions;
+
+    await refreshGraph(root, options);
+
+    expect(existsSync(planted.candidate)).toBe(false);
+    expect(existsSync(planted.rollback)).toBe(false);
+    expect(existsSync(planted.recovery)).toBe(false);
+    expect(existsSync(join(root, ".mex", "graph.db.candidate-after-lock"))).toBe(false);
+    expect(readFileSync(planted.keep, "utf8")).toBe("do-not-delete");
+  }, 30_000);
+
+  it("does not sweep orphan owned-prefix files while another lease is held", async () => {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export const service = 1;\n");
+    await buildBaseline(root);
+    const lease = acquireGraphMaintenanceLease(root, "refresh");
+    try {
+      const planted = plantOwnedPrefixOrphans(root);
+
+      await expect(refreshGraph(root)).rejects.toMatchObject({
+        code: "GRAPH_MAINTENANCE_LOCKED",
+      });
+
+      expect(existsSync(planted.candidate)).toBe(true);
+      expect(existsSync(planted.rollback)).toBe(true);
+      expect(existsSync(planted.recovery)).toBe(true);
+      expect(readFileSync(planted.keep, "utf8")).toBe("do-not-delete");
+      expect((await inspectGraphStatus({ projectRoot: root })).diagnostics)
+        .toContainEqual(expect.objectContaining({ code: "GRAPH_INDEX_ORPHAN_OWNED_DATABASE" }));
+    } finally {
+      lease.release();
+    }
+  }, 30_000);
 });

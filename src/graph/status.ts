@@ -11,7 +11,7 @@ import {
   statSync,
 } from "node:fs";
 import { lstat as lstatAsync, open as openAsync } from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSameResolvedPath, resolveRealPath, resolveRealPathAsync } from "../paths.js";
 import { promisify } from "node:util";
 import type {
@@ -38,6 +38,7 @@ import {
 } from "./corpus-policy.js";
 import { graphManifest, graphManifestDiffersOnlyByConfig } from "./engine-impl.js";
 import { isSupportedSourceFile } from "./extraction/grammars.js";
+import { listOwnedDatabaseArtifacts } from "./owned-database.js";
 import { bandHashInts, decodeMinhash } from "./fingerprint.js";
 import type { Fingerprint } from "./reconcile.js";
 import {
@@ -462,7 +463,7 @@ export async function inspectGraphStatusWithFreshObservation(
     lastAttempt = inspected;
     if (!inspected.retry) {
       return {
-        graphStatus: inspected.status,
+        graphStatus: attachOrphanOwnedDatabaseWarning(projectRoot, inspected.status),
         freshObservation: inspected.freshObservation ?? null,
         degradedObservation: inspected.degradedObservation ?? null,
         configDriftTolerated: inspected.configDriftTolerated === true,
@@ -470,7 +471,7 @@ export async function inspectGraphStatusWithFreshObservation(
     }
   }
   return {
-    graphStatus: lastAttempt!.status,
+    graphStatus: attachOrphanOwnedDatabaseWarning(projectRoot, lastAttempt!.status),
     freshObservation: null,
     degradedObservation: null,
     configDriftTolerated: lastAttempt!.configDriftTolerated === true,
@@ -1307,6 +1308,36 @@ function emptySourceChanges(): GraphSourceChanges {
     configChanged: false,
     grammarChanged: false,
   };
+}
+
+const ORPHAN_OWNED_DATABASE_LIST_LIMIT = 8;
+
+function attachOrphanOwnedDatabaseWarning(projectRoot: string, status: GraphStatus): GraphStatus {
+  const extra = orphanOwnedDatabaseDiagnostics(projectRoot);
+  if (extra.length === 0) return status;
+  return {
+    ...status,
+    diagnostics: [...status.diagnostics, ...extra],
+  };
+}
+
+function orphanOwnedDatabaseDiagnostics(projectRoot: string): Diagnostic[] {
+  const names = listOwnedDatabaseArtifacts(join(projectRoot, ".mex"));
+  if (names.length === 0) return [];
+  const shown = names.slice(0, ORPHAN_OWNED_DATABASE_LIST_LIMIT);
+  const omitted = names.length - shown.length;
+  const listed = shown.join(", ");
+  const more = omitted > 0 ? `, and ${omitted} more` : "";
+  return [{
+    code: "GRAPH_INDEX_ORPHAN_OWNED_DATABASE",
+    severity: "warning",
+    message: `Orphan graph maintenance file(s) remain from an interrupted rebuild or recovery (${listed}${more}). A later mex graph refresh, repair, or rebuild will remove them.`,
+    path: toPosix(join(".mex", names[0]!)),
+    remediation: [{
+      label: "Remove leftover graph maintenance files",
+      command: "mex graph refresh",
+    }],
+  }];
 }
 
 function sidecarDiagnostic(probe: GraphSidecarProbe): Diagnostic {
