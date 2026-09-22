@@ -78,6 +78,41 @@ describe("agent graph commands", () => {
     expect(fixture.close).toHaveBeenCalledOnce();
   });
 
+  it("impact keeps grounding records when callers exhaust the default budget", () => {
+    const leaf = node("function:leaf", "leaf");
+    const callers = Array.from({ length: 60 }, (_, i) => node(`function:caller${i}`, `caller${i}`, `src/caller${i}.ts`, 4));
+    const nodes = [leaf, ...callers];
+    const graph: GraphEngine = {
+      build: vi.fn(), sync: vi.fn(), close: vi.fn(),
+      getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
+      searchNodes: (query) => nodes.filter((entry) => entry.name.toLowerCase() === query.toLowerCase()),
+      getCallers: (id) => id === leaf.id ? callers : [],
+      getCallees: () => [],
+      getIncoming: () => [],
+      getOutgoing: () => [],
+      getIndexedFiles: () => [],
+    };
+    const groundings = Array.from({ length: 6 }, (_, i) => ({
+      scaffold_file: `.mex/context/architecture-${i}.md`, node_id: i < 3 ? leaf.id : callers[i].id,
+    }));
+    const db = {
+      prepare: (sql: string) => ({
+        run: vi.fn(), get: vi.fn(), iterate: vi.fn(),
+        all: () => sql.includes("FROM nodes") ? [] : groundings,
+      }),
+      exec: vi.fn(), pragma: vi.fn(), transaction: <T>(fn: () => T) => fn(), close: vi.fn(), open: true,
+    };
+    const output: string[] = [];
+    runImpact("leaf", "/repo", { open: () => ({ graph, db, close: vi.fn() }), write: (line) => output.push(line) }, { maxNodes: 100 });
+    const rows = output.map((line) => JSON.parse(line));
+    expect(rows.at(-1)).toMatchObject({ type: "summary", truncated: true });
+    expect(rows.filter((row) => row.type === "caller").length).toBeLessThan(callers.length);
+    expect(rows.filter((row) => row.type === "grounding")).toEqual(
+      groundings.map((g) => ({ type: "grounding", node: g.node_id, file: g.scaffold_file })),
+    );
+    expect(rows.findIndex((row) => row.type === "grounding")).toBeLessThan(rows.findIndex((row) => row.type === "summary"));
+  });
+
   it("impact accepts a file and reports each node it defines", () => {
     const fixture = deps();
     runImpact("src/a.ts", "/repo", fixture.deps);

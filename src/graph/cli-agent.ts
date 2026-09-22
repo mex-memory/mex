@@ -132,6 +132,17 @@ export function runImpact(
       }
     }
     const ordered = [...impacted.values()].sort((a, b) => a.depth - b.depth || a.node.id.localeCompare(b.node.id));
+
+    // Grounding is keyed by node, so an excluded node must not reappear
+    // through it. Nodes omitted only by the returned-node cap still count.
+    const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])]
+      .filter((id) => !isDriftedFile(session, session.graph.getNode(id)?.filePath));
+    const groundingRecords: Rec[] = [];
+    for (const grounding of groundedFiles(session.db, affectedIds)) {
+      const record: Rec = { type: "grounding", node: grounding.node_id, file: grounding.scaffold_file };
+      if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
+    }
+
     for (const entry of ordered) {
       if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
       const fact = factFor(session, entry.node.id, opts.detail, opts.fingerprint);
@@ -146,16 +157,6 @@ export function runImpact(
     }
 
     const sourceRecords = planSource(session, ledger, emittedNodes, rootDir, opts);
-
-    // Grounding is keyed by node, so an excluded node must not reappear
-    // through it. Nodes omitted only by the returned-node cap still count.
-    const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])]
-      .filter((id) => !isDriftedFile(session, session.graph.getNode(id)?.filePath));
-    const groundingRecords: Rec[] = [];
-    for (const grounding of groundedFiles(session.db, affectedIds)) {
-      const record: Rec = { type: "grounding", node: grounding.node_id, file: grounding.scaffold_file };
-      if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
-    }
 
     emitAll(write, meta, [
       ...configDriftRecords(session),
