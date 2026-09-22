@@ -60,10 +60,7 @@ describe("MISSING_PATH false positives", () => {
     ).toEqual([]);
   });
 
-  // Not part of #143. A trailing version number reads as a file extension to
-  // the guard above, so `release/2.1.0` never reaches the unrooted check and is
-  // reported as a missing path. Tracked separately; unskip with the fix.
-  it.skip("does not claim a version-shaped branch name", () => {
+  it("does not claim version-shaped branch and runtime references (#201)", () => {
     expect(
       missingPaths("# Release\n\n- Work landed on `release/2.1.0` and `python/3.11`\n")
     ).toEqual([]);

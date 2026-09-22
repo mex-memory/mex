@@ -94,7 +94,7 @@ function isUnrootedReference(
   const trimmed = value.replace(/\/+$/, "");
   const isDirectoryRef = trimmed !== value;
   if (!trimmed.includes("/") && !isDirectoryRef) return false;
-  if (/\.[A-Za-z0-9]+$/.test(trimmed)) return false;
+  if (/\.[A-Za-z][A-Za-z0-9]*$/.test(trimmed)) return false;
 
   const first = trimmed.split("/")[0];
   if (!first || first.startsWith("@") || first === "." || first === "..") return false;
