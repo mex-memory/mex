@@ -21,6 +21,7 @@ import {
   sep,
 } from "node:path";
 import ts from "typescript";
+import { recordGraphPhase, timeGraphPhase } from "../phase-timing.js";
 
 // v3 (#240): checker-rendered signatures no longer embed absolute module paths.
 export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v3";
@@ -479,7 +480,10 @@ export function buildTypeScriptExtraction(
       const sourceFile = program.getSourceFile(absoluteFile);
       if (!sourceFile) continue;
       const filePath = relativePath(root, absoluteFile);
-      const { health, ranges } = sourceHealth(program, sourceFile, semanticDiagnostics);
+      const { health, ranges } = timeGraphPhase(
+        "compiler.diagnostics",
+        () => sourceHealth(program, sourceFile, semanticDiagnostics),
+      );
       const context: FileContext = {
         filePath,
         sourceFile,
@@ -539,6 +543,7 @@ export function buildTypeScriptExtraction(
     // failure to this project so its files fall back to tree-sitter extraction
     // instead of aborting the whole corpus (issue #140 follow-up finding).
     let program: ts.Program;
+    const programStarted = performance.now();
     try {
       program = createProgram({
         rootNames: project.parsed.fileNames,
@@ -557,6 +562,8 @@ export function buildTypeScriptExtraction(
         if (!claimed.has(absolute)) poisonedFiles.add(absolute);
       }
       continue;
+    } finally {
+      recordGraphPhase("compiler.program", performance.now() - programStarted);
     }
     const owned = candidates.filter((file) => {
       if (claimed.has(file) || poisonedFiles.has(file)) return false;
@@ -564,7 +571,7 @@ export function buildTypeScriptExtraction(
       catch { return false; }
     });
     for (const file of owned) claimed.add(file);
-    processProject(project, program, owned);
+    timeGraphPhase("compiler.capture", () => processProject(project, program, owned));
     // program goes out of scope here — the peak-memory point of the old
     // implementation (every program + checker alive simultaneously) is gone.
   }
@@ -586,11 +593,11 @@ export function buildTypeScriptExtraction(
       ...options.inferredCompilerOptions,
     };
     try {
-      const program = createProgram({
+      const program = timeGraphPhase("compiler.program", () => createProgram({
         rootNames: uncovered,
         options: inferredOptions,
         host: inputs.compilerHost(inferredOptions),
-      });
+      }));
       inferredProject = {
         id: "inferred",
         configPath: "",
@@ -601,7 +608,7 @@ export function buildTypeScriptExtraction(
         },
         diagnostics: [],
       };
-      processProject(inferredProject, program, uncovered);
+      timeGraphPhase("compiler.capture", () => processProject(inferredProject!, program, uncovered));
     } catch {
       // Poison among the uncovered roots: leave them all to tree-sitter.
     }
@@ -615,6 +622,7 @@ export function buildTypeScriptExtraction(
     if (captured.fileDraftId) fileDraftIdByPath.set(captured.filePath, captured.fileDraftId);
   }
 
+  const finishStarted = performance.now();
   const files: CompilerFileExtraction[] = [];
   for (const absoluteFile of candidates) {
     const captured = capturedByFile.get(absoluteFile);
@@ -633,6 +641,8 @@ export function buildTypeScriptExtraction(
       references: finishReferences(captured, importBindings, locationIds, nodeById, fileDraftIdByPath),
     } satisfies CompilerFileExtraction);
   }
+
+  recordGraphPhase("compiler.finish", performance.now() - finishStarted);
 
   const summaryProjects: ParsedProject[] = [
     ...parsedProjects.filter((project) => !crashedProjects.has(project)),

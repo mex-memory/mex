@@ -38,6 +38,7 @@ import {
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
 import { tryEnsureSetupIgnoreProtection } from "../setup/ignore.js";
 import { GraphCandidateProcessError, runGraphCandidateProcess, type GraphCandidateProcessOptions } from "./candidate-process.js";
+import { flushGraphPhaseTimings, timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
 
 const LOCK_FILE = "graph.db.lock";
 const LOCK_GATE_FILE = "graph.db.lock.gate";
@@ -478,7 +479,8 @@ async function refreshGraphWithLease(
   let candidatePath: string | null = null;
   try {
     assertNotAborted(options.signal);
-    const priorStatus = await inspect(options, paths.projectRoot, paths.database);
+    const priorStatus = await timeGraphPhaseAsync("envelope.inspect", () =>
+      inspect(options, paths.projectRoot, paths.database));
     assertMaintenanceDirectoryUnchanged(paths);
     assertRefreshable(priorStatus);
     assertClearSidecars(paths.database);
@@ -486,31 +488,35 @@ async function refreshGraphWithLease(
     progress(options, "discover", "Inspecting the current graph snapshot and source corpus.");
 
     candidatePath = ownedPath(paths, "candidate", createToken(options));
-    copyExactDatabase(paths, paths.database, candidatePath, priorIdentity);
-    const buildResult = await refreshCandidate(paths, candidatePath, options);
+    const copyPath = candidatePath;
+    timeGraphPhase("envelope.copy", () => copyExactDatabase(paths, paths.database, copyPath, priorIdentity));
+    const buildResult = await timeGraphPhaseAsync("envelope.candidate", () =>
+      refreshCandidate(paths, copyPath, options));
     await options.__internal?.afterCandidateBuilt?.(candidatePath);
     assertMaintenanceDirectoryUnchanged(paths);
     assertNotAborted(options.signal);
 
     progress(options, "validate", "Validating the refreshed graph candidate.");
-    const candidate = await validateCandidate(options, paths, candidatePath);
+    const candidate = await timeGraphPhaseAsync("envelope.validate", () =>
+      validateCandidate(options, paths, copyPath));
     await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
     assertMaintenanceDirectoryUnchanged(paths);
 
-    const published = await publishCandidate({
+    const published = await timeGraphPhaseAsync("envelope.publish", () => publishCandidate({
       paths,
-      candidatePath,
+      candidatePath: copyPath,
       candidate,
       priorStatus,
       priorIdentity,
       retainRecovery: false,
       options,
-    });
+    }));
     candidatePath = null;
     const finished = currentDate(options);
     return maintenanceResult(started, finished, buildResult, published);
   } finally {
     if (candidatePath) cleanupOwnedDatabase(paths, candidatePath);
+    flushGraphPhaseTimings("refresh");
   }
 }
 
@@ -1642,6 +1648,10 @@ function processIsAlive(pid: number): boolean {
 }
 
 function captureDatabaseIdentity(path: string): DatabaseIdentity {
+  return timeGraphPhase("envelope.dbIdentityHash", () => captureDatabaseIdentityUntimed(path));
+}
+
+function captureDatabaseIdentityUntimed(path: string): DatabaseIdentity {
   assertRegularNonSymlink(path, "graph database");
   const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
   const fd = openSync(path, constants.O_RDONLY | noFollow);
