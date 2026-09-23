@@ -27,7 +27,8 @@ extractor registry lives in
 | **Supported** | Python | `.py` | [`sample.py`](../src/graph/__tests__/fixtures/sample.py), [`extractor-python.test.ts`](../src/graph/__tests__/extractor-python.test.ts), and the [`python-package`](../src/graph/__tests__/fixtures/python-package) integration fixture cover extraction and cross-file package resolution. |
 | **Supported** | Rust | `.rs` | [`sample.rs`](../src/graph/__tests__/fixtures/sample.rs) and [`extractor-rust.test.ts`](../src/graph/__tests__/extractor-rust.test.ts) cover structs, traits, enums, modules, functions, methods, generics, imports, calls, implementations, construction, returns, and field types. |
 | **Partial** | C# | `.cs` | [`sample.cs`](../src/graph/__tests__/fixtures/sample.cs) and [`extractor-csharp.test.ts`](../src/graph/__tests__/extractor-csharp.test.ts) cover namespaces (including nested/file-scoped), classes, interfaces, structs, enums, properties, overloaded indexers, field initializers, `const` fields, constructors/destructors, operators/conversions, static methods, parameters, attributes, `using` imports, calls with receivers, instantiation, and base-list extends/implements. [`engine-csharp.test.ts`](../src/graph/__tests__/engine-csharp.test.ts) verifies persistence and conservative call resolution. Ran clean (0 partial/failed) across 694 real-world `.cs` files in one large external repository. Marked partial, not supported: the `extends`/`implements` split on a class's base list is a first-listed-entry heuristic, not a semantic resolution (documented in `csharp.ts`), generics/type-parameter capture (`typeParameters`, matching Rust's `.rs` support) is not yet implemented, and call binding is limited to proven lexical scope. Calls through arbitrary objects or `base`, and qualified type references (including inheritance and construction), stay unresolved without semantic binding evidence. Recursive calls with multiple same-named overloads also remain unresolved; a unique lexical recursive call can bind to itself. Static constructors have distinct `static C` names so their identities survive reordering against instance constructors. |
-| **Unsupported** | Go and other languages | All other extensions | These names may be reserved in [`src/graph/types.ts`](../src/graph/types.ts), but no grammar or extractor is registered for them. Unsupported files are skipped rather than failing a graph build. |
+| **Supported** | Go | `.go` | [`sample.go`](../src/graph/__tests__/fixtures/sample.go) and [`extractor-go.test.ts`](../src/graph/__tests__/extractor-go.test.ts) cover structs, interfaces, type aliases, functions, methods, generics, imports, calls, and struct field types. |
+| **Unsupported** | Other languages | All other extensions | These names may be reserved in [`src/graph/types.ts`](../src/graph/types.ts), but no grammar or extractor is registered for them. Unsupported files are skipped rather than failing a graph build. |
 
 `src/graph/types.ts` contains a wider future-facing language vocabulary. A name
 in that type union is not a support promise; the grammar and extractor
@@ -242,7 +243,7 @@ either resolve the requested declaration exactly or abstain.
   until their language extractor and resolver work merges.
 - **Support claims are fixture-bounded.** This page describes behavior exercised
   in v0.7.0. It does not promise complete semantic analysis for every construct
-  in a supported language or support for unmerged Go, NestJS, or Next.js work.
+  in a supported language or support for unmerged NestJS or Next.js work.
 
 For contributor interfaces, fixture requirements, and registration points, see
 [Extending the code graph](extractors.md).

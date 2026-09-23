@@ -1375,7 +1375,7 @@ describe("runGraphQuery", () => {
         "export function fetchOrders(userId: string): string[] {\n  return [userId];\n}\n",
       );
       writeFileSync(join(mixedRoot, "OrderList.svelte"), "<script lang=\"ts\">\nlet userId = '';\n</script>\n");
-      writeFileSync(join(mixedRoot, "main.go"), "package main\n");
+      writeFileSync(join(mixedRoot, "main.java"), "class Main {}\n");
       mixedEngine = createGraphEngine({ rootDir: mixedRoot });
       await mixedEngine.build(mixedRoot);
       db = openSqlite(join(mixedRoot, ".mex", "graph.db"));
@@ -1391,7 +1391,7 @@ describe("runGraphQuery", () => {
         code: "TARGET_NOT_FOUND",
         target: "refreshOrders",
         filesIndexed: 1,
-        unindexedSources: { total: 2, byExtension: { ".go": 1, ".svelte": 1 }, truncated: false },
+        unindexedSources: { total: 2, byExtension: { ".java": 1, ".svelte": 1 }, truncated: false },
       });
       const coverageWarnings = (records: Record<string, unknown>[]) => ((records.at(-1)?.warnings ?? []) as string[])
         .filter((warning) => warning.includes("coverage"));
@@ -1415,7 +1415,7 @@ describe("runGraphQuery", () => {
       const changed = capture(() => runGraphQuery("where-defined", "refreshOrders", mixedRoot, mixedDeps, {}));
       expect(changed.find((record) => record.code === "TARGET_NOT_FOUND")).toMatchObject({
         filesIndexed: 1,
-        unindexedSources: { total: 2, byExtension: { ".go": 1, ".svelte": 1 }, truncated: false, observedAt: "last-build" },
+        unindexedSources: { total: 2, byExtension: { ".java": 1, ".svelte": 1 }, truncated: false, observedAt: "last-build" },
       });
       const changedScope = capture(() => runGraphScope("checkout cart pricing", mixedRoot, mixedDeps, {}));
       expect(coverageWarnings(changedScope)).toEqual([expect.stringContaining("at the last graph build")]);

@@ -33,8 +33,8 @@ function source(root: string, path: string, contents: string): void {
 describe("unindexedExtensionHistogram", () => {
   it("reports recognized source extensions no extractor handles", () => {
     const root = temporaryRoot();
-    source(root, "main.go", "package main\n");
-    source(root, "internal/server/server.go", "package server\n");
+    source(root, "main.java", "class Main {}\n");
+    source(root, "internal/server/server.java", "package server;\n");
     source(root, "src/App.svelte", "<script>let x = 1;</script>\n");
     source(root, "src/api.ts", "export const api = true;\n");
 
@@ -42,7 +42,7 @@ describe("unindexedExtensionHistogram", () => {
 
     expect(coverage.total).toBe(3);
     expect(coverage.entries).toEqual([
-      { extension: ".go", files: 2 },
+      { extension: ".java", files: 2 },
       { extension: ".svelte", files: 1 },
     ]);
     expect(coverage.truncated).toBe(false);
@@ -92,29 +92,29 @@ describe("unindexedExtensionHistogram", () => {
     const limits = { maxUnindexedFiles: 50, maxUnindexedEntries: 24 };
     // Only counted files, so the processed-file cap maps exactly onto the total.
     for (let i = 0; i < limits.maxUnindexedFiles + 10; i++) {
-      source(root, `generated/file-${i}.go`, "package main\n");
+      source(root, `generated/file-${i}.java`, "class File {}\n");
     }
 
     const coverage = unindexedExtensionHistogram(root, limits);
 
     expect(coverage.truncated).toBe(true);
     expect(coverage.total).toBe(limits.maxUnindexedFiles);
-    expect(coverage.entries[0]).toEqual({ extension: ".go", files: limits.maxUnindexedFiles });
+    expect(coverage.entries[0]).toEqual({ extension: ".java", files: limits.maxUnindexedFiles });
   });
 
   it("caps the reported entries at maxUnindexedEntries, most common first", () => {
     const root = temporaryRoot();
     const limits = { maxUnindexedFiles: 1000, maxUnindexedEntries: 3 };
-    for (const extension of [".go", ".rb", ".java", ".kt", ".scala"]) {
+    for (const extension of [".cpp", ".rb", ".java", ".kt", ".scala"]) {
       source(root, `src/main${extension}`, "x\n");
     }
-    source(root, "src/extra.go", "package extra\n");
+    source(root, "src/extra.cpp", "int extra;\n");
 
     const coverage = unindexedExtensionHistogram(root, limits);
 
     expect(coverage.total).toBe(6);
     expect(coverage.entries).toEqual([
-      { extension: ".go", files: 2 },
+      { extension: ".cpp", files: 2 },
       { extension: ".java", files: 1 },
       { extension: ".kt", files: 1 },
     ]);
@@ -130,7 +130,7 @@ describe("build-time coverage cache", () => {
   it("counts 600 candidates exactly in a 30k-file tree", () => {
     const root = temporaryRoot();
     for (let i = 0; i < 30_000; i++) source(root, `data/${i}.txt`, "");
-    for (let i = 0; i < 600; i++) source(root, `src/${i}.go`, "package main");
+    for (let i = 0; i < 600; i++) source(root, `src/${i}.java`, "class File {}");
     const raw = captureGraphCoverage(root);
     expect(readGraphCoverage(cachedDb(raw), root, true)).toMatchObject({ total: 600, truncated: false });
     // Large fixture cleanup belongs to this test's explicit runtime budget.
@@ -140,7 +140,7 @@ describe("build-time coverage cache", () => {
 
   it("reuses metadata without any directory discovery on reads", () => {
     const root = temporaryRoot();
-    source(root, "src/main.go", "package main");
+    source(root, "src/main.java", "class Main {}");
     const raw = captureGraphCoverage(root);
     const spy = vi.spyOn(fs, "opendirSync").mockImplementation(() => { throw new Error("read-time walk"); });
     try {
@@ -180,9 +180,9 @@ describe("build-time coverage cache", () => {
 
   it("keeps build-time counts, unstamped, once the entry or directory budget is crossed", () => {
     const root = temporaryRoot();
-    source(root, "a/one.go", "package a");
+    source(root, "a/one.java", "class One {}");
     source(root, "b/two.vue", "<template />");
-    source(root, "c/three.go", "package c");
+    source(root, "c/three.java", "class Three {}");
     const huge = vi.spyOn(fs, "opendirSync").mockImplementation(() => ({
       readSync: () => ({ name: "entry" }), closeSync: () => {},
     }) as unknown as fs.Dir);
@@ -216,7 +216,7 @@ describe("build-time coverage cache", () => {
 
   it("verifies stamps with lstat alone, never realpath, on reads", () => {
     const root = temporaryRoot();
-    source(root, "src/deep/main.go", "package main");
+    source(root, "src/deep/main.java", "class Main {}");
     const raw = captureGraphCoverage(root);
     const realpath = vi.spyOn(fs, "realpathSync").mockImplementation(() => { throw new Error("read-time realpath"); });
     try {

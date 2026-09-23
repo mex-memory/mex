@@ -31,6 +31,7 @@ const WASM_GRAMMAR_FILES: Partial<Record<Language, string>> = {
   python: "tree-sitter-python.wasm",
   rust: "tree-sitter-rust.wasm",
   csharp: "tree-sitter-c-sharp.wasm",
+  go: "tree-sitter-go.wasm",
 };
 let grammarHashCache: string | null = null;
 
@@ -65,6 +66,7 @@ const EXTENSION_MAP: Record<string, Language> = {
   ".py": "python",
   ".rs": "rust",
   ".cs": "csharp",
+  ".go": "go",
 };
 
 /** Glob pattern for every extension registered above. */
