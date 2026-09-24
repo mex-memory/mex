@@ -206,6 +206,17 @@ export const WIKI_DIAGNOSTICS = {
     severity: "error",
     remediation: "Node id and fingerprint must come from live graph output. MEX will not accept caller-supplied values.",
   },
+  /**
+   * Groundings split between a root `grounds_to` and the file-level `mex` map
+   * (#226). Info, because both are read and the root ones belong to the
+   * file-level entity; raised to a warning where the two keys ground one node
+   * differently, since only the `mex.grounds_to` entry is then in effect.
+   */
+  GROUNDING_MIXED_SHAPE: {
+    severity: "info",
+    remediation:
+      "Any `mex ground` write or `mex wiki migrate` moves the root `grounds_to` under `mex.grounds_to`. A node grounded differently in both stays at the root until you keep one and delete the other.",
+  },
 
   // -- Operations ------------------------------------------------------------
   INVALID_OPERATION_ENVELOPE: {

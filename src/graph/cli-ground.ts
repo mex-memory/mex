@@ -54,6 +54,11 @@ grounds_to:
   - node: "<exact graph node id>"
     fingerprint: "<exact mh:64:... fingerprint>"
 
+If the frontmatter already has a mex: map, the list belongs inside it as
+mex.grounds_to (indented under mex:), not at the root. Keep one grounds_to per
+file: never add a root one beside a mex: map, and if a file already has both,
+move the root entries under mex.grounds_to.
+
 When existing prose already names a load-bearing function, method, or class,
 wrap only that existing visible mention, preserving its text:
 [\`symbolName()\`](mex://<exact-node-id>)

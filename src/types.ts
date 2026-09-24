@@ -194,7 +194,10 @@ export type IssueCode =
   // The graph is stale only because source changed, and this grounding cannot be
   // settled without a refresh: its file was deleted, or its node could not be
   // re-derived exactly from the edited file (warning). See #228.
-  | "GROUNDING_UNVERIFIED";
+  | "GROUNDING_UNVERIFIED"
+  // A file keeps groundings both at the root and under `mex:`. Both are read;
+  // info, or a warning when the two ground one node differently. See #226.
+  | "GROUNDING_MIXED_SHAPE";
 
 export interface DriftIssue {
   code: IssueCode;

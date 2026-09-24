@@ -8,9 +8,19 @@
  * bad file, and prose must never be lost.
  *
  * **It never guesses.** Unbound metadata, two blocks competing for one heading,
- * a root `grounds_to` on a multi-entity file — each is reported and left alone.
- * A parser that picks a plausible answer attaches somebody's decision record to
- * the wrong section, and nobody finds out.
+ * a root `grounds_to` in a file with no file-level entity — each is reported
+ * and left alone. A parser that picks a plausible answer attaches somebody's
+ * decision record to the wrong section, and nobody finds out.
+ *
+ * A root `grounds_to` in a file that *has* a file-level entity is not a guess,
+ * and is attached to that entity (#226). Frontmatter is file-level by nature,
+ * and the file-level `mex` map is itself frontmatter, so a root grounding beside
+ * it is a claim about the same document. This used to be refused on any
+ * multi-entity file, which is how setup's own groundings went missing from
+ * `wiki for-code`: population wrote them at the root, and migration then gave
+ * the file a `mex` map and section entities. The narrowing is deliberate and
+ * one-directional: **a root grounding is never attached to a section entity**,
+ * and a file with only section entities keeps its root groundings unattributed.
  *
  * **Every character is accounted for.** Regions belonging to no entity are
  * emitted as explicit gaps, so the partition property can prove nothing was
@@ -43,6 +53,8 @@ import { bindComments, resolveBodyExtents, type Binding } from "./bind.js";
 import { findTopLevelKeyRange, topLevelKeys } from "./frontmatter.js";
 import { lineAt, lineStarts } from "./positions.js";
 import { associateAnchors } from "./anchors.js";
+import { mergeGroundingStores } from "./grounding-stores.js";
+import { validateGrounding, type WikiGrounding } from "../model/grounding.js";
 
 /** An already-parsed metadata value, as a map, or null when it is not one. */
 function asMetadataMap(value: unknown): Record<string, unknown> | null {
@@ -227,6 +239,58 @@ function bindFrontmatter(
   };
 }
 
+/**
+ * The file-level `mex` map with the file's root `grounds_to` attached (#226).
+ *
+ * The union rule is `grounding-stores.ts`, shared with `mex check`'s reader so
+ * the two resolve duplicates and conflicts the same way. Each root entry must
+ * pass the model's own grounding validator first: one malformed root entry
+ * would otherwise reject the whole entity, turning a legacy key into the loss
+ * of the entity it sits beside. The one difference from `check` follows from
+ * that: `check` drops a malformed root list as a set, as it always has, while
+ * this keeps its valid entries.
+ *
+ * Anything this cannot read as a map is returned untouched, so the entity
+ * validator reports it exactly as it did before.
+ */
+function withRootGroundings(
+  path: string,
+  root: Record<string, unknown>,
+  diagnostics: WikiDiagnostic[],
+): unknown {
+  const mex = root["mex"];
+  const map = asMetadataMap(mex);
+  const rootGroundings = root["grounds_to"];
+  if (map === null || !Array.isArray(rootGroundings) || rootGroundings.length === 0) return mex;
+  const own = map["grounds_to"] ?? [];
+  if (!Array.isArray(own)) return mex;
+
+  const context = rootContext({ file: path });
+  const valid = rootGroundings.filter((entry) => validateGrounding(entry, context).ok) as WikiGrounding[];
+  const readable = own.filter((entry): entry is WikiGrounding => {
+    const record = asMetadataMap(entry);
+    return record !== null && typeof record["node"] === "string" && typeof record["fingerprint"] === "string";
+  });
+  const { merged, conflicts } = mergeGroundingStores(readable, valid);
+  const entityId = typeof map["id"] === "string" ? map["id"] : undefined;
+  const nodes = [...new Set(conflicts.map((entry) => entry.node))].join(", ");
+  diagnostics.push(conflicts.length > 0
+    ? diagnostic(
+      "GROUNDING_MIXED_SHAPE",
+      `${path} grounds ${nodes} differently in its root \`grounds_to\` and in \`mex.grounds_to\`; ` +
+        "the `mex.grounds_to` entry is the one in effect.",
+      { file: path, entityId, severity: "warning" },
+    )
+    : diagnostic(
+      "GROUNDING_MIXED_SHAPE",
+      `${path} keeps groundings in both a root \`grounds_to\` and \`mex.grounds_to\`; ` +
+        "both belong to its file-level entity.",
+      { file: path, entityId },
+    ));
+  // Append only what the root adds, after the entity's own list as written.
+  return { ...map, grounds_to: [...own, ...merged.slice(readable.length)] };
+}
+
 /** Every region belonging to no entity, in position order. */
 function collectGaps(text: string, entities: readonly ParsedEntity[]): LabeledRange[] {
   const claimed: { start: number; end: number }[] = [];
@@ -318,7 +382,7 @@ export function parseWikiMarkdown(options: ParseOptions): ParsedFile {
         }),
       );
     } else if (mexRange !== null) {
-      frontmatterBinding = bindFrontmatter(text, document, block, mexRange, rootMap["mex"]);
+      frontmatterBinding = bindFrontmatter(text, document, block, mexRange, withRootGroundings(path, rootMap, diagnostics));
     }
   }
 

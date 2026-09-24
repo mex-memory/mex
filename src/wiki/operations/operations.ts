@@ -31,7 +31,9 @@ import type { WikiEntity, WikiLifecycleState, WikiProvenance } from "../model/en
 import type { WikiGrounding } from "../model/grounding.js";
 import { deriveVerifiedGroundings } from "../grounding/provenance.js";
 import type { PatchEdit } from "../markdown/patch.js";
-import { keyPathRemoveEdit, renderKeyValues } from "../markdown/frontmatter.js";
+import YAML from "yaml";
+import { keyPathEdit, keyPathRemoveEdit, renderKeyValues } from "../markdown/frontmatter.js";
+import { rootGroundingsNotInEffect } from "../markdown/grounding-stores.js";
 import { entityTextOf } from "../markdown/codec.js";
 import { parseDocument } from "../markdown/parse.js";
 import { entityContentHash } from "../model/hash.js";
@@ -693,6 +695,7 @@ function removeSource(context: OperationContext, operation: Extract<WikiOperatio
 
 function setGrounding(context: OperationContext, operation: Extract<WikiOperation, { type: "set-grounding" }>): OperationEdits {
   const located = context.located!;
+  if (operation.payload.absorbRootGroundings === true) return absorbRootGroundings(context, operation.payload.groundsTo);
   const derived = deriveVerifiedGroundings(operation.payload.groundsTo, context.options.graph ?? null);
   if (!derived.ok) {
     return { files: [], entityIds: [], createdIds: [], preconditions: [], revisions: [], diagnostics: derived.diagnostics };
@@ -705,7 +708,75 @@ function setGrounding(context: OperationContext, operation: Extract<WikiOperatio
     extra.push(...anchorEdits(located, groundings));
   }
 
+  // A file-level entity's groundings include the file's root `grounds_to`
+  // (#226), so an explicit replacement of the whole set replaces that key too.
+  // Leaving it would bring every grounding the caller just removed back on the
+  // next read. Only entries that were in effect go: the caller never saw the
+  // others, so replacing "the set" says nothing about them.
+  const root = rootGroundingsEdit(located, rootGroundingsNotInEffect(located.entity.groundsTo, located.parsed.legacy.groundsTo));
+  if (root === null) return reject("WIKI_PARSE_ERROR", `${located.path}: could not locate the root \`grounds_to\` key.`, located.entity.id);
+  extra.push(...root);
+
   return mutateSubject(context, [[METADATA_KEYS.groundsTo, groundings]], extra);
+}
+
+/**
+ * Migration's move of a root `grounds_to` into an existing file-level entity.
+ *
+ * The groundings already belong to the entity as the codec reads it, so the
+ * move changes no fact: it only folds two stores into one. A root entry that
+ * was not in effect — one conflicting with `mex.grounds_to`, or one the codec
+ * could not accept — stays at the root for the same reason `writeGroundings`
+ * keeps it: moving it would be a decision rather than a relocation.
+ */
+function absorbRootGroundings(context: OperationContext, requested: readonly WikiGrounding[]): OperationEdits {
+  const located = context.located!;
+  if (located.metadataKind !== "frontmatter") {
+    return reject(
+      "INVALID_OPERATION_PAYLOAD",
+      `${located.entity.id} is a section entity. A root \`grounds_to\` belongs to a file-level entity and is never attached to a section.`,
+      located.entity.id,
+    );
+  }
+  const current = located.entity.groundsTo;
+  if (requested.length !== current.length || requested.some((entry, index) => canonicalJson(entry) !== canonicalJson(current[index]))) {
+    return reject(
+      "INVALID_OPERATION_PAYLOAD",
+      `absorbRootGroundings moves ${located.entity.id}'s existing groundings and cannot change them; the requested list differs.`,
+      located.entity.id,
+    );
+  }
+  const kept = rootGroundingsNotInEffect(current, located.parsed.legacy.groundsTo);
+  const root = rootGroundingsEdit(located, kept);
+  if (root === null) return reject("WIKI_PARSE_ERROR", `${located.path}: could not locate the root \`grounds_to\` key.`, located.entity.id);
+  return mutateSubject(context, [[METADATA_KEYS.groundsTo, current.map((entry) => ({ ...entry }))]], root);
+}
+
+/** Remove the root `grounds_to` of a file-level entity's file, or narrow it to `kept`. */
+function rootGroundingsEdit(located: LocatedEntity, kept: readonly WikiGrounding[]): PatchEdit[] | null {
+  if (located.metadataKind !== "frontmatter" || !located.parsed.frontmatter?.keys.includes("grounds_to")) return [];
+  const region = parseDocument(located.text).frontmatter;
+  if (region === null) return null;
+  const root = located.parsed.legacy.groundsTo;
+  // A root value with entries the codec could not read as groundings is left
+  // alone, as every grounding writer leaves a value it cannot read.
+  let raw: unknown;
+  try { raw = (YAML.parse(region.text) as Record<string, unknown> | null)?.["grounds_to"]; } catch { return []; }
+  if (!Array.isArray(raw) || raw.length !== root.length) return [];
+  if (kept.length === root.length && kept.length > 0) return [];
+  const edit = kept.length === 0
+    ? keyPathRemoveEdit(located.text, region, ["grounds_to"])
+    : keyPathEdit(located.text, region, ["grounds_to"], kept);
+  if (edit === null) return null;
+  return edit === "absent" ? [] : [edit];
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 /**

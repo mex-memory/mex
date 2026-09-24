@@ -43,6 +43,10 @@ shadow the source being populated.
      - node: "<exact id from graph JSONL>"
        fingerprint: "<exact fingerprint from the same graph fact>"
 
+   If the file's frontmatter already has a \`mex:\` map, the list belongs inside
+   it as \`mex.grounds_to\` (indented under \`mex:\`), not at the root. Keep one
+   \`grounds_to\` per file: never add a root one beside a \`mex:\` map.
+
    Never ground every node returned by scope. Callers/callees provide reading
    context; they are not automatically grounding targets. Do not ground file,
    import, parameter, or vague component nodes.

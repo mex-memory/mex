@@ -201,6 +201,14 @@ function targetOf(heading: RawHeading, ordinal: number): AdoptionTarget {
 }
 
 /**
+ * Why a file that already carries entities is skipped. Exported because it is
+ * the one skip reason that still lets migration fold a root `grounds_to` into
+ * the file's existing file-level entity (#226); every other skip means the file
+ * is not migration's to write.
+ */
+export const ALREADY_ADOPTED_REASON = "already carries entity metadata";
+
+/**
  * Classify one file.
  *
  * Never throws, never guesses, and reports what it declined to decide.
@@ -232,7 +240,7 @@ export function classifyFile(file: InventoryFile): FileClassification {
   // A file that already carries entities has been migrated. Section 13.3: a
   // file with valid ids is skipped, never regenerated.
   if (file.parsed.entities.length > 0) {
-    return { ...result, skipped: true, skipReason: "already carries entity metadata" };
+    return { ...result, skipped: true, skipReason: ALREADY_ADOPTED_REASON };
   }
 
   // A file the codec could not read is a file migration must not write into.

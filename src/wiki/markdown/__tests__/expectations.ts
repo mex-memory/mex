@@ -556,7 +556,7 @@ export const FIXTURE_EXPECTATIONS: FixtureExpectation[] = [
   // ------------------------------------------------------------------- legacy
   {
     path: "legacy/grounds-to-single.md",
-    note: "A root-level grounds_to on a single-entity file: unambiguous, preserved, and readable alongside the mex key.",
+    note: "A root-level grounds_to beside the file-level mex key: unambiguous, preserved, attached to the file-level entity, and reported as a split store (#226).",
     covers: [26],
     entities: [
       {
@@ -572,7 +572,7 @@ export const FIXTURE_EXPECTATIONS: FixtureExpectation[] = [
         bodyEnds: { at: "eof" },
       },
     ],
-    diagnostics: [],
+    diagnostics: ["GROUNDING_MIXED_SHAPE"],
     legacy: { groundsTo: 1, edges: 0 },
   },
   {

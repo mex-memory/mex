@@ -60,9 +60,10 @@ export function makeGroundingChecker(
     //
     // That is silent, and it is worse than a false positive, because a
     // scaffold that checks clean is one nobody looks at. `extractGroundings`
-    // resolves the key path the same way the writer does, so the two ends
-    // agree; the frontmatter value is the fallback for a file that cannot be
-    // re-read here, which is the only case the old path still covers.
+    // reads both keys, because the same silence came back through a file that
+    // carries a root `grounds_to` beside a `mex:` map (#226); the writer folds
+    // the two into one. The frontmatter value is the fallback for a file that
+    // cannot be re-read here, which is the only case the old path still covers.
     const declared = content === null ? (frontmatter?.grounds_to ?? []) : extractGroundings(content);
 
     for (const grounding of declared) {

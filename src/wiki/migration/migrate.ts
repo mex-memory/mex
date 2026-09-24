@@ -28,6 +28,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { ENTITY_ID_LENGTH, ENTITY_ID_PREFIX, isEntityId, type EntityId } from "../model/ids.js";
+import type { WikiGrounding } from "../model/grounding.js";
 import type { AbsorbableRootKey, WikiActor, WikiOperation } from "../model/operation.js";
 import type { WikiEntityType } from "../model/entity.js";
 import type { EntityTypeRegistry } from "../model/entity.js";
@@ -49,7 +50,7 @@ import { acquireWikiMaintenanceLease, type WikiMaintenanceLease } from "../index
 import { readContainedSource } from "../index/source-read.js";
 import { inventoryScaffold, type InventoryFile, type ScaffoldInventory } from "./inventory.js";
 import { classifyFile, orderForAdoption, type Abstention, type Candidate, type FileClassification } from "./classify.js";
-import { opIdForCandidate, opIdForEdge } from "./ids.js";
+import { opIdForCandidate, opIdForEdge, opIdForRootGroundings } from "./ids.js";
 import { planGroundingMoves, planLegacyEdges, type FileOutcome } from "./legacy.js";
 
 export interface MigrateOptions {
@@ -338,7 +339,8 @@ function migrationReportFromInventory(
     (path) => classifications.get(path)?.candidates ?? [],
     options.graph ?? null,
   );
-  report.groundingsMoved = [...groundings.moved.values()].reduce((sum, list) => sum + list.length, 0);
+  report.groundingsMoved = [...groundings.moved.values()].reduce((sum, list) => sum + list.length, 0)
+    + [...groundings.absorbed.values()].reduce((sum, entry) => sum + entry.count, 0);
   report.groundingsAmbiguous = groundings.diagnostics.length;
   report.diagnostics.push(...groundings.diagnostics);
 
@@ -435,6 +437,21 @@ function envelope(
     timestamp: options.now?.() ?? "2026-01-01T00:00:00.000Z",
     payload,
   };
+}
+
+/** A `set-grounding` that only moves a file's root `grounds_to` into its file-level entity. */
+function absorbEnvelope(
+  path: string,
+  absorb: { entityId: EntityId; groundsTo: WikiGrounding[] },
+  options: MigrateOptions,
+): unknown {
+  return envelope(
+    opIdForRootGroundings(path, absorb.groundsTo),
+    "set-grounding",
+    { groundsTo: absorb.groundsTo, absorbRootGroundings: true },
+    options,
+    absorb.entityId,
+  );
 }
 
 /**
@@ -565,6 +582,15 @@ function migrateScaffoldHeld(options: MigrateOptions & { maintenanceLease: WikiM
       if (moved !== undefined && isFileLevel) report.groundingsMoved += moved.length;
     }
     minted.set(file.path, ids);
+  }
+
+  // -- pass 1b: root groundings of files an earlier run adopted (#226) --------
+  for (const [path, absorb] of groundingPlan.absorbed) {
+    const result = applyOperation(absorbEnvelope(path, absorb, options), applyOptions());
+    report.diagnostics.push(...result.diagnostics);
+    if (!result.ok) continue;
+    report.groundingsMoved += absorb.count;
+    if (!result.replayed) for (const changedPath of result.changedFiles) changed.add(changedPath);
   }
 
   // -- pass 2: legacy edges, over a fresh inventory ---------------------------
@@ -823,6 +849,10 @@ export function planPinnedMigration(options: MigrateOptions): PinnedMigrationPla
       if (plan !== null) ids.push(...plan.createdIds);
     }
     minted.set(file.path, ids);
+  }
+
+  for (const [path, absorb] of groundingPlan.absorbed) {
+    remember(planOperation(absorbEnvelope(path, absorb, options), planOptions()));
   }
 
   // Resolve legacy edges over the virtual post-adoption tree, exactly as the

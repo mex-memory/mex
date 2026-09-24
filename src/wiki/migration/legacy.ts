@@ -29,21 +29,35 @@
  *   has a file-level entity — the file-level entity *is* the document — or when
  *   it yields exactly one entity of any kind.
  *
- * A **grounding** is stricter than either, and deliberately: it is a claim that
- * *this prose* is implemented by *that code*. Attributing a file's grounding to
- * a file-level entity that has four component children claims the grounding
- * describes the parent rather than one of the children, which is precisely the
- * guess section 9.4 refuses. So a root `grounds_to` moves only when the file
- * yields **exactly one** entity in total, matching the codec's own rule and the
- * two shipped fixtures that pin it.
+ * A **grounding** is a claim that *this prose* is implemented by *that code*,
+ * and a root `grounds_to` is frontmatter: a claim the file makes about itself,
+ * with nothing in it naming a section. So it moves to the **file-level** entity
+ * whenever the file has or gets one, however many section entities sit beside
+ * it, and it is **never** attributed to a section entity (#226).
+ *
+ * This used to be stricter: a root `grounds_to` moved only when the file
+ * yielded exactly one entity, on the reasoning that attaching it to a parent
+ * with section children claimed it described the parent rather than a child.
+ * But the file-level entity is the whole document, which is what the author
+ * put it on, and refusing left it at the root beside a new `mex:` map. Setup
+ * produced exactly that on every multi-entity file it populated, and the Wiki
+ * then dropped those groundings. Attaching to the file-level entity narrows
+ * "never guesses" rather than abandoning it: the only guess refused was ever
+ * which *section*, and that is still refused. A file with only section
+ * entities keeps its root groundings, reported and unattributed.
+ *
+ * A file adopted before this rule is folded the same way: its root groundings
+ * move into the existing file-level entity's `mex.grounds_to`, as a move of
+ * values already in the file, never re-derived from the graph.
  */
 import { diagnostic, type WikiDiagnostic } from "../model/diagnostic.js";
 import type { EntityId } from "../model/ids.js";
 import type { WikiGrounding } from "../model/grounding.js";
 import type { LegacyEdge } from "../markdown/contract.js";
+import { rootGroundingsNotInEffect } from "../markdown/grounding-stores.js";
 import type { GroundingGraph } from "../grounding/adapter.js";
 import type { InventoryFile, ScaffoldInventory } from "./inventory.js";
-import type { Candidate, FileClassification } from "./classify.js";
+import { ALREADY_ADOPTED_REASON, type Candidate, type FileClassification } from "./classify.js";
 
 /** Frontmatter keys migration preserves untouched. Section 13.4's first bullet. */
 export const PRESERVED_LEGACY_KEYS = ["name", "description", "triggers", "last_updated", "edges"] as const;
@@ -159,6 +173,12 @@ export function planLegacyEdges(
 export interface GroundingPlan {
   /** Groundings to move under `mex.grounds_to`, keyed by file. */
   moved: Map<string, WikiGrounding[]>;
+  /**
+   * Files adopted by an earlier run whose root `grounds_to` folds into their
+   * existing file-level entity (#226), keyed by file. `groundsTo` is that
+   * entity's grounding set as the codec reads it, root entries included.
+   */
+  absorbed: Map<string, { entityId: EntityId; groundsTo: WikiGrounding[]; count: number }>;
   diagnostics: WikiDiagnostic[];
 }
 
@@ -175,6 +195,14 @@ export interface GroundingPlan {
  * the scaffold, written by a previous `mex ground`. So section 12.4's
  * re-derivation requirement, which governs *new* groundings, is not what
  * applies here; moving a fact is not asserting a new one.
+ *
+ * A file that already has a file-level entity is folded without `backfill`:
+ * the codec already reads those groundings as the entity's, so the move must
+ * leave them exactly as they read. Its root entries that are not in effect —
+ * conflicting with the entity's own `mex.grounds_to`, or rejected by the
+ * grounding validator — stay at the root and are reported, because choosing
+ * between two authored values for one node, or repairing a malformed one, is
+ * a decision migration does not make.
  */
 export function planGroundingMoves(
   inventory: ScaffoldInventory,
@@ -183,24 +211,48 @@ export function planGroundingMoves(
   graph: GroundingGraph | null,
 ): GroundingPlan {
   const moved = new Map<string, WikiGrounding[]>();
+  const absorbed: GroundingPlan["absorbed"] = new Map();
   const diagnostics: WikiDiagnostic[] = [];
 
   for (const file of inventory.files) {
     const groundings = file.parsed.legacy.groundsTo;
     if (groundings.length === 0) continue;
 
-    const candidates = candidatesFor(file.path);
-    const existing = file.parsed.entities.length;
-    const total = candidates.length + existing;
-    const fileLevel = candidates.find((candidate) => candidate.target.at === "file");
+    const adopted = file.parsed.entities.find((entry) => entry.metadataKind === "frontmatter");
+    if (adopted !== undefined) {
+      // Any other skip — a Team-owned path, a non-knowledge file — means the
+      // file is not migration's to write, so nothing here touches it.
+      if (classifications.get(file.path)?.skipReason !== ALREADY_ADOPTED_REASON) continue;
+      const kept = rootGroundingsNotInEffect(adopted.entity.groundsTo, groundings);
+      if (kept.length > 0) {
+        diagnostics.push(
+          diagnostic(
+            "AMBIGUOUS_MIGRATION",
+            `${file.path} has root \`grounds_to\` entries for ${[...new Set(kept.map((entry) => entry.node))].join(", ")} ` +
+              "that are not in effect: each conflicts with `mex.grounds_to` or is malformed. They are preserved " +
+              "at the root; keep the right entry under `mex.grounds_to` and delete the root one.",
+            { file: file.path, entityId: adopted.entity.id },
+          ),
+        );
+      }
+      if (kept.length < groundings.length) {
+        absorbed.set(file.path, {
+          entityId: adopted.entity.id,
+          groundsTo: adopted.entity.groundsTo,
+          count: groundings.length - kept.length,
+        });
+      }
+      continue;
+    }
 
-    if (total !== 1 || fileLevel === undefined) {
+    const fileLevel = candidatesFor(file.path).find((candidate) => candidate.target.at === "file");
+    if (fileLevel === undefined) {
       diagnostics.push(
         diagnostic(
           "AMBIGUOUS_MIGRATION",
-          `${file.path} carries a root \`grounds_to\` and yields ${total} entities. A grounding claims that ` +
-            "particular prose is implemented by particular code, and nothing here says which section it " +
-            "describes. It is preserved at the root and left unattributed.",
+          `${file.path} carries a root \`grounds_to\` but has no file-level entity to own it. A grounding ` +
+            "claims that particular prose is implemented by particular code, and nothing here says which " +
+            "section it describes. It is preserved at the root and left unattributed.",
           { file: file.path },
         ),
       );
@@ -208,10 +260,9 @@ export function planGroundingMoves(
     }
 
     moved.set(file.path, groundings.map((grounding) => backfill(grounding, graph)));
-    void classifications;
   }
 
-  return { moved, diagnostics };
+  return { moved, absorbed, diagnostics };
 }
 
 /** Add a `bodyHash` the graph can re-derive; never invent one. */
