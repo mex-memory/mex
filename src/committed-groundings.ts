@@ -24,6 +24,10 @@
  * descriptor-bound reads and the byte ceilings are the ones already reviewed,
  * not a second set.
  *
+ * It lives beside `markdown.ts` rather than under `src/graph/` for the same
+ * reason that module does: no graph module imports the Wiki, and the Wiki
+ * modules used here import nothing from the graph, so no cycle is formed.
+ *
  * Groundings are read through `extractGroundings`, which takes the union of the
  * root `grounds_to` and `mex.grounds_to` (#226). Inline `mex://` anchors are
  * not read: they are links in prose, the Wiki does not index them as
@@ -49,12 +53,12 @@
 
 import { lstatSync } from "node:fs";
 import { relative, resolve } from "node:path";
-import { loadConfiguredWikiConfig } from "../config.js";
-import { extractGroundings } from "../markdown.js";
-import { toPosix } from "../paths.js";
-import { addWikiCorpusBytes, WikiCorpusLimitError, type WikiCorpusLimit } from "../wiki/index/corpus-policy.js";
-import { discoverMarkdownFiles, type DiscoveredFile } from "../wiki/index/discover.js";
-import { readContainedSource } from "../wiki/index/source-read.js";
+import { loadConfiguredWikiConfig } from "./config.js";
+import { extractGroundings } from "./markdown.js";
+import { toPosix } from "./paths.js";
+import { addWikiCorpusBytes, WikiCorpusLimitError, type WikiCorpusLimit } from "./wiki/index/corpus-policy.js";
+import { discoverMarkdownFiles, type DiscoveredFile } from "./wiki/index/discover.js";
+import { readContainedSource } from "./wiki/index/source-read.js";
 
 /** One declared grounding: a scaffold file, relative to the project root, and the node it names. */
 export interface CommittedGrounding {

@@ -17,7 +17,7 @@ import {
 import {
   committedGroundingsChangedSince, observeCommittedGroundings,
   type CommittedGrounding, type CommittedGroundingObservation,
-} from "./committed-groundings.js";
+} from "../committed-groundings.js";
 import { FingerprintStore } from "./fingerprint-store.js";
 import { serializeFingerprint } from "./fingerprint.js";
 import {
