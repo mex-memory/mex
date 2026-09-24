@@ -25,11 +25,14 @@
 //        MOVED     -> rebind identity; WARNING if the accepted body hash differs
 //        AMBIGUOUS -> WARNING  (GROUNDING_AMBIGUOUS) + candidate id
 //        GONE      -> ERROR    (GROUNDING_GONE)
+//   Graph stale only by changed source (#228) — no reconciliation:
+//     file unchanged, or node re-derived exactly -> the Tier-1 rows above
+//     file deleted, node not located exactly     -> WARNING (GROUNDING_UNVERIFIED)
 
 import type { DriftIssue, ScaffoldFrontmatter, Grounding } from "../types.js";
 import type { GraphEngine } from "./engine.js";
 import type { Reconciler } from "./reconcile.js";
-import { makeGroundingChecker } from "../drift/checkers/grounding.js";
+import { makeGroundingChecker, type SourceDriftGrounding } from "../drift/checkers/grounding.js";
 
 export type { Grounding };
 
@@ -120,11 +123,15 @@ export type GroundingChecker = (
  * graph), the drift pipeline simply does not construct this checker (spec §7);
  * the eleven filesystem/lexical checkers are unaffected.
  *
- * Phase-0 stub: returns a checker that throws. Track B provides the real body.
+ * `sourceDrift` is the one additive seam since Phase 0 (#228): a graph that is
+ * stale only because source files changed is still checked, with every node
+ * the snapshot cannot vouch for reported as GROUNDING_UNVERIFIED and no
+ * reconciliation attempted. Omit it for the frozen fresh-graph behaviour.
  */
 export function createGroundingChecker(
   graph: GraphEngine,
   reconciler: Reconciler,
+  sourceDrift?: SourceDriftGrounding,
 ): GroundingChecker {
-  return makeGroundingChecker(graph, reconciler);
+  return makeGroundingChecker(graph, reconciler, sourceDrift);
 }

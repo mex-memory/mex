@@ -190,7 +190,11 @@ export type IssueCode =
   // never has to reopen this shared union. See src/graph/grounding.ts.
   | "GROUNDING_GONE" //      grounded node deleted / unrecoverable (error)
   | "GROUNDING_DRIFT" //     grounded node still exists but its body changed (warning)
-  | "GROUNDING_AMBIGUOUS"; // reconciler found an uncertain move candidate (warning)
+  | "GROUNDING_AMBIGUOUS" // reconciler found an uncertain move candidate (warning)
+  // The graph is stale only because source changed, and this grounding cannot be
+  // settled without a refresh: its file was deleted, or its node could not be
+  // re-derived exactly from the edited file (warning). See #228.
+  | "GROUNDING_UNVERIFIED";
 
 export interface DriftIssue {
   code: IssueCode;

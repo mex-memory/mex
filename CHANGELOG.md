@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `mex check` no longer switches grounding off after a source edit. When the only reason the graph is stale is that source files changed, and the complete list of changed files is known, groundings in unchanged files are checked against the last snapshot. A node in an edited tree-sitter file (Python, Go and the other non-TypeScript languages) is re-extracted from that file with the same extractor and body hash a refresh uses, so a changed body is a real `GROUNDING_DRIFT` without a refresh. What cannot be settled that way — a deleted file, an edited TypeScript or JavaScript file (its spans come from a whole compiler program), or a node no longer found in its file under the same identity — is the new `GROUNDING_UNVERIFIED` warning, counted in the score, with a message to run `mex graph refresh`. Nothing is reported `GROUNDING_GONE` or moved from a stale snapshot, and the freshness warning stays. Config, semantic-input, branch, grammar, schema or parse-health staleness still skips grounding exactly as before. Previously the score did not move after the very edit grounding exists to catch until a full refresh. The accepted cost: every grounding in an edited TypeScript or JavaScript file reads unverified rather than clean or drifted until the next refresh (#228).
+
+### Fixed
+- Closing a read-only grounding runtime now releases the descriptor that binds `graph.db`, not only its SQLite reader. On Windows the open handle made the next refresh in the same process, after any check that opened grounding readers, fail with "The live graph changed before candidate publication" (#228).
+
 ## [0.8.2] - Unreleased
 
 ### Added

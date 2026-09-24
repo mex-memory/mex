@@ -12,9 +12,26 @@ interface GroundingReconcilerCapabilities {
   getFingerprint?(nodeId: string): Fingerprint | null;
 }
 
+/** What a snapshot stale only by changed source can still say about one node (#228). */
+export type SourceDriftResolution =
+  /** The node's body as a refresh would record it: from the snapshot when its
+   *  file is unchanged, or re-derived exactly from the edited file. */
+  | { kind: "current"; bodyHash: string | undefined }
+  /** Only a refresh can settle this node; `reason` says why. */
+  | { kind: "unverified"; reason: string };
+
+/**
+ * Grounding against a graph whose only fault is that source files changed.
+ * Supplied by the read-only runtime, which owns the exhaustive drifted-path set.
+ */
+export interface SourceDriftGrounding {
+  resolve(nodeId: string): SourceDriftResolution;
+}
+
 export function makeGroundingChecker(
   graph: GraphEngine,
   reconciler: Reconciler,
+  sourceDrift?: SourceDriftGrounding,
 ): GroundingChecker {
   const capabilities = reconciler as Reconciler & GroundingReconcilerCapabilities;
 
@@ -52,6 +69,26 @@ export function makeGroundingChecker(
       if (!isGrounding(grounding)) continue;
       const current = graph.getNode(grounding.node);
       const baselineSource = capabilities.getGroundedSource?.(scaffoldFile, grounding.node) ?? null;
+      if (sourceDrift) {
+        // **A stale snapshot never reconciles.** Rename and move detection
+        // compares fingerprints across the whole corpus, and the corpus this
+        // snapshot describes is no longer the working tree. A node that looks
+        // gone may have moved into an edited file, so nothing here is reported
+        // GONE, MOVED or AMBIGUOUS: what cannot be settled is UNVERIFIED, and
+        // a definite DRIFT comes only from a body hash a refresh would record.
+        const resolution = sourceDrift.resolve(grounding.node);
+        if (resolution.kind === "unverified") {
+          issues.push(issue("GROUNDING_UNVERIFIED", "warning", source,
+            `Grounded node cannot be verified until \`mex graph refresh\`: ${grounding.node} (${resolution.reason})`));
+          continue;
+        }
+        const baselineBodyHash = grounding.bodyHash ?? baselineSource?.bodyHash;
+        if (baselineBodyHash !== undefined && resolution.bodyHash !== baselineBodyHash) {
+          issues.push(issue("GROUNDING_DRIFT", "warning", source,
+            `Grounded node body changed: ${grounding.node}`));
+        }
+        continue;
+      }
       if (current) {
         // **The committed hash wins, and the cached one is only a fallback.**
         //
@@ -99,6 +136,14 @@ export function makeGroundingChecker(
 
     if (content === null) return issues;
     for (const anchor of findMexAnchors(content)) {
+      if (sourceDrift) {
+        const resolution = sourceDrift.resolve(anchor.nodeId);
+        if (resolution.kind === "unverified") {
+          issues.push(issue("GROUNDING_UNVERIFIED", "warning", source,
+            `Inline anchor cannot be verified until \`mex graph refresh\`: ${anchor.nodeId} (${resolution.reason})`));
+        }
+        continue;
+      }
       if (graph.getNode(anchor.nodeId)) continue;
       const baselineSource = capabilities.getGroundedSource?.(scaffoldFile, anchor.nodeId) ?? null;
       const baseline = capabilities.getFingerprint?.(anchor.nodeId)

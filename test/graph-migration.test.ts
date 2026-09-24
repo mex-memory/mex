@@ -119,7 +119,11 @@ describe("pre-0.7 graph grounding migration", () => {
     const warning = vi.fn();
     let drift = await runDriftCheckWithGraphStatus(config, { graphWarning: warning });
     expect(drift.graphStatus?.status).toBe("stale");
-    expect(drift.issues.some((issue) => issue.code.startsWith("GROUNDING_"))).toBe(false);
+    // Source-only staleness no longer hides the edit (#228). The edited file is
+    // compiler-extracted, so without a refresh both the grounding and its
+    // inline anchor are unverified — never clean, never a guessed verdict.
+    expect(drift.issues.filter((issue) => issue.code.startsWith("GROUNDING_")).map((issue) => issue.code))
+      .toEqual(["GROUNDING_UNVERIFIED", "GROUNDING_UNVERIFIED"]);
     expect(warning).toHaveBeenCalledWith(expect.stringContaining("Run `mex graph refresh`"));
 
     const refreshRuntime = await loadGroundingRuntime(config);

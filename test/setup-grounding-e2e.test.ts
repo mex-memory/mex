@@ -152,7 +152,16 @@ export function calculateCheckoutTotal(items: number[], member: boolean): number
     const warnings: string[] = [];
     let drift = await runDriftCheckWithGraphStatus(config, { graphWarning: (message) => warnings.push(message) });
     expect(drift.graphStatus?.status).toBe("stale");
-    expect(drift.issues.some((issue) => issue.code.startsWith("GROUNDING_"))).toBe(false);
+    // Source-only staleness no longer hides the edit (#228). checkout.ts is
+    // compiler-extracted, so without a refresh its groundings are unverified:
+    // never clean, and never a definite verdict guessed from a stale snapshot.
+    const staleGrounding = drift.issues.filter((issue) => issue.code.startsWith("GROUNDING_"));
+    expect(staleGrounding.length).toBeGreaterThan(0);
+    expect(staleGrounding.every((issue) => issue.code === "GROUNDING_UNVERIFIED")).toBe(true);
+    expect(staleGrounding).toContainEqual(expect.objectContaining({
+      code: "GROUNDING_UNVERIFIED",
+      file: ".mex/patterns/calculate-checkout.md",
+    }));
     expect(warnings).toContainEqual(expect.stringContaining("Run `mex graph refresh`"));
 
     const refreshRuntime = await loadGroundingRuntime(config);
