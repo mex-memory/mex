@@ -113,6 +113,22 @@ describe("agent graph commands", () => {
     expect(rows.findIndex((row) => row.type === "grounding")).toBeLessThan(rows.findIndex((row) => row.type === "summary"));
   });
 
+  it("impact stays well-formed and truncated when even grounding cannot fit", () => {
+    // The smallest accepted budget holds the protocol framing and nothing else.
+    const probe = deps();
+    runImpact("leaf", "/repo", probe.deps, { maxOutputTokens: 1 });
+    const floor = Number(/use at least (\d+)/.exec(JSON.parse(probe.output[0]!).message)?.[1]);
+    expect(floor).toBeGreaterThan(1);
+
+    const fixture = deps();
+    runImpact("leaf", "/repo", fixture.deps, { maxOutputTokens: floor });
+    const rows = fixture.output.map((line) => JSON.parse(line));
+    expect(rows[0]).toMatchObject({ type: "meta" });
+    expect(rows.at(-1)).toMatchObject({ type: "summary", truncated: true });
+    expect(rows.at(-1).estimatedOutputTokens).toBeLessThanOrEqual(floor);
+    expect(rows.filter((row) => row.type === "grounding")).toEqual([]);
+  });
+
   it("impact accepts a file and reports each node it defines", () => {
     const fixture = deps();
     runImpact("src/a.ts", "/repo", fixture.deps);

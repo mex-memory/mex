@@ -137,6 +137,9 @@ export function runImpact(
     // through it. Nodes omitted only by the returned-node cap still count.
     const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])]
       .filter((id) => !isDriftedFile(session, session.graph.getNode(id)?.filePath));
+    // Knowledge links are admitted before callers and source (#225): they are
+    // tiny and no other command returns them, so budget pressure cuts the
+    // callers other commands can reproduce instead. Output order is unchanged.
     const groundingRecords: Rec[] = [];
     for (const grounding of groundedFiles(session.db, affectedIds)) {
       const record: Rec = { type: "grounding", node: grounding.node_id, file: grounding.scaffold_file };
