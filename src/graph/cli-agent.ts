@@ -14,6 +14,10 @@ import {
   compactFact, groupByFile, planFileSource, readNodeSource, selectScope, sourceHash,
   type CompactFact, type DetailLevel, type RankedScopeFile, type ScopedCandidate, type SourceRange,
 } from "./scope.js";
+import {
+  committedGroundingsChangedSince, observeCommittedGroundings,
+  type CommittedGrounding, type CommittedGroundingObservation,
+} from "../committed-groundings.js";
 import { FingerprintStore } from "./fingerprint-store.js";
 import { serializeFingerprint } from "./fingerprint.js";
 import {
@@ -140,9 +144,16 @@ export function runImpact(
     // Knowledge links are admitted before callers and source (#225): they are
     // tiny and no other command returns them, so budget pressure cuts the
     // callers other commands can reproduce instead. Output order is unchanged.
-    const groundingRecords: Rec[] = [];
-    for (const grounding of groundedFiles(session.db, affectedIds)) {
-      const record: Rec = { type: "grounding", node: grounding.node_id, file: grounding.scaffold_file };
+    // They are read from the committed scaffold, not the graph.db cache (#224),
+    // and anything that scaffold read could not cover is said, not skipped.
+    const scaffold = observeCommittedGroundings(rootDir);
+    (deps as AgentCommandInternalDeps).__internal?.afterCommittedGroundingRead?.();
+    let groundingRecords: Rec[] = [];
+    for (const record of groundingOmissionRecords(scaffold)) {
+      if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
+    }
+    for (const grounding of groundedFiles(session.db, affectedIds, scaffold.groundings)) {
+      const record: Rec = { type: "grounding", node: grounding.node, file: grounding.file };
       if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
     }
 
@@ -160,6 +171,16 @@ export function runImpact(
     }
 
     const sourceRecords = planSource(session, ledger, emittedNodes, rootDir, opts);
+
+    // The graph snapshot is revalidated after this task; the scaffold is not
+    // part of it, so it is observed again here. Links read from bytes that
+    // have since changed are withheld rather than returned as current.
+    const changed = committedGroundingsChangedSince(rootDir, scaffold);
+    if (changed.length > 0) {
+      groundingRecords = [];
+      const record = groundingOmissionRecord("scaffold-changed", changed);
+      if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
+    }
 
     emitAll(write, meta, [
       ...configDriftRecords(session),
@@ -2000,6 +2021,8 @@ type AgentSessionTask = (session: AgentGraphSession, write: (line: string) => vo
 interface AgentCommandInternalHooks {
   freshRead?: Omit<LoadFreshGraphReadSessionOptions, "dbPath" | "loadSession">;
   beforeFinalFreshnessValidation?: () => void | Promise<void>;
+  /** Runs after `impact` reads the scaffold and before it observes it again. */
+  afterCommittedGroundingRead?: () => void;
 }
 
 type AgentCommandInternalDeps = AgentCommandDeps & {
@@ -2606,19 +2629,87 @@ function unresolvedCallSites(
   ).all(name, Math.max(0, limit)) as UnresolvedCallSite[];
 }
 
-function groundedFiles(db: SqliteDatabase, nodeIds: string[]): Array<{ scaffold_file: string; node_id: string }> {
-  if (nodeIds.length === 0) return [];
-  const placeholders = nodeIds.map(() => "?").join(",");
-  return db.prepare(
-    `SELECT DISTINCT grounded.scaffold_file,
-            COALESCE(aliases.canonical_node_id, grounded.node_id) AS node_id
-     FROM _mex_grounded_source grounded
-     LEFT JOIN node_aliases aliases ON aliases.alias_id = grounded.node_id
-     WHERE grounded.scaffold_file IS NOT NULL
-       AND (grounded.node_id IN (${placeholders})
-        OR aliases.canonical_node_id IN (${placeholders}))
-     ORDER BY grounded.scaffold_file, node_id`,
-  ).all(...nodeIds, ...nodeIds) as Array<{ scaffold_file: string; node_id: string }>;
+/**
+ * The committed groundings that name one of `nodeIds`, deduplicated and sorted
+ * by file then node.
+ *
+ * A grounding recorded under an older id still attaches through
+ * `node_aliases`, and is reported under the current id, as it was when this
+ * read the `_mex_grounded_source` cache. That cache is no longer consulted
+ * (#224): it was filled only by capture, so a fresh clone had none of it and a
+ * moved-on checkout kept links the Markdown had dropped.
+ */
+function groundedFiles(
+  db: SqliteDatabase,
+  nodeIds: readonly string[],
+  committed: readonly CommittedGrounding[],
+): CommittedGrounding[] {
+  if (nodeIds.length === 0 || committed.length === 0) return [];
+  const affected = new Set(nodeIds);
+  const canonical = nodeAliases(db, [...new Set(committed.map((entry) => entry.node))]);
+  const found = new Map<string, CommittedGrounding>();
+  for (const entry of committed) {
+    const aliased = canonical.get(entry.node);
+    const node = aliased !== undefined && affected.has(aliased) ? aliased
+      : affected.has(entry.node) ? entry.node : undefined;
+    if (node === undefined) continue;
+    found.set(`${entry.file}\0${node}`, { file: entry.file, node });
+  }
+  return [...found.values()].sort((left, right) =>
+    left.file < right.file ? -1 : left.file > right.file ? 1
+      : left.node < right.node ? -1 : left.node > right.node ? 1 : 0);
+}
+
+/** `alias → canonical` for the given ids, read in bounded batches. */
+function nodeAliases(db: SqliteDatabase, ids: readonly string[]): Map<string, string> {
+  const aliases = new Map<string, string>();
+  for (let start = 0; start < ids.length; start += ALIAS_LOOKUP_BATCH) {
+    const batch = ids.slice(start, start + ALIAS_LOOKUP_BATCH);
+    const rows = db.prepare(
+      `SELECT alias_id, canonical_node_id FROM node_aliases
+       WHERE alias_id IN (${batch.map(() => "?").join(",")})`,
+    ).all(...batch) as Array<{ alias_id: string; canonical_node_id: string }>;
+    for (const row of rows) aliases.set(row.alias_id, row.canonical_node_id);
+  }
+  return aliases;
+}
+
+const ALIAS_LOOKUP_BATCH = 500;
+/** Files named by one omission record; the rest are counted, not listed. */
+const GROUNDING_OMISSION_MAX_FILES = 20;
+
+type GroundingOmissionReason = "scaffold-unreadable" | "scaffold-limit" | "scaffold-changed";
+
+/**
+ * Say which knowledge an answer could not include.
+ *
+ * - `scaffold-unreadable`: the listed files could not be read within bounds,
+ *   so their groundings are absent; every other file's are present.
+ * - `scaffold-limit`: a scaffold-wide ceiling (`limit`) stopped the walk, so
+ *   files after it were not read.
+ * - `scaffold-changed`: the scaffold changed during the call. No grounding
+ *   record is returned, because none can be said to be current.
+ */
+function groundingOmissionRecord(
+  reason: GroundingOmissionReason,
+  files: readonly string[],
+  limit?: string,
+): Rec {
+  const listed = files.slice(0, GROUNDING_OMISSION_MAX_FILES);
+  return {
+    type: "grounding-omitted",
+    reason,
+    files: listed,
+    ...(files.length > listed.length ? { moreFiles: files.length - listed.length } : {}),
+    ...(limit === undefined ? {} : { limit }),
+  };
+}
+
+function groundingOmissionRecords(scaffold: CommittedGroundingObservation): Rec[] {
+  return [
+    ...(scaffold.unreadable.length > 0 ? [groundingOmissionRecord("scaffold-unreadable", scaffold.unreadable)] : []),
+    ...(scaffold.limit !== undefined ? [groundingOmissionRecord("scaffold-limit", [], scaffold.limit)] : []),
+  ];
 }
 
 function liveUnindexedFiles(indexedFiles: IndexedFileInfo[], rootDir: string): string[] {
