@@ -1771,6 +1771,16 @@ function inspectSemanticInputs(
   return { hashes, changedPaths, unavailablePaths, complete, diagnostics };
 }
 
+/**
+ * @internal Read one repository-relative source through the same contained,
+ * identity-stable, size-capped descriptor read that status inspection hashes.
+ * The UTF-8 decode matches indexing, so a caller that re-derives a node's body
+ * from this text sees exactly the text a refresh would stage.
+ */
+export function readContainedRepositorySource(projectRoot: string, path: string): string {
+  return readStableContainedUtf8File(projectRoot, resolveRealPath(projectRoot), path);
+}
+
 function readStableContainedUtf8File(
   projectRoot: string,
   projectRootRealPath: string,

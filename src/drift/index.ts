@@ -72,7 +72,7 @@ export type GraphAwareDriftReport = DriftReport & { graphStatus: GraphStatus };
 export interface GraphAwareRunDriftCheckOpts extends RunDriftCheckOpts {
   readOnlyGroundingRuntimeLoader?: (
     config: MexConfig,
-    options?: { loadRuntime?: boolean },
+    options?: { loadRuntime?: boolean; allowSourceDrift?: boolean },
   ) => Promise<ReadOnlyGroundingRuntimeResult>;
 }
 
@@ -124,13 +124,25 @@ export async function runDriftCheckWithGraphStatus(
   const groundingRelevant = hasGroundings || needsGroundingMigration;
   let groundingRuntime: GroundingRuntime | null = null;
   let graphStatus: GraphStatus | undefined;
+  // True when grounding runs against a snapshot stale only by changed source
+  // (#228). Before, any source edit switched grounding off until a full
+  // refresh, so the score could not move for the very edit it exists to catch.
+  // The runtime now checks unchanged files against the snapshot, re-derives
+  // nodes in edited files exactly or reports them GROUNDING_UNVERIFIED, and
+  // never reconciles. Every other non-fresh reason still skips grounding.
+  let sourceDriftGrounding = false;
   try {
     try {
+      const loadRuntime = opts.groundingRuntimeLoader ? false : groundingRelevant;
       const loaded = await (
         opts.readOnlyGroundingRuntimeLoader ?? loadReadOnlyGroundingRuntime
-      )(config, { loadRuntime: opts.groundingRuntimeLoader ? false : groundingRelevant });
+      )(config, { loadRuntime, ...(loadRuntime ? { allowSourceDrift: true } : {}) });
       graphStatus = loaded.graphStatus;
       groundingRuntime = loaded.runtime;
+      sourceDriftGrounding = !usesInjectedGroundingRuntime
+        && groundingRuntime !== null
+        && loaded.sourceDrift === true
+        && graphStatus.status === "stale";
 
       if (usesInjectedGroundingRuntime) {
         // Preserve the historical injection seam while still inspecting graph
@@ -145,7 +157,8 @@ export async function runDriftCheckWithGraphStatus(
           : null;
       }
 
-      if (!usesInjectedGroundingRuntime && graphStatus.status !== "fresh" && groundingRuntime) {
+      if (!usesInjectedGroundingRuntime && graphStatus.status !== "fresh" && groundingRuntime
+        && !sourceDriftGrounding) {
         const staleRuntime = groundingRuntime;
         groundingRuntime = null;
         staleRuntime.close();
@@ -153,7 +166,7 @@ export async function runDriftCheckWithGraphStatus(
 
       if (!usesInjectedGroundingRuntime && groundingRelevant && graphStatus.status !== "fresh") {
         warnGraph(
-          graphFreshnessWarning(graphStatus, groundingRelevant, needsGroundingMigration),
+          graphFreshnessWarning(graphStatus, groundingRelevant, needsGroundingMigration, sourceDriftGrounding),
         );
       } else if (groundingRelevant && !groundingRuntime && !graphUpgradeNudgeShown) {
         graphUpgradeNudgeShown = true;
@@ -226,7 +239,11 @@ export async function runDriftCheckWithGraphStatus(
       }
     }
 
-    if (usesInjectedGroundingRuntime || graphStatus?.status === "fresh") {
+    // A guard that saw the graph change mid-check marks the status degraded,
+    // so a source-drift batch is published only while it is still `stale`.
+    if (usesInjectedGroundingRuntime
+      || graphStatus?.status === "fresh"
+      || (sourceDriftGrounding && graphStatus?.status === "stale")) {
       allIssues.push(...pendingGroundingIssues);
       checkerIssueCounts.push(...pendingGroundingIssueCounts);
     }
@@ -322,8 +339,13 @@ function graphFreshnessWarning(
   status: GraphStatus,
   groundingRelevant: boolean,
   needsGroundingMigration: boolean,
+  sourceDriftGrounding = false,
 ): string {
-  const groundingNote = groundingRelevant ? "; grounding checks skipped" : "";
+  const groundingNote = !groundingRelevant
+    ? ""
+    : sourceDriftGrounding
+      ? "; groundings in changed source files were re-read or marked unverified"
+      : "; grounding checks skipped";
   const command = graphRemediationCommand(status);
   const primary = status.diagnostics.find((entry) =>
     entry.code === "GRAPH_INDEX_READER_DATABASE_CHANGED"
