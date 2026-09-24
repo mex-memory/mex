@@ -754,6 +754,15 @@ describe("no unscoped scaffold writes", () => {
     //
     // Every other rule in this file is scoped to `src/wiki/`, so before this
     // one nothing in `src/` was watching at all.
+    //
+    // The inventory detector is deliberately broader than the call-shape ban
+    // above: `src/export.ts` writes through file descriptors (`wx`-exclusive
+    // create, marker-verified overwrite) precisely so no `writeFileSync` call
+    // shape exists to match. A writer the inventory cannot see is worse than
+    // a longer pattern, so fd-based mutations are pinned here. The guarded
+    // rules keep the narrow shape on purpose: broadening them would demand
+    // textual guard counts the wiki modules do not have.
+    const FD_WRITE_CALLS = /\b(writeSync|ftruncateSync)\s*\(/g;
     const KNOWN: Readonly<Record<string, string>> = {
       "src/agent-skills/installer.ts": "atomically installs fixed packaged skill trees and marker-scoped root instructions",
       "src/graph/candidate-process.ts": "removes only the identity-bound parent-owned temporary workspace after the candidate child closes",
@@ -764,6 +773,7 @@ describe("no unscoped scaffold writes", () => {
       "src/config.ts": "writes config.json",
       "src/global-config.ts": "writes the global config and telemetry id",
       "src/events.ts": "appends to events/decisions.jsonl",
+      "src/export.ts": "writes one export bundle to a user-specified path — a brand-new file (wx-exclusive) or a marker-verified previous bundle, never scaffold bytes",
       "src/pattern/index.ts": "creates a new pattern file from a template",
       "src/setup/anchor.ts": "edits root tool configs only, never .mex/, and only inside its own markers",
       "src/setup/global-install.ts": "removes only the private temporary npm working directory after the owned global installation finishes",
@@ -776,7 +786,11 @@ describe("no unscoped scaffold writes", () => {
     };
 
     const outside = FILES.filter((path) => !path.startsWith("src/wiki/"));
-    const writers = outside.filter((path) => [...withoutComments(read(path)).matchAll(WRITE_CALLS)].length > 0);
+    const writers = outside.filter(
+      (path) =>
+        [...withoutComments(read(path)).matchAll(WRITE_CALLS)].length > 0 ||
+        [...withoutComments(read(path)).matchAll(FD_WRITE_CALLS)].length > 0,
+    );
     expect(writers.sort()).toEqual(Object.keys(KNOWN).sort());
     // Vacuity guard: there were files outside the wiki engine to check.
     expect(outside.length).toBeGreaterThan(20);
