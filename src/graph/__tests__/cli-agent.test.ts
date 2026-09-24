@@ -1332,6 +1332,128 @@ describe("runGraphGet", () => {
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({ type: "error", code: "INVALID_OUTPUT_BUDGET" });
   });
+
+  function oversizedGetFixture(): {
+    isolated: string;
+    primary: GraphNode;
+    secondary: GraphNode;
+    getDeps: AgentCommandDeps;
+  } {
+    const isolated = mkdtempSync(join(tmpdir(), "mex-graph-get-budget-"));
+    const oversized = (id: string, name: string, filePath: string): { node: GraphNode; source: string } => {
+      const sourceLines = Array.from({ length: 185 }, (_, index) => `// ${name} body ${index + 1}`);
+      sourceLines[0] = `export function ${name}(): void {`;
+      sourceLines[184] = "}";
+      const source = sourceLines.join("\n");
+      writeFileSync(join(isolated, filePath), source);
+      const node: GraphNode = {
+        id, kind: "function", name, qualifiedName: name, filePath, language: "typescript",
+        startLine: 1, endLine: 185, startColumn: 0, endColumn: 1, updatedAt: 1,
+      };
+      return { node, source };
+    };
+    const first = oversized("function:primary-procedure", "PrimaryProcedure", "primary.ts");
+    const second = oversized("function:secondary-procedure", "SecondaryProcedure", "secondary.ts");
+    const primary = first.node;
+    const secondary = second.node;
+    const graph = syntheticScopeGraph({
+      nodes: [primary, secondary],
+      sources: [
+        { path: primary.filePath, content: first.source },
+        { path: secondary.filePath, content: second.source },
+      ],
+      searchNodes: () => [primary, secondary],
+    });
+    return {
+      isolated, primary, secondary,
+      getDeps: {
+        open: () => ({ graph, db: deps.open!(root).db, close: () => {} }),
+        write: (line) => lines.push(line),
+      },
+    };
+  }
+
+  it("does not report no-match when a matched node's source exceeds the output budget", () => {
+    const { isolated, primary, getDeps } = oversizedGetFixture();
+    try {
+      const records = capture(() => runGraphGet([primary.id], isolated, getDeps, {
+        maxOutputTokens: 1500, maxSourceLines: 200,
+      }));
+      const summary = records.at(-1)!;
+      expect(summary.matchedNodes).toBeGreaterThan(0);
+      expect(records.some((record) => record.type === "fact" && record.id === primary.id)).toBe(true);
+      const prefixRanges = records.filter((record) => record.type === "source")
+        .flatMap((record) => record.ranges as Array<{
+          startLine: number; endLine: number; truncated: boolean; nodeIds: string[];
+        }>);
+      expect(prefixRanges).toEqual([expect.objectContaining({
+        nodeIds: [primary.id], truncated: true,
+      })]);
+      expect(prefixRanges[0]!.endLine - prefixRanges[0]!.startLine + 1).toBeLessThan(185);
+      expect(summary).toMatchObject({
+        status: "partial", truncated: true, evidenceStrength: "strong", returnedNodes: 1,
+      });
+      expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(1500);
+      const retry = (summary.suggestedNextCommands as string[])[0] ?? "";
+      const budget = Number((/ --max-output-tokens (\d+)/.exec(retry) ?? [])[1]);
+      expect(retry).toContain(`mex graph get ${primary.id}`);
+      expect(budget).toBeGreaterThan(1500);
+      expect(retry).toContain(" --max-source-lines 200");
+      const retryRecords = capture(() => runGraphGet([primary.id], isolated, getDeps, {
+        maxOutputTokens: budget, maxSourceLines: 200,
+      }));
+      expect(retryRecords.filter((record) => record.type === "source")
+        .flatMap((record) => record.ranges as Array<{ endLine: number; truncated: boolean }>))
+        .toEqual([expect.objectContaining({ endLine: 185, truncated: false })]);
+      expect(retryRecords.at(-1)).toMatchObject({ status: "ok", returnedNodes: 1 });
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a fact for every oversized node before spending budget on source prefixes", () => {
+    const { isolated, primary, secondary, getDeps } = oversizedGetFixture();
+    try {
+      const records = capture(() => runGraphGet([primary.id, secondary.id], isolated, getDeps, {
+        maxOutputTokens: 1500, maxSourceLines: 200,
+      }));
+      expect(records.filter((record) => record.type === "fact").map((record) => record.id))
+        .toEqual([primary.id, secondary.id]);
+      const summary = records.at(-1)!;
+      expect(summary).toMatchObject({ status: "partial", truncated: true, matchedNodes: 2 });
+      expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(1500);
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves --max-source-lines out of the retry suggestion at the default line cap", () => {
+    const { isolated, primary, getDeps } = oversizedGetFixture();
+    try {
+      const records = capture(() => runGraphGet([primary.id], isolated, getDeps, { maxOutputTokens: 1000 }));
+      const retry = (records.at(-1)!.suggestedNextCommands as string[])[0] ?? "";
+      expect(retry).toMatch(/^mex graph get function:primary-procedure --max-output-tokens \d+$/);
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a tight valid get budget honest when full source cannot fit", () => {
+    const { isolated, primary, getDeps } = oversizedGetFixture();
+    try {
+      const records = capture(() => runGraphGet([primary.id], isolated, getDeps, {
+        maxOutputTokens: 800, maxSourceLines: 200,
+      }));
+      const summary = records.at(-1)!;
+      expect(summary.matchedNodes).toBeGreaterThan(0);
+      expect(summary.status).not.toBe("no-match");
+      expect(summary).toMatchObject({ status: "partial", truncated: true });
+      expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(800);
+      expect(records.some((record) => record.type === "fact" && record.id === primary.id)).toBe(true);
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("runGraphQuery", () => {

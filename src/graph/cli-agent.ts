@@ -17,7 +17,7 @@ import {
 import { FingerprintStore } from "./fingerprint-store.js";
 import { serializeFingerprint } from "./fingerprint.js";
 import {
-  BudgetLedger, estimateTokens, resolveOptions, resolveScopeOptions, SCHEMA_VERSION, type AgentOptions,
+  BudgetLedger, DEFAULT_OPTIONS, estimateTokens, resolveOptions, resolveScopeOptions, SCHEMA_VERSION, type AgentOptions,
 } from "./agent-protocol.js";
 import { identifierComponents, isLowValueGraphPath, planGraphQuery } from "./retrieval/query.js";
 import {
@@ -824,15 +824,56 @@ export function runGraphGet(
       sourceRecords.flatMap((record) => (record.ranges as SourceRange[]).flatMap((range) => range.nodeIds)),
     );
 
+    // Source-backed gets stay unchanged. A matched node whose full source
+    // cannot fit still exists: reserve its fact, then spill the largest
+    // whole-line prefix that fits, instead of falling through to no-match.
+    const omittedNodes = dedupeById(nodes.filter((node) => !sourcedIds.has(node.id)));
+    const factRecords: Rec[] = [];
+    let retry: { id: string; full: Rec } | undefined;
+    if (omittedNodes.length > 0) truncated = true;
+    // Every omitted node keeps its fact before any prefix spends the budget.
+    for (const node of omittedNodes) {
+      const fact = factFor(session, node.id, opts.detail, opts.fingerprint);
+      if (!fact) continue;
+      const record: Rec = { type: "fact", ...agentFactFields(fact, opts) };
+      if (ledger.tryAdd(record)) factRecords.push(record);
+    }
+    const reserve = estimateTokens(summarySkeleton([])) + RESERVE_PAD;
+    for (const node of omittedNodes) {
+      const full = sourceRecordForGetNode(session, node, rootDir, opts);
+      if (!full) continue;
+      retry ??= { id: node.id, full };
+      const available = ctx.effectiveMax - ledger.estimatedTokens - reserve;
+      const fitted = fitSourceRange(full, available, ledger);
+      if (fitted && ledger.tryAdd(fitted)) {
+        sourceRecords.push(fitted);
+        for (const range of fitted.ranges as SourceRange[]) {
+          for (const id of range.nodeIds) sourcedIds.add(id);
+        }
+      }
+    }
+    // The retry budget is sized for the current line cap, so a non-default cap travels with it.
+    const sourceLines = opts.maxSourceLines === DEFAULT_OPTIONS.maxSourceLines
+      ? ""
+      : ` --max-source-lines ${opts.maxSourceLines}`;
+    const suggestions = retry
+      ? [`mex graph get ${retry.id} --max-output-tokens ${Math.max(
+        graphGetFullSourceBudget(opts, retry.full),
+        opts.maxOutputTokens + 1,
+      )}${sourceLines}`]
+      : [];
+
     // `get` returns declarations and their proven source bytes only, so the
     // drift declaration appears without any record being marked stale.
-    emitAll(write, meta, [...configDriftRecords(session), ...errorRecords, ...sourceRecords]);
+    emitAll(write, meta, [...configDriftRecords(session), ...errorRecords, ...sourceRecords, ...factRecords]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: ids.length,
       returnedNodes: sourcedIds.size,
       returnedEdges: 0,
       truncated,
-      suggestedNextCommands: [],
+      suggestedNextCommands: suggestions,
+      ...(omittedNodes.length > 0 ? { status: "partial" as const } : {}),
+      ...(factRecords.length > 0 ? { evidenceStrength: "strong" as const } : {}),
     })));
   });
 }
@@ -1054,6 +1095,30 @@ function planSource(
     else for (const range of ranges) emit({ type: "source", filePath, ranges: [range] });
   }
   return sourceRecords;
+}
+
+/** Single-node source record for get's omit spill. Does not change `planSource`. */
+function sourceRecordForGetNode(
+  session: AgentGraphSession,
+  node: GraphNode,
+  rootDir: string,
+  opts: AgentOptions,
+): Rec | null {
+  const source = session.readIndexedSource?.(node.filePath);
+  const range = source === undefined
+    ? readNodeSource(node, rootDir, opts.maxSourceLines)
+    : readNodeSourceBuffer(node, source, opts.maxSourceLines);
+  if (!range) return null;
+  return { type: "source", filePath: node.filePath, ranges: [range] };
+}
+
+/** Minimum honest get ceiling that can admit `fullSource` after protocol framing. */
+function graphGetFullSourceBudget(opts: AgentOptions, fullSource: Rec): number {
+  const reserve = estimateTokens(summarySkeleton([])) + RESERVE_PAD;
+  const framingMeta = metaRecord("graph get", {
+    ...opts, maxNodes: 1, maxFlowSteps: 0, maxOutputTokens: SIZE_PROBE,
+  });
+  return estimateTokens(framingMeta) + estimateTokens(fullSource) + reserve;
 }
 
 function readNodeSourceBuffer(node: GraphNode, source: string, maxLines: number): SourceRange {
