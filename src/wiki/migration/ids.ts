@@ -84,3 +84,17 @@ export function opIdForCandidate(file: InventoryFile, candidate: Candidate): str
 export function opIdForEdge(sourceFile: string, edgeTarget: string, index: number): string {
   return migrationOpId("add-relation", sourceFile, `e:${index}:${edgeTarget}`);
 }
+
+/**
+ * The `opId` for folding a file's root `grounds_to` into its existing
+ * file-level entity (#226).
+ *
+ * Keyed on the groundings moved as well as the file. Once applied the root key
+ * is gone and nothing is planned again; if someone later writes a new root
+ * `grounds_to` into the same file, that is new work with a different payload,
+ * and reusing the old `opId` for it would be refused as a replay mismatch.
+ */
+export function opIdForRootGroundings(file: string, groundings: readonly unknown[]): string {
+  const digest = createHash("sha256").update(JSON.stringify(groundings), "utf8").digest("hex");
+  return migrationOpId("set-grounding", file, `r:${digest.slice(0, 16)}`);
+}

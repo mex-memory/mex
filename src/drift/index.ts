@@ -10,6 +10,7 @@ import { checkEdges } from "./checkers/edges.js";
 import { checkIndexSync } from "./checkers/index-sync.js";
 import { checkStalePatterns } from "./checkers/stale-pattern.js";
 import { checkFrontmatterCompleteness } from "./checkers/frontmatter-completeness.js";
+import { checkGroundingShape } from "./checkers/grounding-shape.js";
 import { checkStaleness } from "./checkers/staleness.js";
 import { checkCommands } from "./checkers/command.js";
 import { checkDependencies } from "./checkers/dependency.js";
@@ -114,7 +115,7 @@ export async function runDriftCheckWithGraphStatus(
   // root `grounds_to` missed every migrated scaffold, where §13.4 has moved the
   // key under the `mex` map — so `groundingRelevant` came out false, the
   // grounding runtime was never opened, and the checker that would have found
-  // the groundings was never constructed. `extractGroundings` resolves the path.
+  // the groundings was never constructed. `extractGroundings` reads both keys.
   const hasGroundings = scaffoldFiles.some((filePath) => {
     let content: string;
     try { content = readFileSync(filePath, "utf-8"); } catch { return false; }
@@ -223,6 +224,11 @@ export async function runDriftCheckWithGraphStatus(
       checkerIssueCounts.push([`edges:${source}`, edgeIssues.length]);
       checkerIssueCounts.push([`frontmatter-completeness:${source}`, frontmatterCompletenessIssues.length]);
       checkerIssueCounts.push([`staleness:${source}`, stalenessIssues.length]);
+
+      // Graph-independent: the split is a fact about the Markdown (#226).
+      const groundingShapeIssues = checkGroundingShape(frontmatter, source);
+      allIssues.push(...groundingShapeIssues);
+      checkerIssueCounts.push([`grounding-shape:${source}`, groundingShapeIssues.length]);
 
       if (groundingRuntime) {
         const groundingIssues = groundingRuntime.checker(

@@ -24,6 +24,7 @@ import type { GroundingGraph } from "../../grounding/adapter.js";
 import { acceptedOperations, operationLogPath, readAuditLog } from "../audit.js";
 import {
   ARCH,
+  ARCH_MD,
   GATEWAY,
   JWT,
   PATTERN,
@@ -961,5 +962,59 @@ describe("approval evidence in one Wiki operation", () => {
     expect(codesOf(applied.diagnostics)).toContain("INVALID_OPERATION_PAYLOAD");
     expect(target.files()).toEqual(before);
     expect(acceptedOperations(readAuditLog(target.root))).toHaveLength(0);
+  });
+});
+
+describe("set-grounding and a root `grounds_to` (#226)", () => {
+  const ROOT_ENTRY = { node: "function:1c9d4b7e2f5a8036c4e1b9d7a2f60358", fingerprint: "mh:64:4b1c7e29", bodyHash: "a".repeat(64) };
+  const withRoot = (): string => ARCH_MD.replace(
+    "last_updated: 2026-08-22\n",
+    `last_updated: 2026-08-22\ngrounds_to:\n  - node: ${ROOT_ENTRY.node}\n    fingerprint: ${ROOT_ENTRY.fingerprint}\n    bodyHash: ${ROOT_ENTRY.bodyHash}\n`,
+  );
+
+  it("absorbs the root key into the file-level entity without re-deriving it", () => {
+    const target = scaffold({ "context/architecture.md": withRoot() });
+    expect(target.entity(ARCH).groundsTo).toEqual([ROOT_ENTRY]);
+    // No graph at all: a move of values already in the file needs none.
+    const applied = applyOperation(envelope(target, "set-grounding", {
+      groundsTo: [ROOT_ENTRY], absorbRootGroundings: true,
+    }, { entityId: ARCH }), { scaffoldRoot: target.root });
+    expect(applied.ok ? [] : codesOf(applied.diagnostics)).toEqual([]);
+    const after = target.read("context/architecture.md");
+    expect(after).not.toMatch(/^grounds_to:/m);
+    expect(target.entity(ARCH).groundsTo).toEqual([ROOT_ENTRY]);
+    expect(parseWikiMarkdown({ path: "context/architecture.md", text: after }).diagnostics).toEqual([]);
+    expect(after).toContain("# keep this note; a whole-map rewrite would eat it");
+  });
+
+  it("refuses to absorb into a section entity", () => {
+    const target = scaffold({ "context/architecture.md": withRoot() });
+    const before = target.files();
+    const applied = applyOperation(envelope(target, "set-grounding", {
+      groundsTo: [], absorbRootGroundings: true,
+    }, { entityId: GATEWAY }), { scaffoldRoot: target.root });
+    expect(applied.ok).toBe(false);
+    expect(codesOf(applied.diagnostics)).toContain("INVALID_OPERATION_PAYLOAD");
+    expect(target.files()).toEqual(before);
+  });
+
+  it("refuses an absorb that would change the groundings it moves", () => {
+    const target = scaffold({ "context/architecture.md": withRoot() });
+    const before = target.files();
+    const applied = applyOperation(envelope(target, "set-grounding", {
+      groundsTo: [{ ...ROOT_ENTRY, bodyHash: "c".repeat(64) }], absorbRootGroundings: true,
+    }, { entityId: ARCH }), { scaffoldRoot: target.root });
+    expect(applied.ok).toBe(false);
+    expect(codesOf(applied.diagnostics)).toContain("INVALID_OPERATION_PAYLOAD");
+    expect(target.files()).toEqual(before);
+  });
+
+  it("replaces the root key too on an explicit set-grounding, so removed groundings stay removed", () => {
+    const target = scaffold({ "context/architecture.md": withRoot() });
+    const applied = applyOperation(envelope(target, "set-grounding", groundingPayload(), { entityId: ARCH }),
+      { scaffoldRoot: target.root, graph: stubGraph } as never);
+    expect(applied.ok ? [] : codesOf(applied.diagnostics)).toEqual([]);
+    expect(target.read("context/architecture.md")).not.toMatch(/^grounds_to:/m);
+    expect(target.entity(ARCH).groundsTo.map((entry) => entry.node)).toEqual([NODE]);
   });
 });

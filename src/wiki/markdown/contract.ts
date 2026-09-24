@@ -114,9 +114,11 @@ export interface ParsedFrontmatter {
 /**
  * Legacy root-level fields.
  *
- * Read but not interpreted. On a multi-entity file a root `grounds_to` is
- * genuinely ambiguous — it cannot be attributed to a section without guessing —
- * so it is preserved here and reported, never assigned.
+ * Read but not interpreted. The root `grounds_to` is always recorded here as
+ * written. Where the file has a file-level entity, the codec also attaches it
+ * to that entity (#226). Where the file has only section entities it cannot be
+ * attributed to a section without guessing, so it stays here, reported and
+ * never assigned.
  */
 export interface ParsedLegacy {
   groundsTo: WikiGrounding[];

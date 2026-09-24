@@ -3,7 +3,9 @@ import remarkParse from "remark-parse";
 import remarkFrontmatter from "remark-frontmatter";
 import { visit } from "unist-util-visit";
 import YAML from "yaml";
-import { renderKeyValue, spliceKeyPath, spliceTopLevelKey } from "./wiki/markdown/frontmatter.js";
+import { keyPathEdit, keyPathRemoveEdit, renderKeyValue, spliceTopLevelKey } from "./wiki/markdown/frontmatter.js";
+import { mergeGroundingStores, rootGroundingsNotInEffect } from "./wiki/markdown/grounding-stores.js";
+import { applyEdits, type PatchEdit } from "./wiki/markdown/patch.js";
 import { parseDocument } from "./wiki/markdown/parse.js";
 import type { Grounding, ScaffoldFrontmatter } from "./types.js";
 import type { Root, Content, Link } from "mdast";
@@ -34,35 +36,79 @@ export function extractFrontmatter(
 }
 
 /**
- * Where a file's groundings live: under `mex:` once it has one, else at the root.
+ * Where a file's groundings are **written**: under `mex:` once it has one, else at the root.
  *
  * A pre-wiki scaffold keeps `grounds_to` as a root frontmatter key, and that is
  * the key `mex ground` has always read and written. Once migration adopts a
  * file as a wiki entity, the entity's metadata is the `mex:` map and the
  * grounding belongs inside it — section 13.4's "move it under `mex.grounds_to`".
  *
- * **Both the read and the write follow the same rule, and that is the point.**
- * Teaching only the reader would leave `writeGroundings` splicing the root key
- * back in on the next `mex ground` run, so the file would end up carrying the
- * same grounding in two places, maintained by two writers that drift the moment
- * either updates — the two-stores-of-one-fact failure D1 exists to forbid,
- * arriving through a door D1 did not name. Migration removes the root key as it
- * moves the values (`ABSORBABLE_ROOT_KEYS`), so exactly one store survives.
+ * **The read and the write must agree on one store, and that is the point.**
+ * Two stores of one fact, maintained by two writers, drift apart the moment
+ * either updates — the failure D1 exists to forbid. This used to be enforced by
+ * having the reader follow this path too, so a file with a `mex:` map was read
+ * only at `mex.grounds_to`. That made the root key invisible rather than
+ * absent: setup itself produced files with both (population wrote root
+ * groundings, then migration added a `mex:` map to a multi-entity file without
+ * moving them), and `mex check` skipped every root entry in them (#226).
+ *
+ * So the reader now takes the union of both keys ({@link extractGroundings}),
+ * and one store is restored by the writer instead: `writeGroundings` on a file
+ * carrying both **consolidates**, moving root entries under `mex.grounds_to`
+ * and removing the root key. The rule for the union, and for the one kind of
+ * root entry a write keeps, is in `src/wiki/markdown/grounding-stores.ts`.
  *
  * A file with no `mex:` key is untouched by this: the path is the root key, and
  * every shipped grounding test exercises that case unchanged.
  */
 export function groundingKeyPath(content: string): readonly string[] {
   const frontmatter = extractFrontmatter(content) as (ScaffoldFrontmatter & { mex?: unknown }) | null;
-  const mex = frontmatter?.mex;
-  return mex !== null && typeof mex === "object" ? ["mex", "grounds_to"] : ["grounds_to"];
+  return hasMexMap(frontmatter) ? ["mex", "grounds_to"] : ["grounds_to"];
 }
 
-/** Return validated code-graph groundings; malformed entries are rejected as a set. */
+function hasMexMap(frontmatter: (ScaffoldFrontmatter & { mex?: unknown }) | null): boolean {
+  const mex = frontmatter?.mex;
+  return mex !== null && typeof mex === "object";
+}
+
+/** The groundings a file carries, per store, as its frontmatter declares them. */
+export interface GroundingShape {
+  /** True when the file has a `mex:` map and a non-empty root `grounds_to`. */
+  mixed: boolean;
+  /** The union a reader sees: `mex` entries, then root entries for other nodes. */
+  merged: Grounding[];
+  /** Root entries whose node `mex.grounds_to` carries with a different fingerprint or bodyHash. */
+  conflicts: Grounding[];
+}
+
+/**
+ * Read both grounding stores from an already-parsed frontmatter.
+ *
+ * Taking the parsed map rather than the file lets `mex check` report the shape
+ * from the frontmatter it already read, without a second read of the file.
+ * Each store is validated as a set on its own, as the single store always was,
+ * so one malformed key cannot hide the other's entries.
+ */
+export function groundingShape(frontmatter: ScaffoldFrontmatter | null): GroundingShape {
+  const withMex = frontmatter as (ScaffoldFrontmatter & { mex?: { grounds_to?: unknown } }) | null;
+  const rootValue: unknown = withMex?.grounds_to;
+  const root = isGroundingArray(rootValue) ? rootValue : [];
+  if (!hasMexMap(withMex)) return { mixed: false, merged: root, conflicts: [] };
+  const mexValue: unknown = withMex?.mex?.grounds_to;
+  const mex = isGroundingArray(mexValue) ? mexValue : [];
+  const { merged, conflicts } = mergeGroundingStores(mex, root);
+  return { mixed: Array.isArray(rootValue) && rootValue.length > 0, merged, conflicts };
+}
+
+/**
+ * Return validated code-graph groundings from both stores (#226).
+ *
+ * On a file with a `mex:` map the result is the union, deduplicated by node;
+ * where the two keys disagree about one node, the `mex.grounds_to` entry is
+ * returned and the disagreement is left for `mex check` to report.
+ */
 export function extractGroundings(content: string): Grounding[] {
-  const frontmatter = extractFrontmatter(content) as (ScaffoldFrontmatter & { mex?: { grounds_to?: unknown } }) | null;
-  const value = groundingKeyPath(content)[0] === "mex" ? frontmatter?.mex?.grounds_to : frontmatter?.grounds_to;
-  return isGroundingArray(value) ? value : [];
+  return groundingShape(extractFrontmatter(content)).merged;
 }
 
 /**
@@ -97,6 +143,17 @@ export function isGroundingArray(value: unknown): value is Grounding[] {
  *
  * It now splices the one key's own range. Everything else in the file, byte for
  * byte, is left as the author wrote it.
+ *
+ * `groundings` is the file's whole grounding set, as {@link extractGroundings}
+ * returned it and the caller changed it. On a file that also carries a root
+ * `grounds_to` beside its `mex:` map, the write **consolidates** (#226): the
+ * set goes to `mex.grounds_to` and the root key is removed in the same splice,
+ * so the next read finds one store. The one exception is a root entry that
+ * conflicts with the old `mex.grounds_to`. The reader never returned it, so
+ * this write is not carrying it forward, and it stays at the root for a person
+ * to resolve. A malformed root key is left alone, as the single-store writer
+ * always left a value it could not read. A second write of the same set is a
+ * no-op.
  */
 export function writeGroundings(content: string, groundings: Grounding[]): string {
   if (!isGroundingArray(groundings)) throw new Error("Invalid grounds_to entries");
@@ -108,10 +165,25 @@ export function writeGroundings(content: string, groundings: Grounding[]): strin
   if (frontmatter === null) {
     return spliceTopLevelKey(content, "grounds_to", renderKeyValue("grounds_to", groundings)).text;
   }
-  const spliced = spliceKeyPath(content, frontmatter, path, groundings);
+  const edit = keyPathEdit(content, frontmatter, path, groundings);
   // A `mex` map that cannot hold the key is not a reason to write a second copy
   // at the root; it is a reason to leave the file alone and let validation say so.
-  return spliced === null ? content : spliced.text;
+  if (edit === null) return content;
+  const edits: PatchEdit[] = [edit];
+  const before = extractFrontmatter(content);
+  const rootValue: unknown = before?.grounds_to;
+  if (isGroundingArray(rootValue)) {
+    const kept = rootGroundingsNotInEffect(groundingShape(before).merged, rootValue);
+    // An empty root list is a second store too, only an empty one.
+    if (kept.length < rootValue.length || rootValue.length === 0) {
+      const root = kept.length === 0
+        ? keyPathRemoveEdit(content, frontmatter, ["grounds_to"])
+        : keyPathEdit(content, frontmatter, ["grounds_to"], kept);
+      if (root === null) return content;
+      if (root !== "absent") edits.push(root);
+    }
+  }
+  return applyEdits(content, edits).text;
 }
 
 export interface MexAnchor {

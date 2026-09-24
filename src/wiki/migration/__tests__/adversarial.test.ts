@@ -27,6 +27,7 @@ import {
   GENERATED_END,
 } from "../generated.js";
 import { checkOnlyRangesChanged } from "../../markdown/ranges.js";
+import { parseWikiMarkdown } from "../../markdown/codec.js";
 
 function scaffoldOf(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "mig-adv-"));
@@ -163,24 +164,54 @@ describe("tier 3 — malformed and explicitly null frontmatter", () => {
 });
 
 describe("tier 3 — a root grounding on a multi-entity file", () => {
-  it("is reported and left exactly where it was", () => {
-    const text =
-      FRONT('grounds_to:\n  - node: "function:1c9d4b7e2f5a8036c4e1b9d7a2f60358"\n    fingerprint: "mh:64:4b1c7e29"\n') +
-      "# Architecture\n\nIntro.\n\n## Ingest\n\nProse enough to clear the threshold, over several lines of it here.\nA second line of prose that carries several more words along with it.\nAnd a third line of prose to be certain the bar is cleared.\n\n## Routing\n\nMore prose, also enough to clear the threshold, over several lines here.\nA second line of prose that carries several more words along with it.\nAnd a third line of prose to be certain the bar is cleared.\n";
-    const root = scaffoldOf({ "context/architecture.md": text });
+  const SECTIONS =
+    "Intro.\n\n## Ingest\n\nProse enough to clear the threshold, over several lines of it here.\nA second line of prose that carries several more words along with it.\nAnd a third line of prose to be certain the bar is cleared.\n\n## Routing\n\nMore prose, also enough to clear the threshold, over several lines here.\nA second line of prose that carries several more words along with it.\nAnd a third line of prose to be certain the bar is cleared.\n";
+  const ROOT = 'grounds_to:\n  - node: "function:1c9d4b7e2f5a8036c4e1b9d7a2f60358"\n    fingerprint: "mh:64:4b1c7e29"\n';
+
+  it("moves to the file-level entity, never to a section (#226)", () => {
+    // This used to stay at the root, which is what setup produced on every
+    // multi-entity file it populated. The file-level entity is the document the
+    // frontmatter describes, so attaching it there guesses no section.
+    const root = scaffoldOf({ "context/architecture.md": FRONT(ROOT) + "# Architecture\n\n" + SECTIONS });
+
+    const report = migrateScaffold({ scaffoldRoot: root });
+    expect(report.groundingsMoved).toBe(1);
+    expect(report.groundingsAmbiguous).toBe(0);
+
+    const after = readFileSync(join(root, "context", "architecture.md"), "utf-8");
+    expect(after).not.toMatch(/^grounds_to:/m);
+    expect(after).toMatch(/^      fingerprint: "?mh:64:4b1c7e29"?$/m);
+    // Exactly one copy, and it is the file-level entity's.
+    expect((after.match(/grounds_to:/g) ?? []).length).toBe(1);
+    const entities = parseWikiMarkdown({ path: "context/architecture.md", text: after }).entities;
+    const fileLevel = entities.filter((entry) => entry.metadataKind === "frontmatter");
+    expect(fileLevel).toHaveLength(1);
+    expect(fileLevel[0]!.entity.groundsTo.map((entry) => entry.node)).toEqual(["function:1c9d4b7e2f5a8036c4e1b9d7a2f60358"]);
+    const sections = entities.filter((entry) => entry.metadataKind !== "frontmatter");
+    expect(sections.length).toBeGreaterThan(0);
+    for (const section of sections) expect(section.entity.groundsTo).toEqual([]);
+  });
+
+  it("is reported and left exactly where it was when no file-level entity can own it", () => {
+    // A risk register yields section entities only. Nothing can say which
+    // risk a document-level grounding describes (section 9.4), so it stays at
+    // the root, unattributed and intact.
+    const text = FRONT(ROOT) + "# Risks\n\n" + SECTIONS;
+    const root = scaffoldOf({ "context/risks.md": text });
 
     const report = migrateScaffold({ scaffoldRoot: root });
     expect(report.groundingsMoved).toBe(0);
     expect(report.groundingsAmbiguous).toBe(1);
     expect(report.diagnostics.filter((entry) => entry.code === "AMBIGUOUS_MIGRATION").length).toBe(1);
 
-    const after = readFileSync(join(root, "context", "architecture.md"), "utf-8");
-    // Section 9.4: nothing can say which section a document-level grounding
-    // describes, so it stays at the root, unattributed and intact.
+    const after = readFileSync(join(root, "context", "risks.md"), "utf-8");
     expect(after).toMatch(/^grounds_to:/m);
     expect(after).toContain('    fingerprint: "mh:64:4b1c7e29"');
     // And there is exactly one copy of it: reported does not mean duplicated.
     expect((after.match(/grounds_to:/g) ?? []).length).toBe(1);
+    const entities = parseWikiMarkdown({ path: "context/risks.md", text: after }).entities;
+    expect(entities.length).toBeGreaterThan(0);
+    for (const entry of entities) expect(entry.entity.groundsTo).toEqual([]);
   });
 });
 

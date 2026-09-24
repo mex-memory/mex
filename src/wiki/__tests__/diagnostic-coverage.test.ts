@@ -258,6 +258,26 @@ const EMITTERS: Record<string, () => readonly WikiDiagnostic[]> = {
 
   MALFORMED_GROUNDING: () => validateGrounding({ node: "rotateToken", fingerprint: "x" }, rootContext()).diagnostics,
   GROUNDING_UNVERIFIED: () => verifyGroundingProvenance([grounding()], () => false),
+  GROUNDING_MIXED_SHAPE: () =>
+    // #226: a root `grounds_to` beside the file-level `mex` map.
+    parseWikiMarkdown({
+      path: "patterns/rotate.md",
+      text: [
+        "---",
+        "name: rotate",
+        "grounds_to:",
+        `  - node: "${grounding().node}"`,
+        `    fingerprint: "${grounding().fingerprint}"`,
+        "mex:",
+        `  id: ${ids(1)[0]}`,
+        "  type: pattern",
+        "  status: promoted",
+        "---",
+        "",
+        "# Rotate",
+        "",
+      ].join("\n"),
+    }).diagnostics,
 
   INVALID_OPERATION_ENVELOPE: () =>
     validateOperation(

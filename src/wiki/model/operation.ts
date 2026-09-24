@@ -218,6 +218,19 @@ export interface SetGroundingPayload {
    * a change the author did not request.
    */
   updateAnchors?: boolean;
+  /**
+   * Move the file's root `grounds_to` under this file-level entity's
+   * `mex.grounds_to`, and assert nothing else (#226).
+   *
+   * Migration's consolidation of a file it adopted before root groundings were
+   * attachable. Like `adopt.absorbRootKeys`, this relocates values already in
+   * the user's Markdown rather than minting new ones, so it is not re-derived
+   * from the graph — re-deriving would record today's body hash and quietly
+   * accept whatever drift the old one would have caught. In exchange,
+   * `groundsTo` must equal the entity's current groundings exactly, so the
+   * operation can move a grounding and cannot introduce one.
+   */
+  absorbRootGroundings?: boolean;
 }
 
 export interface SupersedeEntryPayload {
@@ -509,6 +522,11 @@ const PAYLOAD_VALIDATORS: { [K in WikiOperationType]: Validator<WikiOperationPay
       typeof value === "boolean"
         ? succeed(value)
         : reject(context, "INVALID_OPERATION_PAYLOAD", "`updateAnchors` must be a boolean."),
+    ),
+    absorbRootGroundings: optional((value, context) =>
+      typeof value === "boolean"
+        ? succeed(value)
+        : reject(context, "INVALID_OPERATION_PAYLOAD", "`absorbRootGroundings` must be a boolean."),
     ),
   }),
   "supersede-entry": supersedeValidator,
