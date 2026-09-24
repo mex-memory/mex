@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runGraphQuery, runGraphScope, runImpact, type AgentCommandDeps } from "../src/graph/cli-agent.js";
 import type { GraphEngine } from "../src/graph/engine.js";
 import type { GraphEdge, GraphNode } from "../src/graph/types.js";
@@ -6,7 +6,7 @@ import { __resetTelemetryForTest, __setTelemetryEndpointForTest, __setTransport,
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createServer } from "node:http";
 
 function node(id: string, name: string, file = "src/a.ts", line = 1): GraphNode {
@@ -67,10 +67,31 @@ function deps(indexedSources: Record<string, string> = {}): {
   return { deps: { open: () => ({ graph, db, close }), write: (line) => output.push(line) }, output, close };
 }
 
+const scaffoldRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of scaffoldRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+/** A project root whose committed scaffold declares these groundings; impact reads them from here (#224). */
+function scaffold(groundings: ReadonlyArray<{ file: string; node: string }>): string {
+  const root = mkdtempSync(join(tmpdir(), "mex-impact-scaffold-"));
+  scaffoldRoots.push(root);
+  const byFile = new Map<string, string[]>();
+  for (const { file, node } of groundings) byFile.set(file, [...(byFile.get(file) ?? []), node]);
+  for (const [file, nodes] of byFile) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    const entries = nodes.map((node) => `  - node: ${node}\n    fingerprint: mh:64:00\n`).join("");
+    writeFileSync(join(root, file), `---\ngrounds_to:\n${entries}---\n`);
+  }
+  return root;
+}
+
 describe("agent graph commands", () => {
   it("impact emits deterministic JSONL with transitive callers and grounded memory", () => {
     const fixture = deps();
-    runImpact("leaf", "/repo", fixture.deps);
+    const root = scaffold([{ file: ".mex/context/architecture.md", node: "function:leaf" }]);
+    runImpact("leaf", root, fixture.deps);
     const rows = fixture.output.map((line) => JSON.parse(line));
     expect(rows.map((row) => row.type)).toEqual(["meta", "target", "defines", "caller", "caller", "grounding", "summary"]);
     expect(rows.filter((row) => row.type === "caller").map((row) => row.depth)).toEqual([1, 2]);
@@ -98,12 +119,13 @@ describe("agent graph commands", () => {
     const db = {
       prepare: (sql: string) => ({
         run: vi.fn(), get: vi.fn(), iterate: vi.fn(),
-        all: () => sql.includes("FROM nodes") ? [] : groundings,
+        all: () => [],
       }),
       exec: vi.fn(), pragma: vi.fn(), transaction: <T>(fn: () => T) => fn(), close: vi.fn(), open: true,
     };
     const output: string[] = [];
-    runImpact("leaf", "/repo", { open: () => ({ graph, db, close: vi.fn() }), write: (line) => output.push(line) }, { maxNodes: 100 });
+    const root = scaffold(groundings.map((g) => ({ file: g.scaffold_file, node: g.node_id })));
+    runImpact("leaf", root, { open: () => ({ graph, db, close: vi.fn() }), write: (line) => output.push(line) }, { maxNodes: 100 });
     const rows = output.map((line) => JSON.parse(line));
     expect(rows.at(-1)).toMatchObject({ type: "summary", truncated: true });
     expect(rows.filter((row) => row.type === "caller").length).toBeLessThan(callers.length);
@@ -121,7 +143,8 @@ describe("agent graph commands", () => {
     expect(floor).toBeGreaterThan(1);
 
     const fixture = deps();
-    runImpact("leaf", "/repo", fixture.deps, { maxOutputTokens: floor });
+    const root = scaffold([{ file: ".mex/context/architecture.md", node: "function:leaf" }]);
+    runImpact("leaf", root, fixture.deps, { maxOutputTokens: floor });
     const rows = fixture.output.map((line) => JSON.parse(line));
     expect(rows[0]).toMatchObject({ type: "meta" });
     expect(rows.at(-1)).toMatchObject({ type: "summary", truncated: true });

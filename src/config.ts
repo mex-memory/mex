@@ -146,6 +146,17 @@ export function loadConfiguredSetupMode(scaffoldRoot: string): "code-repo" | "ag
   return loadPersistedConfig(scaffoldRoot)?.setupMode === "agent-memory" ? "agent-memory" : "code-repo";
 }
 
+/**
+ * Read the checkout's `wiki` settings without requiring a complete scaffold.
+ *
+ * For read-only callers outside the Wiki's own commands that must walk the
+ * scaffold the way the Wiki index does, so `wiki.exclude` hides a file from
+ * both or from neither.
+ */
+export function loadConfiguredWikiConfig(scaffoldRoot: string): WikiConfig {
+  return loadWikiConfig(loadPersistedConfig(scaffoldRoot));
+}
+
 /** Persist setup intent using the same atomic, key-preserving config writer. */
 export function saveConfiguredSetupMode(scaffoldRoot: string, mode: "code-repo" | "agent-memory"): void {
   mergeIntoConfig(scaffoldRoot, { setupMode: mode });
