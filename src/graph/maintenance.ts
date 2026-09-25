@@ -29,7 +29,7 @@ import type {
 } from "../team/contracts/graph.js";
 import { DB_SCHEMA_VERSION, upgradeGraphDatabase } from "./db/database.js";
 import { openSqlite } from "./db/sqlite.js";
-import { createGraphEngine, GraphSourceStagingError } from "./engine-impl.js";
+import { createGraphEngine, GraphSourceStagingError, refreshWouldPublishNothing } from "./engine-impl.js";
 import type { BuildResult, GraphEngine } from "./engine.js";
 import {
   inspectGraphSidecars,
@@ -484,8 +484,27 @@ async function refreshGraphWithLease(
     assertMaintenanceDirectoryUnchanged(paths);
     assertRefreshable(priorStatus);
     assertClearSidecars(paths.database);
-    const priorIdentity = captureDatabaseIdentity(paths.database);
     progress(options, "discover", "Inspecting the current graph snapshot and source corpus.");
+
+    // A refresh that would publish nothing, not even coverage or HEAD, needs
+    // no candidate (issue #209): the live graph is already what a candidate
+    // would become, and it is left byte-identical. Anything else, including a
+    // coverage change, takes the normal validated publication.
+    const statBefore = liveDatabaseStat(paths.database);
+    if (timeGraphPhase("envelope.noOpCheck", () => refreshWouldPublishNothing(paths.projectRoot, paths.database))) {
+      assertMaintenanceDirectoryUnchanged(paths);
+      assertClearSidecars(paths.database);
+      if (sameLiveDatabaseStat(statBefore, liveDatabaseStat(paths.database))) {
+        const finished = currentDate(options);
+        return maintenanceResult(
+          started,
+          finished,
+          { filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 },
+          { status: priorStatus, diagnostics: priorStatus.diagnostics },
+        );
+      }
+    }
+    const priorIdentity = captureDatabaseIdentity(paths.database);
 
     candidatePath = ownedPath(paths, "candidate", createToken(options));
     const copyPath = candidatePath;
@@ -2201,6 +2220,22 @@ function sameStatIdentity(
     && left.size === right.size
     && left.mtimeMs === right.mtimeMs
     && left.ctimeMs === right.ctimeMs;
+}
+
+/** A cheap file-object identity for the read-only no-op check. */
+function liveDatabaseStat(path: string): Pick<DatabaseIdentity, "dev" | "ino" | "size" | "mtimeMs" | "ctimeMs"> | null {
+  const stats = safeLstat(path);
+  if (!stats || !stats.isFile() || stats.isSymbolicLink()) return null;
+  return { dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs };
+}
+
+function sameLiveDatabaseStat(
+  left: ReturnType<typeof liveDatabaseStat>,
+  right: ReturnType<typeof liveDatabaseStat>,
+): boolean {
+  return left !== null && right !== null
+    && left.dev === right.dev && left.ino === right.ino && left.size === right.size
+    && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
 function sameDatabaseIdentity(left: DatabaseIdentity, right: DatabaseIdentity): boolean {

@@ -800,6 +800,33 @@ function unchangedGraphSnapshot(
     : null;
 }
 
+/**
+ * Whether refreshing the graph at `dbPath` would publish nothing at all
+ * (issue #209): `sync` would find it unchanged, its coverage is current and it
+ * already records HEAD. The database is read immutably; the caller must have
+ * established that no WAL holds newer data.
+ * @internal
+ */
+export function refreshWouldPublishNothing(rootDir: string, dbPath: string): boolean {
+  const root = resolve(rootDir);
+  let db: SqliteDatabase;
+  try {
+    db = openGraphDatabase(dbPath, { readOnly: true, immutable: true });
+  } catch {
+    return false;
+  }
+  try {
+    const store = new GraphStore(db);
+    const git = readGraphGitProvenance(root);
+    const snapshot = unchangedGraphSnapshot(root, store, git, graphManifest(root));
+    return snapshot !== null
+      && snapshot.indexedHead === git.head
+      && store.getMetadata(GRAPH_COVERAGE_METADATA_KEY) === captureGraphCoverage(root);
+  } finally {
+    db.close();
+  }
+}
+
 export function createGraphEngine(options: GraphEngineOptions): GraphEngine {
   if ("immutable" in (options as GraphEngineOptions & { immutable?: unknown })) {
     throw new TypeError("Immutable graph access is internal to the validated grounding runtime.");
