@@ -6,6 +6,11 @@
 
 **Shared project memory for engineers and their coding agents.**
 
+```bash
+npx mex-agent@0.8.2 setup
+npx skills add mex-memory/mex
+```
+
 MEX keeps your team's architecture, decisions, requirements, and handoffs alongside the code. Engineers and their agents can build on shared context, review proposed changes, and carry work between sessions and teammates—with Git as the sharing layer.
 
 **English** | [简体中文](README.zh-CN.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md)
