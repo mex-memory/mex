@@ -490,8 +490,11 @@ async function refreshGraphWithLease(
     // no candidate (issue #209): the live graph is already what a candidate
     // would become, and it is left byte-identical. Anything else, including a
     // coverage change, takes the normal validated publication.
+    // An inspection that already saw a change settles it without a second
+    // corpus walk; skipping the check only ever takes the normal path.
     const statBefore = liveDatabaseStat(paths.database);
-    if (timeGraphPhase("envelope.noOpCheck", () => refreshWouldPublishNothing(paths.projectRoot, paths.database))) {
+    if (priorStatus.status === "fresh"
+      && timeGraphPhase("envelope.noOpCheck", () => refreshWouldPublishNothing(paths.projectRoot, paths.database))) {
       assertMaintenanceDirectoryUnchanged(paths);
       assertClearSidecars(paths.database);
       if (sameLiveDatabaseStat(statBefore, liveDatabaseStat(paths.database))) {

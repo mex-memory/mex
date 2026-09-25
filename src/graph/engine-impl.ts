@@ -283,6 +283,12 @@ interface DiscoveredFile {
 
 type GraphSkippedSourceFile = SkippedSourceFile;
 
+/** A corpus discovered into its spool before staging begins. */
+interface PreparedCorpus {
+  sourceSpool: GraphSourceSpool;
+  corpus: DiscoveredCorpus;
+}
+
 /** What one source walk found: the corpus, and what it declined to read. */
 interface DiscoveredCorpus {
   files: DiscoveredFile[];
@@ -454,14 +460,24 @@ class GraphEngineImpl implements GraphEngine {
     const gitBeforeStaging = timeGraphPhase("sync.git", () => readGraphGitProvenance(this.rootDir));
     const manifest = timeGraphPhase("sync.manifest", () => graphManifest(this.rootDir));
     const store = this.getStore(true);
-    if (changedSources.length === 0) {
-      const unchanged = unchangedGraphSnapshot(
-        this.rootDir, store, gitBeforeStaging, manifest, this.sourceFileAccess,
-      );
-      if (unchanged) {
-        timeGraphPhase("sync.coverage", () => this.recordUnchangedRefresh(store, unchanged, gitBeforeStaging));
-        return { filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: Date.now() - started };
+    // One discovery serves both the unchanged check and staging (issue #209):
+    // the corpus is read, hashed and spooled once, and the check compares the
+    // very bytes that would be staged.
+    const sourceSpool = new GraphSourceSpool(this.internal.sourceSpoolDirectory);
+    let prepared: PreparedCorpus | undefined;
+    try {
+      const corpus = timeGraphPhase("sync.discover", () =>
+        discoverSourceFiles(this.rootDir, this.sourceFileAccess, sourceSpool));
+      if (changedSources.length === 0) {
+        const unchanged = unchangedGraphSnapshot(this.rootDir, store, gitBeforeStaging, manifest, corpus.files);
+        if (unchanged) {
+          timeGraphPhase("sync.coverage", () => this.recordUnchangedRefresh(store, unchanged, gitBeforeStaging));
+          return { filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: Date.now() - started };
+        }
       }
+      prepared = { sourceSpool, corpus };
+    } finally {
+      if (!prepared) sourceSpool.dispose();
     }
 
     // Stage the whole semantic corpus: every file's extraction, re-extracted or
@@ -478,6 +494,7 @@ class GraphEngineImpl implements GraphEngine {
       this.internal,
       this.compilerExtraction,
       reuse,
+      prepared,
     ));
     try {
       const stagedByPath = new Map(staged.files.map((file) => [file.record.path, file]));
@@ -787,10 +804,9 @@ function unchangedGraphSnapshot(
   store: GraphStore,
   git: GraphGitProvenance,
   manifest: GraphManifest,
-  sourceFileAccess: GraphSourceFileAccess = NODE_SOURCE_FILE_ACCESS,
+  currentCorpus: readonly DiscoveredFile[],
 ): GraphSnapshot | null {
   if (store.getMetadata("manifest_hash") !== manifest.manifestHash) return null;
-  const currentCorpus = timeGraphPhase("sync.discover", () => discoverSourceFiles(root, sourceFileAccess).files);
   const snapshot = parseGraphSnapshot(store.getMetadata(GRAPH_SNAPSHOT_METADATA_KEY));
   return snapshot?.manifestHash === manifest.manifestHash
     && snapshot.indexedBranch === git.branch
@@ -818,7 +834,10 @@ export function refreshWouldPublishNothing(rootDir: string, dbPath: string): boo
   try {
     const store = new GraphStore(db);
     const git = readGraphGitProvenance(root);
-    const snapshot = unchangedGraphSnapshot(root, store, git, graphManifest(root));
+    const manifest = graphManifest(root);
+    if (store.getMetadata("manifest_hash") !== manifest.manifestHash) return false;
+    const corpus = timeGraphPhase("envelope.noOpDiscover", () => discoverSourceFiles(root, NODE_SOURCE_FILE_ACCESS).files);
+    const snapshot = unchangedGraphSnapshot(root, store, git, manifest, corpus);
     return snapshot !== null
       && snapshot.indexedHead === git.head
       && store.getMetadata(GRAPH_COVERAGE_METADATA_KEY) === captureGraphCoverage(root);
@@ -885,10 +904,12 @@ async function stageCorpus(
   internal: GraphEngineInternalHooks = {},
   compilerExtraction?: CompilerExtractionOptions,
   reuse: ExtractionReuse | { reason: string } = { reason: "a full extraction was requested" },
+  /** A corpus already discovered into its spool; staging takes ownership of the spool. */
+  prepared?: PreparedCorpus,
 ): Promise<StagedCorpus> {
-  const sourceSpool = new GraphSourceSpool(internal.sourceSpoolDirectory);
+  const sourceSpool = prepared?.sourceSpool ?? new GraphSourceSpool(internal.sourceSpoolDirectory);
   try {
-    const { files: discovered, skipped } = timeGraphPhase("stage.discover", () =>
+    const { files: discovered, skipped } = prepared?.corpus ?? timeGraphPhase("stage.discover", () =>
       discoverSourceFiles(root, sourceFileAccess, sourceSpool));
     const configSources = timeGraphPhase("stage.config", () => discoverGraphConfigSources(root));
     const stagedConfigHash = configHashForSources(configSources);
