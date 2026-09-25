@@ -1351,11 +1351,18 @@ class CompilerInputLedger {
       // option that affects parsing or binding: the rule TypeScript itself
       // applies when it reuses source files across programs. The bytes are
       // the ledger's, identical for the whole extraction.
+      //
+      // A declaration file (the libraries above all) is shared more widely.
+      // Every other input its parse and bind read is in the key below: module
+      // detection resolves to its own syntax in every mode, strict mode comes
+      // from that alone, no implicit helper or JSX import is added to it, and
+      // the remaining options the binder reads concern executable statements,
+      // switches and labels, which a declaration file does not contain.
       const parse = typeof languageVersionOrOptions === "number"
         ? { languageVersion: languageVersionOrOptions }
         : languageVersionOrOptions;
       const key = [
-        settings,
+        DECLARATION_FILE.test(fileName) ? "declaration" : settings,
         normalizedAbsolute(fileName),
         parse.languageVersion,
         parse.impliedNodeFormat ?? "",
@@ -1462,6 +1469,9 @@ class CompilerInputLedger {
     }
   }
 }
+
+/** TypeScript's declaration file names, including `.d.<extension>.ts`. */
+const DECLARATION_FILE = /\.d(\.[^./\\]+)?\.[cm]?ts$/iu;
 
 /**
  * The compiler options a parsed and bound source file depends on: the set
