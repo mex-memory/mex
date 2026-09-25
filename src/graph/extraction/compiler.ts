@@ -299,6 +299,12 @@ export interface CompilerExtractionOptions {
   programFactory?: (options: ts.CreateProgramOptions) => ts.Program;
   /** Reuse unaffected files' previous captures (issue #209). */
   incremental?: CompilerIncrementalInput;
+  /**
+   * Test seam: the order the checker visits one project's files in. Output
+   * must not depend on it (issue #209); the order-independence property test
+   * permutes it. Must return a permutation of its input.
+   */
+  visitOrder?: (files: readonly string[]) => readonly string[];
 }
 
 interface ParsedProject {
@@ -432,7 +438,9 @@ function declarationLocationsForSymbol(
 ): string[] {
   if (!symbol) return [];
   const resolved = canonicalSymbol(symbol, checker);
-  return [...new Set((resolved.declarations ?? []).map(declarationLocation))];
+  // A union property's declarations come in the checker's type-id order;
+  // sorted, the capture is a function of the code (issue #209).
+  return [...new Set((resolved.declarations ?? []).map(declarationLocation))].sort(compareCodePoints);
 }
 
 /** Finish-time half: locations → the same sorted unique ids `idsForSymbol` produced. */
@@ -581,7 +589,11 @@ export function buildTypeScriptExtraction(
       }
     }
     const contexts: FileContext[] = [];
-    for (const absoluteFile of owned) {
+    const visitOrder = options.visitOrder ? options.visitOrder(owned) : owned;
+    if (visitOrder.length !== owned.length || !owned.every((file) => visitOrder.includes(file))) {
+      throw new Error("A compiler visit order must be a permutation of the owned files.");
+    }
+    for (const absoluteFile of visitOrder) {
       if (reused.has(absoluteFile)) continue;
       const sourceFile = program.getSourceFile(absoluteFile);
       if (!sourceFile) continue;
@@ -2092,19 +2104,32 @@ function captureCallReference(
   const expression = node.expression;
   const sourceId = enclosingSourceId(node, context);
   if (!sourceId) return;
-  const resolvedSignature = checker.getResolvedSignature(node);
+  const calleeType = checker.getTypeAtLocation(expression);
+  // A union-typed callee resolves to a signature the checker builds from
+  // whichever member it created first, so both the resolved signature and
+  // its declaration depend on file visit order. Such a call is described by
+  // every member's signatures instead (issue #209).
+  const unionCallee = calleeType.isUnion();
+  const resolvedSignature = unionCallee ? undefined : checker.getResolvedSignature(node);
+  const memberCallSignatures = unionCallee
+    ? memberSignatures(
+      checker,
+      calleeType,
+      ts.isNewExpression(node) ? ts.SignatureKind.Construct : ts.SignatureKind.Call,
+    )
+    : [];
   const signatureSymbol = resolvedSignature?.declaration
     ? symbolForDeclaration(resolvedSignature.declaration, checker)
     : undefined;
   const expressionSymbol = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(expression) ? expression.name : expression);
-  const callSignatures = checker.getTypeAtLocation(expression).getCallSignatures();
+  const callSignatures = unionCallee ? memberCallSignatures : calleeType.getCallSignatures();
   const candidateLocations = [...new Set(callSignatures
     .map((signature) => signature.declaration ? symbolForDeclaration(signature.declaration, checker) : undefined)
     .flatMap((symbol) => declarationLocationsForSymbol(symbol, checker))
     .concat(
       declarationLocationsForSymbol(signatureSymbol, checker),
       declarationLocationsForSymbol(expressionSymbol, checker),
-    ))];
+    ))].sort(compareCodePoints);
   const polymorphic = ts.isPropertyAccessExpression(expression)
     && expression.expression.kind !== ts.SyntaxKind.ThisKeyword
     && expression.expression.kind !== ts.SyntaxKind.SuperKeyword
@@ -2131,12 +2156,14 @@ function captureCallReference(
     polymorphic,
     candidateLocations,
     expressionText: expression.getText(context.sourceFile),
-    signatureText: resolvedSignature
-      ? portableCheckerText(
-        renderSignature(checker, resolvedSignature, node),
-        context.project.root,
-      )
-      : undefined,
+    signatureText: unionCallee
+      ? canonicalSignatureSet(checker, memberCallSignatures, node, context.project.root)
+      : resolvedSignature
+        ? portableCheckerText(
+          renderSignature(checker, resolvedSignature, node),
+          context.project.root,
+        )
+        : undefined,
   });
 }
 
@@ -2200,8 +2227,18 @@ function captureCallbackReferences(
   captured: CapturedReference[],
 ): void {
   const checker = context.project.checker;
-  const signature = checker.getResolvedSignature(call);
-  const declaration = signature?.getDeclaration();
+  const calleeType = checker.getTypeAtLocation(call.expression);
+  // For a union-typed callee the checker's resolved signature depends on
+  // file visit order; the callee is then its members' first declaration in
+  // code order (portable path, start, kind), a choice the code alone decides.
+  const declaration = calleeType.isUnion()
+    ? firstDeclarationInCodeOrder(
+      memberSignatures(checker, calleeType, ts.SignatureKind.Call)
+        .map((signature) => signature.getDeclaration())
+        .filter((candidate): candidate is ts.SignatureDeclaration => Boolean(candidate)),
+      context.project.root,
+    )
+    : checker.getResolvedSignature(call)?.getDeclaration();
   if (!declaration || !ts.isFunctionLike(declaration)) return;
   const calleeSymbol = symbolForDeclaration(declaration, checker);
   const calleeLocations = declarationLocationsForSymbol(calleeSymbol, checker);
@@ -2375,8 +2412,8 @@ function declarationSignature(
     const location = declarations[0];
     const type = checker.getTypeOfSymbolAtLocation(symbol, location);
     const signatures = [
-      ...checker.getSignaturesOfType(type, ts.SignatureKind.Call),
-      ...checker.getSignaturesOfType(type, ts.SignatureKind.Construct),
+      ...memberSignatures(checker, type, ts.SignatureKind.Call),
+      ...memberSignatures(checker, type, ts.SignatureKind.Construct),
     ];
     const rendered = [...new Set(signatures.map((signature) => portableCheckerText(
       renderSignature(checker, signature, location),
@@ -2427,12 +2464,28 @@ function printCanonical(printer: ts.Printer, node: ts.Node, sourceFile: ts.Sourc
   const transformed = ts.transform(node, [(context) => {
     const visit = (current: ts.Node): ts.Node => {
       const visited = ts.visitEachChild(current, visit, context);
-      if (!ts.isUnionTypeNode(visited)) return visited;
-      const members = visited.types
+      if (ts.isTypeLiteralNode(visited)) {
+        // A mapped or spread object type lists its properties in the type-id
+        // order of its key literals. Members are ordered by name, stably, so
+        // same-named overloads keep their order; unnamed call, construct and
+        // index signatures stay first, in source order.
+        const named = (member: ts.TypeElement): string => (member.name
+          ? printer.printNode(ts.EmitHint.Unspecified, member.name, sourceFile)
+          : "");
+        return context.factory.updateTypeLiteralNode(visited, context.factory.createNodeArray(
+          [...visited.members].sort((left, right) => compareCodePoints(named(left), named(right))),
+        ));
+      }
+      if (!ts.isUnionTypeNode(visited) && !ts.isIntersectionTypeNode(visited)) return visited;
+      const members = context.factory.createNodeArray(visited.types
         .map((member) => ({ member, text: printer.printNode(ts.EmitHint.Unspecified, member, sourceFile) }))
         .sort((left, right) => compareCodePoints(left.text, right.text))
-        .map(({ member }) => member);
-      return context.factory.updateUnionTypeNode(visited, context.factory.createNodeArray(members));
+        .map(({ member }) => member));
+      // Intersections the checker derives from a union (a union signature's
+      // parameters, a contextual type) inherit its type-id order too.
+      return ts.isUnionTypeNode(visited)
+        ? context.factory.updateUnionTypeNode(visited, members)
+        : context.factory.updateIntersectionTypeNode(visited, members);
     };
     return (root) => visit(root);
   }]);
@@ -2603,10 +2656,51 @@ function returnTypeOf(
 ): string | undefined {
   if (!symbol || !ts.isFunctionLike(node)) return undefined;
   const type = checker.getTypeOfSymbolAtLocation(symbol, node);
-  const signature = checker.getSignaturesOfType(type, ts.SignatureKind.Call)[0];
-  return signature
-    ? portableCheckerText(renderType(checker, signature.getReturnType(), node), root)
-    : undefined;
+  // The first signature of each union member, never the checker's union
+  // signature, whose first member depends on file visit order (issue #209).
+  const members = type.isUnion() ? type.types : [type];
+  const returns = [...new Set(members.flatMap((member) => {
+    const signature = checker.getSignaturesOfType(member, ts.SignatureKind.Call)[0];
+    return signature ? [portableCheckerText(renderType(checker, signature.getReturnType(), node), root)] : [];
+  }))].sort(compareCodePoints);
+  return returns.length > 0 ? returns.join(" | ") : undefined;
+}
+
+/**
+ * A type's signatures of one kind, member by member for a union. The
+ * checker's own union signature is built from whichever member it created
+ * first, so it is not a function of the code (issue #209). Callers order the
+ * result themselves.
+ */
+function memberSignatures(checker: ts.TypeChecker, type: ts.Type, kind: ts.SignatureKind): readonly ts.Signature[] {
+  return type.isUnion()
+    ? type.types.flatMap((member) => checker.getSignaturesOfType(member, kind))
+    : checker.getSignaturesOfType(type, kind);
+}
+
+/** Distinct rendered signatures in canonical order, or undefined for none. */
+function canonicalSignatureSet(
+  checker: ts.TypeChecker,
+  signatures: readonly ts.Signature[],
+  enclosing: ts.Node,
+  root: string,
+): string | undefined {
+  const rendered = [...new Set(signatures.map((signature) =>
+    portableCheckerText(renderSignature(checker, signature, enclosing), root)))].sort(compareCodePoints);
+  return rendered.length > 0 ? rendered.join(" | ") : undefined;
+}
+
+/** The declaration that comes first in the code: portable path, then start, then kind. */
+function firstDeclarationInCodeOrder<T extends ts.Node>(declarations: readonly T[], root: string): T | undefined {
+  return declarations
+    .map((declaration) => ({
+      declaration,
+      path: portableInputPath(root, normalizedAbsolute(declaration.getSourceFile().fileName)),
+      start: declaration.getStart(declaration.getSourceFile()),
+    }))
+    .sort((left, right) => compareCodePoints(left.path, right.path)
+      || left.start - right.start
+      || left.declaration.kind - right.declaration.kind)[0]?.declaration;
 }
 
 function jsDocForNode(node: ts.Node): string | undefined {
