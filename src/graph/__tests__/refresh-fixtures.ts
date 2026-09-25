@@ -91,6 +91,9 @@ export const TS_FIXTURE: Fixture = {
   },
   edits: [
     { name: "trailing comment", apply: append("src/util/format.ts", "// trailing comment\n"), expectMode: "incremental" },
+    // A release bump changes no graph input; the next edit stays incremental.
+    { name: "bump the package version", apply: replace("package.json", "\"name\": \"fixture-ts\"", "\"name\": \"fixture-ts\",\n  \"version\": \"1.0.1\"") },
+    { name: "edit after a version bump", apply: append("src/util/math.ts", "// after the bump\n"), expectMode: "incremental" },
     { name: "rename function", apply: all(
       replace("src/util/math.ts", "export function scale(", "export function multiply("),
     ), expectMode: "incremental" },

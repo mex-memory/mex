@@ -71,10 +71,25 @@ export function decodeCachedExtraction(payload: Uint8Array): CachedExtraction | 
 }
 
 /**
+ * Package metadata that neither module resolution nor the checker reads. A
+ * release commit that bumps `version` must not discard every cached
+ * extraction; every other field, including `name`, `main`, `types`,
+ * `typesVersions`, `exports` and `imports`, still counts byte for byte.
+ */
+const PACKAGE_METADATA_FIELDS = new Set([
+  "version", "description", "keywords", "author", "contributors", "maintainers", "license",
+  "repository", "bugs", "homepage", "funding", "scripts", "engines", "publishConfig", "packageManager",
+]);
+/** Dependency maps: the checker reads installed packages, never these version ranges. */
+const DEPENDENCY_MAPS = new Set(["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]);
+
+/**
  * What every cached extraction was produced under. The manifest covers the
  * engine versions, grammars and the resolution-relevant config projection;
- * the exact config bytes are added because a config field outside that
- * projection may still steer module resolution for one importer.
+ * the config sources are added nearly byte for byte, because a field outside
+ * that projection may still steer module resolution for one importer. Only
+ * package metadata is left out. Installed dependencies are compared through
+ * each program's input state instead.
  */
 export function extractionCacheIdentity(
   manifestHash: string,
@@ -82,9 +97,27 @@ export function extractionCacheIdentity(
 ): string {
   const hash = createHash("sha256").update(`format ${EXTRACTION_CACHE_FORMAT}\n${manifestHash}\n`);
   for (const [path, source] of [...configSources.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))) {
-    hash.update(`${path}\0${createHash("sha256").update(source).digest("hex")}\n`);
+    const identity = path === "package.json" || path.endsWith("/package.json") ? packageIdentity(source) : source;
+    hash.update(`${path}\0${createHash("sha256").update(identity).digest("hex")}\n`);
   }
   return hash.digest("hex");
+}
+
+function packageIdentity(source: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch {
+    return source;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return source;
+  const kept = Object.entries(parsed as Record<string, unknown>)
+    .filter(([key]) => !PACKAGE_METADATA_FIELDS.has(key))
+    .map(([key, value]): [string, unknown] => [key, DEPENDENCY_MAPS.has(key) && value && typeof value === "object" && !Array.isArray(value)
+      ? Object.keys(value).sort()
+      : value])
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return `package-identity:${JSON.stringify(kept)}`;
 }
 
 export interface StoredExtraction {

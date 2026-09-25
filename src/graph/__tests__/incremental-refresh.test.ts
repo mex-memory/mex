@@ -188,7 +188,8 @@ describe("incremental refresh converges with the full-restage oracle", () => {
   it("two incremental histories ending at the same tree produce identical stores", async () => {
     const first = await startHarness(TS_FIXTURE);
     const second = await startHarness(TS_FIXTURE);
-    const [comment, rename, , addFile] = TS_FIXTURE.edits;
+    const edit = (name: string): Edit => TS_FIXTURE.edits.find((entry) => entry.name === name)!;
+    const [comment, rename, addFile] = [edit("trailing comment"), edit("rename function"), edit("add file")];
     for (const edit of [comment!, rename!, addFile!]) await step(first, edit, `history A (${edit.name})`);
     for (const edit of [addFile!, rename!, comment!]) await step(second, edit, `history B (${edit.name})`);
     // Continuity aliases record each history's own id transitions by design.
