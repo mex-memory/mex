@@ -20,6 +20,18 @@ interface Scored {
   score: number;
 }
 
+/**
+ * What decided a verdict. `neighbors` marks a MOVED that callers and callees
+ * decided for a node too small for its body to tell (#229): callers surface it
+ * as an info notice naming old → new, since a rebind is otherwise silent.
+ */
+export type ReconcileEvidence = "body" | "neighbors";
+
+export interface ExplainedResolution {
+  resolution: Resolution;
+  evidence: ReconcileEvidence;
+}
+
 export class MinHashReconciler implements Reconciler {
   constructor(private readonly store: FingerprintStore) {}
 
@@ -32,7 +44,16 @@ export class MinHashReconciler implements Reconciler {
    * from an older extractor (#240), and never a rename.
    */
   reconcile(missingNodeId: string, baseline: Fingerprint, bodyHash?: string): Resolution {
+    return this.explain(missingNodeId, baseline, bodyHash).resolution;
+  }
+
+  /** {@link reconcile}, plus the evidence that decided it. */
+  explain(missingNodeId: string, baseline: Fingerprint, bodyHash?: string): ExplainedResolution {
     if (baseline.tokenCount < MIN_TOKENS) return this.reconcileSmall(missingNodeId, baseline, bodyHash);
+    return { resolution: this.reconcileBody(missingNodeId, baseline, bodyHash), evidence: "body" };
+  }
+
+  private reconcileBody(missingNodeId: string, baseline: Fingerprint, bodyHash: string | undefined): Resolution {
     const candidates = this.store.lookup(baseline);
     if (candidates.length === 0) return { kind: "GONE" };
 
@@ -86,7 +107,11 @@ export class MinHashReconciler implements Reconciler {
    * A baseline with fewer than NBR_MIN_SHARED neighbors therefore never
    * reaches MOVED. An identical-text match makes it AMBIGUOUS at most.
    */
-  private reconcileSmall(missingNodeId: string, baseline: Fingerprint, bodyHash: string | undefined): Resolution {
+  private reconcileSmall(
+    missingNodeId: string,
+    baseline: Fingerprint,
+    bodyHash: string | undefined,
+  ): ExplainedResolution {
     const kind = nodeKind(missingNodeId);
     const scored = this.store.neighborhood(baseline.neighbors, NBR_MIN_SHARED, NBR_CANDIDATE_LIMIT)
       .filter((nodeId) => nodeId !== missingNodeId && kind !== null && nodeKind(nodeId) === kind)
@@ -107,12 +132,20 @@ export class MinHashReconciler implements Reconciler {
     const [best] = scored;
     if (!best) {
       const exact = this.identicalText(missingNodeId, this.store.lookup(baseline), bodyHash);
-      return exact ? { kind: "AMBIGUOUS", candidate: exact } : { kind: "GONE" };
+      return {
+        resolution: exact ? { kind: "AMBIGUOUS", candidate: exact } : { kind: "GONE" },
+        evidence: exact ? "body" : "neighbors",
+      };
     }
     const close = nearTies(scored);
-    if (close.length === 1 && best.strong && best.compatible) return { kind: "MOVED", nodeId: best.nodeId };
+    if (close.length === 1 && best.strong && best.compatible) {
+      return { resolution: { kind: "MOVED", nodeId: best.nodeId }, evidence: "neighbors" };
+    }
+    // An identical grounded text settles the tie by body, not by neighbors.
     const exact = this.identicalText(missingNodeId, close.filter((candidate) => candidate.strong), bodyHash);
-    return exact ? { kind: "MOVED", nodeId: exact } : { kind: "AMBIGUOUS", candidate: best.nodeId };
+    return exact
+      ? { resolution: { kind: "MOVED", nodeId: exact }, evidence: "body" }
+      : { resolution: { kind: "AMBIGUOUS", candidate: best.nodeId }, evidence: "neighbors" };
   }
 
   /** The one same-kind candidate whose body hash equals the committed one, when exactly one does. */

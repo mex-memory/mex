@@ -5,6 +5,7 @@ import { deserializeFingerprint, serializeFingerprint } from "../../graph/finger
 import type { GraphEngine } from "../../graph/engine.js";
 import type { GroundedSource, GroundingChecker } from "../../graph/grounding.js";
 import type { Fingerprint, Reconciler, Resolution } from "../../graph/reconcile.js";
+import type { ExplainedResolution } from "../../graph/reconcile-engine.js";
 import { observeCommittedGroundings, type CommittedGrounding } from "../../committed-groundings.js";
 import { extractGroundings, findMexAnchors } from "../../markdown.js";
 
@@ -13,6 +14,17 @@ interface GroundingReconcilerCapabilities {
   getFingerprint?(nodeId: string): Fingerprint | null;
   /** The reconciler may take the committed body hash as a tie-breaker (#229). */
   reconcile(missingNodeId: string, baseline: Fingerprint, bodyHash?: string): Resolution;
+  /** The verdict and the evidence that decided it; without it every verdict counts as body evidence. */
+  explain?(missingNodeId: string, baseline: Fingerprint, bodyHash?: string): ExplainedResolution;
+}
+
+/**
+ * The info notice for a MOVED that callers and callees decided (#229). Not
+ * counted in the score (`src/drift/scoring.ts`); `sync` prints the same line
+ * when it rewrites the reference.
+ */
+export function movedByNeighborsMessage(oldId: string, newId: string, anchor = false): string {
+  return `${anchor ? "Inline anchor" : "Grounded node"} matched by callers and callees, not body: ${oldId} → ${newId}`;
 }
 
 /** What a snapshot stale only by changed source can still say about one node (#228). */
@@ -37,6 +49,9 @@ export function makeGroundingChecker(
   sourceDrift?: SourceDriftGrounding,
 ): GroundingChecker {
   const capabilities = reconciler as Reconciler & GroundingReconcilerCapabilities;
+  const decide = (nodeId: string, baseline: Fingerprint, bodyHash: string | undefined): ExplainedResolution =>
+    capabilities.explain?.(nodeId, baseline, bodyHash)
+      ?? { resolution: capabilities.reconcile(nodeId, baseline, bodyHash), evidence: "body" };
 
   return function checkGrounding(
     frontmatter: ScaffoldFrontmatter | null,
@@ -121,8 +136,12 @@ export function makeGroundingChecker(
         ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
       if (!baseline) continue;
       const baselineBodyHash = grounding.bodyHash ?? baselineSource?.bodyHash;
-      const resolution = capabilities.reconcile(grounding.node, baseline, baselineBodyHash);
+      const { resolution, evidence } = decide(grounding.node, baseline, baselineBodyHash);
       if (resolution.kind === "MOVED") {
+        if (evidence === "neighbors") {
+          issues.push(issue("GROUNDING_MOVED_BY_NEIGHBORS", "info", source,
+            movedByNeighborsMessage(grounding.node, resolution.nodeId)));
+        }
         const moved = graph.getNode(resolution.nodeId);
         if (moved && baselineBodyHash !== undefined && moved.bodyHash !== baselineBodyHash) {
           issues.push(issue("GROUNDING_DRIFT", "warning", source,
@@ -171,8 +190,12 @@ export function makeGroundingChecker(
           `Inline anchor points to an unavailable node: ${anchor.nodeId}`));
         continue;
       }
-      const resolution = capabilities.reconcile(anchor.nodeId, baseline.fingerprint, baseline.bodyHash);
+      const { resolution, evidence } = decide(anchor.nodeId, baseline.fingerprint, baseline.bodyHash);
       if (resolution.kind === "MOVED") {
+        if (evidence === "neighbors") {
+          issues.push(issue("GROUNDING_MOVED_BY_NEIGHBORS", "info", source,
+            movedByNeighborsMessage(anchor.nodeId, resolution.nodeId, true)));
+        }
         issues.push(issue("GROUNDING_DRIFT", "warning", source,
           `Inline anchor should move: ${anchor.nodeId}; candidate: ${resolution.nodeId}`));
       } else if (resolution.kind === "AMBIGUOUS") {

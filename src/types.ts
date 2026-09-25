@@ -197,7 +197,11 @@ export type IssueCode =
   | "GROUNDING_UNVERIFIED"
   // A file keeps groundings both at the root and under `mex:`. Both are read;
   // info, or a warning when the two ground one node differently. See #226.
-  | "GROUNDING_MIXED_SHAPE";
+  | "GROUNDING_MIXED_SHAPE"
+  // A MOVED decided by callers and callees because the body was too small to
+  // tell (old → new). Info, and not counted in the score: nothing is wrong,
+  // but a rebind is otherwise silent. See #229.
+  | "GROUNDING_MOVED_BY_NEIGHBORS";
 
 export interface DriftIssue {
   code: IssueCode;

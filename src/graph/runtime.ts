@@ -353,11 +353,25 @@ function moveGroundingBaseline(
   }
 }
 
-/** Persist only high-confidence MOVED repairs. AMBIGUOUS/GONE remain for the agent. */
+/** A rewritten reference whose MOVED was decided by callers and callees, not body (#229). */
+export interface MovedByNeighborsNotice {
+  /** The scaffold file, relative to the project root. */
+  file: string;
+  oldId: string;
+  newId: string;
+  anchor: boolean;
+}
+
+/**
+ * Persist only high-confidence MOVED repairs. AMBIGUOUS/GONE remain for the agent.
+ * A rewrite decided by callers and callees is appended to `notices`, so `sync`
+ * can say so: once rewritten, `check` no longer sees the old id.
+ */
 export function persistMovedGroundings(
   config: MexConfig,
   scaffoldFiles: readonly string[],
   runtime: GroundingRuntime,
+  notices: MovedByNeighborsNotice[] = [],
 ): number {
   let moved = 0;
   for (const filePath of scaffoldFiles) {
@@ -373,6 +387,8 @@ export function persistMovedGroundings(
     // the old node's rows (no baseline, no fingerprint, no alias) — instead
     // of skipping the anchor and leaving GROUNDING_GONE behind.
     const migratedNodes = new Map<string, string>();
+    const byNeighbors = new Set<string>();
+    const fileNotices: MovedByNeighborsNotice[] = [];
     // Taken before the loop below rebinds entries in place: anchors read them
     // as baselines exactly as `check` does (#229).
     const committedHere = committedBaselines(groundings);
@@ -395,11 +411,15 @@ export function persistMovedGroundings(
       const baseline = deserializeFingerprint(grounding.fingerprint)
         ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
       if (!baseline) continue;
-      const resolution = runtime.reconciler.reconcile(
+      const { resolution, evidence } = runtime.reconciler.explain(
         grounding.node, baseline, grounding.bodyHash ?? baselineSource?.bodyHash);
       if (resolution.kind !== "MOVED") continue;
       if (groundings.some((other) => other !== grounding && other.node === resolution.nodeId)) continue;
       const oldId = grounding.node;
+      if (evidence === "neighbors") {
+        byNeighbors.add(oldId);
+        fileNotices.push({ file: scaffoldFile, oldId, newId: resolution.nodeId, anchor: false });
+      }
       grounding.node = resolution.nodeId;
       const fingerprint = runtime.reconciler.getFingerprint(resolution.nodeId);
       if (fingerprint) grounding.fingerprint = serializeFingerprint(fingerprint);
@@ -415,6 +435,9 @@ export function persistMovedGroundings(
     for (const anchor of [...anchors].reverse()) {
       const migratedId = migratedNodes.get(anchor.nodeId);
       if (migratedId !== undefined) {
+        if (byNeighbors.has(anchor.nodeId)) {
+          fileNotices.push({ file: scaffoldFile, oldId: anchor.nodeId, newId: migratedId, anchor: true });
+        }
         anchoredContent = rewriteMexAnchor(anchoredContent, anchor, migratedId);
         moved += 1;
         continue;
@@ -436,8 +459,12 @@ export function persistMovedGroundings(
         cached: runtime.reconciler.getGroundedSource(scaffoldFile, anchor.nodeId),
       });
       if (!baseline || baseline === "conflict") continue;
-      const resolution = runtime.reconciler.reconcile(anchor.nodeId, baseline.fingerprint, baseline.bodyHash);
+      const { resolution, evidence } = runtime.reconciler.explain(
+        anchor.nodeId, baseline.fingerprint, baseline.bodyHash);
       if (resolution.kind !== "MOVED") continue;
+      if (evidence === "neighbors") {
+        fileNotices.push({ file: scaffoldFile, oldId: anchor.nodeId, newId: resolution.nodeId, anchor: true });
+      }
       if (!groundings.some((entry) => entry.node === resolution.nodeId)) {
         moveGroundingBaseline(scaffoldFile, anchor.nodeId, resolution.nodeId, runtime, pendingMoves);
       }
@@ -446,6 +473,9 @@ export function persistMovedGroundings(
     }
     if (anchoredContent !== content) {
       replaceGroundingDocument(config, filePath, content, anchoredContent, GRAPH_CORPUS_LIMITS.maxSourceFileBytes);
+      // Anchors were rewritten last to first; report them in document order.
+      notices.push(...fileNotices.filter((notice) => !notice.anchor),
+        ...fileNotices.filter((notice) => notice.anchor).reverse());
       for (const [oldId, { previous, newId }] of pendingMoves) {
         runtime.fingerprints.saveGroundedSource({ ...previous, nodeId: newId });
         runtime.fingerprints.deleteGroundedSource(scaffoldFile, oldId);
@@ -458,6 +488,7 @@ export function persistMovedGroundings(
 interface GroundingReconcilerCapabilities {
   getGroundedSource(scaffoldFile: string, nodeId: string): GroundedSource | null;
   getFingerprint(nodeId: string): Fingerprint | null;
+  explain: MinHashReconciler["explain"];
 }
 
 interface GroundingRuntimeGuard {
@@ -476,6 +507,7 @@ function assembleGroundingRuntime(
   const reconciler = new MinHashReconciler(fingerprints);
   const checkerReconciler: Reconciler & GroundingReconcilerCapabilities = {
     reconcile: (nodeId, baseline, bodyHash?: string) => reconciler.reconcile(nodeId, baseline, bodyHash),
+    explain: (nodeId, baseline, bodyHash) => reconciler.explain(nodeId, baseline, bodyHash),
     getFingerprint: (nodeId) => anchorFingerprints.get(nodeId) ?? reconciler.getFingerprint(nodeId),
     getGroundedSource: (file, nodeId) => reconciler.getGroundedSource(file, nodeId),
   };

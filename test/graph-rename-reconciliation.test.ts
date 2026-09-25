@@ -1,9 +1,11 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { stripVTControlCharacters } from "node:util";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DriftIssue, Grounding, MexConfig } from "../src/types.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
+import { computeScore } from "../src/drift/scoring.js";
 import { openGraphDatabase } from "../src/graph/db/database.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
 import { FingerprintStore } from "../src/graph/fingerprint-store.js";
@@ -14,6 +16,7 @@ import { loadGroundingRuntime, persistMovedGroundings } from "../src/graph/runti
 import { extractGroundings, writeGroundings } from "../src/markdown.js";
 import { createGroundingGraph } from "../src/wiki/grounding/adapter.js";
 import { resolveGrounding } from "../src/wiki/grounding/resolve.js";
+import { runSync } from "../src/sync/index.js";
 
 // Renames reported as GROUNDING_GONE (#229): small functions, whose body is
 // too small to recognise across a rename, and inline anchors, which ignored
@@ -188,6 +191,7 @@ async function groundingIssues(config: MexConfig): Promise<DriftIssue[]> {
 /** What `check` concluded about one old id: the verdict and, for a match, the candidate. */
 function verdict(issues: readonly DriftIssue[], oldId: string, anchor = false): string {
   const own = issues.filter((issue) => issue.message.includes(oldId)
+    && issue.code !== "GROUNDING_MOVED_BY_NEIGHBORS"
     && issue.message.startsWith("Inline anchor") === anchor);
   if (own.some((issue) => issue.code === "GROUNDING_GONE")) return "GONE";
   const ambiguous = own.find((issue) => issue.code === "GROUNDING_AMBIGUOUS");
@@ -234,11 +238,14 @@ describe("small functions renamed with their bodies unchanged (#229)", () => {
 
     // Its callers and callee are unchanged and its shape is close, so this is
     // the same function; the GROUNDING_DRIFT carrying the candidate is what
-    // tells the reader the body moved on.
+    // tells the reader the body moved on, and the notice that callers decided it.
     const issues = await groundingIssues(config);
-    expect(verdict(issues, entry.node)).toBe(`MOVED ${nodeId(config.projectRoot, "readGraphStatus")}`);
-    expect(issues.find((issue) => issue.message.includes(entry.node))?.message)
+    const renamed = nodeId(config.projectRoot, "readGraphStatus");
+    expect(verdict(issues, entry.node)).toBe(`MOVED ${renamed}`);
+    expect(issues.find((issue) => issue.code === "GROUNDING_DRIFT")?.message)
       .toMatch(/^Grounded node body changed:/u);
+    expect(issues.find((issue) => issue.code === "GROUNDING_MOVED_BY_NEIGHBORS")?.message)
+      .toBe(`Grounded node matched by callers and callees, not body: ${entry.node} → ${renamed}`);
   }, 60_000);
 });
 
@@ -331,5 +338,74 @@ describe("one verdict for one renamed node in every reader (#229)", () => {
     expect(content).toContain(`mex://${renamed}`);
     expect(content).not.toContain(entry.node);
     expect(existsSync(path)).toBe(true);
+  }, 60_000);
+});
+
+describe("a MOVED decided by callers and callees is announced, not silent (#229)", () => {
+  async function renamedWrapper(bodyHash: boolean) {
+    const config = project(typescript(["wrapOne", "wrapTwo", "inspectGraphStatus"]));
+    await build(config.projectRoot);
+    const grounded = grounding(config.projectRoot, "inspectGraphStatus");
+    const entry = bodyHash ? grounded : { node: grounded.node, fingerprint: grounded.fingerprint };
+    const path = scaffold(config, "wrappers.md", [entry], [entry.node]);
+    write(config.projectRoot, typescript(["wrapOne", "wrapTwo", "readGraphStatus"]));
+    await freshBuild(config.projectRoot);
+    return { config, path, oldId: entry.node, newId: nodeId(config.projectRoot, "readGraphStatus") };
+  }
+
+  it("reports an unscored info notice naming old → new in check, for the entry and the anchor", async () => {
+    const { config, oldId, newId } = await renamedWrapper(true);
+    const report = await runDriftCheckWithGraphStatus(config);
+    const notices = report.issues.filter((issue) => issue.code === "GROUNDING_MOVED_BY_NEIGHBORS");
+    expect(notices).toEqual([
+      expect.objectContaining({
+        severity: "info",
+        file: ".mex/context/wrappers.md",
+        message: `Grounded node matched by callers and callees, not body: ${oldId} → ${newId}`,
+      }),
+      expect.objectContaining({
+        severity: "info",
+        file: ".mex/context/wrappers.md",
+        message: `Inline anchor matched by callers and callees, not body: ${oldId} → ${newId}`,
+      }),
+    ]);
+    expect(report.score).toBe(computeScore(report.issues.filter((issue) => !notices.includes(issue))));
+    expect(computeScore(notices)).toBe(100);
+  }, 60_000);
+
+  it("prints the notice in sync when it rewrites the references", async () => {
+    const { config, path, oldId, newId } = await renamedWrapper(false);
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => { lines.push(args.join(" ")); });
+    try {
+      await runSync({ ...config, aiTools: ["claude"] }, {}, {
+        ask: async () => "3",
+        runAgent: vi.fn(() => false),
+        reviewGrounding: false,
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+    const plain = lines.map((line) => stripVTControlCharacters(line));
+    expect(plain).toContain(`ℹ GROUNDING_MOVED_BY_NEIGHBORS .mex/context/wrappers.md: `
+      + `Grounded node matched by callers and callees, not body: ${oldId} → ${newId}`);
+    expect(plain).toContain(`ℹ GROUNDING_MOVED_BY_NEIGHBORS .mex/context/wrappers.md: `
+      + `Inline anchor matched by callers and callees, not body: ${oldId} → ${newId}`);
+    const content = readFileSync(path, "utf-8");
+    expect(extractGroundings(content).map((grounded) => grounded.node)).toEqual([newId]);
+    expect(content).toContain(`mex://${newId}`);
+  }, 60_000);
+
+  it("says nothing extra when the body decided the move", async () => {
+    const config = project(summarizer("summarize"));
+    await build(config.projectRoot);
+    const entry = grounding(config.projectRoot, "summarize");
+    scaffold(config, "summary.md", [entry], [entry.node]);
+    write(config.projectRoot, summarizer("describeValues"));
+    await freshBuild(config.projectRoot);
+
+    const issues = await groundingIssues(config);
+    expect(verdict(issues, entry.node)).toBe(`MOVED ${nodeId(config.projectRoot, "describeValues")}`);
+    expect(issues.filter((issue) => issue.code === "GROUNDING_MOVED_BY_NEIGHBORS")).toEqual([]);
   }, 60_000);
 });
