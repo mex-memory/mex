@@ -506,6 +506,30 @@ describe("graph maintenance", () => {
     expect(ownedArtifacts(root)).toEqual([]);
   }, 15_000);
 
+  it("records HEAD when the commits since the snapshot touched no indexed file", async () => {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export const service = 1;\n");
+    git(root, "init", "-q", "-b", "main");
+    git(root, "config", "user.name", "Maintenance Test");
+    git(root, "config", "user.email", "maintenance@example.invalid");
+    source(root, ".gitignore", ".mex/\n");
+    git(root, "add", ".");
+    git(root, "commit", "-qm", "fixture");
+    await buildBaseline(root);
+    source(root, "README.md", "Documentation only.\n");
+    git(root, "add", ".");
+    git(root, "commit", "-qm", "docs");
+    const head = git(root, "rev-parse", "HEAD").trim();
+
+    const result = await refreshGraph(root);
+
+    expect(result.status.status).toBe("fresh");
+    expect(result.filesIndexed).toBe(0);
+    expect(result.status.indexedHead).toBe(head);
+    expect((await inspectGraphStatus({ projectRoot: root })).indexedHead).toBe(head);
+    expect(ownedArtifacts(root)).toEqual([]);
+  }, 15_000);
+
   it("rejects a candidate replaced after validation and leaves live bytes exact", async () => {
     const root = temporaryRoot();
     source(root, "src/service.ts", "export const service = 1;\n");

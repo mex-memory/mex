@@ -99,6 +99,7 @@ import {
   readGraphGitProvenance,
   serializeGraphSnapshot,
   type GraphGitProvenance,
+  type GraphSnapshot,
   type GraphSnapshotSemanticInput,
 } from "./snapshot.js";
 import { getCallees, getCallers, getIncoming, getOutgoing } from "./traversal/traversal.js";
@@ -453,17 +454,12 @@ class GraphEngineImpl implements GraphEngine {
     const gitBeforeStaging = timeGraphPhase("sync.git", () => readGraphGitProvenance(this.rootDir));
     const manifest = timeGraphPhase("sync.manifest", () => graphManifest(this.rootDir));
     const store = this.getStore(true);
-    const manifestChanged = store.getMetadata("manifest_hash") !== manifest.manifestHash;
-    if (changedSources.length === 0 && !manifestChanged) {
-      const currentCorpus = timeGraphPhase("sync.discover", () =>
-        discoverSourceFiles(this.rootDir, this.sourceFileAccess).files);
-      const snapshot = parseGraphSnapshot(store.getMetadata(GRAPH_SNAPSHOT_METADATA_KEY));
-      if (snapshot?.manifestHash === manifest.manifestHash
-        && snapshot.indexedBranch === gitBeforeStaging.branch
-        && sourceCorpusMatchesFileRecords(currentCorpus, store.getAllFileRecords())
-        && timeGraphPhase("sync.semanticInputs", () => semanticInputsMatchSnapshot(this.rootDir, snapshot.semanticInputs))) {
-        timeGraphPhase("sync.coverage", () =>
-          store.setMetadata(GRAPH_COVERAGE_METADATA_KEY, captureGraphCoverage(this.rootDir)));
+    if (changedSources.length === 0) {
+      const unchanged = unchangedGraphSnapshot(
+        this.rootDir, store, gitBeforeStaging, manifest, this.sourceFileAccess,
+      );
+      if (unchanged) {
+        timeGraphPhase("sync.coverage", () => this.recordUnchangedRefresh(store, unchanged, gitBeforeStaging));
         return { filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: Date.now() - started };
       }
     }
@@ -525,6 +521,30 @@ class GraphEngineImpl implements GraphEngine {
     } finally {
       staged.sourceSpool.dispose();
     }
+  }
+
+  /**
+   * A refresh that changes no graph fact still records what it observed: the
+   * coverage, and HEAD when the commits since the snapshot touched no indexed
+   * file (issue #209: the snapshot used to keep the older head while status
+   * reported fresh).
+   */
+  private recordUnchangedRefresh(store: GraphStore, snapshot: GraphSnapshot, git: GraphGitProvenance): void {
+    const coverage = captureGraphCoverage(this.rootDir);
+    const advanceHead = snapshot.indexedHead !== git.head
+      // Never record a head that moved while this refresh ran.
+      && readGraphGitProvenance(this.rootDir).head === git.head;
+    store.transaction(() => {
+      store.setMetadata(GRAPH_COVERAGE_METADATA_KEY, coverage);
+      if (!advanceHead) return;
+      const incrementalStateCurrent = incrementalStateIsCurrent(store);
+      const now = new Date().toISOString();
+      const serialized = serializeGraphSnapshot({
+        ...snapshot, indexedHead: git.head, indexedAt: now, lastSuccessfulIndexAt: now,
+      });
+      store.setMetadata(GRAPH_SNAPSHOT_METADATA_KEY, serialized);
+      if (incrementalStateCurrent) store.setMetadata(INCREMENTAL_STATE_METADATA_KEY, incrementalStateMarker(serialized));
+    });
   }
 
   private assertNoNewParseFailures(staged: StagedCorpus): void {
@@ -754,6 +774,30 @@ class GraphEngineImpl implements GraphEngine {
     this.db = null;
     this.store = null;
   }
+}
+
+/**
+ * The snapshot a refresh of `store` would leave unchanged, or null: exactly
+ * the check `sync` applies before any staging. The manifest, the branch, every
+ * source file and every recorded semantic input still match; only coverage and
+ * the recorded HEAD can still move.
+ */
+function unchangedGraphSnapshot(
+  root: string,
+  store: GraphStore,
+  git: GraphGitProvenance,
+  manifest: GraphManifest,
+  sourceFileAccess: GraphSourceFileAccess = NODE_SOURCE_FILE_ACCESS,
+): GraphSnapshot | null {
+  if (store.getMetadata("manifest_hash") !== manifest.manifestHash) return null;
+  const currentCorpus = timeGraphPhase("sync.discover", () => discoverSourceFiles(root, sourceFileAccess).files);
+  const snapshot = parseGraphSnapshot(store.getMetadata(GRAPH_SNAPSHOT_METADATA_KEY));
+  return snapshot?.manifestHash === manifest.manifestHash
+    && snapshot.indexedBranch === git.branch
+    && sourceCorpusMatchesFileRecords(currentCorpus, store.getAllFileRecords())
+    && timeGraphPhase("sync.semanticInputs", () => semanticInputsMatchSnapshot(root, snapshot.semanticInputs))
+    ? snapshot
+    : null;
 }
 
 export function createGraphEngine(options: GraphEngineOptions): GraphEngine {
