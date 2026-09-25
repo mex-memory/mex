@@ -2490,11 +2490,7 @@ interface StoredLshBucketRow {
   band_hash: unknown;
 }
 
-/**
- * Validate the exact persisted shape consumed by FingerprintStore and the
- * reconciler. Iterating two independently ordered cursors avoids retaining the
- * repository's full fingerprint or LSH corpus in memory.
- */
+/** Validate the exact persisted shape consumed by FingerprintStore and the reconciler. */
 function inspectFingerprintInvariants(db: SqliteDatabase): string[] {
   const oversizedFingerprint = db.prepare(
     `SELECT 1 FROM node_fingerprints
@@ -2514,6 +2510,55 @@ function inspectFingerprintInvariants(db: SqliteDatabase): string[] {
   if (oversizedFingerprint || oversizedBucket) {
     throw new CorruptGraphIndexError("Graph fingerprint state contains an oversized persisted value.");
   }
+  // A sound store needs no ordered walk; any fault is reported by it exactly
+  // as before (issue #209).
+  if (fingerprintStorageIsExact(db)) return [];
+  return orderedFingerprintAudit(db);
+}
+
+/**
+ * Whether every fingerprint is well formed and owns exactly its BANDS LSH
+ * buckets with the expected hashes, and no other bucket exists: the verdict
+ * of {@link orderedFingerprintAudit} when it finds nothing. It holds each
+ * fingerprint's expected band hashes in memory and reads the buckets in their
+ * primary-key order, so the LSH table is never sorted by ref, which was most
+ * of the cost of every inspection of a large store (issue #209).
+ */
+function fingerprintStorageIsExact(db: SqliteDatabase): boolean {
+  const expected = new Map<string, { hashes: string[]; seen: Uint8Array }>();
+  const fingerprints = db.prepare(
+    "SELECT CAST(ref AS TEXT) AS ref, node_id, minhash, neighbors, token_count FROM node_fingerprints",
+  ).iterate() as IterableIterator<StoredFingerprintRow>;
+  for (const row of fingerprints) {
+    if (typeof row.ref !== "string" || typeof row.node_id !== "string") return false;
+    const fingerprint = decodeStoredFingerprint(row);
+    if (!fingerprint) return false;
+    expected.set(row.ref, { hashes: bandHashInts(fingerprint).map(String), seen: new Uint8Array(BANDS) });
+  }
+  const buckets = db.prepare(
+    "SELECT CAST(ref AS TEXT) AS ref, band, CAST(band_hash AS TEXT) AS band_hash FROM lsh_buckets",
+  ).iterate() as IterableIterator<StoredLshBucketRow>;
+  for (const bucket of buckets) {
+    const entry = typeof bucket.ref === "string" ? expected.get(bucket.ref) : undefined;
+    if (!entry
+      || typeof bucket.band !== "number"
+      || !Number.isSafeInteger(bucket.band)
+      || bucket.band < 0
+      || bucket.band >= BANDS
+      || entry.seen[bucket.band] !== 0
+      || bucket.band_hash !== entry.hashes[bucket.band]) return false;
+    entry.seen[bucket.band] = 1;
+  }
+  for (const entry of expected.values()) if (entry.seen.includes(0)) return false;
+  return true;
+}
+
+/**
+ * Count every fingerprint and LSH fault. Iterating two independently ordered
+ * cursors avoids retaining the repository's full fingerprint or LSH corpus in
+ * memory; it runs only once the exact check has found a fault.
+ */
+function orderedFingerprintAudit(db: SqliteDatabase): string[] {
   let malformedFingerprints = 0;
   let malformedBucketOwners = 0;
   let missingBands = 0;
