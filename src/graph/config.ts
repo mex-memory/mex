@@ -14,6 +14,13 @@ export const HI = 0.85;
 /** GONE threshold: score < LO ⇒ deleted. Between LO and HI ⇒ AMBIGUOUS. */
 export const LO = 0.55;
 
+/**
+ * A MOVED match must lead the runner-up by at least this much, or it is
+ * AMBIGUOUS: an exact copy of a grounded body elsewhere must not win a tie by
+ * id order and be rebound silently. Same margin refresh's fingerprint aliases use.
+ */
+export const MOVED_MARGIN = 0.08;
+
 /** Weight of body similarity (MinHash Jaccard) in the reconcile score. */
 export const W_BODY = 0.7;
 
@@ -39,6 +46,7 @@ export const ROWS = 2;
 export const RECONCILER_PARAMS = Object.freeze({
   HI,
   LO,
+  MOVED_MARGIN,
   W_BODY,
   W_NBR,
   MIN_TOKENS,

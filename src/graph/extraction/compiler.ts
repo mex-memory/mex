@@ -22,7 +22,8 @@ import {
 } from "node:path";
 import ts from "typescript";
 
-export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v2";
+// v3 (#240): checker-rendered signatures no longer embed absolute module paths.
+export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v3";
 export const TYPESCRIPT_COMPILER_VERSION = ts.version;
 
 export type CompilerSourceLanguage =
@@ -247,6 +248,8 @@ interface ParsedProject {
 interface RuntimeProject extends ParsedProject {
   program: ts.Program;
   checker: ts.TypeChecker;
+  /** Project root that checker-rendered module paths are made relative to. */
+  root: string;
 }
 
 interface ErrorRange {
@@ -470,7 +473,7 @@ export function buildTypeScriptExtraction(
   // Stage one project's owned files while its program is alive; retain only
   // plain data. Nothing stored here references the program, checker, or AST.
   const processProject = (project: ParsedProject, program: ts.Program, owned: readonly string[]): void => {
-    const runtime: RuntimeProject = { ...project, program, checker: program.getTypeChecker() };
+    const runtime: RuntimeProject = { ...project, program, checker: program.getTypeChecker(), root };
     const contexts: FileContext[] = [];
     for (const absoluteFile of owned) {
       const sourceFile = program.getSourceFile(absoluteFile);
@@ -1327,7 +1330,7 @@ function addDraft(
     ...(container && container.kind !== "file" ? [container.qualifiedName] : []),
     descriptor.name,
   ].join("::");
-  const signature = declarationSignature(symbol, usableDeclarations, checker);
+  const signature = declarationSignature(symbol, usableDeclarations, checker, context.project.root);
   const representative = implementationDeclaration(usableDeclarations);
   const draft: DraftNode = {
     kind: descriptor.kind,
@@ -1348,7 +1351,7 @@ function addDraft(
     isAbstract: hasModifier(representative, ts.SyntaxKind.AbstractKeyword) || undefined,
     decorators: decoratorsOf(representative),
     typeParameters: typeParametersOf(representative),
-    returnType: returnTypeOf(symbol, representative, checker),
+    returnType: returnTypeOf(symbol, representative, checker, context.project.root),
   };
   context.drafts.push(draft);
   context.declarationDrafts.set(node, draft);
@@ -1790,7 +1793,12 @@ function captureCallReference(
     polymorphic,
     candidateLocations,
     expressionText: expression.getText(context.sourceFile),
-    signatureText: resolvedSignature ? normalizeSignature(checker.signatureToString(resolvedSignature, node)) : undefined,
+    signatureText: resolvedSignature
+      ? portableCheckerText(
+        checker.signatureToString(resolvedSignature, node, ts.TypeFormatFlags.NoTruncation),
+        context.project.root,
+      )
+      : undefined,
   });
 }
 
@@ -2023,6 +2031,7 @@ function declarationSignature(
   symbol: ts.Symbol | undefined,
   declarations: readonly ts.Node[],
   checker: ts.TypeChecker,
+  root: string,
 ): string | undefined {
   if (symbol) {
     const location = declarations[0];
@@ -2031,9 +2040,12 @@ function declarationSignature(
       ...checker.getSignaturesOfType(type, ts.SignatureKind.Call),
       ...checker.getSignaturesOfType(type, ts.SignatureKind.Construct),
     ];
-    const rendered = [...new Set(signatures.map((signature) => normalizeSignature(checker.signatureToString(signature, location))))].sort();
+    const rendered = [...new Set(signatures.map((signature) => portableCheckerText(
+      checker.signatureToString(signature, location, ts.TypeFormatFlags.NoTruncation),
+      root,
+    )))].sort();
     if (rendered.length > 0) return rendered.join(" | ");
-    const typeText = normalizeSignature(checker.typeToString(type, location, ts.TypeFormatFlags.NoTruncation));
+    const typeText = portableCheckerText(checker.typeToString(type, location, ts.TypeFormatFlags.NoTruncation), root);
     if (typeText && typeText !== "any") return typeText;
   }
   const headers = [...new Set(declarations.map(declarationHeader).filter(Boolean))].sort();
@@ -2188,11 +2200,18 @@ function typeParametersOf(node: ts.Node): string[] | undefined {
   return result && result.length > 0 ? result : undefined;
 }
 
-function returnTypeOf(symbol: ts.Symbol | undefined, node: ts.Node, checker: ts.TypeChecker): string | undefined {
+function returnTypeOf(
+  symbol: ts.Symbol | undefined,
+  node: ts.Node,
+  checker: ts.TypeChecker,
+  root: string,
+): string | undefined {
   if (!symbol || !ts.isFunctionLike(node)) return undefined;
   const type = checker.getTypeOfSymbolAtLocation(symbol, node);
   const signature = checker.getSignaturesOfType(type, ts.SignatureKind.Call)[0];
-  return signature ? normalizeSignature(checker.typeToString(signature.getReturnType(), node, ts.TypeFormatFlags.NoTruncation)) : undefined;
+  return signature
+    ? portableCheckerText(checker.typeToString(signature.getReturnType(), node, ts.TypeFormatFlags.NoTruncation), root)
+    : undefined;
 }
 
 function jsDocForNode(node: ts.Node): string | undefined {
@@ -2290,6 +2309,44 @@ function isCompilerSourceFile(filePath: string): boolean {
 
 function normalizeSignature(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
+}
+
+const CHECKER_IMPORT_TYPE = /import\("([^"]*)"\)/gu;
+
+/**
+ * Normalise text rendered by the checker without any machine path (#240).
+ *
+ * `typeToString`/`signatureToString` print a type that is not in scope at the
+ * rendering location as `import("<absolute module path>").Name`. That text is
+ * part of canonical node identity and is shown to agents, so an absolute path
+ * made ids depend on the checkout directory and leaked it into output. Every
+ * checker render goes through here. The module is rewritten to:
+ * - a package-relative path after the last `node_modules` (`pkg/dist/index`),
+ *   wherever the dependency happens to be installed;
+ * - a repo-relative `./` specifier inside the root (`./src/jsx/base`), which
+ *   reads like an ordinary relative import from the repository root;
+ * - `<external>/<file name>` for anything else outside the root, whose location
+ *   is never stable across machines.
+ * Specifiers the checker already printed bare or relative are left alone.
+ * Every render passes `NoTruncation`: the checker spends its truncation budget
+ * on the text with the absolute path still in it, so where it elides (`<...>`)
+ * would otherwise depend on the length of the checkout path.
+ */
+export function portableCheckerText(value: string, root: string): string {
+  return normalizeSignature(value.replace(
+    CHECKER_IMPORT_TYPE,
+    (_match, specifier: string) => `import("${portableModuleSpecifier(root, specifier)}")`,
+  ));
+}
+
+function portableModuleSpecifier(root: string, specifier: string): string {
+  if (!isAbsolute(specifier)) return specifier;
+  const absolute = normalizedAbsolute(specifier);
+  const segments = absolute.split("/");
+  const dependencyRoot = segments.lastIndexOf("node_modules");
+  if (dependencyRoot >= 0) return segments.slice(dependencyRoot + 1).join("/");
+  if (withinRoot(root, absolute)) return `./${relativePath(root, absolute)}`;
+  return `<external>/${basename(absolute)}`;
 }
 
 function normalizeQualifiedName(value: string): string {

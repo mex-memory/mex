@@ -7,6 +7,7 @@ import {
   canonicalCompilerIdentity,
   discoverTypeScriptProjects,
   normalizedCompilerTokens,
+  portableCheckerText,
 } from "../extraction/compiler.js";
 
 const temporaryRoots: string[] = [];
@@ -87,6 +88,63 @@ function mainFixture(): { root: string; candidates: string[] } {
       "loose.js",
     ],
   };
+}
+
+/**
+ * Types reached through another module, so the checker prints `import("…")`:
+ * an in-repo namespace type and a type from an installed package. `pick` has a
+ * signature long enough that the checker would truncate it.
+ */
+function crossModuleTypeFixture(): Record<string, string> {
+  return {
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true },
+      include: ["src/**/*.ts"],
+    }),
+    "node_modules/ext-pkg/package.json": JSON.stringify({ name: "ext-pkg", types: "index.d.ts" }),
+    "node_modules/ext-pkg/index.d.ts": [
+      "export interface Handle { id: number }",
+      "export declare function open(): Handle;",
+      "",
+    ].join("\n"),
+    "src/jsx/base.ts": [
+      "export namespace JSX { export interface Element { tag: string } }",
+      "export function element(): JSX.Element { return { tag: 'div' }; }",
+      "export interface Fragment { children: string[] }",
+      "export interface Portal { target: string }",
+      "export interface Slot { name: string }",
+      "export interface Text { value: string }",
+      "export const defineHelper = () => (",
+      "  fragment: Fragment,",
+      "  portal: Portal,",
+      "  events: (slot: Slot) => Omit<Text, 'value'> | Promise<Omit<Text, 'value'>>,",
+      ") => events({ name: fragment.children.join(portal.target) });",
+      "",
+    ].join("\n"),
+    "src/page.ts": [
+      "import { defineHelper, element } from './jsx/base';",
+      "export const buildPage = () => element;",
+      "export function render() { return element(); }",
+      "export const pick = defineHelper();",
+      "",
+    ].join("\n"),
+    "src/ext.ts": [
+      "import { open } from 'ext-pkg';",
+      "export const openHandle = () => open();",
+      "",
+    ].join("\n"),
+  };
+}
+
+/** Everything in an extraction that is identity or agent-visible signature text. */
+function identitySurface(result: ReturnType<typeof buildTypeScriptExtraction>): unknown {
+  return result.files.map((file) => ({
+    filePath: file.filePath,
+    nodes: file.nodes.map((node) => [node.id, node.qualifiedName, node.signature, node.returnType]),
+    references: file.references.map((reference) => [
+      reference.id, reference.sourceId, reference.targetId, reference.kind, reference.evidence,
+    ]),
+  }));
 }
 
 describe("TypeScript compiler extraction", () => {
@@ -315,6 +373,48 @@ describe("TypeScript compiler extraction", () => {
     expect(tokens.get(alpha.id)).toContain("StringLiteral");
     expect(tokens.get(alpha.id)).not.toContain("alpha");
     expect(tokens.get(alpha.id)).not.toContain("one");
+  });
+
+  it("renders the same ids, references and signatures from any checkout directory (#240)", () => {
+    const files = crossModuleTypeFixture();
+    const shallow = project(files);
+    const deep = project(Object.fromEntries(
+      Object.entries(files).map(([path, source]) => [`nested/${"deeper".repeat(12)}/other-checkout/${path}`, source]),
+    ));
+    const deepRoot = join(deep, "nested", "deeper".repeat(12), "other-checkout");
+    const candidates = Object.keys(files).filter((path) => path.startsWith("src/"));
+    const first = buildTypeScriptExtraction(shallow, candidates);
+    const second = buildTypeScriptExtraction(deepRoot, candidates);
+
+    const page = first.files.find((entry) => entry.filePath === "src/page.ts")!;
+    const buildPage = page.nodes.find((node) => node.name === "buildPage")!;
+    // Precondition: the checker really prints a cross-module import type here.
+    expect(buildPage.signature).toBe('(): () => import("./src/jsx/base").JSX.Element');
+    const openHandle = first.files.find((entry) => entry.filePath === "src/ext.ts")!
+      .nodes.find((node) => node.name === "openHandle")!;
+    expect(openHandle.signature).toContain("Handle");
+
+    expect(identitySurface(second)).toEqual(identitySurface(first));
+    for (const [result, root] of [[first, shallow], [second, deepRoot]] as const) {
+      const serialized = JSON.stringify(result.files);
+      expect(serialized).not.toContain(root.replaceAll("\\", "/"));
+      expect(serialized).not.toContain(JSON.stringify(root).slice(1, -1));
+      expect(serialized).not.toMatch(/[A-Za-z]:[\\/]/u);
+      expect(serialized).not.toMatch(/import\(\\"\//u);
+    }
+  });
+
+  it("rewrites checker import paths repo-relative inside the root and package-relative outside it", () => {
+    const root = process.platform === "win32" ? "C:\\work\\repo" : "/work/repo";
+    const posixRoot = root.replaceAll("\\", "/");
+    expect(portableCheckerText(`(): import("${posixRoot}/src/jsx/base").JSX.Element`, root))
+      .toBe('(): import("./src/jsx/base").JSX.Element');
+    expect(portableCheckerText(`typeof import("${posixRoot}/node_modules/@scope/pkg/dist/index")`, root))
+      .toBe('typeof import("@scope/pkg/dist/index")');
+    expect(portableCheckerText(`import("${posixRoot}/../shared/types").Shared`, root))
+      .toBe('import("<external>/types").Shared');
+    expect(portableCheckerText('import("hono").Context', root)).toBe('import("hono").Context');
+    expect(portableCheckerText('import("./src/already").Relative', root)).toBe('import("./src/already").Relative');
   });
 
   it("filters source/config-policy misses across more than 1,024 module probes", () => {
