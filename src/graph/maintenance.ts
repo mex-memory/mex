@@ -1206,8 +1206,19 @@ async function publishCandidate(input: CandidatePublicationInput): Promise<Candi
     assertMaintenanceDirectoryUnchanged(paths);
     assertNotAborted(options.signal);
 
-    const status = await inspect(options, paths.projectRoot, paths.database);
+    // The published file must be the validated candidate itself: the same file
+    // object holding the same bytes (issue #209). Its status is then exactly
+    // the status validation inspected, so the full inspection is not repeated.
+    assertClearSidecars(paths.database);
+    if (!samePublishedDatabase(captureDatabaseIdentity(paths.database), input.candidate.identity)) {
+      throw new GraphMaintenanceError(
+        "GRAPH_CANDIDATE_INVALID",
+        "The published graph is not the validated candidate.",
+        input.candidate.status.diagnostics,
+      );
+    }
     assertMaintenanceDirectoryUnchanged(paths);
+    const status = input.candidate.status;
     (input.assertStatus ?? assertPublishableCandidate)(status);
     const diagnostics: Diagnostic[] = [...status.diagnostics];
     let recoveryPath: string | undefined;
@@ -2220,6 +2231,18 @@ function sameStatIdentity(
     && left.size === right.size
     && left.mtimeMs === right.mtimeMs
     && left.ctimeMs === right.ctimeMs;
+}
+
+/**
+ * A rename keeps the file object and its bytes; some platforms still move its
+ * change time, which therefore does not take part.
+ */
+function samePublishedDatabase(published: DatabaseIdentity, validated: DatabaseIdentity): boolean {
+  return published.dev === validated.dev
+    && published.ino === validated.ino
+    && published.size === validated.size
+    && published.mtimeMs === validated.mtimeMs
+    && published.digest === validated.digest;
 }
 
 /** A cheap file-object identity for the read-only no-op check. */
