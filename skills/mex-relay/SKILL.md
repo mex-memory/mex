@@ -1,6 +1,6 @@
 ---
 name: mex-relay
-description: Prepare and manage durable MEX team handoffs. Use when the user asks to hand work to a person or team, prepare an end-of-session handoff, save what the next engineer needs, create a MEX Relay, take or close a Relay, or explicitly invokes /mex-relay or $mex-relay. Treat Relay as a memory and context baton, not chat, notifications, task assignment, issue tracking, or a Jira replacement; do not activate for ordinary status messages that are not durable handoffs.
+description: Prepare and manage durable MEX team handoffs in git-native project memory. Use when the user asks to hand work to a person or team, prepare an end-of-session handoff, save what the next engineer needs, create a MEX Relay, take or close a Relay, or invokes /mex-relay or $mex-relay. Keywords: mex, project memory, relay, handoff, team memory, Claude Code, Codex. Treat Relay as a memory baton, not chat, notifications, task assignment, issue tracking, or Jira; do not activate for ordinary status messages.
 ---
 
 # MEX Relay
