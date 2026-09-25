@@ -6,6 +6,12 @@
 
 **Shared project memory for engineers and their coding agents.**
 
+```bash
+npx mex-agent@0.8.2 setup
+```
+
+Setup includes the official Inbox and Relay skills for your selected Claude Code or Codex integration. [Standalone skill installation](#standalone-skill-installation) is an alternative for existing MEX projects.
+
 MEX keeps your team's architecture, decisions, requirements, and handoffs alongside the code. Engineers and their agents can build on shared context, review proposed changes, and carry work between sessions and teammates—with Git as the sharing layer.
 
 **English** | [简体中文](README.zh-CN.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md)
@@ -253,6 +259,18 @@ Instructions may select Inbox or Relay from clear natural-language intent, but s
 With the 0.8.1 Inbox update, “use MEX Inbox to capture what we decided” produces a contribution to existing project knowledge. The agent checks existing records, then drafts one addition or correction. Architecture, components, conventions, decisions, patterns, and guides are supported alongside existing Spec proposals. A local draft stays in the checkout; publishing writes a Markdown proposal for review; approval updates canonical knowledge and retains the proposal as history. Git shares those files with teammates.
 
 Ordinary GROW, Wiki, and context upkeep remains available without Inbox. Inbox is the explicit contribution path, not another knowledge category.
+
+### Standalone skill installation
+
+For an existing MEX project, you can manage the official Inbox and Relay skills with [skills.sh](https://skills.sh) instead of MEX's skill installer:
+
+```bash
+npx skills add mex-memory/mex
+```
+
+This installs agent skills only; it does not install the `mex` CLI or initialize project memory. The skills still need an available MEX CLI and a configured MEX project.
+
+Choose one installer for each agent integration. If `mex setup` or `mex skills sync` already manages its skills, keep using `mex skills sync`; do not run `skills add` over them. The external installer replaces MEX's managed directories, causing later setup or sync operations to report ownership or path conflicts.
 
 <a id="mcp-server"></a>
 <details>

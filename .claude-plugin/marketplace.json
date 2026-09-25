@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "mex",
+  "description": "Official mex Inbox and Relay skills for Claude Code.",
+  "owner": {
+    "name": "mex"
+  },
+  "plugins": [
+    {
+      "name": "mex",
+      "source": "./",
+      "description": "Git-native project memory skills: /mex-inbox for reviewed knowledge contributions and /mex-relay for durable team handoffs.",
+      "homepage": "https://github.com/mex-memory/mex",
+      "repository": "https://github.com/mex-memory/mex",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./skills/mex-inbox",
+        "./skills/mex-relay"
+      ]
+    }
+  ]
+}

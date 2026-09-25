@@ -1,6 +1,12 @@
 ---
 name: mex-inbox
-description: Draft and review contributions to existing MEX project knowledge. Use when the user asks to capture a discussion or decision in project knowledge, propose an addition or correction for team review, or explicitly invokes /mex-inbox or $mex-inbox. Also supports existing Spec proposals. Do not activate for brainstorming alone, routine GROW upkeep, email inboxes, session logs, or handoffs.
+description: >-
+  Draft and review contributions to existing MEX project knowledge in the repo wiki.
+  Use when the user wants to capture a team decision, convention, or architecture
+  note, propose an addition or correction for team review, or invokes /mex-inbox
+  or $mex-inbox. Also supports existing Spec proposals. Keywords: mex, project
+  memory, CLAUDE.md, team memory, drift, inbox. Do not activate for brainstorming
+  alone, routine GROW upkeep, email inboxes, session logs, or handoffs.
 ---
 
 # MEX Inbox
