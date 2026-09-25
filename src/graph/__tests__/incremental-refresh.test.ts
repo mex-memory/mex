@@ -125,7 +125,7 @@ const EXACT_TABLES = undefined;
  */
 const CROSS_TREE_TABLES: (keyof GraphDump)[] = [
   "fileContents", "nodes", "edges", "importBindings", "unresolvedRefs", "fingerprints",
-  "lshBuckets", "sourceChunks", "sourceChunksFts", "nodesFts",
+  "lshBuckets", "sourceChunks", "rowDigests", "sourceChunksFts", "nodesFts",
 ];
 
 function expectSameGraph(left: string, right: string, tables: (keyof GraphDump)[] | undefined, context: string): void {
@@ -172,6 +172,15 @@ async function step(harness: Harness, edit: Edit, context: string): Promise<void
   } else {
     expect(incremental, `${context}: incremental refresh`).not.toBeInstanceOf(GraphSourceStagingError);
     expect(full, `${context}: full refresh`).not.toBeInstanceOf(GraphSourceStagingError);
+    // An edit that changes nothing the graph depends on is a no-op for both.
+    // Otherwise the stores carry row digests from their first build, so the
+    // incremental refresh must publish as a delta, and the oracle never does.
+    if ((full as BuildResult).refresh === undefined) {
+      expect((incremental as BuildResult).refresh, `${context}: incremental no-op`).toBeUndefined();
+    } else {
+      expect((incremental as BuildResult).refresh?.publication, `${context}: incremental publication`).toBe("delta");
+      expect((full as BuildResult).refresh?.publication, `${context}: oracle publication`).toBe("full");
+    }
   }
   expectSameGraph(harness.incrementalDb, harness.fullDb, EXACT_TABLES, context);
 }
@@ -215,6 +224,9 @@ const TS_FIXTURE: Fixture = {
     "src/helpers.ts": "export function helper(input: string): string {\n  return input.trim();\n}\n",
     "src/consumer.ts": "import { helper } from \"./helpers\";\n\nexport function useHelper(): string {\n  return helper(\" value \");\n}\n",
     "src/standalone.ts": "export function lonely(): number {\n  return 42;\n}\n",
+    "src/bulk.ts": Array.from({ length: 8 }, (_, index) =>
+      `export function bulk${index}(value: number): number {\n  const doubled = value * ${index + 2};\n  return doubled + ${index};\n}\n`).join("\n"),
+    "src/bulk-user.ts": "import { bulk0, bulk1 } from \"./bulk\";\n\nexport function useBulk(): number {\n  return bulk0(1) + bulk1(2);\n}\n",
   },
   edits: [
     { name: "trailing comment", apply: append("src/util/format.ts", "// trailing comment\n"), expectMode: "incremental" },
@@ -229,11 +241,17 @@ const TS_FIXTURE: Fixture = {
       append("src/util/format.ts", "\nexport function add(a: number, b: number): number {\n  return a + b;\n}\n"),
     ), expectMode: "incremental" },
     { name: "delete file", apply: remove("src/standalone.ts"), expectMode: "incremental" },
+    // Many nodes and fingerprints disappear at once, and an importer whose
+    // content is unchanged loses the targets of its bindings and calls.
+    { name: "delete a file with many declarations", apply: remove("src/bulk.ts"), expectMode: "incremental" },
     { name: "remove same-named definition in another file", apply: remove("src/shadow.ts"), expectMode: "incremental" },
     { name: "revert import", apply: replace("src/consumer.ts", "from \"./helpers2\"", "from \"./helpers\""), expectMode: "incremental" },
     { name: "change the ambient declaration", apply: replace("src/globals.d.ts", "version: string", "version: string;\n    build: number"), expectMode: "full" },
-    { name: "change tsconfig", apply: replace("tsconfig.json", "\"strict\": true", "\"strict\": false"), expectMode: "full" },
-    { name: "change package.json", apply: replace("package.json", "\"fixture-ts\"", "\"fixture-ts-renamed\""), expectMode: "full" },
+    // Neither field decides what the compiler resolves, so both are no-ops.
+    { name: "change an insignificant tsconfig option", apply: replace("tsconfig.json", "\"strict\": true", "\"strict\": false") },
+    { name: "rename the package", apply: replace("package.json", "\"fixture-ts\"", "\"fixture-ts-renamed\"") },
+    { name: "change tsconfig", apply: replace("tsconfig.json", "\"target\": \"ES2022\"", "\"target\": \"ES2020\""), expectMode: "full" },
+    { name: "change package.json", apply: replace("package.json", "\"type\": \"module\"", "\"type\": \"module\",\n  \"imports\": { \"#util\": \"./src/util/index.ts\" }"), expectMode: "full" },
     { name: "file stops parsing", apply: write("src/helpers.ts", "export function helper(input: string): string {\n  return input.trim(\n}}}} ((( [[[ export const = ;\n"), refuses: true },
     { name: "file parses again", apply: write("src/helpers.ts", "export function helper(input: string): string {\n  return input.trim();\n}\n"), expectMode: "incremental" },
     { name: "branch-switch batch", apply: all(

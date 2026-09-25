@@ -108,6 +108,24 @@ export interface GraphRefreshResult extends IndexJobResult {
   skipped?: readonly GraphSkippedSource[];
   /** Compiler config inputs outside the project corpus that were declined. */
   declinedInputs?: readonly GraphDeclinedInput[];
+  /** How a refresh did its work. Optional and additive; absent from a rebuild. */
+  refresh?: GraphRefreshWork;
+}
+
+/** How one refresh staged and published the graph. Counts only; never paths. */
+export interface GraphRefreshWork {
+  /** `incremental` re-extracted only the affected files; `full` re-staged the corpus. */
+  mode: "incremental" | "full";
+  /** Why a refresh that could have been incremental re-staged the corpus. */
+  fallbackReason?: string;
+  /** Indexed files added, modified or deleted since the stored graph. */
+  filesChanged: number;
+  filesReextracted: number;
+  /** `delta` rewrote only the files whose derived rows changed. */
+  publication: "delta" | "full";
+  publicationFallbackReason?: string;
+  /** Files whose derived rows were written. */
+  filesRewritten: number;
 }
 
 /**

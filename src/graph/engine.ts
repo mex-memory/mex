@@ -66,6 +66,27 @@ export interface BuildResult {
    * affected project's type resolution is less complete than it looks.
    */
   declinedInputs?: DeclinedCompilerInput[];
+  /** How a refresh did its work (issue #209). Absent from a clean build. */
+  refresh?: GraphRefreshReport;
+}
+
+/** How a publication wrote the graph. */
+export interface GraphPublicationReport {
+  /** `delta` rewrote only the files whose derived rows changed. */
+  publication: "delta" | "full";
+  publicationFallbackReason?: string;
+  /** Files whose derived rows were written. */
+  filesRewritten: number;
+}
+
+/** How a refresh staged and published the graph. */
+export interface GraphRefreshReport extends GraphPublicationReport {
+  /** `incremental` re-extracted only the affected files; `full` re-staged the corpus. */
+  mode: "incremental" | "full";
+  fallbackReason?: string;
+  /** Indexed files added, modified or deleted since the stored graph. */
+  filesChanged: number;
+  filesReextracted: number;
 }
 
 /** A compiler input the containment policy declined to read. */

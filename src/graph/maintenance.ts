@@ -1365,6 +1365,7 @@ function maintenanceResult(
     ...(build.declinedInputs && build.declinedInputs.length > 0
       ? { declinedInputs: build.declinedInputs }
       : {}),
+    ...(build.refresh ? { refresh: build.refresh } : {}),
     ...(published.recoveryPath ? { recoveryPath: published.recoveryPath } : {}),
   };
 }

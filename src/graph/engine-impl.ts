@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSameResolvedPath, toPosix } from "../paths.js";
 import type {
-  BuildResult, DeclinedCompilerInput, GraphEngine, NodeSearchOptions, SkippedSourceFile,
+  BuildResult, DeclinedCompilerInput, GraphEngine, GraphPublicationReport, NodeSearchOptions, SkippedSourceFile,
 } from "./engine.js";
 import {
   GRAPH_CONFIG_GLOBS,
@@ -68,6 +68,15 @@ import { createFingerprintBuilder } from "./fingerprint.js";
 import { MIN_TOKENS } from "./config.js";
 import { minhashJaccard } from "./reconcile-engine.js";
 import type { Fingerprint } from "./reconcile.js";
+import {
+  applyRowDelta,
+  FILE_ROW_DIGESTS_METADATA_KEY,
+  fileRowDigestMarker,
+  groupRowsByFile,
+  planRowDelta,
+  type FileRowGroups,
+  type RowDelta,
+} from "./publication-delta.js";
 import { createStagedResolutionContext } from "./resolution/context.js";
 import { FRAMEWORK_RESOLVERS } from "./resolution/frameworks/index.js";
 import { resolveReferences } from "./resolution/resolver.js";
@@ -384,7 +393,7 @@ class GraphEngineImpl implements GraphEngine {
     );
     try {
       this.assertNoNewParseFailures(staged);
-      const result = this.publish(staged, root, gitBeforeStaging);
+      const { publication: _publication, ...result } = this.publish(staged, root, gitBeforeStaging, false);
       return { ...result, durationMs: Date.now() - started };
     } finally {
       staged.sourceSpool.dispose();
@@ -444,8 +453,29 @@ class GraphEngineImpl implements GraphEngine {
         })));
       }
       this.assertNoNewParseFailures(staged);
-      const result = timeGraphPhase("publish.total", () => this.publish(staged, this.rootDir, gitBeforeStaging));
-      return { ...result, durationMs: Date.now() - started };
+      const previousFiles = new Map(this.getStore(true).getAllFileRecords()
+        .map((file) => [file.path, file.contentHash]));
+      const filesChanged = staged.files.filter((file) => previousFiles.get(file.record.path) !== file.record.contentHash)
+        .length + [...previousFiles.keys()].filter((path) => !stagedByPath.has(path)).length;
+      const { publication, ...result } = timeGraphPhase("publish.total", () => this.publish(
+        staged,
+        this.rootDir,
+        gitBeforeStaging,
+        this.refreshStrategy === "incremental",
+      ));
+      return {
+        ...result,
+        refresh: {
+          mode: "full",
+          fallbackReason: this.refreshStrategy === "full"
+            ? "the full-restage strategy was requested"
+            : "incremental extraction is not available",
+          filesChanged,
+          filesReextracted: staged.files.length,
+          ...publication,
+        },
+        durationMs: Date.now() - started,
+      };
     } finally {
       staged.sourceSpool.dispose();
     }
@@ -472,12 +502,22 @@ class GraphEngineImpl implements GraphEngine {
     staged: StagedCorpus,
     root: string,
     gitBeforeStaging: GraphGitProvenance,
-  ): Omit<BuildResult, "durationMs"> {
+    allowDelta: boolean,
+  ): Omit<BuildResult, "durationMs"> & { publication: GraphPublicationReport } {
     this.internal.beforePublication?.();
     const store = this.getStore(true);
     const freshNodes = staged.files.flatMap((file) => file.nodes);
-    const continuity = timeGraphPhase("publish.continuityPlan", () =>
-      planCompatibilityAliases(store, freshNodes, new FingerprintStore(this.db!)));
+    // Incremental publication (issue #209): rewrite only the files whose
+    // owned rows changed. Any reason it cannot is a full publication, which
+    // also records the digests the next refresh compares against.
+    const grouped = timeGraphPhase("publish.rowGroups", () => groupRowsByFile(staged.files, staged.fingerprints));
+    const planned = !allowDelta ? { reason: "a full publication was requested" }
+      : "reason" in grouped ? grouped
+      : timeGraphPhase("publish.deltaPlan", () => planRowDelta(store, this.db!, grouped));
+    const delta = "reason" in planned ? undefined : planned;
+    const continuity = timeGraphPhase("publish.continuityPlan", () => delta
+      ? planIncrementalCompatibilityAliases(store, freshNodes, delta, new FingerprintStore(this.db!))
+      : planCompatibilityAliases(store, freshNodes, new FingerprintStore(this.db!)));
     // Continuity reads above may be substantial on a mature index. Re-probe
     // only after they finish, at the final synchronous boundary before the
     // snapshot is constructed and its publication transaction begins.
@@ -517,46 +557,30 @@ class GraphEngineImpl implements GraphEngine {
       })),
       semanticInputs,
     });
+    const serializedSnapshot = serializeGraphSnapshot(snapshot);
 
     store.transaction(() => {
-      timeGraphPhase("publish.clear", () => store.clearDerivedGraph());
-      const insertStarted = performance.now();
-      timeGraphPhase("publish.insert.filesAndChunks", () => {
-        for (const file of staged.files) {
-          store.upsertFile(file.record);
-          store.replaceSourceChunks(
-            file.record.path,
-            staged.sourceSpool.read(file.discovered),
-            file.record.contentHash,
-          );
+      if (delta) {
+        const stagedByPath = new Map(staged.files.map((file) => [file.record.path, file]));
+        timeGraphPhase("publish.delta", () => applyRowDelta(
+          store,
+          this.db!,
+          delta,
+          new Map(staged.files.map((file) => [file.record.path, file.record])),
+          (path) => staged.sourceSpool.read(stagedByPath.get(path)!.discovered),
+        ));
+        edgeCount = (grouped as FileRowGroups).edgeCount;
+        if (continuity) {
+          timeGraphPhase("publish.aliases", () => applyIncrementalCompatibilityAliases(
+            store, continuity, freshNodes, new FingerprintStore(this.db!),
+          ));
         }
-      });
-      timeGraphPhase("publish.insert.nodes", () => {
-        for (const file of staged.files) for (const node of file.nodes) store.insertNode(node);
-      });
-      for (const file of staged.files) {
-        const edgesStarted = performance.now();
-        for (const edge of file.edges) if (store.insertEdge(edge)) edgeCount++;
-        recordGraphPhase("publish.insert.edges", performance.now() - edgesStarted);
-        // A resolved reference is an edge. Keeping the row too duplicated one
-        // for every reference the resolver bound — 27-73% of this table on
-        // every repository measured, all of them already in `edges`. Resolution
-        // happens in memory during staging, so nothing downstream reads these
-        // rows back to rebuild anything.
-        for (const reference of file.references) {
-          if (reference.status === "resolved") continue;
-          store.insertUnresolvedRef(reference);
+      } else {
+        edgeCount = this.publishInFull(staged, store, continuity!, freshNodes);
+        if (!("reason" in grouped)) {
+          for (const group of grouped.groups.values()) store.setFileRowDigest(group.path, group.digest);
         }
-        for (const binding of file.imports) store.insertImportBinding(binding);
       }
-      recordGraphPhase("publish.insert", performance.now() - insertStarted);
-
-      timeGraphPhase("publish.fingerprints", () =>
-        upsertFingerprintsInOwnedTransaction(this.db!, staged.fingerprints));
-      timeGraphPhase("publish.aliases", () => createCompatibilityAliases(
-        store, continuity, freshNodes, new FingerprintStore(this.db!),
-      ));
-      timeGraphPhase("publish.fts", () => store.rebuildSearchIndex());
       timeGraphPhase("publish.invariants", () => store.validateInvariants(expectedNodes));
       store.setMetadata("compiler_version", staged.compiler.compilerVersion);
       store.setMetadata("extractor_version", CORPUS_EXTRACTOR_VERSION);
@@ -564,7 +588,9 @@ class GraphEngineImpl implements GraphEngine {
       store.setMetadata("config_hash", staged.configHash);
       store.setMetadata("grammar_hash", staged.grammarHash);
       store.setMetadata(GRAPH_COVERAGE_METADATA_KEY, coverage);
-      store.setMetadata(GRAPH_SNAPSHOT_METADATA_KEY, serializeGraphSnapshot(snapshot));
+      store.setMetadata(GRAPH_SNAPSHOT_METADATA_KEY, serializedSnapshot);
+      if ("reason" in grouped) store.deleteMetadata(FILE_ROW_DIGESTS_METADATA_KEY);
+      else store.setMetadata(FILE_ROW_DIGESTS_METADATA_KEY, fileRowDigestMarker(serializedSnapshot));
       markGraphReady(this.db!, staged.manifestHash);
     });
 
@@ -577,7 +603,63 @@ class GraphEngineImpl implements GraphEngine {
       ...(staged.declinedInputs.length > 0
         ? { declinedInputs: [...staged.declinedInputs] }
         : {}),
+      publication: delta
+        ? { publication: "delta", filesRewritten: delta.rewritten.length + delta.removed.length }
+        : {
+            publication: "full",
+            publicationFallbackReason: (planned as { reason: string }).reason,
+            filesRewritten: staged.files.length,
+          },
     };
+  }
+
+  /** The full publication: clear every derived row and insert the corpus again. */
+  private publishInFull(
+    staged: StagedCorpus,
+    store: GraphStore,
+    continuity: CompatibilityAliasPlan,
+    freshNodes: readonly GraphNode[],
+  ): number {
+    let edgeCount = 0;
+    timeGraphPhase("publish.clear", () => store.clearDerivedGraph());
+    const insertStarted = performance.now();
+    timeGraphPhase("publish.insert.filesAndChunks", () => {
+      for (const file of staged.files) {
+        store.upsertFile(file.record);
+        store.replaceSourceChunks(
+          file.record.path,
+          staged.sourceSpool.read(file.discovered),
+          file.record.contentHash,
+        );
+      }
+    });
+    timeGraphPhase("publish.insert.nodes", () => {
+      for (const file of staged.files) for (const node of file.nodes) store.insertNode(node);
+    });
+    for (const file of staged.files) {
+      const edgesStarted = performance.now();
+      for (const edge of file.edges) if (store.insertEdge(edge)) edgeCount++;
+      recordGraphPhase("publish.insert.edges", performance.now() - edgesStarted);
+      // A resolved reference is an edge. Keeping the row too duplicated one
+      // for every reference the resolver bound — 27-73% of this table on
+      // every repository measured, all of them already in `edges`. Resolution
+      // happens in memory during staging, so nothing downstream reads these
+      // rows back to rebuild anything.
+      for (const reference of file.references) {
+        if (reference.status === "resolved") continue;
+        store.insertUnresolvedRef(reference);
+      }
+      for (const binding of file.imports) store.insertImportBinding(binding);
+    }
+    recordGraphPhase("publish.insert", performance.now() - insertStarted);
+
+    timeGraphPhase("publish.fingerprints", () =>
+      upsertFingerprintsInOwnedTransaction(this.db!, staged.fingerprints));
+    timeGraphPhase("publish.aliases", () => createCompatibilityAliases(
+      store, continuity, freshNodes, new FingerprintStore(this.db!),
+    ));
+    timeGraphPhase("publish.fts", () => store.rebuildSearchIndex());
+    return edgeCount;
   }
 
   searchNodes(query: string, options?: NodeSearchOptions): GraphNode[] {
@@ -1276,7 +1358,47 @@ function planCompatibilityAliases(
   // signatures and fingerprints merely to discover that each ID survived.
   if (plan.canonicalMap.size === oldIds.length) return plan;
 
-  const oldNodes = store.getAllNodes();
+  matchVanishedNodes(plan, store.getAllNodes(), fresh, freshIds, fingerprints);
+  return plan;
+}
+
+/**
+ * Incremental publication (issue #209): the plan a full publication makes,
+ * without reading back the whole stored graph. A file whose row digest is
+ * unchanged stores exactly its fresh nodes, so the stored node set is those
+ * plus the stored nodes of every rewritten or removed file. Null when no node
+ * disappears: then every alias survives as it is.
+ */
+function planIncrementalCompatibilityAliases(
+  store: GraphStore,
+  fresh: readonly GraphNode[],
+  delta: RowDelta,
+  fingerprints: FingerprintStore,
+): CompatibilityAliasPlan | null {
+  if (delta.vanished.length === 0) return null;
+  const freshIds = new Set(fresh.map((node) => node.id));
+  const oldNodes = [
+    ...fresh.filter((node) => !delta.previousNodes.has(node.filePath)),
+    ...[...delta.previousNodes.values()].flat(),
+  ];
+  const plan: CompatibilityAliasPlan = {
+    oldAliases: store.getAllAliases(),
+    canonicalMap: new Map(oldNodes.filter((node) => freshIds.has(node.id)).map((node) => [node.id, node.id])),
+    direct: [],
+    fingerprints: [],
+  };
+  matchVanishedNodes(plan, oldNodes, fresh, freshIds, fingerprints);
+  return plan;
+}
+
+/** Match every stored node that has no fresh counterpart, as continuity requires. */
+function matchVanishedNodes(
+  plan: CompatibilityAliasPlan,
+  oldNodes: readonly GraphNode[],
+  fresh: readonly GraphNode[],
+  freshIds: ReadonlySet<string>,
+  fingerprints: FingerprintStore,
+): void {
   const byQualified = groupUnique(fresh, (node) => `${node.filePath}\0${node.kind}\0${node.qualifiedName}`);
   const oldBySignature = groupUnique(
     oldNodes.filter((node) => normalizedSignature(node.signature).length > 0),
@@ -1314,7 +1436,6 @@ function planCompatibilityAliases(
       }
     }
   }
-  return plan;
 }
 
 function createCompatibilityAliases(
@@ -1338,6 +1459,50 @@ function createCompatibilityAliases(
   for (const alias of plan.oldAliases) {
     const canonical = plan.canonicalMap.get(alias.canonicalNodeId);
     if (canonical) store.insertAlias(alias.aliasId, canonical, alias.matchMethod, alias.confidence);
+  }
+}
+
+/**
+ * Incremental publication (issue #209): leave the alias table exactly as
+ * {@link createCompatibilityAliases} leaves it after a full clear. The full
+ * path inserts direct matches, then fingerprint matches, then every old alias
+ * re-pointed through the canonical map, each insert replacing an earlier row
+ * for the same alias; the same sequence is folded here and only its
+ * difference from the stored table is written.
+ */
+function applyIncrementalCompatibilityAliases(
+  store: GraphStore,
+  plan: CompatibilityAliasPlan,
+  fresh: readonly GraphNode[],
+  freshFingerprints: FingerprintStore,
+): void {
+  const freshById = new Map(fresh.map((node) => [node.id, node]));
+  const target = new Map<string, NodeAliasRecord>();
+  const put = (aliasId: string, canonicalNodeId: string, matchMethod: string, confidence: number): void => {
+    // insertAlias skips a self-alias and an alias of a node that does not exist.
+    if (aliasId === canonicalNodeId || !freshById.has(canonicalNodeId)) return;
+    target.set(aliasId, { aliasId, canonicalNodeId, matchMethod, confidence });
+  };
+  for (const alias of plan.direct) put(alias.aliasId, alias.canonicalNodeId, alias.matchMethod, alias.confidence);
+  for (const old of plan.fingerprints) {
+    const match = fingerprintAliasMatch(old, old.baseline, freshFingerprints, freshById);
+    if (!match) continue;
+    put(old.id, match.node.id, match.method, match.confidence);
+    plan.canonicalMap.set(old.id, match.node.id);
+  }
+  for (const alias of plan.oldAliases) {
+    const canonical = plan.canonicalMap.get(alias.canonicalNodeId);
+    if (canonical) put(alias.aliasId, canonical, alias.matchMethod, alias.confidence);
+  }
+  const stored = new Map(store.getAllAliases().map((alias) => [alias.aliasId, alias]));
+  for (const aliasId of stored.keys()) if (!target.has(aliasId)) store.deleteAlias(aliasId);
+  for (const alias of target.values()) {
+    const before = stored.get(alias.aliasId);
+    if (before
+      && before.canonicalNodeId === alias.canonicalNodeId
+      && before.matchMethod === alias.matchMethod
+      && before.confidence === alias.confidence) continue;
+    store.insertAlias(alias.aliasId, alias.canonicalNodeId, alias.matchMethod, alias.confidence);
   }
 }
 

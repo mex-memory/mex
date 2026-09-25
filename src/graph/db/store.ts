@@ -308,32 +308,7 @@ export class GraphStore {
            body_hash = excluded.body_hash,
            updated_at = excluded.updated_at`,
       )
-      .run(
-        node.id,
-        node.kind,
-        node.name,
-        node.qualifiedName ?? node.name,
-        node.containerId ?? null,
-        node.identityKey ?? node.id,
-        node.filePath,
-        node.language,
-        node.startLine,
-        node.endLine,
-        node.startColumn,
-        node.endColumn,
-        node.docstring ?? null,
-        node.signature ?? null,
-        node.visibility ?? null,
-        node.isExported ? 1 : 0,
-        node.isAsync ? 1 : 0,
-        node.isStatic ? 1 : 0,
-        node.isAbstract ? 1 : 0,
-        node.decorators ? JSON.stringify(node.decorators) : null,
-        node.typeParameters ? JSON.stringify(node.typeParameters) : null,
-        node.returnType ?? null,
-        node.bodyHash ?? null,
-        node.updatedAt,
-      );
+      .run(...nodeRowValues(node), node.updatedAt);
   }
 
   /** Rebuild the external-content FTS index from the final nodes table. */
@@ -463,25 +438,7 @@ export class GraphStore {
            confidence = excluded.confidence,
            resolver = excluded.resolver`,
       )
-      .run(
-        ref.refKey ?? referenceKey(ref),
-        ref.fromNodeId,
-        ref.referenceName,
-        ref.referenceKind,
-        ref.line ?? 0,
-        ref.column ?? 0,
-        ref.candidates ? JSON.stringify(ref.candidates) : null,
-        ref.filePath,
-        ref.language,
-        ref.receiver ?? null,
-        ref.qualifier ?? null,
-        ref.importSource ?? null,
-        ref.metadata ? JSON.stringify(ref.metadata) : null,
-        ref.status ?? "pending",
-        ref.targetId ?? null,
-        ref.confidence ?? null,
-        ref.resolver ?? null,
-      );
+      .run(...unresolvedRefRowValues(ref));
   }
 
   insertImportBinding(binding: ImportBindingRecord): void {
@@ -495,11 +452,7 @@ export class GraphStore {
          resolved_file_path = excluded.resolved_file_path,
          target_id = excluded.target_id,
          metadata = excluded.metadata`,
-    ).run(
-      binding.bindingKey, binding.filePath, binding.localName, binding.importedName,
-      binding.moduleSpecifier, binding.resolvedFilePath ?? null, binding.targetId ?? null,
-      binding.isTypeOnly ? 1 : 0, binding.metadata ? JSON.stringify(binding.metadata) : null,
-    );
+    ).run(...importBindingRowValues(binding));
   }
 
   insertAlias(aliasId: string, canonicalNodeId: string, matchMethod: string, confidence: number): boolean {
@@ -648,6 +601,56 @@ export class GraphStore {
     this.db.exec("DELETE FROM node_fingerprints");
     this.db.exec("DELETE FROM nodes");
     this.db.exec("DELETE FROM files");
+    this.db.exec("DELETE FROM file_row_digests");
+  }
+
+  // --- Incremental publication (issue #209) -----------------------------------
+
+  /** Per-file digests of the derived rows each file owns, as last published. */
+  getFileRowDigests(): Map<string, string> {
+    const rows = this.db.prepare("SELECT path, digest FROM file_row_digests").all() as Array<{
+      path: string; digest: string;
+    }>;
+    return new Map(rows.map((row) => [row.path, row.digest]));
+  }
+
+  setFileRowDigest(path: string, digest: string): void {
+    this.db.prepare(
+      `INSERT INTO file_row_digests (path, digest) VALUES (?, ?)
+       ON CONFLICT(path) DO UPDATE SET digest = excluded.digest`,
+    ).run(path, digest);
+  }
+
+  deleteFileRowDigest(path: string): void {
+    this.db.prepare("DELETE FROM file_row_digests WHERE path = ?").run(path);
+  }
+
+  getNodesByFile(filePath: string): GraphNode[] {
+    return (this.db.prepare("SELECT * FROM nodes WHERE file_path = ?").all(filePath) as NodeRow[])
+      .map(rowToNode);
+  }
+
+  /** Delete the edges, unresolved references and import bindings one file owns. */
+  deleteFileRelations(filePath: string): void {
+    this.db.prepare(
+      "DELETE FROM edges WHERE source IN (SELECT id FROM nodes WHERE file_path = ?)",
+    ).run(filePath);
+    this.db.prepare(
+      "DELETE FROM unresolved_refs WHERE from_node_id IN (SELECT id FROM nodes WHERE file_path = ?)",
+    ).run(filePath);
+    this.db.prepare("DELETE FROM import_bindings WHERE file_path = ?").run(filePath);
+  }
+
+  deleteNode(id: string): void {
+    this.db.prepare("DELETE FROM nodes WHERE id = ?").run(id);
+  }
+
+  deleteFileRecord(filePath: string): void {
+    this.db.prepare("DELETE FROM files WHERE path = ?").run(filePath);
+  }
+
+  deleteAlias(aliasId: string): void {
+    this.db.prepare("DELETE FROM node_aliases WHERE alias_id = ?").run(aliasId);
   }
 
   // --- Reads ----------------------------------------------------------------
@@ -809,6 +812,10 @@ export class GraphStore {
       `INSERT INTO project_metadata (key, value, updated_at) VALUES (?,?,?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
     ).run(key, value, Date.now());
+  }
+
+  deleteMetadata(key: string): void {
+    this.db.prepare("DELETE FROM project_metadata WHERE key = ?").run(key);
   }
 
   getMetadata(key: string): string | null {
@@ -1005,6 +1012,116 @@ export class GraphStore {
       .slice(0, limit)
       .map((entry) => entry.node);
   }
+}
+
+type RowValue = string | number | null;
+
+/** The values `insertNode` binds, in column order, without the write time. */
+function nodeRowValues(node: GraphNode): RowValue[] {
+  return [
+    node.id,
+    node.kind,
+    node.name,
+    node.qualifiedName ?? node.name,
+    node.containerId ?? null,
+    node.identityKey ?? node.id,
+    node.filePath,
+    node.language,
+    node.startLine,
+    node.endLine,
+    node.startColumn,
+    node.endColumn,
+    node.docstring ?? null,
+    node.signature ?? null,
+    node.visibility ?? null,
+    node.isExported ? 1 : 0,
+    node.isAsync ? 1 : 0,
+    node.isStatic ? 1 : 0,
+    node.isAbstract ? 1 : 0,
+    node.decorators ? JSON.stringify(node.decorators) : null,
+    node.typeParameters ? JSON.stringify(node.typeParameters) : null,
+    node.returnType ?? null,
+    node.bodyHash ?? null,
+  ];
+}
+
+function unresolvedRefRowValues(ref: UnresolvedRefRecord): RowValue[] {
+  return [
+    unresolvedRefKey(ref),
+    ref.fromNodeId,
+    ref.referenceName,
+    ref.referenceKind,
+    ref.line ?? 0,
+    ref.column ?? 0,
+    ref.candidates ? JSON.stringify(ref.candidates) : null,
+    ref.filePath,
+    ref.language,
+    ref.receiver ?? null,
+    ref.qualifier ?? null,
+    ref.importSource ?? null,
+    ref.metadata ? JSON.stringify(ref.metadata) : null,
+    ref.status ?? "pending",
+    ref.targetId ?? null,
+    ref.confidence ?? null,
+    ref.resolver ?? null,
+  ];
+}
+
+function importBindingRowValues(binding: ImportBindingRecord): RowValue[] {
+  return [
+    binding.bindingKey, binding.filePath, binding.localName, binding.importedName,
+    binding.moduleSpecifier, binding.resolvedFilePath ?? null, binding.targetId ?? null,
+    binding.isTypeOnly ? 1 : 0, binding.metadata ? JSON.stringify(binding.metadata) : null,
+  ];
+}
+
+// Row images for incremental publication (issue #209). Each is a stable string
+// of exactly what the matching insert writes, so equal images mean equal rows.
+// Operational write times are left out; they record when a row was written,
+// not what the graph says.
+
+export function nodeRowImage(node: GraphNode): string {
+  return JSON.stringify(nodeRowValues(node));
+}
+
+/**
+ * An edge as `insertEdge` would receive it. Duplicate call sites merge through
+ * `strongerEdge` and `mergedEdgeEvidence`, both independent of arrival order,
+ * so the stored row is a function of the multiset of these images.
+ */
+export function edgeRowImage(edge: GraphEdge): string {
+  return canonicalString([
+    edge.source, edge.target, edge.kind, edge.line ?? null, edge.column ?? null,
+    edge.metadata ?? null, edge.provenance ?? null, edge.confidence ?? 1,
+    edge.resolutionMethod ?? null, edge.evidence ?? null,
+  ]);
+}
+
+/** The semantic call-site key the edge uniqueness index enforces. */
+export function edgeKey(edge: GraphEdge): string {
+  return JSON.stringify([edge.source, edge.target, edge.kind, edge.line ?? null, edge.column ?? null]);
+}
+
+export function unresolvedRefRowImage(ref: UnresolvedRefRecord): string {
+  return JSON.stringify(unresolvedRefRowValues(ref));
+}
+
+export function importBindingRowImage(binding: ImportBindingRecord): string {
+  return JSON.stringify(importBindingRowValues(binding));
+}
+
+/** The comparable columns of a `files` row: everything except `indexed_at`. */
+export function fileRecordImage(file: FileRecord): string {
+  return JSON.stringify([
+    file.path, file.contentHash, file.language, file.size, file.modifiedAt, file.nodeCount,
+    file.errors ? JSON.stringify(file.errors) : null, file.parseStatus ?? "ok",
+    file.diagnosticCount ?? 0, file.missingCount ?? 0, file.errorCoverage ?? 0,
+    file.extractorVersion ?? "tree-sitter",
+  ]);
+}
+
+export function unresolvedRefKey(ref: UnresolvedRefRecord): string {
+  return ref.refKey ?? referenceKey(ref);
 }
 
 function referenceKey(ref: UnresolvedRefRecord): string {
