@@ -10,12 +10,12 @@ edges:
     condition: "when selecting the relationships a diagram must preserve"
   - target: "context/conventions.md"
     condition: "when verifying documentation and asset changes"
-last_updated: 2026-09-05
+last_updated: 2026-09-25
 mex:
   id: mx_01M1V9D2FQZYY5AP60RRXXH8YE
   type: pattern
   status: promoted
-  revision: 3
+  revision: 4
   title: release-readme-visuals
   relations:
     - type: related_to
@@ -99,6 +99,9 @@ quietly retain obsolete features or drop a sharing/approval boundary.
   Spec path distinct from normal working-tree review.
 - Team-first language must still explain that each Hub is local and each
   canonical transition needs manual Git sharing; it is not live collaboration.
+- Present standalone skill installers as alternatives to MEX-managed skills,
+  not a second setup step. External installers can replace the managed skill
+  directories or ownership metadata, making later MEX setup or sync refuse them.
 
 ## Verify
 
