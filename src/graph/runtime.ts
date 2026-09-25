@@ -5,7 +5,13 @@ import { globSync } from "glob";
 import type { MexConfig, Grounding } from "../types.js";
 import { extractGroundings, findMexAnchors, rewriteMexAnchor, writeGroundings } from "../markdown.js";
 import { createGroundingChecker, type GroundingChecker, type GroundedSource } from "./grounding.js";
-import type { SourceDriftGrounding, SourceDriftResolution } from "../drift/checkers/grounding.js";
+import {
+  committedBaselines,
+  committedElsewhere,
+  resolveAnchorBaseline,
+  type SourceDriftGrounding,
+  type SourceDriftResolution,
+} from "../drift/checkers/grounding.js";
 import { createGraphEngine } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
 import { detectLanguage, extractFile, loadGrammars } from "./extraction/index.js";
@@ -367,6 +373,9 @@ export function persistMovedGroundings(
     // the old node's rows (no baseline, no fingerprint, no alias) — instead
     // of skipping the anchor and leaving GROUNDING_GONE behind.
     const migratedNodes = new Map<string, string>();
+    // Taken before the loop below rebinds entries in place: anchors read them
+    // as baselines exactly as `check` does (#229).
+    const committedHere = committedBaselines(groundings);
     for (const grounding of groundings) {
       const aliasedNode = runtime.graph.getNode(grounding.node);
       if (aliasedNode) {
@@ -386,7 +395,8 @@ export function persistMovedGroundings(
       const baseline = deserializeFingerprint(grounding.fingerprint)
         ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
       if (!baseline) continue;
-      const resolution = runtime.reconciler.reconcile(grounding.node, baseline);
+      const resolution = runtime.reconciler.reconcile(
+        grounding.node, baseline, grounding.bodyHash ?? baselineSource?.bodyHash);
       if (resolution.kind !== "MOVED") continue;
       if (groundings.some((other) => other !== grounding && other.node === resolution.nodeId)) continue;
       const oldId = grounding.node;
@@ -401,6 +411,7 @@ export function persistMovedGroundings(
     const groundedContent = dirty ? writeGroundings(content, groundings) : content;
     let anchoredContent = groundedContent;
     const anchors = findMexAnchors(anchoredContent);
+    const elsewhere = committedElsewhere(config.projectRoot, scaffoldFile);
     for (const anchor of [...anchors].reverse()) {
       const migratedId = migratedNodes.get(anchor.nodeId);
       if (migratedId !== undefined) {
@@ -418,11 +429,14 @@ export function persistMovedGroundings(
         moved += 1;
         continue;
       }
-      const baselineSource = runtime.reconciler.getGroundedSource(scaffoldFile, anchor.nodeId);
-      const baseline = runtime.anchorFingerprints.get(anchor.nodeId)
-        ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
-      if (!baseline) continue;
-      const resolution = runtime.reconciler.reconcile(anchor.nodeId, baseline);
+      const baseline = resolveAnchorBaseline({
+        current: runtime.anchorFingerprints.get(anchor.nodeId) ?? runtime.reconciler.getFingerprint(anchor.nodeId),
+        here: committedHere.get(anchor.nodeId),
+        elsewhere: () => elsewhere(anchor.nodeId),
+        cached: runtime.reconciler.getGroundedSource(scaffoldFile, anchor.nodeId),
+      });
+      if (!baseline || baseline === "conflict") continue;
+      const resolution = runtime.reconciler.reconcile(anchor.nodeId, baseline.fingerprint, baseline.bodyHash);
       if (resolution.kind !== "MOVED") continue;
       if (!groundings.some((entry) => entry.node === resolution.nodeId)) {
         moveGroundingBaseline(scaffoldFile, anchor.nodeId, resolution.nodeId, runtime, pendingMoves);
@@ -461,7 +475,7 @@ function assembleGroundingRuntime(
 ): GroundingRuntime {
   const reconciler = new MinHashReconciler(fingerprints);
   const checkerReconciler: Reconciler & GroundingReconcilerCapabilities = {
-    reconcile: (nodeId, baseline) => reconciler.reconcile(nodeId, baseline),
+    reconcile: (nodeId, baseline, bodyHash?: string) => reconciler.reconcile(nodeId, baseline, bodyHash),
     getFingerprint: (nodeId) => anchorFingerprints.get(nodeId) ?? reconciler.getFingerprint(nodeId),
     getGroundedSource: (file, nodeId) => reconciler.getGroundedSource(file, nodeId),
   };

@@ -34,7 +34,7 @@ import { serializeFingerprint, deserializeFingerprint } from "../../graph/finger
 import { FingerprintStore } from "../../graph/fingerprint-store.js";
 import { GraphStore } from "../../graph/db/store.js";
 import type { GraphEngine } from "../../graph/engine.js";
-import type { Reconciler, Resolution } from "../../graph/reconcile.js";
+import type { Fingerprint, Reconciler, Resolution } from "../../graph/reconcile.js";
 import type { SqliteDatabase } from "../../graph/db/sqlite.js";
 import type { GroundingBaseline, GroundingSubject } from "../../graph/grounding.js";
 import { asGraphDerived, type GraphDerivedGrounding, type WikiGrounding } from "../model/grounding.js";
@@ -70,7 +70,7 @@ export interface GroundingGraph {
    * different situation from "we looked and found nothing" and resolves
    * differently.
    */
-  reconcile(nodeId: string, committedFingerprint: string): Resolution | null;
+  reconcile(nodeId: string, committedFingerprint: string, bodyHash?: string): Resolution | null;
   /**
    * The cached baseline for one (subject, node), **for rendering an old-vs-new
    * diff only**.
@@ -87,7 +87,8 @@ export interface GroundingGraph {
 /** Build the graph-backed implementation. The only place `src/graph/` is bound in. */
 export function createGroundingGraph(
   engine: Pick<GraphEngine, "getNode">,
-  reconciler: Reconciler,
+  /** May take the committed body hash as a tie-breaker, as the graph's reconciler does (#229). */
+  reconciler: Reconciler & { reconcile(nodeId: string, baseline: Fingerprint, bodyHash?: string): Resolution },
   db: SqliteDatabase,
 ): GroundingGraph {
   const store = new FingerprintStore(db);
@@ -106,9 +107,9 @@ export function createGroundingGraph(
       const fingerprint = store.get(nodeId);
       return fingerprint === null ? null : serializeFingerprint(fingerprint);
     },
-    reconcile(nodeId, committedFingerprint) {
+    reconcile(nodeId, committedFingerprint, bodyHash) {
       const decoded = deserializeFingerprint(committedFingerprint);
-      return decoded === null ? null : reconciler.reconcile(nodeId, decoded);
+      return decoded === null ? null : reconciler.reconcile(nodeId, decoded, bodyHash);
     },
     getBaselineSource(subject, nodeId) {
       return store.getBaseline(subject, nodeId);

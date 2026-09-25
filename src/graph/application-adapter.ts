@@ -158,7 +158,7 @@ export interface RepositoryGraphGroundingSnapshot {
   /** Up to 50 direct symbols, in request order without duplicates or source bodies. */
   getSymbols(nodeIds: readonly string[]): readonly CodeSymbol[];
   getFingerprint(nodeId: string): string | null;
-  reconcile(nodeId: string, committedFingerprint: string): Resolution | null;
+  reconcile(nodeId: string, committedFingerprint: string, bodyHash?: string): Resolution | null;
   getBaselineSource(subject: GroundingSubject, nodeId: string): GroundingBaseline | null;
 }
 
@@ -460,11 +460,11 @@ export class RepositoryGraphPort implements GraphPort {
             throw interruptedRead("The graph grounding snapshot could not read a fingerprint safely.");
           }
         },
-        reconcile(nodeId, committedFingerprint) {
+        reconcile(nodeId, committedFingerprint, bodyHash) {
           assertActive();
           try {
             const fingerprint = deserializeFingerprint(committedFingerprint);
-            return fingerprint === null ? null : reconciler.reconcile(nodeId, fingerprint);
+            return fingerprint === null ? null : reconciler.reconcile(nodeId, fingerprint, bodyHash);
           } catch {
             throw interruptedRead("The graph grounding snapshot could not reconcile a code reference safely.");
           }
