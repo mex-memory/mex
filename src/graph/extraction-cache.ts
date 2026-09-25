@@ -28,10 +28,14 @@ const EXTRACTION_CACHE_FORMAT = 1;
 
 /**
  * Above this many affected compiler files, and this share of them, extract in
- * full: capture dominates either way, and a full extraction needs no plan.
+ * full. Capture cost follows the affected set and reuse adds little, so even
+ * a large affected set is cheaper incrementally: on Hono, an edit affecting
+ * 118 of 384 files refreshed in 30 s where a full extraction took 60 s. Past
+ * this share the saving is marginal, and a full extraction also refreshes
+ * every cached capture.
  */
 const AFFECTED_FILE_FLOOR = 100;
-const AFFECTED_SHARE_LIMIT = 0.3;
+const AFFECTED_SHARE_LIMIT = 0.7;
 
 /** A tree-sitter file's staged extraction, without its write times. */
 export interface CachedTreeFile {
@@ -204,7 +208,7 @@ export function planIncrementalExtraction(
   }
   const compilerFiles = [...current.keys()].filter(isCompilerFile).length;
   if (affected.size > Math.max(AFFECTED_FILE_FLOOR, AFFECTED_SHARE_LIMIT * compilerFiles)) {
-    return { reason: "the affected set exceeds 30% of compiler files" };
+    return { reason: "the affected set exceeds 70% of compiler files" };
   }
   return { captures, affected, trees };
 }
