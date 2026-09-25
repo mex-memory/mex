@@ -24,7 +24,8 @@ import ts from "typescript";
 import { recordGraphPhase, timeGraphPhase } from "../phase-timing.js";
 
 // v3 (#240): checker-rendered signatures no longer embed absolute module paths.
-export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v3";
+// v4 (#209): checker-rendered unions list their members in one canonical order.
+export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v4";
 export const TYPESCRIPT_COMPILER_VERSION = ts.version;
 
 export type CompilerSourceLanguage =
@@ -2132,7 +2133,7 @@ function captureCallReference(
     expressionText: expression.getText(context.sourceFile),
     signatureText: resolvedSignature
       ? portableCheckerText(
-        checker.signatureToString(resolvedSignature, node, ts.TypeFormatFlags.NoTruncation),
+        renderSignature(checker, resolvedSignature, node),
         context.project.root,
       )
       : undefined,
@@ -2378,15 +2379,72 @@ function declarationSignature(
       ...checker.getSignaturesOfType(type, ts.SignatureKind.Construct),
     ];
     const rendered = [...new Set(signatures.map((signature) => portableCheckerText(
-      checker.signatureToString(signature, location, ts.TypeFormatFlags.NoTruncation),
+      renderSignature(checker, signature, location),
       root,
     )))].sort();
     if (rendered.length > 0) return rendered.join(" | ");
-    const typeText = portableCheckerText(checker.typeToString(type, location, ts.TypeFormatFlags.NoTruncation), root);
+    const typeText = portableCheckerText(renderType(checker, type, location), root);
     if (typeText && typeText !== "any") return typeText;
   }
   const headers = [...new Set(declarations.map(declarationHeader).filter(Boolean))].sort();
   return headers.length > 0 ? headers.join(" | ") : undefined;
+}
+
+// Canonical checker text (issue #209). The checker orders a union's members by
+// internal type id, which follows the order types happened to be created in,
+// so the same declaration rendered differently depending on which other files
+// had been examined first; re-extracting a few files could not reproduce a full
+// extraction. These render exactly as `typeToString` / `signatureToString` do,
+// through the same node builder and printer options, except that each union's
+// members are ordered by their own canonical text.
+const typePrinter = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
+const signaturePrinter = ts.createPrinter({
+  removeComments: true,
+  omitTrailingSemicolon: true,
+  newLine: ts.NewLineKind.LineFeed,
+});
+const CHECKER_TEXT_LIMIT = 2_000_000;
+const RENDER_FLAGS = ts.NodeBuilderFlags.NoTruncation | ts.NodeBuilderFlags.IgnoreErrors;
+
+function renderType(checker: ts.TypeChecker, type: ts.Type, enclosing: ts.Node): string {
+  const node = checker.typeToTypeNode(type, enclosing, RENDER_FLAGS);
+  if (!node) return checker.typeToString(type, enclosing, ts.TypeFormatFlags.NoTruncation);
+  return printCanonical(typePrinter, node, enclosing.getSourceFile());
+}
+
+function renderSignature(checker: ts.TypeChecker, signature: ts.Signature, enclosing: ts.Node): string {
+  const node = checker.signatureToSignatureDeclaration(
+    signature,
+    ts.SyntaxKind.CallSignature,
+    enclosing,
+    RENDER_FLAGS | ts.NodeBuilderFlags.WriteTypeParametersInQualifiedName,
+  );
+  if (!node) return checker.signatureToString(signature, enclosing, ts.TypeFormatFlags.NoTruncation);
+  return printCanonical(signaturePrinter, node, enclosing.getSourceFile()).replace(/;$/u, "");
+}
+
+function printCanonical(printer: ts.Printer, node: ts.Node, sourceFile: ts.SourceFile): string {
+  const transformed = ts.transform(node, [(context) => {
+    const visit = (current: ts.Node): ts.Node => {
+      const visited = ts.visitEachChild(current, visit, context);
+      if (!ts.isUnionTypeNode(visited)) return visited;
+      const members = visited.types
+        .map((member) => ({ member, text: printer.printNode(ts.EmitHint.Unspecified, member, sourceFile) }))
+        .sort((left, right) => compareCodePoints(left.text, right.text))
+        .map(({ member }) => member);
+      return context.factory.updateUnionTypeNode(visited, context.factory.createNodeArray(members));
+    };
+    return (root) => visit(root);
+  }]);
+  try {
+    // Checker text is single-line; the printer breaks only synthesized
+    // multi-line literals, which the checker's own writer joins with spaces.
+    const text = printer.printNode(ts.EmitHint.Unspecified, transformed.transformed[0]!, sourceFile)
+      .replace(/\n\s*/gu, " ");
+    return text.length >= CHECKER_TEXT_LIMIT ? `${text.slice(0, CHECKER_TEXT_LIMIT - 3)}...` : text;
+  } finally {
+    transformed.dispose();
+  }
 }
 
 function declarationHeader(node: ts.Node): string {
@@ -2547,7 +2605,7 @@ function returnTypeOf(
   const type = checker.getTypeOfSymbolAtLocation(symbol, node);
   const signature = checker.getSignaturesOfType(type, ts.SignatureKind.Call)[0];
   return signature
-    ? portableCheckerText(checker.typeToString(signature.getReturnType(), node, ts.TypeFormatFlags.NoTruncation), root)
+    ? portableCheckerText(renderType(checker, signature.getReturnType(), node), root)
     : undefined;
 }
 
