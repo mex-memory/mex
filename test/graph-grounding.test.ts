@@ -106,6 +106,30 @@ describe("FingerprintStore and MinHashReconciler", () => {
     db.close();
   });
 
+  it("returns AMBIGUOUS instead of guessing between equally strong candidates", () => {
+    const db = database();
+    insertNode(db, "copy-b");
+    insertNode(db, "copy-a");
+    const store = new FingerprintStore(db);
+    // An exact copy of the grounded body elsewhere: both score 1.0.
+    store.upsert("copy-b", fingerprint(64));
+    store.upsert("copy-a", fingerprint(64));
+    expect(new MinHashReconciler(store).reconcile("missing", fingerprint(64)))
+      .toEqual({ kind: "AMBIGUOUS", candidate: "copy-a" });
+    db.close();
+  });
+
+  it("still returns MOVED when the best candidate clearly leads the runner-up", () => {
+    const db = database();
+    insertNode(db, "moved");
+    insertNode(db, "similar");
+    const store = new FingerprintStore(db);
+    store.upsert("moved", fingerprint(64));
+    store.upsert("similar", fingerprint(48, ["other"]));
+    expect(new MinHashReconciler(store).reconcile("missing", fingerprint(64))).toEqual({ kind: "MOVED", nodeId: "moved" });
+    db.close();
+  });
+
   it("returns AMBIGUOUS for a mid-scoring candidate", () => {
     const db = database();
     insertNode(db, "candidate");
