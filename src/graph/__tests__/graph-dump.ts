@@ -9,7 +9,7 @@
 // stands for, and FTS content is read back term by term through fts5vocab.
 
 import { openSqlite, type SqliteDatabase } from "../db/sqlite.js";
-import { FILE_ROW_DIGESTS_METADATA_KEY } from "../publication-delta.js";
+import { INCREMENTAL_STATE_METADATA_KEY } from "../publication-delta.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "../snapshot.js";
 
 export interface GraphDump {
@@ -25,6 +25,7 @@ export interface GraphDump {
   aliases: string[];
   sourceChunks: string[];
   rowDigests: string[];
+  extractionCache: string[];
   sourceChunksFts: string[];
   nodesFts: string[];
   metadata: string[];
@@ -40,8 +41,8 @@ function rows(db: SqliteDatabase, sql: string): string[] {
 
 function metadataRows(db: SqliteDatabase): string[] {
   const entries = db.prepare("SELECT key, value FROM project_metadata").all() as Array<{ key: string; value: string }>;
-  // The digest marker hashes the serialized snapshot, write time included.
-  return entries.filter(({ key }) => key !== FILE_ROW_DIGESTS_METADATA_KEY).map(({ key, value }) => {
+  // The incremental-state marker hashes the serialized snapshot, write time included.
+  return entries.filter(({ key }) => key !== INCREMENTAL_STATE_METADATA_KEY).map(({ key, value }) => {
     if (key === GRAPH_SNAPSHOT_METADATA_KEY) {
       const snapshot = JSON.parse(value) as Record<string, unknown>;
       delete snapshot.indexedAt;
@@ -78,6 +79,7 @@ export function dumpGraphDatabase(path: string): GraphDump {
       sourceChunks: rows(db, `SELECT file_path, start_line, end_line, content_hash, path_terms,
         identifier_terms, comment_terms FROM source_chunks`),
       rowDigests: rows(db, "SELECT path, digest FROM file_row_digests"),
+      extractionCache: rows(db, "SELECT path, content_hash, hex(payload) AS payload FROM file_extraction_cache"),
       sourceChunksFts: rows(db, `SELECT v.term, v.col, v.offset, c.file_path, c.start_line, c.end_line
         FROM temp.dump_source_vocab v LEFT JOIN source_chunks c ON c.id = v.doc`),
       nodesFts: rows(db, `SELECT v.term, v.col, v.offset, n.id FROM temp.dump_nodes_vocab v

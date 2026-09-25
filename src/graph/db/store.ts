@@ -602,6 +602,7 @@ export class GraphStore {
     this.db.exec("DELETE FROM nodes");
     this.db.exec("DELETE FROM files");
     this.db.exec("DELETE FROM file_row_digests");
+    this.db.exec("DELETE FROM file_extraction_cache");
   }
 
   // --- Incremental publication (issue #209) -----------------------------------
@@ -623,6 +624,32 @@ export class GraphStore {
 
   deleteFileRowDigest(path: string): void {
     this.db.prepare("DELETE FROM file_row_digests WHERE path = ?").run(path);
+  }
+
+  /** Every cached extraction, as last published. */
+  getExtractionCache(): Map<string, { contentHash: string; payload: Uint8Array }> {
+    const rows = this.db.prepare("SELECT path, content_hash, payload FROM file_extraction_cache").all() as Array<{
+      path: string; content_hash: string; payload: Uint8Array;
+    }>;
+    return new Map(rows.map((row) => [row.path, { contentHash: row.content_hash, payload: row.payload }]));
+  }
+
+  setExtractionCacheEntry(path: string, contentHash: string, payload: Uint8Array): void {
+    this.db.prepare(
+      `INSERT INTO file_extraction_cache (path, content_hash, payload) VALUES (?, ?, ?)
+       ON CONFLICT(path) DO UPDATE SET content_hash = excluded.content_hash, payload = excluded.payload`,
+    ).run(path, contentHash, payload);
+  }
+
+  deleteExtractionCacheEntry(path: string): void {
+    this.db.prepare("DELETE FROM file_extraction_cache WHERE path = ?").run(path);
+  }
+
+  /** Every stored fingerprint sketch, without neighbours. */
+  getFingerprintSketches(): Array<{ nodeId: string; minhash: Uint8Array; tokenCount: number }> {
+    return (this.db.prepare("SELECT node_id, minhash, token_count FROM node_fingerprints").all() as Array<{
+      node_id: string; minhash: Uint8Array; token_count: number;
+    }>).map((row) => ({ nodeId: row.node_id, minhash: row.minhash, tokenCount: row.token_count }));
   }
 
   getNodesByFile(filePath: string): GraphNode[] {

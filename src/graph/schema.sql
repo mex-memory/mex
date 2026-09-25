@@ -292,6 +292,16 @@ CREATE TABLE IF NOT EXISTS file_row_digests (
     digest TEXT NOT NULL
 ) WITHOUT ROWID;
 
+-- Incremental extraction (issue #209): each file's pre-resolution extraction,
+-- compressed JSON, reused while that file and everything it can observe
+-- through module resolution is unchanged. Valid under the same marker as the
+-- row digests.
+CREATE TABLE IF NOT EXISTS file_extraction_cache (
+    path TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    payload BLOB NOT NULL
+);
+
 -- =============================================================================
 -- Project metadata (ported from CG — small key/value store for build metadata,
 -- e.g. last-build timestamp, extraction version).

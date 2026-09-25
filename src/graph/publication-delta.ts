@@ -44,8 +44,12 @@ import type { Fingerprint } from "./reconcile.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
 import type { GraphEdge, GraphNode } from "./types.js";
 
-/** project_metadata key: sha256 of the serialized snapshot the digests describe. */
-export const FILE_ROW_DIGESTS_METADATA_KEY = "file_row_digests_snapshot";
+/**
+ * project_metadata key: sha256 of the serialized snapshot that the row digests
+ * and the extraction cache describe. Written in the transaction that
+ * publishes that snapshot, so any other writer leaves it stale.
+ */
+export const INCREMENTAL_STATE_METADATA_KEY = "incremental_state_snapshot";
 
 export interface PublicationFile {
   record: FileRecord;
@@ -164,9 +168,16 @@ function fingerprintImage(nodeId: string, fingerprint: Fingerprint): string {
   return JSON.stringify([nodeId, fingerprint.minhash, fingerprint.neighbors, fingerprint.tokenCount]);
 }
 
-/** The digest marker a publication writes for the snapshot it publishes. */
-export function fileRowDigestMarker(serializedSnapshot: string): string {
+/** The marker a publication writes for the snapshot it publishes. */
+export function incrementalStateMarker(serializedSnapshot: string): string {
   return createHash("sha256").update(serializedSnapshot).digest("hex");
+}
+
+/** Whether the stored row digests and extraction cache describe the stored graph. */
+export function incrementalStateIsCurrent(store: GraphStore): boolean {
+  const storedSnapshot = store.getMetadata(GRAPH_SNAPSHOT_METADATA_KEY);
+  const marker = store.getMetadata(INCREMENTAL_STATE_METADATA_KEY);
+  return storedSnapshot !== null && marker !== null && marker === incrementalStateMarker(storedSnapshot);
 }
 
 /** What an incremental publication rewrites, read before any row changes. */
@@ -193,11 +204,7 @@ export function planRowDelta(
   db: SqliteDatabase,
   grouped: FileRowGroups,
 ): RowDelta | { reason: string } {
-  const storedSnapshot = store.getMetadata(GRAPH_SNAPSHOT_METADATA_KEY);
-  const marker = store.getMetadata(FILE_ROW_DIGESTS_METADATA_KEY);
-  if (storedSnapshot === null || marker === null || marker !== fileRowDigestMarker(storedSnapshot)) {
-    return { reason: "no row digests describe the stored graph" };
-  }
+  if (!incrementalStateIsCurrent(store)) return { reason: "no row digests describe the stored graph" };
   const stored = store.getFileRowDigests();
   const rewritten = [...grouped.groups.values()].filter((group) => stored.get(group.path) !== group.digest);
   const removed = [...stored.keys()].filter((path) => !grouped.groups.has(path)).sort();

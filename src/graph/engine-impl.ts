@@ -47,6 +47,7 @@ import type { SqliteDatabase } from "./db/sqlite.js";
 import {
   buildTypeScriptExtraction,
   canonicalNodeIdentity,
+  CompilerIncrementalFallback,
   detectLanguage,
   extractFile,
   grammarManifestHash,
@@ -58,25 +59,35 @@ import {
   TYPESCRIPT_COMPILER_VERSION,
   type CompilerExtractedNode,
   type CompilerExtractionOptions,
+  type CompilerIncrementalInput,
   type CompilerExtractionResult,
   type CompilerFileExtraction,
   type CompilerSemanticInput,
   type CompilerStagedInput,
 } from "./extraction/index.js";
 import { FingerprintStore, upsertFingerprintsInOwnedTransaction } from "./fingerprint-store.js";
-import { createFingerprintBuilder } from "./fingerprint.js";
+import { createFingerprintBuilder, decodeMinhash } from "./fingerprint.js";
 import { MIN_TOKENS } from "./config.js";
 import { minhashJaccard } from "./reconcile-engine.js";
 import type { Fingerprint } from "./reconcile.js";
 import {
   applyRowDelta,
-  FILE_ROW_DIGESTS_METADATA_KEY,
-  fileRowDigestMarker,
   groupRowsByFile,
+  INCREMENTAL_STATE_METADATA_KEY,
+  incrementalStateIsCurrent,
+  incrementalStateMarker,
   planRowDelta,
   type FileRowGroups,
   type RowDelta,
 } from "./publication-delta.js";
+import {
+  encodeCachedExtraction,
+  extractionCacheIdentity,
+  planIncrementalExtraction,
+  type CachedTreeFile,
+  type IncrementalExtractionPlan,
+  type StoredExtraction,
+} from "./extraction-cache.js";
 import { createStagedResolutionContext } from "./resolution/context.js";
 import { FRAMEWORK_RESOLVERS } from "./resolution/frameworks/index.js";
 import { resolveReferences } from "./resolution/resolver.js";
@@ -300,7 +311,37 @@ interface StagedCorpus {
   configHash: string;
   grammarHash: string;
   sourceSpool: GraphSourceSpool;
+  extraction: StagedExtraction;
 }
+
+/** How staging extracted the corpus, and the cache it leaves for the next refresh. */
+interface StagedExtraction {
+  mode: "incremental" | "full";
+  fallbackReason?: string;
+  filesReextracted: number;
+  cache: ExtractionCacheState;
+}
+
+/** The extraction cache a publication writes: one entry per staged file. */
+interface ExtractionCacheState {
+  identity: string;
+  projectStates: Record<string, string>;
+  entries: Array<{ path: string; contentHash: string; payload: Uint8Array; changed: boolean }>;
+}
+
+/** What a refresh may reuse from the stored graph (issue #209). */
+interface ExtractionReuse {
+  identity: string | null;
+  stored: Map<string, StoredExtraction>;
+  projectStates: Record<string, string>;
+  /** Stored fingerprint sketches by node id; neighbours are always recomputed. */
+  fingerprints: ReadonlyMap<string, Pick<Fingerprint, "minhash" | "tokenCount">>;
+  /** Stored file records, to know which files' sketches still hold. */
+  records: ReadonlyMap<string, FileRecord>;
+}
+
+const EXTRACTION_CACHE_IDENTITY_KEY = "extraction_cache_identity";
+const EXTRACTION_PROJECT_STATES_KEY = "extraction_project_states";
 
 export interface GraphManifest {
   manifestHash: string;
@@ -390,6 +431,7 @@ class GraphEngineImpl implements GraphEngine {
       this.sourceFileAccess,
       this.internal,
       this.compilerExtraction,
+      { reason: "a rebuild extracts in full" },
     );
     try {
       this.assertNoNewParseFailures(staged);
@@ -426,14 +468,20 @@ class GraphEngineImpl implements GraphEngine {
       }
     }
 
-    // Re-stage the whole semantic corpus. This makes an arbitrary sync sequence
-    // converge to the same graph as a clean build and re-resolves cross-file refs.
+    // Stage the whole semantic corpus: every file's extraction, re-extracted or
+    // reused from the cache (issue #209), then resolution over all of it. This
+    // makes an arbitrary sync sequence converge to the same graph as a clean
+    // build and re-resolves cross-file refs.
+    const reuse = this.refreshStrategy === "full"
+      ? { reason: "the full-restage strategy was requested" }
+      : timeGraphPhase("stage.loadCache", () => loadExtractionReuse(store, this.rootDir));
     const staged = await timeGraphPhaseAsync("stage.total", () => stageCorpus(
       this.rootDir,
       manifest,
       this.sourceFileAccess,
       this.internal,
       this.compilerExtraction,
+      reuse,
     ));
     try {
       const stagedByPath = new Map(staged.files.map((file) => [file.record.path, file]));
@@ -466,12 +514,10 @@ class GraphEngineImpl implements GraphEngine {
       return {
         ...result,
         refresh: {
-          mode: "full",
-          fallbackReason: this.refreshStrategy === "full"
-            ? "the full-restage strategy was requested"
-            : "incremental extraction is not available",
+          mode: staged.extraction.mode,
+          ...(staged.extraction.fallbackReason ? { fallbackReason: staged.extraction.fallbackReason } : {}),
           filesChanged,
-          filesReextracted: staged.files.length,
+          filesReextracted: staged.extraction.filesReextracted,
           ...publication,
         },
         durationMs: Date.now() - started,
@@ -570,6 +616,15 @@ class GraphEngineImpl implements GraphEngine {
           (path) => staged.sourceSpool.read(stagedByPath.get(path)!.discovered),
         ));
         edgeCount = (grouped as FileRowGroups).edgeCount;
+        timeGraphPhase("publish.cache", () => {
+          const current = new Set(staged.extraction.cache.entries.map((entry) => entry.path));
+          for (const entry of staged.extraction.cache.entries) {
+            if (entry.changed) store.setExtractionCacheEntry(entry.path, entry.contentHash, entry.payload);
+          }
+          for (const path of store.getExtractionCache().keys()) {
+            if (!current.has(path)) store.deleteExtractionCacheEntry(path);
+          }
+        });
         if (continuity) {
           timeGraphPhase("publish.aliases", () => applyIncrementalCompatibilityAliases(
             store, continuity, freshNodes, new FingerprintStore(this.db!),
@@ -580,6 +635,11 @@ class GraphEngineImpl implements GraphEngine {
         if (!("reason" in grouped)) {
           for (const group of grouped.groups.values()) store.setFileRowDigest(group.path, group.digest);
         }
+        timeGraphPhase("publish.cache", () => {
+          for (const entry of staged.extraction.cache.entries) {
+            store.setExtractionCacheEntry(entry.path, entry.contentHash, entry.payload);
+          }
+        });
       }
       timeGraphPhase("publish.invariants", () => store.validateInvariants(expectedNodes));
       store.setMetadata("compiler_version", staged.compiler.compilerVersion);
@@ -589,8 +649,10 @@ class GraphEngineImpl implements GraphEngine {
       store.setMetadata("grammar_hash", staged.grammarHash);
       store.setMetadata(GRAPH_COVERAGE_METADATA_KEY, coverage);
       store.setMetadata(GRAPH_SNAPSHOT_METADATA_KEY, serializedSnapshot);
-      if ("reason" in grouped) store.deleteMetadata(FILE_ROW_DIGESTS_METADATA_KEY);
-      else store.setMetadata(FILE_ROW_DIGESTS_METADATA_KEY, fileRowDigestMarker(serializedSnapshot));
+      store.setMetadata(EXTRACTION_CACHE_IDENTITY_KEY, staged.extraction.cache.identity);
+      store.setMetadata(EXTRACTION_PROJECT_STATES_KEY, JSON.stringify(staged.extraction.cache.projectStates));
+      if ("reason" in grouped) store.deleteMetadata(INCREMENTAL_STATE_METADATA_KEY);
+      else store.setMetadata(INCREMENTAL_STATE_METADATA_KEY, incrementalStateMarker(serializedSnapshot));
       markGraphReady(this.db!, staged.manifestHash);
     });
 
@@ -712,12 +774,46 @@ export function createGraphEngineFromOpenDatabase(
   return new GraphEngineImpl({ ...options, readOnly: true, immutable: true }, database);
 }
 
+/**
+ * What a refresh may reuse, or why it must extract in full: the cache and
+ * digests must describe the stored snapshot, and every non-corpus input the
+ * compiler recorded must still hold the bytes it read.
+ */
+function loadExtractionReuse(store: GraphStore, root: string): ExtractionReuse | { reason: string } {
+  if (!incrementalStateIsCurrent(store)) return { reason: "no extraction cache describes the stored graph" };
+  const snapshot = parseGraphSnapshot(store.getMetadata(GRAPH_SNAPSHOT_METADATA_KEY));
+  if (!snapshot || !semanticInputsMatchSnapshot(root, snapshot.semanticInputs)) {
+    return { reason: "a non-corpus compiler input changed" };
+  }
+  let projectStates: Record<string, string>;
+  try {
+    projectStates = JSON.parse(store.getMetadata(EXTRACTION_PROJECT_STATES_KEY) ?? "null") as Record<string, string>;
+  } catch {
+    return { reason: "no extraction cache describes the stored graph" };
+  }
+  if (!projectStates || typeof projectStates !== "object") {
+    return { reason: "no extraction cache describes the stored graph" };
+  }
+  const fingerprints = new Map<string, Pick<Fingerprint, "minhash" | "tokenCount">>();
+  for (const row of store.getFingerprintSketches()) {
+    fingerprints.set(row.nodeId, { minhash: decodeMinhash(row.minhash), tokenCount: row.tokenCount });
+  }
+  return {
+    identity: store.getMetadata(EXTRACTION_CACHE_IDENTITY_KEY),
+    stored: store.getExtractionCache(),
+    projectStates,
+    fingerprints,
+    records: new Map(store.getAllFileRecords().map((record) => [record.path, record])),
+  };
+}
+
 async function stageCorpus(
   root: string,
   manifest = graphManifest(root),
   sourceFileAccess: GraphSourceFileAccess = NODE_SOURCE_FILE_ACCESS,
   internal: GraphEngineInternalHooks = {},
   compilerExtraction?: CompilerExtractionOptions,
+  reuse: ExtractionReuse | { reason: string } = { reason: "a full extraction was requested" },
 ): Promise<StagedCorpus> {
   const sourceSpool = new GraphSourceSpool(internal.sourceSpoolDirectory);
   try {
@@ -760,11 +856,26 @@ async function stageCorpus(
     });
     reportParsed(0);
 
+    // Incremental extraction (issue #209): plan which files to extract again,
+    // or record why the whole corpus is extracted.
+    const identity = extractionCacheIdentity(manifest.manifestHash, configSources);
+    const discoveredByPath = new Map(discovered.map((file) => [file.relPath, file]));
+    const isCompilerFile = (path: string): boolean => COMPILER_LANGUAGES.has(detectLanguage(path));
+    let plan: IncrementalExtractionPlan | { reason: string } = "reason" in reuse ? reuse
+      : reuse.identity !== identity ? { reason: "the configuration or the engine changed" }
+      : timeGraphPhase("stage.plan", () => planIncrementalExtraction(
+        reuse.stored,
+        new Map(discovered.map((file) => [file.relPath, file.contentHash])),
+        isCompilerFile,
+        (path) => sourceSpool.read(discoveredByPath.get(path)!),
+      ));
+
     let compiler: CompilerExtractionResult;
-    const semanticInputLedger = createGraphSemanticInputLedger();
-    try {
-      compiler = timeGraphPhase("compiler.total", () => buildTypeScriptExtraction(root, compilerPaths, {
+    const extractCompilerFiles = (incremental?: CompilerIncrementalInput): CompilerExtractionResult => {
+      const semanticInputLedger = createGraphSemanticInputLedger();
+      return timeGraphPhase("compiler.total", () => buildTypeScriptExtraction(root, compilerPaths, {
         ...compilerExtraction,
+        ...(incremental ? { incremental } : {}),
         stagedInputs: compilerInputs,
         readProjectFile: (absolutePath) => {
           const source = readSecureCompilerInput(root, absolutePath);
@@ -782,6 +893,23 @@ async function stageCorpus(
           return source;
         },
       }, reportParsed));
+    };
+    try {
+      if ("reason" in plan) {
+        compiler = extractCompilerFiles();
+      } else {
+        try {
+          compiler = extractCompilerFiles({
+            previous: plan.captures,
+            affected: plan.affected,
+            projectStates: (reuse as ExtractionReuse).projectStates,
+          });
+        } catch (error) {
+          if (!(error instanceof CompilerIncrementalFallback)) throw error;
+          plan = { reason: error.reason };
+          compiler = extractCompilerFiles();
+        }
+      }
     } catch (error) {
       if (error instanceof GraphSourceStagingError) throw error;
       throw new GraphSourceStagingError([sourceStagingFailure(".", "read", error)]);
@@ -808,14 +936,55 @@ async function stageCorpus(
       .map((file) => detectLanguage(file.relPath)))];
     await timeGraphPhaseAsync("stage.loadGrammars", () => loadGrammars([...treeLanguages, ...fallbackLanguages]));
 
+    // Cache entries for the next refresh, encoded before resolution adds
+    // framework nodes and hydrates bindings in place.
+    const storedExtraction = "reason" in reuse ? new Map<string, StoredExtraction>() : reuse.stored;
+    const cacheEntries = new Map<string, ExtractionCacheState["entries"][number]>();
+    const setCacheEntry = (path: string, contentHash: string, payload: Uint8Array): void => {
+      const previous = storedExtraction.get(path);
+      const changed = !previous || previous.contentHash !== contentHash
+        || !Buffer.from(previous.payload).equals(Buffer.from(payload));
+      cacheEntries.set(path, { path, contentHash, payload, changed });
+    };
+    const reusedCaptures = new Set(compiler.reused);
+    timeGraphPhase("stage.cacheCompiler", () => {
+      for (const capture of compiler.captures) {
+        const contentHash = discoveredByPath.get(capture.filePath)?.contentHash;
+        if (!contentHash) continue;
+        if (reusedCaptures.has(capture.filePath)) {
+          cacheEntries.set(capture.filePath, {
+            path: capture.filePath, contentHash, payload: storedExtraction.get(capture.filePath)!.payload, changed: false,
+          });
+        } else {
+          setCacheEntry(capture.filePath, contentHash, encodeCachedExtraction({ kind: "compiler", capture }));
+        }
+      }
+    });
+    compiler.captures.length = 0;
+    const cachedTrees = "reason" in plan ? undefined : plan.trees;
+
     let parsed = compiler.files.length;
+    let treesExtracted = 0;
     const files = discovered.map((file) => {
-      const source = sourceSpool.read(file);
       const compilerFile = compilerByPath.get(file.relPath);
-      const staged = compilerFile
-        ? timeGraphPhase("stage.compilerFiles", () => stageCompilerFile(file, source, compilerFile))
-        : timeGraphPhase("stage.treeSitterFiles", () => stageTreeFile(file, source));
-      if (!compilerFile) reportParsed(++parsed);
+      if (compilerFile) {
+        const source = sourceSpool.read(file);
+        return timeGraphPhase("stage.compilerFiles", () => stageCompilerFile(file, source, compilerFile));
+      }
+      reportParsed(++parsed);
+      const cached = cachedTrees?.get(file.relPath);
+      if (cached) {
+        cacheEntries.set(file.relPath, {
+          path: file.relPath,
+          contentHash: file.contentHash,
+          payload: storedExtraction.get(file.relPath)!.payload,
+          changed: false,
+        });
+        return restoreTreeFile(file, cached);
+      }
+      treesExtracted++;
+      const staged = timeGraphPhase("stage.treeSitterFiles", () => stageTreeFile(file, sourceSpool.read(file)));
+      setCacheEntry(file.relPath, file.contentHash, encodeCachedExtraction({ kind: "tree", file: cachedTreeFile(staged) }));
       return staged;
     });
     compilerByPath.clear();
@@ -828,7 +997,11 @@ async function stageCorpus(
     timeGraphPhase("stage.resolve", () =>
       stageFrameworkAndFallbackResolution(root, files, configSources, sourceSpool));
     timeGraphPhase("stage.validate", () => validateStagedCorpus(files));
-    const fingerprints = timeGraphPhase("stage.fingerprints", () => stageFingerprints(files, sourceSpool));
+    const fingerprints = timeGraphPhase("stage.fingerprints", () => stageFingerprints(
+      files,
+      sourceSpool,
+      "reason" in reuse ? undefined : reuse,
+    ));
     const coveredPaths = new Set([...discovered.map((file) => file.relPath), ...configSources.keys()]);
     const semanticInputs = compiler.semanticInputs.filter((input) => !coveredPaths.has(input.filePath));
     if (semanticInputs.length > GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUTS) {
@@ -850,11 +1023,65 @@ async function stageCorpus(
       fingerprints,
       sourceSpool,
       ...manifest,
+      extraction: {
+        mode: "reason" in plan ? "full" : "incremental",
+        ...("reason" in plan ? { fallbackReason: plan.reason } : {}),
+        filesReextracted: compiler.recaptured + treesExtracted,
+        cache: {
+          identity,
+          projectStates: compiler.projectStates,
+          entries: discovered.flatMap((file) => cacheEntries.get(file.relPath) ?? []),
+        },
+      },
     };
   } catch (error) {
     sourceSpool.dispose();
     throw error;
   }
+}
+
+/** A tree-sitter file's staged extraction, as the cache stores it. */
+function cachedTreeFile(staged: StagedFile): CachedTreeFile {
+  return {
+    language: staged.record.language,
+    nodes: staged.nodes.map(({ updatedAt: _updatedAt, ...node }) => node as GraphNode),
+    edges: staged.edges,
+    references: staged.references,
+    imports: staged.imports,
+    errors: staged.record.errors,
+    parseStatus: staged.record.parseStatus,
+    diagnosticCount: staged.record.diagnosticCount,
+    missingCount: staged.record.missingCount,
+    errorCoverage: staged.record.errorCoverage,
+    extractorVersion: staged.record.extractorVersion,
+  };
+}
+
+/** The inverse of {@link cachedTreeFile}: what `stageTreeFile` stages for the same bytes. */
+function restoreTreeFile(discovered: DiscoveredFile, cached: CachedTreeFile): StagedFile {
+  const now = Date.now();
+  return {
+    discovered,
+    record: {
+      path: discovered.relPath,
+      contentHash: discovered.contentHash,
+      language: cached.language,
+      size: discovered.size,
+      modifiedAt: discovered.modifiedAt,
+      indexedAt: now,
+      nodeCount: cached.nodes.length,
+      errors: cached.errors,
+      parseStatus: cached.parseStatus,
+      diagnosticCount: cached.diagnosticCount,
+      missingCount: cached.missingCount,
+      errorCoverage: cached.errorCoverage,
+      extractorVersion: cached.extractorVersion,
+    },
+    nodes: cached.nodes.map((node) => ({ ...node, updatedAt: now })),
+    edges: cached.edges,
+    references: cached.references,
+    imports: cached.imports,
+  };
 }
 
 /** Missing source/config probes are already observed by bounded corpus walks. */
@@ -1071,6 +1298,7 @@ function validateStagedCorpus(files: readonly StagedFile[]): void {
 function stageFingerprints(
   staged: readonly StagedFile[],
   sourceSpool: GraphSourceSpool,
+  stored?: Pick<ExtractionReuse, "fingerprints" | "records">,
 ): Array<{ nodeId: string; fingerprint: Fingerprint }> {
   const fingerprintBuilder = createFingerprintBuilder();
   const pending: Array<{ nodeId: string; fingerprint: Fingerprint }> = [];
@@ -1087,6 +1315,33 @@ function stageFingerprints(
   for (const file of staged) {
     const nodes = file.nodes.filter((node) => node.bodyHash);
     if (nodes.length === 0) {
+      file.compilerNodes = undefined;
+      continue;
+    }
+    // A sketch depends only on the node's own tokens (issue #209). For the
+    // same bytes and extractor, a node id stands for the same declaration, so
+    // a stored sketch still holds; neighbours are recomputed for every node.
+    const previous = stored?.records.get(file.record.path);
+    const sketches = previous
+      && previous.contentHash === file.record.contentHash
+      && previous.extractorVersion === file.record.extractorVersion
+      ? nodes.map((node) => stored!.fingerprints.get(node.id))
+      : undefined;
+    if (sketches?.every(Boolean)) {
+      nodes.forEach((node, index) => {
+        const sketch = sketches[index]!;
+        pending.push({
+          nodeId: node.id,
+          fingerprint: {
+            minhash: sketch.minhash,
+            neighbors: [...new Set([
+              ...(callersByTarget.get(node.id) ?? []),
+              ...(calleesBySource.get(node.id) ?? []),
+            ])].sort(),
+            tokenCount: sketch.tokenCount,
+          },
+        });
+      });
       file.compilerNodes = undefined;
       continue;
     }

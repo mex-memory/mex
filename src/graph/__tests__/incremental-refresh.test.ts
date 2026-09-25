@@ -125,7 +125,7 @@ const EXACT_TABLES = undefined;
  */
 const CROSS_TREE_TABLES: (keyof GraphDump)[] = [
   "fileContents", "nodes", "edges", "importBindings", "unresolvedRefs", "fingerprints",
-  "lshBuckets", "sourceChunks", "rowDigests", "sourceChunksFts", "nodesFts",
+  "lshBuckets", "sourceChunks", "rowDigests", "extractionCache", "sourceChunksFts", "nodesFts",
 ];
 
 function expectSameGraph(left: string, right: string, tables: (keyof GraphDump)[] | undefined, context: string): void {
@@ -253,7 +253,8 @@ const TS_FIXTURE: Fixture = {
     { name: "change tsconfig", apply: replace("tsconfig.json", "\"target\": \"ES2022\"", "\"target\": \"ES2020\""), expectMode: "full" },
     { name: "change package.json", apply: replace("package.json", "\"type\": \"module\"", "\"type\": \"module\",\n  \"imports\": { \"#util\": \"./src/util/index.ts\" }"), expectMode: "full" },
     { name: "file stops parsing", apply: write("src/helpers.ts", "export function helper(input: string): string {\n  return input.trim(\n}}}} ((( [[[ export const = ;\n"), refuses: true },
-    { name: "file parses again", apply: write("src/helpers.ts", "export function helper(input: string): string {\n  return input.trim();\n}\n"), expectMode: "incremental" },
+    // Not the last published bytes, or the refresh after the refusal is a no-op.
+    { name: "file parses again", apply: write("src/helpers.ts", "export function helper(input: string): string {\n  return input.trim().toLowerCase();\n}\n"), expectMode: "incremental" },
     { name: "branch-switch batch", apply: all(
       write("src/util/math.ts", "export function add(a: number, b: number): number {\n  return a + b + 0;\n}\n\nexport function scale(value: number, factor: number): number {\n  return value * factor;\n}\n"),
       write("src/feature/index.ts", "import { scale } from \"../util/math\";\n\nexport function feature(): number {\n  return scale(2, 3);\n}\n"),
@@ -390,11 +391,11 @@ describe("incremental refresh converges with the full-restage oracle", () => {
   }, 240_000);
 });
 
-// Written before the optimisation lands (issue #209): these assert that the
-// incremental path is actually taken where it is safe and that the conservative
-// fallbacks report themselves. They are expected to fail until it exists.
+// Written before the optimisation landed (issue #209): the incremental path is
+// actually taken where it is safe, and the conservative fallbacks (a global
+// declaration, any config change) report themselves.
 describe("incremental refresh reports its mode", () => {
-  it.fails("takes the incremental path for safe edits and the full path for config or global changes", async () => {
+  it("takes the incremental path for safe edits and the full path for config or global changes", async () => {
     const harness = await startHarness(TS_FIXTURE);
     for (const [index, edit] of TS_FIXTURE.edits.entries()) {
       await step(harness, edit, `mode step ${index + 1} (${edit.name})`);

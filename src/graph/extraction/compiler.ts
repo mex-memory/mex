@@ -199,6 +199,65 @@ export interface CompilerExtractionResult {
   semanticInputs: CompilerSemanticInput[];
   /** Config inputs outside the project corpus that were declined, not read. */
   declinedInputs: DeclinedCompilerInput[];
+  /** One capture per extracted file, in `files` order, for incremental reuse (issue #209). */
+  captures: CompilerFileCapture[];
+  /** Per project: a digest of every program input that is visible without an import. */
+  projectStates: Record<string, string>;
+  /** Files captured from a live program in this run. */
+  recaptured: number;
+  /** Repository-relative paths whose previous capture was reused unchanged. */
+  reused: string[];
+}
+
+/**
+ * Everything the finishing pass needs from one file, as plain data. An
+ * incremental refresh (issue #209) stores it and reuses it instead of
+ * capturing an unaffected file again. Declaration locations inside the root
+ * are stored root-relative (`./path:offset:kind`), so a capture is independent
+ * of where the checkout lives.
+ */
+export interface CompilerFileCapture {
+  filePath: string;
+  language: CompilerSourceLanguage;
+  projectId: string;
+  health: CompilerSourceHealth;
+  nodes: CompilerExtractedNode[];
+  fileDraftId?: string;
+  /** Declaration location → node id, for every declaration this file contributes. */
+  locations: Array<[string, string]>;
+  bindings: DeferredImportBinding[];
+  captured: CapturedReference[];
+  /** Module specifiers the import capture resolved; replayed when the capture is reused. */
+  resolvedSpecifiers: string[];
+  /** Corpus files this file's imports, references and type directives resolve to. */
+  dependencies: string[];
+  /** Corpus paths module resolution probed for this file and did not find. */
+  failedLookups: string[];
+  /** Its declarations are visible without an import: a script, a `.d.ts` or a global augmentation. */
+  globalScope: boolean;
+}
+
+/**
+ * Incremental extraction (issue #209). Every program is still created from
+ * the same roots as a full extraction; only the files in `affected`, and files
+ * without a previous capture, are captured from it. Every other owned file
+ * reuses its previous capture, and the finishing pass runs over all of them.
+ */
+export interface CompilerIncrementalInput {
+  /** Previous captures by repository-relative path. */
+  previous: ReadonlyMap<string, CompilerFileCapture>;
+  /** Repository-relative paths that must be captured again. */
+  affected: ReadonlySet<string>;
+  /** `projectStates` of the previous extraction. */
+  projectStates: Readonly<Record<string, string>>;
+}
+
+/** A condition only a full extraction can honour; the caller extracts in full. */
+export class CompilerIncrementalFallback extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "CompilerIncrementalFallback";
+  }
 }
 
 export interface CompilerStagedInput {
@@ -237,6 +296,8 @@ export interface CompilerExtractionOptions {
   semanticDiagnostics?: boolean;
   /** Test seam: replaces `ts.createProgram` to exercise program-crash isolation. */
   programFactory?: (options: ts.CreateProgramOptions) => ts.Program;
+  /** Reuse unaffected files' previous captures (issue #209). */
+  incremental?: CompilerIncrementalInput;
 }
 
 interface ParsedProject {
@@ -316,13 +377,13 @@ interface PendingReference extends Omit<CompilerReference, "id"> {
 // location→id map are deferred to a final, compiler-free finishing pass. Peak
 // memory becomes the largest single project instead of the sum of all of them.
 
-interface DeferredImportBinding {
+export interface DeferredImportBinding {
   binding: Omit<CompilerImportBinding, "targetId">;
   /** Declaration locations of the imported symbol (alias-resolved). */
   targetLocations: readonly string[];
 }
 
-type CapturedReference =
+export type CapturedReference =
   | { form: "final"; position: number; identityHint: string; reference: Omit<CompilerReference, "id"> }
   | {
       form: "import"; position: number; line: number; column: number; sourceId: string;
@@ -358,6 +419,9 @@ interface CapturedFile {
   fileDraftId?: string;
   bindings: DeferredImportBinding[];
   captured: CapturedReference[];
+  /** Declaration location → node id for this file's declarations. */
+  locations: Array<[string, string]>;
+  resolvedSpecifiers: string[];
 }
 
 /** Capture-time half of the old `idsForSymbol`: symbol → declaration locations. */
@@ -470,13 +534,54 @@ export function buildTypeScriptExtraction(
   const locationIds = new Map<string, string>();
   const nodeById = new Map<string, CompilerExtractedNode>();
   const capturedByFile = new Map<string, CapturedFile>();
+  const dependenciesByFile = new Map<string, FileDependencies>();
+  const projectStates: Record<string, string> = {};
+  const incremental = options.incremental;
+  const rootPrefix = `${normalizedAbsolute(root)}/`;
+  const reusedFiles: string[] = [];
+  let recaptured = 0;
 
   // Stage one project's owned files while its program is alive; retain only
   // plain data. Nothing stored here references the program, checker, or AST.
   const processProject = (project: ParsedProject, program: ts.Program, owned: readonly string[]): void => {
     const runtime: RuntimeProject = { ...project, program, checker: program.getTypeChecker(), root };
+    for (const absoluteFile of owned) {
+      const sourceFile = program.getSourceFile(absoluteFile);
+      if (sourceFile) dependenciesByFile.set(absoluteFile, fileDependencies(program, sourceFile, root, candidateSet));
+    }
+    const state = projectInputState(program, root, candidateSet, dependenciesByFile);
+    projectStates[project.id] = state;
+    // Incremental extraction (issue #209): an unaffected file's capture is a
+    // function of its own bytes, the files it imports (transitively) and the
+    // inputs every file sees without an import. The caller puts every file
+    // that imports a changed file into `affected`; this project's global and
+    // external inputs are compared here, and any change extracts in full.
+    const reused = new Map<string, CapturedFile>();
+    if (incremental) {
+      if (incremental.projectStates[project.id] !== state) {
+        throw new CompilerIncrementalFallback("a global declaration or an external compiler input changed");
+      }
+      for (const absoluteFile of owned) {
+        const filePath = relativePath(root, absoluteFile);
+        const previous = incremental.previous.get(filePath);
+        if (previous && previous.projectId !== project.id) {
+          throw new CompilerIncrementalFallback("a file moved to another compiler project");
+        }
+        if (previous && !incremental.affected.has(filePath)) {
+          // An unaffected file resolves exactly as before; anything else means
+          // the affected set missed a dependency, and nothing is reused.
+          const current = dependenciesByFile.get(absoluteFile);
+          if (!current || !sameDependencies(current, previous)) {
+            throw new CompilerIncrementalFallback("an unaffected file's module resolution changed");
+          }
+          reused.set(absoluteFile, restoreCapture(previous, rootPrefix));
+          reusedFiles.push(filePath);
+        }
+      }
+    }
     const contexts: FileContext[] = [];
     for (const absoluteFile of owned) {
+      if (reused.has(absoluteFile)) continue;
       const sourceFile = program.getSourceFile(absoluteFile);
       if (!sourceFile) continue;
       const filePath = relativePath(root, absoluteFile);
@@ -511,18 +616,28 @@ export function buildTypeScriptExtraction(
     }
 
     assignCanonicalIdentities(contexts);
+    const contextLocations = new Map<FileContext, Array<[string, string]>>();
     for (const context of contexts) {
+      const locations: Array<[string, string]> = [];
       for (const draft of context.drafts) {
         if (!draft.id) continue;
         for (const declaration of draft.declarations) {
-          locationIds.set(declarationLocation(declaration), draft.id);
+          const location = declarationLocation(declaration);
+          locationIds.set(location, draft.id);
+          locations.push([location, draft.id]);
         }
       }
+      contextLocations.set(context, locations);
       context.nodes = materializeNodes(context);
       for (const node of context.nodes) nodeById.set(node.id, node);
     }
+    for (const captured of reused.values()) {
+      for (const [location, id] of captured.locations) locationIds.set(location, id);
+      for (const node of captured.nodes) nodeById.set(node.id, node);
+    }
     for (const context of contexts) {
-      const bindings = captureImportBindings(root, context, inputs);
+      const resolvedSpecifiers: string[] = [];
+      const bindings = captureImportBindings(root, context, inputs, resolvedSpecifiers);
       capturedByFile.set(normalizedAbsolute(context.sourceFile.fileName), {
         filePath: context.filePath,
         language: context.language,
@@ -532,7 +647,20 @@ export function buildTypeScriptExtraction(
         fileDraftId: context.fileDraft?.id,
         bindings,
         captured: captureReferences(context, bindings),
+        locations: contextLocations.get(context)!,
+        resolvedSpecifiers,
       });
+      recaptured++;
+      onFileCaptured?.(capturedByFile.size);
+    }
+    for (const [absoluteFile, captured] of reused) {
+      // Import capture resolves each specifier through the input ledger; the
+      // same probes keep the recorded semantic inputs identical to a capture.
+      const options = program.getCompilerOptions();
+      for (const specifier of captured.resolvedSpecifiers) {
+        ts.resolveModuleName(specifier, absoluteFile, options, inputs.moduleResolutionHost());
+      }
+      capturedByFile.set(absoluteFile, captured);
       onFileCaptured?.(capturedByFile.size);
     }
   };
@@ -624,9 +752,13 @@ export function buildTypeScriptExtraction(
 
   const finishStarted = performance.now();
   const files: CompilerFileExtraction[] = [];
+  const captures: CompilerFileCapture[] = [];
   for (const absoluteFile of candidates) {
     const captured = capturedByFile.get(absoluteFile);
     if (!captured) continue;
+    const dependencies = dependenciesByFile.get(absoluteFile)
+      ?? { dependencies: [], failedLookups: [], globalScope: true };
+    captures.push(portableCapture(captured, dependencies, rootPrefix));
     const importBindings: CompilerImportBinding[] = captured.bindings.map(({ binding, targetLocations }) => ({
       ...binding,
       targetId: idsForLocations(targetLocations, locationIds)[0],
@@ -668,6 +800,199 @@ export function buildTypeScriptExtraction(
     files,
     semanticInputs: inputs.semanticInputs(),
     declinedInputs: inputs.declinedConfigInputs(),
+    captures,
+    projectStates,
+    recaptured,
+    reused: reusedFiles.sort(compareCodePoints),
+  };
+}
+
+function sameDependencies(current: FileDependencies, previous: FileDependencies): boolean {
+  return current.globalScope === previous.globalScope
+    && current.dependencies.join("\n") === previous.dependencies.join("\n")
+    && current.failedLookups.join("\n") === previous.failedLookups.join("\n");
+}
+
+interface FileDependencies {
+  dependencies: string[];
+  failedLookups: string[];
+  globalScope: boolean;
+}
+
+interface ProgramResolutions {
+  forEachResolvedModule?(
+    callback: (resolution: { resolvedModule?: ts.ResolvedModuleFull; failedLookupLocations?: readonly string[] }) => void,
+    file: ts.SourceFile,
+  ): void;
+  forEachResolvedTypeReferenceDirective?(
+    callback: (resolution: {
+      resolvedTypeReferenceDirective?: ts.ResolvedTypeReferenceDirective;
+      failedLookupLocations?: readonly string[];
+    }) => void,
+    file: ts.SourceFile,
+  ): void;
+}
+
+/**
+ * The corpus files one file's compiler facts can depend on through module
+ * resolution, and the corpus paths whose appearance would change a resolution.
+ * Read from the program's own resolution cache, so it is exactly what the
+ * checker used.
+ */
+function fileDependencies(
+  program: ts.Program,
+  sourceFile: ts.SourceFile,
+  root: string,
+  candidates: ReadonlySet<string>,
+): FileDependencies {
+  const resolutions = program as ts.Program & ProgramResolutions;
+  const dependencies = new Set<string>();
+  const failedLookups = new Set<string>();
+  const addTarget = (fileName: string | undefined): void => {
+    if (!fileName) return;
+    const absolute = normalizedAbsolute(fileName);
+    if (candidates.has(absolute)) dependencies.add(relativePath(root, absolute));
+  };
+  const addFailed = (locations: readonly string[] | undefined): void => {
+    for (const location of locations ?? []) {
+      const absolute = normalizedAbsolute(location);
+      if (withinRoot(root, absolute) && isCompilerSourceFile(absolute)) failedLookups.add(relativePath(root, absolute));
+    }
+  };
+  if (!resolutions.forEachResolvedModule || !resolutions.forEachResolvedTypeReferenceDirective) {
+    // Without the resolution cache nothing proves a file independent of others.
+    return { dependencies: [], failedLookups: [], globalScope: true };
+  }
+  resolutions.forEachResolvedModule((resolution) => {
+    addTarget(resolution.resolvedModule?.resolvedFileName);
+    addFailed(resolution.failedLookupLocations);
+  }, sourceFile);
+  resolutions.forEachResolvedTypeReferenceDirective((resolution) => {
+    addTarget(resolution.resolvedTypeReferenceDirective?.resolvedFileName);
+    addFailed(resolution.failedLookupLocations);
+  }, sourceFile);
+  for (const reference of sourceFile.referencedFiles) {
+    const absolute = normalizedAbsolute(resolve(dirname(sourceFile.fileName), reference.fileName));
+    addTarget(absolute);
+    if (!candidates.has(absolute)) addFailed([absolute]);
+  }
+  return {
+    dependencies: [...dependencies].sort(compareCodePoints),
+    failedLookups: [...failedLookups].sort(compareCodePoints),
+    globalScope: isGlobalScopeSource(sourceFile),
+  };
+}
+
+/**
+ * Declarations another file can see without importing this one: a script
+ * (neither an ES nor a CommonJS module), any declaration file, a global
+ * augmentation, an ambient or augmenting `declare module "name"`, or a UMD
+ * global. The source file must be bound, which creating the checker does.
+ */
+export function isGlobalScopeSource(sourceFile: ts.SourceFile): boolean {
+  if (sourceFile.isDeclarationFile) return true;
+  // The binder records a CommonJS module; the parser records an ES module.
+  const indicators = sourceFile as ts.SourceFile & { externalModuleIndicator?: unknown; commonJsModuleIndicator?: unknown };
+  if (indicators.externalModuleIndicator === undefined && indicators.commonJsModuleIndicator === undefined) return true;
+  return declaresGlobals(sourceFile);
+}
+
+/** The syntactic half of {@link isGlobalScopeSource}; needs no binding. */
+export function declaresGlobals(sourceFile: ts.SourceFile): boolean {
+  return sourceFile.statements.some((statement) => ts.isNamespaceExportDeclaration(statement)
+    || (ts.isModuleDeclaration(statement)
+      && (ts.isStringLiteral(statement.name) || (statement.flags & ts.NodeFlags.GlobalAugmentation) !== 0)));
+}
+
+/**
+ * A digest of every input a program's files can see without importing it:
+ * every global-scope corpus file and every non-corpus file (libraries,
+ * dependencies, JSON) in the program, with their exact bytes. Corpus modules
+ * are left out; they are tracked file by file.
+ */
+function projectInputState(
+  program: ts.Program,
+  root: string,
+  candidates: ReadonlySet<string>,
+  dependencies: ReadonlyMap<string, FileDependencies>,
+): string {
+  const entries: string[] = [];
+  for (const sourceFile of program.getSourceFiles()) {
+    const absolute = normalizedAbsolute(sourceFile.fileName);
+    if (candidates.has(absolute)) {
+      const global = dependencies.get(absolute)?.globalScope ?? isGlobalScopeSource(sourceFile);
+      if (!global) continue;
+    }
+    entries.push(`${portableInputPath(root, absolute)}\u0000${sha256(sourceFile.text)}`);
+  }
+  entries.sort(compareCodePoints);
+  return sha256(entries.join("\n"));
+}
+
+/** Root-relative inside the root; from the last `node_modules` segment outside it. */
+function portableInputPath(root: string, absolute: string): string {
+  if (withinRoot(root, absolute)) return relativePath(root, absolute);
+  const segments = absolute.split("/");
+  const dependencyRoot = segments.lastIndexOf("node_modules");
+  return dependencyRoot >= 0 ? segments.slice(dependencyRoot).join("/") : absolute;
+}
+
+function mapCaptureLocations(
+  captured: CapturedReference[],
+  bindings: DeferredImportBinding[],
+  locations: Array<[string, string]>,
+  map: (location: string) => string,
+): Pick<CompilerFileCapture, "captured" | "bindings" | "locations"> {
+  const all = (values: readonly string[]): string[] => values.map(map);
+  return {
+    locations: locations.map(([location, id]) => [map(location), id]),
+    bindings: bindings.map((entry) => ({ ...entry, targetLocations: all(entry.targetLocations) })),
+    captured: captured.map((record): CapturedReference => {
+      switch (record.form) {
+        case "call": return { ...record, candidateLocations: all(record.candidateLocations) };
+        case "heritage": return { ...record, targetLocations: all(record.targetLocations) };
+        case "identifier": return { ...record, targetLocations: all(record.targetLocations) };
+        case "callback": return {
+          ...record,
+          calleeLocations: all(record.calleeLocations),
+          callbackLocations: all(record.callbackLocations),
+        };
+        default: return record;
+      }
+    }),
+  };
+}
+
+function portableCapture(
+  captured: CapturedFile,
+  dependencies: FileDependencies,
+  rootPrefix: string,
+): CompilerFileCapture {
+  return {
+    filePath: captured.filePath,
+    language: captured.language,
+    projectId: captured.projectId,
+    health: captured.health,
+    nodes: captured.nodes,
+    ...(captured.fileDraftId ? { fileDraftId: captured.fileDraftId } : {}),
+    ...mapCaptureLocations(captured.captured, captured.bindings, captured.locations, (location) =>
+      location.startsWith(rootPrefix) ? `./${location.slice(rootPrefix.length)}` : location),
+    resolvedSpecifiers: captured.resolvedSpecifiers,
+    ...dependencies,
+  };
+}
+
+function restoreCapture(capture: CompilerFileCapture, rootPrefix: string): CapturedFile {
+  return {
+    filePath: capture.filePath,
+    language: capture.language,
+    projectId: capture.projectId,
+    health: capture.health,
+    nodes: capture.nodes,
+    fileDraftId: capture.fileDraftId,
+    ...mapCaptureLocations(capture.captured, capture.bindings, capture.locations, (location) =>
+      location.startsWith("./") ? `${rootPrefix}${location.slice(2)}` : location),
+    resolvedSpecifiers: capture.resolvedSpecifiers,
   };
 }
 
@@ -1452,6 +1777,7 @@ function captureImportBindings(
   root: string,
   context: FileContext,
   inputs: CompilerInputLedger,
+  resolvedSpecifiers: string[],
 ): DeferredImportBinding[] {
   const bindings: DeferredImportBinding[] = [];
   const checker = context.project.checker;
@@ -1460,6 +1786,7 @@ function captureImportBindings(
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
     if (!referenceSyntaxIsTrusted(statement, context)) continue;
     const moduleSpecifier = statement.moduleSpecifier.text;
+    resolvedSpecifiers.push(moduleSpecifier);
     const resolution = ts.resolveModuleName(
       moduleSpecifier,
       context.sourceFile.fileName,
