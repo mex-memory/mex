@@ -27,6 +27,11 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createGraphEngine, GraphSourceStagingError, type GraphRefreshStrategy } from "../engine-impl.js";
 import type { BuildResult } from "../engine.js";
+import { openGraphDatabase } from "../db/database.js";
+import { FingerprintStore } from "../fingerprint-store.js";
+import { MinHashReconciler } from "../reconcile-engine.js";
+import { createGroundingGraph, deriveGrounding, type GroundingGraph } from "../../wiki/grounding/adapter.js";
+import { resolveGrounding } from "../../wiki/grounding/resolve.js";
 import { diffGraphDumps, dumpGraphDatabase, type GraphDump } from "./graph-dump.js";
 
 type Files = Record<string, string>;
@@ -44,6 +49,8 @@ interface Fixture {
   name: string;
   files: Files;
   edits: Edit[];
+  /** A framework resolver the fixture must exercise. */
+  framework?: boolean;
 }
 
 const temporary: string[] = [];
@@ -328,6 +335,7 @@ const RUST_FIXTURE: Fixture = {
 
 const EXPRESS_FIXTURE: Fixture = {
   name: "express",
+  framework: true,
   files: {
     "package.json": JSON.stringify({ name: "fixture-express", dependencies: { express: "^5.0.0" } }, null, 2),
     "handlers.ts": "export function listUsers(): string {\n  return \"users\";\n}\n\nexport function health(): string {\n  return \"ok\";\n}\n",
@@ -345,7 +353,109 @@ const EXPRESS_FIXTURE: Fixture = {
   ],
 };
 
-const FIXTURES = [TS_FIXTURE, JS_FIXTURE, PYTHON_FIXTURE, RUST_FIXTURE, EXPRESS_FIXTURE];
+const CSHARP_FIXTURE: Fixture = {
+  name: "csharp",
+  files: {
+    "src/MathUtil.cs": "namespace App\n{\n    public static class MathUtil\n    {\n        public static int Add(int a, int b)\n        {\n            return a + b;\n        }\n    }\n}\n",
+    "src/Service.cs": "namespace App\n{\n    public class Service\n    {\n        public int Total()\n        {\n            return MathUtil.Add(1, 2);\n        }\n    }\n}\n",
+  },
+  edits: [
+    { name: "trailing comment", apply: append("src/MathUtil.cs", "// trailing\n") },
+    { name: "rename method", apply: all(
+      replace("src/MathUtil.cs", "public static int Add(", "public static int Sum("),
+      replace("src/Service.cs", "MathUtil.Add(1, 2)", "MathUtil.Sum(1, 2)"),
+    ) },
+    { name: "add same-named definition in another file", apply: write("src/Other.cs", "namespace App\n{\n    public static class Helpers\n    {\n        public static int Sum(int a, int b)\n        {\n            return a - b;\n        }\n    }\n}\n") },
+    { name: "add file", apply: write("src/Report.cs", "namespace App\n{\n    public class Report\n    {\n        public int Build()\n        {\n            return new Service().Total();\n        }\n    }\n}\n") },
+    { name: "delete file", apply: remove("src/Other.cs") },
+  ],
+};
+
+const FASTAPI_FIXTURE: Fixture = {
+  name: "fastapi",
+  framework: true,
+  files: {
+    "app/__init__.py": "",
+    "app/handlers.py": "def list_users():\n    return []\n\n\ndef health():\n    return 'ok'\n",
+    "app/main.py": "from fastapi import FastAPI\nfrom app.handlers import list_users, health\n\napp = FastAPI()\n\n\n@app.get('/users')\ndef users():\n    return list_users()\n\n\n@app.get('/health')\ndef check():\n    return health()\n",
+  },
+  edits: [
+    { name: "trailing comment", apply: append("app/handlers.py", "# trailing\n") },
+    { name: "add route", apply: append("app/main.py", "\n\n@app.post('/users')\ndef create_user():\n    return list_users()\n") },
+    { name: "rename handler", apply: all(
+      replace("app/handlers.py", "def health():", "def status():"),
+      replace("app/main.py", "import list_users, health", "import list_users, status as health"),
+    ) },
+    { name: "add same-named handler in another file", apply: write("app/more.py", "def list_users():\n    return ['more']\n") },
+    { name: "delete file", apply: remove("app/more.py") },
+  ],
+};
+
+const FLASK_FIXTURE: Fixture = {
+  name: "flask",
+  framework: true,
+  files: {
+    "web/__init__.py": "",
+    "web/views.py": "def render_index():\n    return 'index'\n",
+    "web/app.py": "from flask import Flask\nfrom web.views import render_index\n\napp = Flask(__name__)\n\n\n@app.route('/')\ndef index():\n    return render_index()\n",
+  },
+  edits: [
+    { name: "trailing comment", apply: append("web/views.py", "# trailing\n") },
+    { name: "add route", apply: append("web/app.py", "\n\n@app.route('/about')\ndef about():\n    return render_index()\n") },
+    { name: "rename view", apply: all(
+      replace("web/views.py", "def render_index():", "def render_home():"),
+      replace("web/app.py", "import render_index", "import render_home as render_index"),
+    ) },
+    // Detection is by import: the resolver disappears and returns.
+    { name: "remove the only flask import", apply: replace("web/app.py", "from flask import Flask\n", "") },
+    { name: "restore the flask import", apply: replace("web/app.py", "from web.views import", "from flask import Flask\nfrom web.views import") },
+  ],
+};
+
+const NESTJS_FIXTURE: Fixture = {
+  name: "nestjs",
+  framework: true,
+  files: {
+    "package.json": JSON.stringify({ name: "fixture-nest", dependencies: { "@nestjs/common": "^10.0.0", "@nestjs/core": "^10.0.0" } }, null, 2),
+    "src/users.service.ts": "export class UsersService {\n  all(): string[] {\n    return [];\n  }\n}\n",
+    "src/users.controller.ts": "import { Controller, Get } from \"@nestjs/common\";\nimport { UsersService } from \"./users.service\";\n\n@Controller(\"users\")\nexport class UsersController {\n  constructor(private readonly users: UsersService) {}\n\n  @Get()\n  list(): string[] {\n    return this.users.all();\n  }\n}\n",
+  },
+  edits: [
+    { name: "trailing comment", apply: append("src/users.service.ts", "// trailing\n"), expectMode: "incremental" },
+    { name: "add route", apply: replace("src/users.controller.ts", "  @Get()\n", "  @Get(\"count\")\n  count(): number {\n    return this.users.all().length;\n  }\n\n  @Get()\n"), expectMode: "incremental" },
+    { name: "rename service method", apply: all(
+      replace("src/users.service.ts", "all(): string[]", "everyone(): string[]"),
+      replace("src/users.controller.ts", "this.users.all()", "this.users.everyone()"),
+    ), expectMode: "incremental" },
+    { name: "add controller", apply: write("src/health.controller.ts", "import { Controller, Get } from \"@nestjs/common\";\n\n@Controller(\"health\")\nexport class HealthController {\n  @Get()\n  check(): string {\n    return \"ok\";\n  }\n}\n"), expectMode: "incremental" },
+    { name: "delete controller", apply: remove("src/health.controller.ts"), expectMode: "incremental" },
+  ],
+};
+
+const NEXT_FIXTURE: Fixture = {
+  name: "next",
+  framework: true,
+  files: {
+    "package.json": JSON.stringify({ name: "fixture-next", dependencies: { next: "^15.0.0" } }, null, 2),
+    "lib/users.ts": "export function listUsers(): string[] {\n  return [];\n}\n",
+    "app/api/users/route.ts": "import { listUsers } from \"../../../lib/users\";\n\nexport async function GET(): Promise<Response> {\n  return Response.json(listUsers());\n}\n",
+  },
+  edits: [
+    { name: "trailing comment", apply: append("lib/users.ts", "// trailing\n"), expectMode: "incremental" },
+    { name: "add method", apply: append("app/api/users/route.ts", "\nexport async function POST(): Promise<Response> {\n  return Response.json(listUsers());\n}\n"), expectMode: "incremental" },
+    { name: "rename helper", apply: all(
+      replace("lib/users.ts", "export function listUsers()", "export function allUsers()"),
+      replace("app/api/users/route.ts", "import { listUsers } from", "import { allUsers as listUsers } from"),
+    ), expectMode: "incremental" },
+    { name: "add route file", apply: write("app/api/health/route.ts", "export async function GET(): Promise<Response> {\n  return new Response(\"ok\");\n}\n"), expectMode: "incremental" },
+    { name: "delete route file", apply: remove("app/api/health/route.ts"), expectMode: "incremental" },
+  ],
+};
+
+const FIXTURES = [
+  TS_FIXTURE, JS_FIXTURE, PYTHON_FIXTURE, RUST_FIXTURE, CSHARP_FIXTURE,
+  EXPRESS_FIXTURE, FASTAPI_FIXTURE, FLASK_FIXTURE, NESTJS_FIXTURE, NEXT_FIXTURE,
+];
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
@@ -353,6 +463,10 @@ describe("incremental refresh converges with the full-restage oracle", () => {
   for (const fixture of FIXTURES) {
     it(`${fixture.name}: every scripted edit kind leaves identical stores`, async () => {
       const harness = await startHarness(fixture);
+      if (fixture.framework) {
+        expect(dumpGraphDatabase(harness.incrementalDb).edges.some((edge) => edge.includes('"provenance":"framework"')),
+          `${fixture.name}: framework wiring`).toBe(true);
+      }
       for (const [index, edit] of fixture.edits.entries()) {
         await step(harness, edit, `${fixture.name} step ${index + 1} (${edit.name})`);
       }
@@ -405,5 +519,59 @@ describe("incremental refresh reports its mode", () => {
       if (!edit.expectMode || result instanceof GraphSourceStagingError) continue;
       expect((result as BuildResult & { refresh?: { mode?: string } }).refresh?.mode, edit.name).toBe(edit.expectMode);
     }
+  }, 240_000);
+});
+
+function withGroundingGraph<T>(root: string, dbPath: string, body: (graph: GroundingGraph) => T): T {
+  const engine = createGraphEngine({ rootDir: root, dbPath });
+  const db = openGraphDatabase(dbPath);
+  try {
+    return body(createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db));
+  } finally {
+    engine.close();
+    db.close();
+  }
+}
+
+// Grounding continuity (MOVED / AMBIGUOUS / GONE) reads node ids, aliases and
+// fingerprints; the alias equality above covers it table by table, and this
+// walks one grounded symbol across an incremental move end to end.
+describe("grounding across an incremental move", () => {
+  it("resolves a grounded function moved to another file exactly as the oracle does", async () => {
+    const body = "export function rotateRefreshToken(userId: string): number {\n  const windowSeconds = 3600;\n  const attempts = userId.length;\n  const budget = attempts * windowSeconds;\n  return budget > 100 ? budget : windowSeconds;\n}\n";
+    const harness = await startHarness({
+      name: "grounding",
+      files: {
+        "src/auth.ts": `${body}\nexport function issueAccessToken(subject: string): string {\n  return "at_" + subject.slice(0, 8);\n}\n`,
+        "src/session.ts": "import { rotateRefreshToken } from \"./auth\";\n\nexport function renew(user: string): number {\n  return rotateRefreshToken(user);\n}\n",
+      },
+      edits: [],
+    });
+    const engine = createGraphEngine({ rootDir: harness.root, dbPath: harness.incrementalDb });
+    let nodeId: string;
+    try {
+      nodeId = engine.searchNodes("rotateRefreshToken").find((node) => node.kind === "function")!.id;
+    } finally {
+      engine.close();
+    }
+    const grounding = withGroundingGraph(harness.root, harness.incrementalDb, (graph) => deriveGrounding(graph, nodeId))!;
+    expect(grounding).not.toBeNull();
+
+    await step(harness, {
+      name: "move the grounded function",
+      apply: all(
+        replace("src/auth.ts", body, ""),
+        write("src/tokens.ts", body),
+        replace("src/session.ts", "from \"./auth\"", "from \"./tokens\""),
+      ),
+    }, "grounding move");
+
+    const incremental = withGroundingGraph(harness.root, harness.incrementalDb, (graph) => resolveGrounding(grounding, graph));
+    const full = withGroundingGraph(harness.root, harness.fullDb, (graph) => resolveGrounding(grounding, graph));
+    expect(incremental).toEqual(full);
+    expect(incremental).toMatchObject({ state: "fresh", rebound: true });
+    const moved = withGroundingGraph(harness.root, harness.incrementalDb, (graph) =>
+      graph.getNode((incremental as { resolvedNode: string }).resolvedNode));
+    expect(moved?.filePath).toBe("src/tokens.ts");
   }, 240_000);
 });
