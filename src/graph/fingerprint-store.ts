@@ -82,6 +82,35 @@ export class FingerprintStore {
   }
 
   /**
+   * Current nodes sharing at least `minShared` caller/callee neighbors with
+   * `neighbors`, most shared first, at most `limit` (#229). It reads the same
+   * `calls` edges fingerprint neighborhoods are built from, through the edge
+   * indexes, so the work is bounded by the neighbors' own degree.
+   */
+  neighborhood(neighbors: readonly string[], minShared: number, limit: number): string[] {
+    if (neighbors.length < minShared) return [];
+    const ids = JSON.stringify(neighbors);
+    const rows = this.db.prepare(
+      `SELECT node_id FROM (
+         SELECT target AS node_id, source AS neighbor FROM edges
+         WHERE kind = 'calls' AND source IN (SELECT value FROM json_each(?))
+         UNION
+         SELECT source, target FROM edges
+         WHERE kind = 'calls' AND target IN (SELECT value FROM json_each(?))
+       ) GROUP BY node_id HAVING COUNT(*) >= ?
+       ORDER BY COUNT(*) DESC, node_id LIMIT ?`,
+    ).all(ids, ids, minShared, limit) as Array<{ node_id: string }>;
+    return rows.map((row) => row.node_id);
+  }
+
+  /** A current node's body hash, or null when the node or its body hash is absent. */
+  bodyHash(nodeId: string): string | null {
+    const row = this.db.prepare("SELECT body_hash FROM nodes WHERE id = ?").get(nodeId) as
+      { body_hash: string | null } | undefined;
+    return row?.body_hash ?? null;
+  }
+
+  /**
    * The baseline for one (subject, node) pair, following a node alias when the
    * id it was grounded under has since been reconciled to a canonical one.
    *

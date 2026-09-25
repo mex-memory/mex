@@ -10,19 +10,39 @@
 //
 // Algorithm (Track B implements against this frozen interface, spec §4):
 //   reconcile(missingNodeId, baseline):
-//     1. baseline.tokenCount < MIN_TOKENS       -> GONE   (too small to trust)
+//     1. baseline.tokenCount < MIN_TOKENS       -> small-node path (step 5)
 //     2. candidates = LSH_lookup(baseline);
 //        candidates empty                       -> GONE
 //     3. score(c) = W_BODY*jaccard(baseline.minhash, c.minhash)
 //                 + W_NBR*overlap(baseline.neighbors, c.neighbors)
 //     4. best = argmax(score)
+//        score >= HI, runner-up within MOVED_MARGIN
+//                                               -> AMBIGUOUS(best.id), unless
+//                                                  exactly one tied candidate
+//                                                  has the committed body hash
 //        score >= HI                            -> MOVED(best.id)
 //        score <  LO                            -> GONE
 //        else                                   -> AMBIGUOUS(best.id)
+//     5. small nodes (#229). The body sketch is too small to trust alone, so
+//        callers and callees decide: candidates = same-kind nodes sharing
+//        >= NBR_MIN_SHARED neighbors that are strong (neighbor Jaccard
+//        >= NBR_HI) or have a compatible body (SMALL_BODY_MIN/SMALL_TOKEN_SLACK).
+//        none                                   -> GONE (AMBIGUOUS if exactly
+//                                                  one LSH candidate has the
+//                                                  committed body hash)
+//        best strong and compatible, alone within MOVED_MARGIN
+//                                               -> MOVED(best.id)
+//        else                                   -> AMBIGUOUS(best.id), unless
+//                                                  the body hash picks one
+//                                                  strong candidate
 //
-// Tunable params (HI/LO/W_BODY/W_NBR/MIN_TOKENS/K/BANDS/ROWS) live in
-// `src/graph/config.ts`. They are placeholders, tuned later against a real
-// fixture (spec §12) — not truths baked into this contract.
+// The body hash is an optional third argument of the implementation, not of
+// this interface: it only ever breaks a tie, and a caller without one gets the
+// same verdicts minus those tie-breaks.
+//
+// Tunable params (HI/LO/MOVED_MARGIN/W_BODY/W_NBR/MIN_TOKENS/NBR_*/SMALL_*/
+// K/BANDS/ROWS) live in `src/graph/config.ts`. They are placeholders, tuned
+// later against a real fixture (spec §12) — not truths baked into this contract.
 
 import { NotImplementedError } from "./errors.js";
 
@@ -37,8 +57,8 @@ import { NotImplementedError } from "./errors.js";
  *
  * `minhash` is a K-length (spec §4: K=64) MinHash sketch of the node's
  * normalized-AST trigrams. `neighbors` is the sorted list of caller+callee
- * Tier-1 ids. `tokenCount` gates trust: below `MIN_TOKENS` the fingerprint is
- * too small to distinguish, so reconciliation returns GONE rather than guess.
+ * Tier-1 ids. `tokenCount` gates trust: below `MIN_TOKENS` the body sketch is
+ * too small to distinguish, so only the neighborhood can reconcile it (step 5).
  */
 export interface Fingerprint {
   /** K uint32 MinHash values (K = {@link config.K}). */

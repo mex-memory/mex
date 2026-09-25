@@ -7,7 +7,8 @@ import { runDriftCheck } from "../drift/index.js";
 import { isCliAvailable } from "../cli-tools.js";
 import { buildSyncBrief, buildCombinedBrief } from "./brief-builder.js";
 import { findScaffoldFiles } from "../drift/index.js";
-import { captureGroundingBaselines, groundingReviewNodeIds, loadGroundingRuntime, persistMovedGroundings, previewGroundingBaseline } from "../graph/runtime.js";
+import { captureGroundingBaselines, groundingReviewNodeIds, loadGroundingRuntime, persistMovedGroundings, previewGroundingBaseline, type MovedByNeighborsNotice } from "../graph/runtime.js";
+import { movedByNeighborsMessage } from "../drift/checkers/grounding.js";
 import { writeGroundings } from "../markdown.js";
 import { buildAgentCommand } from "../agent-command.js";
 
@@ -130,37 +131,45 @@ export async function runSync(
     if (!opts.dryRun) {
       const repairRuntime = await loadGroundingRuntime(config).catch(() => null);
       if (repairRuntime) {
+        const notices: MovedByNeighborsNotice[] = [];
         try {
-          persistMovedGroundings(config, scaffoldFiles, repairRuntime);
+          persistMovedGroundings(config, scaffoldFiles, repairRuntime, notices);
         } catch {
           // Drift check owns the user-facing degradation warning; sync continues.
         } finally {
           // Always release the SQLite handle, even if persistence threw.
           repairRuntime.close();
         }
+        // Rewritten already, so the drift check below cannot see these (#229).
+        for (const notice of notices) {
+          console.log(chalk.blue(`ℹ GROUNDING_MOVED_BY_NEIGHBORS ${notice.file}: ${
+            movedByNeighborsMessage(notice.oldId, notice.newId, notice.anchor)}`));
+        }
       }
     }
     const report = await runDriftCheck(config);
+    // A notice reports a completed rebind (#229); there is nothing to repair.
+    const issues = report.issues.filter((i) => i.code !== "GROUNDING_MOVED_BY_NEIGHBORS");
 
-    if (report.issues.length === 0) {
+    if (issues.length === 0) {
       console.log(chalk.green("✓ No drift detected. Everything is in sync."));
       return;
     }
 
     console.log(
       chalk.yellow(
-        `Found ${report.issues.length} issues (score: ${report.score}/100)`
+        `Found ${issues.length} issues (score: ${report.score}/100)`
       )
     );
 
     // Step 2: Group issues by file
     const relevantIssues = opts.includeWarnings
-      ? report.issues
-      : report.issues.filter((i) => {
+      ? issues
+      : issues.filter((i) => {
           // Every grounding outcome is a repair path, including warning-only
           // inline GONE anchors; do not require --warnings to maintain pointers.
           if (i.code.startsWith("GROUNDING_")) return true;
-          const fileHasError = report.issues.some(
+          const fileHasError = issues.some(
             (other) => other.file === i.file && other.severity === "error"
           );
           return fileHasError;

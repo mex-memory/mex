@@ -4,12 +4,27 @@ import type { DriftIssue, Grounding, ScaffoldFrontmatter } from "../../types.js"
 import { deserializeFingerprint, serializeFingerprint } from "../../graph/fingerprint.js";
 import type { GraphEngine } from "../../graph/engine.js";
 import type { GroundedSource, GroundingChecker } from "../../graph/grounding.js";
-import type { Fingerprint, Reconciler } from "../../graph/reconcile.js";
+import type { Fingerprint, Reconciler, Resolution } from "../../graph/reconcile.js";
+import type { ExplainedResolution } from "../../graph/reconcile-engine.js";
+import { observeCommittedGroundings, type CommittedGrounding } from "../../committed-groundings.js";
 import { extractGroundings, findMexAnchors } from "../../markdown.js";
 
 interface GroundingReconcilerCapabilities {
   getGroundedSource?(scaffoldFile: string, nodeId: string): GroundedSource | null;
   getFingerprint?(nodeId: string): Fingerprint | null;
+  /** The reconciler may take the committed body hash as a tie-breaker (#229). */
+  reconcile(missingNodeId: string, baseline: Fingerprint, bodyHash?: string): Resolution;
+  /** The verdict and the evidence that decided it; without it every verdict counts as body evidence. */
+  explain?(missingNodeId: string, baseline: Fingerprint, bodyHash?: string): ExplainedResolution;
+}
+
+/**
+ * The info notice for a MOVED that callers and callees decided (#229). Not
+ * counted in the score (`src/drift/scoring.ts`); `sync` prints the same line
+ * when it rewrites the reference.
+ */
+export function movedByNeighborsMessage(oldId: string, newId: string, anchor = false): string {
+  return `${anchor ? "Inline anchor" : "Grounded node"} matched by callers and callees, not body: ${oldId} → ${newId}`;
 }
 
 /** What a snapshot stale only by changed source can still say about one node (#228). */
@@ -34,6 +49,9 @@ export function makeGroundingChecker(
   sourceDrift?: SourceDriftGrounding,
 ): GroundingChecker {
   const capabilities = reconciler as Reconciler & GroundingReconcilerCapabilities;
+  const decide = (nodeId: string, baseline: Fingerprint, bodyHash: string | undefined): ExplainedResolution =>
+    capabilities.explain?.(nodeId, baseline, bodyHash)
+      ?? { resolution: capabilities.reconcile(nodeId, baseline, bodyHash), evidence: "body" };
 
   return function checkGrounding(
     frontmatter: ScaffoldFrontmatter | null,
@@ -65,6 +83,8 @@ export function makeGroundingChecker(
     // the two into one. The frontmatter value is the fallback for a file that
     // cannot be re-read here, which is the only case the old path still covers.
     const declared = content === null ? (frontmatter?.grounds_to ?? []) : extractGroundings(content);
+    // Taken before the loop below rebinds MOVED entries in place.
+    const committedHere = committedBaselines(declared.filter(isGrounding));
 
     for (const grounding of declared) {
       if (!isGrounding(grounding)) continue;
@@ -115,10 +135,14 @@ export function makeGroundingChecker(
       const baseline = deserializeFingerprint(grounding.fingerprint)
         ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
       if (!baseline) continue;
-      const resolution = reconciler.reconcile(grounding.node, baseline);
+      const baselineBodyHash = grounding.bodyHash ?? baselineSource?.bodyHash;
+      const { resolution, evidence } = decide(grounding.node, baseline, baselineBodyHash);
       if (resolution.kind === "MOVED") {
+        if (evidence === "neighbors") {
+          issues.push(issue("GROUNDING_MOVED_BY_NEIGHBORS", "info", source,
+            movedByNeighborsMessage(grounding.node, resolution.nodeId)));
+        }
         const moved = graph.getNode(resolution.nodeId);
-        const baselineBodyHash = grounding.bodyHash ?? baselineSource?.bodyHash;
         if (moved && baselineBodyHash !== undefined && moved.bodyHash !== baselineBodyHash) {
           issues.push(issue("GROUNDING_DRIFT", "warning", source,
             `Grounded node body changed: ${grounding.node}; candidate: ${resolution.nodeId}`));
@@ -136,6 +160,15 @@ export function makeGroundingChecker(
     }
 
     if (content === null) return issues;
+
+    const elsewhere = committedElsewhere(projectRoot, scaffoldFile);
+    const anchorBaseline = (nodeId: string) => resolveAnchorBaseline({
+      current: capabilities.getFingerprint?.(nodeId) ?? null,
+      here: committedHere.get(nodeId),
+      elsewhere: () => elsewhere(nodeId),
+      cached: capabilities.getGroundedSource?.(scaffoldFile, nodeId) ?? null,
+    });
+
     for (const anchor of findMexAnchors(content)) {
       if (sourceDrift) {
         const resolution = sourceDrift.resolve(anchor.nodeId);
@@ -146,16 +179,23 @@ export function makeGroundingChecker(
         continue;
       }
       if (graph.getNode(anchor.nodeId)) continue;
-      const baselineSource = capabilities.getGroundedSource?.(scaffoldFile, anchor.nodeId) ?? null;
-      const baseline = capabilities.getFingerprint?.(anchor.nodeId)
-        ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
+      const baseline = anchorBaseline(anchor.nodeId);
+      if (baseline === "conflict") {
+        issues.push(issue("GROUNDING_AMBIGUOUS", "warning", source,
+          `Inline anchor has conflicting committed fingerprints in other scaffold files: ${anchor.nodeId}`));
+        continue;
+      }
       if (!baseline) {
         issues.push(issue("GROUNDING_GONE", "warning", source,
           `Inline anchor points to an unavailable node: ${anchor.nodeId}`));
         continue;
       }
-      const resolution = reconciler.reconcile(anchor.nodeId, baseline);
+      const { resolution, evidence } = decide(anchor.nodeId, baseline.fingerprint, baseline.bodyHash);
       if (resolution.kind === "MOVED") {
+        if (evidence === "neighbors") {
+          issues.push(issue("GROUNDING_MOVED_BY_NEIGHBORS", "info", source,
+            movedByNeighborsMessage(anchor.nodeId, resolution.nodeId, true)));
+        }
         issues.push(issue("GROUNDING_DRIFT", "warning", source,
           `Inline anchor should move: ${anchor.nodeId}; candidate: ${resolution.nodeId}`));
       } else if (resolution.kind === "AMBIGUOUS") {
@@ -168,6 +208,94 @@ export function makeGroundingChecker(
     }
     return issues;
   };
+}
+
+/** What a missing node is reconciled from: a fingerprint, and the committed body hash when known. */
+export interface MissingNodeBaseline {
+  fingerprint: Fingerprint;
+  bodyHash?: string;
+}
+
+/** Where an inline anchor's baseline can come from, most direct first. */
+export interface AnchorBaselineSources {
+  /** The node's fingerprint in the current graph (or a snapshot taken before a rebuild). */
+  current: Fingerprint | null;
+  /** The committed `grounds_to` entry for the node in the anchor's own file. */
+  here: MissingNodeBaseline | undefined;
+  /** Committed entries for the node in other scaffold files; read only when needed. */
+  elsewhere: () => readonly CommittedGrounding[];
+  /** The local `_mex_grounded_source` cache. */
+  cached: GroundedSource | null;
+}
+
+/**
+ * **An anchor's baseline, most direct evidence first (#229).**
+ *
+ * The current graph, then this file's committed `grounds_to` entry for the
+ * node, then a committed entry in any other scaffold file, then the local
+ * cache. Anchors used to read only the graph and the cache, so on a fresh
+ * build an anchor had no baseline and read GONE while the `grounds_to` entry
+ * for the same node, in the same run, reconciled MOVED. Committed entries in
+ * other files that disagree about the fingerprint are not chosen between:
+ * that is `"conflict"`, which callers report as AMBIGUOUS.
+ *
+ * Shared by `check` and `sync`, so both read an anchor the same way.
+ */
+export function resolveAnchorBaseline(sources: AnchorBaselineSources): MissingNodeBaseline | "conflict" | null {
+  const { current, here, cached } = sources;
+  if (current) return { fingerprint: current, ...bodyHashOf(here?.bodyHash ?? cached?.bodyHash) };
+  if (here) return here;
+  const elsewhere = sources.elsewhere().filter((entry) => deserializeFingerprint(entry.fingerprint) !== null);
+  if (new Set(elsewhere.map((entry) => entry.fingerprint)).size > 1) return "conflict";
+  const [first] = elsewhere;
+  if (first) {
+    const agreed = new Set(elsewhere.map((entry) => entry.bodyHash)).size === 1;
+    return {
+      fingerprint: deserializeFingerprint(first.fingerprint)!,
+      ...bodyHashOf(agreed ? first.bodyHash : undefined),
+    };
+  }
+  const fingerprint = cached ? deserializeFingerprint(cached.fingerprint) : null;
+  return fingerprint ? { fingerprint, ...bodyHashOf(cached!.bodyHash) } : null;
+}
+
+/** A file's own committed entries as baselines, by node; the first entry for a node wins. */
+export function committedBaselines(groundings: readonly Grounding[]): Map<string, MissingNodeBaseline> {
+  const baselines = new Map<string, MissingNodeBaseline>();
+  for (const grounding of groundings) {
+    const fingerprint = deserializeFingerprint(grounding.fingerprint);
+    if (fingerprint && !baselines.has(grounding.node)) {
+      baselines.set(grounding.node, { fingerprint, ...bodyHashOf(grounding.bodyHash) });
+    }
+  }
+  return baselines;
+}
+
+/**
+ * Committed entries for a node in scaffold files other than `scaffoldFile`.
+ * The returned lookup reads the scaffold at most once, and only when an anchor
+ * gets that far, through the contained, bounded reader `impact` uses (#224).
+ * It is made per checked file, so it never outlives the Markdown it read.
+ */
+export function committedElsewhere(
+  projectRoot: string,
+  scaffoldFile: string,
+): (nodeId: string) => CommittedGrounding[] {
+  let byNode: Map<string, CommittedGrounding[]> | undefined;
+  return (nodeId) => {
+    if (!byNode) {
+      byNode = new Map();
+      for (const entry of observeCommittedGroundings(projectRoot).groundings) {
+        if (entry.file === scaffoldFile) continue;
+        byNode.set(entry.node, [...(byNode.get(entry.node) ?? []), entry]);
+      }
+    }
+    return byNode.get(nodeId) ?? [];
+  };
+}
+
+function bodyHashOf(bodyHash: string | undefined): { bodyHash?: string } {
+  return bodyHash === undefined ? {} : { bodyHash };
 }
 
 function isGrounding(value: unknown): value is Grounding {

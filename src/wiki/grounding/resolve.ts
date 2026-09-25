@@ -89,7 +89,7 @@ export function resolveGrounding(
 
   // Tier-1 miss. The committed fingerprint is what finds the symbol again —
   // this is the job MinHash is actually for.
-  const resolution = graph.reconcile(grounding.node, grounding.fingerprint);
+  const resolution = graph.reconcile(grounding.node, grounding.fingerprint, grounding.bodyHash);
   if (resolution === null) {
     return {
       state: "unresolved",

@@ -2643,11 +2643,11 @@ function groundedFiles(
   db: SqliteDatabase,
   nodeIds: readonly string[],
   committed: readonly CommittedGrounding[],
-): CommittedGrounding[] {
+): Array<Pick<CommittedGrounding, "file" | "node">> {
   if (nodeIds.length === 0 || committed.length === 0) return [];
   const affected = new Set(nodeIds);
   const canonical = nodeAliases(db, [...new Set(committed.map((entry) => entry.node))]);
-  const found = new Map<string, CommittedGrounding>();
+  const found = new Map<string, Pick<CommittedGrounding, "file" | "node">>();
   for (const entry of committed) {
     const aliased = canonical.get(entry.node);
     const node = aliased !== undefined && affected.has(aliased) ? aliased

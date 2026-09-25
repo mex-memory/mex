@@ -14,6 +14,10 @@
  * is no copy, so there is nothing to go stale. The cache table stays: `check`
  * still reads baselines from it.
  *
+ * `check` and `sync` read it too (#229): an inline anchor whose node is gone,
+ * with no entry for that node in its own file, takes the committed fingerprint
+ * of an entry for the same node in another scaffold file as its baseline.
+ *
  * ## One walk, one reader, shared with the Wiki
  *
  * The walk is the Wiki index's own `discoverMarkdownFiles`, honouring the
@@ -64,6 +68,9 @@ import { readContainedSource } from "./wiki/index/source-read.js";
 export interface CommittedGrounding {
   file: string;
   node: string;
+  /** The committed fingerprint, which `check` uses as an anchor's baseline once the node is gone (#229). */
+  fingerprint: string;
+  bodyHash?: string;
 }
 
 export interface CommittedGroundingObservation {
@@ -117,7 +124,12 @@ export function observeCommittedGroundings(projectRoot: string): CommittedGround
     for (const grounding of declaredGroundings(text)) {
       if (seen.has(grounding.node)) continue;
       seen.add(grounding.node);
-      groundings.push({ file: path, node: grounding.node });
+      groundings.push({
+        file: path,
+        node: grounding.node,
+        fingerprint: grounding.fingerprint,
+        ...(grounding.bodyHash === undefined ? {} : { bodyHash: grounding.bodyHash }),
+      });
     }
   }
 
