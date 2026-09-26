@@ -515,7 +515,7 @@ async function refreshGraphWithLease(
 
     candidatePath = ownedPath(paths, "candidate", createToken(options));
     const copyPath = candidatePath;
-    timeGraphPhase("envelope.copy", () => copyExactDatabase(paths, paths.database, copyPath, priorIdentity));
+    timeGraphPhase("envelope.copy", () => copyExactDatabase(paths, paths.database, copyPath, priorIdentity, false));
     const buildResult = await timeGraphPhaseAsync("envelope.candidate", () =>
       refreshCandidate(paths, copyPath, options));
     await options.__internal?.afterCandidateBuilt?.(candidatePath);
@@ -578,7 +578,7 @@ async function rebuildGraphWithLease(
     let continuityFallback = false;
     candidatePath = ownedPath(paths, "candidate", createToken(options));
     if (priorIdentity && cloneForContinuity) {
-      copyExactDatabase(paths, paths.database, candidatePath, priorIdentity);
+      copyExactDatabase(paths, paths.database, candidatePath, priorIdentity, false);
     }
     let buildResult: BuildResult;
     try {
@@ -1185,7 +1185,13 @@ async function publishCandidate(input: CandidatePublicationInput): Promise<Candi
         "recovery",
         createToken(options),
       );
-      rollbackIdentity = copyExactDatabase(paths, paths.database, rollbackPath, input.priorIdentity);
+      rollbackIdentity = copyExactDatabase(
+        paths,
+        paths.database,
+        rollbackPath,
+        input.priorIdentity,
+        input.retainRecovery,
+      );
       await options.__internal?.afterRollbackCreated?.(rollbackPath);
       assertMaintenanceDirectoryUnchanged(paths);
       revalidateLiveDatabase(paths.database, input.priorIdentity);
@@ -1256,6 +1262,7 @@ async function publishCandidate(input: CandidatePublicationInput): Promise<Candi
         assertMaintenanceDirectoryUnchanged(paths);
         assertOwnedCopyUnchanged(rollbackPath, rollbackIdentity);
         assertPublishedCandidateOwnsLivePath(paths, input.candidate);
+        fsyncFile(rollbackPath);
         renameSync(rollbackPath, paths.database);
         rollbackPath = null;
         rollbackIdentity = null;
@@ -1319,6 +1326,7 @@ function retainBoundRollbackCopy(
   try {
     assertMaintenanceDirectoryUnchanged(paths);
     assertOwnedCopyUnchanged(rollbackPath, rollbackIdentity);
+    fsyncFile(rollbackPath);
     return toRepoRelative(paths.projectRoot, rollbackPath);
   } catch {
     return undefined;
@@ -1742,6 +1750,10 @@ function copyExactDatabase(
   sourcePath: string,
   destinationPath: string,
   expected: DatabaseIdentity,
+  // Whether the copy must be durable on return. A candidate is fsynced again
+  // before it is published, and a rollback copy before it is restored or
+  // retained, so neither needs it until then.
+  durable = true,
 ): DatabaseIdentity {
   assertMaintenanceDirectoryUnchanged(paths);
   assertOwnedDatabasePath(destinationPath);
@@ -1788,7 +1800,7 @@ function copyExactDatabase(
     );
   }
   assertMaintenanceDirectoryUnchanged(paths);
-  fsyncFile(destinationPath);
+  if (durable) fsyncFile(destinationPath);
   return copied;
 }
 
