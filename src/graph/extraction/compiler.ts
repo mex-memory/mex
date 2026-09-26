@@ -2765,14 +2765,33 @@ function memberSignatures(checker: ts.TypeChecker, type: ts.Type, kind: ts.Signa
 
 /**
  * The expressions a callee's value is chosen from, or undefined when it has
- * no alternatives. Follows parentheses, `??`, `||`, conditionals and
- * unannotated consts (whose type is their initializer's), so the result is a
- * function of the code rather than of the checker's reduced type.
+ * no alternatives or they cannot all be named. Follows parentheses, `??`,
+ * `||`, conditionals, unannotated consts (whose type is their initializer's),
+ * and an element of an array literal: through a `for...of` variable, an
+ * element access, or the callback parameter of an array method. The checker
+ * reduces identical alternatives to whichever it created first, so these
+ * make the result a function of the code rather than of the reduced type.
  */
 function calleeAlternatives(expression: ts.Expression, checker: ts.TypeChecker): ts.Expression[] | undefined {
   const leaves: ts.Expression[] = [];
   const visited = new Set<ts.Node>();
   let branched = false;
+  let opaque = false;
+  const visitElements = (node: ts.Expression): void => {
+    if (ts.isParenthesizedExpression(node)) return visitElements(node.expression);
+    const initializer = ts.isIdentifier(node) ? unannotatedConstInitializer(node, checker) : undefined;
+    if (initializer) return visitElements(initializer);
+    if (!ts.isArrayLiteralExpression(node)) {
+      opaque = true;
+      return;
+    }
+    if (node.elements.length > 1) branched = true;
+    for (const element of node.elements) {
+      if (ts.isSpreadElement(element)) visitElements(element.expression);
+      else if (ts.isOmittedExpression(element)) opaque = true;
+      else visit(element);
+    }
+  };
   const visit = (node: ts.Expression): void => {
     if (visited.has(node)) return;
     visited.add(node);
@@ -2788,14 +2807,61 @@ function calleeAlternatives(expression: ts.Expression, checker: ts.TypeChecker):
       branched = true;
       visit(node.left);
       visit(node.right);
-    } else {
-      const initializer = ts.isIdentifier(node) ? unannotatedConstInitializer(node, checker) : undefined;
+    } else if (ts.isElementAccessExpression(node) && isArrayLiteralSource(node.expression, checker)) {
+      visitElements(node.expression);
+    } else if (ts.isIdentifier(node)) {
+      const initializer = unannotatedConstInitializer(node, checker);
+      const elements = initializer ? undefined : elementSourceOf(node, checker);
       if (initializer) visit(initializer);
+      else if (elements) visitElements(elements);
       else leaves.push(node);
+    } else {
+      leaves.push(node);
     }
   };
   visit(expression);
-  return branched ? leaves : undefined;
+  return branched && !opaque ? leaves : undefined;
+}
+
+const ARRAY_CALLBACK_METHODS = new Set(["every", "filter", "find", "findLast", "flatMap", "forEach", "map", "some"]);
+
+/**
+ * The array whose elements an unannotated variable ranges over: a
+ * `for (const x of array)` variable, or the first parameter of a callback
+ * passed first to an array method, when that array is a literal.
+ */
+function elementSourceOf(identifier: ts.Identifier, checker: ts.TypeChecker): ts.Expression | undefined {
+  const declaration = checker.getSymbolAtLocation(identifier)?.valueDeclaration;
+  if (!declaration) return undefined;
+  if (ts.isVariableDeclaration(declaration)
+    && ts.isIdentifier(declaration.name)
+    && !declaration.type
+    && ts.isVariableDeclarationList(declaration.parent)
+    && ts.isForOfStatement(declaration.parent.parent)
+    && declaration.parent.parent.initializer === declaration.parent) {
+    const iterated = declaration.parent.parent.expression;
+    return isArrayLiteralSource(iterated, checker) ? iterated : undefined;
+  }
+  if (ts.isParameter(declaration)
+    && ts.isIdentifier(declaration.name)
+    && !declaration.type
+    && (ts.isArrowFunction(declaration.parent) || ts.isFunctionExpression(declaration.parent))
+    && declaration.parent.parameters[0] === declaration
+    && ts.isCallExpression(declaration.parent.parent)
+    && declaration.parent.parent.arguments[0] === declaration.parent
+    && ts.isPropertyAccessExpression(declaration.parent.parent.expression)
+    && ARRAY_CALLBACK_METHODS.has(declaration.parent.parent.expression.name.text)) {
+    const receiver = declaration.parent.parent.expression.expression;
+    return isArrayLiteralSource(receiver, checker) ? receiver : undefined;
+  }
+  return undefined;
+}
+
+function isArrayLiteralSource(expression: ts.Expression, checker: ts.TypeChecker): boolean {
+  if (ts.isParenthesizedExpression(expression)) return isArrayLiteralSource(expression.expression, checker);
+  if (ts.isArrayLiteralExpression(expression)) return true;
+  const initializer = ts.isIdentifier(expression) ? unannotatedConstInitializer(expression, checker) : undefined;
+  return initializer !== undefined && isArrayLiteralSource(initializer, checker);
 }
 
 function unannotatedConstInitializer(identifier: ts.Identifier, checker: ts.TypeChecker): ts.Expression | undefined {

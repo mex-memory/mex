@@ -343,6 +343,11 @@ export const ORDER_FIXTURE: Fixture = {
     "src/paths.ts": "export function isTestPath(path: string): boolean {\n  return path.includes(\"test\");\n}\n",
     "src/path-user.ts": "import { isTestPath } from \"./paths\";\n\nexport const tests = [\"a.test.ts\"].filter(isTestPath);\n",
     "src/path-filter.ts": "import { isTestPath } from \"./paths\";\n\nexport interface FilterOptions {\n  isTest?: (path: string) => boolean;\n}\n\nexport function pick(paths: string[], options: FilterOptions = {}): string[] {\n  const isTest = options.isTest ?? isTestPath;\n  return paths.filter((path) => isTest(path));\n}\n\nexport function check(flag: boolean, options: FilterOptions): boolean {\n  return (flag ? isTestPath : options.isTest || isTestPath)(\"x\");\n}\n",
+    // Identical function types in one array reduce to whichever the checker
+    // created first; command-user.ts creates runRefresh's early.
+    "src/commands.ts": "export async function runStatus(root?: string): Promise<void> {}\nexport async function runRefresh(root?: string): Promise<void> {}\nexport async function runRebuild(root?: string): Promise<void> {}\n",
+    "src/command-user.ts": "import { runRefresh } from \"./commands\";\n\nexport const refresh: typeof runRefresh = runRefresh;\n",
+    "src/command-loop.ts": "import { runRebuild, runRefresh, runStatus } from \"./commands\";\n\nconst all = [runStatus, runRefresh, runRebuild];\n\nexport async function runEach(): Promise<void> {\n  for (const command of [runStatus, runRefresh, runRebuild]) {\n    await command(\"root\");\n  }\n  all.forEach((command) => command());\n  await all[1](\"x\");\n}\n",
     "src/index.ts": "export * from \"./render\";\nexport { parse } from \"./overloads\";\nexport * as gen from \"./generics\";\nexport { level, Settings } from \"./merging\";\n",
     "src/app.ts": "import { build, gen, label, level, parse, Settings, show } from \"./index\";\nimport { pickA } from \"./literals-a\";\nimport { pickB } from \"./literals-b\";\n\nexport function main(): string {\n  const shape = build(\"square\");\n  return [label(shape), show(parse(\"3\")), gen.lengths([\"a\"]).join(), level(Settings.defaults), pickA(true), pickB(false)].join(\" \");\n}\n",
   },
