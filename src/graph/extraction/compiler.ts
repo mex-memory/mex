@@ -25,7 +25,7 @@ import { recordGraphPhase, timeGraphPhase } from "../phase-timing.js";
 
 // v3 (#240): checker-rendered signatures no longer embed absolute module paths.
 // v4 (#209): checker-rendered unions list their members in one canonical order.
-export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v4";
+export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v5";
 export const TYPESCRIPT_COMPILER_VERSION = ts.version;
 
 export type CompilerSourceLanguage =
@@ -2185,19 +2185,24 @@ function captureCallReference(
   const sourceId = enclosingSourceId(node, context);
   if (!sourceId) return;
   const calleeType = checker.getTypeAtLocation(expression);
+  const signatureKind = ts.isNewExpression(node) ? ts.SignatureKind.Construct : ts.SignatureKind.Call;
   // A union-typed callee resolves to a signature the checker builds from
   // whichever member it created first, so both the resolved signature and
   // its declaration depend on file visit order. Such a call is described by
-  // every member's signatures instead (issue #209).
-  const unionCallee = calleeType.isUnion();
+  // every member's signatures instead (issue #209). A callee whose value is
+  // one of several alternatives (`a ?? b`, `a || b`, `c ? a : b`, directly or
+  // through an unannotated const) is described the same way: the checker
+  // reduces identical alternatives to whichever it created first, so the
+  // reduced type may not be a union at all.
+  const alternatives = calleeAlternatives(expression, checker);
+  const unionCallee = calleeType.isUnion() || alternatives !== undefined;
   const resolvedSignature = unionCallee ? undefined : checker.getResolvedSignature(node);
-  const memberCallSignatures = unionCallee
-    ? memberSignatures(
-      checker,
-      calleeType,
-      ts.isNewExpression(node) ? ts.SignatureKind.Construct : ts.SignatureKind.Call,
-    )
-    : [];
+  const memberCallSignatures = alternatives
+    ? [...new Set(alternatives.flatMap((alternative) =>
+      memberSignatures(checker, checker.getTypeAtLocation(alternative), signatureKind)))]
+    : unionCallee
+      ? memberSignatures(checker, calleeType, signatureKind)
+      : [];
   const signatureSymbol = resolvedSignature?.declaration
     ? symbolForDeclaration(resolvedSignature.declaration, checker)
     : undefined;
@@ -2756,6 +2761,56 @@ function memberSignatures(checker: ts.TypeChecker, type: ts.Type, kind: ts.Signa
   return type.isUnion()
     ? type.types.flatMap((member) => checker.getSignaturesOfType(member, kind))
     : checker.getSignaturesOfType(type, kind);
+}
+
+/**
+ * The expressions a callee's value is chosen from, or undefined when it has
+ * no alternatives. Follows parentheses, `??`, `||`, conditionals and
+ * unannotated consts (whose type is their initializer's), so the result is a
+ * function of the code rather than of the checker's reduced type.
+ */
+function calleeAlternatives(expression: ts.Expression, checker: ts.TypeChecker): ts.Expression[] | undefined {
+  const leaves: ts.Expression[] = [];
+  const visited = new Set<ts.Node>();
+  let branched = false;
+  const visit = (node: ts.Expression): void => {
+    if (visited.has(node)) return;
+    visited.add(node);
+    if (ts.isParenthesizedExpression(node)) {
+      visit(node.expression);
+    } else if (ts.isConditionalExpression(node)) {
+      branched = true;
+      visit(node.whenTrue);
+      visit(node.whenFalse);
+    } else if (ts.isBinaryExpression(node)
+      && (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+      branched = true;
+      visit(node.left);
+      visit(node.right);
+    } else {
+      const initializer = ts.isIdentifier(node) ? unannotatedConstInitializer(node, checker) : undefined;
+      if (initializer) visit(initializer);
+      else leaves.push(node);
+    }
+  };
+  visit(expression);
+  return branched ? leaves : undefined;
+}
+
+function unannotatedConstInitializer(identifier: ts.Identifier, checker: ts.TypeChecker): ts.Expression | undefined {
+  let symbol = checker.getSymbolAtLocation(identifier);
+  if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+  const declaration = symbol?.valueDeclaration;
+  return declaration
+    && ts.isVariableDeclaration(declaration)
+    && ts.isIdentifier(declaration.name)
+    && !declaration.type
+    && declaration.initializer
+    && ts.isVariableDeclarationList(declaration.parent)
+    && (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+    ? declaration.initializer
+    : undefined;
 }
 
 /** Distinct rendered signatures in canonical order, or undefined for none. */
