@@ -2537,17 +2537,17 @@ function fingerprintStorageIsExact(db: SqliteDatabase): boolean {
   }
   const buckets = db.prepare(
     "SELECT CAST(ref AS TEXT) AS ref, band, CAST(band_hash AS TEXT) AS band_hash FROM lsh_buckets",
-  ).iterate() as IterableIterator<StoredLshBucketRow>;
-  for (const bucket of buckets) {
-    const entry = typeof bucket.ref === "string" ? expected.get(bucket.ref) : undefined;
+  ).iterateArrays();
+  for (const [ref, band, bandHash] of buckets) {
+    const entry = typeof ref === "string" ? expected.get(ref) : undefined;
     if (!entry
-      || typeof bucket.band !== "number"
-      || !Number.isSafeInteger(bucket.band)
-      || bucket.band < 0
-      || bucket.band >= BANDS
-      || entry.seen[bucket.band] !== 0
-      || bucket.band_hash !== entry.hashes[bucket.band]) return false;
-    entry.seen[bucket.band] = 1;
+      || typeof band !== "number"
+      || !Number.isSafeInteger(band)
+      || band < 0
+      || band >= BANDS
+      || entry.seen[band] !== 0
+      || bandHash !== entry.hashes[band]) return false;
+    entry.seen[band] = 1;
   }
   for (const entry of expected.values()) if (entry.seen.includes(0)) return false;
   return true;
