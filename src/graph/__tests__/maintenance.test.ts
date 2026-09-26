@@ -6,6 +6,7 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -506,6 +507,30 @@ describe("graph maintenance", () => {
     expect(result.status.changes.total).toBe(0);
     expect(ownedArtifacts(root)).toEqual([]);
   }, 15_000);
+
+  // Issue #209: the published bytes are recorded as audited, and only those
+  // exact bytes skip the next audit.
+  it("records the audited digest it publishes and still audits changed bytes", async () => {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export function service(value: number): number {\n  return value + 1;\n}\n");
+    const dbPath = await buildBaseline(root);
+    source(root, "src/service.ts", "export function service(value: number): number {\n  return value + 2;\n}\n");
+    expect((await refreshGraph(root)).status.status).toBe("fresh");
+    const record = JSON.parse(readFileSync(`${realpathSync(dbPath)}-audit.json`, "utf8")) as { digest: string };
+    expect(record.digest).toBe(sha256(dbPath));
+    expect((await inspectGraphStatus({ projectRoot: root })).status).toBe("fresh");
+
+    const db = openSqlite(dbPath);
+    try {
+      db.exec("DELETE FROM lsh_buckets WHERE band = 3 AND ref = (SELECT MIN(ref) FROM lsh_buckets)");
+    } finally {
+      db.close();
+    }
+    expect(sha256(dbPath)).not.toBe(record.digest);
+    const status = await inspectGraphStatus({ projectRoot: root });
+    expect(status.status).toBe("corrupt");
+    expect(status.diagnostics.some((entry) => entry.code === "GRAPH_INDEX_INVARIANT_FAILED")).toBe(true);
+  }, 30_000);
 
   // Issue #209: a refresh that would publish nothing needs no candidate at all.
   it("publishes nothing and leaves the live bytes exact when a refresh has nothing to publish", async () => {

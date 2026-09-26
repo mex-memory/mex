@@ -23,6 +23,7 @@ import type {
 import type { Diagnostic, RepoState } from "../team/contracts/shared.js";
 import { DB_SCHEMA_VERSION, detectGraphSchemaLineage } from "./db/database.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
+import { holdsAuditedBytes } from "./audit-record.js";
 import { BANDS, K } from "./config.js";
 import {
   GRAPH_CORPUS_GLOB_OPTIONS,
@@ -783,11 +784,13 @@ async function inspectGraphStatusAttempt(
     // Revalidating a read re-audits nothing it could learn from: SQLite holds
     // this file open immutable, and a changed identity fails the caller's
     // observation comparison regardless. Any doubt runs the full audit.
+    // A file holding exactly the bytes of a database that already passed the
+    // full audit cannot fail it (issue #209); proven by SHA-256, not by stat.
     const structureAudited = isAuditedDatabase(
       context.options.auditedDatabase,
       database.canonicalPath,
       databaseFileIdentity(fileStat),
-    );
+    ) || holdsAuditedBytes(database.canonicalPath, fileStat!);
     const integrity = structureAudited ? [] : quickCheck(db);
     if (integrity.length > 0) {
       diagnostics.push({

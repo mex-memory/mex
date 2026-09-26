@@ -30,6 +30,7 @@ import type {
 } from "../team/contracts/graph.js";
 import { DB_SCHEMA_VERSION, upgradeGraphDatabase } from "./db/database.js";
 import { openSqlite } from "./db/sqlite.js";
+import { recordAuditedDatabase } from "./audit-record.js";
 import { createGraphEngine, GraphSourceStagingError, refreshWouldPublishNothing } from "./engine-impl.js";
 import type { BuildResult, GraphEngine } from "./engine.js";
 import {
@@ -1233,6 +1234,15 @@ async function publishCandidate(input: CandidatePublicationInput): Promise<Candi
     assertMaintenanceDirectoryUnchanged(paths);
     const status = input.candidate.status;
     (input.assertStatus ?? assertPublishableCandidate)(status);
+    // A fresh validation ran the full structural audit over exactly these
+    // bytes; the next inspection of them need not repeat it.
+    if (status.status === "fresh") {
+      recordAuditedDatabase(
+        realpathSync(paths.database),
+        input.candidate.identity.size,
+        input.candidate.identity.digest,
+      );
+    }
     const diagnostics: Diagnostic[] = [...status.diagnostics];
     let recoveryPath: string | undefined;
     if (rollbackPath && input.retainRecovery) {
