@@ -2,8 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
-  copyFileSync,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -15,6 +15,7 @@ import {
   renameSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
   type Stats,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -1685,7 +1686,12 @@ function captureDatabaseIdentity(path: string): DatabaseIdentity {
   return timeGraphPhase("envelope.dbIdentityHash", () => captureDatabaseIdentityUntimed(path));
 }
 
-function captureDatabaseIdentityUntimed(path: string): DatabaseIdentity {
+/**
+ * The exact identity of the database at `path`. With `copyTo`, the same bytes
+ * that are hashed are also written to that descriptor, so the copy is bound
+ * to the digest in one read.
+ */
+function captureDatabaseIdentityUntimed(path: string, copyTo?: number): DatabaseIdentity {
   assertRegularNonSymlink(path, "graph database");
   const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
   const fd = openSync(path, constants.O_RDONLY | noFollow);
@@ -1698,6 +1704,11 @@ function captureDatabaseIdentityUntimed(path: string): DatabaseIdentity {
       const count = readSync(fd, chunk, 0, chunk.length, offset);
       if (count === 0) break;
       hash.update(chunk.subarray(0, count));
+      if (copyTo !== undefined) {
+        for (let written = 0; written < count;) {
+          written += writeSync(copyTo, chunk, written, count - written, offset + written);
+        }
+      }
       offset += count;
     }
     const after = fstatSync(fd);
@@ -1737,19 +1748,36 @@ function copyExactDatabase(
       `Refusing to overwrite an existing owned maintenance path (${basename(destinationPath)}).`,
     );
   }
-  const before = captureDatabaseIdentity(sourcePath);
-  if (!sameDatabaseIdentity(before, expected)) {
+  assertMaintenanceDirectoryUnchanged(paths);
+  // One read hashes the source and writes the copy: the source identity is
+  // captured across the whole copy (stat stable from open to close), and the
+  // copy is then read back and must carry the expected digest.
+  const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
+  const destination = openSync(
+    destinationPath,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow,
+    0o600,
+  );
+  let source: DatabaseIdentity;
+  try {
+    // Keep the source's permission bits, as a file copy would.
+    fchmodSync(destination, lstatSync(sourcePath).mode & 0o777);
+    source = timeGraphPhase("envelope.dbIdentityHash", () => captureDatabaseIdentityUntimed(sourcePath, destination));
+  } catch (error) {
+    closeSync(destination);
+    cleanupOwnedDatabasePath(paths, destinationPath);
+    throw error;
+  }
+  closeSync(destination);
+  if (!sameDatabaseIdentity(source, expected)) {
+    cleanupOwnedDatabasePath(paths, destinationPath);
     throw new GraphMaintenanceError(
       "GRAPH_MAINTENANCE_RACE",
       "The live graph changed before it could be copied safely.",
     );
   }
-  assertMaintenanceDirectoryUnchanged(paths);
-  copyFileSync(sourcePath, destinationPath, constants.COPYFILE_EXCL);
   const copied = captureDatabaseIdentity(destinationPath);
-  const after = captureDatabaseIdentity(sourcePath);
-  if (copied.digest !== expected.digest || copied.size !== expected.size
-    || !sameDatabaseIdentity(after, expected)) {
+  if (copied.digest !== expected.digest || copied.size !== expected.size) {
     cleanupOwnedDatabasePath(paths, destinationPath);
     throw new GraphMaintenanceError(
       "GRAPH_MAINTENANCE_RACE",
