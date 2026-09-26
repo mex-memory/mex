@@ -10,6 +10,7 @@ import {
 } from "./candidate-protocol.js";
 import { startGraphCandidateWatchdog } from "./candidate-watchdog.js";
 import { createGraphCandidateProgressSender } from "./candidate-progress.js";
+import { flushGraphPhaseTimings } from "./phase-timing.js";
 
 function checkDirectory(path: string, expected: GraphCandidateRequest["workspaceIdentity"]): void {
   const stats = lstatSync(path, { bigint: true });
@@ -80,6 +81,7 @@ async function main(): Promise<void> {
         },
       } as Parameters<typeof createGraphEngine>[0]);
       const result = request.operation === "refresh" ? await engine.sync([]) : await engine.build();
+      flushGraphPhaseTimings(`candidate-${request.operation}`);
       engine.close();
       engine = undefined;
       outcome = { type: "complete", result };

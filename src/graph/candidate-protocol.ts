@@ -45,6 +45,16 @@ const buildResult = z.object({
     reason: z.literal("outside-project-corpus"),
     message: text,
   }).strict()).max(20_000).optional(),
+  // Fixed-vocabulary reasons and counts only; no path crosses this boundary.
+  refresh: z.object({
+    mode: z.enum(["incremental", "full"]),
+    fallbackReason: z.string().max(200).optional(),
+    filesChanged: count,
+    filesReextracted: count,
+    publication: z.enum(["delta", "full"]),
+    publicationFallbackReason: z.string().max(200).optional(),
+    filesRewritten: count,
+  }).strict().optional(),
 }).strict() satisfies z.ZodType<BuildResult>;
 
 export const graphCandidateMessage = z.discriminatedUnion("type", [

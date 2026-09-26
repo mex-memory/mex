@@ -38,6 +38,88 @@ export function upsertFingerprintsInOwnedTransaction(
   writeFingerprints(db, entries, false);
 }
 
+/** A stored fingerprint with the row reference its LSH buckets hang from. */
+export interface StoredFingerprint {
+  nodeId: string;
+  ref: bigint;
+  fingerprint: Fingerprint;
+}
+
+/** The fingerprints of every node one file owns, as currently stored. @internal */
+export function readFileFingerprints(db: SqliteDatabase, filePath: string): StoredFingerprint[] {
+  const rows = db.prepare(
+    `SELECT CAST(f.ref AS TEXT) AS ref, f.node_id, f.minhash, f.neighbors, f.token_count
+     FROM nodes n JOIN node_fingerprints f ON f.node_id = n.id
+     WHERE n.file_path = ?`,
+  ).all(filePath) as Array<FingerprintRow & { ref: string }>;
+  return rows.map((row) => ({ nodeId: row.node_id, ref: BigInt(row.ref), fingerprint: decodeRow(row) }));
+}
+
+/**
+ * Above this many removed fingerprints, index `lsh_buckets(ref)` for the
+ * duration of the write. Deleting a fingerprint row makes SQLite probe its LSH
+ * children through the foreign key, and the primary key is band-first, so each
+ * probe is a full scan (about 140 ms on an 870k-row table); the index takes
+ * about 600 ms to build on the same table and makes each probe ~1 ms.
+ */
+const LSH_REF_INDEX_THRESHOLD = 4;
+
+/**
+ * Incremental publication only (issue #209): replace the fingerprints of the
+ * nodes whose fingerprint changed, inside the caller's publication
+ * transaction, which MUST roll back if this throws. The final rows equal what
+ * {@link upsertFingerprintsInOwnedTransaction} writes for the same
+ * fingerprints; only `ref` values, which nothing outside this table and its
+ * LSH buckets reads, may differ.
+ * @internal
+ */
+export function writeFingerprintDelta(
+  db: SqliteDatabase,
+  removed: readonly StoredFingerprint[],
+  written: ReadonlyArray<{ nodeId: string; fingerprint: Fingerprint; previous?: StoredFingerprint }>,
+): void {
+  const deleteBucket = db.prepare("DELETE FROM lsh_buckets WHERE band = ? AND band_hash = ? AND ref = ?");
+  const insertBucket = db.prepare("INSERT INTO lsh_buckets (band, band_hash, ref) VALUES (?, ?, ?)");
+  const deleteBuckets = (stored: StoredFingerprint): void => {
+    bandHashInts(stored.fingerprint).forEach((bandHash, band) => deleteBucket.run(band, bandHash, stored.ref));
+  };
+  const insertBuckets = (fingerprint: Fingerprint, ref: bigint): void => {
+    bandHashInts(fingerprint).forEach((bandHash, band) => insertBucket.run(band, bandHash, ref));
+  };
+
+  const indexed = removed.length > LSH_REF_INDEX_THRESHOLD;
+  if (indexed) db.exec("CREATE INDEX mex_publication_lsh_ref ON lsh_buckets(ref)");
+  const deleteFingerprint = db.prepare("DELETE FROM node_fingerprints WHERE ref = ?");
+  for (const stored of removed) {
+    deleteBuckets(stored);
+    deleteFingerprint.run(stored.ref);
+  }
+  if (indexed) db.exec("DROP INDEX mex_publication_lsh_ref");
+
+  const insertFingerprint = db.prepare(
+    "INSERT INTO node_fingerprints (node_id, minhash, neighbors, token_count) VALUES (?, ?, ?, ?)",
+  );
+  const updateFingerprint = db.prepare(
+    "UPDATE node_fingerprints SET minhash = ?, neighbors = ?, token_count = ? WHERE ref = ?",
+  );
+  for (const { nodeId, fingerprint, previous } of written) {
+    const minhash = encodeMinhash(fingerprint.minhash);
+    const neighbors = JSON.stringify(fingerprint.neighbors);
+    if (!previous) {
+      const inserted = insertFingerprint.run(nodeId, minhash, neighbors, fingerprint.tokenCount) as {
+        lastInsertRowid: number | bigint;
+      };
+      insertBuckets(fingerprint, BigInt(inserted.lastInsertRowid));
+      continue;
+    }
+    const sameSketch = previous.fingerprint.minhash.length === fingerprint.minhash.length
+      && previous.fingerprint.minhash.every((value, index) => fingerprint.minhash[index] === value);
+    if (!sameSketch) deleteBuckets(previous);
+    updateFingerprint.run(minhash, neighbors, fingerprint.tokenCount, previous.ref);
+    if (!sameSketch) insertBuckets(fingerprint, previous.ref);
+  }
+}
+
 // One fixed synchronous read statement per connection; weak ownership does not
 // retain closed/discarded databases, and no caller-owned iterator is reused.
 const fingerprintReadStatements = new WeakMap<SqliteDatabase, ReturnType<SqliteDatabase["prepare"]>>();

@@ -23,6 +23,7 @@ import type {
 import type { Diagnostic, RepoState } from "../team/contracts/shared.js";
 import { DB_SCHEMA_VERSION, detectGraphSchemaLineage } from "./db/database.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
+import { holdsAuditedBytes } from "./audit-record.js";
 import { BANDS, K } from "./config.js";
 import {
   GRAPH_CORPUS_GLOB_OPTIONS,
@@ -263,6 +264,14 @@ export interface InspectGraphStatusOptions {
    * grounding (`mex check`) and the Hub keep reporting that store as corrupt.
    */
   structuralAudit?: "full" | "graph";
+  /**
+   * @internal Band hashes already derived from identical minhash bytes, shared
+   * by the inspections of one maintenance run (the live graph, then its
+   * candidate). Band hashes are a pure function of the minhash, so the audit
+   * still compares every stored bucket; it only skips rehashing bytes it has
+   * already hashed. The caller owns it and drops it when the run ends.
+   */
+  bandHashMemo?: Map<string, readonly string[]>;
   /** @internal Deterministic observation-race seam for conformance tests. */
   internal?: {
     beforeFreshValidation?: (attempt: number) => void | Promise<void>;
@@ -775,11 +784,13 @@ async function inspectGraphStatusAttempt(
     // Revalidating a read re-audits nothing it could learn from: SQLite holds
     // this file open immutable, and a changed identity fails the caller's
     // observation comparison regardless. Any doubt runs the full audit.
+    // A file holding exactly the bytes of a database that already passed the
+    // full audit cannot fail it (issue #209); proven by SHA-256, not by stat.
     const structureAudited = isAuditedDatabase(
       context.options.auditedDatabase,
       database.canonicalPath,
       databaseFileIdentity(fileStat),
-    );
+    ) || holdsAuditedBytes(database.canonicalPath, fileStat!);
     const integrity = structureAudited ? [] : quickCheck(db);
     if (integrity.length > 0) {
       diagnostics.push({
@@ -801,6 +812,7 @@ async function inspectGraphStatusAttempt(
 
     const coreInvariantFailures = structureAudited ? [] : inspectCoreInvariants(db, {
       fingerprints: context.options.structuralAudit !== "graph",
+      bandHashMemo: context.options.bandHashMemo,
     });
     if (coreInvariantFailures.length > 0) {
       diagnostics.push({
@@ -2368,7 +2380,7 @@ function inspectRequiredSchema(db: SqliteDatabase): string[] {
 
 function inspectCoreInvariants(
   db: SqliteDatabase,
-  scope: { readonly fingerprints: boolean },
+  scope: { readonly fingerprints: boolean; readonly bandHashMemo?: Map<string, readonly string[]> },
 ): string[] {
   const checks: ReadonlyArray<readonly [string, string]> = [
     ["duplicate edge group(s)", `
@@ -2472,7 +2484,7 @@ function inspectCoreInvariants(
     const count = readCount(db, sql);
     if (count > 0) failures.push(`${count} ${label}`);
   }
-  if (scope.fingerprints) failures.push(...inspectFingerprintInvariants(db));
+  if (scope.fingerprints) failures.push(...inspectFingerprintInvariants(db, scope.bandHashMemo));
   return failures.sort(compareCodePoints);
 }
 
@@ -2490,12 +2502,11 @@ interface StoredLshBucketRow {
   band_hash: unknown;
 }
 
-/**
- * Validate the exact persisted shape consumed by FingerprintStore and the
- * reconciler. Iterating two independently ordered cursors avoids retaining the
- * repository's full fingerprint or LSH corpus in memory.
- */
-function inspectFingerprintInvariants(db: SqliteDatabase): string[] {
+/** Validate the exact persisted shape consumed by FingerprintStore and the reconciler. */
+function inspectFingerprintInvariants(
+  db: SqliteDatabase,
+  bandHashMemo?: Map<string, readonly string[]>,
+): string[] {
   const oversizedFingerprint = db.prepare(
     `SELECT 1 FROM node_fingerprints
      WHERE typeof(node_id) <> 'text'
@@ -2514,6 +2525,69 @@ function inspectFingerprintInvariants(db: SqliteDatabase): string[] {
   if (oversizedFingerprint || oversizedBucket) {
     throw new CorruptGraphIndexError("Graph fingerprint state contains an oversized persisted value.");
   }
+  // A sound store needs no ordered walk; any fault is reported by it exactly
+  // as before (issue #209).
+  if (fingerprintStorageIsExact(db, bandHashMemo)) return [];
+  return orderedFingerprintAudit(db);
+}
+
+/**
+ * Whether every fingerprint is well formed and owns exactly its BANDS LSH
+ * buckets with the expected hashes, and no other bucket exists: the verdict
+ * of {@link orderedFingerprintAudit} when it finds nothing. It holds each
+ * fingerprint's expected band hashes in memory and reads the buckets in their
+ * primary-key order, so the LSH table is never sorted by ref, which was most
+ * of the cost of every inspection of a large store (issue #209).
+ */
+function fingerprintStorageIsExact(
+  db: SqliteDatabase,
+  bandHashMemo?: Map<string, readonly string[]>,
+): boolean {
+  const expected = new Map<string, { hashes: readonly string[]; seen: Uint8Array }>();
+  const fingerprints = db.prepare(
+    "SELECT CAST(ref AS TEXT) AS ref, node_id, minhash, neighbors, token_count FROM node_fingerprints",
+  ).iterate() as IterableIterator<StoredFingerprintRow>;
+  for (const row of fingerprints) {
+    if (typeof row.ref !== "string" || typeof row.node_id !== "string") return false;
+    const fingerprint = decodeStoredFingerprint(row);
+    if (!fingerprint) return false;
+    const key = bandHashMemo ? Buffer.from(row.minhash as Uint8Array).toString("latin1") : "";
+    let hashes = bandHashMemo?.get(key);
+    if (!hashes) {
+      hashes = bandHashInts(fingerprint).map(String);
+      bandHashMemo?.set(key, hashes);
+    }
+    expected.set(row.ref, { hashes, seen: new Uint8Array(BANDS) });
+  }
+  // One band at a time through the primary key: reading rows in batches is
+  // far cheaper than stepping a cursor, and a batch stays small. The bands
+  // together must cover every stored row, so a bucket with any other band
+  // value fails the count.
+  const bandRows = db.prepare(
+    "SELECT CAST(ref AS TEXT) AS ref, CAST(band_hash AS TEXT) AS band_hash FROM lsh_buckets WHERE band = ?",
+  );
+  let visited = 0;
+  for (let band = 0; band < BANDS; band++) {
+    const rows = bandRows.allArrays(band);
+    visited += rows.length;
+    for (const [ref, bandHash] of rows) {
+      const entry = typeof ref === "string" ? expected.get(ref) : undefined;
+      if (!entry || entry.seen[band] !== 0 || bandHash !== entry.hashes[band]) return false;
+      entry.seen[band] = 1;
+    }
+  }
+  const stored = db.prepare("SELECT COUNT(*) AS count FROM lsh_buckets").get() as { count?: unknown } | undefined;
+  if (stored?.count !== visited) return false;
+  for (const entry of expected.values()) if (entry.seen.includes(0)) return false;
+  return true;
+}
+
+/**
+ * Count every fingerprint and LSH fault. Iterating two independently ordered
+ * cursors avoids retaining the repository's full fingerprint or LSH corpus in
+ * memory; it runs only once the exact check has found a fault.
+ */
+function orderedFingerprintAudit(db: SqliteDatabase): string[] {
   let malformedFingerprints = 0;
   let malformedBucketOwners = 0;
   let missingBands = 0;

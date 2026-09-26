@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGraphEngine } from "../engine-impl.js";
+import { createGraphEngine, type GraphRefreshStrategy } from "../engine-impl.js";
 import { GraphStore } from "../db/store.js";
 import { openSqlite } from "../db/sqlite.js";
 import { FingerprintStore } from "../fingerprint-store.js";
@@ -16,12 +16,16 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture(strategy?: GraphRefreshStrategy) {
   const root = mkdtempSync(join(tmpdir(), "mex-continuity-resources-"));
   roots.push(root);
   mkdirSync(join(root, "src"));
   const dbPath = join(root, "graph.db");
-  const engine = createGraphEngine({ rootDir: root, dbPath });
+  const engine = createGraphEngine({
+    rootDir: root,
+    dbPath,
+    ...(strategy ? { __internalRefreshStrategy: strategy } : {}),
+  } as Parameters<typeof createGraphEngine>[0]);
   engines.push(engine);
   return { root, dbPath, engine };
 }
@@ -74,8 +78,13 @@ describe("bounded publication continuity reads", () => {
     expect(oldFingerprints).not.toHaveBeenCalled();
   });
 
-  it("preserves fingerprint-rename and signature-move alias chains without reloading fresh nodes", async () => {
-    const { root, dbPath, engine } = fixture();
+  // A full publication needs one old snapshot to disambiguate removed IDs. An
+  // incremental publication (issue #209) derives the old node set from the
+  // fresh nodes of unchanged files plus the stored nodes of rewritten files,
+  // so it never materializes the whole old graph; its aliases must be the same.
+  for (const [strategy, snapshotReads] of [["full", 1], ["incremental", 0]] as const) {
+  it(`preserves fingerprint-rename and signature-move alias chains without reloading fresh nodes (${strategy})`, async () => {
+    const { root, dbPath, engine } = fixture(strategy);
     const source = join(root, "src", "handler.ts");
     const initial = `export function legacyHandler(value: number): number {
   const first = value + 1;
@@ -104,7 +113,7 @@ describe("bounded publication continuity reads", () => {
     expect(middle.id).not.toBe(original.id);
     // One old snapshot is needed to disambiguate removed IDs. The staged fresh
     // nodes already exist and must not be loaded from SQLite a second time.
-    expect(nodeReads).toHaveBeenCalledTimes(1);
+    expect(nodeReads).toHaveBeenCalledTimes(snapshotReads);
 
     nodeReads.mockClear();
     unlinkSync(source);
@@ -114,7 +123,7 @@ describe("bounded publication continuity reads", () => {
     expect(final).toMatchObject({ name: "modernHandler", filePath: "src/moved.ts" });
     expect(final.id).not.toBe(middle.id);
     expect(engine.getNode(middle.id)).toEqual(final);
-    expect(nodeReads).toHaveBeenCalledTimes(1);
+    expect(nodeReads).toHaveBeenCalledTimes(snapshotReads);
 
     nodeReads.mockClear();
     const fingerprintReads = vi.spyOn(FingerprintStore.prototype, "get").mockImplementation(() => {
@@ -151,4 +160,5 @@ describe("bounded publication continuity reads", () => {
     await clean.build();
     expect(graphFacts(dbPath)).toEqual(graphFacts(cleanPath));
   }, 20_000);
+  }
 });

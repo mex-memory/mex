@@ -6,6 +6,7 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -29,6 +30,7 @@ import {
   refreshGraph,
 } from "../maintenance.js";
 import { inspectGraphStatus } from "../status.js";
+import { captureGraphCoverage, GRAPH_COVERAGE_METADATA_KEY } from "../coverage.js";
 
 const roots: string[] = [];
 
@@ -503,6 +505,97 @@ describe("graph maintenance", () => {
     expect(result.status.status).toBe("fresh");
     expect(result.status.indexedBranch).toBe("feature/refresh");
     expect(result.status.changes.total).toBe(0);
+    expect(ownedArtifacts(root)).toEqual([]);
+  }, 15_000);
+
+  // Issue #209: the published bytes are recorded as audited, and only those
+  // exact bytes skip the next audit.
+  it("records the audited digest it publishes and still audits changed bytes", async () => {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export function service(value: number): number {\n  return value + 1;\n}\n");
+    const dbPath = await buildBaseline(root);
+    source(root, "src/service.ts", "export function service(value: number): number {\n  return value + 2;\n}\n");
+    expect((await refreshGraph(root)).status.status).toBe("fresh");
+    const record = JSON.parse(readFileSync(`${realpathSync(dbPath)}-audit.json`, "utf8")) as { digest: string };
+    expect(record.digest).toBe(sha256(dbPath));
+    expect((await inspectGraphStatus({ projectRoot: root })).status).toBe("fresh");
+
+    const db = openSqlite(dbPath);
+    try {
+      db.exec("DELETE FROM lsh_buckets WHERE band = 3 AND ref = (SELECT MIN(ref) FROM lsh_buckets)");
+    } finally {
+      db.close();
+    }
+    expect(sha256(dbPath)).not.toBe(record.digest);
+    const status = await inspectGraphStatus({ projectRoot: root });
+    expect(status.status).toBe("corrupt");
+    expect(status.diagnostics.some((entry) => entry.code === "GRAPH_INDEX_INVARIANT_FAILED")).toBe(true);
+  }, 30_000);
+
+  // Issue #209: a refresh that would publish nothing needs no candidate at all.
+  it("publishes nothing and leaves the live bytes exact when a refresh has nothing to publish", async () => {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export const service = 1;\n");
+    const dbPath = await buildBaseline(root);
+    // The first refresh records the coverage a maintenance publication observes.
+    await refreshGraph(root);
+    const before = sha256(dbPath);
+    let candidates = 0;
+    const result = await refreshGraph(root, {
+      __internal: { afterCandidateBuilt() { candidates++; } },
+    } as GraphMaintenanceOptions);
+
+    expect(result.status.status).toBe("fresh");
+    expect(result.filesIndexed).toBe(0);
+    expect(candidates).toBe(0);
+    expect(sha256(dbPath)).toBe(before);
+    expect(ownedArtifacts(root)).toEqual([]);
+  }, 15_000);
+
+  it("still publishes a refresh whose only change is coverage", async () => {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export const service = 1;\n");
+    const dbPath = await buildBaseline(root);
+    await refreshGraph(root);
+    source(root, "notes/plan.txt", "an unindexed file in a new directory\n");
+    let candidates = 0;
+    const result = await refreshGraph(root, {
+      __internal: { afterCandidateBuilt() { candidates++; } },
+    } as GraphMaintenanceOptions);
+
+    expect(result.status.status).toBe("fresh");
+    expect(candidates).toBe(1);
+    const db = openSqlite(dbPath, { readOnly: true, immutable: true });
+    try {
+      const stored = db.prepare("SELECT value FROM project_metadata WHERE key = ?")
+        .get(GRAPH_COVERAGE_METADATA_KEY) as { value: string };
+      expect(stored.value).toBe(captureGraphCoverage(root));
+    } finally {
+      db.close();
+    }
+  }, 15_000);
+
+  it("records HEAD when the commits since the snapshot touched no indexed file", async () => {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export const service = 1;\n");
+    git(root, "init", "-q", "-b", "main");
+    git(root, "config", "user.name", "Maintenance Test");
+    git(root, "config", "user.email", "maintenance@example.invalid");
+    source(root, ".gitignore", ".mex/\n");
+    git(root, "add", ".");
+    git(root, "commit", "-qm", "fixture");
+    await buildBaseline(root);
+    source(root, "README.md", "Documentation only.\n");
+    git(root, "add", ".");
+    git(root, "commit", "-qm", "docs");
+    const head = git(root, "rev-parse", "HEAD").trim();
+
+    const result = await refreshGraph(root);
+
+    expect(result.status.status).toBe("fresh");
+    expect(result.filesIndexed).toBe(0);
+    expect(result.status.indexedHead).toBe(head);
+    expect((await inspectGraphStatus({ projectRoot: root })).indexedHead).toBe(head);
     expect(ownedArtifacts(root)).toEqual([]);
   }, 15_000);
 

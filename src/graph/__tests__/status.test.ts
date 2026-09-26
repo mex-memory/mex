@@ -1149,6 +1149,42 @@ describe("inspectGraphStatus", () => {
     expect(executableRemediations(status)).toContain("mex graph rebuild");
   });
 
+  // Issue #209: a sound store is audited without sorting the LSH table, and
+  // any fault falls through to the ordered walk. Each violation class alone
+  // must still be caught, with the message the walk has always reported.
+  it.each([
+    { name: "a missing band", corrupt: "DELETE FROM lsh_buckets WHERE ref = ? AND band = 3", expected: "missing fingerprint LSH band(s)" },
+    { name: "a duplicate band", corrupt: "INSERT INTO lsh_buckets (band, band_hash, ref) SELECT band, band_hash + 1, ref FROM lsh_buckets WHERE ref = ? AND band = 5", expected: "duplicate fingerprint LSH bucket row(s)" },
+    { name: "an out-of-range band", corrupt: `UPDATE lsh_buckets SET band = ${BANDS} WHERE ref = ? AND band = 0`, expected: "out-of-range fingerprint LSH bucket row(s)" },
+    { name: "a fractional band", corrupt: "UPDATE lsh_buckets SET band = 2.5 WHERE ref = ? AND band = 2", expected: "missing fingerprint LSH band(s)" },
+    { name: "a wrong band hash", corrupt: "UPDATE lsh_buckets SET band_hash = band_hash + 1 WHERE ref = ? AND band = 7", expected: "fingerprint LSH bucket hash mismatch(es)" },
+    { name: "a malformed fingerprint", corrupt: "UPDATE node_fingerprints SET token_count = -1 WHERE ref = ?", expected: "malformed fingerprint row(s)" },
+    { name: "a bucket without an owner", corrupt: "INSERT INTO lsh_buckets (band, band_hash, ref) VALUES (0, 1, ? + 1000000)", expected: "malformed LSH bucket owner row(s)" },
+  ])("catches $name on its own", async ({ corrupt, expected }) => {
+    const root = temporaryRoot("mex-graph-lsh-class-");
+    source(root, "src/a.ts", `
+      export function alpha(value: number): number { return value + 1; }
+      export function beta(value: number): number { return value * 2; }
+    `);
+    const dbPath = await build(root);
+    expect((await inspect(root)).status).toBe("fresh");
+    const db = openSqlite(dbPath);
+    try {
+      db.exec("PRAGMA foreign_keys = OFF");
+      const row = db.prepare(
+        "SELECT CAST(ref AS TEXT) AS ref FROM node_fingerprints ORDER BY node_id LIMIT 1",
+      ).get() as { ref: string };
+      db.prepare(corrupt).run(BigInt(row.ref));
+    } finally {
+      db.close();
+    }
+
+    const status = await inspect(root);
+    expect(status.status).toBe("corrupt");
+    const diagnostic = status.diagnostics.find((entry) => entry.code === "GRAPH_INDEX_INVARIANT_FAILED");
+    expect(diagnostic?.message).toContain(expected);
+  });
+
   it("skips the structural audit only for the exact audited database path and identity", async () => {
     const root = temporaryRoot("mex-graph-audited-database-");
     source(root, "src/a.ts", "export function a(): number { return 1; }\n");

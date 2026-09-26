@@ -117,6 +117,14 @@ async function baseline(path: string): Promise<string> {
   try { await engine.build(); } finally { engine.close(); }
   return join(path, ".mex/graph.db");
 }
+/**
+ * Give a refresh something to publish. A refresh with nothing to publish
+ * returns before any candidate exists (issue #209), and these tests exercise
+ * the candidate process itself.
+ */
+function pendingChange(path: string): void {
+  writeFileSync(join(path, "service.py"), "def service():\n    return 2\n");
+}
 function isolated(entrypoint: string, extra: Record<string, unknown> = {}): GraphMaintenanceExecutionOptions {
   return { candidateExecution: "process", __internal: { candidateProcess: { entrypoint, ...extra } } } as GraphMaintenanceExecutionOptions;
 }
@@ -185,6 +193,7 @@ describe("isolated graph candidate construction", () => {
   it("cancels real synchronous busy work, waits for process death, and preserves the prior index", async () => {
     const path = root();
     const database = await baseline(path);
+    pendingChange(path);
     const before = hash(database);
     const controller = new AbortController();
     let pid = 0;
@@ -208,6 +217,7 @@ describe("isolated graph candidate construction", () => {
   it("cleans the spool and SQLite sidecars after an abrupt child death during an open write transaction", async () => {
     const path = root();
     const database = await baseline(path);
+    pendingChange(path);
     const before = hash(database);
     let workspace = "";
     await expect(refreshGraph(path, isolated(crashEntry, {
@@ -221,6 +231,7 @@ describe("isolated graph candidate construction", () => {
   it("preserves a replacement workspace instead of recursively deleting a directory it no longer owns", async () => {
     const path = root();
     const database = await baseline(path);
+    pendingChange(path);
     const before = hash(database);
     const original = join(path, "original-candidate-workspace");
     let workspace = "";
@@ -264,6 +275,7 @@ describe("isolated graph candidate construction", () => {
   it("stops a child that loses IPC and keeps computing while its parent remains alive", async () => {
     const path = root();
     const database = await baseline(path);
+    pendingChange(path);
     const before = hash(database);
     const controller = new AbortController();
     let pid = 0;

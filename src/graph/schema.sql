@@ -281,6 +281,27 @@ CREATE INDEX IF NOT EXISTS idx_import_bindings_local ON import_bindings(file_pat
 CREATE INDEX IF NOT EXISTS idx_aliases_canonical ON node_aliases(canonical_node_id);
 CREATE INDEX IF NOT EXISTS idx_source_chunks_file ON source_chunks(file_path, start_line);
 
+-- Incremental publication (issue #209): one digest per file over every derived
+-- row that file owns (its nodes, the edges and unresolved references leaving
+-- them, its import bindings, their fingerprints and its source chunks). A
+-- refresh rewrites only the files whose digest changed. The digests are valid
+-- only for the snapshot recorded beside them in project_metadata; any other
+-- writer invalidates them and the next refresh publishes in full.
+CREATE TABLE IF NOT EXISTS file_row_digests (
+    path TEXT PRIMARY KEY,
+    digest TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- Incremental extraction (issue #209): each file's pre-resolution extraction,
+-- compressed JSON, reused while that file and everything it can observe
+-- through module resolution is unchanged. Valid under the same marker as the
+-- row digests.
+CREATE TABLE IF NOT EXISTS file_extraction_cache (
+    path TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    payload BLOB NOT NULL
+);
+
 -- =============================================================================
 -- Project metadata (ported from CG — small key/value store for build metadata,
 -- e.g. last-build timestamp, extraction version).

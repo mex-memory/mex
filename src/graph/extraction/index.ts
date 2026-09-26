@@ -26,6 +26,8 @@ export { canonicalNodeIdentity, generateNodeId } from "./node-id.js";
 export {
   buildTypeScriptExtraction,
   canonicalCompilerIdentity,
+  CompilerIncrementalFallback,
+  declaresGlobals,
   discoverTypeScriptProjects,
   generateCanonicalCompilerNodeId,
   normalizedCompilerTokens,
@@ -36,6 +38,8 @@ export type {
   CompilerDiagnosticSummary,
   CompilerExtractedNode,
   CompilerExtractionOptions,
+  CompilerFileCapture,
+  CompilerIncrementalInput,
   CompilerExtractionResult,
   CompilerFileExtraction,
   CompilerImportBinding,

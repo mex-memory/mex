@@ -2,8 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
-  copyFileSync,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -15,6 +15,7 @@ import {
   renameSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
   type Stats,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -29,7 +30,8 @@ import type {
 } from "../team/contracts/graph.js";
 import { DB_SCHEMA_VERSION, upgradeGraphDatabase } from "./db/database.js";
 import { openSqlite } from "./db/sqlite.js";
-import { createGraphEngine, GraphSourceStagingError } from "./engine-impl.js";
+import { recordAuditedDatabase } from "./audit-record.js";
+import { createGraphEngine, GraphSourceStagingError, refreshWouldPublishNothing } from "./engine-impl.js";
 import type { BuildResult, GraphEngine } from "./engine.js";
 import {
   inspectGraphSidecars,
@@ -38,6 +40,7 @@ import {
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
 import { tryEnsureSetupIgnoreProtection } from "../setup/ignore.js";
 import { GraphCandidateProcessError, runGraphCandidateProcess, type GraphCandidateProcessOptions } from "./candidate-process.js";
+import { flushGraphPhaseTimings, timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
 
 const LOCK_FILE = "graph.db.lock";
 const LOCK_GATE_FILE = "graph.db.lock.gate";
@@ -478,39 +481,69 @@ async function refreshGraphWithLease(
   let candidatePath: string | null = null;
   try {
     assertNotAborted(options.signal);
-    const priorStatus = await inspect(options, paths.projectRoot, paths.database);
+    // The candidate mostly keeps the live graph's fingerprints; its audit
+    // reuses their band hashes instead of deriving them again.
+    const bandHashMemo = new Map<string, readonly string[]>();
+    const priorStatus = await timeGraphPhaseAsync("envelope.inspect", () =>
+      inspect(options, paths.projectRoot, paths.database, bandHashMemo));
     assertMaintenanceDirectoryUnchanged(paths);
     assertRefreshable(priorStatus);
     assertClearSidecars(paths.database);
-    const priorIdentity = captureDatabaseIdentity(paths.database);
     progress(options, "discover", "Inspecting the current graph snapshot and source corpus.");
 
+    // A refresh that would publish nothing, not even coverage or HEAD, needs
+    // no candidate (issue #209): the live graph is already what a candidate
+    // would become, and it is left byte-identical. Anything else, including a
+    // coverage change, takes the normal validated publication.
+    // An inspection that already saw a change settles it without a second
+    // corpus walk; skipping the check only ever takes the normal path.
+    const statBefore = liveDatabaseStat(paths.database);
+    if (priorStatus.status === "fresh"
+      && timeGraphPhase("envelope.noOpCheck", () => refreshWouldPublishNothing(paths.projectRoot, paths.database))) {
+      assertMaintenanceDirectoryUnchanged(paths);
+      assertClearSidecars(paths.database);
+      if (sameLiveDatabaseStat(statBefore, liveDatabaseStat(paths.database))) {
+        const finished = currentDate(options);
+        return maintenanceResult(
+          started,
+          finished,
+          { filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 },
+          { status: priorStatus, diagnostics: priorStatus.diagnostics },
+        );
+      }
+    }
+    const priorIdentity = captureDatabaseIdentity(paths.database);
+
     candidatePath = ownedPath(paths, "candidate", createToken(options));
-    copyExactDatabase(paths, paths.database, candidatePath, priorIdentity);
-    const buildResult = await refreshCandidate(paths, candidatePath, options);
+    const copyPath = candidatePath;
+    timeGraphPhase("envelope.copy", () => copyExactDatabase(paths, paths.database, copyPath, priorIdentity, false));
+    const buildResult = await timeGraphPhaseAsync("envelope.candidate", () =>
+      refreshCandidate(paths, copyPath, options));
     await options.__internal?.afterCandidateBuilt?.(candidatePath);
     assertMaintenanceDirectoryUnchanged(paths);
     assertNotAborted(options.signal);
 
     progress(options, "validate", "Validating the refreshed graph candidate.");
-    const candidate = await validateCandidate(options, paths, candidatePath);
+    const candidate = await timeGraphPhaseAsync("envelope.validate", () =>
+      validateCandidate(options, paths, copyPath, undefined, bandHashMemo));
     await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
     assertMaintenanceDirectoryUnchanged(paths);
 
-    const published = await publishCandidate({
+    const published = await timeGraphPhaseAsync("envelope.publish", () => publishCandidate({
       paths,
-      candidatePath,
+      candidatePath: copyPath,
       candidate,
       priorStatus,
       priorIdentity,
       retainRecovery: false,
       options,
-    });
+    }));
     candidatePath = null;
     const finished = currentDate(options);
     return maintenanceResult(started, finished, buildResult, published);
   } finally {
     if (candidatePath) cleanupOwnedDatabase(paths, candidatePath);
+    flushGraphPhaseTimings("refresh");
   }
 }
 
@@ -546,7 +579,7 @@ async function rebuildGraphWithLease(
     let continuityFallback = false;
     candidatePath = ownedPath(paths, "candidate", createToken(options));
     if (priorIdentity && cloneForContinuity) {
-      copyExactDatabase(paths, paths.database, candidatePath, priorIdentity);
+      copyExactDatabase(paths, paths.database, candidatePath, priorIdentity, false);
     }
     let buildResult: BuildResult;
     try {
@@ -1153,7 +1186,13 @@ async function publishCandidate(input: CandidatePublicationInput): Promise<Candi
         "recovery",
         createToken(options),
       );
-      rollbackIdentity = copyExactDatabase(paths, paths.database, rollbackPath, input.priorIdentity);
+      rollbackIdentity = copyExactDatabase(
+        paths,
+        paths.database,
+        rollbackPath,
+        input.priorIdentity,
+        input.retainRecovery,
+      );
       await options.__internal?.afterRollbackCreated?.(rollbackPath);
       assertMaintenanceDirectoryUnchanged(paths);
       revalidateLiveDatabase(paths.database, input.priorIdentity);
@@ -1181,9 +1220,29 @@ async function publishCandidate(input: CandidatePublicationInput): Promise<Candi
     assertMaintenanceDirectoryUnchanged(paths);
     assertNotAborted(options.signal);
 
-    const status = await inspect(options, paths.projectRoot, paths.database);
+    // The published file must be the validated candidate itself: the same file
+    // object holding the same bytes (issue #209). Its status is then exactly
+    // the status validation inspected, so the full inspection is not repeated.
+    assertClearSidecars(paths.database);
+    if (!samePublishedDatabase(captureDatabaseIdentity(paths.database), input.candidate.identity)) {
+      throw new GraphMaintenanceError(
+        "GRAPH_CANDIDATE_INVALID",
+        "The published graph is not the validated candidate.",
+        input.candidate.status.diagnostics,
+      );
+    }
     assertMaintenanceDirectoryUnchanged(paths);
+    const status = input.candidate.status;
     (input.assertStatus ?? assertPublishableCandidate)(status);
+    // A fresh validation ran the full structural audit over exactly these
+    // bytes; the next inspection of them need not repeat it.
+    if (status.status === "fresh") {
+      recordAuditedDatabase(
+        realpathSync(paths.database),
+        input.candidate.identity.size,
+        input.candidate.identity.digest,
+      );
+    }
     const diagnostics: Diagnostic[] = [...status.diagnostics];
     let recoveryPath: string | undefined;
     if (rollbackPath && input.retainRecovery) {
@@ -1213,6 +1272,7 @@ async function publishCandidate(input: CandidatePublicationInput): Promise<Candi
         assertMaintenanceDirectoryUnchanged(paths);
         assertOwnedCopyUnchanged(rollbackPath, rollbackIdentity);
         assertPublishedCandidateOwnsLivePath(paths, input.candidate);
+        fsyncFile(rollbackPath);
         renameSync(rollbackPath, paths.database);
         rollbackPath = null;
         rollbackIdentity = null;
@@ -1276,6 +1336,7 @@ function retainBoundRollbackCopy(
   try {
     assertMaintenanceDirectoryUnchanged(paths);
     assertOwnedCopyUnchanged(rollbackPath, rollbackIdentity);
+    fsyncFile(rollbackPath);
     return toRepoRelative(paths.projectRoot, rollbackPath);
   } catch {
     return undefined;
@@ -1359,6 +1420,7 @@ function maintenanceResult(
     ...(build.declinedInputs && build.declinedInputs.length > 0
       ? { declinedInputs: build.declinedInputs }
       : {}),
+    ...(build.refresh ? { refresh: build.refresh } : {}),
     ...(published.recoveryPath ? { recoveryPath: published.recoveryPath } : {}),
   };
 }
@@ -1642,6 +1704,15 @@ function processIsAlive(pid: number): boolean {
 }
 
 function captureDatabaseIdentity(path: string): DatabaseIdentity {
+  return timeGraphPhase("envelope.dbIdentityHash", () => captureDatabaseIdentityUntimed(path));
+}
+
+/**
+ * The exact identity of the database at `path`. With `copyTo`, the same bytes
+ * that are hashed are also written to that descriptor, so the copy is bound
+ * to the digest in one read.
+ */
+function captureDatabaseIdentityUntimed(path: string, copyTo?: number): DatabaseIdentity {
   assertRegularNonSymlink(path, "graph database");
   const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
   const fd = openSync(path, constants.O_RDONLY | noFollow);
@@ -1654,6 +1725,11 @@ function captureDatabaseIdentity(path: string): DatabaseIdentity {
       const count = readSync(fd, chunk, 0, chunk.length, offset);
       if (count === 0) break;
       hash.update(chunk.subarray(0, count));
+      if (copyTo !== undefined) {
+        for (let written = 0; written < count;) {
+          written += writeSync(copyTo, chunk, written, count - written, offset + written);
+        }
+      }
       offset += count;
     }
     const after = fstatSync(fd);
@@ -1684,6 +1760,10 @@ function copyExactDatabase(
   sourcePath: string,
   destinationPath: string,
   expected: DatabaseIdentity,
+  // Whether the copy must be durable on return. A candidate is fsynced again
+  // before it is published, and a rollback copy before it is restored or
+  // retained, so neither needs it until then.
+  durable = true,
 ): DatabaseIdentity {
   assertMaintenanceDirectoryUnchanged(paths);
   assertOwnedDatabasePath(destinationPath);
@@ -1693,19 +1773,36 @@ function copyExactDatabase(
       `Refusing to overwrite an existing owned maintenance path (${basename(destinationPath)}).`,
     );
   }
-  const before = captureDatabaseIdentity(sourcePath);
-  if (!sameDatabaseIdentity(before, expected)) {
+  assertMaintenanceDirectoryUnchanged(paths);
+  // One read hashes the source and writes the copy: the source identity is
+  // captured across the whole copy (stat stable from open to close), and the
+  // copy is then read back and must carry the expected digest.
+  const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
+  const destination = openSync(
+    destinationPath,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow,
+    0o600,
+  );
+  let source: DatabaseIdentity;
+  try {
+    // Keep the source's permission bits, as a file copy would.
+    fchmodSync(destination, lstatSync(sourcePath).mode & 0o777);
+    source = timeGraphPhase("envelope.dbIdentityHash", () => captureDatabaseIdentityUntimed(sourcePath, destination));
+  } catch (error) {
+    closeSync(destination);
+    cleanupOwnedDatabasePath(paths, destinationPath);
+    throw error;
+  }
+  closeSync(destination);
+  if (!sameDatabaseIdentity(source, expected)) {
+    cleanupOwnedDatabasePath(paths, destinationPath);
     throw new GraphMaintenanceError(
       "GRAPH_MAINTENANCE_RACE",
       "The live graph changed before it could be copied safely.",
     );
   }
-  assertMaintenanceDirectoryUnchanged(paths);
-  copyFileSync(sourcePath, destinationPath, constants.COPYFILE_EXCL);
   const copied = captureDatabaseIdentity(destinationPath);
-  const after = captureDatabaseIdentity(sourcePath);
-  if (copied.digest !== expected.digest || copied.size !== expected.size
-    || !sameDatabaseIdentity(after, expected)) {
+  if (copied.digest !== expected.digest || copied.size !== expected.size) {
     cleanupOwnedDatabasePath(paths, destinationPath);
     throw new GraphMaintenanceError(
       "GRAPH_MAINTENANCE_RACE",
@@ -1713,7 +1810,7 @@ function copyExactDatabase(
     );
   }
   assertMaintenanceDirectoryUnchanged(paths);
-  fsyncFile(destinationPath);
+  if (durable) fsyncFile(destinationPath);
   return copied;
 }
 
@@ -1750,11 +1847,12 @@ async function validateCandidate(
   paths: MaintenancePaths,
   candidatePath: string,
   assertStatus: (status: GraphStatus) => void = assertPublishableCandidate,
+  bandHashMemo?: Map<string, readonly string[]>,
 ): Promise<ValidatedCandidate> {
   assertMaintenanceDirectoryUnchanged(paths);
   assertClearSidecars(candidatePath);
   const identityBefore = captureDatabaseIdentity(candidatePath);
-  const status = await inspect(options, paths.projectRoot, candidatePath);
+  const status = await inspect(options, paths.projectRoot, candidatePath, bandHashMemo);
   assertMaintenanceDirectoryUnchanged(paths);
   assertStatus(status);
   assertClearSidecars(candidatePath);
@@ -1991,8 +2089,13 @@ async function inspect(
   options: InternalMaintenanceOptions,
   projectRoot: string,
   database: string,
+  bandHashMemo?: Map<string, readonly string[]>,
 ): Promise<GraphStatus> {
-  return (options.__internal?.inspectStatus ?? inspectGraphStatus)({ projectRoot, dbPath: database });
+  return (options.__internal?.inspectStatus ?? inspectGraphStatus)({
+    projectRoot,
+    dbPath: database,
+    ...(bandHashMemo ? { bandHashMemo } : {}),
+  });
 }
 
 function currentDate(options: InternalMaintenanceOptions): Date {
@@ -2190,6 +2293,34 @@ function sameStatIdentity(
     && left.size === right.size
     && left.mtimeMs === right.mtimeMs
     && left.ctimeMs === right.ctimeMs;
+}
+
+/**
+ * A rename keeps the file object and its bytes; some platforms still move its
+ * change time, which therefore does not take part.
+ */
+function samePublishedDatabase(published: DatabaseIdentity, validated: DatabaseIdentity): boolean {
+  return published.dev === validated.dev
+    && published.ino === validated.ino
+    && published.size === validated.size
+    && published.mtimeMs === validated.mtimeMs
+    && published.digest === validated.digest;
+}
+
+/** A cheap file-object identity for the read-only no-op check. */
+function liveDatabaseStat(path: string): Pick<DatabaseIdentity, "dev" | "ino" | "size" | "mtimeMs" | "ctimeMs"> | null {
+  const stats = safeLstat(path);
+  if (!stats || !stats.isFile() || stats.isSymbolicLink()) return null;
+  return { dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs };
+}
+
+function sameLiveDatabaseStat(
+  left: ReturnType<typeof liveDatabaseStat>,
+  right: ReturnType<typeof liveDatabaseStat>,
+): boolean {
+  return left !== null && right !== null
+    && left.dev === right.dev && left.ino === right.ino && left.size === right.size
+    && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
 function sameDatabaseIdentity(left: DatabaseIdentity, right: DatabaseIdentity): boolean {

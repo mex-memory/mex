@@ -21,9 +21,11 @@ import {
   sep,
 } from "node:path";
 import ts from "typescript";
+import { recordGraphPhase, timeGraphPhase } from "../phase-timing.js";
 
 // v3 (#240): checker-rendered signatures no longer embed absolute module paths.
-export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v3";
+// v4 (#209): checker-rendered unions list their members in one canonical order.
+export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v5";
 export const TYPESCRIPT_COMPILER_VERSION = ts.version;
 
 export type CompilerSourceLanguage =
@@ -198,6 +200,65 @@ export interface CompilerExtractionResult {
   semanticInputs: CompilerSemanticInput[];
   /** Config inputs outside the project corpus that were declined, not read. */
   declinedInputs: DeclinedCompilerInput[];
+  /** One capture per extracted file, in `files` order, for incremental reuse (issue #209). */
+  captures: CompilerFileCapture[];
+  /** Per project: a digest of every program input that is visible without an import. */
+  projectStates: Record<string, string>;
+  /** Files captured from a live program in this run. */
+  recaptured: number;
+  /** Repository-relative paths whose previous capture was reused unchanged. */
+  reused: string[];
+}
+
+/**
+ * Everything the finishing pass needs from one file, as plain data. An
+ * incremental refresh (issue #209) stores it and reuses it instead of
+ * capturing an unaffected file again. Declaration locations inside the root
+ * are stored root-relative (`./path:offset:kind`), so a capture is independent
+ * of where the checkout lives.
+ */
+export interface CompilerFileCapture {
+  filePath: string;
+  language: CompilerSourceLanguage;
+  projectId: string;
+  health: CompilerSourceHealth;
+  nodes: CompilerExtractedNode[];
+  fileDraftId?: string;
+  /** Declaration location → node id, for every declaration this file contributes. */
+  locations: Array<[string, string]>;
+  bindings: DeferredImportBinding[];
+  captured: CapturedReference[];
+  /** Module specifiers the import capture resolved; replayed when the capture is reused. */
+  resolvedSpecifiers: string[];
+  /** Corpus files this file's imports, references and type directives resolve to. */
+  dependencies: string[];
+  /** Corpus paths module resolution probed for this file and did not find. */
+  failedLookups: string[];
+  /** Its declarations are visible without an import: a script, a `.d.ts` or a global augmentation. */
+  globalScope: boolean;
+}
+
+/**
+ * Incremental extraction (issue #209). Every program is still created from
+ * the same roots as a full extraction; only the files in `affected`, and files
+ * without a previous capture, are captured from it. Every other owned file
+ * reuses its previous capture, and the finishing pass runs over all of them.
+ */
+export interface CompilerIncrementalInput {
+  /** Previous captures by repository-relative path. */
+  previous: ReadonlyMap<string, CompilerFileCapture>;
+  /** Repository-relative paths that must be captured again. */
+  affected: ReadonlySet<string>;
+  /** `projectStates` of the previous extraction. */
+  projectStates: Readonly<Record<string, string>>;
+}
+
+/** A condition only a full extraction can honour; the caller extracts in full. */
+export class CompilerIncrementalFallback extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "CompilerIncrementalFallback";
+  }
 }
 
 export interface CompilerStagedInput {
@@ -236,6 +297,14 @@ export interface CompilerExtractionOptions {
   semanticDiagnostics?: boolean;
   /** Test seam: replaces `ts.createProgram` to exercise program-crash isolation. */
   programFactory?: (options: ts.CreateProgramOptions) => ts.Program;
+  /** Reuse unaffected files' previous captures (issue #209). */
+  incremental?: CompilerIncrementalInput;
+  /**
+   * Test seam: the order the checker visits one project's files in. Output
+   * must not depend on it (issue #209); the order-independence property test
+   * permutes it. Must return a permutation of its input.
+   */
+  visitOrder?: (files: readonly string[]) => readonly string[];
 }
 
 interface ParsedProject {
@@ -250,6 +319,8 @@ interface RuntimeProject extends ParsedProject {
   checker: ts.TypeChecker;
   /** Project root that checker-rendered module paths are made relative to. */
   root: string;
+  /** Call-site signature text, by the scope it was rendered in; see {@link renderCallSignature}. */
+  callSignatureTexts: Map<ts.Node, Map<ts.Signature, string>>;
 }
 
 interface ErrorRange {
@@ -315,13 +386,13 @@ interface PendingReference extends Omit<CompilerReference, "id"> {
 // location→id map are deferred to a final, compiler-free finishing pass. Peak
 // memory becomes the largest single project instead of the sum of all of them.
 
-interface DeferredImportBinding {
+export interface DeferredImportBinding {
   binding: Omit<CompilerImportBinding, "targetId">;
   /** Declaration locations of the imported symbol (alias-resolved). */
   targetLocations: readonly string[];
 }
 
-type CapturedReference =
+export type CapturedReference =
   | { form: "final"; position: number; identityHint: string; reference: Omit<CompilerReference, "id"> }
   | {
       form: "import"; position: number; line: number; column: number; sourceId: string;
@@ -357,6 +428,9 @@ interface CapturedFile {
   fileDraftId?: string;
   bindings: DeferredImportBinding[];
   captured: CapturedReference[];
+  /** Declaration location → node id for this file's declarations. */
+  locations: Array<[string, string]>;
+  resolvedSpecifiers: string[];
 }
 
 /** Capture-time half of the old `idsForSymbol`: symbol → declaration locations. */
@@ -366,7 +440,9 @@ function declarationLocationsForSymbol(
 ): string[] {
   if (!symbol) return [];
   const resolved = canonicalSymbol(symbol, checker);
-  return [...new Set((resolved.declarations ?? []).map(declarationLocation))];
+  // A union property's declarations come in the checker's type-id order;
+  // sorted, the capture is a function of the code (issue #209).
+  return [...new Set((resolved.declarations ?? []).map(declarationLocation))].sort(compareCodePoints);
 }
 
 /** Finish-time half: locations → the same sorted unique ids `idsForSymbol` produced. */
@@ -469,17 +545,77 @@ export function buildTypeScriptExtraction(
   const locationIds = new Map<string, string>();
   const nodeById = new Map<string, CompilerExtractedNode>();
   const capturedByFile = new Map<string, CapturedFile>();
+  const dependenciesByFile = new Map<string, FileDependencies>();
+  const reusedCaptures = new Map<string, CompilerFileCapture>();
+  const projectStates: Record<string, string> = {};
+  const incremental = options.incremental;
+  const rootPrefix = `${normalizedAbsolute(root)}/`;
+  const reusedFiles: string[] = [];
+  let recaptured = 0;
 
   // Stage one project's owned files while its program is alive; retain only
   // plain data. Nothing stored here references the program, checker, or AST.
   const processProject = (project: ParsedProject, program: ts.Program, owned: readonly string[]): void => {
-    const runtime: RuntimeProject = { ...project, program, checker: program.getTypeChecker(), root };
-    const contexts: FileContext[] = [];
+    const runtime: RuntimeProject = {
+      ...project, program, checker: program.getTypeChecker(), root, callSignatureTexts: new Map(),
+    };
+    const replayedResolutions = new Set<string>();
+    // Files importing the same specifier from one directory share a resolution.
+    const relevantFailedLookups = new WeakMap<readonly string[], string[]>();
     for (const absoluteFile of owned) {
+      const sourceFile = program.getSourceFile(absoluteFile);
+      if (sourceFile) {
+        dependenciesByFile.set(
+          absoluteFile,
+          fileDependencies(program, sourceFile, root, candidateSet, relevantFailedLookups),
+        );
+      }
+    }
+    const state = projectInputState(program, root, candidateSet, dependenciesByFile);
+    projectStates[project.id] = state;
+    // Incremental extraction (issue #209): an unaffected file's capture is a
+    // function of its own bytes, the files it imports (transitively) and the
+    // inputs every file sees without an import. The caller puts every file
+    // that imports a changed file into `affected`; this project's global and
+    // external inputs are compared here, and any change extracts in full.
+    const reused = new Map<string, CapturedFile>();
+    if (incremental) {
+      if (incremental.projectStates[project.id] !== state) {
+        throw new CompilerIncrementalFallback("a global declaration or an external compiler input changed");
+      }
+      for (const absoluteFile of owned) {
+        const filePath = relativePath(root, absoluteFile);
+        const previous = incremental.previous.get(filePath);
+        if (previous && previous.projectId !== project.id) {
+          throw new CompilerIncrementalFallback("a file moved to another compiler project");
+        }
+        if (previous && !incremental.affected.has(filePath)) {
+          // An unaffected file resolves exactly as before; anything else means
+          // the affected set missed a dependency, and nothing is reused.
+          const current = dependenciesByFile.get(absoluteFile);
+          if (!current || !sameDependencies(current, previous)) {
+            throw new CompilerIncrementalFallback("an unaffected file's module resolution changed");
+          }
+          reused.set(absoluteFile, restoreCapture(previous, rootPrefix));
+          reusedCaptures.set(absoluteFile, previous);
+          reusedFiles.push(filePath);
+        }
+      }
+    }
+    const contexts: FileContext[] = [];
+    const visitOrder = options.visitOrder ? options.visitOrder(owned) : owned;
+    if (visitOrder.length !== owned.length || !owned.every((file) => visitOrder.includes(file))) {
+      throw new Error("A compiler visit order must be a permutation of the owned files.");
+    }
+    for (const absoluteFile of visitOrder) {
+      if (reused.has(absoluteFile)) continue;
       const sourceFile = program.getSourceFile(absoluteFile);
       if (!sourceFile) continue;
       const filePath = relativePath(root, absoluteFile);
-      const { health, ranges } = sourceHealth(program, sourceFile, semanticDiagnostics);
+      const { health, ranges } = timeGraphPhase(
+        "compiler.diagnostics",
+        () => sourceHealth(program, sourceFile, semanticDiagnostics),
+      );
       const context: FileContext = {
         filePath,
         sourceFile,
@@ -507,18 +643,28 @@ export function buildTypeScriptExtraction(
     }
 
     assignCanonicalIdentities(contexts);
+    const contextLocations = new Map<FileContext, Array<[string, string]>>();
     for (const context of contexts) {
+      const locations: Array<[string, string]> = [];
       for (const draft of context.drafts) {
         if (!draft.id) continue;
         for (const declaration of draft.declarations) {
-          locationIds.set(declarationLocation(declaration), draft.id);
+          const location = declarationLocation(declaration);
+          locationIds.set(location, draft.id);
+          locations.push([location, draft.id]);
         }
       }
+      contextLocations.set(context, locations);
       context.nodes = materializeNodes(context);
       for (const node of context.nodes) nodeById.set(node.id, node);
     }
+    for (const captured of reused.values()) {
+      for (const [location, id] of captured.locations) locationIds.set(location, id);
+      for (const node of captured.nodes) nodeById.set(node.id, node);
+    }
     for (const context of contexts) {
-      const bindings = captureImportBindings(root, context, inputs);
+      const resolvedSpecifiers: string[] = [];
+      const bindings = captureImportBindings(root, context, inputs, resolvedSpecifiers);
       capturedByFile.set(normalizedAbsolute(context.sourceFile.fileName), {
         filePath: context.filePath,
         language: context.language,
@@ -528,7 +674,27 @@ export function buildTypeScriptExtraction(
         fileDraftId: context.fileDraft?.id,
         bindings,
         captured: captureReferences(context, bindings),
+        locations: contextLocations.get(context)!,
+        resolvedSpecifiers,
       });
+      recaptured++;
+      onFileCaptured?.(capturedByFile.size);
+    }
+    for (const [absoluteFile, captured] of reused) {
+      // Import capture resolves each specifier through the input ledger; the
+      // same probes keep the recorded semantic inputs identical to a capture.
+      // Resolution depends only on the importing directory and file kind, so
+      // one probe per (directory, extension, specifier) records the same inputs.
+      const options = program.getCompilerOptions();
+      const directory = dirname(absoluteFile);
+      const extension = extname(absoluteFile);
+      for (const specifier of captured.resolvedSpecifiers) {
+        const key = `${directory}|${extension}|${specifier}`;
+        if (replayedResolutions.has(key)) continue;
+        replayedResolutions.add(key);
+        ts.resolveModuleName(specifier, absoluteFile, options, inputs.moduleResolutionHost());
+      }
+      capturedByFile.set(absoluteFile, captured);
       onFileCaptured?.(capturedByFile.size);
     }
   };
@@ -539,6 +705,7 @@ export function buildTypeScriptExtraction(
     // failure to this project so its files fall back to tree-sitter extraction
     // instead of aborting the whole corpus (issue #140 follow-up finding).
     let program: ts.Program;
+    const programStarted = performance.now();
     try {
       program = createProgram({
         rootNames: project.parsed.fileNames,
@@ -557,6 +724,8 @@ export function buildTypeScriptExtraction(
         if (!claimed.has(absolute)) poisonedFiles.add(absolute);
       }
       continue;
+    } finally {
+      recordGraphPhase("compiler.program", performance.now() - programStarted);
     }
     const owned = candidates.filter((file) => {
       if (claimed.has(file) || poisonedFiles.has(file)) return false;
@@ -564,7 +733,7 @@ export function buildTypeScriptExtraction(
       catch { return false; }
     });
     for (const file of owned) claimed.add(file);
-    processProject(project, program, owned);
+    timeGraphPhase("compiler.capture", () => processProject(project, program, owned));
     // program goes out of scope here — the peak-memory point of the old
     // implementation (every program + checker alive simultaneously) is gone.
   }
@@ -586,11 +755,11 @@ export function buildTypeScriptExtraction(
       ...options.inferredCompilerOptions,
     };
     try {
-      const program = createProgram({
+      const program = timeGraphPhase("compiler.program", () => createProgram({
         rootNames: uncovered,
         options: inferredOptions,
         host: inputs.compilerHost(inferredOptions),
-      });
+      }));
       inferredProject = {
         id: "inferred",
         configPath: "",
@@ -601,7 +770,7 @@ export function buildTypeScriptExtraction(
         },
         diagnostics: [],
       };
-      processProject(inferredProject, program, uncovered);
+      timeGraphPhase("compiler.capture", () => processProject(inferredProject!, program, uncovered));
     } catch {
       // Poison among the uncovered roots: leave them all to tree-sitter.
     }
@@ -615,10 +784,16 @@ export function buildTypeScriptExtraction(
     if (captured.fileDraftId) fileDraftIdByPath.set(captured.filePath, captured.fileDraftId);
   }
 
+  const finishStarted = performance.now();
   const files: CompilerFileExtraction[] = [];
+  const captures: CompilerFileCapture[] = [];
   for (const absoluteFile of candidates) {
     const captured = capturedByFile.get(absoluteFile);
     if (!captured) continue;
+    const dependencies = dependenciesByFile.get(absoluteFile)
+      ?? { dependencies: [], failedLookups: [], globalScope: true };
+    // A reused capture is stored exactly as it was read.
+    captures.push(reusedCaptures.get(absoluteFile) ?? portableCapture(captured, dependencies, rootPrefix));
     const importBindings: CompilerImportBinding[] = captured.bindings.map(({ binding, targetLocations }) => ({
       ...binding,
       targetId: idsForLocations(targetLocations, locationIds)[0],
@@ -633,6 +808,8 @@ export function buildTypeScriptExtraction(
       references: finishReferences(captured, importBindings, locationIds, nodeById, fileDraftIdByPath),
     } satisfies CompilerFileExtraction);
   }
+
+  recordGraphPhase("compiler.finish", performance.now() - finishStarted);
 
   const summaryProjects: ParsedProject[] = [
     ...parsedProjects.filter((project) => !crashedProjects.has(project)),
@@ -658,6 +835,210 @@ export function buildTypeScriptExtraction(
     files,
     semanticInputs: inputs.semanticInputs(),
     declinedInputs: inputs.declinedConfigInputs(),
+    captures,
+    projectStates,
+    recaptured,
+    reused: reusedFiles.sort(compareCodePoints),
+  };
+}
+
+function sameDependencies(current: FileDependencies, previous: FileDependencies): boolean {
+  return current.globalScope === previous.globalScope
+    && current.dependencies.join("\n") === previous.dependencies.join("\n")
+    && current.failedLookups.join("\n") === previous.failedLookups.join("\n");
+}
+
+interface FileDependencies {
+  dependencies: string[];
+  failedLookups: string[];
+  globalScope: boolean;
+}
+
+interface ProgramResolutions {
+  forEachResolvedModule?(
+    callback: (resolution: { resolvedModule?: ts.ResolvedModuleFull; failedLookupLocations?: readonly string[] }) => void,
+    file: ts.SourceFile,
+  ): void;
+  forEachResolvedTypeReferenceDirective?(
+    callback: (resolution: {
+      resolvedTypeReferenceDirective?: ts.ResolvedTypeReferenceDirective;
+      failedLookupLocations?: readonly string[];
+    }) => void,
+    file: ts.SourceFile,
+  ): void;
+}
+
+/**
+ * The corpus files one file's compiler facts can depend on through module
+ * resolution, and the corpus paths whose appearance would change a resolution.
+ * Read from the program's own resolution cache, so it is exactly what the
+ * checker used.
+ */
+function fileDependencies(
+  program: ts.Program,
+  sourceFile: ts.SourceFile,
+  root: string,
+  candidates: ReadonlySet<string>,
+  relevantFailedLookups: WeakMap<readonly string[], string[]>,
+): FileDependencies {
+  const resolutions = program as ts.Program & ProgramResolutions;
+  const dependencies = new Set<string>();
+  const failedLookups = new Set<string>();
+  const addTarget = (fileName: string | undefined): void => {
+    if (!fileName) return;
+    const absolute = normalizedAbsolute(fileName);
+    if (candidates.has(absolute)) dependencies.add(relativePath(root, absolute));
+  };
+  const addFailed = (locations: readonly string[] | undefined): void => {
+    if (!locations) return;
+    let relevant = relevantFailedLookups.get(locations);
+    if (!relevant) {
+      // Only a corpus file appearing can change a resolution the refresh
+      // must notice, and nothing under node_modules is ever corpus.
+      relevant = [];
+      for (const location of locations) {
+        if (location.includes("/node_modules/")) continue;
+        const absolute = normalizedAbsolute(location);
+        if (withinRoot(root, absolute) && isCompilerSourceFile(absolute)) relevant.push(relativePath(root, absolute));
+      }
+      relevantFailedLookups.set(locations, relevant);
+    }
+    for (const location of relevant) failedLookups.add(location);
+  };
+  if (!resolutions.forEachResolvedModule || !resolutions.forEachResolvedTypeReferenceDirective) {
+    // Without the resolution cache nothing proves a file independent of others.
+    return { dependencies: [], failedLookups: [], globalScope: true };
+  }
+  resolutions.forEachResolvedModule((resolution) => {
+    addTarget(resolution.resolvedModule?.resolvedFileName);
+    addFailed(resolution.failedLookupLocations);
+  }, sourceFile);
+  resolutions.forEachResolvedTypeReferenceDirective((resolution) => {
+    addTarget(resolution.resolvedTypeReferenceDirective?.resolvedFileName);
+    addFailed(resolution.failedLookupLocations);
+  }, sourceFile);
+  for (const reference of sourceFile.referencedFiles) {
+    const absolute = normalizedAbsolute(resolve(dirname(sourceFile.fileName), reference.fileName));
+    addTarget(absolute);
+    if (!candidates.has(absolute)) addFailed([absolute]);
+  }
+  return {
+    dependencies: [...dependencies].sort(compareCodePoints),
+    failedLookups: [...failedLookups].sort(compareCodePoints),
+    globalScope: isGlobalScopeSource(sourceFile),
+  };
+}
+
+/**
+ * Declarations another file can see without importing this one: a script
+ * (neither an ES nor a CommonJS module), any declaration file, a global
+ * augmentation, an ambient or augmenting `declare module "name"`, or a UMD
+ * global. The source file must be bound, which creating the checker does.
+ */
+export function isGlobalScopeSource(sourceFile: ts.SourceFile): boolean {
+  if (sourceFile.isDeclarationFile) return true;
+  // The binder records a CommonJS module; the parser records an ES module.
+  const indicators = sourceFile as ts.SourceFile & { externalModuleIndicator?: unknown; commonJsModuleIndicator?: unknown };
+  if (indicators.externalModuleIndicator === undefined && indicators.commonJsModuleIndicator === undefined) return true;
+  return declaresGlobals(sourceFile);
+}
+
+/** The syntactic half of {@link isGlobalScopeSource}; needs no binding. */
+export function declaresGlobals(sourceFile: ts.SourceFile): boolean {
+  return sourceFile.statements.some((statement) => ts.isNamespaceExportDeclaration(statement)
+    || (ts.isModuleDeclaration(statement)
+      && (ts.isStringLiteral(statement.name) || (statement.flags & ts.NodeFlags.GlobalAugmentation) !== 0)));
+}
+
+/**
+ * A digest of every input a program's files can see without importing it:
+ * every global-scope corpus file and every non-corpus file (libraries,
+ * dependencies, JSON) in the program, with their exact bytes. Corpus modules
+ * are left out; they are tracked file by file.
+ */
+function projectInputState(
+  program: ts.Program,
+  root: string,
+  candidates: ReadonlySet<string>,
+  dependencies: ReadonlyMap<string, FileDependencies>,
+): string {
+  const entries: string[] = [];
+  for (const sourceFile of program.getSourceFiles()) {
+    const absolute = normalizedAbsolute(sourceFile.fileName);
+    if (candidates.has(absolute)) {
+      const global = dependencies.get(absolute)?.globalScope ?? isGlobalScopeSource(sourceFile);
+      if (!global) continue;
+    }
+    entries.push(`${portableInputPath(root, absolute)}\u0000${sha256(sourceFile.text)}`);
+  }
+  entries.sort(compareCodePoints);
+  return sha256(entries.join("\n"));
+}
+
+/** Root-relative inside the root; from the last `node_modules` segment outside it. */
+function portableInputPath(root: string, absolute: string): string {
+  if (withinRoot(root, absolute)) return relativePath(root, absolute);
+  const segments = absolute.split("/");
+  const dependencyRoot = segments.lastIndexOf("node_modules");
+  return dependencyRoot >= 0 ? segments.slice(dependencyRoot).join("/") : absolute;
+}
+
+function mapCaptureLocations(
+  captured: CapturedReference[],
+  bindings: DeferredImportBinding[],
+  locations: Array<[string, string]>,
+  map: (location: string) => string,
+): Pick<CompilerFileCapture, "captured" | "bindings" | "locations"> {
+  const all = (values: readonly string[]): string[] => values.map(map);
+  return {
+    locations: locations.map(([location, id]) => [map(location), id]),
+    bindings: bindings.map((entry) => ({ ...entry, targetLocations: all(entry.targetLocations) })),
+    captured: captured.map((record): CapturedReference => {
+      switch (record.form) {
+        case "call": return { ...record, candidateLocations: all(record.candidateLocations) };
+        case "heritage": return { ...record, targetLocations: all(record.targetLocations) };
+        case "identifier": return { ...record, targetLocations: all(record.targetLocations) };
+        case "callback": return {
+          ...record,
+          calleeLocations: all(record.calleeLocations),
+          callbackLocations: all(record.callbackLocations),
+        };
+        default: return record;
+      }
+    }),
+  };
+}
+
+function portableCapture(
+  captured: CapturedFile,
+  dependencies: FileDependencies,
+  rootPrefix: string,
+): CompilerFileCapture {
+  return {
+    filePath: captured.filePath,
+    language: captured.language,
+    projectId: captured.projectId,
+    health: captured.health,
+    nodes: captured.nodes,
+    ...(captured.fileDraftId ? { fileDraftId: captured.fileDraftId } : {}),
+    ...mapCaptureLocations(captured.captured, captured.bindings, captured.locations, (location) =>
+      location.startsWith(rootPrefix) ? `./${location.slice(rootPrefix.length)}` : location),
+    resolvedSpecifiers: captured.resolvedSpecifiers,
+    ...dependencies,
+  };
+}
+
+function restoreCapture(capture: CompilerFileCapture, rootPrefix: string): CapturedFile {
+  return {
+    filePath: capture.filePath,
+    language: capture.language,
+    projectId: capture.projectId,
+    health: capture.health,
+    nodes: capture.nodes,
+    fileDraftId: capture.fileDraftId,
+    ...mapCaptureLocations(capture.captured, capture.bindings, capture.locations, (location) =>
+      location.startsWith("./") ? `${rootPrefix}${location.slice(2)}` : location),
+    resolvedSpecifiers: capture.resolvedSpecifiers,
   };
 }
 
@@ -774,6 +1155,8 @@ class CompilerInputLedger {
   private readonly directoryFiles = new Map<string, Set<string>>();
   private readonly directoryChildren = new Map<string, Set<string>>();
   private readonly declinedConfigs = new Map<string, string>();
+  /** Parsed source files shared by every program of one extraction; see {@link compilerHost}. */
+  private readonly sourceFiles = new Map<string, ts.SourceFile>();
   private candidates: string[] = [];
 
   constructor(root: string, private readonly options: CompilerExtractionOptions) {
@@ -980,6 +1363,7 @@ class CompilerInputLedger {
 
   compilerHost(options: ts.CompilerOptions): ts.CompilerHost {
     const base = ts.createCompilerHost(options, true);
+    const settings = sourceFileSettingsKey(options);
     const getSourceFile: ts.CompilerHost["getSourceFile"] = (
       fileName,
       languageVersionOrOptions,
@@ -990,13 +1374,40 @@ class CompilerInputLedger {
         onError?.(`Could not read compiler input ${fileName}.`);
         return undefined;
       }
-      return ts.createSourceFile(
+      // A repository with several tsconfig projects parsed its shared sources
+      // and every library once per project (issue #209). A parsed and bound
+      // source file is shared between programs whose settings agree on every
+      // option that affects parsing or binding: the rule TypeScript itself
+      // applies when it reuses source files across programs. The bytes are
+      // the ledger's, identical for the whole extraction.
+      //
+      // A declaration file (the libraries above all) is shared more widely.
+      // Every other input its parse and bind read is in the key below: module
+      // detection resolves to its own syntax in every mode, strict mode comes
+      // from that alone, no implicit helper or JSX import is added to it, and
+      // the remaining options the binder reads concern executable statements,
+      // switches and labels, which a declaration file does not contain.
+      const parse = typeof languageVersionOrOptions === "number"
+        ? { languageVersion: languageVersionOrOptions }
+        : languageVersionOrOptions;
+      const key = [
+        DECLARATION_FILE.test(fileName) ? "declaration" : settings,
+        normalizedAbsolute(fileName),
+        parse.languageVersion,
+        parse.impliedNodeFormat ?? "",
+        parse.jsDocParsingMode ?? "",
+      ].join("\u0000");
+      const shared = this.sourceFiles.get(key);
+      if (shared && shared.text === source) return shared;
+      const parsed = ts.createSourceFile(
         fileName,
         source,
         languageVersionOrOptions,
         true,
         scriptKindForFile(fileName),
       );
+      this.sourceFiles.set(key, parsed);
+      return parsed;
     };
     return {
       ...base,
@@ -1086,6 +1497,23 @@ class CompilerInputLedger {
       directory = parent;
     }
   }
+}
+
+/** TypeScript's declaration file names, including `.d.<extension>.ts`. */
+const DECLARATION_FILE = /\.d(\.[^./\\]+)?\.[cm]?ts$/iu;
+
+/**
+ * The compiler options a parsed and bound source file depends on: the set
+ * TypeScript compares before reusing a source file in another program, plus
+ * the options the program reads when it collects a file's implicit imports.
+ */
+function sourceFileSettingsKey(options: ts.CompilerOptions): string {
+  const affecting = (ts as unknown as { sourceFileAffectingCompilerOptions?: ReadonlyArray<{ name: string }> })
+    .sourceFileAffectingCompilerOptions;
+  if (!affecting) return JSON.stringify(Object.entries(options).sort(([left], [right]) => compareCodePoints(left, right)));
+  const names = [...new Set([...affecting.map((option) => option.name), "jsx", "jsxImportSource", "importHelpers"])]
+    .sort(compareCodePoints);
+  return JSON.stringify(names.map((name) => [name, options[name] ?? null]));
 }
 
 function parseProjects(
@@ -1442,6 +1870,7 @@ function captureImportBindings(
   root: string,
   context: FileContext,
   inputs: CompilerInputLedger,
+  resolvedSpecifiers: string[],
 ): DeferredImportBinding[] {
   const bindings: DeferredImportBinding[] = [];
   const checker = context.project.checker;
@@ -1450,6 +1879,7 @@ function captureImportBindings(
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
     if (!referenceSyntaxIsTrusted(statement, context)) continue;
     const moduleSpecifier = statement.moduleSpecifier.text;
+    resolvedSpecifiers.push(moduleSpecifier);
     const resolution = ts.resolveModuleName(
       moduleSpecifier,
       context.sourceFile.fileName,
@@ -1754,19 +2184,37 @@ function captureCallReference(
   const expression = node.expression;
   const sourceId = enclosingSourceId(node, context);
   if (!sourceId) return;
-  const resolvedSignature = checker.getResolvedSignature(node);
+  const calleeType = checker.getTypeAtLocation(expression);
+  const signatureKind = ts.isNewExpression(node) ? ts.SignatureKind.Construct : ts.SignatureKind.Call;
+  // A union-typed callee resolves to a signature the checker builds from
+  // whichever member it created first, so both the resolved signature and
+  // its declaration depend on file visit order. Such a call is described by
+  // every member's signatures instead (issue #209). A callee whose value is
+  // one of several alternatives (`a ?? b`, `a || b`, `c ? a : b`, directly or
+  // through an unannotated const) is described the same way: the checker
+  // reduces identical alternatives to whichever it created first, so the
+  // reduced type may not be a union at all.
+  const alternatives = calleeAlternatives(expression, checker);
+  const unionCallee = calleeType.isUnion() || alternatives !== undefined;
+  const resolvedSignature = unionCallee ? undefined : checker.getResolvedSignature(node);
+  const memberCallSignatures = alternatives
+    ? [...new Set(alternatives.flatMap((alternative) =>
+      memberSignatures(checker, checker.getTypeAtLocation(alternative), signatureKind)))]
+    : unionCallee
+      ? memberSignatures(checker, calleeType, signatureKind)
+      : [];
   const signatureSymbol = resolvedSignature?.declaration
     ? symbolForDeclaration(resolvedSignature.declaration, checker)
     : undefined;
   const expressionSymbol = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(expression) ? expression.name : expression);
-  const callSignatures = checker.getTypeAtLocation(expression).getCallSignatures();
+  const callSignatures = unionCallee ? memberCallSignatures : calleeType.getCallSignatures();
   const candidateLocations = [...new Set(callSignatures
     .map((signature) => signature.declaration ? symbolForDeclaration(signature.declaration, checker) : undefined)
     .flatMap((symbol) => declarationLocationsForSymbol(symbol, checker))
     .concat(
       declarationLocationsForSymbol(signatureSymbol, checker),
       declarationLocationsForSymbol(expressionSymbol, checker),
-    ))];
+    ))].sort(compareCodePoints);
   const polymorphic = ts.isPropertyAccessExpression(expression)
     && expression.expression.kind !== ts.SyntaxKind.ThisKeyword
     && expression.expression.kind !== ts.SyntaxKind.SuperKeyword
@@ -1793,12 +2241,14 @@ function captureCallReference(
     polymorphic,
     candidateLocations,
     expressionText: expression.getText(context.sourceFile),
-    signatureText: resolvedSignature
-      ? portableCheckerText(
-        checker.signatureToString(resolvedSignature, node, ts.TypeFormatFlags.NoTruncation),
-        context.project.root,
-      )
-      : undefined,
+    signatureText: unionCallee
+      ? canonicalSignatureSet(context.project, memberCallSignatures, node)
+      : resolvedSignature
+        ? portableCheckerText(
+          renderCallSignature(context.project, resolvedSignature, node),
+          context.project.root,
+        )
+        : undefined,
   });
 }
 
@@ -1862,8 +2312,18 @@ function captureCallbackReferences(
   captured: CapturedReference[],
 ): void {
   const checker = context.project.checker;
-  const signature = checker.getResolvedSignature(call);
-  const declaration = signature?.getDeclaration();
+  const calleeType = checker.getTypeAtLocation(call.expression);
+  // For a union-typed callee the checker's resolved signature depends on
+  // file visit order; the callee is then its members' first declaration in
+  // code order (portable path, start, kind), a choice the code alone decides.
+  const declaration = calleeType.isUnion()
+    ? firstDeclarationInCodeOrder(
+      memberSignatures(checker, calleeType, ts.SignatureKind.Call)
+        .map((signature) => signature.getDeclaration())
+        .filter((candidate): candidate is ts.SignatureDeclaration => Boolean(candidate)),
+      context.project.root,
+    )
+    : checker.getResolvedSignature(call)?.getDeclaration();
   if (!declaration || !ts.isFunctionLike(declaration)) return;
   const calleeSymbol = symbolForDeclaration(declaration, checker);
   const calleeLocations = declarationLocationsForSymbol(calleeSymbol, checker);
@@ -2037,19 +2497,92 @@ function declarationSignature(
     const location = declarations[0];
     const type = checker.getTypeOfSymbolAtLocation(symbol, location);
     const signatures = [
-      ...checker.getSignaturesOfType(type, ts.SignatureKind.Call),
-      ...checker.getSignaturesOfType(type, ts.SignatureKind.Construct),
+      ...memberSignatures(checker, type, ts.SignatureKind.Call),
+      ...memberSignatures(checker, type, ts.SignatureKind.Construct),
     ];
     const rendered = [...new Set(signatures.map((signature) => portableCheckerText(
-      checker.signatureToString(signature, location, ts.TypeFormatFlags.NoTruncation),
+      renderSignature(checker, signature, location),
       root,
     )))].sort();
     if (rendered.length > 0) return rendered.join(" | ");
-    const typeText = portableCheckerText(checker.typeToString(type, location, ts.TypeFormatFlags.NoTruncation), root);
+    const typeText = portableCheckerText(renderType(checker, type, location), root);
     if (typeText && typeText !== "any") return typeText;
   }
   const headers = [...new Set(declarations.map(declarationHeader).filter(Boolean))].sort();
   return headers.length > 0 ? headers.join(" | ") : undefined;
+}
+
+// Canonical checker text (issue #209). The checker orders a union's members by
+// internal type id, which follows the order types happened to be created in,
+// so the same declaration rendered differently depending on which other files
+// had been examined first; re-extracting a few files could not reproduce a full
+// extraction. These render exactly as `typeToString` / `signatureToString` do,
+// through the same node builder and printer options, except that each union's
+// members are ordered by their own canonical text.
+const typePrinter = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
+const signaturePrinter = ts.createPrinter({
+  removeComments: true,
+  omitTrailingSemicolon: true,
+  newLine: ts.NewLineKind.LineFeed,
+});
+const CHECKER_TEXT_LIMIT = 2_000_000;
+const RENDER_FLAGS = ts.NodeBuilderFlags.NoTruncation | ts.NodeBuilderFlags.IgnoreErrors;
+
+function renderType(checker: ts.TypeChecker, type: ts.Type, enclosing: ts.Node): string {
+  const node = checker.typeToTypeNode(type, enclosing, RENDER_FLAGS);
+  if (!node) return checker.typeToString(type, enclosing, ts.TypeFormatFlags.NoTruncation);
+  return printCanonical(typePrinter, node, enclosing.getSourceFile());
+}
+
+function renderSignature(checker: ts.TypeChecker, signature: ts.Signature, enclosing: ts.Node): string {
+  const node = checker.signatureToSignatureDeclaration(
+    signature,
+    ts.SyntaxKind.CallSignature,
+    enclosing,
+    RENDER_FLAGS | ts.NodeBuilderFlags.WriteTypeParametersInQualifiedName,
+  );
+  if (!node) return checker.signatureToString(signature, enclosing, ts.TypeFormatFlags.NoTruncation);
+  return printCanonical(signaturePrinter, node, enclosing.getSourceFile()).replace(/;$/u, "");
+}
+
+function printCanonical(printer: ts.Printer, node: ts.Node, sourceFile: ts.SourceFile): string {
+  const transformed = ts.transform(node, [(context) => {
+    const visit = (current: ts.Node): ts.Node => {
+      const visited = ts.visitEachChild(current, visit, context);
+      if (ts.isTypeLiteralNode(visited)) {
+        // A mapped or spread object type lists its properties in the type-id
+        // order of its key literals. Members are ordered by name, stably, so
+        // same-named overloads keep their order; unnamed call, construct and
+        // index signatures stay first, in source order.
+        const named = (member: ts.TypeElement): string => (member.name
+          ? printer.printNode(ts.EmitHint.Unspecified, member.name, sourceFile)
+          : "");
+        return context.factory.updateTypeLiteralNode(visited, context.factory.createNodeArray(
+          [...visited.members].sort((left, right) => compareCodePoints(named(left), named(right))),
+        ));
+      }
+      if (!ts.isUnionTypeNode(visited) && !ts.isIntersectionTypeNode(visited)) return visited;
+      const members = context.factory.createNodeArray(visited.types
+        .map((member) => ({ member, text: printer.printNode(ts.EmitHint.Unspecified, member, sourceFile) }))
+        .sort((left, right) => compareCodePoints(left.text, right.text))
+        .map(({ member }) => member));
+      // Intersections the checker derives from a union (a union signature's
+      // parameters, a contextual type) inherit its type-id order too.
+      return ts.isUnionTypeNode(visited)
+        ? context.factory.updateUnionTypeNode(visited, members)
+        : context.factory.updateIntersectionTypeNode(visited, members);
+    };
+    return (root) => visit(root);
+  }]);
+  try {
+    // Checker text is single-line; the printer breaks only synthesized
+    // multi-line literals, which the checker's own writer joins with spaces.
+    const text = printer.printNode(ts.EmitHint.Unspecified, transformed.transformed[0]!, sourceFile)
+      .replace(/\n\s*/gu, " ");
+    return text.length >= CHECKER_TEXT_LIMIT ? `${text.slice(0, CHECKER_TEXT_LIMIT - 3)}...` : text;
+  } finally {
+    transformed.dispose();
+  }
 }
 
 function declarationHeader(node: ts.Node): string {
@@ -2208,10 +2741,196 @@ function returnTypeOf(
 ): string | undefined {
   if (!symbol || !ts.isFunctionLike(node)) return undefined;
   const type = checker.getTypeOfSymbolAtLocation(symbol, node);
-  const signature = checker.getSignaturesOfType(type, ts.SignatureKind.Call)[0];
-  return signature
-    ? portableCheckerText(checker.typeToString(signature.getReturnType(), node, ts.TypeFormatFlags.NoTruncation), root)
+  // The first signature of each union member, never the checker's union
+  // signature, whose first member depends on file visit order (issue #209).
+  const members = type.isUnion() ? type.types : [type];
+  const returns = [...new Set(members.flatMap((member) => {
+    const signature = checker.getSignaturesOfType(member, ts.SignatureKind.Call)[0];
+    return signature ? [portableCheckerText(renderType(checker, signature.getReturnType(), node), root)] : [];
+  }))].sort(compareCodePoints);
+  return returns.length > 0 ? returns.join(" | ") : undefined;
+}
+
+/**
+ * A type's signatures of one kind, member by member for a union. The
+ * checker's own union signature is built from whichever member it created
+ * first, so it is not a function of the code (issue #209). Callers order the
+ * result themselves.
+ */
+function memberSignatures(checker: ts.TypeChecker, type: ts.Type, kind: ts.SignatureKind): readonly ts.Signature[] {
+  return type.isUnion()
+    ? type.types.flatMap((member) => checker.getSignaturesOfType(member, kind))
+    : checker.getSignaturesOfType(type, kind);
+}
+
+/**
+ * The expressions a callee's value is chosen from, or undefined when it has
+ * no alternatives or they cannot all be named. Follows parentheses, `??`,
+ * `||`, conditionals, unannotated consts (whose type is their initializer's),
+ * and an element of an array literal: through a `for...of` variable, an
+ * element access, or the callback parameter of an array method. The checker
+ * reduces identical alternatives to whichever it created first, so these
+ * make the result a function of the code rather than of the reduced type.
+ */
+function calleeAlternatives(expression: ts.Expression, checker: ts.TypeChecker): ts.Expression[] | undefined {
+  const leaves: ts.Expression[] = [];
+  const visited = new Set<ts.Node>();
+  let branched = false;
+  let opaque = false;
+  const visitElements = (node: ts.Expression): void => {
+    if (ts.isParenthesizedExpression(node)) return visitElements(node.expression);
+    const initializer = ts.isIdentifier(node) ? unannotatedConstInitializer(node, checker) : undefined;
+    if (initializer) return visitElements(initializer);
+    if (!ts.isArrayLiteralExpression(node)) {
+      opaque = true;
+      return;
+    }
+    if (node.elements.length > 1) branched = true;
+    for (const element of node.elements) {
+      if (ts.isSpreadElement(element)) visitElements(element.expression);
+      else if (ts.isOmittedExpression(element)) opaque = true;
+      else visit(element);
+    }
+  };
+  const visit = (node: ts.Expression): void => {
+    if (visited.has(node)) return;
+    visited.add(node);
+    if (ts.isParenthesizedExpression(node)) {
+      visit(node.expression);
+    } else if (ts.isConditionalExpression(node)) {
+      branched = true;
+      visit(node.whenTrue);
+      visit(node.whenFalse);
+    } else if (ts.isBinaryExpression(node)
+      && (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+      branched = true;
+      visit(node.left);
+      visit(node.right);
+    } else if (ts.isElementAccessExpression(node) && isArrayLiteralSource(node.expression, checker)) {
+      visitElements(node.expression);
+    } else if (ts.isIdentifier(node)) {
+      const initializer = unannotatedConstInitializer(node, checker);
+      const elements = initializer ? undefined : elementSourceOf(node, checker);
+      if (initializer) visit(initializer);
+      else if (elements) visitElements(elements);
+      else leaves.push(node);
+    } else {
+      leaves.push(node);
+    }
+  };
+  visit(expression);
+  return branched && !opaque ? leaves : undefined;
+}
+
+const ARRAY_CALLBACK_METHODS = new Set(["every", "filter", "find", "findLast", "flatMap", "forEach", "map", "some"]);
+
+/**
+ * The array whose elements an unannotated variable ranges over: a
+ * `for (const x of array)` variable, or the first parameter of a callback
+ * passed first to an array method, when that array is a literal.
+ */
+function elementSourceOf(identifier: ts.Identifier, checker: ts.TypeChecker): ts.Expression | undefined {
+  const declaration = checker.getSymbolAtLocation(identifier)?.valueDeclaration;
+  if (!declaration) return undefined;
+  if (ts.isVariableDeclaration(declaration)
+    && ts.isIdentifier(declaration.name)
+    && !declaration.type
+    && ts.isVariableDeclarationList(declaration.parent)
+    && ts.isForOfStatement(declaration.parent.parent)
+    && declaration.parent.parent.initializer === declaration.parent) {
+    const iterated = declaration.parent.parent.expression;
+    return isArrayLiteralSource(iterated, checker) ? iterated : undefined;
+  }
+  if (ts.isParameter(declaration)
+    && ts.isIdentifier(declaration.name)
+    && !declaration.type
+    && (ts.isArrowFunction(declaration.parent) || ts.isFunctionExpression(declaration.parent))
+    && declaration.parent.parameters[0] === declaration
+    && ts.isCallExpression(declaration.parent.parent)
+    && declaration.parent.parent.arguments[0] === declaration.parent
+    && ts.isPropertyAccessExpression(declaration.parent.parent.expression)
+    && ARRAY_CALLBACK_METHODS.has(declaration.parent.parent.expression.name.text)) {
+    const receiver = declaration.parent.parent.expression.expression;
+    return isArrayLiteralSource(receiver, checker) ? receiver : undefined;
+  }
+  return undefined;
+}
+
+function isArrayLiteralSource(expression: ts.Expression, checker: ts.TypeChecker): boolean {
+  if (ts.isParenthesizedExpression(expression)) return isArrayLiteralSource(expression.expression, checker);
+  if (ts.isArrayLiteralExpression(expression)) return true;
+  const initializer = ts.isIdentifier(expression) ? unannotatedConstInitializer(expression, checker) : undefined;
+  return initializer !== undefined && isArrayLiteralSource(initializer, checker);
+}
+
+function unannotatedConstInitializer(identifier: ts.Identifier, checker: ts.TypeChecker): ts.Expression | undefined {
+  let symbol = checker.getSymbolAtLocation(identifier);
+  if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+  const declaration = symbol?.valueDeclaration;
+  return declaration
+    && ts.isVariableDeclaration(declaration)
+    && ts.isIdentifier(declaration.name)
+    && !declaration.type
+    && declaration.initializer
+    && ts.isVariableDeclarationList(declaration.parent)
+    && (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+    ? declaration.initializer
     : undefined;
+}
+
+/** Distinct rendered signatures in canonical order, or undefined for none. */
+function canonicalSignatureSet(
+  project: RuntimeProject,
+  signatures: readonly ts.Signature[],
+  enclosing: ts.Node,
+): string | undefined {
+  const rendered = [...new Set(signatures.map((signature) =>
+    portableCheckerText(renderCallSignature(project, signature, enclosing), project.root)))].sort(compareCodePoints);
+  return rendered.length > 0 ? rendered.join(" | ") : undefined;
+}
+
+/**
+ * A call's signature text, rendered once per signature and scope. How the
+ * checker names a type in rendered text depends only on the symbols visible
+ * from the call, which it looks up through the scopes (`locals`) enclosing it
+ * up to the file; calls in the same innermost scope therefore render the same
+ * signature identically. Verified exact over every call site of two real
+ * repositories (116k calls, 47k repeats), where it saves most of the
+ * rendering, which is the largest single cost of capture.
+ */
+function renderCallSignature(project: RuntimeProject, signature: ts.Signature, call: ts.Node): string {
+  let scope: ts.Node = call.getSourceFile();
+  for (let current = call.parent; current; current = current.parent) {
+    if ((current as ts.Node & { locals?: unknown }).locals !== undefined) {
+      scope = current;
+      break;
+    }
+  }
+  let texts = project.callSignatureTexts.get(scope);
+  if (!texts) {
+    texts = new Map();
+    project.callSignatureTexts.set(scope, texts);
+  }
+  let text = texts.get(signature);
+  if (text === undefined) {
+    text = renderSignature(project.checker, signature, call);
+    texts.set(signature, text);
+  }
+  return text;
+}
+
+/** The declaration that comes first in the code: portable path, then start, then kind. */
+function firstDeclarationInCodeOrder<T extends ts.Node>(declarations: readonly T[], root: string): T | undefined {
+  return declarations
+    .map((declaration) => ({
+      declaration,
+      path: portableInputPath(root, normalizedAbsolute(declaration.getSourceFile().fileName)),
+      start: declaration.getStart(declaration.getSourceFile()),
+    }))
+    .sort((left, right) => compareCodePoints(left.path, right.path)
+      || left.start - right.start
+      || left.declaration.kind - right.declaration.kind)[0]?.declaration;
 }
 
 function jsDocForNode(node: ts.Node): string | undefined {
