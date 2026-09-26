@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSameResolvedPath, toPosix } from "../paths.js";
 import type {
   BuildResult, DeclinedCompilerInput, GraphEngine, GraphPublicationReport, NodeSearchOptions, SkippedSourceFile,
@@ -1967,11 +1967,12 @@ function discoverSourceFiles(
     throw new GraphSourceStagingError([sourceStagingFailure(".", "discover", error)]);
   }
   let sourceBytes = 0;
+  const canonicalDirectories = new Map<string, string>();
   for (const relPath of matches) {
     if (!isSupportedSourceFile(relPath)) continue;
     let canonicalPath: string;
     try {
-      canonicalPath = resolveContainedRepoFile(root, canonicalRoot, relPath);
+      canonicalPath = resolveContainedRepoFile(root, canonicalRoot, relPath, canonicalDirectories);
     } catch (error) {
       failures.push(sourceStagingFailure(relPath, "discover", error));
       continue;
@@ -2085,17 +2086,42 @@ function semanticInputsMatchSnapshot(
   });
 }
 
-function resolveContainedRepoFile(root: string, canonicalRoot: string, relPath: string): string {
+/**
+ * With `canonicalDirectories`, a file that is not itself a link resolves
+ * through its directory's resolution from earlier in the same walk, which is
+ * what a full resolution yields while that directory is unchanged. Every read
+ * resolves the path in full again afterwards and must reach this same path,
+ * so a directory swapped mid-walk is refused rather than followed.
+ */
+function resolveContainedRepoFile(
+  root: string,
+  canonicalRoot: string,
+  relPath: string,
+  canonicalDirectories?: Map<string, string>,
+): string {
   const lexicalRoot = resolve(root);
   const absolutePath = resolve(lexicalRoot, relPath);
   if (!isContainedPath(lexicalRoot, absolutePath)) {
     throw sourceContainmentError("Source path escapes the repository root.");
   }
-  const canonicalPath = realpathSync(absolutePath);
+  const canonicalPath = canonicalDirectories
+    ? resolveThroughDirectory(absolutePath, canonicalDirectories)
+    : realpathSync(absolutePath);
   if (!isContainedPath(canonicalRoot, canonicalPath)) {
     throw sourceContainmentError("Resolved source path escapes the repository root.");
   }
   return canonicalPath;
+}
+
+function resolveThroughDirectory(absolutePath: string, canonicalDirectories: Map<string, string>): string {
+  const directory = dirname(absolutePath);
+  let canonicalDirectory = canonicalDirectories.get(directory);
+  if (canonicalDirectory === undefined) {
+    canonicalDirectory = realpathSync(directory);
+    canonicalDirectories.set(directory, canonicalDirectory);
+  }
+  const throughDirectory = join(canonicalDirectory, basename(absolutePath));
+  return lstatSync(throughDirectory).isSymbolicLink() ? realpathSync(absolutePath) : throughDirectory;
 }
 
 function readStableUtf8File(
