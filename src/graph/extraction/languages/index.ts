@@ -13,6 +13,7 @@ import { javascriptExtractor, jsxExtractor } from "./javascript.js";
 import { pythonExtractor } from "./python.js";
 import { rustExtractor } from "./rust.js";
 import { csharpExtractor } from "./csharp.js";
+import { goExtractor } from "./go.js";
 
 /** Registered extractors, keyed by the language id they emit. */
 export const EXTRACTORS: Partial<Record<Language, LanguageExtractor>> = {
@@ -23,6 +24,7 @@ export const EXTRACTORS: Partial<Record<Language, LanguageExtractor>> = {
   python: pythonExtractor,
   rust: rustExtractor,
   csharp: csharpExtractor,
+  go: goExtractor,
 };
 
 /** The extractor for a language, or undefined if unsupported in this release. */

@@ -127,6 +127,14 @@ When adding a language, document the grammar source and version.
 - **Upstream grammar license:** MIT
 - **Note:** `tree-sitter-wasms@0.1.12` also ships a `tree-sitter-c_sharp.wasm`, but it is built from a different grammar revision than the `node-types.json` published with `tree-sitter-c-sharp@0.23.5`. Several fields that `node-types.json` declares (`variable_declarator.name`, `using_directive.name`) return `undefined` via `childForFieldName` against that older build. The extractor is written and tested against 0.23.5's own field layout — use the grammar's own published wasm for this language, not `tree-sitter-wasms`'s copy.
 
+### Go
+- **Binary source:** `tree-sitter-go` package, version `0.25.0`
+- **Vendored path:** `src/graph/wasm/tree-sitter-go.wasm`
+- **SHA-256:** `9504573f352b20be7f2f1911754d710622aedc15afff16d5ed8fb5645681aee7` (matches `tree-sitter-go@0.25.0/tree-sitter-go.wasm`)
+- **Binary package license:** MIT
+- **Upstream grammar:** [tree-sitter/tree-sitter-go](https://github.com/tree-sitter/tree-sitter-go)
+- **Upstream grammar license:** MIT
+
 ## Pull request proof
 
 Before opening a pull request, run:
