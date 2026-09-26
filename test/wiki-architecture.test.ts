@@ -765,8 +765,10 @@ describe("no unscoped scaffold writes", () => {
     const FD_WRITE_CALLS = /\b(writeSync|ftruncateSync)\s*\(/g;
     const KNOWN: Readonly<Record<string, string>> = {
       "src/agent-skills/installer.ts": "atomically installs fixed packaged skill trees and marker-scoped root instructions",
+      "src/graph/audit-record.ts": "writes only the local audited-digest record beside the graph index it describes",
       "src/graph/candidate-process.ts": "removes only the identity-bound parent-owned temporary workspace after the candidate child closes",
       "src/graph/engine-impl.ts": "writes only a private, bounded temporary source spool that is removed before graph publication",
+      "src/graph/phase-timing.ts": "appends diagnostic phase timings only to the file an operator names in MEX_GRAPH_PHASE_TIMINGS",
       "src/graph/maintenance.ts": "publishes and recovers the disposable graph index under its maintenance lease",
       "src/graph/runtime.ts": "edits existing .mex Markdown; bypasses the pipeline (recorded D9 exception)",
       "src/hub/setup/commit.ts": "manages temporary and preserved Git indexes for explicit revision-reviewed setup commits; never edits Wiki content",
