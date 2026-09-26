@@ -149,9 +149,9 @@ export function groupRowsByFile(
 
 function digestRowGroup(group: FileRowGroup): string {
   const hash = createHash("sha256");
+  // One update per section: the same bytes as a line at a time, far fewer calls.
   const section = (name: string, lines: readonly string[]): void => {
-    hash.update(`${name}\n`);
-    for (const line of lines) hash.update(`${line}\n`);
+    hash.update(lines.length === 0 ? `${name}\n` : `${name}\n${lines.join("\n")}\n`);
   };
   section("content", [group.contentHash ?? ""]);
   section("nodes", group.nodes.map(nodeRowImage).sort());
