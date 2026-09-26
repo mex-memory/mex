@@ -263,6 +263,14 @@ export interface InspectGraphStatusOptions {
    * grounding (`mex check`) and the Hub keep reporting that store as corrupt.
    */
   structuralAudit?: "full" | "graph";
+  /**
+   * @internal Band hashes already derived from identical minhash bytes, shared
+   * by the inspections of one maintenance run (the live graph, then its
+   * candidate). Band hashes are a pure function of the minhash, so the audit
+   * still compares every stored bucket; it only skips rehashing bytes it has
+   * already hashed. The caller owns it and drops it when the run ends.
+   */
+  bandHashMemo?: Map<string, readonly string[]>;
   /** @internal Deterministic observation-race seam for conformance tests. */
   internal?: {
     beforeFreshValidation?: (attempt: number) => void | Promise<void>;
@@ -801,6 +809,7 @@ async function inspectGraphStatusAttempt(
 
     const coreInvariantFailures = structureAudited ? [] : inspectCoreInvariants(db, {
       fingerprints: context.options.structuralAudit !== "graph",
+      bandHashMemo: context.options.bandHashMemo,
     });
     if (coreInvariantFailures.length > 0) {
       diagnostics.push({
@@ -2368,7 +2377,7 @@ function inspectRequiredSchema(db: SqliteDatabase): string[] {
 
 function inspectCoreInvariants(
   db: SqliteDatabase,
-  scope: { readonly fingerprints: boolean },
+  scope: { readonly fingerprints: boolean; readonly bandHashMemo?: Map<string, readonly string[]> },
 ): string[] {
   const checks: ReadonlyArray<readonly [string, string]> = [
     ["duplicate edge group(s)", `
@@ -2472,7 +2481,7 @@ function inspectCoreInvariants(
     const count = readCount(db, sql);
     if (count > 0) failures.push(`${count} ${label}`);
   }
-  if (scope.fingerprints) failures.push(...inspectFingerprintInvariants(db));
+  if (scope.fingerprints) failures.push(...inspectFingerprintInvariants(db, scope.bandHashMemo));
   return failures.sort(compareCodePoints);
 }
 
@@ -2491,7 +2500,10 @@ interface StoredLshBucketRow {
 }
 
 /** Validate the exact persisted shape consumed by FingerprintStore and the reconciler. */
-function inspectFingerprintInvariants(db: SqliteDatabase): string[] {
+function inspectFingerprintInvariants(
+  db: SqliteDatabase,
+  bandHashMemo?: Map<string, readonly string[]>,
+): string[] {
   const oversizedFingerprint = db.prepare(
     `SELECT 1 FROM node_fingerprints
      WHERE typeof(node_id) <> 'text'
@@ -2512,7 +2524,7 @@ function inspectFingerprintInvariants(db: SqliteDatabase): string[] {
   }
   // A sound store needs no ordered walk; any fault is reported by it exactly
   // as before (issue #209).
-  if (fingerprintStorageIsExact(db)) return [];
+  if (fingerprintStorageIsExact(db, bandHashMemo)) return [];
   return orderedFingerprintAudit(db);
 }
 
@@ -2524,8 +2536,11 @@ function inspectFingerprintInvariants(db: SqliteDatabase): string[] {
  * primary-key order, so the LSH table is never sorted by ref, which was most
  * of the cost of every inspection of a large store (issue #209).
  */
-function fingerprintStorageIsExact(db: SqliteDatabase): boolean {
-  const expected = new Map<string, { hashes: string[]; seen: Uint8Array }>();
+function fingerprintStorageIsExact(
+  db: SqliteDatabase,
+  bandHashMemo?: Map<string, readonly string[]>,
+): boolean {
+  const expected = new Map<string, { hashes: readonly string[]; seen: Uint8Array }>();
   const fingerprints = db.prepare(
     "SELECT CAST(ref AS TEXT) AS ref, node_id, minhash, neighbors, token_count FROM node_fingerprints",
   ).iterate() as IterableIterator<StoredFingerprintRow>;
@@ -2533,7 +2548,13 @@ function fingerprintStorageIsExact(db: SqliteDatabase): boolean {
     if (typeof row.ref !== "string" || typeof row.node_id !== "string") return false;
     const fingerprint = decodeStoredFingerprint(row);
     if (!fingerprint) return false;
-    expected.set(row.ref, { hashes: bandHashInts(fingerprint).map(String), seen: new Uint8Array(BANDS) });
+    const key = bandHashMemo ? Buffer.from(row.minhash as Uint8Array).toString("latin1") : "";
+    let hashes = bandHashMemo?.get(key);
+    if (!hashes) {
+      hashes = bandHashInts(fingerprint).map(String);
+      bandHashMemo?.set(key, hashes);
+    }
+    expected.set(row.ref, { hashes, seen: new Uint8Array(BANDS) });
   }
   const buckets = db.prepare(
     "SELECT CAST(ref AS TEXT) AS ref, band, CAST(band_hash AS TEXT) AS band_hash FROM lsh_buckets",

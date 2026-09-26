@@ -480,8 +480,11 @@ async function refreshGraphWithLease(
   let candidatePath: string | null = null;
   try {
     assertNotAborted(options.signal);
+    // The candidate mostly keeps the live graph's fingerprints; its audit
+    // reuses their band hashes instead of deriving them again.
+    const bandHashMemo = new Map<string, readonly string[]>();
     const priorStatus = await timeGraphPhaseAsync("envelope.inspect", () =>
-      inspect(options, paths.projectRoot, paths.database));
+      inspect(options, paths.projectRoot, paths.database, bandHashMemo));
     assertMaintenanceDirectoryUnchanged(paths);
     assertRefreshable(priorStatus);
     assertClearSidecars(paths.database);
@@ -521,7 +524,7 @@ async function refreshGraphWithLease(
 
     progress(options, "validate", "Validating the refreshed graph candidate.");
     const candidate = await timeGraphPhaseAsync("envelope.validate", () =>
-      validateCandidate(options, paths, copyPath));
+      validateCandidate(options, paths, copyPath, undefined, bandHashMemo));
     await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
     assertMaintenanceDirectoryUnchanged(paths);
 
@@ -1822,11 +1825,12 @@ async function validateCandidate(
   paths: MaintenancePaths,
   candidatePath: string,
   assertStatus: (status: GraphStatus) => void = assertPublishableCandidate,
+  bandHashMemo?: Map<string, readonly string[]>,
 ): Promise<ValidatedCandidate> {
   assertMaintenanceDirectoryUnchanged(paths);
   assertClearSidecars(candidatePath);
   const identityBefore = captureDatabaseIdentity(candidatePath);
-  const status = await inspect(options, paths.projectRoot, candidatePath);
+  const status = await inspect(options, paths.projectRoot, candidatePath, bandHashMemo);
   assertMaintenanceDirectoryUnchanged(paths);
   assertStatus(status);
   assertClearSidecars(candidatePath);
@@ -2063,8 +2067,13 @@ async function inspect(
   options: InternalMaintenanceOptions,
   projectRoot: string,
   database: string,
+  bandHashMemo?: Map<string, readonly string[]>,
 ): Promise<GraphStatus> {
-  return (options.__internal?.inspectStatus ?? inspectGraphStatus)({ projectRoot, dbPath: database });
+  return (options.__internal?.inspectStatus ?? inspectGraphStatus)({
+    projectRoot,
+    dbPath: database,
+    ...(bandHashMemo ? { bandHashMemo } : {}),
+  });
 }
 
 function currentDate(options: InternalMaintenanceOptions): Date {
