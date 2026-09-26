@@ -546,6 +546,7 @@ export function buildTypeScriptExtraction(
   const nodeById = new Map<string, CompilerExtractedNode>();
   const capturedByFile = new Map<string, CapturedFile>();
   const dependenciesByFile = new Map<string, FileDependencies>();
+  const reusedCaptures = new Map<string, CompilerFileCapture>();
   const projectStates: Record<string, string> = {};
   const incremental = options.incremental;
   const rootPrefix = `${normalizedAbsolute(root)}/`;
@@ -558,9 +559,17 @@ export function buildTypeScriptExtraction(
     const runtime: RuntimeProject = {
       ...project, program, checker: program.getTypeChecker(), root, callSignatureTexts: new Map(),
     };
+    const replayedResolutions = new Set<string>();
+    // Files importing the same specifier from one directory share a resolution.
+    const relevantFailedLookups = new WeakMap<readonly string[], string[]>();
     for (const absoluteFile of owned) {
       const sourceFile = program.getSourceFile(absoluteFile);
-      if (sourceFile) dependenciesByFile.set(absoluteFile, fileDependencies(program, sourceFile, root, candidateSet));
+      if (sourceFile) {
+        dependenciesByFile.set(
+          absoluteFile,
+          fileDependencies(program, sourceFile, root, candidateSet, relevantFailedLookups),
+        );
+      }
     }
     const state = projectInputState(program, root, candidateSet, dependenciesByFile);
     projectStates[project.id] = state;
@@ -588,6 +597,7 @@ export function buildTypeScriptExtraction(
             throw new CompilerIncrementalFallback("an unaffected file's module resolution changed");
           }
           reused.set(absoluteFile, restoreCapture(previous, rootPrefix));
+          reusedCaptures.set(absoluteFile, previous);
           reusedFiles.push(filePath);
         }
       }
@@ -673,8 +683,15 @@ export function buildTypeScriptExtraction(
     for (const [absoluteFile, captured] of reused) {
       // Import capture resolves each specifier through the input ledger; the
       // same probes keep the recorded semantic inputs identical to a capture.
+      // Resolution depends only on the importing directory and file kind, so
+      // one probe per (directory, extension, specifier) records the same inputs.
       const options = program.getCompilerOptions();
+      const directory = dirname(absoluteFile);
+      const extension = extname(absoluteFile);
       for (const specifier of captured.resolvedSpecifiers) {
+        const key = `${directory}|${extension}|${specifier}`;
+        if (replayedResolutions.has(key)) continue;
+        replayedResolutions.add(key);
         ts.resolveModuleName(specifier, absoluteFile, options, inputs.moduleResolutionHost());
       }
       capturedByFile.set(absoluteFile, captured);
@@ -775,7 +792,8 @@ export function buildTypeScriptExtraction(
     if (!captured) continue;
     const dependencies = dependenciesByFile.get(absoluteFile)
       ?? { dependencies: [], failedLookups: [], globalScope: true };
-    captures.push(portableCapture(captured, dependencies, rootPrefix));
+    // A reused capture is stored exactly as it was read.
+    captures.push(reusedCaptures.get(absoluteFile) ?? portableCapture(captured, dependencies, rootPrefix));
     const importBindings: CompilerImportBinding[] = captured.bindings.map(({ binding, targetLocations }) => ({
       ...binding,
       targetId: idsForLocations(targetLocations, locationIds)[0],
@@ -861,6 +879,7 @@ function fileDependencies(
   sourceFile: ts.SourceFile,
   root: string,
   candidates: ReadonlySet<string>,
+  relevantFailedLookups: WeakMap<readonly string[], string[]>,
 ): FileDependencies {
   const resolutions = program as ts.Program & ProgramResolutions;
   const dependencies = new Set<string>();
@@ -871,10 +890,20 @@ function fileDependencies(
     if (candidates.has(absolute)) dependencies.add(relativePath(root, absolute));
   };
   const addFailed = (locations: readonly string[] | undefined): void => {
-    for (const location of locations ?? []) {
-      const absolute = normalizedAbsolute(location);
-      if (withinRoot(root, absolute) && isCompilerSourceFile(absolute)) failedLookups.add(relativePath(root, absolute));
+    if (!locations) return;
+    let relevant = relevantFailedLookups.get(locations);
+    if (!relevant) {
+      // Only a corpus file appearing can change a resolution the refresh
+      // must notice, and nothing under node_modules is ever corpus.
+      relevant = [];
+      for (const location of locations) {
+        if (location.includes("/node_modules/")) continue;
+        const absolute = normalizedAbsolute(location);
+        if (withinRoot(root, absolute) && isCompilerSourceFile(absolute)) relevant.push(relativePath(root, absolute));
+      }
+      relevantFailedLookups.set(locations, relevant);
     }
+    for (const location of relevant) failedLookups.add(location);
   };
   if (!resolutions.forEachResolvedModule || !resolutions.forEachResolvedTypeReferenceDirective) {
     // Without the resolution cache nothing proves a file independent of others.

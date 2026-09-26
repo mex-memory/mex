@@ -24,7 +24,7 @@ import { declaresGlobals, type CompilerFileCapture } from "./extraction/index.js
 import type { GraphEdge, GraphNode, Language } from "./types.js";
 
 /** Bump whenever a cached payload's shape or meaning changes. */
-const EXTRACTION_CACHE_FORMAT = 1;
+const EXTRACTION_CACHE_FORMAT = 2;
 
 /**
  * Above this many affected compiler files, and this share of them, extract in
