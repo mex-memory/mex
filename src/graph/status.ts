@@ -2556,20 +2556,25 @@ function fingerprintStorageIsExact(
     }
     expected.set(row.ref, { hashes, seen: new Uint8Array(BANDS) });
   }
-  const buckets = db.prepare(
-    "SELECT CAST(ref AS TEXT) AS ref, band, CAST(band_hash AS TEXT) AS band_hash FROM lsh_buckets",
-  ).iterateArrays();
-  for (const [ref, band, bandHash] of buckets) {
-    const entry = typeof ref === "string" ? expected.get(ref) : undefined;
-    if (!entry
-      || typeof band !== "number"
-      || !Number.isSafeInteger(band)
-      || band < 0
-      || band >= BANDS
-      || entry.seen[band] !== 0
-      || bandHash !== entry.hashes[band]) return false;
-    entry.seen[band] = 1;
+  // One band at a time through the primary key: reading rows in batches is
+  // far cheaper than stepping a cursor, and a batch stays small. The bands
+  // together must cover every stored row, so a bucket with any other band
+  // value fails the count.
+  const bandRows = db.prepare(
+    "SELECT CAST(ref AS TEXT) AS ref, CAST(band_hash AS TEXT) AS band_hash FROM lsh_buckets WHERE band = ?",
+  );
+  let visited = 0;
+  for (let band = 0; band < BANDS; band++) {
+    const rows = bandRows.allArrays(band);
+    visited += rows.length;
+    for (const [ref, bandHash] of rows) {
+      const entry = typeof ref === "string" ? expected.get(ref) : undefined;
+      if (!entry || entry.seen[band] !== 0 || bandHash !== entry.hashes[band]) return false;
+      entry.seen[band] = 1;
+    }
   }
+  const stored = db.prepare("SELECT COUNT(*) AS count FROM lsh_buckets").get() as { count?: unknown } | undefined;
+  if (stored?.count !== visited) return false;
   for (const entry of expected.values()) if (entry.seen.includes(0)) return false;
   return true;
 }

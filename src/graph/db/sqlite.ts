@@ -41,10 +41,11 @@ export interface SqliteStatement {
   all(...params: Params): unknown[];
   iterate(...params: Params): IterableIterator<unknown>;
   /**
-   * Rows as arrays in column order. Large scans avoid building an object per
-   * row where the runtime supports it; the statement is used for nothing else.
+   * Every row as an array in column order. Large reads avoid building an
+   * object per row where the runtime supports it; the statement is used for
+   * nothing else.
    */
-  iterateArrays(...params: Params): IterableIterator<unknown[]>;
+  allArrays(...params: Params): unknown[][];
 }
 
 /** A SQLite database handle. */
@@ -83,14 +84,12 @@ class NodeSqliteAdapter implements SqliteDatabase {
       get: (...params: Params) => stmt.get(...params),
       all: (...params: Params) => stmt.all(...params),
       iterate: (...params: Params) => stmt.iterate(...params),
-      iterateArrays: (...params: Params) => {
+      allArrays: (...params: Params) => {
         if (typeof stmt.setReturnArrays === "function") {
           stmt.setReturnArrays(true);
-          return stmt.iterate(...params);
+          return stmt.all(...params);
         }
-        return (function* () {
-          for (const row of stmt.iterate(...params)) yield Object.values(row as object);
-        })();
+        return (stmt.all(...params) as object[]).map((row) => Object.values(row));
       },
     };
   }

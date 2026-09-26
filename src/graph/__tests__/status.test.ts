@@ -1156,6 +1156,7 @@ describe("inspectGraphStatus", () => {
     { name: "a missing band", corrupt: "DELETE FROM lsh_buckets WHERE ref = ? AND band = 3", expected: "missing fingerprint LSH band(s)" },
     { name: "a duplicate band", corrupt: "INSERT INTO lsh_buckets (band, band_hash, ref) SELECT band, band_hash + 1, ref FROM lsh_buckets WHERE ref = ? AND band = 5", expected: "duplicate fingerprint LSH bucket row(s)" },
     { name: "an out-of-range band", corrupt: `UPDATE lsh_buckets SET band = ${BANDS} WHERE ref = ? AND band = 0`, expected: "out-of-range fingerprint LSH bucket row(s)" },
+    { name: "a fractional band", corrupt: "UPDATE lsh_buckets SET band = 2.5 WHERE ref = ? AND band = 2", expected: "missing fingerprint LSH band(s)" },
     { name: "a wrong band hash", corrupt: "UPDATE lsh_buckets SET band_hash = band_hash + 1 WHERE ref = ? AND band = 7", expected: "fingerprint LSH bucket hash mismatch(es)" },
     { name: "a malformed fingerprint", corrupt: "UPDATE node_fingerprints SET token_count = -1 WHERE ref = ?", expected: "malformed fingerprint row(s)" },
     { name: "a bucket without an owner", corrupt: "INSERT INTO lsh_buckets (band, band_hash, ref) VALUES (0, 1, ? + 1000000)", expected: "malformed LSH bucket owner row(s)" },
