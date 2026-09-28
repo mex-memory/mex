@@ -282,6 +282,18 @@ describe("extractClaims — dependencies", () => {
     expect(deps).toEqual(["groq-sdk"]);
   });
 
+  it("does not claim a command written in a dependency entry (#231)", () => {
+    const path = writeFixture(
+      "test.md",
+      "# Dependencies\n\n" +
+        "- **`bun test` / `deno test`** — used only for runtime tests\n" +
+        "- **`hono`** — web framework"
+    );
+    const claims = extractClaims(path, "test.md");
+    const deps = claims.filter((c) => c.kind === "dependency").map((d) => d.value);
+    expect(deps).toEqual(["hono"]);
+  });
+
   it("does not treat a package named in a dependency entry as a path", () => {
     const path = writeFixture(
       "test.md",

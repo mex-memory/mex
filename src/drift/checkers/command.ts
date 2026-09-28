@@ -23,16 +23,20 @@ export function checkCommands(
       /^(?:npm\s+run|yarn|pnpm|bun\s+run)\s+(\S+)/
     );
     if (npmMatch) {
-      const script = npmMatch[1];
-      if (pkgScripts && !pkgScripts.has(script)) {
-        issues.push({
-          code: "DEAD_COMMAND",
-          severity: "error",
-          file: claim.source,
-          line: claim.line,
-          message: `Script "${script}" not found in package.json scripts`,
-          claim,
-        });
+      // `bun run test:{node,workerd}` runs one script per alternative. A name
+      // still holding braces after expansion is a placeholder like `{script}`.
+      for (const script of new Set(expandBraces(npmMatch[1]))) {
+        if (/[{}]/.test(script)) continue;
+        if (pkgScripts && !pkgScripts.has(script)) {
+          issues.push({
+            code: "DEAD_COMMAND",
+            severity: "error",
+            file: claim.source,
+            line: claim.line,
+            message: `Script "${script}" not found in package.json scripts`,
+            claim,
+          });
+        }
       }
       continue;
     }
@@ -55,6 +59,17 @@ export function checkCommands(
   }
 
   return issues;
+}
+
+/** Shell brace expansion of comma lists: `a{b,c}` gives `ab` and `ac`. */
+function expandBraces(word: string): string[] {
+  const group = /\{([^{}]*,[^{}]*)\}/.exec(word);
+  if (!group) return [word];
+  const head = word.slice(0, group.index);
+  const tail = word.slice(group.index + group[0].length);
+  return group[1]
+    .split(",")
+    .flatMap((alternative) => expandBraces(head + alternative + tail));
 }
 
 function loadPackageScripts(

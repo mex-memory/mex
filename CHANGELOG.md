@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `mex check` no longer reports two false positives seen on clean scaffolds. A brace-expanded script name such as `bun run test:{node,workerd}` is expanded and each script it names is checked against `package.json`; a name that still holds braces after expansion is a placeholder and is skipped. A command written in code inside a dependency entry, such as `` **`bun test` / `deno test`** ``, is no longer claimed as a dependency, since a package name never contains whitespace (#231).
+
 ## [0.8.3] - 2026-09-28
 
 ### Added

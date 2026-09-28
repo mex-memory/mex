@@ -421,6 +421,29 @@ describe("checkCommands", () => {
     const issues = checkCommands(claims, tmpDir);
     expect(issues).toHaveLength(0);
   });
+
+  it("checks each script a brace expression names (#231)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ scripts: { "test:node": "vitest", "test:workerd": "vitest" } })
+    );
+    const claims = [
+      claim({ kind: "command", value: "bun run test:{node,workerd}" }),
+      claim({ kind: "command", value: "npm run test:{node,fastly}" }),
+    ];
+    const issues = checkCommands(claims, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toBe('Script "test:fastly" not found in package.json scripts');
+  });
+
+  it("skips a script name left with braces after expansion", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ scripts: { build: "tsc" } })
+    );
+    const claims = [claim({ kind: "command", value: "npm run {script}" })];
+    expect(checkCommands(claims, tmpDir)).toHaveLength(0);
+  });
 });
 
 // ── Dependency Checker ──
