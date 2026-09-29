@@ -408,6 +408,24 @@ describe("checkCommands", () => {
     expect(issues).toHaveLength(0);
   });
 
+  it("ignores package manager built-in commands", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ scripts: { build: "tsc" } })
+    );
+
+    const claims = [
+      claim({ kind: "command", value: "yarn install" }),
+      claim({ kind: "command", value: "yarn add typescript" }),
+      claim({ kind: "command", value: "yarn dlx create-vite" }),
+      claim({ kind: "command", value: "pnpm install" }),
+      claim({ kind: "command", value: "pnpm add typescript" }),
+      claim({ kind: "command", value: "pnpm dlx create-vite" }),
+    ];
+
+    expect(checkCommands(claims, tmpDir)).toHaveLength(0);
+  });
+
   it("reports dead make targets", () => {
     writeFileSync(join(tmpDir, "Makefile"), "build:\n\tgcc main.c\n");
     const claims = [claim({ kind: "command", value: "make deploy" })];
@@ -727,6 +745,32 @@ describe("checkIndexSync", () => {
     writeFileSync(join(tmpDir, "patterns/auth.md"), "# Auth");
     const issues = checkIndexSync(tmpDir, tmpDir);
     expect(issues).toHaveLength(0);
+  });
+
+  it("recognizes frontmatter edge targets in INDEX.md", () => {
+    mkdirSync(join(tmpDir, "patterns"), { recursive: true });
+
+    writeFileSync(
+      join(tmpDir, "patterns", "INDEX.md"),
+      `---
+edges:
+  - target: syntax-extractor-review.md
+---
+
+# Patterns
+`
+    );
+
+    writeFileSync(
+      join(tmpDir, "patterns", "syntax-extractor-review.md"),
+      "# Syntax Extractor Review\n"
+    );
+
+    const issues = checkIndexSync(tmpDir, tmpDir);
+
+    expect(
+      issues.filter((issue) => issue.code === "INDEX_MISSING_ENTRY")
+    ).toHaveLength(0);
   });
 
   it("ignores references inside HTML comments", () => {
