@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { globSync } from "glob";
 import type { DriftIssue } from "../../types.js";
+import { extractFrontmatter } from "../../markdown.js";
 
 /** Cross-reference patterns/INDEX.md with actual pattern files */
 export function checkIndexSync(projectRoot: string, scaffoldRoot: string): DriftIssue[] {
@@ -36,6 +37,24 @@ export function checkIndexSync(projectRoot: string, scaffoldRoot: string): Drift
   const backtickPattern = /`([\w-]+\.md)`/g;
   while ((match = backtickPattern.exec(indexContent)) !== null) {
     referencedFiles.add(match[1]);
+  }
+
+  // Also match frontmatter edge targets
+  const frontmatter = extractFrontmatter(rawContent);
+  const edges = frontmatter?.edges;
+
+  if (Array.isArray(edges)) {
+    for (const edge of edges) {
+      if (
+        edge &&
+        typeof edge === "object" &&
+        "target" in edge &&
+        typeof edge.target === "string"
+      ) {
+        const target = edge.target.replace(/#.*$/, "");
+        referencedFiles.add(basename(target));
+      }
+    }
   }
 
   // Check: pattern files not in INDEX

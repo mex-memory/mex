@@ -2,6 +2,64 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Claim, DriftIssue } from "../../types.js";
 
+const YARN_BUILTINS = new Set([
+  "add",
+  "bin",
+  "cache",
+  "ci",
+  "config",
+  "create",
+  "dlx",
+  "exec",
+  "global",
+  "import",
+  "info",
+  "init",
+  "install",
+  "link",
+  "node",
+  "pack",
+  "patch",
+  "plugin",
+  "remove",
+  "run",
+  "set",
+  "stage",
+  "unplug",
+  "up",
+  "version",
+  "why",
+  "workspace",
+]);
+
+const PNPM_BUILTINS = new Set([
+  "add",
+  "audit",
+  "config",
+  "create",
+  "deploy",
+  "dlx",
+  "exec",
+  "fetch",
+  "import",
+  "init",
+  "install",
+  "licenses",
+  "link",
+  "list",
+  "patch",
+  "prune",
+  "publish",
+  "rebuild",
+  "remove",
+  "root",
+  "run",
+  "store",
+  "test",
+  "update",
+  "why",
+]);
+
 /** Check that claimed npm/yarn/make commands actually exist */
 export function checkCommands(
   claims: Claim[],
@@ -18,12 +76,14 @@ export function checkCommands(
   for (const claim of commandClaims) {
     const cmd = claim.value.trim();
 
-    // npm run <script> / yarn <script> / pnpm <script>
+    // npm run <script> / bun run <script>
     const npmMatch = cmd.match(
-      /^(?:npm\s+run|yarn|pnpm|bun\s+run)\s+(\S+)/
+      /^(?:npm\s+run|bun\s+run)\s+(\S+)/
     );
+
     if (npmMatch) {
       const script = npmMatch[1];
+
       if (pkgScripts && !pkgScripts.has(script)) {
         issues.push({
           code: "DEAD_COMMAND",
@@ -34,13 +94,60 @@ export function checkCommands(
           claim,
         });
       }
+
+      continue;
+    }
+
+    // yarn <command> / yarn <script>
+    const yarnMatch = cmd.match(/^yarn\s+(\S+)/);
+
+    if (yarnMatch) {
+      const command = yarnMatch[1];
+
+      if (!YARN_BUILTINS.has(command)) {
+        if (pkgScripts && !pkgScripts.has(command)) {
+          issues.push({
+            code: "DEAD_COMMAND",
+            severity: "error",
+            file: claim.source,
+            line: claim.line,
+            message: `Script "${command}" not found in package.json scripts`,
+            claim,
+          });
+        }
+      }
+
+      continue;
+    }
+
+    // pnpm <command> / pnpm <script>
+    const pnpmMatch = cmd.match(/^pnpm\s+(\S+)/);
+
+    if (pnpmMatch) {
+      const command = pnpmMatch[1];
+
+      if (!PNPM_BUILTINS.has(command)) {
+        if (pkgScripts && !pkgScripts.has(command)) {
+          issues.push({
+            code: "DEAD_COMMAND",
+            severity: "error",
+            file: claim.source,
+            line: claim.line,
+            message: `Script "${command}" not found in package.json scripts`,
+            claim,
+          });
+        }
+      }
+
       continue;
     }
 
     // make <target>
     const makeMatch = cmd.match(/^make\s+(\S+)/);
+
     if (makeMatch) {
       const target = makeMatch[1];
+
       if (makeTargets && !makeTargets.has(target)) {
         issues.push({
           code: "DEAD_COMMAND",
@@ -61,7 +168,9 @@ function loadPackageScripts(
   projectRoot: string
 ): Set<string> | null {
   const pkgPath = resolve(projectRoot, "package.json");
+
   if (!existsSync(pkgPath)) return null;
+
   try {
     const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
     return new Set(Object.keys(pkg.scripts ?? {}));
@@ -72,14 +181,19 @@ function loadPackageScripts(
 
 function loadMakeTargets(projectRoot: string): Set<string> | null {
   const makePath = resolve(projectRoot, "Makefile");
+
   if (!existsSync(makePath)) return null;
+
   try {
     const content = readFileSync(makePath, "utf-8");
     const targets = new Set<string>();
+
     for (const line of content.split("\n")) {
       const match = line.match(/^(\w[\w-]*):/);
+
       if (match) targets.add(match[1]);
     }
+
     return targets;
   } catch {
     return null;
