@@ -37,6 +37,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { toPosix } from "../../paths.js";
 import { diagnostic, type WikiDiagnostic } from "../model/diagnostic.js";
 import { isTeamOwnedReadOnlyPath } from "../model/team-owned-paths.js";
+import { isLogOwnedPath } from "../model/log-owned-paths.js";
 import { escapedSymlinkDiagnostic, insideRoot, matchesAnyGlob } from "../index/discover.js";
 
 export {
@@ -164,13 +165,15 @@ export function checkContainment(scaffoldRoot: string, relativePath: string): Co
  */
 export function isReadOnlyPath(relativePath: string, readOnly: readonly string[]): boolean {
   const path = toPosix(relativePath);
-  return isTeamOwnedReadOnlyPath(path) || matchesAnyGlob(path, readOnly);
+  return isTeamOwnedReadOnlyPath(path) || isLogOwnedPath(path) || matchesAnyGlob(path, readOnly);
 }
 
 /** The diagnostic a plan returns when its target is reserved. */
 export function readOnlyDiagnostic(relativePath: string): WikiDiagnostic {
   const path = toPosix(relativePath);
-  const reason = isTeamOwnedReadOnlyPath(path)
+  const reason = isLogOwnedPath(path)
+    ? "is owned by the note writer and is always read-only to Wiki"
+    : isTeamOwnedReadOnlyPath(path)
     ? "is owned by TeamWorkflowPort and is always read-only to Wiki"
     : "is reserved read-only by wiki.readOnly";
   return diagnostic(

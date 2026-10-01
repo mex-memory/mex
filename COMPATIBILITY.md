@@ -156,6 +156,25 @@ The CI smoke test at [`test/public-api.test.ts`](./test/public-api.test.ts)
 asserts the existence and basic shape of these exports. Any change that breaks
 that test is a breaking change.
 
+### Unreleased additive note API
+
+This branch additionally exports `recordNote`, `findNotes`, `getNote`,
+`noteProblem`, `NoteError`, `NOTE_LIMITS`, and their `Note*` contract types.
+`recordNote` is asynchronous and returns a versioned local receipt. `findNotes`
+and `getNote` are synchronous, non-mutating readers independent of Graph/Wiki.
+The existing `appendEvent`, `readEvents` and `eventLogPath` remain the synchronous
+legacy JSONL API: they are not redirected to Markdown, and their return types
+and durability semantics are unchanged. New product writes do not also append
+to JSONL. Consumers wanting both stores should opt into `findNotes`.
+
+CLI Timeline JSON retains `events`, `truncated` and `sourceTruncated`, with
+additive version, source-state, diagnostic and note identity fields. The
+source-only MCP workspace now returns this same versioned search envelope
+instead of a bare array. MCP writes retain `ok`, `kind` and `summary`, adding
+the durable receipt; `mex_log` also supports `action: "get"` with `id`.
+Neither CLI nor MCP log writes backfill missing project identity. See the
+[storage/API contract](docs/design/log-notes.md) for errors and bounded reads.
+
 ## What is NOT public
 
 Everything else. Specifically:
@@ -233,6 +252,7 @@ itself, and some are reserved for embedders.
 - `team/members/**`, `workstreams/**`, `inbox/**`, and `relays/**` — canonical team workflow records.
 - `specs/**`, `topics/**`, and `playbooks/**` — canonical Wiki and shared workflow records.
 - `events/decisions.jsonl`, `events/activity/**`, and `events/operations.jsonl` — canonical event and operation records.
+- `events/notes/**` — immutable authored Markdown notes and their byte-preservation attribute policy (unreleased); owned by the note writer, never Wiki authoring/migration.
 - `config.json` — persisted scaffold configuration.
 - `.gitignore` — managed protection for checkout-local state.
 - `graph.db*` and `wiki.db*` — generated Graph and Wiki indexes, including SQLite sidecars.

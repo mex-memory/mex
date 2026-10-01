@@ -30,6 +30,7 @@ import type { WikiEntityType } from "./../model/entity.js";
 import type { RawHeading } from "../markdown/parse.js";
 import type { InventoryFile } from "./inventory.js";
 import { isTeamOwnedReadOnlyPath } from "../model/team-owned-paths.js";
+import { isLogOwnedPath } from "../model/log-owned-paths.js";
 
 /** A section must have at least this many non-blank prose lines to be an entity. */
 export const SUBSTANTIAL_SECTION_LINES = 3;
@@ -215,6 +216,7 @@ export const ALREADY_ADOPTED_REASON = "already carries entity metadata";
  */
 export function classifyFile(file: InventoryFile): FileClassification {
   const result: FileClassification = { file: file.path, candidates: [], abstentions: [], skipped: false };
+  if (isLogOwnedPath(file.path)) return { ...result, skipped: true, skipReason: "Log notes belong to the note writer; migration never rewrites them" };
 
   // Ownership outranks every other question, including whether the file already
   // carries entity metadata. A Team-owned root belongs to the Team workflow:

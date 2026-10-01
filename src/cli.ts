@@ -893,21 +893,31 @@ program
 // ── Agent Memory Events ──
 program
   .command("log <message>")
-  .description("Append a decision, note, risk, or todo to the mex event log")
+  .description("Durably record a decision, note, risk, or todo as an immutable Markdown note")
+  .option("--json", "Output the durable-local receipt as JSON")
   .option("--type <type>", "Event type: decision, note, risk, todo", "note")
   .option("--file <path>", "Related file path (repeatable)", (value, prev: string[]) => [...prev, value], [])
   .option("--source <source>", "Where the event came from (e.g. meeting, manual, agent)")
   .option("--status <status>", "Lifecycle status (e.g. decided, implemented)")
+  .option("--trace <path>", "Legacy trace pointer (does not copy or retain evidence)")
   .action(async (message, opts) => {
     try {
-      const config = loadConfig();
-      const { runLog } = await import("./events.js");
-      await runLog(config, message, { kind: opts.type, files: opts.file, source: opts.source, status: opts.status });
+      const config = findConfig();
+      const { runNoteLog } = await import("./notes/cli.js");
+      await runNoteLog(config, { message, kind: opts.type, files: opts.file, source: opts.source, status: opts.status, trace: opts.trace }, opts.json);
     } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
+      const { printNoteError } = await import("./notes/cli.js");
+      printNoteError(err, opts.json);
     }
+  });
+
+program.command("note").description("Inspect an original historical note")
+  .command("get <id>").description("Read a note by stable ID without Graph or Wiki")
+  .option("--json", "Output the original note as JSON")
+  .action(async (id, opts) => {
+    const { runNoteGet, printNoteError } = await import("./notes/cli.js");
+    try { runNoteGet(findConfig(), id, opts.json); }
+    catch (error) { printNoteError(error, opts.json); }
   });
 
 program
@@ -927,7 +937,7 @@ program
 
 program
   .command("timeline")
-  .description("Read bounded recent project notes (latest 8 MiB / 10,000 log lines)")
+  .description("Search Markdown notes and legacy history (bounded to 8 MiB / 10,000 records per source)")
   .option("--json", "Output events as JSON")
   .option("--format <format>", "Output format: md for a Markdown table (piped into reports)")
   .option("--since <date>", "Filter from YYYY-MM-DD or relative Nd, e.g. 30d")
@@ -943,20 +953,17 @@ program
   .action(async (opts) => {
     try {
       const config = findConfig();
-      const { runTimeline } = await import("./events.js");
-      await runTimeline(config, {
-        json: opts.json,
-        format: opts.format,
+      const { runNoteTimeline } = await import("./notes/cli.js");
+      runNoteTimeline(config, {
         since: opts.since,
         kind: opts.type,
         query: opts.query,
         files: opts.file,
         limit: opts.limit,
-      });
+      }, { json: opts.json, format: opts.format });
     } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
+      const { printNoteError } = await import("./notes/cli.js");
+      printNoteError(err, opts.json);
     }
   });
 
