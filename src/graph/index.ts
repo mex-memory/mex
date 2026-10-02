@@ -55,14 +55,16 @@ export type {
   Resolution,
   Fingerprint,
 } from "./reconcile.js";
-export { notImplementedReconciler, FINGERPRINT_PREFIX } from "./reconcile.js";
+export { notImplementedReconciler, COMPACT_FINGERPRINT_PREFIX, FINGERPRINT_PREFIX } from "./reconcile.js";
 export { MinHashReconciler } from "./reconcile-engine.js";
 export { FingerprintStore } from "./fingerprint-store.js";
 export type { SqliteDatabase } from "./fingerprint-store.js";
 export {
   bandHashes,
   createFingerprint,
+  canonicalFingerprint,
   deserializeFingerprint,
+  sameFingerprint,
   serializeFingerprint,
 } from "./fingerprint.js";
 

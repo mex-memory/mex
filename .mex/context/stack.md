@@ -17,7 +17,7 @@ edges:
   - target: context/setup.md
     condition: when runtime, build, or test prerequisites are needed
 # Broad inventory: ground only claims embodied by a small number of symbols.
-# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
+# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh2:64:<base64url>" }
 grounds_to: []
 last_updated: 2026-09-06
 mex:

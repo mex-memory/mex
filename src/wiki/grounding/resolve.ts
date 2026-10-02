@@ -62,7 +62,7 @@ import {
   type GroundingResolution,
   type WikiGrounding,
 } from "../model/grounding.js";
-import type { GroundedNode, GroundingGraph } from "./adapter.js";
+import { sameFingerprint, type GroundedNode, type GroundingGraph } from "./adapter.js";
 
 /**
  * Resolve one grounding against the local checkout.
@@ -195,7 +195,9 @@ function compare(
       reason: `${node.id} has no fingerprint in this graph, so there is nothing to compare the committed one against.`,
     };
   }
-  if (currentFingerprint === grounding.fingerprint) {
+  // By value: a grounding committed before #233 spells the same fingerprint in
+  // the older encoding, and that is not a change.
+  if (sameFingerprint(currentFingerprint, grounding.fingerprint)) {
     return {
       state: "fresh",
       health: "fresh",

@@ -29,7 +29,7 @@ import {
   type GraphDerivedGrounding,
   type WikiGrounding,
 } from "../model/grounding.js";
-import { deriveGrounding, type GroundingGraph } from "./adapter.js";
+import { deriveGrounding, sameFingerprint, type GroundingGraph } from "./adapter.js";
 
 /**
  * Whether this exact node-and-fingerprint pair comes out of the current graph.
@@ -47,7 +47,7 @@ export function isGraphDerivedGrounding(graph: GroundingGraph, grounding: WikiGr
   const derived = deriveGrounding(graph, grounding.node);
   if (derived === null) return false;
   if (derived.node !== grounding.node) return false;
-  if (derived.fingerprint !== grounding.fingerprint) return false;
+  if (!sameFingerprint(derived.fingerprint, grounding.fingerprint)) return false;
   if (grounding.bodyHash !== undefined && derived.bodyHash !== grounding.bodyHash) return false;
   return true;
 }

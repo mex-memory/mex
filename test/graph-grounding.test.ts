@@ -48,12 +48,19 @@ describe("fingerprinting", () => {
     expect(left.tokenCount).toBe(6);
   });
 
-  it("round-trips the complete baseline through mh:K:hex", () => {
+  it("round-trips the complete baseline through mh2:K:base64url", () => {
     const original = fingerprint(64);
     const serialized = serializeFingerprint(original);
-    expect(serialized).toMatch(/^mh:64:[0-9a-f]+$/);
+    expect(serialized).toMatch(/^mh2:64:[A-Za-z0-9_-]+$/);
     expect(deserializeFingerprint(serialized)).toEqual(original);
     expect(deserializeFingerprint("mh:63:00")).toBeNull();
+    expect(deserializeFingerprint("mh2:63:AA")).toBeNull();
+  });
+
+  it("still reads a baseline committed as mh:K:hex (#233)", () => {
+    const original = fingerprint(64);
+    const committed = `mh:64:${Buffer.from(JSON.stringify(original), "utf8").toString("hex")}`;
+    expect(deserializeFingerprint(committed)).toEqual(original);
   });
 });
 

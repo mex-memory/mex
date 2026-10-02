@@ -39,7 +39,7 @@ edges:
     condition: "[when to follow this edge]"
 grounds_to:
   - node: "function:<tier-1-id>"
-    fingerprint: "mh:64:<hex-fingerprint>"
+    fingerprint: "mh2:64:<base64url-fingerprint>"
 last_updated: [YYYY-MM-DD]
 ---
 
@@ -85,7 +85,7 @@ edges:
     condition: "[when to follow this edge]"
 grounds_to:
   - node: "function:<tier-1-id>"
-    fingerprint: "mh:64:<hex-fingerprint>"
+    fingerprint: "mh2:64:<base64url-fingerprint>"
 last_updated: [YYYY-MM-DD]
 ---
 

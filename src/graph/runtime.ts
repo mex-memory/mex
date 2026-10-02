@@ -26,7 +26,7 @@ import {
 import { openGraphDatabase } from "./db/database.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
 import { FingerprintStore } from "./fingerprint-store.js";
-import { deserializeFingerprint, serializeFingerprint } from "./fingerprint.js";
+import { deserializeFingerprint, sameFingerprint, serializeFingerprint } from "./fingerprint.js";
 import { acquireGraphMaintenanceLease } from "./maintenance.js";
 import { MinHashReconciler } from "./reconcile-engine.js";
 import type { Fingerprint, Reconciler } from "./reconcile.js";
@@ -712,7 +712,7 @@ export function refreshGroundingBaselines(
         if (!grounding
           || resolveGroundingReviewFile(config, scaffoldFile) !== resolve(filePath)
           || acceptance.contentHash !== hashText(content)
-          || acceptance.fingerprint !== serialized
+          || !sameFingerprint(acceptance.fingerprint, serialized)
           || acceptance.bodyHash !== node.bodyHash) {
           skipped += 1;
           options.warn?.(`Grounding review changed for ${nodeId} in ${scaffoldFile}; review it again.`);
@@ -720,7 +720,7 @@ export function refreshGroundingBaselines(
         }
       } else {
         const baselineHash = grounding?.bodyHash ?? previous?.bodyHash;
-        if ((grounding && grounding.fingerprint !== serialized)
+        if ((grounding && !sameFingerprint(grounding.fingerprint, serialized))
           || (baselineHash !== undefined && baselineHash !== node.bodyHash)) {
           skipped += 1;
           options.warn?.(`Preserved changed grounding ${nodeId} in ${scaffoldFile}; explicit review is required.`);
@@ -737,7 +737,7 @@ export function refreshGroundingBaselines(
         continue;
       }
       pendingBaselines.push(baseline);
-      if (grounding && acceptance && grounding.fingerprint !== serialized) {
+      if (grounding && acceptance && !sameFingerprint(grounding.fingerprint, serialized)) {
         grounding.fingerprint = serialized;
         dirty = true;
       }
@@ -802,7 +802,7 @@ export function previewGroundingBaseline(
   const serialized = serializeFingerprint(fingerprint);
   const previous = runtime.fingerprints.getGroundedSource(scaffoldFile, nodeId);
   if ((grounding.bodyHash ?? previous?.bodyHash) === node.bodyHash
-    && grounding.fingerprint === serialized) return null;
+    && sameFingerprint(grounding.fingerprint, serialized)) return null;
   const newBody = readNodeBody(config.projectRoot, node.filePath, node.startLine, node.endLine);
   const oldBody = previous && (grounding.bodyHash === undefined || grounding.bodyHash === previous.bodyHash)
     && hashBody(previous.source) === previous.bodyHash ? previous.source : null;
@@ -886,7 +886,8 @@ function readNodeBody(root: string, filePath: string, startLine: number, endLine
     .split("\n").slice(startLine - 1, endLine).join("\n");
 }
 
-function readBoundedText(filePath: string, maxBytes: number): string {
+/** Read one regular file, never through a symlink, refusing one over `maxBytes`. */
+export function readBoundedText(filePath: string, maxBytes: number): string {
   const fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = fstatSync(fd, { bigint: true });
@@ -909,7 +910,11 @@ function readBoundedText(filePath: string, maxBytes: number): string {
   }
 }
 
-function replaceGroundingDocument(
+/**
+ * Publish `next` over a scaffold document atomically, only if it still holds
+ * `previous`. The path must be Markdown contained in the scaffold.
+ */
+export function replaceGroundingDocument(
   config: MexConfig,
   filePath: string,
   previous: string,

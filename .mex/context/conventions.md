@@ -20,7 +20,7 @@ edges:
 # Add only nodes that embody the documented convention; do not ground examples broadly.
 # grounds_to:
 #   - node: "function:<tier-1-id>"
-#     fingerprint: "mh:64:<hex>"
+#     fingerprint: "mh2:64:<base64url>"
 grounds_to: []
 last_updated: 2026-09-06
 mex:

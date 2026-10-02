@@ -73,7 +73,7 @@ export interface GroundingBaseline {
   source: string;
   /** sha256 of `source` at grounding time. */
   bodyHash: string;
-  /** Serialized Tier-2 fingerprint (`mh:<K>:<hex>`) captured at grounding time. */
+  /** Serialized Tier-2 fingerprint (`mh2:<K>:<base64url>`, or `mh:<K>:<hex>` before #233) captured at grounding time. */
   fingerprint: string;
 }
 
@@ -94,7 +94,7 @@ export interface GroundedSource {
   source: string;
   /** sha256 of `source` at grounding time; compared against the node's current bodyHash. */
   bodyHash: string;
-  /** Serialized Tier-2 fingerprint (`mh:<K>:<hex>`) captured at grounding time. */
+  /** Serialized Tier-2 fingerprint (`mh2:<K>:<base64url>`, or `mh:<K>:<hex>` before #233) captured at grounding time. */
   fingerprint: string;
 }
 

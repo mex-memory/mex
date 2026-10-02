@@ -13,7 +13,7 @@ edges:
   - target: context/conventions.md
     condition: when understanding how to use a technology in this codebase
 # Broad inventory: ground only claims embodied by a small number of symbols.
-# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
+# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh2:64:<base64url>" }
 grounds_to: []
 last_updated: [YYYY-MM-DD]
 ---
