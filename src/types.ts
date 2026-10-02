@@ -201,7 +201,11 @@ export type IssueCode =
   // A MOVED decided by callers and callees because the body was too small to
   // tell (old → new). Info, and not counted in the score: nothing is wrong,
   // but a rebind is otherwise silent. See #229.
-  | "GROUNDING_MOVED_BY_NEIGHBORS";
+  | "GROUNDING_MOVED_BY_NEIGHBORS"
+  // A grounded node's body changed only in its comments: the committed
+  // `bodyHash` differs but `codeHash` matches. Info, and not counted in the
+  // score; accepting the new body is still an explicit review. See #236.
+  | "GROUNDING_COMMENT_DRIFT";
 
 export interface DriftIssue {
   code: IssueCode;
@@ -264,6 +268,18 @@ export interface Grounding {
    * structural comparator, and `mex sync` backfills it on the next capture.
    */
   bodyHash?: string;
+  /**
+   * Hash of the grounded node's code with comments set aside, captured at the
+   * same moment as `bodyHash` (#236; `src/graph/code-hash.ts`).
+   *
+   * Not a second change signal: `bodyHash` still decides whether a body
+   * changed. This only tells a comment-only change from a code change, so the
+   * checker can report the first as `GROUNDING_COMMENT_DRIFT` rather than
+   * `GROUNDING_DRIFT`. Optional and additive; written only while `bodyHash`
+   * describes the current code, as `ch1:<first 12 hex of bodyHash>:<hash>`, so
+   * a pair that no longer records one moment is detected and ignored.
+   */
+  codeHash?: string;
 }
 
 export interface ScaffoldFrontmatter {

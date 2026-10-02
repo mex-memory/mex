@@ -148,11 +148,20 @@ export async function runSync(
       }
     }
     const report = await runDriftCheck(config);
-    // A notice reports a completed rebind (#229); there is nothing to repair.
-    const issues = report.issues.filter((i) => i.code !== "GROUNDING_MOVED_BY_NEIGHBORS");
+    // Notices, not repairs. A completed rebind (#229) has nothing left to do.
+    // A body that changed only in comments (#236) needs a review of the new
+    // body, not an AI session over prose that still describes the code.
+    const commentOnly = report.issues.filter((i) => i.code === "GROUNDING_COMMENT_DRIFT");
+    const issues = report.issues.filter(
+      (i) => i.code !== "GROUNDING_MOVED_BY_NEIGHBORS" && i.code !== "GROUNDING_COMMENT_DRIFT",
+    );
 
     if (issues.length === 0) {
-      console.log(chalk.green("✓ No drift detected. Everything is in sync."));
+      if (commentOnly.length === 0) {
+        console.log(chalk.green("✓ No drift detected. Everything is in sync."));
+      } else {
+        await offerCommentOnlyReview(config, commentOnly, opts.dryRun === true, dependencies, ask);
+      }
       return;
     }
 
@@ -344,6 +353,36 @@ export async function runSync(
       return;
     }
   }
+}
+
+/**
+ * When the only findings are bodies that changed in comments alone (#236),
+ * offer the grounding review directly. Accepting stays an explicit, per-entry
+ * decision against the shown old and new code; nothing is renewed silently,
+ * and no AI session is started for prose that still describes the code.
+ */
+async function offerCommentOnlyReview(
+  config: MexConfig,
+  notices: readonly DriftIssue[],
+  dryRun: boolean,
+  dependencies: SyncDependencies,
+  ask: (question: string) => Promise<string>,
+): Promise<void> {
+  const count = notices.length;
+  console.log(chalk.blue(
+    `ℹ ${count} grounded node${count === 1 ? "" : "s"} changed only in comments; the code ${count === 1 ? "it describes is" : "they describe is"} unchanged.`,
+  ));
+  const interactive = dependencies.reviewGrounding ?? (process.stdin.isTTY && process.stdout.isTTY);
+  if (dryRun || !interactive) {
+    console.log(chalk.dim("Run `mex sync` in a terminal to review and accept the new bodies."));
+    return;
+  }
+  const answer = (await ask("Review and accept them now? [y/N] ")).trim().toLowerCase();
+  if (answer !== "y" && answer !== "yes") {
+    console.log(chalk.dim("Left as notices. They do not affect the drift score."));
+    return;
+  }
+  await reviewGroundingBaselines(config, groupIntoTargets([...notices]), ask);
 }
 
 /** Review one exact entry at a time; no graph lease is held while waiting for input. */

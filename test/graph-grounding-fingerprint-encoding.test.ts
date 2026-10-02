@@ -15,6 +15,7 @@ import type { MexConfig } from "../src/types.js";
 import { resolveAnchorBaseline } from "../src/drift/checkers/grounding.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
+import { codeHash, formatCommittedCodeHash } from "../src/graph/code-hash.js";
 import { deserializeFingerprint, serializeFingerprint } from "../src/graph/fingerprint.js";
 import type { Fingerprint } from "../src/graph/reconcile.js";
 import { loadGroundingRuntime, previewGroundingBaseline, refreshGroundingBaselines } from "../src/graph/runtime.js";
@@ -71,20 +72,36 @@ async function buildGraph(root: string): Promise<void> {
   engine.close();
 }
 
-/** The node's id, current fingerprint and body hash, as the graph produces them. */
-async function graphFacts(config: MexConfig): Promise<{ node: string; fingerprint: Fingerprint; bodyHash: string }> {
+/** The node's id, current fingerprint, body hash and committed code hash, as the graph produces them. */
+async function graphFacts(
+  config: MexConfig,
+): Promise<{ node: string; fingerprint: Fingerprint; bodyHash: string; codeHash: string }> {
   const runtime = await loadGroundingRuntime(config);
   try {
     const found = runtime!.graph.searchNodes("calculateOrderTotal").find((entry) => entry.kind === "function")!;
     const node = runtime!.graph.getNode(found.id)!;
-    return { node: node.id, fingerprint: runtime!.reconciler.getFingerprint(node.id)!, bodyHash: node.bodyHash! };
+    // The committed code hash (#236), as capture would write it.
+    const source = readFileSync(join(config.projectRoot, node.filePath), "utf-8");
+    const code = codeHash(node.filePath, source, node.startLine, node.endLine)!;
+    return {
+      node: node.id,
+      fingerprint: runtime!.reconciler.getFingerprint(node.id)!,
+      bodyHash: node.bodyHash!,
+      codeHash: formatCommittedCodeHash(code, node.bodyHash!),
+    };
   } finally {
     runtime!.close();
   }
 }
 
 /** A grounding as a pre-#233 scaffold committed it, written as text so no writer re-encodes it. */
-function commitHexGrounding(scaffold: string, node: string, fingerprint: string, bodyHash?: string): string {
+function commitHexGrounding(
+  scaffold: string,
+  node: string,
+  fingerprint: string,
+  bodyHash?: string,
+  codeHashValue?: string,
+): string {
   const content = [
     "---",
     "name: architecture",
@@ -92,6 +109,7 @@ function commitHexGrounding(scaffold: string, node: string, fingerprint: string,
     `  - node: "${node}"`,
     `    fingerprint: "${fingerprint}"`,
     ...(bodyHash === undefined ? [] : [`    bodyHash: "${bodyHash}"`]),
+    ...(codeHashValue === undefined ? [] : [`    codeHash: "${codeHashValue}"`]),
     "---",
     "",
     "# Architecture",
@@ -116,7 +134,9 @@ describe("a scaffold committed with hex fingerprints (#233)", () => {
     const { root, scaffold, scaffoldFile, config } = fixture();
     await buildGraph(root);
     const facts = await graphFacts(config);
-    const committed = commitHexGrounding(scaffold, facts.node, hexEncoded(facts.fingerprint), facts.bodyHash);
+    // Complete as a current scaffold commits it, so the encoding is the only
+    // difference from what the graph writes now.
+    const committed = commitHexGrounding(scaffold, facts.node, hexEncoded(facts.fingerprint), facts.bodyHash, facts.codeHash);
 
     expect(await groundingIssueCodes(config)).toEqual([]);
 
