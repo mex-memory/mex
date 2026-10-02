@@ -1129,6 +1129,22 @@ describe("scored scope selection", () => {
     }]);
   });
 
+  it("re-reads a node whose searchable text changed since it was last matched (#234)", () => {
+    // Components are cached per node object. A reused object with different
+    // text must be matched against the new text, never the cached words.
+    const { graph, seed } = fixture();
+    const termsFor = () => selectScope(graph, "Seed ledger task", 10)
+      .candidates.find((candidate) => candidate.id === seed.id)?.reasons ?? [];
+
+    expect(termsFor()).not.toContain("term:ledger");
+    seed.docstring = "Seed docs that settle the ledger";
+    expect(termsFor()).toContain("term:ledger");
+    seed.docstring = "Seed docs";
+    expect(termsFor()).not.toContain("term:ledger");
+    seed.signature = "function seed(ledger: Ledger): string";
+    expect(termsFor()).toContain("term:ledger");
+  });
+
   it("propagates a reliable exact seed through two typed relevance hops", () => {
     const leaf = node("function:leaf", "Leaf", 3);
     const parent = node("function:parent", "parent", 2);
