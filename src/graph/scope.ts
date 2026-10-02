@@ -2301,21 +2301,93 @@ function caseFoldedIdentifierMatch(node: GraphNode, identifier: string): boolean
 }
 
 function nodeContains(node: GraphNode, term: string, prefix = false): boolean {
-  const indexed = new Set([
+  return componentMatches(nodeSearchComponents(node).all, term, prefix);
+}
+
+/** A node's searchable components, with the text they were derived from. */
+interface NodeSearchComponents {
+  name: string;
+  qualifiedName: string;
+  signature: string | undefined;
+  docstring: string | undefined;
+  /** Name, qualified name and signature: what the node *is*. */
+  identity: Set<string>;
+  /** The identity components followed by the docstring's, in that order. */
+  all: Set<string>;
+}
+
+/**
+ * Searchable components per node, computed once rather than per term (#234).
+ *
+ * `nodeContains` runs for every candidate and every query term, and
+ * `nodeMatchesConceptInIdentity` for every candidate and every concept. Both
+ * used to re-tokenize the node's name, qualified name and signature each time.
+ * A signature is the checker's full type text, untruncated so ids do not depend
+ * on the checkout path (#240), and on a generic-heavy codebase it runs to
+ * hundreds of kilobytes: on Hono one Scope call spent 35 of 41 s splitting the
+ * same signatures into the same identifiers.
+ *
+ * Keyed weakly by node object, so a long-lived Hub process releases entries
+ * with the nodes. An entry is reused only while the four strings it was built
+ * from are unchanged, so a node object reused with different text is
+ * tokenized again rather than answered from stale components. Both sets keep
+ * the insertion order the per-call sets had.
+ */
+const nodeSearchComponentCache = new WeakMap<GraphNode, NodeSearchComponents>();
+
+function nodeSearchComponents(node: GraphNode): NodeSearchComponents {
+  const cached = nodeSearchComponentCache.get(node);
+  if (cached
+    && cached.name === node.name
+    && cached.qualifiedName === node.qualifiedName
+    && cached.signature === node.signature
+    && cached.docstring === node.docstring) {
+    return cached;
+  }
+  const identity = new Set([
     ...searchComponents(node.name),
     ...searchComponents(node.qualifiedName),
     ...searchComponents(node.signature ?? ""),
-    ...searchComponents(node.docstring ?? ""),
   ]);
-  return componentMatches(indexed, term, prefix);
+  const entry: NodeSearchComponents = {
+    name: node.name,
+    qualifiedName: node.qualifiedName,
+    signature: node.signature,
+    docstring: node.docstring,
+    identity,
+    all: new Set([...identity, ...searchComponents(node.docstring ?? "")]),
+  };
+  nodeSearchComponentCache.set(node, entry);
+  return entry;
 }
 
 function componentMatches(components: Set<string>, term: string, prefix: boolean): boolean {
   return components.has(term) || (prefix && term.length >= 3 && [...components].some((component) => component.startsWith(term)));
 }
 
+/**
+ * Components of one identifier, shared across nodes (#234).
+ *
+ * A generic-heavy signature repeats the same few identifiers thousands of
+ * times — `Context`, `Env`, `Input` — and each occurrence used to be split
+ * again. Bounded so a long-lived process never grows without limit: when full
+ * it is cleared and refilled, which costs only the splitting it saved.
+ */
+const IDENTIFIER_COMPONENT_CACHE_LIMIT = 50_000;
+const identifierComponentCache = new Map<string, readonly string[]>();
+
+function cachedIdentifierComponents(identifier: string): readonly string[] {
+  let components = identifierComponentCache.get(identifier);
+  if (components === undefined) {
+    if (identifierComponentCache.size >= IDENTIFIER_COMPONENT_CACHE_LIMIT) identifierComponentCache.clear();
+    components = identifierComponents(identifier);
+    identifierComponentCache.set(identifier, components);
+  }
+  return components;
+}
+
 function searchComponents(value: string): string[] {
-  return [...new Set((value.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) ?? []).flatMap(identifierComponents))];
+  return [...new Set((value.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) ?? []).flatMap(cachedIdentifierComponents))];
 }
 
 function literalTerms(plan: ReturnType<typeof planGraphQuery>): string[] {
@@ -2366,12 +2438,7 @@ function nodeMatchesConcept(node: GraphNode, concept: QueryConcept): boolean {
 }
 
 function nodeMatchesConceptInIdentity(node: GraphNode, concept: QueryConcept): boolean {
-  const components = new Set([
-    ...searchComponents(node.name),
-    ...searchComponents(node.qualifiedName),
-    ...searchComponents(node.signature ?? ""),
-  ]);
-  return conceptMatchesComponents(concept, components);
+  return conceptMatchesComponents(concept, nodeSearchComponents(node).identity);
 }
 
 function addConceptEvidence(entry: NodeEvidence, concept: QueryConcept): void {
