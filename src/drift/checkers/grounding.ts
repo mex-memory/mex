@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import type { DriftIssue, Grounding, ScaffoldFrontmatter } from "../../types.js";
-import { deserializeFingerprint, serializeFingerprint } from "../../graph/fingerprint.js";
+import { canonicalFingerprint, deserializeFingerprint, serializeFingerprint } from "../../graph/fingerprint.js";
 import type { GraphEngine } from "../../graph/engine.js";
 import type { GroundedSource, GroundingChecker } from "../../graph/grounding.js";
 import type { Fingerprint, Reconciler, Resolution } from "../../graph/reconcile.js";
@@ -246,7 +246,9 @@ export function resolveAnchorBaseline(sources: AnchorBaselineSources): MissingNo
   if (current) return { fingerprint: current, ...bodyHashOf(here?.bodyHash ?? cached?.bodyHash) };
   if (here) return here;
   const elsewhere = sources.elsewhere().filter((entry) => deserializeFingerprint(entry.fingerprint) !== null);
-  if (new Set(elsewhere.map((entry) => entry.fingerprint)).size > 1) return "conflict";
+  // By value: one file written before #233 and one after spell the same
+  // fingerprint in two encodings, and they agree.
+  if (new Set(elsewhere.map((entry) => canonicalFingerprint(entry.fingerprint))).size > 1) return "conflict";
   const [first] = elsewhere;
   if (first) {
     const agreed = new Set(elsewhere.map((entry) => entry.bodyHash)).size === 1;

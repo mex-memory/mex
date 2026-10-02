@@ -14,7 +14,7 @@ edges:
     condition: "when the value also lives in the graph database"
   - target: "context/conventions.md"
     condition: "when verifying the change"
-last_updated: 2026-09-07
+last_updated: 2026-10-02
 mex:
   id: mx_01M1M0CJK5ZTSHCDDWB3NTSEBF
   type: pattern
@@ -131,3 +131,9 @@ Two distinct kinds of value, and the difference decides where each one lives:
   actually receives before believing a message about what it found.
 - A diagnostic that names a cause nobody checked costs more than no diagnostic.
   If a flag has two causes, carry the discriminator rather than asserting one.
+- A committed value can have more than one spelling. Fingerprints are written
+  as `mh2:` but scaffolds still hold `mh:` (#233), so compare them with
+  `sameFingerprint()` or `canonicalFingerprint()`, never `===`. A string
+  comparison makes every older grounding read as changed: capture preserves
+  it, sync asks for a review, and the Wiki reports it stale. Re-encode an old
+  value only when its file's groundings are being rewritten anyway.

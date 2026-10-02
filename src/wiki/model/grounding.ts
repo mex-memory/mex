@@ -51,7 +51,8 @@ export interface WikiGrounding {
   /** Code-graph node id. Produced by the graph, never invented. */
   node: string;
   /**
-   * Serialized MinHash fingerprint, `mh:<K>:<hex>`. Produced by the graph.
+   * Serialized MinHash fingerprint, `mh2:<K>:<base64url>` (or `mh:<K>:<hex>`
+   * before #233). Produced by the graph.
    *
    * This is an **identity** signal, not a change signal. It is what finds a
    * symbol again after it moves — see {@link groundingComparator} for why that
@@ -185,7 +186,7 @@ export function compareGroundingHealth(left: GroundingHealth, right: GroundingHe
 }
 
 /**
- * Shape of a serialized fingerprint: `mh:<K>:<hex>`.
+ * Shape of a serialized fingerprint in the original encoding: `mh:<K>:<hex>`.
  *
  * Shape only. The canonical codec lives in `src/graph/fingerprint.ts`, and the
  * model layer deliberately does not import it — the model must stay free of the
@@ -194,8 +195,12 @@ export function compareGroundingHealth(left: GroundingHealth, right: GroundingHe
  */
 export const FINGERPRINT_PATTERN = /^mh:\d+:(?:[0-9a-f]{2})+$/i;
 
+/** Shape of the compact encoding written since #233: `mh2:<K>:<base64url>`. Case is data here. */
+export const COMPACT_FINGERPRINT_PATTERN = /^mh2:\d+:[A-Za-z0-9_-]+$/;
+
 export function isFingerprintShaped(value: unknown): value is string {
-  return typeof value === "string" && FINGERPRINT_PATTERN.test(value);
+  return typeof value === "string"
+    && (FINGERPRINT_PATTERN.test(value) || COMPACT_FINGERPRINT_PATTERN.test(value));
 }
 
 /**
@@ -287,7 +292,7 @@ export const validateGrounding: Validator<WikiGrounding> = (value, context) => {
   }
   if (!isFingerprintShaped(grounding.fingerprint)) {
     diagnostics.push(
-      contextDiagnostic(context, "MALFORMED_GROUNDING", `"${grounding.fingerprint}" is not a serialized fingerprint (mh:<K>:<hex>).`),
+      contextDiagnostic(context, "MALFORMED_GROUNDING", `"${grounding.fingerprint}" is not a serialized fingerprint (mh2:<K>:<base64url> or mh:<K>:<hex>).`),
     );
   }
   if (grounding.file !== undefined && !isCanonicalRepoPath(grounding.file)) {

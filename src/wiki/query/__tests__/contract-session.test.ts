@@ -540,8 +540,10 @@ describe("Wiki contract read session", () => {
 
   it("accepts a graph-produced grounding fingerprint larger than 4 KiB", () => {
     scaffold = createScaffold();
+    // 256 neighbours: the compact encoding (#233) takes 17 bytes for each, so
+    // this is what still crosses 4 KiB once serialized.
     const neighbours = Array.from(
-      { length: 48 },
+      { length: 256 },
       (_, index) => `function:${index.toString(16).padStart(32, "0")}`,
     );
     const fingerprint = serializeFingerprint(createFingerprint(

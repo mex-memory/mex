@@ -30,7 +30,7 @@
  * provoke in a real repository.
  */
 
-import { serializeFingerprint, deserializeFingerprint } from "../../graph/fingerprint.js";
+import { serializeFingerprint, deserializeFingerprint, sameFingerprint } from "../../graph/fingerprint.js";
 import { FingerprintStore } from "../../graph/fingerprint-store.js";
 import { GraphStore } from "../../graph/db/store.js";
 import type { GraphEngine } from "../../graph/engine.js";
@@ -38,6 +38,13 @@ import type { Fingerprint, Reconciler, Resolution } from "../../graph/reconcile.
 import type { SqliteDatabase } from "../../graph/db/sqlite.js";
 import type { GroundingBaseline, GroundingSubject } from "../../graph/grounding.js";
 import { asGraphDerived, type GraphDerivedGrounding, type WikiGrounding } from "../model/grounding.js";
+
+/**
+ * Whether two serialized fingerprints are the same fingerprint, in either
+ * encoding (#233). Offered here so the rest of the wiki compares them through
+ * the one door rather than importing the graph's codec itself.
+ */
+export { sameFingerprint };
 
 /** What resolution knows about one code node, as the wiki sees it. */
 export interface GroundedNode {

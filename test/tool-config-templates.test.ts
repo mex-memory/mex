@@ -64,7 +64,7 @@ describe("shipped code-graph agent guidance", () => {
     for (const area of ["templates", ".mex"]) {
       const patterns = readText(join(area, "patterns/README.md"));
       expect(patterns).toContain("grounds_to:");
-      expect(patterns).toContain('fingerprint: "mh:64:<hex-fingerprint>"');
+      expect(patterns).toContain('fingerprint: "mh2:64:<base64url-fingerprint>"');
       expect(patterns).toContain("[`someFunction()`](mex://function:<tier-1-id>)");
       expect(findMexAnchors(patterns), `${area}/patterns examples must stay inert`).toEqual([]);
     }

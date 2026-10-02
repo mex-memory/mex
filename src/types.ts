@@ -233,7 +233,7 @@ export interface DriftReport {
  * ```yaml
  * grounds_to:
  *   - node: "function:a3f8...c21"
- *     fingerprint: "mh:64:9f2a..."
+ *     fingerprint: "mh2:64:AXbN..."
  *     bodyHash: "sha256:7c1d..."
  * ```
  */
@@ -241,7 +241,7 @@ export interface Grounding {
   /** The grounded node's Tier-1 id, `${kind}:sha256(filePath:kind:name)[:32]`. */
   node: string;
   /**
-   * Serialized Tier-2 fingerprint (`mh:<K>:<hex>`) captured when grounded.
+   * Serialized Tier-2 fingerprint (`mh2:<K>:<base64url>`, or `mh:<K>:<hex>` before #233) captured when grounded.
    *
    * An **identity** signal, not a change signal: it is what finds the symbol
    * again after it moves. It is deliberately insensitive to an edited constant

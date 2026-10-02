@@ -28,6 +28,8 @@
  * one rule.
  */
 
+import { sameFingerprint } from "../grounding/adapter.js";
+
 interface GroundingLike {
   node: string;
   fingerprint: string;
@@ -41,9 +43,12 @@ export interface GroundingStores<T extends GroundingLike> {
   conflicts: T[];
 }
 
-/** Same node with different identity or change evidence. */
+/**
+ * Same node with different identity or change evidence. Fingerprints compare
+ * by value, so one fingerprint written in both encodings (#233) is not a conflict.
+ */
 function differs(left: GroundingLike, right: GroundingLike): boolean {
-  return left.fingerprint !== right.fingerprint || left.bodyHash !== right.bodyHash;
+  return !sameFingerprint(left.fingerprint, right.fingerprint) || left.bodyHash !== right.bodyHash;
 }
 
 /** Merge the two stores under the rule above. Order: `mex` first, then root. */

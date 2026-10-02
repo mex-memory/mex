@@ -52,7 +52,7 @@ from the same graph JSONL fact into frontmatter:
 
 grounds_to:
   - node: "<exact graph node id>"
-    fingerprint: "<exact mh:64:... fingerprint>"
+    fingerprint: "<exact fingerprint from the same graph fact>"
 
 If the frontmatter already has a mex: map, the list belongs inside it as
 mex.grounds_to (indented under mex:), not at the root. Keep one grounds_to per

@@ -3,6 +3,7 @@ import remarkParse from "remark-parse";
 import remarkFrontmatter from "remark-frontmatter";
 import { visit } from "unist-util-visit";
 import YAML from "yaml";
+import { canonicalFingerprint } from "./graph/fingerprint.js";
 import { keyPathEdit, keyPathRemoveEdit, renderKeyValue, spliceTopLevelKey } from "./wiki/markdown/frontmatter.js";
 import { mergeGroundingStores, rootGroundingsNotInEffect } from "./wiki/markdown/grounding-stores.js";
 import { applyEdits, type PatchEdit } from "./wiki/markdown/patch.js";
@@ -154,9 +155,18 @@ export function isGroundingArray(value: unknown): value is Grounding[] {
  * to resolve. A malformed root key is left alone, as the single-store writer
  * always left a value it could not read. A second write of the same set is a
  * no-op.
+ *
+ * Every fingerprint is written in the compact encoding (#233). An entry still
+ * in the older `mh:` hex form is re-encoded here, value for value, and only
+ * here: a file's fingerprints change shape when its groundings are being
+ * rewritten anyway, never in a pass of their own.
  */
 export function writeGroundings(content: string, groundings: Grounding[]): string {
   if (!isGroundingArray(groundings)) throw new Error("Invalid grounds_to entries");
+  groundings = groundings.map((grounding) => {
+    const fingerprint = canonicalFingerprint(grounding.fingerprint);
+    return fingerprint === grounding.fingerprint ? grounding : { ...grounding, fingerprint };
+  });
   const path = groundingKeyPath(content);
   if (path.length === 1) {
     return spliceTopLevelKey(content, "grounds_to", renderKeyValue("grounds_to", groundings)).text;

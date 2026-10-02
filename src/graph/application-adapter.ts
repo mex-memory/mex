@@ -1069,7 +1069,9 @@ function resolveCodeReference(
     return {
       status: "resolved",
       ref,
-      health: serializeFingerprint(current) === ref.fingerprint ? "fresh" : "changed",
+      // `fingerprint` is the stored one decoded, so this compares by value in
+      // either encoding (#233).
+      health: serializeFingerprint(current) === serializeFingerprint(fingerprint) ? "fresh" : "changed",
       resolvedRef,
       symbol: projectNode(exact),
     };

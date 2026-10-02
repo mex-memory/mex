@@ -70,12 +70,17 @@ export interface Fingerprint {
 }
 
 /**
- * Serialization prefix for the `grounds_to[].fingerprint` frontmatter string.
- * The baseline fingerprint is stored as `"mh:<K>:<hex>"` (spec §5). Track B owns
- * the exact encode/decode; this constant pins the discriminator so writers and
- * readers agree.
+ * Serialization prefix of the original `grounds_to[].fingerprint` encoding,
+ * `"mh:<K>:<hex>"` (spec §5): hex of the fingerprint's JSON. Still read, never
+ * written; see `src/graph/fingerprint.ts`.
  */
 export const FINGERPRINT_PREFIX = "mh" as const;
+
+/**
+ * Serialization prefix of the compact encoding written since #233,
+ * `"mh2:<K>:<base64url>"`: the same fingerprint as bytes.
+ */
+export const COMPACT_FINGERPRINT_PREFIX = "mh2" as const;
 
 // ----------------------------------------------------------------------------
 // Resolution (the reconciler's verdict)

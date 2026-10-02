@@ -878,6 +878,26 @@ graphCommand
     }
   });
 
+graphCommand
+  .command("compact-fingerprints")
+  .description("Re-encode committed grounding fingerprints in the compact mh2: format; needs no graph")
+  .option("--dry-run", "Report what would change without writing")
+  .option("--json", "Output the result as JSON")
+  .action(async (opts) => {
+    try {
+      const config = loadConfig();
+      const { runCompactFingerprints } = await import("./fingerprint-compaction.js");
+      runCompactFingerprints(config, {
+        dryRun: opts.dryRun === true,
+        json: opts.json ?? graphCommand.opts().json,
+      });
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+      return;
+    }
+  });
+
 program
   .command("impact <target>")
   .description("Show transitive code and scaffold blast radius for a symbol or file")
@@ -1265,6 +1285,7 @@ program
     console.log("  mex graph scope <task>               Compact task neighborhood as JSONL");
     console.log("  mex graph get <id...>                Expand source for node ids as JSONL");
     console.log("  mex graph ground                     Ground an existing pre-0.7 scaffold");
+    console.log("  mex graph compact-fingerprints       Re-encode committed fingerprints as mh2:");
     console.log("  mex graph query <relation> <target>  Structural lookup as JSONL");
     console.log("  mex graph repair                     Checkpoint a stranded WAL, verify integrity");
     console.log("  mex impact <symbol|file>              Blast radius as JSONL");

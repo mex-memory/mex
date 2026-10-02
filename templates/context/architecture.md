@@ -13,7 +13,7 @@ edges:
   - target: context/decisions.md
     condition: when understanding why the architecture is structured this way
 # Broad overview: keep this empty unless a claim depends on a few specific symbols.
-# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh:64:<hex>" }
+# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh2:64:<base64url>" }
 grounds_to: []
 last_updated: [YYYY-MM-DD]
 ---
