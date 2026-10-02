@@ -9,7 +9,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - A refresh that must extract every TypeScript and JavaScript file in full no longer mis-indexes files outside every `tsconfig`. When such a change reached the program built for them (for example a new plain script, whose declarations the other files can see), the signal to extract in full was taken for a crashed program, and every one of those files was indexed by the fallback parser with different node ids and edges until the next rebuild. On FastAPI, a jump over 80 commits that added one documentation script left 48 nodes and 78 edges different from a clean build; it now matches exactly (#209).
-- `mex check` no longer reports two false positives seen on clean scaffolds. A brace-expanded script name such as `bun run test:{node,workerd}` is expanded and each script it names is checked against `package.json`; a name that still holds braces after expansion is a placeholder and is skipped. A command written in code inside a dependency entry, such as `` **`bun test` / `deno test`** ``, is no longer claimed as a dependency, since a package name never contains whitespace (#231).
+- `mex check` no longer reports two false positives seen on clean scaffolds. A brace-expanded script name such as `bun run test:{node,workerd}` is expanded and each script it names is checked against `package.json`; a name that still holds braces after expansion is a placeholder and is skipped, as is one naming more than 64 scripts. A command written in code inside a dependency entry, such as `` **`bun test` / `deno test`** ``, is no longer claimed as a dependency, since a package name never contains whitespace (#231).
 
 ## [0.8.3] - 2026-09-28
 
