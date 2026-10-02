@@ -23,16 +23,21 @@ export function checkCommands(
       /^(?:npm\s+run|yarn|pnpm|bun\s+run)\s+(\S+)/
     );
     if (npmMatch) {
-      const script = npmMatch[1];
-      if (pkgScripts && !pkgScripts.has(script)) {
-        issues.push({
-          code: "DEAD_COMMAND",
-          severity: "error",
-          file: claim.source,
-          line: claim.line,
-          message: `Script "${script}" not found in package.json scripts`,
-          claim,
-        });
+      // `bun run test:{node,workerd}` runs one script per alternative. A name
+      // still holding braces after expansion is a placeholder like `{script}`,
+      // and a word naming too many scripts is skipped the same way.
+      for (const script of new Set(expandBraces(npmMatch[1]) ?? [])) {
+        if (/[{}]/.test(script)) continue;
+        if (pkgScripts && !pkgScripts.has(script)) {
+          issues.push({
+            code: "DEAD_COMMAND",
+            severity: "error",
+            file: claim.source,
+            line: claim.line,
+            message: `Script "${script}" not found in package.json scripts`,
+            claim,
+          });
+        }
       }
       continue;
     }
@@ -55,6 +60,41 @@ export function checkCommands(
   }
 
   return issues;
+}
+
+/** More script names than anyone lists by hand; one Markdown token must stay bounded work. */
+const MAX_BRACE_EXPANSIONS = 64;
+
+/**
+ * Shell brace expansion of comma lists: `a{b,c}` gives `ab` and `ac`.
+ *
+ * Each group multiplies the count, so twenty `{a,b}` groups would name a
+ * million scripts. Expansion stops as soon as more than
+ * {@link MAX_BRACE_EXPANSIONS} names would result, and the word is then not
+ * read as a script list at all (null).
+ */
+function expandBraces(word: string): string[] | null {
+  const expanded: string[] = [];
+  // A stack, with alternatives pushed in reverse, keeps the written order.
+  const pending = [word];
+  while (pending.length > 0) {
+    const next = pending.pop()!;
+    const group = /\{([^{}]*,[^{}]*)\}/.exec(next);
+    if (!group) {
+      expanded.push(next);
+      continue;
+    }
+    const head = next.slice(0, group.index);
+    const tail = next.slice(group.index + group[0].length);
+    const alternatives = group[1].split(",");
+    for (let i = alternatives.length - 1; i >= 0; i--) {
+      pending.push(head + alternatives[i] + tail);
+    }
+    // Every expansion replaces one word with at least two, so this count
+    // never falls: once it is over the limit, the final result is too.
+    if (expanded.length + pending.length > MAX_BRACE_EXPANSIONS) return null;
+  }
+  return expanded;
 }
 
 function loadPackageScripts(

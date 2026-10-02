@@ -214,6 +214,9 @@ export function extractClaims(filePath: string, source: string): Claim[] {
     );
     if (coded.length > 0) {
       for (const child of coded) {
+        // `bun test` in a dependency entry names a tool's command. A package
+        // name never contains whitespace.
+        if (/\s/.test(child.value)) continue;
         claims.push({
           kind: "dependency",
           value: child.value,

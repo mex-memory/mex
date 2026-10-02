@@ -421,6 +421,44 @@ describe("checkCommands", () => {
     const issues = checkCommands(claims, tmpDir);
     expect(issues).toHaveLength(0);
   });
+
+  it("checks each script a brace expression names (#231)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ scripts: { "test:node": "vitest", "test:workerd": "vitest" } })
+    );
+    const claims = [
+      claim({ kind: "command", value: "bun run test:{node,workerd}" }),
+      claim({ kind: "command", value: "npm run test:{node,fastly}" }),
+    ];
+    const issues = checkCommands(claims, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toBe('Script "test:fastly" not found in package.json scripts');
+  });
+
+  it("skips a script name left with braces after expansion", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ scripts: { build: "tsc" } })
+    );
+    const claims = [claim({ kind: "command", value: "npm run {script}" })];
+    expect(checkCommands(claims, tmpDir)).toHaveLength(0);
+  });
+
+  it("checks up to 64 brace-expanded names and skips a word naming more", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ scripts: { build: "tsc" } })
+    );
+    // Six groups name exactly 64 scripts; each is still checked.
+    const sixGroups = [claim({ kind: "command", value: `npm run ${"{a,b}".repeat(6)}` })];
+    expect(checkCommands(sixGroups, tmpDir)).toHaveLength(64);
+    // Seven name 128, and twenty would name a million: not a script list.
+    for (const groups of [7, 20]) {
+      const claims = [claim({ kind: "command", value: `npm run ${"{a,b}".repeat(groups)}` })];
+      expect(checkCommands(claims, tmpDir)).toHaveLength(0);
+    }
+  });
 });
 
 // ── Dependency Checker ──
