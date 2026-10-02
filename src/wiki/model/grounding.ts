@@ -69,6 +69,13 @@ export interface WikiGrounding {
    * carries it.
    */
   bodyHash?: string;
+  /**
+   * Hash of the node's code with comments set aside, captured at the same
+   * moment as `bodyHash` (#236). It does not decide whether a body changed;
+   * it tells a comment-only change from a code change. Kept here so a wiki
+   * write carries it through rather than dropping it as an unknown key.
+   */
+  codeHash?: string;
   /** Repository-relative path, cached for display when the graph is unavailable. */
   file?: string;
   commit?: string;
@@ -251,6 +258,7 @@ const shapeValidator = validateShape<WikiGrounding>({
   node: validateString(),
   fingerprint: validateString(),
   bodyHash: optional(validateString()),
+  codeHash: optional(validateString()),
   file: optional(validateString()),
   commit: optional(validateString()),
   verifiedAt: optional(validateString()),

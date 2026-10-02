@@ -191,6 +191,8 @@ function remediationFor(code: DriftIssue["code"]): string | null {
       return "Fix the link target path or remove the broken Markdown link.";
     case "GROUNDING_MOVED_BY_NEIGHBORS":
       return "Not scored. Confirm the new node is the same function; `mex sync` rewrites the reference.";
+    case "GROUNDING_COMMENT_DRIFT":
+      return "Not scored. Only comments changed; check whether the prose relied on them, then accept the new body in `mex sync`.";
     default:
       return null;
   }

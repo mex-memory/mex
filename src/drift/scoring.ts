@@ -9,9 +9,11 @@ const SEVERITY_COST: Record<Severity, number> = {
 /**
  * Notices: reported so a reader can see what happened, but not drift. A MOVED
  * decided by callers and callees is a correct rebind that would otherwise be
- * silent (#229); it must not cost what a real finding costs.
+ * silent (#229); it must not cost what a real finding costs. A body that
+ * changed only in its comments is reported so it can be reviewed, but the
+ * code the knowledge describes is unchanged (#236).
  */
-const UNSCORED_CODES: ReadonlySet<DriftIssue["code"]> = new Set(["GROUNDING_MOVED_BY_NEIGHBORS"]);
+const UNSCORED_CODES: ReadonlySet<DriftIssue["code"]> = new Set(["GROUNDING_MOVED_BY_NEIGHBORS", "GROUNDING_COMMENT_DRIFT"]);
 
 /** Compute drift score from 0-100. Starts at 100, deducts per issue. */
 export function computeScore(issues: DriftIssue[]): number {

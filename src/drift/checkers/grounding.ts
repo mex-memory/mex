@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import type { DriftIssue, Grounding, ScaffoldFrontmatter } from "../../types.js";
+import { committedCodeHash } from "../../graph/code-hash.js";
 import { canonicalFingerprint, deserializeFingerprint, serializeFingerprint } from "../../graph/fingerprint.js";
 import type { GraphEngine } from "../../graph/engine.js";
 import type { GroundedSource, GroundingChecker } from "../../graph/grounding.js";
@@ -30,8 +31,9 @@ export function movedByNeighborsMessage(oldId: string, newId: string, anchor = f
 /** What a snapshot stale only by changed source can still say about one node (#228). */
 export type SourceDriftResolution =
   /** The node's body as a refresh would record it: from the snapshot when its
-   *  file is unchanged, or re-derived exactly from the edited file. */
-  | { kind: "current"; bodyHash: string | undefined }
+   *  file is unchanged, or re-derived exactly from the edited file. `codeHash`
+   *  computes that body's comment-free hash on demand (#236). */
+  | { kind: "current"; bodyHash: string | undefined; codeHash?: () => string | null }
   /** Only a refresh can settle this node; `reason` says why. */
   | { kind: "unverified"; reason: string };
 
@@ -43,15 +45,58 @@ export interface SourceDriftGrounding {
   resolve(nodeId: string): SourceDriftResolution;
 }
 
+/**
+ * Comment-free code hashes (#236; `src/graph/code-hash.ts`), supplied by the
+ * runtime because they need the node's source file and its grammar. Either
+ * may return null, which always means "cannot tell" and keeps the warning.
+ */
+export interface GroundingCodeHashing {
+  /** The current node's code hash, from its file as the graph indexed it. */
+  current(nodeId: string): string | null;
+  /** The code hash of an old body of `nodeId`, parsed as that node's language. */
+  ofBody(nodeId: string, body: string): string | null;
+}
+
 export function makeGroundingChecker(
   graph: GraphEngine,
   reconciler: Reconciler,
   sourceDrift?: SourceDriftGrounding,
+  codeHashing?: GroundingCodeHashing,
 ): GroundingChecker {
   const capabilities = reconciler as Reconciler & GroundingReconcilerCapabilities;
   const decide = (nodeId: string, baseline: Fingerprint, bodyHash: string | undefined): ExplainedResolution =>
     capabilities.explain?.(nodeId, baseline, bodyHash)
       ?? { resolution: capabilities.reconcile(nodeId, baseline, bodyHash), evidence: "body" };
+
+  /**
+   * A changed body, reported as what changed (#236).
+   *
+   * `bodyHash` has already said the body differs. When the baseline's code
+   * hash is known and equals the current one, only comments changed, and that
+   * is a notice rather than drift. The baseline comes from the committed
+   * `codeHash` — which capture writes only beside a `bodyHash` of the same
+   * moment — or else from the cached old body, but only when that cache is the
+   * very baseline being compared. Anything less is the warning it always was.
+   */
+  const changedBody = (
+    grounding: Grounding,
+    source: string,
+    baselineBodyHash: string,
+    baselineSource: GroundedSource | null,
+    currentCodeHash: () => string | null,
+  ): DriftIssue => {
+    // A committed code hash counts only while it is bound to the committed body
+    // hash; a stale pair is read as absent (`src/graph/code-hash.ts`).
+    const baselineCode = committedCodeHash(grounding.codeHash, grounding.bodyHash)
+      ?? (baselineSource !== null && baselineSource.bodyHash === baselineBodyHash && codeHashing
+        ? codeHashing.ofBody(grounding.node, baselineSource.source)
+        : null);
+    if (baselineCode !== null && baselineCode === currentCodeHash()) {
+      return issue("GROUNDING_COMMENT_DRIFT", "info", source,
+        `Grounded node changed only in comments: ${grounding.node}`);
+    }
+    return issue("GROUNDING_DRIFT", "warning", source, `Grounded node body changed: ${grounding.node}`);
+  };
 
   return function checkGrounding(
     frontmatter: ScaffoldFrontmatter | null,
@@ -105,8 +150,8 @@ export function makeGroundingChecker(
         }
         const baselineBodyHash = grounding.bodyHash ?? baselineSource?.bodyHash;
         if (baselineBodyHash !== undefined && resolution.bodyHash !== baselineBodyHash) {
-          issues.push(issue("GROUNDING_DRIFT", "warning", source,
-            `Grounded node body changed: ${grounding.node}`));
+          issues.push(changedBody(grounding, source, baselineBodyHash, baselineSource,
+            () => resolution.codeHash?.() ?? null));
         }
         continue;
       }
@@ -126,8 +171,8 @@ export function makeGroundingChecker(
         // exactly the pre-existing behaviour and no worse than it was.
         const baselineBodyHash = grounding.bodyHash ?? baselineSource?.bodyHash;
         if (baselineBodyHash !== undefined && current.bodyHash !== baselineBodyHash) {
-          issues.push(issue("GROUNDING_DRIFT", "warning", source,
-            `Grounded node body changed: ${grounding.node}`));
+          issues.push(changedBody(grounding, source, baselineBodyHash, baselineSource,
+            () => codeHashing?.current(grounding.node) ?? null));
         }
         continue;
       }
