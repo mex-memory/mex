@@ -88,6 +88,13 @@ export const TS_FIXTURE: Fixture = {
     "src/bulk.ts": Array.from({ length: 8 }, (_, index) =>
       `export function bulk${index}(value: number): number {\n  const doubled = value * ${index + 2};\n  return doubled + ${index};\n}\n`).join("\n"),
     "src/bulk-user.ts": "import { bulk0, bulk1 } from \"./bulk\";\n\nexport function useBulk(): number {\n  return bulk0(1) + bulk1(2);\n}\n",
+    // Importers reach the stream's methods by position; the consumer only
+    // through the user's return type, without importing the stream at all.
+    "src/stream.ts": "export class StreamApi {\n  pipe(): number {\n    return 1;\n  }\n\n  onAbort(listener: () => void): void {\n    listener();\n  }\n\n  abort(): void {\n    this.onAbort(() => undefined);\n  }\n}\n",
+    "src/stream-user.ts": "import { StreamApi } from \"./stream\";\n\nexport function openStream(): StreamApi {\n  const stream = new StreamApi();\n  stream.onAbort(() => undefined);\n  return stream;\n}\n",
+    "src/stream-consumer.ts": "import { openStream } from \"./stream-user\";\n\nexport function closeStream(): void {\n  openStream().abort();\n}\n",
+    // Outside every tsconfig project: the compiler extracts it in its inferred program.
+    "docs/widget.js": "function setupWidget() {\n  return document.title;\n}\nsetupWidget();\n",
   },
   edits: [
     { name: "trailing comment", apply: append("src/util/format.ts", "// trailing comment\n"), expectMode: "incremental" },
@@ -110,6 +117,18 @@ export const TS_FIXTURE: Fixture = {
     { name: "delete a file with many declarations", apply: remove("src/bulk.ts"), expectMode: "incremental" },
     { name: "remove same-named definition in another file", apply: remove("src/shadow.ts"), expectMode: "incremental" },
     { name: "revert import", apply: replace("src/consumer.ts", "from \"./helpers2\"", "from \"./helpers\""), expectMode: "incremental" },
+    // The declarations after the body move while the file's declaration
+    // signature holds: importers are reused with their locations moved.
+    { name: "grow a method body", apply: replace("src/stream.ts", "    return 1;\n", "    const chunk = 1;\n    const extra = chunk * 2;\n    return chunk + extra;\n"), expectMode: "incremental" },
+    { name: "comment above every declaration", apply: replace("src/stream.ts", "export class StreamApi {", "// The stream every consumer shares.\nexport class StreamApi {"), expectMode: "incremental" },
+    // A changed signature captures every importer again, the consumer included.
+    { name: "change a method signature", apply: replace("src/stream.ts", "onAbort(listener: () => void): void {", "onAbort(listener: () => void, once?: boolean): void {"), expectMode: "incremental" },
+    { name: "move a method before another", apply: all(
+      replace("src/stream.ts", "  abort(): void {\n    this.onAbort(() => undefined);\n  }\n", ""),
+      replace("src/stream.ts", "  pipe(): number {", "  abort(): void {\n    this.onAbort(() => undefined);\n  }\n\n  pipe(): number {"),
+    ) },
+    // A script's declarations are visible to the inferred program's other files.
+    { name: "add a script outside every project", apply: write("docs/kapa.js", "function initKapa() {\n  return setupWidget();\n}\ninitKapa();\n") },
     { name: "change the ambient declaration", apply: replace("src/globals.d.ts", "version: string", "version: string;\n    build: number"), expectMode: "full" },
     // Neither field decides what the compiler resolves, so both are no-ops.
     { name: "change an insignificant tsconfig option", apply: replace("tsconfig.json", "\"strict\": true", "\"strict\": false") },

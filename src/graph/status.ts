@@ -24,6 +24,7 @@ import type { Diagnostic, RepoState } from "../team/contracts/shared.js";
 import { DB_SCHEMA_VERSION, detectGraphSchemaLineage } from "./db/database.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
 import { holdsAuditedBytes } from "./audit-record.js";
+import { recallSource, rememberSource } from "./source-memo.js";
 import { BANDS, K } from "./config.js";
 import {
   GRAPH_CORPUS_GLOB_OPTIONS,
@@ -272,6 +273,13 @@ export interface InspectGraphStatusOptions {
    * already hashed. The caller owns it and drops it when the run ends.
    */
   bandHashMemo?: Map<string, readonly string[]>;
+  /**
+   * @internal Files whose rows a delta publication rewrote in a copy of a
+   * store that passed the full audit. The fingerprint and LSH audit then
+   * checks every fingerprint of these files' nodes bucket by bucket and the
+   * store's bucket total; any doubt runs the full audit.
+   */
+  fingerprintScope?: readonly string[];
   /** @internal Deterministic observation-race seam for conformance tests. */
   internal?: {
     beforeFreshValidation?: (attempt: number) => void | Promise<void>;
@@ -813,6 +821,7 @@ async function inspectGraphStatusAttempt(
     const coreInvariantFailures = structureAudited ? [] : inspectCoreInvariants(db, {
       fingerprints: context.options.structuralAudit !== "graph",
       bandHashMemo: context.options.bandHashMemo,
+      ...(context.options.fingerprintScope ? { fingerprintScope: context.options.fingerprintScope } : {}),
     });
     if (coreInvariantFailures.length > 0) {
       diagnostics.push({
@@ -1820,6 +1829,8 @@ function readStableContainedUtf8File(
       "The resolved path is not a stable regular file.",
     );
   }
+  const remembered = recallSource(canonicalPath, before);
+  if (remembered !== undefined) return remembered;
   const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
   const fd = openSync(canonicalPath, constants.O_RDONLY | noFollow);
   try {
@@ -1850,6 +1861,7 @@ function readStableContainedUtf8File(
         "The repository path changed while it was being read.",
       );
     }
+    rememberSource(canonicalPath, opened, content);
     return content;
   } finally {
     closeSync(fd);
@@ -1891,6 +1903,8 @@ async function readStableContainedUtf8FileAsync(
       "The resolved path is not a stable regular file.",
     );
   }
+  const remembered = recallSource(canonicalPath, before);
+  if (remembered !== undefined) return remembered;
   const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
   const handle = await openAsync(canonicalPath, constants.O_RDONLY | noFollow);
   try {
@@ -1921,6 +1935,7 @@ async function readStableContainedUtf8FileAsync(
         "The repository path changed while it was being read.",
       );
     }
+    rememberSource(canonicalPath, opened, content);
     return content;
   } finally {
     await handle.close();
@@ -2380,7 +2395,11 @@ function inspectRequiredSchema(db: SqliteDatabase): string[] {
 
 function inspectCoreInvariants(
   db: SqliteDatabase,
-  scope: { readonly fingerprints: boolean; readonly bandHashMemo?: Map<string, readonly string[]> },
+  scope: {
+    readonly fingerprints: boolean;
+    readonly bandHashMemo?: Map<string, readonly string[]>;
+    readonly fingerprintScope?: readonly string[];
+  },
 ): string[] {
   const checks: ReadonlyArray<readonly [string, string]> = [
     ["duplicate edge group(s)", `
@@ -2484,7 +2503,9 @@ function inspectCoreInvariants(
     const count = readCount(db, sql);
     if (count > 0) failures.push(`${count} ${label}`);
   }
-  if (scope.fingerprints) failures.push(...inspectFingerprintInvariants(db, scope.bandHashMemo));
+  if (scope.fingerprints) {
+    failures.push(...inspectFingerprintInvariants(db, scope.bandHashMemo, scope.fingerprintScope));
+  }
   return failures.sort(compareCodePoints);
 }
 
@@ -2506,6 +2527,7 @@ interface StoredLshBucketRow {
 function inspectFingerprintInvariants(
   db: SqliteDatabase,
   bandHashMemo?: Map<string, readonly string[]>,
+  fingerprintScope?: readonly string[],
 ): string[] {
   const oversizedFingerprint = db.prepare(
     `SELECT 1 FROM node_fingerprints
@@ -2527,8 +2549,40 @@ function inspectFingerprintInvariants(
   }
   // A sound store needs no ordered walk; any fault is reported by it exactly
   // as before (issue #209).
+  if (fingerprintScope && fingerprintScopeIsExact(db, fingerprintScope)) return [];
   if (fingerprintStorageIsExact(db, bandHashMemo)) return [];
   return orderedFingerprintAudit(db);
+}
+
+/**
+ * The change-sized half of {@link fingerprintStorageIsExact}, for a delta
+ * publication into a copy of a fully audited store: every fingerprint of a
+ * rewritten file's nodes is well formed and owns each of its BANDS buckets
+ * with the expected hash, and the store holds exactly BANDS buckets per
+ * fingerprint. Fingerprints of other files are rows the audited store already
+ * held; the bucket total catches a bucket left behind by a removed one.
+ */
+function fingerprintScopeIsExact(db: SqliteDatabase, paths: readonly string[]): boolean {
+  const counts = db.prepare(
+    "SELECT (SELECT COUNT(*) FROM node_fingerprints) AS fingerprints, (SELECT COUNT(*) FROM lsh_buckets) AS buckets",
+  ).get() as { fingerprints?: unknown; buckets?: unknown } | undefined;
+  if (typeof counts?.fingerprints !== "number" || counts.buckets !== counts.fingerprints * BANDS) return false;
+  const rows = db.prepare(
+    `SELECT CAST(ref AS TEXT) AS ref, node_id, minhash, neighbors, token_count FROM node_fingerprints
+     WHERE node_id IN (SELECT id FROM nodes WHERE file_path IN (SELECT value FROM json_each(?)))`,
+  ).iterate(JSON.stringify(paths)) as IterableIterator<StoredFingerprintRow>;
+  const bucket = db.prepare("SELECT 1 FROM lsh_buckets WHERE band = ? AND band_hash = ? AND ref = ?");
+  for (const row of rows) {
+    if (typeof row.ref !== "string" || typeof row.node_id !== "string") return false;
+    const fingerprint = decodeStoredFingerprint(row);
+    if (!fingerprint) return false;
+    const hashes = bandHashInts(fingerprint);
+    const ref = BigInt(row.ref);
+    for (let band = 0; band < BANDS; band++) {
+      if (!bucket.get(band, hashes[band]!, ref)) return false;
+    }
+  }
+  return true;
 }
 
 /**

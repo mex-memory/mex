@@ -26,10 +26,12 @@ export { canonicalNodeIdentity, generateNodeId } from "./node-id.js";
 export {
   buildTypeScriptExtraction,
   canonicalCompilerIdentity,
+  captureLocations,
   CompilerIncrementalFallback,
   declaresGlobals,
   discoverTypeScriptProjects,
   generateCanonicalCompilerNodeId,
+  locationFile,
   normalizedCompilerTokens,
   TYPESCRIPT_COMPILER_EXTRACTOR_VERSION,
   TYPESCRIPT_COMPILER_VERSION,

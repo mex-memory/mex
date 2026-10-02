@@ -10,6 +10,7 @@
  * record is local, ignored with `graph.db*`, and bound to the audit version,
  * the canonical database path and the size; any doubt runs the full audit.
  */
+import { rememberDigest } from "./source-memo.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -90,12 +91,32 @@ export function holdsAuditedBytes(canonicalDbPath: string, statBeforeOpen: Stats
       hash.update(chunk.subarray(0, count));
       offset += count;
     }
-    return sameStat(statBeforeOpen, fstatSync(fd)) && hash.digest("hex") === record.digest;
+    const after = fstatSync(fd);
+    const digest = hash.digest("hex");
+    if (sameStat(statBeforeOpen, after)) rememberDigest(canonicalDbPath, after, digest);
+    const holds = sameStat(statBeforeOpen, after) && digest === record.digest;
+    if (holds) provenInProcess = { canonicalDbPath, stat: statBeforeOpen };
+    return holds;
   } catch {
     return false;
   } finally {
     closeSync(fd);
   }
+}
+
+let provenInProcess: { canonicalDbPath: string; stat: Stats } | null = null;
+
+/**
+ * Whether this process already proved, by hash, that the file at
+ * `canonicalDbPath` with this exact stat holds recorded audited bytes.
+ */
+export function auditRecordProvenInProcess(
+  canonicalDbPath: string,
+  stat: Pick<Stats, "dev" | "ino" | "size" | "mtimeMs" | "ctimeMs">,
+): boolean {
+  return provenInProcess !== null
+    && provenInProcess.canonicalDbPath === canonicalDbPath
+    && sameStat(provenInProcess.stat, stat as Stats);
 }
 
 function sameStat(left: Stats, right: Stats): boolean {

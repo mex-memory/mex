@@ -104,6 +104,7 @@ import {
 } from "./snapshot.js";
 import { getCallees, getCallers, getIncoming, getOutgoing } from "./traversal/traversal.js";
 import { recordGraphPhase, timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
+import { recallSource, rememberSource, reserveHeldBytes } from "./source-memo.js";
 import type { GraphEdge, GraphNode, Language, ReferenceKind } from "./types.js";
 
 const BODY_KINDS = new Set<GraphNode["kind"]>([
@@ -192,10 +193,16 @@ export class GraphSourceStagingError extends Error {
  * spool. TypeScript/JavaScript sources are loaded only for the compiler's
  * separately bounded semantic batch. The complete repository corpus is never
  * retained as strings in the maintenance process.
+ *
+ * Inside a maintenance operation, staged bytes are held in memory while the
+ * operation's bounded source budget allows (see source-memo), and only the
+ * rest is written to disk; either way a read returns exactly the staged
+ * bytes.
  */
 class GraphSourceSpool {
   private readonly directory: string;
   private readonly entries = new Map<string, string>();
+  private readonly held = new Map<string, string>();
   private disposed = false;
 
   constructor(parentDirectory = tmpdir()) {
@@ -204,13 +211,19 @@ class GraphSourceSpool {
 
   stage(relPath: string, source: string): void {
     if (this.disposed) throw new Error("The graph source spool is closed.");
-    if (this.entries.has(relPath)) throw new Error(`Duplicate staged source: ${relPath}`);
+    if (this.entries.has(relPath) || this.held.has(relPath)) throw new Error(`Duplicate staged source: ${relPath}`);
+    if (reserveHeldBytes(Buffer.byteLength(source, "utf8"))) {
+      this.held.set(relPath, source);
+      return;
+    }
     const stagedPath = join(this.directory, `${String(this.entries.size).padStart(8, "0")}.source`);
     writeFileSync(stagedPath, source, { encoding: "utf8", flag: "wx", mode: 0o600 });
     this.entries.set(relPath, stagedPath);
   }
 
   read(file: DiscoveredFile): string {
+    const held = this.disposed ? undefined : this.held.get(file.relPath);
+    if (held !== undefined) return held;
     const stagedPath = this.entries.get(file.relPath);
     if (this.disposed || !stagedPath) {
       throw new GraphSourceStagingError([{
@@ -266,6 +279,7 @@ class GraphSourceSpool {
       // Cleanup must not replace the result/error from the explicit graph job.
     }
     this.entries.clear();
+    this.held.clear();
   }
 }
 
@@ -702,6 +716,7 @@ class GraphEngineImpl implements GraphEngine {
       ...(staged.declinedInputs.length > 0
         ? { declinedInputs: [...staged.declinedInputs] }
         : {}),
+      ...(delta ? { [DELTA_AUDIT_SCOPE]: [...delta.rewritten.map((group) => group.path), ...delta.removed] } : {}),
       publication: delta
         ? { publication: "delta", filesRewritten: delta.rewritten.length + delta.removed.length }
         : {
@@ -823,7 +838,11 @@ function unchangedGraphSnapshot(
  * established that no WAL holds newer data.
  * @internal
  */
-export function refreshWouldPublishNothing(rootDir: string, dbPath: string): boolean {
+export function refreshWouldPublishNothing(
+  rootDir: string,
+  dbPath: string,
+  options: { sourcesInspected?: boolean } = {},
+): boolean {
   const root = resolve(rootDir);
   let db: SqliteDatabase;
   try {
@@ -834,6 +853,17 @@ export function refreshWouldPublishNothing(rootDir: string, dbPath: string): boo
   try {
     const store = new GraphStore(db);
     const git = readGraphGitProvenance(root);
+    if (options.sourcesInspected) {
+      // A fresh or degraded inspection of these exact bytes already found the
+      // manifest, branch, every source file and every semantic input
+      // unchanged; only HEAD and coverage remain to compare.
+      const snapshot = parseGraphSnapshot(store.getMetadata(GRAPH_SNAPSHOT_METADATA_KEY));
+      return snapshot !== null
+        && store.getMetadata("manifest_hash") === snapshot.manifestHash
+        && snapshot.indexedBranch === git.branch
+        && snapshot.indexedHead === git.head
+        && store.getMetadata(GRAPH_COVERAGE_METADATA_KEY) === captureGraphCoverage(root);
+    }
     const manifest = graphManifest(root);
     if (store.getMetadata("manifest_hash") !== manifest.manifestHash) return false;
     const corpus = timeGraphPhase("envelope.noOpDiscover", () => discoverSourceFiles(root, NODE_SOURCE_FILE_ACCESS).files);
@@ -844,6 +874,18 @@ export function refreshWouldPublishNothing(rootDir: string, dbPath: string): boo
   } finally {
     db.close();
   }
+}
+
+/**
+ * @internal The files a delta publication rewrote, carried on its in-process
+ * build result for the candidate's change-sized fingerprint audit. A result
+ * that crossed a process boundary never carries it, and is audited in full.
+ */
+export const DELTA_AUDIT_SCOPE: unique symbol = Symbol("mex.graph.deltaAuditScope");
+
+export function deltaAuditScope(result: BuildResult): readonly string[] | undefined {
+  const scope = (result as BuildResult & { [DELTA_AUDIT_SCOPE]?: readonly string[] })[DELTA_AUDIT_SCOPE];
+  return Array.isArray(scope) ? scope : undefined;
 }
 
 export function createGraphEngine(options: GraphEngineOptions): GraphEngine {
@@ -994,6 +1036,9 @@ async function stageCorpus(
           compiler = extractCompilerFiles({
             previous: plan.captures,
             affected: plan.affected,
+            gated: plan.gated,
+            modified: plan.modified,
+            importers: plan.importers,
             projectStates: (reuse as ExtractionReuse).projectStates,
           });
         } catch (error) {
@@ -2141,6 +2186,13 @@ function readStableUtf8File(
   if (!before.isFile() || before.isSymbolicLink()) {
     throw sourceContainmentError("Resolved source path is not a stable regular file.");
   }
+  const remembered = recallSource(canonicalPath, before);
+  if (remembered !== undefined) {
+    if (!Number.isSafeInteger(before.size) || before.size < 0 || before.size > maxBytes) {
+      throw new GraphCorpusLimitError(limitName, Number.isSafeInteger(before.size) ? before.size : undefined);
+    }
+    return { source: remembered, size: before.size, modifiedAt: before.mtimeMs };
+  }
   const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
   const fd = openSync(canonicalPath, constants.O_RDONLY | noFollow);
   try {
@@ -2165,6 +2217,7 @@ function readStableUtf8File(
       || !sameFileIdentity(opened, pathAfter)) {
       throw sourceContainmentError("Source file changed while it was being read.");
     }
+    rememberSource(canonicalPath, opened, source);
     return { source, size: opened.size, modifiedAt: opened.mtimeMs };
   } finally {
     closeSync(fd);

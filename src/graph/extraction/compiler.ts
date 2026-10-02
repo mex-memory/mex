@@ -236,6 +236,12 @@ export interface CompilerFileCapture {
   failedLookups: string[];
   /** Its declarations are visible without an import: a script, a `.d.ts` or a global augmentation. */
   globalScope: boolean;
+  /**
+   * The declaration signature of each dependency as this file's program saw
+   * it (see {@link fileDeclarationSignature}). An incremental refresh captures an
+   * importer of a changed file again only where this differs.
+   */
+  dependencySignatures?: Array<[string, string]>;
 }
 
 /**
@@ -249,6 +255,16 @@ export interface CompilerIncrementalInput {
   previous: ReadonlyMap<string, CompilerFileCapture>;
   /** Repository-relative paths that must be captured again. */
   affected: ReadonlySet<string>;
+  /**
+   * Paths whose transitive importers are captured again, within one compiler
+   * project, only when that project sees a declaration signature different
+   * from the one its importers recorded.
+   */
+  gated: ReadonlySet<string>;
+  /** Changed paths whose declaration locations reused captures are remapped through. */
+  modified: ReadonlySet<string>;
+  /** Direct importers of each previously captured path. */
+  importers: ReadonlyMap<string, readonly string[]>;
   /** `projectStates` of the previous extraction. */
   projectStates: Readonly<Record<string, string>>;
 }
@@ -552,6 +568,8 @@ export function buildTypeScriptExtraction(
   const rootPrefix = `${normalizedAbsolute(root)}/`;
   const reusedFiles: string[] = [];
   let recaptured = 0;
+  const affected = new Set(incremental?.affected ?? []);
+  const signaturesByFile = new Map<string, Array<[string, string]>>();
 
   // Stage one project's owned files while its program is alive; retain only
   // plain data. Nothing stored here references the program, checker, or AST.
@@ -573,6 +591,16 @@ export function buildTypeScriptExtraction(
     }
     const state = projectInputState(program, root, candidateSet, dependenciesByFile);
     projectStates[project.id] = state;
+    const signatures = new Map<string, string | undefined>();
+    const signatureOf = (filePath: string): string | undefined => {
+      if (signatures.has(filePath)) return signatures.get(filePath);
+      const sourceFile = program.getSourceFile(absoluteCandidate(root, filePath));
+      const signature = sourceFile
+        ? timeGraphPhase("compiler.signatures", () => fileDeclarationSignature(program, sourceFile))
+        : undefined;
+      signatures.set(filePath, signature);
+      return signature;
+    };
     // Incremental extraction (issue #209): an unaffected file's capture is a
     // function of its own bytes, the files it imports (transitively) and the
     // inputs every file sees without an import. The caller puts every file
@@ -583,13 +611,36 @@ export function buildTypeScriptExtraction(
       if (incremental.projectStates[project.id] !== state) {
         throw new CompilerIncrementalFallback("a global declaration or an external compiler input changed");
       }
+      // A file this project captures sees another only through its program.
+      // Where the program still gives a changed file the declaration
+      // signature every importer here recorded, nothing that imports it can
+      // resolve differently, and none of them is captured again.
+      for (const gatedPath of incremental.gated) {
+        if (!program.getSourceFile(absoluteCandidate(root, gatedPath))) continue;
+        const signature = signatureOf(gatedPath);
+        const recorded = (incremental.importers.get(gatedPath) ?? [])
+          .map((path) => incremental.previous.get(path))
+          .filter((capture) => capture?.projectId === project.id)
+          .map((capture) => capture!.dependencySignatures?.find(([path]) => path === gatedPath)?.[1]);
+        if (signature !== undefined && recorded.length > 0 && recorded.every((value) => value === signature)) continue;
+        const queue = [...(incremental.importers.get(gatedPath) ?? [])];
+        const seen = new Set<string>();
+        while (queue.length > 0) {
+          const path = queue.pop()!;
+          if (seen.has(path)) continue;
+          seen.add(path);
+          const previous = incremental.previous.get(path);
+          if (!previous || previous.projectId === project.id) affected.add(path);
+          for (const importer of incremental.importers.get(path) ?? []) if (!seen.has(importer)) queue.push(importer);
+        }
+      }
       for (const absoluteFile of owned) {
         const filePath = relativePath(root, absoluteFile);
         const previous = incremental.previous.get(filePath);
         if (previous && previous.projectId !== project.id) {
           throw new CompilerIncrementalFallback("a file moved to another compiler project");
         }
-        if (previous && !incremental.affected.has(filePath)) {
+        if (previous && !affected.has(filePath)) {
           // An unaffected file resolves exactly as before; anything else means
           // the affected set missed a dependency, and nothing is reused.
           const current = dependenciesByFile.get(absoluteFile);
@@ -665,7 +716,14 @@ export function buildTypeScriptExtraction(
     for (const context of contexts) {
       const resolvedSpecifiers: string[] = [];
       const bindings = captureImportBindings(root, context, inputs, resolvedSpecifiers);
-      capturedByFile.set(normalizedAbsolute(context.sourceFile.fileName), {
+      const capturedFile = normalizedAbsolute(context.sourceFile.fileName);
+      const dependencySignatures: Array<[string, string]> = [];
+      for (const dependency of dependenciesByFile.get(capturedFile)?.dependencies ?? []) {
+        const signature = signatureOf(dependency);
+        if (signature !== undefined) dependencySignatures.push([dependency, signature]);
+      }
+      signaturesByFile.set(capturedFile, dependencySignatures);
+      capturedByFile.set(capturedFile, {
         filePath: context.filePath,
         language: context.language,
         projectId: runtime.id,
@@ -771,8 +829,21 @@ export function buildTypeScriptExtraction(
         diagnostics: [],
       };
       timeGraphPhase("compiler.capture", () => processProject(inferredProject!, program, uncovered));
-    } catch {
+    } catch (error) {
+      // An incremental refresh that must extract in full says so; it is not
+      // a poisoned root, and extracting these files with tree-sitter would
+      // publish a graph a full extraction never produces.
+      if (error instanceof CompilerIncrementalFallback) throw error;
       // Poison among the uncovered roots: leave them all to tree-sitter.
+    }
+  }
+
+  if (incremental) {
+    // A remapped capture is no longer the stored one; it is stored again.
+    const remapped = remapReusedLocations(incremental, capturedByFile, reusedCaptures, rootPrefix);
+    for (const absoluteFile of remapped) {
+      const index = reusedFiles.indexOf(relativePath(root, absoluteFile));
+      if (index >= 0) reusedFiles.splice(index, 1);
     }
   }
 
@@ -793,7 +864,10 @@ export function buildTypeScriptExtraction(
     const dependencies = dependenciesByFile.get(absoluteFile)
       ?? { dependencies: [], failedLookups: [], globalScope: true };
     // A reused capture is stored exactly as it was read.
-    captures.push(reusedCaptures.get(absoluteFile) ?? portableCapture(captured, dependencies, rootPrefix));
+    captures.push(reusedCaptures.get(absoluteFile) ?? {
+      ...portableCapture(captured, dependencies, rootPrefix),
+      dependencySignatures: signaturesByFile.get(absoluteFile) ?? [],
+    });
     const importBindings: CompilerImportBinding[] = captured.bindings.map(({ binding, targetLocations }) => ({
       ...binding,
       targetId: idsForLocations(targetLocations, locationIds)[0],
@@ -1042,6 +1116,149 @@ function restoreCapture(capture: CompilerFileCapture, rootPrefix: string): Captu
   };
 }
 
+/**
+ * What an importer can observe of a file: the SHA-256 of its declaration
+ * emit, without comments, or undefined when it cannot be emitted. Bodies,
+ * private implementation and comments are absent; every exported and
+ * reachable declaration and every inferred type is present. Offsets are not,
+ * so reused captures remap their locations separately.
+ */
+function fileDeclarationSignature(program: ts.Program, sourceFile: ts.SourceFile): string | undefined {
+  let text: string | undefined;
+  try {
+    // The sixth argument forces declaration emit under noEmit, as the
+    // compiler's own incremental builder does to compare file signatures.
+    const emit = program.emit as (...args: unknown[]) => ts.EmitResult;
+    // Under noEmit the result reports the skipped JavaScript output as
+    // skipped; the declaration text is still written.
+    emit.call(program, sourceFile, (fileName: string, data: string) => {
+      if (/\.d\.[cm]?ts$/iu.test(fileName)) text = data;
+    }, undefined, true, undefined, true);
+  } catch {
+    return undefined;
+  }
+  if (text === undefined) return undefined;
+  const declarations = ts.createSourceFile("signature.d.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const printer = ts.createPrinter({ removeComments: true });
+  // The checker lists a union's members in type-creation order, which varies
+  // with what it checked first; a union means the same in any order, so its
+  // members are sorted and the signature is a function of the code (#209).
+  const canonical = ts.transform(declarations, [(context) => {
+    const visit = (node: ts.Node): ts.Node => {
+      const visited = ts.visitEachChild(node, visit, context);
+      if (!ts.isUnionTypeNode(visited)) return visited;
+      const members = visited.types
+        .map((type) => ({ type, text: printer.printNode(ts.EmitHint.Unspecified, type, declarations) }))
+        .sort((left, right) => compareCodePoints(left.text, right.text))
+        .map(({ type }) => type);
+      return context.factory.updateUnionTypeNode(visited, context.factory.createNodeArray(members));
+    };
+    return (file) => ts.visitNode(file, visit) as ts.SourceFile;
+  }]);
+  try {
+    const printed = printer.printFile(canonical.transformed[0]!);
+    return createHash("sha256").update(printed).digest("base64");
+  } finally {
+    canonical.dispose();
+  }
+}
+
+/** Every declaration location a capture refers to, in any file. */
+export function* captureLocations(capture: Pick<CompilerFileCapture, "bindings" | "captured">): Generator<string> {
+  for (const binding of capture.bindings) yield* binding.targetLocations;
+  for (const record of capture.captured) {
+    switch (record.form) {
+      case "call": yield* record.candidateLocations; break;
+      case "heritage":
+      case "identifier": yield* record.targetLocations; break;
+      case "callback": yield* record.calleeLocations; yield* record.callbackLocations; break;
+      default: break;
+    }
+  }
+}
+
+/** The corpus path of a portable `./path:offset:kind` location, or null outside the corpus. */
+export function locationFile(location: string): string | null {
+  if (!location.startsWith("./")) return null;
+  const kind = location.lastIndexOf(":");
+  const offset = kind > 0 ? location.lastIndexOf(":", kind - 1) : -1;
+  return offset > 2 ? location.slice(2, offset) : null;
+}
+
+/**
+ * Move reused captures' locations in modified files to where those files now
+ * declare the same nodes. Each node's declarations are matched in source
+ * order and must keep their count and syntax kinds; a location that cannot be
+ * matched extracts the corpus in full.
+ */
+function remapReusedLocations(
+  incremental: CompilerIncrementalInput,
+  capturedByFile: Map<string, CapturedFile>,
+  reusedCaptures: Map<string, CompilerFileCapture>,
+  rootPrefix: string,
+): Set<string> {
+  const remappedFiles = new Set<string>();
+  const portable = (location: string): string =>
+    location.startsWith(rootPrefix) ? `./${location.slice(rootPrefix.length)}` : location;
+  const byId = (locations: Array<[string, string]>, map: (location: string) => string): Map<string, string[]> => {
+    const grouped = new Map<string, string[]>();
+    for (const [location, id] of locations) {
+      const bucket = grouped.get(id) ?? [];
+      bucket.push(map(location));
+      grouped.set(id, bucket);
+    }
+    for (const bucket of grouped.values()) bucket.sort((left, right) => locationOffset(left) - locationOffset(right));
+    return grouped;
+  };
+  const moved = new Map<string, string | null>();
+  for (const path of incremental.modified) {
+    const previous = incremental.previous.get(path);
+    if (!previous) continue;
+    const current = capturedByFile.get(`${rootPrefix}${path}`);
+    const after = current ? byId(current.locations, portable) : new Map<string, string[]>();
+    for (const [id, locations] of byId(previous.locations, (location) => location)) {
+      const next = after.get(id);
+      locations.forEach((location, index) => {
+        const target = next?.length === locations.length ? next[index] : undefined;
+        moved.set(location, target !== undefined && locationKind(target) === locationKind(location) ? target : null);
+      });
+    }
+  }
+  if (moved.size === 0) return remappedFiles;
+  const remappedCaptures = new Map<string, CompilerFileCapture>();
+  for (const [absoluteFile, capture] of reusedCaptures) {
+    let changed = false;
+    for (const location of captureLocations(capture)) {
+      if (!moved.has(location)) continue;
+      const target = moved.get(location);
+      if (target === null) {
+        throw new CompilerIncrementalFallback("a changed file no longer declares a node another file refers to");
+      }
+      if (target !== location) changed = true;
+    }
+    if (!changed) continue;
+    const remapped: CompilerFileCapture = {
+      ...capture,
+      ...mapCaptureLocations(capture.captured, capture.bindings, capture.locations, (location) => moved.get(location) ?? location),
+    };
+    reusedCaptures.delete(absoluteFile);
+    capturedByFile.set(absoluteFile, restoreCapture(remapped, rootPrefix));
+    remappedCaptures.set(absoluteFile, remapped);
+    remappedFiles.add(absoluteFile);
+  }
+  for (const [absoluteFile, remapped] of remappedCaptures) reusedCaptures.set(absoluteFile, remapped);
+  return remappedFiles;
+}
+
+function locationOffset(location: string): number {
+  const kind = location.lastIndexOf(":");
+  return Number(location.slice(location.lastIndexOf(":", kind - 1) + 1, kind));
+}
+
+function locationKind(location: string): string {
+  return location.slice(location.lastIndexOf(":") + 1);
+}
+
 /** Bounded like every other diagnostic channel; the list is deduplicated. */
 const MAX_DECLINED_CONFIG_INPUTS = 100;
 
@@ -1139,6 +1356,14 @@ type MatchFiles = (
   realpath: (path: string) => string,
 ) => string[];
 
+type LibraryResolver = (
+  libraryName: string,
+  resolveFrom: string,
+  options: ts.CompilerOptions,
+  host: ts.ModuleResolutionHost,
+  cache: ts.ModuleResolutionCache,
+) => ts.ResolvedModuleWithFailedLookupLocations;
+
 /**
  * One immutable view of repository inputs for the complete compiler pass.
  * Project files are read at most once; explicitly staged bytes always win.
@@ -1157,6 +1382,24 @@ class CompilerInputLedger {
   private readonly declinedConfigs = new Map<string, string>();
   /** Parsed source files shared by every program of one extraction; see {@link compilerHost}. */
   private readonly sourceFiles = new Map<string, ts.SourceFile>();
+  /**
+   * Existence answers by the exact name asked. Every program of a repository
+   * with many tsconfig projects resolves the same imports through the same
+   * directories; the answers are one extraction's view of its inputs, as the
+   * bytes it reads are.
+   */
+  private readonly fileExistence = new Map<string, boolean>();
+  private readonly directoryExistence = new Map<string, boolean>();
+  private readonly realpaths = new Map<string, string>();
+  private readonly dependencySources = new Map<string, string | undefined>();
+  /**
+   * Module and library resolution shared by every program, as the compiler's
+   * own build mode shares it across projects: each program selects the
+   * partition for the options that affect resolution, so programs share
+   * answers only where those options agree.
+   */
+  private moduleResolutionCache: ts.ModuleResolutionCache | undefined;
+  private libraryResolutionCache: ts.ModuleResolutionCache | undefined;
   private candidates: string[] = [];
 
   constructor(root: string, private readonly options: CompilerExtractionOptions) {
@@ -1199,11 +1442,8 @@ class CompilerInputLedger {
       this.observe(absolute, staged);
       return staged;
     }
-    if (!withinRoot(this.root, absolute)) {
-      return isAllowedCompilerDependency(absolute) ? ts.sys.readFile(fileName) : undefined;
-    }
-    if (!this.isProjectInput(absolute)) {
-      return isAllowedCompilerDependency(absolute) ? ts.sys.readFile(fileName) : undefined;
+    if (!withinRoot(this.root, absolute) || !this.isProjectInput(absolute)) {
+      return isAllowedCompilerDependency(absolute) ? this.readDependency(absolute, fileName) : undefined;
     }
     if (this.cache.has(absolute)) return this.cache.get(absolute);
     const source = this.options.readProjectFile
@@ -1215,6 +1455,14 @@ class CompilerInputLedger {
       this.observe(absolute, source);
     }
     else this.observeMissing(absolute);
+    return source;
+  }
+
+  /** A dependency outside the corpus, read once per extraction like every other input. */
+  private readDependency(absolute: string, fileName: string): string | undefined {
+    if (this.dependencySources.has(absolute)) return this.dependencySources.get(absolute);
+    const source = ts.sys.readFile(fileName);
+    this.dependencySources.set(absolute, source);
     return source;
   }
 
@@ -1291,6 +1539,15 @@ class CompilerInputLedger {
   }
 
   fileExists(fileName: string): boolean {
+    let exists = this.fileExistence.get(fileName);
+    if (exists === undefined) {
+      exists = this.probeFile(fileName);
+      this.fileExistence.set(fileName, exists);
+    }
+    return exists;
+  }
+
+  private probeFile(fileName: string): boolean {
     const absolute = absoluteCandidate(this.root, fileName);
     if (this.staged.has(absolute)) return true;
     if (!withinRoot(this.root, absolute)) {
@@ -1303,6 +1560,15 @@ class CompilerInputLedger {
   }
 
   directoryExists(directoryName: string): boolean {
+    let exists = this.directoryExistence.get(directoryName);
+    if (exists === undefined) {
+      exists = this.probeDirectory(directoryName);
+      this.directoryExistence.set(directoryName, exists);
+    }
+    return exists;
+  }
+
+  private probeDirectory(directoryName: string): boolean {
     const absolute = absoluteCandidate(this.root, directoryName);
     if (!withinRoot(this.root, absolute)) {
       return isAllowedCompilerDependency(absolute) && ts.sys.directoryExists(absolute);
@@ -1409,7 +1675,7 @@ class CompilerInputLedger {
       this.sourceFiles.set(key, parsed);
       return parsed;
     };
-    return {
+    const host: ts.CompilerHost = {
       ...base,
       fileExists: (fileName) => this.fileExists(fileName),
       directoryExists: (directoryName) => this.directoryExists(directoryName),
@@ -1420,10 +1686,51 @@ class CompilerInputLedger {
       getSourceFile,
       getSourceFileByPath: (fileName, _path, languageVersionOrOptions, onError) =>
         getSourceFile(fileName, languageVersionOrOptions, onError),
-      realpath: (path) => this.isProjectInput(absoluteCandidate(this.root, path))
-        ? absoluteCandidate(this.root, path)
-        : (base.realpath?.(path) ?? path),
+      realpath: (path) => this.realpath(path, base),
     };
+    const moduleCache = this.moduleResolutionCache ??= ts.createModuleResolutionCache(
+      base.getCurrentDirectory(),
+      (fileName) => base.getCanonicalFileName(fileName),
+    );
+    const libraryCache = this.libraryResolutionCache ??= ts.createModuleResolutionCache(
+      base.getCurrentDirectory(),
+      (fileName) => base.getCanonicalFileName(fileName),
+      undefined,
+      moduleCache.getPackageJsonInfoCache(),
+    );
+    moduleCache.update(options);
+    libraryCache.update(options);
+    const resolveLibrary = (ts as unknown as { resolveLibrary?: LibraryResolver }).resolveLibrary;
+    return {
+      ...host,
+      getModuleResolutionCache: () => moduleCache,
+      resolveModuleNameLiterals: (literals, containingFile, redirectedReference, programOptions, containingSourceFile) =>
+        literals.map((literal) => ts.resolveModuleName(
+          literal.text,
+          containingFile,
+          programOptions,
+          host,
+          moduleCache,
+          redirectedReference,
+          ts.getModeForUsageLocation(containingSourceFile, literal, programOptions),
+        )),
+      // Library replacement packages are resolved the compiler's way when it
+      // exposes that resolver, and by the compiler itself otherwise.
+      ...(resolveLibrary ? {
+        resolveLibrary: (libraryName: string, resolveFrom: string, programOptions: ts.CompilerOptions) =>
+          resolveLibrary(libraryName, resolveFrom, programOptions, host, libraryCache),
+      } : {}),
+    } as ts.CompilerHost;
+  }
+
+  private realpath(path: string, base: Pick<ts.CompilerHost, "realpath">): string {
+    if (this.isProjectInput(absoluteCandidate(this.root, path))) return absoluteCandidate(this.root, path);
+    let real = this.realpaths.get(path);
+    if (real === undefined) {
+      real = base.realpath?.(path) ?? path;
+      this.realpaths.set(path, real);
+    }
+    return real;
   }
 
   moduleResolutionHost(): ts.ModuleResolutionHost {

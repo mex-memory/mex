@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { globIterateSync, type GlobOptions } from "glob";
 import { isSupportedSourceFile, SUPPORTED_SOURCE_GLOB } from "./extraction/grammars.js";
+import { recallWalk, recordingWalkFs, rememberWalk } from "./source-memo.js";
 
 /** One source of truth for repository files that participate in graph identity. */
 export const GRAPH_CORPUS_IGNORE_GLOBS = Object.freeze([
@@ -202,14 +203,23 @@ export function discoverBoundedGraphPaths(
   options: GlobOptions,
   maxFiles: number,
 ): string[] {
+  // Inside one maintenance operation an identical walk over unchanged
+  // directories is answered from the first; see source-memo.
+  const directories = new Map<string, string>();
+  const walkFs = options.fs ? null : recordingWalkFs(directories);
+  const key = walkFs ? JSON.stringify([pattern, options, maxFiles]) : "";
+  const remembered = walkFs ? recallWalk(key) : undefined;
+  if (remembered) return remembered;
   const paths = new Set<string>();
-  for (const match of globIterateSync(pattern as string | string[], options)) {
+  for (const match of globIterateSync(pattern as string | string[], walkFs ? { ...options, fs: walkFs } : options)) {
     paths.add(String(match).split("\\").join("/"));
     if (paths.size > maxFiles) throw new GraphCorpusLimitError(
       maxFiles === GRAPH_CORPUS_LIMITS.maxConfigFiles ? "maxConfigFiles" : "maxSourceFiles",
     );
   }
-  return [...paths].sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+  const sorted = [...paths].sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+  if (walkFs) rememberWalk(key, sorted, directories);
+  return sorted;
 }
 
 export function addGraphCorpusBytes(

@@ -107,7 +107,7 @@ describe("partial capture is indistinguishable from a full extraction", () => {
         const next = random(seed);
         const affected = new Set(paths.filter(() => next() < 0.35));
         const partial = extract(root, {
-          incremental: { previous, affected, projectStates: full.projectStates },
+          incremental: { previous, affected, gated: new Set(), modified: new Set(), importers: new Map(), projectStates: full.projectStates },
           visitOrder: shuffled(seed),
         });
         const facts = compilerFacts(partial);

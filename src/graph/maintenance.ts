@@ -30,8 +30,9 @@ import type {
 } from "../team/contracts/graph.js";
 import { DB_SCHEMA_VERSION, upgradeGraphDatabase } from "./db/database.js";
 import { openSqlite } from "./db/sqlite.js";
-import { recordAuditedDatabase } from "./audit-record.js";
-import { createGraphEngine, GraphSourceStagingError, refreshWouldPublishNothing } from "./engine-impl.js";
+import { auditRecordProvenInProcess, recordAuditedDatabase } from "./audit-record.js";
+import { recallDigest, rememberDigest, withSourceMemo } from "./source-memo.js";
+import { createGraphEngine, deltaAuditScope, GraphSourceStagingError, refreshWouldPublishNothing } from "./engine-impl.js";
 import type { BuildResult, GraphEngine } from "./engine.js";
 import {
   inspectGraphSidecars,
@@ -288,9 +289,10 @@ export function acquireGraphMaintenanceLease(
       } as InternalMaintenanceOptions;
       await merged.__internal?.afterLockAcquired?.();
       assertMaintenanceDirectoryUnchanged(paths);
-      if (operation === "refresh") return await refreshGraphWithLease(paths, merged);
-      if (operation === "repair") return await repairGraphWithLease(paths, merged);
-      return await rebuildGraphWithLease(paths, merged);
+      // One operation reads each unchanged source once; see source-memo.
+      if (operation === "refresh") return await withSourceMemo(() => refreshGraphWithLease(paths, merged));
+      if (operation === "repair") return await withSourceMemo(() => repairGraphWithLease(paths, merged));
+      return await withSourceMemo(() => rebuildGraphWithLease(paths, merged));
     } finally {
       active = false;
     }
@@ -484,6 +486,7 @@ async function refreshGraphWithLease(
     // The candidate mostly keeps the live graph's fingerprints; its audit
     // reuses their band hashes instead of deriving them again.
     const bandHashMemo = new Map<string, readonly string[]>();
+    const statBeforeInspect = liveDatabaseStat(paths.database);
     const priorStatus = await timeGraphPhaseAsync("envelope.inspect", () =>
       inspect(options, paths.projectRoot, paths.database, bandHashMemo));
     assertMaintenanceDirectoryUnchanged(paths);
@@ -497,12 +500,26 @@ async function refreshGraphWithLease(
     // coverage change, takes the normal validated publication.
     // An inspection that already saw a change settles it without a second
     // corpus walk; skipping the check only ever takes the normal path.
+    // A degraded graph differs from a fresh one only by partially parsed
+    // files, which unchanged sources would parse the same way again.
     const statBefore = liveDatabaseStat(paths.database);
-    if (priorStatus.status === "fresh"
-      && timeGraphPhase("envelope.noOpCheck", () => refreshWouldPublishNothing(paths.projectRoot, paths.database))) {
+    if ((priorStatus.status === "fresh" || priorStatus.status === "degraded")
+      && timeGraphPhase("envelope.noOpCheck", () => refreshWouldPublishNothing(paths.projectRoot, paths.database, {
+        sourcesInspected: !options.__internal?.inspectStatus && sameLiveDatabaseStat(statBeforeInspect, statBefore),
+      }))) {
       assertMaintenanceDirectoryUnchanged(paths);
       assertClearSidecars(paths.database);
       if (sameLiveDatabaseStat(statBefore, liveDatabaseStat(paths.database))) {
+        // The inspection audited these bytes in full, or proved them the
+        // bytes of an earlier audit. Recording them spares the next
+        // inspection that audit, as a publication's record does.
+        if (!options.__internal?.inspectStatus && sameLiveDatabaseStat(statBeforeInspect, statBefore)
+          && !auditRecordProvenInProcess(realpathSync(paths.database), statBefore!)) {
+          const audited = captureDatabaseIdentity(paths.database);
+          if (sameLiveDatabaseStat(statBeforeInspect, audited)) {
+            recordAuditedDatabase(realpathSync(paths.database), audited.size, audited.digest);
+          }
+        }
         const finished = currentDate(options);
         return maintenanceResult(
           started,
@@ -524,8 +541,12 @@ async function refreshGraphWithLease(
     assertNotAborted(options.signal);
 
     progress(options, "validate", "Validating the refreshed graph candidate.");
+    // The copy holds exactly the bytes the inspection audited (or proved
+    // audited), and a delta publication rewrote only the files it reports:
+    // the fingerprint audit is change-sized. Anything else audits in full.
+    const fingerprintScope = options.__internal?.inspectStatus ? undefined : deltaAuditScope(buildResult);
     const candidate = await timeGraphPhaseAsync("envelope.validate", () =>
-      validateCandidate(options, paths, copyPath, undefined, bandHashMemo));
+      validateCandidate(options, paths, copyPath, undefined, bandHashMemo, fingerprintScope));
     await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
     assertMaintenanceDirectoryUnchanged(paths);
 
@@ -1234,9 +1255,10 @@ async function publishCandidate(input: CandidatePublicationInput): Promise<Candi
     assertMaintenanceDirectoryUnchanged(paths);
     const status = input.candidate.status;
     (input.assertStatus ?? assertPublishableCandidate)(status);
-    // A fresh validation ran the full structural audit over exactly these
-    // bytes; the next inspection of them need not repeat it.
-    if (status.status === "fresh") {
+    // A fresh or degraded validation ran the full structural audit over
+    // exactly these bytes (degraded reports parse health only); the next
+    // inspection of them need not repeat it.
+    if (status.status === "fresh" || status.status === "degraded") {
       recordAuditedDatabase(
         realpathSync(paths.database),
         input.candidate.identity.size,
@@ -1718,6 +1740,21 @@ function captureDatabaseIdentityUntimed(path: string, copyTo?: number): Database
   const fd = openSync(path, constants.O_RDONLY | noFollow);
   try {
     const before = fstatSync(fd);
+    // Bytes this operation already hashed with the identity unchanged since.
+    const remembered = copyTo === undefined ? recallDigest(path, before) : undefined;
+    if (remembered !== undefined) {
+      const pathNow = lstatSync(path);
+      if (sameStatIdentity(before, pathNow) && !pathNow.isSymbolicLink()) {
+        return {
+          dev: before.dev,
+          ino: before.ino,
+          size: before.size,
+          mtimeMs: before.mtimeMs,
+          ctimeMs: before.ctimeMs,
+          digest: remembered,
+        };
+      }
+    }
     const hash = createHash("sha256");
     const chunk = Buffer.allocUnsafe(HASH_CHUNK_BYTES);
     let offset = 0;
@@ -1742,13 +1779,15 @@ function captureDatabaseIdentityUntimed(path: string, copyTo?: number): Database
         "The graph database changed while its exact identity was captured.",
       );
     }
+    const digest = hash.digest("hex");
+    rememberDigest(path, after, digest);
     return {
       dev: after.dev,
       ino: after.ino,
       size: after.size,
       mtimeMs: after.mtimeMs,
       ctimeMs: after.ctimeMs,
-      digest: hash.digest("hex"),
+      digest,
     };
   } finally {
     closeSync(fd);
@@ -1848,11 +1887,12 @@ async function validateCandidate(
   candidatePath: string,
   assertStatus: (status: GraphStatus) => void = assertPublishableCandidate,
   bandHashMemo?: Map<string, readonly string[]>,
+  fingerprintScope?: readonly string[],
 ): Promise<ValidatedCandidate> {
   assertMaintenanceDirectoryUnchanged(paths);
   assertClearSidecars(candidatePath);
   const identityBefore = captureDatabaseIdentity(candidatePath);
-  const status = await inspect(options, paths.projectRoot, candidatePath, bandHashMemo);
+  const status = await inspect(options, paths.projectRoot, candidatePath, bandHashMemo, fingerprintScope);
   assertMaintenanceDirectoryUnchanged(paths);
   assertStatus(status);
   assertClearSidecars(candidatePath);
@@ -2090,11 +2130,13 @@ async function inspect(
   projectRoot: string,
   database: string,
   bandHashMemo?: Map<string, readonly string[]>,
+  fingerprintScope?: readonly string[],
 ): Promise<GraphStatus> {
   return (options.__internal?.inspectStatus ?? inspectGraphStatus)({
     projectRoot,
     dbPath: database,
     ...(bandHashMemo ? { bandHashMemo } : {}),
+    ...(fingerprintScope ? { fingerprintScope } : {}),
   });
 }
 

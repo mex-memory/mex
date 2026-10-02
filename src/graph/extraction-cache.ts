@@ -7,10 +7,14 @@
 // is cached, compressed, beside the graph it produced. A refresh re-extracts:
 //   * a tree-sitter file only when its own bytes changed: its references are
 //     resolved globally afterwards, so its dependents need nothing;
-//   * a compiler file when its bytes changed, or when it can observe a changed
-//     file through module resolution: the transitive reverse-import closure of
-//     the changed files, the importers of deleted files, and the files whose
-//     failed lookups name an added file.
+//   * a compiler file when its bytes changed, when its module resolution may
+//     have changed (the importers of deleted files, and the files whose failed
+//     lookups name an added file), or when a file it can observe through
+//     module resolution changed its declaration signature: the compiler
+//     expands the transitive reverse-import closure of such a file, per
+//     compiler project, only when that project sees a different signature.
+//     A reused capture's declaration locations in a changed file are remapped
+//     through the node ids both versions of that file declare.
 // Everything the closure cannot see extracts the corpus in full: a changed
 // declaration visible without an import (a script, a `.d.ts`, a global or
 // module augmentation), any config byte, a changed non-corpus input, and the
@@ -20,11 +24,13 @@ import { createHash } from "node:crypto";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import ts from "typescript";
 import type { ImportBindingRecord, UnresolvedRefRecord } from "./db/store.js";
-import { declaresGlobals, type CompilerFileCapture } from "./extraction/index.js";
+import { captureLocations, declaresGlobals, locationFile, type CompilerFileCapture } from "./extraction/index.js";
 import type { GraphEdge, GraphNode, Language } from "./types.js";
 
 /** Bump whenever a cached payload's shape or meaning changes. */
-const EXTRACTION_CACHE_FORMAT = 2;
+// v3: compiler captures record the declaration signature of each dependency.
+// v4: those signatures list union members in one canonical order.
+const EXTRACTION_CACHE_FORMAT = 4;
 
 /**
  * Above this many affected compiler files, and this share of them, extract in
@@ -132,8 +138,19 @@ export interface StoredExtraction {
 export interface IncrementalExtractionPlan {
   /** Previous captures of every compiler file still in the corpus. */
   captures: Map<string, CompilerFileCapture>;
-  /** Compiler files to capture again. */
+  /** Compiler files to capture again, before any signature comparison. */
   affected: Set<string>;
+  /**
+   * Captured files whose importers must be captured again only where the
+   * compiler sees a changed declaration signature: every changed compiler
+   * file with a previous capture, and every file whose resolution may have
+   * changed.
+   */
+  gated: Set<string>;
+  /** Changed compiler files with a previous capture, whose locations may move. */
+  modified: Set<string>;
+  /** Direct importers of each captured file. */
+  importers: Map<string, string[]>;
   /** Unchanged tree-sitter files and their cached extraction. */
   trees: Map<string, CachedTreeFile>;
 }
@@ -188,29 +205,41 @@ export function planIncrementalExtraction(
 
   const deletedSet = new Set(deleted);
   const importers = new Map<string, string[]>();
-  const seeds = new Set(changed.filter(isCompilerFile));
+  const affected = new Set(changed.filter(isCompilerFile));
+  const modified = new Set([...affected].filter((path) => captures.has(path)));
+  const gated = new Set(modified);
   for (const [path, capture] of captures) {
     for (const dependency of capture.dependencies) {
       const bucket = importers.get(dependency) ?? [];
       bucket.push(path);
       importers.set(dependency, bucket);
-      if (deletedSet.has(dependency)) seeds.add(path);
+      if (deletedSet.has(dependency)) gated.add(path);
     }
-    if (capture.failedLookups.some((lookup) => added.has(lookup))) seeds.add(path);
+    if (capture.failedLookups.some((lookup) => added.has(lookup))) gated.add(path);
   }
-  const affected = new Set<string>();
-  const queue = [...seeds];
-  while (queue.length > 0) {
-    const path = queue.pop()!;
+  for (const path of gated) affected.add(path);
+  // A reused capture keeps its declaration locations in other files. Those in
+  // a modified file are remapped by node id, which needs every one of them to
+  // name a declaration that file's previous capture identified; one that did
+  // not, or one in a deleted file, is captured again instead.
+  const identified = new Map<string, Set<string>>();
+  for (const path of modified) identified.set(path, new Set(captures.get(path)!.locations.map(([location]) => location)));
+  for (const [path, capture] of captures) {
     if (affected.has(path)) continue;
-    affected.add(path);
-    for (const importer of importers.get(path) ?? []) if (!affected.has(importer)) queue.push(importer);
+    for (const location of captureLocations(capture)) {
+      const file = locationFile(location);
+      if (file === null) continue;
+      if (deletedSet.has(file) || (identified.has(file) && !identified.get(file)!.has(location))) {
+        affected.add(path);
+        break;
+      }
+    }
   }
   const compilerFiles = [...current.keys()].filter(isCompilerFile).length;
   if (affected.size > Math.max(AFFECTED_FILE_FLOOR, AFFECTED_SHARE_LIMIT * compilerFiles)) {
     return { reason: "the affected set exceeds 70% of compiler files" };
   }
-  return { captures, affected, trees };
+  return { captures, affected, gated, modified, importers, trees };
 }
 
 /**

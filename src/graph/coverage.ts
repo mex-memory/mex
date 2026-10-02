@@ -42,7 +42,7 @@ function lstatStamp(absolute: string): string {
 
 function containedStamp(root: string, canonicalRoot: string, path: string): string {
   const absolute = resolve(root, path);
-  const rel = relative(canonicalRoot, fs.realpathSync(absolute));
+  const rel = relative(canonicalRoot, fs.realpathSync.native(absolute));
   if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) throw new Error("Outside coverage root");
   return lstatStamp(absolute);
 }
@@ -66,7 +66,7 @@ export function captureGraphCoverage(root: string, limits: CoverageCacheLimits =
   let failed = false;
   let stamping = true;
   let canonicalRoot: string;
-  try { canonicalRoot = fs.realpathSync(root); } catch { return "null"; }
+  try { canonicalRoot = fs.realpathSync.native(root); } catch { return "null"; }
   const readdirSync: typeof fs.readdirSync = ((path: fs.PathLike, options: unknown) => {
     try {
       if (failed) throw new Error("Coverage observation already stopped");
