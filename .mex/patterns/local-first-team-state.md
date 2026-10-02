@@ -12,12 +12,12 @@ edges:
     condition: "when connecting team state to Hub, Wiki, or graph consumers"
   - target: "context/conventions.md"
     condition: "when changing canonical serialization or validation"
-last_updated: 2026-10-01
+last_updated: 2026-10-02
 mex:
   id: mx_01M1M0CJMRWZY5TZCEBSFJPAHT
   type: pattern
   status: promoted
-  revision: 9
+  revision: 10
   title: local-first-team-state
   grounds_to:
     - node: function:ecf1fb45ac2910d02bc78f6f761c0145
@@ -75,6 +75,9 @@ under `.mex/local/`. When present, the legacy decision-event JSONL stays byte-fo
   into team-state code.
 - Production code writes files only. Git publication belongs to the human or test
   harness.
+- Reuse an already initialized Git test fixture when adding source/config files.
+  Avoid deleting and reinitializing its `.git` merely to build indexes: that adds
+  an unrelated repository-reset failure boundary before read-only assertions.
 - A page cursor must bind both its filter and the complete bounded corpus
   revision; a position-only cursor can silently skip records after mutation.
 - Filesystem collection locks need bounded owner metadata and proven-dead
