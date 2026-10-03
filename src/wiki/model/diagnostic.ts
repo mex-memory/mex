@@ -338,6 +338,27 @@ export const WIKI_DIAGNOSTICS = {
       "Declare what the file is with a root `type` key in its frontmatter, for example `type: component`, then run `mex wiki migrate`.",
   },
 
+  // -- Query (#235) ------------------------------------------------------------
+
+  /**
+   * A search found nothing, said rather than left as an empty list.
+   *
+   * An agent reads a bare empty result as "there is no knowledge about this",
+   * when the knowledge may sit in a file the Wiki does not index, or under
+   * different words. Info, because an empty answer is a valid answer.
+   */
+  WIKI_QUERY_NO_MATCH: {
+    severity: "info",
+    remediation:
+      "`wiki query` matches words, not meaning. Retry with the distinctive keywords or an entity title, read `ROUTER.md` for the scaffold's own map of its knowledge, or run `mex graph scope \"<task>\"` to start from the code.",
+  },
+  /** No entity contained every query term, so the hits are the broader, some-terms match. */
+  WIKI_QUERY_PARTIAL_MATCH: {
+    severity: "info",
+    remediation:
+      "Each hit lists the terms it matched in `matchedTerms`. Check that a hit answers the question before relying on it, or narrow the query to the keywords that matter.",
+  },
+
   // -- Synthesis (§12) --------------------------------------------------------
 
   /**

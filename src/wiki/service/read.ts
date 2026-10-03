@@ -24,7 +24,7 @@ import { compareGroundingHealth, type GroundingHealth } from "../model/grounding
 import { defaultIndexPath } from "../index/rebuild.js";
 import { openWikiIndex } from "../index/open.js";
 import { resolveBounds, type BoundsInput } from "../query/budget.js";
-import { WikiQuerySession, withWikiQuery, type Neighborhood } from "../query/session.js";
+import { WikiQuerySession, withWikiQuery, type Neighborhood, type SearchMatch } from "../query/session.js";
 import type { EntitySummary, MatchField, RelationEdge } from "../query/rank.js";
 
 /**
@@ -164,25 +164,79 @@ export interface SearchHit {
   entity: EntitySummary;
   /** Which field matched. §10.4 fixes the precedence: id, then title, then summary, then body. */
   field: MatchField;
+  /** Whether the hit contains every query term or only some of them (#235). */
+  match: SearchMatch;
+  /** For a `some_terms` hit: the query terms it matched. */
+  matchedTerms?: string[];
 }
 
 export interface SearchData {
   hits: SearchHit[];
   truncated: boolean;
+  /**
+   * The best tier present: `all_terms` when some hit contains every term
+   * that carries meaning (broader hits may follow it, each labelled
+   * `some_terms`); `some_terms` when none did and every hit is the broader
+   * match; `none` when nothing matched either way.
+   */
+  match: SearchMatch | "none";
+  /** Terms searched, after stop words and question words were dropped. */
+  terms: string[];
+  /** Words dropped from the query as carrying no meaning. */
+  ignoredTerms: string[];
+  /** Terms nothing in the wiki matched at all, even by stem. */
+  unmatchedTerms: string[];
 }
 
-/** §16 `wiki_search` — the three-tier FTS query, in §10.4's categorical order. */
+const EMPTY_SEARCH: SearchData = {
+  hits: [], truncated: false, match: "none", terms: [], ignoredTerms: [], unmatchedTerms: [],
+};
+
+/**
+ * §16 `wiki_search` — the three-tier FTS query, in §10.4's categorical order.
+ *
+ * A question is not a keyword list, so a query whose terms no single entity
+ * contains falls back to entities matching some of them, labelled per hit and
+ * by a notice (#235). An empty answer says so, with where to look next, rather
+ * than reading as "there is no knowledge about this".
+ */
 export function wikiSearch(
   options: WikiServiceOptions & WikiFilterOptions & { text: string },
 ): ServiceResult<SearchData> {
-  return read<SearchData>(options, { hits: [], truncated: false }, (session) => {
+  return read<SearchData>(options, EMPTY_SEARCH, (session) => {
     const page = session.search(options.text, {
       ...(options.includeArchived === undefined ? {} : { includeArchived: options.includeArchived }),
       ...(options.limit === undefined ? {} : { limit: options.limit }),
     });
     const kept = page.items.filter((hit) => applyFilters([hit.entity], options).length === 1);
-    return { data: { hits: kept, truncated: page.truncated }, diagnostics: [] };
+    const match = kept.length === 0 ? "none" : page.match;
+    const data: SearchData = {
+      hits: kept,
+      truncated: page.truncated,
+      match,
+      terms: page.terms,
+      ignoredTerms: page.ignoredTerms,
+      unmatchedTerms: page.unmatchedTerms,
+    };
+    return { data, diagnostics: searchNotices(data) };
   });
+}
+
+/** The two notices a search can carry. Info, so neither changes the exit code. */
+function searchNotices(data: SearchData): WikiDiagnostic[] {
+  const unmatched = data.unmatchedTerms.length === 0
+    ? ""
+    : ` Nothing in the wiki mentions: ${data.unmatchedTerms.join(", ")}.`;
+  if (data.match === "some_terms") {
+    return [diagnostic(
+      "WIKI_QUERY_PARTIAL_MATCH",
+      `No entity contains every term of the query; these are entities matching some of: ${data.terms.join(", ")}.${unmatched}`,
+    )];
+  }
+  if (data.match === "none" && data.terms.length > 0) {
+    return [diagnostic("WIKI_QUERY_NO_MATCH", `No wiki entity matches the query.${unmatched}`)];
+  }
+  return [];
 }
 
 /** §16 `wiki_neighborhood` — the bounded traversal, within one token budget. */
