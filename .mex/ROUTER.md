@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-09-28
+last_updated: 2026-10-01
 ---
 
 # Session Bootstrap
@@ -31,6 +31,15 @@ Then read this file fully before doing anything else in this session.
 
 **Working:**
 
+- Unreleased log ticket 01 on `codex/log-revamp-ticket-01` (base main `7ab22a1`)
+  adds a shared plain-note boundary for CLI/MCP: immutable Markdown, exact body
+  preservation, known-only context, durable-local receipts, bounded two-source
+  discovery and direct ID reads without Graph/Wiki. Legacy synchronous JSONL
+  APIs remain unchanged. Notes are excluded from Wiki ownership; no dual append
+  into Activity or automatic Wiki promotion. Retry keys, retained evidence,
+  corrections and Hub Context are subsequent tickets. Runtime and platform
+  contracts are in `docs/design/log-notes.md`; broader capture/compiler design
+  remains outside this slice.
 - Release preparation for 0.8.3 is on `codex/release-0.8.3`, based on main
   `490ffe5`. The maintainer selected 0.8.3, including documented additive API
   changes. Package metadata, release notes, changelog boundaries, installation

@@ -326,7 +326,9 @@ Within one observed repository state, the first successful eligible Member becom
 
 ### Project notes: logging and reuse
 
-`mex log` records decisions, notes, risks, and todos in `.mex/events/decisions.jsonl`. Future agents can retrieve relevant entries with `mex timeline`; people can read them as **Project notes** in Hub Activity. These records are historical context. Durable conclusions can be promoted into maintained knowledge explicitly, with their source retained.
+In this development branch, `mex log` records an immutable Markdown note under `.mex/events/notes/YYYY-MM/` and returns its ID after local recording completes. Use `--json` for the receipt and `mex note get <id> --json` to read the original. Notes work without Graph or Wiki. Recording does not stage or publish files; share the note store, including its `.gitattributes`, through ordinary Git commits.
+
+`mex timeline` searches both new Markdown notes and existing `.mex/events/decisions.jsonl` history. Existing JSONL APIs and historical identities remain compatible. Hub Activity still presents the legacy Project notes; presentation of new notes in Hub Context is a later slice. These records are historical contributions. Maintained conclusions can be authored explicitly with their source retained. The new note flow is unreleased; keyed retries, attachments and correcting-note links are not implemented in this slice.
 
 In 0.8.1, **Settings → Agent logging** controls when agents write optional notes in this checkout:
 
@@ -339,10 +341,12 @@ The preference guides agents; explicit user requests and mandatory workflow Acti
 ```bash
 mex logging --json
 mex logging checkpoints
+mex log "The cache failed the freshness check" --type note --file src/client.ts --json
 mex timeline --query "retry" --file src/client.ts --type decision --limit 20 --json
+mex note get <id-from-receipt> --json
 ```
 
-Timeline retrieval reads the latest 8 MiB / 10,000 log lines, returns at most 200 entries, and caps output at 64 KiB. JSON reports truncation; a filtered empty result does not prove the full history has no match. Retrieval never changes the log or initializes project identity.
+Timeline retrieval reads at most 8 MiB / 10,000 records per source, returns at most 200 entries, and caps output at 64 KiB. Note filename discovery is also bounded. JSON reports source limitations and omitted results; a filtered empty result does not prove the full history has no match. Retrieval never changes history or initializes project identity. Direct lookup of a new note ID does not depend on the recent search window. See the [note storage and durability contract](docs/design/log-notes.md) for platform limits, exact-byte Git handling and legacy lookup limits.
 
 ## Command map
 

@@ -41,6 +41,8 @@ export interface ContainedArtifactRead {
   bytes: Uint8Array;
   revision: Revision;
   canonicalPath: string;
+  /** Nonzero only for an explicitly requested bounded tail read. */
+  offset: number;
 }
 
 /** Only known canonical Team records opt into checkout-neutral bytes. */
@@ -66,6 +68,7 @@ export function readContainedArtifact(
   path: RepoRelativePath,
   maxBytes: number,
   byteMode: ArtifactByteMode = "exact",
+  tail = false,
 ): ContainedArtifactRead {
   const { canonicalRoot, lexicalPath } = resolveArtifactPath(projectRoot, path);
   let descriptor: number | undefined;
@@ -74,7 +77,9 @@ export function readContainedArtifact(
     descriptor = openSync(lexicalPath, constants.O_RDONLY | NO_FOLLOW);
     const before = fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) throw unsafePath(path, "Artifact is not a regular file.");
-    if (before.size > BigInt(maxBytes)) {
+    if (before.size > BigInt(Number.MAX_SAFE_INTEGER)) throw unsafePath(path, "Artifact size is not safely addressable.");
+    const offset = tail ? Math.max(0, Number(before.size) - maxBytes) : 0;
+    if (!tail && before.size > BigInt(maxBytes)) {
       throw artifactError(
         "VALIDATION_FAILED",
         "Artifact is too large",
@@ -89,9 +94,10 @@ export function readContainedArtifact(
         `Artifact exceeds ${maxBytes} bytes.`,
         path,
       );
-    });
+    }, offset);
     const after = fstatSync(descriptor, { bigint: true });
-    if (!sameIdentity(before, after) || before.size !== after.size || BigInt(bytes.byteLength) !== after.size) {
+    if (!sameIdentity(before, after) || before.size !== after.size || before.mtimeNs !== after.mtimeNs
+      || before.ctimeNs !== after.ctimeNs || BigInt(bytes.byteLength + offset) !== after.size) {
       throw artifactError(
         "REVISION_CONFLICT",
         "Artifact changed during read",
@@ -123,7 +129,7 @@ export function readContainedArtifact(
     // A caller that owns a canonical Team codec may opt into its LF identity.
     // Wiki snapshots, local receipts, and other files retain their exact bytes.
     const revisionBytes = byteMode === "exact" ? bytes : canonicalCheckoutBytes(bytes);
-    return { bytes: revisionBytes, revision: revisionOf(revisionBytes), canonicalPath };
+    return { bytes: revisionBytes, revision: revisionOf(revisionBytes), canonicalPath, offset };
   } catch (error) {
     if (isNotFound(error)) {
       throw artifactError("NOT_FOUND", "Artifact not found", `Artifact ${path} does not exist.`, path);
@@ -154,6 +160,7 @@ export function atomicCreateArtifact(
   path: RepoRelativePath,
   bytes: string | Uint8Array,
   mode: 0o600 | 0o644 = 0o644,
+  durable = false,
 ): Revision {
   if (mode !== 0o600 && mode !== 0o644) {
     throw artifactError("INVALID_REQUEST", "Invalid artifact mode", "Artifact mode must be owner-only or standard readable.");
@@ -180,7 +187,8 @@ export function atomicCreateArtifact(
       throw error;
     }
     unlinkIfPresent(temporaryPath);
-    fsyncDirectory(parentPath);
+    if (durable) syncArtifactParents(canonicalRoot, path);
+    else fsyncDirectory(parentPath);
     return revisionOf(payload);
   } finally {
     unlinkIfPresent(temporaryPath);
@@ -696,13 +704,14 @@ function readDescriptorBounded(
   descriptor: number,
   maxBytes: number,
   tooLarge: () => never,
+  offset = 0,
 ): Buffer {
   const chunks: Buffer[] = [];
   let total = 0;
   while (total <= maxBytes) {
     const remaining = maxBytes + 1 - total;
     const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
-    const bytesRead = readSync(descriptor, chunk, 0, chunk.byteLength, total);
+    const bytesRead = readSync(descriptor, chunk, 0, chunk.byteLength, offset + total);
     if (bytesRead === 0) break;
     chunks.push(chunk.subarray(0, bytesRead));
     total += bytesRead;
@@ -878,6 +887,42 @@ function fsyncDirectory(path: string): void {
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
+}
+
+/** A read-only directory check shared with bounded artifact discovery. */
+export function inspectArtifactDirectory(projectRoot: string, path: RepoRelativePath): string {
+  const { canonicalRoot, lexicalPath } = resolveArtifactPath(projectRoot, path);
+  assertSafeExistingComponents(canonicalRoot, path, false);
+  return lexicalPath;
+}
+
+/**
+ * Flush every naming directory, including newly created ancestors. Windows
+ * cannot flush directory handles through Node; callers must expose that limit.
+ * Unlike the historical best-effort writer, supported-platform failures escape.
+ */
+export function syncArtifactParents(projectRoot: string, path: RepoRelativePath): void {
+  const { canonicalRoot } = resolveArtifactPath(projectRoot, path);
+  const parent = dirname(path) as RepoRelativePath;
+  assertSafeExistingComponents(canonicalRoot, parent, false);
+  if (process.platform === "win32") return;
+  let current = resolve(canonicalRoot, parent);
+  for (;;) {
+    const before = lstatSync(current, { bigint: true });
+    const fd = openSync(current, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | NO_FOLLOW);
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (!opened.isDirectory() || !sameIdentity(before, opened)) throw unsafePath(path, "Publication directory changed.");
+      fsyncSync(fd);
+      const after = lstatSync(current, { bigint: true });
+      if (after.isSymbolicLink() || !sameIdentity(opened, after)) throw unsafePath(path, "Publication directory changed.");
+    } finally {
+      closeSync(fd);
+    }
+    if (current === canonicalRoot) break;
+    current = dirname(current);
+  }
+  assertSafeExistingComponents(canonicalRoot, parent, false);
 }
 
 function unlinkIfPresent(path: string): void {

@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { runLog, runTimeline } from "../src/events.js";
 import { createRepositoryGraphPort } from "../src/graph/application-adapter.js";
+import { readLegacyTimeline } from "../src/team/activity/legacy.js";
 import type { MexConfig } from "../src/types.js";
 
 vi.mock("../src/events.js", async (importOriginal) => ({
@@ -266,7 +267,7 @@ describe("built CLI main-module guard", () => {
     await yieldToVitestRpc();
   });
 
-  it("renders --format md through the built CLI and keeps default and JSON bytes", () => {
+  it("renders Markdown and preserves legacy content in enriched note output", () => {
     const fixture = mkdtempSync(join(tmpdir(), "mex-timeline-md-cli-"));
     try {
       mkdirSync(join(fixture, ".mex", "events"), { recursive: true });
@@ -289,18 +290,25 @@ describe("built CLI main-module guard", () => {
         expect(result.status, detail).toBe(0);
         return result.stdout;
       };
-      const expectedJson = `${JSON.stringify({
-        events: [{ timestamp: "2026-05-14T00:00:00.000Z", kind: "note", message: "chose bounded output", files: ["src/events.ts"], cwd: "." }],
+      const legacyId = readLegacyTimeline(fixture).entries[0].id;
+      const expected = {
+        schemaVersion: 1,
+        events: [{ id: legacyId, format: "legacy", timestamp: "2026-05-14T00:00:00.000Z", kind: "note", message: "chose bounded output", files: ["src/events.ts"], cwd: ".",
+          context: null, originAdapter: null, recordPath: ".mex/events/decisions.jsonl", revision: null }],
         truncated: false,
         sourceTruncated: false,
-      }, null, 2)}\n`;
-      expect(invoke("--json")).toBe(expectedJson);
-      expect(invoke("--json", "--format", "md")).toBe(expectedJson);
-      expect(invoke()).toBe("2026-05-14 note chose bounded output (src/events.ts)\n");
+        sources: { markdown: { truncated: false, unavailable: false }, legacy: { truncated: false, unavailable: false } },
+        diagnostics: [],
+      };
+      const json = invoke("--json");
+      expect(JSON.parse(json)).toEqual(expected);
+      expect(invoke("--json", "--format", "md")).toBe(json);
+      expect(invoke()).toBe(`2026-05-14 note chose bounded output (src/events.ts) [${legacyId}]\n`);
       const markdown = invoke("--format", "md");
-      expect(markdown).toContain("| Date | Type | Event | Files |");
+      expect(markdown).toContain("| Date | Type | Event | Files | ID |");
       expect(markdown).toContain("chose bounded output");
-      expect(markdown).toContain("`src/events.ts`");
+      expect(markdown).toContain("src/events.ts");
+      expect(markdown).toContain(legacyId);
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
@@ -975,7 +983,7 @@ describe("built CLI main-module guard", () => {
     expect(result.stdout).not.toContain(pkg.version);
   });
 
-  it("backfills scaffold_id on an existing scaffold when an explicit log write loads config", () => {
+  it("records a note without inventing missing scaffold identity", () => {
     const fixture = mkdtempSync(join(tmpdir(), "mex-migrate-"));
     try {
       const mexPath = join(fixture, ".mex");
@@ -994,7 +1002,7 @@ describe("built CLI main-module guard", () => {
         aiTools: string[];
         scaffold_id?: string;
       };
-      expect(raw.scaffold_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(raw.scaffold_id).toBeUndefined();
       expect(raw.aiTools).toEqual(["claude"]); // existing keys preserved
     } finally {
       rmSync(fixture, { recursive: true, force: true });
@@ -1021,7 +1029,7 @@ describe("built CLI main-module guard", () => {
         cwd: fixture, encoding: "utf8", env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "1", DO_NOT_TRACK: "0", NO_COLOR: "1" },
       });
       expect(result.status).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({
+      expect(JSON.parse(result.stdout)).toMatchObject({
         events: [expect.objectContaining({ kind: "risk", message: "Auth rollout", files: ["src/auth.ts"] })],
         truncated: false, sourceTruncated: false,
       });
@@ -1032,7 +1040,7 @@ describe("built CLI main-module guard", () => {
         cwd: fixture, encoding: "utf8", env: { ...process.env, HOME: userHome, MEX_HOME: userHome, MEX_TELEMETRY: "1", DO_NOT_TRACK: "0", NO_COLOR: "1" },
       });
       expect(invalid.status).toBe(1);
-      expect(invalid.stderr).toContain("Unknown event type");
+      expect(invalid.stderr).toContain("Unknown note kind");
       expect(readdirSync(userHome)).toEqual([]);
     } finally {
       rmSync(fixture, { recursive: true, force: true });

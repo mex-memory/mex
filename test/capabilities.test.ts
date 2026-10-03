@@ -1096,12 +1096,10 @@ describe("mex capabilities manifest", () => {
   });
 
   it("uses the real initialized-index inspectors without writes or outbound requests", async () => {
+    // Keep readyRoot's committed repository intact: this test covers initialized
+    // index reads, not Git repository replacement.
     const root = readyRoot();
     const home = temporaryRoot();
-    rmSync(join(root, ".git"), { recursive: true, force: true });
-    execFileSync("git", ["init", "--quiet"], { cwd: root });
-    execFileSync("git", ["config", "user.email", "capabilities@example.invalid"], { cwd: root });
-    execFileSync("git", ["config", "user.name", "Capabilities Contract"], { cwd: root });
     mkdirSync(join(root, "src"));
     writeFileSync(join(root, "src", "example.ts"), "export const example = 1;\n");
     writeFileSync(join(root, ".mex", "config.json"), JSON.stringify({

@@ -98,7 +98,8 @@ describe("CLI smoke test against a fixture scaffold", { timeout: testTimeoutMs }
 
     const logged = mex(root, ["log", "smoke: chose the bounded resolver", "--type", "decision"]);
     expect(logged.status).toBe(0);
-    expect(logged.stdout).toContain("Logged decision: smoke: chose the bounded resolver");
+    const receipt = /Recorded (log_[0-9A-Z]{26}) locally \(/.exec(logged.stdout);
+    expect(receipt).not.toBeNull();
 
     const timeline = mex(root, ["timeline"]);
     expect(timeline.status).toBe(0);
@@ -110,7 +111,7 @@ describe("CLI smoke test against a fixture scaffold", { timeout: testTimeoutMs }
       events: Array<{ kind: string; message: string }>;
     };
     expect(asJson.events).toEqual([
-      expect.objectContaining({ kind: "decision", message: "smoke: chose the bounded resolver" }),
+      expect.objectContaining({ id: receipt![1], kind: "decision", message: "smoke: chose the bounded resolver" }),
     ]);
   });
 

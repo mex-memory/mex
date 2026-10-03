@@ -12,12 +12,12 @@ edges:
     condition: "when connecting team state to Hub, Wiki, or graph consumers"
   - target: "context/conventions.md"
     condition: "when changing canonical serialization or validation"
-last_updated: 2026-09-08
+last_updated: 2026-10-02
 mex:
   id: mx_01M1M0CJMRWZY5TZCEBSFJPAHT
   type: pattern
   status: promoted
-  revision: 8
+  revision: 10
   title: local-first-team-state
   grounds_to:
     - node: function:ecf1fb45ac2910d02bc78f6f761c0145
@@ -75,6 +75,9 @@ under `.mex/local/`. When present, the legacy decision-event JSONL stays byte-fo
   into team-state code.
 - Production code writes files only. Git publication belongs to the human or test
   harness.
+- Reuse an already initialized Git test fixture when adding source/config files.
+  Avoid deleting and reinitializing its `.git` merely to build indexes: that adds
+  an unrelated repository-reset failure boundary before read-only assertions.
 - A page cursor must bind both its filter and the complete bounded corpus
   revision; a position-only cursor can silently skip records after mutation.
 - Filesystem collection locks need bounded owner metadata and proven-dead
@@ -140,6 +143,18 @@ under `.mex/local/`. When present, the legacy decision-event JSONL stays byte-fo
 - Preserve legacy Timeline IDs using logical LF offsets while scanning and
   bounding actual bytes. Otherwise changing the shared reader silently changes
   historical IDs after the first CRLF line.
+- The plain-note writer reuses artifact containment and exclusive publication,
+  but opts into strict directory flushes through every naming ancestor before
+  acknowledging. Never compensate for a post-publication flush failure by
+  deleting the record. Expose unsupported platform guarantees in the receipt.
+  Exact authored Markdown needs scoped Git attributes as well as an exact-byte
+  reader; a frontmatter parser must not bind entity-looking examples in the body.
+  Keep the note namespace outside Wiki ownership. See `docs/design/log-notes.md`.
+- A bounded legacy tail cannot recover the historical LF offset without the
+  omitted prefix's CRLF count. Expose unavailable identity instead of minting a
+  replacement. If note filename enumeration exceeds its bound, do not present
+  an arbitrary directory prefix as the newest history; direct ID reads stay
+  independent of discovery and ordinary reads never clean abandoned staging files.
 - Inbox may display escaped carriage returns in a Wiki diff, but must also
   escape literal backslashes so the display is unambiguous. Only the signed
   presentation changes; executable Wiki bytes and revisions stay exact.

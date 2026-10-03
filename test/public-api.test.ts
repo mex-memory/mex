@@ -67,6 +67,9 @@ afterEach(() => {
 describe("public API — function exports", () => {
   it("exports the functions embedders depend on", () => {
     expect(typeof appendEvent).toBe("function");
+    expect(typeof publicApi.recordNote).toBe("function");
+    expect(typeof publicApi.findNotes).toBe("function");
+    expect(typeof publicApi.getNote).toBe("function");
     expect(typeof readEvents).toBe("function");
     expect(typeof eventLogPath).toBe("function");
     expect(typeof runDriftCheck).toBe("function");

@@ -19,6 +19,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { toPosix } from "../../paths.js";
 import { diagnostic, type WikiDiagnostic } from "../model/diagnostic.js";
 import { WIKI_CORPUS_LIMITS, WikiCorpusLimitError } from "./corpus-policy.js";
+import { isLogOwnedPath } from "../model/log-owned-paths.js";
 
 export interface DiscoveredFile {
   /** Scaffold-relative, POSIX separators. The database key. */
@@ -186,6 +187,9 @@ export function discoverMarkdownFiles(options: DiscoverOptions): DiscoveryResult
     for (const entry of [...entries].sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))) {
       const absolute = join(directory, entry.name);
       const rel = relativeToRoot(absolute);
+      // Prune before following links or consuming the note corpus; case aliases
+      // must not expose authored entity-marker examples to the Wiki binder.
+      if (isLogOwnedPath(rel)) continue;
 
       if (entry.isSymbolicLink()) {
         const target = resolveSymlink(absolute);

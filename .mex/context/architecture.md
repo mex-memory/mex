@@ -23,12 +23,12 @@ edges:
 # Broad overview: keep this empty unless a claim depends on a few specific symbols.
 # Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh2:64:<base64url>" }
 grounds_to: []
-last_updated: 2026-09-12
+last_updated: 2026-10-01
 mex:
   id: mx_01M1M0CJ5C5XQV0HM5VM787WQS
   type: architecture
   status: promoted
-  revision: 10
+  revision: 11
   title: architecture
   relations:
     - type: related_to
@@ -81,7 +81,8 @@ revision: 1
 
 - **CLI and setup (`src/cli.ts`, `src/setup/`)** — command dispatch, resumable scaffold creation, agent asset installation, Graph construction, population, grounding capture, and Wiki finalization.
 - **Code Graph (`src/graph/`)** — deterministic extraction, versioned SQLite storage, immutable read sessions, provenance/freshness checks, retrieval, impact, and explicit refresh/rebuild recovery.
-- **Wiki (`src/wiki/`)** — treats repository Markdown as canonical, owns migration/validation/indexing, and exposes bounded query plus repository-adapter services.
+- **Wiki (`src/wiki/`)** — treats maintained repository Markdown as canonical, owns migration/validation/indexing, and exposes bounded query plus repository-adapter services. Historical `events/notes/` content belongs to the note writer and is excluded from Wiki binding, writes and migration.
+- **Plain notes (`src/notes/`, unreleased ticket 01)** — CLI/MCP share `recordNote`, `findNotes` and `getNote`. One immutable Markdown artifact preserves exact supplied text with validated metadata and a durable-local receipt. Bounded discovery combines notes with unchanged legacy JSONL; ID reads work without Graph/Wiki. Retry keys, evidence, correction relations and Hub Context presentation remain later slices. See `docs/design/log-notes.md` for platform guarantees and bounds.
 - **Team workflows (`src/team/`)** — canonical Members, Activity, Workstreams, Inbox, and Relay records plus signed preview/apply services and isolated checkout-local state.
 - **Project Hub (`src/hub/`, `packages/hub-contracts`, `packages/hub-web`)** — `launchHub()` opens the loopback server. Incomplete checkouts get a setup-only process that shares the CLI setup phases through `runHeadlessSetup()`. Claude Code and Codex run as owned background children. Their structured streams supply activity timing and a separate read-only transcript of assistant messages with compact fixed tool labels; command details and tool results are dropped before transcript retention. Cursor-based SSE replays a bounded process-memory history without copying it into run snapshots. After code setup finishes and the committed scaffold identity passes the existing Team authority check, an explicit action promotes the same listener and session into the full Hub. The promoted dashboard then shows a first-run spotlight tour once per checkout. It overlays the live sidebar rather than replacing it, records completion in `.mex/local/hub-onboarding.json` through `/api/v1/settings/onboarding`, and does not run during setup. Existing committed code projects retain Health recovery for missing disposable indexes; Agent memory keeps its separate completion path.
 - **Drift and agent workflows (`src/drift/`, `src/sync/`, `src/agent-skills/`)** — check grounded knowledge, prepare bounded repair briefs, and install the governed Inbox/Relay integrations.

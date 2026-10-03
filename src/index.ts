@@ -23,6 +23,11 @@ export {
 } from "./events.js";
 export type { EventEntry, EventKind, LogOpts } from "./events.js";
 
+// ── Durable notes (additive; the synchronous JSONL API above is unchanged) ──
+export { recordNote, findNotes, getNote } from "./notes/service.js";
+export { NoteError, NOTE_LIMITS, noteProblem } from "./notes/contracts.js";
+export type { NoteInput, NoteContext, NoteRecord, NoteReceipt, NoteQuery, NoteDiagnostic, NoteSearchResult, NoteSourceStatus } from "./notes/contracts.js";
+
 // ── Drift detection ──────────────────────────────────────────────────────────
 export {
   runDriftCheck,
