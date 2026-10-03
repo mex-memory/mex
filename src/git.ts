@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
 
 let _git: SimpleGit | null = null;
@@ -44,6 +45,46 @@ export async function commitsSinceLastChange(
       (c) => c.hash === fileLog.latest!.hash
     );
     return fileIndex === -1 ? null : fileIndex;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Commits since a file was last modified that touched any of `paths` (#237).
+ *
+ * The pathspecs go to `git rev-list --stdin` after `--`, so a file that
+ * references hundreds of paths never meets the Windows command-line limit.
+ * Ordinary pathspec rules apply: a directory matches everything below it and
+ * a path that never existed matches nothing.
+ */
+export async function commitsTouchingPathsSinceLastChange(
+  filePath: string,
+  paths: readonly string[],
+  cwd?: string
+): Promise<number | null> {
+  try {
+    const git = getGit(cwd);
+    const fileLog = await git.log({ file: filePath, maxCount: 1 });
+    if (!fileLog.latest?.hash) return null;
+    if (paths.length === 0) return 0;
+    const input = ["HEAD", `^${fileLog.latest.hash}`, "--", ...paths, ""].join("\n");
+    const output = await new Promise<string>((resolveOutput, reject) => {
+      const child = spawn("git", ["rev-list", "--count", "--stdin"], {
+        cwd: cwd ?? process.cwd(),
+        stdio: ["pipe", "pipe", "ignore"],
+        windowsHide: true,
+      });
+      let stdout = "";
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+      child.on("error", reject);
+      child.on("close", (code) => code === 0 ? resolveOutput(stdout) : reject(new Error(`git rev-list exited ${code}`)));
+      child.stdin.on("error", reject);
+      child.stdin.end(input);
+    });
+    const count = Number.parseInt(output.trim(), 10);
+    return Number.isNaN(count) ? null : count;
   } catch {
     return null;
   }
