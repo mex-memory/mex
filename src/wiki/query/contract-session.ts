@@ -204,6 +204,8 @@ export interface ContractSearchHit {
   matchedTerms?: readonly string[];
   /** For a `some_terms` hit: its coverage of the query, higher first. Never comparable across indexes. */
   score?: number;
+  /** For an `all_terms` hit: FTS5 `bm25()` in its best matched field, lower first. */
+  relevance?: number;
 }
 
 export interface ContractRelationRequest {
@@ -900,12 +902,13 @@ class ContractSession implements WikiContractReadSession {
     normalized: ReturnType<typeof normalizeSearchRequest>,
   ): ContractSearchCandidates {
     const filter = entityFilterSql(normalized, "e");
-    const byId = new Map<string, { row: EntityRow; fields: Set<MatchField> }>();
-    const add = (rows: EntityRow[], field: MatchField): void => {
+    const byId = new Map<string, { row: EntityRow; fields: Set<MatchField>; relevance?: number }>();
+    // Fields arrive best first, so an entity's relevance is its best field's.
+    const add = (rows: (EntityRow & { relevance?: number })[], field: MatchField): void => {
       for (const row of rows) {
         const existing = byId.get(row.id);
         if (existing) existing.fields.add(field);
-        else byId.set(row.id, { row, fields: new Set([field]) });
+        else byId.set(row.id, { row, fields: new Set([field]), ...(row.relevance === undefined ? {} : { relevance: Number(row.relevance) }) });
       }
     };
     add(this.db.prepare(
@@ -919,11 +922,11 @@ class ContractSession implements WikiContractReadSession {
         ["title", "title"], ["summary", "summary"], ["body aliases meta", "body"],
       ] as const) {
         const rows = this.db.prepare(
-          `SELECT ${ENTITY_COLUMNS} FROM wiki_fts f
+          `SELECT ${ENTITY_COLUMNS}, round(bm25(wiki_fts), 6) AS relevance FROM wiki_fts f
             JOIN wiki_entities e ON e.entity_key = f.entity_key
            WHERE wiki_fts MATCH ? AND ${filter.sql}
-           ORDER BY e.title, e.id LIMIT ?`,
-        ).all(`{${columns}} : (${expression})`, ...filter.params, MAX_SEARCH_RESULTS + 1) as EntityRow[];
+           ORDER BY relevance, e.title, e.id LIMIT ?`,
+        ).all(`{${columns}} : (${expression})`, ...filter.params, MAX_SEARCH_RESULTS + 1) as (EntityRow & { relevance: number })[];
         if (rows.length > MAX_SEARCH_RESULTS) safetyTruncated = true;
         add(rows.slice(0, MAX_SEARCH_RESULTS), field);
       }
@@ -933,6 +936,7 @@ class ContractSession implements WikiContractReadSession {
       entity: summaries.get(id)!,
       matchedFields: [...value.fields].sort((left, right) => MATCH_FIELD_RANK[left] - MATCH_FIELD_RANK[right]),
       match: "all_terms",
+      ...(value.relevance === undefined ? {} : { relevance: value.relevance }),
     }));
     if (plan.terms.length === 0 || hits.length >= MAX_SEARCH_RESULTS) return { items: hits, truncated: safetyTruncated };
 
@@ -2398,7 +2402,9 @@ function compareSearchHits(left: ContractSearchHit, right: ContractSearchHit): n
   const lifecycle = (LIFECYCLE_RANK[left.entity.lifecycleState] ?? 3) - (LIFECYCLE_RANK[right.entity.lifecycleState] ?? 3);
   if (lifecycle !== 0) return lifecycle;
   const health = healthRank(left.entity.groundingHealth) - healthRank(right.entity.groundingHealth);
-  return health !== 0 ? health : compareEntitySummary(left.entity, right.entity);
+  if (health !== 0) return health;
+  const relevance = (left.relevance ?? 0) - (right.relevance ?? 0);
+  return relevance !== 0 ? relevance : compareEntitySummary(left.entity, right.entity);
 }
 
 function compareEntitySummary(left: ContractEntitySummary, right: ContractEntitySummary): number {

@@ -25,6 +25,8 @@ const IDS = {
   middleware: "mx_01KTAH8Q004DSGTECA5MBCRZ88",
   external: "mx_01KTWJ1R00FFGFA48FZBYSZ90D",
   archived: "mx_01KVEJTS0033N8ZWSQZXJNG34H",
+  passing: "mx_01KW0KKT00Q5R49QMFGW64X5T6",
+  focused: "mx_01KWJMCV00XQ0PJ1A3TAPZR2ZN",
 } as const;
 
 function block(id: string, title: string, body: string, status = "promoted"): string {
@@ -50,6 +52,12 @@ beforeAll(() => {
       block(IDS.external, "External Dependencies", "Hono depends on the Web platform. Database schema work is out of scope."),
   );
   scaffold.write("patterns/add-middleware.md", block(IDS.middleware, "add-middleware", "Add a Hono middleware and export it."));
+  scaffold.write(
+    "context/notes.md",
+    // Both mention caching only in the body. The one about caching sorts last by title.
+    block(IDS.passing, "Alpha notes", "Logging, metrics and tracing are configured per environment; caching is mentioned once.") +
+      block(IDS.focused, "Zeta notes", "Caching rules: response caching, cache keys, and caching headers."),
+  );
   rebuildWikiIndex({ scaffoldRoot: scaffold.root, indexPath, now: steppingClock() });
 });
 
@@ -196,6 +204,22 @@ describe("natural-language search (#235)", () => {
         }
       }
       expect(session.search({ query: "Hono avoid" }).items).toEqual([]);
+    } finally {
+      session.close();
+    }
+  });
+});
+
+describe("order within a field", () => {
+  it("ranks the entity most about the words first, rather than by title", () => {
+    const page = search("caching");
+    expect(page.items.map((hit) => [hit.entity.id, hit.field])).toEqual([
+      [IDS.focused, "body"],
+      [IDS.passing, "body"],
+    ]);
+    const session = openWikiContractReadSession({ scaffoldRoot: scaffold.root, indexPath });
+    try {
+      expect(session.search({ query: "caching" }).items.map((hit) => hit.entity.id)).toEqual([IDS.focused, IDS.passing]);
     } finally {
       session.close();
     }

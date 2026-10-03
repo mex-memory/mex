@@ -230,6 +230,8 @@ export interface WikiSearchHit {
   entity: WikiEntitySummary;
   /** Adapter-local rank only; consumers must not fuse it with graph scores. */
   score?: number;
+  /** Adapter-local text relevance within the matched field, lower first; never fused with graph scores. */
+  relevance?: number;
   matchedFields: readonly ("id" | "title" | "summary" | "body")[];
 }
 

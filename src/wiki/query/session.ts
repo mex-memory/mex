@@ -233,12 +233,13 @@ export class WikiQuerySession {
     const hits: RankedHit[] = [];
     const seen = new Set<string>();
 
-    const add = (rows: EntityRow[], field: MatchField): void => {
-      for (const entity of this.decorate(rows)) {
+    const add = (rows: (EntityRow & { relevance?: number })[], field: MatchField): void => {
+      for (const [index, entity] of this.decorate(rows).entries()) {
         if (seen.has(entity.id)) continue;
         if (!isVisible(entity.status, options)) continue;
         seen.add(entity.id);
-        hits.push({ entity, field });
+        const relevance = rows[index]!.relevance;
+        hits.push(relevance === undefined ? { entity, field } : { entity, field, relevance: Number(relevance) });
       }
     };
 
@@ -256,10 +257,11 @@ export class WikiQuerySession {
       ] as const) {
         const rows = this.db
           .prepare(
-            `SELECT ${ENTITY_COLUMNS} FROM wiki_fts f JOIN wiki_entities e ON e.entity_key = f.entity_key
-              WHERE wiki_fts MATCH ? AND e.shadowed = 0 ORDER BY e.title, e.id LIMIT ?`,
+            `SELECT ${ENTITY_COLUMNS}, round(bm25(wiki_fts), 6) AS relevance
+               FROM wiki_fts f JOIN wiki_entities e ON e.entity_key = f.entity_key
+              WHERE wiki_fts MATCH ? AND e.shadowed = 0 ORDER BY relevance, e.title, e.id LIMIT ?`,
           )
-          .all(`{${columns}} : (${expression})`, bounds.limit * 4) as EntityRow[];
+          .all(`{${columns}} : (${expression})`, bounds.limit * 4) as (EntityRow & { relevance: number })[];
         add(rows, field);
       }
     }
