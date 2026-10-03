@@ -78,7 +78,16 @@ banner() {
 # ─────────────────────────────────────────────────────────────
 
 MEX_CMD=""
+# Verify capability, not just the name: TeX Live also ships a `mex` binary.
+MEX_ON_PATH=""
 if command -v mex &>/dev/null; then
+  if mex capabilities --json </dev/null 2>/dev/null | grep -q '"mexVersion"'; then
+    MEX_ON_PATH="yes"
+  else
+    warn "'mex' at $(command -v mex) is not mex-agent (name collision, e.g. TeX Live) — ignoring it"
+  fi
+fi
+if [ -n "$MEX_ON_PATH" ]; then
   MEX_CMD="mex"
 elif [ -f "$SCRIPT_DIR/dist/cli.js" ]; then
   MEX_CMD="node $SCRIPT_DIR/dist/cli.js"
