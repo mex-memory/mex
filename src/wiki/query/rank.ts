@@ -99,6 +99,11 @@ export function isVisible(status: string, options: VisibilityOptions = {}): bool
 export interface RankedHit {
   entity: EntitySummary;
   field: MatchField;
+  /**
+   * FTS5 `bm25()` within the matched field, rounded; lower is more relevant.
+   * Absent for a hit that is not a full-text match, such as an exact id.
+   */
+  relevance?: number;
 }
 
 /**
@@ -117,6 +122,9 @@ export function compareHits(left: RankedHit, right: RankedHit): number {
 
   const byHealth = healthRank(left.entity.health) - healthRank(right.entity.health);
   if (byHealth !== 0) return byHealth;
+
+  const byRelevance = (left.relevance ?? 0) - (right.relevance ?? 0);
+  if (byRelevance !== 0) return byRelevance;
 
   return compareEntities(left.entity, right.entity);
 }

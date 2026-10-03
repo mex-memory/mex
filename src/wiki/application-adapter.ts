@@ -902,7 +902,12 @@ export class RepositoryWikiPort implements WikiPort<
     const projected = candidateSet.items.flatMap((hit) => {
       const current = this.#projectCurrentSummary(session, graph, hit.entity);
       return normalized.groundingHealth === undefined || normalized.groundingHealth.includes(current.groundingHealth)
-        ? [{ entity: current, matchedFields: [...hit.matchedFields] }]
+        ? [{
+          entity: current,
+          matchedFields: [...hit.matchedFields],
+          ...(hit.score === undefined ? {} : { score: hit.score }),
+          ...(hit.relevance === undefined ? {} : { relevance: hit.relevance }),
+        }]
         : [];
     }).sort(compareCurrentSearchHits);
     const sourceTruncated = candidateSet.truncated || projected.length > MAX_CURRENT_SEARCH_RESULTS;
@@ -2713,7 +2718,12 @@ function projectEntity(
 }
 
 function projectSearchHit(hit: ContractSearchHit): WikiSearchHit {
-  return { entity: projectSummary(hit.entity), matchedFields: [...hit.matchedFields] };
+  return {
+    entity: projectSummary(hit.entity),
+    matchedFields: [...hit.matchedFields],
+    ...(hit.score === undefined ? {} : { score: hit.score }),
+    ...(hit.relevance === undefined ? {} : { relevance: hit.relevance }),
+  };
 }
 
 function projectRelation(relation: ContractRelation): WikiRelation {
@@ -3341,7 +3351,15 @@ function assertGroundingSnapshotRevision(snapshot: RepositoryWikiGroundingSnapsh
   }
 }
 
+/**
+ * Search order. A `score` marks a hit that matched only some query terms
+ * (#235): every unscored, all-terms hit comes first, then those by score.
+ */
 function compareCurrentSearchHits(left: WikiSearchHit, right: WikiSearchHit): number {
+  const tier = Number(left.score !== undefined) - Number(right.score !== undefined);
+  if (tier !== 0) return tier;
+  const coverage = (right.score ?? 0) - (left.score ?? 0);
+  if (coverage !== 0) return coverage;
   const leftField = left.matchedFields[0] ?? "body";
   const rightField = right.matchedFields[0] ?? "body";
   const field = MATCH_FIELD_RANK[leftField] - MATCH_FIELD_RANK[rightField];
@@ -3351,6 +3369,8 @@ function compareCurrentSearchHits(left: WikiSearchHit, right: WikiSearchHit): nu
   if (lifecycle !== 0) return lifecycle;
   const health = healthRank(left.entity.groundingHealth) - healthRank(right.entity.groundingHealth);
   if (health !== 0) return health;
+  const relevance = (left.relevance ?? 0) - (right.relevance ?? 0);
+  if (relevance !== 0) return relevance;
   return compareCodePoints(left.entity.title, right.entity.title)
     || compareCodePoints(left.entity.ref.id, right.entity.ref.id);
 }

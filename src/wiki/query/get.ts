@@ -8,7 +8,7 @@
 
 import type { WikiDiagnostic } from "../model/diagnostic.js";
 import type { EntitySummary } from "./rank.js";
-import { withWikiQuery, type ListOptions, type Neighborhood, type Page, type QueryResult, type RelatedOptions, type SearchOptions } from "./session.js";
+import { withWikiQuery, type ListOptions, type Neighborhood, type Page, type QueryResult, type RelatedOptions, type SearchOptions, type SearchPage } from "./session.js";
 import type { MatchField } from "./rank.js";
 import type { ForCodeOptions, GroundedEntity } from "./for-code.js";
 
@@ -30,7 +30,7 @@ export function searchEntities(
   indexPath: string,
   text: string,
   options: SearchOptions = {},
-): QueryResult<Page<{ entity: EntitySummary; field: MatchField }>> {
+): QueryResult<SearchPage> {
   return withWikiQuery(indexPath, (session) => session.search(text, options));
 }
 

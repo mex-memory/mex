@@ -642,7 +642,7 @@ wikiCommand
     runShow(wikiIo(), id, options);
   });
 
-withReadFilters(wikiCommand.command("query <text...>").description("Full-text search, title before body")).action(
+withReadFilters(wikiCommand.command("query <text...>").description("Search the Wiki by words: entities with every term first, title before body, then entities matching some terms, labelled")).action(
   async (text: string[], options) => {
     const { runQuery } = await import("./wiki/cli/commands.js");
     runQuery(wikiIo(), text.join(" "), options);

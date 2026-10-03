@@ -61,6 +61,7 @@ import { fts5UnavailableDiagnostic } from "../index/fts5.js";
 import { assertFts5Available, openSqlite } from "../../graph/db/sqlite.js";
 import { rebuildWikiIndex } from "../index/rebuild.js";
 import { getEntity } from "../query/get.js";
+import { wikiSearch } from "../service/read.js";
 import { escapedSymlinkDiagnostic } from "../index/discover.js";
 import { planOperation } from "../operations/plan.js";
 import { applyOperation } from "../operations/apply.js";
@@ -75,6 +76,17 @@ function inScratch<T>(body: (directory: string) => T): T {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+/** One indexed entity for the two search notices to search. */
+function indexedSearchScaffold(directory: string): void {
+  mkdirSync(join(directory, "context"), { recursive: true });
+  writeFileSync(
+    join(directory, "context", "notes.md"),
+    [`<!-- mex:entity`, `id: ${OPS_ID}`, "type: decision", "status: promoted", "revision: 1", "-->", "## Rotate refresh tokens", "", "Tokens rotate on every refresh."].join(String.fromCharCode(10)),
+    "utf-8",
+  );
+  rebuildWikiIndex({ scaffoldRoot: directory });
 }
 
 /**
@@ -362,6 +374,19 @@ status: promoted
     inScratch((directory) => {
       const opened = openWikiIndex(join(directory, "wiki.db"));
       return opened.ok ? [] : [opened.diagnostic];
+    }),
+
+  // A search that finds nothing, and one that finds only some of its terms (#235).
+  WIKI_QUERY_NO_MATCH: () =>
+    inScratch((directory) => {
+      indexedSearchScaffold(directory);
+      return wikiSearch({ scaffoldRoot: directory, text: "GraphQL federation" }).diagnostics;
+    }),
+
+  WIKI_QUERY_PARTIAL_MATCH: () =>
+    inScratch((directory) => {
+      indexedSearchScaffold(directory);
+      return wikiSearch({ scaffoldRoot: directory, text: "Why do tokens rotate hourly?" }).diagnostics;
     }),
 
   WIKI_INDEX_FTS5_UNAVAILABLE: () => {

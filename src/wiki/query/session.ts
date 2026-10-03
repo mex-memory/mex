@@ -34,6 +34,7 @@ import {
   type VisibilityOptions,
 } from "./rank.js";
 import { estimateTokens, fitWithinBudget, resolveBounds, type Bounds, type BoundsInput } from "./budget.js";
+import { findSomeTermsMatches, planWikiSearch, type EntityScope } from "./search-plan.js";
 
 export type QueryResult<T> = { ok: true; value: T } | { ok: false; diagnostic: WikiDiagnostic };
 
@@ -67,6 +68,37 @@ export interface ListOptions extends VisibilityOptions, BoundsInput {
 }
 
 export interface SearchOptions extends VisibilityOptions, BoundsInput {}
+
+/**
+ * How much of a query a hit matched (#235).
+ *
+ * `all_terms` contains every term that carries meaning; `some_terms` is the
+ * broader match returned only when nothing contained them all.
+ */
+export type SearchMatch = "all_terms" | "some_terms";
+
+export interface SearchPageHit {
+  entity: EntitySummary;
+  field: MatchField;
+  match: SearchMatch;
+  /** For a `some_terms` hit: the query terms it matched, in query order. */
+  matchedTerms?: string[];
+}
+
+/** A search page, and what the query was taken to mean. */
+export interface SearchPage extends Page<SearchPageHit> {
+  /** The tier the hits came from, or `none` when neither found anything. */
+  match: SearchMatch | "none";
+  /** Terms searched, after stop words were dropped. */
+  terms: string[];
+  /** Stop words dropped from the query. */
+  ignoredTerms: string[];
+  /** Terms no visible entity matched at all, even by stem. */
+  unmatchedTerms: string[];
+}
+
+/** Per-term bound for the broader tier; the same ceiling `list` reads to. */
+const SOME_TERMS_PER_TERM_LIMIT = 2000;
 
 export interface RelatedOptions extends VisibilityOptions, BoundsInput {
   /** Include incoming edges as well as outgoing ones. Default true. */
@@ -183,21 +215,31 @@ export class WikiQuerySession {
    * The tiers are separate FTS queries rather than a scoring function because
    * the required order is categorical: no number of body matches may outrank
    * one title match, and a relevance score always eventually lets it.
+   *
+   * Stop words are dropped first, and when no entity contains every remaining
+   * term the broader `some_terms` tier answers instead, labelled as such
+   * (`search-plan.ts`). That tier has no categorical claim to keep, so it is
+   * ordered by how much of the query each entity covers.
    */
-  search(text: string, options: SearchOptions = {}): Page<{ entity: EntitySummary; field: MatchField }> {
+  search(text: string, options: SearchOptions = {}): SearchPage {
     const bounds = resolveBounds(options);
     const trimmed = text.trim();
-    if (trimmed === "") return { items: [], truncated: false };
+    const plan = planWikiSearch(trimmed);
+    const page = (items: SearchPageHit[], truncated: boolean, match: SearchPage["match"], unmatchedTerms: string[] = []): SearchPage => ({
+      items, truncated, match, terms: plan.terms, ignoredTerms: plan.ignoredTerms, unmatchedTerms,
+    });
+    if (trimmed === "") return page([], false, "none");
 
     const hits: RankedHit[] = [];
     const seen = new Set<string>();
 
-    const add = (rows: EntityRow[], field: MatchField): void => {
-      for (const entity of this.decorate(rows)) {
+    const add = (rows: (EntityRow & { relevance?: number })[], field: MatchField): void => {
+      for (const [index, entity] of this.decorate(rows).entries()) {
         if (seen.has(entity.id)) continue;
         if (!isVisible(entity.status, options)) continue;
         seen.add(entity.id);
-        hits.push({ entity, field });
+        const relevance = rows[index]!.relevance;
+        hits.push(relevance === undefined ? { entity, field } : { entity, field, relevance: Number(relevance) });
       }
     };
 
@@ -206,7 +248,7 @@ export class WikiQuerySession {
       .all(trimmed) as EntityRow[];
     add(exact, "id");
 
-    const expression = toMatchExpression(trimmed);
+    const expression = plan.allTermsExpression;
     if (expression !== null) {
       for (const [columns, field] of [
         ["title", "title"],
@@ -215,20 +257,52 @@ export class WikiQuerySession {
       ] as const) {
         const rows = this.db
           .prepare(
-            `SELECT ${ENTITY_COLUMNS} FROM wiki_fts f JOIN wiki_entities e ON e.entity_key = f.entity_key
-              WHERE wiki_fts MATCH ? AND e.shadowed = 0 ORDER BY e.title, e.id LIMIT ?`,
+            `SELECT ${ENTITY_COLUMNS}, round(bm25(wiki_fts), 6) AS relevance
+               FROM wiki_fts f JOIN wiki_entities e ON e.entity_key = f.entity_key
+              WHERE wiki_fts MATCH ? AND e.shadowed = 0 ORDER BY relevance, e.title, e.id LIMIT ?`,
           )
-          .all(`{${columns}} : (${expression})`, bounds.limit * 4) as EntityRow[];
+          .all(`{${columns}} : (${expression})`, bounds.limit * 4) as (EntityRow & { relevance: number })[];
         add(rows, field);
       }
     }
 
     hits.sort(compareHits);
-    const fitted = fitWithinBudget(hits, bounds);
-    return {
-      items: fitted.items.map((hit) => ({ entity: hit.entity, field: hit.field })),
-      truncated: fitted.truncated,
-    };
+    const strict: SearchPageHit[] = hits.map((hit) => ({ entity: hit.entity, field: hit.field, match: "all_terms" }));
+    // More every-term hits than a page holds leave no room for broader ones,
+    // and the page is already truncated.
+    if (plan.terms.length === 0 || strict.length > bounds.limit) {
+      const fitted = fitWithinBudget(strict, bounds);
+      return page(fitted.items, fitted.truncated, strict.length > 0 ? "all_terms" : "none");
+    }
+
+    // The rest of the page is the broader match, after every every-term hit
+    // and labelled per hit. Not only when the strict tier is empty: a term in
+    // most of the wiki (the project's own name) can make the strict tier
+    // return the entities that mention it while missing the one that answers.
+    const broader = findSomeTermsMatches(this.db, plan.terms, visibilityScope(options), SOME_TERMS_PER_TERM_LIMIT);
+    const kept = broader.matches.slice(0, bounds.limit * 4);
+    const byKey = new Map(kept.map((match) => [match.entityKey, match]));
+    const rows = kept.length === 0 ? [] : this.db
+      .prepare(
+        `SELECT ${ENTITY_COLUMNS} FROM wiki_entities e
+          WHERE e.entity_key IN (${kept.map(() => "?").join(", ")}) AND e.shadowed = 0 LIMIT ?`,
+      )
+      .all(...kept.map((match) => match.entityKey), kept.length) as EntityRow[];
+    const some = this.decorate(rows)
+      .map((entity, index) => ({ entity, match: byKey.get(rows[index]!.entity_key)! }))
+      .filter((hit) => !seen.has(hit.entity.id) && isVisible(hit.entity.status, options))
+      .map((hit) => ({ entity: hit.entity, field: hit.match.field, score: hit.match.score, matchedTerms: hit.match.matchedTerms }))
+      .sort((left, right) => right.score - left.score || compareHits(left, right))
+      .map((hit): SearchPageHit => ({
+        entity: hit.entity, field: hit.field, match: "some_terms", matchedTerms: hit.matchedTerms,
+      }));
+    const fitted = fitWithinBudget([...strict, ...some], bounds);
+    return page(
+      fitted.items,
+      fitted.truncated || broader.truncated || broader.matches.length > kept.length,
+      strict.length > 0 ? "all_terms" : some.length > 0 ? "some_terms" : "none",
+      broader.unmatchedTerms,
+    );
   }
 
   /**
@@ -477,15 +551,28 @@ export class WikiQuerySession {
  *
  * Every term is quoted and the terms are ANDed. Passing user text into MATCH
  * unescaped makes `NEAR`, `*` and an unbalanced quote into syntax errors at
- * best, and into a query the user did not write at worst.
+ * best, and into a query the user did not write at worst. Stop words are
+ * dropped first (#235); see `planWikiSearch`.
  */
 export function toMatchExpression(text: string): string | null {
-  const terms = text
-    .split(/[^\p{L}\p{N}_]+/u)
-    .map((term) => term.trim())
-    .filter((term) => term.length > 0);
-  if (terms.length === 0) return null;
-  return terms.map((term) => `"${term.replace(/"/g, '""')}"`).join(" AND ");
+  return planWikiSearch(text).allTermsExpression;
+}
+
+/** The visibility rule `isVisible` applies, as SQL, so the broader tier's frequencies count only what can be returned. */
+function visibilityScope(options: VisibilityOptions): EntityScope {
+  const clauses = ["e.shadowed = 0"];
+  const params: string[] = [];
+  if (options.statuses !== undefined) {
+    if (options.statuses.length === 0) clauses.push("0");
+    else {
+      clauses.push(`e.status IN (${options.statuses.map(() => "?").join(", ")})`);
+      params.push(...options.statuses);
+    }
+  } else {
+    if (options.includeArchived !== true) clauses.push("e.status <> 'archived'");
+    if (options.includeInFlight === false) clauses.push("e.status <> 'in_flight'");
+  }
+  return { sql: clauses.join(" AND "), params };
 }
 
 /** Neighbourhood cost, in the graph's own estimator (§4.7). */
