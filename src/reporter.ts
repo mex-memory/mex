@@ -193,6 +193,10 @@ function remediationFor(code: DriftIssue["code"]): string | null {
       return "Not scored. Confirm the new node is the same function; `mex sync` rewrites the reference.";
     case "GROUNDING_COMMENT_DRIFT":
       return "Not scored. Only comments changed; check whether the prose relied on them, then accept the new body in `mex sync`.";
+    case "KNOWLEDGE_NOT_ADOPTED":
+      return "Run `mex wiki migrate` to add it to the Wiki; `--dry-run` shows the plan first.";
+    case "KNOWLEDGE_UNTYPED":
+      return "Declare the file's type with a root `type` key in its frontmatter (for example `type: component`), then run `mex wiki migrate`.";
     default:
       return null;
   }
