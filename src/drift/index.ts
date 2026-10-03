@@ -11,7 +11,7 @@ import { checkIndexSync } from "./checkers/index-sync.js";
 import { checkStalePatterns } from "./checkers/stale-pattern.js";
 import { checkFrontmatterCompleteness } from "./checkers/frontmatter-completeness.js";
 import { checkGroundingShape } from "./checkers/grounding-shape.js";
-import { checkStaleness } from "./checkers/staleness.js";
+import { checkStaleness, isTemplateOwnedScaffoldFile, stalenessReferencedPaths } from "./checkers/staleness.js";
 import { checkCommands } from "./checkers/command.js";
 import { checkDependencies } from "./checkers/dependency.js";
 import { checkCrossFile } from "./checkers/cross-file.js";
@@ -28,6 +28,7 @@ import {
 } from "../graph/runtime.js";
 import { extractGroundings, findMexAnchors } from "../markdown.js";
 import type { GraphStatus } from "../team/contracts/graph.js";
+import type { GraphEngine } from "../graph/engine.js";
 
 let graphUpgradeNudgeShown = false;
 let graphMigrationNudgeShown = false;
@@ -192,11 +193,14 @@ export async function runDriftCheckWithGraphStatus(
     }
 
     // Extract claims from all files
+    const claimsBySource = new Map<string, Claim[]>();
     for (const filePath of scaffoldFiles) {
       const source = toPosix(relative(projectRoot, filePath));
       const claims = extractClaims(filePath, source);
       allClaims.push(...claims);
+      claimsBySource.set(source, claims);
     }
+    const scaffoldSources = new Set(scaffoldFiles.map((filePath) => toPosix(relative(projectRoot, filePath))));
 
     // Run checkers that work on individual files
     for (const filePath of scaffoldFiles) {
@@ -211,14 +215,26 @@ export async function runDriftCheckWithGraphStatus(
       const frontmatterCompletenessIssues = checkFrontmatterCompleteness(frontmatter, source);
       allIssues.push(...frontmatterCompletenessIssues);
 
-      // Staleness check
-      const stalenessIssues = await checkStaleness(
-        source,
-        source,
-        projectRoot,
-        config.stalenessThresholds,
-        { lastUpdated: typeof frontmatter?.last_updated === "string" ? frontmatter.last_updated : undefined },
-      );
+      // Staleness check. Template-owned files are skipped, and the commit
+      // signal counts only commits to what this file describes (#237).
+      const stalenessIssues = isTemplateOwnedScaffoldFile(toPosix(relative(scaffoldRoot, filePath)))
+        ? []
+        : await checkStaleness(
+          source,
+          source,
+          projectRoot,
+          config.stalenessThresholds,
+          {
+            lastUpdated: typeof frontmatter?.last_updated === "string" ? frontmatter.last_updated : undefined,
+            referencedPaths: stalenessReferencedPaths({
+              claims: claimsBySource.get(source) ?? [],
+              groundedFiles: groundedFilesOf(filePath, groundingRuntime?.graph ?? null),
+              projectRoot,
+              scaffoldRoot,
+              scaffoldFiles: scaffoldSources,
+            }),
+          },
+        );
       allIssues.push(...stalenessIssues);
 
       checkerIssueCounts.push([`edges:${source}`, edgeIssues.length]);
@@ -505,4 +521,28 @@ export function buildVerboseLog(
       ([checker, count]) => `Checker ${checker}: ${count} issue${count === 1 ? "" : "s"}`
     ),
   ];
+}
+
+/**
+ * Files of the code a scaffold file grounds: the committed `file` of each
+ * grounding, else the node's file in the graph, plus each inline anchor's
+ * node. Without a graph an uncommitted location is simply unknown.
+ */
+function groundedFilesOf(filePath: string, graph: Pick<GraphEngine, "getNode"> | null): string[] {
+  let content: string;
+  try { content = readFileSync(filePath, "utf-8"); } catch { return []; }
+  const files: string[] = [];
+  const nodeFile = (nodeId: string) => {
+    try { return graph?.getNode(nodeId)?.filePath; } catch { return undefined; }
+  };
+  for (const grounding of extractGroundings(content)) {
+    const committed = (grounding as { file?: unknown }).file;
+    const file = (typeof committed === "string" ? committed : undefined) ?? nodeFile(grounding.node);
+    if (file) files.push(file);
+  }
+  for (const anchor of findMexAnchors(content)) {
+    const file = nodeFile(anchor.nodeId);
+    if (file) files.push(file);
+  }
+  return files;
 }
