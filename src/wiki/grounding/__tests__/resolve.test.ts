@@ -99,6 +99,31 @@ describe("the resolution table", () => {
     });
   });
 
+  it("calls a rebound node with a byte-identical body fresh, whatever its fingerprint", () => {
+    // The graph answers the declared id with the node a compatibility alias
+    // recorded for it after ids were re-minted (#240). Its neighbours were
+    // renumbered, so its fingerprint differs; its body did not.
+    const aliased = stubGraph({
+      nodes: { [NODE]: node(MOVED_NODE, "body-1") },
+      fingerprints: { [MOVED_NODE]: "mh:64:ffffffff" },
+    });
+    expect(resolveGrounding(GROUNDED, aliased)).toEqual({
+      state: "fresh",
+      health: "fresh",
+      node: NODE,
+      resolvedNode: MOVED_NODE,
+      rebound: true,
+      bodyHash: "body-1",
+    });
+
+    // A body that differs is still judged by structure.
+    const edited = stubGraph({
+      nodes: { [NODE]: node(MOVED_NODE, "body-2") },
+      fingerprints: { [MOVED_NODE]: "mh:64:ffffffff" },
+    });
+    expect(resolveGrounding(GROUNDED, edited)).toMatchObject({ state: "stale", health: "changed", resolvedNode: MOVED_NODE });
+  });
+
   it("compares a rebind by fingerprint, because a rename always moves the body hash", () => {
     // Measured against a real graph: renaming a symbol changes its body hash,
     // since the name is part of the body. If a rebind were compared by body

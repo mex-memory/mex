@@ -183,6 +183,25 @@ function compare(
     };
   }
 
+  // **A rebind whose body is byte-identical is fresh.** The graph answers a
+  // declared id through a compatibility alias when ids are re-minted (#240),
+  // and reconciliation rebinds a moved symbol; either way, a body equal to the
+  // committed hash is the code the entity described. Neighbour ids inside
+  // the fingerprint were renumbered by the re-mint, so comparing structure
+  // here reported `changed` for code that had not changed by one byte —
+  // where `mex check`, comparing bodies, rightly called it fresh. A body that
+  // differs still goes to the fingerprint below, so a rename stays fresh.
+  if (rebound && grounding.bodyHash !== undefined && grounding.bodyHash === currentBodyHash) {
+    return {
+      state: "fresh",
+      health: "fresh",
+      node: declaredNode,
+      resolvedNode: node.id,
+      rebound,
+      bodyHash: currentBodyHash,
+    };
+  }
+
   // Structure: either the grounding committed no body hash, or the symbol was
   // rebound. This sees a symbol being rewritten and misses a constant being
   // edited, which is why anything mex writes commits a body hash.
