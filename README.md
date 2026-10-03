@@ -176,7 +176,7 @@ The team's memory is shared; the machinery that retrieves it stays local. MEX se
 
 Canonical knowledge is structured Markdown with metadata, relations, sources, provenance, and code groundings; accepted Wiki writes append audit records. The Code Graph and Wiki search index are rebuildable local SQLite views, not shared sources of truth.
 
-In 0.8.1, ordinary Wiki creation and synthesis capture the operation's recorded actor, time, and session as creation provenance while preserving any supplied original attribution. Migration leaves unknown, untyped `context/*.md` files untouched; supply an explicit entity type before migrating them instead of relying on an architecture default.
+In 0.8.1, ordinary Wiki creation and synthesis capture the operation's recorded actor, time, and session as creation provenance while preserving any supplied original attribution. Migration leaves unknown, untyped `context/*.md` files untouched; declare the file's type with a root `type` key in its frontmatter (for example `type: component`) before migrating it, instead of relying on an architecture default. `mex check` and `mex wiki validate` report knowledge files that are not yet in the Wiki.
 
 | Commit and push to share | Keep local or ephemeral; never commit |
 | --- | --- |

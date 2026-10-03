@@ -100,6 +100,17 @@ function inScratch<T>(body: (directory: string) => T): T {
  */
 const NOT_YET_EMITTED: Record<string, string> = {};
 
+/** A scaffold the Wiki is in use in: one adopted file-level entity. */
+function writeAdoptedArchitecture(directory: string): void {
+  mkdirSync(join(directory, "context"), { recursive: true });
+  writeFileSync(
+    join(directory, "context", "architecture.md"),
+    "---\nname: architecture\nmex:\n  id: mx_01K4FAM7W8N9R3T5Y6Q2ZBCHJD\n  type: architecture\n  status: promoted\n"
+      + "  revision: 1\n  title: architecture\n---\n\n# Architecture\n\nProse.\n",
+    "utf-8",
+  );
+}
+
 function codesOf(diagnostics: readonly WikiDiagnostic[]): WikiDiagnosticCode[] {
   return diagnostics.map((entry) => entry.code);
 }
@@ -629,6 +640,23 @@ See [the code](mex://function:0123456789abcdef).
       const inventory = inventoryScaffold({ scaffoldRoot: directory });
       const index = inventory.files.find((file) => file.path === "patterns/INDEX.md")!;
       return planGeneratedView(index, inventory, "pattern")?.diagnostics ?? [];
+    }),
+
+  KNOWLEDGE_NOT_ADOPTED: () =>
+    // A pattern added after the scaffold was migrated, through the real pass.
+    inScratch((directory) => {
+      writeAdoptedArchitecture(directory);
+      mkdirSync(join(directory, "patterns"), { recursive: true });
+      writeFileSync(join(directory, "patterns", "add-route.md"), "---\nname: add-route\n---\n\n# Add a route\n\nSteps.\n", "utf-8");
+      return validateScaffold({ scaffoldRoot: directory }).diagnostics;
+    }),
+
+  KNOWLEDGE_UNTYPED: () =>
+    // A domain context file population wrote without a `type`.
+    inScratch((directory) => {
+      writeAdoptedArchitecture(directory);
+      writeFileSync(join(directory, "context", "routing.md"), "---\nname: routing\n---\n\n# Routing\n\nProse.\n", "utf-8");
+      return validateScaffold({ scaffoldRoot: directory }).diagnostics;
     }),
 
   INVALID_AGENT_RESPONSE: () =>

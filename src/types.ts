@@ -205,7 +205,14 @@ export type IssueCode =
   // A grounded node's body changed only in its comments: the committed
   // `bodyHash` differs but `codeHash` matches. Info, and not counted in the
   // score; accepting the new body is still an explicit review. See #236.
-  | "GROUNDING_COMMENT_DRIFT";
+  | "GROUNDING_COMMENT_DRIFT"
+  // ── Wiki adoption (emitted by src/drift/checkers/wiki-adoption.ts; #227) ──
+  // A knowledge file migration would adopt but has not, such as a pattern
+  // added after setup (warning).
+  | "KNOWLEDGE_NOT_ADOPTED"
+  // A context file no rule names and whose frontmatter declares no usable
+  // `type`, so migration leaves it outside the Wiki (warning).
+  | "KNOWLEDGE_UNTYPED";
 
 export interface DriftIssue {
   code: IssueCode;

@@ -191,10 +191,18 @@ function projectLegacyTopics(
   };
 }
 
-function absorbedRootKeys(hasGroundings: boolean, hasMappedTopics: boolean): AbsorbableRootKey[] {
+function absorbedRootKeys(
+  hasGroundings: boolean,
+  hasMappedTopics: boolean,
+  hasDeclaredType: boolean,
+): AbsorbableRootKey[] {
   const keys: AbsorbableRootKey[] = [];
   if (hasGroundings) keys.push("grounds_to");
   if (hasMappedTopics) keys.push("topics");
+  // The classifier offers a file-level candidate on a file with a root `type`
+  // only when it accepted that declaration (#227), so its value is now
+  // `mex.type` and the root key would be a second store of it.
+  if (hasDeclaredType) keys.push("type");
   return keys;
 }
 
@@ -543,7 +551,11 @@ function migrateScaffoldHeld(options: MigrateOptions & { maintenanceLease: WikiM
 
     for (const candidate of ordered) {
       const isFileLevel = candidate.target.at === "file";
-      const absorbRootKeys = absorbedRootKeys(moved !== undefined, isFileLevel && legacyTopics.absorb);
+      const absorbRootKeys = absorbedRootKeys(
+        moved !== undefined,
+        isFileLevel && legacyTopics.absorb,
+        isFileLevel && file.parsed.legacy.type !== undefined,
+      );
       const payload: Record<string, unknown> = {
         file: candidate.file,
         adopt:
@@ -830,7 +842,11 @@ export function planPinnedMigration(options: MigrateOptions): PinnedMigrationPla
     const ids: EntityId[] = [];
     for (const candidate of orderForAdoption(classification.candidates)) {
       const isFileLevel = candidate.target.at === "file";
-      const absorbRootKeys = absorbedRootKeys(moved !== undefined, isFileLevel && legacyTopics.absorb);
+      const absorbRootKeys = absorbedRootKeys(
+        moved !== undefined,
+        isFileLevel && legacyTopics.absorb,
+        isFileLevel && file.parsed.legacy.type !== undefined,
+      );
       const payload: Record<string, unknown> = {
         file: candidate.file,
         adopt: candidate.target.at === "file"

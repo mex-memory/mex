@@ -54,7 +54,12 @@ describe("unknown context file classification", () => {
     const root = scaffoldOf({ [path]: text });
     const preview = planMigration({ scaffoldRoot: root });
     expect(preview.planned).toEqual([]);
-    expect(preview.abstentions).toEqual([{ file: path, target: null, reason: expect.stringContaining("does not establish architecture") }]);
+    expect(preview.abstentions).toEqual([{
+      file: path,
+      target: null,
+      kind: "untyped",
+      reason: expect.stringContaining("does not establish what kind of knowledge it holds"),
+    }]);
     expect(readFileSync(join(root, path), "utf8")).toBe(text);
     for (let run = 0; run < 2; run += 1) {
       const report = migrateScaffold({ scaffoldRoot: root });
@@ -63,6 +68,42 @@ describe("unknown context file classification", () => {
       expect(report.abstentions).toEqual(preview.abstentions);
       expect(readFileSync(join(root, path), "utf8")).toBe(text);
     }
+  });
+
+  it("adopts the file once its author declares a type, absorbing the declaration, and is idempotent (#227)", () => {
+    const path = "context/security.md";
+    const text = FRONT("type: guide\nlast_updated: 2020-01-01\nedges: []\n")
+      + "# Security procedures\n\n## Account recovery\n\nFollow the recorded recovery process.\n";
+    const root = scaffoldOf({ [path]: text });
+    expect(planMigration({ scaffoldRoot: root }).planned).toEqual([
+      expect.objectContaining({ file: path, type: "guide", title: "architecture" }),
+    ]);
+
+    const report = migrateScaffold({ scaffoldRoot: root });
+    expect(report.idsGenerated).toHaveLength(1);
+    expect(report.abstentions).toEqual([]);
+    const after = readFileSync(join(root, path), "utf8");
+    const parsed = parseWikiMarkdown({ path, text: after });
+    expect(parsed.entities.map((entry) => entry.entity.type)).toEqual(["guide"]);
+    // One store of the type: the root declaration moved under `mex:`.
+    expect(parsed.legacy.type).toBeUndefined();
+    expect(after).not.toMatch(/^type:/m);
+    // Only the frontmatter changed; the prose is byte-identical.
+    expect(after.slice(after.indexOf("# Security procedures"))).toBe(text.slice(text.indexOf("# Security procedures")));
+
+    const again = migrateScaffold({ scaffoldRoot: root });
+    expect(again.idsGenerated).toEqual([]);
+    expect(readFileSync(join(root, path), "utf8")).toBe(after);
+  });
+
+  it("leaves a file with an unusable declaration byte-identical", () => {
+    const path = "context/security.md";
+    const text = FRONT("type: requirement\n") + "# Security\n\nProse.\n";
+    const root = scaffoldOf({ [path]: text });
+    const report = migrateScaffold({ scaffoldRoot: root });
+    expect(report.idsGenerated).toEqual([]);
+    expect(report.abstentions).toEqual([expect.objectContaining({ file: path, kind: "invalid-declaration" })]);
+    expect(readFileSync(join(root, path), "utf8")).toBe(text);
   });
 });
 
@@ -334,7 +375,7 @@ describe("a dry run over the adversarial set", () => {
 
   it("writes nothing and reports every abstention", () => {
     const root = scaffoldOf({
-      "context/stack.md": FRONT() + "# Stack\n\nProse.\n",
+      "context/glossary.md": FRONT() + "# Glossary\n\nProse.\n",
       "context/nested/deeper.md": FRONT() + "# Deeper\n\nProse.\n",
       "context/architecture.md":
         FRONT() + "# Architecture\n\nIntro.\n\n## Thin\n\nOne line.\n",

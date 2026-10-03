@@ -70,6 +70,7 @@ import type { GroundingGraph } from "../grounding/adapter.js";
 import { resolveGrounding } from "../grounding/resolve.js";
 import { inventoryScaffold, type InventoryFile, type ScaffoldInventory } from "../migration/inventory.js";
 import { planGeneratedView } from "../migration/generated.js";
+import { findAdoptionGaps } from "../migration/adoption-gaps.js";
 import { createParseCache } from "../operations/locate.js";
 import { readAuditLog } from "../operations/audit.js";
 import { resolveBounds, type BoundsInput } from "../query/budget.js";
@@ -186,6 +187,7 @@ export function validateScaffold(options: ValidateOptions): ValidationReport {
   collected.push(...groundingResults.diagnostics);
   collected.push(...anchorChecks(inventory));
   collected.push(...generatedViewChecks(inventory));
+  collected.push(...adoptionChecks(inventory));
   collected.push(...operationLogChecks(scaffoldRoot));
 
   const bounds = resolveBounds(options);
@@ -576,6 +578,17 @@ function generatedViewTypeFor(file: InventoryFile): "pattern" | "decision" | nul
   if (/(^|\/)patterns\/(INDEX|README)\.md$/.test(file.path)) return "pattern";
   if (/(^|\/)decisions?\.md$/.test(file.path)) return "decision";
   return null;
+}
+
+/**
+ * Knowledge files outside the Wiki (#227): files migration would adopt, and
+ * context files nothing types. Read off migration's own classifier, so this
+ * reports exactly what `mex wiki migrate` would do or decline to do.
+ */
+function adoptionChecks(inventory: ScaffoldInventory): WikiDiagnostic[] {
+  return findAdoptionGaps(inventory).map((gap) =>
+    diagnostic(gap.kind === "not-adopted" ? "KNOWLEDGE_NOT_ADOPTED" : "KNOWLEDGE_UNTYPED", gap.message, { file: gap.file }),
+  );
 }
 
 /** §14.1 — malformed operation-log entries. The Markdown is unaffected by these. */

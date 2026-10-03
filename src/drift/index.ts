@@ -18,6 +18,7 @@ import { checkCrossFile } from "./checkers/cross-file.js";
 import { checkScriptCoverage } from "./checkers/script-coverage.js";
 import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 import { checkAnchorLink } from "./checkers/anchor-link.js";
+import { checkWikiAdoption } from "./checkers/wiki-adoption.js";
 import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
 import { toPosix } from "../paths.js";
@@ -326,6 +327,10 @@ export async function runDriftCheckWithGraphStatus(
     const anchorLinkIssues = checkAnchorLink(projectRoot, scaffoldRoot);
     allIssues.push(...anchorLinkIssues);
     checkerIssueCounts.push(["anchor-link", anchorLinkIssues.length]);
+
+    const wikiAdoptionIssues = checkWikiAdoption(projectRoot, scaffoldRoot);
+    allIssues.push(...wikiAdoptionIssues);
+    checkerIssueCounts.push(["wiki-adoption", wikiAdoptionIssues.length]);
 
     const toolConfigSyncIssues = checkToolConfigSync(projectRoot);
     allIssues.push(...toolConfigSyncIssues);

@@ -26,7 +26,7 @@
  * second adoption in any file with nesting; adopting bottom-up never does,
  * because each insertion only ever truncates prose no entity yet owns.
  */
-import type { WikiEntityType } from "./../model/entity.js";
+import { WIKI_ENTITY_TYPES, type WikiEntityType } from "./../model/entity.js";
 import type { RawHeading } from "../markdown/parse.js";
 import type { InventoryFile } from "./inventory.js";
 import { isTeamOwnedReadOnlyPath } from "../model/team-owned-paths.js";
@@ -58,6 +58,14 @@ export interface Abstention {
   /** Null when the whole file was abstained on. */
   target: AdoptionTarget | null;
   reason: string;
+  /**
+   * Why a whole file was abstained on, when the reason is one a person settles
+   * by typing it (#227): no rule and no declaration (`untyped`), or a root
+   * `type` migration cannot honour (`invalid-declaration`). Absent for every
+   * other abstention. Lets `wiki validate` and `mex check` report the file
+   * without parsing the reason.
+   */
+  kind?: "untyped" | "invalid-declaration";
 }
 
 export interface FileClassification {
@@ -117,6 +125,18 @@ const CONTEXT_ROLES: Record<string, Role> = {
     sectionDepth: 2,
     rule: "section 13.2: setup/runbook to `guide`",
   },
+  "context/stack.md": {
+    // `mex setup` writes this file for every project, so it is a name rule
+    // like the four above rather than an unknown file (#227). It records the
+    // technologies the system is built from and why they were chosen: the
+    // technology half of the architecture, which is how the architecture
+    // template's own edge to it reads. Its sections are lists of libraries,
+    // versions and exclusions, not components, so they stay prose.
+    fileType: "architecture",
+    sectionType: null,
+    sectionDepth: 2,
+    rule: "section 13.2: stack file to a file-level `architecture`; its lists stay prose",
+  },
   "context/risks.md": {
     // No file-level entity: a risk register is a list, not one claim.
     fileType: null,
@@ -140,6 +160,46 @@ const PATTERN_ROLE: Role = {
   sectionDepth: 2,
   rule: "section 13.2: pattern file to a file-level `pattern`",
 };
+
+/**
+ * Entity types a file may declare for itself with a root `type` key (#227).
+ *
+ * Every type the Wiki authors, except the Spec family: specs, requirements,
+ * constraints and acceptance criteria are created only through governed Inbox
+ * authoring (`src/wiki/cli/spec-authoring-boundary.ts`), and a frontmatter
+ * key must not be a way round that. Team-readable types are never Wiki types.
+ */
+export const DECLARABLE_FILE_TYPES: readonly WikiEntityType[] = WIKI_ENTITY_TYPES.filter(
+  (type) => !["spec", "requirement", "constraint", "acceptance_criterion"].includes(type),
+);
+
+/**
+ * A file the author typed with a root `type` key, and no rule types otherwise.
+ *
+ * **The declaration is the evidence, not the path.** A file's location does
+ * not establish what kind of knowledge it holds — `context/` alone holds five
+ * different types — so an unknown file is never typed by where it sits. A
+ * root `type: component` is the author saying what the file is, in the file,
+ * reviewable in a diff, which is the explicit type the abstention asks for
+ * without asking a person to mint an entity id by hand.
+ *
+ * File-level only, for the reason `PATTERN_ROLE` is: the declaration names
+ * what the document is and says nothing about its headings. Adoption absorbs
+ * the key into `mex.type`, so the type is never stored twice.
+ */
+function declaredRole(type: WikiEntityType): Role {
+  return {
+    fileType: type,
+    sectionType: null,
+    sectionDepth: 2,
+    rule: `the file declares \`type: ${type}\` in its frontmatter`,
+  };
+}
+
+/** True for `context/<name>.md`, the files population writes and the Wiki should hold. */
+export function isDirectContextFile(path: string): boolean {
+  return /^context\/[^/]+\.mdx?$/iu.test(path);
+}
 
 export function roleFor(path: string): Role | null {
   // Navigation and generated output outrank every other rule, including the
@@ -262,15 +322,28 @@ export function classifyFile(file: InventoryFile): FileClassification {
     return result;
   }
 
-  const role = roleFor(file.path);
+  const declared = file.parsed.legacy.type;
+  const pathRole = roleFor(file.path);
+  if (declared !== undefined) {
+    const refusal = declarationRefusal(file.path, declared, pathRole);
+    if (refusal !== null) {
+      result.abstentions.push({ file: file.path, target: null, reason: refusal, kind: "invalid-declaration" });
+      return result;
+    }
+  }
+  const role = pathRole ?? (declared === undefined || declared === null
+    ? null
+    : declaredRole(declared as WikiEntityType));
   if (role === null) {
     result.abstentions.push({
       file: file.path,
       target: null,
+      kind: "untyped",
       reason:
         `No classification rule determines the type of ${file.path}. ` +
-        "The context directory contains several knowledge types; its location alone does not establish architecture. " +
-        "Add explicit Wiki entity metadata with the intended type before retrying. Migration leaves this file unchanged.",
+        "A file's location does not establish what kind of knowledge it holds; the context directory alone holds several. " +
+        `Declare the type in the file's frontmatter, for example \`type: component\` (one of ${DECLARABLE_FILE_TYPES.join(", ")}), ` +
+        "then run `mex wiki migrate`. Migration leaves this file unchanged.",
     });
     return result;
   }
@@ -394,6 +467,34 @@ export function classifyFile(file: InventoryFile): FileClassification {
   }
 
   return result;
+}
+
+/**
+ * Why a root `type` cannot be honoured, or null when it can.
+ *
+ * Refused rather than ignored, because each case leaves the author believing
+ * the file is typed when it is not: a value that is not a declarable type, or
+ * one that disagrees with the rule that already types the file. Migration does
+ * not choose between the author and a rule; it says so and changes nothing.
+ * A declaration that agrees with the rule is accepted and absorbed.
+ */
+function declarationRefusal(path: string, declared: string | null, role: Role | null): string | null {
+  const allowed = DECLARABLE_FILE_TYPES.join(", ");
+  if (declared === null || !(DECLARABLE_FILE_TYPES as readonly string[]).includes(declared)) {
+    const shown = declared === null ? "a value that is not a type name" : `\`${declared}\``;
+    return `${path} declares \`type\` as ${shown}, which is not a type migration can adopt. ` +
+      `Use one of ${allowed}. Spec-family types are created through \`mex inbox\`. Migration leaves this file unchanged.`;
+  }
+  if (role === null) return null;
+  if (role.fileType === null) {
+    return `${path} declares \`type: ${declared}\`, but its entities are its sections (${role.rule}), ` +
+      "so there is no file-level entity for the declaration to type. Remove the `type` key. Migration leaves this file unchanged.";
+  }
+  if (role.fileType !== declared) {
+    return `${path} declares \`type: ${declared}\`, but ${role.rule}. Migration will not choose between them: ` +
+      `remove the \`type\` key, or change it to \`${role.fileType}\`. Migration leaves this file unchanged.`;
+  }
+  return null;
 }
 
 /** The title a file-level entity takes: frontmatter `name`, else the first heading. */

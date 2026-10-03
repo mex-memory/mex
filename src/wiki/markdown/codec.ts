@@ -349,6 +349,11 @@ function readLegacy(root: Record<string, unknown> | null): ParsedLegacy {
     }
   }
 
+  if (Object.hasOwn(root, "type")) {
+    const declared = root["type"];
+    legacy.type = typeof declared === "string" && declared.trim() !== "" ? declared.trim() : null;
+  }
+
   return legacy;
 }
 

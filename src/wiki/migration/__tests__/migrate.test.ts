@@ -77,14 +77,14 @@ describe("migrating the tier-1 corpus", () => {
   it("creates the entities the classifier proposed, and reports no error", () => {
     const errors = report.diagnostics.filter((entry) => entry.severity === "error");
     expect(errors.map((entry) => `${entry.code}: ${entry.message}`)).toEqual([]);
-    expect(report.idsGenerated.length).toBe(42);
+    expect(report.idsGenerated.length).toBe(43);
     expect(report.idsGenerated.every((id) => isEntityId(id))).toBe(true);
-    expect(new Set(report.idsGenerated).size).toBe(42);
+    expect(new Set(report.idsGenerated).size).toBe(43);
   });
 
   it("leaves every character of prose byte-identical", () => {
     const after = allProse(root);
-    // Not a vacuous comparison: the run above created 42 entities across these
+    // Not a vacuous comparison: the run above created 43 entities across these
     // files, so the metadata blocks being stripped are real.
     expect(report.idsGenerated.length).toBeGreaterThan(0);
     expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
@@ -96,7 +96,7 @@ describe("migrating the tier-1 corpus", () => {
   it("puts a `mex:` key or a comment block where the classifier said, and nowhere else", () => {
     const inventory = inventoryScaffold({ scaffoldRoot: root });
     const entities = inventory.files.flatMap((file) => file.parsed.entities);
-    expect(entities.length).toBe(42);
+    expect(entities.length).toBe(43);
     // Parsing the migrated tree produces no diagnostic at all: the metadata
     // migration wrote is metadata the codec reads back.
     expect(inventory.files.flatMap((file) => file.parsed.diagnostics)).toEqual([]);
@@ -153,7 +153,7 @@ describe("the dry run", () => {
 
     const report = planMigration({ scaffoldRoot: root });
     expect(report.dryRun).toBe(true);
-    expect(report.planned.length).toBe(42);
+    expect(report.planned.length).toBe(43);
     expect(report.idsGenerated).toEqual([]);
 
     // Asserted against the log's *contents*, not its existence.
@@ -224,8 +224,8 @@ describe("opIds", () => {
     const idsBefore = first.files.flatMap((file) =>
       orderForAdoption(classifyFile(file).candidates).map((candidate) => opIdForCandidate(file, candidate)),
     );
-    expect(idsBefore.length).toBe(42);
-    expect(new Set(idsBefore).size).toBe(42);
+    expect(idsBefore.length).toBe(43);
+    expect(new Set(idsBefore).size).toBe(43);
 
     migrateScaffold({ scaffoldRoot: root });
 
@@ -297,8 +297,8 @@ describe("restartability", () => {
 
     const after = inventoryScaffold({ scaffoldRoot: root });
     const ids = after.files.flatMap((file) => file.parsed.entities.map((entry) => entry.entity.id));
-    expect(ids.length).toBe(42);
-    expect(new Set(ids).size, "a resumed run minted a second entity for the same prose").toBe(42);
+    expect(ids.length).toBe(43);
+    expect(new Set(ids).size, "a resumed run minted a second entity for the same prose").toBe(43);
     expect(after.files.flatMap((file) => file.parsed.diagnostics)).toEqual([]);
 
     // And the prose is still untouched after a crash and a resume.
