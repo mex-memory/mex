@@ -246,6 +246,13 @@ describe("what `wiki query` tells its caller", () => {
     expect(exitCodeFor(envelopeFor(result.data, result.diagnostics))).toBe(WIKI_EXIT.ok);
   });
 
+  it("says when every term exists but never enough of them together", () => {
+    // "hono" is everywhere and "caching" is in two notes, never with "Hono".
+    const result = wikiSearch({ scaffoldRoot: scaffold.root, indexPath, text: "Hono caching" });
+    expect(result.data).toMatchObject({ hits: [], match: "none", unmatchedTerms: [] });
+    expect(result.diagnostics[0]!.message).toContain("no entity matches enough of them together");
+  });
+
   it("adds nothing to an answer that contains every term", () => {
     expect(wikiSearch({ scaffoldRoot: scaffold.root, indexPath, text: "runtime dependencies" }).diagnostics).toEqual([]);
   });

@@ -234,7 +234,11 @@ function searchNotices(data: SearchData): WikiDiagnostic[] {
     )];
   }
   if (data.match === "none" && data.terms.length > 0) {
-    return [diagnostic("WIKI_QUERY_NO_MATCH", `No wiki entity matches the query.${unmatched}`)];
+    // Every term found somewhere, but never enough of them in one entity.
+    const apart = data.unmatchedTerms.length === 0 && data.terms.length > 1
+      ? " Each term appears in the wiki, but no entity matches enough of them together."
+      : "";
+    return [diagnostic("WIKI_QUERY_NO_MATCH", `No wiki entity matches the query.${unmatched}${apart}`)];
   }
   return [];
 }
