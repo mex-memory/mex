@@ -33,6 +33,8 @@ import type { AbsorbableRootKey, WikiActor, WikiOperation } from "../model/opera
 import type { WikiEntityType } from "../model/entity.js";
 import type { EntityTypeRegistry } from "../model/entity.js";
 import type { GroundingGraph } from "../grounding/adapter.js";
+import { resolveGrounding } from "../grounding/resolve.js";
+import type { GroundingResolver } from "../index/write.js";
 import { applyOperation, applyPlannedOperationSequence, type ApplyOptions } from "../operations/apply.js";
 import { planOperation, type WikiPatchPlan } from "../operations/plan.js";
 import { createParseCache } from "../operations/locate.js";
@@ -497,6 +499,7 @@ function migrateScaffoldHeld(options: MigrateOptions & { maintenanceLease: WikiM
     ...(options.registry === undefined ? {} : { registry: options.registry }),
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
     ...(options.graph === undefined || options.graph === null ? {} : { graph: options.graph }),
+    ...groundingResolverFor(options.graph ?? null),
     ...(options.indexPath === undefined ? {} : { indexPath: options.indexPath }),
     ...(options.onFileWritten === undefined ? {} : { onFileWritten: options.onFileWritten }),
     ...(options.beforeFileRename === undefined ? {} : { beforeFileRename: options.beforeFileRename }),
@@ -682,6 +685,11 @@ function diffsFor(options: MigrateOptions, changed: Set<string>): string[] {
 }
 
 /** Render a report the way section 13.6 asks, for a caller that wants text. */
+/** Health for the index refresh after each write, from the graph migration was given (#232). */
+function groundingResolverFor(graph: GroundingGraph | null): { resolveGrounding?: GroundingResolver } {
+  return graph === null ? {} : { resolveGrounding: (grounding) => resolveGrounding(grounding, graph) };
+}
+
 export function renderMigrationReport(report: MigrationReport): string {
   const lines: string[] = [];
   lines.push(report.dryRun ? "Migration dry run" : "Migration applied");
@@ -1034,6 +1042,7 @@ function applyPinnedMigrationHeld(
     ...(options.registry === undefined ? {} : { registry: options.registry }),
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
     ...(options.graph === undefined || options.graph === null ? {} : { graph: options.graph }),
+    ...groundingResolverFor(options.graph ?? null),
     ...(options.indexPath === undefined ? {} : { indexPath: options.indexPath }),
     ...(options.onFileWritten === undefined ? {} : { onFileWritten: options.onFileWritten }),
     ...(options.beforeFileRename === undefined ? {} : { beforeFileRename: options.beforeFileRename }),

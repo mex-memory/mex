@@ -18,8 +18,10 @@ import { existsSync } from "node:fs";
 import { diagnostic, hasBlockingDiagnostic, type WikiDiagnostic } from "../model/diagnostic.js";
 import type { EntityTypeRegistry } from "../model/entity.js";
 import type { GroundingGraph } from "../grounding/adapter.js";
+import { resolveGrounding } from "../grounding/resolve.js";
+import type { GroundingResolver } from "../index/write.js";
 import { createHash } from "node:crypto";
-import { rebuildWikiIndex } from "../index/rebuild.js";
+import { prepareWikiRebuild, rebuildWikiIndex, type RebuildOptions, type RebuildResult } from "../index/rebuild.js";
 import { refreshWikiIndex } from "../index/refresh.js";
 import { payloadHashOf, planOperation, type PlanOptions, type WikiPatchPlan } from "../operations/plan.js";
 import { readAuditLog, recordFor } from "../operations/audit.js";
@@ -51,6 +53,25 @@ export interface WikiWriteOptions extends WikiServiceOptions {
   /** The live code graph, required to mint or verify a grounding. */
   graph?: GroundingGraph | null;
   maintenance?: WikiMaintenanceContext;
+}
+
+/**
+ * Grounding health for the index a write publishes, from the graph that write
+ * was given (#232).
+ *
+ * The graph was already threaded through to mint and verify groundings, but
+ * the index writes beside it never saw it, so every row they wrote stored
+ * NULL health — "nothing looked" — even when something had. A rebuild, a
+ * refresh and a post-write refresh all take the same resolver or none, as
+ * `RebuildOptions.resolveGrounding` requires.
+ */
+function groundingResolverFor(options: WikiWriteOptions): { resolveGrounding?: GroundingResolver } {
+  const graph = options.graph ?? null;
+  return graph === null ? {} : { resolveGrounding: (grounding) => resolveGrounding(grounding, graph) };
+}
+
+function applyOptionsFrom(options: WikiWriteOptions): ApplyOptions {
+  return { ...planOptionsFrom(options), ...groundingResolverFor(options) };
 }
 
 function planOptionsFrom(options: WikiWriteOptions): PlanOptions {
@@ -157,7 +178,7 @@ export function wikiApplyOperation(
     };
   }
 
-  const applyOptions: ApplyOptions = planOptionsFrom(options);
+  const applyOptions: ApplyOptions = applyOptionsFrom(options);
   const result = options.plan !== undefined && options.expectedPreviewRevision !== undefined
     ? applyPlannedOperation(options.plan, {
         ...applyOptions,
@@ -241,13 +262,43 @@ export interface RebuildData {
  * configuration: a command the user runs.
  */
 export function wikiRebuildIndex(options: WikiWriteOptions): ServiceResult<RebuildData> {
-  const result = rebuildWikiIndex({
+  return rebuildServiceResult(rebuildWikiIndex(rebuildOptionsFrom(options)));
+}
+
+/**
+ * `wiki rebuild-index` in two phases, for a caller holding a graph snapshot
+ * that must prove itself fresh before the index is published (#232).
+ *
+ * The candidate is built and preflighted while the snapshot is open; `commit`
+ * publishes it and `discard` drops it. The same shape the repository adapter
+ * hands the graph's two-phase publication, so a CLI rebuild and a Hub rebuild
+ * cannot publish health from a graph that changed under them.
+ */
+export function wikiPrepareRebuildIndex(options: WikiWriteOptions): {
+  preflight(): void;
+  commit(): ServiceResult<RebuildData>;
+  discard(): void;
+} {
+  const prepared = prepareWikiRebuild(rebuildOptionsFrom(options));
+  return {
+    preflight: () => prepared.preflight(),
+    commit: () => rebuildServiceResult(prepared.commit()),
+    discard: () => prepared.discard(),
+  };
+}
+
+function rebuildOptionsFrom(options: WikiWriteOptions): RebuildOptions {
+  return {
     scaffoldRoot: resolve(options.scaffoldRoot),
     ...(options.indexPath === undefined ? {} : { indexPath: options.indexPath }),
     ...(options.exclude === undefined ? {} : { exclude: options.exclude }),
     ...(options.registry === undefined ? {} : { registry: options.registry }),
     ...(options.maintenance === undefined ? {} : { maintenance: options.maintenance }),
-  });
+    ...groundingResolverFor(options),
+  };
+}
+
+function rebuildServiceResult(result: RebuildResult): ServiceResult<RebuildData> {
   return {
     data: {
       indexPath: result.indexPath,
@@ -298,6 +349,7 @@ export function wikiRefreshIndex(
     ...(options.exclude === undefined ? {} : { exclude: options.exclude }),
     ...(options.registry === undefined ? {} : { registry: options.registry }),
     ...(options.maintenance === undefined ? {} : { maintenance: options.maintenance }),
+    ...groundingResolverFor(options),
   });
   if (!result.ok) {
     return {
@@ -467,7 +519,7 @@ export function wikiRegenerateViews(
     };
   }
 
-  const applied = applyGeneratedViews({ ...planOptionsFrom(options), views });
+  const applied = applyGeneratedViews({ ...applyOptionsFrom(options), views });
   return {
     data: { examined, changedFiles: applied.changedFiles, dryRun: false },
     diagnostics: [...diagnostics, ...suppressIndexRefresh(applied.diagnostics, options)],
