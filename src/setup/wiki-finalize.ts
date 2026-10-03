@@ -116,7 +116,11 @@ export async function finalizeSetupWiki(
   // validation supplies the blocking diagnostic that keeps setup from writing
   // other files around a scaffold which is already structurally unsafe.
   const preflight = await engine.validate({ projectRoot });
-  collectDiagnostics(preflight.diagnostics);
+  // Every knowledge file outside the Wiki is either adopted by the migration
+  // this run applies next or already reported above as one of its
+  // abstentions, so telling the user to run `mex wiki migrate` here would be
+  // wrong twice over (#227).
+  collectDiagnostics(withoutAdoptionGaps(preflight.diagnostics, ["KNOWLEDGE_NOT_ADOPTED", "KNOWLEDGE_UNTYPED"]));
   filesScanned = preflight.data.filesScanned;
   entitiesChecked = preflight.data.entitiesChecked;
   if (plan.data.blocked || hasErrors(plan) || hasErrors(preflight)) {
@@ -141,7 +145,9 @@ export async function finalizeSetupWiki(
 
   options.onProgress?.("Validating Wiki scaffold...");
   const validated = await engine.validate({ projectRoot });
-  collectDiagnostics(validated.diagnostics);
+  // An untyped context file was reported as a migration abstention above. A
+  // file still not adopted after the migration is not expected, and is kept.
+  collectDiagnostics(withoutAdoptionGaps(validated.diagnostics, ["KNOWLEDGE_UNTYPED"]));
   filesScanned = validated.data.filesScanned;
   entitiesChecked = validated.data.entitiesChecked;
   if (hasErrors(validated)) {
@@ -158,4 +164,12 @@ function hasErrors(result: ServiceResult<unknown>): boolean {
 
 function migrationChangedFiles(result: ServiceResult<MigrationApplyResult>): readonly string[] {
   return result.data.report.diffs;
+}
+
+/** Drop the adoption-gap codes this stage of setup already accounts for (#227). */
+function withoutAdoptionGaps(
+  diagnostics: readonly WikiDiagnostic[],
+  codes: readonly WikiDiagnostic["code"][],
+): WikiDiagnostic[] {
+  return diagnostics.filter((entry) => !codes.includes(entry.code));
 }

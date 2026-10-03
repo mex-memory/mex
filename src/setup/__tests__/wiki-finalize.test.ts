@@ -24,6 +24,30 @@ afterEach(() => {
 });
 
 describe("setup Wiki finalization", () => {
+  it("adopts files added since an earlier setup without telling the user to run migration (#227)", async () => {
+    const projectRoot = fixture();
+    const scaffoldRoot = join(projectRoot, ".mex");
+    mkdirSync(join(scaffoldRoot, "context"), { recursive: true });
+    mkdirSync(join(scaffoldRoot, "patterns"), { recursive: true });
+    writeFileSync(
+      join(scaffoldRoot, "context", "architecture.md"),
+      "---\nname: architecture\nmex:\n  id: mx_01K4FAM7W8N9R3T5Y6Q2ZBCHJD\n  type: architecture\n  status: promoted\n"
+        + "  revision: 1\n  title: architecture\n---\n\n# Architecture\n\nProse.\n",
+      "utf8",
+    );
+    writeFileSync(join(scaffoldRoot, "patterns", "add-route.md"), "---\nname: add-route\n---\n\n# Add a route\n\nSteps.\n", "utf8");
+    writeFileSync(join(scaffoldRoot, "context", "routing.md"), "---\nname: routing\n---\n\n# Routing\n\nProse.\n", "utf8");
+    const warnings: string[] = [];
+
+    const result = await finalizeSetupWiki({ projectRoot, scaffoldRoot, onWarning: (message) => warnings.push(message) });
+
+    expect(result).toMatchObject({ ready: true, migrated: true, plannedEntities: 1, abstentions: 1 });
+    expect(readFileSync(join(scaffoldRoot, "patterns", "add-route.md"), "utf8")).toContain("mex:");
+    // The untyped file is reported once, as the migration abstention it is.
+    expect(warnings).toEqual([expect.stringContaining("Wiki migration left context/routing.md for review")]);
+    expect(result.diagnostics.filter((entry) => entry.code.startsWith("KNOWLEDGE_"))).toEqual([]);
+  });
+
   it("plans, migrates, rebuilds, validates, and reports abstentions", async () => {
     const { projectRoot, scaffoldRoot } = legacyScaffold();
     const progress: string[] = [];
