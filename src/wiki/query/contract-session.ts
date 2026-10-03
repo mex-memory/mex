@@ -41,6 +41,8 @@ import { fts5UnavailableDiagnostic } from "../index/fts5.js";
 import { isTeamOwnedReadOnlyPath } from "../model/team-owned-paths.js";
 import { estimateTokens } from "./budget.js";
 import { healthRank, LIFECYCLE_RANK, MATCH_FIELD_RANK, type MatchField } from "./rank.js";
+import { findSomeTermsMatches, planWikiSearch } from "./search-plan.js";
+import type { SearchMatch } from "./session.js";
 
 const DEFAULT_PAGE_LIMIT = 25;
 const MAX_PAGE_LIMIT = 100;
@@ -196,6 +198,12 @@ export interface ContractSearchRequest extends ContractListRequest {
 export interface ContractSearchHit {
   entity: ContractEntitySummary;
   matchedFields: readonly MatchField[];
+  /** Every query term, or only some of them (#235); see `search-plan.ts`. */
+  match: SearchMatch;
+  /** For a `some_terms` hit: the query terms it matched, in query order. */
+  matchedTerms?: readonly string[];
+  /** For a `some_terms` hit: its coverage of the query, higher first. Never comparable across indexes. */
+  score?: number;
 }
 
 export interface ContractRelationRequest {
@@ -903,7 +911,8 @@ class ContractSession implements WikiContractReadSession {
     add(this.db.prepare(
       `SELECT ${ENTITY_COLUMNS} FROM wiki_entities e WHERE e.id = ? AND ${filter.sql} LIMIT 1`,
     ).all(normalized.query, ...filter.params) as EntityRow[], "id");
-    const expression = matchExpression(normalized.query);
+    const plan = planWikiSearch(normalized.query);
+    const expression = plan.allTermsExpression;
     let safetyTruncated = false;
     if (expression !== null) {
       for (const [columns, field] of [
@@ -920,10 +929,36 @@ class ContractSession implements WikiContractReadSession {
       }
     }
     const summaries = new Map(this.summaries([...byId.values()].map((value) => value.row)).map((item) => [item.id, item]));
-    const hits = [...byId.entries()].map(([id, value]) => ({
+    const hits: ContractSearchHit[] = [...byId.entries()].map(([id, value]) => ({
       entity: summaries.get(id)!,
       matchedFields: [...value.fields].sort((left, right) => MATCH_FIELD_RANK[left] - MATCH_FIELD_RANK[right]),
+      match: "all_terms",
     }));
+    if (plan.terms.length === 0 || hits.length >= MAX_SEARCH_RESULTS) return { items: hits, truncated: safetyTruncated };
+
+    // Entities matching only some of the terms follow every all-terms hit
+    // (#235), ordered as the CLI session orders them.
+    const broader = findSomeTermsMatches(this.db, plan.terms, filter, MAX_SEARCH_RESULTS);
+    if (broader.truncated) safetyTruncated = true;
+    const room = broader.matches.slice(0, MAX_SEARCH_RESULTS);
+    const rows = room.length === 0 ? [] : this.db.prepare(
+      `SELECT ${ENTITY_COLUMNS} FROM wiki_entities e WHERE e.entity_key IN (${placeholders(room.length)}) AND ${filter.sql} LIMIT ?`,
+    ).all(...room.map((match) => match.entityKey), ...filter.params, room.length) as EntityRow[];
+    const rowsByKey = new Map(rows.map((row) => [row.entity_key, row]));
+    const unseen = room.filter((match) => rowsByKey.has(match.entityKey) && !byId.has(rowsByKey.get(match.entityKey)!.id));
+    const fresh = unseen.slice(0, MAX_SEARCH_RESULTS - hits.length);
+    if (unseen.length > fresh.length) safetyTruncated = true;
+    const freshSummaries = new Map(this.summaries(fresh.map((match) => rowsByKey.get(match.entityKey)!)).map((item) => [item.id, item]));
+    for (const match of fresh) {
+      hits.push({
+        entity: freshSummaries.get(rowsByKey.get(match.entityKey)!.id)!,
+        matchedFields: [match.field],
+        match: "some_terms",
+        matchedTerms: match.matchedTerms,
+        score: match.score,
+      });
+    }
+    if (broader.matches.length > room.length) safetyTruncated = true;
     return { items: hits, truncated: safetyTruncated };
   }
 
@@ -2353,6 +2388,11 @@ function groundingPrecedence(value: GroundingHealth): number {
 }
 
 function compareSearchHits(left: ContractSearchHit, right: ContractSearchHit): number {
+  // Every all-terms hit before any some-terms hit; those by coverage (#235).
+  const tier = Number(left.match === "some_terms") - Number(right.match === "some_terms");
+  if (tier !== 0) return tier;
+  const coverage = (right.score ?? 0) - (left.score ?? 0);
+  if (coverage !== 0) return coverage;
   const field = MATCH_FIELD_RANK[left.matchedFields[0]!] - MATCH_FIELD_RANK[right.matchedFields[0]!];
   if (field !== 0) return field;
   const lifecycle = (LIFECYCLE_RANK[left.entity.lifecycleState] ?? 3) - (LIFECYCLE_RANK[right.entity.lifecycleState] ?? 3);
@@ -2382,11 +2422,6 @@ function compareRelationHits(left: ContractRelationHit, right: ContractRelationH
 
 function compareString(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function matchExpression(text: string): string | null {
-  const terms = text.split(/[^\p{L}\p{N}_]+/u).map((term) => term.trim()).filter(Boolean);
-  return terms.length === 0 ? null : terms.map((term) => `"${term.replace(/"/g, '""')}"`).join(" AND ");
 }
 
 function parseObject<T>(value: string | null): T | undefined {
