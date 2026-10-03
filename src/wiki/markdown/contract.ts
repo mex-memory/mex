@@ -125,6 +125,15 @@ export interface ParsedLegacy {
   edges: LegacyEdge[];
   /** Unresolved root-level labels; migration maps these only when configured. */
   topics: string[];
+  /**
+   * A root-level `type` the author declared for the file (#227), trimmed.
+   *
+   * Absent when the file has no root `type` key; `null` when it has one whose
+   * value is not a non-empty string, so a malformed declaration is reported
+   * rather than read as no declaration. Read but not interpreted here: whether
+   * the value names a Wiki entity type is the migration classifier's question.
+   */
+  type?: string | null;
 }
 
 export interface ParsedFile {

@@ -277,6 +277,6 @@ export function backfill(grounding: WikiGrounding, graph: GroundingGraph | null)
 export function unrecognizedKeys(file: InventoryFile): string[] {
   const frontmatter = file.parsed.frontmatter;
   if (frontmatter === null) return [];
-  const known = new Set<string>([...PRESERVED_LEGACY_KEYS, "grounds_to", "mex"]);
+  const known = new Set<string>([...PRESERVED_LEGACY_KEYS, "grounds_to", "type", "mex"]);
   return frontmatter.keys.filter((key) => !known.has(key));
 }

@@ -100,13 +100,15 @@ export type InsertionPoint =
  * A closed set, and the only non-prose deletion migration performs. Root
  * `grounds_to` has a live owner — `extractGroundings` and `writeGroundings`
  * read and write it on every `mex ground` run — and legacy topic labels can be
- * explicitly resolved to canonical topic ids. Leaving either root key behind
- * after its values move under `mex:` would leave **two stores of one fact**
- * with no rule about which wins, which is what D1 exists to forbid.
+ * explicitly resolved to canonical topic ids. A root `type` is the author's
+ * declaration of what the file is (#227), and adoption writes it as `mex.type`.
+ * Leaving any of these root keys behind after its value moves under `mex:`
+ * would leave **two stores of one fact** with no rule about which wins, which
+ * is what D1 exists to forbid.
  * Naming it in the payload keeps the removal visible in the plan, the preview
  * and the audit log, rather than happening as a side effect of adoption.
  */
-export const ABSORBABLE_ROOT_KEYS = ["grounds_to", "topics"] as const;
+export const ABSORBABLE_ROOT_KEYS = ["grounds_to", "topics", "type"] as const;
 
 export type AbsorbableRootKey = (typeof ABSORBABLE_ROOT_KEYS)[number];
 

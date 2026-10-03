@@ -159,11 +159,28 @@ describe("classification over the corpus", () => {
     expect(nested[0]?.reason).toContain("stays with the section that contains it");
   });
 
-  it.each(["context/stack.md", "context/glossary.md", "context/security.md"])("abstains on %s rather than deriving architecture from its directory", (path) => {
+  it.each(["context/glossary.md", "context/security.md"])("abstains on %s rather than deriving a type from its directory", (path) => {
     const result = classified(path);
     expect(result.candidates).toEqual([]);
-    expect(result.abstentions).toEqual([{ file: path, target: null, reason: expect.stringContaining("Add explicit Wiki entity metadata") }]);
+    expect(result.abstentions).toEqual([{
+      file: path,
+      target: null,
+      kind: "untyped",
+      reason: expect.stringContaining("Declare the type in the file's frontmatter"),
+    }]);
+    expect(result.abstentions[0]?.reason).toContain("mex wiki migrate");
     expect(roleFor(path)).toBeNull();
+  });
+
+  it("gives the stack file setup writes one file-level architecture entity, by name (#227)", () => {
+    const result = classified("context/stack.md");
+    expect(result.abstentions).toEqual([]);
+    expect(result.candidates).toEqual([expect.objectContaining({
+      target: { at: "file" },
+      type: "architecture",
+      title: "stack",
+    })]);
+    expect(roleFor("context/stack.md")).toMatchObject({ fileType: "architecture", sectionType: null });
   });
 
   it("preserves the explicit named context rules", () => {
@@ -218,12 +235,16 @@ describe("classification over the corpus", () => {
     const setup = 6 + 1;
     const risks = 6; // a register is a list, not one claim
     const patterns = 6; // one file-level entity each
+    const stack = 1; // the file, by name; its lists stay prose
     expect(candidates.length).toBe(
-      architecture + conventions + decisions + setup + risks + patterns,
+      architecture + conventions + decisions + setup + risks + patterns + stack,
     );
-    expect(abstentions.filter((entry) => entry.target === null)).toHaveLength(8);
+    // The seven context files no rule names and none declares a type for.
+    const untyped = abstentions.filter((entry) => entry.target === null);
+    expect(untyped).toHaveLength(7);
+    expect(untyped.every((entry) => entry.kind === "untyped")).toBe(true);
     expect(abstentions.some((entry) => entry.target !== null)).toBe(true);
-    expect(abstentions.length).toBeGreaterThan(8);
+    expect(abstentions.length).toBeGreaterThan(7);
     expect(all.filter((entry) => entry.skipped).length).toBe(6);
   });
 });
@@ -381,5 +402,86 @@ describe("why the adoption order is what it is", () => {
     };
     const ordered = orderForAdoption([container, ...classifyFile(file).candidates]);
     expect(ordered.map((candidate) => candidate.title)).toEqual(["One queue owns a ticket", "Decision Log"]);
+  });
+});
+
+describe("a declared type (#227)", () => {
+  const front = (keys: string) =>
+    `---\nname: routing\ndescription: How requests reach handlers.\n${keys}last_updated: 2026-09-21\n---\n\n`
+    + "# Routing\n\n## Registration\n\nRoutes are registered on the app and compiled once.\n";
+
+  it("adopts a context file no rule names as one file-level entity of the declared type", () => {
+    const result = classifyFile(inline(front("type: component\n"), "context/routing.md"));
+    expect(result.abstentions).toEqual([]);
+    expect(result.candidates).toEqual([expect.objectContaining({
+      target: { at: "file" },
+      type: "component",
+      title: "routing",
+      rule: expect.stringContaining("declares `type: component`"),
+    })]);
+  });
+
+  it("is honoured outside `context/` too, because the declaration is the evidence and not the path", () => {
+    const result = classifyFile(inline(front("type: guide\n"), "runbooks/deploy.md"));
+    expect(result.candidates.map((candidate) => candidate.type)).toEqual(["guide"]);
+  });
+
+  it("leaves the sections of a declared file as prose", () => {
+    const result = classifyFile(inline(front("type: convention\n"), "context/routing.md"));
+    expect(result.candidates.map((candidate) => candidate.target.at)).toEqual(["file"]);
+  });
+
+  it("accepts a declaration that agrees with the name rule", () => {
+    const result = classifyFile(inline(front("type: architecture\n"), "context/stack.md"));
+    expect(result.candidates.map((candidate) => candidate.type)).toEqual(["architecture"]);
+    expect(result.abstentions).toEqual([]);
+  });
+
+  it.each([
+    ["an unknown type", "type: subsystem\n", "`subsystem`"],
+    ["a Team-owned type", "type: relay\n", "`relay`"],
+    ["a Spec-family type, which only governed Inbox authoring creates", "type: requirement\n", "mex inbox"],
+    ["a value that is not a string", "type: [component]\n", "not a type name"],
+    ["an empty value", "type: \"\"\n", "not a type name"],
+    ["an explicit null", "type: null\n", "not a type name"],
+  ])("refuses %s and changes nothing", (_label, keys, expected) => {
+    const result = classifyFile(inline(front(keys), "context/routing.md"));
+    expect(result.candidates).toEqual([]);
+    expect(result.abstentions).toEqual([{
+      file: "context/routing.md",
+      target: null,
+      kind: "invalid-declaration",
+      reason: expect.stringContaining(expected),
+    }]);
+  });
+
+  it("refuses a declaration that disagrees with the name rule rather than choosing", () => {
+    const result = classifyFile(inline(front("type: guide\n"), "context/stack.md"));
+    expect(result.candidates).toEqual([]);
+    expect(result.abstentions).toEqual([expect.objectContaining({
+      kind: "invalid-declaration",
+      reason: expect.stringContaining("change it to `architecture`"),
+    })]);
+  });
+
+  it("refuses a declaration on a file whose entities are its sections", () => {
+    const result = classifyFile(inline(front("type: risk\n"), "context/risks.md"));
+    expect(result.candidates).toEqual([]);
+    expect(result.abstentions[0]).toMatchObject({ kind: "invalid-declaration", target: null });
+    expect(result.abstentions[0]?.reason).toContain("Remove the `type` key");
+  });
+
+  it("refuses a pattern that declares another type", () => {
+    const result = classifyFile(inline(front("type: guide\n"), "patterns/add-route.md"));
+    expect(result.candidates).toEqual([]);
+    expect(result.abstentions[0]?.kind).toBe("invalid-declaration");
+  });
+
+  it("never reaches a navigation file, a Team-owned file, or one already adopted", () => {
+    expect(classifyFile(inline(front("type: component\n"), "ROUTER.md")).skipped).toBe(true);
+    expect(classifyFile(inline(front("type: component\n"), "relays/relay.md")).skipped).toBe(true);
+    const adopted = "---\ntype: guide\nmex:\n  id: mx_01K4FAM7W8N9R3T5Y6Q2ZBCHJD\n  type: guide\n  status: promoted\n"
+      + "  revision: 1\n  title: Runbook\n---\n\nSteps.\n";
+    expect(classifyFile(inline(adopted, "context/runbook.md"))).toMatchObject({ skipped: true, candidates: [] });
   });
 });
