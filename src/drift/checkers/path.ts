@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { globSync } from "glob";
 import YAML from "yaml";
+import { loadAllDependencies } from "./dependency.js";
 import type { Claim, DriftIssue } from "../../types.js";
 
 const PLACEHOLDER_WORDS = /(?:^|[/_-])(?:new|example|your|sample|my|foo|bar|placeholder|template)(?:[/_.-]|$)/i;
@@ -16,6 +17,15 @@ const SCOPED_PACKAGE = /^@([\w-]+)\/([\w-]+)(\/.*)?$/;
 
 /** URLs are not filesystem paths */
 const URL_PATTERN = /^(?:https?|ftp|file):\/\/|^\/\//;
+
+/** A single-segment relative `.js` import specifier used in prose, not a repo path. */
+const RELATIVE_JS_SPECIFIER = /^\.\/[^/]+\.js$/;
+
+/** Words that mark prose about import specifiers rather than a file reference. */
+const IMPORT_PROSE = /\b(?:import(?:s|ed|ing)?|specifier(?:s)?|esm|emitted)\b/i;
+
+/** Basename of a file documented under `.mex/local/<name>`. */
+const MEX_LOCAL_FILE = /^\.mex\/local\/([^/]+)$/;
 
 /** Check that all claimed paths exist on disk */
 export function checkPaths(
@@ -30,6 +40,9 @@ export function checkPaths(
 
   // Collect workspace package names once for all claims
   const workspaceNames = collectWorkspaceNames(projectRoot);
+  const declaredPackages = collectDeclaredPackageNames(projectRoot);
+  const projectNames = collectProjectNames(projectRoot);
+  const mexLocalBasenames = collectMexLocalBasenames(pathClaims);
   const ignoredPaths = collectIgnoredPaths(
     pathClaims.map((c) => c.value),
     projectRoot
@@ -48,7 +61,21 @@ export function checkPaths(
     // treat those as prose rather than reporting a file that was never claimed.
     if (isUnrootedReference(claim.value, projectRoot, scaffoldRoot)) continue;
 
-    if (pathExists(claim.value, projectRoot, scaffoldRoot, workspaceNames)) continue;
+    // The npm package may be `hono` while JSR documents `@hono/hono`.
+    if (projectNames.has(claim.value)) continue;
+
+    // Prose sometimes names `.mex/local/hub-onboarding.json` and later `hub-onboarding.json`.
+    if (!claim.value.includes("/") && mexLocalBasenames.has(claim.value)) continue;
+
+    if (isImportSpecifierExample(claim, projectRoot)) continue;
+
+    if (pathExists(
+      claim.value,
+      projectRoot,
+      scaffoldRoot,
+      workspaceNames,
+      declaredPackages,
+    )) continue;
 
     // A path the repository deliberately ignores is created at runtime, so its
     // absence from a clean checkout is expected rather than drift: `.mex/local/`
@@ -111,6 +138,82 @@ function isUnrootedReference(
  * batched call keeps this to a single subprocess per run; a checkout without
  * Git simply reports nothing ignored.
  */
+function collectDeclaredPackageNames(projectRoot: string): Set<string> {
+  const deps = loadAllDependencies(projectRoot);
+  return new Set(deps?.map((entry) => entry.name) ?? []);
+}
+
+/** Names the project publishes under npm, JSR, or Deno. */
+function collectProjectNames(projectRoot: string): Set<string> {
+  const names = new Set<string>();
+
+  const pkgPath = resolve(projectRoot, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { name?: string };
+      if (pkg.name) names.add(pkg.name);
+    } catch {
+      // skip
+    }
+  }
+
+  for (const manifest of ["jsr.json", "deno.json"] as const) {
+    const manifestPath = resolve(projectRoot, manifest);
+    if (!existsSync(manifestPath)) continue;
+    try {
+      const doc = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: string };
+      if (doc.name) names.add(doc.name);
+    } catch {
+      // skip
+    }
+  }
+
+  return names;
+}
+
+/** Basenames the scaffold documents under `.mex/local/<name>`. */
+function collectMexLocalBasenames(claims: Claim[]): Set<string> {
+  const basenames = new Set<string>();
+  for (const claim of claims) {
+    const match = claim.value.match(MEX_LOCAL_FILE);
+    if (match) basenames.add(match[1]!);
+  }
+  return basenames;
+}
+
+/**
+ * A `./file.js` token in a paragraph about imports names a specifier shape,
+ * not a file at the repository root.
+ */
+function isImportSpecifierExample(claim: Claim, projectRoot: string): boolean {
+  if (!RELATIVE_JS_SPECIFIER.test(claim.value)) return false;
+
+  const filePath = resolve(projectRoot, claim.source);
+  let content: string;
+  try {
+    content = readFileSync(filePath, "utf-8");
+  } catch {
+    return false;
+  }
+
+  const lines = content.split(/\r?\n/);
+  const lineIndex = Math.max(0, (claim.line ?? 1) - 1);
+  let start = lineIndex;
+  while (start > 0) {
+    const previous = lines[start - 1]?.trim() ?? "";
+    if (previous === "" || previous.startsWith("#")) break;
+    start--;
+  }
+  let end = lineIndex;
+  while (end < lines.length - 1) {
+    const next = lines[end + 1]?.trim() ?? "";
+    if (next === "" || next.startsWith("#")) break;
+    end++;
+  }
+
+  return IMPORT_PROSE.test(lines.slice(start, end + 1).join(" "));
+}
+
 function collectIgnoredPaths(values: string[], projectRoot: string): Set<string> {
   const ignored = new Set<string>();
   const candidates = [...new Set(values)].filter((v) => v.length > 0);
@@ -204,7 +307,8 @@ function pathExists(
   value: string,
   projectRoot: string,
   scaffoldRoot: string,
-  workspaceNames: Set<string>
+  workspaceNames: Set<string>,
+  declaredPackages: Set<string>,
 ): boolean {
   // Try project root first (e.g. src/index.ts)
   if (existsSync(resolve(projectRoot, value))) return true;
@@ -238,10 +342,14 @@ function pathExists(
     // Check workspace names (handles package managers that don't symlink
     // all workspaces into node_modules, e.g. bun)
     if (workspaceNames.has(pkgName)) return true;
+
+    // A clone without node_modules still declares the package in a manifest.
+    if (declaredPackages.has(pkgName)) return true;
   }
 
   // Bare filenames: search recursively — the file may exist in a subdirectory
   if (!value.includes("/")) {
+    if (existsSync(resolve(projectRoot, ".mex/local", value))) return true;
     // `dot: true` so a file that lives in a hidden directory is found:
     // a backticked `deploy.yml` normally sits in `.github/workflows/`.
     const matches = globSync(`**/${value}`, {
