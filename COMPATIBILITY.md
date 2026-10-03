@@ -224,6 +224,18 @@ An entry may also carry `bodyHash`, the hash of the node's body when it was grou
 
 Files without `grounds_to` retain their previous behavior. The graph database and grounding baselines under `.mex/` are internal mex data and should not be edited directly.
 
+### Declared entity type
+
+A scaffold file that no Wiki migration rule names may declare what it is with a root `type` key, for example `type: component` on a domain file such as `context/payments.md` (#227):
+
+```yaml
+name: payments
+description: How payouts are scheduled and settled.
+type: component
+```
+
+`mex wiki migrate` then adopts the file as one file-level entity of that type and moves the value to `mex.type`, removing the root key. Every Wiki-authored type except the Spec family is accepted; Spec-family entities are created through `mex inbox`. A value that is not one of those types, or that disagrees with the rule that already types the file (such as `type: guide` on `context/stack.md`), is reported and the file is left unchanged. A file without `type` behaves as before: untyped `context/*.md` files are still not adopted, and `mex check` and `mex wiki validate` now report them as `KNOWLEDGE_UNTYPED`.
+
 The `LanguageExtractor` and `FrameworkResolver` interfaces are source-level contribution seams, not part of the public npm API, and may change between minor versions. They are intentionally not exported from `src/index.ts`.
 
 Inside the `.mex/` scaffold directory, some paths are owned by `mex-agent`
