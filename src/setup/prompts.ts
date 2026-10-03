@@ -161,9 +161,11 @@ If yes, create additional domain-specific context files in .mex/context/.
 Examples: a project with a complex auth system gets .mex/context/auth.md.
 A data pipeline gets .mex/context/ingestion.md. A project with Stripe gets
 .mex/context/payments.md. Use the same YAML frontmatter format (name,
-description, triggers, edges, last_updated). Only create these for
-domains that have real depth — not for simple integrations that fit
-in a few lines of architecture.md.
+description, triggers, edges, last_updated), plus a type key that says
+what the file is so the Wiki indexes it: type: component for a subsystem
+or domain (the usual case), type: guide for a runbook, or
+type: convention for rules. Only create these for domains that have real depth — not for simple
+integrations that fit in a few lines of architecture.md.
 
 After populating .mex/context/ files, minimally update .mex/ROUTER.md:
 - Fill or refresh the Current Project State section based on what you found
@@ -211,9 +213,12 @@ or too shallow? If yes, create additional domain-specific context files
 in .mex/context/. Examples: a project with a complex auth system gets
 .mex/context/auth.md. A data pipeline gets .mex/context/ingestion.md.
 A project with Stripe gets .mex/context/payments.md. Use the same YAML
-frontmatter format (name, description, triggers, edges, last_updated).
-Only create these for domains that have real depth — not for simple
-integrations that fit in a few lines of architecture.md. For fresh
+frontmatter format (name, description, triggers, edges, last_updated),
+plus a type key that says what the file is so the Wiki indexes it:
+type: component for a subsystem or domain (the usual case), type: guide
+for a runbook, or type: convention for rules. Only create these for
+domains that have real depth — not for simple integrations that fit
+in a few lines of architecture.md. For fresh
 projects, mark domain-specific unknowns with "[TO BE DETERMINED —
 populate after first implementation]".
 
