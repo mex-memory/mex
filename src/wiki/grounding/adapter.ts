@@ -30,7 +30,7 @@
  * provoke in a real repository.
  */
 
-import { serializeFingerprint, deserializeFingerprint, sameFingerprint } from "../../graph/fingerprint.js";
+import { serializeFingerprint, deserializeFingerprint, sameFingerprint, sameFingerprintCode } from "../../graph/fingerprint.js";
 import { FingerprintStore } from "../../graph/fingerprint-store.js";
 import { GraphStore } from "../../graph/db/store.js";
 import type { GraphEngine } from "../../graph/engine.js";
@@ -45,6 +45,12 @@ import { asGraphDerived, type GraphDerivedGrounding, type WikiGrounding } from "
  * the one door rather than importing the graph's codec itself.
  */
 export { sameFingerprint };
+
+/**
+ * Whether two serialized fingerprints describe the same code, neighbours set
+ * aside — the structural change signal for a grounding with no body hash.
+ */
+export { sameFingerprintCode };
 
 /** What resolution knows about one code node, as the wiki sees it. */
 export interface GroundedNode {

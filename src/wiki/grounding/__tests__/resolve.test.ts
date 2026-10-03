@@ -17,6 +17,7 @@ import {
   resolveGrounding,
 } from "../resolve.js";
 import type { GroundedNode, GroundingGraph } from "../adapter.js";
+import { serializeFingerprint } from "../../../graph/fingerprint.js";
 import type { WikiGrounding } from "../../model/grounding.js";
 
 const NODE = "function:1a2b3c4d5e6f7a8b";
@@ -122,6 +123,24 @@ describe("the resolution table", () => {
       fingerprints: { [MOVED_NODE]: "mh:64:ffffffff" },
     });
     expect(resolveGrounding(GROUNDED, edited)).toMatchObject({ state: "stale", health: "changed", resolvedNode: MOVED_NODE });
+  });
+
+  it("judges a grounding with no body hash by its code, not by who calls it", () => {
+    const code = { minhash: Array.from({ length: 64 }, (_, index) => index * 7919), tokenCount: 40 };
+    const committed = serializeFingerprint({ ...code, neighbors: [`function:${"a".repeat(32)}`] });
+    const legacyGrounding: WikiGrounding = { node: NODE, fingerprint: committed };
+    // Neighbours renumbered (#240) and a new caller: the same code.
+    const renumbered = serializeFingerprint({ ...code, neighbors: [`function:${"b".repeat(32)}`, `method:${"c".repeat(32)}`] });
+    expect(resolveGrounding(legacyGrounding, stubGraph({
+      nodes: { [NODE]: node(NODE, "body-9") },
+      fingerprints: { [NODE]: renumbered },
+    }))).toMatchObject({ state: "fresh", health: "fresh" });
+    // A rewritten body changes the sketch, and that is still drift.
+    const rewritten = serializeFingerprint({ ...code, minhash: code.minhash.map((value) => value + 1), neighbors: [] });
+    expect(resolveGrounding(legacyGrounding, stubGraph({
+      nodes: { [NODE]: node(NODE, "body-9") },
+      fingerprints: { [NODE]: rewritten },
+    }))).toMatchObject({ state: "stale", health: "changed" });
   });
 
   it("compares a rebind by fingerprint, because a rename always moves the body hash", () => {

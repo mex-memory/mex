@@ -62,7 +62,7 @@ import {
   type GroundingResolution,
   type WikiGrounding,
 } from "../model/grounding.js";
-import { sameFingerprint, type GroundedNode, type GroundingGraph } from "./adapter.js";
+import { sameFingerprintCode, type GroundedNode, type GroundingGraph } from "./adapter.js";
 
 /**
  * Resolve one grounding against the local checkout.
@@ -215,8 +215,11 @@ function compare(
     };
   }
   // By value: a grounding committed before #233 spells the same fingerprint in
-  // the older encoding, and that is not a change.
-  if (sameFingerprint(currentFingerprint, grounding.fingerprint)) {
+  // the older encoding, and that is not a change. And by code alone: the
+  // neighbour list changes when a caller elsewhere is added or node ids are
+  // re-minted (#240), and reading that as this node's code changing reported
+  // `changed` for groundings whose every token was the same.
+  if (sameFingerprintCode(currentFingerprint, grounding.fingerprint)) {
     return {
       state: "fresh",
       health: "fresh",

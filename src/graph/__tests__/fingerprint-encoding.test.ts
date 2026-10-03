@@ -5,6 +5,7 @@ import {
   createFingerprint,
   deserializeFingerprint,
   sameFingerprint,
+  sameFingerprintCode,
   serializeFingerprint,
 } from "../fingerprint.js";
 import type { Fingerprint } from "../reconcile.js";
@@ -95,6 +96,22 @@ describe("compact fingerprint encoding (#233)", () => {
       expect(sameFingerprint(legacy(realistic), serializeFingerprint(other))).toBe(false);
       expect(sameFingerprint(legacy(realistic), legacy(other))).toBe(false);
     }
+  });
+
+  it("compares code alone, setting neighbours aside, when asked whether the code changed", () => {
+    // Renumbered neighbours (#240) and a new caller elsewhere are not this node's code changing.
+    const renumbered = { ...realistic, neighbors: realistic.neighbors.map((id) => `${id.split(":")[0]}:${"0".repeat(32)}`) };
+    const calledMore = { ...realistic, neighbors: [...realistic.neighbors, nodeId("function", "new-caller")] };
+    for (const other of [renumbered, calledMore]) {
+      expect(sameFingerprintCode(legacy(realistic), serializeFingerprint(other))).toBe(true);
+      expect(sameFingerprint(legacy(realistic), serializeFingerprint(other))).toBe(false);
+    }
+    const minhash = [...realistic.minhash];
+    minhash[0] = (minhash[0]! + 1) % 0x100000000;
+    for (const other of [{ ...realistic, minhash }, { ...realistic, tokenCount: realistic.tokenCount + 1 }]) {
+      expect(sameFingerprintCode(serializeFingerprint(realistic), serializeFingerprint(other))).toBe(false);
+    }
+    expect(sameFingerprintCode("mh2:64:not-a-fingerprint", serializeFingerprint(realistic))).toBe(false);
   });
 
   it("compares strings that do not decode only by identity", () => {
