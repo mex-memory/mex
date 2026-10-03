@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-09-28
+last_updated: 2026-10-03
 ---
 
 # Session Bootstrap
@@ -385,10 +385,12 @@ Then read this file fully before doing anything else in this session.
   appear only when a stable status observation makes the requested operation
   safe; migration-required or unstable Wiki observations never fabricate a
   repair action.
-- The Wiki CLI's `serviceOptions` carries no code graph, so `wiki validate`
-  cannot resolve a grounding and `wiki migrate`'s body-hash backfill never runs.
-  Both degrade silently rather than failing; the validate notice now reports
-  that the pass had no graph instead of asserting the checkout has none.
+- The Wiki CLI's graph-aware commands (validate, rebuild-index, migrate, apply,
+  regenerate-views) reach the graph only through the repository graph port's
+  fresh snapshot (#232). A stale or changing graph is not used: the command
+  runs without it and reports `CODE_GRAPH_UNAVAILABLE`, so `mex graph` must be
+  current for Wiki grounding verdicts. Synthesis (`wiki build/prepare/propose`)
+  still opens `graph.db` directly, without that freshness proof.
 
 ## Routing Table
 

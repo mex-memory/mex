@@ -55,7 +55,8 @@ import type { EntityId } from "../model/ids.js";
 import type { WikiGrounding } from "../model/grounding.js";
 import type { LegacyEdge } from "../markdown/contract.js";
 import { rootGroundingsNotInEffect } from "../markdown/grounding-stores.js";
-import type { GroundingGraph } from "../grounding/adapter.js";
+import { join, relative, resolve } from "node:path";
+import { sameFingerprint, type GroundingGraph } from "../grounding/adapter.js";
 import type { InventoryFile, ScaffoldInventory } from "./inventory.js";
 import { ALREADY_ADOPTED_REASON, type Candidate, type FileClassification } from "./classify.js";
 
@@ -209,7 +210,11 @@ export function planGroundingMoves(
   classifications: Map<string, FileClassification>,
   candidatesFor: (path: string) => Candidate[],
   graph: GroundingGraph | null,
+  /** The checkout root `mex ground` keyed its cached baselines under; defaults to the scaffold's parent. */
+  projectRoot?: string,
 ): GroundingPlan {
+  const project = projectRoot ?? resolve(inventory.root, "..");
+  const subjectOf = (path: string): string => relative(project, join(inventory.root, path)).replaceAll("\\", "/");
   const moved = new Map<string, WikiGrounding[]>();
   const absorbed: GroundingPlan["absorbed"] = new Map();
   const diagnostics: WikiDiagnostic[] = [];
@@ -259,17 +264,47 @@ export function planGroundingMoves(
       continue;
     }
 
-    moved.set(file.path, groundings.map((grounding) => backfill(grounding, graph)));
+    moved.set(file.path, groundings.map((grounding) => backfill(grounding, graph, subjectOf(file.path))));
   }
 
   return { moved, absorbed, diagnostics };
 }
 
-/** Add a `bodyHash` the graph can re-derive; never invent one. */
-export function backfill(grounding: WikiGrounding, graph: GroundingGraph | null): WikiGrounding {
+/**
+ * Add the `bodyHash` the grounding was made against, when there is evidence of
+ * it; never invent one (#232).
+ *
+ * The body hash is what every later drift verdict compares against, so the
+ * one written here has to be the body as it was when the grounding was made,
+ * not as it is now. Taking the current body unconditionally — the rule before
+ * the CLI handed migration a graph, when it never ran — would have erased any
+ * drift since grounding, permanently and silently. Two sources, most direct
+ * first, the same evidence `mex sync`'s own legacy backfill uses:
+ *
+ * 1. The baseline `mex ground` cached for this scaffold file and node, when its
+ *    fingerprint is the one committed — the historical body itself. Read for
+ *    its value, not to decide drift.
+ * 2. The current body, but only for the declared node itself (not an alias)
+ *    whose fingerprint is still the committed one. A changed structure means
+ *    the code moved on, and adopting it would hide that.
+ *
+ * Otherwise the entry stays without one and keeps its structural comparison.
+ */
+export function backfill(
+  grounding: WikiGrounding,
+  graph: GroundingGraph | null,
+  /** Project-relative path of the scaffold file, the key `mex ground` cached under. */
+  subject?: string,
+): WikiGrounding {
   if (grounding.bodyHash !== undefined || graph === null) return grounding;
+  const historical = subject === undefined ? null : graph.getBaselineSource({ kind: "scaffold", id: subject }, grounding.node);
+  if (historical !== null && sameFingerprint(historical.fingerprint, grounding.fingerprint)) {
+    return { ...grounding, bodyHash: historical.bodyHash };
+  }
   const node = graph.getNode(grounding.node);
-  if (node === null || node.bodyHash === null) return grounding;
+  if (node === null || node.id !== grounding.node || node.bodyHash === null) return grounding;
+  const current = graph.getFingerprint(node.id);
+  if (current === null || !sameFingerprint(current, grounding.fingerprint)) return grounding;
   return { ...grounding, bodyHash: node.bodyHash };
 }
 

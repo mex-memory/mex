@@ -160,6 +160,26 @@ export function sameFingerprint(left: string, right: string): boolean {
   return left === right || canonicalFingerprint(left) === canonicalFingerprint(right);
 }
 
+/**
+ * Whether two serialized fingerprints describe the same code: the same MinHash
+ * signature over the same number of tokens, in either encoding.
+ *
+ * The neighbour list is left out on purpose. It names the node's callers and
+ * callees, so it changes when code *elsewhere* calls this node or when node
+ * ids are re-minted (#240) — neither of which is this node's code changing.
+ * Use it to answer "is this still the code?" without a body hash; identity
+ * questions, which neighbours help settle, keep {@link sameFingerprint}.
+ */
+export function sameFingerprintCode(left: string, right: string): boolean {
+  if (sameFingerprint(left, right)) return true;
+  const a = deserializeFingerprint(left);
+  const b = deserializeFingerprint(right);
+  if (a === null || b === null) return false;
+  return a.tokenCount === b.tokenCount
+    && a.minhash.length === b.minhash.length
+    && a.minhash.every((value, index) => value === b.minhash[index]);
+}
+
 /** Kind indexes 0–254 name a table entry; 0xff introduces a verbatim id. */
 const VERBATIM_NEIGHBOR = 0xff;
 const NEIGHBOR_ID = /^([a-z][a-z0-9_]*):([0-9a-f]{32})$/;

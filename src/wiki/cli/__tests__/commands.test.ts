@@ -242,7 +242,7 @@ const CODE_GRAPH = {
 function allCommands(
   harnessed: Captured,
   flags: CommandFlags,
-): Array<{ command: string; run: () => void }> {
+): Array<{ command: string; run: () => void | Promise<void> }> {
   const { io } = harnessed;
   return [
     { command: "list", run: () => runList(io, flags) },
@@ -270,7 +270,7 @@ function allCommands(
 }
 
 describe("stable JSON envelopes", () => {
-  it("every implemented command returns the §15.2 shape", () => {
+  it("every implemented command returns the §15.2 shape", async () => {
     const cases = allCommands(harness(), { json: true });
     // The count is asserted so a command dropped from the list fails here
     // rather than quietly reducing what this suite covers.
@@ -280,13 +280,13 @@ describe("stable JSON envelopes", () => {
     );
   });
 
-  it("emits exactly one enveloped object per command under --json", () => {
+  it("emits exactly one enveloped object per command under --json", async () => {
     for (const { command } of allCommands(harness(), { json: true })) {
       const local = harness();
       writeFileSync(join(local.root, "op.json"), "{}", "utf-8");
       writeFileSync(join(local.root, "response.json"), "{}", "utf-8");
       const entry = allCommands(local, { json: true }).find((candidate) => candidate.command === command)!;
-      entry.run();
+      await entry.run();
       expect(local.lines, command).toHaveLength(1);
       const parsed = JSON.parse(local.lines[0]!) as Record<string, unknown>;
       expect(Object.keys(parsed).sort(), command).toEqual(["data", "diagnostics", "ok", "schemaVersion"]);
@@ -297,7 +297,7 @@ describe("stable JSON envelopes", () => {
 });
 
 describe("no ANSI in JSON", () => {
-  it("holds for all ten with colour forced on", () => {
+  it("holds for all ten with colour forced on", async () => {
     // Built, never written: a literal escape byte in a source file is banned.
     const escape = String.fromCharCode(0x1b);
     expect(chalk.level).toBeGreaterThan(0);
@@ -308,12 +308,12 @@ describe("no ANSI in JSON", () => {
       const local = harness();
       writeFileSync(join(local.root, "op.json"), "{}", "utf-8");
       writeFileSync(join(local.root, "response.json"), "{}", "utf-8");
-      allCommands(local, { json: true }).find((candidate) => candidate.command === command)!.run();
+      await allCommands(local, { json: true }).find((candidate) => candidate.command === command)!.run();
       for (const line of local.lines) expect(line.includes(escape), `${command}: ${line}`).toBe(false);
     }
   });
 
-  it("does colour the human path, so the JSON assertion is not vacuous", () => {
+  it("does colour the human path, so the JSON assertion is not vacuous", async () => {
     const escape = String.fromCharCode(0x1b);
     const local = harness(false);
     runList(local.io, {});
@@ -323,12 +323,12 @@ describe("no ANSI in JSON", () => {
 });
 
 describe("typed exit statuses", () => {
-  it("never pairs ok:false with exit 0, across every command", () => {
+  it("never pairs ok:false with exit 0, across every command", async () => {
     let checked = 0;
     for (const { command } of allCommands(harness(), { json: true })) {
       // No index and no operation file: several of the ten now fail.
       const local = harness(false);
-      allCommands(local, { json: true }).find((candidate) => candidate.command === command)!.run();
+      await allCommands(local, { json: true }).find((candidate) => candidate.command === command)!.run();
       const parsed = JSON.parse(local.lines[0]!) as { ok: boolean };
       if (!parsed.ok) expect(local.exit(), command).not.toBe(WIKI_EXIT.ok);
       else expect(local.exit(), command).toBe(WIKI_EXIT.ok);
@@ -337,7 +337,7 @@ describe("typed exit statuses", () => {
     expect(checked).toBe(14);
   });
 
-  it("reports a missing index as its own status, distinct from a diagnostic failure", () => {
+  it("reports a missing index as its own status, distinct from a diagnostic failure", async () => {
     const local = harness(false);
     runList(local.io, { json: true });
     expect(local.exit()).toBe(WIKI_EXIT.index);
@@ -347,33 +347,33 @@ describe("typed exit statuses", () => {
     expect(parsed.diagnostics[0]?.remediation).toContain("rebuild-index");
   });
 
-  it("reports an unreadable operation file as a usage error, not an index one", () => {
+  it("reports an unreadable operation file as a usage error, not an index one", async () => {
     const local = harness();
     writeFileSync(join(local.root, "op.json"), "{ not json", "utf-8");
-    runApply(local.io, join(local.root, "op.json"), { json: true });
+    await runApply(local.io, join(local.root, "op.json"), { json: true });
     expect(local.exit()).toBe(WIKI_EXIT.usage);
   });
 });
 
 describe("missing-index behaviour", () => {
-  it("never rebuilds, for any read command", () => {
+  it("never rebuilds, for any read command", async () => {
     const reads = ["list", "show", "query", "related", "backlinks", "graph"];
     for (const command of reads) {
       const local = harness(false);
-      allCommands(local, { json: true }).find((candidate) => candidate.command === command)!.run();
+      await allCommands(local, { json: true }).find((candidate) => candidate.command === command)!.run();
       expect(readdirSync(local.root), command).not.toContain("wiki.db");
     }
   });
 
-  it("lets validate answer anyway, and still creates nothing", () => {
+  it("lets validate answer anyway, and still creates nothing", async () => {
     const local = harness(false);
-    runValidate(local.io, { json: true });
+    await runValidate(local.io, { json: true });
     const parsed = JSON.parse(local.lines[0]!) as { ok: boolean; data: { entitiesChecked: number } };
     expect(parsed.data.entitiesChecked).toBe(3);
     expect(readdirSync(local.root)).not.toContain("wiki.db");
   });
 
-  it("delete the index, rebuild, and every read command returns — at the command level", () => {
+  it("delete the index, rebuild, and every read command returns — at the command level", async () => {
     const local = harness();
     runList(local.io, { json: true });
     const before = JSON.parse(local.lines[0]!) as { data: { entities: unknown[] } };
@@ -385,13 +385,13 @@ describe("missing-index behaviour", () => {
     expect((JSON.parse(local.lines[0]!) as { ok: boolean }).ok).toBe(false);
 
     local.lines.length = 0;
-    runRebuildIndex(local.io, { json: true });
+    await runRebuildIndex(local.io, { json: true });
     expect(local.exit()).toBe(WIKI_EXIT.ok);
 
     for (const command of ["list", "show", "query", "related", "backlinks", "graph"]) {
       const fresh = { ...local, lines: [] as string[] };
       const io: CommandIo = { ...local.io, write: (line) => fresh.lines.push(line) };
-      allCommands({ ...local, io, lines: fresh.lines }, { json: true })
+      await allCommands({ ...local, io, lines: fresh.lines }, { json: true })
         .find((candidate) => candidate.command === command)!
         .run();
       expect((JSON.parse(fresh.lines[0]!) as { ok: boolean }).ok, command).toBe(true);
@@ -400,7 +400,7 @@ describe("missing-index behaviour", () => {
 });
 
 describe("bounded output", () => {
-  it("clamps a limit nobody should be able to ask for, and says the list was cut", () => {
+  it("clamps a limit nobody should be able to ask for, and says the list was cut", async () => {
     const local = harness();
     runList(local.io, { json: true, limit: 1 });
     const parsed = JSON.parse(local.lines[0]!) as { data: { entities: unknown[]; truncated: boolean } };
@@ -410,7 +410,7 @@ describe("bounded output", () => {
     expect(JSON.stringify(parsed).includes("TRUNCATED")).toBe(false);
   });
 
-  it("tells a user plainly that a bounded graph is a sample", () => {
+  it("tells a user plainly that a bounded graph is a sample", async () => {
     const local = harness();
     runGraph(local.io, { limit: 1 });
     expect(local.lines.join(" ")).toContain("bounded sample");
@@ -432,22 +432,22 @@ grounds_to:
 Body.
 `;
 
-  it("does not blame the checkout's code graph for a pass that was never given one", () => {
+  it("does not blame the checkout's code graph for a pass that was never given one", async () => {
     // `runValidate` builds its options from `serviceOptions`, which carries no
     // graph, so this is the branch every CLI run takes. The old wording
     // asserted there was no graph in the checkout — a fact this command does
     // not check, and one that was false on the scaffold that surfaced it.
     const local = harness(true, { "context/grounded.md": GROUNDED });
-    runValidate(local.io, {});
+    await runValidate(local.io, {});
     const notice = local.lines.find((line) => line.includes("grounding checks did not run"));
     expect(notice).toBeDefined();
     expect(notice).toContain("this pass was given no code graph");
     expect(notice).not.toContain("no code graph in this checkout");
   });
 
-  it("carries the discriminator in JSON, so a CI caller can tell the two causes apart", () => {
+  it("carries the discriminator in JSON, so a CI caller can tell the two causes apart", async () => {
     const local = harness(true, { "context/grounded.md": GROUNDED });
-    runValidate(local.io, { json: true });
+    await runValidate(local.io, { json: true });
     const parsed = JSON.parse(local.lines[0]!) as {
       data: { groundingsUnverified: boolean; codeGraphAvailable: boolean };
     };
@@ -457,7 +457,7 @@ Body.
 });
 
 describe("query filters", () => {
-  it("mean the same thing wherever they apply", () => {
+  it("mean the same thing wherever they apply", async () => {
     expect(filtersFrom({ limit: "25" }).limit).toBe(25);
     expect(filtersFrom({ limit: 25 }).limit).toBe(25);
     // A flag that is not a number is dropped rather than becoming NaN, which
@@ -467,7 +467,7 @@ describe("query filters", () => {
     expect(filtersFrom({})).toEqual({});
   });
 
-  it("filter list, query and graph identically", () => {
+  it("filter list, query and graph identically", async () => {
     const local = harness();
     for (const run of [
       () => runList(local.io, { json: true, type: "component" }),
@@ -590,12 +590,12 @@ describe("mutation cannot bypass review", () => {
     return prepared.data.groups;
   }
 
-  it("plans and writes nothing without --apply — asserted as a negative", () => {
+  it("plans and writes nothing without --apply — asserted as a negative", async () => {
     const local = harness();
     const path = operationFile(local.root);
     const before = readFileSync(join(local.root, "context/architecture.md"), "utf-8");
 
-    runApply(local.io, path, { json: true });
+    await runApply(local.io, path, { json: true });
     const parsed = JSON.parse(local.lines[0]!) as { ok: boolean; data: { planned: boolean; applied: boolean } };
     expect(parsed.data.planned).toBe(true);
     expect(parsed.data.applied).toBe(false);
@@ -603,21 +603,21 @@ describe("mutation cannot bypass review", () => {
     expect(readdirSync(local.root)).not.toContain("events");
   });
 
-  it("writes with --apply, and --dry-run overrides it", () => {
+  it("writes with --apply, and --dry-run overrides it", async () => {
     const local = harness();
     const path = operationFile(local.root);
     const before = readFileSync(join(local.root, "context/architecture.md"), "utf-8");
 
     const guardedIo = { ...local.io, enforceInboxSpecBoundary: true };
-    runApply(guardedIo, path, { json: true, apply: true, dryRun: true });
+    await runApply(guardedIo, path, { json: true, apply: true, dryRun: true });
     expect(readFileSync(join(local.root, "context/architecture.md"), "utf-8")).toBe(before);
 
     local.lines.length = 0;
-    runApply(guardedIo, path, { json: true, apply: true });
+    await runApply(guardedIo, path, { json: true, apply: true });
     expect(readFileSync(join(local.root, "context/architecture.md"), "utf-8")).toContain("status: deprecated");
   });
 
-  it("installs the direct Spec guard on real wiki apply before preview or apply can write", () => {
+  it("installs the direct Spec guard on real wiki apply before preview or apply can write", async () => {
     const local = harness();
     const path = createOperationFile(local.root, "context/direct-spec.md", "spec");
     const before = readFileSync(join(local.root, "context/architecture.md"), "utf-8");
@@ -625,7 +625,7 @@ describe("mutation cannot bypass review", () => {
 
     for (const flags of [{ json: true }, { json: true, apply: true }]) {
       local.lines.length = 0;
-      runApply(guardedIo, path, flags);
+      await runApply(guardedIo, path, flags);
       const envelope = JSON.parse(local.lines[0]!) as {
         ok: boolean;
         data: { planned: boolean; applied: boolean; changedFiles: string[] };
@@ -641,7 +641,7 @@ describe("mutation cannot bypass review", () => {
     }
   });
 
-  it("classifies physical Spec destinations through symlink and case aliases before writing", () => {
+  it("classifies physical Spec destinations through symlink and case aliases before writing", async () => {
     const local = harness();
     mkdirSync(join(local.root, "specs"), { recursive: true });
     symlinkSync("../specs", join(local.root, "context", "spec-alias"), "dir");
@@ -655,7 +655,7 @@ describe("mutation cannot bypass review", () => {
     for (const destination of cases) {
       local.lines.length = 0;
       const path = createOperationFile(local.root, destination);
-      runApply(guardedIo, path, { json: true, apply: true });
+      await runApply(guardedIo, path, { json: true, apply: true });
       const envelope = JSON.parse(local.lines[0]!) as {
         ok: boolean;
         data: { planned: boolean; applied: boolean; changedFiles: string[] };
@@ -670,12 +670,12 @@ describe("mutation cannot bypass review", () => {
     }
   });
 
-  it("refuses a non-Spec inline replacement whose nested relation targets a Spec", () => {
+  it("refuses a non-Spec inline replacement whose nested relation targets a Spec", async () => {
     const local = harness(true, { "specs/direct.md": SPEC_DUPLICATES_MD });
     const path = inlineReplacementRelationOperationFile(local.root);
     const before = readFileSync(join(local.root, "context", "architecture.md"), "utf-8");
 
-    runApply(
+    await runApply(
       { ...local.io, enforceInboxSpecBoundary: true },
       path,
       { json: true, apply: true },
@@ -695,13 +695,13 @@ describe("mutation cannot bypass review", () => {
     expect(existsSync(join(local.root, "events"))).toBe(false);
   });
 
-  it("refuses update and move-out of non-Spec entities physically stored under specs", () => {
+  it("refuses update and move-out of non-Spec entities physically stored under specs", async () => {
     const local = harness(true, { "specs/misfiled.md": MISFILED_DECISION_DUPLICATES_MD });
     const before = readFileSync(join(local.root, "specs", "misfiled.md"), "utf-8");
 
     for (const type of ["update-entry", "move-entry"] as const) {
       local.lines.length = 0;
-      runApply(
+      await runApply(
         { ...local.io, enforceInboxSpecBoundary: true },
         misfiledExistingOperationFile(local.root, type),
         { json: true, apply: true },
@@ -721,7 +721,7 @@ describe("mutation cannot bypass review", () => {
     }
   });
 
-  it("installs the direct Spec guard on real wiki propose and refuses a mixed batch atomically", () => {
+  it("installs the direct Spec guard on real wiki propose and refuses a mixed batch atomically", async () => {
     const local = harness(true, {
       "specs/direct.md": SPEC_DUPLICATES_MD,
       "context/conventions.md": CONVENTION_DUPLICATES_MD,
@@ -765,7 +765,7 @@ describe("mutation cannot bypass review", () => {
     expect(existsSync(join(local.root, "events"))).toBe(false);
   });
 
-  it("keeps non-Spec wiki propose available when the product guard is installed", () => {
+  it("keeps non-Spec wiki propose available when the product guard is installed", async () => {
     const local = harness(true, { "context/conventions.md": CONVENTION_DUPLICATES_MD });
     const convention = globalGroups(local).find((group) => group.type === "convention")!;
     const response = join(local.root, "safe-global-response.json");
@@ -800,7 +800,7 @@ describe("mutation cannot bypass review", () => {
     expect(existsSync(join(local.root, "events"))).toBe(false);
   });
 
-  it("refuses a mixed propose batch when a non-Spec mutation originates under specs", () => {
+  it("refuses a mixed propose batch when a non-Spec mutation originates under specs", async () => {
     const local = harness(true, {
       "specs/misfiled.md": MISFILED_DECISION_DUPLICATES_MD,
       "context/conventions.md": CONVENTION_DUPLICATES_MD,
@@ -844,7 +844,7 @@ describe("mutation cannot bypass review", () => {
 });
 
 describe("no command builds its own envelope", () => {
-  it("holds across the command module", () => {
+  it("holds across the command module", async () => {
     // §20.7's parity, structurally: there is one definition, so a command that
     // assembled the shape by hand would be the second one. Comments stripped,
     // so prose about the rule is not read as a breach of it.
