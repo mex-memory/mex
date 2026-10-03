@@ -328,6 +328,15 @@ export const WIKI_DIAGNOSTICS = {
     severity: "info",
     remediation: "A generated section no longer matches the index. Regenerate it.",
   },
+  KNOWLEDGE_NOT_ADOPTED: {
+    severity: "warning",
+    remediation: "Run `mex wiki migrate` to adopt it; `mex wiki migrate --dry-run` shows the plan first.",
+  },
+  KNOWLEDGE_UNTYPED: {
+    severity: "warning",
+    remediation:
+      "Declare what the file is with a root `type` key in its frontmatter, for example `type: component`, then run `mex wiki migrate`.",
+  },
 
   // -- Synthesis (§12) --------------------------------------------------------
 
