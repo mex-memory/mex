@@ -125,8 +125,18 @@ fi
 
 MEX_CMD=""
 
-# Check for global mex command first
+# Check for global mex command first. Verify capability, not just the name:
+# TeX Live also ships a `mex` binary, so a name match alone can be the wrong program.
+MEX_ON_PATH=""
 if command -v mex &>/dev/null; then
+  if mex capabilities --json </dev/null 2>/dev/null | grep -q '"mexVersion"'; then
+    MEX_ON_PATH="yes"
+  else
+    warn "'mex' at $(command -v mex) is not mex-agent (name collision, e.g. TeX Live) — ignoring it"
+  fi
+fi
+
+if [ -n "$MEX_ON_PATH" ]; then
   MEX_CMD="mex"
   ok "mex CLI found"
 elif command -v node &>/dev/null; then

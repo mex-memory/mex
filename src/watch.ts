@@ -11,7 +11,7 @@ function buildHookContent(config: MexConfig): string {
   // Use local CLI if built, otherwise fall back to npx
   const cmd = existsSync(cliPath)
     ? `node "${cliPath}" check --quiet`
-    : "npx mex check --quiet";
+    : "npx mex-agent check --quiet";
 
   return `#!/bin/sh
 ${HOOK_MARKER}
