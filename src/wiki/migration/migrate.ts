@@ -68,6 +68,8 @@ export interface MigrateOptions {
   registry?: EntityTypeRegistry;
   /** The code graph, for backfilling a moved grounding's `bodyHash`. */
   graph?: GroundingGraph | null;
+  /** The checkout root, which keys the cached grounding baselines backfill reads; defaults to the scaffold's parent. */
+  projectRoot?: string;
   /** Where `wiki.db` lives, when there is one. Absent is normal. */
   indexPath?: string;
   actor?: WikiActor;
@@ -348,6 +350,7 @@ function migrationReportFromInventory(
     classifications,
     (path) => classifications.get(path)?.candidates ?? [],
     options.graph ?? null,
+    options.projectRoot,
   );
   report.groundingsMoved = [...groundings.moved.values()].reduce((sum, list) => sum + list.length, 0)
     + [...groundings.absorbed.values()].reduce((sum, entry) => sum + entry.count, 0);
@@ -523,6 +526,7 @@ function migrateScaffoldHeld(options: MigrateOptions & { maintenanceLease: WikiM
     classifications,
     (path) => classifications.get(path)?.candidates ?? [],
     options.graph ?? null,
+    options.projectRoot,
   );
   report.groundingsAmbiguous = groundingPlan.diagnostics.length;
   report.diagnostics.push(...groundingPlan.diagnostics);
@@ -840,6 +844,7 @@ export function planPinnedMigration(options: MigrateOptions): PinnedMigrationPla
     classifications,
     (path) => classifications.get(path)?.candidates ?? [],
     options.graph ?? null,
+    options.projectRoot,
   );
 
   for (const file of inventory.files) {

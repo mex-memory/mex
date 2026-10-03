@@ -236,6 +236,63 @@ describe("tier 2 — a grounded scaffold, migrated", () => {
     expect(groundingAt(project, 0)?.bodyHash).toBe(moved?.bodyHash);
   }, 180_000);
 
+  it("backfills the body the grounding was made against, not the code as it is now (#232)", async () => {
+    const project = createProject();
+    await buildGraph(project);
+    const nodeId = nodeIdOf(project, "rotateRefreshToken");
+    runGround(project, nodeId);
+    const committed = groundingAt(project, 0)!;
+    const original = withGraph(project, (graph) => graph.getNode(nodeId)!.bodyHash!);
+
+    // A constant edit: the fingerprint cannot see it, the body hash can.
+    writeFileSync(join(project.root, "src", "auth.ts"), SOURCE.replace("3600", "7200"), "utf-8");
+    await buildGraph(project);
+    const current = withGraph(project, (graph) => graph.getNode(nodeId)!.bodyHash!);
+    expect(current).not.toBe(original);
+
+    // The baseline `mex ground` cached when the grounding was made.
+    const db = openGraphDatabase(join(project.root, ".mex", "graph.db"));
+    try {
+      new FingerprintStore(db).saveBaseline({
+        subject: { kind: "scaffold", id: ".mex/patterns/rotate-tokens.md" },
+        nodeId,
+        source: SOURCE,
+        bodyHash: original,
+        fingerprint: committed.fingerprint!,
+      });
+    } finally {
+      db.close();
+    }
+
+    withGraph(project, (graph) => migrateScaffold({ scaffoldRoot: project.scaffoldRoot, graph }));
+    // The drift since grounding survives migration rather than being adopted.
+    expect(groundingAt(project, 0)?.bodyHash).toBe(original);
+  }, 180_000);
+
+  it("writes no bodyHash when neither a cached baseline nor the structure vouches for one (#232)", async () => {
+    const project = createProject();
+    await buildGraph(project);
+    const nodeId = nodeIdOf(project, "rotateRefreshToken");
+    runGround(project, nodeId);
+
+    // A structural rewrite, with no cached baseline to say what it was before.
+    writeFileSync(
+      join(project.root, "src", "auth.ts"),
+      SOURCE.replace(
+        "return attempts * windowSeconds;",
+        "if (attempts > 3) throw new Error(\"too many\");\n  return attempts * windowSeconds * 2;",
+      ),
+      "utf-8",
+    );
+    await buildGraph(project);
+    expect(nodeIdOf(project, "rotateRefreshToken")).toBe(nodeId);
+
+    withGraph(project, (graph) => migrateScaffold({ scaffoldRoot: project.scaffoldRoot, graph }));
+    const grounding = groundingAt(project, 0);
+    expect(grounding?.node).toBe(nodeId);
+    expect(grounding?.bodyHash).toBeUndefined();
+  }, 180_000);
+
   it("moves nothing, and reports it, when no graph is available", async () => {
     const project = createProject();
     await buildGraph(project);
