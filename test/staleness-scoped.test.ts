@@ -85,6 +85,19 @@ describe("STALE_FILE counts only commits to what a file describes (#237)", () =>
     });
   });
 
+  it("counts commits to the committed file of grounded code", async () => {
+    write(".mex/context/conventions.md", doc("Prefer small modules.").replace(
+      "---\n\n",
+      "grounds_to:\n  - node: function:0123456789abcdef\n    fingerprint: mh2:64:AAAA\n    file: src/b.ts\n---\n\n",
+    ));
+    git("add", "-A");
+    git("commit", "-q", "-m", "ground conventions");
+    commitTo("src/b.ts", 2);
+    expect((await staleFiles())[".mex/context/conventions.md"]).toBe(
+      "2 commits to referenced paths since file was last updated (threshold: 2)",
+    );
+  });
+
   it("judges a file that references nothing by age alone", async () => {
     commitTo("src/a.ts", 5);
     const stale = await staleFiles();
