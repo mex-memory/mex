@@ -613,6 +613,21 @@ function wikiIo(): import("./wiki/cli/commands.js").CommandIo {
   };
 }
 
+/**
+ * `wikiIo()` plus the code graph, for the commands that resolve groundings
+ * (#232): validate, rebuild-index, migrate, apply and regenerate-views.
+ *
+ * The graph is the repository graph port, the same one the Project Hub hands
+ * the Wiki: it opens nothing until a command asks for a snapshot, refuses one
+ * that is missing, stale or incompatible, and never maintains the index. The
+ * read-only commands keep `wikiIo()` and pay for none of it.
+ */
+async function groundedWikiIo(): Promise<import("./wiki/cli/commands.js").CommandIo> {
+  const base = wikiIo();
+  const { createRepositoryGraphPort } = await import("./graph/application-adapter.js");
+  return { ...base, groundingBridge: createRepositoryGraphPort(base.projectRoot ?? resolve(base.scaffoldRoot, "..")) };
+}
+
 /** The §15.1 filters, added to whichever commands they apply to. */
 function withReadFilters(command: Command): Command {
   return command
@@ -671,7 +686,7 @@ wikiCommand
   .option("--json", "emit one enveloped JSON object")
   .action(async (options) => {
     const { runValidate } = await import("./wiki/cli/commands.js");
-    runValidate(wikiIo(), options);
+    await runValidate(await groundedWikiIo(), options);
   });
 
 withReadFilters(wikiCommand.command("graph").description("A bounded slice of the relation graph")).action(
@@ -687,7 +702,7 @@ wikiCommand
   .option("--json", "emit one enveloped JSON object")
   .action(async (options) => {
     const { runRebuildIndex } = await import("./wiki/cli/commands.js");
-    runRebuildIndex(wikiIo(), options);
+    await runRebuildIndex(await groundedWikiIo(), options);
   });
 
 wikiCommand
@@ -697,7 +712,7 @@ wikiCommand
   .option("--json", "emit one enveloped JSON object")
   .action(async (options) => {
     const { runRegenerateViews } = await import("./wiki/cli/commands.js");
-    runRegenerateViews(wikiIo(), options);
+    await runRegenerateViews(await groundedWikiIo(), options);
   });
 
 wikiCommand
@@ -707,7 +722,7 @@ wikiCommand
   .option("--json", "emit one enveloped JSON object")
   .action(async (options) => {
     const { runMigrate } = await import("./wiki/cli/commands.js");
-    runMigrate(wikiIo(), options);
+    await runMigrate(await groundedWikiIo(), options);
   });
 
 wikiCommand
@@ -718,7 +733,7 @@ wikiCommand
   .option("--json", "emit one enveloped JSON object")
   .action(async (file: string, options) => {
     const { runApply } = await import("./wiki/cli/commands.js");
-    runApply(wikiIo(), file, options);
+    await runApply(await groundedWikiIo(), file, options);
   });
 
 /**

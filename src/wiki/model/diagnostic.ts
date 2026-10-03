@@ -207,6 +207,16 @@ export const WIKI_DIAGNOSTICS = {
     remediation: "Node id and fingerprint must come from live graph output. MEX will not accept caller-supplied values.",
   },
   /**
+   * A command that resolves groundings ran without a code graph it could
+   * trust (#232): the checkout's graph is stale, needs a rebuild, is corrupt,
+   * or changed during the pass. Info, because the command still did its work;
+   * it says how much of it was checked, not that the scaffold is wrong.
+   */
+  CODE_GRAPH_UNAVAILABLE: {
+    severity: "info",
+    remediation: "Run `mex graph` to bring the code graph up to date, then run this command again.",
+  },
+  /**
    * Groundings split between a root `grounds_to` and the file-level `mex` map
    * (#226). Info, because both are read and the root ones belong to the
    * file-level entity; raised to a warning where the two keys ground one node

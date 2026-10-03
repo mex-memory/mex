@@ -67,6 +67,7 @@ import { planOperation } from "../operations/plan.js";
 import { applyOperation } from "../operations/apply.js";
 import { readAuditLog } from "../operations/audit.js";
 import type { GroundingResolver } from "../index/write.js";
+import { codeGraphUnavailableDiagnostic } from "../grounding/availability.js";
 
 /** Run `body` against a fresh scratch directory, cleaning up afterwards. */
 function inScratch<T>(body: (directory: string) => T): T {
@@ -675,6 +676,11 @@ See [the code](mex://function:0123456789abcdef).
       writeFileSync(join(directory, "patterns", "add-route.md"), "---\nname: add-route\n---\n\n# Add a route\n\nSteps.\n", "utf-8");
       return validateScaffold({ scaffoldRoot: directory }).diagnostics;
     }),
+
+  CODE_GRAPH_UNAVAILABLE: () =>
+    // A graph that exists but could not be trusted for the pass (#232). A
+    // missing graph is ordinary and has no notice, so it is not the case here.
+    [codeGraphUnavailableDiagnostic("stale")!],
 
   KNOWLEDGE_UNTYPED: () =>
     // A domain context file population wrote without a `type`.

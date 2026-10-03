@@ -416,7 +416,7 @@ export interface MigrateData {
  * on a scaffold it handled correctly.
  */
 export function wikiMigrate(
-  options: WikiWriteOptions & { dryRun?: boolean; now?: () => string },
+  options: WikiWriteOptions & { dryRun?: boolean; now?: () => string; projectRoot?: string },
 ): ServiceResult<MigrateData> {
   const migrateOptions = {
     scaffoldRoot: resolve(options.scaffoldRoot),
@@ -426,6 +426,7 @@ export function wikiMigrate(
     ...(options.graph === undefined ? {} : { graph: options.graph }),
     ...(options.indexPath === undefined ? {} : { indexPath: options.indexPath }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
   };
   const dryRun = options.dryRun === true;
   const report = dryRun ? planMigration(migrateOptions) : migrateScaffold(migrateOptions);
