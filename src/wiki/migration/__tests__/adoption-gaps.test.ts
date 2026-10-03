@@ -45,7 +45,7 @@ describe("knowledge files outside the Wiki (#227)", () => {
     expect(gapsOf(root)).toEqual([{
       file: "patterns/add-route.md",
       kind: "not-adopted",
-      message: expect.stringContaining("migration would adopt it as 1 entity (pattern)"),
+      message: "patterns/add-route.md is not in the Wiki: `mex wiki migrate` would adopt it as 1 entity (pattern).",
     }]);
   });
 

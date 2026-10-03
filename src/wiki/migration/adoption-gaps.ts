@@ -58,9 +58,9 @@ export function findAdoptionGaps(inventory: ScaffoldInventory): AdoptionGap[] {
         file: file.path,
         kind: "not-adopted",
         message:
-          `${file.path} is not in the Wiki: migration would adopt it as ` +
+          `${file.path} is not in the Wiki: \`mex wiki migrate\` would adopt it as ` +
           `${classification.candidates.length} entit${classification.candidates.length === 1 ? "y" : "ies"} ` +
-          `(${types.join(", ")}), but has not been run since it was written.`,
+          `(${types.join(", ")}).`,
       });
       continue;
     }
