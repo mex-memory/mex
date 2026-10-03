@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { globSync } from "glob";
 import type { Claim, DriftIssue } from "../../types.js";
@@ -165,50 +165,42 @@ function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined
 function loadAllDependencies(projectRoot: string): DepEntry[] | null {
   const entries: DepEntry[] = [];
 
-  // package.json
-  const pkgPath = resolve(projectRoot, "package.json");
-  if (existsSync(pkgPath)) {
+  // Repositories can contain independent applications in nested directories.
+  // Discover dependency manifests recursively, while ignoring dependency
+  // directories and Git metadata so we only inspect manifests belonging to
+  // the repository itself.
+  const manifests = [
+    ...globSync("**/package.json", {
+      cwd: projectRoot,
+      ignore: ["**/node_modules/**", "**/.git/**"],
+    }),
+    ...globSync("**/pyproject.toml", {
+      cwd: projectRoot,
+      ignore: ["**/node_modules/**", "**/.git/**"],
+    }),
+  ];
+
+  for (const manifest of manifests) {
+    const manifestPath = resolve(projectRoot, manifest);
+
     try {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-      for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
-        entries.push({ name, version: String(version) });
-      }
-      for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
-        entries.push({ name, version: String(version) });
+      if (manifest.endsWith("package.json")) {
+        const pkg = JSON.parse(readFileSync(manifestPath, "utf-8"));
+
+        for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
+          entries.push({ name, version: String(version) });
+        }
+
+        for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
+          entries.push({ name, version: String(version) });
+        }
+      } else {
+        entries.push(
+          ...parsePyprojectDependencies(readFileSync(manifestPath, "utf-8"))
+        );
       }
     } catch {
-      // skip
-    }
-  }
-
-  // pyproject.toml (#3): [project] dependencies and optional-dependencies,
-  // plus [tool.poetry.dependencies]. Python claims ("FastAPI", "Celery") were
-  // reported missing whenever the project declared them here instead of a
-  // package.json. Version specifiers are kept verbatim — the version-claims
-  // checker treats them as substrings, and PEP 508 names are the identity.
-  const pyprojectPath = resolve(projectRoot, "pyproject.toml");
-  if (existsSync(pyprojectPath)) {
-    entries.push(...parsePyprojectDependencies(readFileSync(pyprojectPath, "utf-8")));
-  }
-
-  // A repository often keeps a second application in a subdirectory without
-  // declaring workspaces, and that application's packages are declared in its
-  // own manifest. Reading only the root one reported every dependency the
-  // subproject documents as missing.
-  for (const nested of globSync("*/package.json", {
-    cwd: projectRoot,
-    ignore: ["node_modules/**"],
-  })) {
-    try {
-      const pkg = JSON.parse(readFileSync(resolve(projectRoot, nested), "utf-8"));
-      for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
-        entries.push({ name, version: String(version) });
-      }
-      for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
-        entries.push({ name, version: String(version) });
-      }
-    } catch {
-      // skip
+      // Skip malformed or unreadable manifests.
     }
   }
 

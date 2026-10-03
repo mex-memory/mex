@@ -708,6 +708,55 @@ describe("checkDependencies", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].code).toBe("VERSION_MISMATCH");
   });
+
+  it("discovers package.json at arbitrary nesting depth", () => {
+    mkdirSync(join(tmpDir, "apps", "web", "frontend"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "apps", "web", "frontend", "package.json"),
+      JSON.stringify({
+        dependencies: {
+          "mex-deep-zod-test": "^1.0.0",
+        },
+      })
+    );
+
+    const issues = checkDependencies(
+      [
+        claim({ kind: "dependency", value: "mex-deep-zod-test" }),
+        claim({ kind: "dependency", value: "mex-definitely-missing-test" }),
+      ],
+      tmpDir
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].claim.value).toBe("mex-definitely-missing-test");
+    expect(issues[0].code).toBe("DEPENDENCY_MISSING");
+  });
+
+  it("discovers pyproject.toml at arbitrary nesting depth", () => {
+    mkdirSync(join(tmpDir, "services", "backend", "api"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "services", "backend", "api", "pyproject.toml"),
+      [
+        "[project]",
+        'name = "api"',
+        'dependencies = ["mex-deep-httpx-test>=1.0.0"]',
+        "",
+      ].join("\n")
+    );
+
+    const issues = checkDependencies(
+      [
+        claim({ kind: "dependency", value: "mex-deep-httpx-test" }),
+        claim({ kind: "dependency", value: "mex-definitely-missing-test" }),
+      ],
+      tmpDir
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].claim.value).toBe("mex-definitely-missing-test");
+    expect(issues[0].code).toBe("DEPENDENCY_MISSING");
+  });
 });
 
 // ── Cross-file Checker ──
