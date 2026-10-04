@@ -5,23 +5,38 @@ import type { MexConfig } from "./types.js";
 import { runHeartbeat } from "./heartbeat.js";
 
 const HOOK_MARKER = "# mex-drift-check";
+const HOOK_END_MARKER = "# mex-drift-check-end";
+const HOOK_BLOCK = new RegExp(`^${HOOK_MARKER}$[\\s\\S]*?^${HOOK_END_MARKER}$\\n?`, "m");
+
+// TeX Live also ships a `mex`, so verify the binary is ours.
+const PATH_MEX_RESOLUTION = `mex_is_agent() {
+  _out=$("$1" --help </dev/null 2>/dev/null) || return 1
+  [ "$(printf '%s\\n' "$_out" | grep -Ec '^  (check|sync)( |$)')" -eq 2 ]
+}
+MEX_BIN=$(command -v mex 2>/dev/null) || MEX_BIN=""
+if [ -n "$MEX_BIN" ] && mex_is_agent "$MEX_BIN"; then
+  SCORE=$("$MEX_BIN" check --quiet 2>&1) || true
+else
+  SCORE=$(npx mex-agent check --quiet 2>&1) || true
+fi`;
 
 function buildHookContent(config: MexConfig): string {
   const cliPath = resolve(config.scaffoldRoot, "dist", "cli.js");
   // Use local CLI if built, otherwise fall back to npx
-  const cmd = existsSync(cliPath)
-    ? `node "${cliPath}" check --quiet`
-    : "npx mex-agent check --quiet";
+  const run = existsSync(cliPath)
+    ? `SCORE=$(node "${cliPath}" check --quiet 2>&1) || true`
+    : PATH_MEX_RESOLUTION;
 
   return `#!/bin/sh
 ${HOOK_MARKER}
 # Auto-installed by mex watch — runs drift check after each commit
-SCORE=$(${cmd} 2>&1) || true
+${run}
 # Only show output if there are issues (not a perfect score)
 case "$SCORE" in
   *"100/100"*) ;;
   *) echo "$SCORE" ;;
 esac
+${HOOK_END_MARKER}
 `;
 }
 
@@ -117,7 +132,7 @@ function uninstallHook(hookPath: string): void {
   }
 
   // Remove mex section (everything between marker and next non-mex line)
-  const lines = content.split("\n");
+  const lines = content.replace(HOOK_BLOCK, "").split("\n");
   const filtered: string[] = [];
   let inMexBlock = false;
 

@@ -78,13 +78,19 @@ banner() {
 # ─────────────────────────────────────────────────────────────
 
 MEX_CMD=""
-# Verify capability, not just the name: TeX Live also ships a `mex` binary.
+# TeX Live also ships a `mex`, so verify the binary is ours.
+is_mex_agent() {
+  local out
+  out=$("$1" --help </dev/null 2>/dev/null) || return 1
+  [ "$(printf '%s\n' "$out" | grep -Ec '^  (check|sync)( |$)')" -eq 2 ]
+}
+
 MEX_ON_PATH=""
-if command -v mex &>/dev/null; then
-  if mex capabilities --json </dev/null 2>/dev/null | grep -q '"mexVersion"'; then
+if MEX_BIN=$(command -v mex 2>/dev/null); then
+  if is_mex_agent "$MEX_BIN"; then
     MEX_ON_PATH="yes"
   else
-    warn "'mex' at $(command -v mex) is not mex-agent (name collision, e.g. TeX Live) — ignoring it"
+    warn "'mex' at $MEX_BIN is not mex-agent (name collision, e.g. TeX Live) — ignoring it"
   fi
 fi
 if [ -n "$MEX_ON_PATH" ]; then
