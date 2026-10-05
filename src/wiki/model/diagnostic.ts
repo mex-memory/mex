@@ -362,6 +362,12 @@ export const WIKI_DIAGNOSTICS = {
     remediation:
       "`wiki query` matches words, not meaning. Retry with the distinctive keywords or an entity title, read `ROUTER.md` for the scaffold's own map of its knowledge, or run `mex graph scope \"<task>\"` to start from the code.",
   },
+  /** Hits whose groundings were never resolved against a fresh code graph. */
+  WIKI_HEALTH_UNCHECKED: {
+    severity: "info",
+    remediation:
+      "Run `mex graph` (or `mex graph refresh`), then `mex wiki rebuild-index`, so grounding health is resolved against the current code before relying on an unflagged hit.",
+  },
   /** No entity contained every query term, so the hits are the broader, some-terms match. */
   WIKI_QUERY_PARTIAL_MATCH: {
     severity: "info",

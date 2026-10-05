@@ -514,6 +514,23 @@ export class WikiQuerySession {
    * ranking order answers the first question with the second's answer, which
    * nothing caught while the column was always NULL.
    */
+  /**
+   * How many of these entities' groundings carry no verdict: health never
+   * resolved (the index was built without a code graph) or `unverified` (the
+   * graph was unavailable or stale when it was). Their entities read as
+   * unflagged without having been checked.
+   */
+  uncheckedGroundings(entityIds: readonly string[]): number {
+    if (entityIds.length === 0) return 0;
+    const row = this.db
+      .prepare(
+        `SELECT count(*) AS n FROM wiki_groundings g JOIN wiki_entities e ON e.entity_key = g.entity_key
+          WHERE e.id IN (${entityIds.map(() => "?").join(", ")}) AND (g.health IS NULL OR g.health = 'unverified') LIMIT 1`,
+      )
+      .get(...entityIds) as { n: number } | undefined;
+    return Number(row?.n ?? 0);
+  }
+
   private decorate(rows: readonly EntityRow[]): EntitySummary[] {
     if (rows.length === 0) return [];
     const keys = rows.map((row) => row.entity_key);
