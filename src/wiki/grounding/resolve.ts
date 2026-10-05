@@ -64,6 +64,7 @@ import {
   type WikiGrounding,
 } from "../model/grounding.js";
 import { sameFingerprintCode, type GroundedNode, type GroundingGraph } from "./adapter.js";
+import { factDrift } from "./fact-drift.js";
 
 /** What resolution may know about the entity a grounding belongs to. */
 export interface GroundingContext {
@@ -293,8 +294,9 @@ function explainDrift(
   if (evidence === null) return null;
   if (evidence.commentOnly) return { kind: "comment-only" };
   if (evidence.layoutOnly) return { kind: "layout-only" };
-  void context;
-  return null;
+  if (context.fact === undefined || evidence.oldBody === null || evidence.newBody === null) return null;
+  const verdict = factDrift(context.fact, evidence.oldBody, evidence.newBody);
+  return verdict.kind === "nearby" ? { kind: "changed-nearby", anchors: verdict.anchors } : null;
 }
 
 /** One entity's groundings, resolved together. */
