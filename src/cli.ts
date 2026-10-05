@@ -310,13 +310,20 @@ program
   .option("--dry-run", "Show what would happen without making changes")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
   .option("--no-open", "Print the setup link without opening a browser")
+  .option("--tool <tool>", "Terminal setup: use this AI tool instead of asking (repeatable; none for no tool)", (value: string, previous: string[] = []) => [...previous, value])
+  .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
   .action(async (_opts, command: Command) => {
-    const opts = command.optsWithGlobals<{ cli?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean }>();
+    const opts = command.optsWithGlobals<{ cli?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean; tool?: string[]; yes?: boolean }>();
     try {
-      if (opts.cli || opts.dryRun) {
+      if (opts.cli || opts.dryRun || opts.tool !== undefined || opts.yes) {
         if (opts.port !== undefined || opts.open === false) throw new Error("--port and --no-open apply to browser setup. Omit them with --cli or --dry-run.");
-        const { runSetup } = await import("./setup/index.js");
-        await runSetup({ dryRun: opts.dryRun, mode: opts.mode });
+        const setup = await import("./setup/index.js");
+        await setup.runSetup({
+          dryRun: opts.dryRun,
+          mode: opts.mode,
+          ...(opts.tool === undefined ? {} : { tools: setup.parseSetupTools(opts.tool) }),
+          ...(opts.yes ? { yes: true } : {}),
+        });
       } else {
         await runBrowserCommand({ ...opts, setup: true });
       }

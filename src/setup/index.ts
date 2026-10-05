@@ -222,8 +222,21 @@ export function setupCommitCheckpointCommands(selectedTools: readonly AiTool[]):
   return commands;
 }
 
-export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): Promise<void> {
-  const { dryRun = false } = opts;
+export interface SetupRunOptions {
+  dryRun?: boolean;
+  mode?: string;
+  /** Use these AI tools instead of asking (`--tool`, repeatable). */
+  tools?: AiTool[];
+  /**
+   * Never wait on a question (`--yes`): population counts as finished once the
+   * scaffold has no placeholders left, and the optional closing prompts are
+   * skipped. For scripts, CI and benchmarks.
+   */
+  yes?: boolean;
+}
+
+export async function runSetup(opts: SetupRunOptions = {}): Promise<void> {
+  const { dryRun = false, yes = false } = opts;
 
   banner();
   console.log();
@@ -294,7 +307,12 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   // interrupted or the templates gained new required slots. Reuse it instead
   // of making a resumed setup ask the user the same question again.
   const configuredTools = loadConfiguredAiTools(mexDir);
-  if (hasConfiguredAiTools(mexDir)) {
+  if (opts.tools !== undefined) {
+    selectedTools = [...new Set(opts.tools)];
+    anchorNotes = ensureToolAnchors(projectRoot, templatesDir, selectedTools, dryRun);
+    if (!dryRun) saveAiTools(mexDir, selectedTools);
+    info(`Using AI tools from --tool: ${selectedTools.map((tool) => AI_TOOLS[tool].name).join(", ") || "none"}`);
+  } else if (hasConfiguredAiTools(mexDir)) {
     selectedTools = configuredTools;
     // A scaffold orphaned by the old skip lands here, not in the menu
     // branch: it is populated and its aiTools are saved. Link on this path
@@ -403,7 +421,7 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     info("Paste the prompt below into your AI tool.");
     info("The agent will read your codebase and fill every scaffold file.");
     printPromptForManualPaste(prompt);
-    populationFinished = await confirmPopulationFinished(mexDir);
+    populationFinished = yes ? isScaffoldPopulated(mexDir) : await confirmPopulationFinished(mexDir);
   }
 
   if (!populationFinished || !isScaffoldPopulated(mexDir)) {
@@ -426,9 +444,21 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
   }
 
   printAnchorNotes(anchorNotes);
+  if (yes) return;
   await promptGlobalInstall();
   if (process.exitCode === 130 || process.exitCode === 143) return;
   await promptSetupContact();
+}
+
+/** Parse `--tool` values for a non-interactive setup; unknown names are an error. */
+export function parseSetupTools(values: readonly string[]): AiTool[] {
+  const known = new Set<string>(Object.values(TOOL_CHOICE_MAP));
+  return values.map((value) => {
+    const tool = value.trim().toLowerCase();
+    if (tool === "none") return null;
+    if (!known.has(tool)) throw new Error(`Unknown --tool ${value}. Use one of: ${[...known].join(", ")}, none.`);
+    return tool as AiTool;
+  }).filter((tool): tool is AiTool => tool !== null);
 }
 
 // ── Step functions ──
