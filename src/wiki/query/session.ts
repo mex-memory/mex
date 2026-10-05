@@ -291,7 +291,10 @@ export class WikiQuerySession {
     const some = this.decorate(rows)
       .map((entity, index) => ({ entity, match: byKey.get(rows[index]!.entity_key)! }))
       .filter((hit) => !seen.has(hit.entity.id) && isVisible(hit.entity.status, options))
-      .map((hit) => ({ entity: hit.entity, field: hit.match.field, score: hit.match.score, matchedTerms: hit.match.matchedTerms }))
+      .map((hit) => ({
+        entity: hit.entity, field: hit.match.field, score: hit.match.score, matchedTerms: hit.match.matchedTerms,
+        relevance: hit.match.relevance,
+      }))
       .sort((left, right) => right.score - left.score || compareHits(left, right))
       .map((hit): SearchPageHit => ({
         entity: hit.entity, field: hit.field, match: "some_terms", matchedTerms: hit.matchedTerms,
