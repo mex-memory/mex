@@ -13,7 +13,9 @@
  * Given the entity's text, the body it was grounded to and the body now:
  *
  * 1. Collect the fact's anchors: code-like tokens from its text that also
- *    occur in the old body. No anchor, no verdict.
+ *    occur in the old body below its declaration line (the symbol's own name
+ *    locates the grounding, not the fact). Fewer than {@link MIN_ANCHORS},
+ *    no verdict.
  * 2. Diff the two bodies line by line and widen every changed line to the
  *    whole list, call or object literal it sits in (an array gaining an
  *    element touches only the new line, yet changes the array), plus
@@ -35,6 +37,13 @@
 /** Unchanged lines on each side of a change that still count as part of it. */
 export const CONTEXT_LINES = 2;
 
+/**
+ * Distinct anchors a fact needs inside the body before a change can be called
+ * nearby. One token says little about where a fact lives — "index.ts exports
+ * only RegExpRouter", grounded to the class, anchors only on the class name.
+ */
+export const MIN_ANCHORS = 2;
+
 /** Bodies above this many lines are not diffed; the verdict stays `touched`. */
 const MAX_DIFF_LINES = 2_000;
 
@@ -55,13 +64,17 @@ const WEAK_ANCHORS: ReadonlySet<string> = new Set([
  * The code-like tokens a fact names.
  *
  * - every identifier inside backticks or quotes, and the quoted text itself;
- * - identifiers that cannot be ordinary prose: dotted chains (`c.redirect`),
- *   calls (`next()`), private names (`#req`), and words with an inner capital,
- *   a digit, `_` or `$` (`parseBody`, `HS256`, `RETAINED_304_HEADERS`);
+ * - identifiers that cannot be ordinary prose: the member of a dotted chain
+ *   (`redirect` in `c.redirect`), calls (`next()`), private names (`#req`),
+ *   and words with an inner capital, a digit, `_` or `$` (`parseBody`,
+ *   `HS256`, `RETAINED_304_HEADERS`); file paths are ignored;
  * - all-capital words of two or more letters (`GET`, `METHODS`);
  * - numbers with two or more digits (`302`, `34560000`).
  */
-export function factAnchors(text: string): string[] {
+export function factAnchors(input: string): string[] {
+  // File paths name where code lives, not what it does: `src/hono.ts` would
+  // otherwise anchor on `hono` and `ts`.
+  const text = input.replace(/(?:[\w@.-]+\/)+[\w@.-]+|\b[\w-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|py|rs|go|java|cs|rb)\b/g, " ");
   const anchors = new Set<string>();
   const addIdentifiers = (fragment: string): void => {
     for (const match of fragment.matchAll(/#?[A-Za-z_$][\w$]*/g)) {
@@ -80,13 +93,15 @@ export function factAnchors(text: string): string[] {
   for (const match of text.matchAll(/#?[A-Za-z_$][\w$]*(?:\.#?[A-Za-z_$][\w$]*)*(\(\))?/g)) {
     const token = match[1] === undefined ? match[0] : match[0].slice(0, -2);
     const parts = token.split(".");
-    const dotted = parts.length > 1;
     const call = match[1] !== undefined;
-    for (const part of parts) {
+    for (const [index, part] of parts.entries()) {
       const bare = part.replace(/^#/, "");
       if (bare.length < 2 || WEAK_ANCHORS.has(part)) continue;
-      const codeLike = dotted
-        || call
+      // In `app.route()` or `c.req.parseBody()` the member is the code; the
+      // receivers are conventional variable names, anchors only on their own merit.
+      const member = parts.length > 1 && index === parts.length - 1;
+      const codeLike = member
+        || (call && index === parts.length - 1)
         || part.startsWith("#")
         || /[a-z][A-Z]/.test(bare)
         || /\d/.test(bare)
@@ -219,9 +234,19 @@ function widened(lines: readonly string[], changed: readonly number[]): string {
  * See the module note for the rule and why every doubt says `touched`.
  */
 export function factDrift(fact: string, oldBody: string, newBody: string): FactDrift {
-  const anchors = factAnchors(fact).filter((anchor) => occurrences(oldBody, anchor) > 0);
-  if (anchors.length === 0) {
-    return { kind: "touched", anchors, reason: "The fact names nothing that occurs in the grounded code." };
+  // The declaration line names the symbol, which locates the grounding, not
+  // the fact: "parse() returns the last value" anchored only to `parse` would
+  // call any change to parse's body nearby. Only anchors inside the body count.
+  const inside = oldBody.split("\n").slice(1).join("\n");
+  const anchors = factAnchors(fact).filter((anchor) => occurrences(inside, anchor) > 0);
+  if (anchors.length < MIN_ANCHORS) {
+    return {
+      kind: "touched",
+      anchors,
+      reason: anchors.length === 0
+        ? "The fact names nothing that occurs in the grounded code."
+        : "The fact names too little of the grounded code to tell where it lives.",
+    };
   }
   for (const anchor of anchors) {
     if (occurrences(newBody, anchor) < occurrences(oldBody, anchor)) {

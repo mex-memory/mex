@@ -67,9 +67,12 @@ describe("factDrift", () => {
   it("reports nearby when the change is away from every line the fact names", () => {
     const changed = old.replace("log('redirecting')", "log('redirect requested')");
     const fact = "redirect() responds with status 302 by default.";
-    expect(factDrift(fact, old, changed).kind).toBe("touched"); // `redirect` anchors the first lines
+    // `redirect` only names the declaration, leaving `302` alone: too little to locate the fact.
+    expect(factDrift(fact, old, changed).kind).toBe("touched");
+    expect(factDrift(fact, old, old.replace("  trace()\n", "  trace(302)\n")).kind).toBe("touched");
     const far = "c.newResponse is called with 302 when no status is given.";
     expect(factDrift(far, old, changed)).toEqual({ kind: "nearby", anchors: ["newResponse", "302"] });
+    expect(factDrift("It replies with 302.", old, changed).kind).toBe("touched"); // one anchor is not enough
   });
 
   it("reports touched when a named literal changes", () => {
@@ -86,6 +89,12 @@ describe("factDrift", () => {
     const list = ["const METHODS = [", "  'get',", "  'post',", "  'put',", "] as const"].join("\n");
     const grown = list.replace("  'put',", "  'put',\n  'query',");
     expect(factDrift("METHODS lists get, post and put.", list, grown).kind).toBe("touched");
+  });
+
+  it("does not anchor a fact to the symbol's own declaration", () => {
+    const parse = ["export const parse = (cookie) => {", "  const out = {}", "  for (const pair of split(cookie)) {", "    out[pair.name] = pair.value", "  }", "  return out", "}"].join("\n");
+    const changed = parse.replace("    out[pair.name] = pair.value", "    out[pair.name] ??= pair.value");
+    expect(factDrift("parse() returns the last value when a name repeats.", parse, changed).kind).toBe("touched");
   });
 
   it("fails safe without anchors", () => {
@@ -138,9 +147,9 @@ describe("resolution of a changed body with evidence", () => {
       oldBody: "alpha()\nbeta()\ngamma()\ndelta()\nepsilon()\nzeta()", newBody: "alpha()\nbeta()\ngamma()\ndelta()\nepsilon()\neta()",
     };
     expect(resolveGrounding(GROUNDED, graphWith(evidence)).health).toBe("changed");
-    expect(resolveGrounding(GROUNDED, graphWith(evidence), { fact: "It calls alpha() first." })).toMatchObject({
+    expect(resolveGrounding(GROUNDED, graphWith(evidence), { fact: "It calls beta() then gamma()." })).toMatchObject({
       health: "fresh",
-      drift: { kind: "changed-nearby", anchors: ["alpha"] },
+      drift: { kind: "changed-nearby", anchors: ["beta", "gamma"] },
     });
     expect(resolveGrounding(GROUNDED, graphWith(evidence), { fact: "It ends with zeta()." }).health).toBe("changed");
   });
