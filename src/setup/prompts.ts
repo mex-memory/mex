@@ -50,6 +50,12 @@ shadow the source being populated.
    Never ground every node returned by scope. Callers/callees provide reading
    context; they are not automatically grounding targets. Do not ground file,
    import, parameter, or vague component nodes.
+
+   A claim is grounded to **every** symbol whose change could make it false,
+   not just the one it names: a default set in a constructor and read in a
+   helper grounds to both; a list kept in a constant grounds to the constant.
+   Drift on a symbol the claim depends on but does not cite is otherwise
+   invisible.
 3. When prose names a load-bearing function, method, or class that you looked
    up in the graph, make the readable symbol mention a navigation anchor of the
    form \`[symbolName()](mex://<exact-node-id>)\`, using the real node id. Setup
@@ -57,7 +63,24 @@ shadow the source being populated.
    where a future agent would plausibly jump to code, not every incidental
    mention. Inline anchors contain
    the node id only; never put a fingerprint in the URI.
-4. Broad architecture/stack/conventions files should ground sparsely or remain
+4. **One code-linked claim per entity.** Health is reported per entity, so a
+   file-level grounding shared by many claims flags all of them whenever any
+   one symbol changes. Give each specific behavioral claim that is grounded to
+   code its own section entity with its own \`groundsTo\`, created with
+   \`mex wiki apply <op.json> --apply\`:
+
+   {"opId": "setup_<short-slug>", "type": "create-entry",
+    "actor": {"kind": "agent", "id": "<your tool>"}, "timestamp": "<ISO time>",
+    "reason": "one entity per code-linked claim",
+    "payload": {"file": "context/<file>.md", "insertAt": {"at": "end-of-file"},
+      "type": "fact", "title": "<short claim title>", "body": "<the claim>",
+      "headingDepth": 2, "status": "promoted",
+      "groundsTo": [{"node": "<exact id>", "fingerprint": "<exact fingerprint>"}]}}
+
+   Name the identifiers and literals the claim depends on in its body (for
+   example \`parseBody()\`, \`302\`): drift checks compare them against what
+   changed. Doc, config and broad overview prose stays grouped in its file.
+5. Broad architecture/stack/conventions files should ground sparsely or remain
    \`grounds_to: []\`. Pattern files and deep domain files should ground tightly
    to the few symbols that implement their documented behavior. Grounding must
    follow actual prose claims—never add grounding merely so every file has some.
