@@ -49,6 +49,8 @@ import { MinHashReconciler } from "./reconcile-engine.js";
 import type { Resolution } from "./reconcile.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
 import { inspectGraphStatus } from "./status.js";
+import { prepareCodeHashing } from "./code-hash.js";
+import { createGroundingEvidence, type CommittedBody, type GroundingChangeEvidence } from "./grounding-evidence.js";
 import { LANGUAGES, NODE_KINDS, type GraphNode } from "./types.js";
 
 const MAX_CURSOR_BYTES = 4 * 1024;
@@ -160,6 +162,10 @@ export interface RepositoryGraphGroundingSnapshot {
   getFingerprint(nodeId: string): string | null;
   reconcile(nodeId: string, committedFingerprint: string, bodyHash?: string): Resolution | null;
   getBaselineSource(subject: GroundingSubject, nodeId: string): GroundingBaseline | null;
+  /** How a body that differs from its committed hash differs; see `grounding-evidence.ts`. */
+  explainChange(committed: CommittedBody, nodeId: string): GroundingChangeEvidence | null;
+  /** Remember the node's current body under its committed hash, while the two match. */
+  rememberBody(nodeId: string, bodyHash: string): void;
 }
 
 /**
@@ -345,6 +351,9 @@ export class RepositoryGraphPort implements GraphPort {
     callback: (snapshot: RepositoryGraphGroundingSnapshot) => T | Promise<T>,
   ): Promise<T> {
     try {
+      // Comment and layout comparisons parse source; without grammars every
+      // such hash is null and a changed body simply stays `changed`.
+      await prepareCodeHashing().catch(() => undefined);
       const read = await this.#withFresh(async (context) => {
         const snapshot = this.#groundingSnapshot(context);
         try {
@@ -411,6 +420,10 @@ export class RepositoryGraphPort implements GraphPort {
   } {
       const store = new FingerprintStore(context.session.db);
       const reconciler = new MinHashReconciler(store);
+      const evidence = createGroundingEvidence({
+        projectRoot: this.#projectRoot,
+        getNode: (nodeId) => context.session.graph.getNode(nodeId),
+      });
       let active = true;
       const assertActive = (): void => {
         if (!active) {
@@ -476,6 +489,14 @@ export class RepositoryGraphPort implements GraphPort {
           } catch {
             throw interruptedRead("The graph grounding snapshot could not read a baseline safely.");
           }
+        },
+        explainChange(committed, nodeId) {
+          assertActive();
+          return evidence.explainChange(committed, nodeId);
+        },
+        rememberBody(nodeId, bodyHash) {
+          assertActive();
+          evidence.rememberBody(nodeId, bodyHash);
         },
       };
       return {

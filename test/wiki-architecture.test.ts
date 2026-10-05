@@ -768,6 +768,7 @@ describe("no unscoped scaffold writes", () => {
       "src/graph/audit-record.ts": "writes only the local audited-digest record beside the graph index it describes",
       "src/graph/candidate-process.ts": "removes only the identity-bound parent-owned temporary workspace after the candidate child closes",
       "src/graph/engine-impl.ts": "writes only a private, bounded temporary source spool that is removed before graph publication",
+      "src/graph/grounding-evidence.ts": "writes only checkout-local, content-addressed grounded bodies under .mex/local/grounded-bodies",
       "src/graph/phase-timing.ts": "appends diagnostic phase timings only to the file an operator names in MEX_GRAPH_PHASE_TIMINGS",
       "src/graph/maintenance.ts": "publishes and recovers the disposable graph index under its maintenance lease",
       "src/graph/runtime.ts": "edits existing .mex Markdown; bypasses the pipeline (recorded D9 exception)",
