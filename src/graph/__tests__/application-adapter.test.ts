@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -89,6 +90,31 @@ function expectPortCode(error: unknown, code: string): void {
   expect(error).toBeInstanceOf(MexPortError);
   expect((error as MexPortError).problem.code).toBe(code);
 }
+
+describe("RepositoryGraphPort grounding evidence", () => {
+  it("explains a layout-only edit through a fresh snapshot, grammars loaded", async () => {
+    const { root, port } = await fixture();
+    const { createGraphEngine } = await import("../engine-impl.js");
+    const engine = createGraphEngine({ rootDir: root });
+    const id = engine.searchNodes("serviceTarget").find((node) => node.name === "serviceTarget")!.id;
+    engine.close();
+    const committed = await port.withFreshGroundingSnapshot((snapshot) => {
+      const node = snapshot.getNode(id)!;
+      snapshot.rememberBody(id, node.bodyHash!);
+      return { bodyHash: node.bodyHash! };
+    });
+
+    source(root, "src/service.ts", readFileSync(join(root, "src/service.ts"), "utf8")
+      .replace("  const doubled = input * 2;", "  // doubled first\n  const doubled = input * 2")
+      .replace("const adjusted = doubled + 7;", "const adjusted = doubled + 7"));
+    git(root, "commit", "-qam", "format");
+    await port.refresh();
+
+    const evidence = await port.withFreshGroundingSnapshot((snapshot) => snapshot.explainChange(committed, id));
+    expect(evidence).toMatchObject({ commentOnly: false, layoutOnly: true });
+    expect(evidence?.oldBody).toContain("input * 2;");
+  });
+});
 
 describe("RepositoryGraphPort", () => {
   it.each([undefined, "process"] as const)("forwards maintenance authority with execution mode %s", async (candidateExecution) => {

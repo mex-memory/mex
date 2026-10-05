@@ -383,6 +383,7 @@ export class RepositoryGraphPort implements GraphPort {
     let prepared: RepositoryGraphPreparedPublication<T> | undefined;
     let commitStarted = false;
     let committed: T | undefined;
+    await prepareCodeHashing().catch(() => undefined);
     try {
       await this.#withFresh(async (context) => {
         const snapshot = this.#groundingSnapshot(context);
