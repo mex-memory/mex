@@ -1795,7 +1795,7 @@ const EXPECTED_TABLE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   wiki_entity_topics: ["entity_key", "ordinal", "topic_entity_id"],
   wiki_sources: ["entity_key", "ordinal", "type", "ref", "note", "repository", "commit_sha", "captured_at", "identity", "metadata"],
   wiki_groundings: [
-    "entity_key", "ordinal", "node_id", "fingerprint", "body_hash", "file", "commit_sha", "verified_at", "reason",
+    "entity_key", "ordinal", "node_id", "fingerprint", "body_hash", "code_hash", "file", "commit_sha", "verified_at", "reason",
     "state", "resolved_node", "health", "resolution",
   ],
   wiki_diagnostics: [
@@ -1842,7 +1842,7 @@ const INDEX_TEXT_FIELDS: Readonly<Record<string, readonly StoredTextField[]>> = 
   ],
   wiki_groundings: [
     ["entity_key", 4_128], ["node_id", 4_096], ["fingerprint", WIKI_CORPUS_LIMITS.maxFileBytes], ["body_hash", 256, true],
-    ["file", 4_096, true], ["commit_sha", 256, true], ["verified_at", 256, true],
+    ["code_hash", 256, true], ["file", 4_096, true], ["commit_sha", 256, true], ["verified_at", 256, true],
     ["reason", 65_536, true], ["state", 32, true], ["resolved_node", 4_096, true],
     ["health", 32, true], ["resolution", 65_536, true],
   ],
@@ -2014,7 +2014,7 @@ function validateIndexStructure(db: SqliteDatabase): string | null {
 
     let groundingRowCount = 0;
     const groundingRows = db.prepare(
-      `SELECT node_id, fingerprint, body_hash, file, commit_sha, verified_at, reason, state, resolved_node, health, resolution
+      `SELECT node_id, fingerprint, body_hash, code_hash, file, commit_sha, verified_at, reason, state, resolved_node, health, resolution
          FROM wiki_groundings ORDER BY entity_key, ordinal LIMIT 100001`,
     ).iterate() as IterableIterator<Record<string, unknown>>;
     for (const row of groundingRows) {
@@ -2022,7 +2022,8 @@ function validateIndexStructure(db: SqliteDatabase): string | null {
       if (groundingRowCount > 100_000) return "The wiki index grounding inventory exceeds its safety bound.";
       if (!isBoundedString(row["node_id"], 4096, 1)
         || !isBoundedString(row["fingerprint"], WIKI_CORPUS_LIMITS.maxFileBytes, 1)
-        || !isBoundedNullableString(row["body_hash"], 256) || (row["file"] !== null && !isSafeRepoPath(row["file"]))
+        || !isBoundedNullableString(row["body_hash"], 256) || !isBoundedNullableString(row["code_hash"], 256)
+        || (row["file"] !== null && !isSafeRepoPath(row["file"]))
         || !isBoundedNullableString(row["commit_sha"], 256) || !isBoundedNullableString(row["verified_at"], 256)
         || !isBoundedNullableString(row["reason"], 65_536) || !isBoundedNullableString(row["resolved_node"], 4096)
         || !validBoundedJson(row["resolution"])) {

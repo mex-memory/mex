@@ -201,8 +201,8 @@ export function writeParsedFile(db: SqliteDatabase, parsed: ParsedFile, options:
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertGrounding = db.prepare(
-    `INSERT INTO wiki_groundings (entity_key, ordinal, node_id, fingerprint, body_hash, file, commit_sha, verified_at, reason, state, resolved_node, health)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
+    `INSERT INTO wiki_groundings (entity_key, ordinal, node_id, fingerprint, body_hash, code_hash, file, commit_sha, verified_at, reason, state, resolved_node, health)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
   );
   const insertFts = db.prepare(
     `INSERT INTO wiki_fts (entity_key, title, summary, body, aliases, meta) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -273,6 +273,7 @@ export function writeParsedFile(db: SqliteDatabase, parsed: ParsedFile, options:
         grounding.node,
         grounding.fingerprint,
         grounding.bodyHash ?? null,
+        grounding.codeHash ?? null,
         grounding.file ?? null,
         grounding.commit ?? null,
         grounding.verifiedAt ?? null,
@@ -377,7 +378,11 @@ interface EntityRow {
  * code graph: the index must build in a checkout that has no graph, and the
  * layering lint keeps the graph behind one door in `src/wiki/grounding/`.
  */
-export type GroundingResolver = (grounding: WikiGrounding) => GroundingResolution;
+export type GroundingResolver = (
+  grounding: WikiGrounding,
+  /** The entity's title and body, so a change can be weighed against the fact it supports. */
+  context?: { fact?: string },
+) => GroundingResolution;
 
 export interface ResolveOptions {
   scaffoldRoot: string;
@@ -474,6 +479,7 @@ interface GroundingRow {
   node_id: string;
   fingerprint: string;
   body_hash: string | null;
+  code_hash: string | null;
   grounding_file: string | null;
   commit_sha: string | null;
   verified_at: string | null;
@@ -503,13 +509,14 @@ function resolveGroundings(db: SqliteDatabase, resolve?: GroundingResolver): Wik
   const rows = db
     .prepare(
       `SELECT g.entity_key, g.ordinal, e.id AS entity_id, e.file AS file, e.shadowed AS shadowed,
-              g.node_id, g.fingerprint, g.body_hash, g.file AS grounding_file,
+              e.title AS entity_title, e.body AS entity_body,
+              g.node_id, g.fingerprint, g.body_hash, g.code_hash, g.file AS grounding_file,
               g.commit_sha, g.verified_at, g.reason
          FROM wiki_groundings g
          JOIN wiki_entities e ON e.entity_key = g.entity_key
         ORDER BY g.entity_key, g.ordinal`,
     )
-    .all() as Array<GroundingRow & { shadowed: number }>;
+    .all() as Array<GroundingRow & { shadowed: number; entity_title: string; entity_body: string }>;
 
   const update = db.prepare(
     `UPDATE wiki_groundings SET state = ?, resolved_node = ?, health = ?, resolution = ? WHERE entity_key = ? AND ordinal = ?`,
@@ -517,7 +524,7 @@ function resolveGroundings(db: SqliteDatabase, resolve?: GroundingResolver): Wik
   const diagnostics: WikiDiagnostic[] = [];
 
   for (const row of rows) {
-    const resolution = resolve(groundingOf(row));
+    const resolution = resolve(groundingOf(row), { fact: `${row.entity_title}\n\n${row.entity_body}` });
     const resolvedNode = "resolvedNode" in resolution ? resolution.resolvedNode : null;
     update.run(
       resolution.state,
@@ -538,6 +545,7 @@ function resolveGroundings(db: SqliteDatabase, resolve?: GroundingResolver): Wik
 function groundingOf(row: GroundingRow): WikiGrounding {
   const grounding: WikiGrounding = { node: row.node_id, fingerprint: row.fingerprint };
   if (row.body_hash !== null) grounding.bodyHash = row.body_hash;
+  if (row.code_hash !== null) grounding.codeHash = row.code_hash;
   if (row.grounding_file !== null) grounding.file = row.grounding_file;
   if (row.commit_sha !== null) grounding.commit = row.commit_sha;
   if (row.verified_at !== null) grounding.verifiedAt = row.verified_at;

@@ -773,13 +773,14 @@ async function synthesisIo(): Promise<import("./wiki/cli/commands.js").CommandIo
     import("./sync/index.js"),
   ]);
 
+  await (await import("./graph/code-hash.js")).prepareCodeHashing().catch(() => undefined);
   const db = openGraphDatabase(dbPath);
   const engine = createGraphEngine({ rootDir: config.projectRoot, dbPath });
   return {
     ...base,
     repoRoot: config.projectRoot,
     codeGraph: createSynthesisGraph(engine, db),
-    graph: createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db),
+    graph: createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db, { projectRoot: config.projectRoot }),
     ...(config.wiki?.synthesis === undefined ? {} : { synthesisScope: config.wiki.synthesis }),
     launchAgent: (playbook: string) => {
       // mex's own launcher, not a second one: six tools, cross-platform

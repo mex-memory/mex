@@ -691,7 +691,7 @@ function diffsFor(options: MigrateOptions, changed: Set<string>): string[] {
 /** Render a report the way section 13.6 asks, for a caller that wants text. */
 /** Health for the index refresh after each write, from the graph migration was given (#232). */
 function groundingResolverFor(graph: GroundingGraph | null): { resolveGrounding?: GroundingResolver } {
-  return graph === null ? {} : { resolveGrounding: (grounding) => resolveGrounding(grounding, graph) };
+  return graph === null ? {} : { resolveGrounding: (grounding, context) => resolveGrounding(grounding, graph, context) };
 }
 
 export function renderMigrationReport(report: MigrationReport): string {

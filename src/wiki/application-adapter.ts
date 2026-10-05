@@ -2460,11 +2460,11 @@ export class RepositoryWikiPort implements WikiPort<
         throw new Error("injected-operation-index-refresh-failure");
       };
     }
-    return (grounding) => {
+    return (grounding, context) => {
           if (this.#options.__internal?.failOperationIndexRefresh?.() === true) {
             throw new Error("injected-operation-index-refresh-failure");
           }
-          return resolveGrounding(grounding, graph);
+          return resolveGrounding(grounding, graph, context);
         };
   }
 
