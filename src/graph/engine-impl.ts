@@ -110,11 +110,14 @@ import type { GraphEdge, GraphNode, Language, ReferenceKind } from "./types.js";
 const BODY_KINDS = new Set<GraphNode["kind"]>([
   "function", "method", "class", "interface", "enum", "type_alias", "struct",
   "trait", "protocol", "constant", "variable", "component",
+  // Class properties and fields carry behaviour (defaults, visibility), so
+  // facts about them need a body hash and fingerprint to be grounded.
+  "property", "field",
 ]);
 
 const COMPILER_LANGUAGES = new Set<Language>(["typescript", "javascript", "tsx", "jsx"]);
 const RESOLVER_VERSION = "compiler-first-v2";
-const TREE_SITTER_EXTRACTOR_VERSION = "tree-sitter-v2";
+const TREE_SITTER_EXTRACTOR_VERSION = "tree-sitter-v3";
 const CORPUS_EXTRACTOR_VERSION = `${TYPESCRIPT_COMPILER_EXTRACTOR_VERSION}+${TREE_SITTER_EXTRACTOR_VERSION}`;
 
 export interface GraphEngineOptions {
