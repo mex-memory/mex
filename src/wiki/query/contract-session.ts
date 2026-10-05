@@ -204,7 +204,10 @@ export interface ContractSearchHit {
   matchedTerms?: readonly string[];
   /** For a `some_terms` hit: its coverage of the query, higher first. Never comparable across indexes. */
   score?: number;
-  /** For an `all_terms` hit: FTS5 `bm25()` in its best matched field, lower first. */
+  /**
+   * FTS5 `bm25()`, lower first: in its best matched field for an `all_terms`
+   * hit, over every field for a `some_terms` hit (the tie-break after score).
+   */
   relevance?: number;
 }
 
@@ -960,6 +963,7 @@ class ContractSession implements WikiContractReadSession {
         match: "some_terms",
         matchedTerms: match.matchedTerms,
         score: match.score,
+        relevance: match.relevance,
       });
     }
     if (broader.matches.length > room.length) safetyTruncated = true;
