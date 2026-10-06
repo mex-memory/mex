@@ -762,7 +762,7 @@ describe("§24 definition of done", () => {
     expect((await engine.list()).diagnostics.filter((entry) => entry.severity === "error")).toEqual([]);
   });
 
-  it("clause 9: validation covers structural, referential, source, grounding and log failures", async () => {
+  it("clause 9: validation covers structural, referential, source and log failures; check covers grounding", async () => {
     const root = mkdtempSync(join(tmpdir(), "mex-accept-bad-"));
     roots.push(root);
     mkdirSync(join(root, "context"), { recursive: true });
@@ -798,12 +798,9 @@ Everything about this entity is wrong in a different way.
     expect(codes.has("INVALID_RELATION_TARGET"), "referential").toBe(true);
     expect(codes.has("SOURCE_FILE_MISSING"), "source").toBe(true);
     expect(codes.has("MALFORMED_OPERATION_LOG"), "operation log").toBe(true);
-    // Grounding: a grounding carrying no body hash can only be checked
-    // structurally, which is blind to a changed constant. The validator says
-    // so as MALFORMED_GROUNDING rather than under a GROUNDING_* name — the
-    // GROUNDING_* codes are verdicts a resolver reached, and no resolver ran
-    // here because this scaffold has no code graph.
-    expect(codes.has("MALFORMED_GROUNDING"), "grounding").toBe(true);
+    // Grounding: code links are `mex check`'s, decided by the shared verdict
+    // (`test/grounding-verdict-agreement.test.ts`), so validate reports none.
+    expect([...codes].some((code) => code.startsWith("GROUNDING_")), "grounding").toBe(false);
   });
 
   it("clause 10: synthesis produces reviewed operations rather than direct writes", () => {
