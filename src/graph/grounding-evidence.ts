@@ -68,17 +68,33 @@ export function createGroundingEvidence(options: {
   getNode(nodeId: string): EvidenceNode | null;
   /** Defaults to {@link groundedBodyCacheDir}. */
   bodyCacheDir?: string;
+  /**
+   * A second, read-only place an old body may be found by its hash: the
+   * graph's `_mex_grounded_source` rows. Content-addressed and re-verified
+   * here, so it can never stand in for a body it does not hash to.
+   */
+  recallBody?(bodyHash: string): string | null;
 }): GroundingEvidence {
   const dir = options.bodyCacheDir ?? groundedBodyCacheDir(options.projectRoot);
   const pathFor = (bodyHash: string): string | null =>
     /^[0-9a-f]{64}$/.test(bodyHash) ? join(dir, `${bodyHash}.txt`) : null;
 
-  const recall = (bodyHash: string): string | null => {
+  const cached = (bodyHash: string): string | null => {
     const path = pathFor(bodyHash);
     if (path === null) return null;
     try {
       const body = readFileSync(path, "utf8");
       return hashNodeBody(body) === bodyHash ? body : null;
+    } catch {
+      return null;
+    }
+  };
+  const recall = (bodyHash: string): string | null => {
+    const body = cached(bodyHash);
+    if (body !== null) return body;
+    try {
+      const recorded = options.recallBody?.(bodyHash) ?? null;
+      return recorded !== null && hashNodeBody(recorded) === bodyHash ? recorded : null;
     } catch {
       return null;
     }
@@ -119,7 +135,7 @@ export function createGroundingEvidence(options: {
     },
     rememberBody(nodeId, bodyHash) {
       const path = pathFor(bodyHash);
-      if (path === null || recall(bodyHash) !== null) return;
+      if (path === null || cached(bodyHash) !== null) return;
       const current = readNode(nodeId);
       if (current === null || hashNodeBody(current.body) !== bodyHash) return;
       try {

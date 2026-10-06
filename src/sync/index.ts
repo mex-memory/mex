@@ -106,6 +106,14 @@ interface SyncDependencies {
   reviewGrounding?: boolean;
 }
 
+/** Findings `sync` reports but never hands to an AI session. */
+const SYNC_NOTICE_CODES: ReadonlySet<DriftIssue["code"]> = new Set([
+  "GROUNDING_MOVED_BY_NEIGHBORS",
+  "GROUNDING_COMMENT_DRIFT",
+  "GROUNDING_MOVED",
+  "GROUNDING_NEARBY_DRIFT",
+]);
+
 /** Run targeted sync: detect → brief → AI → verify → ask → loop */
 export async function runSync(
   config: MexConfig,
@@ -152,9 +160,9 @@ export async function runSync(
     // A body that changed only in comments (#236) needs a review of the new
     // body, not an AI session over prose that still describes the code.
     const commentOnly = report.issues.filter((i) => i.code === "GROUNDING_COMMENT_DRIFT");
-    const issues = report.issues.filter(
-      (i) => i.code !== "GROUNDING_MOVED_BY_NEIGHBORS" && i.code !== "GROUNDING_COMMENT_DRIFT",
-    );
+    // A move and a change away from the fact are notices too: the link's
+    // verdict is not `changed`, so nothing in the prose is in question.
+    const issues = report.issues.filter((i) => !SYNC_NOTICE_CODES.has(i.code));
 
     if (issues.length === 0) {
       if (commentOnly.length === 0) {

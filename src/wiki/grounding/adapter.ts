@@ -125,6 +125,7 @@ export function createGroundingGraph(
   const evidence = source === undefined ? null : createGroundingEvidence({
     projectRoot: source.projectRoot,
     getNode: (nodeId) => engine.getNode(nodeId),
+    recallBody: (bodyHash) => store.sourceByBodyHash(bodyHash),
     ...(source.bodyCacheDir === undefined ? {} : { bodyCacheDir: source.bodyCacheDir }),
   });
   return {

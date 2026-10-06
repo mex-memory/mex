@@ -57,6 +57,9 @@ export const DEFAULT_SCAFFOLD_PATTERNS = [
   "SYNC.md",
 ] as const;
 
+/** A `<!-- mex:entity -->` block that declares code links, which the frontmatter readers do not see. */
+const ENTITY_BLOCK_GROUNDING = /<!--\s*mex:entity[^]*?grounds_to/;
+
 export interface RunDriftCheckOpts {
   verbose?: boolean;
   /** Override the glob patterns used to discover scaffold files (relative to
@@ -121,7 +124,8 @@ export async function runDriftCheckWithGraphStatus(
   const hasGroundings = scaffoldFiles.some((filePath) => {
     let content: string;
     try { content = readFileSync(filePath, "utf-8"); } catch { return false; }
-    return extractGroundings(content).length > 0 || findMexAnchors(content).length > 0;
+    return extractGroundings(content).length > 0 || findMexAnchors(content).length > 0
+      || ENTITY_BLOCK_GROUNDING.test(content);
   });
   const needsGroundingMigration = !hasGroundings && scaffoldFiles.some(isPopulatedGroundingCandidate);
   const groundingRelevant = hasGroundings || needsGroundingMigration;
