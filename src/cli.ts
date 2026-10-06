@@ -622,7 +622,7 @@ function wikiIo(): import("./wiki/cli/commands.js").CommandIo {
 
 /**
  * `wikiIo()` plus the code graph, for the commands that resolve groundings
- * (#232): validate, rebuild-index, migrate, apply and regenerate-views.
+ * (#232): rebuild-index, migrate, apply and regenerate-views.
  *
  * The graph is the repository graph port, the same one the Project Hub hands
  * the Wiki: it opens nothing until a command asks for a snapshot, refuses one
@@ -688,12 +688,12 @@ withReadFilters(wikiCommand.command("backlinks <id>").description("Entities that
 
 wikiCommand
   .command("validate")
-  .description("Check the whole scaffold; works with no index and no code graph")
+  .description("Check Wiki structure (ids, relations, evidence, anchors); code links are checked by `mex check`")
   .option("--limit <n>", "maximum diagnostics to report")
   .option("--json", "emit one enveloped JSON object")
   .action(async (options) => {
     const { runValidate } = await import("./wiki/cli/commands.js");
-    await runValidate(await groundedWikiIo(), options);
+    await runValidate(wikiIo(), options);
   });
 
 withReadFilters(wikiCommand.command("graph").description("A bounded slice of the relation graph")).action(
