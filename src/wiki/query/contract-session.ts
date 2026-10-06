@@ -155,6 +155,7 @@ export interface ContractGrounding {
   requestedNode: string;
   fingerprint: string;
   bodyHash?: string;
+  codeHash?: string;
   file?: string;
   commit?: string;
   verifiedAt?: string;
@@ -1209,7 +1210,7 @@ class ContractSession implements WikiContractReadSession {
 
   private groundings(key: string): ContractGrounding[] {
     const rows = this.db.prepare(
-      `SELECT node_id, fingerprint, body_hash, file, commit_sha, verified_at, reason, resolution
+      `SELECT node_id, fingerprint, body_hash, code_hash, file, commit_sha, verified_at, reason, resolution
          FROM wiki_groundings WHERE entity_key = ? ORDER BY ordinal LIMIT ?`,
     ).all(key, MAX_RELATIONS_PER_ENTITY + 1) as Array<Record<string, string | null>>;
     this.assertCanonicalMetadataBound(rows, "groundings");
@@ -1217,6 +1218,7 @@ class ContractSession implements WikiContractReadSession {
       requestedNode: row["node_id"]!,
       fingerprint: row["fingerprint"]!,
       ...(row["body_hash"] === null ? {} : { bodyHash: row["body_hash"]! }),
+      ...(row["code_hash"] === null ? {} : { codeHash: row["code_hash"]! }),
       ...(row["file"] === null ? {} : { file: row["file"]! }),
       ...(row["commit_sha"] === null ? {} : { commit: row["commit_sha"]! }),
       ...(row["verified_at"] === null ? {} : { verifiedAt: row["verified_at"]! }),

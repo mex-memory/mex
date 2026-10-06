@@ -23,6 +23,8 @@ import { createGroundingGraph } from "../src/wiki/grounding/adapter.js";
 import { resolveGrounding } from "../src/wiki/grounding/resolve.js";
 import { groundingVerdict, type GroundingVerdict } from "../src/wiki/grounding/verdict.js";
 import { parseWikiMarkdown } from "../src/wiki/markdown/codec.js";
+import { wikiGroundingStatus } from "../src/wiki/service/read.js";
+import { wikiRebuildIndex } from "../src/wiki/service/write.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -139,8 +141,11 @@ async function checkVerdict(fx: Fixture): Promise<{ verdict: GroundingVerdict | 
     : { verdict: withVerdict.verdict!, ...(withVerdict.entity ? { entity: withVerdict.entity.id } : {}) };
 }
 
-/** The verdict the Wiki stores for the same link, from the Wiki's own adapter. */
-function wikiVerdict(fx: Fixture): GroundingVerdict {
+/**
+ * The verdict the Wiki reaches for the same link, from the Wiki's own adapter,
+ * and the health `wiki rebuild-index` stores for the entity from it.
+ */
+function wikiVerdict(fx: Fixture): { verdict: GroundingVerdict; stored: string | null } {
   const parsed = parseWikiMarkdown({ path: "context/orders.md", text: readFileSync(fx.scaffold, "utf-8") });
   const entity = parsed.entities[0]!.entity;
   const dbPath = join(fx.root, ".mex", "graph.db");
@@ -148,7 +153,11 @@ function wikiVerdict(fx: Fixture): GroundingVerdict {
   const engine = createGraphEngine({ rootDir: fx.root, dbPath });
   try {
     const graph = createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db, { projectRoot: fx.root });
-    return groundingVerdict(resolveGrounding(entity.groundsTo[0]!, graph, { fact: `${entity.title}\n\n${entity.body}` })).verdict;
+    const verdict = groundingVerdict(resolveGrounding(entity.groundsTo[0]!, graph, { fact: `${entity.title}\n\n${entity.body}` })).verdict;
+    const scaffoldRoot = join(fx.root, ".mex");
+    wikiRebuildIndex({ scaffoldRoot, graph });
+    const status = wikiGroundingStatus({ scaffoldRoot, id: ENTITY_ID });
+    return { verdict, stored: status.data.entities[0]?.health ?? null };
   } finally {
     engine.close();
     db.close();
@@ -164,8 +173,11 @@ describe("check and the Wiki share one code-link verdict", () => {
     await build(fx.root);
 
     const check = await checkVerdict(fx);
-    const wiki = wikiVerdict(fx);
+    const { verdict: wiki, stored } = wikiVerdict(fx);
     expect(wiki).toBe(expected);
+    // The index stores the Wiki's coarser health, derived from the same verdict.
+    const health: Record<string, string> = { "changed-nearby": "fresh", moved: "fresh" };
+    expect(stored).toBe(health[wiki] ?? wiki);
     // `check` stays silent only for a link that needs nothing at all.
     expect(check.verdict === "silent" ? "fresh" : check.verdict).toBe(wiki);
     if (check.verdict !== "silent") expect(check.entity).toBe(ENTITY_ID);
