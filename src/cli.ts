@@ -390,7 +390,7 @@ skillsCommand
 // ── Layer 2: Drift Detection ──
 program
   .command("check")
-  .description("Detect drift between scaffold files and codebase reality")
+  .description("Run every deterministic drift check, including scaffold and Wiki code links; read-only, no AI")
   .option("--json", "Output full drift report as JSON")
   .option("--quiet", "Single-line summary only")
   .option("--fix", "Run sync to fix any issues found")
@@ -854,7 +854,7 @@ wikiCommand
 
 wikiCommand
   .command("for-code <nodeId...>")
-  .description("Knowledge entities grounded to the given code-graph node ids")
+  .description("Knowledge entities grounded to the given code-graph node ids, with the link health `mex check` reports")
   .option("--json", "Emit one enveloped JSON object instead of JSONL records")
   .option("--limit <n>", "maximum entities to return")
   .option("--include-archived", "include archived entities, which are excluded by default")
@@ -1048,7 +1048,7 @@ program
 // ── Layer 3: Targeted Sync ──
 program
   .command("sync")
-  .description("Run drift check, then build targeted prompts for AI to fix flagged files")
+  .description("Run drift check, then fix flagged files and review flagged Wiki entities in one interactive AI session")
   .option("--dry-run", "Show what would be synced without executing")
   .option("--warnings", "Include warning-only files (by default only errors are synced)")
   .action(async (opts) => {
