@@ -41,6 +41,7 @@ import { resolve } from "node:path";
 import { tryEnsureSetupIgnoreProtection } from "../../setup/ignore.js";
 import type { WikiDiagnostic } from "../model/diagnostic.js";
 import { inspectDirectWikiSpecMutation } from "./spec-authoring-boundary.js";
+import { wikiRegroundEntity } from "../service/reground.js";
 import {
   graphDiagnostics,
   publishWithGraph,
@@ -448,6 +449,32 @@ export async function runApply(io: CommandIo, file: string, flags: CommandFlags)
 }
 
 /** Exported for the exit-code table's test, which asserts the CLI uses it. */
+/**
+ * `mex wiki reground <id>` — re-record an entity's code links after review.
+ * Plans by default; writes only with `--apply`, like `wiki apply`.
+ */
+export async function runReground(io: CommandIo, id: string, flags: CommandFlags & { reason?: string }): Promise<void> {
+  const write = flags.apply === true && flags.dryRun !== true;
+  const reground = (graph: import("../grounding/adapter.js").GroundingGraph | null) => wikiRegroundEntity(id, {
+    ...serviceOptions(io),
+    ...(write ? { apply: true } : {}),
+    ...(flags.reason === undefined ? {} : { reason: flags.reason }),
+    graph,
+  });
+  const { value, unavailable } = write
+    ? await writeWithGraph(io.groundingBridge, reground)
+    : await readWithGraph(io.groundingBridge, reground);
+  const result = { ...value, diagnostics: [...value.diagnostics, ...graphDiagnostics(unavailable)] };
+  emit(io, result, flags, (data) => {
+    for (const link of data.links) {
+      const target = link.recordedNode !== undefined && link.recordedNode !== link.node ? ` → ${link.recordedNode}` : "";
+      io.write(`${link.node}${target}: ${link.verdict}`);
+    }
+    if (data.apply?.applied) io.write(chalk.green(`re-recorded ${data.entityId} — ${data.apply.changedFiles.join(", ")}`));
+    else if (data.apply?.planned) io.write(chalk.dim("planned only — re-run with --apply to write"));
+  });
+}
+
 export { WIKI_EXIT };
 
 // -- §12 synthesis: build, prepare, propose ----------------------------------

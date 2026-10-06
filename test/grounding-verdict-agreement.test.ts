@@ -25,6 +25,7 @@ import { groundingVerdict, type GroundingVerdict } from "../src/wiki/grounding/v
 import { parseWikiMarkdown } from "../src/wiki/markdown/codec.js";
 import { wikiGroundingStatus } from "../src/wiki/service/read.js";
 import { wikiRebuildIndex } from "../src/wiki/service/write.js";
+import { wikiRegroundEntity } from "../src/wiki/service/reground.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -181,5 +182,70 @@ describe("check and the Wiki share one code-link verdict", () => {
     // `check` stays silent only for a link that needs nothing at all.
     expect(check.verdict === "silent" ? "fresh" : check.verdict).toBe(wiki);
     if (check.verdict !== "silent") expect(check.entity).toBe(ENTITY_ID);
+  }, 60_000);
+});
+
+/** Run `fn` with the Wiki's graph adapter over the fixture's graph. */
+function withWikiGraph<T>(fx: Fixture, fn: (graph: ReturnType<typeof createGroundingGraph>) => T): T {
+  const dbPath = join(fx.root, ".mex", "graph.db");
+  const db = openGraphDatabase(dbPath);
+  const engine = createGraphEngine({ rootDir: fx.root, dbPath });
+  try {
+    return fn(createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db, { projectRoot: fx.root }));
+  } finally {
+    engine.close();
+    db.close();
+  }
+}
+
+describe("wiki reground re-records a reviewed entity", () => {
+  it("re-records a changed link, after which check is clean", async () => {
+    const fx = fixture();
+    await build(fx.root);
+    await ground(fx);
+    writeFileSync(fx.source, SOURCE.replace("subtotal * 0.18", "subtotal * 0.21"));
+    await build(fx.root);
+    expect((await checkVerdict(fx)).verdict).toBe("changed");
+
+    const scaffoldRoot = join(fx.root, ".mex");
+    const planned = withWikiGraph(fx, (graph) => wikiRegroundEntity(ENTITY_ID, { scaffoldRoot, graph }));
+    expect(planned.data.apply?.applied).toBe(false);
+    expect((await checkVerdict(fx)).verdict).toBe("changed");
+
+    const applied = withWikiGraph(fx, (graph) => wikiRegroundEntity(ENTITY_ID, { scaffoldRoot, graph, apply: true }));
+    expect(applied.data.links).toMatchObject([{ verdict: "changed" }]);
+    expect(applied.diagnostics).toEqual([]);
+    expect(applied.data.apply?.applied).toBe(true);
+    expect((await checkVerdict(fx)).verdict).toBe("silent");
+  }, 60_000);
+
+  it("follows a rename to the new node", async () => {
+    const fx = fixture();
+    await build(fx.root);
+    await ground(fx);
+    writeFileSync(fx.source, SOURCE.replace("calculateOrderTotal", "computeOrderTotal"));
+    await build(fx.root);
+
+    const scaffoldRoot = join(fx.root, ".mex");
+    const applied = withWikiGraph(fx, (graph) => wikiRegroundEntity(ENTITY_ID, { scaffoldRoot, graph, apply: true }));
+    expect(applied.data.links[0]!.verdict).toBe("moved");
+    expect(applied.data.links[0]!.recordedNode).not.toBe(applied.data.links[0]!.node);
+    expect(readFileSync(fx.scaffold, "utf-8")).toContain(applied.data.links[0]!.recordedNode!);
+    expect((await checkVerdict(fx)).verdict).toBe("silent");
+  }, 60_000);
+
+  it("refuses a missing link and writes nothing", async () => {
+    const fx = fixture();
+    await build(fx.root);
+    await ground(fx);
+    writeFileSync(fx.source, SOURCE.slice(SOURCE.indexOf("export function formatReceipt")));
+    await build(fx.root);
+    const before = readFileSync(fx.scaffold, "utf-8");
+
+    const scaffoldRoot = join(fx.root, ".mex");
+    const refused = withWikiGraph(fx, (graph) => wikiRegroundEntity(ENTITY_ID, { scaffoldRoot, graph, apply: true }));
+    expect(refused.data.apply).toBeNull();
+    expect(refused.data.links).toMatchObject([{ verdict: "missing" }]);
+    expect(readFileSync(fx.scaffold, "utf-8")).toBe(before);
   }, 60_000);
 });

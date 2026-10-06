@@ -622,7 +622,7 @@ function wikiIo(): import("./wiki/cli/commands.js").CommandIo {
 
 /**
  * `wikiIo()` plus the code graph, for the commands that resolve groundings
- * (#232): rebuild-index, migrate, apply and regenerate-views.
+ * (#232): rebuild-index, migrate, apply, reground and regenerate-views.
  *
  * The graph is the repository graph port, the same one the Project Hub hands
  * the Wiki: it opens nothing until a command asks for a snapshot, refuses one
@@ -741,6 +741,17 @@ wikiCommand
   .action(async (file: string, options) => {
     const { runApply } = await import("./wiki/cli/commands.js");
     await runApply(await groundedWikiIo(), file, options);
+  });
+
+wikiCommand
+  .command("reground <entity-id>")
+  .description("Re-record an entity's code links after review confirms its text still holds; writes only with --apply")
+  .option("--apply", "write the re-recorded links, rather than only planning them")
+  .option("--reason <text>", "why the links are re-recorded, kept in the operation log")
+  .option("--json", "emit one enveloped JSON object")
+  .action(async (id: string, options) => {
+    const { runReground } = await import("./wiki/cli/commands.js");
+    await runReground(await groundedWikiIo(), id, options);
   });
 
 /**
