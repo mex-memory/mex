@@ -92,6 +92,11 @@ function healthTone(health: WikiGroundingHealth) {
   return "neutral" as const;
 }
 
+/** Health that `mex check` flags and `mex sync` reviews; the same verdict the CLI reports. */
+function needsReview(health: WikiGroundingHealth): boolean {
+  return health === "changed" || health === "missing" || health === "ambiguous";
+}
+
 function wikiProblemTitle(code: string | undefined): string {
   if (code === "INDEX_STALE") return "The Knowledge index is stale";
   if (code === "INDEX_CORRUPT") return "The Knowledge index is corrupt";
@@ -734,6 +739,7 @@ function KnowledgeDetail() {
                     <div className={styles.detailStatus}><StatusPill tone={healthTone(visibleResponse.entity.groundingHealth)}>{sentenceCase(visibleResponse.entity.groundingHealth)}</StatusPill><StatusPill>Revision {visibleResponse.indexedRevision.slice(0, 8)}</StatusPill></div>
                   </header>
                   {revisionConflict ? <div className={styles.revisionConflict} role="alert"><RefreshCw aria-hidden="true" /><span><strong>Knowledge changed while this record was open.</strong>The current body and links remain frozen until every panel reloads from one revision.</span><Button disabled={detail.isFetching || relationPage.isFetching || backlinkPage.isFetching} onClick={() => void reloadLatest()} size="sm" type="button" variant="outline">Reload latest</Button></div> : null}
+                  {needsReview(visibleResponse.entity.groundingHealth) ? <div className={styles.partialNotice} role="status"><AlertTriangle aria-hidden="true" /><span><strong>The linked code changed since this record was checked.</strong>Run <code>mex check</code> to see which links, and <code>mex sync</code> to review the record.</span></div> : null}
                   {partial ? <div className={styles.partialNotice} role="status"><AlertTriangle aria-hidden="true" /><span><strong>This is a bounded or partial projection.</strong>Trustworthy content is retained; omitted evidence and independent link failures are called out in place.</span></div> : null}
                   <div className={styles.detailGrid}>
                     <DetailIdentity detail={visibleResponse} />
