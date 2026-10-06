@@ -60,13 +60,24 @@ describe("MISSING_PATH false positives", () => {
     ).toEqual([]);
   });
 
-  // Not part of #143. A trailing version number reads as a file extension to
-  // the guard above, so `release/2.1.0` never reaches the unrooted check and is
-  // reported as a missing path. Tracked separately; unskip with the fix.
-  it.skip("does not claim a version-shaped branch name", () => {
+  // Not part of #143. A trailing version number used to read as a file
+  // extension, so `release/2.1.0` never reached the unrooted check (#201).
+  it("does not claim a version-shaped branch name", () => {
     expect(
       missingPaths("# Release\n\n- Work landed on `release/2.1.0` and `python/3.11`\n")
     ).toEqual([]);
+  });
+
+  it("still claims a missing file whose extension has a digit in it", () => {
+    expect(
+      missingPaths("# Assets\n\n- The intro is `media/intro.mp4`, the notes `docs/setup.md`\n")
+    ).toEqual(["media/intro.mp4", "docs/setup.md"]);
+  });
+
+  it("still checks a version-shaped value rooted at a directory that exists", () => {
+    expect(
+      missingPaths("# API\n\n- Clients call `api/v1.2`\n", { "api/README.md": "# API\n" })
+    ).toEqual(["api/v1.2"]);
   });
 
   it("does not claim a pseudo-path pair such as overall/overall", () => {
