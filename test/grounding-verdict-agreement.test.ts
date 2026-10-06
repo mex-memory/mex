@@ -9,7 +9,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { stripVTControlCharacters } from "node:util";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MexConfig } from "../src/types.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
 import { openGraphDatabase } from "../src/graph/db/database.js";
@@ -19,6 +20,7 @@ import { serializeFingerprint } from "../src/graph/fingerprint.js";
 import { MinHashReconciler } from "../src/graph/reconcile-engine.js";
 import { loadGroundingRuntime, refreshGroundingBaselines } from "../src/graph/runtime.js";
 import { writeGroundings } from "../src/markdown.js";
+import { runSync } from "../src/sync/index.js";
 import { createGroundingGraph } from "../src/wiki/grounding/adapter.js";
 import { resolveGrounding } from "../src/wiki/grounding/resolve.js";
 import { groundingVerdict, type GroundingVerdict } from "../src/wiki/grounding/verdict.js";
@@ -26,6 +28,8 @@ import { parseWikiMarkdown } from "../src/wiki/markdown/codec.js";
 import { wikiGroundingStatus } from "../src/wiki/service/read.js";
 import { wikiRebuildIndex } from "../src/wiki/service/write.js";
 import { wikiRegroundEntity } from "../src/wiki/service/reground.js";
+
+vi.mock("../src/cli-tools.js", () => ({ isCliAvailable: () => true }));
 
 const roots: string[] = [];
 afterEach(() => {
@@ -248,4 +252,87 @@ describe("wiki reground re-records a reviewed entity", () => {
     expect(refused.data.links).toMatchObject([{ verdict: "missing" }]);
     expect(readFileSync(fx.scaffold, "utf-8")).toBe(before);
   }, 60_000);
+});
+
+describe("mex sync reviews flagged Wiki entities in the same session", () => {
+  async function syncWith(fx: Fixture, agent: (brief: string) => boolean, rebuild?: () => Promise<{ entityCount: number }>) {
+    const lines: string[] = [];
+    const briefs: string[] = [];
+    const answers = ["1", "n", "n", "n"];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => { lines.push(args.join(" ")); });
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { lines.push(args.join(" ")); });
+    try {
+      await runSync(fx.config, {}, {
+        ask: async () => answers.shift() ?? "n",
+        runAgent: (_tool, brief) => {
+          briefs.push(brief);
+          return agent(brief);
+        },
+        reviewGrounding: false,
+        ...(rebuild === undefined ? {} : { rebuildWikiIndex: rebuild }),
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+    return { lines: lines.map((line) => stripVTControlCharacters(line)), briefs };
+  }
+
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
+  it("hands the entity to the agent, which re-records it; the index is rebuilt and check is clean", async () => {
+    const fx = fixture();
+    await build(fx.root);
+    await ground(fx);
+    writeFileSync(fx.source, SOURCE.replace("subtotal * 0.18", "subtotal * 0.21"));
+    await build(fx.root);
+
+    // A deterministic agent answering "changed": it fixes the fact, then re-records.
+    const { lines, briefs } = await syncWith(fx, () => {
+      writeFileSync(fx.scaffold, readFileSync(fx.scaffold, "utf-8").replace("0.18`.", "0.21`."));
+      const done = withWikiGraph(fx, (graph) => wikiRegroundEntity(ENTITY_ID, { scaffoldRoot: join(fx.root, ".mex"), graph, apply: true }));
+      return done.data.apply?.applied === true;
+    });
+
+    expect(briefs).toHaveLength(1);
+    expect(briefs[0]).toContain("WIKI ENTITY REVIEW");
+    expect(briefs[0]).toContain(`${ENTITY_ID} "Order totals"`);
+    expect(briefs[0]).toContain("mex wiki reground <entity-id> --apply");
+    expect(briefs[0]).toContain("UNSURE: change nothing");
+    expect(lines.some((line) => line.startsWith("Rebuilt the Wiki index (1 entities)"))).toBe(true);
+    expect(lines).toContain("Wiki entities reviewed: 1 cleared, 0 still flagged.");
+    expect((await checkVerdict(fx)).verdict).toBe("silent");
+    expect(wikiGroundingStatus({ scaffoldRoot: join(fx.root, ".mex"), id: ENTITY_ID }).data.entities[0]?.health).toBe("fresh");
+  }, 90_000);
+
+  it("names a missing link the agent could not re-record as still flagged", async () => {
+    const fx = fixture();
+    await build(fx.root);
+    await ground(fx);
+    writeFileSync(fx.source, SOURCE.slice(SOURCE.indexOf("export function formatReceipt")));
+    await build(fx.root);
+
+    // "Unsure": the agent changes nothing.
+    const { lines, briefs } = await syncWith(fx, () => true);
+    expect(briefs[0]).toContain("GROUNDING_GONE (missing)");
+    expect(briefs[0]).toContain("refuses them");
+    expect(lines).toContain("Wiki entities reviewed: 0 cleared, 1 still flagged.");
+    expect(lines).toContain(`  still flagged, not cleared: ${ENTITY_ID} "Order totals" — missing`);
+  }, 90_000);
+
+  it("stops loudly when the Wiki index rebuild fails", async () => {
+    const fx = fixture();
+    await build(fx.root);
+    await ground(fx);
+    writeFileSync(fx.source, SOURCE.replace("subtotal * 0.18", "subtotal * 0.21"));
+    await build(fx.root);
+
+    const { lines } = await syncWith(fx, () => true, async () => {
+      throw new Error("disk full");
+    });
+    expect(lines).toContain("✗ Wiki index rebuild failed: disk full");
+    expect(process.exitCode).toBe(1);
+    expect(lines.some((line) => line.startsWith("Drift score:"))).toBe(false);
+  }, 90_000);
 });
