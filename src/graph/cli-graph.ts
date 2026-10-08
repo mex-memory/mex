@@ -1,8 +1,10 @@
 import type {
   GraphRefreshResult, GraphSourceChanges, GraphStatus,
 } from "../team/contracts/graph.js";
+import type { Diagnostic } from "../team/contracts/shared.js";
 import {
   GraphMaintenanceError,
+  inspectOrphanGraphFiles,
   repairGraph,
   rebuildGraph,
   refreshGraph,
@@ -21,9 +23,50 @@ export interface GraphCommandOptions {
 /** Strictly read-only graph health/freshness command. */
 export async function runGraphStatus(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
-  const status = await inspectGraphStatus({ projectRoot: rootDir });
+  const inspected = await inspectGraphStatus({ projectRoot: rootDir });
+  const leftovers = orphanGraphFileDiagnostics(rootDir, inspected);
+  const status = leftovers.length > 0
+    ? { ...inspected, diagnostics: [...inspected.diagnostics, ...leftovers] }
+    : inspected;
   if (options.json) console.log(JSON.stringify(status, null, 2));
   else printStatus(status);
+}
+
+/**
+ * Name owned graph files left under `.mex/` (issue #205). Read-only: an
+ * interrupted maintenance run leaves a full-size candidate that otherwise
+ * stays invisible unless someone lists the directory. The store's own status
+ * is unchanged; these are reported alongside it.
+ */
+function orphanGraphFileDiagnostics(rootDir: string, status: GraphStatus): Diagnostic[] {
+  const files = inspectOrphanGraphFiles(rootDir);
+  // A live maintenance run legitimately owns its in-progress candidate.
+  if (files.maintenanceActive) return [];
+  const diagnostics: Diagnostic[] = [];
+  if (files.candidates.length > 0) {
+    // Refresh and repair sweep as soon as they hold the lease, even when they
+    // then decline the store; only a missing index is refused before that.
+    const command = status.status === "missing" ? "mex graph rebuild" : "mex graph refresh";
+    diagnostics.push({
+      code: "GRAPH_INDEX_ORPHAN_CANDIDATE",
+      severity: "warning",
+      message: `${files.candidates.length} leftover graph build candidate file(s) from an interrupted `
+        + "maintenance run are using disk space; the next `mex graph refresh`, `repair`, or `rebuild` "
+        + "removes them.",
+      detail: { paths: files.candidates },
+      remediation: [{ label: "Remove leftover candidates", command }],
+    });
+  }
+  if (files.retained.length > 0) {
+    diagnostics.push({
+      code: "GRAPH_INDEX_RECOVERY_DATA_PRESENT",
+      severity: "info",
+      message: `${files.retained.length} retained graph recovery file(s) are present under .mex/; `
+        + "delete them by hand once you no longer need the prior graph bytes.",
+      detail: { paths: files.retained },
+    });
+  }
+  return diagnostics;
 }
 
 /** Explicit correctness-first refresh through the existing full semantic sync path. */
