@@ -1,11 +1,56 @@
 import { describe, expect, it, vi } from "vitest";
 import type { HubJobSnapshot } from "../types.js";
 import { createWikiJobExecutors } from "../wiki.js";
+import { performance } from "node:perf_hooks";
 import type { RepositoryWikiPort } from "../../../wiki/application-adapter.js";
 
 const job = {} as HubJobSnapshot;
+type WikiRebuildContext = NonNullable<Parameters<RepositoryWikiPort["rebuildIndex"]>[0]>;
 
 describe("createWikiJobExecutors", () => {
+  it("samples rapid counts while immediately forwarding phases and completion", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      const reportProgress = vi.fn();
+      const wiki = { rebuildIndex: async (context: WikiRebuildContext) => {
+        for (let completed = 0; completed <= 40; completed++) {
+          context.reportProgress?.({ phase: "parse", completed, total: 40, message: "private source" });
+        }
+        context.reportProgress?.({ phase: "resolve", message: "private source" });
+        clock.mockReturnValue(100);
+        context.reportProgress?.({ phase: "resolve", completed: 1, total: 2, message: "private source" });
+        context.reportProgress?.({ phase: "publish", message: "private source" });
+      } } as unknown as RepositoryWikiPort;
+      await createWikiJobExecutors(wiki).wiki_rebuild?.({
+        job, signal: new AbortController().signal, reportProgress,
+      });
+      expect(reportProgress.mock.calls.map(([progress]) => progress)).toEqual([
+        { phase: "parse", completed: 0, total: 40 },
+        { phase: "parse", completed: 40, total: 40 },
+        { phase: "resolve" },
+        { phase: "resolve", completed: 1, total: 2 },
+        { phase: "publish" },
+      ]);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("checks cancellation even when an intermediate count would be skipped", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      const controller = new AbortController();
+      const reportProgress = vi.fn();
+      const wiki = { rebuildIndex: async (context: WikiRebuildContext) => {
+        context.reportProgress?.({ phase: "parse", completed: 0, total: 40, message: "private source" });
+        controller.abort();
+        context.reportProgress?.({ phase: "parse", completed: 1, total: 40, message: "private source" });
+      } } as unknown as RepositoryWikiPort;
+      await expect(createWikiJobExecutors(wiki).wiki_rebuild?.({
+        job, signal: controller.signal, reportProgress,
+      })).rejects.toThrow();
+      expect(reportProgress).toHaveBeenCalledOnce();
+    } finally { clock.mockRestore(); }
+  });
+
   it("discovers the exact changed set and forwards cancellation and numeric phases", async () => {
     const discoverRefreshPaths = vi.fn(async () => [
       ".mex/context/architecture.md",

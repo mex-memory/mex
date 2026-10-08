@@ -1,4 +1,5 @@
 import type { IndexProgress } from "../../team/contracts/shared.js";
+import { performance } from "node:perf_hooks";
 import type { RepositoryWikiPort } from "../../wiki/application-adapter.js";
 import type { HubJobExecutors, HubJobProgressUpdate } from "./types.js";
 
@@ -14,15 +15,35 @@ export function createWikiJobExecutors(wiki: RepositoryWikiPort): HubJobExecutor
       if (changedPaths.length === 0) return;
       await wiki.refreshFiles(changedPaths, {
         signal,
-        reportProgress: (progress) => reportProgress(projectProgress(progress)),
+        reportProgress: boundedProgress(signal, reportProgress),
       });
     },
     wiki_rebuild: async ({ signal, reportProgress }) => {
       await wiki.rebuildIndex({
         signal,
-        reportProgress: (progress) => reportProgress(projectProgress(progress)),
+        reportProgress: boundedProgress(signal, reportProgress),
       });
     },
+  };
+}
+
+/** Persist phase changes and completion immediately; sample intermediate counts. */
+function boundedProgress(
+  signal: AbortSignal,
+  report: (progress: HubJobProgressUpdate) => void,
+): (progress: IndexProgress) => void {
+  let lastPhase: HubJobProgressUpdate["phase"];
+  let lastReport = -Infinity;
+  return (progress) => {
+    signal.throwIfAborted();
+    const projected = projectProgress(progress);
+    const now = performance.now();
+    const complete = progress.total !== undefined && progress.completed === progress.total;
+    if (projected.phase !== lastPhase || complete || now - lastReport >= 100) {
+      report(projected);
+      lastPhase = projected.phase;
+      lastReport = now;
+    }
   };
 }
 

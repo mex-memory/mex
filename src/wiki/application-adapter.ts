@@ -1399,9 +1399,9 @@ export class RepositoryWikiPort implements WikiPort<
         () => this.#prepareRefresh(normalized, context, null),
       );
       if (!result.ok) throw errorForDiagnostics([result.diagnostic], "The Wiki index could not be refreshed.");
-      const status = this.#inspect();
-      if (status.indexedRevision === null) throw indexError(status);
       const counts = await this.#countIndex();
+      const status = counts.status;
+      if (status.indexedRevision === null) throw indexError(status);
       this.#postWriteRefreshFailed = false;
       return {
         state: "succeeded" as const,
@@ -1444,9 +1444,9 @@ export class RepositoryWikiPort implements WikiPort<
           result.diagnostics.map(projectDiagnostic),
         );
       }
-      const status = this.#inspect();
-      if (status.indexedRevision === null) throw indexError(status);
       const counts = await this.#countIndex();
+      const status = counts.status;
+      if (status.indexedRevision === null) throw indexError(status);
       this.#postWriteRefreshFailed = false;
       return {
         state: "succeeded" as const,
@@ -2375,7 +2375,7 @@ export class RepositoryWikiPort implements WikiPort<
     });
   }
 
-  async #countIndex(): Promise<{ entities: number; relations: number }> {
+  async #countIndex(): Promise<{ entities: number; relations: number; status: ContractWikiIndexStatus }> {
     return this.#read((session) => {
       let entities = 0;
       let relations = 0;
@@ -2401,7 +2401,9 @@ export class RepositoryWikiPort implements WikiPort<
         }
         cursor = page.nextCursor ?? undefined;
       } while (cursor !== undefined);
-      return { entities, relations };
+      // Counts and revision come from the same descriptor-bound read, which
+      // still revalidates the index and canonical corpus before returning.
+      return { entities, relations, status: session.status() };
     });
   }
 

@@ -162,11 +162,20 @@ export function createWikiIndex(path: string): WikiIndexHandle {
   configureConnection(db);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  db.exec(WIKI_SCHEMA_SQL);
-  db.prepare(`INSERT INTO wiki_meta (key, value) VALUES (?, ?)`).run(
-    WIKI_META_KEYS.schemaVersion,
-    String(WIKI_SCHEMA_VERSION),
-  );
+  try {
+    // The private candidate needs one durable schema commit, rather than a
+    // separate WAL sync for every table and index declaration.
+    db.transaction(() => {
+      db.exec(WIKI_SCHEMA_SQL);
+      db.prepare(`INSERT INTO wiki_meta (key, value) VALUES (?, ?)`).run(
+        WIKI_META_KEYS.schemaVersion,
+        String(WIKI_SCHEMA_VERSION),
+      );
+    });
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   return handle(db, path, WIKI_SCHEMA_VERSION);
 }
 

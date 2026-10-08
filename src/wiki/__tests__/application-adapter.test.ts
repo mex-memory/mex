@@ -253,6 +253,41 @@ New bounded Wiki content.
     expect((await port.getEntity(ENTITY))?.location.path).toBe(".mex/context/architecture.md");
   });
 
+  it("reports maintenance counts and revision from one revalidated read", async () => {
+    const target = project();
+    let reads = 0;
+    let inspections = 0;
+    const port = createRepositoryWikiPort(target.root, { __internal: {
+      inspect() { inspections++; throw new Error("redundant inspection"); },
+      read(options, callback) {
+        reads++;
+        return withWikiContractReadSession(options, callback);
+      },
+    } });
+    const rebuilt = await port.rebuildIndex();
+    expect(rebuilt).toMatchObject({ entitiesIndexed: 3, relationsIndexed: 1 });
+    expect(rebuilt.indexedRevision).toMatch(/^[a-f0-9]{64}$/);
+    await expect(port.refreshFiles([".mex/context/architecture.md"])).resolves.toMatchObject({
+      entitiesIndexed: 3, relationsIndexed: 1, indexedRevision: rebuilt.indexedRevision,
+    });
+    expect(reads).toBe(2);
+    expect(inspections).toBe(0);
+  });
+
+  it("rejects a maintenance census when canonical files change during its read", async () => {
+    const target = project();
+    const port = createRepositoryWikiPort(target.root, { __internal: {
+      read(options, callback) {
+        return withWikiContractReadSession(options, (session) => {
+          const result = callback(session);
+          writeFileSync(target.firstPath, readFileSync(target.firstPath, "utf8") + "\nConcurrent edit.\n");
+          return result;
+        });
+      },
+    } });
+    await expectCode(() => port.rebuildIndex(), "REVISION_CONFLICT");
+  });
+
   it("reads Inbox targets only from a fresh same-session Wiki snapshot without consulting Graph", async () => {
     const target = project(true);
     await createRepositoryWikiPort(target.root).rebuildIndex();

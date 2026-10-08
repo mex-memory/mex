@@ -18,7 +18,7 @@ mex:
   id: mx_01M1M0CJKZF3ABC1PQREMA2HYR
   type: pattern
   status: promoted
-  revision: 5
+  revision: 6
   title: fresh-graph-hub-integration
   grounds_to:
     - node: function:9099fdd7e5562f7507cc7e80a6d67f1e
@@ -97,6 +97,14 @@ or make Wiki availability appear real.
    gaps with production fixtures.
 
 ## Gotchas
+
+- Explicit Wiki maintenance samples intermediate Hub progress at most once
+  per 100 ms; phase transitions and completion are persisted immediately, and
+  every callback still checks cancellation. Avoid a durable job write for each
+  parsed file. Create the private index schema in one transaction, and report
+  maintenance counts and revision from one revalidated Wiki read session rather
+  than inspecting the published corpus twice. Keep publication and final
+  Graph/Wiki freshness proofs intact when optimizing maintenance latency.
 
 - Existing broad entities need an explicit knowledge upgrade, not a setup
   rerun. `mex wiki upgrade` is read-only by default and caps its agent review

@@ -109,6 +109,24 @@ describe("opening the index", () => {
     expect(existsSync(path)).toBe(false);
   });
 
+  it("durably creates the complete schema and version together", () => {
+    scaffold = createScaffold();
+    const path = join(scaffold.root, "wiki.db");
+    const created = createWikiIndex(path);
+    expect(created.db.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
+    created.close();
+    const result = openWikiIndex(path);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.diagnostic.message);
+    try {
+      expect(result.index.schemaVersion).toBe(WIKI_SCHEMA_VERSION);
+      for (const table of WIKI_TABLES) {
+        expect(() => result.index.db.prepare(`SELECT * FROM ${table} LIMIT 0`).all()).not.toThrow();
+      }
+      expect(result.index.db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+    } finally { result.index.close(); }
+  });
+
   it("reports a corrupt index rather than throwing", () => {
     scaffold = createScaffold();
     const path = join(scaffold.root, "wiki.db");
