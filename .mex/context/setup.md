@@ -20,7 +20,7 @@ edges:
 # Ground only setup behavior implemented by specific code symbols.
 # Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh2:64:<base64url>" }
 grounds_to: []
-last_updated: 2026-09-13
+last_updated: "2026-10-08"
 mex:
   id: mx_01M1M0CJGBPPFPWHY980PMTS2T
   type: guide
@@ -48,7 +48,11 @@ mex:
 id: mx_01M1M0CJFM7745E5H4WNP73T2G
 type: guide
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJGBPPFPWHY980PMTS2T
+    note: Section of setup in context/setup.md
 -->
 ## Prerequisites
 
@@ -61,7 +65,11 @@ revision: 1
 id: mx_01M1M0CJEX81H4G5X2CV5K65FA
 type: guide
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJGBPPFPWHY980PMTS2T
+    note: Section of setup in context/setup.md
 -->
 ## First-time Setup
 
@@ -77,7 +85,11 @@ revision: 1
 id: mx_01M1M0CJE778KMAJA005V2RWWN
 type: guide
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJGBPPFPWHY980PMTS2T
+    note: Section of setup in context/setup.md
 -->
 ## Environment Variables
 
@@ -92,7 +104,11 @@ revision: 1
 id: mx_01M1M0CJDF75G8KWY5VY3ZWD5A
 type: guide
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJGBPPFPWHY980PMTS2T
+    note: Section of setup in context/setup.md
 -->
 ## Common Commands
 
@@ -109,7 +125,11 @@ revision: 1
 id: mx_01M1M0CJCRH0R5BV8T5R7NPPQ6
 type: guide
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJGBPPFPWHY980PMTS2T
+    note: Section of setup in context/setup.md
 -->
 ## Common Issues
 
