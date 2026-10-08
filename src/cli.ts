@@ -754,6 +754,29 @@ wikiCommand
     await runReground(await groundedWikiIo(), id, options);
   });
 
+wikiCommand
+  .command("link-sections")
+  .description("Connect existing knowledge sections to their enclosing knowledge; writes only with --apply")
+  .option("--apply", "write the planned structural relationships")
+  .option("--dry-run", "plan only, even if --apply was given")
+  .option("--json", "emit one enveloped JSON object")
+  .action(async (options) => {
+    const { runLinkSections } = await import("./wiki/cli/commands.js");
+    await runLinkSections(await groundedWikiIo(), options);
+  });
+
+wikiCommand
+  .command("upgrade")
+  .description("Preview an existing scaffold's review for one code-linked fact per entity; --apply starts an interactive agent")
+  .option("--apply", "start the explicit agent review, rather than preview only")
+  .option("--dry-run", "preview only, even if --apply was given")
+  .option("--after <entity-id>", "resume bounded review after an existing entity id")
+  .option("--tool <name>", "optional interactive CLI override; otherwise uses the same agent chooser as mex sync")
+  .action(async (options) => {
+    const { runKnowledgeUpgrade } = await import("./sync/knowledge-upgrade.js");
+    await runKnowledgeUpgrade(loadConfig(), options);
+  });
+
 /**
  * The synthesis wiring: the code graph, and an agent launcher.
  *

@@ -51,6 +51,7 @@ The repo is indexed into `.mex/graph.db`. Use it to avoid re-reading code you al
 After meaningful work, run GROW:
 - Ground: what changed in reality?
 - Record: update `ROUTER.md` and relevant `context/` files
+- Connect: keep each section linked to its enclosing knowledge with `refines`; preview missing structural links with `mex wiki link-sections`, then apply explicitly. Add semantic relationships only with evidence; backlinks are derived.
 - Orient: create or update a `patterns/` runbook if this can recur
 - Write: bump `last_updated` on changed scaffold files; optional `mex log` notes follow the logging policy below
 

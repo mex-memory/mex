@@ -23,10 +23,17 @@ describe("population guidance for code-linked claims", () => {
     it(`asks to ground every symbol a claim depends on (${name})`, () => {
       expect(prompt).toContain("grounded to **every** symbol whose change could make it false");
     });
+
+    it(`connects split claims with supported canonical relationships (${name})`, () => {
+      expect(prompt).toContain("mex wiki link-sections --apply");
+      expect(prompt).toContain("File-level edges alone do not connect");
+      expect(prompt).toContain("never invent connections");
+    });
   }
 
   it("carries the same rule into GROW", () => {
     const router = readFileSync(new URL("../templates/ROUTER.md", import.meta.url), "utf8");
     expect(router).toContain("grounded to every symbol whose change could make it false");
+    expect(router).toContain("mex wiki link-sections");
   });
 });

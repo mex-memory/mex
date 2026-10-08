@@ -101,6 +101,21 @@ describe("Context graph repository reads", () => {
     expect(readFileSync(index)).toEqual(before);
   });
 
+  it("keeps an authored parent outside the first page visible without raising the node cap", async () => {
+    const target = fixture(101);
+    const text = readFileSync(target.path, "utf8").replace(
+      `    target: ${id(1)}`, `    target: ${id(100)}`
+    ).replace("type: related_to", "type: refines");
+    writeFileSync(target.path, text);
+    const port = createRepositoryWikiPort(target.root);
+    await port.rebuildIndex();
+    const graph = await port.graphOverview();
+    expect(graph.nodes).toHaveLength(100);
+    expect(graph.nodes.some(node => node.ref.id === id(100))).toBe(true);
+    expect(graph.relations).toMatchObject([{ type: "refines", source: { id: id(0) }, target: { id: id(100) } }]);
+    expect(graph.coverage.nodesTruncated).toBe(true);
+  });
+
   it("reads compact symbols and grounding health through one shared Graph observation", async () => {
     const target = fixture(3, false, true);
     await createRepositoryWikiPort(target.root).rebuildIndex();

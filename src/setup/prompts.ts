@@ -80,6 +80,11 @@ shadow the source being populated.
    Name the identifiers and literals the claim depends on in its body (for
    example \`parseBody()\`, \`302\`): drift checks compare them against what
    changed. Doc, config and broad overview prose stays grouped in its file.
+   Connect each section to its enclosing document or section using a canonical
+   \`refines\` relation and the existing entity id. After splitting claims, run
+   \`mex wiki link-sections\` to preview, then \`mex wiki link-sections --apply\`
+   to repair missing structural links. Review meaningful cross-file relations
+   separately; never infer dependencies merely from shared words or code links.
 5. Broad architecture/stack/conventions files should ground sparsely or remain
    \`grounds_to: []\`. Pattern files and deep domain files should ground tightly
    to the few symbols that implement their documented behavior. Grounding must
@@ -141,6 +146,13 @@ using anchor links (see INDEX.md annotation for format).
 
 PASS 3 — Wire the web:
 
+File-level edges alone do not connect separately addressable claim entities.
+Preserve existing canonical relations; connect sections to their enclosing
+knowledge with \`refines\` and existing ids. Preview missing structural links
+with \`mex wiki link-sections\`, then apply them explicitly. Add cross-entity
+\`depends_on\`, \`implements\` or \`related_to\` only when the content supports it;
+never invent connections to meet a count or duplicate inverse backlinks.
+
 Re-read every scaffold file you audited or wrote (.mex/context/ files, pattern
 files, .mex/ROUTER.md).
 For each file, add or update the edges array in the YAML frontmatter.
@@ -148,8 +160,8 @@ Each edge should point to another scaffold file that is meaningfully related,
 with a condition explaining when an agent should follow that edge.
 
 Rules for edges:
-- Every context/ file should have at least 2 edges
-- Every pattern file should have at least 1 edge (usually to the relevant context file)
+- Add only meaningful edges supported by the content; there is no minimum count
+- A pattern can link to its relevant context file when that connection is supported
 - Edges should be bidirectional where it makes sense (if A links to B, consider B linking to A)
 - Edge targets are relative to the .mex/ scaffold root (e.g.,
   context/stack.md, patterns/add-endpoint.md)

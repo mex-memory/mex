@@ -42,6 +42,7 @@ import { tryEnsureSetupIgnoreProtection } from "../../setup/ignore.js";
 import type { WikiDiagnostic } from "../model/diagnostic.js";
 import { inspectDirectWikiSpecMutation } from "./spec-authoring-boundary.js";
 import { wikiRegroundEntity } from "../service/reground.js";
+import { wikiLinkSections } from "../service/link-sections.js";
 import {
   graphDiagnostics,
   publishWithGraph,
@@ -472,6 +473,20 @@ export async function runReground(io: CommandIo, id: string, flags: CommandFlags
     }
     if (data.apply?.applied) io.write(chalk.green(`re-recorded ${data.entityId} — ${data.apply.changedFiles.join(", ")}`));
     else if (data.apply?.planned) io.write(chalk.dim("planned only — re-run with --apply to write"));
+  });
+}
+
+export async function runLinkSections(io: CommandIo, flags: CommandFlags): Promise<void> {
+  const write = flags.apply === true && flags.dryRun !== true;
+  const run = (graph: import("../grounding/adapter.js").GroundingGraph | null) =>
+    wikiLinkSections({ ...serviceOptions(io), graph, apply: write });
+  const { value, unavailable } = write
+    ? await writeWithGraph(io.groundingBridge, run)
+    : await readWithGraph(io.groundingBridge, run);
+  emit(io, { ...value, diagnostics: [...value.diagnostics, ...graphDiagnostics(unavailable)] }, flags, data => {
+    io.write(`${data.links.length} section connections${data.applied ? " written" : " planned"}`);
+    for (const link of data.links) io.write(`${link.source} → ${link.target} (${link.file})`);
+    if (!write && data.links.length) io.write("Re-run with --apply to write these relationships.");
   });
 }
 

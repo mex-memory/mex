@@ -490,7 +490,25 @@ export class RepositoryWikiPort implements WikiPort<
       const status = session.status();
       if (status.state !== "fresh") throw indexError(status);
       const page = session.list({ kinds: WIKI_ENTITY_TYPES, includeArchived: true, limit: MAX_CONTEXT_NODES });
-      const nodes = page.items.map((entity) => this.#projectCurrentSummary(session, graph, entity));
+      // Keep authored parents visible even when alphabetic paging excludes them.
+      // Promote at most 25 targets from the existing bounded outgoing scan;
+      // retain room for disconnected records and never fabricate relationships.
+      const parents = new Map<string, ContractEntitySummary>();
+      const initialIds = new Set(page.items.map(entity => entity.id));
+      for (const entity of page.items) {
+        if (parents.size === 25) break;
+        const edges = session.relations({ entityId: entity.id, direction: "outgoing", includeArchived: true, limit: 100 });
+        for (const hit of edges.items) {
+          if (hit.relation.type === "refines" && hit.entity !== null
+            && !initialIds.has(hit.entity.id)
+            && (WIKI_ENTITY_TYPES as readonly string[]).includes(hit.entity.type)) {
+            parents.set(hit.entity.id, hit.entity);
+            if (parents.size === 25) break;
+          }
+        }
+      }
+      const selected = [...page.items.slice(0, MAX_CONTEXT_NODES - parents.size), ...parents.values()];
+      const nodes = selected.map((entity) => this.#projectCurrentSummary(session, graph, entity));
       const included = new Set(nodes.map((entity) => entity.ref.id));
       const relations: WikiRelation[] = [];
       let relationsTruncated = false;

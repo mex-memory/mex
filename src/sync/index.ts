@@ -55,7 +55,7 @@ export function runToolInteractive(
 }
 
 /** Pick which AI tool to use for interactive sync */
-async function pickSyncTool(configuredTools: AiTool[]): Promise<AiTool | null> {
+export async function pickSyncTool(configuredTools: AiTool[]): Promise<AiTool | null> {
   // Filter to tools that have a CLI and are installed
   let available = configuredTools.filter((t) => {
     const meta = AI_TOOLS[t];
