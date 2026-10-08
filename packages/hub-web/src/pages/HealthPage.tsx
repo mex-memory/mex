@@ -48,12 +48,33 @@ function HealthIcon({ status }: { status: string }) {
 
 function Diagnostics({ diagnostics }: { diagnostics: HealthComponent["diagnostics"] }) {
   if (!diagnostics.length) return null;
+  const groups = new Map<string, HealthComponent["diagnostics"]>();
+  for (const diagnostic of diagnostics) {
+    const key = JSON.stringify([diagnostic.severity, diagnostic.message]);
+    const group = groups.get(key);
+    if (group) group.push(diagnostic);
+    else groups.set(key, [diagnostic]);
+  }
 
   return (
     <ul className={healthStyles.diagnosticList}>
-      {diagnostics.map((diagnostic, index) => (
-        <li key={`${diagnostic.code}-${index}`} data-severity={diagnostic.severity}>{diagnostic.message}</li>
-      ))}
+      {[...groups].map(([key, group]) => {
+        const diagnostic = group[0]!;
+        return (
+          <li key={key} data-severity={diagnostic.severity}>
+            {group.length === 1 ? diagnostic.message : (
+              <details>
+                <summary>{diagnostic.message} ({group.length} occurrences)</summary>
+                <ul className={healthStyles.diagnosticList}>
+                  {group.map((item, index) => (
+                    <li key={index}><code>{item.code}</code>{item.path ? <> — <code>{item.path}</code></> : null}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
