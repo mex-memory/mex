@@ -384,6 +384,21 @@ status: promoted
       return wikiSearch({ scaffoldRoot: directory, text: "GraphQL federation" }).diagnostics;
     }),
 
+  WIKI_HEALTH_UNCHECKED: () =>
+    inScratch((directory) => {
+      mkdirSync(join(directory, "context"), { recursive: true });
+      writeFileSync(
+        join(directory, "context", "notes.md"),
+        [`<!-- mex:entity`, `id: ${OPS_ID}`, "type: decision", "status: promoted", "revision: 1", "grounds_to:",
+          "  - node: function:0123456789abcdef", "    fingerprint: mh:64:00", "-->", "## Rotate refresh tokens", "",
+          "Tokens rotate on every refresh."].join(String.fromCharCode(10)),
+        "utf-8",
+      );
+      // Built without a graph: the grounding carries no verdict.
+      rebuildWikiIndex({ scaffoldRoot: directory });
+      return wikiSearch({ scaffoldRoot: directory, text: "rotate refresh tokens" }).diagnostics;
+    }),
+
   WIKI_QUERY_PARTIAL_MATCH: () =>
     inScratch((directory) => {
       indexedSearchScaffold(directory);

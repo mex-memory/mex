@@ -898,6 +898,34 @@ describe("Search states", () => {
 });
 
 describe("Health states", () => {
+  it("groups repeated health messages while preserving severity and diagnostic details", async () => {
+    const fixture = createFixtureApi();
+    const health = await fixture.getHealth();
+    const message = "A Knowledge code link could not be found in the current graph.";
+    renderRoute("/health", apiWith({ getHealth: () => Promise.resolve({
+      ...health,
+      components: [{
+        id: "wiki", label: "Wiki index", status: "degraded", summary: "Knowledge needs review.",
+        diagnostics: [
+          { code: "GROUNDING_MISSING", severity: "warning", message, path: ".mex/context/first.md" },
+          { code: "GROUNDING_MISSING", severity: "warning", message, path: ".mex/context/second.md" },
+          { code: "OTHER_DIAGNOSTIC", severity: "warning", message },
+          { code: "GROUNDING_MISSING", severity: "error", message },
+        ],
+      }],
+    }) }));
+    const summary = await screen.findByText(`${message} (3 occurrences)`);
+    const details = summary.closest("details")!;
+    expect(details).not.toHaveAttribute("open");
+    expect(screen.getByText(message).closest("li")).toHaveAttribute("data-severity", "error");
+    await userEvent.setup().click(summary);
+    expect(details).toHaveAttribute("open");
+    expect(within(details).getByText(".mex/context/first.md")).toBeVisible();
+    expect(within(details).getByText(".mex/context/second.md")).toBeVisible();
+    expect(within(details).getByText("OTHER_DIAGNOSTIC")).toBeVisible();
+    expect(within(details).getAllByRole("listitem")).toHaveLength(3);
+  });
+
   it("renders its loading state while the read-only inspection is pending", async () => {
     renderRoute("/health", apiWith({ getHealth: () => pending<HealthResponse>() }));
 

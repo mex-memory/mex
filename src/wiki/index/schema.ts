@@ -29,7 +29,7 @@
  * `openWikiIndex`, never a throw from inside an open and never a silent
  * rebuild on a read path.
  */
-export const WIKI_SCHEMA_VERSION = 3;
+export const WIKI_SCHEMA_VERSION = 4;
 
 /** Every table the schema declares, for the packaging and dump tests. */
 export const WIKI_TABLES = [
@@ -200,6 +200,8 @@ CREATE TABLE wiki_groundings (
   node_id       TEXT NOT NULL,
   fingerprint   TEXT NOT NULL,
   body_hash     TEXT,
+  -- The committed comment-free code hash (#236), as Markdown spells it.
+  code_hash     TEXT,
   file          TEXT,
   commit_sha    TEXT,
   verified_at   TEXT,

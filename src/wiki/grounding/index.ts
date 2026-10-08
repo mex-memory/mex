@@ -19,4 +19,4 @@ export {
   deriveVerifiedGroundings,
   isGraphDerivedGrounding,
 } from "./provenance.js";
-export { resolveEntityGroundings, resolveGrounding, type EntityResolution } from "./resolve.js";
+export { resolveEntityGroundings, resolveGrounding, type EntityResolution, type GroundingContext } from "./resolve.js";

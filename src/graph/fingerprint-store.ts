@@ -216,6 +216,14 @@ export class FingerprintStore {
     return row ? decodeBaseline(row) : null;
   }
 
+  /** Any recorded baseline body whose hash is `bodyHash`, whichever subject recorded it. */
+  sourceByBodyHash(bodyHash: string): string | null {
+    const row = this.db.prepare(
+      "SELECT source FROM _mex_grounded_source WHERE body_hash = ? LIMIT 1",
+    ).get(bodyHash) as { source: string } | undefined;
+    return row?.source ?? null;
+  }
+
   /** Every baseline recorded for one subject, in node order. */
   listBaselines(subject: GroundingSubject): GroundingBaseline[] {
     const rows = this.db.prepare(

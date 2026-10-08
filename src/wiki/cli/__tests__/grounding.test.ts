@@ -139,43 +139,23 @@ function codes(lines: readonly string[]): string[] {
 }
 
 describe("wiki validate", () => {
-  it("resolves groundings against a fresh graph", async () => {
-    const changed = cli(bridge(graphWithBody("body-2")));
-    await runValidate(changed.io, { json: true });
-    expect(envelope(changed.lines).data).toMatchObject({ codeGraphAvailable: true, groundingsUnverified: false });
-    expect(codes(changed.lines)).toContain("GROUNDING_STALE");
+  it("checks structure only and never opens the code graph", async () => {
+    let opened = false;
+    const watched = bridge(graphWithBody("body-2"));
+    const spy = new Proxy(watched, {
+      get(target, key, receiver) {
+        if (key === "withFreshGroundingSnapshot") opened = true;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const run = cli(spy);
+    await runValidate(run.io, { json: true });
+    expect(codes(run.lines)).not.toContain("GROUNDING_STALE");
+    expect(opened).toBe(false);
 
-    const fresh = cli(bridge(graphWithBody("body-1")));
-    await runValidate(fresh.io, { json: true });
-    expect(codes(fresh.lines)).not.toContain("GROUNDING_STALE");
-  });
-
-  it("says why when the graph refuses a snapshot, and resolves nothing", async () => {
-    const stale = cli(bridge(graphWithBody("body-2"), { refuse: "INDEX_STALE" }));
-    await runValidate(stale.io, { json: true });
-    expect(envelope(stale.lines).data).toMatchObject({ codeGraphAvailable: false, groundingsUnverified: true });
-    expect(codes(stale.lines)).toContain("CODE_GRAPH_UNAVAILABLE");
-    expect(codes(stale.lines)).not.toContain("GROUNDING_STALE");
-
-    const human = cli(bridge(graphWithBody("body-2"), { refuse: "INDEX_STALE" }));
+    const human = cli(bridge(graphWithBody("body-2")));
     await runValidate(human.io, {});
-    expect(human.lines.join("\n")).toContain("the code graph could not be used for this pass");
-  });
-
-  it("treats a checkout with no graph as ordinary, not as a problem", async () => {
-    const missing = cli(bridge(graphWithBody("body-1"), { refuse: "INDEX_MISSING" }));
-    await runValidate(missing.io, {});
-    const output = missing.lines.join("\n");
-    expect(output).toContain("this checkout has no code graph");
-    expect(output).not.toContain("CODE_GRAPH_UNAVAILABLE");
-  });
-
-  it("drops verdicts from a snapshot that failed its final freshness proof", async () => {
-    const moved = cli(bridge(graphWithBody("body-2"), { failFinalProof: true }));
-    await runValidate(moved.io, { json: true });
-    expect(envelope(moved.lines).data.codeGraphAvailable).toBe(false);
-    expect(codes(moved.lines)).toContain("CODE_GRAPH_UNAVAILABLE");
-    expect(codes(moved.lines)).not.toContain("GROUNDING_STALE");
+    expect(human.lines.join("\n")).toContain("`mex check` checks every code link");
   });
 });
 

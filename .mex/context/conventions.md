@@ -22,7 +22,7 @@ edges:
 #   - node: "function:<tier-1-id>"
 #     fingerprint: "mh2:64:<base64url>"
 grounds_to: []
-last_updated: 2026-09-06
+last_updated: "2026-10-08"
 mex:
   id: mx_01M1M0CJ9460AT00V8TH0QCKAC
   type: convention
@@ -50,7 +50,11 @@ mex:
 id: mx_01M1M0CJ8E6KNBAMXBK7GBCGPM
 type: convention
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJ9460AT00V8TH0QCKAC
+    note: Section of conventions in context/conventions.md
 -->
 ## Naming
 
@@ -63,7 +67,11 @@ revision: 1
 id: mx_01M1M0CJ7QBQSRTSBWQTPSR3R8
 type: convention
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJ9460AT00V8TH0QCKAC
+    note: Section of conventions in context/conventions.md
 -->
 ## Structure
 
@@ -77,7 +85,11 @@ revision: 1
 id: mx_01M1M0CJ6XGNARCADMW3ABZPJT
 type: convention
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJ9460AT00V8TH0QCKAC
+    note: Section of conventions in context/conventions.md
 -->
 ## Patterns
 
@@ -91,7 +103,11 @@ revision: 1
 id: mx_01M1M0CJ65DM25FSRADTNKX2D3
 type: convention
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJ9460AT00V8TH0QCKAC
+    note: Section of conventions in context/conventions.md
 -->
 ## Verify Checklist
 

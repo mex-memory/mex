@@ -93,6 +93,13 @@ export interface WikiGrounding {
  */
 export type GroundingState = "fresh" | "stale" | "missing" | "unresolved" | "ungrounded";
 
+/** Why a changed body still resolved fresh. */
+export interface GroundingDriftNote {
+  kind: "comment-only" | "layout-only" | "changed-nearby";
+  /** For `changed-nearby`: the tokens of the fact that the change left alone. */
+  anchors?: string[];
+}
+
 /** Derived, per-checkout health. Never written to Markdown. */
 export type GroundingHealth = "fresh" | "changed" | "missing" | "ambiguous" | "unverified";
 
@@ -123,6 +130,12 @@ export type GroundingResolution =
       /** True when reconciliation rebound a moved symbol. */
       rebound: boolean;
       bodyHash: string;
+      /**
+       * Set when the body differs from the committed hash in a way that does
+       * not reach the fact: only comments, only layout, or lines away from
+       * everything the fact names. Information for a reviewer, not a warning.
+       */
+      drift?: GroundingDriftNote;
     }
   | {
       state: "stale";

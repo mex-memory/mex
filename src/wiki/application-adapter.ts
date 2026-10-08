@@ -490,7 +490,25 @@ export class RepositoryWikiPort implements WikiPort<
       const status = session.status();
       if (status.state !== "fresh") throw indexError(status);
       const page = session.list({ kinds: WIKI_ENTITY_TYPES, includeArchived: true, limit: MAX_CONTEXT_NODES });
-      const nodes = page.items.map((entity) => this.#projectCurrentSummary(session, graph, entity));
+      // Keep authored parents visible even when alphabetic paging excludes them.
+      // Promote at most 25 targets from the existing bounded outgoing scan;
+      // retain room for disconnected records and never fabricate relationships.
+      const parents = new Map<string, ContractEntitySummary>();
+      const initialIds = new Set(page.items.map(entity => entity.id));
+      for (const entity of page.items) {
+        if (parents.size === 25) break;
+        const edges = session.relations({ entityId: entity.id, direction: "outgoing", includeArchived: true, limit: 100 });
+        for (const hit of edges.items) {
+          if (hit.relation.type === "refines" && hit.entity !== null
+            && !initialIds.has(hit.entity.id)
+            && (WIKI_ENTITY_TYPES as readonly string[]).includes(hit.entity.type)) {
+            parents.set(hit.entity.id, hit.entity);
+            if (parents.size === 25) break;
+          }
+        }
+      }
+      const selected = [...page.items.slice(0, MAX_CONTEXT_NODES - parents.size), ...parents.values()];
+      const nodes = selected.map((entity) => this.#projectCurrentSummary(session, graph, entity));
       const included = new Set(nodes.map((entity) => entity.ref.id));
       const relations: WikiRelation[] = [];
       let relationsTruncated = false;
@@ -544,7 +562,7 @@ export class RepositoryWikiPort implements WikiPort<
       if (entity === null || !(WIKI_ENTITY_TYPES as readonly string[]).includes(entity.type)) {
         throw portError("NOT_FOUND", 404, "Wiki entity not found", "The requested Context entity does not exist.");
       }
-      const projected = projectGroundings(entity.groundings.slice(0, MAX_CODE_LOOKUP_NODES), stableObservationTime(session), graph);
+      const projected = projectGroundings(entity.groundings.slice(0, MAX_CODE_LOOKUP_NODES), stableObservationTime(session), graph, factOf(entity));
       const groundings = projected.flatMap((grounding) => grounding.state === "ungrounded" ? [] : [{
         requestedNode: grounding.requestedNode,
         resolvedNode: grounding.state === "fresh" || grounding.state === "stale"
@@ -635,7 +653,7 @@ export class RepositoryWikiPort implements WikiPort<
           ...common,
           selection: {
             kind: "groundings" as const,
-            results: projectGroundings(entity.groundings, stableObservationTime(session), graph),
+            results: projectGroundings(entity.groundings, stableObservationTime(session), graph, factOf(entity)),
           },
         };
       }
@@ -935,7 +953,7 @@ export class RepositoryWikiPort implements WikiPort<
     return {
       ...projectSummary(summary),
       groundingHealth: aggregateWikiGroundingHealth(
-        projectGroundings(groundings, stableObservationTime(session), graph),
+        projectGroundings(groundings, stableObservationTime(session), graph, summaryFact(session, summary, graph)),
       ),
     };
   }
@@ -986,7 +1004,7 @@ export class RepositoryWikiPort implements WikiPort<
     return this.#readCurrent((session, graph) => {
       const entity = session.get(id);
       if (entity === null) throw portError("NOT_FOUND", 404, "Wiki entity not found", "The requested Wiki entity does not exist.");
-      return projectGroundings(entity.groundings, stableObservationTime(session), graph);
+      return projectGroundings(entity.groundings, stableObservationTime(session), graph, factOf(entity));
     });
   }
 
@@ -2460,11 +2478,11 @@ export class RepositoryWikiPort implements WikiPort<
         throw new Error("injected-operation-index-refresh-failure");
       };
     }
-    return (grounding) => {
+    return (grounding, context) => {
           if (this.#options.__internal?.failOperationIndexRefresh?.() === true) {
             throw new Error("injected-operation-index-refresh-failure");
           }
-          return resolveGrounding(grounding, graph);
+          return resolveGrounding(grounding, graph, context);
         };
   }
 
@@ -2683,7 +2701,7 @@ function projectEntity(
   observedAt: string,
   graph: GroundingGraph | null,
 ): WikiEntity<never> {
-  const groundings = projectGroundings(entity.groundings, observedAt, graph);
+  const groundings = projectGroundings(entity.groundings, observedAt, graph, factOf(entity));
   return {
     ...projectSummary(entity),
     groundingHealth: aggregateWikiGroundingHealth(groundings),
@@ -2751,19 +2769,43 @@ function projectRelationHit(hit: ContractRelationHit): WikiRelationHit {
   };
 }
 
+/**
+ * The fact a grounding supports, exactly as the index resolves it
+ * (`src/wiki/index/write.ts`), so a live view and the stored health — and
+ * `mex check` — reach the same verdict.
+ */
+function factOf(entity: { title: string; body: string }): string {
+  return `${entity.title}
+
+${entity.body}`;
+}
+
+/** A summary's fact, read only when a live graph will resolve it. */
+function summaryFact(
+  session: WikiContractReadSession,
+  summary: ContractEntitySummary,
+  graph: GroundingGraph | null,
+): string | undefined {
+  if (graph === null) return undefined;
+  const entity = session.get(summary.id);
+  return entity === null ? undefined : factOf(entity);
+}
+
 function projectGroundings(
   groundings: readonly ContractGrounding[],
   observedAt = new Date(0).toISOString(),
   graph?: GroundingGraph | null,
+  fact?: string,
 ): readonly WikiGroundingResolution[] {
   if (groundings.length === 0) return [{ state: "ungrounded", health: "unverified", observedAt }];
-  const current = graph === undefined ? groundings : currentContractGroundings(groundings, graph);
+  const current = graph === undefined ? groundings : currentContractGroundings(groundings, graph, fact);
   return current.map((grounding) => projectGrounding(grounding, observedAt));
 }
 
 function currentContractGroundings(
   groundings: readonly ContractGrounding[],
   graph: GroundingGraph | null,
+  fact: string | undefined,
 ): readonly ContractGrounding[] {
   return groundings.map((grounding) => ({
     ...grounding,
@@ -2771,11 +2813,12 @@ function currentContractGroundings(
       node: grounding.requestedNode,
       fingerprint: grounding.fingerprint,
       ...(grounding.bodyHash === undefined ? {} : { bodyHash: grounding.bodyHash }),
+      ...(grounding.codeHash === undefined ? {} : { codeHash: grounding.codeHash }),
       ...(grounding.file === undefined ? {} : { file: grounding.file }),
       ...(grounding.commit === undefined ? {} : { commit: grounding.commit }),
       ...(grounding.verifiedAt === undefined ? {} : { verifiedAt: grounding.verifiedAt }),
       ...(grounding.reason === undefined ? {} : { reason: grounding.reason }),
-    }, graph) as unknown as Readonly<Record<string, unknown>>,
+    }, graph, fact === undefined ? {} : { fact }) as unknown as Readonly<Record<string, unknown>>,
   }));
 }
 

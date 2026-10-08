@@ -196,7 +196,8 @@ function verdict(issues: readonly DriftIssue[], oldId: string, anchor = false): 
   if (own.some((issue) => issue.code === "GROUNDING_GONE")) return "GONE";
   const ambiguous = own.find((issue) => issue.code === "GROUNDING_AMBIGUOUS");
   if (ambiguous) return `AMBIGUOUS ${/candidate: (\S+)/u.exec(ambiguous.message)?.[1] ?? ""}`.trim();
-  const moved = own.find((issue) => issue.code === "GROUNDING_DRIFT" && issue.message.includes("candidate: "));
+  const moved = own.find((issue) => (issue.code === "GROUNDING_DRIFT" || issue.code === "GROUNDING_MOVED")
+    && issue.message.includes("candidate: "));
   if (moved) return `MOVED ${/candidate: (\S+)/u.exec(moved.message)![1]}`;
   return own.length === 0 && !anchor ? "MOVED silently" : own.map((issue) => issue.code).join(",");
 }

@@ -526,6 +526,7 @@ function assembleGroundingRuntime(
       const node = graph.getNode(nodeId);
       return node ? codeHashOfBody(node.filePath, body) : null;
     },
+    recallBody: (bodyHash) => fingerprints.sourceByBodyHash(bodyHash),
   };
   const rawChecker = createGroundingChecker(graph, checkerReconciler, sourceDrift, codeHashing);
   const checker: GroundingChecker = guard

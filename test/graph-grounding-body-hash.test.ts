@@ -138,11 +138,10 @@ describe("the grounding body hash is committed to Markdown", () => {
     expect(await groundingIssueCodes(config)).toEqual(["GROUNDING_DRIFT"]);
   }, 60_000);
 
-  it("reports nothing after the same rebuild when the scaffold carries no hash", async () => {
-    // The pre-fix world, reproduced deliberately: this is the defect, and it is
-    // also the backward-compatibility case. A grounding with no committed hash
-    // parses, resolves and stays silent — no crash, no false drift, and no
-    // detection either, which is precisely why the field had to be added.
+  it("says a grounding has no baseline after the same rebuild when the scaffold carries no hash", async () => {
+    // The pre-fix world, reproduced deliberately. A grounding with no committed
+    // hash parses and resolves without a crash or a false drift, and cannot
+    // detect the edit either, so it is reported as having no baseline.
     const { root, source, scaffold, config } = fixture();
     await buildGraph(root);
     await authorGrounding(config, scaffold, "calculateOrderTotal");
@@ -151,13 +150,14 @@ describe("the grounding body hash is committed to Markdown", () => {
     writeFileSync(source, EDITED);
     await rebuildGraphFromScratch(root);
 
-    expect(await groundingIssueCodes(config)).toEqual([]);
+    expect(await groundingIssueCodes(config)).toEqual(["GROUNDING_NO_BASELINE"]);
   }, 60_000);
 
-  it("still detects drift from the graph.db cache for an old grounding with a live index", async () => {
-    // The other half of backward compatibility: a scaffold authored before this
-    // field existed, whose index was never deleted, must behave exactly as it
-    // did. The cache is still consulted when Markdown has nothing to say.
+  it("never passes an old grounding with no body hash clean, and never takes the cache as its baseline", async () => {
+    // A scaffold authored before this field existed. `check` and the Wiki share
+    // one verdict, and the Wiki never takes the graph.db cache as the oracle,
+    // so the link is compared by structure, which cannot see an edited
+    // constant. It is reported as having no baseline instead of passing.
     const { root, source, scaffold, config } = fixture();
     await buildGraph(root);
     await authorGrounding(config, scaffold, "calculateOrderTotal");
@@ -172,7 +172,7 @@ describe("the grounding body hash is committed to Markdown", () => {
     writeFileSync(source, EDITED);
     await buildGraph(root);
 
-    expect(await groundingIssueCodes(config)).toEqual(["GROUNDING_DRIFT"]);
+    expect(await groundingIssueCodes(config)).toEqual(["GROUNDING_NO_BASELINE"]);
   }, 60_000);
 
   it("backfills a migrated file-level entity, whose grounding lives under the mex map", async () => {

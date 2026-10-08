@@ -13,7 +13,12 @@ const SEVERITY_COST: Record<Severity, number> = {
  * changed only in its comments is reported so it can be reviewed, but the
  * code the knowledge describes is unchanged (#236).
  */
-const UNSCORED_CODES: ReadonlySet<DriftIssue["code"]> = new Set(["GROUNDING_MOVED_BY_NEIGHBORS", "GROUNDING_COMMENT_DRIFT"]);
+const UNSCORED_CODES: ReadonlySet<DriftIssue["code"]> = new Set([
+  "GROUNDING_MOVED_BY_NEIGHBORS",
+  "GROUNDING_COMMENT_DRIFT",
+  "GROUNDING_NEARBY_DRIFT",
+  "GROUNDING_MOVED",
+]);
 
 /** Compute drift score from 0-100. Starts at 100, deducts per issue. */
 export function computeScore(issues: DriftIssue[]): number {

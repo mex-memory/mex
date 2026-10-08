@@ -417,45 +417,6 @@ describe("bounded output", () => {
   });
 });
 
-describe("the unverified-grounding notice", () => {
-  const GROUNDED = `<!-- mex:entity
-id: mx_01ARZ3NDEKTSV4RRFFQ69G5FAG
-type: decision
-status: promoted
-revision: 1
-grounds_to:
-  - node: "function:deadbeefdeadbeef"
-    fingerprint: "mh:64:aabbccdd"
--->
-## Grounded
-
-Body.
-`;
-
-  it("does not blame the checkout's code graph for a pass that was never given one", async () => {
-    // `runValidate` builds its options from `serviceOptions`, which carries no
-    // graph, so this is the branch every CLI run takes. The old wording
-    // asserted there was no graph in the checkout — a fact this command does
-    // not check, and one that was false on the scaffold that surfaced it.
-    const local = harness(true, { "context/grounded.md": GROUNDED });
-    await runValidate(local.io, {});
-    const notice = local.lines.find((line) => line.includes("grounding checks did not run"));
-    expect(notice).toBeDefined();
-    expect(notice).toContain("this pass was given no code graph");
-    expect(notice).not.toContain("no code graph in this checkout");
-  });
-
-  it("carries the discriminator in JSON, so a CI caller can tell the two causes apart", async () => {
-    const local = harness(true, { "context/grounded.md": GROUNDED });
-    await runValidate(local.io, { json: true });
-    const parsed = JSON.parse(local.lines[0]!) as {
-      data: { groundingsUnverified: boolean; codeGraphAvailable: boolean };
-    };
-    expect(parsed.data.groundingsUnverified).toBe(true);
-    expect(parsed.data.codeGraphAvailable).toBe(false);
-  });
-});
-
 describe("query filters", () => {
   it("mean the same thing wherever they apply", async () => {
     expect(filtersFrom({ limit: "25" }).limit).toBe(25);

@@ -9,6 +9,12 @@ import type { Fingerprint, Reconciler, Resolution } from "../../graph/reconcile.
 import type { ExplainedResolution } from "../../graph/reconcile-engine.js";
 import { observeCommittedGroundings, type CommittedGrounding } from "../../committed-groundings.js";
 import { extractGroundings, findMexAnchors } from "../../markdown.js";
+import { createGroundingEvidence } from "../../graph/grounding-evidence.js";
+import type { GroundingGraph } from "../../wiki/grounding/adapter.js";
+import { resolveGrounding } from "../../wiki/grounding/resolve.js";
+import { groundingVerdict, type NamedVerdict } from "../../wiki/grounding/verdict.js";
+import { parseWikiMarkdown } from "../../wiki/markdown/codec.js";
+import type { GroundingResolution } from "../../wiki/model/grounding.js";
 
 interface GroundingReconcilerCapabilities {
   getGroundedSource?(scaffoldFile: string, nodeId: string): GroundedSource | null;
@@ -55,6 +61,8 @@ export interface GroundingCodeHashing {
   current(nodeId: string): string | null;
   /** The code hash of an old body of `nodeId`, parsed as that node's language. */
   ofBody(nodeId: string, body: string): string | null;
+  /** A recorded old body by its hash, from the graph's grounded-source rows. */
+  recallBody?(bodyHash: string): string | null;
 }
 
 export function makeGroundingChecker(
@@ -68,34 +76,13 @@ export function makeGroundingChecker(
     capabilities.explain?.(nodeId, baseline, bodyHash)
       ?? { resolution: capabilities.reconcile(nodeId, baseline, bodyHash), evidence: "body" };
 
-  /**
-   * A changed body, reported as what changed (#236).
-   *
-   * `bodyHash` has already said the body differs. When the baseline's code
-   * hash is known and equals the current one, only comments changed, and that
-   * is a notice rather than drift. The baseline comes from the committed
-   * `codeHash` — which capture writes only beside a `bodyHash` of the same
-   * moment — or else from the cached old body, but only when that cache is the
-   * very baseline being compared. Anything less is the warning it always was.
-   */
-  const changedBody = (
-    grounding: Grounding,
-    source: string,
-    baselineBodyHash: string,
-    baselineSource: GroundedSource | null,
-    currentCodeHash: () => string | null,
-  ): DriftIssue => {
-    // A committed code hash counts only while it is bound to the committed body
-    // hash; a stale pair is read as absent (`src/graph/code-hash.ts`).
-    const baselineCode = committedCodeHash(grounding.codeHash, grounding.bodyHash)
-      ?? (baselineSource !== null && baselineSource.bodyHash === baselineBodyHash && codeHashing
-        ? codeHashing.ofBody(grounding.node, baselineSource.source)
-        : null);
-    if (baselineCode !== null && baselineCode === currentCodeHash()) {
-      return issue("GROUNDING_COMMENT_DRIFT", "info", source,
-        `Grounded node changed only in comments: ${grounding.node}`);
+  // The graph as the shared verdict function reads it, built once per project root.
+  let links: { projectRoot: string; graph: CheckLinkGraph } | null = null;
+  const linkGraph = (projectRoot: string): CheckLinkGraph => {
+    if (links?.projectRoot !== projectRoot) {
+      links = { projectRoot, graph: createCheckLinkGraph(graph, capabilities, decide, projectRoot, codeHashing) };
     }
-    return issue("GROUNDING_DRIFT", "warning", source, `Grounded node body changed: ${grounding.node}`);
+    return links.graph;
   };
 
   return function checkGrounding(
@@ -111,97 +98,45 @@ export function makeGroundingChecker(
     let content: string | null;
     try { content = readFileSync(filePath, "utf-8"); } catch { content = null; }
 
-    // **Read through `extractGroundings`, which knows both key paths.**
-    //
-    // A pre-wiki scaffold keeps `grounds_to` at the frontmatter root. Once
-    // `wiki migrate` adopts a file as an entity, §13.4 moves the key under the
-    // `mex` map — and reading the root key directly, as this did, then finds
-    // nothing. The loop ran zero times and the checker reported no grounding
-    // issues at all: not stale, not missing, not gone. Measured on a migrated
-    // scaffold with a fresh graph and four groundings in one file, `mex check`
-    // returned zero `GROUNDING_*` codes of any kind.
-    //
-    // That is silent, and it is worse than a false positive, because a
-    // scaffold that checks clean is one nobody looks at. `extractGroundings`
-    // reads both keys, because the same silence came back through a file that
-    // carries a root `grounds_to` beside a `mex:` map (#226); the writer folds
-    // the two into one. The frontmatter value is the fallback for a file that
-    // cannot be re-read here, which is the only case the old path still covers.
-    const declared = content === null ? (frontmatter?.grounds_to ?? []) : extractGroundings(content);
-    // Taken before the loop below rebinds MOVED entries in place.
-    const committedHere = committedBaselines(declared.filter(isGrounding));
+    // Every code link in the file, with the Wiki entity it belongs to. Read
+    // through the Wiki's own codec, so `mex.grounds_to` maps, `<!-- mex:entity -->`
+    // blocks and a pre-wiki root `grounds_to` (#226) are all seen, each link once.
+    const declared = content === null
+      ? (frontmatter?.grounds_to ?? []).filter(isGrounding).map((grounding): DeclaredLink => ({ grounding }))
+      : declaredLinks(scaffoldFile, content);
+    // Taken from the links as committed, for inline anchors below.
+    const committedHere = committedBaselines(declared.map((link) => link.grounding));
 
-    for (const grounding of declared) {
-      if (!isGrounding(grounding)) continue;
-      const current = graph.getNode(grounding.node);
-      const baselineSource = capabilities.getGroundedSource?.(scaffoldFile, grounding.node) ?? null;
+    const shared = linkGraph(projectRoot);
+    for (const { grounding, entity } of declared) {
+      let target = shared;
       if (sourceDrift) {
         // **A stale snapshot never reconciles.** Rename and move detection
         // compares fingerprints across the whole corpus, and the corpus this
         // snapshot describes is no longer the working tree. A node that looks
         // gone may have moved into an edited file, so nothing here is reported
         // GONE, MOVED or AMBIGUOUS: what cannot be settled is UNVERIFIED, and
-        // a definite DRIFT comes only from a body hash a refresh would record.
+        // a definite verdict comes only from a body hash a refresh would record.
         const resolution = sourceDrift.resolve(grounding.node);
         if (resolution.kind === "unverified") {
-          issues.push(issue("GROUNDING_UNVERIFIED", "warning", source,
-            `Grounded node cannot be verified until \`mex graph refresh\`: ${grounding.node} (${resolution.reason})`));
+          issues.push(withEntity(issue("GROUNDING_UNVERIFIED", "warning", source,
+            `Grounded node cannot be verified until \`mex graph refresh\`: ${grounding.node} (${resolution.reason})`), entity));
           continue;
         }
-        const baselineBodyHash = grounding.bodyHash ?? baselineSource?.bodyHash;
-        if (baselineBodyHash !== undefined && resolution.bodyHash !== baselineBodyHash) {
-          issues.push(changedBody(grounding, source, baselineBodyHash, baselineSource,
-            () => resolution.codeHash?.() ?? null));
-        }
-        continue;
+        target = sourceDriftLinkGraph(shared, grounding.node, resolution, codeHashing);
       }
-      if (current) {
-        // **The committed hash wins, and the cached one is only a fallback.**
-        //
-        // `_mex_grounded_source` lives in `.mex/graph.db`, which is gitignored
-        // and disposable by invariant — `mex graph rebuild` is offered as a
-        // routine repair. Reading the baseline only from there meant a rebuild
-        // silently ended drift detection for every grounding in the scaffold:
-        // `baselineSource` came back null, this branch reported nothing, and
-        // the grounding went on looking healthy forever. A teammate who cloned
-        // never had a baseline in the first place.
-        //
-        // So prefer `grounding.bodyHash`, which is in Git. The cache still
-        // answers for a grounding authored before that field existed, which is
-        // exactly the pre-existing behaviour and no worse than it was.
-        const baselineBodyHash = grounding.bodyHash ?? baselineSource?.bodyHash;
-        if (baselineBodyHash !== undefined && current.bodyHash !== baselineBodyHash) {
-          issues.push(changedBody(grounding, source, baselineBodyHash, baselineSource,
-            () => codeHashing?.current(grounding.node) ?? null));
-        }
-        continue;
+      const verdict = checkLink(grounding, target, entity?.fact);
+      const found = linkIssues(grounding.node, verdict, source);
+      // A link with no committed body hash is compared by structure alone,
+      // which cannot see an edited constant. Say so rather than pass it clean;
+      // one finding per link, so only when nothing worse was found.
+      if (grounding.bodyHash === undefined && !found.some((entry) => entry.severity !== "info")) {
+        found.push(issue("GROUNDING_NO_BASELINE", "warning", source,
+          `Grounded node has no recorded body hash, so only structural change is seen: ${grounding.node}`));
       }
-
-      const baseline = deserializeFingerprint(grounding.fingerprint)
-        ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
-      if (!baseline) continue;
-      const baselineBodyHash = grounding.bodyHash ?? baselineSource?.bodyHash;
-      const { resolution, evidence } = decide(grounding.node, baseline, baselineBodyHash);
-      if (resolution.kind === "MOVED") {
-        if (evidence === "neighbors") {
-          issues.push(issue("GROUNDING_MOVED_BY_NEIGHBORS", "info", source,
-            movedByNeighborsMessage(grounding.node, resolution.nodeId)));
-        }
-        const moved = graph.getNode(resolution.nodeId);
-        if (moved && baselineBodyHash !== undefined && moved.bodyHash !== baselineBodyHash) {
-          issues.push(issue("GROUNDING_DRIFT", "warning", source,
-            `Grounded node body changed: ${grounding.node}; candidate: ${resolution.nodeId}`));
-        }
-        grounding.node = resolution.nodeId;
-        const movedFingerprint = capabilities.getFingerprint?.(resolution.nodeId);
-        if (movedFingerprint) grounding.fingerprint = serializeFingerprint(movedFingerprint);
-      } else if (resolution.kind === "AMBIGUOUS") {
-        issues.push(issue("GROUNDING_AMBIGUOUS", "warning", source,
-          `Grounded node may have moved: ${grounding.node}; candidate: ${resolution.candidate}`));
-      } else {
-        issues.push(issue("GROUNDING_GONE", "error", source,
-          `Grounded node no longer exists: ${grounding.node}`));
-      }
+      issues.push(...found.map((entry) => withEntity(entry, entity)));
+      // A frontmatter-only read rebinds MOVED entries in place, as it always did.
+      if (content === null && verdict.named.resolvedNode !== undefined) grounding.node = verdict.named.resolvedNode;
     }
 
     if (content === null) return issues;
@@ -252,6 +187,223 @@ export function makeGroundingChecker(
       }
     }
     return issues;
+  };
+}
+
+/** A link's entity, when it belongs to one: what `check` reports and the fact it is judged against. */
+interface LinkEntity {
+  id: string;
+  title: string;
+  fact: string;
+}
+
+interface DeclaredLink {
+  grounding: Grounding;
+  entity?: LinkEntity;
+}
+
+/**
+ * Every committed code link in one Markdown file. Wiki entities come first,
+ * read by the Wiki's codec exactly as the index reads them; a root
+ * `grounds_to` that no entity owns (a pre-wiki scaffold) follows. A node is
+ * reported once per owner, so a file-level entity that also carries the same
+ * entry at the frontmatter root (#226) is not counted twice.
+ */
+function declaredLinks(scaffoldFile: string, content: string): DeclaredLink[] {
+  const links: DeclaredLink[] = [];
+  const owned = new Set<string>();
+  let entities: readonly { entity: { id: string; title: string; body: string; groundsTo: readonly Grounding[] } }[];
+  try {
+    entities = parseWikiMarkdown({ path: scaffoldFile, text: content }).entities;
+  } catch {
+    entities = [];
+  }
+  for (const { entity } of entities) {
+    const seen = new Set<string>();
+    for (const grounding of entity.groundsTo) {
+      if (!isGrounding(grounding) || seen.has(grounding.node)) continue;
+      seen.add(grounding.node);
+      owned.add(grounding.node);
+      links.push({ grounding, entity: { id: entity.id, title: entity.title, fact: `${entity.title}\n\n${entity.body}` } });
+    }
+  }
+  for (const grounding of extractGroundings(content)) {
+    if (!isGrounding(grounding) || owned.has(grounding.node)) continue;
+    owned.add(grounding.node);
+    links.push({ grounding });
+  }
+  return links;
+}
+
+/** The shared verdict's graph, plus how each reconciliation was decided. */
+interface CheckLinkGraph extends GroundingGraph {
+  /** By declared node: whether a reconciliation was decided by body or by neighbours. */
+  movedBy: Map<string, ExplainedResolution["evidence"]>;
+  /** An old body by its committed hash, when this checkout has seen it. */
+  oldBody(bodyHash: string): string | null;
+}
+
+/**
+ * The graph as {@link resolveGrounding} reads it, for `check`.
+ *
+ * Read-only by construction: it has no `rememberBody`, so `check` never writes
+ * the body cache. Everything else answers as the Wiki's adapter does, from the
+ * same graph and the same old-body evidence.
+ */
+function createCheckLinkGraph(
+  graph: GraphEngine,
+  capabilities: Reconciler & GroundingReconcilerCapabilities,
+  decide: (nodeId: string, baseline: Fingerprint, bodyHash: string | undefined) => ExplainedResolution,
+  projectRoot: string,
+  codeHashing: GroundingCodeHashing | undefined,
+): CheckLinkGraph {
+  const recallBody = codeHashing?.recallBody;
+  const evidence = createGroundingEvidence({
+    projectRoot,
+    getNode: (nodeId) => graph.getNode(nodeId),
+    ...(recallBody === undefined ? {} : { recallBody: (bodyHash: string) => recallBody(bodyHash) }),
+  });
+  const movedBy = new Map<string, ExplainedResolution["evidence"]>();
+  return {
+    movedBy,
+    oldBody(bodyHash) {
+      return recallBody?.(bodyHash) ?? null;
+    },
+    getNode(nodeId) {
+      const node = graph.getNode(nodeId);
+      return node === null ? null : {
+        id: node.id,
+        bodyHash: node.bodyHash ?? null,
+        filePath: node.filePath,
+        startLine: node.startLine,
+        endLine: node.endLine,
+      };
+    },
+    getFingerprint(nodeId) {
+      const fingerprint = capabilities.getFingerprint?.(nodeId) ?? null;
+      return fingerprint === null ? null : serializeFingerprint(fingerprint);
+    },
+    reconcile(nodeId, committedFingerprint, bodyHash) {
+      const baseline = deserializeFingerprint(committedFingerprint);
+      if (baseline === null) return null;
+      const { resolution, evidence: decidedBy } = decide(nodeId, baseline, bodyHash);
+      movedBy.set(nodeId, decidedBy);
+      return resolution;
+    },
+    getBaselineSource() {
+      return null;
+    },
+    explainChange(grounding, nodeId) {
+      return evidence.explainChange(grounding, nodeId);
+    },
+  };
+}
+
+/**
+ * The same graph for one node of a snapshot stale only by changed source
+ * (#228): its body hash is the one a refresh would record, and only the
+ * comment-only question can be answered, from code hashes.
+ */
+function sourceDriftLinkGraph(
+  shared: CheckLinkGraph,
+  nodeId: string,
+  current: Extract<SourceDriftResolution, { kind: "current" }>,
+  codeHashing: GroundingCodeHashing | undefined,
+): CheckLinkGraph {
+  return {
+    ...shared,
+    getNode(id) {
+      const node = shared.getNode(id);
+      if (id !== nodeId || node === null) return node;
+      return { ...node, bodyHash: current.bodyHash ?? null };
+    },
+    explainChange(grounding) {
+      const old = grounding.bodyHash === undefined ? null : shared.oldBody(grounding.bodyHash);
+      const baselineCode = committedCodeHash(grounding.codeHash, grounding.bodyHash)
+        ?? (old !== null ? codeHashing?.ofBody(nodeId, old) ?? null : null);
+      const commentOnly = baselineCode !== null && baselineCode === (current.codeHash?.() ?? null);
+      return { commentOnly, layoutOnly: commentOnly, oldBody: null, newBody: null };
+    },
+  };
+}
+
+/** One link's verdict, from the function the Wiki uses. */
+function checkLink(grounding: Grounding, graph: CheckLinkGraph, fact: string | undefined): LinkVerdict {
+  const resolution = resolveGrounding({
+    node: grounding.node,
+    fingerprint: grounding.fingerprint,
+    ...(grounding.bodyHash === undefined ? {} : { bodyHash: grounding.bodyHash }),
+    ...(grounding.codeHash === undefined ? {} : { codeHash: grounding.codeHash }),
+  }, graph, fact === undefined ? {} : { fact });
+  return {
+    named: groundingVerdict(resolution),
+    resolution,
+    byNeighbors: graph.movedBy.get(grounding.node) === "neighbors",
+  };
+}
+
+interface LinkVerdict {
+  named: NamedVerdict;
+  resolution: GroundingResolution;
+  byNeighbors: boolean;
+}
+
+const NEARBY_MESSAGE = "Grounded node changed away from everything the fact names";
+
+/** The findings one verdict deserves; a plain `fresh` deserves none. */
+function linkIssues(node: string, verdict: LinkVerdict, source: string): DriftIssue[] {
+  const { named, resolution, byNeighbors } = verdict;
+  const moved = named.resolvedNode !== undefined && named.resolvedNode !== node ? named.resolvedNode : undefined;
+  const found: DriftIssue[] = [];
+  if (moved !== undefined && byNeighbors) {
+    found.push(issue("GROUNDING_MOVED_BY_NEIGHBORS", "info", source, movedByNeighborsMessage(node, moved)));
+  }
+  switch (named.verdict) {
+    case "fresh":
+    case "moved":
+      // A move is not drift: the code is the code the fact was recorded
+      // against, found under another id. Said once, so `sync` can rewrite it.
+      if (moved !== undefined) {
+        found.push(issue("GROUNDING_MOVED", "info", source, `Grounded node moved: ${node}; candidate: ${moved}`));
+      }
+      if (named.note === "comment-only") {
+        found.push(issue("GROUNDING_COMMENT_DRIFT", "info", source, `Grounded node changed only in comments: ${node}`));
+      } else if (named.note === "layout-only") {
+        found.push(issue("GROUNDING_COMMENT_DRIFT", "info", source,
+          `Grounded node changed only in comments or formatting: ${node}`));
+      } else if (named.note === "changed-nearby") {
+        found.push(issue("GROUNDING_NEARBY_DRIFT", "info", source, `${NEARBY_MESSAGE}: ${node}`));
+      }
+      break;
+    case "changed-nearby":
+      found.push(issue("GROUNDING_NEARBY_DRIFT", "info", source, `${NEARBY_MESSAGE}: ${node}`));
+      break;
+    case "changed":
+      found.push(issue("GROUNDING_DRIFT", "warning", source,
+        `Grounded node body changed: ${node}${moved === undefined ? "" : `; candidate: ${moved}`}`));
+      break;
+    case "ambiguous": {
+      const candidate = resolution.state === "unresolved" ? resolution.candidates?.[0] : undefined;
+      found.push(issue("GROUNDING_AMBIGUOUS", "warning", source,
+        `Grounded node may have moved: ${node}${candidate === undefined ? "" : `; candidate: ${candidate}`}`));
+      break;
+    }
+    case "missing":
+      found.push(issue("GROUNDING_GONE", "error", source, `Grounded node no longer exists: ${node}`));
+      break;
+    case "unverified":
+      break;
+  }
+  return found.map((entry) => ({ ...entry, verdict: named.verdict }));
+}
+
+/** Attach a link's Wiki entity to its finding: structured, and readable after the node id. */
+function withEntity(found: DriftIssue, entity: LinkEntity | undefined): DriftIssue {
+  if (entity === undefined) return found;
+  return {
+    ...found,
+    message: `${found.message}; entity: ${entity.id} "${entity.title}"`,
+    entity: { id: entity.id, title: entity.title },
   };
 }
 

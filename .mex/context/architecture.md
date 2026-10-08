@@ -23,7 +23,7 @@ edges:
 # Broad overview: keep this empty unless a claim depends on a few specific symbols.
 # Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh2:64:<base64url>" }
 grounds_to: []
-last_updated: 2026-09-12
+last_updated: "2026-10-08"
 mex:
   id: mx_01M1M0CJ5C5XQV0HM5VM787WQS
   type: architecture
@@ -54,7 +54,11 @@ mex:
 id: mx_01M1M0CJ4PS8VVVJJTFA58S3A5
 type: component
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJ5C5XQV0HM5VM787WQS
+    note: Section of architecture in context/architecture.md
 -->
 ## System Overview
 
@@ -75,7 +79,11 @@ under `.mex/local/`.
 id: mx_01M1M0CJ403NMAF19JFEKQ5W29
 type: component
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJ5C5XQV0HM5VM787WQS
+    note: Section of architecture in context/architecture.md
 -->
 ## Key Components
 
@@ -90,7 +98,11 @@ revision: 1
 id: mx_01M1M0CJ3B8XKJ8NJGYRMYJ59C
 type: component
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJ5C5XQV0HM5VM787WQS
+    note: Section of architecture in context/architecture.md
 -->
 ## External Dependencies
 
@@ -105,7 +117,11 @@ revision: 1
 id: mx_01M1M0CJ1E1X7BW1Q7PMGPVCRC
 type: component
 status: promoted
-revision: 1
+revision: 2
+relations:
+  - type: refines
+    target: mx_01M1M0CJ5C5XQV0HM5VM787WQS
+    note: Section of architecture in context/architecture.md
 -->
 ## What Does NOT Exist Here
 

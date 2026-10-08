@@ -12,10 +12,14 @@ The command runs drift detection first, shows you exactly what's wrong, then off
 3. **Prompt export** — shows the prompts for manual paste
 4. **Exit** — fix it yourself
 
+In the same session the agent reviews each Wiki entity whose linked code changed:
+still true → `mex wiki reground <id> --apply`; changed → fix the text, then reground;
+unsure → leave the flag. Sync then rebuilds the Wiki index and checks again.
+
 ## Quick Check
 
 ```bash
-mex check              # full drift report
+mex check              # full drift report, including Wiki code links
 mex check --quiet      # one-liner: "drift score 85/100 (1 error)"
 mex sync --dry-run     # preview targeted fix prompts
 ```

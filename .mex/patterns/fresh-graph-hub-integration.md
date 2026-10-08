@@ -13,7 +13,7 @@ edges:
     condition: "when changing Hub routes, sessions, safe projections, SSE, or jobs"
   - target: "context/architecture.md"
     condition: "when reviewing the current Graph-to-Hub architecture and boundaries"
-last_updated: 2026-09-09
+last_updated: 2026-10-08
 mex:
   id: mx_01M1M0CJKZF3ABC1PQREMA2HYR
   type: pattern
@@ -98,6 +98,28 @@ or make Wiki availability appear real.
 
 ## Gotchas
 
+- Existing broad entities need an explicit knowledge upgrade, not a setup
+  rerun. `mex wiki upgrade` is read-only by default and caps its agent review
+  batch at 50 grounded non-Fact entities. `--apply` uses the same agent chooser
+  as sync or emits a copyable prompt when no CLI is installed. Fresh-graph and
+  candidate-drift preflight run before an agent starts. Preserve parent ids and
+  inbound references; semantic claim splitting needs review. Successful agent
+  exit is not evidence that every candidate is granular; rebuild, check and
+  review the diff without an automatic Git operation.
+
+- Splitting grounded claims into section entities does not create canonical
+  relationships. `mex wiki link-sections` previews a bounded structural repair;
+  `--apply` records `refines` links to existing enclosing entities through the
+  ordinary atomic operation batch. It preserves claim bodies and groundings,
+  skips read-only, archived and Spec/Team records, and refuses duplicate ids.
+  The bounded Hub overview reserves at most 25 places for authored `refines`
+  targets omitted by its initial page, so parents remain visible without
+  raising the 100-node or 500-edge output caps. Semantic dependencies still
+  require evidence and are never inferred from keywords or shared symbols.
+
+- Group repeated Health messages by safe text and severity in the browser, with
+  occurrence counts and expandable code/path details. Keep individual diagnostics
+  in the API, its existing bounds, and the underlying health assessment unchanged.
 - A fresh status observed before a request is not a freshness proof for its
   response. Final revalidation is mandatory, including after source reads.
 - An immutable SQLite handle still needs inode, sidecar, and snapshot binding.

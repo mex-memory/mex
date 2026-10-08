@@ -218,7 +218,17 @@ export function wikiSearch(
       ignoredTerms: page.ignoredTerms,
       unmatchedTerms: page.unmatchedTerms,
     };
-    return { data, diagnostics: searchNotices(data) };
+    const unchecked = session.uncheckedGroundings(kept.map((hit) => hit.entity.id));
+    return {
+      data,
+      diagnostics: [
+        ...searchNotices(data),
+        ...(unchecked === 0 ? [] : [diagnostic(
+          "WIKI_HEALTH_UNCHECKED",
+          `${unchecked} grounding${unchecked === 1 ? "" : "s"} behind these hits ${unchecked === 1 ? "has" : "have"} not been checked against the current code, so an unflagged hit may still be stale.`,
+        )]),
+      ],
+    };
   });
 }
 

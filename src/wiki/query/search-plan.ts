@@ -173,6 +173,12 @@ export interface SomeTermsMatch {
   field: MatchField;
   /** Matched terms, in query order. */
   matchedTerms: string[];
+  /**
+   * FTS5 `bm25()` of the matched terms over every field, rounded; lower is
+   * more relevant. Breaks ties between equal scores by how strongly, not just
+   * whether, the entity's text is about the terms — instead of by title.
+   */
+  relevance: number;
 }
 
 export interface SomeTermsResult {
@@ -205,6 +211,30 @@ const FIELD_WEIGHT: Record<MatchField, number> = { id: 3, title: 3, summary: 2, 
  * that is reported through `truncated`, and its document frequency is then an
  * undercount, which can only make it look more distinctive than it is.
  */
+/** Rows per `IN (...)` lookup, under SQLite's default bound-parameter limit. */
+const RELEVANCE_CHUNK = 500;
+
+/**
+ * bm25 of any of `terms` for each entity in `entityKeys`, title weighted as
+ * tier 2 weights it. Missing entries mean no full-text row (relevance 0).
+ */
+function relevanceOf(db: SqliteDatabase, terms: readonly string[], entityKeys: readonly string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  if (terms.length === 0 || entityKeys.length === 0) return out;
+  const expression = terms.map((term) => `(${someTermsExpression(term)})`).join(" OR ");
+  for (let start = 0; start < entityKeys.length; start += RELEVANCE_CHUNK) {
+    const chunk = entityKeys.slice(start, start + RELEVANCE_CHUNK);
+    const rows = db
+      .prepare(
+        `SELECT entity_key, round(bm25(wiki_fts, 0, ${FIELD_WEIGHT.title}, ${FIELD_WEIGHT.summary}, ${FIELD_WEIGHT.body}, ${FIELD_WEIGHT.body}, ${FIELD_WEIGHT.body}), 6) AS relevance
+           FROM wiki_fts WHERE wiki_fts MATCH ? AND entity_key IN (${chunk.map(() => "?").join(", ")}) LIMIT ?`,
+      )
+      .all(`{title summary body aliases meta} : (${expression})`, ...chunk, chunk.length) as { entity_key: string; relevance: number }[];
+    for (const row of rows) out.set(row.entity_key, Number(row.relevance));
+  }
+  return out;
+}
+
 export function findSomeTermsMatches(
   db: SqliteDatabase,
   terms: readonly string[],
@@ -254,7 +284,7 @@ export function findSomeTermsMatches(
   const byEntity = new Map<string, SomeTermsMatch>();
   for (const term of terms) {
     for (const [entityKey, field] of perTerm.get(term)!) {
-      const match = byEntity.get(entityKey) ?? { entityKey, score: 0, field, matchedTerms: [] };
+      const match = byEntity.get(entityKey) ?? { entityKey, score: 0, field, matchedTerms: [], relevance: 0 };
       match.score += weight.get(term)! * FIELD_WEIGHT[field];
       if (MATCH_FIELD_RANK[field] < MATCH_FIELD_RANK[match.field]) match.field = field;
       match.matchedTerms.push(term);
@@ -262,9 +292,17 @@ export function findSomeTermsMatches(
     }
   }
 
-  const matches = [...byEntity.values()]
-    .filter((match) => match.matchedTerms.filter((term) => distinctive.has(term)).length >= required)
-    .map((match) => ({ ...match, score: Math.round(match.score * 1e6) / 1e6 }))
-    .sort((left, right) => right.score - left.score || MATCH_FIELD_RANK[left.field] - MATCH_FIELD_RANK[right.field]);
+  const qualified = [...byEntity.values()]
+    .filter((match) => match.matchedTerms.filter((term) => distinctive.has(term)).length >= required);
+  const relevance = relevanceOf(db, terms.filter((term) => perTerm.get(term)!.size > 0), qualified.map((match) => match.entityKey));
+  const matches = qualified
+    .map((match) => ({
+      ...match,
+      score: Math.round(match.score * 1e6) / 1e6,
+      relevance: relevance.get(match.entityKey) ?? 0,
+    }))
+    .sort((left, right) => right.score - left.score
+      || left.relevance - right.relevance
+      || MATCH_FIELD_RANK[left.field] - MATCH_FIELD_RANK[right.field]);
   return { matches, unmatchedTerms, truncated };
 }
