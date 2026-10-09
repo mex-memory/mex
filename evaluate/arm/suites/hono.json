@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "id": "hono-agent-arm",
+  "description": "Full-loop agent test on Hono: repository files only versus the same checkout with the MEX scaffold and CLI.",
+  "repetitions": 3,
+  "arms": {
+    "files": { "label": "repository files only", "scaffold": false },
+    "mex": { "label": "MEX scaffold and CLI", "scaffold": true }
+  },
+  "scaffolds": {
+    "default": "refs/eval/scaffold",
+    "trap": "refs/eval/scaffold-trap"
+  },
+  "tasks": [
+    {
+      "id": "request-dispatch",
+      "type": "qa",
+      "base": "52febbcc",
+      "scaffold": "default",
+      "prompt": "How does an incoming Request enter a Hono application, get matched to routes, and dispatch through one or multiple handlers?",
+      "gold": {
+        "code": [
+          { "symbol": "#dispatch", "path": "src/hono-base.ts", "startLine": 408, "endLine": 468 },
+          { "symbol": "fetch", "path": "src/hono-base.ts", "startLine": 481, "endLine": 487 }
+        ],
+        "knowledge": ["context/architecture.md (request flow)", "patterns/debug-request-pipeline.md (Context)"],
+        "answerPoints": [
+          "app.fetch (an arrow property) passes the Request, env and execution context to the private #dispatch method",
+          "#dispatch matches method and path through this.router.match and creates a Context",
+          "exactly one matched handler is called directly (fast path), its result awaited and checked for a Response",
+          "several matched handlers/middleware run through compose(), and a non-finalized context afterwards is an error"
+        ]
+      },
+      "origin": "August request-dispatch, gold re-pinned from 0293343d (#dispatch +1, fetch +1)"
+    },
+    {
+      "id": "middleware-composition",
+      "type": "qa",
+      "base": "52febbcc",
+      "scaffold": "default",
+      "prompt": "How are Hono middleware handlers composed so next advances exactly once while errors and not-found responses are handled?",
+      "gold": {
+        "code": [
+          { "symbol": "compose", "path": "src/compose.ts", "startLine": 15, "endLine": 73 },
+          { "symbol": "dispatch", "path": "src/compose.ts", "startLine": 32, "endLine": 71 }
+        ],
+        "knowledge": ["context/architecture.md (compose)", "patterns/debug-request-pipeline.md (Gotchas)", "patterns/add-middleware.md (Gotchas)"],
+        "answerPoints": [
+          "compose returns a function that runs an inner recursive dispatch(i) over the middleware array",
+          "an index check throws 'next() called multiple times' when next is called twice",
+          "when a handler throws and onError exists, context.error is set and onError's result becomes the response; without onError the error is rethrown",
+          "when no handler produced a response and the context is not finalized, onNotFound supplies the response"
+        ]
+      },
+      "origin": "August middleware-composition; compose spans unchanged at 52febbcc"
+    },
+    {
+      "id": "router-decision",
+      "type": "qa",
+      "base": "52febbcc",
+      "scaffold": "default",
+      "prompt": "Why does the Hono class use SmartRouter wrapping RegExpRouter and TrieRouter by default, instead of using a single router, and what limitation does that design place on registering routes?",
+      "gold": {
+        "code": [
+          { "symbol": "Hono", "path": "src/hono.ts" },
+          { "symbol": "SmartRouter", "path": "src/router/smart-router/router.ts" },
+          { "symbol": "UnsupportedPathError", "path": "src/router.ts" }
+        ],
+        "knowledge": ["context/decisions.md (### Default router is SmartRouter over RegExpRouter + TrieRouter)", "context/routing.md"],
+        "answerPoints": [
+          "RegExpRouter is the fastest (it compiles all routes into one regular expression) but rejects some path patterns by throwing UnsupportedPathError",
+          "SmartRouter tries its routers in order on the first match and keeps the first router that accepts every registered route, with TrieRouter as the general fallback",
+          "the choice is locked in lazily at the first match, so routes cannot be added after the first request has been matched (adding throws)"
+        ]
+      },
+      "origin": "new: decision question answered by decisions.md"
+    },
+    {
+      "id": "error-convention",
+      "type": "qa",
+      "base": "52febbcc",
+      "scaffold": "default",
+      "prompt": "Inside a Hono built-in middleware, a shared auth helper returns c.text('Unauthorized', 401) when authentication fails. According to how this project is meant to be written, why is that the wrong approach, what should the helper do instead, and how does the alternative reach the client and the application's own error handling?",
+      "gold": {
+        "code": [
+          { "symbol": "HTTPException", "path": "src/http-exception.ts" },
+          { "symbol": "getResponse", "path": "src/http-exception.ts" },
+          { "symbol": "errorHandler", "path": "src/hono-base.ts", "startLine": 35, "endLine": 42 },
+          { "symbol": "compose", "path": "src/compose.ts" }
+        ],
+        "knowledge": ["context/conventions.md (## Patterns: signal HTTP errors by throwing HTTPException)"],
+        "answerPoints": [
+          "the helper should throw new HTTPException(401, ...) (optionally with a res or message) instead of returning an ad-hoc response",
+          "returning a response from deep inside a helper bypasses app.onError and the application's custom error handling",
+          "a thrown error is caught in compose/dispatch and routed to the error handler; the default errorHandler returns err.getResponse() for HTTPException-like errors and otherwise logs and returns a 500"
+        ]
+      },
+      "origin": "new: convention question answered by conventions.md"
+    },
+    {
+      "id": "lambda-empty-query",
+      "type": "change",
+      "base": "28e8572c^",
+      "scaffold": "default",
+      "prompt": "Bug report: Hono's AWS Lambda adapter drops query parameters that are present but empty. For API Gateway v1 (REST) events and ALB events that use single-value queryStringParameters, a request such as /path?flag= (event queryStringParameters: { flag: '' }) reaches the Hono app without any flag parameter, so c.req.query('flag') is undefined and URLSearchParams.has('flag') is false. Parameters whose value is undefined should still be omitted. Fix the adapter so present-but-empty values are preserved, add tests for it, and make sure the adapter's existing tests still pass.",
+      "hiddenTests": { "fromCommit": "28e8572c", "files": ["src/adapter/aws-lambda/handler.test.ts"] },
+      "gold": {
+        "code": [{ "symbol": "EventV1Processor", "path": "src/adapter/aws-lambda/handler.ts" }, { "symbol": "ALBProcessor", "path": "src/adapter/aws-lambda/handler.ts" }],
+        "knowledge": ["patterns/runtime-adapter.md (Steps; Gotchas: query strings)"],
+        "expectedDrift": []
+      },
+      "origin": "honojs/hono#5292 (28e8572c); base is its parent"
+    },
+    {
+      "id": "lambda-edge-binary",
+      "type": "change",
+      "base": "de310ac0^",
+      "scaffold": "default",
+      "prompt": "Bug report: Hono's Lambda@Edge adapter decides whether a response body is binary with a different content-type check from the AWS Lambda adapter. Binary types such as application/vnd.openxmlformats-officedocument.wordprocessingml.document are treated as text because the type contains 'xml', so createResult() reads the body with res.text() and corrupts it. Make the Lambda@Edge adapter's binary detection consistent with the AWS Lambda adapter's, add tests for it, and make sure the adapter's existing tests still pass.",
+      "hiddenTests": { "fromCommit": "de310ac0", "files": ["src/adapter/lambda-edge/handler.test.ts"] },
+      "gold": {
+        "code": [{ "symbol": "createResult", "path": "src/adapter/lambda-edge/handler.ts" }, { "symbol": "defaultIsContentTypeBinary", "path": "src/adapter/aws-lambda/handler.ts" }],
+        "knowledge": ["patterns/runtime-adapter.md (Gotchas: binary vs text bodies)"],
+        "expectedDrift": []
+      },
+      "origin": "honojs/hono#5426 (de310ac0); base is its parent"
+    },
+    {
+      "id": "compose-refactor",
+      "type": "change",
+      "base": "52febbcc",
+      "scaffold": "default",
+      "prompt": "Refactor compose() in src/compose.ts for readability: move the error-handling path inside its dispatch loop (what happens when a handler throws, with and without an onError handler) into a separate internal helper function in the same file. Behaviour must not change. Keep any project documentation that describes this code accurate, and make sure the existing tests for compose and the app still pass.",
+      "hiddenTests": { "fromCommit": null, "files": ["src/compose.test.ts", "src/hono.test.ts"] },
+      "gold": {
+        "code": [{ "symbol": "compose", "path": "src/compose.ts", "startLine": 15, "endLine": 73 }],
+        "knowledge": ["patterns/debug-request-pipeline.md (Gotchas: inside compose, context.error and onError replace c.res)", "context/architecture.md (compose owns error routing)"],
+        "expectedDrift": ["compose (src/compose.ts)"],
+        "review": "Diff must extract the catch path into a same-file helper with identical semantics; mex arm: impact on compose should surface the debug-request-pipeline claim."
+      },
+      "origin": "new: refactor of a grounded symbol (compose)"
+    },
+    {
+      "id": "lambda-binary-stale",
+      "type": "qa",
+      "base": "0d86899d",
+      "scaffold": "trap",
+      "prompt": "In Hono's AWS Lambda adapter as it is in this checkout, will the Lambda result body be base64-encoded (isBase64Encoded: true) or returned as plain text for each of these response Content-Type values: (1) application/vnd.apple.installer+xml, (2) application/rss+xml, (3) APPLICATION/JSON? Name the function that decides and explain why each case comes out the way it does.",
+      "gold": {
+        "code": [{ "symbol": "defaultIsContentTypeBinary", "path": "src/adapter/aws-lambda/handler.ts" }],
+        "knowledge": ["trap fact on defaultIsContentTypeBinary (true at 52febbcc, false at 0d86899d)"],
+        "answerPoints": [
+          "(1) application/vnd.apple.installer+xml is binary, base64-encoded: it is special-cased before the general +xml text rule",
+          "(2) application/rss+xml is text",
+          "(3) APPLICATION/JSON is text because the match is case-insensitive (/i)",
+          "the deciding function is defaultIsContentTypeBinary (overridable via isContentTypeBinary)"
+        ],
+        "staleAnswer": "Answers that (1) is text or (3) is binary follow the stale scaffold claim rather than the current code.",
+        "expectedDrift": ["defaultIsContentTypeBinary (src/adapter/aws-lambda/handler.ts)"]
+      },
+      "origin": "stale trap: honojs/hono#5424 (0d86899d) changed defaultIsContentTypeBinary; scaffold claim kept from before it"
+    }
+  ]
+}
