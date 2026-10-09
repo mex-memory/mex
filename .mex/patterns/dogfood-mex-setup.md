@@ -64,8 +64,14 @@ global `mex`.
 
 ## Gotchas
 
-- From 0.8.2, unflagged `setup` opens the browser. Terminal drivers and scripts
-  must pass `--cli`; `--dry-run` remains a read-only terminal preview.
+- Unflagged `setup` now opens terminal setup; `--cli` remains a compatibility
+  alias. Browser drivers must pass `setup --browser` or use `hub` explicitly.
+  Bare `mex` uses terminal setup for incomplete/agent-memory projects and the
+  Hub for code projects with a Router and committed identity, even when indexes
+  are missing. Keep that entry decision read-only and independent of source
+  scanning, CLI discovery, or database-presence completion claims.
+  `--dry-run` remains a read-only terminal preview. Reject `--browser` combined
+  with `--cli`, `--dry-run`, `--tool`, or `--yes` before launching either flow.
 - Interactive terminal setup uses the shared ordered engine through a HUD.
   Enter on a tool selects it and starts setup atomically; that focused tool
   precedes other checked tools when selecting a native agent. Space optionally
@@ -104,7 +110,7 @@ global `mex`.
   agent session: tsup cleans old hashed chunks, and the late Hub import can
   fail when that session returns. Exit the old process completely before
   rebuilding. If this happened after finalization, start the current CLI with
-  `setup` (without `--cli`) to open the finishing page; Retry in the old HUD
+  `setup --browser` to open the finishing page; Retry in the old HUD
   cannot replace its cached module imports.
   `test/cli.test.ts` also builds production assets in its setup hook; run the
   packaged browser scenarios after that suite so manifests cannot outlive files.

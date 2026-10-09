@@ -345,7 +345,7 @@ function git(fixture: GitFixture, ...args: string[]): string { return gitBytes(f
 function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
 
 async function openFixtureHub(page: Page, fixture: Fixture, expectReview = true) {
-  const hub = spawn(process.execPath, [join(repositoryRoot, "dist/cli.js"), "setup", "--no-open"], {
+  const hub = spawn(process.execPath, [join(repositoryRoot, "dist/cli.js"), "setup", "--browser", "--no-open"], {
     cwd: fixture.project, env: fixture.env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
   try {

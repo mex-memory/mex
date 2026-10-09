@@ -38,11 +38,14 @@ afterEach(() => {
 });
 
 describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReason ? ` (${skipReason})` : ""}`, { timeout: 35_000 }, () => {
-  it("shows the ASCII banner and choices at 80x24 before any setup writes, then cancels cleanly", async () => {
+  it.each([
+    { entry: "mex setup", command: ["setup"] },
+    { entry: "bare mex", command: [] },
+  ])("$entry shows the ASCII banner and choices at 80x24 before any setup writes, then cancels cleanly", async ({ command }) => {
     const f = fixture("incomplete");
-    const result = await terminal(f, [], [{ expect: "Choose your AI tools", missing: [".mex", ".agents", "AGENTS.md", ".gitignore"], input: "\u0003" }], { columns: 80, rows: 24 });
+    const result = await terminal(f, [], [{ expect: "Choose your AI tools", missing: [".mex", ".agents", "AGENTS.md", ".gitignore"], input: "\u0003" }], { columns: 80, rows: 24, command });
     expect(result.exitCode, result.output).toBe(130);
-    expect(result.output).toContain("__  __ _____ __  __");
+    expect(result.output).toContain("88888b.d88b.   .d88b.  888  888");
     expect(result.output).toContain("Codex");
     expect(result.output).toContain("Space multi-select");
     expect(result.output).toContain("Setup cancelled.");
@@ -119,7 +122,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(nativeOutput).toContain("hello native agent");
     expect(nativeOutput).not.toContain("PROJECT MEMORY / SETUP");
     expect(nativeOutput).not.toContain("\u001b[?1049h");
-    expect(result.output).toContain("Run `mex setup --cli` to continue");
+    expect(result.output).toContain("Run `mex setup` to continue");
     expect(JSON.parse(readFileSync(join(f.project, ".mex/config.json"), "utf8")).aiTools).toEqual(["codex"]);
     expectPromptCleaned(f);
   });
@@ -134,7 +137,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     ]);
     expect(result.exitCode, result.output).toBe(1);
     expect(result.output).toContain("Show setup prompt");
-    expect(result.output).toContain("Run `mex setup --cli` to continue");
+    expect(result.output).toContain("Run `mex setup` to continue");
     expectPromptCleaned(f);
   });
 
@@ -305,7 +308,7 @@ process.send({ type: "ready" });
 });
 
 function args(extra: string[] = [], defaultTool = true): string[] {
-  return ["setup", "--cli", ...(extra.includes("--mode") ? [] : ["--mode", "agent-memory"]), ...(!defaultTool || extra.includes("--tool") ? [] : ["--tool", "codex"]), "--no-open", ...extra];
+  return ["setup", ...(extra.includes("--mode") ? [] : ["--mode", "agent-memory"]), ...(!defaultTool || extra.includes("--tool") ? [] : ["--tool", "codex"]), "--no-open", ...extra];
 }
 
 function codeRepository(f: Fixture, files = 20): void {
@@ -342,7 +345,7 @@ function fixture(mode: "incomplete" | "failed" | "complete" | "hold"): Fixture {
   return f;
 }
 
-function terminal(f: Fixture, extra: string[] = [], actions: Action[] = [], options: { columns?: number; rows?: number; defaultTool?: boolean } = {}): Promise<Result> {
+function terminal(f: Fixture, extra: string[] = [], actions: Action[] = [], options: { columns?: number; rows?: number; defaultTool?: boolean; command?: string[] } = {}): Promise<Result> {
   return new Promise((resolve, reject) => {
     const child = execFile(pythonPath!, [harness], { encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) { reject(new Error(`PTY harness failed: ${error.message}\n${stderr}\n${stdout.slice(-4000)}`)); return; }
@@ -352,7 +355,7 @@ function terminal(f: Fixture, extra: string[] = [], actions: Action[] = [], opti
         resolve(result);
       } catch (error) { reject(error); }
     });
-    child.stdin!.end(JSON.stringify({ command: [process.execPath, f.cli ?? cli, ...args(extra, options.defaultTool !== false)], cwd: f.project, env: f.env, unsetEnv: ["CI", "NO_COLOR", "FORCE_COLOR"], columns: options.columns ?? 140, rows: options.rows ?? 40, actions, timeoutMs: 25_000 }));
+    child.stdin!.end(JSON.stringify({ command: [process.execPath, f.cli ?? cli, ...(options.command ?? args(extra, options.defaultTool !== false))], cwd: f.project, env: f.env, unsetEnv: ["CI", "NO_COLOR", "FORCE_COLOR"], columns: options.columns ?? 140, rows: options.rows ?? 40, actions, timeoutMs: 25_000 }));
   });
 }
 

@@ -35,10 +35,11 @@ type Line = { text: string; color?: string; backgroundColor?: string; dimColor?:
 type Choice = { label: string; action: TerminalSetupAction };
 
 const BANNER = [
-  " __  __ _____ __  __",
-  "|  \\/  | ____|\\ \\/ /",
-  "| |\\/| |  _|   >  <",
-  "|_|  |_|_____|/_/\\_\\",
+  "88888b.d88b.   .d88b.  888  888",
+  "888 \"888 \"88b d8P  Y8b `Y8bd8P'",
+  "888  888  888 88888888   X88K",
+  "888  888  888 Y8b.     .d8\"\"8b.",
+  "888  888  888  \"Y8888  888  888",
 ];
 const COLOR = {
   ink: "#ECE5D5",
@@ -241,15 +242,22 @@ export function TerminalSetupHUD({ view, onAction }: { view: TerminalSetupView; 
   const padding = dimensions.columns >= 30 ? 1 : 0;
   const width = Math.max(1, dimensions.columns - padding * 2);
   const framed = width >= 24 && height >= 7;
-  const fullBanner = view.screen === "configure" && width >= 60 && height >= 21;
+  const insideWidth = framed ? width - 4 : width;
+  const fullBanner = view.screen === "configure" && dimensions.columns >= 60 && height >= 21;
   const header: Line[] = fullBanner
-    ? BANNER.map((text, index) => ({ text: text + (index === 1 ? "    PROJECT MEMORY / SETUP" : index === 3 ? "    A place for project knowledge." : ""), color: COLOR.cyan, bold: true }))
+    ? BANNER.map((text, index) => {
+      const caption = index === 1 ? "    PROJECT MEMORY / SETUP" : index === 3 ? "    A place for project knowledge." : "";
+      return { text: text + (text.length + caption.length <= insideWidth ? caption : ""), color: COLOR.cyan, bold: true };
+    })
     : [];
+  if (fullBanner) {
+    header.unshift({ text: "" });
+    header.push({ text: "" });
+  }
   if (height >= 11) header.push({ text: `${plain(view.projectName)}  /  ${plain(view.mode)}${width >= 60 ? `  /  TOTAL ${elapsed(view.startedAt, now)}` : ""}`, color: COLOR.muted });
   const bodyHeight = Math.max(0, height - header.length - (framed ? 4 : 2));
   const split = !expanded && width >= 74 && bodyHeight >= 9;
   const railWidth = view.screen === "configure" ? 46 : 31;
-  const insideWidth = framed ? width - 4 : width;
   const contentWidth = split ? width - railWidth - 5 : insideWidth;
   const fullDetail = [view.error, view.detail, view.hubUrl].filter((value, index, values) => value && values.indexOf(value) === index).join("\n\n");
   const boundedDetail = fullDetail.length > 4_096
@@ -280,7 +288,8 @@ export function TerminalSetupHUD({ view, onAction }: { view: TerminalSetupView; 
       bold: index === selected,
     }));
     if (split) {
-      rail = visibleChoices([...toolLines.map(item => [item, { text: "" }]), continueLines], selected, bodyHeight);
+      const spaceChoices = toolLines.length * 2 + continueLines.length <= bodyHeight;
+      rail = visibleChoices([...toolLines.map(item => spaceChoices ? [item, { text: "" }] : [item]), continueLines], selected, bodyHeight);
       const tool = view.tools[selected];
       const native = tool?.id === "claude" || tool?.id === "codex";
       content = [

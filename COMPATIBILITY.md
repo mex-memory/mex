@@ -52,6 +52,104 @@ shipping new versions.
 If you only use the `mex` CLI, most of this still applies, but CLI flags
 themselves are best-effort (see [CLI surface](#cli-surface) below).
 
+## Upgrading to 0.8.4
+
+Release preparation is dated October 9, 2026; 0.8.4 remains unpublished until
+merge, tagging, and publication. The commands below apply once it is available.
+
+**Upgrade everyone sharing a scaffold before committing new groundings.**
+0.8.4 writes lossless `mh2:` fingerprints; 0.8.3 and earlier cannot read them and
+can report false missing or malformed grounding. Existing `mh:` fingerprints
+remain supported, compare by value, and are not rewritten by ordinary reads.
+`mex graph compact-fingerprints --dry-run` previews an optional explicit
+conversion; apply it only after the team's clients have been upgraded. Graph
+schema remains v4; Wiki and canonical Relay artifact versions are unchanged.
+
+Install `mex-agent@0.8.4`, preserve the existing graph, then run:
+
+```bash
+mex graph refresh
+mex check
+mex sync
+mex wiki rebuild-index
+```
+
+The internal extraction-cache format changes, so the first refresh re-extracts
+the corpus once. Later refreshes can reuse unchanged captures and avoid
+re-extracting importers whose dependency declaration signatures did not change.
+Do not delete or rebuild a working old graph as the first upgrade step. Projects
+upgrading from before 0.8.3 must also retain that graph for the TypeScript node-ID
+transition described [below](#upgrading-to-083). A fresh clone without it relies
+on committed fingerprint reconciliation and may require manual re-grounding.
+For an incompatible or damaged store, follow `mex graph status`'s explicit
+recovery action.
+
+`mex check` now supplies the code-link verdicts shared with Wiki queries and Hub.
+`mex wiki validate` checks structure and is not a replacement code-link health
+gate. Proven comment-only and formatting-only changes remain fresh; changes
+away from the named fact can report `changed-nearby`. Missing, ambiguous, or
+unverified links still require attention. Review sync's decisions and the
+scaffold diff before committing through Git. `mex wiki reground <id>` previews
+re-recording a reviewed entity's links; `--apply` authorizes that write.
+Ordinary reads never accept a new grounding baseline.
+
+Graph-aware Wiki maintenance uses a fresh snapshot and revalidates it before
+publishing derived results. Where a command can continue without graph evidence,
+it reports `CODE_GRAPH_UNAVAILABLE`; that is not a successful code-link check.
+Rebuild the local Wiki index after graph/scaffold maintenance to refresh its
+stored health. Use `mex wiki migrate --dry-run` to review newly adoptable
+`context/stack.md`, patterns, and explicitly typed domain files before running
+`mex wiki migrate`. Untyped unknown context files stay outside the Wiki and are
+reported for review. No update or ordinary Hub read migrates those files for you.
+
+For managed integrations, run `mex skills sync --dry-run`, resolve conflicts,
+then `mex skills sync` and start a new agent session. Do not overlay standalone
+skill installs on MEX-managed integrations. An already completed setup does not
+need setup again solely to upgrade.
+
+### Setup entry-point change
+
+`mex setup` opens the terminal HUD by default; `--cli` remains supported.
+`mex setup --browser` explicitly selects browser setup and cannot be combined
+with terminal-only `--cli`, `--tool`, `--yes`, or `--dry-run`. Bare `mex` chooses
+terminal setup for an incomplete project and Hub for an established code
+project. `mex hub` explicitly opens the browser; `mex tui` retains the terminal
+dashboard. `--port` and `--no-open` also control the finishing Hub launched by
+interactive terminal setup.
+
+Use `--yes` and repeatable `--tool` flags (or `--tool none`) for automation.
+Piped input/output and CI also use plain output and never start an agent or a
+long-lived Hub. Exit codes are `0` for completed preparation/successful dry run,
+`2` for pending population, `1` for failure, and `130`/`143` for interruption.
+Scripts needing browser setup must select `--browser` explicitly.
+
+### Additive API changes in 0.8.4
+
+No package-root export or required argument is removed. `DriftIssue` adds the
+optional `entity` (`id`, `title`) and `verdict` fields. `IssueCode` adds
+`GROUNDING_COMMENT_DRIFT`, `GROUNDING_NEARBY_DRIFT`, `GROUNDING_NO_BASELINE`,
+`GROUNDING_MOVED`, `KNOWLEDGE_NOT_ADOPTED`, and `KNOWLEDGE_UNTYPED`. Consumers
+that handle codes exhaustively should add these cases. Frontmatter grounding
+entries can carry optional `codeHash` alongside `bodyHash`; old clients ignore
+that field, but still cannot read the new `mh2:` fingerprint encoding.
+
+The maintainer explicitly selected 0.8.4 for these changes. As with 0.8.3, this
+is a scoped exception to the usual minor-version rule for additive public fields;
+the general versioning policy below is unchanged.
+
+### Remaining setup and graph limits
+
+Dependency-rich TypeScript/JavaScript graph builds can still exhaust Node's
+heap during compiler extraction. File count alone does not bound resolved type
+complexity. Worker isolation and diagnostics do not lower the required peak
+memory or guarantee a successful build.
+
+Browser completion readiness still relies on limited placeholder/index-presence
+checks after restart; a failed final validation can subsequently appear
+commit-ready. Oversized population prompts can exceed the Hub run-response
+contract. Neither issue is resolved by the terminal redesign. Review the actual
+scaffold and run code-link/structure checks before treating setup as verified.
+
 ## Upgrading to 0.8.3
 
 Install `mex-agent@0.8.3`. In a project with an existing code graph, keep that
@@ -218,9 +316,9 @@ grounds_to:
     fingerprint: "mh2:64:AXbN..."
 ```
 
-Fingerprints are written as `mh2:64:<base64url>`. Scaffolds committed before #233 hold `mh:64:<hex>`; both are read and compared by value, and an older entry is re-encoded only when its file's groundings are rewritten. `mex graph compact-fingerprints` re-encodes them all in one explicit pass (`--dry-run` writes nothing). Versions before #233 cannot read `mh2:`, so everyone sharing a scaffold should upgrade before new groundings are committed.
+Fingerprints are written as `mh2:64:<base64url>`. Scaffolds committed before #233 hold `mh:64:<hex>`; both are read and compared by value, and an older entry is re-encoded only when its file's groundings are rewritten. `mex graph compact-fingerprints` re-encodes them all in one explicit pass (`--dry-run` writes nothing). MEX 0.8.3 and earlier cannot read `mh2:`, so everyone sharing a scaffold should upgrade to 0.8.4 before new groundings are committed.
 
-An entry may also carry `bodyHash`, the hash of the node's body when it was grounded, and `codeHash`, the hash of that body's code with comments set aside, bound to the `bodyHash` it was captured with (#236). Capture writes both; neither is hand-written. When only `bodyHash` differs from the current code, `mex check` reports the info notice `GROUNDING_COMMENT_DRIFT` instead of `GROUNDING_DRIFT`.
+An entry may also carry `bodyHash`, the hash of the node's body when it was grounded, and `codeHash`, the hash of that body's code with comments set aside, bound to the `bodyHash` it was captured with (#236). Capture writes both; neither is hand-written. When the recorded body differs but its bound code hash proves the code unchanged, the shared verdict remains fresh and `mex check` can report the informational `GROUNDING_COMMENT_DRIFT` notice. Uncertain comparisons remain flagged; reads never renew the baseline.
 
 Files without `grounds_to` retain their previous behavior. The graph database and grounding baselines under `.mex/` are internal mex data and should not be edited directly.
 

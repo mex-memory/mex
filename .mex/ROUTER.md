@@ -30,7 +30,19 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
-- Local terminal setup work replaces the old prompts with an ASCII MEX HUD,
+- Release preparation for 0.8.4 is on `codex/release-0.8.4`, based on main
+  `54f7d7a`, and includes the terminal setup overhaul and default-routing work.
+  Current package metadata, capability fixtures, README installation examples,
+  release notes, and upgrade guidance target 0.8.4. Historical release records
+  retain their versions. Teams must upgrade together before sharing new `mh2:`
+  groundings; older clients cannot read them. Preparation and PR creation are
+  authorized; publication is still pending. Verification and known follow-ups
+  are tracked in `docs/design/0.8.4-release-plan.md`.
+- Local terminal setup is the default for `mex setup` and bare `mex` in
+  incomplete projects, with the lowercase ASCII `mex` banner in cyan.
+  `setup --browser` explicitly opens browser setup; `--cli` remains supported.
+  Bare `mex` still opens the Hub for established code projects, preserving
+  missing-index recovery. The HUD replaces the old prompts with
   integration selection before writes, native Claude/Codex terminal handoff,
   and explicit complete/paused/failed/cancelled outcomes. Enter selects the
   highlighted tool and starts; Space optionally toggles extra integrations,
@@ -68,7 +80,7 @@ Then read this file fully before doing anything else in this session.
   approving review before normal merge. The maintainer will publish after merge.
   Verification and remaining publication steps are tracked in
   `docs/design/0.8.3-release-plan.md`.
-- 0.8.2 setup work on `codex/0.8.2-hub-setup` makes `mex setup` and bare
+- 0.8.2 setup work on `codex/0.8.2-hub-setup` originally made `mex setup` and bare
   `mex` browser entry points; `setup --cli` retains terminal setup and
   `setup --dry-run` remains a read-only terminal preview. Setup commits now
   lead to a completion guide with explicit **Open Hub**, version-pinned optional
@@ -84,7 +96,8 @@ Then read this file fully before doing anything else in this session.
   frozen. The release plan records the deterministic calibration and CI evidence.
   This is branch implementation, not a published release; verification
   and outstanding release gates are in `docs/design/0.8.2-release-plan.md`.
-- Incomplete checkouts open a Hub setup wizard from `mex`, `mex setup`, or `mex hub` instead of the
+- Incomplete checkouts can open a Hub setup wizard explicitly with
+  `mex setup --browser` or `mex hub` instead of the
   full dashboard. Setup begins on a welcome screen, then runs the same ordered
   `mex setup` steps through a headless engine, pauses at population with a
   copyable prompt when no selected CLI is available. Claude/Codex population

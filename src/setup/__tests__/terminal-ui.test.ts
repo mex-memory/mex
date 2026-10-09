@@ -52,7 +52,12 @@ describe("terminal setup HUD", () => {
   it("presents the ASCII identity and tool selection within 80 by 24", async () => {
     const app = await show();
     expectFits(app.lastFrame(), 80, 24);
-    expect(app.lastFrame()).toContain("|_|  |_|_____|/_/\\_\\");
+    expect(app.lastFrame()).toContain("88888b.d88b.   .d88b.  888  888");
+    expect(app.lastFrame()).toContain("888 \"888 \"88b d8P  Y8b `Y8bd8P'");
+    expect(app.lastFrame()).toContain("888  888  888 88888888   X88K");
+    expect(app.lastFrame()).toContain("888  888  888 Y8b.     .d8\"\"8b.");
+    expect(app.lastFrame()).toContain("888  888  888  \"Y8888  888  888");
+    expect(app.lastFrame()).toContain("A place for project knowledge.");
     expect(app.lastFrame()).toContain("example-project  /  code-repo");
     expect(app.lastFrame()).toContain("> [x] Claude Code  CLI ready");
     expect(app.lastFrame()).toContain("[ ] Cursor");
@@ -60,6 +65,17 @@ describe("terminal setup HUD", () => {
     expect(app.lastFrame()).toContain("Space multi-select");
     expect(app.lastFrame()).toContain("Continue with selected tools");
     expectAlignedBorders(app.lastFrame(), 80);
+  });
+
+  it("keeps the five-line banner and picker within 60 columns without clipping a side caption", async () => {
+    const app = await show({}, 60, 24);
+    expect(app.lastFrame()).toContain("88888b.d88b.   .d88b.  888  888");
+    expect(app.lastFrame()).toContain("888  888  888  \"Y8888  888  888");
+    expect(app.lastFrame()).not.toContain("A place for");
+    expect(app.lastFrame()).toContain("Continue with selected tools");
+    expect(app.lastFrame()).toContain("Enter select/start");
+    expectFits(app.lastFrame(), 60, 24);
+    expectAlignedBorders(app.lastFrame(), 60);
   });
 
   it("distinguishes a missing population CLI from tools that only receive an integration", async () => {
@@ -156,9 +172,13 @@ describe("terminal setup HUD", () => {
     expect(app.onAction).toHaveBeenLastCalledWith({ type: "toggle", tool: "opencode" });
   });
 
-  it.each([true, false])("keeps the complete Continue choice usable in a 32 by 9 terminal (selected: %s)", async hasSelectedTool => {
-    const app = await show({ tools: initial.tools.map(tool => ({ ...tool, selected: hasSelectedTool && tool.id === "claude" })) }, 32, 9);
+  it.each([true, false])("keeps the focused Continue choice usable after resizing to 32 by 9 (selected: %s)", async hasSelectedTool => {
+    const app = await show({ tools: initial.tools.map(tool => ({ ...tool, selected: hasSelectedTool && tool.id === "claude" })) });
     app.stdin.write("\u001b[A");
+    await settle();
+    expect(app.lastFrame()).toContain(hasSelectedTool ? "> Continue with selected tools" : "> Continue without an agent");
+    Object.defineProperties(app.stdout, { columns: { configurable: true, value: 32 }, rows: { configurable: true, value: 9 } });
+    app.stdout.emit("resize");
     await settle();
     const text = app.lastFrame()?.replace(/│/g, " ").replace(/\s+/g, " ");
     expect(text).toContain(hasSelectedTool ? "> Continue with selected tools" : "> Continue without an agent");
@@ -274,7 +294,7 @@ describe("terminal setup HUD", () => {
     const app = await show({ screen, activeStep: "population", completedSteps: ["scaffold"] });
     expect(app.lastFrame()).toContain(status);
     expect(app.lastFrame()).toContain("[done] Scaffold");
-    expect(app.lastFrame()).not.toContain("|_|  |_|_____|/_/\\_\\");
+    expect(app.lastFrame()).not.toContain("88888b.d88b.");
   });
 
   it.each(["configure", "progress", "population", "error", "hub"] as const)("cancels %s on Ctrl+C and raw-mode EOF", async screen => {

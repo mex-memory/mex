@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve } from "node:path";
 import { globSync } from "glob";
 import chalk from "chalk";
 import {
@@ -34,6 +34,7 @@ export {
 import { finalizeSetupWiki } from "./wiki-finalize.js";
 import { SetupError } from "./errors.js";
 import { classifySetupMaintenanceError, setupWikiFailureMessage } from "./maintenance-errors.js";
+export { findSetupProjectRoot } from "./entry.js";
 import {
   ensureMarkdownAnchor,
   ensureOpencodeAnchor,
@@ -156,16 +157,6 @@ function reportAnchor(dest: string, result: AnchorWriteResult, dry: boolean, onM
 const ok = (msg: string) => console.log(`${chalk.green("✓")} ${msg}`);
 const info = (msg: string) => console.log(`${chalk.blue("→")} ${msg}`);
 const warn = (msg: string) => console.log(`${chalk.yellow("!")} ${msg}`);
-
-export function findSetupProjectRoot(startDir: string = process.cwd()): string {
-  let current = resolve(startDir);
-  while (true) {
-    if (existsSync(resolve(current, ".git"))) return current;
-    const parent = dirname(current);
-    if (parent === current) return resolve(startDir);
-    current = parent;
-  }
-}
 
 // ── Main ──
 

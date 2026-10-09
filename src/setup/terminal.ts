@@ -17,7 +17,7 @@ import { selectSetupAgent } from "./population.js";
 import { formatSetupGraphActivity, setupGraphActivity } from "./graph-progress.js";
 import type { TerminalSetupAction, TerminalSetupView } from "./terminal-ui.js";
 
-const CONTINUE = "Run `mex setup --cli` to continue. Existing authored files are preserved.";
+const CONTINUE = "Run `mex setup` to continue. Existing authored files are preserved.";
 
 /** The terminal owns presentation and interaction; all writes use the shared setup engine. */
 export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupRunResult> {
@@ -70,7 +70,7 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
         return { outcome: "paused", exitCode: 2, message: "Scaffold population is still required." };
       }
       console.log(result.message);
-      console.log("Run `mex setup` to open the setup completion page.");
+      console.log("Run `mex setup --browser` to open the setup completion page.");
       return { outcome: "complete", exitCode: 0, message: result.message };
     }
 

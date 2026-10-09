@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { Command, InvalidArgumentError } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -175,6 +175,36 @@ async function runBrowserCommand(options: { port?: number; open: boolean; mode?:
   await launchHub({ port: options.port, openBrowser: options.open, mode: options.mode, setup: options.setup });
 }
 
+async function reportSetupCommandError(error: unknown): Promise<void> {
+  const { SetupError } = await import("./setup/errors.js");
+  console.error(error instanceof SetupError ? error.userMessage : error instanceof Error ? error.message : String(error));
+  if (error instanceof SetupError && error.message !== error.userMessage) console.error(`Diagnostics: ${error.message}`);
+  process.exitCode = 1;
+}
+
+async function runSetupCommand(options: {
+  browser?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean; tool?: string[]; yes?: boolean;
+}): Promise<void> {
+  try {
+    if (options.browser) {
+      await runBrowserCommand({ ...options, setup: true });
+      return;
+    }
+    const setup = await import("./setup/index.js");
+    const result = await setup.runSetup({
+      dryRun: options.dryRun,
+      mode: options.mode,
+      port: options.port,
+      openBrowser: options.open,
+      ...(options.tool === undefined ? {} : { tools: setup.parseSetupTools(options.tool) }),
+      ...(options.yes ? { yes: true } : {}),
+    });
+    process.exitCode = result.exitCode;
+  } catch (error) {
+    await reportSetupCommandError(error);
+  }
+}
+
 // ── Telemetry hooks ──
 
 const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command) => {
@@ -192,7 +222,13 @@ program
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
   .option("--no-open", "Print the Hub link without opening a browser")
   .action(async (opts: { port?: number; open: boolean }) => {
-    await runBrowserCommand(opts);
+    try {
+      const { resolveDefaultEntry } = await import("./setup/entry.js");
+      if (await resolveDefaultEntry() === "hub") await runBrowserCommand(opts);
+      else await runSetupCommand(opts);
+    } catch (error) {
+      await reportSetupCommandError(error);
+    }
   });
 
 program
@@ -301,41 +337,20 @@ program.addCommand(buildSpecCommand({
   io: processTeamCommandIo(),
 }));
 
-// ── Setup (browser by default; explicit terminal and read-only paths) ──
+// ── Setup (terminal by default; explicit browser and read-only paths) ──
 program
   .command("setup")
-  .description("Set up MEX in the local Hub; use --cli for terminal setup")
-  .option("--cli", "Run setup in the terminal")
+  .description("Set up MEX in the terminal; use --browser for browser setup")
+  .option("--cli", "Run setup in the terminal (the default)")
+  .addOption(new Option("--browser", "Run setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes"]))
   .option("--mode <mode>", "Template mode: code-repo or agent-memory (preserves saved mode)")
   .option("--dry-run", "Show what would happen without making changes")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
-  .option("--no-open", "Print the setup link without opening a browser")
+  .option("--no-open", "Show the Hub link without opening a browser")
   .option("--tool <tool>", "Terminal setup: preselect an AI tool (repeatable; none for no tool; --yes skips review)", (value: string, previous: string[] = []) => [...previous, value])
   .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
   .action(async (_opts, command: Command) => {
-    const opts = command.optsWithGlobals<{ cli?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean; tool?: string[]; yes?: boolean }>();
-    try {
-      if (opts.cli || opts.dryRun || opts.tool !== undefined || opts.yes) {
-        const setup = await import("./setup/index.js");
-        const result = await setup.runSetup({
-          dryRun: opts.dryRun,
-          mode: opts.mode,
-          port: opts.port,
-          openBrowser: opts.open,
-          ...(opts.tool === undefined ? {} : { tools: setup.parseSetupTools(opts.tool) }),
-          ...(opts.yes ? { yes: true } : {}),
-        });
-        process.exitCode = result.exitCode;
-      } else {
-        await runBrowserCommand({ ...opts, setup: true });
-      }
-    } catch (err) {
-      const { SetupError } = await import("./setup/errors.js");
-      console.error(err instanceof SetupError ? err.userMessage : (err as Error).message);
-      if (err instanceof SetupError && err.message !== err.userMessage) console.error(`Diagnostics: ${err.message}`);
-      process.exitCode = 1;
-      return;
-    }
+    await runSetupCommand(command.optsWithGlobals());
   });
 
 // ── Official agent skills ──
@@ -1311,9 +1326,9 @@ program
   .description("List all available commands and scripts")
   .action(() => {
     console.log(chalk.bold("\nCLI Commands") + chalk.dim("  (run from project root)\n"));
-    console.log("  mex                    Open the local Hub (or setup for a new project)");
-    console.log("  mex setup              Set up MEX in the local browser Hub");
-    console.log("  mex setup --cli        Use the terminal setup flow");
+    console.log("  mex                    Open the Hub, or terminal setup for a new project");
+    console.log("  mex setup              Set up MEX in the terminal HUD");
+    console.log("  mex setup --browser    Use the browser setup flow");
     console.log("  mex setup --dry-run    Preview setup without making changes");
     console.log("  mex skills sync        Install/update official skills for configured agents");
     console.log("  mex skills sync --dry-run --json  Preview skill and instruction changes as JSON");

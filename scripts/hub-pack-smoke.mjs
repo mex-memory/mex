@@ -183,7 +183,7 @@ try {
   }
 
   const beforeSetupHead = run("git", ["rev-parse", "HEAD"], project).trim();
-  const setupOutput = await runInteractiveAgentSetup(cli, project, work);
+  const setupOutput = runNoninteractiveAgentSetup(cli, project, work);
   verifyPackedSetupOutput(setupOutput);
   verifySetupConfig(project);
   verifySetupIgnoreProtection(project);
@@ -1046,15 +1046,16 @@ async function verifyFreshCodeRepoSetup(tarball, workRoot, cache, version) {
   const cli = join(installed, "dist", "cli.js");
   const agentBin = join(workRoot, "fresh-setup-agent-bin");
   mkdirSync(agentBin, { recursive: true });
-  installFakeCodex(agentBin, workRoot);
+  const agentInvocation = installSetupAgentGuards(agentBin, workRoot);
 
   const beforeHead = run("git", ["rev-parse", "HEAD"], project).trim();
-  const output = await runFreshCodeRepoSetup(cli, project, agentBin);
+  const output = runFreshCodeRepoSetup(cli, project, agentBin, agentInvocation);
   const normalized = output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "");
   for (const expected of [
-    "Codex finished the population session",
+    "Setup paused: scaffold population is still required.",
+    "Population prompt:",
     "Wiki migration and index are ready.",
-    "Graph and Wiki are ready. Setup is ready to commit.",
+    "Graph and Wiki are ready. Review and commit the canonical MEX setup.",
   ]) {
     if (!normalized.includes(expected)) {
       throw new Error(`Packed fresh setup omitted: ${expected}\n${normalized}`);
@@ -1082,7 +1083,7 @@ async function verifyFreshCodeRepoSetup(tarball, workRoot, cache, version) {
   ]) {
     const content = readFileSync(join(project, ".mex", file), "utf8");
     if (content.includes("[Project Name]") || content.includes("[YYYY-MM-DD]")) {
-      throw new Error(`Fake Codex population left a required placeholder in ${file}.`);
+      throw new Error(`Manual fixture population left a required placeholder in ${file}.`);
     }
   }
   for (const database of ["graph.db", "wiki.db"]) {
@@ -1115,171 +1116,142 @@ async function verifyFreshCodeRepoSetup(tarball, workRoot, cache, version) {
   }
 }
 
-function installFakeCodex(directory, workRoot) {
-  const script = join(workRoot, "fake-codex-populate.mjs");
+function installSetupAgentGuards(directory, workRoot) {
+  const invocation = join(workRoot, "unexpected-setup-agent.json");
+  const script = join(workRoot, "unexpected-setup-agent.mjs");
   writeFileSync(script, [
-    'import { readFileSync, readdirSync, writeFileSync } from "node:fs";',
-    'import { join } from "node:path";',
-    'const root = join(process.cwd(), ".mex");',
-    'const visit = (directory) => {',
-    '  for (const entry of readdirSync(directory, { withFileTypes: true })) {',
-    '    const path = join(directory, entry.name);',
-    '    if (entry.isDirectory()) visit(path);',
-    '    else if (entry.isFile() && entry.name.endsWith(".md")) {',
-    '      const content = readFileSync(path, "utf8")',
-    '        .replaceAll("[Project Name]", "Packed First Run")',
-    '        .replaceAll("[YYYY-MM-DD]", "2026-09-02");',
-    '      writeFileSync(path, content, "utf8");',
-    '    }',
-    '  }',
-    '};',
-    'visit(root);',
-    'process.stdout.write("fake Codex populated the scaffold\\n");',
+    'import { writeFileSync } from "node:fs";',
+    `writeFileSync(${JSON.stringify(invocation)}, JSON.stringify(process.argv));`,
+    'process.stderr.write("Noninteractive setup must not launch an agent.\\n");',
+    'process.exitCode = 99;',
     '',
   ].join("\n"), "utf8");
-  if (process.platform === "win32") {
-    writeFileSync(join(directory, "codex.cmd"), `@"${process.execPath}" "${script}" %*\r\n`, "utf8");
-  } else {
-    const command = join(directory, "codex");
-    writeFileSync(command, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, "utf8");
-    chmodSync(command, 0o755);
+  for (const command of ["claude", "codex"]) {
+    if (process.platform === "win32") {
+      writeFileSync(join(directory, `${command}.cmd`), `@"${process.execPath}" "${script}" %*\r\n`, "utf8");
+    } else {
+      const executable = join(directory, command);
+      writeFileSync(executable, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, "utf8");
+      chmodSync(executable, 0o755);
+    }
   }
+  return invocation;
 }
 
-function runFreshCodeRepoSetup(cli, project, agentBin) {
-  const env = {
-    ...process.env,
-    MEX_TELEMETRY: "0",
-    NO_COLOR: "1",
-    PATH: `${agentBin}${delimiter}${process.env.PATH ?? ""}`,
+function populateSetupFixture(project) {
+  // Stand in for an explicit user/agent edit after the plain CLI pauses. The
+  // setup command itself must never invoke the available fake agent above.
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else if (entry.isFile() && entry.name.endsWith(".md")) {
+        const before = readFileSync(path, "utf8");
+        const after = before
+          .replaceAll("[Project Name]", "Setup Fixture")
+          .replaceAll("[YYYY-MM-DD]", "2026-09-02");
+        if (after !== before) writeFileSync(path, after, "utf8");
+      }
+    }
   };
-  return new Promise((resolveOutput, reject) => {
-    const setup = spawn(process.execPath, [cli, "setup", "--cli"], {
-      cwd: project,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    let selected = false;
-    let settled = false;
-    const finish = (error, output) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolveOutput(output);
-    };
-    const timer = setTimeout(() => {
-      if (setup.exitCode === null) setup.kill("SIGKILL");
-      finish(new Error(`Timed out running packed fresh setup.\n${stdout}\n${stderr}`));
-    }, 120_000);
-    setup.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
-      if (!selected && stdout.includes("Choice [1-8] (default: 1):")) {
-        selected = true;
-        setup.stdin.end("6\n");
-      }
-    });
-    setup.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
-    setup.on("error", (error) => finish(error));
-    setup.on("close", (code, signal) => {
-      if (code !== 0 || signal !== null || !selected) {
-        finish(new Error(
-          `Packed fresh setup failed (exit ${String(code)}, signal ${String(signal)}).\n${stdout}\n${stderr}`,
-        ));
-        return;
-      }
-      finish(null, stdout);
-    });
-  });
+  visit(join(project, ".mex"));
 }
 
-function runInteractiveAgentSetup(cli, project, workRoot) {
+function runFreshCodeRepoSetup(cli, project, agentBin, agentInvocation) {
+  const env = { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" };
+  // Replace every spelling of PATH, including Path on Windows, so the sentinel
+  // agents always win over any developer-machine installation.
+  const originalPath = Object.entries(env).find(([key]) => key.toLowerCase() === "path")?.[1] ?? "";
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === "path") delete env[key];
+  }
+  env.PATH = `${agentBin}${delimiter}${originalPath}`;
+  const locatedAgent = spawnSync(
+    locateSmokeExecutable(process.platform === "win32" ? "where.exe" : "which"),
+    ["codex"],
+    { cwd: project, env, encoding: "utf8", timeout: 5_000, windowsHide: true },
+  );
+  const expectedAgent = join(agentBin, process.platform === "win32" ? "codex.cmd" : "codex");
+  if (locatedAgent.error || locatedAgent.status !== 0
+    || resolve(locatedAgent.stdout.split(/\r?\n/u)[0].trim()) !== resolve(expectedAgent)) {
+    throw new Error("The packed fresh setup smoke did not expose its guarded Codex CLI first on PATH.");
+  }
+  const assertNoAgent = () => {
+    if (existsSync(agentInvocation)) {
+      throw new Error("Packed noninteractive setup launched an agent instead of pausing for manual population.");
+    }
+  };
+  return runManualPopulationSetup(cli, project, env, ["codex"], { assertNoAgent });
+}
+
+function runNoninteractiveAgentSetup(cli, project, workRoot) {
   const emptyPath = join(workRoot, "empty-agent-path");
   mkdirSync(emptyPath, { recursive: true });
 
-  // This fixture exercises the code Hub after setup, so persist code-repo intent.
-  // Keep the packed smoke independent from developer-machine agent installs.
-  // Launch Node by absolute path and restrict PATH to Git, then prove the
-  // selected agent CLIs are absent before exercising manual population.
+  // Also exercise selected integrations when no corresponding agent CLI is
+  // installed. Keep Node absolute and prove the restricted PATH still has Git.
   const env = { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" };
   for (const key of Object.keys(env)) {
     if (key.toLowerCase() === "path") delete env[key];
   }
   env.PATH = installGitOnlyPath(emptyPath);
   verifyManualSetupEnvironment(project, env);
+  return runManualPopulationSetup(cli, project, env, ["claude", "codex"], { legacyCli: true });
+}
 
-  return new Promise((resolveOutput, reject) => {
-    const setup = spawn(process.execPath, [cli, "setup", "--cli", "--mode", "code-repo"], {
-      cwd: project,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    let choseMultiple = false;
-    let choseClients = false;
-    let settled = false;
+function runManualPopulationSetup(cli, project, env, tools, {
+  legacyCli = false,
+  assertNoAgent = () => {},
+} = {}) {
+  const entryOptions = legacyCli ? ["--cli"] : [];
+  const paused = runPlainSetup(cli, project, env, [
+    ...entryOptions, "--mode", "code-repo", ...tools.flatMap((tool) => ["--tool", tool]),
+  ], 2);
+  assertNoAgent();
+  for (const expected of ["Setup paused: scaffold population is still required.", "Population prompt:"]) {
+    if (!paused.includes(expected)) {
+      throw new Error(`Packed setup omitted its manual population checkpoint: ${expected}\n${paused}`);
+    }
+  }
 
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (setup.exitCode === null) setup.kill("SIGKILL");
-      reject(error);
-    };
-    const answer = (value) => {
-      if (setup.stdin.destroyed || !setup.stdin.writable) {
-        fail(new Error(`The packed setup closed stdin before all prompts were answered.\n${stderr}`));
-        return;
-      }
-      setup.stdin.write(`${value}\n`);
-    };
-    const drivePrompts = () => {
-      if (!choseMultiple && stdout.includes("Choice [1-8] (default: 1):")) {
-        choseMultiple = true;
-        answer("7");
-      }
-      if (!choseClients && stdout.includes("Enter tool numbers separated by spaces")) {
-        choseClients = true;
-        answer("1 6");
-        setup.stdin.end();
-      }
-    };
-    const timer = setTimeout(() => {
-      fail(new Error(`Timed out driving the packed interactive setup.\n${stdout}\n${stderr}`));
-    }, 60_000);
+  populateSetupFixture(project);
+  // Omitting mode and tools on resume must retain the user's persisted choices.
+  const completed = runPlainSetup(cli, project, env, entryOptions, 0);
+  assertNoAgent();
+  for (const expected of [
+    "Wiki migration and index are ready.",
+    "Graph and Wiki are ready. Review and commit the canonical MEX setup.",
+    "Run `mex setup --browser` to open the setup completion page.",
+  ]) {
+    if (!completed.includes(expected)) {
+      throw new Error(`Packed setup did not finish preparation after manual population: ${expected}\n${completed}`);
+    }
+  }
+  return `${paused}\n${completed}`;
+}
 
-    setup.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
-      drivePrompts();
-    });
-    setup.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
-    setup.on("error", (error) => {
-      fail(new Error(`The packed interactive setup could not start: ${error.message}`, {
-        cause: error,
-      }));
-    });
-    setup.on("close", (code, signal) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (
-        code !== 0
-        || signal !== null
-        || !choseMultiple
-        || !choseClients
-      ) {
-        reject(new Error(
-          `The packed interactive setup did not complete all expected prompts `
-          + `(exit ${String(code)}, signal ${String(signal)}).\n${stdout}\n${stderr}`,
-        ));
-        return;
-      }
-      resolveOutput(stdout);
-    });
+function runPlainSetup(cli, project, env, options, expectedExit) {
+  const args = [cli, "setup", "--yes", "--no-open", ...options];
+  const result = spawnSync(process.execPath, args, {
+    cwd: project,
+    env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 120_000,
+    maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
   });
+  if (result.error || result.status !== expectedExit || result.signal !== null) {
+    throw new Error(
+      `Packed plain setup expected exit ${expectedExit}, got ${String(result.status)}`
+      + ` (signal ${String(result.signal)}).\n${result.stdout}\n${result.stderr}`,
+      { cause: result.error },
+    );
+  }
+  if (result.stdout.includes("\u001b[?1049h") || /Choice \[1-8\]|Enter tool numbers/u.test(result.stdout)) {
+    throw new Error("Packed noninteractive setup rendered an interactive tool picker.");
+  }
+  return result.stdout;
 }
 
 function installGitOnlyPath(directory) {
@@ -1330,22 +1302,18 @@ function verifyManualSetupEnvironment(project, env) {
 
 function verifyPackedSetupOutput(output) {
   const normalized = output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "");
-  const expectedActions = [
-    "Install the packaged mex-inbox skill at .claude/skills/mex-inbox.",
-    "Install the packaged mex-relay skill at .claude/skills/mex-relay.",
-    "Append the MEX-managed instruction block to CLAUDE.md without changing its existing bytes.",
-    "Install the packaged mex-inbox skill at .agents/skills/mex-inbox.",
-    "Install the packaged mex-relay skill at .agents/skills/mex-relay.",
-    "Append the MEX-managed instruction block to AGENTS.md without changing its existing bytes.",
+  const expectedMessages = [
+    "Link AI tool instructions",
+    "Install official MEX agent skills",
+    "Setup paused: scaffold population is still required.",
+    "Population prompt:",
+    "Wiki migration and index are ready.",
+    "Graph and Wiki are ready. Review and commit the canonical MEX setup.",
   ];
-  const sessionGuarantee = "Start a new Claude Code and Codex session to guarantee the new skills and project instructions are loaded.";
-  if (
-    !normalized.includes("Choice [1-8] (default: 1):")
-    || !normalized.includes("Enter tool numbers separated by spaces")
-    || !expectedActions.every((message) => normalized.includes(message))
-    || !normalized.includes(sessionGuarantee)
-  ) {
-    throw new Error("The packed interactive setup omitted its two-client install actions or new-session guarantee.");
+  // Installation itself is checked against the exact packaged trees, managed
+  // instructions and both clients' idempotent sync reports below.
+  if (!expectedMessages.every((message) => normalized.includes(message))) {
+    throw new Error("The packed plain setup omitted its install, manual population, or completion status.");
   }
 }
 
@@ -1361,7 +1329,7 @@ function verifySetupConfig(project) {
       readOnly: ["context/read-only/**"],
     })
   ) {
-    throw new Error("The packed interactive setup did not persist code-repo intent and both clients while preserving existing config.");
+    throw new Error("The packed plain setup did not preserve code-repo intent, both clients, and existing config on resume.");
   }
 }
 

@@ -77,9 +77,9 @@ relations:
 2. `npm run typecheck`
 3. `npm test`
 4. `npm run build`
-5. For exact-checkout browser setup, run `node dist/cli.js setup`. Use `node dist/cli.js setup --cli` for the terminal HUD. It hands the terminal to a selected native Claude/Codex session, restores the HUD, checks population, then finalizes grounding and Wiki. Manual population offers Check populated files or a resumable exit. `--yes`, pipes, and CI use plain output with no agent or Hub launch; exit 2 means population is still required.
+5. For exact-checkout terminal setup, run `node dist/cli.js setup` (`--cli` remains supported). The HUD hands the terminal to a selected native Claude/Codex session, restores it, checks population, then finalizes grounding and Wiki. Manual population offers Check populated files or a resumable exit. Use `node dist/cli.js setup --browser` for browser setup or to reopen its commit/completion page. `--yes`, pipes, and CI use plain output with no agent or Hub launch; exit 2 means population is still required.
 6. Review the canonical scaffold and selected agent files in setup, then explicitly commit them through the Hub action or your Git client. Keep generated databases and `.mex/local/` ignored. The completion guide precedes **Open Hub** and offers optional version-pinned global install and contact details.
-7. Bare `node dist/cli.js` opens the Hub or setup; `node dist/cli.js hub` remains supported. Verify any installed global CLI matches the checkout. `mex tui` retains the terminal dashboard.
+7. Bare `node dist/cli.js` opens the Hub for established code projects, including missing-index recovery, and terminal setup otherwise. `node dist/cli.js hub` explicitly opens the browser. Verify any installed global CLI matches the checkout. `mex tui` retains the terminal dashboard.
 
 <!-- mex:entity
 id: mx_01M1M0CJE778KMAJA005V2RWWN
