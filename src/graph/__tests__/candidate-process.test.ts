@@ -244,10 +244,19 @@ describe("isolated graph candidate construction", () => {
     const database = await baseline(path);
     pendingChange(path);
     const before = hash(database);
+    let pid = 0;
     let workspace = "";
-    await expect(refreshGraph(path, isolated(crashEntry, {
-      onSpawn: (_pid: number, directory: string) => { workspace = directory; },
-    }))).rejects.toMatchObject({ category: "failed", diagnostic: { reason: "exit", signal: "SIGKILL" } });
+    const error = await refreshGraph(path, isolated(crashEntry, {
+      onSpawn: (childPid: number, directory: string) => { pid = childPid; workspace = directory; },
+    })).catch((error: unknown) => error) as GraphCandidateProcessError;
+    expect(error).toBeInstanceOf(GraphCandidateProcessError);
+    // Windows reports forced termination as an exit code, without a POSIX signal.
+    const exit = process.platform === "win32"
+      ? { exitCode: expect.any(Number), signal: null }
+      : { exitCode: null, signal: "SIGKILL" };
+    expect(error).toMatchObject({ category: "failed", diagnostic: { reason: "exit", ...exit } });
+    if (process.platform === "win32") expect(error.diagnostic!.exitCode).not.toBe(0);
+    expect(processAlive(pid)).toBe(false);
     expect(existsSync(workspace)).toBe(false);
     expect(hash(database)).toBe(before);
     expect(artifacts(path)).toEqual([]);

@@ -112,7 +112,8 @@ function scaffold(root: string, mode: "code-repo" | "agent-memory"): void {
 }
 
 function git(root: string, ...args: string[]): void {
-  execFileSync("git", args, { cwd: root, stdio: "pipe" });
+  // Fixture commits must not leave background maintenance racing the full .git snapshot.
+  execFileSync("git", ["-c", "maintenance.auto=false", ...args], { cwd: root, stdio: "pipe" });
 }
 
 function commitIdentity(root: string): void {

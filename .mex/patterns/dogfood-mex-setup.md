@@ -13,12 +13,12 @@ edges:
     condition: "when distinguishing canonical artifacts from local projections"
   - target: "patterns/release-performance-gate.md"
     condition: "when the change also affects packed-install or release gates"
-last_updated: 2026-10-09
+last_updated: 2026-10-10
 mex:
   id: mx_01M1M0CJJD2AQZ6XKHV4VKYTGJ
   type: pattern
   status: promoted
-  revision: 5
+  revision: 6
   title: dogfood-mex-setup
   grounds_to:
     - node: function:9055347f917caf8721a2f6d4e18bcc9a
@@ -72,6 +72,10 @@ global `mex`.
   scanning, CLI discovery, or database-presence completion claims.
   `--dry-run` remains a read-only terminal preview. Reject `--browser` combined
   with `--cli`, `--dry-run`, `--tool`, or `--yes` before launching either flow.
+- Read-only entry tests snapshot Git bytes as well as project files. Disable
+  automatic Git maintenance in fixture-writing commands before taking those
+  snapshots; a background maintenance lock disappearing after a fixture commit
+  is unrelated to entry discovery. Keep the full snapshot assertion intact.
 - Interactive terminal setup uses the shared ordered engine through a HUD.
   Enter on a tool selects it and starts setup atomically; that focused tool
   precedes other checked tools when selecting a native agent. Space optionally
@@ -97,6 +101,9 @@ global `mex`.
   and last progress; project only authored recovery text to Hub. A signal alone
   is not evidence of memory exhaustion. Fresh tiny fixtures verify the path but
   do not represent MEX with its installed dependency graph.
+  A self-killed worker reports a nonzero exit code and no signal on Windows;
+  POSIX reports `SIGKILL` and no exit code. Assert the platform's real diagnostic
+  while preserving process-death, workspace-cleanup, and live-index checks.
 - After terminal validation, start the setup-enabled Hub in the foreground for
   commit review and completion. `--no-open` suppresses browser launch only.
   Scripted/CI/`--yes` runs never start an agent or long-lived Hub; exit 2 is the
