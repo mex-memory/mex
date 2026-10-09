@@ -24,6 +24,17 @@ afterEach(() => {
 });
 
 describe("setup Wiki finalization", () => {
+  it("stops at the migration boundary without changing canonical files or creating an index", async () => {
+    const { projectRoot, scaffoldRoot } = legacyScaffold(false);
+    const before = readFileSync(join(scaffoldRoot, "context/setup.md"), "utf8");
+    const abort = new AbortController();
+    await expect(finalizeSetupWiki({ projectRoot, scaffoldRoot, signal: abort.signal,
+      onProgress: message => { if (message === "Applying Wiki migration...") abort.abort(); },
+    })).rejects.toThrow("Setup was cancelled");
+    expect(readFileSync(join(scaffoldRoot, "context/setup.md"), "utf8")).toBe(before);
+    expect(existsSync(join(scaffoldRoot, "wiki.db"))).toBe(false);
+  });
+
   it("adopts files added since an earlier setup without telling the user to run migration (#227)", async () => {
     const projectRoot = fixture();
     const scaffoldRoot = join(projectRoot, ".mex");

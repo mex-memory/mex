@@ -13,7 +13,7 @@ edges:
     condition: "when distinguishing canonical artifacts from local projections"
   - target: "patterns/release-performance-gate.md"
     condition: "when the change also affects packed-install or release gates"
-last_updated: 2026-09-13
+last_updated: 2026-10-09
 mex:
   id: mx_01M1M0CJJD2AQZ6XKHV4VKYTGJ
   type: pattern
@@ -66,11 +66,46 @@ global `mex`.
 
 - From 0.8.2, unflagged `setup` opens the browser. Terminal drivers and scripts
   must pass `--cli`; `--dry-run` remains a read-only terminal preview.
+- Interactive terminal setup uses the shared ordered engine through a HUD.
+  Enter on a tool selects it and starts setup atomically; that focused tool
+  precedes other checked tools when selecting a native agent. Space optionally
+  toggles extra integrations. A separate Continue row preserves the checked
+  choices, including the deliberate no-agent path. Test fresh setup without
+  injected `--tool` flags so highlighted-but-unchecked choices are exercised.
+  Suspend and completely unmount the HUD before inherited-stdio population,
+  then restore it and inspect the files. Agent exit zero alone is not readiness.
+  Keep signals and descendant cleanup separate from headless process groups:
+  native agents share MEX's foreground terminal and must not be detached.
+  Ink unmount restores cooked mode and unrefs stdin but does not pause its
+  underlying reader: explicitly pause stdin before handing it to the child,
+  and ref it before remounting Ink or opening the manual readline question.
+  Otherwise the parent can consume the child's input or exit while awaiting
+  a manual answer. Real PTY tests cover this boundary.
+- Forward graph maintenance updates separately from ordered setup phases:
+  repeated parse events must not mark the graph complete or restart its timer.
+  Show real phase/count updates, animate only during active work, and distinguish
+  elapsed time from time since the last worker event. Stop animation on unmount
+  so the native agent retains the terminal without stray HUD redraws.
+- Preserve bounded worker stderr locally; discarded stderr hides Node heap
+  exhaustion behind a generic worker failure. Retain exit/signal, elapsed time,
+  and last progress; project only authored recovery text to Hub. A signal alone
+  is not evidence of memory exhaustion. Fresh tiny fixtures verify the path but
+  do not represent MEX with its installed dependency graph.
+- After terminal validation, start the setup-enabled Hub in the foreground for
+  commit review and completion. `--no-open` suppresses browser launch only.
+  Scripted/CI/`--yes` runs never start an agent or long-lived Hub; exit 2 is the
+  resumable population checkpoint, 1 failure, and 130/143 cancellation.
 - Test completion without a real global installation or contact submission.
   Isolate `MEX_HOME` in disposable fixtures and inject the npm/form transport.
   Successful contact delivery stores only a submitted marker; skipping stores
   only a skipped marker. Neither contains contact data or analytics identifiers.
 - Build before browser testing, and do not rebuild a running Hub's asset tree.
+  The same applies to a running setup CLI, including time spent in its native
+  agent session: tsup cleans old hashed chunks, and the late Hub import can
+  fail when that session returns. Exit the old process completely before
+  rebuilding. If this happened after finalization, start the current CLI with
+  `setup` (without `--cli`) to open the finishing page; Retry in the old HUD
+  cannot replace its cached module imports.
   `test/cli.test.ts` also builds production assets in its setup hook; run the
   packaged browser scenarios after that suite so manifests cannot outlive files.
 
@@ -78,13 +113,17 @@ global `mex`.
   use the built checkout when validating uncommitted setup changes.
 - Setup copies missing scaffold files but does not overwrite substantive files.
   Population prompts must merge at section granularity and preserve managed blocks.
-- A non-interactive run without Claude Code or Codex may pause after printing the
-  population prompt. That is a resumable checkpoint, not a failed setup.
+- A non-interactive run pauses after printing the population prompt when
+  placeholders remain, even if an agent CLI is installed. It never waits on an
+  interactive session. Test the shipped interactive CLI with the POSIX PTY
+  harness and fake agents; the Python harness is skipped on Windows.
 - Drift staleness uses committed Git history. Correct uncommitted content can
   remain stale until the canonical scaffold is committed.
 - A Graph with partial parses can support scoped evidence while exact reads
   abstain. Do not weaken freshness or provenance checks to force an answer.
-- MEX does not stage, commit, pull, or push repository changes.
+- Terminal setup does not stage or commit. The setup Hub may create a local
+  commit only after exact diff review and explicit user action, preserving
+  unrelated staged work. MEX never pulls or pushes.
 
 ## Verify
 

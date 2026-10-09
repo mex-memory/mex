@@ -8,7 +8,7 @@ import { build } from "esbuild";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { boundedCandidateMessage } from "../candidate-protocol.js";
 import { createGraphCandidateProgressSender } from "../candidate-progress.js";
-import { runGraphCandidateProcess } from "../candidate-process.js";
+import { GRAPH_CANDIDATE_DIAGNOSTIC_BYTES, GraphCandidateProcessError, runGraphCandidateProcess } from "../candidate-process.js";
 import { GRAPH_CORPUS_LIMITS } from "../corpus-policy.js";
 import { createGraphEngine } from "../engine-impl.js";
 import { rebuildGraph, refreshGraph, type GraphMaintenanceExecutionOptions } from "../maintenance.js";
@@ -24,6 +24,12 @@ let crashEntry: string;
 let lateEntry: string;
 let disconnectedEntry: string;
 let parentEntry: string;
+let startupCrashEntry: string;
+let noReadyEntry: string;
+let malformedEntry: string;
+let diagnosticEntry: string;
+let heapLimitEntry: string;
+let reportedHeapTextEntry: string;
 
 function root(): string {
   const path = mkdtempSync(join(tmpdir(), "mex-candidate-process-test-"));
@@ -93,6 +99,25 @@ beforeAll(async () => {
       __internal: { entrypoint: process.argv[4], onSpawn: (pid, workspace) => process.send({ type: "spawned", pid, workspace }) },
     });
   `);
+  startupCrashEntry = await bundle("startup-crash", `
+    process.stderr.write("Error: missing private runtime dependency\\n");
+    process.exit(7);
+  `);
+  noReadyEntry = await bundle("no-ready", 'setInterval(() => {}, 1000);');
+  malformedEntry = await bundle("malformed", 'process.send({ type: "progress", progress: { phase: "parse", source: "private" } }); setInterval(() => {}, 1000);');
+  diagnosticEntry = await bundle("diagnostic", prefix + `
+    process.send({ type: "progress", progress: { phase: "parse", completed: 1, total: 2 } });
+    process.stderr.write("\\x1b[31mPRIVATE_START\\x1b[0m\\x1b]0;INJECTED_TITLE\\x07\\n" + "x".repeat(256 * 1024) + "\\nPRIVATE_END\\n", () => {
+      process.send({ type: "failed", category: "failed" });
+    });
+  ` + suffix);
+  heapLimitEntry = await bundle("heap-limit", prefix + `
+    process.send({ type: "progress", progress: { phase: "parse", completed: 1, total: 2 } });
+    process.stderr.write("x".repeat(10 * 1024) + "\\nFATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\\n" + "y".repeat(10 * 1024), () => process.exit(134));
+  ` + suffix);
+  reportedHeapTextEntry = await bundle("reported-heap-text", prefix + `
+    process.stderr.write("FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\\n", () => process.send({ type: "failed", category: "failed" }));
+  ` + suffix);
 }, 30_000);
 
 afterEach(() => {
@@ -222,7 +247,7 @@ describe("isolated graph candidate construction", () => {
     let workspace = "";
     await expect(refreshGraph(path, isolated(crashEntry, {
       onSpawn: (_pid: number, directory: string) => { workspace = directory; },
-    }))).rejects.toMatchObject({ category: "failed" });
+    }))).rejects.toMatchObject({ category: "failed", diagnostic: { reason: "exit", signal: "SIGKILL" } });
     expect(existsSync(workspace)).toBe(false);
     expect(hash(database)).toBe(before);
     expect(artifacts(path)).toEqual([]);
@@ -303,7 +328,7 @@ describe("isolated graph candidate construction", () => {
     await expect(runGraphCandidateProcess({
       projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"b".repeat(48)}`), operation: "rebuild",
       __internal: { entrypoint: busyEntry, buildTimeoutMs: 500, onSpawn: (value) => { pid = value; } },
-    })).rejects.toMatchObject({ category: "failed" });
+    })).rejects.toMatchObject({ category: "failed", diagnostic: { reason: "build-timeout" } });
     expect(processAlive(pid)).toBe(false);
   });
 
@@ -343,6 +368,77 @@ describe("isolated graph candidate construction", () => {
     expect(boundedCandidateMessage({ type: "failed", category: "failed", stack: "private" })).toBeNull();
     expect(boundedCandidateMessage({ type: "complete", result: { filesIndexed: -1, nodesCreated: 0, edgesCreated: 0, durationMs: 0 } })).toBeNull();
     expect(boundedCandidateMessage({ type: "failed", category: "x".repeat(1024 * 1024) })).toBeNull();
+  });
+
+  it("reports a worker startup crash with its exit code and bounded local stderr", async () => {
+    const path = root();
+    const error = await runGraphCandidateProcess({
+      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      __internal: { entrypoint: startupCrashEntry },
+    }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(GraphCandidateProcessError);
+    expect(error).toMatchObject({ category: "failed", diagnostic: { reason: "exit", exitCode: 7, signal: null,
+      elapsedMs: expect.any(Number), stderr: "Error: missing private runtime dependency" } });
+    expect((error as Error).message).toContain("exit code 7");
+    expect((error as Error).message).toContain("missing private runtime dependency");
+  });
+
+  it.each([
+    ["startup deadline", () => noReadyEntry, "startup-timeout"],
+    ["invalid protocol", () => malformedEntry, "protocol"],
+  ] as const)("distinguishes a %s from graph build failure", async (_label, entrypoint, reason) => {
+    const path = root();
+    await expect(runGraphCandidateProcess({
+      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      __internal: { entrypoint: entrypoint(), startupTimeoutMs: 100 },
+    })).rejects.toMatchObject({ category: "failed", diagnostic: { reason } });
+  });
+
+  it("drains excessive worker diagnostics, keeps useful head/tail, strips terminal controls, and reports last progress", async () => {
+    const path = root();
+    const error = await runGraphCandidateProcess({
+      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      __internal: { entrypoint: diagnosticEntry },
+    }).catch((error: unknown) => error) as GraphCandidateProcessError;
+    expect(error.diagnostic).toMatchObject({ reason: "worker-error", progress: { phase: "parse", completed: 1, total: 2 } });
+    expect(error.diagnostic!.stderr).toContain("PRIVATE_START");
+    expect(error.diagnostic!.stderr).toContain("PRIVATE_END");
+    expect(error.diagnostic!.stderr).toContain("truncated");
+    expect(error.diagnostic!.stderr).not.toMatch(/\u001b|\u0007|INJECTED_TITLE/u);
+    expect(Buffer.byteLength(error.diagnostic!.stderr!)).toBeLessThanOrEqual(GRAPH_CANDIDATE_DIAGNOSTIC_BYTES);
+    expect(error.message).toContain("last progress: parse 1/2 files");
+    expect(error.diagnostic!.resourceFailure).toBeUndefined();
+  });
+
+  it("identifies a heap limit only from Node's explicit fatal runtime diagnostic", async () => {
+    const path = root();
+    const error = await runGraphCandidateProcess({
+      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      __internal: { entrypoint: heapLimitEntry },
+    }).catch((error: unknown) => error) as GraphCandidateProcessError;
+    expect(error.diagnostic).toMatchObject({ reason: "exit", exitCode: 134, resourceFailure: "heap-limit" });
+    expect(error.message).toContain("reached Node's JavaScript heap limit");
+    expect(error.diagnostic!.stderr).not.toContain("FATAL ERROR");
+  });
+
+  it("does not treat a caught worker error containing the heap marker as a fatal runtime crash", async () => {
+    const path = root();
+    const error = await runGraphCandidateProcess({
+      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      __internal: { entrypoint: reportedHeapTextEntry },
+    }).catch((error: unknown) => error) as GraphCandidateProcessError;
+    expect(error.diagnostic!.reason).toBe("worker-error");
+    expect(error.diagnostic!.resourceFailure).toBeUndefined();
+  });
+
+  it("preserves an actual worker exception on stderr without widening the failure IPC schema", async () => {
+    const path = root();
+    const error = await runGraphCandidateProcess({
+      projectRoot: path, candidatePath: join(path, ".mex", "invalid-candidate-name"), operation: "rebuild",
+      __internal: { entrypoint: realEntry },
+    }).catch((error: unknown) => error) as GraphCandidateProcessError;
+    expect(error.diagnostic).toMatchObject({ reason: "worker-error", stderr: "Error: Invalid candidate path." });
+    expect(boundedCandidateMessage({ type: "failed", category: "failed", errorMessage: "private" })).toBeNull();
   });
 
   it("sends throttled counts during synchronous work without requiring completion callbacks to run", () => {

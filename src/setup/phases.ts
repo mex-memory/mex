@@ -3,6 +3,9 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfiguredSetupMode, saveConfiguredSetupMode } from "../config.js";
 import { ensureSetupIgnoreProtection, renderSetupIgnoreProtection, verifySetupIgnoreProtection } from "./ignore.js";
+import { SetupError, classifySetupFileSystemError } from "./errors.js";
+import { classifySetupMaintenanceError } from "./maintenance-errors.js";
+import type { GraphMaintenanceProgress } from "../team/contracts/graph.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -46,18 +49,25 @@ export function verifyExistingSetupConfig(mexDir: string): void {
     if (error instanceof Error
       && "code" in error
       && (error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw new Error("Could not inspect existing .mex/config.json. Fix its permissions before rerunning setup.", {
-      cause: error,
-    });
+    throw classifySetupFileSystemError(error, "Could not inspect .mex/config.json.") ?? new SetupError(
+      "Could not inspect existing .mex/config.json. Fix its permissions before rerunning setup.",
+      { cause: error },
+    );
   }
   if (stats.isSymbolicLink() || !stats.isFile()) {
-    throw new Error("Existing .mex/config.json must be a regular file. Fix it before rerunning setup.");
+    throw new SetupError("Existing .mex/config.json must be a regular file. Fix it before rerunning setup.");
+  }
+  let contents: string;
+  try {
+    contents = readFileSync(path, "utf8");
+  } catch (error) {
+    throw classifySetupFileSystemError(error, "Could not read .mex/config.json.") ?? error;
   }
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const parsed: unknown = JSON.parse(contents);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
   } catch {
-    throw new Error("Existing .mex/config.json is not a valid JSON object. Fix it before rerunning setup.");
+    throw new SetupError("Existing .mex/config.json is not a valid JSON object. Fix it before rerunning setup.");
   }
 }
 
@@ -74,15 +84,18 @@ export function setupTemplatesDirectory(): string {
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
-  throw new Error(
+  throw new SetupError(
     `Templates directory not found. Looked in:\n${candidates.map((path) => `  - ${path}`).join("\n")}\nThe mex-agent package may be corrupted — try reinstalling.`,
+    { userMessage: "MEX setup templates are missing. Reinstall mex-agent, restart the Hub, then retry setup." },
   );
 }
 
 export function normalizeSetupMode(raw: string | undefined): SetupMode {
   const mode = raw ?? "code-repo";
   if (mode === "code-repo" || mode === "agent-memory") return mode;
-  throw new Error(`Unknown setup mode "${mode}". Use code-repo or agent-memory.`);
+  throw new SetupError(`Unknown setup mode "${mode}". Use code-repo or agent-memory.`, {
+    userMessage: "The setup mode is not supported. Choose code-repo or agent-memory, then retry setup.",
+  });
 }
 
 /** Explicit choices override persisted intent; a resume uses the original mode. */
@@ -112,10 +125,21 @@ export function createSetupScaffold(options: {
     const memorySource = resolve(templatesDir, "agent-memory", file);
     const source = mode === "agent-memory" && existsSync(memorySource)
       ? memorySource : resolve(templatesDir, file);
-    const action = ensureScaffoldFile(source, resolve(mexDir, file), dryRun);
+    let action: ScaffoldFileAction;
+    try {
+      action = ensureScaffoldFile(source, resolve(mexDir, file), dryRun);
+    } catch (error) {
+      throw classifySetupFileSystemError(error, `Could not create .mex/${file}.`) ?? error;
+    }
     options.onFile?.(file, action);
   }
-  if (!dryRun) saveConfiguredSetupMode(mexDir, mode);
+  if (!dryRun) {
+    try {
+      saveConfiguredSetupMode(mexDir, mode);
+    } catch (error) {
+      throw classifySetupFileSystemError(error, "Could not save the setup mode in .mex/config.json.") ?? error;
+    }
+  }
 }
 
 /** Scanner failure is optional: both transports fall back to filesystem discovery. */
@@ -133,6 +157,7 @@ export async function scanSetupCodebase(projectRoot: string, mexDir: string): Pr
 export async function buildSetupGraph(projectRoot: string, options: {
   signal?: AbortSignal;
   background?: boolean;
+  onProgress?: (progress: GraphMaintenanceProgress) => void;
 } = {}): Promise<void> {
   throwIfSetupAborted(options.signal);
   try {
@@ -140,9 +165,12 @@ export async function buildSetupGraph(projectRoot: string, options: {
     await rebuildGraph(projectRoot, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.background ? { candidateExecution: "process" as const } : {}),
+      ...(options.onProgress ? { onProgress: options.onProgress } : {}),
     });
   } catch (error) {
     throwIfSetupAborted(options.signal);
+    const expected = classifySetupMaintenanceError(error, "graph");
+    if (expected) throw expected;
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Code graph setup failed: ${message}. Fix the problem and rerun mex setup.`);
   }

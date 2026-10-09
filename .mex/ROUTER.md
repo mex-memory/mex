@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-10-08
+last_updated: 2026-10-09
 ---
 
 # Session Bootstrap
@@ -30,6 +30,24 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
+- Local terminal setup work replaces the old prompts with an ASCII MEX HUD,
+  integration selection before writes, native Claude/Codex terminal handoff,
+  and explicit complete/paused/failed/cancelled outcomes. Enter selects the
+  highlighted tool and starts; Space optionally toggles extra integrations,
+  and a separate Continue row supports the current selection or no agent.
+  It reuses the shared
+  setup engine and opens the setup-enabled Hub after validation for commit
+  review and optional completion details. Scripts and CI remain plain and
+  never launch an interactive agent or long-lived Hub. Long graph steps now
+  forward actual phase/file counts into an animated HUD with phase/quiet timers;
+  failures retain bounded local worker diagnostics and authored recovery advice.
+  This is working-tree
+  implementation, not a published release.
+- Local setup error-reporting work preserves authored recovery instructions
+  for expected config, ignore-protection, integration, Graph, grounding, and
+  Wiki failures in the browser. Raw diagnostics remain terminal-only, and
+  unexpected exceptions retain the generic fallback. This working-tree change
+  leaves the setup completion rules and private response schema unchanged.
 - Local work on `fix/knowledge-drift-precision` adds `mex wiki link-sections`:
   preview or explicitly apply missing section-to-parent `refines` relationships
   without changing claim text or groundings. Setup/GROW guidance preserves those
@@ -375,6 +393,16 @@ Then read this file fully before doing anything else in this session.
 - Public package-root exports for the provisional team contracts.
 
 **Known Issues:**
+- A disposable MEX copy with installed dependencies reproduced Node heap
+  exhaustion during graph construction (924 sources, last event 865/924,
+  about 101 seconds, explicit V8 heap-limit stderr). The source-only copy
+  completed; a tiny fresh repository also passes. A compiler-only probe also
+  exhausted the heap during signature rendering, before graph persistence;
+  this does not establish a persistent leak or one uniquely causal declaration.
+  Setup now exposes that cause,
+  but the underlying compiler memory pressure is not fixed by HUD animation
+  or process isolation. Investigate it without changing canonical signatures
+  or increasing production heap/resource budgets merely to pass the example.
 - Graph construction still rebuilds the full eligible corpus after source
   changes and has no peak-memory quota. The branch's actual Hub probe peaked at
   about 1,963 MiB combined RSS and retained multi-second pauses around initial

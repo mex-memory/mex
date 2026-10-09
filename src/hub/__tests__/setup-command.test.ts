@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   findConfig: vi.fn(),
   identity: vi.fn(),
   createTeam: vi.fn(),
+  openBrowser: vi.fn(),
   order: [] as string[],
 }));
 
@@ -30,6 +31,7 @@ vi.mock("../security/session.js", () => ({
 }));
 vi.mock("../app.js", () => ({ createHubApp: mocks.createApp }));
 vi.mock("../node-server.js", () => ({ startHubNodeServer: mocks.startServer }));
+vi.mock("../browser.js", () => ({ openHubBrowser: mocks.openBrowser }));
 vi.mock("../setup/services.js", () => ({ createSetupHubServices: mocks.createSetup }));
 vi.mock("../../setup/headless.js", () => ({ inspectSetupStatus: mocks.inspect }));
 vi.mock("../setup/readiness.js", () => ({ hasCommittedHubIdentity: mocks.committedIdentity }));
@@ -78,6 +80,96 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Hub setup process", () => {
+  it("does not start resources when the finishing lane is already cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const onListening = vi.fn();
+    await runSetupHubCommand({ projectRoot: "/Users/private/project", openBrowser: true, signal: controller.signal, onListening });
+    expect(mocks.createSetup).not.toHaveBeenCalled();
+    expect(mocks.startServer).not.toHaveBeenCalled();
+    expect(mocks.startTelemetry).not.toHaveBeenCalled();
+    expect(mocks.openBrowser).not.toHaveBeenCalled();
+    expect(onListening).not.toHaveBeenCalled();
+    expect(process.stdout.write).not.toHaveBeenCalled();
+  });
+
+  it("closes a listener that finishes starting after cancellation", async () => {
+    let ready!: (server: { origin: string; close: typeof mocks.closeServer; replaceApp: () => void }) => void;
+    mocks.startServer.mockReturnValue(new Promise((resolve) => { ready = resolve; }));
+    const controller = new AbortController();
+    const onListening = vi.fn();
+    const running = runSetupHubCommand({ projectRoot: "/Users/private/project", openBrowser: true, signal: controller.signal, onListening });
+    await vi.waitFor(() => expect(mocks.startServer).toHaveBeenCalledOnce());
+    controller.abort();
+    ready({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    await running;
+    expect(mocks.order).toEqual(["http", "setup"]);
+    expect(mocks.startTelemetry).not.toHaveBeenCalled();
+    expect(onListening).not.toHaveBeenCalled();
+    expect(mocks.openBrowser).not.toHaveBeenCalled();
+    expect(process.stdout.write).not.toHaveBeenCalled();
+  });
+
+  it("hands the bound finishing link to the HUD and removes shutdown listeners on abort", async () => {
+    const controller = new AbortController();
+    const onListening = vi.fn();
+    const removeAbortListener = vi.spyOn(controller.signal, "removeEventListener");
+    const priorInterrupt = process.listeners("SIGINT");
+    const priorTerminate = process.listeners("SIGTERM");
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    const running = runSetupHubCommand({
+      projectRoot: "/Users/private/project", openBrowser: true, port: 48123,
+      initialMode: "agent-memory", signal: controller.signal, onListening,
+    });
+    await vi.waitFor(() => expect(onListening).toHaveBeenCalledOnce());
+    expect(onListening).toHaveBeenCalledWith({ origin: "http://127.0.0.1:48123", bootstrapUrl: "http://127.0.0.1:48123/#token=private-bootstrap-token" });
+    expect(mocks.createSetup).toHaveBeenCalledWith("/Users/private/project", expect.objectContaining({ initialMode: "agent-memory" }));
+    expect(mocks.startServer).toHaveBeenCalledWith(expect.objectContaining({ port: 48123 }));
+    expect(mocks.openBrowser).toHaveBeenCalledWith("http://127.0.0.1:48123/#token=private-bootstrap-token");
+    expect(process.stdout.write).not.toHaveBeenCalled();
+    controller.abort();
+    await running;
+    expect(mocks.order).toEqual(["http", "setup", "telemetry"]);
+    expect(process.listeners("SIGINT")).toEqual(priorInterrupt);
+    expect(process.listeners("SIGTERM")).toEqual(priorTerminate);
+    expect(removeAbortListener).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
+  it("handles cancellation from onListening before browser launch or shutdown wait", async () => {
+    const controller = new AbortController();
+    const priorInterrupt = process.listeners("SIGINT");
+    const priorTerminate = process.listeners("SIGTERM");
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    await runSetupHubCommand({
+      projectRoot: "/Users/private/project", openBrowser: true, signal: controller.signal,
+      onListening: () => controller.abort(),
+    });
+    expect(mocks.openBrowser).not.toHaveBeenCalled();
+    expect(process.stdout.write).not.toHaveBeenCalled();
+    expect(mocks.order).toEqual(["http", "setup", "telemetry"]);
+    expect(process.listeners("SIGINT")).toEqual(priorInterrupt);
+    expect(process.listeners("SIGTERM")).toEqual(priorTerminate);
+  });
+
+  it("routes startup output through onMessage when no listener callback is supplied", async () => {
+    const controller = new AbortController();
+    const onMessage = vi.fn(() => controller.abort());
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    await runSetupHubCommand({ projectRoot: "/Users/private/project", openBrowser: false, signal: controller.signal, onMessage });
+    expect(onMessage).toHaveBeenCalledWith(expect.stringContaining("http://127.0.0.1:48123/#token=private-bootstrap-token"));
+    expect(process.stdout.write).not.toHaveBeenCalled();
+    expect(mocks.order).toEqual(["http", "setup", "telemetry"]);
+  });
+
+  it("cleans up setup and reports a listener startup failure to its caller", async () => {
+    const onListening = vi.fn();
+    mocks.startServer.mockRejectedValue(new Error("Port is occupied."));
+    await expect(runSetupHubCommand({ projectRoot: "/Users/private/project", openBrowser: true, onListening })).rejects.toThrow("Port is occupied.");
+    expect(onListening).not.toHaveBeenCalled();
+    expect(mocks.openBrowser).not.toHaveBeenCalled();
+    expect(mocks.order).toEqual(["setup"]);
+  });
+
   it("starts the setup Hub without jobs when the checkout is not ready", async () => {
     let ready!: (server: { origin: string; close: typeof mocks.closeServer; replaceApp: () => void }) => void;
     mocks.startServer.mockReturnValue(new Promise((resolve) => { ready = resolve; }));
@@ -152,6 +244,47 @@ describe("Hub setup process", () => {
     stopHub(priorListeners);
     await running;
     expect(mocks.order).toEqual(["http", "jobs", "telemetry"]);
+  });
+
+  it.each([{ setup: true }, { mode: "code-repo" }])("retains the setup finishing screen for explicit launch options %j", async (options) => {
+    mocks.inspect.mockReturnValue({ mode: "code-repo", hasScaffold: true, ready: true, stage: "ready" });
+    mocks.committedIdentity.mockResolvedValue(true);
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    const priorListeners = new Set(process.listeners("SIGTERM"));
+    const running = launchHub({ openBrowser: false, ...options });
+    await vi.waitFor(() => expect(mocks.events).toHaveBeenCalledOnce());
+    expect(mocks.createSetup).toHaveBeenCalledWith("/Users/private/project", expect.objectContaining({ initialMode: "mode" in options ? options.mode : undefined }));
+    expect(mocks.createTeam).not.toHaveBeenCalled();
+    stopHub(priorListeners);
+    await running;
+  });
+
+  it.each(["ready", "failed"])("routes a %s promotion notice through the HUD callback", async (outcome) => {
+    let onReady!: (signal: AbortSignal) => Promise<void>;
+    const replaceApp = vi.fn();
+    mocks.createSetup.mockImplementation((_root, options: { onReady: typeof onReady }) => {
+      onReady = options.onReady;
+      return { services: {}, setup: { shutdown: mocks.stopSetup } };
+    });
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp });
+    const controller = new AbortController();
+    const onListening = vi.fn();
+    const onMessage = vi.fn();
+    const running = runSetupHubCommand({ projectRoot: "/Users/private/project", openBrowser: false, signal: controller.signal, onListening, onMessage });
+    await vi.waitFor(() => expect(onListening).toHaveBeenCalledOnce());
+    if (outcome === "ready") {
+      await onReady(new AbortController().signal);
+      expect(replaceApp).toHaveBeenCalledOnce();
+      expect(onMessage).toHaveBeenCalledWith("Project Hub is ready at http://127.0.0.1:48123");
+    } else {
+      mocks.findConfig.mockImplementation(() => { throw new Error("Config could not be read."); });
+      await expect(onReady(new AbortController().signal)).rejects.toThrow("Config could not be read.");
+      expect(replaceApp).not.toHaveBeenCalled();
+      expect(onMessage).toHaveBeenCalledWith("Project Hub could not open after setup: Config could not be read.");
+    }
+    expect(process.stdout.write).not.toHaveBeenCalled();
+    controller.abort();
+    await running;
   });
 
   it("cleans up pending composition after cancellation without replacing the setup app", async () => {

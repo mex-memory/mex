@@ -113,6 +113,12 @@ Prefer terminal setup or working over SSH?
 npx mex-agent@0.8.3 setup --cli
 ```
 
+Terminal setup opens a keyboard-driven HUD with an ASCII MEX banner. Highlight a tool with the arrow keys and press Enter to select it and begin. Space optionally selects additional integrations; the Continue row starts with your checked choices or without an agent. Long steps show an animated activity indicator, elapsed time, and the latest reported work; graph parsing also shows real file counts. When a selected Claude Code or Codex CLI is available, its normal interactive session takes over the terminal; exit that session to return to MEX. MEX checks the scaffold before continuing. Incomplete work can be reopened, populated manually, or left for later.
+
+After validation, the terminal starts the setup Hub for commit review and the optional completion steps. Keep that terminal running while using the Hub; press `q` or Ctrl+C to stop it. Use `--cli --no-open` to show the local link without opening a browser, and `--port <n>` to choose its port. Press `d` in the HUD to read longer status or error details.
+
+For scripts, use `--yes` with repeatable `--tool <name>` flags (or `--tool none`). Piped input/output and CI also use plain output. These runs reuse saved choices, default to no integrations when none are saved, and never launch an agent or browser or wait for input. Exit codes are `0` for completed preparation or a successful dry run, `2` when population is still required, `1` for failure, and `130`/`143` for interruption. After a population checkpoint, rerun `mex setup --cli` to continue.
+
 `mex setup --dry-run` remains a terminal preview without changes. Once installed, bare `mex` opens the Hub (or setup for an incomplete project), while `mex tui` opens the terminal dashboard.
 
 ![Three steps to a ready project: run setup, populate memory, then review and commit the checkpoint before opening Hub.](docs/diagrams/readme/setup.svg)
@@ -148,7 +154,7 @@ mex setup
 
 The npm package is named `mex-agent`; the installed command is `mex`. Complete the review and commit checkpoint above before running `mex hub`.
 
-Both the Hub and terminal completion flows offer an optional global installation pinned to the running MEX version. If it fails, setup remains complete and you can retry the command above. Open a new terminal afterward and run `mex --version`.
+The Hub completion page, also opened after interactive terminal setup, offers an optional global installation pinned to the running MEX version. If it fails, setup remains complete and you can retry the command above. Open a new terminal afterward and run `mex --version`.
 
 </details>
 

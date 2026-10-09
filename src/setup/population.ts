@@ -96,7 +96,7 @@ export async function launchSetupPopulationAsync(
   }
 }
 
-function createPopulationSession(prompt: string, projectRoot: string): {
+export function createPopulationSession(prompt: string, projectRoot: string): {
   root: string;
   instruction: string;
   cleanup: () => void;

@@ -9,6 +9,10 @@ import {
   saveAiTools,
 } from "../config.js";
 import { AI_TOOLS, type AiTool } from "../types.js";
+import { AGENT_SKILL_TARGETS, OFFICIAL_MEX_SKILLS } from "../agent-skills/types.js";
+import { SetupError, classifySetupFileSystemError } from "./errors.js";
+import { classifySetupAgentAssetsError } from "./agent-errors.js";
+import type { GraphMaintenanceProgress } from "../team/contracts/graph.js";
 import { launchHeadlessSetupPopulation, type HeadlessPopulationActivity, type HeadlessPopulationTranscript } from "./headless-population.js";
 import {
   detectProjectState,
@@ -85,6 +89,16 @@ export interface HeadlessSetupOptions {
   readonly onPopulationTranscript?: (entry: HeadlessPopulationTranscript) => void;
   readonly onPopulationPrompt?: (prompt: string) => void;
   readonly onAnchorNotes?: (notes: readonly string[]) => void;
+  /** Presentation-owned population (the terminal temporarily yields to a native agent). */
+  readonly populate?: (input: {
+    selectedTools: readonly AiTool[];
+    prompt: string;
+    projectRoot: string;
+    signal?: AbortSignal;
+  }) => Promise<{ tool: "claude" | "codex" | null; completed: boolean }>;
+  readonly onMessage?: (message: string) => void;
+  /** Live maintenance updates, separate from the ordered setup phase transitions. */
+  readonly onGraphProgress?: (progress: GraphMaintenanceProgress) => void;
 }
 
 export interface HeadlessSetupProgress {
@@ -162,11 +176,12 @@ export function setupUnavailableReason(): string {
 }
 
 /**
- * Run the same ordered setup path as `mex setup`, without readline or a TTY.
+ * Run the shared ordered setup path, with presentation and input owned by callers.
  *
- * Tool choice arrives from the Hub form. Population uses a headless Claude or
- * Codex session when one is installed; otherwise the prompt is returned for
- * the user to paste. Finalize only runs after `isScaffoldPopulated`.
+ * The Hub defaults to a headless Claude/Codex session; the terminal supplies a
+ * native handoff callback. Scripts use confirmPopulation to inspect without an
+ * agent. Finalize only runs after checking the populated files, regardless of
+ * the population adapter's result.
  */
 export async function runHeadlessSetup(
   options: HeadlessSetupOptions,
@@ -186,7 +201,7 @@ export async function runHeadlessSetup(
   throwIfSetupAborted(options.signal);
 
   if (mode === "code-repo" && !existsSync(resolve(projectRoot, ".git"))) {
-    throw new Error("No Git repository found. Run `git init` first, then rerun setup.");
+    throw new SetupError("No Git repository found. Run `git init` first, then rerun setup.");
   }
 
   const scaffoldPopulatedAtStart = isScaffoldPopulated(mexDir);
@@ -199,28 +214,51 @@ export async function runHeadlessSetup(
   report("tools");
   const requestedTools = uniqueTools(options.tools ?? loadConfiguredAiTools(mexDir));
   const selectedTools = requestedTools;
-  const anchorNotes = ensureToolAnchors(projectRoot, templatesDir, selectedTools, false);
+  let anchorNotes: string[];
+  try {
+    anchorNotes = ensureToolAnchors(projectRoot, templatesDir, selectedTools, false, options.onMessage);
+  } catch (error) {
+    throw classifySetupFileSystemError(error, "Could not link the selected AI tool instruction files.") ?? error;
+  }
   options.onAnchorNotes?.(anchorNotes);
-  saveAiTools(mexDir, selectedTools);
+  try {
+    saveAiTools(mexDir, selectedTools);
+  } catch (error) {
+    throw classifySetupFileSystemError(error, "Could not save the AI tool selection in .mex/config.json.") ?? error;
+  }
 
   const selectedAgentClients = selectedTools.filter((tool) => tool === "claude" || tool === "codex");
   if (selectedAgentClients.length > 0) {
     report("skills");
-    const agentAssets = installSetupAgentAssets({
-      projectRoot,
-      selectedTools,
-      dryRun: false,
-      checkIgnored: mode === "code-repo",
-    });
+    let agentAssets: ReturnType<typeof installSetupAgentAssets>;
+    try {
+      agentAssets = installSetupAgentAssets({
+        projectRoot,
+        selectedTools,
+        dryRun: false,
+        checkIgnored: mode === "code-repo",
+      });
+    } catch (error) {
+      throw classifySetupAgentAssetsError(error) ?? error;
+    }
     if (agentAssets?.conflicted) {
-      throw new Error("Official MEX agent assets have conflicts. Resolve them and rerun setup or mex skills sync.");
+      // Only known install destinations can enter the browser explanation.
+      const destinations = new Set(Object.values(AGENT_SKILL_TARGETS).flatMap((target) => [
+        target.instructionsPath,
+        ...OFFICIAL_MEX_SKILLS.map((skill) => `${target.skillsDirectory}/${skill}`),
+      ]));
+      const conflicts = [...new Set(agentAssets.actions
+        .filter((action) => action.action === "conflict" && destinations.has(action.path))
+        .map((action) => action.path))].slice(0, 2);
+      const detail = conflicts.length ? ` Check ${conflicts.join(" and ")}.` : "";
+      throw new SetupError(`Official MEX agent assets have conflicts.${detail} Review them with mex skills sync --dry-run, resolve the conflicts, then retry setup.`);
     }
   }
 
   report("identity");
   const identity = ensureScaffoldIdentity(mexDir, projectRoot);
   if (readScaffoldId(mexDir) !== identity.scaffold_id) {
-    throw new Error("Could not persist .mex/config.json. Fix its permissions or contents and rerun setup.");
+    throw new SetupError("Could not persist .mex/config.json. Fix its permissions or contents and rerun setup.");
   }
 
   let scannerBrief: string | null = null;
@@ -231,7 +269,11 @@ export async function runHeadlessSetup(
 
   if (mode === "code-repo") {
     report("graph");
-    await buildSetupGraph(projectRoot, { background: true, signal: options.signal });
+    await buildSetupGraph(projectRoot, {
+      background: true,
+      signal: options.signal,
+      onProgress: options.onGraphProgress,
+    });
   }
 
   const prompt = await buildSetupPopulationPrompt(mode, state, scannerBrief);
@@ -244,7 +286,7 @@ export async function runHeadlessSetup(
 
   if (!populationFinished && options.confirmPopulation !== true) {
     throwIfSetupAborted(options.signal);
-    const launched = await launchHeadlessSetupPopulation({
+    const launched = await (options.populate ?? launchHeadlessSetupPopulation)({
       selectedTools,
       prompt,
       projectRoot,
@@ -288,7 +330,10 @@ export async function runHeadlessSetup(
   if (mode === "code-repo") {
     report("finalize");
     throwIfSetupAborted(options.signal);
-    await finalizeCodeRepoSetup(projectRoot, mexDir);
+    await finalizeCodeRepoSetup(projectRoot, mexDir, {
+      signal: options.signal,
+      onMessage: options.onMessage,
+    });
     throwIfSetupAborted(options.signal);
   }
 

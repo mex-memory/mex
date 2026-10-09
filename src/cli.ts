@@ -310,25 +310,29 @@ program
   .option("--dry-run", "Show what would happen without making changes")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
   .option("--no-open", "Print the setup link without opening a browser")
-  .option("--tool <tool>", "Terminal setup: use this AI tool instead of asking (repeatable; none for no tool)", (value: string, previous: string[] = []) => [...previous, value])
+  .option("--tool <tool>", "Terminal setup: preselect an AI tool (repeatable; none for no tool; --yes skips review)", (value: string, previous: string[] = []) => [...previous, value])
   .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
   .action(async (_opts, command: Command) => {
     const opts = command.optsWithGlobals<{ cli?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean; tool?: string[]; yes?: boolean }>();
     try {
       if (opts.cli || opts.dryRun || opts.tool !== undefined || opts.yes) {
-        if (opts.port !== undefined || opts.open === false) throw new Error("--port and --no-open apply to browser setup. Omit them with --cli or --dry-run.");
         const setup = await import("./setup/index.js");
-        await setup.runSetup({
+        const result = await setup.runSetup({
           dryRun: opts.dryRun,
           mode: opts.mode,
+          port: opts.port,
+          openBrowser: opts.open,
           ...(opts.tool === undefined ? {} : { tools: setup.parseSetupTools(opts.tool) }),
           ...(opts.yes ? { yes: true } : {}),
         });
+        process.exitCode = result.exitCode;
       } else {
         await runBrowserCommand({ ...opts, setup: true });
       }
     } catch (err) {
-      console.error((err as Error).message);
+      const { SetupError } = await import("./setup/errors.js");
+      console.error(err instanceof SetupError ? err.userMessage : (err as Error).message);
+      if (err instanceof SetupError && err.message !== err.userMessage) console.error(`Diagnostics: ${err.message}`);
       process.exitCode = 1;
       return;
     }
