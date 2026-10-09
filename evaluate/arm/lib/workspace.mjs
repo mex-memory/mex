@@ -3,7 +3,9 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, un
 import { delimiter, dirname, join } from "node:path";
 import { runSync } from "../../compare/lib/process.mjs";
 
-const GIT_IDENTITY = ["-c", "user.name=mex-eval", "-c", "user.email=eval@localhost", "-c", "core.autocrlf=false"];
+// Line endings follow the subject clone's core.autocrlf: grounding baselines hash the
+// checked-out bytes, so checkouts must match the platform the scaffold was written on.
+const GIT_IDENTITY = ["-c", "user.name=mex-eval", "-c", "user.email=eval@localhost"];
 const SCAFFOLD_PATHS = [".mex", "CLAUDE.md", ".claude"];
 const INDEX_FILES = ["graph.db", "wiki.db"];
 
