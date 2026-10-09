@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AiTool, MexConfig, DriftReport } from "../src/types.js";
 import { buildKnowledgeUpgradeBrief, planKnowledgeUpgrade, runKnowledgeUpgrade } from "../src/sync/knowledge-upgrade.js";
+import type { RunToolInteractiveOptions } from "../src/sync/index.js";
 
 const ID = "mx_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const roots: string[] = [];
@@ -22,7 +23,7 @@ function dependencies() {
   return {
     write: vi.fn(), available: vi.fn(() => true), pickTool: vi.fn(async () => "opencode" as const),
     ensureFreshGraph: vi.fn(async () => {}), check: vi.fn(async () => report),
-    runAgent: vi.fn<(tool: AiTool, brief: string, cwd: string) => boolean>(() => true), rebuild: vi.fn(async () => ({ entityCount: 1 })),
+    runAgent: vi.fn<(tool: AiTool, brief: string, cwd: string, options?: RunToolInteractiveOptions) => boolean>(() => true), rebuild: vi.fn(async () => ({ entityCount: 1 })),
   };
 }
 describe("existing knowledge upgrade", () => {
@@ -39,7 +40,7 @@ describe("existing knowledge upgrade", () => {
     const f = fixture(); const d = dependencies();
     await runKnowledgeUpgrade(f.config, { apply: true }, d);
     expect(d.pickTool).toHaveBeenCalledWith(["opencode"]);
-    expect(d.runAgent).toHaveBeenCalledWith("opencode", expect.stringContaining(ID), f.config.projectRoot);
+    expect(d.runAgent).toHaveBeenCalledWith("opencode", expect.stringContaining(ID), f.config.projectRoot, { timeoutMs: null });
     expect(d.rebuild).toHaveBeenCalledOnce(); expect(d.check).toHaveBeenCalledTimes(2);
   });
   it("honors an explicit supported agent override", async () => {
