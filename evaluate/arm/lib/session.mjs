@@ -126,7 +126,8 @@ function summarizeCheck(stdout) {
 }
 
 /**
- * Run one session. `armSpec.withMex` decides the scaffold and PATH; policy is
+ * Run one session. `armSpec.withMex` decides the scaffold and `armSpec.withCli`
+ * the frozen CLI on PATH (defaulting to the scaffold); policy is
  * validated afterwards from the transcript, as nothing can enforce it inside
  * the session.
  */
@@ -144,6 +145,11 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
   if (parsed.malformedLines) violations.push(`${parsed.malformedLines} malformed stream line(s)`);
   if (!parsed.usage.accountingValid) violations.push(`token accounting: ${parsed.usage.accountingReason}`);
   if (calls.npxMex) violations.push("npx mex-agent invoked (unpinned CLI)");
+  const withCli = armSpec.withCli ?? armSpec.withMex;
+  if (armSpec.withMex && !withCli) {
+    const cliCalls = calls.classified.filter((entry) => entry.category.startsWith("mex:"));
+    if (cliCalls.length) violations.push(`markdown-only arm invoked the mex CLI ${cliCalls.length} time(s)`);
+  }
   if (!armSpec.withMex) {
     const leaked = calls.classified.filter((entry) => entry.category.startsWith("mex:") || entry.category.startsWith("knowledge-"));
     if (leaked.length) violations.push(`files arm used MEX ${leaked.length} time(s)`);
@@ -164,7 +170,7 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
   const diff = agentDiff(workspace);
   writeFileSync(`${outputPrefix}.patch`, diff.patch);
   let mexCheck = null;
-  if (armSpec.withMex) {
+  if (withCli) {
     runMex(cliBin, ["graph", "refresh"], workspace, env);
     const check = runMex(cliBin, ["check", "--json"], workspace, env);
     writeFileSync(`${outputPrefix}.check.json`, check.stdout);

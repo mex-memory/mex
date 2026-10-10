@@ -7,7 +7,7 @@ import { classifyBash, classifyCall, forcedCompliance, isHandHashEdit, summarize
 import { bootstrapMean, buildBlindReview } from "../lib/report.mjs";
 import { buildPrompt, claudeInvocation, groundingLinesChanged } from "../lib/session.mjs";
 import { armPath, createWorkspace, git, removeWorkspace } from "../lib/workspace.mjs";
-import { parseArgs } from "../index.mjs";
+import { armSpecFor, parseArgs } from "../index.mjs";
 
 test("classifies MEX invocations by subcommand, however they are spelled", () => {
   assert.equal(classifyBash('mex graph scope "router"').category, "mex:scope");
@@ -176,4 +176,10 @@ test("grounding lines are counted only in the .mex part of a patch", () => {
   ].join("\n");
   assert.equal(groundingLinesChanged(patch), 3);
   assert.equal(groundingLinesChanged(""), 0);
+});
+
+test("arm specs separate the scaffold from the CLI", () => {
+  assert.deepEqual(armSpecFor({ scaffold: false }), { withMex: false, withCli: false });
+  assert.deepEqual(armSpecFor({ scaffold: true }), { withMex: true, withCli: true });
+  assert.deepEqual(armSpecFor({ scaffold: true, cli: false }), { withMex: true, withCli: false });
 });

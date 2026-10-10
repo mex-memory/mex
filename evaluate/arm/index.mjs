@@ -44,6 +44,9 @@ export function parseArgs(argv) {
   return args;
 }
 
+// An arm may carry the scaffold without the CLI (Markdown only); `cli` defaults to `scaffold`.
+export const armSpecFor = (arm) => ({ withMex: Boolean(arm.scaffold), withCli: Boolean(arm.scaffold) && arm.cli !== false });
+
 const indexKey = (base, scaffold) => `${base.slice(0, 12)}-${scaffold.slice(0, 12)}`;
 
 function prepare(args, suite) {
@@ -52,12 +55,14 @@ function prepare(args, suite) {
   const scaffolds = Object.fromEntries(Object.entries(suite.scaffolds).map(([name, ref]) => [name, resolveCommit(args.subject, ref)]));
   const tasks = {};
   const baselines = {};
+  // Graph and Wiki indexes only matter when some arm has the CLI.
+  const needsIndexes = Object.values(suite.arms).some((arm) => armSpecFor(arm).withCli);
   for (const task of suite.tasks) {
     const base = resolveCommit(args.subject, task.base);
     const scaffold = scaffolds[task.scaffold];
     const key = indexKey(base, scaffold);
-    const cachePath = buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv, depsDir: args.deps });
-    baselines[key] = JSON.parse(readFileSync(join(cachePath, "check-baseline.json"), "utf8"));
+    const cachePath = !needsIndexes ? null : buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv, depsDir: args.deps });
+    if (cachePath) baselines[key] = JSON.parse(readFileSync(join(cachePath, "check-baseline.json"), "utf8"));
     tasks[task.id] = { base, scaffold, indexKey: key, cachePath, hiddenFrom: task.hiddenTests?.fromCommit ? resolveCommit(args.subject, task.hiddenTests.fromCommit) : null };
   }
   const entry = mexEntrypoint(args.cliBin);
@@ -107,15 +112,15 @@ async function run(args, suite) {
       if (existing.valid) continue;
       renameSync(resultPath, join(runsDir, `${item.runId}.invalid-${Date.now()}.json.txt`));
     }
-    const task = item.task, info = prepared.tasks[task.id], armSpec = { withMex: suite.arms[item.armId].scaffold };
-    const env = { ...process.env, PATH: armPath(process.env.PATH, { cliBin: args.cliBin, withMex: armSpec.withMex }) };
+    const task = item.task, info = prepared.tasks[task.id], armSpec = armSpecFor(suite.arms[item.armId]);
+    const env = { ...process.env, PATH: armPath(process.env.PATH, { cliBin: args.cliBin, withMex: armSpec.withCli }) };
     const workspace = join(args.output, "ws", item.runId);
     removeWorkspace(args.subject, workspace);
     process.stderr.write(`[arm] ${item.runId}\n`);
     let row;
     try {
       const created = createWorkspace({ subjectRoot: args.subject, workspace, base: info.base, scaffoldCommit: armSpec.withMex ? info.scaffold : null, depsDir: args.deps });
-      const indexes = armSpec.withMex ? installIndexes({ workspace, cachePath: info.cachePath, cliBin: args.cliBin, env }) : null;
+      const indexes = armSpec.withCli ? installIndexes({ workspace, cachePath: info.cachePath, cliBin: args.cliBin, env }) : null;
       const session = await runAgentSession({
         task: { ...task, hiddenTests: task.hiddenTests ? { ...task.hiddenTests, fromCommit: info.hiddenFrom } : null },
         armId: item.armId, armSpec, workspace, env, cliBin: args.cliBin, model: args.model,
