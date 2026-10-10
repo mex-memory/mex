@@ -718,6 +718,25 @@
   overflow-wrap: anywhere;
 }
 
+.recoveryCommand {
+  padding: 8px 9px;
+  border-top: 1px solid var(--border);
+}
+
+.recoveryCommand > small {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted-foreground);
+  font-size: 8.5px;
+}
+
+.recoveryCommand > code {
+  display: block;
+  color: var(--foreground);
+  font-size: 9.5px;
+  overflow-wrap: anywhere;
+}
+
 .serviceMain .actionControls {
   align-items: flex-start;
   margin-top: 7px;

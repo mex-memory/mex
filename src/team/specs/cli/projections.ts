@@ -1,4 +1,5 @@
 import { MexPortError, type Diagnostic, type MexErrorCode } from "../../contracts/shared.js";
+import { WIKI_MIGRATION_RECOVERY } from "../../../wiki/migration/recovery.js";
 import type {
   SpecDetailProjection,
   SpecIndexProjection,
@@ -69,8 +70,8 @@ function recoveryFor(
 ): readonly { label: string; command: string }[] {
   if (state === "migration_required") {
     return [{
-      label: "Preview the required Wiki migration",
-      command: "mex wiki migrate --dry-run --json",
+      label: WIKI_MIGRATION_RECOVERY.label,
+      command: `${WIKI_MIGRATION_RECOVERY.command} --json`,
     }];
   }
   if (state === "missing" || state === "stale" || state === "rebuild_required") {
