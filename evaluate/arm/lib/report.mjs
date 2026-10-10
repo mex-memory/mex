@@ -107,6 +107,14 @@ export function generateReport({ suite, rows, grades = null, salt, baselines = {
   const baselineControl = valid.filter((row) => row.arm === control);
   lines.push("", `Fallbacks per ${treatment} session: median ${fmt(median(mexRows.map((row) => row.metrics.fallbacks)))}; ${control} discovery calls per session: median ${fmt(median(baselineControl.map((row) => row.allocation?.discovery?.calls ?? 0)))}.`, "Fallback causes (empty / wrong / verify / skipped) need transcript review; record them in grades.json under `fallbackCauses`.");
 
+  const forced = mexRows.filter((row) => row.compliance);
+  if (forced.length) {
+    const checks = ["routerRead", "routedRead", "scopeBeforeSource", "impactBeforeEdit", "checkAfterEdit"];
+    const yes = (value) => (value === undefined ? "–" : value ? "yes" : "no");
+    lines.push("", `## Forced-policy compliance (${treatment} arm)`, "", `Compliant: ${forced.filter((row) => row.compliance.compliant).length}/${forced.length}. Rows are kept either way; detection of shell edits is heuristic.`, "", `| Run | ${checks.join(" | ")} |`, `|---|${checks.map(() => "---").join("|")}|`);
+    for (const row of forced) lines.push(`| ${row.runId} | ${checks.map((key) => yes(row.compliance[key])).join(" | ")} |`);
+  }
+
   lines.push("", "## Loop close (change tasks)", "", "| Run | Tests | Knowledge files edited | Grounding issues vs baseline | Hand-edited hashes |", "|---|---|---|---|---|");
   for (const row of mexRows.filter((entry) => entry.taskType === "change")) {
     const baseline = baselines[row.indexKey]?.grounding?.length ?? 0;

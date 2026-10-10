@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { claudeAdapter } from "../../adapters/agents/claude.mjs";
 import { ANSWER_SCHEMA } from "../../compare/lib/answer.mjs";
 import { runSync, runTimed } from "../../compare/lib/process.mjs";
-import { summarizeCalls } from "./classify.mjs";
+import { forcedCompliance, summarizeCalls } from "./classify.mjs";
 import { git, runMex } from "./workspace.mjs";
 
 export const CHANGE_SCHEMA = {
@@ -24,13 +24,19 @@ const CHANGE_SUFFIX = "\n\nMake the change in the repository in the current dire
 // Prompt policies for the MEX arm. "none" tests unprompted adoption: the
 // scaffold's CLAUDE.md is the only pointer. "steered" names MEX in the prompt,
 // as evaluate/compare's forced-first graph arm did. The files arm never sees it.
-export const MEX_PROMPTS = ["none", "steered"];
+// "forced" orders the work: routed knowledge first, then Scope before any
+// source read; compliance is checked from the transcript afterwards.
+export const MEX_PROMPTS = ["none", "steered", "forced"];
+const MEX_FORCE_COMMON = "This repository has MEX installed: project knowledge in `.mex/` and a code graph CLI, `mex`, on PATH. Work in this order. First, read `.mex/ROUTER.md` and the `.mex/context/` or `.mex/patterns/` files it routes you to for this task. Then run `mex graph scope \"<task>\"` before reading or searching any source file. When you know an exact symbol name, use `mex graph query <where-defined|who-calls|what-calls> <symbol>` and `mex graph get <id...>`. Treat source returned by the graph as already read.";
+const MEX_FORCE_CHANGE = " Before editing, run `mex impact <symbol|file>` for what you will change. After your change, run `mex graph refresh` and then `mex check`, and update any `.mex` knowledge that drifted.";
 const MEX_STEER_COMMON = "This repository has MEX installed: project knowledge in `.mex/` (start at `.mex/ROUTER.md` and read the files it routes you to) and a code graph CLI, `mex`, on PATH. Start with `mex graph scope \"<task>\"`. When you know an exact symbol name, use `mex graph query <where-defined|who-calls|what-calls> <symbol>` and `mex graph get <id...>`. Treat source returned by the graph as already read.";
 const MEX_STEER_CHANGE = " Before editing a symbol, run `mex impact <symbol|file>`. After your change, run `mex graph refresh` and then `mex check` to see whether any `.mex` knowledge drifted.";
 
 export function buildPrompt(task, { mexPrompt = "none", withMex = false } = {}) {
-  const steer = withMex && mexPrompt === "steered"
-    ? `\n\n${MEX_STEER_COMMON}${task.type === "change" ? MEX_STEER_CHANGE : ""}`
+  const change = task.type === "change";
+  const steer = !withMex ? ""
+    : mexPrompt === "steered" ? `\n\n${MEX_STEER_COMMON}${change ? MEX_STEER_CHANGE : ""}`
+    : mexPrompt === "forced" ? `\n\n${MEX_FORCE_COMMON}${change ? MEX_FORCE_CHANGE : ""}`
     : "";
   return `${task.prompt}${steer}${task.type === "change" ? CHANGE_SUFFIX : QA_SUFFIX}`;
 }
@@ -171,6 +177,7 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
       permissionDenials: parsed.permissionDenials,
     },
     allocation: calls.allocation,
+    compliance: armSpec.withMex && mexPrompt === "forced" ? forcedCompliance(parsed.toolCalls, task.type) : null,
     ...result,
     diff: { files: diff.files, knowledgeFiles: diff.files.filter((file) => file.startsWith(".mex/")) },
     hiddenTests: hiddenTests ? { ok: hiddenTests.ok, exitCode: hiddenTests.exitCode, passed: hiddenTests.passed, failed: hiddenTests.failed, total: hiddenTests.total, error: hiddenTests.error ?? null } : null,

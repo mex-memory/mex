@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
-import { classifyBash, classifyCall, isHandHashEdit, summarizeCalls } from "../lib/classify.mjs";
+import { classifyBash, classifyCall, forcedCompliance, isHandHashEdit, summarizeCalls } from "../lib/classify.mjs";
 import { bootstrapMean, buildBlindReview } from "../lib/report.mjs";
 import { buildPrompt, claudeInvocation } from "../lib/session.mjs";
 import { armPath, createWorkspace, git, removeWorkspace } from "../lib/workspace.mjs";
@@ -82,6 +82,26 @@ test("the steered policy names MEX only in the MEX arm's prompt", () => {
   assert.match(buildPrompt(change, { mexPrompt: "steered", withMex: true }), /mex impact[\s\S]*Do not commit/);
   assert.doesNotMatch(buildPrompt(change, { mexPrompt: "steered", withMex: false }), /mex/i);
   assert.doesNotMatch(buildPrompt(change, { mexPrompt: "none", withMex: true }), /mex/i);
+  assert.match(buildPrompt(qa, { mexPrompt: "forced", withMex: true }), /First, read `\.mex\/ROUTER\.md`[\s\S]*before reading or searching any source file/);
+  assert.doesNotMatch(buildPrompt(change, { mexPrompt: "forced", withMex: false }), /mex/i);
+});
+
+test("forced compliance follows the prescribed order, splitting shell lines", () => {
+  const bash = (command) => ({ name: "Bash", input: { command } });
+  const read = (file_path) => ({ name: "Read", input: { file_path } });
+  const good = [
+    bash("cat .mex/ROUTER.md; mex logging --json"), read("C:/ws/.mex/patterns/debug-request-pipeline.md"),
+    bash('mex graph scope "compose errors"'), read("C:/ws/src/compose.ts"),
+    bash("mex impact compose"), { name: "Edit", input: { file_path: "C:/ws/src/compose.ts" } },
+    bash("npx vitest --run src/compose.test.ts; mex graph refresh; mex check"),
+  ];
+  assert.deepEqual(forcedCompliance(good, "change"), { routerRead: true, routedRead: true, scopeBeforeSource: true, impactBeforeEdit: true, checkAfterEdit: true, compliant: true });
+  const sourceFirst = [read("C:/ws/.mex/ROUTER.md"), bash('grep -n compose src/hono-base.ts; mex graph scope "x"')];
+  assert.deepEqual(forcedCompliance(sourceFirst, "qa"), { routerRead: true, routedRead: false, scopeBeforeSource: false, compliant: false });
+  const scriptEdit = [bash("mex impact compose"), bash("python - <<'E'\nopen('src/compose.ts','w').write(s)\nE"), bash("mex check")];
+  const result = forcedCompliance(scriptEdit, "change");
+  assert.equal(result.impactBeforeEdit, true);
+  assert.equal(result.checkAfterEdit, true);
 });
 
 test("bootstrap interval brackets the mean and is deterministic", () => {
