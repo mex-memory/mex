@@ -180,6 +180,20 @@ export interface HeadlessSetupResult {
   readonly preparation?: { readonly state: ProjectState; readonly scannerBrief: string | null };
 }
 
+/**
+ * Setup can drive only Claude Code and Codex automatically, so a run that launched no agent needs
+ * to say why: either no selected tool is one of those two, or their CLIs were absent from PATH.
+ */
+function automaticPopulationUnavailableMessage(unavailable: readonly BackgroundAgentTool[]): string {
+  if (unavailable.length === 0) {
+    return "None of the selected tools can run setup automatically (supported: Claude Code, Codex). Paste this prompt into your tool, then continue setup.";
+  }
+  const names = unavailable
+    .map((tool) => `${AI_TOOLS[tool].name} (\`${AI_TOOLS[tool].cli ?? tool}\`)`)
+    .join(", ");
+  return `${names} ${unavailable.length === 1 ? "was" : "were"} selected but not found on PATH for this process. Install ${unavailable.length === 1 ? "it" : "them"} or restart \`mex\` from a new terminal, or paste this prompt manually.`;
+}
+
 const STEP_LABELS: Record<SetupProgressStep, string> = {
   detect: "Detect project state",
   scaffold: "Create .mex/ scaffold",
@@ -458,6 +472,7 @@ async function runLockedSetup(
 
   let populationFinished = scaffoldPopulatedAtStart;
   let populationTool: BackgroundAgentTool | null = null;
+  let populationUnavailable: readonly BackgroundAgentTool[] = [];
   let populationCompleted = false;
   let coverageNotice: string | undefined;
 
@@ -555,6 +570,7 @@ async function runLockedSetup(
       onTranscript: options.onPopulationTranscript,
     });
     populationTool = launched.tool;
+    populationUnavailable = launched.unavailable ?? [];
     populationCompleted = launched.completed;
     throwIfSetupAborted(options.signal);
     if (launched.completed) {
@@ -613,7 +629,9 @@ async function runLockedSetup(
       commitCommands: mode === "code-repo" ? setupCommitCheckpointCommands(selectedTools) : [],
       anchorNotes,
       ...(coverageNotice ? { coverageNotice } : {}),
-      message: handoff !== null
+      message: populationTool === null && options.confirmPopulation !== true
+        ? automaticPopulationUnavailableMessage(populationUnavailable)
+        : handoff !== null
         ? `${options.confirmPopulation === true ? "Required scaffold placeholders remain. " : ""}${handoff.line} No agent CLI could run here, so paste the prompt into your agent; it runs \`mex setup next\` until setup is complete.`
         : coverageNotice !== undefined
         ? `The shared scaffold files still have required placeholders, so setup did not finalize. ${coverageNotice} Rerun \`mex setup\` to continue.`
@@ -621,7 +639,9 @@ async function runLockedSetup(
         ? "The agent exited successfully, but required scaffold placeholders remain."
         : options.confirmPopulation === true
           ? "Required scaffold placeholders remain. Finish the manual population prompt, then check again."
-          : "Setup is waiting for population. Complete the prompt in your AI tool, then continue setup.",
+          : populationTool === null
+            ? automaticPopulationUnavailableMessage(populationUnavailable)
+            : "Setup is waiting for population. Complete the prompt in your AI tool, then continue setup.",
     };
   }
 
