@@ -162,32 +162,46 @@ export function summarizeCalls(toolCalls, subjectRoot = "") {
   return { classified, allocation, totalCalls, mexCalls, fallbacks, npxMex, handHashEdits, outsideRoot };
 }
 
-const ROUTER_PATH = /(?:^|[/\s"'])\.mex\/ROUTER\.md\b/;
-const ROUTED_PATH = /(?:^|[/\s"'])\.mex\/(?:context|patterns)\/\S+\.md\b/;
+const ROUTER_PATH = /(?:^|[/\s"'=])\.mex\/ROUTER\.md\b/;
+const ENTRY_FILES = /(?:^|[/\s"'=])\.mex\/(?:ROUTER|AGENTS)\.md\b/g;
+const INTO_MEX = /\bcd\s+["']?(?:\S*[\\/])?\.mex\b/;
 const SCRIPT_WRITE = /^(?:python3?|py|node)\b/;
+
+/**
+ * Knowledge events for text naming .mex paths: "router" for ROUTER.md, and
+ * "consulted" for any other .mex path (a context or pattern file, or a
+ * directory search). AGENTS.md alone is neither.
+ */
+function knowledgeEvents(text) {
+  const value = ` ${normalizePath(text)}`;
+  const events = ROUTER_PATH.test(value) ? ["router"] : [];
+  if (isKnowledgePath(value.replace(ENTRY_FILES, " "))) events.push("consulted");
+  return events;
+}
 
 /** Ordered compliance events for one tool call; Bash lines are split into their simple commands. */
 function complianceEvents(call) {
   const input = call.input ?? {};
-  const knowledge = (text) => {
-    const value = normalizePath(text);
-    return ROUTER_PATH.test(value) ? ["router"] : ROUTED_PATH.test(value) ? ["routed"] : [];
-  };
   switch (call.name) {
     case "Read":
-      return isKnowledgePath(input.file_path) ? knowledge(` ${input.file_path}`) : ["source"];
+      return isKnowledgePath(input.file_path) ? knowledgeEvents(input.file_path) : ["source"];
     case "Grep":
-    case "Glob":
-      return isKnowledgePath(input.path) || isKnowledgePath(input.pattern) ? [] : ["source"];
+    case "Glob": {
+      const target = `${input.path ?? ""} ${input.pattern ?? ""}`;
+      return isKnowledgePath(input.path) || isKnowledgePath(input.pattern) ? knowledgeEvents(target) : ["source"];
+    }
     case "Edit":
     case "MultiEdit":
     case "Write":
       return isKnowledgePath(input.file_path) ? [] : ["edit"];
     case "Bash": {
       const command = String(input.command ?? "");
+      // A search run after `cd .mex...` names no .mex path but reads knowledge.
+      const insideMex = INTO_MEX.test(command);
       const events = [];
       for (const segment of shellSegments(command)) {
         const mex = segment.match(MEX_INVOCATION);
+        const reads = READ_COMMAND.test(segment) && !/\bsed\s+-i\b/.test(segment);
         if (mex) {
           const [sub, second] = [mex[1], mex[2]];
           events.push(sub === "graph" && second === "scope" ? "scope"
@@ -195,13 +209,14 @@ function complianceEvents(call) {
             : sub === "check" ? "check"
             : sub === "graph" && second === "refresh" ? "refresh" : "mex");
         } else if (TEST_COMMAND.test(segment)) continue;
-        else if (READ_COMMAND.test(segment) && !/\bsed\s+-i\b/.test(segment)) {
-          events.push(...(isKnowledgePath(segment) ? knowledge(` ${segment}`) : ["source"]));
+        else if (reads || DISCOVERY_COMMAND.test(segment)) {
+          if (isKnowledgePath(segment)) events.push(...knowledgeEvents(segment));
+          else events.push(insideMex ? "consulted" : "source");
         } else if (/\bsed\s+-i\b/.test(segment) || /(?:^|\s)>{1,2}\s*\S/.test(segment)) {
           if (!isKnowledgePath(segment)) events.push("edit");
         } else if (SCRIPT_WRITE.test(segment) && /\.write|writeFile/.test(command)) {
           if (!isKnowledgePath(command)) events.push("edit");
-        } else if (DISCOVERY_COMMAND.test(segment) && !isKnowledgePath(segment)) events.push("source");
+        }
       }
       return events;
     }
@@ -211,8 +226,9 @@ function complianceEvents(call) {
 }
 
 /**
- * Did a forced-policy MEX session follow the prescribed order? Routed knowledge
- * and Scope before the first source read or search; for change tasks, impact
+ * Did a forced-policy MEX session follow the prescribed order? Consulted
+ * knowledge (a read or grep beyond ROUTER.md and AGENTS.md) and Scope before
+ * the first source read or search; for change tasks, impact
  * before the first edit and check after the last one. Shell-level detection is
  * heuristic (a script that writes files counts as an edit).
  */
@@ -223,7 +239,7 @@ export function forcedCompliance(toolCalls, taskType) {
   const before = (a, b) => first(a) >= 0 && (first(b) < 0 || first(a) < first(b));
   const result = {
     routerRead: first("router") >= 0,
-    routedRead: first("routed") >= 0,
+    knowledgeConsulted: first("consulted") >= 0,
     scopeBeforeSource: before("scope", "source"),
   };
   if (taskType === "change") {

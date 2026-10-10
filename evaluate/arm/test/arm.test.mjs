@@ -95,9 +95,13 @@ test("forced compliance follows the prescribed order, splitting shell lines", ()
     bash("mex impact compose"), { name: "Edit", input: { file_path: "C:/ws/src/compose.ts" } },
     bash("npx vitest --run src/compose.test.ts; mex graph refresh; mex check"),
   ];
-  assert.deepEqual(forcedCompliance(good, "change"), { routerRead: true, routedRead: true, scopeBeforeSource: true, impactBeforeEdit: true, checkAfterEdit: true, compliant: true });
+  assert.deepEqual(forcedCompliance(good, "change"), { routerRead: true, knowledgeConsulted: true, scopeBeforeSource: true, impactBeforeEdit: true, checkAfterEdit: true, compliant: true });
   const sourceFirst = [read("C:/ws/.mex/ROUTER.md"), bash('grep -n compose src/hono-base.ts; mex graph scope "x"')];
-  assert.deepEqual(forcedCompliance(sourceFirst, "qa"), { routerRead: true, routedRead: false, scopeBeforeSource: false, compliant: false });
+  assert.deepEqual(forcedCompliance(sourceFirst, "qa"), { routerRead: true, knowledgeConsulted: false, scopeBeforeSource: false, compliant: false });
+  const grepped = [{ name: "Grep", input: { pattern: "HTTPException", path: ".mex/context" } }, bash('mex graph scope "errors"')];
+  assert.equal(forcedCompliance(grepped, "qa").knowledgeConsulted, true);
+  assert.equal(forcedCompliance([bash("cd .mex/context; grep -n onError conventions.md decisions.md"), bash('mex graph scope "x"')], "qa").knowledgeConsulted, true);
+  assert.equal(forcedCompliance([read("C:/ws/.mex/AGENTS.md"), bash("cat .mex/ROUTER.md")], "qa").knowledgeConsulted, false);
   const scriptEdit = [bash("mex impact compose"), bash("python - <<'E'\nopen('src/compose.ts','w').write(s)\nE"), bash("mex check")];
   const result = forcedCompliance(scriptEdit, "change");
   assert.equal(result.impactBeforeEdit, true);

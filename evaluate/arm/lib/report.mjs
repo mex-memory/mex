@@ -109,7 +109,7 @@ export function generateReport({ suite, rows, grades = null, salt, baselines = {
 
   const forced = mexRows.filter((row) => row.compliance);
   if (forced.length) {
-    const checks = ["routerRead", "routedRead", "scopeBeforeSource", "impactBeforeEdit", "checkAfterEdit"];
+    const checks = ["routerRead", "knowledgeConsulted", "scopeBeforeSource", "impactBeforeEdit", "checkAfterEdit"];
     const yes = (value) => (value === undefined ? "–" : value ? "yes" : "no");
     lines.push("", `## Forced-policy compliance (${treatment} arm)`, "", `Compliant: ${forced.filter((row) => row.compliance.compliant).length}/${forced.length}. Rows are kept either way; detection of shell edits is heuristic.`, "", `| Run | ${checks.join(" | ")} |`, `|---|${checks.map(() => "---").join("|")}|`);
     for (const row of forced) lines.push(`| ${row.runId} | ${checks.map((key) => yes(row.compliance[key])).join(" | ")} |`);
