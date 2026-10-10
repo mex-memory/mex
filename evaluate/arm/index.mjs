@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { buildSchedule } from "../compare/lib/schedule.mjs";
 import { runSync } from "../compare/lib/process.mjs";
 import { buildBlindReview, generateReport, loadRows } from "./lib/report.mjs";
-import { runAgentSession } from "./lib/session.mjs";
+import { MEX_PROMPTS, runAgentSession } from "./lib/session.mjs";
 import { armPath, buildIndexCache, createWorkspace, git, installIndexes, mexEntrypoint, removeWorkspace, resolveCommit } from "./lib/workspace.mjs";
 
 const fileSha = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -32,8 +32,10 @@ export function parseArgs(argv) {
     else if (arg === "--timeout-qa-ms") args.timeoutQaMs = Number(value(i++));
     else if (arg === "--timeout-change-ms") args.timeoutChangeMs = Number(value(i++));
     else if (arg === "--fake-agent") args.claude = [process.execPath, resolve(value(i++))];
+    else if (arg === "--mex-prompt") args.mexPrompt = value(i++);
     else throw new Error(`unknown argument: ${arg}`);
   }
+  if (args.mexPrompt !== undefined && !MEX_PROMPTS.includes(args.mexPrompt)) throw new Error(`--mex-prompt must be one of ${MEX_PROMPTS.join(", ")}`);
   if (!args.mode) throw new Error("choose --prepare, --run, --blind or --report");
   for (const key of ["suite", "output"]) if (!args[key]) throw new Error(`--${key} is required`);
   if (["prepare", "run"].includes(args.mode)) {
@@ -54,7 +56,7 @@ function prepare(args, suite) {
     const base = resolveCommit(args.subject, task.base);
     const scaffold = scaffolds[task.scaffold];
     const key = indexKey(base, scaffold);
-    const cachePath = buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv });
+    const cachePath = buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv, depsDir: args.deps });
     baselines[key] = JSON.parse(readFileSync(join(cachePath, "check-baseline.json"), "utf8"));
     tasks[task.id] = { base, scaffold, indexKey: key, cachePath, hiddenFrom: task.hiddenTests?.fromCommit ? resolveCommit(args.subject, task.hiddenTests.fromCommit) : null };
   }
@@ -63,7 +65,7 @@ function prepare(args, suite) {
     schemaVersion: 1, suiteId: suite.id, suiteSha256: fileSha(args.suite), preparedAt: new Date().toISOString(),
     subject: { root: args.subject, scaffolds, autocrlf: git(args.subject, ["config", "--get", "core.autocrlf"], { allowFailure: true }).stdout.trim() || null },
     cli: { bin: args.cliBin, entrypoint: entry, sha256: fileSha(entry), version: runSync(process.execPath, [entry, "--version"]).stdout.trim() },
-    deps: args.deps, model: args.model,
+    deps: args.deps, indexedWithDeps: true, model: args.model, mexPrompt: args.mexPrompt ?? "none",
     agent: { claudeVersion: runSync("claude", ["--version"]).stdout.trim() },
     node: process.version, platform: `${process.platform}-${process.arch}`,
     tasks,
@@ -80,6 +82,9 @@ function loadPrepared(args, suite) {
   if (prepared.suiteSha256 !== fileSha(args.suite)) throw new Error("suite changed after --prepare");
   if (fileSha(prepared.cli.entrypoint) !== prepared.cli.sha256) throw new Error("frozen MEX CLI changed after --prepare");
   if (prepared.model !== args.model) throw new Error(`model differs from the prepared run (${prepared.model})`);
+  // Runs prepared before the option existed used no MEX prompt.
+  const mexPrompt = prepared.mexPrompt ?? "none";
+  if (args.mexPrompt !== undefined && args.mexPrompt !== mexPrompt) throw new Error(`--mex-prompt differs from the prepared run (${mexPrompt})`);
   for (const [name, commit] of Object.entries(prepared.subject.scaffolds)) {
     if (resolveCommit(args.subject, suite.scaffolds[name]) !== commit) throw new Error(`scaffold ${name} moved after --prepare`);
   }
@@ -115,7 +120,7 @@ async function run(args, suite) {
         task: { ...task, hiddenTests: task.hiddenTests ? { ...task.hiddenTests, fromCommit: info.hiddenFrom } : null },
         armId: item.armId, armSpec, workspace, env, cliBin: args.cliBin, model: args.model,
         timeoutMs: task.type === "change" ? args.timeoutChangeMs : args.timeoutQaMs,
-        outputPrefix: join(artifacts, item.runId), claudeCommand: args.claude,
+        outputPrefix: join(artifacts, item.runId), claudeCommand: args.claude, mexPrompt: prepared.mexPrompt ?? "none",
       });
       row = { runId: item.runId, taskId: task.id, taskType: task.type, arm: item.armId, repetition: item.repetition, orderIndex: item.orderIndex, indexKey: info.indexKey, workspaceHead: created.head, indexes, startedFrom: info.base, ...session };
     } finally {

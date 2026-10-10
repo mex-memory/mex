@@ -85,14 +85,17 @@ export function removeWorkspace(subjectRoot, workspace) {
 }
 
 /** Build Graph and Wiki indexes once per base and scaffold, in a template checkout. */
-export function buildIndexCache({ subjectRoot, cacheDir, key, base, scaffoldCommit, cliBin, env }) {
+export function buildIndexCache({ subjectRoot, cacheDir, key, base, scaffoldCommit, cliBin, env, depsDir = null }) {
   const target = join(cacheDir, key);
   if (INDEX_FILES.every((name) => existsSync(join(target, name)))) return target;
   mkdirSync(target, { recursive: true });
   const template = join(cacheDir, `${key}.template`);
   removeWorkspace(subjectRoot, template);
   try {
-    createWorkspace({ subjectRoot, workspace: template, base, scaffoldCommit });
+    // Sessions link the dependencies, so the template must too: the compiler
+    // reads their declarations, and a graph built without them makes every
+    // session's first refresh fall back to a full extraction.
+    createWorkspace({ subjectRoot, workspace: template, base, scaffoldCommit, depsDir });
     for (const args of [["graph"], ["wiki", "rebuild-index"]]) {
       const result = runMex(cliBin, args, template, env);
       if (result.code !== 0) throw new Error(`mex ${args.join(" ")} failed for ${key}: ${result.stderr || result.stdout}`);

@@ -21,18 +21,28 @@ export const CHANGE_SCHEMA = {
 const QA_SUFFIX = "\n\nAnswer from the repository in the current directory. Return the required JSON: answer, symbols (exact declaration names), evidence (repository-relative path and line) and complete.";
 const CHANGE_SUFFIX = "\n\nMake the change in the repository in the current directory. Do not commit. When you are done, return the required JSON: a summary, the files you changed, and the tests you ran.";
 
-export function buildPrompt(task) {
-  return `${task.prompt}${task.type === "change" ? CHANGE_SUFFIX : QA_SUFFIX}`;
+// Prompt policies for the MEX arm. "none" tests unprompted adoption: the
+// scaffold's CLAUDE.md is the only pointer. "steered" names MEX in the prompt,
+// as evaluate/compare's forced-first graph arm did. The files arm never sees it.
+export const MEX_PROMPTS = ["none", "steered"];
+const MEX_STEER_COMMON = "This repository has MEX installed: project knowledge in `.mex/` (start at `.mex/ROUTER.md` and read the files it routes you to) and a code graph CLI, `mex`, on PATH. Start with `mex graph scope \"<task>\"`. When you know an exact symbol name, use `mex graph query <where-defined|who-calls|what-calls> <symbol>` and `mex graph get <id...>`. Treat source returned by the graph as already read. Fall back to Read, Grep or Glob only when the graph evidence is insufficient.";
+const MEX_STEER_CHANGE = " Before editing a symbol, run `mex impact <symbol|file>`. After your change, run `mex graph refresh` and then `mex check` to see whether any `.mex` knowledge drifted.";
+
+export function buildPrompt(task, { mexPrompt = "none", withMex = false } = {}) {
+  const steer = withMex && mexPrompt === "steered"
+    ? `\n\n${MEX_STEER_COMMON}${task.type === "change" ? MEX_STEER_CHANGE : ""}`
+    : "";
+  return `${task.prompt}${steer}${task.type === "change" ? CHANGE_SUFFIX : QA_SUFFIX}`;
 }
 
-export function claudeInvocation({ task, model, claudeCommand = ["claude"] }) {
+export function claudeInvocation({ task, model, claudeCommand = ["claude"], mexPrompt = "none", withMex = false }) {
   const tools = task.type === "change" ? ["Read", "Grep", "Glob", "Bash", "Edit", "Write"] : ["Read", "Grep", "Glob", "Bash"];
   const [command, ...prefix] = claudeCommand;
   return {
     command,
     args: [
       ...prefix,
-      "-p", buildPrompt(task),
+      "-p", buildPrompt(task, { mexPrompt, withMex }),
       "--output-format", "stream-json", "--verbose",
       // Project sources load the checkout's CLAUDE.md (the MEX arm's entry
       // point); user settings, plugins and hooks stay out of both arms.
@@ -101,8 +111,8 @@ function summarizeCheck(stdout) {
  * validated afterwards from the transcript, as nothing can enforce it inside
  * the session.
  */
-export async function runAgentSession({ task, armId, armSpec, workspace, env, cliBin, model, timeoutMs, outputPrefix, claudeCommand }) {
-  const invocation = claudeInvocation({ task, model, claudeCommand });
+export async function runAgentSession({ task, armId, armSpec, workspace, env, cliBin, model, timeoutMs, outputPrefix, claudeCommand, mexPrompt = "none" }) {
+  const invocation = claudeInvocation({ task, model, claudeCommand, mexPrompt, withMex: armSpec.withMex });
   const processResult = await runTimed(invocation.command, invocation.args, { cwd: workspace, env, timeoutMs });
   writeFileSync(`${outputPrefix}.jsonl`, processResult.stdout);
   const parsed = claudeAdapter.parseTranscript(processResult.stdout, { ...task, gold: [] });

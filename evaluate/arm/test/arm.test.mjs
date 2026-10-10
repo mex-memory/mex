@@ -75,6 +75,15 @@ test("invocations give change tasks edit tools and Q&A tasks none", () => {
   assert.ok(!qa.args.some((arg) => /mex/i.test(arg)), "prompts and flags never mention MEX");
 });
 
+test("the steered policy names MEX only in the MEX arm's prompt", () => {
+  const qa = { type: "qa", prompt: "Why?" }, change = { type: "change", prompt: "Fix" };
+  assert.match(buildPrompt(qa, { mexPrompt: "steered", withMex: true }), /mex graph scope/);
+  assert.doesNotMatch(buildPrompt(qa, { mexPrompt: "steered", withMex: true }), /mex impact/);
+  assert.match(buildPrompt(change, { mexPrompt: "steered", withMex: true }), /mex impact[\s\S]*Do not commit/);
+  assert.doesNotMatch(buildPrompt(change, { mexPrompt: "steered", withMex: false }), /mex/i);
+  assert.doesNotMatch(buildPrompt(change, { mexPrompt: "none", withMex: true }), /mex/i);
+});
+
 test("bootstrap interval brackets the mean and is deterministic", () => {
   const values = [-10, -5, -3, 0, 2, -8];
   const a = bootstrapMean(values), b = bootstrapMean(values);
