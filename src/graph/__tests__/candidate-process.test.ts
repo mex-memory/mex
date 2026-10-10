@@ -399,9 +399,9 @@ describe("isolated graph candidate construction", () => {
     const path = root();
     await expect(runGraphCandidateProcess({
       projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
-      __internal: { entrypoint: entrypoint(), startupTimeoutMs: 100 },
+      __internal: { entrypoint: entrypoint(), ...(reason === "startup-timeout" ? { startupTimeoutMs: 100 } : {}) },
     })).rejects.toMatchObject({ category: "failed", diagnostic: { reason } });
-  });
+  }, 20_000);
 
   it("drains excessive worker diagnostics, keeps useful head/tail, strips terminal controls, and reports last progress", async () => {
     const path = root();
@@ -416,6 +416,8 @@ describe("isolated graph candidate construction", () => {
     expect(error.diagnostic!.stderr).not.toMatch(/\u001b|\u0007|INJECTED_TITLE/u);
     expect(Buffer.byteLength(error.diagnostic!.stderr!)).toBeLessThanOrEqual(GRAPH_CANDIDATE_DIAGNOSTIC_BYTES);
     expect(error.message).toContain("last progress: parse 1/2 files");
+    expect(error.message).not.toContain("signal SIGTERM");
+    expect(error.message).not.toContain("signal SIGKILL");
     expect(error.diagnostic!.resourceFailure).toBeUndefined();
   });
 
@@ -447,6 +449,7 @@ describe("isolated graph candidate construction", () => {
       __internal: { entrypoint: realEntry },
     }).catch((error: unknown) => error) as GraphCandidateProcessError;
     expect(error.diagnostic).toMatchObject({ reason: "worker-error", stderr: "Error: Invalid candidate path." });
+    expect(error.message).not.toContain("signal SIGTERM");
     expect(boundedCandidateMessage({ type: "failed", category: "failed", errorMessage: "private" })).toBeNull();
   });
 

@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   statSync,
@@ -1172,8 +1173,14 @@ function runFreshCodeRepoSetup(cli, project, agentBin, agentInvocation) {
     { cwd: project, env, encoding: "utf8", timeout: 5_000, windowsHide: true },
   );
   const expectedAgent = join(agentBin, process.platform === "win32" ? "codex.cmd" : "codex");
+  // where.exe expands Windows short paths and normalizes their case.
+  const canonical = (path) => {
+    const real = realpathSync.native(path);
+    return process.platform === "win32" ? real.toLowerCase() : real;
+  };
+  const locatedPath = locatedAgent.stdout?.split(/\r?\n/u)[0].trim();
   if (locatedAgent.error || locatedAgent.status !== 0
-    || resolve(locatedAgent.stdout.split(/\r?\n/u)[0].trim()) !== resolve(expectedAgent)) {
+    || !locatedPath || canonical(locatedPath) !== canonical(expectedAgent)) {
     throw new Error("The packed fresh setup smoke did not expose its guarded Codex CLI first on PATH.");
   }
   const assertNoAgent = () => {

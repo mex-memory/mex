@@ -21,6 +21,10 @@ complete, paused, failed, and cancelled outcomes. Expected failures carry
 recovery instructions; bounded worker diagnostics remain available in the
 terminal, while browser errors expose only safe messages. Completing or checking
 setup without agent output no longer creates an empty background-session panel.
+Press `d` to review retained setup notices and diagnostics; `l` on the finishing
+screen shows a clean copyable Hub link, including in a narrow terminal. Finish
+later remains a paused outcome after an agent failure, and the final message
+reflects a setup commit completed in the browser.
 
 After interactive preparation, the browser handles setup-file review, the
 explicit local commit checkpoint, and completion. MEX never pushes. Use
@@ -64,8 +68,11 @@ earlier cannot read that encoding.**
   changed text or uncertain links require the corresponding review. Index
   rebuild and another check follow. Baselines are not silently accepted.
 - `mex wiki validate` checks structure. Use `mex check` for code-link health.
-  Graph-aware Wiki maintenance uses a fresh, revalidated snapshot and reports
-  unavailable evidence instead of treating it as a trustworthy graph.
+  Graph-aware Wiki maintenance uses a revalidated snapshot. An unrelated
+  incomplete parse permits exact grounding from fully parsed files; targets
+  in incomplete files remain unverified with named remediation. Source or
+  configuration drift still blocks grounding, and missing targets are not
+  reconciled against an incomplete corpus.
 - Natural-language Wiki queries ignore question/stop words, rank exact-term
   answers ahead of broader matches, and explain partial or empty results. Hub
   search uses the same ranking and identifies unchecked health.

@@ -16,6 +16,7 @@ import { classifySetupAgentAssetsError } from "./agent-errors.js";
 import { selectSetupAgent } from "./population.js";
 import { formatSetupGraphActivity, setupGraphActivity } from "./graph-progress.js";
 import type { TerminalSetupAction, TerminalSetupView } from "./terminal-ui.js";
+import { appendTerminalSetupEvent } from "./terminal-events.js";
 
 const CONTINUE = "Run `mex setup` to continue. Existing authored files are preserved.";
 
@@ -86,7 +87,8 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
     };
     let pending: ((action: TerminalSetupAction) => void) | undefined;
     const update = (changes: Partial<TerminalSetupView>) => {
-      view = { ...view, ...changes };
+      view = { ...view, ...changes,
+        events: changes.detail ? appendTerminalSetupEvent(view.events ?? [], changes.detail) : view.events };
       ui.update(view);
     };
     const ui = createTerminalSetupUI(view, action => {
@@ -95,8 +97,33 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
         update({ tools: view.tools.map(tool => tool.id === action.tool ? { ...tool, selected: !tool.selected } : tool) });
         return;
       }
+      if (action.type === "link" && view.hubUrl) {
+        void showHubLink();
+        return;
+      }
       pending?.(action);
     });
+    const showHubLink = async () => {
+      let rl: ReturnType<typeof createInterface> | undefined;
+      const closeInput = () => cancel();
+      try {
+        await ui.suspend();
+        stdin.ref();
+        // Outside the frame, terminal wrapping adds no border characters to a copy.
+        console.log(`\nHub link (keep it private):\n${view.hubUrl}\n`);
+        // The suspended HUD leaves a cooked terminal. Avoid readline's keypress
+        // decoder, which otherwise consumes the first key after Ink remounts.
+        rl = createInterface({ input: stdin, output: stdout, terminal: false });
+        rl.once("SIGINT", closeInput);
+        await rl.question("Press Enter to return to MEX…", { signal: abort.signal });
+      } catch (error) {
+        if (!abort.signal.aborted) update({ detail: error instanceof Error ? error.message : "Could not show the Hub link." });
+      } finally {
+        rl?.off("SIGINT", closeInput);
+        rl?.close();
+        ui.resume(view);
+      }
+    };
     const choose = (): Promise<TerminalSetupAction> => {
       if (abort.signal.aborted) return Promise.resolve({ type: "cancel" });
       return new Promise(resolve => {
@@ -159,7 +186,10 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
                   const action = first && tool ? { type: "agent" as const } : await choose();
                   first = false;
                   if (action.type === "cancel") throwIfSetupAborted(abort.signal);
-                  if (action.type === "exit") return { tool, completed: false };
+                  if (action.type === "exit") {
+                    populationFailure = undefined;
+                    return { tool, completed: false };
+                  }
                   if (action.type === "agent" && tool) {
                     const { launchInteractiveSetupPopulation } = await import("./interactive-population.js");
                     await ui.suspend();
@@ -189,7 +219,7 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
                     const closeInput = () => cancel();
                     try {
                       console.log(`\nCopy this prompt into your AI tool:\n\n${input.prompt}\n`);
-                      rl = createInterface({ input: stdin, output: stdout });
+                      rl = createInterface({ input: stdin, output: stdout, terminal: false });
                       rl.once("SIGINT", closeInput);
                       rl.once("close", closeInput);
                       await rl.question("Press Enter to return to MEX…", { signal: abort.signal });
@@ -235,7 +265,12 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
             onMessage: detail => update({ detail }),
           });
           if (!listening) throwIfSetupAborted(abort.signal);
-          outcome = { outcome: "complete", exitCode: 0, message: `${validated.message} Hub stopped. Run \`mex setup\` to reopen the completion page.` };
+          const { projectSetupStatus } = await import("../hub/setup/readiness.js");
+          const finished = await projectSetupStatus(projectRoot);
+          const message = finished.mode === "agent-memory" || finished.ready
+            ? "Setup complete. Hub stopped. Run `mex hub` to open Hub again."
+            : `${validated.message} Hub stopped. Run \`mex setup --browser\` to reopen the completion page.`;
+          outcome = { outcome: "complete", exitCode: 0, message };
         } catch (error) {
           if (abort.signal.aborted) throw error;
           const detail = error instanceof SetupError ? error.userMessage : error instanceof Error ? error.message : String(error);

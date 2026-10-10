@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-10-09
+last_updated: 2026-10-10
 ---
 
 # Session Bootstrap
@@ -38,6 +38,14 @@ Then read this file fully before doing anything else in this session.
   groundings; older clients cannot read them. Preparation and PR creation are
   authorized; publication is still pending. Verification and known follow-ups
   are tracked in `docs/design/0.8.4-release-plan.md`.
+- PR #271 review fixes add final stdin shutdown, bounded terminal warning history,
+  a clean copyable Hub link, width-aware control labels, explicit paused outcomes,
+  and a final browser-commit readiness check. The Wiki grounding bridge now
+  accepts exact evidence from fully parsed files when the only graph shortfall
+  is an unrelated incomplete parse; partial-file and missing-target evidence
+  remains unverified, and source/configuration drift still refuses. Windows
+  packed CLI discovery compares canonical paths. Release performance limits
+  remain unchanged; the final exact-head CI run is still required.
 - Local terminal setup is the default for `mex setup` and bare `mex` in
   incomplete projects, with the lowercase ASCII `mex` banner in cyan.
   `setup --browser` explicitly opens browser setup; `--cli` remains supported.

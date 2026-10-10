@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTerminalSetupUI, type TerminalSetupView } from "../terminal-ui.js";
+import { stdin } from "node:process";
 
 const { render } = vi.hoisted(() => ({ render: vi.fn() }));
 vi.mock("ink", async importOriginal => ({ ...await importOriginal<typeof import("ink")>(), render }));
@@ -17,7 +18,7 @@ function renderer() {
   return { instance, flush, fail };
 }
 
-beforeEach(() => { render.mockReset(); });
+beforeEach(() => { vi.restoreAllMocks(); render.mockReset(); });
 
 describe("terminal setup renderer ownership", () => {
   it("waits for terminal restoration before handing control back and creates a fresh renderer on resume", async () => {
@@ -50,6 +51,7 @@ describe("terminal setup renderer ownership", () => {
 
   it("coalesces repeated teardown and never mounts a queued resume after close", async () => {
     const current = renderer();
+    const pause = vi.spyOn(stdin, "pause");
     render.mockReturnValue(current.instance);
     const ui = createTerminalSetupUI(view, vi.fn());
     const first = ui.suspend();
@@ -62,10 +64,12 @@ describe("terminal setup renderer ownership", () => {
     expect(current.instance.cleanup).toHaveBeenCalledOnce();
     await ui.close();
     expect(current.instance.unmount).toHaveBeenCalledOnce();
+    expect(pause).toHaveBeenCalled();
   });
 
   it("still cleans up the Ink instance when its output flush fails", async () => {
     const current = renderer();
+    const pause = vi.spyOn(stdin, "pause");
     render.mockReturnValue(current.instance);
     const ui = createTerminalSetupUI(view, vi.fn());
     const closing = ui.close();
@@ -73,5 +77,6 @@ describe("terminal setup renderer ownership", () => {
     current.fail(error);
     await expect(closing).rejects.toBe(error);
     expect(current.instance.cleanup).toHaveBeenCalledOnce();
+    expect(pause).toHaveBeenCalledOnce();
   });
 });

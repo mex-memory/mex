@@ -23,6 +23,8 @@ export interface GraphCandidateProcessDiagnostic {
     | "protocol" | "ipc-disconnected" | "worker-error" | "exit" | "observer" | "cancelled";
   readonly exitCode?: number | null;
   readonly signal?: NodeJS.Signals | null;
+  /** Signal requested by MEX after an already diagnosed worker failure. */
+  readonly supervisorSignal?: NodeJS.Signals;
   readonly elapsedMs?: number;
   readonly progress?: GraphCandidateProgress;
   /** Only set when Node prints its explicit fatal JavaScript heap-limit marker. */
@@ -209,7 +211,9 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
         // exit status instead of blaming a channel that closed as a consequence.
         if (reason === "ipc-disconnected" && (code !== null || (signal && !sentSignals.has(signal)))) reason = "exit";
         reject(new GraphCandidateProcessError(failure?.category ?? "failed", {
-          reason, exitCode: code, signal, elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+          reason, exitCode: code, signal,
+          ...(reason !== "exit" && signal && sentSignals.has(signal) ? { supervisorSignal: signal } : {}),
+          elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
           ...(lastProgress ? { progress: lastProgress } : {}),
           ...(reason === "exit" && stderr.heapLimit()
             ? { resourceFailure: "heap-limit" as const } : {}),
@@ -278,7 +282,7 @@ function diagnosticMessage(diagnostic: GraphCandidateProcessDiagnostic): string 
   };
   const details: string[] = [];
   if (diagnostic.exitCode !== undefined && diagnostic.exitCode !== null) details.push(`exit code ${diagnostic.exitCode}`);
-  if (diagnostic.signal) details.push(`signal ${diagnostic.signal}`);
+  if (diagnostic.signal && diagnostic.signal !== diagnostic.supervisorSignal) details.push(`signal ${diagnostic.signal}`);
   if (diagnostic.elapsedMs !== undefined) details.push(`${(diagnostic.elapsedMs / 1000).toFixed(1)}s elapsed`);
   if (diagnostic.progress) {
     const { phase, completed, total } = diagnostic.progress;

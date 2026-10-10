@@ -75,6 +75,20 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(existsSync(f.record)).toBe(false);
   });
 
+  it("accepts the first HUD key after returning from the manual prompt", async () => {
+    const f = fixture("incomplete");
+    const result = await terminal(f, ["--tool", "none"], [
+      { expect: "Choose your AI tools", input: "\r" },
+      { expect: "> Show setup prompt", input: "\r" },
+      { expect: "Press Enter to return to MEX", input: "\r" },
+      { expect: "> Show setup prompt", input: "\u001b[A" },
+      { expect: "> Finish later", input: "\r" },
+    ]);
+    expect(result.exitCode, result.output).toBe(2);
+    expect(result.output).toContain("Setup paused at population");
+    expect(existsSync(f.record)).toBe(false);
+  });
+
   it.each([
     { description: "a fresh project", savedTools: [] },
     { description: "a project with Claude already selected", savedTools: ["claude"] },
@@ -127,7 +141,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expectPromptCleaned(f);
   });
 
-  it("returns to recovery after a nonzero native agent exit and reports failure on Finish later", async () => {
+  it("returns to recovery after a nonzero native agent exit and pauses on Finish later", async () => {
     const f = fixture("failed");
     const result = await terminal(f, [], [
       { expect: "Choose your AI tools", input: "\r" },
@@ -135,7 +149,8 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
       { expect: "Codex stopped before a clean exit", input: "\u001b[A" },
       { expect: "> Finish later", input: "\r" },
     ]);
-    expect(result.exitCode, result.output).toBe(1);
+    expect(result.exitCode, result.output).toBe(2);
+    expect(result.output).toContain("Setup paused at population");
     expect(result.output).toContain("Show setup prompt");
     expect(result.output).toContain("Run `mex setup` to continue");
     expectPromptCleaned(f);
@@ -158,6 +173,25 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(readFileSync(join(f.project, ".mex/AGENTS.md"), "utf8")).not.toContain("[YYYY-MM-DD]");
     expect(existsSync(join(f.project, ".mex/graph.db"))).toBe(false);
     expect(existsSync(join(f.project, ".mex/wiki.db"))).toBe(false);
+    expectPromptCleaned(f);
+  });
+
+  it("shows a clean copyable Hub link at 60x16 and exits after returning to the HUD", async () => {
+    const f = fixture("complete");
+    const result = await terminal(f, [], [
+      { expect: "Choose your AI tools", input: "\r" },
+      { expect: "MEX_PTY_CHILD_READY", input: "populate\n" },
+      { expect: "Continue in your browser", input: "l" },
+      { expect: "Hub link \\(keep it private\\):\\n(http://127\\.0\\.0\\.1:[0-9]+/#token=[A-Za-z0-9_-]{43})\\n", regex: true },
+      { expect: "Press Enter to return to MEX", input: "\r" },
+      { expect: "Continue in your browser", input: "q" },
+    ], { columns: 60, rows: 16 });
+    expect(result.exitCode, result.output).toBe(0);
+    const link = result.events[3].match!.split("\n")[1];
+    expect(result.raw).toContain(`Hub link (keep it private):\r\n${link}\r\n`);
+    expect(result.output).toContain("Setup complete. Hub stopped.");
+    const address = new URL(link);
+    expect(await canConnect(Number(address.port))).toBe(false);
     expectPromptCleaned(f);
   });
 

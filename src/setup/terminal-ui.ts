@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { stdin } from "node:process";
-import { Box, Text, render, useInput, useStdout, type Instance } from "ink";
+import { Box, Text, render, useInput, useStdin, useStdout, type Instance } from "ink";
 import type { AiTool } from "../types.js";
 import type { SetupProgressStep } from "./headless.js";
 
@@ -15,6 +15,7 @@ export interface TerminalSetupView {
   activeStep?: SetupProgressStep;
   completedSteps: readonly SetupProgressStep[];
   detail: string;
+  events?: readonly string[];
   startedAt: number;
   phaseStartedAt?: number;
   lastActivityAt?: number;
@@ -28,7 +29,7 @@ export interface TerminalSetupView {
 export type TerminalSetupAction =
   | { type: "toggle"; tool: AiTool }
   | { type: "start"; tool?: AiTool }
-  | { type: "cancel" | "agent" | "prompt" | "check" | "exit" | "retry" };
+  | { type: "cancel" | "agent" | "prompt" | "check" | "exit" | "retry" | "link" };
 
 type ActionHandler = (action: TerminalSetupAction) => void;
 type Line = { text: string; color?: string; backgroundColor?: string; dimColor?: boolean; bold?: boolean };
@@ -142,15 +143,17 @@ function title(view: TerminalSetupView): string {
   }
 }
 
-function footer(view: TerminalSetupView, narrow: boolean): string {
+function footer(view: TerminalSetupView, width: number): string {
   if (view.stopping) return "Waiting for the current operation to stop...";
+  let labels: readonly string[];
   switch (view.screen) {
-    case "configure": return narrow ? "Enter start Space multi ↑↓ ^C" : "Enter select/start  Space multi-select  Up/Down move  Ctrl+C exit";
-    case "population": return narrow ? "Arrows / Enter / d details / ^C" : "Up/Down move  Enter choose  d details  Ctrl+C stop";
-    case "error": return narrow ? "↑↓ Enter  d diagnostics  ^C" : "Up/Down move  Enter choose  d diagnostics  Ctrl+C stop";
-    case "hub": return "d details  q / Ctrl+C stop Hub";
-    case "progress": return "d details  Ctrl+C stop setup";
+    case "configure": labels = ["Enter select/start  Space multi-select  Up/Down move  Ctrl+C exit", "Enter select/start Space multi ↑↓ Ctrl+C", "Enter start Space multi ↑↓ ^C", "Enter Space ↑↓ ^C"]; break;
+    case "population": labels = ["Up/Down move  Enter choose  d details  Ctrl+C stop", "↑↓ Enter  d details  Ctrl+C", "↑↓ Enter d ^C"]; break;
+    case "error": labels = ["Up/Down move  Enter choose  d diagnostics  Ctrl+C stop", "↑↓ Enter  d diagnostics  Ctrl+C", "↑↓ Enter d ^C"]; break;
+    case "hub": labels = ["d details  l copy link  q / Ctrl+C stop Hub", "d details l link q/Ctrl+C stop", "d l link q/^C"]; break;
+    case "progress": labels = ["d details  Ctrl+C stop setup", "d details ^C stop"]; break;
   }
+  return labels.find(label => label.length <= width) ?? "^C";
 }
 
 function initialFocus(view: TerminalSetupView): number {
@@ -189,6 +192,7 @@ function phaseLine(view: TerminalSetupView, step: SetupProgressStep, label: stri
 /** The renderer owns input only while mounted; native agents get the entire terminal. */
 export function TerminalSetupHUD({ view, onAction }: { view: TerminalSetupView; onAction: ActionHandler }): React.ReactElement {
   const { stdout } = useStdout();
+  const { stdin: input } = useStdin();
   const [dimensions, setDimensions] = useState(() => ({ columns: stdout.columns || 80, rows: stdout.rows || 24 }));
   const [focus, setFocus] = useState(() => initialFocus(view));
   const [expanded, setExpanded] = useState(false);
@@ -205,7 +209,7 @@ export function TerminalSetupHUD({ view, onAction }: { view: TerminalSetupView; 
     return () => { stdout.off("resize", resize); };
   }, [stdout]);
   useEffect(() => { setFocus(initialFocus(view)); setExpanded(false); setDetailOffset(0); }, [view.screen, view.initialTool]);
-  useEffect(() => { setDetailOffset(0); }, [view.detail, view.error, view.hubUrl]);
+  useEffect(() => { if (!view.events?.length) setDetailOffset(0); }, [view.detail, view.error, view.hubUrl]);
   useEffect(() => {
     setNow(Date.now());
     if (!working) return;
@@ -219,7 +223,16 @@ export function TerminalSetupHUD({ view, onAction }: { view: TerminalSetupView; 
       onAction({ type: "cancel" });
       return;
     }
-    if (input === "d" && view.screen !== "configure") { setExpanded(!expanded); return; }
+    if (input === "d" && view.screen !== "configure") {
+      // Open at the current diagnostics; older retained notices remain above.
+      if (!expanded) setDetailOffset(view.events?.length ? maxOffset : 0);
+      setExpanded(!expanded);
+      return;
+    }
+    if (input.toLowerCase() === "l" && view.screen === "hub" && view.hubUrl) {
+      onAction({ type: "link" });
+      return;
+    }
     if (expanded) {
       if (key.escape) setExpanded(false);
       else if (key.upArrow) setDetailOffset(Math.max(0, visibleOffset - 1));
@@ -237,6 +250,11 @@ export function TerminalSetupHUD({ view, onAction }: { view: TerminalSetupView; 
       else if (menu[selected]) onAction(menu[selected].action);
     }
   });
+  useEffect(() => {
+    // Readline pauses the stream on close. Resume only after useInput has
+    // installed Ink's readable handler, so the first returning key is retained.
+    input.resume();
+  }, [input]);
 
   const height = Math.max(1, Math.min(23, dimensions.rows - 1));
   const padding = dimensions.columns >= 30 ? 1 : 0;
@@ -263,7 +281,10 @@ export function TerminalSetupHUD({ view, onAction }: { view: TerminalSetupView; 
   const boundedDetail = fullDetail.length > 4_096
     ? fullDetail.slice(0, 3_040) + "\n[Middle of detail omitted]\n" + fullDetail.slice(-1_024)
     : fullDetail;
-  const detailLines = wrapped(boundedDetail, insideWidth, 4_096);
+  const detailLines = view.events?.length
+    ? [...view.events.slice(-64).flatMap(event => [...wrapped(event.slice(0, 1_024), insideWidth, 1_024), { text: "" }]),
+      ...wrapped(boundedDetail, insideWidth, 4_096)]
+    : wrapped(boundedDetail, insideWidth, 4_096);
   const maxOffset = Math.max(0, detailLines.length - bodyHeight);
   const visibleOffset = Math.min(detailOffset, maxOffset);
   let content: Line[] = [];
@@ -386,7 +407,7 @@ export function TerminalSetupHUD({ view, onAction }: { view: TerminalSetupView; 
     ...(framed ? [line({ text: section, color: COLOR.border, bold: true }, "section")] : []),
     ...body,
     ...(framed ? [edge(split ? "╰" + "─".repeat(railWidth) + "┴" + "─".repeat(width - railWidth - 3) + "╯" : "╰" + "─".repeat(width - 2) + "╯", "bottom")] : []),
-    line({ text: expanded ? (width < 55 ? "Arrows scroll  d/Esc back  ^C" : "Up/Down / PgUp/PgDn scroll  d / Esc back  Ctrl+C stop") : footer(view, width < 55), color: COLOR.muted }, "footer"),
+    line({ text: expanded ? (["Up/Down / PgUp/PgDn scroll  d / Esc back  Ctrl+C stop", "Arrows scroll d/Esc back Ctrl+C", "↑↓ d/Esc ^C"].find(label => label.length <= width) ?? "^C") : footer(view, width), color: COLOR.muted }, "footer"),
   );
 }
 
@@ -449,9 +470,15 @@ export function createTerminalSetupUI(initial: TerminalSetupView, onAction: Acti
       else if (pending) void pending.then(mount, () => {});
       else mount();
     },
-    close() {
+    async close() {
       closed = true;
-      return unmount();
+      try {
+        await unmount();
+      } finally {
+        // A pending Windows console read can otherwise hold shutdown until Enter.
+        stdin.pause();
+        if (stdin.isTTY) stdin.unref();
+      }
     },
   };
 }

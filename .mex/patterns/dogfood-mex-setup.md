@@ -18,7 +18,7 @@ mex:
   id: mx_01M1M0CJJD2AQZ6XKHV4VKYTGJ
   type: pattern
   status: promoted
-  revision: 6
+  revision: 7
   title: dogfood-mex-setup
   grounds_to:
     - node: function:9055347f917caf8721a2f6d4e18bcc9a
@@ -90,7 +90,13 @@ global `mex`.
   underlying reader: explicitly pause stdin before handing it to the child,
   and ref it before remounting Ink or opening the manual readline question.
   Otherwise the parent can consume the child's input or exit while awaiting
-  a manual answer. Real PTY tests cover this boundary.
+  a manual answer. On final close, pause and unref stdin even after a readline
+  round trip; otherwise a Windows console read can keep the process alive.
+  Manual prompt/link questions use the cooked terminal without readline's
+  keypress decoder. Readline also pauses the stream on close: resume reads only
+  after the remounted HUD installs its input handler, retaining the first key.
+  Real PTY tests cover both readline round trips. Verify Windows portability
+  and native console shutdown separately; POSIX PTYs do not cover that boundary.
 - Forward graph maintenance updates separately from ordered setup phases:
   repeated parse events must not mark the graph complete or restart its timer.
   Show real phase/count updates, animate only during active work, and distinguish
@@ -104,10 +110,24 @@ global `mex`.
   A self-killed worker reports a nonzero exit code and no signal on Windows;
   POSIX reports `SIGKILL` and no exit code. Assert the platform's real diagnostic
   while preserving process-death, workspace-cleanup, and live-index checks.
+  Distinguish a signal sent by MEX to clean up an already diagnosed failure
+  from the worker's original cause. Preserve both in local diagnostic metadata,
+  but do not describe supervisor cleanup as the cause of failure.
+  Give malformed-protocol tests the normal worker-start allowance; reserve the
+  deliberately tiny startup deadline for the startup-timeout case itself.
+- Keep bounded process-local setup history under `d`, including earlier
+  migration warnings. Open details at the current diagnostic and allow scrolling
+  back; replacing only the latest message loses earlier actionable notices.
+  Choose footer labels by the actual available width. On the finishing Hub
+  screen, `l` suspends the HUD to print its entire URL without frame characters.
 - After terminal validation, start the setup-enabled Hub in the foreground for
   commit review and completion. `--no-open` suppresses browser launch only.
   Scripted/CI/`--yes` runs never start an agent or long-lived Hub; exit 2 is the
   resumable population checkpoint, 1 failure, and 130/143 cancellation.
+  Choosing Finish later clears a prior agent-launch failure for this explicit
+  paused outcome. After the Hub stops, recheck the browser's commit result before
+  choosing the completion message; committed projects reopen with `mex hub`,
+  while the remaining commit page reopens with `mex setup --browser`.
 - Test completion without a real global installation or contact submission.
   Isolate `MEX_HOME` in disposable fixtures and inject the npm/form transport.
   Successful contact delivery stores only a submitted marker; skipping stores
@@ -132,8 +152,11 @@ global `mex`.
   harness and fake agents; the Python harness is skipped on Windows.
 - Drift staleness uses committed Git history. Correct uncommitted content can
   remain stale until the canonical scaffold is committed.
-- A Graph with partial parses can support scoped evidence while exact reads
-  abstain. Do not weaken freshness or provenance checks to force an answer.
+- An unrelated incomplete parse does not invalidate exact Wiki grounding from
+  a fully parsed file. Only the grounding bridge admits parse-only degradation;
+  source/configuration drift still refuses, partial-file facts remain unverified,
+  and missing targets are not reconciled across an incomplete corpus. Name the
+  incomplete files and remedy rather than claiming a concurrent graph change.
 - Terminal setup does not stage or commit. The setup Hub may create a local
   commit only after exact diff review and explicit user action, preserving
   unrelated staged work. MEX never pulls or pushes.

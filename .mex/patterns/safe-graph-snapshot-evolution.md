@@ -12,12 +12,12 @@ edges:
     condition: "when changing the graph data plane or its consumers"
   - target: "context/conventions.md"
     condition: "when verifying a graph implementation change"
-last_updated: 2026-09-09
+last_updated: 2026-10-10
 mex:
   id: mx_01M1M0CJP81C590FCKTSN5HA3Q
   type: pattern
   status: promoted
-  revision: 4
+  revision: 5
   title: safe-graph-snapshot-evolution
   grounds_to:
     - node: function:57e8797d70bfb28e3f0bb1d6e065a84b
@@ -157,6 +157,14 @@ only to explicit maintenance workflows.
   containment and verified source bytes survive a config change; anything
   reached by following an edge does not. Labelling everything is honest but
   wastes a trustworthy answer; labelling nothing is a lie.
+- Wiki grounding admits only parse-only degradation through its own snapshot
+  bridge. Exact nodes and fingerprints must come from files recorded as fully
+  parsed; source or configuration drift still refuses. Do not reconcile a
+  missing target against an incomplete corpus or infer that it is gone. Carry
+  the bounded incomplete-file reason through reads and rejected writes, and
+  retain the complete final snapshot/source revalidation before publication.
+  Test real Wiki apply for healthy and partial files plus source/config drift;
+  do not relax the general GraphPort gate to make grounding work.
 - Commit output under the class it was labelled with. If the store changes class
   between opening and output, discard the response rather than relabelling it —
   the records were built under a claim they no longer earn.

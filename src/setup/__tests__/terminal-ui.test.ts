@@ -2,6 +2,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "ink-testing-library";
 import { TerminalSetupHUD, type TerminalSetupView } from "../terminal-ui.js";
+import { appendTerminalSetupEvent } from "../terminal-events.js";
 
 const h = React.createElement;
 const settle = () => new Promise(resolve => setTimeout(resolve, 25));
@@ -49,6 +50,55 @@ function expectAlignedBorders(frame: string | undefined, columns: number) {
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("terminal setup HUD", () => {
+  it.each([55, 57, 60, 64, 65, 66])("keeps selection and exit instructions complete at %s columns", async columns => {
+    const app = await show({}, columns, 16);
+    const footer = app.lastFrame()!.split("\n").at(-1)!;
+    expect(footer).toContain("Enter");
+    expect(footer).toContain("Space");
+    expect(footer).toMatch(/Ctrl\+C|\^C/);
+    expect(footer).not.toMatch(/…|\.\.\./);
+    expectFits(app.lastFrame(), columns, 16);
+  });
+
+  it("retains earlier finalize warnings in details after completion advances", async () => {
+    const events = ["AMBIGUOUS_MIGRATION: review architecture", "AMBIGUOUS_MIGRATION: review decisions", "Wiki validation finished"];
+    const app = await show({ screen: "hub", detail: "Continue in your browser", events });
+    app.stdin.write("d");
+    await settle();
+    expect(app.lastFrame()).toContain("review architecture");
+    expect(app.lastFrame()).toContain("review decisions");
+    expect(app.lastFrame()).toContain("Wiki validation finished");
+  });
+
+  it("bounds retained history and per-event text while preserving the latest messages", () => {
+    let events: readonly string[] = [];
+    for (let index = 0; index < 200; index++) events = appendTerminalSetupEvent(events, `${index}:` + "x".repeat(2_048));
+    expect(events.length).toBeLessThanOrEqual(64);
+    expect(events.reduce((sum, event) => sum + event.length, 0)).toBeLessThanOrEqual(16_384);
+    expect(events.every(event => event.length <= 1_024)).toBe(true);
+    expect(events.at(-1)).toMatch(/^199:/);
+    expect(events.some(event => event.startsWith("0:"))).toBe(false);
+  });
+
+  it("opens retained details at the current failure and lets users scroll back to earlier notices", async () => {
+    const events = Array.from({ length: 30 }, (_, index) => `Earlier setup event ${index}`);
+    const app = await show({ screen: "error", detail: "Current graph failure", events });
+    app.stdin.write("d");
+    await settle();
+    expect(app.lastFrame()).toContain("Current graph failure");
+    expect(app.lastFrame()).not.toContain("Earlier setup event 0");
+    for (let page = 0; page < 4; page++) { app.stdin.write("\u001b[5~"); await settle(); }
+    expect(app.lastFrame()).toContain("Earlier setup event 0");
+    expect(app.onAction).not.toHaveBeenCalled();
+  });
+
+  it("offers clean Hub link access in a narrow terminal", async () => {
+    const app = await show({ screen: "hub", hubUrl: "http://127.0.0.1:43123/#token=" + "a".repeat(48) }, 60, 16);
+    expect(app.lastFrame()).toContain("l copy link");
+    app.stdin.write("l");
+    await settle();
+    expect(app.onAction).toHaveBeenLastCalledWith({ type: "link" });
+  });
   it("presents the ASCII identity and tool selection within 80 by 24", async () => {
     const app = await show();
     expectFits(app.lastFrame(), 80, 24);
