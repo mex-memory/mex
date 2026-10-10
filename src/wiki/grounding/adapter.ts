@@ -72,6 +72,8 @@ export interface GroundedNode {
  * what would make drift disappear behind a helpful-looking cache update.
  */
 export interface GroundingGraph {
+  /** A stable parse gap permits direct verified targets, but proves no absence. */
+  readonly incompleteReason?: string;
   /** The node under this id, or null when the graph has no such node. */
   getNode(nodeId: string): GroundedNode | null;
   /** The node's serialized fingerprint in this checkout, or null. */

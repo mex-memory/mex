@@ -15,10 +15,10 @@ MEX 将团队的架构、决策、需求和交接信息与代码放在一起。�
 [![GitHub 星标](https://img.shields.io/github/stars/mex-memory/mex?style=flat)](https://github.com/mex-memory/mex/stargazers)
 [![网站](https://img.shields.io/badge/website-mexmemory.com-4f7cff)](https://mexmemory.com)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/FEdNsQ4Qt4)
-[![许可证：MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mex-memory/mex/blob/v0.8.0/LICENSE)
+[![许可证：MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mex-memory/mex/blob/v0.8.4/LICENSE)
 [![CI](https://github.com/mex-memory/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/mex-memory/mex/actions/workflows/ci.yml)
-[![Node.js >=22.5](https://img.shields.io/badge/Node.js-%3E%3D22.5-339933?logo=node.js&logoColor=white)](https://github.com/mex-memory/mex/blob/v0.8.0/package.json)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](https://github.com/mex-memory/mex/blob/v0.8.0/package.json)
+[![Node.js >=22.5](https://img.shields.io/badge/Node.js-%3E%3D22.5-339933?logo=node.js&logoColor=white)](https://github.com/mex-memory/mex/blob/v0.8.4/package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](https://github.com/mex-memory/mex/blob/v0.8.4/package.json)
 [![智能体记忆](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](#agent-memory-mode)
 [![MCP：仅提供源码](https://img.shields.io/badge/MCP-source%20only-6f8cff)](#mcp-server)
 
@@ -26,7 +26,7 @@ MEX 将团队的架构、决策、需求和交接信息与代码放在一起。�
 
 </div>
 
-> 此译文的主要产品介绍仍对应 0.8.0。安装命令和升级指引已调整为 0.8.3；产品变更请参阅[英文 README](README.md)和 [0.8.3 发行说明](RELEASE_NOTES.md)。
+> 此译文的主要产品介绍仍对应 0.8.0。设置流程、安装命令和升级指引已调整为 0.8.4；其他产品变更请参阅[英文 README](README.md)和 [0.8.4 发行说明](RELEASE_NOTES.md)。
 
 ---
 
@@ -35,7 +35,7 @@ MEX 将团队的架构、决策、需求和交接信息与代码放在一起。�
 **一位工程师及其智能体获得的认识，应该成为下一位队友能用上的上下文。** MEX 在仓库中为这些知识提供持久的归宿：可读的 Markdown、关联代码的说明、经过审阅的 Spec 提案，以及结构化交接。人通过本地 Hub 浏览和审阅；智能体通过项目指令和 CLI 检索并协助维护。
 
 > [!IMPORTANT]
-> **[MEX 0.8](https://github.com/mex-memory/mex/releases/tag/v0.8.0) 将智能体记忆扩展为团队记忆：** 本地 Project Hub、结构化 Wiki 与团队工作流、受审批流程管控的 Specs、Members、Workstreams、Relays、Activity，以及官方 Claude Code/Codex 技能——全部与已有的 Code Graph、代码关联和漂移检测系统相连接。
+> **[MEX 0.8.4](RELEASE_NOTES.md) 默认在全新的终端 HUD 中开始设置**，将终端交给智能体，再回到 Hub 中完成审阅。设置错误会保留具体的恢复指引。本版本还加快 Graph 刷新和检索，并缩短代码关联指纹；[共享新格式前，请先升级整个团队](#upgrade-and-compatibility)。
 
 💬 **加入 Discord 上的 MEX 社区**——讨论想法、寻求帮助、分享反馈，展示你正在构建的项目。
 
@@ -102,14 +102,18 @@ MEX 需要 **Node.js 22.5 或更高版本**，以及一个 Git 仓库。标准 n
 在仓库根目录运行：
 
 ```bash
-npx mex-agent@0.8.3 setup
+npx mex-agent@0.8.4 setup
 ```
 
-此命令会在本地浏览器中打开设置向导。选择 AI 工具，构建脚手架和索引，并让可用的 Claude Code 或 Codex CLI 填充项目记忆。若智能体不可用或运行失败，可复制提示词，手动完成后继续。现有指令会保留；需要手动补充的集成指引不会阻止设置。
+此命令会打开终端 HUD，并显示全新的青色 ASCII `mex` 标识。使用方向键高亮工具，按 Enter 选中并开始；也可用空格键勾选其他集成。Continue 行会按已勾选的选项继续，也可不使用智能体。耗时步骤会显示活动动画、已用时间和最近的工作状态；Graph 解析还会显示实际文件数量。若所选的 Claude Code 或 Codex CLI 可用，其原生交互会话会接管终端；退出该会话即可返回 MEX。MEX 会先检查脚手架；若内容尚未完成，可重试、手动填充或稍后继续。现有指令会保留。
 
-在 Hub 中审阅确切的设置文件差异，点击 **Commit setup** 创建本地提交，也可以使用手动 Git 检查点。完成页面会说明如何开启新会话并验证项目记忆，还可选择安装当前版本的全局命令，或留下电子邮箱和可选姓名。联系信息通过内嵌 Web3Forms 服务发送，不写入仓库或使用遥测；本机只记录已提交或已跳过。点击 **Open Hub** 后进入完整 Hub 和首次使用导览。
+验证后，设置会打开 Hub 进入收尾步骤。审阅确切的设置文件差异，点击 **Commit setup** 创建本地提交，也可以使用手动 Git 检查点。MEX 会保留无关的暂存变更，且不会自动 push 或 pull。完成页面会说明如何开启新会话并验证项目记忆，还可选择安装当前版本的全局命令，或留下电子邮箱和可选姓名。联系信息通过内嵌 Web3Forms 服务发送，不写入仓库或使用遥测；本机只记录已提交或已跳过。点击 **Open Hub** 后进入完整 Hub 和首次使用导览。
 
-若偏好终端或通过 SSH 操作，请运行 `npx mex-agent@0.8.3 setup --cli`。`setup --dry-run` 仍是只读终端预览；`--no-open` 只打印浏览器链接，`--port <n>` 指定本地端口。安装后，`mex` 打开 Hub 或设置，`mex tui` 打开终端面板。智能体仍需自行安装并满足账户和网络要求。
+使用 Hub 时请保持设置终端运行；按 `q` 或 Ctrl+C 可停止它。`--no-open` 显示收尾页面的链接而不打开浏览器，`--port <n>` 指定本地端口。按 `d` 可查看完整的状态或错误详情。预期的设置错误会附带具体恢复指引，例如修正格式错误的配置或隐藏脚手架的 Git 忽略规则。智能体仍需自行安装并满足账户和网络要求。
+
+如需从浏览器进行设置，运行 `npx mex-agent@0.8.4 setup --browser`；它使用相同的设置引擎，在后台运行智能体，并提供手动填充选项。`--browser --no-open` 只打印链接而不打开浏览器。`--cli` 仍是默认终端流程的兼容别名。
+
+脚本可使用 `--yes` 和可重复的 `--tool <name>`，或 `--tool none`。CI 及重定向输入或输出的环境也使用无交互文本输出：复用已保存的选项，没有保存的选项时不选择任何集成，也不会启动智能体或浏览器。退出码 `0` 表示准备或预览成功，`2` 表示仍需填充记忆，`1` 表示失败，`130`/`143` 表示中断。`mex setup --dry-run` 不修改文件。安装后，`mex` 会为已建立的代码项目打开 Hub，为未完成的项目打开终端设置；`mex hub` 显式打开浏览器，`mex tui` 打开终端面板。
 
 ![准备好项目的三个步骤：运行设置、填充记忆，然后审阅并提交检查点，再打开 Hub。](docs/diagrams/readme/setup.svg)
 
@@ -125,9 +129,9 @@ npx mex-agent@0.8.3 setup
 通过 Git 克隆或拉取团队的仓库和分支。如果 0.8 设置已完成并提交，在自己的检出目录中构建派生索引，然后打开 Hub：
 
 ```bash
-npx mex-agent@0.8.3 graph rebuild
-npx mex-agent@0.8.3 wiki rebuild-index
-npx mex-agent@0.8.3 hub
+npx mex-agent@0.8.4 graph rebuild
+npx mex-agent@0.8.4 wiki rebuild-index
+npx mex-agent@0.8.4 hub
 ```
 
 复用共享的项目记忆，不要仅为加入项目而重新生成。在 Team/Members 中检查实际生效的身份，并按需选择你已有的 Member 记录作为本地覆盖设置。如果尚无记录，请通过经过审阅的工作流明确创建一条，并共享其权威记录文件。Members 用于标明归属，不是登录或权限系统。
@@ -140,7 +144,7 @@ npx mex-agent@0.8.3 hub
 <summary><strong>更喜欢全局安装？</strong></summary>
 
 ```bash
-npm install -g mex-agent@0.8.3
+npm install -g mex-agent@0.8.4
 mex setup
 ```
 
@@ -155,14 +159,14 @@ npm 包名为 `mex-agent`，安装后的命令为 `mex`。运行 `mex hub` 前�
 <summary><strong>想将 MEX 用于长期运行的运维智能体？</strong></summary>
 
 ```bash
-npx mex-agent@0.8.3 setup --mode agent-memory
+npx mex-agent@0.8.4 setup --mode agent-memory
 ```
 
 这个独立模板将 MEX 的路由与维护模型应用于家庭实验室、基础设施，以及长期运行的智能体工作空间。它增加了 `HEARTBEAT.md` 约定和清理规范；本 README 描述的 Code Graph、Wiki 和团队 Hub 流程属于默认的 `code-repo` 模式。
 
 </details>
 
-为便于阅读，示例使用 `mex`。你可以按上述方式全局安装，或将其替换为 `npx mex-agent@0.8.3`。
+为便于阅读，示例使用 `mex`。你可以按上述方式全局安装，或将其替换为 `npx mex-agent@0.8.4`。
 
 <a id="how-mex-works"></a>
 
@@ -264,7 +268,7 @@ Claude Code 使用 `--tool claude`。审阅生成的指令和技能文件；如�
 <details>
 <summary><strong>MCP 服务器——仅提供源码</strong></summary>
 
-仓库包含用于本地开发的 [MCP 工作区](https://github.com/mex-memory/mex/tree/v0.8.0/packages/mex-mcp)。它未随 MEX 0.8 发布；已发布的智能体接口是 `mex-agent` CLI 及其项目指令和技能。
+仓库包含用于本地开发的 [MCP 工作区](https://github.com/mex-memory/mex/tree/v0.8.4/packages/mex-mcp)。它未随 MEX 0.8 发布；已发布的智能体接口是 `mex-agent` CLI 及其项目指令和技能。
 
 </details>
 
@@ -350,14 +354,19 @@ Relay 是持久交接记录，不是聊天、实时通知、任务分配，也�
 如果使用全局安装，请升级 CLI 并刷新所选 Claude Code/Codex 技能副本：
 
 ```bash
-npm install -g mex-agent@0.8.3
+npm install -g mex-agent@0.8.4
 mex skills sync --dry-run
 mex skills sync
 ```
 
-如果已完成 0.8.0 的设置，上述命令会更新受管理的技能和智能体指引；无需仅为升级软件包而重新运行 setup。请检查与本地修改的指引之间报告的冲突，然后开启新的智能体会话。
+如果已完成 0.8.0–0.8.3 的设置，上述命令会更新受管理的技能和智能体指引；无需仅为升级软件包而重新运行 setup。请检查与本地修改的指引之间报告的冲突，然后开启新的智能体会话。
 
-**升级到 0.8.3 时，请保留现有 Graph。** 先运行 `mex graph refresh`，再运行 `mex sync`：首次刷新会完整提取代码，并可能更改 TypeScript 节点 ID。请检查有歧义或缺失的 grounding，通过 Git 提交 scaffold 变更。若 scaffold 已变更，请运行 `mex wiki rebuild-index` 刷新 Wiki 索引。新克隆或未保留旧 Graph 的重建只能依靠已提交的指纹进行匹配，可能需要手动重新关联代码。详见[兼容性指南](COMPATIBILITY.md#upgrading-to-083)。
+> [!WARNING]
+> **提交新增或修改的代码关联前，请让所有共享脚手架的成员升级到 0.8.4。** 早期版本（包括 0.8.3）无法读取紧凑的 `mh2:` 指纹。现有 `mh:` 指纹仍受支持；仅升级软件包不会重写文件或改变代码关联的含义。
+
+Graph 和 Wiki 索引的 schema 不变。升级后首次运行 `mex graph refresh` 会为新的提取缓存重新提取一次代码。如需一次性转换现有指纹，先预览 `mex graph compact-fingerprints --dry-run`，再运行 `mex graph compact-fingerprints`，审阅差异后提交。完整步骤见[升级到 0.8.4](COMPATIBILITY.md#upgrading-to-084)。
+
+**如果从 0.8.2 或更早版本升级，请保留现有 Graph。** 0.8.3 引入的 TypeScript 标识变更可能改变节点 ID。先运行 `mex graph refresh`，再运行 `mex sync`，以保留新旧 ID 的映射。请检查有歧义或缺失的 grounding，通过 Git 提交 scaffold 变更。若 scaffold 已变更，请运行 `mex wiki rebuild-index` 刷新 Wiki 索引。新克隆或未保留旧 Graph 的重建只能依靠已提交的指纹进行匹配，可能需要手动重新关联代码。详见 [0.8.3 迁移步骤](COMPATIBILITY.md#upgrading-to-083)。
 
 仅升级软件包和技能，并不能让旧仓库或尚未完成设置的仓库立即满足 Hub 的运行条件。对于这些仓库，请先通过 dry run 检查 setup 的变更，再实际应用；setup 会保留现有编写的文件，其变更仍需审阅：
 
@@ -417,10 +426,10 @@ MEX 将团队记忆保存在仓库文件中，并提供本地检索和审阅工�
 
 ## 继续了解
 
-- 阅读 [MEX 0.8 发行说明](https://github.com/mex-memory/mex/releases/tag/v0.8.0)。
-- 查看[运行时与兼容性指南](https://github.com/mex-memory/mex/blob/v0.8.0/COMPATIBILITY.md)和[安全政策](https://github.com/mex-memory/mex/blob/v0.8.0/SECURITY.md)。
-- 查阅 [Code Graph 支持矩阵](https://github.com/mex-memory/mex/blob/v0.8.0/docs/code-graph-support.md)。
-- 了解[提取器模型和支持的关系](https://github.com/mex-memory/mex/blob/v0.8.0/docs/extractors.md)。
-- 阅读 [Code Graph 检索基准结果](https://github.com/mex-memory/mex/blob/v0.8.0/evaluate/RESULTS.md)，其中包含与普通文件搜索基线的盲评对比。
+- 阅读 [MEX 0.8.4 发行说明](RELEASE_NOTES.md)。
+- 查看[运行时与兼容性指南](https://github.com/mex-memory/mex/blob/v0.8.4/COMPATIBILITY.md)和[安全政策](https://github.com/mex-memory/mex/blob/v0.8.4/SECURITY.md)。
+- 查阅 [Code Graph 支持矩阵](https://github.com/mex-memory/mex/blob/v0.8.4/docs/code-graph-support.md)。
+- 了解[提取器模型和支持的关系](https://github.com/mex-memory/mex/blob/v0.8.4/docs/extractors.md)。
+- 阅读 [Code Graph 检索基准结果](https://github.com/mex-memory/mex/blob/v0.8.4/evaluate/RESULTS.md)，其中包含与普通文件搜索基线的盲评对比。
 - 在本地使用 `mex capabilities --json` 和 `mex commands` 检查 CLI。
 - 加入 [Discord 上的 MEX 社区](https://discord.gg/FEdNsQ4Qt4)，或访问 [mexmemory.com](https://mexmemory.com)。

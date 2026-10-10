@@ -13,12 +13,12 @@ edges:
     condition: "when distinguishing canonical artifacts from local projections"
   - target: "patterns/release-performance-gate.md"
     condition: "when the change also affects packed-install or release gates"
-last_updated: 2026-09-13
+last_updated: 2026-10-10
 mex:
   id: mx_01M1M0CJJD2AQZ6XKHV4VKYTGJ
   type: pattern
   status: promoted
-  revision: 5
+  revision: 7
   title: dogfood-mex-setup
   grounds_to:
     - node: function:9055347f917caf8721a2f6d4e18bcc9a
@@ -64,13 +64,81 @@ global `mex`.
 
 ## Gotchas
 
-- From 0.8.2, unflagged `setup` opens the browser. Terminal drivers and scripts
-  must pass `--cli`; `--dry-run` remains a read-only terminal preview.
+- Unflagged `setup` now opens terminal setup; `--cli` remains a compatibility
+  alias. Browser drivers must pass `setup --browser` or use `hub` explicitly.
+  Bare `mex` uses terminal setup for incomplete/agent-memory projects and the
+  Hub for code projects with a Router and committed identity, even when indexes
+  are missing. Keep that entry decision read-only and independent of source
+  scanning, CLI discovery, or database-presence completion claims.
+  `--dry-run` remains a read-only terminal preview. Reject `--browser` combined
+  with `--cli`, `--dry-run`, `--tool`, or `--yes` before launching either flow.
+- Read-only entry tests snapshot Git bytes as well as project files. Disable
+  automatic Git maintenance in fixture-writing commands before taking those
+  snapshots; a background maintenance lock disappearing after a fixture commit
+  is unrelated to entry discovery. Keep the full snapshot assertion intact.
+- Interactive terminal setup uses the shared ordered engine through a HUD.
+  Enter on a tool selects it and starts setup atomically; that focused tool
+  precedes other checked tools when selecting a native agent. Space optionally
+  toggles extra integrations. A separate Continue row preserves the checked
+  choices, including the deliberate no-agent path. Test fresh setup without
+  injected `--tool` flags so highlighted-but-unchecked choices are exercised.
+  Suspend and completely unmount the HUD before inherited-stdio population,
+  then restore it and inspect the files. Agent exit zero alone is not readiness.
+  Keep signals and descendant cleanup separate from headless process groups:
+  native agents share MEX's foreground terminal and must not be detached.
+  Ink unmount restores cooked mode and unrefs stdin but does not pause its
+  underlying reader: explicitly pause stdin before handing it to the child,
+  and ref it before remounting Ink or opening the manual readline question.
+  Otherwise the parent can consume the child's input or exit while awaiting
+  a manual answer. On final close, pause and unref stdin even after a readline
+  round trip; otherwise a Windows console read can keep the process alive.
+  Manual prompt/link questions use the cooked terminal without readline's
+  keypress decoder. Readline also pauses the stream on close: resume reads only
+  after the remounted HUD installs its input handler, retaining the first key.
+  Real PTY tests cover both readline round trips. Verify Windows portability
+  and native console shutdown separately; POSIX PTYs do not cover that boundary.
+- Forward graph maintenance updates separately from ordered setup phases:
+  repeated parse events must not mark the graph complete or restart its timer.
+  Show real phase/count updates, animate only during active work, and distinguish
+  elapsed time from time since the last worker event. Stop animation on unmount
+  so the native agent retains the terminal without stray HUD redraws.
+- Preserve bounded worker stderr locally; discarded stderr hides Node heap
+  exhaustion behind a generic worker failure. Retain exit/signal, elapsed time,
+  and last progress; project only authored recovery text to Hub. A signal alone
+  is not evidence of memory exhaustion. Fresh tiny fixtures verify the path but
+  do not represent MEX with its installed dependency graph.
+  A self-killed worker reports a nonzero exit code and no signal on Windows;
+  POSIX reports `SIGKILL` and no exit code. Assert the platform's real diagnostic
+  while preserving process-death, workspace-cleanup, and live-index checks.
+  Distinguish a signal sent by MEX to clean up an already diagnosed failure
+  from the worker's original cause. Preserve both in local diagnostic metadata,
+  but do not describe supervisor cleanup as the cause of failure.
+  Give malformed-protocol tests the normal worker-start allowance; reserve the
+  deliberately tiny startup deadline for the startup-timeout case itself.
+- Keep bounded process-local setup history under `d`, including earlier
+  migration warnings. Open details at the current diagnostic and allow scrolling
+  back; replacing only the latest message loses earlier actionable notices.
+  Choose footer labels by the actual available width. On the finishing Hub
+  screen, `l` suspends the HUD to print its entire URL without frame characters.
+- After terminal validation, start the setup-enabled Hub in the foreground for
+  commit review and completion. `--no-open` suppresses browser launch only.
+  Scripted/CI/`--yes` runs never start an agent or long-lived Hub; exit 2 is the
+  resumable population checkpoint, 1 failure, and 130/143 cancellation.
+  Choosing Finish later clears a prior agent-launch failure for this explicit
+  paused outcome. After the Hub stops, recheck the browser's commit result before
+  choosing the completion message; committed projects reopen with `mex hub`,
+  while the remaining commit page reopens with `mex setup --browser`.
 - Test completion without a real global installation or contact submission.
   Isolate `MEX_HOME` in disposable fixtures and inject the npm/form transport.
   Successful contact delivery stores only a submitted marker; skipping stores
   only a skipped marker. Neither contains contact data or analytics identifiers.
 - Build before browser testing, and do not rebuild a running Hub's asset tree.
+  The same applies to a running setup CLI, including time spent in its native
+  agent session: tsup cleans old hashed chunks, and the late Hub import can
+  fail when that session returns. Exit the old process completely before
+  rebuilding. If this happened after finalization, start the current CLI with
+  `setup --browser` to open the finishing page; Retry in the old HUD
+  cannot replace its cached module imports.
   `test/cli.test.ts` also builds production assets in its setup hook; run the
   packaged browser scenarios after that suite so manifests cannot outlive files.
 
@@ -78,13 +146,20 @@ global `mex`.
   use the built checkout when validating uncommitted setup changes.
 - Setup copies missing scaffold files but does not overwrite substantive files.
   Population prompts must merge at section granularity and preserve managed blocks.
-- A non-interactive run without Claude Code or Codex may pause after printing the
-  population prompt. That is a resumable checkpoint, not a failed setup.
+- A non-interactive run pauses after printing the population prompt when
+  placeholders remain, even if an agent CLI is installed. It never waits on an
+  interactive session. Test the shipped interactive CLI with the POSIX PTY
+  harness and fake agents; the Python harness is skipped on Windows.
 - Drift staleness uses committed Git history. Correct uncommitted content can
   remain stale until the canonical scaffold is committed.
-- A Graph with partial parses can support scoped evidence while exact reads
-  abstain. Do not weaken freshness or provenance checks to force an answer.
-- MEX does not stage, commit, pull, or push repository changes.
+- An unrelated incomplete parse does not invalidate exact Wiki grounding from
+  a fully parsed file. Only the grounding bridge admits parse-only degradation;
+  source/configuration drift still refuses, partial-file facts remain unverified,
+  and missing targets are not reconciled across an incomplete corpus. Name the
+  incomplete files and remedy rather than claiming a concurrent graph change.
+- Terminal setup does not stage or commit. The setup Hub may create a local
+  commit only after exact diff review and explicit user action, preserving
+  unrelated staged work. MEX never pulls or pushes.
 
 ## Verify
 

@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
+import { classifySetupFileSystemError, SetupError } from "./errors.js";
 
 export const SETUP_IGNORE_PATH = ".mex/.gitignore" as const;
 export const SETUP_IGNORE_RULES = ["graph.db*", "wiki.db*", "local/"] as const;
@@ -29,8 +30,8 @@ export interface SetupIgnoreProtectionResult {
   readonly addedRules: readonly string[];
 }
 
-export class SetupIgnoreProtectionError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+export class SetupIgnoreProtectionError extends SetupError {
+  constructor(message: string, options?: ErrorOptions & { userMessage?: string }) {
     super(message, options);
     this.name = "SetupIgnoreProtectionError";
   }
@@ -54,6 +55,7 @@ export function ensureSetupIgnoreProtection(
   if (mexStats && (mexStats.isSymbolicLink() || !mexStats.isDirectory())) {
     throw new SetupIgnoreProtectionError(
       `Cannot protect local MEX data: ${mexDirectory} is not a safe directory.`,
+      { userMessage: "The .mex path must be a regular directory, not a symlink. Fix that path, then rerun setup." },
     );
   }
 
@@ -61,10 +63,23 @@ export function ensureSetupIgnoreProtection(
   if (ignoreStats && (ignoreStats.isSymbolicLink() || !ignoreStats.isFile())) {
     throw new SetupIgnoreProtectionError(
       `Cannot protect local MEX data: ${ignorePath} is not a regular file.`,
+      { userMessage: "The .mex/.gitignore path must be a regular file, not a symlink. Fix that path, then rerun setup." },
     );
   }
 
-  const existing = ignoreStats ? readFileSync(ignorePath) : Buffer.alloc(0);
+  let existing: Buffer;
+  try {
+    existing = ignoreStats ? readFileSync(ignorePath) : Buffer.alloc(0);
+  } catch (error) {
+    throw new SetupIgnoreProtectionError(
+      error instanceof Error ? error.message : `Could not read local MEX ignore rules at ${ignorePath}.`,
+      {
+        cause: error,
+        userMessage: classifySetupFileSystemError(error, "Could not read .mex/.gitignore.")?.userMessage
+          ?? "Could not read .mex/.gitignore. Check its permissions, then rerun setup.",
+      },
+    );
+  }
   const content = existing.toString("utf8");
   const presentRules = new Set(splitLines(content));
   const addedRules = SETUP_IGNORE_RULES.filter((rule) => !presentRules.has(rule));
@@ -90,7 +105,11 @@ export function ensureSetupIgnoreProtection(
     } catch (error) {
       throw new SetupIgnoreProtectionError(
         `Could not create the MEX directory at ${mexDirectory}.`,
-        { cause: error },
+        {
+          cause: error,
+          userMessage: classifySetupFileSystemError(error, "Could not create .mex.")?.userMessage
+            ?? "Could not create .mex. Check write permissions for the project directory, then rerun setup.",
+        },
       );
     }
     requireSafeDirectory(mexDirectory, ".mex directory");
@@ -109,7 +128,11 @@ export function ensureSetupIgnoreProtection(
   } catch (error) {
     throw new SetupIgnoreProtectionError(
       `Could not write local MEX data protection to ${ignorePath}.`,
-      { cause: error },
+      {
+        cause: error,
+        userMessage: classifySetupFileSystemError(error, "Could not write .mex/.gitignore.")?.userMessage
+          ?? "Could not write .mex/.gitignore. Check write permissions for .mex and its ignore file, then rerun setup.",
+      },
     );
   }
 
@@ -168,7 +191,9 @@ export function verifySetupIgnoreProtection(projectRoot: string): void {
     ".mex/local/setup-state.json",
   ]) {
     if (!isIgnored(root, path)) {
-      throw new SetupIgnoreProtectionError(`Local MEX path is not ignored by Git: ${path}`);
+      throw new SetupIgnoreProtectionError(`Local MEX path is not ignored by Git: ${path}`, {
+        userMessage: "Local MEX data is not ignored by Git. Check .mex/.gitignore and conflicting negation rules, then retry setup.",
+      });
     }
   }
 }
@@ -192,6 +217,9 @@ function requireSafeDirectory(path: string, label: string): void {
   if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) {
     throw new SetupIgnoreProtectionError(
       `Cannot protect local MEX data: ${label} at ${path} is not a safe directory.`,
+      { userMessage: label === "project root"
+        ? "The project root must be a regular directory, not a symlink. Run setup from a valid project directory."
+        : "The .mex path must be a regular directory, not a symlink. Fix that path, then rerun setup." },
     );
   }
 }
@@ -203,7 +231,11 @@ function lstatIfExists(path: string): ReturnType<typeof lstatSync> | null {
     if (isMissing(error)) return null;
     throw new SetupIgnoreProtectionError(
       `Could not inspect setup path ${path}.`,
-      { cause: error },
+      {
+        cause: error,
+        userMessage: classifySetupFileSystemError(error, "Could not inspect the setup paths.")?.userMessage
+          ?? "Could not inspect the setup paths. Check permissions for the project directory, .mex, and .mex/.gitignore, then rerun setup.",
+      },
     );
   }
 }
@@ -223,11 +255,13 @@ function isIgnored(projectRoot: string, path: string): boolean {
   if (checked.error) {
     throw new SetupIgnoreProtectionError("Could not run Git to verify local MEX data protection.", {
       cause: checked.error,
+      userMessage: "Could not run Git to verify ignore rules. Make sure Git is installed and available on PATH, then rerun setup.",
     });
   }
   if (checked.status === 0) return true;
   if (checked.status === 1) return false;
   throw new SetupIgnoreProtectionError(
     `Git could not verify local MEX data protection: ${checked.stderr.trim() || `exit ${checked.status}`}`,
+    { userMessage: "Git could not verify ignore rules. Check that this project is a valid Git repository and run git status to diagnose it, then rerun setup." },
   );
 }

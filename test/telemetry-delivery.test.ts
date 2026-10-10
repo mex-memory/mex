@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -336,7 +336,8 @@ describe("noninitializing audit and filesystem containment", () => {
     symlinkSync(outside, join(root, ".mex", "telemetry"), "dir");
     expect(enqueue(event())).toBe(false);
     expect(readdirSync(outside)).toEqual([]);
-    rmSync(join(root, ".mex", "telemetry")); mkdirSync(join(root, ".mex", "telemetry"));
+    expect(lstatSync(join(root, ".mex", "telemetry")).isSymbolicLink()).toBe(true);
+    unlinkSync(join(root, ".mex", "telemetry")); mkdirSync(join(root, ".mex", "telemetry"));
     const other = join(outside, "other"); writeFileSync(other, "do not change");
     symlinkSync(other, dbPath());
     expect(enqueue(event())).toBe(false);

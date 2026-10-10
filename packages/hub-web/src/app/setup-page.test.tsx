@@ -280,6 +280,47 @@ describe("Hub setup wizard", () => {
     expect(screen.getByRole("button", { name: "Resume setup" })).toBeEnabled();
   });
 
+  it("switches from startup activity to the first real transcript and keeps it through the commit checkpoint and refresh", async () => {
+    const at = new Date().toISOString();
+    const transcriptId = "a944e8d9-7e02-4d04-9a62-d8b347b8e7dc";
+    const harness = setupHarness({ hasScaffold: true }, {
+      status: "running", populationTool: "codex", selectedTools: ["codex"],
+      progress: { step: "population", label: "Populating MEX" },
+      populationActivity: { tool: "codex", startedAt: at, lastActivityAt: null, totalEvents: 1,
+        events: [{ id: 1, at, kind: "starting", state: "running" }] },
+    });
+    const view = renderSetup(harness.api);
+    expect(await screen.findByRole("list", { name: "Recent agent activity" })).toHaveTextContent("Starting the background session");
+    expect(screen.queryByRole("region", { name: "Background session output" })).toBeNull();
+    expect(harness.api.subscribeToSetupTranscript).not.toHaveBeenCalled();
+    await waitForSubscription(harness, 1);
+
+    act(() => harness.snapshot({ transcriptId }));
+    await waitFor(() => expect(harness.api.subscribeToSetupTranscript).toHaveBeenCalledOnce());
+    const batch: SetupTranscriptBatch = {
+      runId: transcriptId, cursor: 1, firstId: 1, truncated: false, done: false,
+      entries: [{ id: 1, at, kind: "assistant", text: "I have updated the project memory.", truncated: false }],
+    };
+    act(() => harness.sendTranscript(batch));
+    expect(screen.getByText("I have updated the project memory.")).toBeVisible();
+    expect(screen.queryByRole("list", { name: "Recent agent activity" })).toBeNull();
+
+    act(() => harness.snapshot({ progress: { step: "finalize", label: "Finalize MEX" } }));
+    await waitFor(() => expect(screen.getByText("I have updated the project memory.")).toBeVisible());
+    act(() => harness.sendTranscript({ ...batch, done: true }));
+    act(() => harness.complete({ status: "paused", stage: "needs_commit", populated: true, commitCommands }, {
+      stage: "needs_commit", populated: true, commitCommands,
+    }));
+    expect(await screen.findByRole("button", { name: "Check commit and continue" })).toBeVisible();
+    expect(screen.getByText("I have updated the project memory.")).toBeVisible();
+    expect(screen.getByText("Session ended")).toBeVisible();
+
+    view.unmount();
+    renderSetup(harness.api);
+    await waitFor(() => expect(screen.getByText("I have updated the project memory.")).toBeVisible());
+    expect(screen.queryByText("This session produced no output.")).toBeNull();
+  });
+
   it.each(["claude", "codex"] as const)("restores %s population activity on refresh and accepts real SSE updates without a percentage", async (tool) => {
     // Keep async bootstrap/render duration out of the elapsed-time assertion.
     vi.spyOn(Date, "now").mockReturnValue(Date.now());

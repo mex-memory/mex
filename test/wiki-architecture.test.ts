@@ -766,6 +766,7 @@ describe("no unscoped scaffold writes", () => {
     const KNOWN: Readonly<Record<string, string>> = {
       "src/agent-skills/installer.ts": "atomically installs fixed packaged skill trees and marker-scoped root instructions",
       "src/graph/audit-record.ts": "writes only the local audited-digest record beside the graph index it describes",
+      "src/graph/candidate-entry.ts": "writes bounded worker failure diagnostics only to stderr (fd 2), never scaffold files",
       "src/graph/candidate-process.ts": "removes only the identity-bound parent-owned temporary workspace after the candidate child closes",
       "src/graph/engine-impl.ts": "writes only a private, bounded temporary source spool that is removed before graph publication",
       "src/graph/grounding-evidence.ts": "writes only checkout-local, content-addressed grounded bodies under .mex/local/grounded-bodies",
@@ -803,6 +804,13 @@ describe("no unscoped scaffold writes", () => {
     const runtime = withoutComments(read("src/graph/runtime.ts"));
     expect([...runtime.matchAll(/writeFileSync\s*\(/g)]).toHaveLength(1);
     expect([...runtime.matchAll(/renameSync\s*\(/g)]).toHaveLength(1);
+
+    // The worker's fd writer is a stderr diagnostic sink, not a file-write
+    // exemption. Keep its only direct write on fd 2 and catch added mutations.
+    const candidateEntry = withoutComments(read("src/graph/candidate-entry.ts"));
+    expect([...candidateEntry.matchAll(WRITE_CALLS)]).toHaveLength(0);
+    expect([...candidateEntry.matchAll(FD_WRITE_CALLS)]).toHaveLength(1);
+    expect(candidateEntry).toMatch(/\bwriteSync\s*\(\s*2\s*,/);
   });
 
   it("does not constrain code outside the wiki engine", () => {

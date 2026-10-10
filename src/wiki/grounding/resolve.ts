@@ -95,6 +95,9 @@ export function resolveGrounding(
 
   const direct = graph.getNode(grounding.node);
   if (direct !== null) return compare(grounding, graph, direct, grounding.node, context);
+  if (graph.incompleteReason) {
+    return { state: "unresolved", health: "unverified", node: grounding.node, reason: graph.incompleteReason };
+  }
 
   // Tier-1 miss. The committed fingerprint is what finds the symbol again —
   // this is the job MinHash is actually for.

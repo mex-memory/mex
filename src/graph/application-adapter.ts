@@ -156,6 +156,8 @@ export interface RepositoryGraphGroundedNode {
 export interface RepositoryGraphGroundingSnapshot {
   /** Exact immutable graph snapshot revision, for composite Wiki cursors. */
   readonly revision: string;
+  /** Missing targets cannot be reconciled conclusively across a parse gap. */
+  readonly incompleteReason?: string;
   getNode(nodeId: string): RepositoryGraphGroundedNode | null;
   /** Up to 50 direct symbols, in request order without duplicates or source bodies. */
   getSymbols(nodeIds: readonly string[]): readonly CodeSymbol[];
@@ -363,7 +365,7 @@ export class RepositoryGraphPort implements GraphPort {
         } finally {
           snapshot.revoke();
         }
-      });
+      }, undefined, true);
       return read.value;
     } catch (error) {
       if (error instanceof GroundingSnapshotCallbackError) throw error.cause;
@@ -399,7 +401,7 @@ export class RepositoryGraphPort implements GraphPort {
       }, async (publication) => {
         commitStarted = true;
         committed = await publication.commit();
-      });
+      }, true);
       return committed!;
     } catch (error) {
       if (prepared !== undefined && !commitStarted) {
@@ -421,9 +423,20 @@ export class RepositoryGraphPort implements GraphPort {
   } {
       const store = new FingerprintStore(context.session.db);
       const reconciler = new MinHashReconciler(store);
+      const incomplete = context.session.degradations.includes("parse-degraded");
+      const files = incomplete ? context.session.graph.getIndexedFiles?.() ?? [] : [];
+      const healthyFiles = new Set(files.filter(file => file.parseStatus === "ok").map(file => file.path));
+      const gaps = files.filter(file => file.parseStatus !== "ok").map(file => file.path).sort();
+      const incompleteReason = incomplete
+        ? `The code graph has incomplete parses${gaps.length ? ` in ${gaps.slice(0, 8).join(", ").slice(0, 1_024)}${gaps.length > 8 ? ", …" : ""}` : ""}. This target cannot be verified. Fix those files or explicitly exclude intentional fixtures, then run \`mex graph\`.`
+        : undefined;
+      const getVerifiedNode = (nodeId: string) => {
+        const node = context.session.graph.getNode(nodeId);
+        return node && (!incomplete || healthyFiles.has(node.filePath)) ? node : null;
+      };
       const evidence = createGroundingEvidence({
         projectRoot: this.#projectRoot,
-        getNode: (nodeId) => context.session.graph.getNode(nodeId),
+        getNode: getVerifiedNode,
       });
       let active = true;
       const assertActive = (): void => {
@@ -433,6 +446,7 @@ export class RepositoryGraphPort implements GraphPort {
       };
       const snapshot: RepositoryGraphGroundingSnapshot = {
         revision: context.revision,
+        ...(incompleteReason ? { incompleteReason } : {}),
         getSymbols(nodeIds) {
           assertActive();
           if (!Array.isArray(nodeIds) || nodeIds.length > MAX_GROUNDING_SYMBOLS) {
@@ -441,7 +455,7 @@ export class RepositoryGraphPort implements GraphPort {
           const ids = [...new Set(Array.from(nodeIds, validateSymbolId))];
           try {
             return ids.flatMap((id) => {
-              const node = context.session.graph.getNode(id);
+              const node = getVerifiedNode(id);
               // Graph point reads also follow aliases. Only the requested
               // declaration belongs in this direct-symbol projection.
               return node?.id === id ? [projectNode(node)] : [];
@@ -453,7 +467,7 @@ export class RepositoryGraphPort implements GraphPort {
         getNode(nodeId) {
           assertActive();
           try {
-            const node = context.session.graph.getNode(nodeId);
+            const node = getVerifiedNode(nodeId);
             return node === null ? null : {
               id: node.id,
               bodyHash: node.bodyHash ?? null,
@@ -468,6 +482,7 @@ export class RepositoryGraphPort implements GraphPort {
         getFingerprint(nodeId) {
           assertActive();
           try {
+            if (incomplete && !getVerifiedNode(nodeId)) return null;
             const fingerprint = store.get(nodeId);
             return fingerprint === null ? null : serializeFingerprint(fingerprint);
           } catch {
@@ -477,6 +492,7 @@ export class RepositoryGraphPort implements GraphPort {
         reconcile(nodeId, committedFingerprint, bodyHash) {
           assertActive();
           try {
+            if (incomplete) return null;
             const fingerprint = deserializeFingerprint(committedFingerprint);
             return fingerprint === null ? null : reconciler.reconcile(nodeId, fingerprint, bodyHash);
           } catch {
@@ -527,6 +543,7 @@ export class RepositoryGraphPort implements GraphPort {
   async #withFresh<T>(
     build: (context: FreshContext) => T | Promise<T>,
     afterValidation?: (value: T) => void | Promise<void>,
+    allowParseDegraded = false,
   ): Promise<{
     revision: string;
     status: GraphStatus;
@@ -537,6 +554,7 @@ export class RepositoryGraphPort implements GraphPort {
       loaded = await this.#deps.loadFresh(this.#projectRoot, {
         dbPath: this.#dbPath,
         loadSession: true,
+        ...(allowParseDegraded ? { allowDegradedReads: true } : {}),
       });
     } catch {
       throw interruptedRead("The graph changed or became unavailable before the read began.");
@@ -544,6 +562,11 @@ export class RepositoryGraphPort implements GraphPort {
     const session = loaded.session;
     if (!session) throw errorForStatus(loaded.graphStatus);
     try {
+      if (session.degradations.length && (!allowParseDegraded
+        || session.degradations.some(degradation => degradation !== "parse-degraded"))) {
+        throw portError("INDEX_STALE", 409, "Graph inputs changed",
+          "The graph's source or configuration changed. Refresh it before verifying groundings.");
+      }
       const revision = readSnapshotRevision(session.db);
       const context: FreshContext = {
         session,
