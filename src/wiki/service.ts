@@ -256,18 +256,15 @@ class WikiEngineImpl implements WikiEngine, WikiEngineExtras {
   /**
    * §7.2 names this `validate(): Promise<WikiDiagnostic[]>`.
    *
-   * The diagnostics are there, in `.diagnostics`. What the literal signature
-   * loses is `data.groundingsUnverified` — whether the grounding half of the
-   * pass ran at all — and a CI caller that cannot tell a clean report from an
-   * unread one is the exact failure §17's review queues would inherit. So the
-   * data half is kept, and the signature widened rather than the fact dropped.
+   * The diagnostics are there, in `.diagnostics`; the data half (counts,
+   * truncation) is kept, so the signature is widened rather than the facts
+   * dropped. Code links are `mex check`'s, not validate's.
    */
   async validate(options: Partial<ValidateOptions> = {}): Promise<ServiceResult<ValidateData>> {
     return wikiValidate({
       scaffoldRoot: resolve(this.options.scaffoldRoot),
       ...(this.options.exclude === undefined ? {} : { exclude: this.options.exclude }),
       ...(this.options.registry === undefined ? {} : { registry: this.options.registry }),
-      ...(this.options.graph === undefined || this.options.graph === null ? {} : { graph: this.options.graph }),
       ...options,
     } as ValidateOptions);
   }

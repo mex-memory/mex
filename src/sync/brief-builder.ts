@@ -20,11 +20,13 @@ export async function buildCombinedBrief(
   }
 
   const groundingInstructions = buildGroundingRepairInstructions(targets);
+  const wikiInstructions = buildWikiReviewInstructions(targets);
   return `The following scaffold files have drift issues that need fixing. Fix all of them in one pass.
 
 ${sections.map((s, i) => `━━━ File ${i + 1}/${sections.length} ━━━\n\n${s}`).join("\n\n")}
 
 ${groundingInstructions}
+${wikiInstructions}
 
 Update each file to fix its issues. Only change what's necessary — do not rewrite sections that are correct.
 When a referenced path no longer exists, find the correct current path from the filesystem context above and update the reference.`;
@@ -37,12 +39,14 @@ export async function buildSyncBrief(
 ): Promise<string> {
   const section = await buildFileSection(target, projectRoot);
   const groundingInstructions = buildGroundingRepairInstructions([target]);
+  const wikiInstructions = buildWikiReviewInstructions([target]);
 
   return `The following scaffold file has drift issues that need fixing:
 
 ${section}
 
 ${groundingInstructions}
+${wikiInstructions}
 
 Update the file to fix these issues. Only change what's necessary — do not rewrite sections that are correct.
 When a referenced path no longer exists, find the correct current path from the filesystem context above and update the reference.`;
@@ -60,9 +64,11 @@ whole useful neighborhood, but ground only functions/methods that embody claims
 the repaired prose actually makes. Keep broad files sparse.
 
 - GROUNDING_DRIFT/body change: decide whether the claim changed from the supplied
-  old/new body. Repair only affected prose. Preserve the existing grounds_to
-  fingerprint and bodyHash until the user explicitly accepts that entry in
-  sync's grounding review; completing the agent session does not accept it.
+  old/new body. Repair only affected prose. For a link that names no Wiki
+  entity, preserve the existing grounds_to fingerprint and bodyHash until the
+  user explicitly accepts that entry in sync's grounding review; completing the
+  agent session does not accept it. A link on a Wiki entity follows WIKI ENTITY
+  REVIEW below.
 - MOVED: sync may have already durably rebound a high-confidence move. Verify the
   grounds_to id and every inline mex:// anchor for that symbol use the new id,
   and retain its previous bodyHash. Identity repair does not establish that the
@@ -80,6 +86,64 @@ bodyHash to make drift disappear. Inline navigation is exactly
 Anchor only load-bearing symbol mentions, without changing their visible text.
 Before finishing, re-read each changed file and verify ids/fingerprints resolve,
 no grounding or anchor is duplicated, and unrelated prose remains untouched.`;
+}
+
+/** One flagged Wiki entity: its id, title, file, and each flagged link's code and verdict. */
+export interface FlaggedEntity {
+  id: string;
+  title: string;
+  file: string;
+  links: string[];
+}
+
+/** Wiki entities whose links `check` flagged, in first-seen order. */
+export function flaggedWikiEntities(targets: readonly SyncTarget[]): FlaggedEntity[] {
+  const byId = new Map<string, FlaggedEntity>();
+  for (const target of targets) {
+    for (const issue of target.issues) {
+      if (issue.entity === undefined || !issue.code.startsWith("GROUNDING_")) continue;
+      const entry = byId.get(issue.entity.id)
+        ?? { id: issue.entity.id, title: issue.entity.title, file: target.file, links: [] };
+      entry.links.push(`${issue.code}${issue.verdict === undefined ? "" : ` (${issue.verdict})`}`);
+      byId.set(issue.entity.id, entry);
+    }
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Review of flagged Wiki entities, in the same session as scaffold drift.
+ *
+ * The agent compares each fact with the code as recorded and as it is now and
+ * decides whether every statement still holds. It re-records only through
+ * `mex wiki reground`, which derives every hash from the live graph.
+ */
+function buildWikiReviewInstructions(targets: SyncTarget[]): string {
+  const flagged = flaggedWikiEntities(targets);
+  if (flagged.length === 0) return "";
+  const list = flagged
+    .map((entity) => `- ${entity.id} "${entity.title}" (${entity.file}): ${entity.links.join(", ")}`)
+    .join("\n");
+  return `
+WIKI ENTITY REVIEW — each entity below states facts about code that changed:
+
+${list}
+
+For each entity, compare its text with the grounded code as recorded ("Old body"
+above) and as it is now ("New body", or \`mex graph get <nodeId>\`). Check every
+statement, then decide exactly one:
+
+- STILL TRUE: every statement holds for the current code. Run
+  \`mex wiki reground <entity-id> --apply\`. It re-records every link of the
+  entity from the live graph, following a moved symbol to its new id.
+- CHANGED: a statement no longer holds. Edit only the entity's text so that it
+  is true for the current code, then run \`mex wiki reground <entity-id> --apply\`.
+- UNSURE: change nothing. The entity keeps its flag for a person to decide.
+
+GROUNDING_GONE and GROUNDING_AMBIGUOUS links have no code to re-record against,
+and \`mex wiki reground\` refuses them. Repair them as described above (relink to
+the right node or remove the link, and fix the text), or leave them flagged.
+Never write or edit node ids, fingerprints, bodyHash or codeHash by hand.`;
 }
 
 /** Build the content section for a single target (no wrapper instructions) */

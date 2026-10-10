@@ -206,6 +206,9 @@ export type IssueCode =
   // `bodyHash` differs but `codeHash` matches. Info, and not counted in the
   // score; accepting the new body is still an explicit review. See #236.
   | "GROUNDING_COMMENT_DRIFT"
+  | "GROUNDING_NEARBY_DRIFT"
+  | "GROUNDING_NO_BASELINE"
+  | "GROUNDING_MOVED"
   // ── Wiki adoption (emitted by src/drift/checkers/wiki-adoption.ts; #227) ──
   // A knowledge file migration would adopt but has not, such as a pattern
   // added after setup (warning).
@@ -222,6 +225,13 @@ export interface DriftIssue {
   message: string;
   /** The claim that triggered this issue, if any */
   claim?: Claim;
+  /** The Wiki entity whose code link this issue is about, if any. */
+  entity?: { id: string; title: string };
+  /**
+   * For a code-link finding: the shared verdict (`src/wiki/grounding/verdict.ts`)
+   * it reports, the same one the Wiki stores.
+   */
+  verdict?: "fresh" | "changed-nearby" | "moved" | "changed" | "missing" | "ambiguous" | "unverified";
 }
 
 export interface DriftReport {

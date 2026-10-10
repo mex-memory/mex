@@ -186,30 +186,36 @@ describe("grounding checker", () => {
       bodyHash: "old-hash", fingerprint: serializeFingerprint(baseline),
     });
     const reconciler = new MinHashReconciler(store);
-    const fm = { grounds_to: [{ node: "current", fingerprint: serializeFingerprint(baseline) }] };
+    const fm = { grounds_to: [{ node: "current", fingerprint: serializeFingerprint(baseline), bodyHash: "old-hash" }] };
     expect(createGroundingChecker(graph([node("current", "old-hash")]), reconciler)(fm, "/repo/.mex/context.md", "context.md", "/repo", "/repo/.mex")).toEqual([]);
     const issues = createGroundingChecker(graph([node("current", "new-hash")]), reconciler)(fm, "/repo/.mex/context.md", "context.md", "/repo", "/repo/.mex");
     expect(issues).toMatchObject([{ code: "GROUNDING_DRIFT", severity: "warning" }]);
     db.close();
   });
 
-  it("reports GONE and AMBIGUOUS, and silently rebinds MOVED", () => {
+  it("reports GONE and AMBIGUOUS, and rebinds MOVED with an unscored notice", () => {
     const baseline = fingerprint(64);
-    const grounding = { node: "missing", fingerprint: serializeFingerprint(baseline) };
-    const check = (reconciler: Reconciler) => createGroundingChecker(graph([]), reconciler)(
+    const grounding = { node: "missing", fingerprint: serializeFingerprint(baseline), bodyHash: "old-hash" };
+    const check = (reconciler: Reconciler) => createGroundingChecker(graph([node("new-id", "new-hash")]), {
+      getFingerprint: () => baseline,
+      ...reconciler,
+    } as Reconciler)(
       { grounds_to: [grounding] }, "/repo/.mex/context.md", "context.md", "/repo", "/repo/.mex",
     );
     expect(check({ reconcile: () => ({ kind: "GONE" }) })).toMatchObject([{ code: "GROUNDING_GONE", severity: "error" }]);
     expect(check({ reconcile: () => ({ kind: "AMBIGUOUS", candidate: "maybe" }) })).toMatchObject([{ code: "GROUNDING_AMBIGUOUS", severity: "warning" }]);
-    expect(check({ reconcile: () => ({ kind: "MOVED", nodeId: "new-id" }) })).toEqual([]);
+    expect(check({ reconcile: () => ({ kind: "MOVED", nodeId: "new-id" }) })).toMatchObject([{ code: "GROUNDING_MOVED", severity: "info" }]);
     expect(grounding.node).toBe("new-id");
   });
 
   it("reports changed accepted content after MOVED resolution before pointer persistence", () => {
     const grounding = { node: "missing", fingerprint: serializeFingerprint(fingerprint(64)), bodyHash: "accepted-hash" };
+    // A rebind is judged by structure, since a rename changes the body hash by
+    // construction; a structure that differs is a change.
     const checker = createGroundingChecker(graph([node("new-id", "changed-hash")]), {
       reconcile: () => ({ kind: "MOVED", nodeId: "new-id" }),
-    });
+      getFingerprint: () => fingerprint(8),
+    } as Reconciler);
     expect(checker({ grounds_to: [grounding] }, "/repo/.mex/context.md", "context.md", "/repo", "/repo/.mex"))
       .toMatchObject([{ code: "GROUNDING_DRIFT", severity: "warning" }]);
     expect(grounding.bodyHash).toBe("accepted-hash");

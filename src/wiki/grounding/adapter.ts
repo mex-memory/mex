@@ -37,6 +37,7 @@ import type { GraphEngine } from "../../graph/engine.js";
 import type { Fingerprint, Reconciler, Resolution } from "../../graph/reconcile.js";
 import type { SqliteDatabase } from "../../graph/db/sqlite.js";
 import type { GroundingBaseline, GroundingSubject } from "../../graph/grounding.js";
+import { createGroundingEvidence, type GroundingChangeEvidence } from "../../graph/grounding-evidence.js";
 import { asGraphDerived, type GraphDerivedGrounding, type WikiGrounding } from "../model/grounding.js";
 
 /**
@@ -95,7 +96,21 @@ export interface GroundingGraph {
    * available to them.
    */
   getBaselineSource(subject: GroundingSubject, nodeId: string): GroundingBaseline | null;
+  /**
+   * What can be said about a body that no longer matches the committed hash.
+   * Optional: a graph that cannot read source returns nothing and every
+   * changed body stays `changed`.
+   */
+  explainChange?(grounding: WikiGrounding, nodeId: string): ChangeEvidence | null;
+  /**
+   * Note that the node's current body is the one `bodyHash` names, so a later
+   * change can be explained against it. Called only when the two match.
+   */
+  rememberBody?(nodeId: string, bodyHash: string): void;
 }
+
+/** Evidence about a changed body; see `src/graph/grounding-evidence.ts`. */
+export type ChangeEvidence = GroundingChangeEvidence;
 
 /** Build the graph-backed implementation. The only place `src/graph/` is bound in. */
 export function createGroundingGraph(
@@ -103,8 +118,16 @@ export function createGroundingGraph(
   /** May take the committed body hash as a tie-breaker, as the graph's reconciler does (#229). */
   reconciler: Reconciler & { reconcile(nodeId: string, baseline: Fingerprint, bodyHash?: string): Resolution },
   db: SqliteDatabase,
+  /** Enables {@link GroundingGraph.explainChange}: where source is read from, and where old bodies are kept. */
+  source?: { projectRoot: string; bodyCacheDir?: string },
 ): GroundingGraph {
   const store = new FingerprintStore(db);
+  const evidence = source === undefined ? null : createGroundingEvidence({
+    projectRoot: source.projectRoot,
+    getNode: (nodeId) => engine.getNode(nodeId),
+    recallBody: (bodyHash) => store.sourceByBodyHash(bodyHash),
+    ...(source.bodyCacheDir === undefined ? {} : { bodyCacheDir: source.bodyCacheDir }),
+  });
   return {
     getNode(nodeId) {
       const node = engine.getNode(nodeId);
@@ -126,6 +149,12 @@ export function createGroundingGraph(
     },
     getBaselineSource(subject, nodeId) {
       return store.getBaseline(subject, nodeId);
+    },
+    explainChange(grounding, nodeId) {
+      return evidence === null ? null : evidence.explainChange(grounding, nodeId);
+    },
+    rememberBody(nodeId, bodyHash) {
+      evidence?.rememberBody(nodeId, bodyHash);
     },
   };
 }

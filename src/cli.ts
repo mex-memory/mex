@@ -310,13 +310,20 @@ program
   .option("--dry-run", "Show what would happen without making changes")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
   .option("--no-open", "Print the setup link without opening a browser")
+  .option("--tool <tool>", "Terminal setup: use this AI tool instead of asking (repeatable; none for no tool)", (value: string, previous: string[] = []) => [...previous, value])
+  .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
   .action(async (_opts, command: Command) => {
-    const opts = command.optsWithGlobals<{ cli?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean }>();
+    const opts = command.optsWithGlobals<{ cli?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean; tool?: string[]; yes?: boolean }>();
     try {
-      if (opts.cli || opts.dryRun) {
+      if (opts.cli || opts.dryRun || opts.tool !== undefined || opts.yes) {
         if (opts.port !== undefined || opts.open === false) throw new Error("--port and --no-open apply to browser setup. Omit them with --cli or --dry-run.");
-        const { runSetup } = await import("./setup/index.js");
-        await runSetup({ dryRun: opts.dryRun, mode: opts.mode });
+        const setup = await import("./setup/index.js");
+        await setup.runSetup({
+          dryRun: opts.dryRun,
+          mode: opts.mode,
+          ...(opts.tool === undefined ? {} : { tools: setup.parseSetupTools(opts.tool) }),
+          ...(opts.yes ? { yes: true } : {}),
+        });
       } else {
         await runBrowserCommand({ ...opts, setup: true });
       }
@@ -383,7 +390,7 @@ skillsCommand
 // ── Layer 2: Drift Detection ──
 program
   .command("check")
-  .description("Detect drift between scaffold files and codebase reality")
+  .description("Run every deterministic drift check, including scaffold and Wiki code links; read-only, no AI")
   .option("--json", "Output full drift report as JSON")
   .option("--quiet", "Single-line summary only")
   .option("--fix", "Run sync to fix any issues found")
@@ -615,7 +622,7 @@ function wikiIo(): import("./wiki/cli/commands.js").CommandIo {
 
 /**
  * `wikiIo()` plus the code graph, for the commands that resolve groundings
- * (#232): validate, rebuild-index, migrate, apply and regenerate-views.
+ * (#232): rebuild-index, migrate, apply, reground and regenerate-views.
  *
  * The graph is the repository graph port, the same one the Project Hub hands
  * the Wiki: it opens nothing until a command asks for a snapshot, refuses one
@@ -681,12 +688,12 @@ withReadFilters(wikiCommand.command("backlinks <id>").description("Entities that
 
 wikiCommand
   .command("validate")
-  .description("Check the whole scaffold; works with no index and no code graph")
+  .description("Check Wiki structure (ids, relations, evidence, anchors); code links are checked by `mex check`")
   .option("--limit <n>", "maximum diagnostics to report")
   .option("--json", "emit one enveloped JSON object")
   .action(async (options) => {
     const { runValidate } = await import("./wiki/cli/commands.js");
-    await runValidate(await groundedWikiIo(), options);
+    await runValidate(wikiIo(), options);
   });
 
 withReadFilters(wikiCommand.command("graph").description("A bounded slice of the relation graph")).action(
@@ -736,6 +743,40 @@ wikiCommand
     await runApply(await groundedWikiIo(), file, options);
   });
 
+wikiCommand
+  .command("reground <entity-id>")
+  .description("Re-record an entity's code links after review confirms its text still holds; writes only with --apply")
+  .option("--apply", "write the re-recorded links, rather than only planning them")
+  .option("--reason <text>", "why the links are re-recorded, kept in the operation log")
+  .option("--json", "emit one enveloped JSON object")
+  .action(async (id: string, options) => {
+    const { runReground } = await import("./wiki/cli/commands.js");
+    await runReground(await groundedWikiIo(), id, options);
+  });
+
+wikiCommand
+  .command("link-sections")
+  .description("Connect existing knowledge sections to their enclosing knowledge; writes only with --apply")
+  .option("--apply", "write the planned structural relationships")
+  .option("--dry-run", "plan only, even if --apply was given")
+  .option("--json", "emit one enveloped JSON object")
+  .action(async (options) => {
+    const { runLinkSections } = await import("./wiki/cli/commands.js");
+    await runLinkSections(await groundedWikiIo(), options);
+  });
+
+wikiCommand
+  .command("upgrade")
+  .description("Preview an existing scaffold's review for one code-linked fact per entity; --apply starts an interactive agent")
+  .option("--apply", "start the explicit agent review, rather than preview only")
+  .option("--dry-run", "preview only, even if --apply was given")
+  .option("--after <entity-id>", "resume bounded review after an existing entity id")
+  .option("--tool <name>", "optional interactive CLI override; otherwise uses the same agent chooser as mex sync")
+  .action(async (options) => {
+    const { runKnowledgeUpgrade } = await import("./sync/knowledge-upgrade.js");
+    await runKnowledgeUpgrade(loadConfig(), options);
+  });
+
 /**
  * The synthesis wiring: the code graph, and an agent launcher.
  *
@@ -773,13 +814,14 @@ async function synthesisIo(): Promise<import("./wiki/cli/commands.js").CommandIo
     import("./sync/index.js"),
   ]);
 
+  await (await import("./graph/code-hash.js")).prepareCodeHashing().catch(() => undefined);
   const db = openGraphDatabase(dbPath);
   const engine = createGraphEngine({ rootDir: config.projectRoot, dbPath });
   return {
     ...base,
     repoRoot: config.projectRoot,
     codeGraph: createSynthesisGraph(engine, db),
-    graph: createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db),
+    graph: createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db, { projectRoot: config.projectRoot }),
     ...(config.wiki?.synthesis === undefined ? {} : { synthesisScope: config.wiki.synthesis }),
     launchAgent: (playbook: string) => {
       // mex's own launcher, not a second one: six tools, cross-platform
@@ -835,7 +877,7 @@ wikiCommand
 
 wikiCommand
   .command("for-code <nodeId...>")
-  .description("Knowledge entities grounded to the given code-graph node ids")
+  .description("Knowledge entities grounded to the given code-graph node ids, with the link health `mex check` reports")
   .option("--json", "Emit one enveloped JSON object instead of JSONL records")
   .option("--limit <n>", "maximum entities to return")
   .option("--include-archived", "include archived entities, which are excluded by default")
@@ -1029,7 +1071,7 @@ program
 // ── Layer 3: Targeted Sync ──
 program
   .command("sync")
-  .description("Run drift check, then build targeted prompts for AI to fix flagged files")
+  .description("Run drift check, then fix flagged files and review flagged Wiki entities in one interactive AI session")
   .option("--dry-run", "Show what would be synced without executing")
   .option("--warnings", "Include warning-only files (by default only errors are synced)")
   .action(async (opts) => {

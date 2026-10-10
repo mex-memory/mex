@@ -213,12 +213,6 @@ describe("the WikiEngine facade", () => {
     const report = await engine.validate();
     expect(report.data.entitiesChecked).toBe(2);
     expect(report.data.counts.error).toBe(0);
-    // False, and correctly so: this scaffold declares no groundings, so
-    // nothing degraded. `groundingsUnverified` says "checks that had something
-    // to check could not run", not "no graph was supplied" — the distinction
-    // matters because a review queue built on the second reading would light
-    // up on every ungrounded scaffold in existence.
-    expect(report.data.groundingsUnverified).toBe(false);
   });
 });
 

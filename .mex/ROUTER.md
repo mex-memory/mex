@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-10-03
+last_updated: 2026-10-08
 ---
 
 # Session Bootstrap
@@ -30,6 +30,15 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
+- Local work on `fix/knowledge-drift-precision` adds `mex wiki link-sections`:
+  preview or explicitly apply missing section-to-parent `refines` relationships
+  without changing claim text or groundings. Setup/GROW guidance preserves those
+  connections; the bounded Hub graph retains up to 25 authored parent targets
+  beyond its initial page. These changes are on this branch, not yet released.
+  `mex wiki upgrade` previews existing broad code-linked review candidates;
+  `--apply` uses sync's agent chooser (or a manual prompt fallback). It requires
+  a fresh graph and rejects flagged candidate groundings before launching an
+  agent. Claim splitting is reviewed, not inferred on Hub reads or installation.
 
 - Release preparation for 0.8.3 is on `codex/release-0.8.3`, based on main
   `490ffe5`. The maintainer selected 0.8.3, including documented additive API

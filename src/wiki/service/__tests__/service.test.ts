@@ -434,7 +434,6 @@ describe("validate, through the service", () => {
 
   it("reports how much it could actually check, in data rather than as a diagnostic", () => {
     const result = wikiValidate({ scaffoldRoot: scaffold(false) });
-    expect(typeof result.data.groundingsUnverified).toBe("boolean");
     expect(result.data.counts).toEqual({
       error: expect.any(Number),
       warning: expect.any(Number),

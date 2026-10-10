@@ -125,14 +125,20 @@ section using anchor links (see INDEX.md annotation for format).
 
 PASS 3 — Wire the web:
 
+File-level edges do not connect separate section entities. Preview missing
+section-to-parent `refines` relationships with `mex wiki link-sections`, then
+write explicitly with `mex wiki link-sections --apply`. Use existing ids and
+review cross-entity semantic relationships from evidence; never invent links
+to meet a count or duplicate inverse backlinks.
+
 Re-read every file you just wrote (context/ files, pattern files, ROUTER.md).
 For each file, add or update the `edges` array in the YAML frontmatter.
 Each edge should point to another scaffold file that is meaningfully related,
 with a `condition` explaining when an agent should follow that edge.
 
 Rules for edges:
-- Every context/ file should have at least 2 edges
-- Every pattern file should have at least 1 edge (usually to the relevant context file)
+- Add only meaningful edges supported by the content; there is no minimum count
+- Link a pattern to its relevant context file when the content supports it
 - Edges should be bidirectional where it makes sense (if A links to B, consider B linking to A)
 - Use relative paths (e.g., context/stack.md, patterns/add-endpoint.md)
 - Pattern files can edge to other patterns (e.g., debug pattern → related task pattern)
@@ -213,14 +219,18 @@ pattern file you created.
 
 PASS 3 — Wire the web:
 
+Connect section entities to their enclosing knowledge with canonical `refines`
+relations and existing ids. Preview with `mex wiki link-sections`, then apply
+explicitly with `--apply`. Semantic dependencies need evidence, not link quotas.
+
 Re-read every file you just wrote (context/ files, pattern files, ROUTER.md).
 For each file, add or update the `edges` array in the YAML frontmatter.
 Each edge should point to another scaffold file that is meaningfully related,
 with a `condition` explaining when an agent should follow that edge.
 
 Rules for edges:
-- Every context/ file should have at least 2 edges
-- Every pattern file should have at least 1 edge
+- Add only meaningful edges supported by the content; there is no minimum count
+- Link a pattern to its relevant context file when the content supports it
 - Edges should be bidirectional where it makes sense
 - Use relative paths (e.g., context/stack.md, patterns/add-endpoint.md)
 

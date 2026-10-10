@@ -292,11 +292,18 @@ describe("path-independent TypeScript node ids (#240)", () => {
     // Only the grounds_to entries; an inline anchor's own reconciliation
     // before sync is #229's concern.
     const grounded = report.issues.filter((issue) => issue.message.startsWith("Grounded node"));
-    // renderPage's neighbours kept their ids: MOVED rebinds silently. Every
+    // renderPage's neighbours kept their ids: MOVED is informational. Every
     // neighbour of renderApp was itself path-affected, so the neighbour half of
     // its score is lost and it surfaces as AMBIGUOUS with the right candidate.
     expect(grounded).toEqual([expect.objectContaining({
+      code: "GROUNDING_MOVED",
+      severity: "info",
+      verdict: "moved",
+      message: expect.stringContaining(`${oldPage.id}; candidate: ${page.id}`),
+    }), expect.objectContaining({
       code: "GROUNDING_AMBIGUOUS",
+      severity: "warning",
+      verdict: "ambiguous",
       message: expect.stringContaining(`${oldApp.id}; candidate: ${app.id}`),
     })]);
 

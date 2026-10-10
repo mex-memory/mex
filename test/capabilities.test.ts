@@ -1098,10 +1098,8 @@ describe("mex capabilities manifest", () => {
   it("uses the real initialized-index inspectors without writes or outbound requests", async () => {
     const root = readyRoot();
     const home = temporaryRoot();
-    rmSync(join(root, ".git"), { recursive: true, force: true });
-    execFileSync("git", ["init", "--quiet"], { cwd: root });
-    execFileSync("git", ["config", "user.email", "capabilities@example.invalid"], { cwd: root });
-    execFileSync("git", ["config", "user.name", "Capabilities Contract"], { cwd: root });
+    // readyRoot already supplies a committed repository and fixture identity.
+    // Keep that history intact while adding the source used by the inspectors.
     mkdirSync(join(root, "src"));
     writeFileSync(join(root, "src", "example.ts"), "export const example = 1;\n");
     writeFileSync(join(root, ".mex", "config.json"), JSON.stringify({

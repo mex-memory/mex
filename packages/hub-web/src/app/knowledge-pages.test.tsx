@@ -224,6 +224,20 @@ describe("Knowledge detail and Code linking", () => {
     expect(screen.getByRole("tab", { name: "Backlinks" })).toHaveFocus();
   });
 
+  it("points a record whose linked code changed at mex check and mex sync", async () => {
+    renderRoute(`/knowledge/${GRAPH_TOPIC_ID}`);
+    expect(await screen.findByRole("heading", { level: 1, name: "One snapshot per graph request" })).toBeVisible();
+    const notice = screen.getByText("The linked code changed since this record was checked.").closest("[role=status]")!;
+    expect(notice).toHaveTextContent("mex check");
+    expect(notice).toHaveTextContent("mex sync");
+  });
+
+  it("shows no review notice for a fresh record", async () => {
+    renderRoute(`/knowledge/${HUB_ID}`);
+    expect(await screen.findByRole("heading", { level: 1, name: "Project Hub read boundaries" })).toBeVisible();
+    expect(screen.queryByText("The linked code changed since this record was checked.")).not.toBeInTheDocument();
+  });
+
   it("keeps a trustworthy body visible when a relation panel fails independently", async () => {
     const user = userEvent.setup();
     const fixture = createFixtureApi();

@@ -1,7 +1,7 @@
 ---
 name: agents
 description: Always-loaded project anchor. Read this first. Contains project identity, non-negotiables, commands, and pointer to ROUTER.md for full context.
-last_updated: "2026-09-10"
+last_updated: "2026-10-08"
 ---
 
 # mex
@@ -34,6 +34,7 @@ The repo is indexed into `.mex/graph.db`. Use it as a bounded discovery tool alo
 - During `mex sync`, adjudicate ambiguous grounding and verify refreshed grounding is emitted.
 
 ## Scaffold Growth
+Keep section entities connected to their enclosing knowledge with `refines` using existing ids. Preview missing structural links with `mex wiki link-sections`, then apply explicitly. Semantic connections need evidence; shared words or code groundings alone do not prove a dependency.
 After meaningful work, run GROW: ground what changed, record state/context updates, orient with a reusable pattern when warranted, and write updated timestamps/rationale. See `ROUTER.md`.
 
 ## Navigation

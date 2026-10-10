@@ -48,6 +48,26 @@ export async function prepareCodeHashing(): Promise<void> {
  * that cannot be said with certainty; see the module note.
  */
 export function codeHash(filePath: string, source: string, startLine: number, endLine: number): string | null {
+  return tokenHash(filePath, source, startLine, endLine, false);
+}
+
+/**
+ * {@link codeHash} with layout set aside as well: statement semicolons,
+ * trailing commas before a closing bracket and the choice of quote character
+ * are dropped, so a formatter pass (a Prettier upgrade adding trailing commas,
+ * a switch from double to single quotes) is not drift. Every identifier,
+ * literal value, operator and bracket still counts. Null when uncertain, like
+ * `codeHash`.
+ */
+export function layoutHash(filePath: string, source: string, startLine: number, endLine: number): string | null {
+  return tokenHash(filePath, source, startLine, endLine, true);
+}
+
+/** Leaves a formatter adds or removes without changing what the code does. */
+const CLOSING = new Set([")", "]", "}", ">"]);
+const QUOTES = new Set(['"', "'"]);
+
+function tokenHash(filePath: string, source: string, startLine: number, endLine: number, layout: boolean): string | null {
   const tree = parse(source, detectLanguage(filePath));
   if (tree === null) return null;
   try {
@@ -73,15 +93,48 @@ export function codeHash(filePath: string, source: string, startLine: number, en
     };
     visit(tree.rootNode);
     if (uncertain || tokens.length === 0) return null;
-    return createHash("sha256").update(JSON.stringify(tokens)).digest("hex");
+    const hashed = layout ? withoutLayout(tokens) : tokens;
+    return createHash("sha256").update(JSON.stringify(hashed)).digest("hex");
   } finally {
     disposeTree(tree);
   }
 }
 
+function withoutLayout(tokens: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token === ";") continue;
+    if (token === "," && CLOSING.has(tokens[index + 1] ?? "")) continue;
+    out.push(QUOTES.has(token) ? "'" : token);
+  }
+  return out;
+}
+
 /** {@link codeHash} of a node's body on its own, for a baseline only its old body text survives for. */
 export function codeHashOfBody(filePath: string, body: string): string | null {
   return codeHash(filePath, body, 1, body.split("\n").length);
+}
+
+/**
+ * Hash a node body read on its own, as {@link codeHash} or {@link layoutHash}.
+ *
+ * A method or a nested function does not parse as a file of its own, so when
+ * the plain slice is uncertain it is parsed again inside a class body, and
+ * only its own lines are hashed. Callers compare two bodies hashed by this
+ * same function, so both sides go through the same wrapping; a body that only
+ * parses one way on one side compares unequal, which keeps the warning.
+ */
+export function bodyTokenHash(filePath: string, body: string, layout: boolean): string | null {
+  const lines = body.split("\n").length;
+  const plain = tokenHash(filePath, body, 1, lines, layout);
+  if (plain !== null) return plain;
+  const language = detectLanguage(filePath);
+  if (language === "python") {
+    return tokenHash(filePath, `class __mex_body__:\n${body}`, 2, lines + 1, layout);
+  }
+  if (language === "unknown") return null;
+  return tokenHash(filePath, `class __mex_body__ {\n${body}\n}`, 2, lines + 1, layout);
 }
 
 /**

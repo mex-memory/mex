@@ -67,7 +67,7 @@ export interface WikiWriteOptions extends WikiServiceOptions {
  */
 function groundingResolverFor(options: WikiWriteOptions): { resolveGrounding?: GroundingResolver } {
   const graph = options.graph ?? null;
-  return graph === null ? {} : { resolveGrounding: (grounding) => resolveGrounding(grounding, graph) };
+  return graph === null ? {} : { resolveGrounding: (grounding, context) => resolveGrounding(grounding, graph, context) };
 }
 
 function applyOptionsFrom(options: WikiWriteOptions): ApplyOptions {
