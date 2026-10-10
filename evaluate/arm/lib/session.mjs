@@ -25,7 +25,7 @@ const CHANGE_SUFFIX = "\n\nMake the change in the repository in the current dire
 // scaffold's CLAUDE.md is the only pointer. "steered" names MEX in the prompt,
 // as evaluate/compare's forced-first graph arm did. The files arm never sees it.
 export const MEX_PROMPTS = ["none", "steered"];
-const MEX_STEER_COMMON = "This repository has MEX installed: project knowledge in `.mex/` (start at `.mex/ROUTER.md` and read the files it routes you to) and a code graph CLI, `mex`, on PATH. Start with `mex graph scope \"<task>\"`. When you know an exact symbol name, use `mex graph query <where-defined|who-calls|what-calls> <symbol>` and `mex graph get <id...>`. Treat source returned by the graph as already read. Fall back to Read, Grep or Glob only when the graph evidence is insufficient.";
+const MEX_STEER_COMMON = "This repository has MEX installed: project knowledge in `.mex/` (start at `.mex/ROUTER.md` and read the files it routes you to) and a code graph CLI, `mex`, on PATH. Start with `mex graph scope \"<task>\"`. When you know an exact symbol name, use `mex graph query <where-defined|who-calls|what-calls> <symbol>` and `mex graph get <id...>`. Treat source returned by the graph as already read.";
 const MEX_STEER_CHANGE = " Before editing a symbol, run `mex impact <symbol|file>`. After your change, run `mex graph refresh` and then `mex check` to see whether any `.mex` knowledge drifted.";
 
 export function buildPrompt(task, { mexPrompt = "none", withMex = false } = {}) {
