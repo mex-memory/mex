@@ -115,12 +115,12 @@ export function generateReport({ suite, rows, grades = null, salt, baselines = {
     for (const row of forced) lines.push(`| ${row.runId} | ${checks.map((key) => yes(row.compliance[key])).join(" | ")} |`);
   }
 
-  lines.push("", "## Loop close (change tasks)", "", "| Run | Tests | Knowledge files edited | Grounding issues vs baseline | Hand-edited hashes |", "|---|---|---|---|---|");
+  lines.push("", "## Loop close (change tasks)", "", "| Run | Tests | Knowledge files edited | Grounding issues vs baseline | Grounding lines rewritten | Hand-edited hashes |", "|---|---|---|---|---|---|");
   for (const row of mexRows.filter((entry) => entry.taskType === "change")) {
     const baseline = baselines[row.indexKey]?.grounding?.length ?? 0;
     const now = row.mexCheck?.grounding?.length ?? null;
     const codes = row.mexCheck ? Object.entries(row.mexCheck.counts).filter(([code]) => code.startsWith("GROUNDING_")).map(([code, n]) => `${code}×${n}`).join(", ") : "–";
-    lines.push(`| ${row.runId} | ${row.hiddenTests ? `${row.hiddenTests.passed}/${row.hiddenTests.total}${row.hiddenTests.ok ? " ✓" : " ✗"}` : "–"} | ${row.diff.knowledgeFiles.join(", ") || "none"} | ${now === null ? "–" : `${now - baseline} (${codes || "none"})`} | ${row.metrics.handHashEdits} |`);
+    lines.push(`| ${row.runId} | ${row.hiddenTests ? `${row.hiddenTests.passed}/${row.hiddenTests.total}${row.hiddenTests.ok ? " ✓" : " ✗"}` : "–"} | ${row.diff.knowledgeFiles.join(", ") || "none"} | ${now === null ? "–" : `${now - baseline} (${codes || "none"})`} | ${row.diff.groundingLinesChanged ?? "–"} | ${row.metrics.handHashEdits} |`);
   }
 
   const trap = suite.tasks.find((task) => task.scaffold === "trap");

@@ -179,6 +179,12 @@ function knowledgeEvents(text) {
   return events;
 }
 
+/** A search aimed only at prose documentation (Markdown, docs/, README), not at source. */
+function isDocsOnly(text) {
+  const value = normalizePath(text);
+  return /\.mdx?\b|(?:^|[\s/"'])docs(?:[/\s"']|$)|\bREADME\b/i.test(value) && !/(?:^|[\s/"'])src(?:[/\s"']|$)|\.[cm]?[jt]sx?\b/.test(value);
+}
+
 /** Ordered compliance events for one tool call; Bash lines are split into their simple commands. */
 function complianceEvents(call) {
   const input = call.input ?? {};
@@ -188,7 +194,8 @@ function complianceEvents(call) {
     case "Grep":
     case "Glob": {
       const target = `${input.path ?? ""} ${input.pattern ?? ""}`;
-      return isKnowledgePath(input.path) || isKnowledgePath(input.pattern) ? knowledgeEvents(target) : ["source"];
+      if (isKnowledgePath(input.path) || isKnowledgePath(input.pattern)) return knowledgeEvents(target);
+      return isDocsOnly(`${input.path ?? ""} ${input.glob ?? ""}`) ? [] : ["source"];
     }
     case "Edit":
     case "MultiEdit":
@@ -207,11 +214,13 @@ function complianceEvents(call) {
           events.push(sub === "graph" && second === "scope" ? "scope"
             : sub === "impact" ? "impact"
             : sub === "check" ? "check"
+            : sub === "wiki" && ["query", "show", "related"].includes(second) ? "consulted"
             : sub === "graph" && second === "refresh" ? "refresh" : "mex");
         } else if (TEST_COMMAND.test(segment)) continue;
         else if (reads || DISCOVERY_COMMAND.test(segment)) {
           if (isKnowledgePath(segment)) events.push(...knowledgeEvents(segment));
-          else events.push(insideMex ? "consulted" : "source");
+          else if (insideMex) events.push("consulted");
+          else if (!isDocsOnly(segment)) events.push("source");
         } else if (/\bsed\s+-i\b/.test(segment) || /(?:^|\s)>{1,2}\s*\S/.test(segment)) {
           if (!isKnowledgePath(segment)) events.push("edit");
         } else if (SCRIPT_WRITE.test(segment) && /\.write|writeFile/.test(command)) {

@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { classifyBash, classifyCall, forcedCompliance, isHandHashEdit, summarizeCalls } from "../lib/classify.mjs";
 import { bootstrapMean, buildBlindReview } from "../lib/report.mjs";
-import { buildPrompt, claudeInvocation } from "../lib/session.mjs";
+import { buildPrompt, claudeInvocation, groundingLinesChanged } from "../lib/session.mjs";
 import { armPath, createWorkspace, git, removeWorkspace } from "../lib/workspace.mjs";
 import { parseArgs } from "../index.mjs";
 
@@ -102,6 +102,10 @@ test("forced compliance follows the prescribed order, splitting shell lines", ()
   assert.equal(forcedCompliance(grepped, "qa").knowledgeConsulted, true);
   assert.equal(forcedCompliance([bash("cd .mex/context; grep -n onError conventions.md decisions.md"), bash('mex graph scope "x"')], "qa").knowledgeConsulted, true);
   assert.equal(forcedCompliance([read("C:/ws/.mex/AGENTS.md"), bash("cat .mex/ROUTER.md")], "qa").knowledgeConsulted, false);
+  const wiki = [bash("cat .mex/ROUTER.md"), bash('mex wiki query "dispatch compose"; mex wiki show mx_1'), bash('mex graph scope "x"')];
+  assert.deepEqual(forcedCompliance(wiki, "qa"), { routerRead: true, knowledgeConsulted: true, scopeBeforeSource: true, compliant: true });
+  const docsFirst = [bash('mex wiki show mx_1; grep -rn compose docs README.md'), bash('mex graph scope "x"'), read("C:/ws/src/compose.ts")];
+  assert.equal(forcedCompliance(docsFirst, "qa").scopeBeforeSource, true, "a docs-only search is not a source read");
   const scriptEdit = [bash("mex impact compose"), bash("python - <<'E'\nopen('src/compose.ts','w').write(s)\nE"), bash("mex check")];
   const result = forcedCompliance(scriptEdit, "change");
   assert.equal(result.impactBeforeEdit, true);
@@ -161,4 +165,15 @@ test("argument parsing requires the pinned inputs for --run", () => {
   assert.throws(() => parseArgs(["--run", "--suite", "s.json", "--output", "o"]), /--subject/);
   const args = parseArgs(["--report", "--suite", "s.json", "--output", "o"]);
   assert.equal(args.mode, "report");
+});
+
+test("grounding lines are counted only in the .mex part of a patch", () => {
+  const patch = [
+    "diff --git a/.mex/context/architecture.md b/.mex/context/architecture.md",
+    "-      fingerprint: mh2:64:old", "+      fingerprint: mh2:64:new", "+      bodyHash: abc", "+  - file: src/compose.ts", "+    node: function:1",
+    "diff --git a/src/compose.ts b/src/compose.ts",
+    "+// fingerprint: not knowledge",
+  ].join("\n");
+  assert.equal(groundingLinesChanged(patch), 3);
+  assert.equal(groundingLinesChanged(""), 0);
 });

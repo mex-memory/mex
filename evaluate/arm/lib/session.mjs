@@ -27,7 +27,7 @@ const CHANGE_SUFFIX = "\n\nMake the change in the repository in the current dire
 // "forced" orders the work: routed knowledge first, then Scope before any
 // source read; compliance is checked from the transcript afterwards.
 export const MEX_PROMPTS = ["none", "steered", "forced"];
-const MEX_FORCE_COMMON = "This repository has MEX installed: project knowledge in `.mex/` and a code graph CLI, `mex`, on PATH. Work in this order. First, read `.mex/ROUTER.md`. Then grep or read the `.mex/context/` and `.mex/patterns/` files for this task's key terms; they explain how this code works. Do not skip this step. Only then run `mex graph scope \"<task>\"` before reading or searching any source file. When you know an exact symbol name, use `mex graph query <where-defined|who-calls|what-calls> <symbol>` and `mex graph get <id...>`. Treat source returned by the graph as already read.";
+const MEX_FORCE_COMMON = "This repository has MEX installed: project knowledge in `.mex/` and a CLI, `mex`, on PATH. Work in this order. First, read `.mex/ROUTER.md`. Then find the relevant knowledge with `mex wiki query \"<key terms>\"` and read the facts you need with `mex wiki show <id>`; they explain how this code works. Do not skip this step. Only then run `mex graph scope \"<task>\"` before reading or searching any source file. When you know an exact symbol name, use `mex graph query <where-defined|who-calls|what-calls> <symbol>` and `mex graph get <id...>`. Treat source returned by the graph as already read.";
 const MEX_FORCE_CHANGE = " Before editing, run `mex impact <symbol|file>` for what you will change. After your change, run `mex graph refresh` and then `mex check`, and update any `.mex` knowledge that drifted.";
 const MEX_STEER_COMMON = "This repository has MEX installed: project knowledge in `.mex/` (start at `.mex/ROUTER.md` and read the files it routes you to) and a code graph CLI, `mex`, on PATH. Start with `mex graph scope \"<task>\"`. When you know an exact symbol name, use `mex graph query <where-defined|who-calls|what-calls> <symbol>` and `mex graph get <id...>`. Treat source returned by the graph as already read.";
 const MEX_STEER_CHANGE = " Before editing a symbol, run `mex impact <symbol|file>`. After your change, run `mex graph refresh` and then `mex check` to see whether any `.mex` knowledge drifted.";
@@ -62,6 +62,19 @@ export function claudeInvocation({ task, model, claudeCommand = ["claude"], mexP
       "--allowedTools", ...tools,
     ],
   };
+}
+
+/**
+ * Added grounding lines (fingerprint, bodyHash, codeHash, node) in the .mex part
+ * of a patch, however they were written: Edit, sed, a script or `mex sync`.
+ */
+export function groundingLinesChanged(patch) {
+  let inKnowledge = false, count = 0;
+  for (const line of String(patch ?? "").split("\n")) {
+    if (line.startsWith("diff --git ")) inKnowledge = / a\/\.mex\//.test(line);
+    else if (inKnowledge && /^\+\s*(?:-\s*)?(?:fingerprint|bodyHash|codeHash|node):/.test(line)) count += 1;
+  }
+  return count;
 }
 
 function parseChangeResult(raw) {
@@ -179,7 +192,7 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
     allocation: calls.allocation,
     compliance: armSpec.withMex && mexPrompt === "forced" ? forcedCompliance(parsed.toolCalls, task.type) : null,
     ...result,
-    diff: { files: diff.files, knowledgeFiles: diff.files.filter((file) => file.startsWith(".mex/")) },
+    diff: { files: diff.files, knowledgeFiles: diff.files.filter((file) => file.startsWith(".mex/")), groundingLinesChanged: groundingLinesChanged(diff.patch) },
     hiddenTests: hiddenTests ? { ok: hiddenTests.ok, exitCode: hiddenTests.exitCode, passed: hiddenTests.passed, failed: hiddenTests.failed, total: hiddenTests.total, error: hiddenTests.error ?? null } : null,
     mexCheck,
     valid: violations.length === 0,
