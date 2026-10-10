@@ -3119,6 +3119,10 @@ export const WikiHealthDetailsSchema = z.object({
   allowedJobKinds: z.array(z.enum(["wiki_refresh", "wiki_rebuild"])).max(2),
   recommendedJobKind: z.enum(["wiki_refresh", "wiki_rebuild"]).nullable(),
   activeJobId: hubJobId.nullable(),
+  recoveryCommand: z.object({
+    label: z.string().min(1).max(200),
+    command: z.string().min(1).max(200),
+  }).strict().nullable().optional(),
 }).strict().superRefine((value, context) => {
   if (
     value.recommendedJobKind !== null

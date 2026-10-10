@@ -48,12 +48,33 @@ function HealthIcon({ status }: { status: string }) {
 
 function Diagnostics({ diagnostics }: { diagnostics: HealthComponent["diagnostics"] }) {
   if (!diagnostics.length) return null;
+  const groups = new Map<string, HealthComponent["diagnostics"]>();
+  for (const diagnostic of diagnostics) {
+    const key = JSON.stringify([diagnostic.severity, diagnostic.message]);
+    const group = groups.get(key);
+    if (group) group.push(diagnostic);
+    else groups.set(key, [diagnostic]);
+  }
 
   return (
     <ul className={healthStyles.diagnosticList}>
-      {diagnostics.map((diagnostic, index) => (
-        <li key={`${diagnostic.code}-${index}`} data-severity={diagnostic.severity}>{diagnostic.message}</li>
-      ))}
+      {[...groups].map(([key, group]) => {
+        const diagnostic = group[0]!;
+        return (
+          <li key={key} data-severity={diagnostic.severity}>
+            {group.length === 1 ? diagnostic.message : (
+              <details>
+                <summary>{diagnostic.message} ({group.length} occurrences)</summary>
+                <ul className={healthStyles.diagnosticList}>
+                  {group.map((item, index) => (
+                    <li key={index}><code>{item.code}</code>{item.path ? <> — <code>{item.path}</code></> : null}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -121,11 +142,18 @@ function ActionControls({
 }
 
 function WikiHealthReadout({ wiki }: { wiki: WikiHealthDetails }) {
+  const recoveryCommand = wiki.recoveryCommand ?? null;
   return (
     <div className={healthStyles.wikiReadout}>
       <div className={healthStyles.indexBanner}>
         <span><small>Wiki index status</small><strong>{sentenceCase(wiki.indexStatus)}</strong></span>
-        <StatusPill tone={stateTone(wiki.indexStatus)}>{wiki.recommendedJobKind ? `${sentenceCase(wiki.recommendedJobKind)} recommended` : "No repair recommended"}</StatusPill>
+        <StatusPill tone={stateTone(wiki.indexStatus)}>
+          {wiki.recommendedJobKind
+            ? `${sentenceCase(wiki.recommendedJobKind)} recommended`
+            : recoveryCommand
+              ? "CLI action required"
+              : "No repair recommended"}
+        </StatusPill>
       </div>
       <dl className={healthStyles.wikiFacts}>
         <div><dt>Indexed</dt><dd>{formatDate(wiki.indexedAt)}</dd></div>
@@ -133,6 +161,12 @@ function WikiHealthReadout({ wiki }: { wiki: WikiHealthDetails }) {
         <div><dt>Revision</dt><dd className={healthStyles.mono}>{wiki.indexedRevision?.slice(0, 12) ?? "Not indexed"}</dd></div>
         <div><dt>Observed</dt><dd>{formatDate(wiki.observedAt)}</dd></div>
       </dl>
+      {recoveryCommand && !wiki.recommendedJobKind ? (
+        <div className={healthStyles.recoveryCommand}>
+          <small>{recoveryCommand.label}</small>
+          <code className={healthStyles.mono}>{recoveryCommand.command}</code>
+        </div>
+      ) : null}
     </div>
   );
 }

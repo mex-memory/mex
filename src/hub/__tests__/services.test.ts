@@ -1697,6 +1697,62 @@ The worker drains the durable queue.
     expect(JSON.stringify(unsafeHealth)).not.toContain("/Users/alice");
   });
 
+  it("points migration_required Wiki health at the CLI migration preview", async () => {
+    const services = createLocalHubReadServices({
+      projectRoot,
+      scaffoldId: "scaffold-local",
+      git,
+      wiki: wikiWithStatus("migration_required"),
+      jobs: { list: () => ({ items: [] }) },
+      now: () => new Date(NOW),
+    });
+    const component = (await services.health()).components.find((item) => item.id === "wiki")!;
+    expect(component.wiki?.recoveryCommand).toEqual({
+      label: "Preview the required Wiki migration",
+      command: "mex wiki migrate --dry-run",
+    });
+    expect(component.wiki?.recommendedJobKind).toBeNull();
+    expect(component).not.toHaveProperty("repairJobKind");
+    expect(component.summary).toBe(
+      "Legacy Knowledge requires an explicit migration before Hub reads can continue. "
+      + "Preview it with mex wiki migrate --dry-run, then apply the migration with the CLI.",
+    );
+
+    const fresh = createLocalHubReadServices({
+      projectRoot,
+      scaffoldId: "scaffold-local",
+      git,
+      wiki: wikiWithStatus("fresh"),
+      jobs: { list: () => ({ items: [] }) },
+      now: () => new Date(NOW),
+    });
+    const freshComponent = (await fresh.health()).components.find((item) => item.id === "wiki")!;
+    expect(freshComponent.wiki?.recoveryCommand).toBeNull();
+  });
+
+  it("explains grounding health without exposing raw diagnostic messages", async () => {
+    const wiki = wikiWithStatus("stale");
+    const status = await wiki.inspectIndex();
+    vi.spyOn(wiki, "inspectIndex").mockResolvedValue({
+      ...status,
+      diagnostics: ["GROUNDING_STALE", "GROUNDING_MISSING", "GROUNDING_UNRESOLVED"].map((code) => ({
+        code, severity: "warning" as const, message: "private raw diagnostic",
+      })),
+    });
+    const services = createLocalHubReadServices({
+      projectRoot, scaffoldId: "scaffold-local", git, wiki,
+      jobs: { list: () => ({ items: [] }) }, now: () => new Date(NOW),
+    });
+    const component = (await services.health()).components.find((item) => item.id === "wiki")!;
+    expect(component.diagnostics.map((item) => item.message)).toEqual([
+      "Linked code changed; review the Knowledge with mex check or mex sync.",
+      "A Knowledge code link could not be found in the current graph.",
+      "A Knowledge code link could not be resolved confidently.",
+    ]);
+    expect(JSON.stringify(component)).not.toContain("private raw diagnostic");
+    expect(component.wiki?.indexStatus).toBe("stale");
+  });
+
   it("uses real repository context without inventing unavailable project data", async () => {
     const services = createLocalHubReadServices({
       projectRoot,
