@@ -48,7 +48,7 @@ describe("headless population process", () => {
         "--allowedTools", HEADLESS_CLAUDE_ALLOWED_TOOLS.join(","),
         "--output-format", "stream-json", "--verbose", "--include-partial-messages",
       ]);
-      await expect(run).resolves.toEqual({ tool, completed: true });
+      await expect(run).resolves.toEqual({ tool, unavailable: [], completed: true });
       expect(heartbeat).toBeGreaterThan(0);
       expect(readFileSync(join(fixture.root, "still-readable.txt"), "utf8")).toBe(prompt);
       expect(fixture.spawn).toHaveBeenCalledWith(tool, expect.any(Array), expect.objectContaining({
@@ -114,7 +114,7 @@ describe("headless population process", () => {
       ]);
       expect(activities).toContainEqual({ tool, kind, state: "running" });
       writeFileSync(join(fixture.root, "release.txt"), "continue");
-      await expect(run).resolves.toEqual({ tool, completed: true });
+      await expect(run).resolves.toEqual({ tool, unavailable: [], completed: true });
       expect(activities).toContainEqual({ tool, kind: "completed", state: "completed" });
       expect(JSON.stringify(activities)).not.toContain(privateContent);
       expect(JSON.stringify(activities)).not.toContain(fixture.root);
@@ -163,7 +163,7 @@ describe("headless population process", () => {
       expect(settled).toBe(false);
       expect(entries).toEqual([{ tool, kind: "assistant", text: visible }, { tool, kind: "command", text: "Ran a command" }]);
       writeFileSync(join(fixture.root, "release-transcript.txt"), "release");
-      await expect(run).resolves.toEqual({ tool, completed: true });
+      await expect(run).resolves.toEqual({ tool, unavailable: [], completed: true });
       expect(entries).toEqual([
         { tool, kind: "assistant", text: visible }, { tool, kind: "command", text: "Ran a command" },
         { tool, kind: "file", text: "Updated a file" },
@@ -200,7 +200,7 @@ describe("headless population process", () => {
     const event = { type: "item.completed", item: { type: "agent_message", id: "a1", text: "Done" } };
     const fixture = agentFixture(`process.stdout.write(${JSON.stringify(JSON.stringify(event) + "\n")}); emitSuccess();`);
     await expect(launchHeadlessSetupPopulation({ ...fixture.options, onTranscript: () => { throw new Error("observer failed"); } }))
-      .resolves.toEqual({ tool: "codex", completed: true });
+      .resolves.toEqual({ tool: "codex", unavailable: [], completed: true });
     expect(fixture.remainingPrompts()).toEqual([]);
   });
 
@@ -270,7 +270,7 @@ describe("headless population process", () => {
     const fixture = agentFixture("emitSuccess();");
     await expect(launchHeadlessSetupPopulation({ ...fixture.options,
       onActivity: () => { throw new Error("observer failed"); } }))
-      .resolves.toEqual({ tool: "codex", completed: true });
+      .resolves.toEqual({ tool: "codex", unavailable: [], completed: true });
     expect(fixture.remainingPrompts()).toEqual([]);
   });
 
@@ -281,7 +281,7 @@ describe("headless population process", () => {
       ...fixture.options,
       selectedTools: ["cursor", "claude", "codex", "opencode"],
       __internal: { ...fixture.options.__internal, isAvailable: available },
-    })).resolves.toEqual({ tool: "codex", completed: true });
+    })).resolves.toEqual({ tool: "codex", unavailable: ["claude"], completed: true });
     expect(available.mock.calls).toEqual([["claude"], ["codex"]]);
     expect(fixture.spawn).toHaveBeenCalledTimes(1);
   });
@@ -291,7 +291,7 @@ describe("headless population process", () => {
     await expect(launchHeadlessSetupPopulation({
       ...fixture.options,
       __internal: { ...fixture.options.__internal, isAvailable: async () => false },
-    })).resolves.toEqual({ tool: null, completed: false });
+    })).resolves.toEqual({ tool: null, unavailable: ["codex"], completed: false });
     expect(fixture.spawn).not.toHaveBeenCalled();
     expect(existsSync(join(fixture.root, ".mex/local"))).toBe(false);
   });
@@ -372,7 +372,7 @@ describe("headless population process", () => {
     await waitFor(() => existsSync(join(fixture.root, "heartbeat.txt")));
     const descendant = JSON.parse(readFileSync(join(fixture.root, "descendant.json"), "utf8")) as { pid: number };
     children.push(descendant.pid);
-    await expect(run).resolves.toEqual({ tool: "codex", completed: true });
+    await expect(run).resolves.toEqual({ tool: "codex", unavailable: [], completed: true });
     const lastHeartbeat = readFileSync(join(fixture.root, "heartbeat.txt"), "utf8");
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(readFileSync(join(fixture.root, "heartbeat.txt"), "utf8")).toBe(lastHeartbeat);

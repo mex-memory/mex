@@ -143,7 +143,7 @@ describe("headless setup run", () => {
 
   it("checks incomplete manual population without launching another AI session", async () => {
     const root = fixture();
-    const launch = vi.spyOn(population, "launchHeadlessSetupPopulation").mockResolvedValue({ tool: "codex", completed: false });
+    const launch = vi.spyOn(population, "launchHeadlessSetupPopulation").mockResolvedValue({ tool: "codex", unavailable: [], completed: false });
     await runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: ["codex"] });
     expect(launch).toHaveBeenCalledOnce();
     expect(launch).toHaveBeenCalledWith(expect.objectContaining({ allowNonGit: true }));
@@ -155,12 +155,45 @@ describe("headless setup run", () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it("says when no selected tool can run setup automatically", async () => {
+    const root = fixture();
+    vi.spyOn(population, "launchHeadlessSetupPopulation").mockResolvedValue({
+      tool: null, unavailable: [], completed: false,
+    });
+    const result = await runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: ["cursor"] });
+    expect(result).toMatchObject({ stage: "needs_population", populationTool: null });
+    expect(result.message).toBe(
+      "None of the selected tools can run setup automatically (supported: Claude Code, Codex). Paste this prompt into your tool, then continue setup.",
+    );
+  });
+
+  it("names the selected agent whose CLI is missing instead of implying a crashed session", async () => {
+    const root = fixture();
+    vi.spyOn(population, "launchHeadlessSetupPopulation").mockResolvedValue({
+      tool: null, unavailable: ["claude"], completed: false,
+    });
+    const result = await runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: ["claude"] });
+    expect(result.populationTool).toBeNull();
+    expect(result.message).toContain("Claude Code (`claude`) was selected but not found on PATH for this process.");
+    expect(result.message).toContain("or paste this prompt manually.");
+    expect(result.message).not.toContain("waiting for population");
+  });
+
+  it("keeps the waiting message when an agent actually ran but did not finish", async () => {
+    const root = fixture();
+    vi.spyOn(population, "launchHeadlessSetupPopulation").mockResolvedValue({
+      tool: "codex", unavailable: [], completed: false,
+    });
+    const result = await runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: ["codex"] });
+    expect(result.message).toBe("Setup is waiting for population. Complete the prompt in your AI tool, then continue setup.");
+  });
+
   it("forwards actual population transcript output to the browser observer", async () => {
     const root = fixture();
     const entry = { tool: "codex" as const, kind: "assistant" as const, text: "Reading the repository." };
     vi.spyOn(population, "launchHeadlessSetupPopulation").mockImplementation(async options => {
       options.onTranscript?.(entry);
-      return { tool: "codex", completed: false };
+      return { tool: "codex", unavailable: [], completed: false };
     });
     const onPopulationTranscript = vi.fn();
     await runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: ["codex"], onPopulationTranscript });
