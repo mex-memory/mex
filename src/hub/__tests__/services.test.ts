@@ -1633,6 +1633,39 @@ The worker drains the durable queue.
     });
   });
 
+  it("points migration_required Wiki health at the CLI migration preview", async () => {
+    const services = createLocalHubReadServices({
+      projectRoot,
+      scaffoldId: "scaffold-local",
+      git,
+      wiki: wikiWithStatus("migration_required"),
+      jobs: { list: () => ({ items: [] }) },
+      now: () => new Date(NOW),
+    });
+    const component = (await services.health()).components.find((item) => item.id === "wiki")!;
+    expect(component.wiki?.recoveryCommand).toEqual({
+      label: "Preview the required Wiki migration",
+      command: "mex wiki migrate --dry-run",
+    });
+    expect(component.wiki?.recommendedJobKind).toBeNull();
+    expect(component).not.toHaveProperty("repairJobKind");
+    expect(component.summary).toBe(
+      "Legacy Knowledge requires an explicit migration before Hub reads can continue. "
+      + "Preview it with mex wiki migrate --dry-run, then apply the migration with the CLI.",
+    );
+
+    const fresh = createLocalHubReadServices({
+      projectRoot,
+      scaffoldId: "scaffold-local",
+      git,
+      wiki: wikiWithStatus("fresh"),
+      jobs: { list: () => ({ items: [] }) },
+      now: () => new Date(NOW),
+    });
+    const freshComponent = (await fresh.health()).components.find((item) => item.id === "wiki")!;
+    expect(freshComponent.wiki?.recoveryCommand).toBeNull();
+  });
+
   it("revalidates Wiki maintenance eligibility for every index state", async () => {
     const expected: Record<WikiIndexStatus["state"], readonly string[]> = {
       missing: ["wiki_rebuild"],
@@ -1695,39 +1728,6 @@ The worker drains the durable queue.
     });
     expect(unsafeComponent).not.toHaveProperty("repairJobKind");
     expect(JSON.stringify(unsafeHealth)).not.toContain("/Users/alice");
-  });
-
-  it("points migration_required Wiki health at the CLI migration preview", async () => {
-    const services = createLocalHubReadServices({
-      projectRoot,
-      scaffoldId: "scaffold-local",
-      git,
-      wiki: wikiWithStatus("migration_required"),
-      jobs: { list: () => ({ items: [] }) },
-      now: () => new Date(NOW),
-    });
-    const component = (await services.health()).components.find((item) => item.id === "wiki")!;
-    expect(component.wiki?.recoveryCommand).toEqual({
-      label: "Preview the required Wiki migration",
-      command: "mex wiki migrate --dry-run",
-    });
-    expect(component.wiki?.recommendedJobKind).toBeNull();
-    expect(component).not.toHaveProperty("repairJobKind");
-    expect(component.summary).toBe(
-      "Legacy Knowledge requires an explicit migration before Hub reads can continue. "
-      + "Preview it with mex wiki migrate --dry-run, then apply the migration with the CLI.",
-    );
-
-    const fresh = createLocalHubReadServices({
-      projectRoot,
-      scaffoldId: "scaffold-local",
-      git,
-      wiki: wikiWithStatus("fresh"),
-      jobs: { list: () => ({ items: [] }) },
-      now: () => new Date(NOW),
-    });
-    const freshComponent = (await fresh.health()).components.find((item) => item.id === "wiki")!;
-    expect(freshComponent.wiki?.recoveryCommand).toBeNull();
   });
 
   it("explains grounding health without exposing raw diagnostic messages", async () => {
