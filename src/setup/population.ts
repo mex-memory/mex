@@ -14,6 +14,12 @@ export type SetupAgentTool = Extract<AiTool, "claude" | "codex">;
 
 export interface SetupPopulationLaunchResult {
   tool: SetupAgentTool | null;
+  /**
+   * Selected agents whose CLI was probed and not found, in selection order. Agents after the
+   * chosen one are never probed, so they are absent here; an empty list with `tool: null` means
+   * no selected tool can run setup automatically.
+   */
+  unavailable: SetupAgentTool[];
   completed: boolean;
 }
 
@@ -34,10 +40,23 @@ export function selectSetupAgent(
   selectedTools: readonly AiTool[],
   isAvailable: (command: string) => boolean = isCliAvailable,
 ): SetupAgentTool | null {
+  return pickSetupAgent(selectedTools, isAvailable).tool;
+}
+
+/**
+ * Shared selection policy for both launchers: probe the selected agents in the user's order,
+ * stop at the first available CLI, and keep the ones that were checked and missing.
+ */
+function pickSetupAgent(
+  selectedTools: readonly AiTool[],
+  isAvailable: (command: string) => boolean,
+): { tool: SetupAgentTool | null; unavailable: SetupAgentTool[] } {
+  const unavailable: SetupAgentTool[] = [];
   for (const { tool, command } of setupAgentCandidates(selectedTools)) {
-    if (isAvailable(command)) return tool;
+    if (isAvailable(command)) return { tool, unavailable };
+    unavailable.push(tool);
   }
-  return null;
+  return { tool: null, unavailable };
 }
 
 function* setupAgentCandidates(selectedTools: readonly AiTool[]): Generator<{ tool: SetupAgentTool; command: string }> {
@@ -55,15 +74,18 @@ export function launchSetupPopulation(
   projectRoot: string,
   dependencies: SetupPopulationDependencies = {},
 ): SetupPopulationLaunchResult {
-  const tool = selectSetupAgent(selectedTools, dependencies.isAvailable);
-  if (tool === null) return { tool: null, completed: false };
+  const { tool, unavailable } = pickSetupAgent(
+    selectedTools,
+    dependencies.isAvailable ?? isCliAvailable,
+  );
+  if (tool === null) return { tool: null, unavailable, completed: false };
 
   const session = createPopulationSession(prompt, projectRoot);
   try {
     const completed = (dependencies.run ?? runToolInteractive)(
       tool, session.instruction, session.root, { timeoutMs: null },
     );
-    return { tool, completed };
+    return { tool, unavailable, completed };
   } finally {
     session.cleanup();
   }
@@ -81,16 +103,22 @@ export async function launchSetupPopulationAsync(
 ): Promise<SetupPopulationLaunchResult> {
   // Resolve availability asynchronously, but retain the exact CLI selection policy.
   let tool: SetupAgentTool | null = null;
+  const unavailable: SetupAgentTool[] = [];
   for (const candidate of setupAgentCandidates(selectedTools)) {
     if (await dependencies.isAvailable(candidate.command)) {
       tool = candidate.tool;
       break;
     }
+    unavailable.push(candidate.tool);
   }
-  if (tool === null) return { tool: null, completed: false };
+  if (tool === null) return { tool: null, unavailable, completed: false };
   const session = createPopulationSession(prompt, projectRoot);
   try {
-    return { tool, completed: await dependencies.run(tool, session.instruction, session.root) };
+    return {
+      tool,
+      unavailable,
+      completed: await dependencies.run(tool, session.instruction, session.root),
+    };
   } finally {
     session.cleanup();
   }

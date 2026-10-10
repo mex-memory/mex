@@ -433,6 +433,26 @@ describe("Hub setup wizard", () => {
     expect(harness.api.startSetup).toHaveBeenCalledWith({ mode: "agent-memory", tools: [], confirmPopulation: true });
   });
 
+  it("hides the session transcript when setup launched no agent", async () => {
+    // The runner always allocates a transcriptId, so a run that never started a CLI used to render
+    // a finished, empty transcript ("Session ended / This session produced no output.") next to the
+    // manual prompt. See #269.
+    const harness = setupHarness({ hasGit: false, hasScaffold: true, mode: "agent-memory", configuredTools: ["claude"], stage: "needs_population" }, {
+      status: "paused",
+      mode: "agent-memory",
+      stage: "needs_population",
+      selectedTools: ["claude"],
+      populationTool: null,
+      transcriptId: "a944e8d9-7e02-4d04-9a62-d8b347b8e7dc",
+      prompt: "Populate your agent memory.",
+      message: "Setup is waiting for population. Complete the prompt in your AI tool, then continue setup.",
+    });
+    renderSetup(harness.api);
+    expect(await screen.findByLabelText("Population prompt", undefined, { timeout: 5_000 })).toHaveValue("Populate your agent memory.");
+    expect(screen.queryByRole("region", { name: "Agent session transcript" })).toBeNull();
+    expect(screen.queryByText("This session produced no output.")).toBeNull();
+  });
+
   it.each([false, true])("finishes Agent memory without dashboard loading or indexes (Git: %s)", async (hasGit) => {
     const harness = setupHarness({ hasGit, hasScaffold: true, mode: "agent-memory", populated: true, stage: "complete" });
     renderSetup(harness.api);
