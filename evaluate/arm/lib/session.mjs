@@ -151,7 +151,9 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
     if (cliCalls.length) violations.push(`markdown-only arm invoked the mex CLI ${cliCalls.length} time(s)`);
   }
   if (!armSpec.withMex) {
-    const leaked = calls.classified.filter((entry) => entry.category.startsWith("mex:") || entry.category.startsWith("knowledge-"));
+    // This checkout has no .mex, so a .mex path (e.g. `ls .mex` probing for docs)
+    // can return nothing; another checkout's .mex is caught as an outside touch below.
+    const leaked = calls.classified.filter((entry) => entry.category.startsWith("mex:"));
     if (leaked.length) violations.push(`files arm used MEX ${leaked.length} time(s)`);
   }
   const outsideReads = calls.classified.filter((entry) => entry.outside && /hono-mex|[\\/]\.mex[\\/]|mex-test-tmp[\\/]arm/i.test(entry.path ?? ""));
