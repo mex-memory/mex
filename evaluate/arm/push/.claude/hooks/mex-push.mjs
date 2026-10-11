@@ -211,7 +211,7 @@ function pack(entries, budget, max, bodyMax, options) {
 }
 
 const loadIndex = () => existsSync(INDEX) ? JSON.parse(readFileSync(INDEX, "utf8")).entities : null;
-const blankState = (session) => ({ session, shown: [], editShown: [], stopBlocked: false });
+const blankState = (session) => ({ session, shown: [], editShown: [], bashSeen: [], stopBlocked: false });
 const loadState = (session) => {
   try { const all = JSON.parse(readFileSync(STATE, "utf8")); return all.session === session ? all : blankState(session); } catch { return blankState(session); }
 };
@@ -261,16 +261,31 @@ function onEdit(input, entities) {
   if (!path) return;
   const file = norm(relative(ROOT, resolve(ROOT, path)));
   if (file.startsWith(".mex/") || file.startsWith("..")) return;
+  notifyChanged([file], loadState(input.session_id), entities, "edit");
+}
+
+// Edits made through Bash (sed, scripts) bypass the Edit hook: after each Bash
+// call, notice source files that changed since the last check.
+function onBash(input, entities) {
   const state = loadState(input.session_id);
-  const linked = linkedTo(entities, file).filter((e) => !state.editShown.includes(e.id));
-  if (!linked.length) return log("edit", { file, injected: 0 });
+  state.bashSeen ??= [];
+  const fresh = changedFiles().filter((f) => !state.bashSeen.includes(f));
+  if (!fresh.length) return;
+  state.bashSeen.push(...fresh);
+  notifyChanged(fresh, state, entities, "bash");
+}
+
+function notifyChanged(files, state, entities, event) {
+  const file = files.join(", ");
+  const linked = entities.filter((e) => e.code.some((f) => files.includes(f)) && !state.editShown.includes(e.id));
+  if (!linked.length) { saveState(state); return log(event, { file, injected: 0 }); }
   const packed = pack(sections(linked), BUDGET.edit, MAX_ENTRIES.edit, 200, { source: true });
   const overviews = linked.filter((e) => e.level === 0);
   const text = `You changed ${file}. MEX entries that describe this code:\n${packed.map((p) => p.l).join("\n")}${overviews.length ? `\nAlso linked overviews: ${overviews.map((e) => `.mex/${e.file}`).join(", ")}.` : ""}\nIf your change makes an entry false, read a few lines at its .mex line (offset/limit) and rewrite just that prose. Never touch <!-- mex:entity --> blocks or fingerprints: MEX re-records code links when you finish.`;
   state.editShown.push(...linked.map((e) => e.id));
   state.shown.push(...linked.map((e) => e.id));
   saveState(state);
-  log("edit", { file, injected: packed.length + overviews.length, chars: text.length, ids: linked.map((e) => e.id), text });
+  log(event, { file, injected: packed.length + overviews.length, chars: text.length, ids: linked.map((e) => e.id), text });
   emit("PostToolUse", text);
 }
 
@@ -337,6 +352,7 @@ async function main() {
   if (mode === "prompt") return onPrompt(input, entities);
   if (mode === "read") return onRead(input, entities);
   if (mode === "edit") return onEdit(input, entities);
+  if (mode === "bash") return onBash(input, entities);
   if (mode === "stop") return onStop(input, entities);
 }
 
