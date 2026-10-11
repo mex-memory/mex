@@ -150,7 +150,7 @@ async function run(args, suite) {
     process.stderr.write(`[arm] ${item.runId}\n`);
     let row;
     try {
-      const created = createWorkspace({ subjectRoot: args.subject, workspace, base: info.base, scaffoldCommit: armSpec.withMex ? info.scaffold : null, depsDir: args.deps });
+      const created = createWorkspace({ subjectRoot: args.subject, workspace, base: info.base, scaffoldCommit: armSpec.withMex ? info.scaffold : null, depsDir: args.deps, appendInstructions: suite.appendInstructions === true, basePatches: suite.basePatches ?? [] });
       const indexes = armSpec.withCli ? installIndexes({ workspace, cachePath: info.cachePath, cliBin: args.cliBin, env }) : null;
       if (armSpec.withPush) { if (existsSync(pushLog)) renameSync(pushLog, `${pushLog}.old-${Date.now()}`); indexes.push = preparePush(workspace, env); }
       const session = await runAgentSession({

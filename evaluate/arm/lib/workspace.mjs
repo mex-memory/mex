@@ -1,5 +1,5 @@
 // Per-session subject checkouts for the agent-arm test.
-import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { runSync } from "../../compare/lib/process.mjs";
 
@@ -55,21 +55,44 @@ export function unlinkDependencies(workspace) {
   if (existsSync(target)) throw new Error(`refusing to continue: ${target} is not a removable link`);
 }
 
+/** Every arm: drop a marked section (from the line starting `deleteFrom` up to the line equal to `deleteTo`). */
+function applyBasePatch(workspace, patch) {
+  const path = join(workspace, patch.file);
+  if (!existsSync(path)) return;
+  const lines = readFileSync(path, "utf8").split("\n");
+  const start = lines.findIndex((line) => line.startsWith(patch.deleteFrom));
+  if (start < 0) return;
+  const end = lines.findIndex((line, i) => i > start && line.trim() === patch.deleteTo);
+  lines.splice(start, (end < 0 ? lines.length : end) - start);
+  writeFileSync(path, lines.join("\n"));
+  git(workspace, ["add", "--", patch.file]);
+}
+
 /**
  * Check out the task base, add the scaffold for the MEX arm, link the shared
  * dependencies, and commit, so the session diff is exactly the agent's work.
  */
-export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit = null, depsDir = null }) {
+export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit = null, depsDir = null, appendInstructions = false, basePatches = [] }) {
   if (existsSync(workspace)) throw new Error(`workspace already exists: ${workspace}`);
   mkdirSync(dirname(workspace), { recursive: true });
   git(subjectRoot, ["worktree", "add", "--detach", workspace, base]);
+  // `appendInstructions` keeps the base's own CLAUDE.md and appends the
+  // scaffold's MEX block, as `mex setup` does for an existing file.
+  const ownInstructions = join(workspace, "CLAUDE.md");
+  const baseInstructions = appendInstructions && existsSync(ownInstructions) ? readFileSync(ownInstructions, "utf8") : null;
   for (const path of SCAFFOLD_PATHS) {
+    if (baseInstructions !== null && path === "CLAUDE.md") continue;
     if (existsSync(join(workspace, path))) git(workspace, ["rm", "-r", "-q", "--", path]);
   }
+  for (const patch of basePatches) applyBasePatch(workspace, patch);
   if (scaffoldCommit) {
     const present = git(workspace, ["ls-tree", "--name-only", scaffoldCommit, "--", ...SCAFFOLD_PATHS]).stdout.split("\n").filter(Boolean);
     if (!present.includes(".mex")) throw new Error(`scaffold commit ${scaffoldCommit} has no .mex directory`);
     git(workspace, ["checkout", scaffoldCommit, "--", ...present]);
+    if (baseInstructions !== null && present.includes("CLAUDE.md")) {
+      writeFileSync(ownInstructions, `${baseInstructions.trimEnd()}\n\n${readFileSync(ownInstructions, "utf8")}`);
+      git(workspace, ["add", "--", "CLAUDE.md"]);
+    }
   }
   git(workspace, ["commit", "-q", "--allow-empty", "-m", scaffoldCommit ? "eval: base with MEX scaffold" : "eval: base without MEX"]);
   linkDependencies(workspace, depsDir);
