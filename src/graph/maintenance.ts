@@ -9,6 +9,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
   realpathSync,
@@ -47,8 +48,9 @@ const LOCK_FILE = "graph.db.lock";
 const LOCK_GATE_FILE = "graph.db.lock.gate";
 const MAX_LOCK_BYTES = 4 * 1024;
 const HASH_CHUNK_BYTES = 1024 * 1024;
+const CANDIDATE_PREFIX = "graph.db.candidate-";
 const OWNED_DATABASE_PREFIXES = [
-  "graph.db.candidate-",
+  CANDIDATE_PREFIX,
   "graph.db.rollback-",
   "graph.db.recovery-",
 ] as const;
@@ -289,6 +291,10 @@ export function acquireGraphMaintenanceLease(
       } as InternalMaintenanceOptions;
       await merged.__internal?.afterLockAcquired?.();
       assertMaintenanceDirectoryUnchanged(paths);
+      // An interrupted earlier run cannot remove its own candidate (issue
+      // #205). The lease is exclusive per project and is held here, so no
+      // concurrent run can own one: any candidate still present is an orphan.
+      sweepOrphanCandidates(paths);
       // One operation reads each unchanged source once; see source-memo.
       if (operation === "refresh") return await withSourceMemo(() => refreshGraphWithLease(paths, merged));
       if (operation === "repair") return await withSourceMemo(() => repairGraphWithLease(paths, merged));
@@ -2166,6 +2172,56 @@ function cleanupOwnedDatabase(paths: MaintenancePaths, path: string): void {
   if (dirname(path) !== paths.mexDir) return;
   cleanupOwnedDatabasePath(paths, path);
   cleanupDiscardedOwnedSidecars(paths, path);
+}
+
+/**
+ * Remove build candidates (and their SQLite sidecars) left behind by a
+ * maintenance run that never reached its own cleanup: Ctrl+C, a CI timeout, or
+ * a crash (issue #205). Call only while holding the maintenance lease.
+ *
+ * Recovery copies are deliberately retained and are never swept here.
+ */
+function sweepOrphanCandidates(paths: MaintenancePaths): void {
+  assertMaintenanceDirectoryUnchanged(paths);
+  for (const name of readdirSync(paths.mexDir)) {
+    if (!name.startsWith(CANDIDATE_PREFIX)) continue;
+    const path = join(paths.mexDir, name);
+    const stats = safeLstat(path);
+    if (!stats || !stats.isFile() || stats.isSymbolicLink()) continue;
+    cleanupOwnedDatabasePath(paths, path);
+  }
+}
+
+export interface OrphanGraphFiles {
+  /** Leftover build candidates the next maintenance run removes. */
+  candidates: string[];
+  /** Retained recovery copies; never removed automatically. */
+  retained: string[];
+  /** A live maintenance run holds the lock and may own the candidates. */
+  maintenanceActive: boolean;
+}
+
+/** Read-only listing of owned graph files under `.mex/`; never modifies anything. */
+export function inspectOrphanGraphFiles(projectRoot: string): OrphanGraphFiles {
+  const mexDir = join(resolve(projectRoot), ".mex");
+  const result: OrphanGraphFiles = { candidates: [], retained: [], maintenanceActive: false };
+  const mexStats = safeLstat(mexDir);
+  if (!mexStats || !mexStats.isDirectory() || mexStats.isSymbolicLink()) return result;
+  let names: string[];
+  try {
+    names = readdirSync(mexDir);
+  } catch {
+    return result;
+  }
+  for (const name of names.sort()) {
+    if (!OWNED_DATABASE_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
+    const stats = safeLstat(join(mexDir, name));
+    if (!stats || !stats.isFile() || stats.isSymbolicLink()) continue;
+    (name.startsWith(CANDIDATE_PREFIX) ? result.candidates : result.retained).push(`.mex/${name}`);
+  }
+  const owner = readLockOwner(join(mexDir, LOCK_FILE));
+  result.maintenanceActive = owner !== null && processIsAlive(owner.pid);
+  return result;
 }
 
 function cleanupOwnedDatabasePath(paths: MaintenancePaths, path: string): void {

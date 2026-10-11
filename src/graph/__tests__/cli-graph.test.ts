@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -148,6 +148,54 @@ describe("graph CLI cached coverage", () => {
       output.length = 0;
       await runGraphRefresh({ root });
       expect(output.some((line) => line.includes("Not indexed: 1") && line.includes(".vue (1)"))).toBe(true);
+    } finally {
+      log.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+describe("graph CLI status reports orphan owned files (issue #205)", () => {
+  it("warns about a leftover candidate without removing it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-status-orphan-cli-"));
+    const output: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((line) => output.push(String(line)));
+    try {
+      writeFileSync(join(root, "api.ts"), "export const api = true;");
+      await runGraph({ root, json: true });
+      const candidateName = `graph.db.candidate-${"d".repeat(48)}`;
+      const candidate = join(root, ".mex", candidateName);
+      const recovery = join(root, ".mex", `graph.db.recovery-${"e".repeat(48)}`);
+      writeFileSync(candidate, "leftover");
+      writeFileSync(recovery, "retained");
+
+      output.length = 0;
+      await runGraphStatus({ root });
+      expect(output).toContain("Graph status: fresh");
+      expect(output.some((line) => line.startsWith("WARNING GRAPH_INDEX_ORPHAN_CANDIDATE"))).toBe(true);
+      expect(output.some((line) => line.startsWith("INFO GRAPH_INDEX_RECOVERY_DATA_PRESENT"))).toBe(true);
+      expect(output).toContain("Next: mex graph refresh");
+
+      output.length = 0;
+      await runGraphStatus({ root, json: true });
+      const status = JSON.parse(output.join(""));
+      expect(status.status).toBe("fresh");
+      expect(status.diagnostics).toContainEqual(expect.objectContaining({
+        code: "GRAPH_INDEX_ORPHAN_CANDIDATE",
+        severity: "warning",
+        detail: { paths: [`.mex/${candidateName}`] },
+      }));
+      expect(existsSync(candidate)).toBe(true);
+      expect(existsSync(recovery)).toBe(true);
+
+      output.length = 0;
+      await runGraphRefresh({ root, json: true });
+      expect(existsSync(candidate)).toBe(false);
+      expect(existsSync(recovery)).toBe(true);
+
+      output.length = 0;
+      await runGraphStatus({ root });
+      expect(output.some((line) => line.includes("GRAPH_INDEX_ORPHAN_CANDIDATE"))).toBe(false);
     } finally {
       log.mockRestore();
       rmSync(root, { recursive: true, force: true });

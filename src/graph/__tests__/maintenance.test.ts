@@ -25,6 +25,7 @@ import { createGraphEngine } from "../engine-impl.js";
 import {
   acquireGraphMaintenanceLease,
   GraphMaintenanceError,
+  inspectOrphanGraphFiles,
   rebuildGraph,
   repairGraph,
   refreshGraph,
@@ -1144,5 +1145,128 @@ describe("graph maintenance", () => {
 
     expect((await inspectGraphStatus({ projectRoot: root })).status).toBe("fresh");
     expect(ownedArtifacts(root)).toEqual([]);
+  });
+});
+
+describe("orphan owned graph files (issue #205)", () => {
+  const CANDIDATE = `graph.db.candidate-${"a".repeat(48)}`;
+  const RECOVERY = `graph.db.recovery-${"b".repeat(48)}`;
+  const ROLLBACK = `graph.db.rollback-${"c".repeat(48)}`;
+
+  /** Simulate what a killed maintenance run leaves behind, plus files that must survive. */
+  async function plantLeftovers(): Promise<{ root: string; mexDir: string }> {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export const service = true;\n");
+    const dbPath = await buildBaseline(root);
+    const mexDir = join(root, ".mex");
+    writeFileSync(join(mexDir, CANDIDATE), readFileSync(dbPath));
+    writeFileSync(join(mexDir, `${CANDIDATE}-wal`), "");
+    writeFileSync(join(mexDir, `${CANDIDATE}-journal`), "");
+    writeFileSync(join(mexDir, RECOVERY), "retained recovery bytes");
+    writeFileSync(join(mexDir, ROLLBACK), "retained rollback bytes");
+    writeFileSync(join(mexDir, "notes.txt"), "unrelated");
+    return { root, mexDir };
+  }
+
+  function expectCandidatesSweptOthersKept(mexDir: string): void {
+    const names = readdirSync(mexDir);
+    expect(names.filter((name) => name.startsWith("graph.db.candidate-"))).toEqual([]);
+    expect(names).toEqual(expect.arrayContaining([RECOVERY, ROLLBACK, "notes.txt", "graph.db"]));
+    expect(readFileSync(join(mexDir, RECOVERY), "utf8")).toBe("retained recovery bytes");
+  }
+
+  it("removes an interrupted run's candidate and sidecars on the next refresh", async () => {
+    const { root, mexDir } = await plantLeftovers();
+
+    await refreshGraph(root);
+
+    expectCandidatesSweptOthersKept(mexDir);
+    expect(ownedArtifacts(root)).toEqual([ROLLBACK]);
+  });
+
+  it("removes an interrupted run's candidate on the next full rebuild", async () => {
+    const { root, mexDir } = await plantLeftovers();
+
+    const result = await rebuildGraph(root);
+
+    expect(result.status.status).toBe("fresh");
+    expectCandidatesSweptOthersKept(mexDir);
+  });
+
+  it("removes leftovers once the lease is held, even when repair then declines the store", async () => {
+    const { root, mexDir } = await plantLeftovers();
+
+    await repairGraph(root).catch(() => undefined);
+
+    expectCandidatesSweptOthersKept(mexDir);
+  });
+
+  it("sweeps through a manually acquired lease before the operation runs", async () => {
+    const { root, mexDir } = await plantLeftovers();
+    const lease = acquireGraphMaintenanceLease(root, "rebuild");
+    try {
+      // Acquiring the lease alone sweeps nothing; the sweep belongs to the run.
+      expect(existsSync(join(mexDir, CANDIDATE))).toBe(true);
+      await lease.rebuild();
+    } finally {
+      lease.release();
+    }
+
+    expectCandidatesSweptOthersKept(mexDir);
+  });
+
+  it("leaves leftovers alone when another run holds the lease", async () => {
+    const { root, mexDir } = await plantLeftovers();
+    const holder = acquireGraphMaintenanceLease(root, "refresh");
+    try {
+      await expect(refreshGraph(root)).rejects.toMatchObject({ code: "GRAPH_MAINTENANCE_LOCKED" });
+      expect(existsSync(join(mexDir, CANDIDATE))).toBe(true);
+      expect(existsSync(join(mexDir, `${CANDIDATE}-wal`))).toBe(true);
+    } finally {
+      holder.release();
+    }
+  });
+
+  it("never follows a candidate-named symlink", async () => {
+    const root = temporaryRoot();
+    source(root, "src/service.ts", "export const service = true;\n");
+    await buildBaseline(root);
+    const outside = join(temporaryRoot("mex-graph-outside-"), "keep.db");
+    writeFileSync(outside, "outside bytes");
+    symlinkSync(outside, join(root, ".mex", CANDIDATE));
+
+    await refreshGraph(root);
+
+    expect(readFileSync(outside, "utf8")).toBe("outside bytes");
+    expect(inspectOrphanGraphFiles(root).candidates).toEqual([]);
+  });
+
+  it("lists leftovers read-only for status reporting", async () => {
+    const { root, mexDir } = await plantLeftovers();
+
+    const files = inspectOrphanGraphFiles(root);
+
+    expect(files).toEqual({
+      candidates: [`.mex/${CANDIDATE}`, `.mex/${CANDIDATE}-journal`, `.mex/${CANDIDATE}-wal`],
+      retained: [`.mex/${RECOVERY}`, `.mex/${ROLLBACK}`],
+      maintenanceActive: false,
+    });
+    expect(existsSync(join(mexDir, CANDIDATE))).toBe(true);
+    expect(inspectOrphanGraphFiles(temporaryRoot())).toEqual({
+      candidates: [],
+      retained: [],
+      maintenanceActive: false,
+    });
+  });
+
+  it("reports maintenance as active while a live lease owns the directory", async () => {
+    const { root } = await plantLeftovers();
+    const lease = acquireGraphMaintenanceLease(root, "refresh");
+    try {
+      expect(inspectOrphanGraphFiles(root).maintenanceActive).toBe(true);
+    } finally {
+      lease.release();
+    }
+    expect(inspectOrphanGraphFiles(root).maintenanceActive).toBe(false);
   });
 });
