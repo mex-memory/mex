@@ -15,7 +15,7 @@ const fileSha = (path) => createHash("sha256").update(readFileSync(path)).digest
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 
 export function parseArgs(argv) {
-  const args = { mode: null, tasks: null, repetition: null, resume: false, timeoutQaMs: 900_000, timeoutChangeMs: 1_800_000, claude: ["claude"] };
+  const args = { mode: null, tasks: null, arms: null, repetition: null, resume: false, timeoutQaMs: 900_000, timeoutChangeMs: 1_800_000, claude: ["claude"] };
   const value = (i) => { if (argv[i + 1] === undefined) throw new Error(`${argv[i]} needs a value`); return argv[i + 1]; };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -27,6 +27,7 @@ export function parseArgs(argv) {
     else if (arg === "--output") args.output = resolve(value(i++));
     else if (arg === "--model") args.model = value(i++);
     else if (arg === "--tasks") args.tasks = value(i++).split(",").map((id) => id.trim());
+    else if (arg === "--arms") args.arms = value(i++).split(",").map((id) => id.trim());
     else if (arg === "--repetition") args.repetition = Number(value(i++));
     else if (arg === "--resume") args.resume = true;
     else if (arg === "--timeout-qa-ms") args.timeoutQaMs = Number(value(i++));
@@ -45,7 +46,33 @@ export function parseArgs(argv) {
 }
 
 // An arm may carry the scaffold without the CLI (Markdown only); `cli` defaults to `scaffold`.
-export const armSpecFor = (arm) => ({ withMex: Boolean(arm.scaffold), withCli: Boolean(arm.scaffold) && arm.cli !== false });
+// `push` arms deliver knowledge through the scaffold's Claude Code hooks, which need the CLI.
+export const armSpecFor = (arm) => ({ withMex: Boolean(arm.scaffold), withCli: Boolean(arm.scaffold) && arm.cli !== false, withPush: Boolean(arm.scaffold) && arm.push === true });
+
+const PUSH_HOOK = join(".claude", "hooks", "mex-push.mjs");
+
+/** Build the push index in a session checkout, after its Graph and Wiki indexes are in place. */
+function preparePush(workspace, env) {
+  const result = runSync(process.execPath, [join(workspace, PUSH_HOOK), "index"], { cwd: workspace, env: { ...env, CLAUDE_PROJECT_DIR: workspace } });
+  if (result.code !== 0) throw new Error(`push index failed in ${workspace}: ${result.stderr || result.stdout}`);
+  return JSON.parse(result.stdout.trim().split("\n").pop());
+}
+
+/** What the hooks delivered in one session, from the log they append to. */
+export function summarizePushLog(path) {
+  if (!existsSync(path)) return null;
+  const summary = { prompt: 0, read: 0, edit: 0, stopBlock: 0, regrounded: 0, regroundFailed: 0, injectedChars: 0, hookMs: 0, errors: 0 };
+  for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
+    const entry = JSON.parse(line);
+    summary.hookMs += entry.ms ?? 0;
+    summary.injectedChars += entry.chars ?? 0;
+    if (entry.event === "error" || entry.error) summary.errors += 1;
+    if (["prompt", "read", "edit"].includes(entry.event) && entry.injected) summary[entry.event] += 1;
+    if (entry.event === "stop-block") summary.stopBlock += 1;
+    if (entry.event === "stop-reground") { summary.regrounded += entry.ok; summary.regroundFailed += entry.drifted - entry.ok; }
+  }
+  return summary;
+}
 
 const indexKey = (base, scaffold) => `${base.slice(0, 12)}-${scaffold.slice(0, 12)}`;
 
@@ -101,6 +128,7 @@ async function run(args, suite) {
   const armIds = Object.keys(suite.arms);
   const schedule = buildSchedule(suite.tasks, armIds, suite.repetitions)
     .filter((item) => !args.tasks || args.tasks.includes(item.task.id))
+    .filter((item) => !args.arms || args.arms.includes(item.armId))
     .filter((item) => !args.repetition || item.repetition === args.repetition);
   const runsDir = join(args.output, "runs"), artifacts = join(args.output, "artifacts");
   mkdirSync(runsDir, { recursive: true }); mkdirSync(artifacts, { recursive: true });
@@ -113,7 +141,8 @@ async function run(args, suite) {
       renameSync(resultPath, join(runsDir, `${item.runId}.invalid-${Date.now()}.json.txt`));
     }
     const task = item.task, info = prepared.tasks[task.id], armSpec = armSpecFor(suite.arms[item.armId]);
-    const env = { ...process.env, PATH: armPath(process.env.PATH, { cliBin: args.cliBin, withMex: armSpec.withCli }) };
+    const pushLog = join(artifacts, `${item.runId}.push.jsonl`);
+    const env = { ...process.env, PATH: armPath(process.env.PATH, { cliBin: args.cliBin, withMex: armSpec.withCli }), ...(armSpec.withPush ? { MEX_PUSH_LOG: pushLog } : {}) };
     const workspace = join(args.output, "ws", item.runId);
     removeWorkspace(args.subject, workspace);
     process.stderr.write(`[arm] ${item.runId}\n`);
@@ -121,13 +150,14 @@ async function run(args, suite) {
     try {
       const created = createWorkspace({ subjectRoot: args.subject, workspace, base: info.base, scaffoldCommit: armSpec.withMex ? info.scaffold : null, depsDir: args.deps });
       const indexes = armSpec.withCli ? installIndexes({ workspace, cachePath: info.cachePath, cliBin: args.cliBin, env }) : null;
+      if (armSpec.withPush) { if (existsSync(pushLog)) renameSync(pushLog, `${pushLog}.old-${Date.now()}`); indexes.push = preparePush(workspace, env); }
       const session = await runAgentSession({
         task: { ...task, hiddenTests: task.hiddenTests ? { ...task.hiddenTests, fromCommit: info.hiddenFrom } : null },
         armId: item.armId, armSpec, workspace, env, cliBin: args.cliBin, model: args.model,
         timeoutMs: task.type === "change" ? args.timeoutChangeMs : args.timeoutQaMs,
         outputPrefix: join(artifacts, item.runId), claudeCommand: args.claude, mexPrompt: prepared.mexPrompt ?? "none",
       });
-      row = { runId: item.runId, taskId: task.id, taskType: task.type, arm: item.armId, repetition: item.repetition, orderIndex: item.orderIndex, indexKey: info.indexKey, workspaceHead: created.head, indexes, startedFrom: info.base, ...session };
+      row = { runId: item.runId, taskId: task.id, taskType: task.type, arm: item.armId, repetition: item.repetition, orderIndex: item.orderIndex, indexKey: info.indexKey, workspaceHead: created.head, indexes, startedFrom: info.base, ...session, ...(armSpec.withPush ? { push: summarizePushLog(pushLog) } : {}) };
     } finally {
       removeWorkspace(args.subject, workspace);
     }

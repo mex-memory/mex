@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/mex-push.mjs\" prompt", "timeout": 30 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Read", "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/mex-push.mjs\" read", "timeout": 30 }] },
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/mex-push.mjs\" edit", "timeout": 30 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/mex-push.mjs\" stop", "timeout": 300 }] }
+    ]
+  }
+}
