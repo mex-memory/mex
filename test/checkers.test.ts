@@ -235,6 +235,119 @@ describe("checkPaths", () => {
     const issues = checkPaths(claims, tmpDir, tmpDir);
     expect(issues).toHaveLength(0);
   });
+
+  it("resolves scoped packages declared in manifests without node_modules (#231 item 1)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({
+        name: "demo",
+        devDependencies: {
+          "@hono/node-server": "^1.0.0",
+          "@typescript/native-preview": "^7.0.0",
+        },
+      })
+    );
+    const claims = [
+      claim({ kind: "path", value: "@hono/node-server" }),
+      claim({ kind: "path", value: "@typescript/native-preview" }),
+    ];
+    expect(checkPaths(claims, tmpDir, tmpDir)).toHaveLength(0);
+  });
+
+  it("resolves @types packages declared in manifests (#231 item 1)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({
+        name: "demo",
+        devDependencies: {
+          "@types/node": "^22.0.0",
+        },
+      })
+    );
+    const claims = [claim({ kind: "path", value: "@types/node" })];
+    expect(checkPaths(claims, tmpDir, tmpDir)).toHaveLength(0);
+  });
+
+  it("still reports a scoped package that is not declared (#231 item 1)", () => {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "demo" }));
+    const claims = [claim({ kind: "path", value: "@scope/missing" })];
+    const issues = checkPaths(claims, tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("MISSING_PATH");
+  });
+
+  it("skips the project's own JSR name (#231 item 2)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ name: "hono" })
+    );
+    writeFileSync(
+      join(tmpDir, "jsr.json"),
+      JSON.stringify({ name: "@hono/hono" })
+    );
+    const claims = [claim({ kind: "path", value: "@hono/hono" })];
+    expect(checkPaths(claims, tmpDir, tmpDir)).toHaveLength(0);
+  });
+
+  it("skips bare .mex/local filenames documented with a full path (#231 item 5)", () => {
+    execFileSync("git", ["init", "-q"], { cwd: tmpDir });
+    mkdirSync(join(tmpDir, ".mex"), { recursive: true });
+    writeFileSync(join(tmpDir, ".mex/.gitignore"), "local/\n");
+    const claims = [
+      claim({ kind: "path", value: ".mex/local/hub-onboarding.json", source: ".mex/ROUTER.md" }),
+      claim({ kind: "path", value: "hub-onboarding.json", source: ".mex/patterns/hub-first-run-onboarding.md" }),
+    ];
+    expect(checkPaths(claims, tmpDir, tmpDir)).toHaveLength(0);
+  });
+
+  it("still reports bare filenames that are not .mex/local artifacts (#231 item 5)", () => {
+    execFileSync("git", ["init", "-q"], { cwd: tmpDir });
+    mkdirSync(join(tmpDir, ".mex"), { recursive: true });
+    writeFileSync(join(tmpDir, ".mex/.gitignore"), "local/\n");
+    const claims = [
+      claim({ kind: "path", value: ".mex/local/hub-onboarding.json", source: ".mex/ROUTER.md" }),
+      claim({ kind: "path", value: "conversation_state.py", source: "context/architecture.md" }),
+    ];
+    const issues = checkPaths(claims, tmpDir, tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].claim?.value).toBe("conversation_state.py");
+  });
+
+  it("skips ./file.js import-specifier examples in import prose (#231 item 6)", () => {
+    mkdirSync(join(tmpDir, ".mex/context"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".mex/context/conventions.md"),
+      "ESM TypeScript imports use emitted `.js` specifiers, including relative imports such as `./parse.js`.\n"
+    );
+    const claims = [
+      claim({
+        kind: "path",
+        value: "./parse.js",
+        source: ".mex/context/conventions.md",
+        line: 1,
+      }),
+    ];
+    expect(checkPaths(claims, tmpDir, join(tmpDir, ".mex"))).toHaveLength(0);
+  });
+
+  it("still reports a missing ./file.js path outside import prose (#231 item 6)", () => {
+    mkdirSync(join(tmpDir, ".mex"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".mex/ROUTER.md"),
+      "Run the parser at `./parse.js` before continuing.\n"
+    );
+    const claims = [
+      claim({
+        kind: "path",
+        value: "./parse.js",
+        source: ".mex/ROUTER.md",
+        line: 1,
+      }),
+    ];
+    const issues = checkPaths(claims, tmpDir, join(tmpDir, ".mex"));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("MISSING_PATH");
+  });
 });
 
 // ── Edges Checker ──

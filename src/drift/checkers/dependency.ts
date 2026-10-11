@@ -162,7 +162,7 @@ function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined
   return deps.find((d) => d.normalizes && normalizeName(d.name) === normalized);
 }
 
-function loadAllDependencies(projectRoot: string): DepEntry[] | null {
+export function loadAllDependencies(projectRoot: string): DepEntry[] | null {
   const entries: DepEntry[] = [];
 
   // package.json
