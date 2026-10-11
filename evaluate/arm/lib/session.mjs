@@ -97,11 +97,23 @@ function vitestCounts(output) {
 export function runHiddenTests(workspace, hiddenTests, env) {
   if (!hiddenTests) return null;
   if (hiddenTests.fromCommit) git(workspace, ["checkout", hiddenTests.fromCommit, "--", ...hiddenTests.files]);
+  if (hiddenTests.runner === "hereby") return runHerebyTests(workspace, hiddenTests, env);
   const vitest = join(workspace, "node_modules", "vitest", "vitest.mjs");
   if (!existsSync(vitest)) return { ok: false, error: "vitest is not installed in the workspace" };
   const result = runSync(process.execPath, [vitest, "--run", "--coverage.enabled=false", ...hiddenTests.files], { cwd: workspace, env });
   const counts = vitestCounts(`${result.stdout}\n${result.stderr}`);
   return { ok: result.code === 0 && counts.failed === 0 && counts.passed > 0, exitCode: result.code, ...counts, output: `${result.stdout}\n${result.stderr}`.slice(-20_000) };
+}
+
+/** TypeScript-style hidden tests: `hereby runtests --tests=<pattern>` (mocha; baselines must match). */
+function runHerebyTests(workspace, hiddenTests, env) {
+  const hereby = join(workspace, "node_modules", "hereby", "bin", "hereby.js");
+  if (!existsSync(hereby)) return { ok: false, error: "hereby is not installed in the workspace" };
+  const result = runSync(process.execPath, [hereby, "runtests", `--tests=${hiddenTests.tests}`], { cwd: workspace, env });
+  const output = `${result.stdout}\n${result.stderr}`.replace(/\x1b\[[0-9;]*m/g, "");
+  const pick = (word) => Number(output.match(new RegExp(`(\\d+) ${word}`))?.[1] ?? 0);
+  const passed = pick("passing"), failed = pick("failing");
+  return { ok: result.code === 0 && failed === 0 && passed > 0, exitCode: result.code, passed, failed, total: passed + failed, output: output.slice(-20_000) };
 }
 
 function agentDiff(workspace) {
