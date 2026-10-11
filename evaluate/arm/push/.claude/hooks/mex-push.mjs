@@ -248,7 +248,7 @@ function onRead(input, entities) {
   // Facts only: precise, independently checkable claims about this file's code.
   const fresh = linkedTo(entities, file).filter((e) => e.type === "fact" && !state.shown.includes(e.id));
   if (!fresh.length) return log("read", { file, injected: 0 });
-  const packed = pack(fresh, BUDGET.read, MAX_ENTRIES.read, 200);
+  const packed = pack(fresh, BUDGET.read, MAX_ENTRIES.read, 200, { source: true });
   const text = `MEX facts about ${file}:\n${packed.map((p) => p.l).join("\n")}`;
   state.shown.push(...packed.map((p) => p.e.id));
   saveState(state);
