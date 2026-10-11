@@ -246,7 +246,12 @@ function onRead(input, entities) {
   if (file.startsWith(".mex/") || file.startsWith("..")) return;
   const state = loadState(input.session_id);
   // Facts only: precise, independently checkable claims about this file's code.
-  const fresh = linkedTo(entities, file).filter((e) => e.type === "fact" && !state.shown.includes(e.id));
+  // A partial read (offset/limit) of a large file gets only the facts whose
+  // linked functions lie in the lines read.
+  const from = Number(input.tool_input?.offset) || 0;
+  const to = from ? from + (Number(input.tool_input?.limit) || 2000) - 1 : Infinity;
+  const inRange = (e) => !from || e.locs.some((l) => l.file === file && l.start <= to && l.end >= from);
+  const fresh = linkedTo(entities, file).filter((e) => e.type === "fact" && !state.shown.includes(e.id) && inRange(e));
   if (!fresh.length) return log("read", { file, injected: 0 });
   const packed = pack(fresh, BUDGET.read, MAX_ENTRIES.read, 200, { source: true });
   const text = `MEX facts about ${file}:\n${packed.map((p) => p.l).join("\n")}`;
