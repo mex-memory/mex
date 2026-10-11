@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// MEX push prototype (eval only): delivers curated knowledge to the agent
+// MEX push prototype v2 (eval only): delivers curated knowledge to the agent
 // through Claude Code hooks instead of asking the agent to go and find it.
-//   index  — build .mex/local/push-index.json (entities, prose, code links, health)
+//   index  — build .mex/local/push-index.json (entities, prose, code locations, health)
 //   prompt — UserPromptSubmit: the few entries that match the task
-//   read   — PostToolUse(Read): entries linked to the file just opened
-//   edit   — PostToolUse(Edit|Write): entries describing the code just changed
+//   read   — PostToolUse(Read): facts linked to the file just opened
+//   edit   — PostToolUse(Edit|Write): entries describing the code just changed, with
+//            the exact line of their prose so they can be fixed without searching
 //   stop   — Stop: re-record code links of entries whose code the agent changed
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -15,8 +16,8 @@ const MEX = join(ROOT, ".mex");
 const LOCAL = join(MEX, "local");
 const INDEX = join(LOCAL, "push-index.json");
 const STATE = join(LOCAL, "push-state.json");
-const BUDGET = { prompt: 2400, read: 1600, edit: 1600 };
-const MAX_ENTRIES = { prompt: 5, read: 5, edit: 8 };
+const BUDGET = { prompt: 1200, read: 1000, edit: 1400 };
+const MAX_ENTRIES = { prompt: 3, read: 4, edit: 8 };
 
 const started = Date.now();
 const norm = (p) => p.replace(/\\/g, "/");
@@ -45,36 +46,34 @@ function mex(args) {
   return { code: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
-// Live drift per entity from `mex check`; the Wiki index's health is only as
-// fresh as its last rebuild.
-function driftFromCheck() {
-  const check = mex(["check", "--json"]);
-  const drift = {};
+// Read-only lookups in the disposable graph index: where a node is, and the
+// hash of its current body (the same value a grounding records as bodyHash).
+async function graphNodes(ids) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(join(MEX, "graph.db"), { readOnly: true });
   try {
-    for (const issue of JSON.parse(check.stdout).issues ?? []) {
-      if (!String(issue.code).startsWith("GROUNDING_")) continue;
-      const id = String(issue.message).match(/entity: (mx_[0-9A-Z]+)/)?.[1];
-      if (id && !drift[id]) drift[id] = issue.code.replace("GROUNDING_", "").toLowerCase();
-    }
-  } catch { return null; }
-  return drift;
+    const get = db.prepare("SELECT id, name, file_path, start_line, end_line, body_hash FROM nodes WHERE id = ?");
+    return Object.fromEntries(ids.map((id) => [id, get.get(id) ?? null]));
+  } finally { db.close(); }
 }
 
 // ---------- index ----------
 
-function groundedFiles(meta) {
-  const files = [];
-  let inside = false, indent = -1;
+function groundings(meta) {
+  const out = [];
+  let inside = false, indent = -1, current = null;
   for (const line of meta.split(/\r?\n/)) {
     const key = line.match(/^(\s*)grounds_to:\s*$/);
     if (key) { inside = true; indent = key[1].length; continue; }
     if (!inside) continue;
     const lead = line.match(/^(\s*)/)[1].length;
     if (line.trim() && lead <= indent && !line.trim().startsWith("-")) { inside = false; continue; }
-    const file = line.match(/^\s*-?\s*file:\s*(\S+)/);
-    if (file) files.push(norm(file[1].replace(/^["']|["']$/g, "")));
+    const file = line.match(/^\s*-\s*file:\s*(\S+)/);
+    if (file) { current = { file: norm(file[1].replace(/^["']|["']$/g, "")) }; out.push(current); continue; }
+    const field = line.match(/^\s*(node|bodyHash):\s*(\S+)/);
+    if (field && current) current[field[1]] = field[2];
   }
-  return [...new Set(files)];
+  return out;
 }
 
 function walk(dir, out = []) {
@@ -87,6 +86,8 @@ function walk(dir, out = []) {
   return out;
 }
 
+const lineAt = (text, index) => text.slice(0, index).split("\n").length;
+
 function parseFile(path) {
   const text = readFileSync(path, "utf8").replace(/\r\n/g, "\n");
   const file = norm(relative(MEX, path));
@@ -97,11 +98,11 @@ function parseFile(path) {
     const id = mexSection.match(/^\s{2}id:\s*(\S+)/m)?.[1];
     if (id) {
       entities.push({
-        id, file, level: 0,
+        id, file, level: 0, line: 1,
         type: mexSection.match(/^\s{2}type:\s*(\S+)/m)?.[1] ?? "doc",
         title: (mexSection.match(/^\s{2}title:\s*(.+)$/m)?.[1] ?? file).trim(),
         body: oneLine(front[1].match(/^description:\s*(.+)$/m)?.[1] ?? ""),
-        code: groundedFiles(mexSection),
+        grounds: groundings(mexSection),
       });
     }
   }
@@ -110,34 +111,37 @@ function parseFile(path) {
     const meta = block[1];
     const id = meta.match(/^id:\s*(\S+)/m)?.[1];
     if (!id) return;
-    const after = text.slice(block.index + block[0].length, i + 1 < blocks.length ? blocks[i + 1].index : text.length);
+    const start = block.index + block[0].length;
+    const after = text.slice(start, i + 1 < blocks.length ? blocks[i + 1].index : text.length);
     const heading = after.match(/^(#{1,6})\s+(.+)$/m);
-    let body = after;
+    let body = after, bodyAt = start;
     if (heading) {
       body = after.slice(heading.index + heading[0].length);
+      bodyAt = start + heading.index;
       const next = body.match(new RegExp(`^#{1,${heading[1].length}}\\s`, "m"));
       if (next) body = body.slice(0, next.index);
     }
     entities.push({
-      id, file, level: heading ? heading[1].length : 9,
+      id, file, level: heading ? heading[1].length : 9, line: lineAt(text, bodyAt),
       type: meta.match(/^type:\s*(\S+)/m)?.[1] ?? "section",
       title: oneLine(heading?.[2] ?? id),
       body: oneLine(body).slice(0, 1500),
-      code: groundedFiles(meta),
+      grounds: groundings(meta),
     });
   });
   return entities;
 }
 
-function buildIndex() {
+async function buildIndex() {
   const entities = walk(MEX).flatMap(parseFile);
-  const listed = mex(["wiki", "list", "--limit", "500", "--json"]);
-  const health = {};
-  try {
-    for (const entity of JSON.parse(listed.stdout).data.entities) health[entity.id] = entity.health ?? null;
-  } catch { throw new Error(`mex wiki list failed: ${listed.stderr || listed.stdout}`); }
-  const drift = driftFromCheck() ?? {};
-  for (const entity of entities) entity.health = drift[entity.id] ? (drift[entity.id] === "drift" ? "changed" : drift[entity.id]) : entity.code.length ? (health[entity.id] ?? "fresh") : null;
+  const nodes = await graphNodes([...new Set(entities.flatMap((e) => e.grounds.map((g) => g.node).filter(Boolean)))]);
+  for (const e of entities) {
+    e.code = [...new Set(e.grounds.map((g) => g.file))];
+    e.locs = e.grounds.map((g) => nodes[g.node]).filter(Boolean)
+      .map((n) => ({ file: n.file_path, name: n.name, start: n.start_line, end: n.end_line }));
+    const drift = e.grounds.filter((g) => g.node && (!nodes[g.node] || (g.bodyHash && nodes[g.node].body_hash !== g.bodyHash)));
+    e.health = !e.grounds.length ? null : drift.length ? (drift.some((g) => !nodes[g.node]) ? "missing" : "changed") : "fresh";
+  }
   mkdirSync(LOCAL, { recursive: true });
   writeFileSync(INDEX, JSON.stringify({ builtAt: new Date().toISOString(), entities }));
   const counts = { entities: entities.length, linked: entities.filter((e) => e.code.length).length, notFresh: entities.filter((e) => e.health && e.health !== "fresh").length };
@@ -176,25 +180,29 @@ function rank(entities, query) {
 }
 
 function label(e) {
-  if (!e.code.length || !e.health) return e.type;
-  return e.health === "fresh" ? `${e.type} · verified` : `${e.type} · ⚠ ${e.health}: its code changed after this was written — check the code before relying on it`;
+  if (!e.health) return e.type;
+  return e.health === "fresh" ? `${e.type} ✓` : `${e.type} ⚠ ${e.health}: code changed since this was written, verify`;
 }
 
-function line(e, bodyMax) {
+const where = (e) => e.locs.length
+  ? ` → ${e.locs.slice(0, 3).map((l) => `${l.file}:${l.start}-${l.end} ${l.name}`).join("; ")}`
+  : e.code.length ? ` → ${e.code.slice(0, 2).join(", ")}` : "";
+
+function line(e, bodyMax, { source = false } = {}) {
   const t = e.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 30);
   const bodyStarts = e.body.toLowerCase().replace(/[^a-z0-9]/g, "").startsWith(t);
-  let body = e.body.length > bodyMax ? `${e.body.slice(0, bodyMax).replace(/\s\S*$/, "")} …` : e.body;
+  const body = e.body.length > bodyMax ? `${e.body.slice(0, bodyMax).replace(/\s\S*$/, "")} …` : e.body;
   const text = bodyStarts && body ? body : body ? `${e.title} — ${body}` : e.title;
-  const code = e.code.length ? ` Code: ${e.code.slice(0, 4).join(", ")}.` : "";
-  return `- [${label(e)}] ${text}${code} (.mex/${e.file})`;
+  const src = source || !e.code.length ? ` (.mex/${e.file}:${e.line})` : "";
+  return `- [${label(e)}] ${text}${where(e)}${src}`;
 }
 
-function pack(entries, budget, max, bodyMax) {
+function pack(entries, budget, max, bodyMax, options) {
   const out = [];
   let used = 0;
   for (const e of entries) {
     if (out.length >= max) break;
-    const l = line(e, e.level === 0 ? 200 : e.type === "fact" ? bodyMax : Math.min(bodyMax, 220));
+    const l = line(e, e.type === "fact" ? bodyMax : Math.min(bodyMax, 200), options);
     if (used + l.length > budget && out.length) continue;
     out.push({ e, l });
     used += l.length + 1;
@@ -203,34 +211,33 @@ function pack(entries, budget, max, bodyMax) {
 }
 
 const loadIndex = () => existsSync(INDEX) ? JSON.parse(readFileSync(INDEX, "utf8")).entities : null;
+const blankState = (session) => ({ session, shown: [], editShown: [], stopBlocked: false });
 const loadState = (session) => {
-  try { const all = JSON.parse(readFileSync(STATE, "utf8")); return all.session === session ? all : { session, shown: [], editShown: [], stopBlocked: false }; } catch { return { session, shown: [], editShown: [], stopBlocked: false }; }
+  try { const all = JSON.parse(readFileSync(STATE, "utf8")); return all.session === session ? all : blankState(session); } catch { return blankState(session); }
 };
 const saveState = (state) => { mkdirSync(LOCAL, { recursive: true }); writeFileSync(STATE, JSON.stringify(state)); };
 const emit = (event, context) => process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: context } }));
+// File-level overviews are whole documents; they are too broad to inject.
+const sections = (entities) => entities.filter((e) => e.level > 0);
 
 // ---------- hooks ----------
 
 function onPrompt(input, entities) {
   const state = loadState(input.session_id);
-  const ranked = rank(entities, input.prompt ?? "");
+  const ranked = rank(sections(entities), input.prompt ?? "");
   if (!ranked.length) return log("prompt", { injected: 0 });
   const top = ranked[0].score;
-  const keep = ranked.filter((r) => r.score >= Math.max(2.5, top * 0.6)).map((r) => r.e);
-  const packed = pack(keep, BUDGET.prompt, MAX_ENTRIES.prompt, 360);
+  const keep = ranked.filter((r) => r.score >= Math.max(3, top * 0.7)).map((r) => r.e);
+  const packed = pack(keep, BUDGET.prompt, MAX_ENTRIES.prompt, 260);
   if (!packed.length) return log("prompt", { injected: 0, top });
-  const text = `MEX knowledge matching this task (curated project notes; "verified" means the code it describes is unchanged since it was written). Use it to orient, then confirm details in the code:\n${packed.map((p) => p.l).join("\n")}`;
+  const text = `MEX knowledge for this task (✓ = its code is unchanged since written). Start from these locations:\n${packed.map((p) => p.l).join("\n")}`;
   state.shown.push(...packed.map((p) => p.e.id));
   saveState(state);
   log("prompt", { injected: packed.length, chars: text.length, ids: packed.map((p) => p.e.id), scores: ranked.slice(0, 8).map((r) => [r.e.id, +r.score.toFixed(2)]), text });
   emit("UserPromptSubmit", text);
 }
 
-function linkedTo(entities, file) {
-  // Facts first: they are the precise, independently checkable claims.
-  const order = { fact: 0 };
-  return entities.filter((e) => e.code.includes(file)).sort((a, b) => (order[a.type] ?? 1) - (order[b.type] ?? 1) || a.level - b.level);
-}
+const linkedTo = (entities, file) => entities.filter((e) => e.code.includes(file));
 
 function onRead(input, entities) {
   const path = input.tool_input?.file_path;
@@ -238,10 +245,11 @@ function onRead(input, entities) {
   const file = norm(relative(ROOT, resolve(ROOT, path)));
   if (file.startsWith(".mex/") || file.startsWith("..")) return;
   const state = loadState(input.session_id);
-  const fresh = linkedTo(entities, file).filter((e) => !state.shown.includes(e.id));
+  // Facts only: precise, independently checkable claims about this file's code.
+  const fresh = linkedTo(entities, file).filter((e) => e.type === "fact" && !state.shown.includes(e.id));
   if (!fresh.length) return log("read", { file, injected: 0 });
-  const packed = pack(fresh, BUDGET.read, MAX_ENTRIES.read, 300);
-  const text = `MEX knowledge about ${file}:\n${packed.map((p) => p.l).join("\n")}`;
+  const packed = pack(fresh, BUDGET.read, MAX_ENTRIES.read, 200);
+  const text = `MEX facts about ${file}:\n${packed.map((p) => p.l).join("\n")}`;
   state.shown.push(...packed.map((p) => p.e.id));
   saveState(state);
   log("read", { file, injected: packed.length, chars: text.length, ids: packed.map((p) => p.e.id), text });
@@ -256,37 +264,58 @@ function onEdit(input, entities) {
   const state = loadState(input.session_id);
   const linked = linkedTo(entities, file).filter((e) => !state.editShown.includes(e.id));
   if (!linked.length) return log("edit", { file, injected: 0 });
-  const packed = pack(linked, BUDGET.edit, MAX_ENTRIES.edit, 220);
-  const text = `You changed ${file}. These MEX entries describe that code:\n${packed.map((p) => p.l).join("\n")}\nIf your change makes one of them false, rewrite that entry's prose in its .mex file (only the text under its heading; leave the <!-- mex:entity --> block alone). Do not compute fingerprints or edit grounding metadata: MEX re-records the code links when you finish.`;
-  state.editShown.push(...packed.map((p) => p.e.id));
-  state.shown.push(...packed.map((p) => p.e.id));
+  const packed = pack(sections(linked), BUDGET.edit, MAX_ENTRIES.edit, 200, { source: true });
+  const overviews = linked.filter((e) => e.level === 0);
+  const text = `You changed ${file}. MEX entries that describe this code:\n${packed.map((p) => p.l).join("\n")}${overviews.length ? `\nAlso linked overviews: ${overviews.map((e) => `.mex/${e.file}`).join(", ")}.` : ""}\nIf your change makes an entry false, read a few lines at its .mex line (offset/limit) and rewrite just that prose. Never touch <!-- mex:entity --> blocks or fingerprints: MEX re-records code links when you finish.`;
+  state.editShown.push(...linked.map((e) => e.id));
+  state.shown.push(...linked.map((e) => e.id));
   saveState(state);
-  log("edit", { file, injected: packed.length, chars: text.length, ids: packed.map((p) => p.e.id), text });
+  log("edit", { file, injected: packed.length + overviews.length, chars: text.length, ids: linked.map((e) => e.id), text });
   emit("PostToolUse", text);
 }
 
+const git = (args) => spawnSync("git", args, { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).stdout ?? "";
+
 function changedFiles() {
-  const git = (args) => spawnSync("git", args, { cwd: ROOT, encoding: "utf8" }).stdout ?? "";
   const files = [...git(["diff", "--name-only", "HEAD"]).split("\n"), ...git(["ls-files", "--others", "--exclude-standard"]).split("\n")];
   return [...new Set(files.map((f) => norm(f.trim())).filter((f) => f && !f.startsWith(".mex/")))];
 }
 
-function onStop(input, entities) {
+/** Base-side line ranges each file's diff touches (`@@ -a,b` hunks). */
+function touchedRanges(files) {
+  const ranges = {};
+  let current = null;
+  for (const l of git(["diff", "-U0", "HEAD", "--", ...files]).split("\n")) {
+    const header = l.match(/^\+\+\+ b\/(.+)$/) ?? l.match(/^--- a\/(.+)$/);
+    if (header) { current = norm(header[1]); ranges[current] ??= []; continue; }
+    const hunk = l.match(/^@@ -(\d+)(?:,(\d+))? /);
+    if (hunk && current) {
+      const start = Number(hunk[1]), count = hunk[2] === undefined ? 1 : Number(hunk[2]);
+      ranges[current].push([start, start + Math.max(count, 1) - 1]);
+    }
+  }
+  return ranges;
+}
+
+async function onStop(input, entities) {
   const state = loadState(input.session_id);
   const changed = changedFiles();
   const affected = entities.filter((e) => e.code.some((f) => changed.includes(f)));
   if (!affected.length) return log("stop", { changed: changed.length, affected: 0 });
+  // Cheap prefilter: only refresh when a diff hunk overlaps a linked node's base range.
+  const ranges = touchedRanges(changed);
+  const hit = affected.filter((e) => e.locs.some((l) => (ranges[l.file] ?? []).some(([a, b]) => a <= l.end && b >= l.start)));
+  if (!hit.length) return log("stop", { changed: changed.length, affected: affected.length, touched: 0 });
   const refresh = mex(["graph", "refresh"]);
-  const drift = driftFromCheck();
-  if (!drift) return log("stop", { error: "mex check failed", refresh: refresh.code });
-  const drifted = affected.filter((e) => drift[e.id]);
-  if (!drifted.length) return log("stop", { changed: changed.length, affected: affected.length, drifted: 0 });
+  const nodes = await graphNodes([...new Set(hit.flatMap((e) => e.grounds.map((g) => g.node).filter(Boolean)))]);
+  const drifted = hit.filter((e) => e.grounds.some((g) => g.node && (!nodes[g.node] || (g.bodyHash && nodes[g.node].body_hash !== g.bodyHash))));
+  if (!drifted.length) return log("stop", { changed: changed.length, affected: affected.length, touched: hit.length, drifted: 0, refresh: refresh.code });
   const unseen = drifted.filter((e) => !state.editShown.includes(e.id));
   if (unseen.length && !state.stopBlocked && !input.stop_hook_active) {
     state.stopBlocked = true;
     state.editShown.push(...unseen.map((e) => e.id));
     saveState(state);
-    const reason = `Before finishing: your change touched code that these MEX entries describe:\n${unseen.map((e) => line(e, 220)).join("\n")}\nIf your change makes one of them false, rewrite that entry's prose in its .mex file (leave the <!-- mex:entity --> block alone). If they still hold, change nothing. Then finish with your final answer again. MEX re-records the code links itself.`;
+    const reason = `Before finishing: your change touched code that these MEX entries describe:\n${unseen.map((e) => line(e, 200, { source: true })).join("\n")}\nIf your change makes one false, read a few lines at its .mex line and rewrite just that prose (leave <!-- mex:entity --> blocks alone). If they still hold, change nothing. Then finish with your final answer again. MEX re-records the code links itself.`;
     log("stop-block", { drifted: drifted.map((e) => e.id), unseen: unseen.map((e) => e.id), chars: reason.length, text: reason });
     process.stdout.write(JSON.stringify({ decision: "block", reason }));
     return;
@@ -311,4 +340,5 @@ async function main() {
   if (mode === "stop") return onStop(input, entities);
 }
 
+process.removeAllListeners("warning");
 main().catch((error) => { log("error", { mode: process.argv[2], error: String(error?.stack ?? error).slice(0, 2000) }); if (process.argv[2] === "index") process.exitCode = 1; });
