@@ -138,10 +138,20 @@ export const claudeAdapter = {
         }
       } else if (event.type === "result") {
         resultValue = event.structured_output ?? event.result ?? resultValue;
-        if (Number.isFinite(Number(event.total_cost_usd))) reportedCostUsd = Number(event.total_cost_usd);
-        if (Number.isFinite(Number(event.num_turns))) turns = Number(event.num_turns);
+        // A blocking Stop hook continues the session and emits one result per stop: sum them.
+        if (Number.isFinite(Number(event.total_cost_usd))) reportedCostUsd = (reportedCostUsd ?? 0) + Number(event.total_cost_usd);
+        if (Number.isFinite(Number(event.num_turns))) turns = (turns ?? 0) + Number(event.num_turns);
         resultPermissionDenials = Array.isArray(event.permission_denials) ? event.permission_denials : [];
-        if (event.usage && typeof event.usage === "object") terminalUsage = event.usage;
+        if (event.usage && typeof event.usage === "object") {
+          const prior = terminalUsage ?? {};
+          const sum = (key, fallback) => Number(prior[key] ?? 0) + Number(event.usage[key] ?? (fallback ? event.usage[fallback] : 0) ?? 0);
+          terminalUsage = {
+            input_tokens: sum("input_tokens"),
+            cache_creation_input_tokens: sum("cache_creation_input_tokens"),
+            cache_read_input_tokens: sum("cache_read_input_tokens"),
+            output_tokens: sum("output_tokens"),
+          };
+        }
         if (event.api_error_status !== null && event.api_error_status !== undefined
           && Number.isFinite(Number(event.api_error_status))) terminalApiErrorStatus = Number(event.api_error_status);
         if (typeof event.terminal_reason === "string") terminalReason = event.terminal_reason;
