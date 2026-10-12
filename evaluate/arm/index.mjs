@@ -161,9 +161,9 @@ async function run(args, suite) {
       });
       row = { runId: item.runId, taskId: task.id, taskType: task.type, arm: item.armId, repetition: item.repetition, orderIndex: item.orderIndex, indexKey: info.indexKey, workspaceHead: created.head, indexes, startedFrom: info.base, ...session, ...(armSpec.withPush ? { push: summarizePushLog(pushLog) } : {}) };
     } finally {
-      removeWorkspace(args.subject, workspace);
+      if (row) writeJson(resultPath, row);
+      try { removeWorkspace(args.subject, workspace); } catch (error) { process.stderr.write(`[arm] cleanup of ${item.runId} failed, continuing: ${error.message}\n`); }
     }
-    writeJson(resultPath, row);
     if (row.providerFailure?.type === "rate_limit") {
       throw new Error(`usage limit reached during ${item.runId}; rerun with --resume after it resets`);
     }

@@ -99,11 +99,27 @@ export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit =
   return { head: git(workspace, ["rev-parse", "HEAD"]).stdout.trim() };
 }
 
+/** Stop processes an agent left running inside the workspace (e.g. orphaned test workers). */
+function stopStrayProcesses(workspace) {
+  if (process.platform !== "win32") return;
+  // Match the workspace's last path segment: shells spell the path with either slash style.
+  const needle = workspace.split(/[\\/]/).filter(Boolean).pop().replace(/'/g, "''");
+  runSync("powershell", ["-NoProfile", "-Command", `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${needle}') -and $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`]);
+}
+
 export function removeWorkspace(subjectRoot, workspace) {
   if (!existsSync(workspace)) return;
+  stopStrayProcesses(workspace);
   unlinkDependencies(workspace);
   git(subjectRoot, ["worktree", "remove", "--force", workspace], { allowFailure: true });
-  if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true });
+  try {
+    if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
+  } catch (error) {
+    // Windows: node's rm fails with EPERM on read-only test baselines that Remove-Item -Force clears.
+    if (process.platform !== "win32") throw error;
+    runSync("powershell", ["-NoProfile", "-Command", `Remove-Item -LiteralPath '${workspace.replace(/'/g, "''")}' -Recurse -Force`]);
+    if (existsSync(workspace)) throw error;
+  }
   git(subjectRoot, ["worktree", "prune"], { allowFailure: true });
 }
 
