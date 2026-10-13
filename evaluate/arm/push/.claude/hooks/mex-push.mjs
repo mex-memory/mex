@@ -6,16 +6,24 @@
 //   read   — PostToolUse(Read): facts linked to the file just opened
 //   edit   — PostToolUse(Edit|Write): entries describing the code just changed, with
 //            the exact line of their prose so they can be fixed without searching
-//   stop   — Stop: re-record code links of entries whose code the agent changed
-import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+//   stop   — Stop: find entries whose linked code the diff touches (no graph work),
+//            ask once about unseen ones, then hand re-recording to `settle`
+//   settle — detached worker: one graph refresh, re-record drifted entries, rebuild
+//            the index; the session never waits for it
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const ROOT = process.env.CLAUDE_PROJECT_DIR ? resolve(process.env.CLAUDE_PROJECT_DIR) : process.cwd();
 const MEX = join(ROOT, ".mex");
 const LOCAL = join(MEX, "local");
 const INDEX = join(LOCAL, "push-index.json");
 const STATE = join(LOCAL, "push-state.json");
+// The settle worker holds LOCK while it runs; a stop during that run leaves AGAIN.
+const LOCK = join(LOCAL, "push-settle.lock");
+const AGAIN = join(LOCAL, "push-settle.again");
 const BUDGET = { prompt: 1200, read: 1000, edit: 1400 };
 const MAX_ENTRIES = { prompt: 3, read: 4, edit: 8 };
 
@@ -42,7 +50,13 @@ function mexEntry() {
 function mex(args) {
   const entry = mexEntry();
   if (!entry) return { code: 127, stdout: "", stderr: "mex is not on PATH" };
-  const result = spawnSync(process.execPath, [entry, ...args], { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  let result;
+  // A console-less (detached) process on Windows sometimes fails to start a child
+  // with STATUS_DLL_INIT_FAILED (0xC0000142); that child never ran, so retry it.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    result = spawnSync(process.execPath, [entry, ...args], { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    if (result.status !== 0xC0000142) break;
+  }
   return { code: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
@@ -134,11 +148,14 @@ function parseFile(path) {
 
 async function buildIndex() {
   const entities = walk(MEX).flatMap(parseFile);
+  // Diff hunks are base-side (HEAD) lines, so keep the session-start locations across rebuilds.
+  const before = Object.fromEntries((loadIndex() ?? []).map((e) => [e.id, e.baseLocs ?? e.locs]));
   const nodes = await graphNodes([...new Set(entities.flatMap((e) => e.grounds.map((g) => g.node).filter(Boolean)))]);
   for (const e of entities) {
     e.code = [...new Set(e.grounds.map((g) => g.file))];
     e.locs = e.grounds.map((g) => nodes[g.node]).filter(Boolean)
       .map((n) => ({ file: n.file_path, name: n.name, start: n.start_line, end: n.end_line }));
+    e.baseLocs = before[e.id] ?? e.locs;
     const drift = e.grounds.filter((g) => g.node && (!nodes[g.node] || (g.bodyHash && nodes[g.node].body_hash !== g.bodyHash)));
     e.health = !e.grounds.length ? null : drift.length ? (drift.some((g) => !nodes[g.node]) ? "missing" : "changed") : "fresh";
   }
@@ -223,8 +240,10 @@ const sections = (entities) => entities.filter((e) => e.level > 0);
 // ---------- hooks ----------
 
 function onPrompt(input, entities) {
+  // Background-task completions arrive as prompts; they are not a new task.
+  if (/^\s*<task-notification>/.test(input.prompt ?? "")) return log("prompt", { injected: 0, skipped: "task-notification" });
   const state = loadState(input.session_id);
-  const ranked = rank(sections(entities), input.prompt ?? "");
+  const ranked = rank(sections(entities).filter((e) => !state.shown.includes(e.id)), input.prompt ?? "");
   if (!ranked.length) return log("prompt", { injected: 0 });
   const top = ranked[0].score;
   const keep = ranked.filter((r) => r.score >= Math.max(3, top * 0.7)).map((r) => r.e);
@@ -280,21 +299,39 @@ function onBash(input, entities) {
   notifyChanged(fresh, state, entities, "bash");
 }
 
+// An entry is touched when a diff hunk overlaps one of its linked functions, or
+// when it links the file without a function location.
+function touchedEntries(entities, files) {
+  const ranges = touchedRanges(files);
+  return entities.filter((e) => e.code.some((f) => files.includes(f)) && (
+    e.baseLocs.some((l) => (ranges[l.file] ?? []).some(([a, b]) => a <= l.end && b >= l.start))
+    || e.grounds.some((g) => files.includes(g.file) && !e.baseLocs.some((l) => l.file === g.file))));
+}
+
 function notifyChanged(files, state, entities, event) {
   const file = files.join(", ");
-  const linked = entities.filter((e) => e.code.some((f) => files.includes(f)) && !state.editShown.includes(e.id));
+  const linked = touchedEntries(entities, files).filter((e) => !state.editShown.includes(e.id));
   if (!linked.length) { saveState(state); return log(event, { file, injected: 0 }); }
   const packed = pack(sections(linked), BUDGET.edit, MAX_ENTRIES.edit, 200, { source: true });
   const overviews = linked.filter((e) => e.level === 0);
   const text = `You changed ${file}. MEX entries that describe this code:\n${packed.map((p) => p.l).join("\n")}${overviews.length ? `\nAlso linked overviews: ${overviews.map((e) => `.mex/${e.file}`).join(", ")}.` : ""}\nIf your change makes an entry false, read a few lines at its .mex line (offset/limit) and rewrite just that prose. Never touch <!-- mex:entity --> blocks or fingerprints: MEX re-records code links when you finish.`;
-  state.editShown.push(...linked.map((e) => e.id));
-  state.shown.push(...linked.map((e) => e.id));
+  // Only what was actually listed counts as seen; the rest can still surface at stop.
+  const listed = [...packed.map((p) => p.e.id), ...overviews.map((e) => e.id)];
+  state.editShown.push(...listed);
+  state.shown.push(...listed);
   saveState(state);
   log(event, { file, injected: packed.length + overviews.length, chars: text.length, ids: linked.map((e) => e.id), text });
   emit("PostToolUse", text);
 }
 
-const git = (args) => spawnSync("git", args, { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).stdout ?? "";
+function git(args) {
+  let result;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    result = spawnSync("git", args, { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    if (result.status !== 0xC0000142) break;
+  }
+  return result.stdout ?? "";
+}
 
 function changedFiles() {
   const files = [...git(["diff", "--name-only", "HEAD"]).split("\n"), ...git(["ls-files", "--others", "--exclude-standard"]).split("\n")];
@@ -317,39 +354,72 @@ function touchedRanges(files) {
   return ranges;
 }
 
+// The stop hook does no graph work: the diff alone says which entries' code was
+// touched. Re-recording their links needs a graph refresh (100 s on a large
+// repo), so a detached `settle` worker does it after the agent is done.
 async function onStop(input, entities) {
   const state = loadState(input.session_id);
   const changed = changedFiles();
-  const affected = entities.filter((e) => e.code.some((f) => changed.includes(f)));
-  if (!affected.length) return log("stop", { changed: changed.length, affected: 0 });
-  // Cheap prefilter: only refresh when a diff hunk overlaps a linked node's base range.
-  const ranges = touchedRanges(changed);
-  const hit = affected.filter((e) => e.locs.some((l) => (ranges[l.file] ?? []).some(([a, b]) => a <= l.end && b >= l.start)));
-  if (!hit.length) return log("stop", { changed: changed.length, affected: affected.length, touched: 0 });
-  const refresh = mex(["graph", "refresh"]);
-  const nodes = await graphNodes([...new Set(hit.flatMap((e) => e.grounds.map((g) => g.node).filter(Boolean)))]);
-  const drifted = hit.filter((e) => e.grounds.some((g) => g.node && (!nodes[g.node] || (g.bodyHash && nodes[g.node].body_hash !== g.bodyHash))));
-  if (!drifted.length) return log("stop", { changed: changed.length, affected: affected.length, touched: hit.length, drifted: 0, refresh: refresh.code });
-  const unseen = drifted.filter((e) => !state.editShown.includes(e.id));
+  const hit = touchedEntries(entities, changed).filter((e) => e.baseLocs.length);
+  if (!hit.length) return log("stop", { changed: changed.length, touched: 0 });
+  const unseen = hit.filter((e) => !state.editShown.includes(e.id));
   if (unseen.length && !state.stopBlocked && !input.stop_hook_active) {
     state.stopBlocked = true;
     state.editShown.push(...unseen.map((e) => e.id));
     saveState(state);
     const reason = `Before finishing: your change touched code that these MEX entries describe:\n${unseen.map((e) => line(e, 200, { source: true })).join("\n")}\nIf your change makes one false, read a few lines at its .mex line and rewrite just that prose (leave <!-- mex:entity --> blocks alone). If they still hold, change nothing. Then finish with your final answer again. MEX re-records the code links itself.`;
-    log("stop-block", { drifted: drifted.map((e) => e.id), unseen: unseen.map((e) => e.id), chars: reason.length, text: reason });
+    log("stop-block", { touched: hit.map((e) => e.id), unseen: unseen.map((e) => e.id), chars: reason.length, text: reason });
     process.stdout.write(JSON.stringify({ decision: "block", reason }));
     return;
   }
-  const results = drifted.map((e) => {
-    const r = mex(["wiki", "reground", e.id, "--apply", "--reason", "agent reviewed the entry after changing its code (push prototype)"]);
-    return { id: e.id, code: r.code, out: (r.stdout + r.stderr).slice(0, 300) };
-  });
-  log("stop-reground", { drifted: drifted.length, ok: results.filter((r) => r.code === 0).length, results });
+  // A later stop with the same code diff (e.g. after a background task) has nothing new to settle.
+  const signature = createHash("sha1").update(git(["diff", "HEAD", "--", ...new Set(hit.flatMap((e) => e.code))])).digest("hex");
+  if (state.settled === signature) return log("stop", { changed: changed.length, touched: hit.length, settle: "unchanged" });
+  state.settled = signature;
+  saveState(state);
+  log("stop", { changed: changed.length, touched: hit.length, settle: startSettle() });
+}
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+function startSettle() {
+  mkdirSync(LOCAL, { recursive: true });
+  if (existsSync(LOCK) && alive(Number(readFileSync(LOCK, "utf8")))) { writeFileSync(AGAIN, ""); return "queued"; }
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "settle"], { cwd: ROOT, env: process.env, detached: true, stdio: "ignore", windowsHide: true });
+  writeFileSync(LOCK, String(child.pid));
+  child.unref();
+  return "started";
+}
+
+async function settle() {
+  writeFileSync(LOCK, String(process.pid));
+  try {
+    do {
+      rmSync(AGAIN, { force: true });
+      const entities = loadIndex();
+      const hit = touchedEntries(entities, changedFiles()).filter((e) => e.baseLocs.length);
+      const t0 = Date.now();
+      const refresh = mex(["graph", "refresh"]);
+      const refreshMs = Date.now() - t0;
+      const nodes = await graphNodes([...new Set(hit.flatMap((e) => e.grounds.map((g) => g.node).filter(Boolean)))]);
+      const drifted = hit.filter((e) => e.grounds.some((g) => g.node && (!nodes[g.node] || (g.bodyHash && nodes[g.node].body_hash !== g.bodyHash))));
+      const results = drifted.map((e) => {
+        const r = mex(["wiki", "reground", e.id, "--apply", "--reason", "agent reviewed the entry after changing its code (push prototype)"]);
+        return { id: e.id, code: r.code, out: (r.stdout + r.stderr).slice(0, 300) };
+      });
+      // The index must describe the re-recorded links, or the next stop sees them as drifted again.
+      if (results.length) await buildIndex();
+      log("settle", { touched: hit.length, refresh: refresh.code, refreshMs, ...(refresh.code ? { refreshErr: (refresh.stderr || refresh.stdout).slice(-1500) } : {}), drifted: drifted.length, ok: results.filter((r) => r.code === 0).length, results });
+    } while (existsSync(AGAIN));
+  } finally {
+    rmSync(LOCK, { force: true });
+  }
 }
 
 async function main() {
   const mode = process.argv[2];
   if (mode === "index") return buildIndex();
+  if (mode === "settle") return settle();
   const raw = readFileSync(0, "utf8");
   const input = raw ? JSON.parse(raw) : {};
   const entities = loadIndex();
