@@ -61,17 +61,19 @@ function preparePush(workspace, env) {
 /** What the hooks delivered in one session, from the log they append to. */
 export function summarizePushLog(path) {
   if (!existsSync(path)) return null;
-  const summary = { prompt: 0, read: 0, edit: 0, stopBlock: 0, regrounded: 0, regroundFailed: 0, injectedChars: 0, hookMs: 0, stopMs: 0, errors: 0 };
+  const summary = { prompt: 0, read: 0, edit: 0, stopBlock: 0, regrounded: 0, regroundFailed: 0, injectedChars: 0, hookMs: 0, stopMs: 0, settleMs: 0, refreshFailed: 0, errors: 0 };
   for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
     const entry = JSON.parse(line);
     // The index is built before the session starts; only in-session hook time counts.
-    if (entry.event !== "index") summary.hookMs += entry.ms ?? 0;
+    // The settle worker runs detached after the agent is done; it is not hook time.
+    if (entry.event === "settle") { summary.settleMs += entry.ms ?? 0; if (entry.refresh) summary.refreshFailed += 1; }
+    else if (entry.event !== "index") summary.hookMs += entry.ms ?? 0;
     if (String(entry.event).startsWith("stop")) summary.stopMs += entry.ms ?? 0;
     summary.injectedChars += entry.chars ?? 0;
     if (entry.event === "error" || entry.error) summary.errors += 1;
     if (["prompt", "read", "edit"].includes(entry.event) && entry.injected) summary[entry.event] += 1;
     if (entry.event === "stop-block") summary.stopBlock += 1;
-    if (entry.event === "stop-reground") { summary.regrounded += entry.ok; summary.regroundFailed += entry.drifted - entry.ok; }
+    if (entry.event === "stop-reground" || entry.event === "settle") { summary.regrounded += entry.ok; summary.regroundFailed += entry.drifted - entry.ok; }
   }
   return summary;
 }

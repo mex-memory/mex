@@ -1,5 +1,5 @@
 // One agent session in a prepared checkout, plus its post-session measurements.
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeAdapter } from "../../adapters/agents/claude.mjs";
 import { ANSWER_SCHEMA } from "../../compare/lib/answer.mjs";
@@ -143,6 +143,23 @@ function summarizeCheck(stdout) {
  * validated afterwards from the transcript, as nothing can enforce it inside
  * the session.
  */
+/**
+ * Wait for the push layer's detached settle worker (graph refresh + re-recording),
+ * so the diff, check and hidden tests see its writes. Its time is not session time.
+ */
+export async function waitForPushSettle(workspace, timeoutMs = 20 * 60 * 1000) {
+  const lock = join(workspace, ".mex", "local", "push-settle.lock");
+  const started = Date.now();
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  while (existsSync(lock) && Date.now() - started < timeoutMs) {
+    let pid = NaN;
+    try { pid = Number(readFileSync(lock, "utf8")); } catch { /* removed meanwhile */ }
+    if (pid && !alive(pid)) break;
+    await new Promise((done) => setTimeout(done, 1000));
+  }
+  return { waitMs: Date.now() - started, timedOut: existsSync(lock) && Date.now() - started >= timeoutMs };
+}
+
 export async function runAgentSession({ task, armId, armSpec, workspace, env, cliBin, model, timeoutMs, outputPrefix, claudeCommand, mexPrompt = "none" }) {
   const invocation = claudeInvocation({ task, model, claudeCommand, mexPrompt, withMex: armSpec.withMex });
   const processResult = await runTimed(invocation.command, invocation.args, { cwd: workspace, env, timeoutMs });
@@ -181,6 +198,8 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
     result = { answer: parsed.structured.ok ? parsed.structured.value : null };
   }
 
+  const settle = armSpec.withPush ? await waitForPushSettle(workspace) : null;
+  if (settle?.timedOut) violations.push("push settle worker did not finish");
   const diff = agentDiff(workspace);
   writeFileSync(`${outputPrefix}.patch`, diff.patch);
   let mexCheck = null;
@@ -197,6 +216,7 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
   return {
     agent: "claude",
     process: { code: processResult.code, signal: processResult.signal, timedOut: processResult.timedOut, elapsedMs: processResult.elapsedMs, stderr: String(processResult.stderr ?? "").slice(-4000) },
+    ...(settle ? { settleWait: settle } : {}),
     providerFailure: parsed.providerFailure ?? null,
     metrics: {
       newTokens: usage.newTokens, processed: usage.reportedTotal, uncachedInput: usage.uncachedInput,
