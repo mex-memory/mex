@@ -2,7 +2,7 @@
 edges:
   - target: syntax-extractor-review.md
     condition: when adding or reviewing syntax-only language extractors
-last_updated: 2026-09-12
+last_updated: 2026-10-11
 ---
 
 # Pattern Index
@@ -11,6 +11,7 @@ Lookup table for project-specific pattern files.
 
 | Pattern | Use when |
 |---------|----------|
+| [`dependency-manifest-discovery.md`](dependency-manifest-discovery.md) | Reviewing recursive dependency discovery, manifest precedence, containment, or corpus limits |
 | [`usage-telemetry.md`](usage-telemetry.md) | Changing CLI/Hub event coverage, opt-out, queue delivery, or usage measurement |
 | [`hub-first-run-onboarding.md`](hub-first-run-onboarding.md) | Adding or changing the checkout-local first-run Hub tour |
 | [`contract-first-external-adapter.md`](contract-first-external-adapter.md) | Freezing a consumer port before an independently owned implementation is pinned |

@@ -1,6 +1,6 @@
 # Code graph support
 
-This page documents the fixture-backed code-graph support included in mex 0.8.3.
+This page documents the fixture-backed code-graph support included in mex 0.8.4.
 
 This page distinguishes three evidence levels:
 

@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-10-08
+last_updated: 2026-10-13
 ---
 
 # Session Bootstrap
@@ -30,6 +30,68 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
+- Benchmark-gap fixes (PR #274, unreleased): file impact lists external
+  callers first at unchanged default limits, with optional `--direction`;
+  graph errors exit nonzero; `file:line` targets; CRLF normalized before
+  tree-sitter parsing; `obj.x = function` assignments are named nodes; C#
+  resolves types and static calls through namespaces and `using` directives;
+  Rust resolves `crate::` paths from the crate root and workspace members.
+  Fresh reads cache the body the committed hash names, so comment, layout,
+  rename and changed-nearby checks have an old side; a moved symbol is judged
+  by that old body when present, otherwise by structure; groundings without a
+  body hash read unverified until reviewed `wiki reground`. Wiki index v5 uses
+  authored description/triggers, and query hits expose per-link health. Long
+  sync briefs use private prompt files. Extractor/resolver versions changed,
+  so the first refresh after upgrading rebuilds the graph.
+- Release preparation for 0.8.4 is on `codex/release-0.8.4`, based on main
+  `54f7d7a`, and includes the terminal setup overhaul and default-routing work.
+  Current package metadata, capability fixtures, README installation examples,
+  release notes, and upgrade guidance target 0.8.4. Historical release records
+  retain their versions. Teams must upgrade together before sharing new `mh2:`
+  groundings; older clients cannot read them. Preparation and PR creation are
+  authorized; publication is still pending. Verification and known follow-ups
+  are tracked in `docs/design/0.8.4-release-plan.md`.
+- PR #271 review fixes add final stdin shutdown, bounded terminal warning history,
+  a clean copyable Hub link, width-aware control labels, explicit paused outcomes,
+  and a final browser-commit readiness check. The Wiki grounding bridge now
+  accepts exact evidence from fully parsed files when the only graph shortfall
+  is an unrelated incomplete parse; partial-file and missing-target evidence
+  remains unverified, and source/configuration drift still refuses. Windows
+  packed CLI discovery compares canonical paths. Release performance limits
+  remain unchanged; the final exact-head CI run is still required.
+- The Windows follow-up waits for Enter after the manual prompt and Hub link
+  view in a short-lived child process. A parent console read between HUD mounts
+  left the next HUD without input on Windows. `mex check` now checks groundings
+  when the graph's only faults are incomplete parses (and/or changed source).
+  Partial-file and missing targets are unverified with the files named, and
+  configuration drift still skips grounding. Main's #250/#251 checker fixes are
+  merged into the release branch.
+- Local terminal setup is the default for `mex setup` and bare `mex` in
+  incomplete projects, with the lowercase ASCII `mex` banner in cyan.
+  `setup --browser` explicitly opens browser setup; `--cli` remains supported.
+  Bare `mex` still opens the Hub for established code projects, preserving
+  missing-index recovery. The HUD replaces the old prompts with
+  integration selection before writes, native Claude/Codex terminal handoff,
+  and explicit complete/paused/failed/cancelled outcomes. Enter selects the
+  highlighted tool and starts; Space optionally toggles extra integrations,
+  and a separate Continue row supports the current selection or no agent.
+  It reuses the shared
+  setup engine and opens the setup-enabled Hub after validation for commit
+  review and optional completion details. Scripts and CI remain plain and
+  never launch an interactive agent or long-lived Hub. Long graph steps now
+  forward actual phase/file counts into an animated HUD with phase/quiet timers;
+  failures retain bounded local worker diagnostics and authored recovery advice.
+  This is working-tree
+  implementation, not a published release.
+- Local setup error-reporting work preserves authored recovery instructions
+  for expected config, ignore-protection, integration, Graph, grounding, and
+  Wiki failures in the browser. Raw diagnostics remain terminal-only, and
+  unexpected exceptions retain the generic fallback. This working-tree change
+  leaves the setup completion rules and private response schema unchanged.
+- PR #250's nested dependency-manifest fixes are merged into main:
+  recursive manifest discovery preserves root precedence, skips symlinks, and
+  abstains when bounded discovery or reads cannot complete. These changes are
+  validated by 137 focused tests and typecheck after main integration; see [dependency-manifest-discovery.md](patterns/dependency-manifest-discovery.md) for regression guidance.
 - Local work on `fix/knowledge-drift-precision` adds `mex wiki link-sections`:
   preview or explicitly apply missing section-to-parent `refines` relationships
   without changing claim text or groundings. Setup/GROW guidance preserves those
@@ -50,7 +112,7 @@ Then read this file fully before doing anything else in this session.
   approving review before normal merge. The maintainer will publish after merge.
   Verification and remaining publication steps are tracked in
   `docs/design/0.8.3-release-plan.md`.
-- 0.8.2 setup work on `codex/0.8.2-hub-setup` makes `mex setup` and bare
+- 0.8.2 setup work on `codex/0.8.2-hub-setup` originally made `mex setup` and bare
   `mex` browser entry points; `setup --cli` retains terminal setup and
   `setup --dry-run` remains a read-only terminal preview. Setup commits now
   lead to a completion guide with explicit **Open Hub**, version-pinned optional
@@ -66,7 +128,8 @@ Then read this file fully before doing anything else in this session.
   frozen. The release plan records the deterministic calibration and CI evidence.
   This is branch implementation, not a published release; verification
   and outstanding release gates are in `docs/design/0.8.2-release-plan.md`.
-- Incomplete checkouts open a Hub setup wizard from `mex`, `mex setup`, or `mex hub` instead of the
+- Incomplete checkouts can open a Hub setup wizard explicitly with
+  `mex setup --browser` or `mex hub` instead of the
   full dashboard. Setup begins on a welcome screen, then runs the same ordered
   `mex setup` steps through a headless engine, pauses at population with a
   copyable prompt when no selected CLI is available. Claude/Codex population
@@ -375,8 +438,19 @@ Then read this file fully before doing anything else in this session.
 - Public package-root exports for the provisional team contracts.
 
 **Known Issues:**
-- Graph construction still rebuilds the full eligible corpus after source
-  changes and has no peak-memory quota. The branch's actual Hub probe peaked at
+- A disposable MEX copy with installed dependencies reproduced Node heap
+  exhaustion during graph construction (924 sources, last event 865/924,
+  about 101 seconds, explicit V8 heap-limit stderr). The source-only copy
+  completed; a tiny fresh repository also passes. A compiler-only probe also
+  exhausted the heap during signature rendering, before graph persistence;
+  this does not establish a persistent leak or one uniquely causal declaration.
+  Setup now exposes that cause,
+  but the underlying compiler memory pressure is not fixed by HUD animation
+  or process isolation. Investigate it without changing canonical signatures
+  or increasing production heap/resource budgets merely to pass the example.
+- Graph refresh now has content-hash reuse and incremental publication; importer
+  and augmentation closures still require conservative re-extraction. Full
+  TypeScript construction has no peak-memory quota. The historical Hub probe peaked at
   about 1,963 MiB combined RSS and retained multi-second pauses around initial
   checks and validation/publication despite responsive compiler-phase polling.
   Fatal parent exit may leave owned temporary artifacts. The historical
@@ -394,12 +468,16 @@ Then read this file fully before doing anything else in this session.
   appear only when a stable status observation makes the requested operation
   safe; migration-required or unstable Wiki observations never fabricate a
   repair action.
-- The Wiki CLI's graph-aware commands (validate, rebuild-index, migrate, apply,
-  regenerate-views) reach the graph only through the repository graph port's
+- The Wiki CLI's graph-aware commands (rebuild-index, migrate, apply, reground,
+  link-sections, regenerate-views) reach the graph only through the repository graph port's
   fresh snapshot (#232). A stale or changing graph is not used: the command
   runs without it and reports `CODE_GRAPH_UNAVAILABLE`, so `mex graph` must be
-  current for Wiki grounding verdicts. Synthesis (`wiki build/prepare/propose`)
-  still opens `graph.db` directly, without that freshness proof.
+  current for Wiki grounding verdicts. `wiki validate` checks structure only;
+  use `mex check` for current code-link verdicts. Production synthesis
+  (`wiki build/prepare/propose`) now adopts a strict fresh immutable Graph/source
+  snapshot, withholds output after a failed final proof, and publishes exact
+  prepared operation batches only after revalidation. Incomplete durable intents
+  require exact operation recovery; synthesis refuses to remint identities.
 
 ## Routing Table
 

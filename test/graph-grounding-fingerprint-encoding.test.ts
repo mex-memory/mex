@@ -197,14 +197,14 @@ describe("comparing one fingerprint in two encodings", () => {
   const hex = hexEncoded(fingerprint);
   const node = "function:fedcba9876543210fedcba9876543210";
 
-  it("resolves fresh in the wiki when only the committed fingerprint can decide", () => {
+  it("keeps legacy body-bearing links unverified while accepting both fingerprint encodings", () => {
     const graph = {
       getNode: () => ({ id: node, bodyHash: "body", filePath: "src/a.ts", startLine: 1, endLine: 2 }),
       getFingerprint: () => compact,
       reconcile: () => ({ kind: "GONE" as const }),
       getBaselineSource: () => null,
     };
-    expect(resolveGrounding({ node, fingerprint: hex }, graph)).toMatchObject({ state: "fresh", health: "fresh" });
+    expect(resolveGrounding({ node, fingerprint: hex }, graph)).toMatchObject({ state: "unresolved", health: "unverified", resolvedNode: node });
   });
 
   it("is not a conflict between the root and mex stores", () => {

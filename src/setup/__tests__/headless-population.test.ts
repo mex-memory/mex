@@ -1,4 +1,5 @@
 import crossSpawn from "cross-spawn";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,7 +71,7 @@ describe("headless population process", () => {
 
   it("pre-approves only the read-only mex commands headless Claude population needs", () => {
     for (const shell of ["Bash", "PowerShell"]) {
-      for (const command of ["mex graph scope", "mex graph get", "mex graph query", "mex impact", "mex logging", "mex log"]) {
+      for (const command of ["mex graph scope", "mex graph get", "mex graph query", "mex wiki query", "mex impact", "mex logging", "mex log"]) {
         expect(HEADLESS_CLAUDE_ALLOWED_TOOLS).toContain(`${shell}(${command}:*)`);
       }
     }
@@ -319,8 +320,10 @@ describe("headless population process", () => {
   it("reports a launch failure instead of manual population", async () => {
     const fixture = agentFixture("");
     const onActivity = vi.fn();
+    // Node's own spawn fails before the child starts on every platform. On
+    // Windows cross-spawn runs a missing file through cmd.exe, which starts.
     const missingSpawn = ((_command: string, args: string[], options: object) =>
-      crossSpawn(join(fixture.root, "does-not-exist"), args, options)) as unknown as typeof crossSpawn;
+      spawn(join(fixture.root, "does-not-exist"), args, options)) as unknown as typeof crossSpawn;
     await expect(launchHeadlessSetupPopulation({
       ...fixture.options,
       onActivity,

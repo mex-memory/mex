@@ -133,7 +133,14 @@ function scalar(db, sql, params = []) {
 }
 
 function rows(db, sql, params = []) {
-  return db.prepare(sql).all(...params).map((row) => ({ ...row }));
+  const statement = db.prepare(sql);
+  statement.setReadBigInts(true);
+  return statement.all(...params).map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [
+    key,
+    typeof value === "bigint"
+      ? (value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(value) : value.toString())
+      : value,
+  ])));
 }
 
 function tableExists(db, table) {
@@ -471,7 +478,7 @@ function edgeHealth(db, edges) {
 
 function isLowValuePath(filePath) {
   const path = String(filePath ?? "").toLowerCase();
-  return /(^|\/)(__tests?__|tests?|specs?|fixtures?|examples?|samples?|benchmarks?|demos?|mocks?|testdata|integration)(\/|$)/.test(path)
+  return /(^|\/)(__tests?__|tests?|spec|fixtures?|examples?|samples?|benchmarks?|demos?|mocks?|testdata|integration)(\/|$)/.test(path)
     || /\.(test|spec)\.[^/]+$/.test(path)
     || /(^|\/)test_[^/]+\.[^/]+$/.test(path)
     || /_test\.[^/]+$/.test(path)

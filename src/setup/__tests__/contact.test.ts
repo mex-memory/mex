@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -62,7 +62,8 @@ describe("optional setup contact", () => {
     expect(readContactPreference()).toEqual({ status: "unavailable" });
     await expect(rememberContactPreference({ status: "skipped" })).rejects.toThrow();
     expect(readdirSync(outside)).toEqual([]);
-    rmSync(join(root, ".mex/setup")); mkdirSync(join(root, ".mex/setup"));
+    expect(lstatSync(join(root, ".mex/setup")).isSymbolicLink()).toBe(true);
+    unlinkSync(join(root, ".mex/setup")); mkdirSync(join(root, ".mex/setup"));
     writeFileSync(join(root, ".mex/setup/contact-submitted.json"), "broken");
     expect(readContactPreference()).toEqual({ status: "unavailable" });
     await expect(rememberContactPreference({ status: "submitted" })).rejects.toThrow();

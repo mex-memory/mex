@@ -43,6 +43,7 @@ import type { WikiDiagnostic } from "../model/diagnostic.js";
 import { inspectDirectWikiSpecMutation } from "./spec-authoring-boundary.js";
 import { wikiRegroundEntity } from "../service/reground.js";
 import { wikiLinkSections } from "../service/link-sections.js";
+import { publishSynthesis, readSynthesis, type WikiCliSynthesisBridge } from "./synthesis.js";
 import {
   graphDiagnostics,
   publishWithGraph,
@@ -73,6 +74,7 @@ import {
   wikiSynthesisBuild,
   wikiSynthesisPrepare,
   wikiSynthesisPropose,
+  wikiPrepareSynthesisPropose,
   wikiValidate,
   isPrepareStage,
   type PrepareStage,
@@ -101,6 +103,8 @@ export interface CommandIo {
    * invocation has no graph, which every one of them tolerates.
    */
   groundingBridge?: WikiCliGroundingBridge | null;
+  /** Production synthesis reads and publications adopt one strict fresh snapshot. */
+  synthesisBridge?: WikiCliSynthesisBridge | null;
   /** §12 scope knobs from `wiki.synthesis`. */
   synthesisScope?: SynthesisScope;
   /** Launch an agent with the playbook. Returns false when none is available. */
@@ -513,6 +517,18 @@ function synthesisOptions(io: CommandIo): Parameters<typeof wikiSynthesisBuild>[
   };
 }
 
+function runSynthesisRead<T>(
+  io: CommandIo,
+  flags: CommandFlags,
+  work: (bound: CommandIo) => ServiceResult<T>,
+  render: (data: T) => void,
+): void | Promise<void> {
+  if (!io.synthesisBridge) { emit(io, work(io), flags, render); return; }
+  return readSynthesis(io.synthesisBridge, snapshot => work({ ...io,
+    codeGraph: snapshot?.codeGraph ?? null, graph: snapshot?.graph ?? null,
+  })).then(result => { emit(io, result, flags, render); });
+}
+
 function directSpecBoundaryDiagnostics(
   io: CommandIo,
   envelope: unknown,
@@ -533,12 +549,11 @@ function directSpecBoundaryDiagnostics(
  * launches, because a command an agent is parsing must not open an interactive
  * session inside itself.
  */
-export function runBuild(io: CommandIo, flags: CommandFlags): void {
-  const result = wikiSynthesisBuild({
-    ...synthesisOptions(io),
+export function runBuild(io: CommandIo, flags: CommandFlags): void | Promise<void> {
+  return runSynthesisRead(io, flags, bound => wikiSynthesisBuild({
+    ...synthesisOptions(bound),
     ...(flags.cluster === undefined ? {} : { cluster: flags.cluster }),
-  });
-  emit(io, result, flags, (data) => {
+  }), (data) => {
     if (data.clusters.length === 0) return;
     io.write(`${data.clusters.length} cluster(s) to synthesize:`);
     for (const cluster of data.clusters) {
@@ -577,7 +592,7 @@ function unknownStage(value: string | undefined): WikiDiagnostic[] {
  * and scaffold. The prompt is what the agent sends to its own model; mex sends
  * nothing anywhere.
  */
-export function runPrepare(io: CommandIo, flags: CommandFlags): void {
+export function runPrepare(io: CommandIo, flags: CommandFlags): void | Promise<void> {
   if (!isPrepareStage(flags.stage)) {
     const envelope = envelopeFor(null, unknownStage(flags.stage));
     if (flags.json === true) io.write(renderEnvelope(envelope));
@@ -586,12 +601,11 @@ export function runPrepare(io: CommandIo, flags: CommandFlags): void {
     return;
   }
   const stage: PrepareStage = flags.stage;
-  const result = wikiSynthesisPrepare({
-    ...synthesisOptions(io),
+  return runSynthesisRead(io, flags, bound => wikiSynthesisPrepare({
+    ...synthesisOptions(bound),
     stage,
     ...(flags.cluster === undefined ? {} : { cluster: flags.cluster }),
-  });
-  emit(io, result, flags, (data) => {
+  }), (data) => {
     if (data.prompt === null) return;
     io.write(`stage ${data.stage}${data.cluster === null ? "" : ` · cluster ${data.cluster}`}`);
     if (data.groups.length > 0) io.write(`${data.groups.length} candidate group(s)`);
@@ -615,15 +629,14 @@ export function runPrepare(io: CommandIo, flags: CommandFlags): void {
  * plans, prints the diff and writes nothing, which is the safe outcome when a
  * caller says nothing at all.
  */
-export function runPropose(io: CommandIo, file: string, flags: CommandFlags): void {
-  const result = wikiSynthesisPropose({
-    ...synthesisOptions(io),
+export function runPropose(io: CommandIo, file: string, flags: CommandFlags): void | Promise<void> {
+  const proposalOptions = (bound: CommandIo) => ({
+    ...synthesisOptions(bound),
     responsePath: file,
-    ...(flags.apply === true && flags.dryRun !== true ? { apply: true } : {}),
     ...(isPrepareStage(flags.stage) ? { stage: flags.stage } : {}),
     ...(flags.cluster === undefined ? {} : { cluster: flags.cluster }),
   });
-  emit(io, result, flags, (data) => {
+  const render = (data: ReturnType<typeof wikiSynthesisPropose>["data"]) => {
     io.write(
       `${data.received} candidate(s) received, ${data.accepted} accepted, ${data.rejected.length} refused`,
     );
@@ -640,5 +653,15 @@ export function runPropose(io: CommandIo, file: string, flags: CommandFlags): vo
     }
     if (data.applied) io.write(chalk.green(`applied — ${data.changedFiles.join(", ")}`));
     else io.write(chalk.dim("planned only — re-run with --apply to write"));
-  });
+  };
+  const apply = flags.apply === true && flags.dryRun !== true;
+  if (!io.synthesisBridge) {
+    emit(io, wikiSynthesisPropose({ ...proposalOptions(io), ...(apply ? { apply: true } : {}) }), flags, render);
+    return;
+  }
+  if (!apply) return runSynthesisRead(io, flags, bound => wikiSynthesisPropose(proposalOptions(bound)), render);
+  return publishSynthesis(io.synthesisBridge,
+    snapshot => wikiPrepareSynthesisPropose(proposalOptions({ ...io, ...snapshot })),
+    () => wikiSynthesisPropose(proposalOptions({ ...io, codeGraph: null, graph: null })),
+  ).then(result => { emit(io, result, flags, render); });
 }

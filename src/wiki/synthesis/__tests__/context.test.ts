@@ -47,6 +47,18 @@ function stubGraph(
 }
 
 describe("extractClusterContext", () => {
+  it("uses snapshot-bound source for every span instead of re-reading the live file", () => {
+    const repoRoot = freshRepo({ "auth/token.ts": "export function issueToken() { return 'unverified live bytes'; }" });
+    const graph = stubGraph({ "function:issueToken": { id: "function:issueToken", kind: "function",
+      name: "issueToken", filePath: "auth/token.ts", startLine: 1, endLine: 1 } });
+    let reads = 0;
+    graph.readFileLines = () => { reads += 1; return ["export function issueToken() { return 'verified indexed bytes'; }"]; };
+    const context = extractClusterContext(graph, { name: "auth", nodeIds: ["function:issueToken"], files: ["auth/token.ts"] }, repoRoot);
+    expect(reads).toBe(1);
+    expect(context.codeBlocks[0]?.content).toContain("verified indexed bytes");
+    expect(context.codeBlocks[0]?.content).not.toContain("unverified live bytes");
+  });
+
   it("resolves structural nodes and exact line-span code blocks", () => {
     const repoRoot = freshRepo({
       "auth/tokens.ts": [

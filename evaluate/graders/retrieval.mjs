@@ -25,11 +25,37 @@ export function resultRecordsForTask(task, records) {
     : task.operation === "query"
       ? new Set(["result"])
       : new Set(["defines", "caller"]);
-  return records.filter((record) => types.has(record.type));
+  const results = records.filter((record) => types.has(record.type));
+  if (task.operation !== "scope") return results;
+  // Source-detail responses identify selected symbols in ranges, without fact
+  // records. Keep unknown ids too: preceding misses must occupy their real rank.
+  const seen = new Set(results.map((record) => record.id).filter(Boolean));
+  for (const record of records) {
+    if (record.type !== "source") continue;
+    for (const range of record.ranges ?? [record]) {
+      for (const id of range.nodeIds ?? []) {
+        if (typeof id !== "string" || seen.has(id)) continue;
+        seen.add(id);
+        results.push({ type: "source-node", id, filePath: evidencePath(record), ...evidenceSpan(range) });
+      }
+    }
+  }
+  return results;
 }
 
-function rankEvidence(results, evidence) {
-  const index = results.findIndex((record) => evidenceMatchesRecord(evidence, record));
+function matchesResult(evidence, record, coverage) {
+  if (evidenceMatchesRecord(evidence, record)) return true;
+  if (record.type !== "source-node") return false;
+  // Resolve only exact returned ids through the graph coverage captured before
+  // retrieval. Query text, source text and gold similarity are never guessed.
+  return [...(coverage?.evidence ?? []), ...(coverage?.auxiliaryEvidence ?? [])].some((entry) => evidenceMatchesRecord(evidence, entry)
+    && evidencePath(entry) === evidencePath(record)
+    && (entry.matches ?? []).some((match) => match.id === record.id
+      && record.startLine <= match.endLine && record.endLine >= match.startLine));
+}
+
+function rankEvidence(results, evidence, coverage) {
+  const index = results.findIndex((record) => matchesResult(evidence, record, coverage));
   return index < 0 ? null : index + 1;
 }
 
@@ -41,9 +67,9 @@ function dcg(relevance) {
   return relevance.reduce((total, value, index) => total + (value ? 1 / Math.log2(index + 2) : 0), 0);
 }
 
-function ndcgAt(results, relevant, k) {
+function ndcgAt(results, relevant, k, coverage) {
   if (!relevant.length) return null;
-  const relevance = results.slice(0, k).map((record) => Number(relevant.some((evidence) => evidenceMatchesRecord(evidence, record))));
+  const relevance = results.slice(0, k).map((record) => Number(relevant.some((evidence) => matchesResult(evidence, record, coverage))));
   while (relevance.length < k) relevance.push(0);
   const ideal = Array.from({ length: k }, (_, index) => Number(index < Math.min(k, relevant.length)));
   const idealDcg = dcg(ideal);
@@ -219,14 +245,14 @@ export function gradeRetrieval(task, records, processResult = {}, graphCoverage 
   const { eligible: retrievalGold, missing: constructionMissing } = coveredGold(task, graphCoverage);
   const alternates = task.acceptableAlternates ?? [];
   const prohibited = task.mustNotReturn ?? [];
-  const goldRanks = gold.map((evidence) => ({ ...evidence, graphCovered: !constructionMissing.some((missing) => evidenceMatchesRecord(evidence, missing)), rank: rankEvidence(results, evidence) }));
+  const goldRanks = gold.map((evidence) => ({ ...evidence, graphCovered: !constructionMissing.some((missing) => evidenceMatchesRecord(evidence, missing)), rank: rankEvidence(results, evidence, graphCoverage) }));
   const retrievalGoldRanks = goldRanks.filter((entry) => entry.graphCovered);
-  const alternateRanks = alternates.map((evidence) => ({ ...evidence, rank: rankEvidence(results, evidence) }));
-  const prohibitedRanks = prohibited.map((evidence) => ({ ...evidence, rank: rankEvidence(results, evidence) }));
+  const alternateRanks = alternates.map((evidence) => ({ ...evidence, rank: rankEvidence(results, evidence, graphCoverage) }));
+  const prohibitedRanks = prohibited.map((evidence) => ({ ...evidence, rank: rankEvidence(results, evidence, graphCoverage) }));
   const ranks = retrievalGoldRanks.map((entry) => entry.rank);
   const firstRelevantRank = [...retrievalGoldRanks, ...alternateRanks].map((entry) => entry.rank).filter(Number.isFinite).sort((a, b) => a - b)[0] ?? null;
   const relevant = [...retrievalGold, ...alternates];
-  const relevantTop5 = results.slice(0, 5).filter((record) => relevant.some((evidence) => evidenceMatchesRecord(evidence, record))).length;
+  const relevantTop5 = results.slice(0, 5).filter((record) => relevant.some((evidence) => matchesResult(evidence, record, graphCoverage))).length;
   const errorCodes = records.filter((record) => record.type === "error").map((record) => record.code ?? "UNKNOWN");
   const expectedErrorCodes = task.expect?.errorCodes ?? [];
   const noResultExpected = task.expect?.noResult === true;
@@ -241,7 +267,7 @@ export function gradeRetrieval(task, records, processResult = {}, graphCoverage 
   const maxOutputTokens = Number(summary?.maxOutputTokens ?? task.options?.maxOutputTokens ?? NaN);
   const estimatedOutputTokens = Number(summary?.estimatedOutputTokens ?? NaN);
   const budgetCompliant = Number.isFinite(maxOutputTokens) && Number.isFinite(estimatedOutputTokens) ? estimatedOutputTokens <= maxOutputTokens : null;
-  const relevantReturned = results.filter((record) => relevant.some((evidence) => evidenceMatchesRecord(evidence, record))).length;
+  const relevantReturned = results.filter((record) => relevant.some((evidence) => matchesResult(evidence, record, graphCoverage))).length;
   const firstResponse = firstResponseMetrics(task, records);
   return {
     returned: results.length,
@@ -258,7 +284,7 @@ export function gradeRetrieval(task, records, processResult = {}, graphCoverage 
     recallAt5: round(recallAt(ranks, 5)),
     recallAt10: round(recallAt(ranks, 10)),
     reciprocalRank: firstRelevantRank ? round(1 / firstRelevantRank) : 0,
-    ndcgAt10: round(ndcgAt(results, relevant, 10)),
+    ndcgAt10: round(ndcgAt(results, relevant, 10, graphCoverage)),
     precisionAt5: round(relevantTop5 / 5),
     precisionAmongReturnedAt5: round(results.length ? relevantTop5 / Math.min(5, results.length) : 0),
     irrelevantRate: round(results.length ? (results.length - relevantReturned) / results.length : 0),

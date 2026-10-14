@@ -344,7 +344,7 @@ function groundingFor(entity: MockWikiEntitySeed): Record<string, unknown> | nul
   return {
     node,
     fingerprint,
-    ...(kind === "changed" || kind === "fresh" ? { bodyHash: `baseline-${node}` } : {}),
+    ...(kind === "changed" || kind === "fresh" || kind === "renamed" ? { bodyHash: `baseline-${node}` } : {}),
     reason: `Fixture ${kind} grounding`,
   };
 }

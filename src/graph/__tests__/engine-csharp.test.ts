@@ -62,6 +62,19 @@ class Unique {
   void Repeat() { Repeat(); this.Repeat(); }
 }
 `);
+  writeFileSync(join(root, "lib.cs"), `
+namespace Lib.Core;
+public class Sink { public static void Emit() {} }
+`);
+  writeFileSync(join(root, "app.cs"), `
+using Lib.Core;
+namespace App;
+class User : Sink { void Go() { Sink.Emit(); } }
+`);
+  writeFileSync(join(root, "other.cs"), `
+namespace Other;
+class NoUsing : Sink { void Go() { Sink.Emit(); } }
+`);
   engine = createGraphEngine({ rootDir: root });
   await engine.build(root);
 });
@@ -88,8 +101,8 @@ describe("C# graph persistence and resolution", () => {
 
   it("keeps unproven receivers unresolved despite same-named lexical methods", () => {
     const caller = symbol("Example.A.Start");
-    expect(engine.getCallees(caller.id).map((node) => node.qualifiedName))
-      .toEqual(["Example.A.GetOther"]);
+    expect(engine.getCallees(caller.id).map((node) => node.qualifiedName).sort())
+      .toEqual(["Example.A.GetOther", "Example.StaticB.Run"]);
     const db = openSqlite(join(root, ".mex", "graph.db"));
     try {
       expect(db.prepare(`
@@ -98,7 +111,6 @@ describe("C# graph persistence and resolution", () => {
         ORDER BY reference_name
       `).all(caller.id)).toEqual([
         { reference_name: "GetOther().Run", receiver: "GetOther()", status: "unresolved", target_id: null, confidence: 0 },
-        { reference_name: "StaticB.Run", receiver: "StaticB", status: "unresolved", target_id: null, confidence: 0 },
         { reference_name: "base.Run", receiver: "base", status: "unresolved", target_id: null, confidence: 0 },
         { reference_name: "other.Run", receiver: "other", status: "unresolved", target_id: null, confidence: 0 },
       ]);
@@ -135,30 +147,27 @@ describe("C# graph persistence and resolution", () => {
     expect(engine.getOutgoing(child.id, ["implements"])).toEqual([]);
   });
 
-  it("retains qualified type references without binding same-named lexical types", () => {
-    const db = openSqlite(join(root, ".mex", "graph.db"));
-    try {
-      for (const [owner, kind, reference] of [
-        ["Collisions.QualifiedChild", "extends", "Elsewhere.Base"],
-        ["Collisions.GlobalChild", "extends", "global::Elsewhere.Base"],
-        ["Collisions.QualifiedImplements", "implements", "Elsewhere.IContract"],
-        ["Collisions.GlobalImplements", "implements", "global::Elsewhere.IContract"],
-        ["Collisions.Factory.QualifiedCreate", "instantiates", "Elsewhere.Resource"],
-        ["Collisions.Factory.GlobalCreate", "instantiates", "global::Elsewhere.Resource"],
-        ["Collisions.Factory.GlobalRootCreate", "instantiates", "global::Resource"],
-      ] as const) {
-        const source = symbol(owner);
-        expect(engine.getOutgoing(source.id, [kind])).toEqual([]);
-        expect(db.prepare(`
-          SELECT reference_name, reference_kind, status, target_id, confidence
-          FROM unresolved_refs WHERE from_node_id = ? AND reference_name = ?
-        `).all(source.id, reference)).toEqual([
-          { reference_name: reference, reference_kind: kind, status: "unresolved", target_id: null, confidence: 0 },
-        ]);
-      }
-    } finally {
-      db.close();
+  it("binds qualified type references through their namespace, never to same-named lexical types", () => {
+    for (const [owner, kind, target] of [
+      ["Collisions.QualifiedChild", "extends", "Elsewhere.Base"],
+      ["Collisions.GlobalChild", "extends", "Elsewhere.Base"],
+      ["Collisions.QualifiedImplements", "implements", "Elsewhere.IContract"],
+      ["Collisions.GlobalImplements", "implements", "Elsewhere.IContract"],
+      ["Collisions.Factory.QualifiedCreate", "instantiates", "Elsewhere.Resource"],
+      ["Collisions.Factory.GlobalCreate", "instantiates", "Elsewhere.Resource"],
+      ["Collisions.Factory.GlobalRootCreate", "instantiates", "Resource"],
+    ] as const) {
+      expect(engine.getOutgoing(symbol(owner).id, [kind]).map((neighbor) => neighbor.node.qualifiedName), owner)
+        .toEqual([target]);
     }
+  });
+
+  it("binds types and static calls across files only through a using directive", () => {
+    const sink = symbol("Lib.Core.Sink");
+    expect(engine.getOutgoing(symbol("App.User").id, ["extends"]).map((neighbor) => neighbor.node.id)).toEqual([sink.id]);
+    expect(engine.getCallees(symbol("App.User.Go").id).map((node) => node.qualifiedName)).toEqual(["Lib.Core.Sink.Emit"]);
+    expect(engine.getOutgoing(symbol("Other.NoUsing").id, ["extends"])).toEqual([]);
+    expect(engine.getCallees(symbol("Other.NoUsing.Go").id)).toEqual([]);
   });
 
   it("still resolves unqualified inheritance and construction in lexical scope", () => {

@@ -83,6 +83,10 @@ export function extractFile(
 ): FileExtraction | null {
   const extractor = getExtractor(language);
   if (!extractor) return null;
+  // Tree-sitter's Python grammar can classify CRLF continuations differently.
+  // Parse a checkout-neutral buffer; freshness still hashes the captured bytes
+  // and line/column locations remain valid in the original source.
+  source = source.replace(/\r\n/gu, "\n");
   const tree = parse(source, language);
   if (!tree) return null;
   try {
@@ -152,6 +156,7 @@ export function normalizedAstTokens(
   source: string,
   ranges: ReadonlyArray<{ id: string; startLine: number; endLine: number }>,
 ): Map<string, string[]> {
+  source = source.replace(/\r\n/gu, "\n");
   const tree = parse(source, detectLanguage(filePath));
   if (!tree) return new Map();
   try {

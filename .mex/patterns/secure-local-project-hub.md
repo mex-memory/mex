@@ -11,12 +11,12 @@ edges:
     condition: "when persisting a Hub job or migrating team.db"
   - target: "context/architecture.md"
     condition: "when wiring a real Graph or Wiki adapter"
-last_updated: 2026-09-11
+last_updated: 2026-10-09
 mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
   status: promoted
-  revision: 10
+  revision: 11
   title: secure-local-project-hub
   grounds_to:
     - node: function:188820af31f0d74c6518f6926f559877
@@ -76,6 +76,13 @@ preview/apply services.
 
 ## Gotchas
 
+- Setup failures need a browser-safe explanation at the producer. Use the
+  internal `SetupError.userMessage` contract for expected failures; retain raw
+  filesystem, Git, worker, and database diagnostics in `message`/`cause` only.
+  Classify maintenance codes and use registry-owned Wiki remediation rather
+  than forwarding exception text. Keep both run error fields within 512
+  characters, preserve cancellation precedence, and test the real runner's
+  failure and retry path as well as mocked error projection.
 - WHATWG URL construction normalizes traversal and backslashes; native request
   targets need their own pre-normalization gate.
 - A HEAD request may be routed through a GET handler. Reject it before reserving
@@ -154,6 +161,12 @@ preview/apply services.
   carry no output backlog. Never put the transcript into repeated run snapshots.
   Browser retention is independently bounded, with a limited text/row window,
   literal selectable text, stable scrollback, and explicit Follow latest.
+- Allocate a setup transcript identity only after the first retained agent
+  output, then announce it on the run snapshot. Starting or checking setup can
+  skip the agent entirely; commit checks, manual population, and finalization
+  must not fabricate an empty session. Show real startup activity until output
+  arrives, and retain actual session history through finalization and commit
+  review. Verify both the absent-session path and replay after a page refresh.
 - Cap individual provider records, tool correlation, and SSE cadence; discard
   malformed/oversized records and require recognized terminal success. Claude
   partial/final text, Codex cumulative assistant text, and tool lifecycle

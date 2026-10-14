@@ -97,6 +97,15 @@ export interface SearchPage extends Page<SearchPageHit> {
   unmatchedTerms: string[];
 }
 
+/** A compact explanation of one cached grounding verdict, separate from lifecycle. */
+export interface SearchGrounding {
+  nodeId: string;
+  resolvedNodeId: string | null;
+  health: GroundingHealth | null;
+  state: string | null;
+  reason: string | null;
+}
+
 /** Per-term bound for the broader tier; the same ceiling `list` reads to. */
 const SOME_TERMS_PER_TERM_LIMIT = 2000;
 
@@ -392,6 +401,20 @@ export class WikiQuerySession {
       health: row.health === null ? null : (row.health as GroundingHealth),
       state: row.state,
     }));
+  }
+
+  /** Search exposes at most 25 links per hit, with an honest overflow signal. */
+  searchGroundingsFor(id: string): { items: SearchGrounding[]; truncated: boolean } {
+    const rows = this.db.prepare(`SELECT g.node_id, g.resolved_node, g.health, g.state,
+      CASE WHEN json_valid(g.resolution) THEN substr(json_extract(g.resolution, '$.reason'), 1, 1024) END AS reason
+      FROM wiki_groundings g JOIN wiki_entities e ON e.entity_key = g.entity_key
+      WHERE e.id = ? AND e.shadowed = 0 ORDER BY g.ordinal LIMIT 26`).all(id) as {
+        node_id: string; resolved_node: string | null; health: GroundingHealth | null; state: string | null; reason: string | null;
+      }[];
+    return { items: rows.slice(0, 25).map(row => ({
+      nodeId: row.node_id, resolvedNodeId: row.resolved_node, health: row.health, state: row.state,
+      reason: row.reason ?? (row.health === "changed" ? "The grounded code changed; re-check this claim." : null),
+    })), truncated: rows.length > 25 };
   }
 
   /**

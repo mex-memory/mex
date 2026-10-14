@@ -23,7 +23,7 @@ function fixture(count = 32, dense = false, grounded = false) {
       : index === 0 ? [1] : [];
     return `id: ${id(index)}\ntype: ${index === 0 ? "architecture" : "component"}\nstatus: ${index === count - 1 ? "archived" : "promoted"}\nrevision: 1\n`
       + (targets.length ? `relations:\n${targets.map((target) => `  - type: related_to\n    target: ${id(target)}\n    note: Recorded connection ${index} to ${target}\n`).join("")}` : "")
-      + (grounded && index === 0 ? `grounds_to:\n  - node: ${NODE}\n    fingerprint: ${FINGERPRINT}\n` : "");
+      + (grounded && index === 0 ? `grounds_to:\n  - node: ${NODE}\n    fingerprint: ${FINGERPRINT}\n    bodyHash: ${"c".repeat(64)}\n` : "");
   };
   writeFileSync(path, `---\nmex:\n${metadata(0).split("\n").filter(Boolean).map((line) => `  ${line}\n`).join("")}---\n# Unit 000\n\nA document entity.\n\n`
     + Array.from({ length: count - 1 }, (_, i) => i + 1).map((index) => (

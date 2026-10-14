@@ -359,3 +359,53 @@ describe("check grounds against a graph stale only by changed source (#228)", ()
     expect(stale.warnings.join("\n")).toContain("grounding checks skipped");
   }, 120_000);
 });
+
+describe("check grounds against a graph with incompletely parsed files", () => {
+  const BROKEN = "export function partialTarget(): number { return 1; }\nexport const broken = ;\n";
+
+  it("keeps exact verdicts for fully parsed files and marks the parse gap unverified", async () => {
+    const { root, scaffold, config, ids } = await fixture();
+    const fresh = await check(config);
+    write(root, "src/fixtures/broken.ts", BROKEN);
+    await rebuild(root);
+    const degraded = await check(config);
+    expect(degraded.report.graphStatus.status).toBe("degraded");
+    // Before, a single unparseable fixture skipped every grounding and scored 100.
+    expect(verdicts(degraded.report, ids)).toEqual(verdicts(fresh.report, ids));
+    expect(verdicts(degraded.report, ids).predrifted).toBe("GROUNDING_DRIFT");
+    expect(degraded.warnings.join("\n")).toContain("groundings in incompletely parsed source files were marked unverified");
+
+    // A target inside the partial file, and one the graph lacks, cannot be settled.
+    const engine = createGraphEngine({ rootDir: root });
+    const partial = engine.searchNodes("partialTarget").find((node) => node.name === "partialTarget")!;
+    engine.close();
+    expect(partial.filePath).toBe("src/fixtures/broken.ts");
+    const template = extractGroundings(readFileSync(scaffold, "utf-8"))[0]!;
+    const missing = `function:${"0".repeat(32)}`;
+    writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), [
+      ...extractGroundings(readFileSync(scaffold, "utf-8")),
+      { ...template, node: partial.id },
+      { ...template, node: missing },
+    ]));
+    const gaps = await check(config);
+    const unverified = gaps.report.issues.filter((entry) => entry.code === "GROUNDING_UNVERIFIED");
+    expect(unverified.find((entry) => entry.message.includes(partial.id))!.message)
+      .toMatch(/cannot be verified while the graph has incomplete parses: .*src\/fixtures\/broken\.ts did not parse completely/u);
+    expect(unverified.find((entry) => entry.message.includes(missing))!.message)
+      .toContain("not in the graph, which could not fully parse src/fixtures/broken.ts");
+    expect(gaps.report.issues.some((entry) => entry.message.includes(missing) && entry.code !== "GROUNDING_UNVERIFIED"))
+      .toBe(false);
+    expect(gaps.report.score).toBeLessThan(degraded.report.score);
+  }, 120_000);
+
+  it("still detects a body edit when changed source and a parse gap combine", async () => {
+    const { root, config, ids } = await fixture();
+    write(root, "src/fixtures/broken.ts", BROKEN);
+    await rebuild(root);
+    applyEdits(root, { "py/body.py": EDITS["py/body.py"]! });
+    const both = await check(config);
+    expect(verdicts(both.report, ids).compute_total).toBe("GROUNDING_DRIFT");
+    expect(verdicts(both.report, ids).steady).toBe("OK");
+    expect(both.warnings.join("\n")).toContain("changed or incompletely parsed source files");
+  }, 120_000);
+});

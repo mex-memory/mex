@@ -1,19 +1,16 @@
 /**
- * The wiki's view of the one grounding baseline (D1).
+ * The Wiki's accessor for cached historical grounding source (D1).
  *
- * There is exactly one baseline store and it lives in `graph.db`. This module
- * is a subject-shaped accessor onto it, not a second copy: everything here
- * delegates to `FingerprintStore`, which is the code that has always owned that
- * table.
+ * The accepted change baseline is the `bodyHash` committed in Markdown. This
+ * module is a subject-shaped accessor onto `FingerprintStore` in disposable
+ * `graph.db`, not another canonical store.
  *
- * **What the baseline is for, and what it is not for.** It holds the node's
- * source and body hash as of the last grounding, so a reviewer can be shown the
- * old side of a diff. It is re-captured by an ordinary graph rebuild, which is
- * precisely why no resolution may reach a verdict from it — see `resolve.ts`.
- * The wiki index's `wiki_groundings` rows hold *derived* resolution and health;
- * delete `wiki.db` and they come back, because the canonical reference is in
- * Markdown and the baseline is recapturable from the graph. That is §20.5's
- * step 9 and it is why this file stores nothing of its own.
+ * The cached source and hash describe an explicitly captured grounding so a
+ * reviewer can see the old side of a diff. Rebuilding or deleting a disposable
+ * index cannot recreate lost historical source, and current code must never be
+ * substituted for it. Resolution compares the committed Markdown baseline;
+ * absent old source simply leaves finer comment/layout/fact review unavailable.
+ * Derived Wiki health can be rebuilt from Markdown without accepting new code.
  */
 
 import { FingerprintStore } from "../../graph/fingerprint-store.js";

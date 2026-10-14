@@ -109,6 +109,9 @@ export interface ParsedFrontmatter {
   keys: string[];
   /** Range of the `mex` key and its value, or null when absent. */
   mexKeyRange: SourceRange | null;
+  /** Authored discovery hints, used only by the file-level entity's derived FTS row. */
+  description?: string;
+  triggers?: string[];
 }
 
 /**

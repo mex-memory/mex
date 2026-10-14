@@ -136,8 +136,11 @@ export async function runDriftCheckWithGraphStatus(
   // refresh, so the score could not move for the very edit it exists to catch.
   // The runtime now checks unchanged files against the snapshot, re-derives
   // nodes in edited files exactly or reports them GROUNDING_UNVERIFIED, and
-  // never reconciles. Every other non-fresh reason still skips grounding.
+  // never reconciles. A snapshot with incompletely parsed files is checked the
+  // same way: groundings in fully parsed files are exact, the rest unverified.
+  // Every other non-fresh reason still skips grounding.
   let sourceDriftGrounding = false;
+  let parseDegradedGrounding = false;
   try {
     try {
       const loadRuntime = opts.groundingRuntimeLoader ? false : groundingRelevant;
@@ -149,7 +152,8 @@ export async function runDriftCheckWithGraphStatus(
       sourceDriftGrounding = !usesInjectedGroundingRuntime
         && groundingRuntime !== null
         && loaded.sourceDrift === true
-        && graphStatus.status === "stale";
+        && (graphStatus.status === "stale" || graphStatus.status === "degraded");
+      parseDegradedGrounding = sourceDriftGrounding && loaded.parseDegraded === true;
 
       if (usesInjectedGroundingRuntime) {
         // Preserve the historical injection seam while still inspecting graph
@@ -173,7 +177,7 @@ export async function runDriftCheckWithGraphStatus(
 
       if (!usesInjectedGroundingRuntime && groundingRelevant && graphStatus.status !== "fresh") {
         warnGraph(
-          graphFreshnessWarning(graphStatus, groundingRelevant, needsGroundingMigration, sourceDriftGrounding),
+          graphFreshnessWarning(graphStatus, groundingRelevant, needsGroundingMigration, sourceDriftGrounding, parseDegradedGrounding),
         );
       } else if (groundingRelevant && !groundingRuntime && !graphUpgradeNudgeShown) {
         graphUpgradeNudgeShown = true;
@@ -266,11 +270,12 @@ export async function runDriftCheckWithGraphStatus(
       }
     }
 
-    // A guard that saw the graph change mid-check marks the status degraded,
-    // so a source-drift batch is published only while it is still `stale`.
+    // A guard that saw the graph change mid-check records that diagnostic, so a
+    // partial batch is published only while the bound snapshot stayed valid.
     if (usesInjectedGroundingRuntime
       || graphStatus?.status === "fresh"
-      || (sourceDriftGrounding && graphStatus?.status === "stale")) {
+      || (sourceDriftGrounding
+        && !graphStatus?.diagnostics.some((entry) => entry.code === "GRAPH_INDEX_READER_DATABASE_CHANGED"))) {
       allIssues.push(...pendingGroundingIssues);
       checkerIssueCounts.push(...pendingGroundingIssueCounts);
     }
@@ -371,12 +376,17 @@ function graphFreshnessWarning(
   groundingRelevant: boolean,
   needsGroundingMigration: boolean,
   sourceDriftGrounding = false,
+  parseDegradedGrounding = false,
 ): string {
   const groundingNote = !groundingRelevant
     ? ""
-    : sourceDriftGrounding
-      ? "; groundings in changed source files were re-read or marked unverified"
-      : "; grounding checks skipped";
+    : !sourceDriftGrounding
+      ? "; grounding checks skipped"
+      : !parseDegradedGrounding
+        ? "; groundings in changed source files were re-read or marked unverified"
+        : status.changes.total > 0
+          ? "; groundings in changed or incompletely parsed source files were re-read or marked unverified"
+          : "; groundings in incompletely parsed source files were marked unverified";
   const command = graphRemediationCommand(status);
   const primary = status.diagnostics.find((entry) =>
     entry.code === "GRAPH_INDEX_READER_DATABASE_CHANGED"

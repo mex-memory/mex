@@ -7,11 +7,11 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { bodyTokenHash, codeHash, layoutHash, prepareCodeHashing } from "../../../graph/code-hash.js";
+import { bodyTokenHash, codeHash, declarationRenameHash, layoutHash, prepareCodeHashing } from "../../../graph/code-hash.js";
 import { createGroundingEvidence } from "../../../graph/grounding-evidence.js";
 import { factAnchors, factDrift } from "../fact-drift.js";
 import { resolveGrounding } from "../resolve.js";
@@ -37,10 +37,41 @@ describe("layoutHash", () => {
     expect(layoutHash("a.ts", before, 1, 6)).not.toBe(layoutHash("a.ts", before.replace("f(a, b)", "f(a - b)"), 1, 6));
   });
 
+  it("keeps empty statements, loop separators and ASI behavior visible", () => {
+    expect(bodyTokenHash("a.ts", "function f() { if (enabled); run(); }", true))
+      .not.toBe(bodyTokenHash("a.ts", "function f() { if (enabled) run(); }", true));
+    expect(bodyTokenHash("a.ts", "function f() { for (;;); run(); }", true))
+      .not.toBe(bodyTokenHash("a.ts", "function f() { for (;;) run(); }", true));
+    expect(bodyTokenHash("a.ts", "function f() { return\n(value); }", true))
+      .not.toBe(bodyTokenHash("a.ts", "function f() { return(value); }", true));
+  });
+
   it("hashes a method body on its own by parsing it inside a class", () => {
     const method = "  #add(method: string) {\n    return method.toUpperCase()\n  }";
     expect(bodyTokenHash("a.ts", method, true)).not.toBeNull();
     expect(bodyTokenHash("a.ts", method, true)).toBe(bodyTokenHash("a.ts", `${method.replace("()", "();")}`, true));
+  });
+});
+
+describe("declarationRenameHash", () => {
+  const before = "export function oldName(value: number) {\n  return value + 3600\n}";
+  it("sets aside just the outer name and layout", () => {
+    const hash = declarationRenameHash("a.ts", before);
+    expect(hash).not.toBeNull();
+    expect(declarationRenameHash("a.ts", before.replace("oldName", "newName").replace("3600", "3600;"))).toBe(hash);
+    expect(declarationRenameHash("a.ts", before.replace("oldName", "newName").replace("3600", "7200"))).not.toBe(hash);
+    expect(declarationRenameHash("a.ts", before.replaceAll("value", "input"))).not.toBe(hash);
+  });
+
+  it("supports an isolated method and refuses unfamiliar or broken slices", () => {
+    const before = "  #oldName(value: number) {\n    return value + 3600\n  }";
+    const hash = declarationRenameHash("a.ts", before);
+    expect(hash).not.toBeNull();
+    expect(declarationRenameHash("a.ts", before.replace("#oldName", "#newName"))).toBe(hash);
+    expect(declarationRenameHash("a.ts", before.replace("#oldName", "newName"))).not.toBe(hash);
+    expect(declarationRenameHash("a.ts", "constructor() {\n  run()\n}")).toBeNull();
+    expect(declarationRenameHash("a.unknown", before)).toBeNull();
+    expect(declarationRenameHash("a.ts", "function broken( {")).toBeNull();
   });
 });
 
@@ -70,7 +101,7 @@ describe("factDrift", () => {
     // `redirect` only names the declaration, leaving `302` alone: too little to locate the fact.
     expect(factDrift(fact, old, changed).kind).toBe("touched");
     expect(factDrift(fact, old, old.replace("  trace()\n", "  trace(302)\n")).kind).toBe("touched");
-    const far = "c.newResponse is called with 302 when no status is given.";
+    const far = "c.newResponse builds the reply with status 302.";
     expect(factDrift(far, old, changed)).toEqual({ kind: "nearby", anchors: ["newResponse", "302"] });
     expect(factDrift("It replies with 302.", old, changed).kind).toBe("touched"); // one anchor is not enough
   });
@@ -89,6 +120,16 @@ describe("factDrift", () => {
     const list = ["const METHODS = [", "  'get',", "  'post',", "  'put',", "] as const"].join("\n");
     const grown = list.replace("  'put',", "  'put',\n  'query',");
     expect(factDrift("METHODS lists get, post and put.", list, grown).kind).toBe("touched");
+  });
+
+  it("keeps h018 flagged when QUERY is added to the complete CORS defaults", () => {
+    const before = ["function cors() {", "  const origin = '*'", "  const methods = [",
+      "    'GET',", "    'HEAD',", "    'PUT',", "    'POST',", "    'DELETE',", "    'PATCH',",
+      "  ]", "  return { origin, methods }", "}"].join("\n");
+    const after = before.replace("    'PATCH',", "    'PATCH',\n    'QUERY',");
+    const fact = "cors() defaults to origin '*' and to allowing the methods GET, HEAD, PUT, POST, DELETE and PATCH.";
+    for (const method of ["GET", "HEAD", "PUT", "POST", "DELETE", "PATCH"]) expect(after).toContain(method);
+    expect(factDrift(fact, before, after).kind).toBe("touched");
   });
 
   it("does not anchor a fact to the symbol's own declaration", () => {
@@ -125,7 +166,7 @@ function graphWith(evidence: ChangeEvidence | null, current = "body-2"): Groundi
 const GROUNDED: WikiGrounding = { node: NODE, fingerprint: "mh:64:00", bodyHash: "body-1" };
 
 describe("resolution of a changed body with evidence", () => {
-  it("remembers a matching body", () => {
+  it("remembers the body a fresh resolution saw, so a later edit has an old side", () => {
     const graph = graphWith(null, "body-1");
     expect(resolveGrounding(GROUNDED, graph).health).toBe("fresh");
     expect(graph.remembered).toEqual([`${NODE}:body-1`]);
@@ -152,6 +193,16 @@ describe("resolution of a changed body with evidence", () => {
       drift: { kind: "changed-nearby", anchors: ["beta", "gamma"] },
     });
     expect(resolveGrounding(GROUNDED, graphWith(evidence), { fact: "It ends with zeta()." }).health).toBe("changed");
+  });
+
+  it("keeps h018 changed when its previously named methods are still present", () => {
+    const before = "function cors() {\n  return { origin: '*', methods: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE', 'PATCH'] }\n}";
+    const after = before.replace("'PATCH'", "'PATCH', 'QUERY'");
+    const resolution = resolveGrounding(GROUNDED, graphWith({ commentOnly: false, layoutOnly: false,
+      oldBody: before, newBody: after }), {
+      fact: "cors() defaults to origin '*' and to allowing the methods GET, HEAD, PUT, POST, DELETE and PATCH.",
+    });
+    expect(resolution).toMatchObject({ health: "changed", baselineBodyHash: "body-1" });
   });
 
   it("stays changed without evidence", () => {
@@ -192,5 +243,74 @@ describe("grounding evidence over real files", () => {
     current = "export function f(a: string) {\n  return g(a, 'y')\n}\n";
     write(current);
     expect(evidence.explainChange(committed, NODE)).toMatchObject({ commentOnly: false, layoutOnly: false });
+
+    current = v1.replace("function f(", "function renamed(");
+    write(current);
+    expect(evidence.explainChange(committed, NODE)).toMatchObject({ renameOnly: true });
+
+    current = current.replace('"x"', '"y"');
+    write(current);
+    expect(evidence.explainChange(committed, NODE)).toMatchObject({ renameOnly: false });
   });
+
+  it("refuses cache symlink ancestors without writing outside the checkout", () => {
+    for (const component of ["local", "grounded-bodies"]) {
+      const root = mkdtempSync(join(tmpdir(), "mex-cache-contained-"));
+      const outside = mkdtempSync(join(tmpdir(), "mex-cache-outside-"));
+      roots.push(root, outside);
+      mkdirSync(join(root, "src"));
+      mkdirSync(join(root, ".mex"));
+      const local = join(root, ".mex", "local");
+      if (component === "grounded-bodies") mkdirSync(local);
+      const link = component === "local" ? local : join(local, "grounded-bodies");
+      symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
+      const body = "export function f() { return 3600; }";
+      writeFileSync(join(root, "src", "a.ts"), body);
+      const bodyHash = createHash("sha256").update(body).digest("hex");
+      const evidence = createGroundingEvidence({ projectRoot: root,
+        getNode: () => ({ filePath: "src/a.ts", startLine: 1, endLine: 1, bodyHash }) });
+      expect(() => evidence.rememberBody(NODE, bodyHash)).not.toThrow();
+      expect(readdirSync(outside)).toEqual([]);
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    }
+  });
+
+  it("preserves a stale temp and writes a new private content-addressed cache file", () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-cache-owned-"));
+    roots.push(root);
+    mkdirSync(join(root, "src"));
+    const dir = join(root, ".mex", "local", "grounded-bodies");
+    mkdirSync(dir, { recursive: true });
+    const body = "export function f() { return 3600; }";
+    writeFileSync(join(root, "src", "a.ts"), body);
+    const bodyHash = createHash("sha256").update(body).digest("hex");
+    const target = join(dir, `${bodyHash}.txt`);
+    const stale = `${target}.${process.pid}.tmp`;
+    writeFileSync(stale, "unrelated stale temporary bytes");
+    const evidence = createGroundingEvidence({ projectRoot: root,
+      getNode: () => ({ filePath: "src/a.ts", startLine: 1, endLine: 1, bodyHash }) });
+    evidence.rememberBody(NODE, bodyHash);
+    expect(readFileSync(stale, "utf8")).toBe("unrelated stale temporary bytes");
+    expect(readFileSync(target, "utf8")).toBe(body);
+    expect(readdirSync(dir).sort()).toEqual([`${bodyHash}.txt`, `${bodyHash}.txt.${process.pid}.tmp`].sort());
+    if (process.platform !== "win32") expect(statSync(target).mode & 0o777).toBe(0o600);
+  });
+
+  it("never replaces an existing corrupt cache leaf", () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-cache-corrupt-"));
+    roots.push(root);
+    mkdirSync(join(root, "src"));
+    const dir = join(root, ".mex", "local", "grounded-bodies");
+    mkdirSync(dir, { recursive: true });
+    const body = "export function f() { return 3600; }";
+    writeFileSync(join(root, "src", "a.ts"), body);
+    const bodyHash = createHash("sha256").update(body).digest("hex");
+    const target = join(dir, `${bodyHash}.txt`);
+    writeFileSync(target, "existing bytes that do not hash to this key");
+    const evidence = createGroundingEvidence({ projectRoot: root,
+      getNode: () => ({ filePath: "src/a.ts", startLine: 1, endLine: 1, bodyHash }) });
+    expect(() => evidence.rememberBody(NODE, bodyHash)).not.toThrow();
+    expect(readFileSync(target, "utf8")).toBe("existing bytes that do not hash to this key");
+  });
+
 });

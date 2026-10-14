@@ -61,8 +61,8 @@ HARD RULES (non-negotiable):
 1. ONLY use information present in the ClusterContext. Never invent or assume missing code, intent, or architecture.
 2. Prefer PRIMARY evidence. Supporting evidence may refine a unit; it should not be the sole basis for one unless there is no primary evidence at all.
 3. Every unit MUST be grounded in one or more real nodeIds copied exactly from the context. If you cannot ground it, do not emit it.
-4. Prefer grounding to nodeIds of primary symbols.
-5. Units must be ATOMIC — one clear concept each. Split when a unit is doing two jobs.
+4. Prefer grounding to nodeIds of primary symbols, and include EVERY symbol whose change could make the claim false. A claim about a helper's caller or a shared constant needs that dependency as well; do not substitute one broad container for its supporting symbols.
+5. Units must be ATOMIC — one clear concept each. Split independent behavioral claims into separate units with their own groundings so a change to one does not flag the others. Keep the concrete identifiers and literals the claim depends on in its prose.
 6. Units must be SEMANTIC and reusable. Do not restate a function signature or narrate one code block.
 7. Every unit must be supported by concrete implementation evidence from the provided code.
 8. Prefer a few excellent units over many mediocre ones. An empty result is a valid and often correct answer.

@@ -17,6 +17,7 @@ const HEADLESS_CLAUDE_MEX_COMMANDS = [
   "mex graph get",
   "mex graph query",
   "mex graph status",
+  "mex wiki query",
   "mex impact",
   "mex logging",
   "mex log",

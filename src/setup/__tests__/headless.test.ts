@@ -8,6 +8,8 @@ import * as population from "../headless-population.js";
 import { runSetup } from "../index.js";
 import { MEX_ANCHOR_START } from "../anchor.js";
 import { loadConfiguredAiTools, loadConfiguredSetupMode, hasConfiguredAiTools } from "../../config.js";
+import * as config from "../../config.js";
+import { SetupError } from "../errors.js";
 
 const roots: string[] = [];
 
@@ -60,6 +62,47 @@ describe("headless setup status", () => {
 });
 
 describe("headless setup run", () => {
+  it("returns an actionable expected error for malformed config without replacing it", async () => {
+    const root = fixture();
+    mkdirSync(join(root, ".mex"));
+    writeFileSync(join(root, ".mex/config.json"), "{broken");
+    await expect(runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: [] })).rejects.toMatchObject({
+      userMessage: "Existing .mex/config.json is not a valid JSON object. Fix it before rerunning setup.",
+    });
+    expect(readFileSync(join(root, ".mex/config.json"), "utf8")).toBe("{broken");
+  });
+
+  it("identifies official skill conflicts without replacing user-owned files", async () => {
+    const root = fixture();
+    const skill = join(root, ".agents/skills/mex-inbox");
+    mkdirSync(skill, { recursive: true });
+    writeFileSync(join(skill, "SKILL.md"), "User-owned skill");
+    await expect(runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: ["codex"] })).rejects.toMatchObject({
+      userMessage: expect.stringContaining("Check .agents/skills/mex-inbox"),
+    });
+    expect(readFileSync(join(skill, "SKILL.md"), "utf8")).toBe("User-owned skill");
+  });
+
+  it("explains a config write failure without leaking raw filesystem diagnostics", async () => {
+    const root = fixture();
+    const cause = Object.assign(new Error("private path /secret/config"), { code: "ENOSPC" });
+    vi.spyOn(config, "saveAiTools").mockImplementation(() => { throw cause; });
+    const error = await runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: [] }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(SetupError);
+    expect(error).toMatchObject({ cause, message: cause.message });
+    expect((error as SetupError).userMessage).toContain("Could not save the AI tool selection in .mex/config.json.");
+    expect((error as SetupError).userMessage).toContain("Free disk space");
+    expect((error as SetupError).userMessage).not.toMatch(/private|secret/);
+  });
+
+  it("preserves the existing persistence check as an expected error", async () => {
+    const root = fixture();
+    vi.spyOn(config, "readScaffoldId").mockReturnValue(undefined);
+    await expect(runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: [] })).rejects.toMatchObject({
+      userMessage: "Could not persist .mex/config.json. Fix its permissions or contents and rerun setup.",
+    });
+  });
+
   it("delivers the real manual prompt and integration guidance before a population failure", async () => {
     const root = fixture();
     const authoredRules = `My existing agent rules.\n${MEX_ANCHOR_START}\n`;

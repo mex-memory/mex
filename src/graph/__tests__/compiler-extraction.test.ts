@@ -148,6 +148,86 @@ function identitySurface(result: ReturnType<typeof buildTypeScriptExtraction>): 
 }
 
 describe("TypeScript compiler extraction", () => {
+  it("names property-assigned functions and attributes their own calls to that symbol", () => {
+    const root = project({
+      "application.js": [
+        "const app = {};",
+        "function initialize() {}",
+        "app.init = function () { initialize(); };",
+        "app['handle'] = () => initialize();",
+        "function boot() { app.init(); app.handle(); }",
+        "app.recur = function named() { named(); };",
+        "",
+      ].join("\n"),
+    });
+    const file = buildTypeScriptExtraction(root, ["application.js"]).files[0]!;
+    const init = file.nodes.find((node) => node.name === "app.init")!;
+    const handle = file.nodes.find((node) => node.name === "app.handle")!;
+    const initialize = file.nodes.find((node) => node.name === "initialize")!;
+    const boot = file.nodes.find((node) => node.name === "boot")!;
+    const recur = file.nodes.find((node) => node.name === "app.recur")!;
+    expect(init).toMatchObject({ kind: "function", declarationRole: "function-assignment", startLine: 3 });
+    expect(handle).toMatchObject({ kind: "function", declarationRole: "function-assignment", startLine: 4 });
+    expect(file.references).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceId: init.id, targetId: initialize.id, kind: "calls", status: "resolved" }),
+      expect.objectContaining({ sourceId: handle.id, targetId: initialize.id, kind: "calls", status: "resolved" }),
+      expect.objectContaining({ sourceId: boot.id, targetId: init.id, kind: "calls", status: "resolved" }),
+      expect.objectContaining({ sourceId: boot.id, targetId: handle.id, kind: "calls", status: "resolved" }),
+      expect.objectContaining({ sourceId: recur.id, targetId: recur.id, kind: "calls", status: "resolved" }),
+    ]));
+    expect(file.nodes.some((node) => node.name === "<callback:BinaryExpression>")).toBe(false);
+  });
+
+  it("keeps dynamic assignment targets anonymous", () => {
+    const root = project({ "application.js": "const app = {}; let key = 'init'; app[key] = function () {};\n" });
+    const file = buildTypeScriptExtraction(root, ["application.js"]).files[0]!;
+    expect(file.nodes.some((node) => node.declarationRole === "function-assignment")).toBe(false);
+  });
+
+  it("keeps factory calls with the factory while a returned closure owns its own calls", () => {
+    const root = project({
+      "factory.js": [
+        "function initialize() {}",
+        "function mixin(target, source) {}",
+        "const proto = {};",
+        "export function createApplication() {",
+        "  const app = function () { initialize(); };",
+        "  mixin(app, proto);",
+        "  initialize();",
+        "  return app;",
+        "}",
+        "",
+      ].join("\n"),
+    });
+    const file = buildTypeScriptExtraction(root, ["factory.js"]).files[0]!;
+    const factory = file.nodes.find((node) => node.name === "createApplication")!;
+    const app = file.nodes.find((node) => node.qualifiedName === "createApplication::app")!;
+    const initialize = file.nodes.find((node) => node.name === "initialize")!;
+    const mixin = file.nodes.find((node) => node.name === "mixin")!;
+    expect(file.references).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceId: factory.id, targetId: mixin.id, kind: "calls", line: 5 }),
+      expect.objectContaining({ sourceId: factory.id, targetId: initialize.id, kind: "calls", line: 6 }),
+      expect.objectContaining({ sourceId: app.id, targetId: initialize.id, kind: "calls", line: 4 }),
+    ]));
+  });
+
+  it("preserves symbol and reference identity across LF and CRLF checkouts", () => {
+    const source = [
+      "export function helper() {}",
+      "export function invoke(callback: () => void) { callback(); }",
+      "export function run() {",
+      "  invoke(",
+      "    () => helper()",
+      "  );",
+      "}",
+      "",
+    ].join("\n");
+    const lf = project({ "module.ts": source });
+    const crlf = project({ "module.ts": source.replace(/\n/gu, "\r\n") });
+    expect(identitySurface(buildTypeScriptExtraction(crlf, ["module.ts"])))
+      .toEqual(identitySurface(buildTypeScriptExtraction(lf, ["module.ts"])));
+  });
+
   it("discovers configs, project references, and one inferred program for uncovered files", () => {
     const { root, candidates } = mainFixture();
     const discovered = discoverTypeScriptProjects(root, candidates);

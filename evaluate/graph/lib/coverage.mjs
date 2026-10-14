@@ -71,7 +71,7 @@ function directedPaths(sourceIds, targetIds, kinds, nodesById, edges) {
 
 function taskCoverage(task, nodes, edges) {
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const evidence = (task.gold ?? []).map((gold) => {
+  const inspectEvidence = (gold) => {
     const matches = nodes.filter((node) => selectorMatches(gold, node));
     return {
       symbol: gold.symbol,
@@ -89,7 +89,11 @@ function taskCoverage(task, nodes, edges) {
         kindAgrees: gold.kind === undefined ? null : gold.kind === node.kind,
       })),
     };
-  });
+  };
+  const evidence = (task.gold ?? []).map(inspectEvidence);
+  // Exact id lookup for source-only alternate/negative results must not change
+  // the gold denominator or construction coverage definitions.
+  const auxiliaryEvidence = [...(task.acceptableAlternates ?? []), ...(task.mustNotReturn ?? [])].map(inspectEvidence);
   const requiredFlows = (task.requiredFlows ?? []).map((flow) => {
     const sources = nodes.filter((node) => selectorMatches(flow.from, node));
     const targets = nodes.filter((node) => selectorMatches(flow.to, node));
@@ -103,6 +107,7 @@ function taskCoverage(task, nodes, edges) {
   return {
     taskId: task.id,
     evidence,
+    auxiliaryEvidence,
     totalEvidence: evidence.length,
     coveredEvidence: covered,
     missingEvidence: evidence.length - covered,

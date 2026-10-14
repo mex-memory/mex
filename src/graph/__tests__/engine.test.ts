@@ -16,6 +16,7 @@ import { createGraphEngine } from "../index.js";
 import type { GraphEngine } from "../engine.js";
 import { openSqlite } from "../db/sqlite.js";
 import { DB_SCHEMA_VERSION, readSchemaVersion } from "../db/database.js";
+import { FingerprintStore } from "../fingerprint-store.js";
 
 let root: string;
 let engine: GraphEngine;
@@ -42,6 +43,7 @@ beforeAll(async () => {
     join(root, "semantic-error.ts"),
     `export const semanticallyInvalid: number = "not a number";\n`,
   );
+  writeFileSync(join(root, "properties.ts"), "export class Context { _basePath = '/'; #req = undefined; }\n");
   writeFileSync(join(root, "package.json"), JSON.stringify({ dependencies: { express: "^5.0.0" } }));
   writeFileSync(join(root, "handlers.ts"), "export function importedHandler(): void {}\n");
   const bridgeLines = Array.from({ length: 110 }, (_, index) => `  // source bridge filler ${index + 1}`);
@@ -116,6 +118,19 @@ describe("GraphEngine build + reads", () => {
     expect(helper!.kind).toBe("function");
     expect(helper!.filePath).toBe("util.ts");
     expect(helper!.bodyHash).toBeTruthy();
+  });
+
+  it("retains grounding fingerprints and body hashes for public and private properties", () => {
+    const db = openSqlite(join(root, ".mex", "graph.db"));
+    try {
+      const fingerprints = new FingerprintStore(db);
+      for (const name of ["_basePath", "#req"]) {
+        const property = engine.getNode(findId(name))!;
+        expect(property.kind).toBe("property");
+        expect(property.bodyHash).toMatch(/^[0-9a-f]{64}$/u);
+        expect(fingerprints.get(property.id)).toEqual(expect.objectContaining({ tokenCount: expect.any(Number) }));
+      }
+    } finally { db.close(); }
   });
 
   it("getNode returns null for an unknown id (Tier-1 miss)", () => {

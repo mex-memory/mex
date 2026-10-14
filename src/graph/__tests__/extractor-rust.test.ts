@@ -66,7 +66,7 @@ describe("Rust extractor", () => {
   it("emits calls and implements references", () => {
     expect(hasEdge("implements", "Greeter")).toBe(true);
     expect(hasEdge("calls", "HashMap::new")).toBe(true);
-    expect(hasEdge("calls", "insert")).toBe(true);
+    expect(hasEdge("calls", "map.insert")).toBe(true);
     expect(hasEdge("calls", "admin::is_admin")).toBe(true);
   });
 

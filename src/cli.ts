@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { Command, InvalidArgumentError } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -175,6 +175,36 @@ async function runBrowserCommand(options: { port?: number; open: boolean; mode?:
   await launchHub({ port: options.port, openBrowser: options.open, mode: options.mode, setup: options.setup });
 }
 
+async function reportSetupCommandError(error: unknown): Promise<void> {
+  const { SetupError } = await import("./setup/errors.js");
+  console.error(error instanceof SetupError ? error.userMessage : error instanceof Error ? error.message : String(error));
+  if (error instanceof SetupError && error.message !== error.userMessage) console.error(`Diagnostics: ${error.message}`);
+  process.exitCode = 1;
+}
+
+async function runSetupCommand(options: {
+  browser?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean; tool?: string[]; yes?: boolean;
+}): Promise<void> {
+  try {
+    if (options.browser) {
+      await runBrowserCommand({ ...options, setup: true });
+      return;
+    }
+    const setup = await import("./setup/index.js");
+    const result = await setup.runSetup({
+      dryRun: options.dryRun,
+      mode: options.mode,
+      port: options.port,
+      openBrowser: options.open,
+      ...(options.tool === undefined ? {} : { tools: setup.parseSetupTools(options.tool) }),
+      ...(options.yes ? { yes: true } : {}),
+    });
+    process.exitCode = result.exitCode;
+  } catch (error) {
+    await reportSetupCommandError(error);
+  }
+}
+
 // ── Telemetry hooks ──
 
 const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command) => {
@@ -192,7 +222,13 @@ program
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
   .option("--no-open", "Print the Hub link without opening a browser")
   .action(async (opts: { port?: number; open: boolean }) => {
-    await runBrowserCommand(opts);
+    try {
+      const { resolveDefaultEntry } = await import("./setup/entry.js");
+      if (await resolveDefaultEntry() === "hub") await runBrowserCommand(opts);
+      else await runSetupCommand(opts);
+    } catch (error) {
+      await reportSetupCommandError(error);
+    }
   });
 
 program
@@ -301,37 +337,20 @@ program.addCommand(buildSpecCommand({
   io: processTeamCommandIo(),
 }));
 
-// ── Setup (browser by default; explicit terminal and read-only paths) ──
+// ── Setup (terminal by default; explicit browser and read-only paths) ──
 program
   .command("setup")
-  .description("Set up MEX in the local Hub; use --cli for terminal setup")
-  .option("--cli", "Run setup in the terminal")
+  .description("Set up MEX in the terminal; use --browser for browser setup")
+  .option("--cli", "Run setup in the terminal (the default)")
+  .addOption(new Option("--browser", "Run setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes"]))
   .option("--mode <mode>", "Template mode: code-repo or agent-memory (preserves saved mode)")
   .option("--dry-run", "Show what would happen without making changes")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
-  .option("--no-open", "Print the setup link without opening a browser")
-  .option("--tool <tool>", "Terminal setup: use this AI tool instead of asking (repeatable; none for no tool)", (value: string, previous: string[] = []) => [...previous, value])
+  .option("--no-open", "Show the Hub link without opening a browser")
+  .option("--tool <tool>", "Terminal setup: preselect an AI tool (repeatable; none for no tool; --yes skips review)", (value: string, previous: string[] = []) => [...previous, value])
   .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
   .action(async (_opts, command: Command) => {
-    const opts = command.optsWithGlobals<{ cli?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean; tool?: string[]; yes?: boolean }>();
-    try {
-      if (opts.cli || opts.dryRun || opts.tool !== undefined || opts.yes) {
-        if (opts.port !== undefined || opts.open === false) throw new Error("--port and --no-open apply to browser setup. Omit them with --cli or --dry-run.");
-        const setup = await import("./setup/index.js");
-        await setup.runSetup({
-          dryRun: opts.dryRun,
-          mode: opts.mode,
-          ...(opts.tool === undefined ? {} : { tools: setup.parseSetupTools(opts.tool) }),
-          ...(opts.yes ? { yes: true } : {}),
-        });
-      } else {
-        await runBrowserCommand({ ...opts, setup: true });
-      }
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
+    await runSetupCommand(command.optsWithGlobals());
   });
 
 // ── Official agent skills ──
@@ -551,13 +570,14 @@ graphCommand
 
 graphCommand
   .command("query <relation> <target>")
-  .description("Query graph structure: who-calls, what-calls, or where-defined")
+  .description("Query who-calls, what-calls, or where-defined by symbol, node id, or indexed file:line")
   .option("--detail <level>", "minimal | standard | source", "minimal")
   .option("--max-nodes <n>", "maximum results to return")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
-  .action((relation, target, options) => {
-    return import("./graph/cli-agent.js").then(({ runGraphQuery }) => runGraphQuery(relation, target, process.cwd(), {}, options));
+  .action(async (relation, target, options) => {
+    const { createGraphCliWriter } = await import("./graph-cli-output.js");
+    return import("./graph/cli-agent.js").then(({ runGraphQuery }) => runGraphQuery(relation, target, process.cwd(), { write: createGraphCliWriter() }, options));
   });
 
 graphCommand
@@ -582,7 +602,8 @@ graphCommand
             knowledgeRecordsFor(nodeIds).map((record) => ({ ...record })),
         }))
       : {};
-    return runGraphScope(task.join(" "), process.cwd(), deps, options);
+    const { createGraphCliWriter } = await import("./graph-cli-output.js");
+    return runGraphScope(task.join(" "), process.cwd(), { ...deps, write: createGraphCliWriter() }, options);
   });
 
 // ── Wiki ──
@@ -788,40 +809,24 @@ wikiCommand
  */
 async function synthesisIo(): Promise<import("./wiki/cli/commands.js").CommandIo> {
   const base = wikiIo();
-  const config = loadConfig();
-  const { resolve } = await import("node:path");
-  const { existsSync } = await import("node:fs");
-  const dbPath = resolve(config.projectRoot, ".mex", "graph.db");
-  if (!existsSync(dbPath)) return base;
+  const config = findConfig();
 
   const [
-    { createGroundingGraph, createSynthesisGraph },
-    { openGraphDatabase },
-    { createGraphEngine },
-    { MinHashReconciler },
-    { FingerprintStore },
+    { createRepositoryGraphPort },
     { AI_TOOLS },
     { isCliAvailable },
     { runToolInteractive },
   ] = await Promise.all([
-    import("./wiki/grounding/adapter.js"),
-    import("./graph/db/database.js"),
-    import("./graph/engine-impl.js"),
-    import("./graph/reconcile-engine.js"),
-    import("./graph/fingerprint-store.js"),
+    import("./graph/application-adapter.js"),
     import("./types.js"),
     import("./cli-tools.js"),
     import("./sync/index.js"),
   ]);
 
-  await (await import("./graph/code-hash.js")).prepareCodeHashing().catch(() => undefined);
-  const db = openGraphDatabase(dbPath);
-  const engine = createGraphEngine({ rootDir: config.projectRoot, dbPath });
   return {
     ...base,
     repoRoot: config.projectRoot,
-    codeGraph: createSynthesisGraph(engine, db),
-    graph: createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db, { projectRoot: config.projectRoot }),
+    synthesisBridge: createRepositoryGraphPort(config.projectRoot),
     ...(config.wiki?.synthesis === undefined ? {} : { synthesisScope: config.wiki.synthesis }),
     launchAgent: (playbook: string) => {
       // mex's own launcher, not a second one: six tools, cross-platform
@@ -848,7 +853,7 @@ wikiCommand
   .option("--json", "emit one enveloped JSON object; never launches an agent")
   .action(async (options) => {
     const { runBuild } = await import("./wiki/cli/commands.js");
-    runBuild(await synthesisIo(), { ...options, print: options.print === true || options.json === true });
+    await runBuild(await synthesisIo(), { ...options, print: options.print === true || options.json === true });
   });
 
 wikiCommand
@@ -859,7 +864,7 @@ wikiCommand
   .option("--json", "emit one enveloped JSON object")
   .action(async (options) => {
     const { runPrepare } = await import("./wiki/cli/commands.js");
-    runPrepare(await synthesisIo(), options);
+    await runPrepare(await synthesisIo(), options);
   });
 
 wikiCommand
@@ -872,7 +877,7 @@ wikiCommand
   .option("--json", "emit one enveloped JSON object")
   .action(async (file: string, options) => {
     const { runPropose } = await import("./wiki/cli/commands.js");
-    runPropose(await synthesisIo(), file, options);
+    await runPropose(await synthesisIo(), file, options);
   });
 
 wikiCommand
@@ -896,8 +901,9 @@ graphCommand
   .option("--detail <level>", "source (get always returns source)", "source")
   .option("--max-source-lines <n>", "per-node source line cap")
   .option("--max-output-tokens <n>", "hard output token ceiling")
-  .action((ids: string[], options) => {
-    return import("./graph/cli-agent.js").then(({ runGraphGet }) => runGraphGet(ids, process.cwd(), {}, options));
+  .action(async (ids: string[], options) => {
+    const { createGraphCliWriter } = await import("./graph-cli-output.js");
+    return import("./graph/cli-agent.js").then(({ runGraphGet }) => runGraphGet(ids, process.cwd(), { write: createGraphCliWriter() }, options));
   });
 
 graphCommand
@@ -957,14 +963,16 @@ graphCommand
 
 program
   .command("impact <target>")
-  .description("Show transitive code and scaffold blast radius for a symbol or file")
+  .description("Show transitive code and scaffold blast radius for a symbol, node id, file, or indexed file:line")
+  .addOption(new Option("--direction <direction>", "proven call edges: callers (default), callees, or both").choices(["callers", "callees", "both"]))
   .option("--detail <level>", "minimal | standard | source", "minimal")
-  .option("--depth <n>", "transitive caller depth", "2")
+  .option("--depth <n>", "transitive call-edge depth", "2")
   .option("--max-nodes <n>", "maximum impacted nodes to return")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
-  .action((target, options) => {
-    return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), {}, options));
+  .action(async (target, options) => {
+    const { createGraphCliWriter } = await import("./graph-cli-output.js");
+    return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), { write: createGraphCliWriter() }, options));
   });
 
 // ── Agent Memory Events ──
@@ -1307,9 +1315,9 @@ program
   .description("List all available commands and scripts")
   .action(() => {
     console.log(chalk.bold("\nCLI Commands") + chalk.dim("  (run from project root)\n"));
-    console.log("  mex                    Open the local Hub (or setup for a new project)");
-    console.log("  mex setup              Set up MEX in the local browser Hub");
-    console.log("  mex setup --cli        Use the terminal setup flow");
+    console.log("  mex                    Open the Hub, or terminal setup for a new project");
+    console.log("  mex setup              Set up MEX in the terminal HUD");
+    console.log("  mex setup --browser    Use the browser setup flow");
     console.log("  mex setup --dry-run    Preview setup without making changes");
     console.log("  mex skills sync        Install/update official skills for configured agents");
     console.log("  mex skills sync --dry-run --json  Preview skill and instruction changes as JSON");

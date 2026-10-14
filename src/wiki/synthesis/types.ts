@@ -132,6 +132,8 @@ export interface ContextGraphNode {
 
 /** The reads context extraction makes. */
 export interface ContextGraphReader {
+  /** Use immutable, hash-matched source when the reader owns a repository snapshot. */
+  readFileLines?(filePath: string): string[] | null;
   describeNode(id: string): ContextGraphNode | null;
   callersOf(nodeId: string): string[];
   calleesOf(nodeId: string): string[];

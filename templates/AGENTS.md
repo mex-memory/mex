@@ -34,6 +34,9 @@ last_updated: [YYYY-MM-DD]
      - Lint: `npm run lint`
      - Build: `npm run build` -->
 
+## Project Knowledge
+For a question about project decisions, conventions, or behavior, start with `mex wiki query "<question>" --limit 5 --json`. Inspect matched terms and each grounding's health: partial matches are leads, and `changed` means re-check the claim against code. If the index is unavailable, follow `ROUTER.md` or start from `mex graph scope "<task>"`. Reads never rebuild or refresh an index.
+
 ## Code Graph
 Use the smallest relevant structured resolver. For Inbox or Relay mutations, resolve only the intended action with `mex inbox contract --action <command-id> --json` or `mex relay contract --action <command-id> --json`; use `mex capabilities --json` only for broader capability discovery. If the user explicitly asks to create, save, or draft a checkout-local Inbox or Relay draft, preview and apply that exact draft without asking for redundant confirmation. Deleting a local draft, or publishing, approving, rejecting, withdrawing, marking stale, repairing, taking or acknowledging, or closing, requires fresh explicit confirmation after semantic preview. Treat Git commit, push, and pull as separate actions requiring their own authorization.
 

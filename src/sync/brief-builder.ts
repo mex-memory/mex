@@ -131,7 +131,18 @@ ${list}
 
 For each entity, compare its text with the grounded code as recorded ("Old body"
 above) and as it is now ("New body", or \`mex graph get <nodeId>\`). Check every
-statement, then decide exactly one:
+statement, including complete lists, exclusions, defaults, and negative claims.
+Check what was added as well as what disappeared: unchanged named tokens do not
+prove that a claim remains true. For example, h018 says the complete CORS default
+method list is GET, HEAD, PUT, POST, DELETE, PATCH. Adding QUERY falsifies that
+claim even though every previously named method is still present. Inspect every
+symbol the fact depends on, including constants or helpers outside its one link;
+relink the fact to all load-bearing dependencies when repairing it.
+
+Successful agent execution and renewed hashes are not semantic approval. Only
+re-record after this comparison establishes the text, and put the review evidence
+in the operation's --reason. If evidence is incomplete, choose UNSURE.
+Then decide exactly one:
 
 - STILL TRUE: every statement holds for the current code. Run
   \`mex wiki reground <entity-id> --apply\`. It re-records every link of the

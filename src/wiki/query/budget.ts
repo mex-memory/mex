@@ -14,9 +14,9 @@
  * that go with it.
  */
 
-import { BudgetLedger, estimateTokens } from "../../graph/agent-protocol.js";
+import { BudgetLedger, estimateTokens, FRAMING_RESERVE } from "../../graph/agent-protocol.js";
 
-export { estimateTokens, BudgetLedger };
+export { estimateTokens, BudgetLedger, FRAMING_RESERVE };
 
 /** D10's default neighbourhood budget. */
 export const DEFAULT_NEIGHBORHOOD_TOKENS = 4000;

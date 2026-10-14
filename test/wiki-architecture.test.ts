@@ -764,8 +764,10 @@ describe("no unscoped scaffold writes", () => {
     // textual guard counts the wiki modules do not have.
     const FD_WRITE_CALLS = /\b(writeSync|ftruncateSync)\s*\(/g;
     const KNOWN: Readonly<Record<string, string>> = {
+      "src/agent-prompt.ts": "writes and removes one private prompt file for an oversized agent brief (interactive setup, sync)",
       "src/agent-skills/installer.ts": "atomically installs fixed packaged skill trees and marker-scoped root instructions",
       "src/graph/audit-record.ts": "writes only the local audited-digest record beside the graph index it describes",
+      "src/graph/candidate-entry.ts": "writes bounded worker failure diagnostics only to stderr (fd 2), never scaffold files",
       "src/graph/candidate-process.ts": "removes only the identity-bound parent-owned temporary workspace after the candidate child closes",
       "src/graph/engine-impl.ts": "writes only a private, bounded temporary source spool that is removed before graph publication",
       "src/graph/grounding-evidence.ts": "writes only checkout-local, content-addressed grounded bodies under .mex/local/grounded-bodies",
@@ -781,7 +783,6 @@ describe("no unscoped scaffold writes", () => {
       "src/setup/anchor.ts": "edits root tool configs only, never .mex/, and only inside its own markers",
       "src/setup/global-install.ts": "removes only the private temporary npm working directory after the owned global installation finishes",
       "src/setup/ignore.ts": "creates or appends only the setup-managed .mex/.gitignore rules",
-      "src/setup/population.ts": "writes and removes one ignored private prompt file for the interactive setup session",
       "src/team/artifacts/filesystem.ts": "atomically publishes bounded team-owned canonical artifacts",
       "src/team/local-state/receipt-signer.ts": "atomically provisions the bounded local-only C preview signing credential",
       "src/team/relay/cli/local-preview.ts": "removes only the exact contained checkout-local Relay receipt after successful apply",
@@ -803,6 +804,13 @@ describe("no unscoped scaffold writes", () => {
     const runtime = withoutComments(read("src/graph/runtime.ts"));
     expect([...runtime.matchAll(/writeFileSync\s*\(/g)]).toHaveLength(1);
     expect([...runtime.matchAll(/renameSync\s*\(/g)]).toHaveLength(1);
+
+    // The worker's fd writer is a stderr diagnostic sink, not a file-write
+    // exemption. Keep its only direct write on fd 2 and catch added mutations.
+    const candidateEntry = withoutComments(read("src/graph/candidate-entry.ts"));
+    expect([...candidateEntry.matchAll(WRITE_CALLS)]).toHaveLength(0);
+    expect([...candidateEntry.matchAll(FD_WRITE_CALLS)]).toHaveLength(1);
+    expect(candidateEntry).toMatch(/\bwriteSync\s*\(\s*2\s*,/);
   });
 
   it("does not constrain code outside the wiki engine", () => {

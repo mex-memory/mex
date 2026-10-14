@@ -109,7 +109,7 @@ function withGraph<T>(project: Project, body: (graph: GroundingGraph, db: Return
   const db = openGraphDatabase(dbPath);
   try {
     const reconciler = new MinHashReconciler(new FingerprintStore(db));
-    return body(createGroundingGraph(engine, reconciler, db), db);
+    return body(createGroundingGraph(engine, reconciler, db, { projectRoot: project.root }), db);
   } finally {
     engine.close();
     db.close();
@@ -142,6 +142,7 @@ function writeEntity(project: Project, grounding: WikiGrounding, status = "promo
       `## Refresh tokens rotate hourly\n\nThe rotation window is one hour.\n`,
     "utf-8",
   );
+  if (grounding.bodyHash) withGraph(project, (graph) => graph.rememberBody?.(grounding.node, grounding.bodyHash!));
 }
 
 /** The groundings the entity declares, read back out of Markdown via the index. */

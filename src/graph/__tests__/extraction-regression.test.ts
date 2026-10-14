@@ -154,6 +154,24 @@ describe("Graph Extraction Regression", () => {
   });
 
   describe("fallback parser recovery", () => {
+    it("extracts identical Python continuations, declarations and calls with LF or CRLF", () => {
+      const source = [
+        "intersphinx_mapping = {",
+        ...Array.from({ length: 10 }, (_, index) => `    'subject${index}': ('https://docs.example.com/subject${index}', None),`),
+        "}",
+        "ResponseValue = (",
+        "    str | bytes",
+        ")",
+        "def render():",
+        "    return ResponseValue()",
+        "",
+      ].join("\n");
+      const lf = extractFile("src/typing.py", source)!;
+      const crlf = extractFile("src/typing.py", source.replace(/\n/gu, "\r\n"))!;
+      expect(lf.nodes.some((entry) => entry.name === "ResponseValue")).toBe(true);
+      expect(crlf).toEqual(lf);
+    });
+
     it("keeps healthy Python declarations and withholds declarations intersecting errors", () => {
       const result = extractFile(
         "src/recovery.py",

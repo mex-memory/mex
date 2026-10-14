@@ -377,6 +377,10 @@ export function parseWikiMarkdown(options: ParseOptions): ParsedFile {
       range: { start: block.start, end: block.end },
       keys: topLevelKeys(block),
       mexKeyRange: mexRange === null ? null : { start: mexRange.keyStart, end: mexRange.valueEnd },
+      ...(typeof rootMap?.["description"] === "string" ? { description: rootMap["description"] } : {}),
+      ...(Array.isArray(rootMap?.["triggers"])
+        ? { triggers: rootMap["triggers"].filter((value): value is string => typeof value === "string") }
+        : {}),
     };
 
     if (rootMap === null) {

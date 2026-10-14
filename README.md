@@ -7,7 +7,7 @@
 **Shared project memory for engineers and their coding agents.**
 
 ```bash
-npx mex-agent@0.8.3 setup
+npx mex-agent@0.8.4 setup
 ```
 
 Setup includes the official Inbox and Relay skills for your selected Claude Code or Codex integration. [Standalone skill installation](#standalone-skill-installation) is an alternative for existing MEX projects.
@@ -20,10 +20,10 @@ MEX keeps your team's architecture, decisions, requirements, and handoffs alongs
 [![GitHub stars](https://img.shields.io/github/stars/mex-memory/mex?style=flat)](https://github.com/mex-memory/mex/stargazers)
 [![Website](https://img.shields.io/badge/website-mexmemory.com-4f7cff)](https://mexmemory.com)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/FEdNsQ4Qt4)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mex-memory/mex/blob/v0.8.3/LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mex-memory/mex/blob/v0.8.4/LICENSE)
 [![CI](https://github.com/mex-memory/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/mex-memory/mex/actions/workflows/ci.yml)
-[![Node.js >=22.5](https://img.shields.io/badge/Node.js-%3E%3D22.5-339933?logo=node.js&logoColor=white)](https://github.com/mex-memory/mex/blob/v0.8.3/package.json)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](https://github.com/mex-memory/mex/blob/v0.8.3/package.json)
+[![Node.js >=22.5](https://img.shields.io/badge/Node.js-%3E%3D22.5-339933?logo=node.js&logoColor=white)](https://github.com/mex-memory/mex/blob/v0.8.4/package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](https://github.com/mex-memory/mex/blob/v0.8.4/package.json)
 [![Agent memory](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](#agent-memory-mode)
 [![MCP: source only](https://img.shields.io/badge/MCP-source%20only-6f8cff)](#mcp-server)
 
@@ -38,7 +38,7 @@ One engineer knows why a constraint exists. Another has the debugging history. A
 **What one engineer and their agent learn should become context the next teammate can use.** MEX gives that knowledge a durable home in the repository: readable Markdown, code-linked explanations, reviewed knowledge contributions, and structured handoffs. People explore and review it in a local Hub; agents retrieve and help maintain it through project instructions and the CLI.
 
 > [!IMPORTANT]
-> **[MEX 0.8.3](RELEASE_NOTES.md) makes graph refresh incremental and grounding more reliable**, adds FastAPI, Flask, and NestJS routes, and brings scaffold export and Markdown timelines. Existing projects should follow the [graph upgrade steps](#upgrade-and-compatibility) to preserve TypeScript grounding links.
+> **[MEX 0.8.4](RELEASE_NOTES.md) starts setup in a new terminal HUD**, hands the terminal to your agent, and finishes with review in the Hub. Setup errors now keep their recovery guidance. The release also speeds up graph refresh and retrieval and writes smaller grounding fingerprints; [upgrade the whole team before sharing the new format](#upgrade-and-compatibility).
 
 💬 **Join the MEX community on Discord** — discuss ideas, get help, share feedback, and show what you're building.
 
@@ -96,24 +96,30 @@ MEX requires **Node.js 22.5 or newer**, SQLite FTS5 support in that Node build, 
 Run from the repository root:
 
 ```bash
-npx mex-agent@0.8.3 setup
+npx mex-agent@0.8.4 setup
 ```
 
-This opens setup in your local browser Hub. Choose your AI tools, watch the scaffold and indexes build, and let an available selected Claude Code or Codex CLI populate project memory. If the agent is unavailable or fails, copy the population prompt into your agent, then continue. Existing instructions are preserved; any manual integration pointers appear as advisory guidance.
+This opens a keyboard-driven terminal HUD with a cyan ASCII `mex` banner. Highlight a tool with the arrow keys and press Enter to select it and begin. Space optionally selects additional integrations; the Continue row starts with your checked choices or without an agent. Long steps show an animated activity indicator, elapsed time, and the latest reported work; graph parsing also shows real file counts. When a selected Claude Code or Codex CLI is available, its normal interactive session takes over the terminal; exit that session to return to MEX. MEX checks the scaffold before continuing. Incomplete work can be reopened, populated manually, or left for later. Existing instructions are preserved.
 
-Review the exact setup-file diff in the Hub and choose **Commit setup** to create a local commit. A manual Git checkpoint remains available. MEX preserves unrelated staged work and never pushes or pulls.
+After validation, setup opens the Hub for completion. Review the exact setup-file diff and choose **Commit setup** to create a local commit. A manual Git checkpoint remains available. MEX preserves unrelated staged work and never pushes or pulls.
 
 The completion screen explains how to start a fresh agent session and verify that it reads your project memory. It also offers two optional steps: install the `mex` command globally at the version running setup, and leave an email (plus an optional name) for follow-up about MEX. Contact details are sent through the embedded Web3Forms service and stay out of the repository and usage telemetry. Only a submitted/skipped preference is remembered on this computer. Choose **Open Hub** when ready; the Hub's introductory tour starts there.
 
-Connected agents have their own installation, account, and network requirements. To print the local browser link without opening it, use `npx mex-agent@0.8.3 setup --no-open`; add `--port <n>` to choose a loopback port.
+Connected agents have their own installation, account, and network requirements. Keep the setup terminal running while using the finishing Hub; press `q` or Ctrl+C to stop it. Use `npx mex-agent@0.8.4 setup --no-open` to show the finishing link without opening a browser; add `--port <n>` to choose a loopback port. Press `d` in the HUD to read longer status or error details.
 
-Prefer terminal setup or working over SSH?
+Expected setup errors include specific recovery instructions, such as correcting malformed configuration or an ignore rule that hides the scaffold. An incomplete agent session returns to recovery choices; a successful agent exit alone does not mark setup complete.
+
+Prefer browser setup?
 
 ```bash
-npx mex-agent@0.8.3 setup --cli
+npx mex-agent@0.8.4 setup --browser
 ```
 
-`mex setup --dry-run` remains a terminal preview without changes. Once installed, bare `mex` opens the Hub (or setup for an incomplete project), while `mex tui` opens the terminal dashboard.
+The browser runs the same setup engine with a background Claude Code or Codex session and manual population fallback. `--browser --no-open` prints its link without launching a browser. The existing `--cli` flag remains an alias for the default terminal flow.
+
+For scripts, use `--yes` with repeatable `--tool <name>` flags (or `--tool none`). Piped input/output and CI also use plain output. These runs reuse saved choices, default to no integrations when none are saved, and never launch an agent or browser or wait for input. Exit codes are `0` for completed preparation or a successful dry run, `2` when population is still required, `1` for failure, and `130`/`143` for interruption. After a population checkpoint, rerun `mex setup` to continue. Once preparation is complete, `mex setup --browser` opens the commit and completion page.
+
+`mex setup --dry-run` remains a terminal preview without changes. Once installed, bare `mex` opens the Hub for an established code project or terminal setup for an incomplete project. `mex hub` explicitly opens the browser, while `mex tui` opens the terminal dashboard.
 
 ![Three steps to a ready project: run setup, populate memory, then review and commit the checkpoint before opening Hub.](docs/diagrams/readme/setup.svg)
 
@@ -127,9 +133,9 @@ Push the reviewed setup commit through your team's normal Git workflow so teamma
 Clone or pull the team's repository and branch through Git. For a completed, committed 0.8 setup, build the derived indexes in your own checkout and open Hub:
 
 ```bash
-npx mex-agent@0.8.3 graph rebuild
-npx mex-agent@0.8.3 wiki rebuild-index
-npx mex-agent@0.8.3 hub
+npx mex-agent@0.8.4 graph rebuild
+npx mex-agent@0.8.4 wiki rebuild-index
+npx mex-agent@0.8.4 hub
 ```
 
 Reuse the shared project memory; do not regenerate it just to join. In Team/Members, check the effective identity and, if needed, choose your existing Member record as a local override. If you do not have a record yet, explicitly create one through the reviewed workflow and share its canonical files. Members are attribution, not a sign-in or permission system.
@@ -142,13 +148,13 @@ Older or incomplete setups should follow [upgrade and compatibility](#upgrade-an
 <summary><strong>Prefer a global installation?</strong></summary>
 
 ```bash
-npm install -g mex-agent@0.8.3
+npm install -g mex-agent@0.8.4
 mex setup
 ```
 
 The npm package is named `mex-agent`; the installed command is `mex`. Complete the review and commit checkpoint above before running `mex hub`.
 
-Both the Hub and terminal completion flows offer an optional global installation pinned to the running MEX version. If it fails, setup remains complete and you can retry the command above. Open a new terminal afterward and run `mex --version`.
+The Hub completion page, also opened after interactive terminal setup, offers an optional global installation pinned to the running MEX version. If it fails, setup remains complete and you can retry the command above. Open a new terminal afterward and run `mex --version`.
 
 </details>
 
@@ -157,14 +163,14 @@ Both the Hub and terminal completion flows offer an optional global installation
 <summary><strong>Using MEX for a persistent operational agent?</strong></summary>
 
 ```bash
-npx mex-agent@0.8.3 setup --mode agent-memory
+npx mex-agent@0.8.4 setup --mode agent-memory
 ```
 
 This separate template applies MEX's routing and maintenance model to homelab, infrastructure, and long-running agent workspaces. It adds a `HEARTBEAT.md` contract and cleanup conventions; the Code Graph, Wiki, and team-Hub flow described in this README is the default `code-repo` mode.
 
 </details>
 
-Examples use `mex` for readability. Install it globally as above or replace it with `npx mex-agent@0.8.3`.
+Examples use `mex` for readability. Install it globally as above or replace it with `npx mex-agent@0.8.4`.
 
 ## How MEX works
 
@@ -275,7 +281,7 @@ Choose one installer for each agent integration. If `mex setup` or `mex skills s
 <details>
 <summary><strong>MCP server — source only</strong></summary>
 
-The repository includes an [MCP workspace](https://github.com/mex-memory/mex/tree/v0.8.3/packages/mex-mcp) for local development. It is not published with MEX 0.8; the released agent interface is the `mex-agent` CLI and its project instructions and skills.
+The repository includes an [MCP workspace](https://github.com/mex-memory/mex/tree/v0.8.4/packages/mex-mcp) for local development. It is not published with MEX 0.8; the released agent interface is the `mex-agent` CLI and its project instructions and skills.
 
 </details>
 
@@ -350,7 +356,7 @@ Run `mex <command> --help` for the complete interface.
 
 | Goal | Commands |
 | --- | --- |
-| Set up or inspect compatibility | `mex setup`, `mex setup --cli`, `mex capabilities`, `mex skills sync` |
+| Set up or inspect compatibility | `mex setup`, `mex setup --browser`, `mex capabilities`, `mex skills sync` |
 | Use persistent-agent mode | `mex setup --mode agent-memory`, `mex heartbeat` |
 | Open a local interface | `mex hub`, `mex tui` |
 | Build and retrieve code context | `mex graph status`, `mex graph refresh`, `mex graph rebuild`, `mex graph scope <task>`, `mex graph query <relation> <target>`, `mex graph get <node-id>`, `mex impact <target>` |
@@ -381,14 +387,19 @@ Use `mex capabilities --json` for machine-readable capability discovery and `mex
 For a global installation, upgrade the CLI and refresh the selected Claude Code/Codex skill copies:
 
 ```bash
-npm install -g mex-agent@0.8.3
+npm install -g mex-agent@0.8.4
 mex skills sync --dry-run
 mex skills sync
 ```
 
-For an already completed 0.8.0–0.8.2 setup, this refreshes the managed skills and agent guidance; setup does not need to run again just for the package upgrade. Review any reported conflicts with locally edited instructions, then start a new agent session.
+For an already completed 0.8.0–0.8.3 setup, this refreshes the managed skills and agent guidance; setup does not need to run again just for the package upgrade. Review any reported conflicts with locally edited instructions, then start a new agent session.
 
-**Keep your existing graph for the 0.8.3 upgrade.** The first refresh performs a full extraction and can change TypeScript node IDs. Refresh before syncing so MEX can map the old IDs to their replacements:
+> [!WARNING]
+> **Upgrade everyone sharing the scaffold to 0.8.4 before committing new or updated groundings.** This release writes compact `mh2:` fingerprints, which earlier versions—including 0.8.3—cannot read. Existing `mh:` fingerprints remain readable; upgrading alone neither rewrites files nor changes their grounding meaning.
+
+The Graph and Wiki index schemas are unchanged. The first graph refresh after upgrading re-extracts the corpus once for the new extraction cache. To convert existing fingerprints together, preview `mex graph compact-fingerprints --dry-run`, then run `mex graph compact-fingerprints` and review the diff before committing. See [Upgrading to 0.8.4](COMPATIBILITY.md#upgrading-to-084) for the full sequence.
+
+**Keep your existing graph when upgrading from 0.8.2 or earlier.** The TypeScript identity changes introduced in 0.8.3 can change node IDs. Refresh before syncing so MEX can map the old IDs to their replacements:
 
 ```bash
 mex graph refresh
@@ -449,10 +460,10 @@ MEX keeps team memory in repository files and provides local retrieval and revie
 
 ## Explore further
 
-- Read the [MEX 0.8.3 release notes](RELEASE_NOTES.md).
-- Check the [runtime and compatibility guide](https://github.com/mex-memory/mex/blob/v0.8.3/COMPATIBILITY.md) and [security policy](https://github.com/mex-memory/mex/blob/v0.8.3/SECURITY.md).
-- Review the [Code Graph support matrix](https://github.com/mex-memory/mex/blob/v0.8.3/docs/code-graph-support.md).
-- See the [extractor model and supported relationships](https://github.com/mex-memory/mex/blob/v0.8.3/docs/extractors.md).
-- Read the [graph retrieval benchmark results](https://github.com/mex-memory/mex/blob/v0.8.3/evaluate/RESULTS.md), including the blind-graded comparison against an ordinary file-search baseline.
+- Read the [MEX 0.8.4 release notes](RELEASE_NOTES.md).
+- Check the [runtime and compatibility guide](https://github.com/mex-memory/mex/blob/v0.8.4/COMPATIBILITY.md) and [security policy](https://github.com/mex-memory/mex/blob/v0.8.4/SECURITY.md).
+- Review the [Code Graph support matrix](https://github.com/mex-memory/mex/blob/v0.8.4/docs/code-graph-support.md).
+- See the [extractor model and supported relationships](https://github.com/mex-memory/mex/blob/v0.8.4/docs/extractors.md).
+- Read the [graph retrieval benchmark results](https://github.com/mex-memory/mex/blob/v0.8.4/evaluate/RESULTS.md), including the blind-graded comparison against an ordinary file-search baseline.
 - Inspect the CLI locally with `mex capabilities --json` and `mex commands`.
 - Join the [MEX community on Discord](https://discord.gg/FEdNsQ4Qt4) or visit [mexmemory.com](https://mexmemory.com).

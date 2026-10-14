@@ -1,6 +1,5 @@
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { globSync } from "glob";
+import { opendirSync, openSync, readSync, closeSync, fstatSync, constants } from "node:fs";
+import { resolve, relative, sep } from "node:path";
 import type { Claim, DriftIssue } from "../../types.js";
 
 /** Runtimes, platforms, databases, protocols, and architectural terms that appear in stack docs but aren't installable packages */
@@ -162,53 +161,94 @@ function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined
   return deps.find((d) => d.normalizes && normalizeName(d.name) === normalized);
 }
 
+// Discovery may recurse arbitrarily deep, but must not retain or read an
+// unlimited corpus. Exceeding a budget abstains instead of checking a partial list.
+const MAX_DISCOVERY_ENTRIES = 100_000;
+const MAX_MANIFESTS = 1_024;
+const MAX_MANIFEST_BYTES = 1_048_576;
+const MAX_TOTAL_MANIFEST_BYTES = 8_388_608;
+
+function discoverManifests(projectRoot: string): string[] | null {
+  const pending = [resolve(projectRoot)];
+  const manifests: string[] = [];
+  let inspected = 0;
+  try {
+    while (pending.length) {
+      const directory = opendirSync(pending.pop()!);
+      try {
+        for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
+          if (++inspected > MAX_DISCOVERY_ENTRIES) return null;
+          // Preserve glob's hidden-directory exclusion and avoid installed
+          // dependencies, Git metadata, directory junctions and file symlinks.
+          if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.isSymbolicLink()) continue;
+          const path = resolve(directory.path, entry.name);
+          if (entry.isDirectory()) pending.push(path);
+          else if (entry.isFile() && (entry.name === "package.json" || entry.name === "pyproject.toml")) {
+            manifests.push(path);
+            if (manifests.length > MAX_MANIFESTS) return null;
+          }
+        }
+      } finally { directory.closeSync(); }
+    }
+  } catch {
+    return null;
+  }
+  const rank = (path: string) => path === resolve(projectRoot, "package.json") ? 0
+    : path === resolve(projectRoot, "pyproject.toml") ? 1 : 2;
+  const key = (path: string) => relative(projectRoot, path).split(sep).join("/");
+  return manifests.sort((a, b) => rank(a) - rank(b) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+}
+
+function readManifest(path: string, remaining: number): string | null {
+  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    if (!fstatSync(descriptor).isFile()) return null;
+    const limit = Math.min(MAX_MANIFEST_BYTES, remaining);
+    const bytes = Buffer.alloc(limit + 1);
+    let count = 0;
+    while (count < bytes.length) {
+      const read = readSync(descriptor, bytes, count, bytes.length - count, null);
+      if (!read) break;
+      count += read;
+    }
+    return count > limit ? null : bytes.subarray(0, count).toString("utf-8");
+  } finally { closeSync(descriptor); }
+}
+
 function loadAllDependencies(projectRoot: string): DepEntry[] | null {
   const entries: DepEntry[] = [];
 
-  // package.json
-  const pkgPath = resolve(projectRoot, "package.json");
-  if (existsSync(pkgPath)) {
+  // Repositories can contain independent applications in nested directories.
+  // Discover dependency manifests recursively, while ignoring dependency
+  // directories and Git metadata so we only inspect manifests belonging to
+  // the repository itself.
+  const manifests = discoverManifests(projectRoot);
+  if (!manifests) return null;
+  let remaining = MAX_TOTAL_MANIFEST_BYTES;
+
+  for (const manifest of manifests) {
     try {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-      for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
-        entries.push({ name, version: String(version) });
-      }
-      for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
-        entries.push({ name, version: String(version) });
+      const content = readManifest(manifest, remaining);
+      if (content === null) return null;
+      remaining -= Buffer.byteLength(content, "utf-8");
+      if (manifest.endsWith("package.json")) {
+        const pkg = JSON.parse(content);
+
+        for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
+          entries.push({ name, version: String(version) });
+        }
+
+        for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
+          entries.push({ name, version: String(version) });
+        }
+      } else {
+        entries.push(
+          ...parsePyprojectDependencies(content)
+        );
       }
     } catch {
-      // skip
-    }
-  }
-
-  // pyproject.toml (#3): [project] dependencies and optional-dependencies,
-  // plus [tool.poetry.dependencies]. Python claims ("FastAPI", "Celery") were
-  // reported missing whenever the project declared them here instead of a
-  // package.json. Version specifiers are kept verbatim — the version-claims
-  // checker treats them as substrings, and PEP 508 names are the identity.
-  const pyprojectPath = resolve(projectRoot, "pyproject.toml");
-  if (existsSync(pyprojectPath)) {
-    entries.push(...parsePyprojectDependencies(readFileSync(pyprojectPath, "utf-8")));
-  }
-
-  // A repository often keeps a second application in a subdirectory without
-  // declaring workspaces, and that application's packages are declared in its
-  // own manifest. Reading only the root one reported every dependency the
-  // subproject documents as missing.
-  for (const nested of globSync("*/package.json", {
-    cwd: projectRoot,
-    ignore: ["node_modules/**"],
-  })) {
-    try {
-      const pkg = JSON.parse(readFileSync(resolve(projectRoot, nested), "utf-8"));
-      for (const [name, version] of Object.entries(pkg.dependencies ?? {})) {
-        entries.push({ name, version: String(version) });
-      }
-      for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
-        entries.push({ name, version: String(version) });
-      }
-    } catch {
-      // skip
+      // An unreadable or malformed manifest makes the corpus incomplete.
+      return null;
     }
   }
 

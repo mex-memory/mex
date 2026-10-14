@@ -69,7 +69,16 @@ export function checkGroundingProvenance(
   if (graph === null) {
     return verifyGroundingProvenance(groundings, () => false);
   }
-  return verifyGroundingProvenance(groundings, (grounding) => isGraphDerivedGrounding(graph, grounding));
+  const failures: Array<string | undefined> = [];
+  const diagnostics = verifyGroundingProvenance(groundings, (grounding) => {
+    const verified = isGraphDerivedGrounding(graph, grounding);
+    if (!verified) failures.push(graph.getNode(grounding.node) === null ? graph.incompleteReason : undefined);
+    return verified;
+  });
+  return diagnostics.map((diagnostic, index) => failures[index]
+    ? { ...diagnostic, message: `${diagnostic.message} ${failures[index]}`,
+      remediation: "Fix the named incomplete files or exclude intentional fixtures, refresh the graph, then retry." }
+    : diagnostic);
 }
 
 /**

@@ -1,11 +1,4 @@
-import {
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { relative, resolve } from "node:path";
+import { AgentPromptError, createAgentPromptSession } from "../agent-prompt.js";
 import { isCliAvailable } from "../cli-tools.js";
 import { runToolInteractive } from "../sync/index.js";
 import { AI_TOOLS, type AiTool } from "../types.js";
@@ -22,7 +15,7 @@ interface SetupPopulationDependencies {
   run?: typeof runToolInteractive;
 }
 
-export class SetupPopulationError extends Error {
+export class SetupPopulationError extends AgentPromptError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "SetupPopulationError";
@@ -96,85 +89,14 @@ export async function launchSetupPopulationAsync(
   }
 }
 
-function createPopulationSession(prompt: string, projectRoot: string): {
+export function createPopulationSession(prompt: string, projectRoot: string): {
   root: string;
   instruction: string;
   cleanup: () => void;
 } {
-  const root = resolve(projectRoot);
-  const localDirectory = ensureLocalPopulationDirectory(root);
-  let sessionDirectory: string;
   try {
-    sessionDirectory = mkdtempSync(resolve(localDirectory, "setup-population-"));
+    return createAgentPromptSession(prompt, projectRoot, "setup-population");
   } catch (error) {
-    throw new SetupPopulationError(
-      `Could not create a private setup population prompt under ${localDirectory}.`,
-      { cause: error },
-    );
+    throw new SetupPopulationError(error instanceof Error ? error.message : "Could not prepare the private setup population prompt.", { cause: error });
   }
-
-  try {
-    const promptPath = resolve(sessionDirectory, "prompt.md");
-    writeFileSync(promptPath, prompt, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    const pointer = relative(root, promptPath).replaceAll("\\", "/");
-    const instruction = `Read the full setup population prompt from \`${pointer}\`, then follow it exactly.`;
-    return { root, instruction, cleanup: () => rmSync(sessionDirectory, { recursive: true, force: true }) };
-  } catch (error) {
-    rmSync(sessionDirectory, { recursive: true, force: true });
-    throw error;
-  }
-}
-
-function ensureLocalPopulationDirectory(projectRoot: string): string {
-  const mexDirectory = resolve(projectRoot, ".mex");
-  requireRegularDirectory(mexDirectory, ".mex");
-
-  const localDirectory = resolve(mexDirectory, "local");
-  const localStats = lstatIfExists(localDirectory);
-  if (localStats === null) {
-    try {
-      mkdirSync(localDirectory, { mode: 0o700 });
-    } catch (error) {
-      if (!isAlreadyExists(error)) {
-        throw new SetupPopulationError(
-          `Could not create the setup population directory at ${localDirectory}.`,
-          { cause: error },
-        );
-      }
-    }
-  }
-  requireRegularDirectory(localDirectory, ".mex/local");
-  return localDirectory;
-}
-
-function requireRegularDirectory(path: string, label: string): void {
-  const stats = lstatIfExists(path);
-  if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new SetupPopulationError(
-      `Cannot store the setup population prompt: ${label} at ${path} is not a regular directory.`,
-    );
-  }
-}
-
-function lstatIfExists(path: string): ReturnType<typeof lstatSync> | null {
-  try {
-    return lstatSync(path);
-  } catch (error) {
-    if (isMissing(error)) return null;
-    throw new SetupPopulationError(`Could not inspect setup population path ${path}.`, {
-      cause: error,
-    });
-  }
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error
-    && "code" in error
-    && (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
-function isAlreadyExists(error: unknown): boolean {
-  return error instanceof Error
-    && "code" in error
-    && (error as NodeJS.ErrnoException).code === "EEXIST";
 }

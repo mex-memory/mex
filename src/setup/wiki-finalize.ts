@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { throwIfSetupAborted } from "./phases.js";
 import {
   createWikiEngine,
   type MigrationApplyResult,
@@ -20,6 +21,7 @@ export interface SetupWikiFinalizationOptions {
   readOnly?: readonly string[];
   onProgress?: (message: string) => void;
   onWarning?: (message: string) => void;
+  signal?: AbortSignal;
 }
 
 /** A compact, setup-oriented summary over the existing Wiki service results. */
@@ -48,6 +50,7 @@ export interface SetupWikiFinalizationResult {
 export async function finalizeSetupWiki(
   options: SetupWikiFinalizationOptions,
 ): Promise<SetupWikiFinalizationResult> {
+  throwIfSetupAborted(options.signal);
   const projectRoot = resolve(options.projectRoot);
   const scaffoldRoot = resolve(options.scaffoldRoot);
   const engine = createWikiEngine({
@@ -101,7 +104,9 @@ export async function finalizeSetupWiki(
   });
 
   options.onProgress?.("Planning Wiki migration...");
+  throwIfSetupAborted(options.signal);
   const plan = await engine.planMigration();
+  throwIfSetupAborted(options.signal);
   collectDiagnostics(plan.diagnostics);
   plannedEntities = plan.data.report.planned.length;
   filesScanned = plan.data.report.filesScanned;
@@ -116,6 +121,7 @@ export async function finalizeSetupWiki(
   // validation supplies the blocking diagnostic that keeps setup from writing
   // other files around a scaffold which is already structurally unsafe.
   const preflight = await engine.validate({ projectRoot });
+  throwIfSetupAborted(options.signal);
   // Every knowledge file outside the Wiki is either adopted by the migration
   // this run applies next or already reported above as one of its
   // abstentions, so telling the user to run `mex wiki migrate` here would be
@@ -128,7 +134,9 @@ export async function finalizeSetupWiki(
   }
 
   options.onProgress?.("Applying Wiki migration...");
+  throwIfSetupAborted(options.signal);
   const applied = await engine.applyMigration(plan.data);
+  throwIfSetupAborted(options.signal);
   collectDiagnostics(applied.diagnostics);
   migrated = migrationChangedFiles(applied).length > 0;
   if (!applied.data.applied || hasErrors(applied)) {
@@ -136,7 +144,9 @@ export async function finalizeSetupWiki(
   }
 
   options.onProgress?.("Rebuilding Wiki index...");
-  const rebuilt = await engine.rebuildIndex();
+  throwIfSetupAborted(options.signal);
+  const rebuilt = await engine.rebuildIndex(options.signal ? { signal: options.signal } : undefined);
+  throwIfSetupAborted(options.signal);
   collectDiagnostics(rebuilt.diagnostics);
   indexedEntities = rebuilt.data.entityCount;
   if (hasErrors(rebuilt)) {
@@ -144,7 +154,9 @@ export async function finalizeSetupWiki(
   }
 
   options.onProgress?.("Validating Wiki scaffold...");
+  throwIfSetupAborted(options.signal);
   const validated = await engine.validate({ projectRoot });
+  throwIfSetupAborted(options.signal);
   // An untyped context file was reported as a migration abstention above. A
   // file still not adopted after the migration is not expected, and is kept.
   collectDiagnostics(withoutAdoptionGaps(validated.diagnostics, ["KNOWLEDGE_UNTYPED"]));

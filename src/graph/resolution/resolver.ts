@@ -39,6 +39,9 @@ const TARGET_KINDS: Record<string, NodeKind[]> = {
   function_ref: ["function", "method"],
 };
 
+/** Receivers that lexically name the calling body's own instance or class. */
+const LEXICAL_SELF_RECEIVERS = new Set(["self", "this", "cls"]);
+
 /**
  * Resolve every unresolved reference against the full node set. Returns the
  * reference edges to persist (`contains` edges are already resolved by the
@@ -131,11 +134,26 @@ export function resolveReferences(
     }
   }
 
+  const csharp = createCSharpScope(nodes, refs, byId);
+
   // Pass 2: symbol references (calls, extends, implements, instantiates, …).
   for (const ref of refs) {
     if (ref.referenceKind === "imports") continue;
     const fromNode = byId.get(ref.fromNodeId);
     if (!fromNode) continue;
+
+    // C# types are visible through the enclosing namespaces and `using`
+    // directives, never by name alone: bind a type reference, or a call on a
+    // type-named receiver, only when exactly one visible type answers it.
+    if (ref.language === "csharp") {
+      const target = csharp.resolve(ref, fromNode);
+      if (target) {
+        const kind = ref.referenceKind === "function_ref" ? "references" : ref.referenceKind as EdgeKind;
+        push(ref.fromNodeId, target.id, kind, ref, "lexical", 1,
+          target.filePath === fromNode.filePath ? "lexical-scope" : "namespace-scope");
+        continue;
+      }
+    }
 
     const frameworkResolution = framework?.resolvers
       .filter((resolver) => !resolver.languages || resolver.languages.includes(ref.language))
@@ -177,10 +195,18 @@ export function resolveReferences(
     if (!candidates || candidates.length === 0) continue;
 
     const allowedKinds = TARGET_KINDS[ref.referenceKind] ?? [];
-    // A recursive C# call is still a candidate for itself. Removing it can
+    // A recursive call is still a candidate for itself. Removing it can
     // turn an unresolved overload set into a false, confident sibling edge.
-    const allowSelf = ref.language === "csharp"
-      && (ref.referenceKind === "calls" || ref.referenceKind === "function_ref");
+    // Outside C#, only an unimported bare name inside a function, or a
+    // lexical self receiver inside a method, can name the calling body:
+    // `super().save()`, `other.save()`, or an imported `dumps` inside a
+    // method of the same name each name a different body.
+    const selfReceiver = (ref.receiver ?? ref.referenceName.split(".").slice(0, -1).join(".")).trim();
+    const lexicalSelfCall = directBindings.length === 0 && (selfReceiver === ""
+      ? fromNode.kind === "function"
+      : fromNode.kind === "method" && LEXICAL_SELF_RECEIVERS.has(selfReceiver));
+    const allowSelf = (ref.referenceKind === "calls" || ref.referenceKind === "function_ref")
+      && (ref.language === "csharp" || lexicalSelfCall);
     const filtered = candidates.filter((node) =>
       (allowedKinds.length === 0 || allowedKinds.includes(node.kind))
       && (allowSelf || node.id !== ref.fromNodeId),
@@ -196,6 +222,7 @@ export function resolveReferences(
       fromNode,
       ref,
       provenFiles.size > 0 ? provenFiles : importsByFile.get(fromNode.filePath),
+      qualifierBindings.length > 0,
     );
     if (!target) continue;
 
@@ -232,6 +259,7 @@ function pickBest(
   fromNode: GraphNode,
   ref: UnresolvedRefRecord,
   importedFiles: Set<string> | undefined,
+  explicitQualifier = false,
 ): GraphNode | null {
   const receiver = ref.receiver ?? ref.referenceName.split(".").slice(0, -1).join(".");
   // A C# qualifier may name an object, namespace, type, or alias. Syntax alone
@@ -243,6 +271,10 @@ function pickBest(
     const isQualified = receiver.trim() !== "" || ref.referenceName.includes("::");
     if (isQualified && !isThisCall) return null;
   }
+  // Rust member-call extraction retains the receiver. Only `self` proves a
+  // lexical impl owner; a same-named method in that file does not type `other`.
+  // Explicit imported module qualifiers can still bind in their own file.
+  if (ref.language === "rust" && receiver && receiver !== "self" && !explicitQualifier) return null;
 
   const sameFile = candidates.filter((n) => n.filePath === fromNode.filePath);
   if (sameFile.length > 0) {
@@ -271,6 +303,129 @@ function pickBest(
 }
 
 /** The segment after the last `.` (`obj.method` → `method`; `free` → `free`). */
+const CSHARP_TYPE_KINDS = new Set<string>(["class", "interface", "struct", "enum"]);
+
+/** C# namespace visibility: enclosing namespaces plus `using` directives, per file. */
+function createCSharpScope(
+  nodes: GraphNode[],
+  refs: UnresolvedRefRecord[],
+  byId: Map<string, GraphNode>,
+): { resolve(ref: UnresolvedRefRecord, fromNode: GraphNode): GraphNode | null } {
+  const typesByName = new Map<string, GraphNode[]>();
+  const usingsByFile = new Map<string, Set<string>>();
+  const namespaceOf = new Map<string, string>();
+  const childrenByContainer = new Map<string, GraphNode[]>();
+  const membersCache = new Map<string, Map<string, GraphNode[]>>();
+  const usings = (file: string): Set<string> => {
+    let set = usingsByFile.get(file);
+    if (!set) usingsByFile.set(file, (set = new Set()));
+    return set;
+  };
+  const enclosingNamespace = (node: GraphNode): string => {
+    const known = namespaceOf.get(node.id);
+    if (known !== undefined) return known;
+    const names: string[] = [];
+    for (let current = byId.get(node.containerId ?? ""); current; current = byId.get(current.containerId ?? "")) {
+      if (current.kind === "namespace") names.unshift(current.name);
+    }
+    const name = names.join(".");
+    namespaceOf.set(node.id, name);
+    return name;
+  };
+  let any = false;
+  for (const node of nodes) {
+    if (node.language !== "csharp") continue;
+    any = true;
+    if (node.containerId) {
+      const siblings = childrenByContainer.get(node.containerId);
+      if (siblings) siblings.push(node); else childrenByContainer.set(node.containerId, [node]);
+    }
+    if (CSHARP_TYPE_KINDS.has(node.kind)) {
+      const list = typesByName.get(node.name);
+      if (list) list.push(node); else typesByName.set(node.name, [node]);
+    }
+  }
+  if (!any) return { resolve: () => null };
+  for (const ref of refs) {
+    if (ref.language !== "csharp" || ref.referenceKind !== "imports") continue;
+    const name = ref.referenceName.replace(/^global::/, "").trim();
+    if (name.startsWith("static ") || name.includes("=")) continue;
+    usings(ref.filePath).add(name);
+  }
+
+  /** C# lookup order: enclosing types, then each enclosing namespace inward-out, then usings and the global namespace. */
+  const resolveType = (raw: string, fromNode: GraphNode): GraphNode | null => {
+    const explicitGlobal = raw.trim().startsWith("global::");
+    const name = raw.replace(/^\s*global::/, "").replace(/<.*$/s, "").replace(/\?$/, "").trim();
+    if (!/^[A-Za-z_][\w.]*$/.test(name)) return null;
+    const dot = name.lastIndexOf(".");
+    const simple = dot < 0 ? name : name.slice(dot + 1);
+    const qualifier = dot < 0 ? "" : name.slice(0, dot);
+    const candidates = typesByName.get(simple) ?? [];
+    if (candidates.length === 0) return null;
+    const unique = (list: GraphNode[]): GraphNode | null | undefined =>
+      list.length === 1 ? list[0]! : list.length > 1 ? null : undefined;
+    const within = (namespace: string) => candidates.filter((type) =>
+      enclosingNamespace(type) === namespace && !CSHARP_TYPE_KINDS.has(byId.get(type.containerId ?? "")?.kind ?? ""));
+    if (explicitGlobal) return unique(within(qualifier)) ?? null;
+    if (qualifier === "") {
+      const ancestors = new Set<string>();
+      for (let node = byId.get(fromNode.containerId ?? ""); node; node = byId.get(node.containerId ?? "")) ancestors.add(node.id);
+      ancestors.add(fromNode.id);
+      const nested = unique(candidates.filter((type) => type.containerId !== undefined && ancestors.has(type.containerId)
+        && byId.get(type.containerId)?.kind !== "namespace"));
+      if (nested !== undefined) return nested;
+    }
+    const enclosing = enclosingNamespace(fromNode);
+    const parts = enclosing === "" ? [] : enclosing.split(".");
+    for (let length = parts.length; length > 0; length -= 1) {
+      const prefix = parts.slice(0, length).join(".");
+      const found = unique(within(qualifier === "" ? prefix : `${prefix}.${qualifier}`));
+      if (found !== undefined) return found;
+    }
+    if (qualifier !== "") return unique(within(qualifier)) ?? null;
+    const imported = usings(fromNode.filePath);
+    return unique(candidates.filter((type) => {
+      const namespace = enclosingNamespace(type);
+      return (namespace === "" || imported.has(namespace)) && !CSHARP_TYPE_KINDS.has(byId.get(type.containerId ?? "")?.kind ?? "");
+    })) ?? null;
+  };
+
+  return {
+    resolve(ref, fromNode) {
+      if (ref.referenceKind === "extends" || ref.referenceKind === "implements" || ref.referenceKind === "instantiates") {
+        const type = resolveType(ref.referenceName, fromNode);
+        return type && type.id !== fromNode.id ? type : null;
+      }
+      if (ref.referenceKind !== "calls") return null;
+      const dot = ref.referenceName.lastIndexOf(".");
+      if (dot < 0) return null;
+      const receiver = ref.referenceName.slice(0, dot);
+      if (receiver === "this" || receiver === "base") return null;
+      const type = resolveType(receiver, fromNode);
+      if (!type) return null;
+      const method = ref.referenceName.slice(dot + 1);
+      const members = membersByType(type.id).get(method) ?? [];
+      return members.length > 0 && members.every((member) => member.qualifiedName === members[0]!.qualifiedName)
+        ? members[0]!
+        : null;
+    },
+  };
+
+  function membersByType(typeId: string): Map<string, GraphNode[]> {
+    let members = membersCache.get(typeId);
+    if (members) return members;
+    members = new Map();
+    for (const node of childrenByContainer.get(typeId) ?? []) {
+      if (node.kind !== "method") continue;
+      const list = members.get(node.name);
+      if (list) list.push(node); else members.set(node.name, [node]);
+    }
+    membersCache.set(typeId, members);
+    return members;
+  }
+}
+
 function lastSegment(name: string): string {
   const dot = name.lastIndexOf(".");
   const rust = name.lastIndexOf("::");
@@ -335,11 +490,20 @@ function resolveRustModulePath(
   if (parts.length === 0) return null;
 
   const fromDir = posixDirname(fromFile);
-  const sourceRoot = fromFile.includes("/") ? fromFile.split("/", 1)[0]! : "";
+  const sourceRoot = rustCrateRoot(fromFile, fileNodeByPath)
+    ?? (fromFile.includes("/") ? fromFile.split("/", 1)[0]! : "");
   let base = fromDir;
+  const sibling = parts[0] === "crate" || parts[0] === "self" || parts[0] === "super"
+    ? null
+    : rustWorkspaceCrateRoot(parts[0]!, fileNodeByPath);
   if (parts[0] === "crate") {
     parts.shift();
     base = sourceRoot;
+  } else if (sibling !== null) {
+    // `use ignore::types::Types` from another workspace member names that
+    // member's library root, the unique indexed `<name>/src/lib.rs`.
+    parts.shift();
+    base = sibling;
   } else if (parts[0] === "self") {
     parts.shift();
     base = rustModuleDirectory(fromFile);
@@ -364,6 +528,31 @@ function resolveRustModulePath(
   }
   return null;
 }
+
+/** The nearest ancestor holding the crate root (`lib.rs` or `main.rs`). */
+function rustCrateRoot(fromFile: string, fileNodeByPath: Map<string, string>): string | null {
+  for (let dir = posixDirname(fromFile); ; dir = posixDirname(dir)) {
+    if (fileNodeByPath.has(posixJoin(dir, "lib.rs")) || fileNodeByPath.has(posixJoin(dir, "main.rs"))) return dir;
+    if (dir === "" || dir === ".") return null;
+  }
+}
+
+/** The library root of a workspace member whose directory names the crate, when unique. */
+function rustWorkspaceCrateRoot(crate: string, fileNodeByPath: Map<string, string>): string | null {
+  let members = rustMembersByIndex.get(fileNodeByPath);
+  if (members === undefined) {
+    members = new Map();
+    for (const path of fileNodeByPath.keys()) {
+      if (!path.endsWith("/src/lib.rs")) continue;
+      const memberDir = posixDirname(posixDirname(path));
+      const member = memberDir.slice(memberDir.lastIndexOf("/") + 1).replace(/-/g, "_");
+      members.set(member, members.has(member) ? null : posixDirname(path));
+    }
+    rustMembersByIndex.set(fileNodeByPath, members);
+  }
+  return members.get(crate) ?? null;
+}
+const rustMembersByIndex = new WeakMap<Map<string, string>, Map<string, string | null>>();
 
 function rustModuleDirectory(fromFile: string): string {
   const dir = posixDirname(fromFile);

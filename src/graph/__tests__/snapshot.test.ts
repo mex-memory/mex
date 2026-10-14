@@ -89,7 +89,7 @@ describe("graph snapshot provenance", () => {
       schemaVersion: DB_SCHEMA_VERSION,
       compilerVersion: "5.9.3",
       extractorVersion: expect.stringContaining("typescript-5.9"),
-      resolverVersion: "compiler-first-v2",
+      resolverVersion: "compiler-first-v3",
       sourceCorpusDigest: computeSourceCorpusDigest([{ path: "src/stable.ts", contentHash }]),
       sourceCount: 1,
       parseHealth: { total: 1, ok: 1, partial: 0, failed: 0 },

@@ -13,6 +13,7 @@ import { MexPortError } from "../../team/contracts/shared.js";
 import {
   createRepositoryGraphPort,
   type RepositoryGraphGroundingSnapshot,
+  type RepositoryGraphSynthesisReader,
   type GraphSearchBundleResult,
 } from "../application-adapter.js";
 import { openSqlite } from "../db/sqlite.js";
@@ -117,6 +118,71 @@ describe("RepositoryGraphPort grounding evidence", () => {
 });
 
 describe("RepositoryGraphPort", () => {
+  it("counts previously omitted node fields before materializing synthesis evidence", async () => {
+    const { root, port } = await fixture();
+    const id = (await port.searchNodes({ query: "serviceTarget", limit: 1 })).items[0]!.ref.symbolId;
+    const db = openSqlite(join(root, ".mex/graph.db"));
+    // Construct the oversized persisted value inside SQLite, without retaining
+    // a 34 MiB JavaScript test string on the constrained runner.
+    const updated = db.prepare("UPDATE nodes SET identity_key = identity_key || hex(zeroblob(?)) WHERE id = ?")
+      .run(17 * 1024 * 1024, id);
+    expect(updated.changes).toBe(1);
+    const measured = db.prepare("SELECT length(CAST(identity_key AS BLOB)) AS bytes, instr(identity_key, char(0)) AS nul FROM nodes WHERE id = ?")
+      .get(id) as { bytes: number; nul: number };
+    expect(measured.bytes).toBeGreaterThan(32 * 1024 * 1024);
+    expect(measured.nul).toBeGreaterThan(0);
+    db.close();
+    let entered = false;
+    await expect(port.withFreshSynthesisSnapshot(() => { entered = true; })).rejects.toSatisfy(error => {
+      expectPortCode(error, "VALIDATION_FAILED");
+      expect((error as MexPortError).problem.detail).toContain("bounded synthesis evidence limit");
+      return true;
+    });
+    expect(entered).toBe(false);
+  }, 30_000);
+
+  it("binds synthesis structure and source to one fresh revocable read", async () => {
+    const { root, port } = await fixture();
+    const dbPath = join(root, ".mex/graph.db");
+    const before = readFileSync(dbPath);
+    let escaped: RepositoryGraphSynthesisReader | undefined;
+    const result = await port.withFreshSynthesisSnapshot(snapshot => {
+      escaped = snapshot.codeGraph;
+      const nodes = snapshot.codeGraph.nodesInFile("src/service.ts");
+      const target = nodes.find(node => snapshot.codeGraph.describeNode(node.id)?.name === "serviceTarget")!;
+      expect(snapshot.graph.getNode(target.id)?.id).toBe(target.id);
+      return { files: snapshot.codeGraph.listFiles(), source: snapshot.codeGraph.readFileLines("src/service.ts").join("\n") };
+    });
+    expect(result.files).toContainEqual({ path: "src/service.ts" });
+    expect(result.source).toBe(readFileSync(join(root, "src/service.ts"), "utf8"));
+    expect(readFileSync(dbPath)).toEqual(before);
+    expect(() => escaped!.listFiles()).toThrowError(MexPortError);
+    source(root, "src/service.ts", `${result.source}\nexport const changed = 1;\n`);
+    let entered = false;
+    await expect(port.withFreshSynthesisSnapshot(() => { entered = true; })).rejects.toBeInstanceOf(MexPortError);
+    expect(entered).toBe(false);
+  }, 30_000);
+
+  it("discards a synthesis publication when final graph freshness fails", async () => {
+    const { root } = await fixture();
+    const port = createRepositoryGraphPort(root, {
+      __internal: { loadFresh: async (...args) => {
+        const loaded = await loadFreshGraphReadSession(...args);
+        if (!loaded.session) return loaded;
+        return { ...loaded, session: { ...loaded.session, revalidateFreshness: async () => ({
+          valid: false, code: "GRAPH_INDEX_READER_SNAPSHOT_CHANGED", message: "injected final race", graphStatus: loaded.graphStatus,
+        }) } };
+      } },
+    });
+    let committed = false;
+    let discarded = false;
+    await expect(port.withFreshSynthesisPublication(snapshot => {
+      expect(snapshot.codeGraph.readFileLines("src/service.ts")[0]).toContain("serviceTarget");
+      return { preflight() {}, commit() { committed = true; }, discard() { discarded = true; } };
+    })).rejects.toSatisfy(error => { expectPortCode(error, "OPERATION_INTERRUPTED"); return true; });
+    expect({ committed, discarded }).toEqual({ committed: false, discarded: true });
+  }, 30_000);
+
   it.each([undefined, "process"] as const)("forwards maintenance authority with execution mode %s", async (candidateExecution) => {
     const root = temporaryRoot();
     const refresh = vi.fn(async () => { throw new Error("injected stop"); });

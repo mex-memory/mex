@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { createGraphEngine, GraphSourceStagingError } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
@@ -58,6 +58,18 @@ function failureCategory(error: unknown): "compatibility" | "staging" | "failed"
   return "failed";
 }
 
+/** Local stderr only. The private IPC schema and GraphPort keep fixed categories. */
+function writeFailureDiagnostic(error: unknown): void {
+  const name = error instanceof Error ? error.name : "Error";
+  const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+  const message = error instanceof Error ? error.message : String(error);
+  const failures = error instanceof GraphSourceStagingError
+    ? error.failures.slice(0, 3).map((failure) => `${failure.operation} ${failure.filePath.slice(0, 512)}: ${failure.message.slice(0, 1024)}`).join("\n")
+    : "";
+  const summary = Buffer.from(`${name.slice(0, 128)}${code ? ` (${code.slice(0, 128)})` : ""}: ${message.slice(0, 2048)}\n${failures}`.slice(0, 4096)).subarray(0, 4096);
+  try { writeSync(2, summary); } catch { /* Diagnostics cannot replace the original failure. */ }
+}
+
 async function main(): Promise<void> {
   if (!process.send || !process.connected) throw new Error("Candidate construction requires its private parent channel.");
   const stopWatchdog = await startGraphCandidateWatchdog();
@@ -87,6 +99,7 @@ async function main(): Promise<void> {
       outcome = { type: "complete", result };
       if (!boundedCandidateMessage(outcome)) throw new Error("Graph result exceeded its private message bound.");
     } catch (error) {
+      writeFailureDiagnostic(error);
       try { engine?.close(); } catch { /* The supervisor removes the unpublished candidate after close. */ }
       outcome = { type: "failed", category: failureCategory(error) };
     }
@@ -95,11 +108,12 @@ async function main(): Promise<void> {
       await stopWatchdog();
       process.exitCode = outcome.type === "complete" ? 0 : 1;
       process.disconnect();
-    } catch {
+    } catch (error) {
+      writeFailureDiagnostic(error);
       process.exit(1);
     }
   });
   await send({ type: "ready" });
 }
 
-main().catch(() => process.exit(1));
+main().catch((error) => { writeFailureDiagnostic(error); process.exit(1); });

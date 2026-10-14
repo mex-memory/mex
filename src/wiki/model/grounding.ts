@@ -23,15 +23,12 @@ import { isCanonicalRepoPath } from "./path.js";
  * ## What is canonical
  *
  * The node id and fingerprint in Markdown are the canonical, Git-tracked
- * reference, and **the fingerprint is the drift oracle**. Everything else is
- * rebuildable cache: the code graph holds a baseline body hash and old source
- * text so drift can be *displayed* as an old-vs-new diff, and the wiki index
- * holds derived resolution results so they can be filtered and sorted. Delete
- * both databases and drift is still detectable, because the canonical
- * fingerprint is in the Markdown. Anything that treats the cached baseline as
- * the primary signal will silently report `fresh` after a graph rebuild
- * re-captures that baseline, which is exactly the failure this note exists to
- * prevent.
+ * reference. The committed body hash is the change baseline; the fingerprint
+ * establishes identity and sees structural edits, but cannot see changed
+ * literals. A legacy link with no committed hash is unverified
+ * after a structural match. Its disposable source cache can display a diff,
+ * never establish that the current body was accepted. Delete both databases
+ * and a committed body baseline still detects drift.
  *
  * ## Two axes that must never be assignable to one another
  *
@@ -65,8 +62,8 @@ export interface WikiGrounding {
    * **The change signal, and canonical because it is in Markdown.** Optional
    * only because §8.7 requires `node` and `fingerprint` and this is additive:
    * a grounding written before this field existed still resolves, through the
-   * coarser comparator {@link groundingComparator} names. Everything mex writes
-   * carries it.
+   * structural comparator {@link groundingComparator} names, but a structural
+   * match alone cannot verify an existing body. Everything mex writes carries it.
    */
   bodyHash?: string;
   /**
@@ -166,6 +163,8 @@ export type GroundingResolution =
        */
       health: "ambiguous" | "unverified";
       node: string;
+      /** Known identity whose behavior is unverified because its baseline is absent. */
+      resolvedNode?: string;
       /** Candidate nodes, when the resolution was ambiguous. */
       candidates?: string[];
       reason?: string;
@@ -256,8 +255,8 @@ export function isNodeIdShaped(value: unknown): value is string {
  *
  * So the drift comparison prefers the body hash **committed in Markdown**. Note
  * what that does *not* mean: the graph's cached `body_hash` is still never the
- * oracle. A cache is re-captured by an ordinary graph rebuild, so comparing
- * current-against-cache compares current against current and drift vanishes.
+ * oracle. A disposable cache may be absent or contain a different capture;
+ * accepting it instead of the committed value can erase real change evidence.
  * Both values compared here — the current node's, and the entity's — are
  * canonical: one is the live code, the other is in Git.
  */

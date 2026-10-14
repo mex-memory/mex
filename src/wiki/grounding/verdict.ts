@@ -14,7 +14,7 @@
  * | `changed` | the code changed in a way that may falsify the fact |
  * | `missing` | the symbol is gone and nothing matches it |
  * | `ambiguous` | the symbol may have moved, but the match is uncertain |
- * | `unverified` | nothing to compare against: no graph, or an undecodable reference |
+ * | `unverified` | no graph, undecodable reference, or no committed body baseline |
  */
 
 import type { GroundingDriftNote, GroundingResolution } from "../model/grounding.js";
@@ -55,7 +55,8 @@ export function groundingVerdict(resolution: GroundingResolution): NamedVerdict 
     case "missing":
       return { verdict: "missing" };
     case "unresolved":
-      return { verdict: resolution.health === "ambiguous" ? "ambiguous" : "unverified" };
+      return { verdict: resolution.health === "ambiguous" ? "ambiguous" : "unverified",
+        ...(resolution.resolvedNode === undefined ? {} : { resolvedNode: resolution.resolvedNode }) };
     default:
       return { verdict: "unverified" };
   }

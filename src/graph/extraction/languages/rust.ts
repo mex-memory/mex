@@ -369,7 +369,10 @@ class RustWalker {
     if (fn) {
       if (fn.type === "field_expression") {
         const field = getChildByField(fn, "field");
-        if (field) calleeName = getNodeText(field, this.source);
+        const receiver = getChildByField(fn, "value");
+        if (field && receiver) {
+          calleeName = `${getNodeText(receiver, this.source).trim()}.${getNodeText(field, this.source)}`;
+        }
       } else if (fn.type === "scoped_identifier") {
         calleeName = getNodeText(fn, this.source);
       } else {

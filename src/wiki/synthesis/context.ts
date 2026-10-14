@@ -344,7 +344,8 @@ export function extractClusterContext(
   // One read per file, reused across every span it contributes.
   const lineCache = new Map<string, string[] | null>();
   const linesOf = (filePath: string): string[] | null => {
-    if (!lineCache.has(filePath)) lineCache.set(filePath, readFileLines(repoRoot, filePath));
+    if (!lineCache.has(filePath)) lineCache.set(filePath,
+      graph.readFileLines ? graph.readFileLines(filePath) : readFileLines(repoRoot, filePath));
     return lineCache.get(filePath) ?? null;
   };
 

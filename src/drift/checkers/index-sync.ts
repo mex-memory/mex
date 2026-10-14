@@ -1,7 +1,8 @@
 import { readFileSync, existsSync } from "node:fs";
-import { resolve, basename } from "node:path";
+import { resolve, relative } from "node:path";
 import { globSync } from "glob";
 import type { DriftIssue } from "../../types.js";
+import { extractFrontmatter } from "../../markdown.js";
 
 /** Cross-reference patterns/INDEX.md with actual pattern files */
 export function checkIndexSync(projectRoot: string, scaffoldRoot: string): DriftIssue[] {
@@ -38,9 +39,32 @@ export function checkIndexSync(projectRoot: string, scaffoldRoot: string): Drift
     referencedFiles.add(match[1]);
   }
 
+  // Also match frontmatter edge targets
+  const frontmatter = extractFrontmatter(rawContent);
+  const edges = frontmatter?.edges;
+
+  if (Array.isArray(edges)) {
+    for (const edge of edges) {
+      if (
+        edge &&
+        typeof edge === "object" &&
+        "target" in edge &&
+        typeof edge.target === "string" && edge.target.trim().length > 0
+      ) {
+        const target = edge.target.replace(/#.*$/, "");
+        if (!target) continue;
+        // Match checkEdges' declaring-file, scaffold, then project resolution.
+        const candidates = [resolve(patternsDir, target), resolve(scaffoldRoot, target), resolve(projectRoot, target)];
+        const targetPath = candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+        referencedFiles.add(relative(patternsDir, targetPath));
+      }
+    }
+  }
+
+  const referencedPaths = new Set([...referencedFiles].map((ref) => resolve(patternsDir, ref)));
   // Check: pattern files not in INDEX
   for (const file of patternFiles) {
-    if (!referencedFiles.has(file)) {
+    if (!referencedPaths.has(resolve(patternsDir, file))) {
       issues.push({
         code: "INDEX_MISSING_ENTRY",
         severity: "warning",

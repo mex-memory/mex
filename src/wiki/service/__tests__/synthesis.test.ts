@@ -21,11 +21,16 @@ import {
   wikiSynthesisBuild,
   wikiSynthesisPrepare,
   wikiSynthesisPropose,
+  wikiPrepareSynthesisPropose,
   type SynthesisOptions,
 } from "../synthesis.js";
 import { wikiRebuildIndex } from "../write.js";
 import { parseWikiMarkdown } from "../../markdown/contract.js";
 import { readAuditLog } from "../../operations/audit.js";
+import { appendAudit, auditRecord } from "../../operations/audit.js";
+import { planOperation } from "../../operations/plan.js";
+import { proposeUnits } from "../../synthesis/propose.js";
+import type { CandidateUnit } from "../../synthesis/candidates.js";
 import type { GroundingGraph, SynthesisGraph } from "../../grounding/adapter.js";
 
 const ISSUE = "function:a3f8c21d9e4b7f60a1c2d3e4f5061728";
@@ -242,6 +247,74 @@ describe("wiki prepare", () => {
 });
 
 describe("wiki propose — stage A", () => {
+  it.each([false, true])("refuses intent-only recovery without reminting ids, canonical rename landed: %s", (landed) => {
+    const { repoRoot, scaffoldRoot, options } = fixture();
+    const response = unitsResponse() as { units: CandidateUnit[] };
+    const proposed = proposeUnits([{ ...response.units[0]!, status: "promoted", stage: "architecture_component", cluster: "auth" }], { graph });
+    const envelope = proposed.operations[0]!.envelope;
+    const planned = planOperation(envelope, { scaffoldRoot, graph, captureCreationProvenance: true });
+    if (!planned.ok) throw new Error(JSON.stringify(planned.diagnostics));
+    appendAudit(scaffoldRoot, auditRecord(planned.plan, "intent"));
+    if (landed) for (const file of planned.plan.files) writeFileSync(file.absolutePath, file.proposedText);
+    const path = join(scaffoldRoot, "context/architecture.md");
+    const before = readFileSync(path, "utf8");
+    const auditPath = join(scaffoldRoot, "events/operations.jsonl");
+    const auditBefore = readFileSync(auditPath, "utf8");
+    const result = wikiSynthesisPropose({ ...options,
+      responsePath: writeResponse(repoRoot, "units.json", response), apply: true });
+    expect(result.data).toMatchObject({ applied: false, changedFiles: [], createdIds: [] });
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: "CONTENT_HASH_CONFLICT",
+      message: expect.stringContaining("Recovery required"), remediation: expect.stringContaining("exact original reviewed operation") }));
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(readFileSync(auditPath, "utf8")).toBe(auditBefore);
+    const parsed = parseWikiMarkdown({ path: "context/architecture.md", text: before });
+    expect(parsed.entities.map(entry => entry.entity.id)).toEqual(landed ? planned.plan.createdIds : []);
+    expect(readAuditLog(scaffoldRoot).entries[0]!.createdIds).toEqual(planned.plan.createdIds);
+  });
+
+  it("prepares exact plans without writes, then publishes only those reviewed ids", () => {
+    const { repoRoot, scaffoldRoot, options } = fixture();
+    const responsePath = writeResponse(repoRoot, "units.json", unitsResponse());
+    const path = join(scaffoldRoot, "context/architecture.md");
+    const before = readFileSync(path, "utf8");
+    const prepared = wikiPrepareSynthesisPropose({ ...options, responsePath });
+    prepared.preflight();
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(existsSync(join(scaffoldRoot, "events"))).toBe(false);
+    const result = prepared.commit();
+    expect(result.data.applied).toBe(true);
+    const parsed = parseWikiMarkdown({ path: "context/architecture.md", text: readFileSync(path, "utf8") });
+    expect(parsed.entities.map(entry => entry.entity.id)).toEqual(result.data.createdIds);
+    expect(result.data.createdIds).toHaveLength(2);
+  });
+
+  it("discards a prepared synthesis publication without touching knowledge or audit", () => {
+    const { repoRoot, scaffoldRoot, options } = fixture();
+    const path = join(scaffoldRoot, "context/architecture.md");
+    const before = readFileSync(path, "utf8");
+    const prepared = wikiPrepareSynthesisPropose({ ...options,
+      responsePath: writeResponse(repoRoot, "units.json", unitsResponse()) });
+    prepared.discard();
+    expect(() => prepared.commit()).toThrow("no longer active");
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(existsSync(join(scaffoldRoot, "events"))).toBe(false);
+  });
+
+  it("refuses a changed canonical file before any prepared sibling is written", () => {
+    const { repoRoot, scaffoldRoot, options } = fixture();
+    const path = join(scaffoldRoot, "context/architecture.md");
+    const prepared = wikiPrepareSynthesisPropose({ ...options,
+      responsePath: writeResponse(repoRoot, "units.json", unitsResponse()) });
+    const changed = `${readFileSync(path, "utf8")}\nA concurrent authored note.\n`;
+    writeFileSync(path, changed);
+    const result = prepared.commit();
+    expect(result.data.applied).toBe(false);
+    expect(result.data.changedFiles).toEqual([]);
+    expect(result.diagnostics.some(entry => entry.severity === "error")).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(changed);
+    expect(existsSync(join(scaffoldRoot, "events"))).toBe(false);
+  });
+
   it("refuses a response that is not readable as one", () => {
     const { repoRoot, options } = fixture();
     const path = join(repoRoot, "broken.json");
@@ -337,6 +410,23 @@ describe("wiki propose — stage A", () => {
       text: readFileSync(join(scaffoldRoot, "context", "architecture.md"), "utf-8"),
     });
     expect(parsed.entities).toHaveLength(2);
+  });
+
+  it("retains completed create ids when a later response includes another new unit", () => {
+    const { repoRoot, scaffoldRoot, options } = fixture();
+    const original = unitsResponse() as { stage: string; cluster: string; units: Array<Record<string, unknown>> };
+    const first = wikiSynthesisPropose({ ...options,
+      responsePath: writeResponse(repoRoot, "first.json", original), apply: true });
+    const extended = { ...original, units: [...original.units, { ...original.units[0],
+      title: "Token callers share the same issuer", body: "Token creation callers use the central issuer, so their token format follows that single implementation." }] };
+    const second = wikiSynthesisPropose({ ...options,
+      responsePath: writeResponse(repoRoot, "second.json", extended), apply: true });
+    expect(second.data.applied).toBe(true);
+    expect(second.data.createdIds.slice(0, 2)).toEqual(first.data.createdIds);
+    expect(second.data.createdIds).toHaveLength(3);
+    const parsed = parseWikiMarkdown({ path: "context/architecture.md",
+      text: readFileSync(join(scaffoldRoot, "context/architecture.md"), "utf8") });
+    expect(parsed.entities.map(entry => entry.entity.id)).toEqual(second.data.createdIds);
   });
 
   it("refuses every unit when the graph is gone, however good the candidates", () => {

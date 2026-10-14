@@ -1594,13 +1594,16 @@ relations:
     const first = await port.getEntityNeighborhood(request);
     expect(first).not.toBeNull();
     expect(leases).toBe(1);
+    // Legacy groundings (no committed body hash): matching structure cannot
+    // prove unchanged literals, so they read unverified until a baseline is
+    // recorded; a structural change still reads changed.
     expect(first?.entity).toMatchObject({
-      groundingHealth: "fresh",
-      groundings: [{ health: "fresh", state: "fresh" }],
+      groundingHealth: "unverified",
+      groundings: [{ health: "unverified", state: "unresolved" }],
     });
-    expect(first?.neighborhood.root.groundingHealth).toBe("fresh");
+    expect(first?.neighborhood.root.groundingHealth).toBe("unverified");
     expect(first?.neighborhood.entities.find((entity) => entity.ref.id === TARGET)?.groundingHealth)
-      .toBe("fresh");
+      .toBe("unverified");
 
     const second = await port.getEntityNeighborhood(request);
     expect(second).not.toBeNull();

@@ -19,6 +19,7 @@ import {
 import { HubHttpError } from "../http/errors.js";
 import { setupCommitCheckpointCommands, SetupFinalizationError } from "../../setup/index.js";
 import { SetupPopulationError } from "../../setup/population.js";
+import { SetupError } from "../../setup/errors.js";
 import { initialSetupStatus, projectSetupStatus } from "./readiness.js";
 import { SetupTranscriptStore } from "./transcript.js";
 import { SetupCommitService } from "./commit.js";
@@ -235,8 +236,9 @@ export class HubSetupRunner {
     const startedAt = this.now().toISOString();
     const controller = new AbortController();
     this.controller = controller;
-    const transcriptId = randomUUID();
-    this.transcriptStore = new SetupTranscriptStore(transcriptId, this.now);
+    if (this.transcriptTimer !== null) clearTimeout(this.transcriptTimer);
+    this.transcriptTimer = null;
+    this.transcriptStore = null;
     this.run = {
       status: "running",
       mode: request.mode,
@@ -247,7 +249,6 @@ export class HubSetupRunner {
       prompt: null,
       populationTool: null,
       populationCompleted: false,
-      transcriptId,
       commitCommands: [],
       anchorNotes,
       message: "Starting MEX setup…",
@@ -310,7 +311,22 @@ export class HubSetupRunner {
         onAnchorNotes: (anchorNotes) => { this.run = { ...this.run, anchorNotes: [...anchorNotes] }; },
         onPopulationTranscript: (entry) => {
           if (signal.aborted || this.run.status !== "running" || this.controller?.signal !== signal) return;
-          this.transcriptStore?.append({ kind: entry.kind, text: entry.text });
+          if (entry.text.length === 0) return;
+          if (this.transcriptStore === null) {
+            // Population adapters already sanitize visible output. A setup
+            // check or an agent with no retained output has no transcript.
+            const transcriptId = randomUUID();
+            const store = new SetupTranscriptStore(transcriptId, this.now);
+            store.append({ kind: entry.kind, text: entry.text });
+            if (store.stats().retainedEntries === 0) return;
+            this.transcriptStore = store;
+            this.run = { ...this.run, transcriptId };
+            // Announce only after the first page is readable, even if no
+            // subsequent progress event arrives to wake setup subscribers.
+            this.emit();
+            return;
+          }
+          this.transcriptStore.append({ kind: entry.kind, text: entry.text });
           if (this.transcriptTimer === null) {
             this.transcriptTimer = setTimeout(() => this.notifyTranscript(), TRANSCRIPT_EMIT_INTERVAL_MS);
             this.transcriptTimer.unref();
@@ -366,15 +382,16 @@ export class HubSetupRunner {
       await this.finishFromResult(result, signal, request.openHub === true);
     } catch (error) {
       // Child output and arbitrary filesystem exceptions are never a browser payload.
-      const message = signal.aborted ? "Setup was cancelled. You can resume it when ready."
+      const message = (signal.aborted ? "Setup was cancelled. You can resume it when ready."
+        : error instanceof SetupError ? error.userMessage
         : error instanceof SetupPopulationError || error instanceof SetupFinalizationError || error instanceof HubHttpError ? error.message
-        : "Setup could not finish. Run mex setup --cli in this project for details, then retry.";
+        : "Setup could not finish. Run mex setup --cli in this project for details, then retry.").slice(0, 512);
       this.run = {
         ...this.run,
         status: signal.aborted ? "cancelled" : "failed",
         ready: false,
         message,
-        error: signal.aborted ? null : message.slice(0, 512),
+        error: signal.aborted ? null : message,
         finishedAt: this.now().toISOString(),
         progress: this.run.progress,
       };

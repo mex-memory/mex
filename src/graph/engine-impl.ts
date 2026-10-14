@@ -116,8 +116,8 @@ const BODY_KINDS = new Set<GraphNode["kind"]>([
 ]);
 
 const COMPILER_LANGUAGES = new Set<Language>(["typescript", "javascript", "tsx", "jsx"]);
-const RESOLVER_VERSION = "compiler-first-v2";
-const TREE_SITTER_EXTRACTOR_VERSION = "tree-sitter-v3";
+const RESOLVER_VERSION = "compiler-first-v3";
+const TREE_SITTER_EXTRACTOR_VERSION = "tree-sitter-v4";
 const CORPUS_EXTRACTOR_VERSION = `${TYPESCRIPT_COMPILER_EXTRACTOR_VERSION}+${TREE_SITTER_EXTRACTOR_VERSION}`;
 
 export interface GraphEngineOptions {

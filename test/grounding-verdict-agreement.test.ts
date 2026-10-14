@@ -83,6 +83,11 @@ const EDITS: Array<{ name: string; edit: (source: string) => string; expected: G
     expected: "moved",
   },
   {
+    name: "rename plus literal change",
+    edit: (source) => source.replace("calculateOrderTotal", "computeOrderTotal").replace("subtotal * 0.18", "subtotal * 0.21"),
+    expected: "changed",
+  },
+  {
     name: "deleted",
     edit: (source) => source.slice(source.indexOf("export function formatReceipt")),
     expected: "missing",
@@ -121,10 +126,10 @@ async function build(root: string): Promise<void> {
 }
 
 /** Ground the entity to `calculateOrderTotal` and record its baseline, as `mex sync` does. */
-async function ground(fx: Fixture): Promise<void> {
+async function ground(fx: Fixture, symbol = "calculateOrderTotal"): Promise<void> {
   const runtime = await loadGroundingRuntime(fx.config);
   try {
-    const node = runtime!.graph.searchNodes("calculateOrderTotal").find((entry) => entry.kind === "function")!;
+    const node = runtime!.graph.searchNodes(symbol).find((entry) => entry.kind === "function")!;
     const fingerprint = runtime!.reconciler.getFingerprint(node.id)!;
     writeFileSync(fx.scaffold, writeGroundings(readFileSync(fx.scaffold, "utf-8"), [{
       node: node.id,
@@ -187,6 +192,21 @@ describe("check and the Wiki share one code-link verdict", () => {
     expect(check.verdict === "silent" ? "fresh" : check.verdict).toBe(wiki);
     if (check.verdict !== "silent") expect(check.entity).toBe(ENTITY_ID);
   }, 60_000);
+
+  it("h018: both flag QUERY added to the complete CORS default list", async () => {
+    const fx = fixture();
+    const before = "export function cors() {\n  const origin = '*'\n  const methods = [\n    'GET',\n    'HEAD',\n    'PUT',\n    'POST',\n    'DELETE',\n    'PATCH',\n  ]\n  return { origin, methods }\n}\n";
+    const fact = "cors() defaults to origin '*' and to allowing the methods GET, HEAD, PUT, POST, DELETE and PATCH.";
+    writeFileSync(fx.source, before);
+    writeFileSync(fx.scaffold, readFileSync(fx.scaffold, "utf8").replace(FACT, fact));
+    await build(fx.root);
+    await ground(fx, "cors");
+    writeFileSync(fx.source, before.replace("    'PATCH',", "    'PATCH',\n    'QUERY',"));
+    await build(fx.root);
+    expect((await checkVerdict(fx)).verdict).toBe("changed");
+    expect(wikiVerdict(fx)).toEqual({ verdict: "changed", stored: "changed" });
+  }, 60_000);
+
 });
 
 /** Run `fn` with the Wiki's graph adapter over the fixture's graph. */

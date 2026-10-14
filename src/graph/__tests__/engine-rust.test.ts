@@ -30,6 +30,23 @@ beforeAll(async () => {
       + "pub fn invoke_imported() -> u8 { imported_helper() }\n"
       + "pub fn invoke_alias() -> u8 { aliased_helper() }\n",
   );
+  writeFileSync(join(root, "src/recursive.rs"), [
+    "pub struct Worker;",
+    "impl Worker {",
+    "  pub fn repeat(&self) { self.repeat(); }",
+    "  pub fn inspect(&self, other: &Worker) { other.repeat(); }",
+    "}",
+    "",
+  ].join("\n"));
+  for (const [path, text] of [
+    ["crates/walk/src/lib.rs", "pub mod types;\n"],
+    ["crates/walk/src/types.rs", "pub fn walk_types() -> u8 { 2 }\n"],
+    ["crates/cli/src/args.rs", "pub fn parse_args() -> u8 { 3 }\n"],
+    ["crates/cli/src/main.rs", "mod args;\nuse walk::types::walk_types;\nuse crate::args::parse_args;\nfn main() { walk_types(); parse_args(); }\n"],
+  ] as const) {
+    mkdirSync(join(root, dirname(path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  }
   engine = createGraphEngine({ rootDir: root });
   await engine.build(root);
 });
@@ -40,6 +57,24 @@ afterAll(() => {
 });
 
 describe("Rust graph discovery", () => {
+  it("resolves crate paths from a nested crate root and sibling workspace members", () => {
+    const main = engine.searchNodes("main").find((node) => node.name === "main" && node.filePath === "crates/cli/src/main.rs")!;
+    expect(engine.getCallees(main.id).map((node) => node.filePath).sort())
+      .toEqual(["crates/cli/src/args.rs", "crates/walk/src/types.rs"]);
+  });
+
+  it("binds unique self recursion and retains unverified object receivers", () => {
+    const repeat = engine.searchNodes("repeat").find((node) => node.name === "repeat")!;
+    const inspect = engine.searchNodes("inspect").find((node) => node.name === "inspect")!;
+    expect(engine.getCallees(repeat.id).map((node) => node.id)).toContain(repeat.id);
+    expect(engine.getCallees(inspect.id)).toEqual([]);
+    const db = openSqlite(join(root, ".mex", "graph.db"));
+    try {
+      expect(db.prepare("SELECT reference_name, receiver, status FROM unresolved_refs WHERE from_node_id = ? AND reference_kind = 'calls'")
+        .get(inspect.id)).toMatchObject({ reference_name: "other.repeat", receiver: "other", status: "unresolved" });
+    } finally { db.close(); }
+  });
+
   it("indexes Rust files during a full graph build", () => {
     expect(engine.searchNodes("User").some((node) => (
       node.name === "User" && node.language === "rust"

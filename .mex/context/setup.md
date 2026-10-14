@@ -20,7 +20,7 @@ edges:
 # Ground only setup behavior implemented by specific code symbols.
 # Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh2:64:<base64url>" }
 grounds_to: []
-last_updated: "2026-10-08"
+last_updated: "2026-10-09"
 mex:
   id: mx_01M1M0CJGBPPFPWHY980PMTS2T
   type: guide
@@ -77,9 +77,9 @@ relations:
 2. `npm run typecheck`
 3. `npm test`
 4. `npm run build`
-5. For exact-checkout browser setup, run `node dist/cli.js setup`. Use `node dist/cli.js setup --cli` for terminal dogfooding; rerun that terminal command after manual population to finalize grounding and Wiki readiness.
+5. For exact-checkout terminal setup, run `node dist/cli.js setup` (`--cli` remains supported). The HUD hands the terminal to a selected native Claude/Codex session, restores it, checks population, then finalizes grounding and Wiki. Manual population offers Check populated files or a resumable exit. Use `node dist/cli.js setup --browser` for browser setup or to reopen its commit/completion page. `--yes`, pipes, and CI use plain output with no agent or Hub launch; exit 2 means population is still required.
 6. Review the canonical scaffold and selected agent files in setup, then explicitly commit them through the Hub action or your Git client. Keep generated databases and `.mex/local/` ignored. The completion guide precedes **Open Hub** and offers optional version-pinned global install and contact details.
-7. Bare `node dist/cli.js` opens the Hub or setup; `node dist/cli.js hub` remains supported. Verify any installed global CLI matches the checkout. `mex tui` retains the terminal dashboard.
+7. Bare `node dist/cli.js` opens the Hub for established code projects, including missing-index recovery, and terminal setup otherwise. `node dist/cli.js hub` explicitly opens the browser. Verify any installed global CLI matches the checkout. `mex tui` retains the terminal dashboard.
 
 <!-- mex:entity
 id: mx_01M1M0CJE778KMAJA005V2RWWN
@@ -135,6 +135,7 @@ relations:
 
 - **`node:sqlite` is unavailable:** confirm `node --version` is at least 22.5; older Node releases cannot run MEX 0.8.x.
 - **Graph reports migration/rebuild required after an upgrade:** run the exact checkout CLI with `node dist/cli.js graph rebuild`, or rerun setup; do not edit SQLite files manually.
+- **Graph setup appears idle:** the terminal HUD shows real worker phases/file counts, phase elapsed time, and time since the last event. Its spinner shows the interface is active, not that the worker has reported more progress. Press `d` for details; worker failures retain bounded terminal diagnostics, including confirmed Node heap exhaustion.
 - **Wiki reports migration required:** finish scaffold population and continue browser setup or rerun `node dist/cli.js setup --cli` so migration, index rebuild, and validation happen in the supported order.
 - **Tests become flaky while a build runs:** do not run the full test suite concurrently with tsup/Vite cleanup of generated output.
 - **Graph status is degraded:** inspect parse health and narrow graph queries; partial structural parsing is usable evidence, not permission to invent missing facts.

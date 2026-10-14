@@ -72,6 +72,8 @@ export interface GroundedNode {
  * what would make drift disappear behind a helpful-looking cache update.
  */
 export interface GroundingGraph {
+  /** A stable parse gap permits direct verified targets, but proves no absence. */
+  readonly incompleteReason?: string;
   /** The node under this id, or null when the graph has no such node. */
   getNode(nodeId: string): GroundedNode | null;
   /** The node's serialized fingerprint in this checkout, or null. */
@@ -89,11 +91,9 @@ export interface GroundingGraph {
    * The cached baseline for one (subject, node), **for rendering an old-vs-new
    * diff only**.
    *
-   * Never consult this to decide whether something drifted. It is re-captured
-   * by an ordinary graph rebuild, so a current-against-baseline comparison is a
-   * current-against-current comparison and reports `fresh` for code that
-   * changed — at exactly the moment the user did the most ordinary thing
-   * available to them.
+   * Never treat this disposable row as the accepted change baseline. Current
+   * code cannot recreate lost historical source after an index is discarded;
+   * only content matching the committed body hash can explain its old side.
    */
   getBaselineSource(subject: GroundingSubject, nodeId: string): GroundingBaseline | null;
   /**
@@ -103,8 +103,8 @@ export interface GroundingGraph {
    */
   explainChange?(grounding: WikiGrounding, nodeId: string): ChangeEvidence | null;
   /**
-   * Note that the node's current body is the one `bodyHash` names, so a later
-   * change can be explained against it. Called only when the two match.
+   * Explicit maintenance may cache a body whose hash matches. Never invoke
+   * this from resolution or ordinary reads: it writes checkout-local state.
    */
   rememberBody?(nodeId: string, bodyHash: string): void;
 }
@@ -213,6 +213,8 @@ export function deriveGrounding(
  * what was asked for and let the caller say how much it asked for.
  */
 export interface SynthesisGraph {
+  /** Snapshot-bound source when composed by the repository adapter. */
+  readFileLines?(filePath: string): string[] | null;
   /** Every indexed file, deduplicated, in path order. */
   listFiles(): Array<{ path: string }>;
   /** The declarations in one file. Empty for a path the graph does not know. */

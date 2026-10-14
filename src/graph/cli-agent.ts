@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { globSync } from "glob";
 import { graphManifest, graphManifestDiffersOnlyByConfig } from "./engine-impl.js";
 import type { GraphEngine, GraphNeighbor, IndexedFileInfo } from "./engine.js";
@@ -75,19 +75,29 @@ export interface AgentCommandDeps {
 
 type RawOptions = Partial<Record<keyof AgentOptions, unknown>>;
 type Rec = Record<string, unknown>;
+type ImpactDirection = "callers" | "callees" | "both";
 
 /** Agent-facing blast radius. Output is newline-delimited JSON (JSONL). */
 export function runImpact(
   target: string,
   rootDir = process.cwd(),
   deps: AgentCommandDeps = {},
-  rawOptions: RawOptions = {},
+  rawOptions: RawOptions & { direction?: unknown } = {},
 ): void | Promise<void> {
   const output = deps.write ?? console.log;
+  const direction = rawOptions.direction === undefined ? "callers" : rawOptions.direction;
+  if (direction !== "callers" && direction !== "callees" && direction !== "both") {
+    writeJson(output, {
+      type: "error", code: "INVALID_OPTION", option: "direction",
+      message: "Impact direction must be callers, callees, or both.",
+      expected: ["callers", "callees", "both"],
+    });
+    return;
+  }
   const opts = resolveOptions(rawOptions);
   return withAgentGraphSession(rootDir, deps, output, freshTargetedRead(opts), (session, write) => {
     const fileNodes = nodesForFile(session, rootDir, target);
-    const roots = fileNodes.length > 0 ? fileNodes : resolveSymbol(session.graph, target);
+    const roots = fileNodes.length > 0 ? fileNodes : resolveTarget(session, rootDir, target);
     if (roots.length === 0) {
       for (const record of configDriftRecords(session)) writeJson(write, record);
       writeJson(write, {
@@ -103,38 +113,41 @@ export function runImpact(
       return;
     }
 
-    // Definitions (roots) and transitive callers share one `maxNodes` cap on returned nodes.
+    // Definitions and directed dependencies share one returned-node cap.
     const rootsSorted = roots.sort(byId);
     const ctx = beginResponse("impact", opts, undefined,
-      rootsSorted.length > 0 ? [`mex graph get ${rootsSorted[0]!.id} --detail source`] : []);
+      rootsSorted.length > 0 ? [`mex graph get ${rootsSorted[0]!.id} --detail source`] : [],
+      direction === "callers" ? {} : { direction });
     const ledger = ctx.ledger;
     const meta = ctx.meta;
 
     const headRecords: Rec[] = [];  // `target` — data, but not a graph fact
-    const factRecords: Rec[] = [];  // `defines` + `caller` — real facts, eligible for source
+    const factRecords: Rec[] = [];  // definitions/dependencies — real facts, eligible for source
     const emittedNodes: GraphNode[] = [];
     let truncated = false;
 
     const targetRecord: Rec = { type: "target", targetType: fileNodes.length > 0 ? "file" : "symbol", value: target };
     if (ledger.tryAdd(targetRecord)) headRecords.push(targetRecord); else truncated = true;
 
-    for (const root of rootsSorted) {
-      if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
+    const admitDefinition = (root: GraphNode): boolean => {
+      if (emittedNodes.length >= opts.maxNodes) { truncated = true; return false; }
       const fact = factFor(session, root.id, opts.detail, opts.fingerprint);
-      if (!fact) continue;
+      if (!fact) return true;
       const record: Rec = { type: "defines", ...agentFactFields(fact, opts) };
-      if (!ledger.tryAdd(record)) { truncated = true; break; }
+      if (!ledger.tryAdd(record)) { truncated = true; return false; }
       factRecords.push(record);
       emittedNodes.push(root);
+      return true;
+    };
+    // A symbol target needs its declaration as context. A file already names
+    // all of its roots: admitting every definition first can consume the
+    // entire cap before any caller outside the file is shown.
+    if (fileNodes.length === 0) {
+      for (const root of rootsSorted) if (!admitDefinition(root)) break;
     }
 
     const impacted = new Map<string, { node: GraphNode; depth: number; root: string }>();
-    for (const root of rootsSorted) {
-      for (const entry of transitiveCallers(session.graph, root, opts.depth)) {
-        const current = impacted.get(entry.node.id);
-        if (!current || entry.depth < current.depth) impacted.set(entry.node.id, { ...entry, root: root.id });
-      }
-    }
+    for (const entry of transitiveCallNeighbors(session.graph, rootsSorted, opts.depth, direction)) impacted.set(entry.node.id, entry);
     const ordered = [...impacted.values()].sort((a, b) => a.depth - b.depth || a.node.id.localeCompare(b.node.id));
 
     // Grounding is keyed by node, so an excluded node must not reappear
@@ -164,10 +177,17 @@ export function runImpact(
       // Reached by following call edges, which is exactly what drifted
       // resolution can get wrong.
       const record: Rec = markResolutionStale(session,
-        { type: "caller", depth: entry.depth, root: entry.root, ...agentFactFields(fact, opts) });
+        {
+          type: direction === "callers" ? "caller" : direction === "callees" ? "callee" : "dependency",
+          depth: entry.depth, root: entry.root,
+          ...agentFactFields(fact, opts), ...callbackEnclosingSymbol(session, entry.node),
+        });
       if (!ledger.tryAdd(record)) { truncated = true; break; }
       factRecords.push(record);
       emittedNodes.push(entry.node);
+    }
+    if (fileNodes.length > 0) {
+      for (const root of rootsSorted) if (!admitDefinition(root)) break;
     }
 
     const sourceRecords = planSource(session, ledger, emittedNodes, rootDir, opts);
@@ -211,7 +231,7 @@ export function runGraphQuery(
   }
   const opts = resolveOptions(rawOptions);
   return withAgentGraphSession(rootDir, deps, output, freshTargetedRead(opts), (session, write) => {
-    const nodes = resolveSymbol(session.graph, target);
+    const nodes = resolveTarget(session, rootDir, target);
     if (nodes.length === 0) {
       if (relation === "who-calls"
         && emitUnresolvedCallers(session, write, target, opts)) return;
@@ -252,7 +272,10 @@ export function runGraphQuery(
       if (!fact) continue;
       // `where-defined` returns the declaration itself and is independent of
       // resolution; the call relations are edges and are not.
-      const base: Rec = { type: "result", relation, target: pair.targetId, ...agentFactFields(fact, opts) };
+      const base: Rec = {
+        type: "result", relation, target: pair.targetId,
+        ...agentFactFields(fact, opts), ...callbackEnclosingSymbol(session, pair.node),
+      };
       const record: Rec = relation === "where-defined" ? base : markResolutionStale(session, base);
       if (!ledger.tryAdd(record)) { truncated = true; break; }
       entries.push({ record, node: pair.node });
@@ -942,13 +965,19 @@ class OutputBudgetTooSmallError extends Error {
  * `anticipatedSuggestions` sizes the reserve; the final summary recomputes them
  * from what was actually returned (same fixed-width ids, so the reserve holds).
  */
-function beginResponse(command: string, opts: AgentOptions, task: string | undefined, anticipatedSuggestions: string[]): ResponseCtx {
+function beginResponse(
+  command: string,
+  opts: AgentOptions,
+  task: string | undefined,
+  anticipatedSuggestions: string[],
+  metaFields: Rec = {},
+): ResponseCtx {
   const requested = opts.maxOutputTokens;
   const reserve = estimateTokens(summarySkeleton(anticipatedSuggestions)) + RESERVE_PAD;
-  const framingFloor = estimateTokens(metaRecord(command, { ...opts, maxOutputTokens: SIZE_PROBE }, task)) + reserve;
+  const framingFloor = estimateTokens({ ...metaRecord(command, { ...opts, maxOutputTokens: SIZE_PROBE }, task), ...metaFields }) + reserve;
   if (requested < framingFloor) throw new OutputBudgetTooSmallError(requested, framingFloor);
   const effectiveMax = requested;
-  const meta = metaRecord(command, { ...opts, maxOutputTokens: effectiveMax }, task);
+  const meta = { ...metaRecord(command, { ...opts, maxOutputTokens: effectiveMax }, task), ...metaFields };
   const ledger = new BudgetLedger(effectiveMax, reserve);
   ledger.frame(meta);
   return { ledger, meta, effectiveMax };
@@ -2447,6 +2476,44 @@ function resolveSymbol(graph: GraphEngine, target: string): GraphNode[] {
   return matches.filter((node) => node.name === target || node.qualifiedName === target);
 }
 
+/** Resolve an exact symbol/id, or the narrowest declaration at an indexed file:line. */
+function resolveTarget(session: AgentGraphSession, rootDir: string, target: string): GraphNode[] {
+  const exact = resolveSymbol(session.graph, target);
+  if (exact.length > 0) return exact;
+  const location = /^(.*):(\d+)$/u.exec(target);
+  if (!location) return [];
+  const line = Number(location[2]);
+  if (!Number.isSafeInteger(line) || line < 1) return [];
+  const candidates = nodesForFile(session, rootDir, location[1]!)
+    .filter((node) => node.kind !== "file" && node.startLine <= line && node.endLine >= line);
+  if (candidates.length === 0) return [];
+  const span = (node: GraphNode): number => node.endLine - node.startLine;
+  const smallest = candidates.reduce((minimum, node) => Math.min(minimum, span(node)), Number.POSITIVE_INFINITY);
+  const narrow = candidates.filter((node) => span(node) === smallest);
+  const containers = new Set(narrow.map((node) => node.containerId));
+  // Equal spans can be genuinely ambiguous (multiple declarations on one
+  // line). Keep every tied declaration rather than choosing by hash/order.
+  return narrow.filter((node) => !containers.has(node.id)).sort(byId);
+}
+
+/** Navigation context only: lexical containment does not prove callback execution. */
+const MAX_CALLBACK_CONTAINER_DEPTH = 32;
+
+function callbackEnclosingSymbol(session: AgentGraphSession, node: GraphNode): Rec {
+  if (!node.name.startsWith("<callback:")) return {};
+  const seen = new Set([node.id]);
+  let parentId = node.containerId;
+  for (let depth = 0; depth < MAX_CALLBACK_CONTAINER_DEPTH && parentId && !seen.has(parentId); depth += 1) {
+    seen.add(parentId);
+    const parent = session.graph.getNode(parentId);
+    if (!parent || isDriftedFile(session, parent.filePath)) return {};
+    if (parent.kind === "file") return {};
+    if (!parent.name.startsWith("<callback:")) return { enclosingSymbol: nodeRef(parent) };
+    parentId = parent.containerId;
+  }
+  return {};
+}
+
 function relatedCallNodes(graph: GraphEngine, queried: GraphNode, relation: Exclude<QueryRelation, "where-defined">): GraphNode[] {
   const typed = relation === "who-calls"
     ? (graph.getIncoming?.(queried.id, ["calls"]) ?? [])
@@ -2478,23 +2545,34 @@ function dedupeNeighbors(entries: GraphNeighbor[]): GraphNeighbor[] {
 }
 
 function nodesForFile(session: AgentGraphSession, rootDir: string, target: string): GraphNode[] {
-  const relativeTarget = (target.startsWith("/") ? relative(rootDir, target) : target)
+  const relativeTarget = (isAbsolute(target) ? relative(rootDir, target) : target)
     .replace(/^\.\//, "").replaceAll("\\", "/");
   const rows = session.db.prepare("SELECT id FROM nodes WHERE file_path = ? ORDER BY id").all(relativeTarget) as Array<{ id: string }>;
   return rows.map((row) => session.graph.getNode(row.id)).filter((node): node is GraphNode => node !== null);
 }
 
-function transitiveCallers(graph: GraphEngine, root: GraphNode, maxDepth: number): Array<{ node: GraphNode; depth: number }> {
-  const seen = new Set([root.id]);
-  const queue: Array<{ node: GraphNode; depth: number }> = [{ node: root, depth: 0 }];
-  const results: Array<{ node: GraphNode; depth: number }> = [];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
+function transitiveCallNeighbors(
+  graph: GraphEngine,
+  roots: readonly GraphNode[],
+  maxDepth: number,
+  direction: ImpactDirection,
+): Array<{ node: GraphNode; depth: number; root: string }> {
+  // One multi-source breadth-first walk visits a shared caller once. Repeating
+  // the entire walk for every definition made file-seed work scale with both
+  // the number of definitions and the size of their overlapping call trees.
+  const seen = new Set(roots.map((node) => node.id));
+  const queue = roots.map((node) => ({ node, depth: 0, root: node.id }));
+  const results: Array<{ node: GraphNode; depth: number; root: string }> = [];
+  for (let head = 0; head < queue.length; head += 1) {
+    const current = queue[head]!;
     if (current.depth >= maxDepth) continue;
-    for (const caller of graph.getCallers(current.node.id).sort(byId)) {
-      if (seen.has(caller.id)) continue;
-      seen.add(caller.id);
-      const entry = { node: caller, depth: current.depth + 1 };
+    const neighbors = direction === "callers" ? graph.getCallers(current.node.id)
+      : direction === "callees" ? graph.getCallees(current.node.id)
+      : [...graph.getCallers(current.node.id), ...graph.getCallees(current.node.id)];
+    for (const neighbor of neighbors.sort(byId)) {
+      if (seen.has(neighbor.id)) continue;
+      seen.add(neighbor.id);
+      const entry = { node: neighbor, depth: current.depth + 1, root: current.root };
       results.push(entry);
       queue.push(entry);
     }

@@ -29,9 +29,12 @@ import { diagnostic, hasBlockingDiagnostic, type WikiDiagnostic } from "../model
 import { withWikiQuery } from "../query/session.js";
 import type { WikiQuerySession } from "../query/session.js";
 import { resolveBounds } from "../query/budget.js";
-import { locateEntity, createParseCache, type ParseCache } from "../operations/locate.js";
-import { applyOperation } from "../operations/apply.js";
-import { planOperation } from "../operations/plan.js";
+import { locateEntity, createParseCache } from "../operations/locate.js";
+import { applyPlannedOperationBatch, planOperationBatch } from "../operations/batch.js";
+import { readAuditLog, recordFor } from "../operations/audit.js";
+import { payloadHashOf } from "../operations/plan.js";
+import { validateOperation } from "../model/operation.js";
+import { rootContext } from "../model/validate.js";
 import { previewPlan, renderPreview } from "../operations/preview.js";
 import { findClusters } from "../synthesis/cluster.js";
 import { extractClusterContext } from "../synthesis/context.js";
@@ -75,6 +78,15 @@ export interface SynthesisOptions extends WikiWriteOptions {
   scope?: SynthesisScope;
   /** Optional root-product policy applied before any proposal is planned or written. */
   operationGuard?: (envelope: unknown) => readonly WikiDiagnostic[];
+  /** @internal Capture an exact batch for publication after Graph revalidation. */
+  deferApply?: (commit: () => SynthesisBatchWrite) => void;
+}
+
+interface SynthesisBatchWrite {
+  applied: boolean;
+  changedFiles: string[];
+  createdIds: string[];
+  diagnostics: readonly WikiDiagnostic[];
 }
 
 export interface SynthesisScope {
@@ -347,6 +359,31 @@ export function wikiSynthesisPropose(
   return proposeUnitsStage(options, envelope, stage);
 }
 
+/** Prepare without writes; the repository graph bridge alone releases commit. */
+export function wikiPrepareSynthesisPropose(
+  options: SynthesisOptions & { responsePath: string; stage?: PrepareStage; cluster?: string },
+): { preflight(): void; commit(): ServiceResult<ProposeData>; discard(): void } {
+  let pending: (() => SynthesisBatchWrite) | undefined;
+  let active = true;
+  const result = wikiSynthesisPropose({ ...options, apply: true, deferApply: commit => { pending = commit; } });
+  return {
+    preflight() {
+      if (!active) throw new Error("The synthesis publication is no longer active.");
+    },
+    commit() {
+      if (!active) throw new Error("The synthesis publication is no longer active.");
+      active = false;
+      if (!pending || hasBlockingDiagnostic(result.diagnostics)) return result;
+      const written = pending();
+      return {
+        data: { ...result.data, applied: written.applied, changedFiles: written.changedFiles, createdIds: written.createdIds },
+        diagnostics: [...result.diagnostics, ...written.diagnostics],
+      };
+    },
+    discard() { active = false; pending = undefined; },
+  };
+}
+
 function proposeUnitsStage(
   options: SynthesisOptions & { responsePath: string; apply?: boolean; cluster?: string },
   envelope: Record<string, unknown>,
@@ -489,20 +526,18 @@ interface BatchEntry {
 /**
  * Plan every operation, and apply them only with explicit authority.
  *
- * One `parseCache` across the batch. A synthesis run is the caller finding 65.6
- * named: `applyOperation` re-reads and re-parses the file it targets, and a
- * batch of forty proposals into three documents would otherwise parse the same
- * unchanged prose over a hundred times.
+ * The engine's virtual overlay plans one exact atomic batch. Graph-backed
+ * publication can hold that plan until the complete snapshot is revalidated,
+ * then apply without re-reading graph facts or minting different entity ids.
  */
 function runBatch(
   options: SynthesisOptions & { apply?: boolean },
   entries: readonly BatchEntry[],
 ): ServiceResult<ProposeData> {
-  const cache: ParseCache = createParseCache();
   const planOptions = {
     scaffoldRoot: resolve(options.scaffoldRoot),
     captureCreationProvenance: true,
-    parseCache: cache,
+    parseCache: createParseCache(),
     ...(options.indexPath === undefined ? {} : { indexPath: options.indexPath }),
     ...(options.exclude === undefined ? {} : { exclude: options.exclude }),
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
@@ -511,11 +546,6 @@ function runBatch(
   };
 
   const diagnostics: WikiDiagnostic[] = [];
-  const diffs: string[] = [];
-  const operations: Array<{ opId: string; summary: string }> = [];
-  const changedFiles: string[] = [];
-  const createdIds: string[] = [];
-  let applied = false;
 
   // Product policy is a batch preflight: one refused generated operation must
   // prevent every sibling from being planned or written. Otherwise an agent
@@ -527,34 +557,68 @@ function runBatch(
     return { data: emptyPropose(), diagnostics };
   }
 
+  if (entries.length === 0) return { data: emptyPropose(), diagnostics };
+  const log = readAuditLog(options.scaffoldRoot);
+  diagnostics.push(...log.diagnostics);
+  if (hasBlockingDiagnostic(diagnostics)) return { data: emptyPropose(), diagnostics };
+  const replayIds = new Map<string, readonly string[]>();
+  const pending: BatchEntry[] = [];
   for (const entry of entries) {
-    const planned = planOperation(entry.envelope, planOptions);
-    if (!planned.ok) {
-      diagnostics.push(...planned.diagnostics);
-      continue;
+    const operation = validateOperation(entry.envelope, rootContext());
+    if (!operation.ok) return { data: emptyPropose(), diagnostics: [...diagnostics, ...operation.diagnostics] };
+    const receipt = recordFor(log, entry.opId);
+    const completed = receipt.complete;
+    if (!completed && receipt.intent) {
+      return { data: emptyPropose(), diagnostics: [...diagnostics,
+        diagnostic("CONTENT_HASH_CONFLICT", `Recovery required: synthesis operation ${entry.opId} has an incomplete durable intent. Refusing to remint its recorded identities.`, {
+          remediation: "Recover the exact original reviewed operation envelope or plan with the existing Wiki operation recovery path before retrying synthesis. Preserve the recorded opId, payload, identities and audit history; do not delete the intent or renew grounding baselines to bypass recovery.",
+        })] };
     }
-    operations.push({ opId: entry.opId, summary: entry.summary });
-    diffs.push(renderPreview(previewPlan(planned.plan)));
-
-    if (options.apply !== true) continue;
-    const result = applyOperation(entry.envelope, planOptions);
-    diagnostics.push(...result.diagnostics);
-    if (result.ok && !result.replayed) applied = true;
-    changedFiles.push(...result.changedFiles);
-    createdIds.push(...result.createdIds);
+    if (!completed) { pending.push(entry); continue; }
+    if (completed.type !== operation.value.type
+      || completed.payloadHash !== payloadHashOf(operation.value.type, operation.value.payload)) {
+      return { data: emptyPropose(), diagnostics: [...diagnostics,
+        diagnostic("INVALID_OPERATION_ENVELOPE", `Operation ${entry.opId} is recorded with a different payload.`)] };
+    }
+    // Completed creates retain the exact ids their immutable receipt recorded.
+    replayIds.set(entry.opId, completed.createdIds);
   }
-
-  return {
+  const summaries = entries.map(entry => ({ opId: entry.opId, summary: entry.summary }));
+  if (pending.length === 0) return { data: { ...emptyPropose(), operations: summaries,
+    createdIds: options.apply === true ? entries.flatMap(entry => [...replayIds.get(entry.opId)!]) : [] }, diagnostics };
+  const planned = planOperationBatch(pending.map(entry => entry.envelope), planOptions);
+  diagnostics.push(...planned.diagnostics);
+  if (!planned.ok) return { data: emptyPropose(), diagnostics };
+  const result: ServiceResult<ProposeData> = {
     data: {
       ...emptyPropose(),
-      operations,
-      diff: diffs.length === 0 ? null : diffs.join("\n"),
-      applied,
-      changedFiles: [...new Set(changedFiles)],
-      createdIds,
+      operations: summaries,
+      diff: planned.plan.operations.map(plan => renderPreview(previewPlan(plan))).join("\n"),
     },
     diagnostics,
   };
+  const commit = (): SynthesisBatchWrite => {
+    const applied = applyPlannedOperationBatch(planned.plan, { ...planOptions,
+      expectedPreviewRevision: planned.plan.previewRevision });
+    return {
+      applied: applied.ok && !applied.replayed,
+      changedFiles: [...applied.changedFiles],
+      createdIds: applied.ok ? entries.flatMap(entry => [...(replayIds.get(entry.opId)
+        ?? planned.plan.operations.find(plan => plan.opId === entry.opId)?.createdIds ?? [])]) : [],
+      diagnostics: applied.diagnostics,
+    };
+  };
+  if (options.apply === true) {
+    if (options.deferApply) options.deferApply(commit);
+    else {
+      const written = commit();
+      result.data.applied = written.applied;
+      result.data.changedFiles = written.changedFiles;
+      result.data.createdIds = written.createdIds;
+      diagnostics.push(...written.diagnostics);
+    }
+  }
+  return result;
 }
 
 interface ProjectedUnits {

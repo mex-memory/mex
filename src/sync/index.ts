@@ -12,6 +12,7 @@ import { captureGroundingBaselines, groundingReviewNodeIds, loadGroundingRuntime
 import { movedByNeighborsMessage } from "../drift/checkers/grounding.js";
 import { writeGroundings } from "../markdown.js";
 import { buildAgentCommand } from "../agent-command.js";
+import { createAgentPromptSession } from "../agent-prompt.js";
 
 const INTERACTIVE_AI_TIMEOUT_MS = 15 * 60_000;
 
@@ -36,22 +37,28 @@ export function runToolInteractive(
   cwd: string,
   options: RunToolInteractiveOptions = {},
 ): boolean {
-  const invocation = buildAgentCommand(tool, brief, "interactive");
-  if (invocation === null) return false;
+  if (AI_TOOLS[tool].cli === null) return false;
+  // Long sync briefs exceed Windows .cmd limits even when correctly escaped.
+  // Reuse setup's private file transport; keep small existing invocations intact.
+  const session = Buffer.byteLength(brief, "utf8") > 1_024 ? createAgentPromptSession(brief, cwd) : null;
+  const invocation = buildAgentCommand(tool, session?.instruction ?? brief, "interactive")!;
   // cross-spawn resolves Windows `.cmd`/`.bat` wrappers (npm installs `claude`
   // as `claude.cmd`) and escapes args correctly — plain spawnSync throws ENOENT
   // on Windows, and `shell: true` mangles the multi-line prompt (issue #85).
-  const result = crossSpawn.sync(invocation.command, invocation.args, {
-    cwd,
-    stdio: "inherit",
-    ...(options.timeoutMs === null
-      ? {}
-      : { timeout: options.timeoutMs ?? INTERACTIVE_AI_TIMEOUT_MS }),
-  });
-  // A spawn failure (ENOENT, etc.) sets `error` and leaves `status` null — don't
-  // mistake that for success, or launch problems get silently swallowed.
-  if (result.error) return false;
-  return result.status === 0;
+  try {
+    const result = crossSpawn.sync(invocation.command, invocation.args, {
+      cwd,
+      stdio: "inherit",
+      ...(options.timeoutMs === null
+        ? {}
+        : { timeout: options.timeoutMs ?? INTERACTIVE_AI_TIMEOUT_MS }),
+    });
+    // A spawn failure (ENOENT, etc.) must not be mistaken for success.
+    if (result.error) return false;
+    return result.status === 0;
+  } finally {
+    session?.cleanup();
+  }
 }
 
 /** Pick which AI tool to use for interactive sync */

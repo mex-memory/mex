@@ -90,11 +90,14 @@ export interface ReadOnlyGroundingRuntimeResult {
   graphStatus: GraphStatus;
   runtime: GroundingRuntime | null;
   /**
-   * True when `runtime` is bound to a stale snapshot whose only fault is
-   * changed source (#228). Its checker never reconciles and reports what it
-   * cannot settle as GROUNDING_UNVERIFIED. Only set under `allowSourceDrift`.
+   * True when `runtime` is bound to a snapshot whose only faults are changed
+   * source (#228) or incompletely parsed files. Its checker never reconciles
+   * and reports what it cannot settle as GROUNDING_UNVERIFIED. Only set under
+   * `allowSourceDrift`.
    */
   sourceDrift?: boolean;
+  /** Set with `sourceDrift` when incompletely parsed files are among those faults. */
+  parseDegraded?: boolean;
 }
 
 export interface LoadReadOnlyGroundingRuntimeOptions {
@@ -105,9 +108,10 @@ export interface LoadReadOnlyGroundingRuntimeOptions {
   /** Inspect status without opening graph readers when grounding is irrelevant. */
   loadRuntime?: boolean;
   /**
-   * Also bind a stale snapshot when changed source is its only shortfall, and
-   * check groundings against it (#228). Every other non-fresh store still
-   * returns no runtime. Opt-in, because the caller owns labelling the result.
+   * Also bind a snapshot whose only shortfalls are changed source (#228) or
+   * incompletely parsed files, and check groundings against it. Every other
+   * non-fresh store still returns no runtime. Opt-in, because the caller owns
+   * labelling the result.
    */
   allowSourceDrift?: boolean;
 }
@@ -141,6 +145,11 @@ type LoadReadOnlyGroundingRuntimeInternalOptions = LoadReadOnlyGroundingRuntimeO
  * an unchanged file; a node in an edited file is re-derived from that file by
  * the same extractor and body hash a refresh would use, or reported
  * unverified. Nothing about staleness is hidden: the status stays `stale`.
+ *
+ * A snapshot with incompletely parsed files is bound the same way. Every node
+ * in a fully parsed file is as exact as a fresh graph's; a node in a partial
+ * or failed file, or one the snapshot lacks, is unverified, because a parse
+ * gap can hide a definition. Nothing is reconciled across that gap.
  */
 export async function loadReadOnlyGroundingRuntime(
   config: MexConfig,
@@ -155,11 +164,11 @@ export async function loadReadOnlyGroundingRuntime(
         freshObservation: null,
       })
     : internal?.inspectObservation ?? inspectGraphStatusWithFreshObservation;
-  // The read-session loader would also adopt config drift and parse health.
-  // Grounding accepts neither, so hide every degraded observation except the
-  // one whose sole shortfall is changed source; the rest behave as before.
+  // The read-session loader would also adopt config drift. Grounding does not
+  // accept it, so hide every degraded observation except those whose only
+  // shortfalls are changed source or incomplete parses.
   const inspectObservation: typeof inspectGraphStatusWithFreshObservation = options.allowSourceDrift
-    ? async (inspectOptions) => onlySourceDrift(await inspectBase(inspectOptions))
+    ? async (inspectOptions) => onlyGroundableDegradation(await inspectBase(inspectOptions))
     : inspectBase;
   const loaded = await loadFreshGraphReadSession(config.projectRoot, {
     dbPath,
@@ -198,12 +207,16 @@ export async function loadReadOnlyGroundingRuntime(
         ];
       },
     };
+    const parseDegraded = session.degradations.includes("parse-degraded");
     const sourceDrift = session.degradations.length > 0
       ? await prepareSourceDriftGrounding(
           config.projectRoot,
           session.graph,
           session.driftedSources,
           loaded.graphStatus.changes.modified,
+          parseDegraded
+            ? (session.graph.getIndexedFiles?.() ?? []).filter((file) => file.parseStatus !== "ok").map((file) => file.path)
+            : [],
         )
       : undefined;
     await prepareGroundingCodeHashing();
@@ -225,6 +238,7 @@ export async function loadReadOnlyGroundingRuntime(
       // before candidate publication").
       runtime: { ...runtime, close: () => session.close() },
       ...(sourceDrift ? { sourceDrift: true } : {}),
+      ...(sourceDrift && parseDegraded ? { parseDegraded: true } : {}),
     };
   } catch {
     session.close();
@@ -563,14 +577,14 @@ function assembleGroundingRuntime(
   };
 }
 
-/** Keep a degraded observation only when changed source is the store's sole shortfall. */
-function onlySourceDrift(inspection: InternalGraphStatusInspection): InternalGraphStatusInspection {
+/** Keep a degraded observation only when changed source or incomplete parses are its sole shortfalls. */
+function onlyGroundableDegradation(inspection: InternalGraphStatusInspection): InternalGraphStatusInspection {
   const degraded = inspection.degradedObservation ?? null;
   if (!degraded) return inspection;
-  const sourceOnly = inspection.graphStatus.status === "stale"
-    && degraded.degradations.length === 1
-    && degraded.degradations[0] === "source-drift";
-  return sourceOnly ? inspection : { ...inspection, degradedObservation: null };
+  const groundable = (inspection.graphStatus.status === "stale" || inspection.graphStatus.status === "degraded")
+    && degraded.degradations.length > 0
+    && degraded.degradations.every((reason) => reason === "source-drift" || reason === "parse-degraded");
+  return groundable ? inspection : { ...inspection, degradedObservation: null };
 }
 
 /**
@@ -605,14 +619,21 @@ function isCompilerSourceLanguage(language: Language): boolean {
  *   node the extractor no longer emits under that id, a file that cannot be
  *   read within the corpus limits — is unverified. None of it is reported
  *   gone or moved: those need the whole refreshed corpus.
+ * - A node in a file that did not parse completely, or any node the snapshot
+ *   lacks while such a file exists, is unverified and names those files.
  */
 async function prepareSourceDriftGrounding(
   projectRoot: string,
   graph: GraphEngine,
   driftedSources: readonly string[],
   modifiedSources: readonly string[],
+  parseGaps: readonly string[] = [],
 ): Promise<SourceDriftGrounding> {
   const drifted = new Set(driftedSources);
+  const gaps = new Set(parseGaps);
+  const gapList = [...gaps].sort();
+  const gapNames = `${gapList.slice(0, 8).join(", ")}${gapList.length > 8 ? ", …" : ""}`.slice(0, 1_024);
+  const gapRemedy = "fix or exclude them, then run `mex graph`";
   const modified = new Set(modifiedSources.filter((path) => drifted.has(path)));
   const treeLanguages = [...new Set([...modified].map((path) => detectLanguage(path)))]
     .filter((language) => !isCompilerSourceLanguage(language));
@@ -645,10 +666,16 @@ async function prepareSourceDriftGrounding(
     return nodes;
   };
   const unverified = (reason: string): SourceDriftResolution => ({ kind: "unverified", reason });
+  const gap = (reason: string): SourceDriftResolution => ({ kind: "unverified", reason, until: "while the graph has incomplete parses" });
   return {
     resolve(nodeId) {
       const node = graph.getNode(nodeId);
-      if (!node) return unverified("not in the last graph snapshot");
+      if (!node) {
+        return gaps.size > 0
+          ? gap(`not in the graph, which could not fully parse ${gapNames}; ${gapRemedy}`)
+          : unverified("not in the last graph snapshot");
+      }
+      if (gaps.has(node.filePath)) return gap(`${node.filePath} did not parse completely; ${gapRemedy}`);
       if (!drifted.has(node.filePath)) {
         return { kind: "current", bodyHash: node.bodyHash, codeHash: () => currentNodeCodeHash(projectRoot, node) };
       }

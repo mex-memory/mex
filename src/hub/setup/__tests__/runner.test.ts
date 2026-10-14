@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SetupRunSchema } from "@mex/hub-contracts/setup";
+import { SetupRunSchema, SetupTranscriptBatchSchema } from "@mex/hub-contracts/setup";
 import type { HeadlessSetupOptions } from "../../../setup/headless.js";
 import { SetupPopulationError } from "../../../setup/population.js";
+import { createPopulationTranscriptDecoder, type PopulationTranscriptSignal } from "../../../setup/population-transcript.js";
 import { SetupFinalizationError } from "../../../setup/index.js";
+import { SetupError } from "../../../setup/errors.js";
 
 const mocks = vi.hoisted(() => ({ inspect: vi.fn(), execute: vi.fn(), status: vi.fn(), initial: vi.fn() }));
 vi.mock("../../../setup/headless.js", () => ({ inspectSetupStatus: mocks.inspect, runHeadlessSetup: mocks.execute }));
@@ -63,35 +65,113 @@ describe("setup run lifecycle", () => {
       return new Promise((resolve) => { finish = () => resolve(result); });
     });
     const runner = new HubSetupRunner({ projectRoot: "/test" });
-    const run = runner.start({ mode: "code-repo", tools: ["codex"] });
+    const announcedPages: string[][] = [];
+    const setupListener = vi.fn((snapshot: ReturnType<HubSetupRunner["snapshot"]>) => {
+      if (snapshot.transcriptId) announcedPages.push(runner.readTranscript(snapshot.transcriptId, 0).entries.map(entry => entry.text));
+    });
+    runner.subscribe(setupListener);
+    expect(runner.start({ mode: "code-repo", tools: ["codex"] }).transcriptId).toBeUndefined();
     await Promise.resolve();
     const listener = vi.fn();
     const unsubscribe = runner.subscribeTranscript(listener);
-    for (let i = 0; i < 50; i++) report({ tool: "codex", kind: "assistant", text: `Session message ${i}\n` });
-    expect(listener).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(runner.snapshot())).not.toContain("Session message");
-    expect(runner.readTranscript(run.transcriptId!, 0)).toMatchObject({ cursor: 32, done: false });
-    await vi.advanceTimersByTimeAsync(200);
+    const emissionsBeforeOutput = setupListener.mock.calls.length;
+    report({ tool: "codex", kind: "assistant", text: "Session message 0\n" });
+    const first = SetupRunSchema.parse(runner.snapshot());
+    expect(first.transcriptId).toBeDefined();
+    const firstId = first.transcriptId!;
+    expect(setupListener).toHaveBeenCalledTimes(emissionsBeforeOutput + 1);
+    expect(setupListener).toHaveBeenLastCalledWith(first);
+    expect(announcedPages[0]).toEqual(["Session message 0\n"]);
+    expect(SetupTranscriptBatchSchema.parse(runner.readTranscript(firstId, 0))).toMatchObject({
+      entries: [{ text: "Session message 0\n" }], cursor: 1, done: false,
+    });
+    for (let i = 1; i < 50; i++) report({ tool: "codex", kind: "assistant", text: `Session message ${i}\n` });
+    expect(setupListener).toHaveBeenCalledTimes(emissionsBeforeOutput + 1);
     expect(listener).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(runner.snapshot())).not.toContain("Session message");
+    expect(runner.readTranscript(firstId, 0)).toMatchObject({ cursor: 32, done: false });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(listener).toHaveBeenCalledTimes(3);
     runner.cancel();
     const cancelledReport = report;
     cancelledReport({ tool: "codex", kind: "assistant", text: "Late private output" });
     finish();
     await vi.waitFor(() => expect(runner.snapshot().status).toBe("cancelled"));
-    expect(runner.readTranscript(run.transcriptId!, 32)).toMatchObject({ cursor: 50, done: true });
+    expect(runner.readTranscript(firstId, 32)).toMatchObject({ cursor: 50, done: true });
     const next = runner.start({ mode: "code-repo", tools: ["claude"] });
     await Promise.resolve();
-    expect(next.transcriptId).not.toBe(run.transcriptId);
-    expect(() => runner.readTranscript(run.transcriptId!, 0)).toThrow("Reconnect");
+    expect(next.transcriptId).toBeUndefined();
+    expect(() => runner.readTranscript(firstId, 0)).toThrow("Reconnect");
     cancelledReport({ tool: "codex", kind: "assistant", text: "Prior session" });
-    expect(runner.readTranscript(next.transcriptId!, 0).entries).toEqual([]);
+    expect(runner.snapshot().transcriptId).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
     report({ tool: "claude", kind: "command", text: "Ran a command" });
-    runner.cancel();
+    const nextId = runner.snapshot().transcriptId!;
+    expect(nextId).toBeDefined();
+    expect(nextId).not.toBe(firstId);
+    expect(() => runner.readTranscript(firstId, 0)).toThrow("Reconnect");
     finish();
+    await vi.waitFor(() => expect(runner.snapshot().status).toBe("paused"));
+    report({ tool: "claude", kind: "assistant", text: "Late completed output" });
     await runner.shutdown();
-    expect(runner.readTranscript(next.transcriptId!, 0).entries.map((entry) => entry.text)).toEqual(["Ran a command"]);
+    expect(runner.readTranscript(nextId, 0)).toMatchObject({ done: true, entries: [{ text: "Ran a command" }] });
     expect(vi.getTimerCount()).toBe(0);
     unsubscribe();
+  });
+
+  it.each([
+    { name: "manual population", stage: "needs_population", populated: false },
+    { name: "already populated commit checkpoint", stage: "needs_commit", populated: true },
+    { name: "finalization only", stage: "needs_finalize", populated: true },
+  ])("does not create a transcript for $name without agent output", async ({ stage, populated }) => {
+    mocks.inspect.mockReturnValue({ ...status, stage, populated });
+    mocks.status.mockResolvedValue({ ...status, stage: populated ? "needs_commit" : "needs_population", populated });
+    mocks.execute.mockImplementation(async (options: HeadlessSetupOptions) => {
+      options.onProgress?.({ step: populated ? "finalize" : "population", label: "Check existing setup" });
+      return { ...result, ready: false, populated, populationTool: null, populationCompleted: false };
+    });
+    const runner = new HubSetupRunner({ projectRoot: "/test" });
+    expect(runner.snapshot().transcriptId).toBeUndefined();
+    expect(runner.start({ mode: "code-repo", tools: [], confirmPopulation: true }).transcriptId).toBeUndefined();
+    await vi.waitFor(() => expect(runner.snapshot().status).toBe("paused"));
+    const snapshot = SetupRunSchema.parse(runner.snapshot());
+    expect(snapshot.transcriptId).toBeUndefined();
+    const reconnect = vi.fn();
+    runner.subscribe(reconnect);
+    expect(reconnect).toHaveBeenCalledExactlyOnceWith(snapshot);
+    await runner.shutdown();
+  });
+
+  it("keeps activity live without creating a transcript for empty or stripped output", async () => {
+    vi.useFakeTimers();
+    let options!: HeadlessSetupOptions;
+    let finish!: () => void;
+    mocks.execute.mockImplementation((input: HeadlessSetupOptions) => {
+      options = input;
+      return new Promise(resolve => { finish = () => resolve(result); });
+    });
+    const runner = new HubSetupRunner({ projectRoot: "/test" });
+    runner.start({ mode: "code-repo", tools: ["codex"] });
+    await Promise.resolve();
+    options.onPopulationActivity?.({ tool: "codex", kind: "starting", state: "running" });
+    options.onPopulationTranscript?.({ tool: "codex", kind: "assistant", text: "" });
+    const decoded = vi.fn((entry: PopulationTranscriptSignal) => options.onPopulationTranscript?.({ tool: "codex", ...entry }));
+    const decoder = createPopulationTranscriptDecoder("codex", decoded);
+    decoder.write(Buffer.from(JSON.stringify({ type: "item.completed", item: {
+      id: "control-only", type: "agent_message", text: "\u001b[31m\u0000\u0007\u001b[0m",
+    } }) + "\n"));
+    decoder.end();
+    expect(decoded).not.toHaveBeenCalled();
+    expect(runner.snapshot().populationActivity).toMatchObject({ tool: "codex", totalEvents: 1 });
+    expect(runner.snapshot().transcriptId).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+    runner.cancel();
+    options.onPopulationTranscript?.({ tool: "codex", kind: "assistant", text: "Late first output" });
+    finish();
+    await runner.shutdown();
+    expect(SetupRunSchema.parse(runner.snapshot())).toMatchObject({ status: "cancelled" });
+    expect(runner.snapshot().transcriptId).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each(["claude", "codex"] as const)("streams bounded %s activity before completion and preserves it for reconnects", async (tool) => {
@@ -219,13 +299,80 @@ describe("setup run lifecycle", () => {
     await runner.shutdown();
   });
 
-  it("does not serialize an arbitrary internal failure into the browser", async () => {
-    mocks.execute.mockRejectedValue(new Error("secret token in /private/project/file.md"));
+  it("publishes only the authored setup message to current and reconnecting subscribers", async () => {
+    const userMessage = "Existing .mex/config.json is not a valid JSON object. Fix it before rerunning setup.";
+    mocks.execute.mockImplementation(async (options: HeadlessSetupOptions) => {
+      options.onProgress?.({ step: "scaffold", label: "Create .mex/ scaffold" });
+      throw new SetupError("Private failure in /private/project/config.json", {
+        userMessage,
+        cause: new Error("secret token in nested cause"),
+      });
+    });
+    const runner = new HubSetupRunner({ projectRoot: "/test" });
+    const listener = vi.fn();
+    runner.subscribe(listener);
+    runner.start({ mode: "code-repo", tools: [] });
+    await vi.waitFor(() => expect(runner.snapshot().status).toBe("failed"));
+
+    const snapshot = SetupRunSchema.parse(runner.snapshot());
+    expect(snapshot).toMatchObject({
+      status: "failed", ready: false, message: userMessage, error: userMessage,
+      progress: { step: "scaffold", label: "Create .mex/ scaffold" },
+    });
+    expect(snapshot.transcriptId).toBeUndefined();
+    expect(listener).toHaveBeenLastCalledWith(snapshot);
+    const reconnect = vi.fn();
+    runner.subscribe(reconnect);
+    expect(reconnect).toHaveBeenCalledExactlyOnceWith(snapshot);
+    expect(JSON.stringify([...listener.mock.calls, ...reconnect.mock.calls])).not.toMatch(/Private failure|\/private\/project|secret token|nested cause/);
+    await runner.shutdown();
+  });
+
+  it("keeps long authored setup failures inside the existing snapshot contract", async () => {
+    const userMessage = "Safe setup remediation. ".repeat(200);
+    mocks.execute.mockRejectedValue(new SetupError("Private exception detail", { userMessage }));
     const runner = new HubSetupRunner({ projectRoot: "/test" });
     runner.start({ mode: "code-repo", tools: [] });
     await vi.waitFor(() => expect(runner.snapshot().status).toBe("failed"));
-    expect(JSON.stringify(runner.snapshot())).not.toMatch(/secret token|\/private\/project/);
+    const snapshot = SetupRunSchema.parse(runner.snapshot());
+    expect(snapshot.message).toBe(userMessage.slice(0, 512));
+    expect(snapshot.error).toBe(snapshot.message);
+    expect(JSON.stringify(snapshot)).not.toContain("Private exception detail");
     await runner.shutdown();
+  });
+
+  it.each([
+    new Error("secret token in /private/project/file.md", { cause: new Error("private nested cause") }),
+    { name: "SetupError", message: "secret token", userMessage: "untrusted claimed remediation" },
+  ])("does not serialize an arbitrary or lookalike failure into the browser", async (error) => {
+    mocks.execute.mockRejectedValue(error);
+    const runner = new HubSetupRunner({ projectRoot: "/test" });
+    runner.start({ mode: "code-repo", tools: [] });
+    await vi.waitFor(() => expect(runner.snapshot().status).toBe("failed"));
+    const snapshot = SetupRunSchema.parse(runner.snapshot());
+    expect(snapshot.message).toBe("Setup could not finish. Run mex setup --cli in this project for details, then retry.");
+    expect(snapshot.error).toBe(snapshot.message);
+    expect(JSON.stringify(snapshot)).not.toMatch(/secret token|\/private\/project|private nested cause|untrusted claimed remediation/);
+    await runner.shutdown();
+  });
+
+  it("keeps cancellation authoritative when execution rejects with an expected setup error", async () => {
+    let rejectExecution!: (error: unknown) => void;
+    mocks.execute.mockImplementation(() => new Promise((_resolve, reject) => { rejectExecution = reject; }));
+    const runner = new HubSetupRunner({ projectRoot: "/test" });
+    runner.start({ mode: "code-repo", tools: [] });
+    await vi.waitFor(() => expect(mocks.execute).toHaveBeenCalledOnce());
+    runner.cancel();
+    rejectExecution(new SetupError("Private cancellation detail", {
+      userMessage: "Expected setup failure that cancellation supersedes.",
+    }));
+    await runner.shutdown();
+    const snapshot = SetupRunSchema.parse(runner.snapshot());
+    expect(snapshot).toMatchObject({
+      status: "cancelled", ready: false, error: null,
+      message: "Setup was cancelled. You can resume it when ready.",
+    });
+    expect(JSON.stringify(snapshot)).not.toMatch(/Private cancellation detail|Expected setup failure/);
   });
 
   it("stays at a commit checkpoint instead of attempting premature promotion", async () => {
@@ -247,12 +394,14 @@ describe("setup run lifecycle", () => {
     const runner = new HubSetupRunner({ projectRoot: "/test", onReady });
     runner.start({ mode: "code-repo", tools: ["codex"], confirmPopulation: true });
     await vi.waitFor(() => expect(runner.snapshot().status).toBe("succeeded"));
+    expect(SetupRunSchema.parse(runner.snapshot()).transcriptId).toBeUndefined();
     expect(mocks.execute).not.toHaveBeenCalled();
     expect(onReady).not.toHaveBeenCalled();
     runner.start({ mode: "code-repo", tools: ["codex"], confirmPopulation: true, openHub: true });
     await vi.waitFor(() => expect(onReady).toHaveBeenCalledOnce());
     expect(mocks.execute).not.toHaveBeenCalled();
     await runner.shutdown();
+    expect(SetupRunSchema.parse(runner.snapshot()).transcriptId).toBeUndefined();
   });
 
   it("keeps completed Agent memory free of commit commands and Hub promotion", async () => {

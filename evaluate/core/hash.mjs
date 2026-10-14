@@ -91,7 +91,9 @@ export function repositoryIdentity(root) {
       remote: null,
       dirty: null,
       dirtyEntries: [],
-      treeStateSha256: directoryHash(absolute, { exclude: GRAPH_DB_PATHS }),
+      // A first graph build also creates its generated ignore protection.
+      // Exclude exactly that artifact, never canonical knowledge under .mex.
+      treeStateSha256: directoryHash(absolute, { exclude: [...GRAPH_DB_PATHS, ".mex/.gitignore"] }),
     };
   }
   const sha = git(absolute, ["rev-parse", "HEAD"], true);

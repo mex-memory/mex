@@ -25,7 +25,8 @@ import { recordGraphPhase, timeGraphPhase } from "../phase-timing.js";
 
 // v3 (#240): checker-rendered signatures no longer embed absolute module paths.
 // v4 (#209): checker-rendered unions list their members in one canonical order.
-export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v5";
+// v6: property-assigned function values retain their authored target name.
+export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v6";
 export const TYPESCRIPT_COMPILER_VERSION = ts.version;
 
 export type CompilerSourceLanguage =
@@ -703,6 +704,17 @@ export function buildTypeScriptExtraction(
           const location = declarationLocation(declaration);
           locationIds.set(location, draft.id);
           locations.push([location, draft.id]);
+          // The checker declares a JS expando property at its assignment
+          // target (`app.init`), while its implementation/body spans the whole
+          // assignment. Retain both locations so calls resolve to this node.
+          if (draft.declarationRole === "function-assignment" && ts.isBinaryExpression(declaration)) {
+            const targetLocation = declarationLocation(declaration.left);
+            locationIds.set(targetLocation, draft.id);
+            locations.push([targetLocation, draft.id]);
+            const implementationLocation = declarationLocation(declaration.right);
+            locationIds.set(implementationLocation, draft.id);
+            locations.push([implementationLocation, draft.id]);
+          }
         }
       }
       contextLocations.set(context, locations);
@@ -1971,6 +1983,7 @@ interface DeclarationDescriptor {
   name: string;
   role: string;
   symbol?: ts.Symbol;
+  declarations?: readonly ts.Node[];
 }
 
 function declarationDescriptor(node: ts.Node, context: FileContext): DeclarationDescriptor | null {
@@ -2025,7 +2038,24 @@ function declarationDescriptor(node: ts.Node, context: FileContext): Declaration
       symbol: checker.getSymbolAtLocation(node.name),
     };
   }
-  if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && !isNamedFunctionValue(node)) {
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+    const parent = node.parent;
+    if (ts.isBinaryExpression(parent)
+      && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      && parent.right === node
+      && (ts.isPropertyAccessExpression(parent.left) || ts.isElementAccessExpression(parent.left))) {
+      const name = assignedFunctionName(parent.left);
+      if (name) {
+        const symbolLocation = ts.isPropertyAccessExpression(parent.left)
+          ? parent.left.name : parent.left.argumentExpression;
+        return {
+          kind: "function", name, role: "function-assignment",
+          symbol: symbolLocation ? checker.getSymbolAtLocation(symbolLocation) : undefined,
+          declarations: [parent],
+        };
+      }
+    }
+    if (isNamedFunctionValue(node)) return null;
     const role = anonymousFunctionRole(node, context);
     return { kind: "function", name: `<callback:${role.label}>`, role: role.identity };
   }
@@ -2039,14 +2069,14 @@ function addDraft(
 ): void {
   const checker = context.project.checker;
   const symbol = descriptor.symbol ? canonicalSymbol(descriptor.symbol, checker) : undefined;
-  if (symbol) {
+  if (symbol && descriptor.role !== "function-assignment") {
     const existing = context.symbolDrafts.get(symbol);
     if (existing) {
       context.declarationDrafts.set(node, existing);
       return;
     }
   }
-  const declarations = symbol?.declarations
+  const declarations = descriptor.declarations?.slice() ?? symbol?.declarations
     ?.filter((declaration) => declaration.getSourceFile() === context.sourceFile)
     .filter((declaration) => compatibleDeclaration(descriptor.kind, declaration)) ?? [node];
   const usableDeclarations = declarations.length > 0 ? declarations : [node];
@@ -2144,7 +2174,7 @@ function materializeNodes(context: FileContext): CompilerExtractedNode[] {
         endLine: end.line + 1,
         startColumn: start.character,
         endColumn: end.character,
-        docstring: draft.docstring,
+        docstring: draft.docstring ? sourceEvidenceText(draft.docstring) : undefined,
         signature: draft.signature,
         visibility: draft.visibility,
         isExported: draft.isExported,
@@ -2526,10 +2556,10 @@ function captureCallReference(
     && expression.expression.kind !== ts.SyntaxKind.ThisKeyword
     && expression.expression.kind !== ts.SyntaxKind.SuperKeyword
     && isPolymorphicReceiver(checker.getTypeAtLocation(expression.expression));
-  const receiver = ts.isPropertyAccessExpression(expression) ? expression.expression.getText(context.sourceFile) : undefined;
+  const receiver = ts.isPropertyAccessExpression(expression) ? sourceEvidenceText(expression.expression.getText(context.sourceFile)) : undefined;
   const targetName = ts.isPropertyAccessExpression(expression)
     ? expression.name.text
-    : expression.getText(context.sourceFile);
+    : sourceEvidenceText(expression.getText(context.sourceFile));
   // A chained call expression starts where its entire receiver chain starts;
   // use the actual callee token so semantic callsite uniqueness is real.
   const position = ts.isPropertyAccessExpression(expression)
@@ -2547,7 +2577,7 @@ function captureCallReference(
     receiver,
     polymorphic,
     candidateLocations,
-    expressionText: expression.getText(context.sourceFile),
+    expressionText: sourceEvidenceText(expression.getText(context.sourceFile)),
     signatureText: unionCallee
       ? canonicalSignatureSet(context.project, memberCallSignatures, node)
       : resolvedSignature
@@ -2569,7 +2599,7 @@ function captureHeritageReferences(
   const checker = context.project.checker;
   for (const type of clause.types) {
     const symbol = checker.getSymbolAtLocation(type.expression);
-    const targetName = type.expression.getText(context.sourceFile);
+    const targetName = sourceEvidenceText(type.expression.getText(context.sourceFile));
     const position = type.getStart(context.sourceFile);
     const point = lineColumn(context.sourceFile, position);
     captured.push({
@@ -2599,7 +2629,7 @@ function captureIdentifierReference(
   const point = lineColumn(context.sourceFile, position);
   const parent = identifier.parent;
   const receiver = ts.isPropertyAccessExpression(parent) && parent.name === identifier
-    ? parent.expression.getText(context.sourceFile)
+    ? sourceEvidenceText(parent.expression.getText(context.sourceFile))
     : undefined;
   captured.push({
     form: "identifier",
@@ -2664,10 +2694,10 @@ function captureCallbackReferences(
       calleeLocations,
       callbackDraftId,
       callbackLocations,
-      parameterName: parameter.name.getText(declaration.getSourceFile()),
+      parameterName: sourceEvidenceText(parameter.name.getText(declaration.getSourceFile())),
       argumentIndex: index,
-      wiringSite: call.getText(context.sourceFile),
-      argumentText: argument.getText(context.sourceFile),
+      wiringSite: sourceEvidenceText(call.getText(context.sourceFile)),
+      argumentText: sourceEvidenceText(argument.getText(context.sourceFile)),
     });
   });
 }
@@ -2954,7 +2984,10 @@ function compatibleDeclaration(kind: CompilerNodeKind, declaration: ts.Declarati
 }
 
 function implementationDeclaration(declarations: readonly ts.Node[]): ts.Node {
-  return declarations.find(isFunctionLikeWithBody)
+  const assigned = declarations.find((declaration) => ts.isBinaryExpression(declaration)
+    && isFunctionLikeWithBody(declaration.right));
+  return assigned && ts.isBinaryExpression(assigned) ? assigned.right
+    : declarations.find(isFunctionLikeWithBody)
     ?? declarations.find((declaration) => ts.isClassLike(declaration) && Boolean(declaration.members))
     ?? declarations.at(-1)!;
 }
@@ -2985,6 +3018,22 @@ function isNamedFunctionValue(node: ts.ArrowFunction | ts.FunctionExpression): b
     || ts.isPropertyDeclaration(parent)
     || ts.isPropertyAssignment(parent)
     || (ts.isFunctionExpression(node) && Boolean(node.name));
+}
+
+/** Keep dynamic element accesses anonymous: `app[key]` is not a stable name. */
+function assignedFunctionName(node: ts.Expression): string | undefined {
+  if (ts.isIdentifier(node)) return node.text;
+  if (ts.isPropertyAccessExpression(node)) {
+    const receiver = assignedFunctionName(node.expression);
+    return receiver ? `${receiver}.${node.name.text}` : undefined;
+  }
+  if (ts.isElementAccessExpression(node) && node.argumentExpression
+    && ts.isStringLiteralLike(node.argumentExpression)) {
+    const receiver = assignedFunctionName(node.expression);
+    const member = node.argumentExpression.text;
+    return receiver && /^[A-Za-z_$][\w$]*$/u.test(member) ? `${receiver}.${member}` : undefined;
+  }
+  return undefined;
 }
 
 function isFunctionLikeValue(node: ts.Expression): boolean {
@@ -3029,7 +3078,7 @@ function isExported(node: ts.Node, symbol: ts.Symbol | undefined, checker: ts.Ty
 
 function decoratorsOf(node: ts.Node): string[] | undefined {
   if (!ts.canHaveDecorators(node)) return undefined;
-  const decorators = ts.getDecorators(node)?.map((decorator) => decorator.expression.getText(node.getSourceFile()));
+  const decorators = ts.getDecorators(node)?.map((decorator) => sourceEvidenceText(decorator.expression.getText(node.getSourceFile())));
   return decorators && decorators.length > 0 ? decorators : undefined;
 }
 
@@ -3335,6 +3384,11 @@ function isCompilerSourceFile(filePath: string): boolean {
 
 function normalizeSignature(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
+}
+
+/** Portable evidence text; input capture and freshness retain exact bytes. */
+function sourceEvidenceText(value: string): string {
+  return value.replace(/\r\n/gu, "\n");
 }
 
 const CHECKER_IMPORT_TYPE = /import\("([^"]*)"\)/gu;

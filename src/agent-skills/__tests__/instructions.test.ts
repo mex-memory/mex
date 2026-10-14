@@ -19,6 +19,9 @@ describe("managed MEX instruction blocks", () => {
         "At the start of every session, read `.mex/AGENTS.md` and `.mex/ROUTER.md`",
       );
       expect(block).toContain("explicit contributions to project knowledge");
+      expect(block).toContain('mex wiki query "<question>" --limit 5 --json');
+      expect(block).toContain("per-grounding health");
+      expect(block).toContain("ordinary reads never rebuild or refresh indexes");
       expect(block).toContain("durable team handoffs");
       expect(block).toContain("Invoke them automatically when intent clearly matches");
       expect(block).toContain("ordinary GROW upkeep remains available without Inbox");

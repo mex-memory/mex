@@ -35,8 +35,8 @@ export interface RegroundData {
   apply: ApplyData | null;
 }
 
-/** Verdicts a reviewer can re-record: the code is there, under some id. */
-const RERECORDABLE: ReadonlySet<GroundingVerdict> = new Set(["fresh", "changed-nearby", "moved", "changed"]);
+/** A reviewer can record a known identity even when a legacy body baseline is absent. */
+const RERECORDABLE: ReadonlySet<GroundingVerdict> = new Set(["fresh", "changed-nearby", "moved", "changed", "unverified"]);
 
 export function wikiRegroundEntity(
   entityId: string,
@@ -79,6 +79,12 @@ export function wikiRegroundEntity(
         { entityId }));
       continue;
     }
+    if (named.verdict === "unverified" && !graph.getNode(recordedNode)?.bodyHash) {
+      links.push({ node: grounding.node, verdict: named.verdict });
+      blocked.push(diagnostic("GROUNDING_UNRESOLVED",
+        `${recordedNode} has no current body hash. Re-recording requires current change evidence; link the fact to a body-bearing support symbol before review.`, { entityId }));
+      continue;
+    }
     const fingerprint = graph.getFingerprint(recordedNode);
     if (fingerprint === null) {
       links.push({ node: grounding.node, verdict: named.verdict });
@@ -104,9 +110,19 @@ export function wikiRegroundEntity(
     baseContentHash: entity.location.entityContentHash,
     actor: { kind: "agent", id: "mex-reground" },
     timestamp,
-    reason: options.reason ?? "Reviewed: every statement still holds for the current code",
+    reason: options.reason ?? "Explicitly re-recorded the entity's current code links",
     payload: { groundsTo },
   };
   const applied = wikiApplyOperation(operation, { ...options, graph, ...(options.apply === true ? { apply: true } : {}) });
+  // Cache current bodies only after this explicitly requested write succeeds.
+  // Ordinary resolution and dry-run planning never populate local state.
+  if (applied.data.applied) {
+    for (const grounding of groundsTo) {
+      try {
+        const bodyHash = graph.getNode(grounding.node)?.bodyHash;
+        if (bodyHash) graph.rememberBody?.(grounding.node, bodyHash);
+      } catch { /* An optional cache failure cannot undo a successful canonical write. */ }
+    }
+  }
   return { data: { entityId, links, apply: applied.data }, diagnostics: applied.diagnostics };
 }

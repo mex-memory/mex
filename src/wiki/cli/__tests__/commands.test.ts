@@ -47,6 +47,8 @@ import { WIKI_EXIT } from "../envelope.js";
 import { COMMAND_BINDINGS } from "../../service/surface.js";
 import { wikiRebuildIndex } from "../../service/write.js";
 import { locateEntity } from "../../operations/locate.js";
+import { MexPortError } from "../../../team/contracts/shared.js";
+import type { WikiCliSynthesisBridge } from "../synthesis.js";
 
 const ARCH = "mx_01K4FAM7W8N9R3T5Y6Q2ZBCHJD";
 const GATEWAY = "mx_01BX5ZZKBKACTAV9WEVGEMMVRZ";
@@ -268,6 +270,73 @@ function allCommands(
     },
   ];
 }
+
+describe("synthesis graph freshness", () => {
+  const nodeId = "function:a3f8c21d9e4b7f60a1c2d3e4f5061728";
+  const snapshot = {
+    codeGraph: {
+      ...CODE_GRAPH,
+      nodesInFile: () => [{ id: nodeId, kind: "function" }],
+      describeNode: (id: string) => id === nodeId ? { id, kind: "function", name: "issueToken",
+        filePath: "src/auth/tokens.ts", startLine: 1, endLine: 1 } : null,
+      readFileLines: () => ["export function issueToken() { return 'token'; }"],
+    },
+    graph: { getNode: (id: string) => id === nodeId ? { id, bodyHash: "b".repeat(64),
+      filePath: "src/auth/tokens.ts", startLine: 1, endLine: 1 } : null,
+      getFingerprint: () => "mh:64:9f2a4c6e", reconcile: () => null, getBaselineSource: () => null },
+  };
+  function lateFailure(): WikiCliSynthesisBridge {
+    return {
+      async withFreshSynthesisSnapshot(callback) {
+        await callback(snapshot);
+        throw new MexPortError({ title: "Graph changed", status: 409, code: "OPERATION_INTERRUPTED", detail: "final proof failed" });
+      },
+      async withFreshSynthesisPublication(prepare) {
+        const prepared = await prepare(snapshot);
+        await prepared.preflight();
+        await prepared.discard();
+        throw new MexPortError({ title: "Graph changed", status: 409, code: "OPERATION_INTERRUPTED", detail: "final proof failed" });
+      },
+    };
+  }
+
+  it("discards buffered clusters and prompts before emitting a failed final proof", async () => {
+    const local = harness(false);
+    const io = { ...local.io, synthesisBridge: lateFailure() };
+    await runBuild(io, { json: true, print: true });
+    let result = JSON.parse(local.lines[0]!);
+    expect(result.ok).toBe(false);
+    expect(result.data.clusters).toEqual([]);
+    expect(result.diagnostics.map((entry: { code: string }) => entry.code)).toContain("CODE_GRAPH_UNAVAILABLE");
+    expect(local.exit()).not.toBe(0);
+    local.lines.length = 0;
+    await runPrepare(io, { json: true, stage: "architecture_component", cluster: "auth" });
+    result = JSON.parse(local.lines[0]!);
+    expect(result.ok).toBe(false);
+    expect(result.data.prompt).toBeNull();
+    expect(existsSync(join(local.root, "events"))).toBe(false);
+  });
+
+  it("refuses apply after a failed final proof without publishing even one candidate", async () => {
+    const local = harness(false);
+    const path = join(local.root, "context/architecture.md");
+    const before = readFileSync(path, "utf8");
+    const response = join(local.root, "response.json");
+    writeFileSync(response, JSON.stringify({ stage: "architecture_component", cluster: "auth", units: [{
+      type: "component", title: "A single token creation path",
+      summary: "The issuer returns the configured token value.",
+      body: "The issuer provides the token value from one central implementation used by every caller.",
+      confidence: 0.9, grounding: { nodeIds: [nodeId] },
+    }] }));
+    await runPropose({ ...local.io, synthesisBridge: lateFailure() }, response, { json: true, apply: true });
+    const result = JSON.parse(local.lines[0]!);
+    expect(result.ok).toBe(false);
+    expect(result.data).toMatchObject({ applied: false, changedFiles: [] });
+    expect(result.diagnostics.map((entry: { code: string }) => entry.code)).toContain("CODE_GRAPH_UNAVAILABLE");
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(existsSync(join(local.root, "events"))).toBe(false);
+  });
+});
 
 describe("stable JSON envelopes", () => {
   it("every implemented command returns the §15.2 shape", async () => {

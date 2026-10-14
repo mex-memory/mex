@@ -1566,6 +1566,182 @@ describe("runGraphQuery", () => {
 });
 
 describe("runImpact", () => {
+  it("preserves the default callers protocol when that direction is explicit", () => {
+    const implicit = capture(() => runImpact("run", root, deps));
+    const explicit = capture(() => runImpact("run", root, deps, { direction: "callers" }));
+    expect(explicit).toEqual(implicit);
+    expect(explicit[0]).not.toHaveProperty("direction");
+  });
+
+  it("walks proven callees only when requested, at the existing depth and token caps", () => {
+    const records = capture(() => runImpact("start", root, deps, { direction: "callees" }));
+    expect(records[0]).toMatchObject({ type: "meta", direction: "callees", maxNodes: 10, maxOutputTokens: 1500 });
+    expect(records.filter((record) => record.type === "callee")).toEqual([
+      expect.objectContaining({ id: idOf("run"), depth: 1, root: idOf("start") }),
+      expect.objectContaining({ id: idOf("helper"), depth: 2, root: idOf("start") }),
+    ]);
+    expect(records.some((record) => record.type === "caller")).toBe(false);
+    expect(records.at(-1)).toMatchObject({ returnedNodes: 3, matchedNodes: 3, truncated: false });
+    expect(records.at(-1)!.estimatedOutputTokens).toBeLessThanOrEqual(1500);
+    const shallow = capture(() => runImpact("start", root, deps, { direction: "callees", depth: 1 }));
+    expect(shallow.filter((record) => record.type === "callee")).toEqual([
+      expect.objectContaining({ id: idOf("run"), depth: 1 }),
+    ]);
+  });
+
+  it("walks both call directions deterministically without duplicate roots", () => {
+    const first = capture(() => runImpact("run", root, deps, { direction: "both", maxNodes: 2 }));
+    const second = capture(() => runImpact("run", root, deps, { direction: "both", maxNodes: 2 }));
+    expect(first).toEqual(second);
+    expect(first[0]).toMatchObject({ type: "meta", direction: "both" });
+    expect(first.filter((record) => record.type === "dependency")).toHaveLength(1);
+    expect(first.at(-1)).toMatchObject({ matchedNodes: 3, returnedNodes: 2, truncated: true });
+    expect(first.at(-1)!.estimatedOutputTokens).toBeLessThanOrEqual(1500);
+    const full = capture(() => runImpact("run", root, deps, { direction: "both" }));
+    expect(new Set(full.filter((record) => record.type === "dependency").map((record) => record.id)))
+      .toEqual(new Set([idOf("helper"), idOf("start")]));
+  });
+
+  it("rejects invalid impact direction before opening a graph", () => {
+    let opened = false;
+    const records = capture(() => runImpact("run", root, {
+      ...deps, open: () => { opened = true; throw new Error("must not open"); },
+    }, { direction: "upstream" }));
+    expect(opened).toBe(false);
+    expect(records).toEqual([expect.objectContaining({ type: "error", code: "INVALID_OPTION", option: "direction" })]);
+  });
+
+  it("admits external callers before a file's definitions under the default node cap", () => {
+    const definitions: GraphNode[] = Array.from({ length: 14 }, (_, index) => ({
+      id: `function:definition-${index}`, kind: "function", name: `helper${index}`, qualifiedName: `helper${index}`,
+      filePath: "util.ts", language: "typescript", startLine: index + 1, endLine: index + 1,
+      startColumn: 0, endColumn: 20, updatedAt: 1,
+    }));
+    const caller: GraphNode = {
+      ...definitions[0]!, id: "function:outside-caller", name: "run", qualifiedName: "run", filePath: "main.ts",
+    };
+    const db = openSqlite(":memory:");
+    db.exec("CREATE TABLE nodes (id TEXT, file_path TEXT)");
+    const insert = db.prepare("INSERT INTO nodes (id, file_path) VALUES (?, ?)");
+    for (const node of [...definitions, caller]) insert.run(node.id, node.filePath);
+    const graph = syntheticScopeGraph({
+      nodes: [...definitions, caller], sources: [], searchNodes: () => [],
+      edges: [{ source: caller.id, target: definitions[0]!.id, kind: "calls", line: 1 }],
+    });
+    try {
+      const records = capture(() => runImpact("util.ts", root, {
+        open: () => ({ graph, db, close: () => {} }), write: (line) => lines.push(line),
+      }));
+      const facts = records.filter((record) => record.type === "caller" || record.type === "defines");
+      expect(facts[0]).toMatchObject({ type: "caller", id: caller.id, root: definitions[0]!.id });
+      expect(facts).toHaveLength(10);
+      expect(records.at(-1)).toMatchObject({ matchedNodes: 15, returnedNodes: 10, truncated: true });
+      expect(records.at(-1)!.estimatedOutputTokens).toBeLessThanOrEqual(1500);
+    } finally { db.close(); }
+  });
+
+  it("walks shared callers once and reports the shortest file-seed depth without duplicate definitions", () => {
+    const first: GraphNode = {
+      id: "function:root-first", kind: "function", name: "first", qualifiedName: "first", filePath: "shared.ts",
+      language: "typescript", startLine: 1, endLine: 1, startColumn: 0, endColumn: 10, updatedAt: 1,
+    };
+    const second = { ...first, id: "function:root-second", name: "second", qualifiedName: "second", startLine: 2, endLine: 2 };
+    const external = { ...first, id: "function:external", name: "external", qualifiedName: "external", filePath: "main.ts" };
+    const upstream = { ...external, id: "function:upstream", name: "upstream", qualifiedName: "upstream" };
+    const db = openSqlite(":memory:");
+    db.exec("CREATE TABLE nodes (id TEXT, file_path TEXT)");
+    const insert = db.prepare("INSERT INTO nodes (id, file_path) VALUES (?, ?)");
+    for (const node of [first, second, external, upstream]) insert.run(node.id, node.filePath);
+    const graph = syntheticScopeGraph({
+      nodes: [first, second, external, upstream], sources: [], searchNodes: () => [],
+      edges: [
+        { source: first.id, target: second.id, kind: "calls" },
+        { source: external.id, target: first.id, kind: "calls" },
+        { source: external.id, target: second.id, kind: "calls" },
+        { source: upstream.id, target: external.id, kind: "calls" },
+      ],
+    });
+    const reads: string[] = [];
+    const callers = graph.getCallers;
+    graph.getCallers = (id) => { reads.push(id); return callers(id); };
+    try {
+      const records = capture(() => runImpact("shared.ts", root, {
+        open: () => ({ graph, db, close: () => {} }), write: (line) => lines.push(line),
+      }));
+      expect(records.filter((record) => record.type === "caller")).toEqual([
+        expect.objectContaining({ id: external.id, depth: 1, root: first.id }),
+        expect.objectContaining({ id: upstream.id, depth: 2, root: first.id }),
+      ]);
+      expect(records.at(-1)).toMatchObject({ matchedNodes: 4, returnedNodes: 4, truncated: false });
+      // One traversal read, plus compactFact's callerCount projection. The
+      // previous per-root walk made two traversal reads for this shared node.
+      expect(reads.filter((id) => id === external.id)).toHaveLength(2);
+    } finally { db.close(); }
+  });
+
+  it("resolves file:line to the innermost indexed declaration", () => {
+    const records = capture(() => runImpact("main.ts:6", root, deps));
+    expect(records.find((record) => record.type === "defines")).toMatchObject({ id: idOf("start"), name: "start" });
+    const query = capture(() => runGraphQuery("where-defined", "./main.ts:6", root, deps));
+    expect(query.find((record) => record.type === "result")).toMatchObject({ id: idOf("start"), name: "start" });
+  });
+
+  it("keeps equally narrow declarations ambiguous for file:line impact", () => {
+    const first: GraphNode = {
+      id: "function:first", kind: "function", name: "first", qualifiedName: "first",
+      filePath: "same.ts", language: "typescript", startLine: 1, endLine: 1,
+      startColumn: 0, endColumn: 20, updatedAt: 1,
+    };
+    const second = { ...first, id: "function:second", name: "second", qualifiedName: "second", startColumn: 21, endColumn: 40 };
+    const db = openSqlite(":memory:");
+    db.exec("CREATE TABLE nodes (id TEXT, file_path TEXT)");
+    const insert = db.prepare("INSERT INTO nodes (id, file_path) VALUES (?, ?)");
+    for (const node of [first, second]) insert.run(node.id, node.filePath);
+    const graph = syntheticScopeGraph({ nodes: [first, second], sources: [], searchNodes: () => [] });
+    try {
+      const records = capture(() => runImpact("same.ts:1", root, {
+        open: () => ({ graph, db, close: () => {} }), write: (line) => lines.push(line),
+      }));
+      expect(records).toEqual([expect.objectContaining({ type: "error", code: "TARGET_AMBIGUOUS" })]);
+    } finally { db.close(); }
+  });
+
+  it("names an anonymous caller's enclosing symbol without inventing an outer call edge", () => {
+    const helper = engine.getNode(idOf("helper"))!;
+    const outer = engine.getNode(idOf("run"))!;
+    const callback: GraphNode = { ...outer, id: "function:callback", name: "<callback:invoke[0]>", containerId: outer.id };
+    const graph = syntheticScopeGraph({
+      nodes: [helper, outer, callback], sources: [], searchNodes: () => [],
+      edges: [{ source: callback.id, target: helper.id, kind: "calls", line: 3 }],
+    });
+    const callbackDeps = {
+      ...deps, open: () => ({ ...deps.open!(root), graph }),
+    };
+    const records = capture(() => runGraphQuery("who-calls", helper.id, root, callbackDeps));
+    expect(records.find((record) => record.type === "result")).toMatchObject({
+      id: callback.id, enclosingSymbol: { id: outer.id, name: "run", file: "main.ts" },
+    });
+    expect(graph.getCallers(helper.id).map((node) => node.id)).toEqual([callback.id]);
+  });
+
+  it("bounds optional callback navigation through deeply nested containers", () => {
+    const helper = engine.getNode(idOf("helper"))!;
+    const outer = engine.getNode(idOf("run"))!;
+    const callbacks: GraphNode[] = Array.from({ length: 40 }, (_, index) => ({
+      ...outer, id: `function:nested-callback-${index}`, name: `<callback:invoke[${index}]>`,
+      containerId: index < 39 ? `function:nested-callback-${index + 1}` : outer.id,
+    }));
+    const graph = syntheticScopeGraph({
+      nodes: [helper, outer, ...callbacks], sources: [], searchNodes: () => [],
+      edges: [{ source: callbacks[0]!.id, target: helper.id, kind: "calls" }],
+    });
+    const records = capture(() => runGraphQuery("who-calls", helper.id, root, {
+      ...deps, open: () => ({ ...deps.open!(root), graph }),
+    }));
+    expect(records.find((record) => record.type === "result")).not.toHaveProperty("enclosingSymbol");
+    expect(records.at(-1)).toMatchObject({ matchedNodes: 1, returnedNodes: 1 });
+  });
+
   it("respects the depth cap and frames with meta/summary", () => {
     const shallow = capture(() => runImpact("helper", root, deps, { depth: 1 }));
     expect(shallow[0]).toMatchObject({ type: "meta", command: "impact" });

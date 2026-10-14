@@ -22,6 +22,57 @@ const architectureAfter = architectureBefore.replace(architectureRemoved, `${arc
 interface CommitPreview { revision: string; files: Array<{ path: string; status: string }>; }
 
 test.describe("built setup commit checkpoint", () => {
+  test("terminal-finalized projects reach review, then completion after the canonical commit", async ({ page }) => {
+    const fixture = createFixture({ existingScaffold: true });
+    let hub: ChildProcess | undefined;
+    try {
+      rmSync(join(fixture.project, ".mex/graph.db"));
+      rmSync(join(fixture.project, ".mex/wiki.db"));
+      const terminal = spawnSync(process.execPath, [join(repositoryRoot, "dist/cli.js"), "setup", "--cli", "--yes", "--tool", "none"], {
+        cwd: fixture.project, env: fixture.env, encoding: "utf8", timeout: 20_000,
+      });
+      expect(terminal.status, terminal.stderr + terminal.stdout).toBe(0);
+      expect(terminal.stdout).toContain("Graph and Wiki are ready");
+      assertUnrelatedPreserved(fixture);
+      hub = (await openFixtureHub(page, fixture)).hub;
+      await expect(page.getByRole("button", { name: "Review setup changes", exact: true })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Background session output", exact: true })).toHaveCount(0);
+      // Checking the outstanding commit is not an agent session. It must not
+      // manufacture an empty transcript, including after reconnecting the page.
+      await page.getByText("Commit manually", { exact: true }).click();
+      await page.getByRole("button", { name: "Check commit and continue", exact: true }).click();
+      await expect(page.getByRole("button", { name: "Review setup changes", exact: true })).toBeVisible();
+      await expect.poll(async () => {
+        const response = await page.request.get(new URL("/api/v1/setup/run", page.url()).href);
+        expect(response.ok()).toBe(true);
+        const run = await response.json();
+        return { status: run.status, transcriptId: run.transcriptId ?? null };
+      }).toEqual({ status: "paused", transcriptId: null });
+      await expect(page.getByRole("region", { name: "Background session output", exact: true })).toHaveCount(0);
+      await expect(page.getByText("This session produced no output.", { exact: true })).toHaveCount(0);
+      await page.reload();
+      await expect(page.getByRole("button", { name: "Review setup changes", exact: true })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Background session output", exact: true })).toHaveCount(0);
+      expect(existsSync(join(fixture.root, "provider-invoked"))).toBe(false);
+      await stopHub(hub);
+      // An explicit fixture Git checkpoint models the user's manual commit path.
+      git(fixture, "add", "--", ".mex");
+      git(fixture, "commit", "--quiet", "--only", "-m", "Accept terminal setup", "--", ".mex");
+      assertUnrelatedPreserved(fixture);
+      const opened = await openFixtureHub(page, fixture, false);
+      hub = opened.hub;
+      await expect(page.getByRole("heading", { name: "You’re ready", exact: true })).toBeVisible();
+      await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Background session output", exact: true })).toHaveCount(0);
+      await page.getByRole("button", { name: "Open Hub", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
+      expect(existsSync(join(fixture.root, "provider-invoked"))).toBe(false);
+    } finally {
+      try { if (hub) await stopHub(hub); }
+      finally { rmSync(fixture.root, { recursive: true, force: true }); }
+    }
+  });
+
   test("reviews and commits only setup files while preserving unrelated staged work", async ({ page }, testInfo) => {
     const fixture = createFixture();
     let hub: ChildProcess | undefined;
@@ -293,8 +344,8 @@ function gitBytes(fixture: GitFixture, ...args: string[]): Buffer {
 function git(fixture: GitFixture, ...args: string[]): string { return gitBytes(fixture, ...args).toString("utf8"); }
 function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
 
-async function openFixtureHub(page: Page, fixture: Fixture) {
-  const hub = spawn(process.execPath, [join(repositoryRoot, "dist/cli.js"), "setup", "--no-open"], {
+async function openFixtureHub(page: Page, fixture: Fixture, expectReview = true) {
+  const hub = spawn(process.execPath, [join(repositoryRoot, "dist/cli.js"), "setup", "--browser", "--no-open"], {
     cwd: fixture.project, env: fixture.env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
   try {
@@ -305,7 +356,7 @@ async function openFixtureHub(page: Page, fixture: Fixture) {
     page.on("pageerror", (error) => pageErrors.push(error.message));
     page.on("request", (request) => { if (new URL(request.url()).origin !== origin) externalRequests.push(request.url()); });
     await page.goto(bootstrap);
-    await expect(page.getByRole("button", { name: "Review setup changes", exact: true })).toBeVisible();
+    if (expectReview) await expect(page.getByRole("button", { name: "Review setup changes", exact: true })).toBeVisible();
     return { hub, origin, pageErrors, externalRequests };
   } catch (error) { await stopHub(hub); throw error; }
 }

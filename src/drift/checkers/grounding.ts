@@ -34,14 +34,15 @@ export function movedByNeighborsMessage(oldId: string, newId: string, anchor = f
   return `${anchor ? "Inline anchor" : "Grounded node"} matched by callers and callees, not body: ${oldId} → ${newId}`;
 }
 
-/** What a snapshot stale only by changed source can still say about one node (#228). */
+/** What a snapshot stale by changed source (#228) or incomplete parses can still say about one node. */
 export type SourceDriftResolution =
   /** The node's body as a refresh would record it: from the snapshot when its
    *  file is unchanged, or re-derived exactly from the edited file. `codeHash`
    *  computes that body's comment-free hash on demand (#236). */
   | { kind: "current"; bodyHash: string | undefined; codeHash?: () => string | null }
-  /** Only a refresh can settle this node; `reason` says why. */
-  | { kind: "unverified"; reason: string };
+  /** Only a refresh can settle this node; `reason` says why. A parse gap is not
+   *  settled by a refresh, so it names its own condition in `until`. */
+  | { kind: "unverified"; reason: string; until?: string };
 
 /**
  * Grounding against a graph whose only fault is that source files changed.
@@ -120,17 +121,17 @@ export function makeGroundingChecker(
         const resolution = sourceDrift.resolve(grounding.node);
         if (resolution.kind === "unverified") {
           issues.push(withEntity(issue("GROUNDING_UNVERIFIED", "warning", source,
-            `Grounded node cannot be verified until \`mex graph refresh\`: ${grounding.node} (${resolution.reason})`), entity));
+            `Grounded node cannot be verified ${resolution.until ?? "until `mex graph refresh`"}: ${grounding.node} (${resolution.reason})`), entity));
           continue;
         }
         target = sourceDriftLinkGraph(shared, grounding.node, resolution, codeHashing);
       }
       const verdict = checkLink(grounding, target, entity?.fact);
-      const found = linkIssues(grounding.node, verdict, source);
+      const found = linkIssues(grounding, verdict, source);
       // A link with no committed body hash is compared by structure alone,
       // which cannot see an edited constant. Say so rather than pass it clean;
       // one finding per link, so only when nothing worse was found.
-      if (grounding.bodyHash === undefined && !found.some((entry) => entry.severity !== "info")) {
+      if (!grounding.bodyHash && !found.some((entry) => entry.severity !== "info")) {
         found.push(issue("GROUNDING_NO_BASELINE", "warning", source,
           `Grounded node has no recorded body hash, so only structural change is seen: ${grounding.node}`));
       }
@@ -154,7 +155,7 @@ export function makeGroundingChecker(
         const resolution = sourceDrift.resolve(anchor.nodeId);
         if (resolution.kind === "unverified") {
           issues.push(issue("GROUNDING_UNVERIFIED", "warning", source,
-            `Inline anchor cannot be verified until \`mex graph refresh\`: ${anchor.nodeId} (${resolution.reason})`));
+            `Inline anchor cannot be verified ${resolution.until ?? "until `mex graph refresh`"}: ${anchor.nodeId} (${resolution.reason})`));
         }
         continue;
       }
@@ -351,7 +352,8 @@ interface LinkVerdict {
 const NEARBY_MESSAGE = "Grounded node changed away from everything the fact names";
 
 /** The findings one verdict deserves; a plain `fresh` deserves none. */
-function linkIssues(node: string, verdict: LinkVerdict, source: string): DriftIssue[] {
+function linkIssues(grounding: Grounding, verdict: LinkVerdict, source: string): DriftIssue[] {
+  const node = grounding.node;
   const { named, resolution, byNeighbors } = verdict;
   const moved = named.resolvedNode !== undefined && named.resolvedNode !== node ? named.resolvedNode : undefined;
   const found: DriftIssue[] = [];
@@ -392,6 +394,13 @@ function linkIssues(node: string, verdict: LinkVerdict, source: string): DriftIs
       found.push(issue("GROUNDING_GONE", "error", source, `Grounded node no longer exists: ${node}`));
       break;
     case "unverified":
+      if (!grounding.bodyHash && named.resolvedNode !== undefined) {
+        found.push(issue("GROUNDING_NO_BASELINE", "warning", source,
+          `Grounded node has no recorded body hash, so unchanged literals cannot be verified: ${node}`));
+      } else {
+        found.push(issue("GROUNDING_UNVERIFIED", "warning", source,
+          `Grounded node cannot be verified: ${node}${resolution.state === "unresolved" ? ` (${resolution.reason})` : ""}`));
+      }
       break;
   }
   return found.map((entry) => ({ ...entry, verdict: named.verdict }));

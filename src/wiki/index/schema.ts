@@ -29,7 +29,7 @@
  * `openWikiIndex`, never a throw from inside an open and never a silent
  * rebuild on a read path.
  */
-export const WIKI_SCHEMA_VERSION = 4;
+export const WIKI_SCHEMA_VERSION = 5;
 
 /** Every table the schema declares, for the packaging and dump tests. */
 export const WIKI_TABLES = [
@@ -243,6 +243,10 @@ CREATE TABLE wiki_diagnostics (
 CREATE INDEX wiki_diagnostics_scope ON wiki_diagnostics(scope, file);
 
 -- Full text over title, summary, body, aliases and selected metadata (§10.2).
+-- File-level rows use root description when mex.summary is absent, and append
+-- root triggers to aliases. These hints never change the canonical entity or
+-- leak into its section entities. Version 5 requires an explicit rebuild of
+-- older indexes so unchanged Markdown gains the new derived search text.
 -- "Selected metadata" resolved to: entity type, the scaffold-relative file path,
 -- and the titles of the entity's topics — the three things a user searches by
 -- that are not prose. Everything else in \`metadata\` is structural and would

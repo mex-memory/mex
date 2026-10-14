@@ -65,7 +65,7 @@ const REASONS: Partial<Record<string, CodeGraphUnavailableReason>> = {
 };
 
 /** The reason a graph refusal names, or null for an error that is not a refusal. */
-function unavailableReason(error: unknown): CodeGraphUnavailableReason | null {
+export function graphUnavailableReason(error: unknown): CodeGraphUnavailableReason | null {
   if (!(error instanceof MexPortError)) return null;
   return REASONS[error.problem.code] ?? null;
 }
@@ -98,7 +98,7 @@ export async function readWithGraph<T>(
     return { value, unavailable: null };
   } catch (error) {
     if (error instanceof WorkFailure) throw error.cause;
-    const reason = unavailableReason(error);
+    const reason = graphUnavailableReason(error);
     if (reason === null) throw error;
     return { value: work(null), unavailable: reason };
   }
@@ -131,7 +131,7 @@ export async function writeWithGraph<T>(
     return { value, unavailable: null };
   } catch (error) {
     if (error instanceof WorkFailure) throw error.cause;
-    const reason = unavailableReason(error);
+    const reason = graphUnavailableReason(error);
     if (reason === null) throw error;
     const done = completed as { value: T } | null;
     if (done !== null) return { value: done.value, unavailable: "changed" };
@@ -172,7 +172,7 @@ export async function publishWithGraph<T>(
     return { value, unavailable: null };
   } catch (error) {
     if (error instanceof WorkFailure) throw error.cause;
-    const reason = unavailableReason(error);
+    const reason = graphUnavailableReason(error);
     if (reason === null) throw error;
     return withoutGraph(reason);
   }

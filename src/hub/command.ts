@@ -44,6 +44,9 @@ export interface RunSetupHubCommandOptions {
   readonly port?: number;
   readonly openBrowser: boolean;
   readonly initialMode?: SetupMode;
+  readonly signal?: AbortSignal;
+  readonly onListening?: (listener: { origin: string; bootstrapUrl: string }) => void;
+  readonly onMessage?: (message: string) => void;
 }
 
 /**
@@ -135,6 +138,7 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
 
 /** Setup-only Hub: same session/assets/server, no Team/Graph/Wiki jobs until ready. */
 export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Promise<void> {
+  if (options.signal?.aborted) return;
   const captureEvent = createProjectTelemetryCapture(options.projectRoot);
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
   let stopTelemetry: (() => Promise<void>) | undefined;
@@ -143,9 +147,13 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
   let assets: HubAssetManifest | undefined;
   let promoting = false;
   let closing = false;
+  const reportMessage = (message: string): void => {
+    if (options.onMessage) options.onMessage(message);
+    else if (!options.onListening) process.stdout.write(`\n${message}\n`);
+  };
 
   const promoteToProjectHub = async (signal: AbortSignal): Promise<void> => {
-    if (signal.aborted) throw new Error("Setup was cancelled.");
+    if (signal.aborted || options.signal?.aborted) throw new Error("Setup was cancelled.");
     const listener = server;
     const session = security;
     const manifest = assets;
@@ -167,18 +175,16 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
         ...(config.wiki?.exclude === undefined ? {} : { wikiExclude: config.wiki.exclude }),
         ...(config.wiki?.readOnly === undefined ? {} : { wikiReadOnly: config.wiki.readOnly }),
       });
-      if (closing || signal.aborted) {
+      if (closing || signal.aborted || options.signal?.aborted) {
         await composed.jobs.shutdown();
-        throw new Error(signal.aborted ? "Setup was cancelled." : "The Hub listener is stopping.");
+        throw new Error(signal.aborted || options.signal?.aborted ? "Setup was cancelled." : "The Hub listener is stopping.");
       }
       jobs = composed.jobs;
       listener.replaceApp(composed.app);
-      process.stdout.write(`\nProject Hub is ready at ${listener.origin}\n`);
+      reportMessage(`Project Hub is ready at ${listener.origin}`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      process.stdout.write(
-        `\nProject Hub could not open after setup: ${detail}\n`,
-      );
+      reportMessage(`Project Hub could not open after setup: ${detail}`);
       throw error;
     } finally {
       promoting = false;
@@ -206,16 +212,18 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
     });
 
     server = await startHubNodeServer({ app, port: options.port });
+    if (options.signal?.aborted) return;
     expectedOrigin = server.origin;
     stopTelemetry = startHubTelemetry();
     emitHubTelemetry(captureEvent, "hub.session_started", {});
     const bootstrapUrl = `${server.origin}/#token=${encodeURIComponent(bootstrapToken)}`;
 
-    process.stdout.write(`\nProject Hub setup wizard running at ${server.origin}\n`);
-    process.stdout.write(`One-time bootstrap link (valid for 5 minutes):\n${bootstrapUrl}\n`);
-    process.stdout.write("Press Ctrl+C to stop.\n\n");
-    if (options.openBrowser) openHubBrowser(bootstrapUrl);
-    await waitForShutdownSignal();
+    options.onListening?.({ origin: server.origin, bootstrapUrl });
+    if (!options.onListening) {
+      reportMessage(`Project Hub setup wizard running at ${server.origin}\nOne-time bootstrap link (valid for 5 minutes):\n${bootstrapUrl}\nPress Ctrl+C to stop.\n`);
+    }
+    if (options.openBrowser && !options.signal?.aborted) openHubBrowser(bootstrapUrl);
+    await waitForShutdownSignal(options.signal);
   } finally {
     closing = true;
     try {
@@ -302,14 +310,17 @@ async function composeProductionHub(
   }
 }
 
-function waitForShutdownSignal(): Promise<void> {
+function waitForShutdownSignal(signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
     const complete = () => {
       process.off("SIGINT", complete);
       process.off("SIGTERM", complete);
+      signal?.removeEventListener("abort", complete);
       resolve();
     };
     process.once("SIGINT", complete);
     process.once("SIGTERM", complete);
+    signal?.addEventListener("abort", complete, { once: true });
   });
 }

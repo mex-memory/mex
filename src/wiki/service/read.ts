@@ -23,8 +23,8 @@ import { diagnostic, type WikiDiagnostic } from "../model/diagnostic.js";
 import { compareGroundingHealth, type GroundingHealth } from "../model/grounding.js";
 import { defaultIndexPath } from "../index/rebuild.js";
 import { openWikiIndex } from "../index/open.js";
-import { resolveBounds, type BoundsInput } from "../query/budget.js";
-import { WikiQuerySession, withWikiQuery, type Neighborhood, type SearchMatch } from "../query/session.js";
+import { BudgetLedger, estimateTokens, FRAMING_RESERVE, resolveBounds, type BoundsInput } from "../query/budget.js";
+import { WikiQuerySession, withWikiQuery, type Neighborhood, type SearchGrounding, type SearchMatch } from "../query/session.js";
 import type { EntitySummary, MatchField, RelationEdge } from "../query/rank.js";
 
 /**
@@ -168,6 +168,9 @@ export interface SearchHit {
   match: SearchMatch;
   /** For a `some_terms` hit: the query terms it matched. */
   matchedTerms?: string[];
+  /** Cached per-link verdicts explain an aggregate warning without marking every claim false. */
+  groundings?: SearchGrounding[];
+  groundingsTruncated?: boolean;
 }
 
 export interface SearchData {
@@ -207,12 +210,46 @@ export function wikiSearch(
     const page = session.search(options.text, {
       ...(options.includeArchived === undefined ? {} : { includeArchived: options.includeArchived }),
       ...(options.limit === undefined ? {} : { limit: options.limit }),
+      ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
     });
-    const kept = page.items.filter((hit) => applyFilters([hit.entity], options).length === 1);
+    const ranked = page.items.filter((hit) => applyFilters([hit.entity], options).length === 1);
+    const bounds = resolveBounds(options);
+    const ledger = new BudgetLedger(bounds.maxTokens);
+    // Ranking earns the returned hits. Optional explanations may use only the
+    // space left after every hit is reserved, and can never reduce recall.
+    for (const hit of ranked) ledger.tryAdd(hit);
+    let usedTokens = ledger.estimatedTokens;
+    let detailsTruncated = false;
+    const kept = ranked.map(hit => {
+      const groundings = session.searchGroundingsFor(hit.entity.id);
+      if (groundings.items.length === 0 && !groundings.truncated) return hit;
+      let current: SearchHit = hit;
+      const admit = (candidate: SearchHit): boolean => {
+        const delta = estimateTokens(candidate) - estimateTokens(current);
+        if (usedTokens + delta > bounds.maxTokens - FRAMING_RESERVE) return false;
+        usedTokens += delta;
+        current = candidate;
+        return true;
+      };
+      // Charge the marker before details. A global signal remains available
+      // even when a full ranked-hit page leaves no room for per-hit context.
+      if (!admit({ ...hit, groundingsTruncated: true })) {
+        detailsTruncated = true;
+        return hit;
+      }
+      const admitted: SearchGrounding[] = [];
+      for (const grounding of groundings.items) {
+        if (!admit({ ...current, groundings: [...admitted, grounding] })) break;
+        admitted.push(grounding);
+      }
+      if (groundings.truncated || admitted.length < groundings.items.length) detailsTruncated = true;
+      else admit({ ...hit, groundings: admitted });
+      return current;
+    });
     const match = kept.length === 0 ? "none" : page.match;
     const data: SearchData = {
       hits: kept,
-      truncated: page.truncated,
+      truncated: page.truncated || detailsTruncated,
       match,
       terms: page.terms,
       ignoredTerms: page.ignoredTerms,

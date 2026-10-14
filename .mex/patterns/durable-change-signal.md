@@ -14,12 +14,12 @@ edges:
     condition: "when the value also lives in the graph database"
   - target: "context/conventions.md"
     condition: "when verifying the change"
-last_updated: 2026-10-02
+last_updated: 2026-10-12
 mex:
   id: mx_01M1M0CJK5ZTSHCDDWB3NTSEBF
   type: pattern
   status: promoted
-  revision: 5
+  revision: 6
   title: durable-change-signal
   grounds_to:
     - node: function:fa9a6935ad14990f545c7802e4ecbc0a
@@ -124,11 +124,31 @@ Two distinct kinds of value, and the difference decides where each one lives:
 
 ## Gotchas
 
+- A moved identity is judged by its old body when this checkout has cached
+  it: a rename that also edits a literal stays changed, and only a proven
+  declaration-only rename, layout or comment edit, or changed-nearby verdict
+  clears it. Without the old body, or when the rename cannot be hashed, it is
+  judged by structure as #229 settled.
+- A structural match without a committed change baseline is unverified, even
+  for a bodyless declaration. Keep known identity navigable, and record a
+  baseline only through reviewed `wiki reground`.
+- Fresh reads cache the body their committed hash names, content-addressed,
+  through contained, identity-bound, exclusive private files. Without that old
+  side every relaxation is lost: removing it raised benchmark false alarms from
+  168 to 240 with no stale fact caught. Cache failure only leaves a later edit
+  reading changed.
+- Keyword guards (defaults, negatives, complete sets) and control-flow guards
+  on nearby were measured: 36 more false alarms, no stale fact caught. h018's
+  CORS list stays touched under the anchor-and-expression rule; complete-list
+  review belongs to sync, not to nearby.
+
 - A command that reports a captured count is not evidence it wrote a durable
   baseline. Verify that the matching Markdown `bodyHash` changed as intended.
-- `serviceOptions` in the wiki CLI carries no code graph, so `wiki validate` and
-  `wiki migrate` degrade silently rather than failing. Check what a command
-  actually receives before believing a message about what it found.
+- `wiki validate` checks structure without a code graph; use `mex check` for
+  current code-link verdicts. Graph-aware commands such as `wiki migrate` use
+  the fresh repository Graph bridge and report `CODE_GRAPH_UNAVAILABLE` when
+  it cannot provide evidence. Check the command's actual input and diagnostics
+  before interpreting its grounding results.
 - A diagnostic that names a cause nobody checked costs more than no diagnostic.
   If a flag has two causes, carry the discriminator rather than asserting one.
 - A committed value can have more than one spelling. Fingerprints are written

@@ -137,11 +137,13 @@ export function ftsBodyFor(parsed: ParsedFile, entity: ParsedEntity): string {
   return [entity.entity.body, ...adopted].join("\n").trim();
 }
 
-/** Alias text for the FTS row: what a topic answers to besides its title. */
-function aliasesOf(entity: ParsedEntity): string {
+/** Authored aliases and file-level discovery triggers; never copied to child claims. */
+function aliasesOf(parsed: ParsedFile, entity: ParsedEntity): string {
   const raw = entity.entity.metadata?.["aliases"];
-  if (!Array.isArray(raw)) return "";
-  return raw.filter((value): value is string => typeof value === "string").join(" ");
+  const aliases = Array.isArray(raw) ? raw.filter((value): value is string => typeof value === "string") : [];
+  const triggers = entity.metadataKind === "frontmatter" ? parsed.frontmatter?.triggers ?? [] : [];
+  // Keep derived text inside the immutable read contract's existing field bound.
+  return [...aliases, ...triggers].join(" ").slice(0, 65_536);
 }
 
 export interface WriteOptions {
@@ -284,9 +286,9 @@ export function writeParsedFile(db: SqliteDatabase, parsed: ParsedFile, options:
     insertFts.run(
       key,
       entity.title,
-      entity.summary ?? "",
+      entity.summary ?? (parsedEntity.metadataKind === "frontmatter" ? parsed.frontmatter?.description ?? "" : "").slice(0, 65_536),
       ftsBodyFor(parsed, parsedEntity),
-      aliasesOf(parsedEntity),
+      aliasesOf(parsed, parsedEntity),
       `${entity.type} ${parsed.path}`,
     );
 

@@ -39,6 +39,7 @@ export {
   wikiSynthesisBuild,
   wikiSynthesisPrepare,
   wikiSynthesisPropose,
+  wikiPrepareSynthesisPropose,
   type BuildData,
   type PrepareData,
   type PrepareStage,
