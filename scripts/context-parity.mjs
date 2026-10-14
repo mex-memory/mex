@@ -22,13 +22,15 @@
  * `<workspace>/.mex/local/context-aliases.json`, the one file this script
  * writes; everything else in the workspace is read-only to it.
  *
+ * `--dump <file>` also writes the composer injected ids (recipe, question id, ids).
+ *
  * Recipes: `R2w` runs the CLI with `--lexical`; `R3` runs it without, so it
  * needs the semantic extra (set MEX_HOME to the MEX home that has it). Exit
  * status is 1 if any question differs.
  */
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -51,6 +53,7 @@ function parseArguments(argv) {
     else if (flag === "--recipe") options.recipes.push(value());
     else if (flag === "--cli") options.cli = resolve(value());
     else if (flag === "--subdir") options.subdir = value();
+    else if (flag === "--dump") options.dump = resolve(value());
     else if (flag === "--help" || flag === "-h") {
       console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("*/")[0]);
       process.exit(0);
@@ -90,6 +93,7 @@ function runPrompt(prompt, recipe) {
   return { envelope: JSON.parse(result.stdout), ms };
 }
 
+const dumped = {};
 let totalMismatches = 0;
 const summary = [];
 for (const recipe of options.recipes) {
@@ -111,6 +115,7 @@ for (const recipe of options.recipes) {
         fail(`The CLI used ${data.recipe} for an R3 run; install the semantic extra (MEX_HOME=${process.env.MEX_HOME ?? "~"}).`);
       }
       const actual = data.injected.map((entry) => entry.id);
+      (dumped[recipe] ??= {})[question.id] = actual;
       if (actual.length > 0) injectedQuestions += 1;
       if (JSON.stringify(actual) === JSON.stringify(expected)) match += 1;
       else mismatches.push({ question, expected, actual, data, top: reference[question.id].top });
@@ -139,6 +144,7 @@ for (const recipe of options.recipes) {
   }
 }
 
+if (options.dump) writeFileSync(options.dump, JSON.stringify(dumped));
 console.log("\nParity (injected ids identical, in order)");
 for (const row of summary) {
   const pct = ((100 * row.match) / row.total).toFixed(1);

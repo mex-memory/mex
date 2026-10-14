@@ -92,7 +92,8 @@ export async function composePrompt(index: ContextIndex, prompt: string, options
   let pool = recipe.name === "R3" ? facts : index.entities.filter(isWikiCandidate);
   if (pool.length === 0) return done(emptyResult("no-candidates", recipe.name));
 
-  const rankIndex = buildRankIndex(pool.map(toRankable));
+  const projectWords = new Set(index.projectWords);
+  const rankIndex = buildRankIndex(pool.map(toRankable), projectWords);
   let output = rankQuery(rankIndex, text);
   let vectorsComputed = 0;
   if (recipe.dense) {
@@ -111,7 +112,7 @@ export async function composePrompt(index: ContextIndex, prompt: string, options
       recipe = RECIPES.R2w;
       pool = index.entities.filter(isWikiCandidate);
       if (pool.length === 0) return done(emptyResult("no-candidates", recipe.name));
-      output = rankQuery(buildRankIndex(pool.map(toRankable)), text);
+      output = rankQuery(buildRankIndex(pool.map(toRankable), projectWords), text);
     }
   }
 

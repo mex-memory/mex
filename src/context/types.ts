@@ -8,7 +8,7 @@
 
 import type { RecipeName } from "./frozen.js";
 
-export const CONTEXT_INDEX_SCHEMA_VERSION = 1;
+export const CONTEXT_INDEX_SCHEMA_VERSION = 2;
 
 /** One recorded code link of an entity, as its Markdown wrote it. */
 export interface ContextGrounding {
@@ -73,6 +73,8 @@ export interface ContextIndex {
   schemaVersion: typeof CONTEXT_INDEX_SCHEMA_VERSION;
   builtAt: string;
   inputs: ContextInputs;
+  /** Words naming the project (directory, package name); stop words for this project. */
+  projectWords: string[];
   entities: ContextEntity[];
   /** Fact vectors keyed by model id, then entity id. */
   vectors: Record<string, Record<string, ContextVector>>;

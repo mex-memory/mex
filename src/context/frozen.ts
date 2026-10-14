@@ -10,12 +10,15 @@
  * reference injections one for one.
  */
 
-/** Words that never carry a query concept (the frozen tokenizer's stop list). */
+/**
+ * Words that never carry a query concept (the frozen tokenizer's stop list).
+ * The project's own name is added per project at index time (`projectWords`).
+ */
 export const STOP_WORDS: ReadonlySet<string> = new Set(
   ("the a an and or of to in on for with from by is are was were be been how what why when which who does do did "
     + "this that these those it its into via as at than then there their they you your not no can will would "
     + "should could about after before over under between only also just more most some any each every one two "
-    + "all get got make made use used using hono").split(" "),
+    + "all get got make made use used using").split(" "),
 );
 
 /**

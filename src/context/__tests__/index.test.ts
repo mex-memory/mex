@@ -103,6 +103,21 @@ describe("context index build", () => {
   });
 });
 
+describe("project name stop words", () => {
+  it("derives them from the directory and package.json name, and rebuilds when they change", async () => {
+    fx.writeSource("package.json", JSON.stringify({ name: "@acme/WidgetKit" }));
+    const first = await ensureContextIndex(fx.context);
+    expect(first.index.projectWords).toEqual(expect.arrayContaining(["widget", "kit"]));
+    expect(first.index.projectWords).not.toContain("acme");
+
+    fx.writeSource("package.json", JSON.stringify({ name: "gadgetry" }));
+    const second = await ensureContextIndex(fx.context);
+    expect(second.rebuilt).toBe(true);
+    expect(second.index.projectWords).toContain("gadgetry");
+    expect(second.index.projectWords).not.toContain("widget");
+  });
+});
+
 describe("invalidation", () => {
   it("reuses a current index without rebuilding it", async () => {
     const first = await ensureContextIndex(fx.context);

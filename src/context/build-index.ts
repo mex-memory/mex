@@ -7,6 +7,8 @@
  * Wiki command. Only the types a prompt can be answered from are kept.
  */
 
+import { dirname } from "node:path";
+import { readProjectWords } from "./project-words.js";
 import { parseWikiMarkdown } from "../wiki/markdown/codec.js";
 import { lineAt, lineStarts } from "../wiki/markdown/positions.js";
 import { ACTIVE_LIFECYCLE_STATES } from "../wiki/model/entity.js";
@@ -77,6 +79,7 @@ export function buildContextIndex(scaffoldRoot: string, options: BuildOptions): 
         schemaVersion: CONTEXT_INDEX_SCHEMA_VERSION,
         builtAt: now(),
         inputs,
+        projectWords: readProjectWords(dirname(scaffoldRoot)),
         entities,
         vectors: carryVectors(options.previous, entities),
       },

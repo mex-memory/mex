@@ -18,12 +18,14 @@ export function stem(word: string): string {
   return w.length > 4 && w.endsWith("e") ? w.slice(0, -1) : w;
 }
 
-export function tokens(text: string): string[] {
+const NO_WORDS: ReadonlySet<string> = new Set();
+
+export function tokens(text: string, projectWords: ReadonlySet<string> = NO_WORDS): string[] {
   return text
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter((w) => w.length > 2 && !STOP_WORDS.has(w))
+    .filter((w) => w.length > 2 && !STOP_WORDS.has(w) && !projectWords.has(w))
     .map(stem);
 }
 
@@ -79,7 +81,23 @@ export function extractIdentifiers(prompt: string): QueryIdentifier[] {
 }
 
 /** Query words after dedup and filler removal. */
-export function queryWords(prompt: string): string[] {
-  const words = [...new Set(tokens(prompt))];
+export function queryWords(prompt: string, projectWords: ReadonlySet<string> = NO_WORDS): string[] {
+  const words = [...new Set(tokens(prompt, projectWords))];
   return words.filter((w) => !QUERY_FILLER.has(w) && !QUERY_FILLER.has(w.replace(/e$/, "")));
+}
+
+/**
+ * The words that name the project itself (directory name, `package.json` name
+ * without its scope), split like any other text. They appear everywhere in a
+ * project's own knowledge, so they carry no information about a question.
+ */
+export function projectNameWords(names: readonly string[]): string[] {
+  const words = new Set<string>();
+  for (const name of names) {
+    const bare = name.replace(/^@[^/]+\//, "");
+    for (const w of bare.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/)) {
+      if (w.length > 2) words.add(w);
+    }
+  }
+  return [...words].sort();
 }

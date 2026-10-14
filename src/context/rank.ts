@@ -37,6 +37,7 @@ export interface RankIndex {
   docs: RankDoc[];
   avgLen: number;
   df: Map<string, number>;
+  projectWords: ReadonlySet<string>;
 }
 
 /** A scored candidate. Lexical fields are zero for a dense-only entry. */
@@ -61,15 +62,16 @@ export interface RankOutput {
   list: RankedCandidate[];
 }
 
-export function buildRankIndex(entities: readonly RankableEntity[]): RankIndex {
+export function buildRankIndex(entities: readonly RankableEntity[], projectWords: ReadonlySet<string> = new Set()): RankIndex {
+  const tok = (text: string): string[] => tokens(text, projectWords);
   const docs: RankDoc[] = entities.map((entity, order) => {
-    const aliasTokens = tokens(entity.aliases.join(" . "));
+    const aliasTokens = tok(entity.aliases.join(" . "));
     const terms = [
-      ...tokens(entity.title),
-      ...tokens(entity.title),
-      ...tokens(entity.title),
-      ...tokens(entity.body),
-      ...entity.code.flatMap((file) => tokens(file)),
+      ...tok(entity.title),
+      ...tok(entity.title),
+      ...tok(entity.title),
+      ...tok(entity.body),
+      ...entity.code.flatMap((file) => tok(file)),
     ];
     if (entity.aliases.length > 0) terms.push(...aliasTokens, ...aliasTokens, ...aliasTokens);
     const tf = new Map<string, number>();
@@ -86,7 +88,7 @@ export function buildRankIndex(entities: readonly RankableEntity[]): RankIndex {
   const df = new Map<string, number>();
   for (const doc of docs) for (const term of doc.tf.keys()) df.set(term, (df.get(term) ?? 0) + 1);
   const avgLen = docs.reduce((sum, doc) => sum + doc.len, 0) / Math.max(docs.length, 1);
-  return { docs, avgLen, df };
+  return { docs, avgLen, df, projectWords };
 }
 
 const idfOf = (index: RankIndex, term: string): number => {
@@ -95,7 +97,7 @@ const idfOf = (index: RankIndex, term: string): number => {
 };
 
 export function rankQuery(index: RankIndex, prompt: string): RankOutput {
-  const words = queryWords(prompt);
+  const words = queryWords(prompt, index.projectWords);
   const identifiers = extractIdentifiers(prompt);
   const idf = new Map(words.map((term) => [term, idfOf(index, term)]));
   const idfSum = words.reduce((sum, term) => sum + idf.get(term)!, 0) || 1;

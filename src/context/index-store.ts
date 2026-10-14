@@ -13,6 +13,7 @@ import { closeSync, fstatSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AliasOverlay } from "./build-index.js";
 import { openGraphReader } from "./graph-reader.js";
+import { readProjectWords } from "./project-words.js";
 import { writeTextAtomic } from "./local-state.js";
 import type { ContextRoot } from "./root.js";
 import { CONTEXT_INDEX_SCHEMA_VERSION, type ContextDiagnostic, type ContextIndex } from "./types.js";
@@ -93,6 +94,7 @@ export interface QuickInputs {
   listing: WikiListing;
   graphIdentity: string | null;
   overlay: AliasOverlay;
+  projectWords: string[];
 }
 
 export function quickInputs(root: ContextRoot): QuickInputs {
@@ -104,7 +106,7 @@ export function quickInputs(root: ContextRoot): QuickInputs {
   } finally {
     reader?.close();
   }
-  return { listing, graphIdentity, overlay: readAliasOverlay(root.localDir) };
+  return { listing, graphIdentity, overlay: readAliasOverlay(root.localDir), projectWords: readProjectWords(root.projectRoot) };
 }
 
 function sameListing(index: ContextIndex, listing: WikiListing): boolean {
@@ -156,7 +158,9 @@ export async function ensureContextIndex(root: ContextRoot, mode: EnsureMode = "
   const diagnostics: ContextDiagnostic[] = [...quick.listing.diagnostics];
 
   const sideInputsCurrent = (index: ContextIndex): boolean =>
-    index.inputs.graph.identity === quick.graphIdentity && index.inputs.aliasOverlay === quick.overlay.digest;
+    index.inputs.graph.identity === quick.graphIdentity
+    && index.inputs.aliasOverlay === quick.overlay.digest
+    && JSON.stringify(index.projectWords) === JSON.stringify(quick.projectWords);
 
   let observation: WikiObservation | undefined;
   if (loaded.index !== null && mode === "if-stale" && sideInputsCurrent(loaded.index)) {
