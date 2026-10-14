@@ -115,7 +115,8 @@ export type ContextDiagnosticCode =
   | "CONTEXT_SEMANTIC_UNAVAILABLE"
   | "CONTEXT_SEMANTIC_FAILED"
   | "CONTEXT_SESSION_INVALID"
-  | "CONTEXT_USAGE";
+  | "CONTEXT_USAGE"
+  | "CONTEXT_FAILED";
 
 export interface CandidateExplain {
   rank: number;

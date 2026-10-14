@@ -40,6 +40,18 @@ export interface ContextFlags {
   session?: string;
 }
 
+/** An unexpected failure becomes a typed diagnostic and a nonzero exit, never a stack trace. */
+async function guarded(io: ContextIo, flags: ContextFlags, command: () => Promise<void>): Promise<void> {
+  try {
+    await command();
+  } catch (error) {
+    const diagnostics: ContextDiagnostic[] = [
+      { code: "CONTEXT_FAILED", severity: "error", message: error instanceof Error ? error.message : String(error) },
+    ];
+    emit(io, flags.json, buildEnvelope({}, diagnostics), () => "");
+  }
+}
+
 function noScaffold(io: ContextIo, json: boolean | undefined): void {
   const diagnostics: ContextDiagnostic[] = [
     {
@@ -86,7 +98,10 @@ function countBy(index: ContextIndex): Record<string, number> {
   return Object.fromEntries(Object.entries(byType).sort(([a], [b]) => (a < b ? -1 : 1)));
 }
 
-export async function runContextIndex(io: ContextIo, flags: ContextFlags = {}): Promise<void> {
+export const runContextIndex = (io: ContextIo, flags: ContextFlags = {}): Promise<void> =>
+  guarded(io, flags, () => indexCommand(io, flags));
+
+async function indexCommand(io: ContextIo, flags: ContextFlags): Promise<void> {
   const root = resolveContextRoot(io.cwd);
   if (root === null) return noScaffold(io, flags.json);
 
@@ -199,7 +214,10 @@ function explainTable(result: PromptResult, rebuilt: boolean, timings: Record<st
   return lines.join("\n");
 }
 
-export async function runContextPrompt(io: ContextIo, textParts: string | readonly string[], flags: ContextFlags = {}): Promise<void> {
+export const runContextPrompt = (io: ContextIo, textParts: string | readonly string[], flags: ContextFlags = {}): Promise<void> =>
+  guarded(io, flags, () => promptCommand(io, textParts, flags));
+
+async function promptCommand(io: ContextIo, textParts: string | readonly string[], flags: ContextFlags): Promise<void> {
   const root = resolveContextRoot(io.cwd);
   if (root === null) return noScaffold(io, flags.json);
 
