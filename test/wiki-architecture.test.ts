@@ -775,6 +775,7 @@ describe("no unscoped scaffold writes", () => {
       "src/graph/maintenance.ts": "publishes and recovers the disposable graph index under its maintenance lease",
       "src/graph/runtime.ts": "edits existing .mex Markdown; bypasses the pipeline (recorded D9 exception)",
       "src/hub/setup/commit.ts": "manages temporary and preserved Git indexes for explicit revision-reviewed setup commits; never edits Wiki content",
+      "src/context/local-state.ts": "writes only derived, checkout-local context files under .mex/local (index, session state) and the MEX-managed semantic-extra directory; never Markdown or canonical state",
       "src/config.ts": "writes config.json",
       "src/global-config.ts": "writes the global config and telemetry id",
       "src/events.ts": "appends to events/decisions.jsonl",
