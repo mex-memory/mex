@@ -22,7 +22,12 @@ export interface ContextRoot {
   localDir: string;
 }
 
-const SCAFFOLD_MARKERS = ["ROUTER.md", "AGENTS.md", "config.json", "wiki.db", "graph.db"] as const;
+/**
+ * What makes a `.mex/` a project scaffold. `config.json` is deliberately not a
+ * marker: the per-machine MEX home (`~/.mex`) has one too, and `findConfig`
+ * itself requires `ROUTER.md`.
+ */
+const SCAFFOLD_MARKERS = ["ROUTER.md", "AGENTS.md", "wiki.db", "graph.db"] as const;
 
 function isDirectory(path: string): boolean {
   try {
