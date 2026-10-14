@@ -16,7 +16,8 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "mex": "dist/cli.js"
+    "mex": "dist/cli.js",
+    "mex-hook": "dist/hook.js"
   },
   "files": [
     "dist",

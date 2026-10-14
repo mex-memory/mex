@@ -1,8 +1,11 @@
 import { defineConfig } from "tsup";
 
 /**
- * Two-config build:
+ * Three-config build:
  *  - cli + private graph candidate → executable bundles, no public declarations
+ *  - hook → the light `mex-hook` entry agent hosts call per event; split on
+ *    its own, so the prompt path's heavy modules (Markdown parser, ranker) live
+ *    in a chunk only a prompt loads, and none of it is shared with the CLI
  *  - index → dist/index.js + dist/index.d.ts (library entry consumed via `exports`)
  */
 export default defineConfig([
@@ -22,6 +25,27 @@ export default defineConfig([
     // Hub contracts are a private workspace package and are intentionally
     // bundled into the published CLI instead of becoming a runtime dependency.
     noExternal: ["@mex/hub-contracts"],
+    banner: {
+      js: "#!/usr/bin/env node",
+    },
+  },
+  {
+    entry: { hook: "src/context/hook/entry.ts" },
+    format: ["esm"],
+    target: "node20",
+    outDir: "dist",
+    clean: false,
+    // Tool events (read, edit, grep) are the hot path and import only light
+    // modules; the prompt handler is reached through a dynamic import, which
+    // splitting turns into its own chunk, so its external dependencies (the
+    // Markdown toolchain) are not loaded for a tool event.
+    splitting: true,
+    sourcemap: true,
+    dts: false,
+    esbuildOptions(options) {
+      // Keep the hook's chunks distinguishable from the CLI's in dist/.
+      options.chunkNames = "hook-chunk-[hash]";
+    },
     banner: {
       js: "#!/usr/bin/env node",
     },
