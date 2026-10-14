@@ -15,12 +15,23 @@ import { pathToFileURL } from "node:url";
 import { mexHomeDir } from "../global-config.js";
 import type { Embedder } from "./dense.js";
 import { DENSE_MODEL, DENSE_MODEL_ID } from "./frozen.js";
-import { ensureDirectory, removeManagedDirectory, writeManagedFile } from "./local-state.js";
+import { ensureDirectory, removeManagedDirectory, removeManagedPaths, writeManagedFile } from "./local-state.js";
 
 /** The library version the frozen recipe was evaluated with. */
 export const SEMANTIC_LIBRARY_VERSION = "4.3.1";
 const MARKER_NAME = "mex-semantic-extra";
 const EXPECTED_DIMENSIONS = 384;
+/**
+ * The library hard-depends on `sharp` (image decoding, unused for text), a second
+ * runtime (`onnxruntime-web`, 140 MB, unused by the Node build) and
+ * `onnxruntime-node`, which ships native binaries for every platform (290 MB)
+ * plus GPU provider libraries. The install stubs `sharp`, removes the web
+ * runtime and keeps only this platform's CPU binaries. (The WebAssembly runtime
+ * would be smaller still, but its quantised kernels differ from the native ones
+ * enough to move one held-out injection across the cosine threshold, so it is
+ * not used.)
+ */
+const GPU_PROVIDER_FILES = /directml|dxcompiler|dxil|providers_|libcudart|libcublas|libcudnn|libnv/i;
 const MAX_SIZE_WALK_ENTRIES = 200_000;
 
 export const semanticDirectory = (): string => join(mexHomeDir(), "semantic");
@@ -227,6 +238,29 @@ async function downloadAndVerifyModel(dir: string): Promise<void> {
   }
 }
 
+/** Remove the unused web runtime, other platforms' binaries and GPU provider libraries. */
+function pruneRuntime(dir: string): void {
+  const ort = join(dir, "node_modules", "onnxruntime-node");
+  const drop = [join(dir, "node_modules", "onnxruntime-web")];
+  const napi = join(ort, "bin", "napi-v6");
+  try {
+    for (const platform of readdirSync(napi)) {
+      if (platform !== process.platform) {
+        drop.push(join(napi, platform));
+        continue;
+      }
+      for (const arch of readdirSync(join(napi, platform))) {
+        const archDir = join(napi, platform, arch);
+        if (arch !== process.arch) drop.push(archDir);
+        else for (const file of readdirSync(archDir)) if (GPU_PROVIDER_FILES.test(file)) drop.push(join(archDir, file));
+      }
+    }
+  } catch {
+    // Nothing installed yet (or a test runner): nothing to prune.
+  }
+  removeManagedPaths(dir, drop);
+}
+
 /** Install the library and the model into the managed directory, then verify them. */
 export async function installSemantic(options: InstallOptions = {}): Promise<SemanticStatus> {
   const dir = options.dir ?? semanticDirectory();
@@ -235,19 +269,35 @@ export async function installSemantic(options: InstallOptions = {}): Promise<Sem
   ensureDirectory(dir);
   writeManagedFile(
     dir,
+    join(dir, "stubs", "sharp", "package.json"),
+    `${JSON.stringify({ name: "sharp", version: "0.35.4", main: "index.js" })}\n`,
+  );
+  writeManagedFile(dir, join(dir, "stubs", "sharp", "index.js"), "module.exports = {};\n");
+  writeManagedFile(
+    dir,
     join(dir, "package.json"),
-    `${JSON.stringify({ name: MARKER_NAME, private: true, description: "Managed by `mex context semantic`. Safe to delete." }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        name: MARKER_NAME,
+        private: true,
+        description: "Managed by `mex context semantic`. Safe to delete.",
+        overrides: { sharp: "file:./stubs/sharp" },
+      },
+      null,
+      2,
+    )}\n`,
   );
   say(`Installing @huggingface/transformers@${SEMANTIC_LIBRARY_VERSION} into ${dir}`);
   const npm = await run(
     "npm",
-    ["install", `@huggingface/transformers@${SEMANTIC_LIBRARY_VERSION}`, "--no-audit", "--no-fund", "--loglevel=error"],
+    ["install", `@huggingface/transformers@${SEMANTIC_LIBRARY_VERSION}`, "--no-audit", "--no-fund", "--ignore-scripts", "--loglevel=error"],
     dir,
     10 * 60_000,
   );
   if (npm.code !== 0) {
     throw new SemanticInstallError("npm could not install the semantic library.", (npm.stderr || npm.stdout).trim().slice(-800));
   }
+  pruneRuntime(dir);
   say(`Downloading ${DENSE_MODEL.model} (${DENSE_MODEL.dtype})`);
   await (options.verifyModel ?? downloadAndVerifyModel)(dir);
   return semanticStatus(dir);

@@ -38,10 +38,10 @@ Chosen by a sealed held-out evaluation: 70 questions over Hono and TypeScript, s
   - Test half: helped 17/24, 3 of 20 injected wrong, 0/10 false injections.
 - **Fallback (R2w)**: lexical only, used when the semantic extra is not installed. Candidates are all typed Wiki sections (fact, convention, decision, guide, pattern, component) with body text. Floor 0.4186, G 5, ratio 0.5, margin 0.45.
   - Test half: 17/24, 5 of 22 wrong, 0/10.
-- **Stop list**: words about code ("error, issue, problem, update, test, function…") never count as query concepts.
+- **Stop words**: the tokenizer drops common English function words and a short list of conversational filler ("please, explain, describe, show, want, need, really…"), plus the project's own name (root directory name and `package.json` name, derived at index time). Words about code ("error", "issue", "update", "test", "function"…) are *not* stop words in the frozen recipes: that list only feeds the segment channel, which is disabled.
 - **Abstention is logged**, with a reason (`no-index`, `below-floor`, `uncorroborated`, …).
 
-The semantic channel is opt-in. Its library and model (about 23 MB) are installed under a MEX-managed directory on request. When they are absent, R2w is used, with no error.
+The semantic channel is opt-in. Its library and model are installed under a MEX-managed directory on request: about 68 MB on Windows, of which the model is 23 MB. A stock install is about 500 MB, because the library hard-depends on native runtimes for every platform plus a second, web runtime; the installer stubs `sharp`, removes the web runtime and keeps only this platform's CPU binaries. (The WebAssembly runtime would be about 56 MB, but its quantised kernels differ from the native ones enough to move one held-out injection across the cosine threshold, so it is not used.) When the extra is absent, R2w is used, with no error.
 
 ## Packets
 
@@ -88,4 +88,4 @@ Setup, GROW and `wiki apply` write 3–6 short symptom or goal phrases per code-
 - **Session de-duplication** runs after the gate, so the frozen scores and margins are computed over the full candidate set; entries already shown are then dropped.
 - **Writers**: `src/context/local-state.ts` is the only module that mutates the filesystem. It writes the index, session files (`.mex/local/context-sessions/`, bounded and pruned) and the managed semantic directory (`<MEX home>/semantic/`).
 - **Parity**: `scripts/context-parity.mjs` replays the held-out question files through the built CLI and compares injected ids with the reference harness.
-- **Two reference details not ported**: the reference's second "code noise" stop list is consumed only by the segment channel, which the frozen recipes disable (`seg: 0`), so it never affected a result. The reference's term table was a plain object, so the query word "constructor" matched every document through the prototype chain; the port uses a `Map`.
+- **Reference details not ported**: the reference's second "code noise" stop list is consumed only by the segment channel, which the frozen recipes disable (`seg: 0`), so it never affected a result. The reference hard-coded one repository's name as a stop word; the port derives the project-name words per project (index field `projectWords`). The reference's term table was a plain object, so the query word "constructor" matched every document through the prototype chain; the port uses a `Map`.

@@ -106,3 +106,13 @@ export function writeManagedFile(managedDir: string, target: string, text: strin
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, text, "utf8");
 }
+
+/** Delete paths inside a managed directory (the pruned semantic install). Missing paths are fine. */
+export function removeManagedPaths(managedDir: string, targets: readonly string[]): void {
+  const dir = resolve(managedDir);
+  for (const target of targets) {
+    const path = resolve(target);
+    if (!path.startsWith(dir + sep)) throw new Error("Refusing to remove a path outside the managed directory.");
+    rmSync(path, { recursive: true, force: true });
+  }
+}
