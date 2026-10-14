@@ -777,6 +777,7 @@ describe("no unscoped scaffold writes", () => {
       "src/hub/setup/commit.ts": "manages temporary and preserved Git indexes for explicit revision-reviewed setup commits; never edits Wiki content",
       "src/context/local-state.ts": "writes only derived, checkout-local context files under .mex/local (index, session state) and the MEX-managed semantic-extra directory; never Markdown or canonical state",
       "src/config.ts": "writes config.json",
+      "src/hooks/install.ts": "atomically writes the marker-scoped hook entries in .claude/settings.json and the managed block in CLAUDE.md; never touches .mex/",
       "src/global-config.ts": "writes the global config and telemetry id",
       "src/events.ts": "appends to events/decisions.jsonl",
       "src/export.ts": "writes one export bundle to a user-specified path — a brand-new file (wx-exclusive) or a marker-verified previous bundle, never scaffold bytes",

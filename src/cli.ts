@@ -156,6 +156,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "logging"
     || commandName === "timeline"
     || commandName === "context"
+    || commandName === "hooks"
     || commandName === "capabilities"
     || commandName === "member"
     || commandName === "activity"
@@ -1099,6 +1100,58 @@ contextCommand
     await runContextSemantic(contextIo(), action, options);
   });
 
+// ── Hooks ──
+//
+// Installs the light `mex-hook` entry into an agent host's settings
+// (docs/design/context-hooks.md). Claude Code is the first host.
+
+function hooksIo(): import("./hooks/cli.js").HooksIo {
+  return {
+    write: (line: string) => console.log(line),
+    writeError: (line: string) => console.error(line),
+    setExitCode: (code: number) => {
+      process.exitCode = code;
+    },
+    cwd: process.cwd(),
+  };
+}
+
+const hooksCommand = program
+  .command("hooks")
+  .description("Install, inspect or remove the agent hooks that deliver project knowledge while the agent works");
+
+hooksCommand
+  .command("install")
+  .description("Add MEX's hook entries to the project's .claude/settings.json and a short instruction block to CLAUDE.md (your own entries are kept)")
+  .option("--tool <tool>", "the agent host (only claude for now)", "claude")
+  .option("--dry-run", "show the diff without writing anything")
+  .option("--json", "emit one JSON object")
+  .action(async (options) => {
+    const { runHooksInstall } = await import("./hooks/cli.js");
+    runHooksInstall(hooksIo(), options);
+  });
+
+hooksCommand
+  .command("status")
+  .description("Show whether the hooks are installed, which command they run and whether it still resolves")
+  .option("--tool <tool>", "the agent host (only claude for now)", "claude")
+  .option("--json", "emit one JSON object")
+  .action(async (options) => {
+    const { runHooksStatus } = await import("./hooks/cli.js");
+    runHooksStatus(hooksIo(), options);
+  });
+
+hooksCommand
+  .command("remove")
+  .description("Remove exactly the entries and block MEX installed, leaving everything else as it was")
+  .option("--tool <tool>", "the agent host (only claude for now)", "claude")
+  .option("--dry-run", "show the diff without writing anything")
+  .option("--json", "emit one JSON object")
+  .action(async (options) => {
+    const { runHooksRemove } = await import("./hooks/cli.js");
+    runHooksRemove(hooksIo(), options);
+  });
+
 program
   .command("heartbeat")
   .description("Run lightweight agent-memory health checks once")
@@ -1413,6 +1466,7 @@ program
     console.log("  mex context prompt <text>  Knowledge packet for a prompt (empty when nothing fits)");
     console.log("  mex context index      Build the checkout-local context index");
     console.log("  mex context semantic install|status|remove  Optional embeddings extra");
+    console.log("  mex hooks install|status|remove  Agent hooks that deliver project knowledge (Claude Code)");
     console.log("  mex heartbeat          Run lightweight agent-memory health checks");
     console.log("  mex doctor             Friendly scaffold health summary");
     console.log("  mex tui                Open the interactive mex dashboard");
@@ -1642,7 +1696,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "skills", "capabilities", "member", "activity", "workstream", "inbox", "relay", "spec", "check", "init", "graph", "wiki", "impact", "sync", "pattern", "log", "timeline", "context",
+    "setup", "skills", "capabilities", "member", "activity", "workstream", "inbox", "relay", "spec", "check", "init", "graph", "wiki", "impact", "sync", "pattern", "log", "timeline", "context", "hooks",
     "heartbeat", "doctor", "watch", "tui", "commands", "completion",
     "telemetry", "config", "feedback", "hub",
   ];
