@@ -39,7 +39,7 @@ export interface SemanticStatus {
   directory: string;
   library: { installed: boolean; version: string | null };
   model: { id: string; dtype: string; cached: boolean };
-  /** Disk used by the managed directory, or null if it does not exist. */
+  /** Disk used by the managed directory; null if it does not exist or was not measured. */
   bytes: number | null;
 }
 
@@ -72,7 +72,7 @@ function directoryBytes(dir: string): number | null {
   return total;
 }
 
-export function semanticStatus(dir: string = semanticDirectory()): SemanticStatus {
+export function semanticStatus(dir: string = semanticDirectory(), options: { measure?: boolean } = {}): SemanticStatus {
   let version: string | null = null;
   try {
     version = (JSON.parse(readFileSync(libraryManifestOf(dir), "utf8")) as { version?: string }).version ?? null;
@@ -86,7 +86,8 @@ export function semanticStatus(dir: string = semanticDirectory()): SemanticStatu
     directory: dir,
     library: { installed: libraryInstalled, version },
     model: { id: DENSE_MODEL.model, dtype: DENSE_MODEL.dtype, cached: modelCached },
-    bytes: directoryBytes(dir),
+    // Walking the install is slow (tens of thousands of files); only `status` asks for it.
+    bytes: options.measure === false ? null : directoryBytes(dir),
   };
 }
 
@@ -129,7 +130,7 @@ export async function loadEmbedder(
   dir: string = semanticDirectory(),
   options: { allowDownload?: boolean } = {},
 ): Promise<LoadedEmbedder> {
-  const status = semanticStatus(dir);
+  const status = semanticStatus(dir, { measure: false });
   if (!options.allowDownload && status.state !== "installed") {
     return { embedder: null, reason: status.state === "absent" ? "The semantic extra is not installed." : "The semantic extra is incomplete." };
   }

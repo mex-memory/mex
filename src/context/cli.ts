@@ -95,7 +95,7 @@ export async function runContextIndex(io: ContextIo, flags: ContextFlags = {}): 
   let vectors: IndexSummary["vectors"] = null;
   if (flags.lexical !== true) {
     const facts = ensured.index.entities.filter((e) => e.type === "fact");
-    if (facts.length > 0 && semanticStatus().state === "installed") {
+    if (facts.length > 0 && semanticStatus(undefined, { measure: false }).state === "installed") {
       const loaded = await loadEmbedder();
       if (loaded.embedder !== null) {
         try {
@@ -211,7 +211,7 @@ export async function runContextPrompt(io: ContextIo, textParts: string | readon
 
   let embedder: Embedder | null = null;
   const hasFacts = ensured.index.entities.some((e) => e.type === "fact");
-  if (flags.lexical !== true && hasFacts && semanticStatus().state === "installed") {
+  if (flags.lexical !== true && hasFacts && semanticStatus(undefined, { measure: false }).state === "installed") {
     const loaded = await loadEmbedder();
     embedder = loaded.embedder;
     if (embedder === null && loaded.reason !== undefined) {
@@ -350,7 +350,7 @@ export async function runContextSemantic(io: ContextIo, action: string, flags: C
         remediation: "Check your network and npm configuration, then run `mex context semantic install` again. Prompts keep working with the lexical recipe.",
       },
     ];
-    emit(io, flags.json, buildEnvelope({ state: semanticStatus().state }, diagnostics), () => "");
+    emit(io, flags.json, buildEnvelope({ state: semanticStatus(undefined, { measure: false }).state }, diagnostics), () => "");
   }
 }
 
