@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync 
 import { resolve, dirname, isAbsolute, basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { MexConfig, AiTool, StalenessThresholds, WatchConfig, HeartbeatConfig, ScaffoldIdentity, WikiConfig, WikiSynthesisConfig } from "./types.js";
-import { DEFAULT_STALENESS_THRESHOLDS } from "./drift/checkers/staleness.js";
+import { DEFAULT_STALENESS_THRESHOLDS } from "./drift/checkers/staleness-defaults.js";
 
 /**
  * Inputs accepted by {@link createConfig}. Only the two roots are required —

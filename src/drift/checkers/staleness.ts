@@ -2,15 +2,10 @@ import { daysSinceLastChange, commitsSinceLastChange, commitsTouchingPathsSinceL
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { toPosix } from "../../paths.js";
+import { DEFAULT_STALENESS_THRESHOLDS } from "./staleness-defaults.js";
 import type { Claim, DriftIssue, Severity, StalenessThresholds } from "../../types.js";
 
-/** Default thresholds. Overridden via MexConfig.stalenessThresholds / CLI flags. */
-export const DEFAULT_STALENESS_THRESHOLDS: StalenessThresholds = {
-  warnDays: 30,
-  errorDays: 90,
-  warnCommits: 50,
-  errorCommits: 200,
-};
+export { DEFAULT_STALENESS_THRESHOLDS };
 
 /**
  * Scaffold files whose content mex ships rather than the project authors
