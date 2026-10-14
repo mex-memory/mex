@@ -59,7 +59,7 @@ export function runGitAsync(cwd: string, args: readonly string[]): Promise<strin
 }
 
 export interface FileDiff {
-  /** Inclusive base-side (HEAD) line ranges the change touches. */
+  /** Inclusive base-side (HEAD) line ranges the change touches; a pure insertion is the half line after the line it follows. */
   ranges: Array<[number, number]>;
   /** Hash of the hunks, so an unchanged change is recognisable on the next call. */
   signature: string;
@@ -101,8 +101,10 @@ export function parseUnifiedZero(diff: string): Map<string, FileDiff> {
     if (hunk && current !== null) {
       const start = Number(hunk[1]);
       const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
-      // A pure insertion (count 0) lands after `start`; it still touches that line's neighbourhood.
-      current.ranges.push([start, start + Math.max(count, 1) - 1]);
+      // A pure insertion (count 0) lands between `start` and the next line. Recording it as the
+      // half line after `start` makes it overlap a symbol exactly when it falls inside the symbol's
+      // lines, not when it merely follows its last line or precedes its first.
+      current.ranges.push(count === 0 ? [start + 0.5, start + 0.5] : [start, start + count - 1]);
       current.hunks.push(line);
       continue;
     }
