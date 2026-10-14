@@ -189,3 +189,63 @@ function isStandaloneMarker(content: string, index: number, marker: string): boo
     after === "" || after === "\n" || (after === "\r" && content[afterIndex + 1] === "\n");
   return beginsLine && endsLine;
 }
+
+export interface ManagedBlockRemoval {
+  readonly action: "remove" | "noop" | "conflict";
+  /** The file as it should be once the block is gone; absent unless `action` is `remove`. */
+  readonly desiredBytes?: Uint8Array;
+  /** True when nothing but whitespace remains, i.e. the file held only the block. */
+  readonly empty?: boolean;
+  /** Exact marker-delimited block that will be removed. */
+  readonly removed?: string;
+  readonly reason: "absent" | "removed" | "malformed-markers" | "invalid-encoding";
+}
+
+/**
+ * Compute the removal of a managed block without writing. It inverts
+ * {@link planManagedBlockEdit}'s append: the block, the line ending after it and
+ * the blank-line separator before it go, and every other byte stays. Removing
+ * a block that was appended to a file therefore restores that file exactly,
+ * except that a file which had no final newline gets one: the append writes the
+ * same bytes for both, so the original cannot be recovered.
+ */
+export function planManagedBlockRemoval(
+  spec: Pick<ManagedBlockSpec, "start" | "end">,
+  currentBytes: Uint8Array | null,
+): ManagedBlockRemoval {
+  if (currentBytes === null) return { action: "noop", reason: "absent" };
+  let current: string;
+  try {
+    current = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(currentBytes);
+  } catch {
+    return { action: "conflict", reason: "invalid-encoding" };
+  }
+  const starts = allIndexesOf(current, spec.start);
+  const ends = allIndexesOf(current, spec.end);
+  if (starts.length === 0 && ends.length === 0) return { action: "noop", reason: "absent" };
+  if (
+    starts.length !== 1 ||
+    ends.length !== 1 ||
+    starts[0]! >= ends[0]! ||
+    !isStandaloneMarker(current, starts[0]!, spec.start) ||
+    !isStandaloneMarker(current, ends[0]!, spec.end)
+  ) {
+    return { action: "conflict", reason: "malformed-markers" };
+  }
+
+  const eol = detectEol(current);
+  const blockEnd = ends[0]! + spec.end.length;
+  let head = current.slice(0, starts[0]!);
+  let tail = current.slice(blockEnd);
+  if (tail.startsWith(eol)) tail = tail.slice(eol.length);
+  // The append put a blank line between existing text and the block; take that back.
+  if (head.endsWith(`${eol}${eol}`) && tail === "") head = head.slice(0, -eol.length);
+  const desired = head + tail;
+  return {
+    action: "remove",
+    desiredBytes: Buffer.from(desired, "utf8"),
+    empty: desired.trim() === "",
+    removed: current.slice(starts[0]!, blockEnd),
+    reason: "removed",
+  };
+}
