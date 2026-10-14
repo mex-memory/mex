@@ -63,3 +63,44 @@ export function recordShown(localDir: string, sessionId: string, ids: readonly s
     now: now.getTime(),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Source-file signatures
+// ---------------------------------------------------------------------------
+//
+// A Bash call can change source files without any Edit hook seeing it, and the
+// only way to find out is `git diff`, which costs a process start. This
+// separate, per-session map remembers a size-and-mtime signature for the linked
+// source files as of the last check, so a Bash call that changed nothing
+// costs a handful of `stat` calls instead.
+
+export const MAX_STATS_PER_SESSION = 2000;
+const MAX_STATS_FILE_BYTES = 512 * 1024;
+
+const statsFileOf = (localDir: string, sessionId: string): string =>
+  sessionFileOf(localDir, sessionId).replace(/\.json$/, ".stat.json");
+
+/** Signatures recorded for this session, `{ "<project-relative file>": "<size>:<mtimeMs>" }`. */
+export function loadStats(localDir: string, sessionId: string): Record<string, string> {
+  const path = statsFileOf(localDir, sessionId);
+  try {
+    if (statSync(path).size > MAX_STATS_FILE_BYTES) return {};
+    const value = JSON.parse(readFileSync(path, "utf8")) as { schemaVersion?: number; stats?: Record<string, unknown> };
+    if (value.schemaVersion !== SESSION_SCHEMA_VERSION || typeof value.stats !== "object" || value.stats === null) return {};
+    const out: Record<string, string> = {};
+    for (const [file, signature] of Object.entries(value.stats)) if (typeof signature === "string") out[file] = signature;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Merge signatures into the session's map; keeps the most recently written ones when it grows past the bound. */
+export function recordStats(localDir: string, sessionId: string, stats: Readonly<Record<string, string>>, now: Date = new Date()): void {
+  const entries = Object.entries(stats);
+  if (entries.length === 0) return;
+  const merged = { ...loadStats(localDir, sessionId), ...stats };
+  const kept = Object.entries(merged).slice(-MAX_STATS_PER_SESSION);
+  writeTextAtomic(localDir, statsFileOf(localDir, sessionId), `${JSON.stringify({ schemaVersion: SESSION_SCHEMA_VERSION, stats: Object.fromEntries(kept) })}\n`);
+  pruneDirectory(localDir, sessionDirOf(localDir), { maxAgeMs: SESSION_MAX_AGE_MS, maxFiles: MAX_SESSION_FILES, now: now.getTime() });
+}

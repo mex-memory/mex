@@ -7,7 +7,7 @@
  * composer itself (ranking, packets, health) free of side effects.
  */
 
-import { mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
@@ -115,4 +115,38 @@ export function removeManagedPaths(managedDir: string, targets: readonly string[
     if (!path.startsWith(dir + sep)) throw new Error("Refusing to remove a path outside the managed directory.");
     rmSync(path, { recursive: true, force: true });
   }
+}
+
+export interface AppendOptions {
+  /** When the file grows past this many bytes it is cut to its newest half, on a line boundary. */
+  maxBytes: number;
+}
+
+/**
+ * Append one line to a bounded log under the local directory.
+ *
+ * The hook entry logs every event and every failure here. The log is advisory:
+ * it is capped (the newest half survives a trim), and the caller treats a
+ * failure to write it as nothing.
+ */
+export function appendBoundedLine(localDir: string, target: string, line: string, options: AppendOptions): void {
+  const path = contained(localDir, target);
+  mkdirSync(dirname(path), { recursive: true });
+  let size = 0;
+  try {
+    size = statSync(path).size;
+  } catch {
+    size = 0;
+  }
+  if (size > options.maxBytes) {
+    try {
+      const text = readFileSync(path, "utf8");
+      const tail = text.slice(Math.floor(text.length / 2));
+      const cut = tail.indexOf("\n");
+      writeTextAtomic(localDir, path, cut < 0 ? "" : tail.slice(cut + 1));
+    } catch {
+      rmSync(path, { force: true });
+    }
+  }
+  appendFileSync(path, `${line}\n`, "utf8");
 }
