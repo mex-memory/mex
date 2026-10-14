@@ -6,6 +6,7 @@
  * with the reason, never a partial write.
  */
 
+import type { ResolveOptions } from "./command.js";
 import {
   applyHooksPlan,
   assertSupportedTool,
@@ -23,6 +24,8 @@ export interface HooksIo {
   writeError: (line: string) => void;
   setExitCode: (code: number) => void;
   cwd: string;
+  /** How to find the hook command; tests only. */
+  resolve?: ResolveOptions;
 }
 
 export interface HooksFlags {
@@ -74,7 +77,7 @@ function summarize(plan: HooksPlan, dryRun: boolean): string {
 export function runHooksInstall(io: HooksIo, flags: HooksFlags = {}): void {
   try {
     assertSupportedTool(flags.tool);
-    const plan = planHooksInstall(io.cwd);
+    const plan = planHooksInstall(io.cwd, io.resolve);
     const dryRun = flags.dryRun === true;
     if (!dryRun) applyHooksPlan(plan);
     const diff = dryRun ? renderPlanDiff(plan) : "";
@@ -155,7 +158,7 @@ function describeStatus(status: HooksStatus): string {
 export function runHooksStatus(io: HooksIo, flags: HooksFlags = {}): void {
   try {
     assertSupportedTool(flags.tool);
-    const status = hooksStatus(io.cwd);
+    const status = hooksStatus(io.cwd, io.resolve);
     ok(io, flags, status, describeStatus(status));
   } catch (error) {
     fail(io, flags, error);
