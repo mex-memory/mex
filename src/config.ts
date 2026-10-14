@@ -315,6 +315,25 @@ function loadWikiConfig(raw: MexPersistedConfig | null): WikiConfig {
   return normalizeWikiConfig(wiki as Partial<WikiConfig>);
 }
 
+/** Characters of context a hooked session may receive before packets shrink to pointers. */
+export const DEFAULT_CONTEXT_SESSION_BUDGET_CHARS = 12_000;
+const MAX_CONTEXT_SESSION_BUDGET_CHARS = 1_000_000;
+
+export interface ContextConfig {
+  sessionBudgetChars: number;
+}
+
+/**
+ * Read `context` out of `.mex/config.json` (the hooks' per-session budget).
+ * Degrades to the default for a missing, mistyped or out-of-range value; never throws.
+ */
+export function loadConfiguredContextConfig(scaffoldRoot: string): ContextConfig {
+  const raw = loadPersistedConfig(scaffoldRoot)?.context;
+  const value = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>)["sessionBudgetChars"] : undefined;
+  const ok = typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_CONTEXT_SESSION_BUDGET_CHARS;
+  return { sessionBudgetChars: ok ? value : DEFAULT_CONTEXT_SESSION_BUDGET_CHARS };
+}
+
 function loadHeartbeatConfig(raw: MexPersistedConfig | null): HeartbeatConfig | undefined {
   if (!raw || typeof raw.heartbeat !== "object" || raw.heartbeat === null || Array.isArray(raw.heartbeat)) {
     return undefined;

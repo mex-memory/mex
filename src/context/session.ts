@@ -24,6 +24,8 @@ const SESSION_SCHEMA_VERSION = 1;
 interface SessionFile {
   schemaVersion: number;
   shown: string[];
+  /** Characters of context injected in this session so far, across all events. */
+  injectedChars?: number;
   updatedAt: string;
 }
 
@@ -51,11 +53,33 @@ export function loadShown(localDir: string, sessionId: string): Set<string> {
   }
 }
 
-/** Record ids as shown; keeps only the newest ones and prunes stale session files. */
-export function recordShown(localDir: string, sessionId: string, ids: readonly string[], now: Date = new Date()): void {
-  if (ids.length === 0) return;
+/** Characters injected in this session so far (0 for an unknown or damaged session). */
+export function loadInjectedChars(localDir: string, sessionId: string): number {
+  try {
+    const path = sessionFileOf(localDir, sessionId);
+    if (statSync(path).size > MAX_SESSION_FILE_BYTES) return 0;
+    const value = JSON.parse(readFileSync(path, "utf8")) as Partial<SessionFile>;
+    return value.schemaVersion === SESSION_SCHEMA_VERSION && typeof value.injectedChars === "number" && value.injectedChars > 0
+      ? Math.floor(value.injectedChars)
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Record ids as shown and add `chars` to the session's injected total; keeps
+ * only the newest ids and prunes stale session files.
+ */
+export function recordShown(localDir: string, sessionId: string, ids: readonly string[], now: Date = new Date(), chars = 0): void {
+  if (ids.length === 0 && chars <= 0) return;
   const shown = [...new Set([...loadShown(localDir, sessionId), ...ids])].slice(-MAX_SHOWN_PER_SESSION);
-  const file: SessionFile = { schemaVersion: SESSION_SCHEMA_VERSION, shown, updatedAt: now.toISOString() };
+  const file: SessionFile = {
+    schemaVersion: SESSION_SCHEMA_VERSION,
+    shown,
+    injectedChars: loadInjectedChars(localDir, sessionId) + Math.max(0, Math.floor(chars)),
+    updatedAt: now.toISOString(),
+  };
   writeTextAtomic(localDir, sessionFileOf(localDir, sessionId), `${JSON.stringify(file)}\n`);
   pruneDirectory(localDir, sessionDirOf(localDir), {
     maxAgeMs: SESSION_MAX_AGE_MS,

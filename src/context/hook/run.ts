@@ -11,12 +11,14 @@
 
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { loadConfiguredContextConfig } from "../../config.js";
 import { loadContextIndex } from "../index-file.js";
 import { openGraphReader } from "../graph-reader.js";
 import { PACKET_CHAR_LIMIT } from "../packet.js";
 import { appendBoundedLine } from "../local-state.js";
 import { resolveContextRoot, type ContextRoot } from "../root.js";
-import { isValidSessionId, loadShown, loadStats, recordShown, recordStats } from "../session.js";
+import { isValidSessionId, loadInjectedChars, loadShown, loadStats, recordShown, recordStats } from "../session.js";
+import { decideBudget } from "./budget.js";
 import { diffAgainstHead, diffAgainstHeadAsync, fileSignature, readHead } from "./diff.js";
 import {
   composeEdit,
@@ -169,13 +171,20 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
 
     const sessionId = isValidSessionId(payload.session_id) ? payload.session_id : null;
     // The prompt path needs the Markdown parser and the ranker; tool events never load them.
-    const result: Handled = event === "prompt"
+    let result: Handled = event === "prompt"
       ? await (await import("./prompt.js")).handlePrompt(root, text(payload.prompt) ?? "", sessionId, { lexical: env.lexical === true })
       : await handleTool(root, payload, event, sessionId);
+    // The session's injection budget: whole packets while there is room, pointers past it, nothing far past it.
+    if (sessionId !== null && result.text.trim() !== "") {
+      const budget = loadConfiguredContextConfig(root.scaffoldRoot).sessionBudgetChars;
+      const decision = decideBudget({ used: loadInjectedChars(root.localDir, sessionId), budget, text: result.text, pointers: result.pointers ?? [] });
+      if (decision.kind === "pointers") result = { ...result, text: decision.text, note: "budget-pointers" };
+      else if (decision.kind === "exhausted") result = { ...result, text: "", ids: [], note: "budget-exhausted" };
+    }
     const delivered = result.text.trim() !== "";
     if (delivered && sessionId !== null) {
       try {
-        recordShown(root.localDir, sessionId, result.remember);
+        recordShown(root.localDir, sessionId, result.remember, new Date(), result.text.length);
       } catch (error) {
         appendLog(root, { event, error: `session state: ${describeError(error)}` });
       }
@@ -313,6 +322,7 @@ function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, 
     text: parts.map((p) => p.text).filter((t) => t !== "").join("\n\n"),
     remember: parts.flatMap((p) => p.remember),
     ids: parts.flatMap((p) => p.ids),
+    pointers: parts.flatMap((p) => p.pointers ?? []),
     stats: current,
   };
   if (note !== undefined && outcome.text === "") outcome.note = note;

@@ -17,6 +17,7 @@ import type { GraphNodeRow, GraphReader } from "../graph-reader.js";
 import { formatPacket, liveStateFrom, PACKET_CHAR_LIMIT, type LiveLocation, type PacketEntry } from "../packet.js";
 import type { ContextEntity, ContextIndex, LiveHealth } from "../types.js";
 import { baseLocations } from "./base.js";
+import type { PointerEntry } from "./budget.js";
 import { touches, type FileDiff } from "./diff.js";
 
 export const READ_MAX_FACTS = 2;
@@ -34,6 +35,8 @@ export interface EventOutcome {
   remember: string[];
   /** Facts the text carries, for the log. */
   ids: string[];
+  /** One entry per fact in the text, for the budget's degraded form. */
+  pointers?: PointerEntry[];
 }
 
 export interface EventContext {
@@ -85,6 +88,8 @@ const sameFile = (a: string, b: string): boolean => (process.platform === "win32
 function locationsIn(locations: readonly LiveLocation[], file: string): LiveLocation[] {
   return locations.filter((location) => sameFile(location.file, file));
 }
+
+const pointerOf = (entry: PacketEntry): PointerEntry => ({ id: entry.entity.id, title: entry.entity.title, health: entry.live.health });
 
 function oneLineList(ids: readonly string[]): string {
   return ids.slice(0, POINTER_IDS).join(" ");
@@ -141,7 +146,7 @@ export function composeRead(ctx: EventContext, input: ReadInput): EventOutcome |
   const packet = formatPacket(entries, "read", { maxEntries: READ_MAX_FACTS, footer });
   if (packet.shown.length === 0) return null;
   const ids = packet.shown.map((entry) => entry.entity.id);
-  return { text: packet.text, remember: ids, ids };
+  return { text: packet.text, remember: ids, ids, pointers: packet.shown.map(pointerOf) };
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +226,7 @@ export function composeEdit(ctx: EventContext, input: EditInput, charLimit = PAC
   });
   if (packet.shown.length === 0) return { text: "", remember, ids: [] };
   const ids = packet.shown.map((entry) => entry.entity.id);
-  return { text: `${preamble}\n\n${packet.text}`, remember: [...remember, ...ids.map((id) => `edit:${id}`)], ids };
+  return { text: `${preamble}\n\n${packet.text}`, remember: [...remember, ...ids.map((id) => `edit:${id}`)], ids, pointers: packet.shown.map(pointerOf) };
 }
 
 // ---------------------------------------------------------------------------
@@ -366,5 +371,5 @@ export function composeGrep(ctx: EventContext, hits: readonly GrepHit[]): EventO
   }
   if (text.length > GREP_NOTE_CHAR_LIMIT) text = text.slice(0, GREP_NOTE_CHAR_LIMIT - 1) + "…";
   const ids = withFacts.map((f) => f.fact!.id);
-  return { text, remember: ids, ids };
+  return { text, remember: ids, ids, pointers: withFacts.map((f) => ({ id: f.fact!.id, title: f.fact!.title, health: f.health })) };
 }

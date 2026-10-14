@@ -27,7 +27,7 @@ export interface PromptOptions {
 export async function handlePrompt(root: ContextRoot, prompt: string, sessionId: string | null, options: PromptOptions): Promise<Handled> {
   const silence = (note: string): Handled => ({ text: "", remember: [], ids: [], note });
   // A background-task completion arrives as a prompt; it is not a new task.
-  if (/^s*<task-notification>/.test(prompt)) return silence("task-notification");
+  if (/^\s*<task-notification>/.test(prompt)) return silence("task-notification");
   if (prompt.trim() === "") return silence("empty-prompt");
 
   const ensured = await ensureContextIndex(root, "if-stale");
@@ -65,6 +65,7 @@ export async function handlePrompt(root: ContextRoot, prompt: string, sessionId:
     text: result.packet,
     remember: result.injected.map((i) => i.id),
     ids: result.injected.map((i) => i.id),
+    pointers: result.injected.map((i) => ({ id: i.id, title: i.title, health: i.health })),
     note: result.abstention ?? `${result.recipe}/${result.channel}`,
   };
 }
