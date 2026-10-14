@@ -155,6 +155,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "config"
     || commandName === "logging"
     || commandName === "timeline"
+    || commandName === "context"
     || commandName === "capabilities"
     || commandName === "member"
     || commandName === "activity"
@@ -1045,6 +1046,59 @@ program
     }
   });
 
+// ── Context ──
+//
+// Knowledge delivery for coding agents: a read-only composer over the Wiki and
+// the code graph (docs/design/context-hooks.md). The root is found from any
+// subdirectory by the composer itself, so these commands work from wherever a
+// hook happens to run.
+
+function contextIo(): import("./context/cli.js").ContextIo {
+  return {
+    write: (line: string) => console.log(line),
+    writeError: (line: string) => console.error(line),
+    setExitCode: (code: number) => {
+      process.exitCode = code;
+    },
+    cwd: process.cwd(),
+  };
+}
+
+const contextCommand = program
+  .command("context")
+  .description("Deliver the right project knowledge to an agent: index it, rank it against a prompt, manage the optional semantic extra");
+
+contextCommand
+  .command("index")
+  .description("Build .mex/local/context-index.json from the Wiki and the code graph (also caches fact vectors when the semantic extra is installed)")
+  .option("--lexical", "skip fact vectors even when the semantic extra is installed")
+  .option("--json", "emit one enveloped JSON object")
+  .action(async (options) => {
+    const { runContextIndex } = await import("./context/cli.js");
+    await runContextIndex(contextIo(), options);
+  });
+
+contextCommand
+  .command("prompt <text...>")
+  .description("The knowledge packet for a prompt, or nothing when nothing clearly fits (use - to read the prompt from stdin)")
+  .option("--session <id>", "do not repeat entries already shown in this session")
+  .option("--lexical", "force the lexical recipe even when the semantic extra is installed")
+  .option("--explain", "show candidate ranks, scores and the gate's decision for each")
+  .option("--json", "emit one enveloped JSON object")
+  .action(async (text: string[], options) => {
+    const { runContextPrompt } = await import("./context/cli.js");
+    await runContextPrompt(contextIo(), text, options);
+  });
+
+contextCommand
+  .command("semantic <action>")
+  .description("install | status | remove the optional semantic extra (MiniLM embeddings in a MEX-managed directory)")
+  .option("--json", "emit one enveloped JSON object")
+  .action(async (action: string, options) => {
+    const { runContextSemantic } = await import("./context/cli.js");
+    await runContextSemantic(contextIo(), action, options);
+  });
+
 program
   .command("heartbeat")
   .description("Run lightweight agent-memory health checks once")
@@ -1356,6 +1410,9 @@ program
     console.log("  mex impact <symbol|file>              Blast radius as JSONL");
     console.log("  mex log <message>      Append a note/decision/risk/todo to the event log");
     console.log("  mex timeline           Show recent event log entries");
+    console.log("  mex context prompt <text>  Knowledge packet for a prompt (empty when nothing fits)");
+    console.log("  mex context index      Build the checkout-local context index");
+    console.log("  mex context semantic install|status|remove  Optional embeddings extra");
     console.log("  mex heartbeat          Run lightweight agent-memory health checks");
     console.log("  mex doctor             Friendly scaffold health summary");
     console.log("  mex tui                Open the interactive mex dashboard");
@@ -1585,7 +1642,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "skills", "capabilities", "member", "activity", "workstream", "inbox", "relay", "spec", "check", "init", "graph", "wiki", "impact", "sync", "pattern", "log", "timeline",
+    "setup", "skills", "capabilities", "member", "activity", "workstream", "inbox", "relay", "spec", "check", "init", "graph", "wiki", "impact", "sync", "pattern", "log", "timeline", "context",
     "heartbeat", "doctor", "watch", "tui", "commands", "completion",
     "telemetry", "config", "feedback", "hub",
   ];
