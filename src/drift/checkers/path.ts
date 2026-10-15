@@ -94,7 +94,9 @@ function isUnrootedReference(
   const trimmed = value.replace(/\/+$/, "");
   const isDirectoryRef = trimmed !== value;
   if (!trimmed.includes("/") && !isDirectoryRef) return false;
-  if (/\.[A-Za-z0-9]+$/.test(trimmed)) return false;
+  // A file extension has a letter in it; an all-digit tail such as the `.0` in
+  // `release/2.1.0` or the `.11` in `python/3.11` is a version, not a file type.
+  if (/\.[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*$/.test(trimmed)) return false;
 
   const first = trimmed.split("/")[0];
   if (!first || first.startsWith("@") || first === "." || first === "..") return false;
