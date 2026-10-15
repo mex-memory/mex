@@ -9,7 +9,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pruneDirectory, writeTextAtomic } from "./local-state.js";
 
@@ -18,14 +18,26 @@ export const MAX_SESSION_ID_LENGTH = 256;
 export const MAX_SHOWN_PER_SESSION = 512;
 export const MAX_SESSION_FILES = 200;
 export const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_SESSION_FILE_BYTES = 64 * 1024;
+const MAX_SESSION_FILE_BYTES = 256 * 1024;
 const SESSION_SCHEMA_VERSION = 1;
+
+/** An explicit "this still holds" from the agent (`mex context confirm`). */
+export interface Confirmation {
+  at: string;
+  note?: string;
+}
 
 interface SessionFile {
   schemaVersion: number;
   shown: string[];
   /** Characters of context injected in this session so far, across all events. */
   injectedChars?: number;
+  /** Entities the agent confirmed still hold after the session changed their code. */
+  confirmed?: Record<string, Confirmation>;
+  /** True once the Stop hook has asked about unconfirmed entities: it asks at most once per session. */
+  stopAsked?: boolean;
+  /** Digest of the touched code the settle worker last ran for; an unchanged digest needs no second run. */
+  settled?: string;
   updatedAt: string;
 }
 
@@ -67,25 +79,115 @@ export function loadInjectedChars(localDir: string, sessionId: string): number {
   }
 }
 
+function readSessionFile(path: string): SessionFile | null {
+  try {
+    if (statSync(path).size > MAX_SESSION_FILE_BYTES) return null;
+    const value = JSON.parse(readFileSync(path, "utf8")) as Partial<SessionFile>;
+    if (value.schemaVersion !== SESSION_SCHEMA_VERSION || !Array.isArray(value.shown)) return null;
+    return value as SessionFile;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionFile(localDir: string, path: string, file: SessionFile, now: Date): void {
+  writeTextAtomic(localDir, path, `${JSON.stringify({ ...file, updatedAt: now.toISOString() })}\n`);
+  pruneDirectory(localDir, sessionDirOf(localDir), {
+    maxAgeMs: SESSION_MAX_AGE_MS,
+    maxFiles: MAX_SESSION_FILES,
+    now: now.getTime(),
+  });
+}
+
+/** Change one session's file, keeping every field the change does not name. */
+function updateSession(localDir: string, path: string, change: (file: SessionFile) => void, now: Date): void {
+  const file: SessionFile = readSessionFile(path) ?? { schemaVersion: SESSION_SCHEMA_VERSION, shown: [], updatedAt: now.toISOString() };
+  change(file);
+  writeSessionFile(localDir, path, file, now);
+}
+
 /**
  * Record ids as shown and add `chars` to the session's injected total; keeps
  * only the newest ids and prunes stale session files.
  */
 export function recordShown(localDir: string, sessionId: string, ids: readonly string[], now: Date = new Date(), chars = 0): void {
   if (ids.length === 0 && chars <= 0) return;
-  const shown = [...new Set([...loadShown(localDir, sessionId), ...ids])].slice(-MAX_SHOWN_PER_SESSION);
-  const file: SessionFile = {
-    schemaVersion: SESSION_SCHEMA_VERSION,
-    shown,
-    injectedChars: loadInjectedChars(localDir, sessionId) + Math.max(0, Math.floor(chars)),
-    updatedAt: now.toISOString(),
-  };
-  writeTextAtomic(localDir, sessionFileOf(localDir, sessionId), `${JSON.stringify(file)}\n`);
-  pruneDirectory(localDir, sessionDirOf(localDir), {
-    maxAgeMs: SESSION_MAX_AGE_MS,
-    maxFiles: MAX_SESSION_FILES,
-    now: now.getTime(),
-  });
+  updateSession(localDir, sessionFileOf(localDir, sessionId), (file) => {
+    file.shown = [...new Set([...file.shown.filter((id): id is string => typeof id === "string"), ...ids])].slice(-MAX_SHOWN_PER_SESSION);
+    file.injectedChars = loadInjectedCharsOf(file) + Math.max(0, Math.floor(chars));
+  }, now);
+}
+
+function loadInjectedCharsOf(file: SessionFile): number {
+  return typeof file.injectedChars === "number" && file.injectedChars > 0 ? Math.floor(file.injectedChars) : 0;
+}
+
+// ---------------------------------------------------------------------------
+// End-of-session review: confirmations and the one question
+// ---------------------------------------------------------------------------
+
+const UNSCOPED_FILE = "unscoped.json";
+const MAX_CONFIRMED_PER_SESSION = 256;
+
+const unscopedPathOf = (localDir: string): string => join(sessionDirOf(localDir), UNSCOPED_FILE);
+
+/**
+ * The session file most recently written, when a confirmation names no session.
+ * `mex context confirm` runs as the agent's own command and cannot know the
+ * host's session id; the session that is working right now is the newest file.
+ */
+export function latestSessionPath(localDir: string): string | null {
+  let best: { path: string; mtime: number } | null = null;
+  try {
+    for (const name of readdirSync(sessionDirOf(localDir))) {
+      if (!name.endsWith(".json") || name.endsWith(".stat.json") || name === UNSCOPED_FILE) continue;
+      const path = join(sessionDirOf(localDir), name);
+      const mtime = statSync(path).mtimeMs;
+      if (best === null || mtime > best.mtime) best = { path, mtime };
+    }
+  } catch {
+    return null;
+  }
+  return best?.path ?? null;
+}
+
+export type ConfirmationScope = "session" | "latest" | "unscoped";
+
+/** Record that the agent confirmed these entities still hold. */
+export function recordConfirmation(
+  localDir: string,
+  sessionId: string | null,
+  ids: readonly string[],
+  note?: string,
+  now: Date = new Date(),
+): ConfirmationScope {
+  const named = sessionId === null ? null : sessionFileOf(localDir, sessionId);
+  const latest = named === null ? latestSessionPath(localDir) : null;
+  const path = named ?? latest ?? unscopedPathOf(localDir);
+  updateSession(localDir, path, (file) => {
+    const confirmed = { ...(file.confirmed ?? {}) };
+    for (const id of ids) confirmed[id] = { at: now.toISOString(), ...(note === undefined || note === "" ? {} : { note: note.slice(0, 500) }) };
+    file.confirmed = Object.fromEntries(Object.entries(confirmed).slice(-MAX_CONFIRMED_PER_SESSION));
+  }, now);
+  return named !== null ? "session" : latest !== null ? "latest" : "unscoped";
+}
+
+/** Confirmations that count for a session: its own, and those recorded when no session could be named. */
+export function loadConfirmed(localDir: string, sessionId: string | null): Record<string, Confirmation> {
+  const own = sessionId === null ? null : readSessionFile(sessionFileOf(localDir, sessionId));
+  const loose = readSessionFile(unscopedPathOf(localDir));
+  return { ...(loose?.confirmed ?? {}), ...(own?.confirmed ?? {}) };
+}
+
+/** Whether the Stop hook already asked in this session. */
+export function loadStopAsked(localDir: string, sessionId: string): boolean {
+  return readSessionFile(sessionFileOf(localDir, sessionId))?.stopAsked === true;
+}
+
+export function recordStopAsked(localDir: string, sessionId: string, now: Date = new Date()): void {
+  updateSession(localDir, sessionFileOf(localDir, sessionId), (file) => {
+    file.stopAsked = true;
+  }, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -127,4 +229,16 @@ export function recordStats(localDir: string, sessionId: string, stats: Readonly
   const kept = Object.entries(merged).slice(-MAX_STATS_PER_SESSION);
   writeTextAtomic(localDir, statsFileOf(localDir, sessionId), `${JSON.stringify({ schemaVersion: SESSION_SCHEMA_VERSION, stats: Object.fromEntries(kept) })}\n`);
   pruneDirectory(localDir, sessionDirOf(localDir), { maxAgeMs: SESSION_MAX_AGE_MS, maxFiles: MAX_SESSION_FILES, now: now.getTime() });
+}
+
+/** The code digest the settle worker last ran for in this session. */
+export function loadSettled(localDir: string, sessionId: string): string | null {
+  const value = readSessionFile(sessionFileOf(localDir, sessionId))?.settled;
+  return typeof value === "string" ? value : null;
+}
+
+export function recordSettled(localDir: string, sessionId: string, digest: string, now: Date = new Date()): void {
+  updateSession(localDir, sessionFileOf(localDir, sessionId), (file) => {
+    file.settled = digest;
+  }, now);
 }

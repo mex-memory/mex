@@ -8,6 +8,7 @@
  * that record instead of the moving graph. A new commit starts a new record.
  */
 
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { writeTextAtomic } from "../local-state.js";
@@ -23,6 +24,13 @@ export interface BaseSnapshot {
   schemaVersion: typeof BASE_SCHEMA_VERSION;
   head: string;
   locations: Record<string, LiveLocation[]>;
+  /** Hash of each entity's prose as of this record, to tell prose edited later from prose already there. */
+  prose?: Record<string, string>;
+}
+
+/** A short hash of an entity's title and body: what "the prose was edited" is measured on. */
+export function proseHash(entity: Pick<ContextEntity, "title" | "body">): string {
+  return createHash("sha1").update(`${entity.title}\n${entity.body}`).digest("hex").slice(0, 12);
 }
 
 export function loadBase(localDir: string): BaseSnapshot | null {
@@ -74,7 +82,12 @@ export function baseLocations(
   }
   const fresh = current();
   try {
-    const snapshot: BaseSnapshot = { schemaVersion: BASE_SCHEMA_VERSION, head, locations: fresh };
+    const snapshot: BaseSnapshot = {
+      schemaVersion: BASE_SCHEMA_VERSION,
+      head,
+      locations: fresh,
+      prose: Object.fromEntries(entities.map((entity) => [entity.id, proseHash(entity)])),
+    };
     writeTextAtomic(localDir, basePathOf(localDir), `${JSON.stringify(snapshot)}\n`);
   } catch {
     // The record is an optimisation of correctness, not a requirement: the next event tries again.

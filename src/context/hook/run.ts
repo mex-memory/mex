@@ -12,6 +12,7 @@
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { loadConfiguredContextConfig } from "../../config.js";
+import { loadFlaggedIds } from "../flags.js";
 import { loadContextIndex } from "../index-file.js";
 import { openGraphReader } from "../graph-reader.js";
 import { PACKET_CHAR_LIMIT } from "../packet.js";
@@ -36,7 +37,7 @@ export const HOOK_LOG_NAME = "context-log.jsonl";
 export const HOOK_LOG_MAX_BYTES = 256 * 1024;
 const LOG_TEXT_CHARS = 2000;
 
-/** The events a hook can handle. `stop` is a reserved seam for the end-of-session milestone. */
+/** The events a hook can handle. */
 export type HookEvent = "prompt" | "read" | "edit" | "grep" | "bash" | "stop";
 
 export interface HookPayload {
@@ -47,6 +48,8 @@ export interface HookPayload {
   session_id?: unknown;
   prompt?: unknown;
   cwd?: unknown;
+  /** Set by Claude Code when the agent is continuing because a Stop hook blocked. */
+  stop_hook_active?: unknown;
 }
 
 export interface HookEnvironment {
@@ -125,7 +128,7 @@ function grepToolHits(payload: HookPayload, projectRoot: string): GrepHit[] {
   return Array.isArray(names) ? hitsFromFileList(names.filter((n): n is string => typeof n === "string"), projectRoot) : [];
 }
 
-function appendLog(root: ContextRoot | null, entry: Record<string, unknown>): void {
+export function appendLog(root: ContextRoot | null, entry: Record<string, unknown>): void {
   if (root === null) return;
   try {
     appendBoundedLine(root.localDir, join(root.localDir, HOOK_LOG_NAME), JSON.stringify({ at: new Date().toISOString(), ...entry }), {
@@ -136,7 +139,7 @@ function appendLog(root: ContextRoot | null, entry: Record<string, unknown>): vo
   }
 }
 
-function describeError(error: unknown): string {
+export function describeError(error: unknown): string {
   const raw = error instanceof Error ? (error.stack ?? error.message) : String(error);
   return raw.slice(0, 1500);
 }
@@ -160,7 +163,7 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
     const payload = parsePayload(raw);
     if (payload === null) return { stdout: "" };
     event = classifyHook(payload);
-    if (event === null || event === "stop") return { stdout: "" };
+    if (event === null) return { stdout: "" };
 
     const startDirs = [env.projectDir, text(payload.cwd), env.cwd].filter((d): d is string => d !== undefined && d !== "");
     for (const dir of startDirs) {
@@ -170,6 +173,11 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
     if (root === null) return { stdout: "" };
 
     const sessionId = isValidSessionId(payload.session_id) ? payload.session_id : null;
+    if (event === "stop") {
+      const stop = await (await import("./stop.js")).handleStop({ root, sessionId, stopHookActive: payload.stop_hook_active === true });
+      appendLog(root, { event: stop.log["blocked"] === true ? "stop-block" : "stop", ms: Math.round(performance.now() - started), ...stop.log });
+      return { stdout: stop.stdout };
+    }
     // The prompt path needs the Markdown parser and the ranker; tool events never load them.
     let result: Handled = event === "prompt"
       ? await (await import("./prompt.js")).handlePrompt(root, text(payload.prompt) ?? "", sessionId, { lexical: env.lexical === true })
@@ -258,6 +266,7 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
       reader,
       shown: sessionId === null ? new Set<string>() : loadShown(root.localDir, sessionId),
       head: readHead(root.projectRoot),
+      flagged: loadFlaggedIds(root.localDir),
     };
     switch (event) {
       case "read": {

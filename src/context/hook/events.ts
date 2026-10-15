@@ -49,6 +49,8 @@ export interface EventContext {
   shown: ReadonlySet<string>;
   /** The commit HEAD names, when it could be read. */
   head: string | null;
+  /** Entities a session touched and nobody re-confirmed (`context-flags.json`); they read as changed. */
+  flagged?: ReadonlySet<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +77,7 @@ export function isDocPath(path: string): boolean {
 // Shared
 // ---------------------------------------------------------------------------
 
-function facts(index: ContextIndex): ContextEntity[] {
+export function facts(index: ContextIndex): ContextEntity[] {
   return index.entities.filter((entity) => entity.type === "fact" && entity.level > 0);
 }
 
@@ -122,7 +124,7 @@ export function readRange(input: Pick<ReadInput, "offset" | "limit">): [number, 
 export function composeRead(ctx: EventContext, input: ReadInput): EventOutcome | null {
   const linked = linkedTo(ctx.index, input.file);
   if (linked.length === 0) return null;
-  const live = liveStateFrom(ctx.reader, linked);
+  const live = liveStateFrom(ctx.reader, linked, ctx.flagged);
   const range = readRange(input);
 
   const inRange = linked
@@ -153,6 +155,57 @@ export function composeRead(ctx: EventContext, input: ReadInput): EventOutcome |
 // edit and bash
 // ---------------------------------------------------------------------------
 
+export interface TouchedFact {
+  entity: ContextEntity;
+  /** First touched line of the entity's code at HEAD (for ordering), or a huge number when none could be located. */
+  first: number;
+  /** Why it counts as touched, in a few words: the symbol the change fell in, or that the symbol could not be located. */
+  why: string;
+}
+
+/**
+ * The facts a change touches, judged on the base side.
+ *
+ * A fact is touched when a hunk overlaps one of its linked symbols as the code
+ * stood at HEAD, or when it links a changed file but none of its symbols could
+ * be located there (deleted, or never resolved), since the change may well have
+ * been to it. `base` is where each fact's code stood at HEAD (see `base.ts`).
+ */
+export function findTouched(
+  candidates: readonly ContextEntity[],
+  files: readonly string[],
+  diffs: ReadonlyMap<string, FileDiff>,
+  base: Readonly<Record<string, LiveLocation[]>>,
+  skip: (entity: ContextEntity) => boolean = () => false,
+): TouchedFact[] {
+  const touched: TouchedFact[] = [];
+  for (const entity of candidates) {
+    if (skip(entity)) continue;
+    let first = Number.MAX_SAFE_INTEGER;
+    let hit = false;
+    const reasons: string[] = [];
+    for (const file of files) {
+      if (!entity.code.some((code) => sameFile(code, file))) continue;
+      const ranges = diffs.get(file)!.ranges;
+      const here = locationsIn(base[entity.id] ?? [], file);
+      if (here.length === 0) {
+        hit = true;
+        reasons.push(`${file} changed; its linked code could not be located at HEAD`);
+      } else {
+        for (const location of here) {
+          if (touches(ranges, location.start, location.end)) {
+            hit = true;
+            first = Math.min(first, location.start);
+            reasons.push(`edited #${location.name.replace(/^#/, "")} in ${file}`);
+          }
+        }
+      }
+    }
+    if (hit) touched.push({ entity, first, why: [...new Set(reasons)].slice(0, 2).join("; ") });
+  }
+  return touched;
+}
+
 export const EDIT_INSTRUCTION =
   "If your change makes a fact false, read a few lines at its .mex line (offset/limit) and rewrite just that prose. Never edit <!-- mex:entity --> blocks, ids or fingerprints: MEX re-records code links itself.";
 
@@ -182,31 +235,10 @@ export function composeEdit(ctx: EventContext, input: EditInput, charLimit = PAC
 
   const candidates = facts(ctx.index).filter((entity) => entity.code.some((code) => fresh.some((file) => sameFile(file, code))));
   if (candidates.length === 0) return { text: "", remember, ids: [] };
-  const live = liveStateFrom(ctx.reader, candidates);
+  const live = liveStateFrom(ctx.reader, candidates, ctx.flagged);
   const base = baseLocations(ctx.localDir, ctx.head, candidates, live);
 
-  const touched: Array<{ entity: ContextEntity; first: number }> = [];
-  for (const entity of candidates) {
-    if (ctx.shown.has(`edit:${entity.id}`)) continue;
-    let first = Number.MAX_SAFE_INTEGER;
-    let hit = false;
-    for (const file of fresh) {
-      if (!entity.code.some((code) => sameFile(code, file))) continue;
-      const ranges = input.diffs.get(file)!.ranges;
-      const here = locationsIn(base[entity.id] ?? [], file);
-      if (here.length === 0) {
-        hit = true;
-      } else {
-        for (const location of here) {
-          if (touches(ranges, location.start, location.end)) {
-            hit = true;
-            first = Math.min(first, location.start);
-          }
-        }
-      }
-    }
-    if (hit) touched.push({ entity, first });
-  }
+  const touched = findTouched(candidates, fresh, input.diffs, base, (entity) => ctx.shown.has(`edit:${entity.id}`));
   if (touched.length === 0) return { text: "", remember, ids: [] };
   touched.sort((a, b) => a.first - b.first);
 
@@ -324,7 +356,7 @@ export function composeGrep(ctx: EventContext, hits: readonly GrepHit[]): EventO
     if (findings.filter((f) => f.fact !== null).length >= GREP_MAX_FACTS) continue;
     const fact = linked[0]!;
     usedFacts.add(fact.id);
-    const health = liveStateFrom(ctx.reader, [fact])(fact).health;
+    const health = liveStateFrom(ctx.reader, [fact], ctx.flagged)(fact).health;
     findings.push({ hit, node, fact, moreFacts: linked.length - 1, health, callers: distinctByPlace(ctx.reader.callers(node.id, GREP_MAX_CALLERS * 3)).slice(0, GREP_MAX_CALLERS) });
   }
   // File-only output (no line numbers) can still point at a file's facts, one per file.
@@ -333,7 +365,7 @@ export function composeGrep(ctx: EventContext, hits: readonly GrepHit[]): EventO
     const fact = linkedTo(ctx.index, hit.file).find((entity) => !ctx.shown.has(entity.id) && !usedFacts.has(entity.id));
     if (fact === undefined || findings.filter((f) => f.fact !== null).length >= GREP_MAX_FACTS) continue;
     usedFacts.add(fact.id);
-    findings.push({ hit, node: null, fact, moreFacts: 0, health: liveStateFrom(ctx.reader, [fact])(fact).health, callers: [] });
+    findings.push({ hit, node: null, fact, moreFacts: 0, health: liveStateFrom(ctx.reader, [fact], ctx.flagged)(fact).health, callers: [] });
   }
 
   const withFacts = findings.filter((f) => f.fact !== null);

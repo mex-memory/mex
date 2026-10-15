@@ -8,7 +8,9 @@
  * command that opens the rest.
  */
 
+import { join } from "node:path";
 import { openGraphReader, type GraphReader } from "./graph-reader.js";
+import { loadFlaggedIds } from "./flags.js";
 import type { ContextEntity, LiveHealth } from "./types.js";
 
 export const PACKET_CHAR_LIMIT = 4000;
@@ -41,7 +43,7 @@ export type LiveStateResolver = (entity: ContextEntity) => LiveState;
 export function resolveLiveState(scaffoldRoot: string, entities: readonly ContextEntity[]): LiveStateResolver {
   const { reader } = openGraphReader(scaffoldRoot);
   try {
-    return liveStateFrom(reader, entities);
+    return liveStateFrom(reader, entities, loadFlaggedIds(join(scaffoldRoot, "local")));
   } finally {
     reader?.close();
   }
@@ -52,13 +54,17 @@ export function resolveLiveState(scaffoldRoot: string, entities: readonly Contex
  * also looks up callers opens the graph once). Every row is read before this
  * returns, so the caller may close the handle afterwards.
  */
-export function liveStateFrom(reader: GraphReader | null, entities: readonly ContextEntity[]): LiveStateResolver {
+export function liveStateFrom(
+  reader: GraphReader | null,
+  entities: readonly ContextEntity[],
+  flagged?: ReadonlySet<string>,
+): LiveStateResolver {
   const nodes = reader ? reader.nodes(entities.flatMap((e) => e.groundings.map((g) => g.node))) : null;
   return (entity) => {
     if (entity.groundings.length === 0) return { health: "none", locations: [] };
     if (nodes === null) {
       return {
-        health: "unchecked",
+        health: flagged?.has(entity.id) === true ? "changed" : "unchecked",
         locations: entity.symbols.map((s) => ({ file: s.file, start: s.start, end: s.end, name: s.name })),
       };
     }
@@ -76,7 +82,9 @@ export function liveStateFrom(reader: GraphReader | null, entities: readonly Con
       if (g.bodyHash === null) unverified = true;
       else if (node.bodyHash !== g.bodyHash) changed = true;
     }
-    const health: LiveHealth = missing ? "missing" : changed ? "changed" : unverified ? "unverified" : "fresh";
+    let health: LiveHealth = missing ? "missing" : changed ? "changed" : unverified ? "unverified" : "fresh";
+    // A session touched this entity's code and nobody re-confirmed it: it reads as changed until someone does.
+    if (flagged?.has(entity.id) === true && (health === "fresh" || health === "unverified")) health = "changed";
     return { health, locations };
   };
 }

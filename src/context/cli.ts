@@ -8,6 +8,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { buildEnvelope, exitCodeOf, renderEnvelope, CONTEXT_EXIT, type ContextEnvelope } from "./envelope.js";
 import { composePrompt } from "./compose.js";
@@ -22,7 +23,11 @@ import {
   SemanticInstallError,
   type SemanticStatus,
 } from "./semantic.js";
-import { isValidSessionId, loadShown, recordShown } from "./session.js";
+import { loadConfiguredContextConfig } from "../config.js";
+import { loadFlags, mutateFlags, type FlagEntry } from "./flags.js";
+import { HOOK_LOG_NAME } from "./hook/run.js";
+import { settleRunning } from "./hook/settle.js";
+import { isValidSessionId, loadShown, recordConfirmation, recordShown, type ConfirmationScope } from "./session.js";
 import type { ContextDiagnostic, ContextIndex, PromptResult } from "./types.js";
 
 export interface ContextIo {
@@ -38,6 +43,7 @@ export interface ContextFlags {
   explain?: boolean;
   lexical?: boolean;
   session?: string;
+  note?: string;
 }
 
 /** An unexpected failure becomes a typed diagnostic and a nonzero exit, never a stack trace. */
@@ -308,6 +314,145 @@ function persistAfterPrompt(
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// mex context confirm / status
+// ---------------------------------------------------------------------------
+
+export interface ConfirmData {
+  confirmed: string[];
+  unknown: string[];
+  scope: ConfirmationScope | null;
+}
+
+/**
+ * `mex context confirm <id...>`: the agent says these entities still hold after
+ * its change. Only this (or rewriting the prose) lets the settle worker
+ * re-record their code links; reading or being shown a fact never does.
+ */
+export const runContextConfirm = (io: ContextIo, ids: readonly string[], flags: ContextFlags = {}): Promise<void> =>
+  guarded(io, flags, () => confirmCommand(io, ids, flags));
+
+async function confirmCommand(io: ContextIo, ids: readonly string[], flags: ContextFlags): Promise<void> {
+  const root = resolveContextRoot(io.cwd);
+  if (root === null) return noScaffold(io, flags.json);
+  const diagnostics: ContextDiagnostic[] = [];
+  const wanted = [...new Set(ids)];
+  const ensured = await ensureContextIndex(root, "if-stale");
+  const known = new Set(ensured.index.entities.map((entity) => entity.id));
+  const confirmed = wanted.filter((id) => known.has(id));
+  const unknown = wanted.filter((id) => !known.has(id));
+  if (unknown.length > 0) {
+    diagnostics.push({
+      code: "CONTEXT_USAGE",
+      severity: confirmed.length === 0 ? "error" : "warning",
+      message: `Not a known entity id: ${unknown.join(", ")}.`,
+      remediation: "`mex context status` lists the entities waiting for review.",
+    });
+  }
+  let sessionId: string | null = null;
+  if (flags.session !== undefined) {
+    if (isValidSessionId(flags.session)) sessionId = flags.session;
+    else {
+      diagnostics.push({ code: "CONTEXT_SESSION_INVALID", severity: "warning", message: "The session id is empty, too long or contains control characters; the confirmation is recorded without one." });
+    }
+  }
+  let scope: ConfirmationScope | null = null;
+  if (confirmed.length > 0) {
+    scope = recordConfirmation(root.localDir, sessionId, confirmed, flags.note);
+    // An entity already flagged becomes eligible at once, whichever session the Stop hook runs in.
+    mutateFlags(root.localDir, (stored) => {
+      for (const id of confirmed) {
+        const entry = stored.entities[id];
+        if (entry === undefined) continue;
+        entry.status = "eligible";
+        entry.basis = "confirmed";
+        if (flags.note !== undefined && flags.note !== "") entry.note = flags.note.slice(0, 500);
+        entry.updatedAt = new Date().toISOString();
+      }
+    });
+  }
+  const data: ConfirmData = { confirmed, unknown, scope };
+  emit(io, flags.json, buildEnvelope(data, diagnostics), () =>
+    confirmed.length === 0
+      ? ""
+      : `Confirmed ${confirmed.length} ${confirmed.length === 1 ? "entity" : "entities"} still hold. MEX re-records their code links after the session.`,
+  );
+}
+
+export interface StatusEntry {
+  id: string;
+  title: string;
+  file: string;
+  line: number;
+  status: FlagEntry["status"];
+  basis?: FlagEntry["basis"];
+  why: string;
+  since: string;
+  error?: string;
+}
+
+export interface StatusData {
+  stopReview: "ask" | "off";
+  settle: { running: boolean; last: Record<string, unknown> | null };
+  flagged: StatusEntry[];
+  eligible: StatusEntry[];
+}
+
+function lastSettleLog(localDir: string): Record<string, unknown> | null {
+  try {
+    const lines = readFileSync(join(localDir, HOOK_LOG_NAME), "utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const line = lines[i]!.trim();
+      if (line === "") continue;
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      if (typeof entry["event"] === "string" && (entry["event"] as string).startsWith("settle")) return entry;
+    }
+  } catch {
+    // No log yet, or a damaged line: there is nothing to report.
+  }
+  return null;
+}
+
+/** `mex context status`: what is waiting for review and what the settle worker last did. */
+export const runContextStatus = (io: ContextIo, flags: ContextFlags = {}): Promise<void> =>
+  guarded(io, flags, async () => {
+    const root = resolveContextRoot(io.cwd);
+    if (root === null) return noScaffold(io, flags.json);
+    const stored = loadFlags(root.localDir);
+    const entries: StatusEntry[] = Object.entries(stored.entities).map(([id, entry]) => ({
+      id,
+      title: entry.title,
+      file: entry.file,
+      line: entry.line,
+      status: entry.status,
+      ...(entry.basis === undefined ? {} : { basis: entry.basis }),
+      why: entry.why,
+      since: entry.since,
+      ...(entry.error === undefined ? {} : { error: entry.error }),
+    }));
+    const data: StatusData = {
+      stopReview: loadConfiguredContextConfig(root.scaffoldRoot).stopReview,
+      settle: { running: settleRunning(root.localDir), last: lastSettleLog(root.localDir) },
+      flagged: entries.filter((entry) => entry.status === "flagged"),
+      eligible: entries.filter((entry) => entry.status === "eligible"),
+    };
+    emit(io, flags.json, buildEnvelope(data, []), () => {
+      const row = (entry: StatusEntry): string =>
+        `  ${entry.id}  ${entry.title}  (.mex/${entry.file}:${entry.line})  ${entry.why}${entry.error === undefined ? "" : `  [last re-record failed: ${entry.error}]`}`;
+      const lines = [`Stop review: ${data.stopReview}. Settle worker: ${data.settle.running ? "running" : "idle"}.`];
+      if (data.flagged.length === 0 && data.eligible.length === 0) lines.push("Nothing is waiting for review.");
+      if (data.flagged.length > 0) {
+        lines.push(`Changed, re-check (${data.flagged.length}): rewrite the prose if it is now false, or run \`mex context confirm <id>\` if it holds.`);
+        lines.push(...data.flagged.map(row));
+      }
+      if (data.eligible.length > 0) {
+        lines.push(`Vouched for, waiting to be re-recorded (${data.eligible.length}):`);
+        lines.push(...data.eligible.map((entry) => `${row(entry)}  [${entry.basis ?? "confirmed"}]`));
+      }
+      return lines.join("\n");
+    });
+  });
 
 // ---------------------------------------------------------------------------
 // mex context semantic

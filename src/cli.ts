@@ -1118,6 +1118,26 @@ contextCommand
   });
 
 contextCommand
+  .command("confirm <id...>")
+  .description("Say that these entities still hold after your change, so MEX re-records their code links when the session ends")
+  .option("--session <id>", "the agent session the confirmation belongs to (default: the session working now)")
+  .option("--note <text>", "why it still holds, kept with the confirmation")
+  .option("--json", "emit one enveloped JSON object")
+  .action(async (ids: string[], options) => {
+    const { runContextConfirm } = await import("./context/cli.js");
+    await runContextConfirm(contextIo(), ids, options);
+  });
+
+contextCommand
+  .command("status")
+  .description("List the entities a session touched that still read as changed, and what the end-of-session worker last did")
+  .option("--json", "emit one enveloped JSON object")
+  .action(async (options) => {
+    const { runContextStatus } = await import("./context/cli.js");
+    await runContextStatus(contextIo(), options);
+  });
+
+contextCommand
   .command("semantic <action>")
   .description("install | status | remove the optional semantic extra (MiniLM embeddings in a MEX-managed directory)")
   .option("--json", "emit one enveloped JSON object")

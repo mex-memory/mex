@@ -38,6 +38,22 @@ export function writeTextAtomic(localDir: string, target: string, text: string):
   }
 }
 
+/**
+ * Create `target` only if it does not exist yet (an exclusive create). Returns
+ * false when it was already there, which is how a lock says "taken".
+ */
+export function writeTextExclusive(localDir: string, target: string, text: string): boolean {
+  const path = contained(localDir, target);
+  mkdirSync(dirname(path), { recursive: true });
+  try {
+    writeFileSync(path, text, { encoding: "utf8", flag: "wx" });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+}
+
 export function removeLocalFile(localDir: string, target: string): void {
   rmSync(contained(localDir, target), { force: true });
 }

@@ -18,7 +18,22 @@ function readStdin(): string {
   }
 }
 
+/** `mex-hook settle --project <dir> [--session <id>]`: the detached worker the Stop hook starts. */
+async function settle(args: readonly string[]): Promise<void> {
+  const value = (flag: string): string | null => {
+    const at = args.indexOf(flag);
+    return at >= 0 && args[at + 1] !== undefined ? args[at + 1]! : null;
+  };
+  const { runSettleWorker } = await import("./settle.js");
+  await runSettleWorker(value("--project") ?? process.cwd(), { sessionId: value("--session") });
+}
+
 async function main(): Promise<void> {
+  if (process.argv[2] === "settle") {
+    await settle(process.argv.slice(3));
+    process.exitCode = 0;
+    return;
+  }
   const { stdout } = await runHook(readStdin(), {
     projectDir: process.env["CLAUDE_PROJECT_DIR"],
     cwd: process.cwd(),

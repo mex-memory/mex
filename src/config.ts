@@ -319,19 +319,28 @@ function loadWikiConfig(raw: MexPersistedConfig | null): WikiConfig {
 export const DEFAULT_CONTEXT_SESSION_BUDGET_CHARS = 12_000;
 const MAX_CONTEXT_SESSION_BUDGET_CHARS = 1_000_000;
 
+export type ContextStopReview = "ask" | "off";
+
 export interface ContextConfig {
   sessionBudgetChars: number;
+  /** `ask`: the Stop hook asks once about touched entities nobody vouched for. `off`: it never blocks. */
+  stopReview: ContextStopReview;
 }
 
 /**
- * Read `context` out of `.mex/config.json` (the hooks' per-session budget).
- * Degrades to the default for a missing, mistyped or out-of-range value; never throws.
+ * Read `context` out of `.mex/config.json` (the hooks' per-session budget and
+ * the end-of-session review). Degrades to the defaults for a missing, mistyped
+ * or out-of-range value; never throws.
  */
 export function loadConfiguredContextConfig(scaffoldRoot: string): ContextConfig {
   const raw = loadPersistedConfig(scaffoldRoot)?.context;
-  const value = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>)["sessionBudgetChars"] : undefined;
+  const record = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const value = record["sessionBudgetChars"];
   const ok = typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_CONTEXT_SESSION_BUDGET_CHARS;
-  return { sessionBudgetChars: ok ? value : DEFAULT_CONTEXT_SESSION_BUDGET_CHARS };
+  return {
+    sessionBudgetChars: ok ? value : DEFAULT_CONTEXT_SESSION_BUDGET_CHARS,
+    stopReview: record["stopReview"] === "off" ? "off" : "ask",
+  };
 }
 
 function loadHeartbeatConfig(raw: MexPersistedConfig | null): HeartbeatConfig | undefined {
