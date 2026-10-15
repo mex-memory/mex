@@ -22,6 +22,7 @@ export function renderHookInstructionBlock(eol: "\n" | "\r\n" = "\n"): string {
     "- An entry marked ⚠ describes code that changed after it was written: check the code before relying on it, and say so if the entry is wrong.",
     '- Need more? `mex wiki query "<two or three words>"`, then `mex wiki show <id>` for one entry\'s text. This is cheaper than opening `.mex` files, which are mostly metadata.',
     "- If your code change makes an entry false, rewrite that entry's prose at the `.mex` line shown with it; do not search `.mex` for entries, the affected ones are listed when you edit code. Never edit the `mex:entity` comment blocks, ids or fingerprints: MEX re-records code links itself.",
+    "- When you finish, MEX may list entries your change touched that nobody has vouched for. Rewrite the ones your change made false; for the ones that still hold, run `mex context confirm <ids>`. Entries left alone stay flagged as changed.",
     HOOK_INSTRUCTIONS_END,
   ].join(eol);
 }

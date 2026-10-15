@@ -12,7 +12,7 @@ export const MEX_HOOK_MARKER = "--mex-managed";
 export const HOOK_TIMEOUT_SECONDS = 30;
 
 export interface HookSpec {
-  event: "UserPromptSubmit" | "PostToolUse";
+  event: "UserPromptSubmit" | "PostToolUse" | "Stop";
   /** Tool-name matcher; absent for events that have none. */
   matcher?: string;
   label: string;
@@ -25,6 +25,7 @@ export const HOOK_SPECS: readonly HookSpec[] = [
   { event: "PostToolUse", matcher: "Edit|Write|MultiEdit", label: "PostToolUse Edit|Write|MultiEdit" },
   { event: "PostToolUse", matcher: "Grep", label: "PostToolUse Grep" },
   { event: "PostToolUse", matcher: "Bash", label: "PostToolUse Bash" },
+  { event: "Stop", label: "Stop" },
 ];
 
 export function isManagedCommand(command: unknown): boolean {

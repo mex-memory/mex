@@ -80,7 +80,8 @@ describe("mex hooks install", () => {
     const settings = readJson();
     expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
     expect(settings.hooks.PostToolUse.map((g: any) => g.matcher)).toEqual(["Read", "Edit|Write|MultiEdit", "Grep", "Bash"]);
-    const commands = [...settings.hooks.UserPromptSubmit, ...settings.hooks.PostToolUse].flatMap((g: any) => g.hooks.map((h: any) => h.command));
+    expect(settings.hooks.Stop).toHaveLength(1);
+    const commands = [...settings.hooks.UserPromptSubmit, ...settings.hooks.PostToolUse, ...settings.hooks.Stop].flatMap((g: any) => g.hooks.map((h: any) => h.command));
     expect(commands).toHaveLength(HOOK_SPECS.length);
     for (const command of commands) {
       expect(isManagedCommand(command)).toBe(true);
@@ -121,7 +122,10 @@ describe("mex hooks install", () => {
     const settings = readJson();
     expect(settings.model).toBe("sonnet");
     expect(settings.permissions).toEqual(USER_SETTINGS.permissions);
-    expect(settings.hooks.Stop).toEqual(USER_SETTINGS.hooks.Stop);
+    // The user's Stop group is first and unmixed; MEX's own Stop group follows it.
+    expect(settings.hooks.Stop).toHaveLength(2);
+    expect(settings.hooks.Stop[0]).toEqual(USER_SETTINGS.hooks.Stop[0]);
+    expect(isManagedCommand(settings.hooks.Stop[1].hooks[0].command)).toBe(true);
     // The user's groups are still first and unmixed; MEX's own Bash group sits beside the user's.
     expect(settings.hooks.UserPromptSubmit[0]).toEqual(USER_SETTINGS.hooks.UserPromptSubmit[0]);
     expect(settings.hooks.PostToolUse.slice(0, 2)).toEqual(USER_SETTINGS.hooks.PostToolUse);
