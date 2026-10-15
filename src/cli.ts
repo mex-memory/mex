@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { Command, InvalidArgumentError, Option } from "commander";
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
@@ -494,6 +494,32 @@ program
   });
 
 // ── Code Graph ──
+
+/**
+ * The project root for the agent graph reads: the working directory when it
+ * holds the graph, otherwise the nearest scaffold above it. Hooks and agents
+ * run from subdirectories, and from there these reads used to answer
+ * GRAPH_UNAVAILABLE.
+ */
+async function graphReadRoot(cwd = process.cwd()): Promise<string> {
+  if (existsSync(resolve(cwd, ".mex", "graph.db"))) return cwd;
+  const { resolveContextRoot } = await import("./context/root.js");
+  return resolveContextRoot(cwd)?.projectRoot ?? cwd;
+}
+
+/**
+ * A file target (`path` or `path:line`) written relative to the working
+ * directory, re-expressed relative to `root`. Symbols, node ids and absolute
+ * paths pass through unchanged.
+ */
+function rebaseGraphTarget(target: string, root: string, cwd = process.cwd()): string {
+  if (resolve(root) === resolve(cwd)) return target;
+  const match = /^(.*?)(:\d+(?:-\d+)?)?$/.exec(target);
+  const path = match?.[1] ?? target;
+  if (path.length === 0 || isAbsolute(path) || !existsSync(resolve(cwd, path))) return target;
+  return relative(root, resolve(cwd, path)).split("\\").join("/") + (match?.[2] ?? "");
+}
+
 const graphCommand = program
   .command("graph")
   .description("Inspect or explicitly maintain the code knowledge graph")
@@ -579,7 +605,7 @@ graphCommand
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
   .action(async (relation, target, options) => {
     const { createGraphCliWriter } = await import("./graph-cli-output.js");
-    return import("./graph/cli-agent.js").then(({ runGraphQuery }) => runGraphQuery(relation, target, process.cwd(), { write: createGraphCliWriter() }, options));
+    return import("./graph/cli-agent.js").then(async ({ runGraphQuery }) => { const root = await graphReadRoot(); return runGraphQuery(relation, rebaseGraphTarget(target, root), root, { write: createGraphCliWriter() }, options); });
   });
 
 graphCommand
@@ -605,7 +631,7 @@ graphCommand
         }))
       : {};
     const { createGraphCliWriter } = await import("./graph-cli-output.js");
-    return runGraphScope(task.join(" "), process.cwd(), { ...deps, write: createGraphCliWriter() }, options);
+    return runGraphScope(task.join(" "), await graphReadRoot(), { ...deps, write: createGraphCliWriter() }, options);
   });
 
 // ── Wiki ──
@@ -890,7 +916,7 @@ wikiCommand
   .option("--include-archived", "include archived entities, which are excluded by default")
   .action(async (nodeIds: string[], options) => {
     const { runWikiForCode } = await import("./wiki/cli/for-code.js");
-    runWikiForCode(nodeIds, process.cwd(), {
+    runWikiForCode(nodeIds, await graphReadRoot(), {
       json: options.json === true,
       limit: options.limit === undefined ? undefined : Number(options.limit),
       includeArchived: options.includeArchived === true,
@@ -905,7 +931,7 @@ graphCommand
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .action(async (ids: string[], options) => {
     const { createGraphCliWriter } = await import("./graph-cli-output.js");
-    return import("./graph/cli-agent.js").then(({ runGraphGet }) => runGraphGet(ids, process.cwd(), { write: createGraphCliWriter() }, options));
+    return import("./graph/cli-agent.js").then(async ({ runGraphGet }) => { const root = await graphReadRoot(); return runGraphGet(ids, root, { write: createGraphCliWriter() }, options); });
   });
 
 graphCommand
@@ -974,7 +1000,7 @@ program
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
   .action(async (target, options) => {
     const { createGraphCliWriter } = await import("./graph-cli-output.js");
-    return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), { write: createGraphCliWriter() }, options));
+    return import("./graph/cli-agent.js").then(async ({ runImpact }) => { const root = await graphReadRoot(); return runImpact(rebaseGraphTarget(target, root), root, { write: createGraphCliWriter() }, options); });
   });
 
 // ── Agent Memory Events ──
