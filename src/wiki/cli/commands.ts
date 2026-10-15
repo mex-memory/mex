@@ -41,7 +41,7 @@ import { resolve } from "node:path";
 import { tryEnsureSetupIgnoreProtection } from "../../setup/ignore.js";
 import type { WikiDiagnostic } from "../model/diagnostic.js";
 import { inspectDirectWikiSpecMutation } from "./spec-authoring-boundary.js";
-import { wikiRegroundEntity } from "../service/reground.js";
+import { wikiRegroundEntities, wikiRegroundEntity } from "../service/reground.js";
 import { wikiLinkSections } from "../service/link-sections.js";
 import { publishSynthesis, readSynthesis, type WikiCliSynthesisBridge } from "./synthesis.js";
 import {
@@ -455,17 +455,40 @@ export async function runApply(io: CommandIo, file: string, flags: CommandFlags)
 
 /** Exported for the exit-code table's test, which asserts the CLI uses it. */
 /**
- * `mex wiki reground <id>` — re-record an entity's code links after review.
+ * `mex wiki reground <id...>` — re-record entities' code links after review.
  * Plans by default; writes only with `--apply`, like `wiki apply`.
+ *
+ * One id behaves, and prints, exactly as it always did. Several ids share one
+ * fresh graph snapshot (opening one costs seconds), get a result each, and a
+ * refused entity never blocks the others: the exit status is nonzero when any
+ * of them failed, and `--json` says which.
  */
-export async function runReground(io: CommandIo, id: string, flags: CommandFlags & { reason?: string }): Promise<void> {
+export async function runReground(io: CommandIo, ids: string | readonly string[], flags: CommandFlags & { reason?: string }): Promise<void> {
+  const list = typeof ids === "string" ? [ids] : [...new Set(ids)];
   const write = flags.apply === true && flags.dryRun !== true;
-  const reground = (graph: import("../grounding/adapter.js").GroundingGraph | null) => wikiRegroundEntity(id, {
+  const common = (graph: import("../grounding/adapter.js").GroundingGraph | null) => ({
     ...serviceOptions(io),
     ...(write ? { apply: true } : {}),
     ...(flags.reason === undefined ? {} : { reason: flags.reason }),
     graph,
   });
+  if (list.length > 1) {
+    const batch = (graph: import("../grounding/adapter.js").GroundingGraph | null) => wikiRegroundEntities(list, common(graph));
+    const { value, unavailable } = write
+      ? await writeWithGraph(io.groundingBridge, batch)
+      : await readWithGraph(io.groundingBridge, batch);
+    emit(io, { ...value, diagnostics: [...value.diagnostics, ...graphDiagnostics(unavailable)] }, flags, (data) => {
+      for (const entry of data.entities) {
+        if (entry.ok && entry.apply?.applied) io.write(chalk.green(`re-recorded ${entry.entityId} — ${entry.apply.changedFiles.join(", ")}`));
+        else if (entry.ok) io.write(chalk.dim(`planned ${entry.entityId} — re-run with --apply to write`));
+        else io.write(chalk.red(`refused ${entry.entityId}${entry.links.length > 0 ? ` (${entry.links.map((l) => `${l.node}: ${l.verdict}`).join(", ")})` : ""}`));
+      }
+      io.write(`${data.applied} re-recorded, ${data.planned} planned, ${data.failed} refused`);
+    });
+    return;
+  }
+  const id = list[0] ?? "";
+  const reground = (graph: import("../grounding/adapter.js").GroundingGraph | null) => wikiRegroundEntity(id, common(graph));
   const { value, unavailable } = write
     ? await writeWithGraph(io.groundingBridge, reground)
     : await readWithGraph(io.groundingBridge, reground);

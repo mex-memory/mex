@@ -126,3 +126,75 @@ export function wikiRegroundEntity(
   }
   return { data: { entityId, links, apply: applied.data }, diagnostics: applied.diagnostics };
 }
+
+/** One entity's outcome inside a batch: the single-id result plus whether it succeeded and why not. */
+export interface RegroundBatchEntity extends RegroundData {
+  /** True when the entity was re-recorded (or, without `--apply`, planned without a refusal). */
+  ok: boolean;
+  /** This entity's own diagnostics; the batch result carries them all, once, as well. */
+  diagnostics: WikiDiagnostic[];
+}
+
+export interface RegroundBatchData {
+  /** One result per requested id, in request order, duplicates removed. */
+  entities: RegroundBatchEntity[];
+  /** Entities whose links were written. */
+  applied: number;
+  /** Entities that were planned and not written (no `--apply`). */
+  planned: number;
+  /** Entities refused or failed; the others are unaffected. */
+  failed: number;
+}
+
+const BLOCKING: ReadonlySet<string> = new Set(["error"]);
+
+/**
+ * Re-record several entities against one graph snapshot.
+ *
+ * Each id goes through {@link wikiRegroundEntity} unchanged, so every safety
+ * check the single-id command has (a link that is missing, ambiguous or
+ * unverifiable refuses that entity; an edit made since it was read is refused,
+ * not overwritten) holds per id. What the batch adds is the shared snapshot the
+ * caller opened (opening one costs seconds), per-id results and partial-failure
+ * reporting: one refused entity never stops or rolls back the others.
+ */
+export function wikiRegroundEntities(
+  entityIds: readonly string[],
+  options: WikiWriteOptions & { apply?: boolean; reason?: string; now?: () => Date },
+): ServiceResult<RegroundBatchData> {
+  const ids = [...new Set(entityIds)];
+  const entities: RegroundBatchEntity[] = [];
+  const diagnostics: WikiDiagnostic[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    let result: ServiceResult<RegroundData>;
+    try {
+      result = wikiRegroundEntity(id, options);
+    } catch (error) {
+      // An unexpected failure on one entity is that entity's failure, not the batch's.
+      result = {
+        data: { entityId: id, links: [], apply: null },
+        diagnostics: [diagnostic("INVALID_OPERATION_PAYLOAD",
+          `${id} could not be re-recorded: ${error instanceof Error ? error.message : String(error)}`, { entityId: id })],
+      };
+    }
+    const own = [...result.diagnostics];
+    const failed = result.data.apply === null || own.some((entry) => BLOCKING.has(entry.severity));
+    entities.push({ ...result.data, ok: !failed, diagnostics: own });
+    for (const entry of own) {
+      const key = `${entry.code}\u0000${entry.entityId ?? ""}\u0000${entry.message}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      diagnostics.push(entry);
+    }
+  }
+  return {
+    data: {
+      entities,
+      applied: entities.filter((e) => e.ok && e.apply?.applied === true).length,
+      planned: entities.filter((e) => e.ok && e.apply?.applied !== true && e.apply?.planned === true).length,
+      failed: entities.filter((e) => !e.ok).length,
+    },
+    diagnostics,
+  };
+}

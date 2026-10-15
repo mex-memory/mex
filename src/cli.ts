@@ -793,14 +793,14 @@ wikiCommand
   });
 
 wikiCommand
-  .command("reground <entity-id>")
-  .description("Re-record an entity's code links after review confirms its text still holds; writes only with --apply")
+  .command("reground <entity-id...>")
+  .description("Re-record entities' code links after review confirms their text still holds (several ids share one graph snapshot); writes only with --apply")
   .option("--apply", "write the re-recorded links, rather than only planning them")
   .option("--reason <text>", "why the links are re-recorded, kept in the operation log")
   .option("--json", "emit one enveloped JSON object")
-  .action(async (id: string, options) => {
+  .action(async (ids: string[], options) => {
     const { runReground } = await import("./wiki/cli/commands.js");
-    await runReground(await groundedWikiIo(), id, options);
+    await runReground(await groundedWikiIo(), ids, options);
   });
 
 wikiCommand
