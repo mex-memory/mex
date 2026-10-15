@@ -370,3 +370,22 @@ describe("hook events around the Stop", () => {
     expect(await project.run({ hook_event_name: "Stop", session_id: "s-quiet" })).toBe("");
   });
 });
+
+describe("the prose baseline", () => {
+  it("an older base record without prose hashes learns them at the next prompt, so a later edit counts", async () => {
+    const project = await createHookProject();
+    await startSession(project, "s-old");
+    const basePath = join(project.fx.context.localDir, "context-base.json");
+    const old = JSON.parse(readFileSync(basePath, "utf8")) as Record<string, unknown>;
+    delete old["prose"];
+    writeFileSync(basePath, JSON.stringify(old));
+
+    await startSession(project, "s-new");
+    expect(Object.keys((JSON.parse(readFileSync(basePath, "utf8")) as { prose: Record<string, string> }).prose)).toHaveLength(3);
+
+    project.fx.writeSource("src/billing.ts", BILLING_V2);
+    editProse(project, TOTALS_PROSE, `${TOTALS_PROSE} Now it also counts one extra.`);
+    const pass = await settleOnce(project.fx.context, { sessionId: "s-new", runCli: fakeCli().run });
+    expect(pass).toMatchObject({ touched: 3, eligible: 1, flagged: 2 });
+  });
+});

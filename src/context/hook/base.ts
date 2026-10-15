@@ -72,6 +72,17 @@ export function baseLocations(
   if (head === null) return current();
   const recorded = loadBase(localDir);
   if (recorded !== null && recorded.head === head) {
+    // The prose a session starts from: recorded for entities an older record (or a later addition) has none for.
+    const unseen = entities.filter((e) => recorded.prose?.[e.id] === undefined);
+    if (unseen.length > 0) {
+      try {
+        const prose = { ...recorded.prose, ...Object.fromEntries(unseen.map((e) => [e.id, proseHash(e)])) };
+        writeTextAtomic(localDir, basePathOf(localDir), `${JSON.stringify({ ...recorded, prose })}\n`);
+        recorded.prose = prose;
+      } catch {
+        // The next event tries again.
+      }
+    }
     // An entity added after the record was taken has no older side than now.
     const missing = entities.filter((e) => e.groundings.length > 0 && recorded.locations[e.id] === undefined);
     if (missing.length === 0) return recorded.locations;
@@ -99,6 +110,6 @@ export function baseLocations(
 export function ensureBase(localDir: string, head: string | null, entities: readonly ContextEntity[], live: LiveStateResolver): void {
   if (head === null) return;
   const recorded = loadBase(localDir);
-  if (recorded !== null && recorded.head === head) return;
+  if (recorded !== null && recorded.head === head && entities.every((e) => recorded.prose?.[e.id] !== undefined)) return;
   baseLocations(localDir, head, entities, live);
 }
