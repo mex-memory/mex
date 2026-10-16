@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { applyOperation } from "../../wiki/operations/apply.js";
 import { ensureFactVectors } from "../dense.js";
 import {
   ensureContextIndex,
@@ -65,6 +66,30 @@ describe("context index build", () => {
       level: 3,
     });
     expect(limits.body).toContain("edge proxy");
+  });
+
+  it("indexes the aliases that `wiki apply` writes for a new fact", async () => {
+    const applied = applyOperation({
+      opId: "op-aliases-1",
+      type: "create-entry",
+      actor: { kind: "agent", id: "test" },
+      timestamp: "2026-10-16T10:00:00.000Z",
+      payload: {
+        file: "context/limits.md",
+        insertAt: { at: "end-of-file" },
+        type: "fact",
+        title: "Tenant limits are enforced at the edge",
+        body: "Rate limits for a tenant are enforced by the edge proxy before a request reaches any service.",
+        headingDepth: 2,
+        status: "promoted",
+        aliases: ["requests rejected under load", " tenant throttling ", "Tenant throttling"],
+      },
+    }, { scaffoldRoot: fx.context.scaffoldRoot });
+    expect(applied.ok).toBe(true);
+
+    const { index } = await ensureContextIndex(fx.context);
+    const created = index.entities.find((e) => e.id === applied.createdIds[0])!;
+    expect(created.aliases).toEqual(["requests rejected under load", "tenant throttling"]);
   });
 
   it("records graph symbols and bodies' hashes for grounded entities", async () => {

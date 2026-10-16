@@ -33,8 +33,7 @@ Do not create or delete scaffold files. The only permitted content edits are:
 2. Wrap an existing load-bearing symbol mention in a mex:// Markdown link.
 
 Use the graph for all code lookup:
-- mex graph scope "<behavior described by this file>" --fingerprint for broad context
-  (--fingerprint attaches the exact serialized fingerprint you must copy into grounds_to)
+- mex graph scope "<behavior described by this file>" for broad context
 - mex graph get <id> --detail source to read the body of a node you intend to ground
 - mex graph query where-defined <symbol> to resolve an exact mention
 - mex graph query who-calls <symbol> / what-calls <symbol> when call context matters
@@ -47,12 +46,13 @@ architecture/stack/conventions files should remain sparse or ungrounded; pattern
 and deep-domain files should ground tightly. Never add grounding just so every
 file has an entry, and never ground file/import/parameter or vague component nodes.
 
-For a justified behavioral target, copy the exact id and serialized fingerprint
-from the same graph JSONL fact into frontmatter:
+For a justified behavioral target, copy the exact id from the graph JSONL into
+frontmatter. Write the node id only; MEX records the fingerprint and body hash
+from the graph when the migration is captured, and rejects an id the graph does
+not hold. Never copy, type, or invent a fingerprint:
 
 grounds_to:
   - node: "<exact graph node id>"
-    fingerprint: "<exact fingerprint from the same graph fact>"
 
 If the frontmatter already has a mex: map, the list belongs inside it as
 mex.grounds_to (indented under mex:), not at the root. Keep one grounds_to per
@@ -63,22 +63,22 @@ When existing prose already names a load-bearing function, method, or class,
 wrap only that existing visible mention, preserving its text:
 [\`symbolName()\`](mex://<exact-node-id>)
 
-The asymmetry is mandatory: fingerprints belong ONLY in grounds_to frontmatter.
-A mex:// URI is exactly mex://<nodeId> and never contains a fingerprint.
+The asymmetry is mandatory: a mex:// URI is exactly mex://<nodeId> and never
+contains a fingerprint.
 
 Make the migration idempotent. Before adding anything, inspect existing
-grounds_to entries and mex:// anchors. Merge by node id, update stale fingerprints,
-and do not duplicate an entry or wrap a mention that is already anchored. A second
+grounds_to entries and mex:// anchors. Merge by node id and leave an existing
+entry's fingerprint and bodyHash untouched; do not duplicate an entry or wrap a
+mention that is already anchored. A second
 run must leave the file byte-identical when the existing pointers are current.
 
 Before finishing, re-read every changed file and verify:
 - all original prose and visible symbol text is preserved;
 - every grounds_to node and every mex:// id came from graph output;
-- each grounds_to fingerprint came from the same node fact;
 - no node id is duplicated and no anchor is nested or duplicated.
 
 If .mex/graph.db or trustworthy graph facts are unavailable, stop and report it.
-Never invent node ids or fingerprints. Report which files gained grounding and
+Never invent node ids. Report which files gained grounding and
 which broad files were intentionally left sparse or ungrounded.`;
 }
 

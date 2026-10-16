@@ -28,7 +28,8 @@ describe("setup graph-grounding population", () => {
     for (const prompt of [buildExistingWithBriefPrompt('{"folders":["src"]}'), buildExistingNoBriefPrompt()]) {
       expect(prompt).toContain('mex graph scope "<task or domain>"');
       expect(prompt).toContain("READ BROAD, GROUND TIGHT");
-      expect(prompt).toContain('fingerprint: "<exact fingerprint from the same graph fact>"');
+      expect(prompt).toContain('- node: "<exact id from graph JSONL>"');
+      expect(prompt).not.toContain("<exact fingerprint");
       expect(prompt).toContain("mex://<exact-node-id>");
       expect(prompt).toContain("Never ground every node returned by scope");
       expect(prompt).toContain("architecture/stack/conventions files should ground sparsely");

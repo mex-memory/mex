@@ -27,7 +27,7 @@ import type { WikiDiagnostic } from "../model/diagnostic.js";
 import {
   verifyGroundingProvenance,
   type GraphDerivedGrounding,
-  type WikiGrounding,
+  type GroundingRequest,
 } from "../model/grounding.js";
 import { deriveGrounding, sameFingerprint, type GroundingGraph } from "./adapter.js";
 
@@ -38,16 +38,21 @@ import { deriveGrounding, sameFingerprint, type GroundingGraph } from "./adapter
  * fingerprint is exactly the shape of a caller who copied one line and made up
  * the other, and it is the case a node-only check would wave through.
  *
+ * A request that names only the node is accepted when the node is in the
+ * graph: there is no supplied value to disagree with, and the write takes the
+ * fingerprint from the graph itself. A fingerprint that is supplied is held to
+ * the same exact comparison as before.
+ *
  * A committed `bodyHash`, when present, is checked too: it is what drift is
  * later measured against, so accepting a wrong one would poison every future
  * resolution — the entity would read `stale` forever, or worse, `fresh` against
  * a hash that never described the code.
  */
-export function isGraphDerivedGrounding(graph: GroundingGraph, grounding: WikiGrounding): boolean {
+export function isGraphDerivedGrounding(graph: GroundingGraph, grounding: GroundingRequest): boolean {
   const derived = deriveGrounding(graph, grounding.node);
   if (derived === null) return false;
   if (derived.node !== grounding.node) return false;
-  if (!sameFingerprint(derived.fingerprint, grounding.fingerprint)) return false;
+  if (grounding.fingerprint !== undefined && !sameFingerprint(derived.fingerprint, grounding.fingerprint)) return false;
   if (grounding.bodyHash !== undefined && derived.bodyHash !== grounding.bodyHash) return false;
   return true;
 }
@@ -63,7 +68,7 @@ export function isGraphDerivedGrounding(graph: GroundingGraph, grounding: WikiGr
  * where a missing graph degrades to `unverified` and shows what it has.
  */
 export function checkGroundingProvenance(
-  groundings: readonly WikiGrounding[],
+  groundings: readonly GroundingRequest[],
   graph: GroundingGraph | null,
 ): WikiDiagnostic[] {
   if (graph === null) {
@@ -90,7 +95,7 @@ export function checkGroundingProvenance(
  * either values it may write or the reasons it may not.
  */
 export function deriveVerifiedGroundings(
-  groundings: readonly WikiGrounding[],
+  groundings: readonly GroundingRequest[],
   graph: GroundingGraph | null,
 ): { ok: true; groundings: GraphDerivedGrounding[] } | { ok: false; diagnostics: WikiDiagnostic[] } {
   const diagnostics = checkGroundingProvenance(groundings, graph);

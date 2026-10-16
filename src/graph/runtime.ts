@@ -3,7 +3,7 @@ import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, re
 import { isAbsolute, relative, resolve } from "node:path";
 import { globSync } from "glob";
 import type { MexConfig, Grounding } from "../types.js";
-import { extractGroundings, findMexAnchors, rewriteMexAnchor, writeGroundings } from "../markdown.js";
+import { extractGroundings, fillMissingFingerprints, findMexAnchors, rewriteMexAnchor, writeGroundings } from "../markdown.js";
 import { createGroundingChecker, type GroundingChecker, type GroundedSource } from "./grounding.js";
 import {
   committedBaselines,
@@ -731,12 +731,28 @@ export function refreshGroundingBaselines(
   let skipped = 0;
   for (const filePath of scaffoldFiles) {
     const readLimit = accepted === undefined ? GRAPH_CORPUS_LIMITS.maxSourceFileBytes : GROUNDING_REVIEW_MAX_BYTES;
-    const content = readBoundedText(filePath, readLimit);
+    // `original` is what is on disk and what a concurrent edit is judged against;
+    // `content` is that text once any grounding written as a node id alone has
+    // its fingerprint from the graph. A selected renewal fills nothing.
+    const original = readBoundedText(filePath, readLimit);
+    let content = original;
+    const scaffoldFile = relative(config.projectRoot, filePath).replaceAll("\\", "/");
+    let dirty = false;
+    if (accepted === undefined) {
+      const fill = fillMissingFingerprints(original, (nodeId) => graphFingerprint(runtime, nodeId));
+      if (fill.unresolved.length > 0) {
+        for (const nodeId of fill.unresolved) {
+          skipped += 1;
+          options.warn?.(`Skipped grounding baseline for unavailable node ${nodeId} in ${scaffoldFile}.`);
+        }
+        continue;
+      }
+      content = fill.content;
+      dirty = fill.filled > 0;
+    }
     const groundings = extractGroundings(content);
     const anchors = findMexAnchors(content);
     if (groundings.length === 0 && anchors.length === 0) continue;
-    const scaffoldFile = relative(config.projectRoot, filePath).replaceAll("\\", "/");
-    let dirty = false;
     const pendingBaselines: GroundedSource[] = [];
     const groundingByNode = new Map(groundings.map((grounding) => [grounding.node, grounding]));
     const nodeIds = new Set([
@@ -811,7 +827,7 @@ export function refreshGroundingBaselines(
         }
       }
     }
-    if (readBoundedText(filePath, readLimit) !== content) {
+    if (readBoundedText(filePath, readLimit) !== original) {
       skipped += pendingBaselines.length;
       options.warn?.(`Grounding document ${scaffoldFile} changed during capture; review it again.`);
       continue;
@@ -821,12 +837,12 @@ export function refreshGroundingBaselines(
       options.warn?.(`Grounding source changed during capture for ${scaffoldFile}; review it again.`);
       continue;
     }
-    if (readBoundedText(filePath, readLimit) !== content) {
+    if (readBoundedText(filePath, readLimit) !== original) {
       skipped += pendingBaselines.length;
       options.warn?.(`Grounding document ${scaffoldFile} changed before publication; review it again.`);
       continue;
     }
-    if (dirty) replaceGroundingDocument(config, filePath, content, writeGroundings(content, groundings), readLimit);
+    if (dirty) replaceGroundingDocument(config, filePath, original, writeGroundings(content, groundings), readLimit);
     // Markdown is authoritative. A failed document publication leaves its old
     // cache untouched; a cache failure after publication cannot erase history.
     for (const baseline of pendingBaselines) {
@@ -838,6 +854,18 @@ export function refreshGroundingBaselines(
     captured += pendingBaselines.length;
   }
   return { captured, skipped };
+}
+
+/**
+ * What the graph says a node looks like, serialized for `grounds_to`.
+ * Null for an id the graph does not hold exactly (an alias is not the node) or
+ * a node with no body to baseline, the two cases a baseline is skipped for.
+ */
+function graphFingerprint(runtime: GroundingRuntime, nodeId: string): string | null {
+  const fingerprint = runtime.reconciler.getFingerprint(nodeId);
+  const node = runtime.graph.getNode(nodeId);
+  if (!fingerprint || node?.id !== nodeId || !node.bodyHash) return null;
+  return serializeFingerprint(fingerprint);
 }
 
 /** Produce a bounded review from current graph facts without changing a baseline. */

@@ -28,7 +28,7 @@ import { sourceIdentity, type WikiSource } from "../model/source.js";
 import { authoringSourceCollectionFits, validateAuthoringProvenance } from "../model/authoring-evidence.js";
 import type { WikiRelationRef } from "../model/relation.js";
 import type { WikiEntity, WikiLifecycleState, WikiProvenance } from "../model/entity.js";
-import type { WikiGrounding } from "../model/grounding.js";
+import type { GroundingRequest, WikiGrounding } from "../model/grounding.js";
 import { deriveVerifiedGroundings } from "../grounding/provenance.js";
 import type { PatchEdit } from "../markdown/patch.js";
 import YAML from "yaml";
@@ -248,6 +248,9 @@ function paddedInsertion(text: string, offset: number, block: string): string {
 /** The metadata fields a new entity carries, in a fixed, readable order. */
 function newEntityFields(id: EntityId, payload: CreateEntryPayload): (readonly [string, unknown])[] {
   const headingDepth = payload.headingDepth;
+  const metadata = payload.aliases === undefined || payload.aliases.length === 0
+    ? payload.metadata
+    : { ...payload.metadata, aliases: payload.aliases };
   return [
     ["id", id],
     ["type", payload.type],
@@ -263,7 +266,7 @@ function newEntityFields(id: EntityId, payload: CreateEntryPayload): (readonly [
     ["summary", payload.summary],
     [
       METADATA_KEYS.metadata,
-      payload.metadata === undefined || Object.keys(payload.metadata).length === 0 ? undefined : payload.metadata,
+      metadata === undefined || Object.keys(metadata).length === 0 ? undefined : metadata,
     ],
     ["topics", payload.topics === undefined || payload.topics.length === 0 ? undefined : payload.topics],
     ["relations", payload.relations === undefined || payload.relations.length === 0 ? undefined : payload.relations],
@@ -313,7 +316,14 @@ function createInto(context: OperationContext, payload: CreateEntryPayload, id: 
     return { files: [], entityIds: [], createdIds: [id], preconditions: [], revisions: [], diagnostics: [] };
   }
 
-  if (payload.adopt !== undefined) return adoptInto(file, payload, payload.adopt, id);
+  if (payload.adopt !== undefined) {
+    // Adoption moves values already in the user's Markdown and never consults
+    // the graph, so it has nothing to derive a missing fingerprint from.
+    if (payload.groundsTo?.some((entry) => entry.fingerprint === undefined)) {
+      return reject("INVALID_OPERATION_PAYLOAD", "create-entry with `adopt` needs a fingerprint on every grounding; it does not derive one from the graph.");
+    }
+    return adoptInto(file, payload, payload.adopt, id);
+  }
 
   // **§12.4, on the operation that mints rather than moves.** `set-grounding`
   // has always re-derived what it is asked to write; `create-entry` wrote its
@@ -538,7 +548,7 @@ export function buildOperationEdits(operation: WikiOperation, context: Operation
 
 function updateEntry(context: OperationContext, operation: Extract<WikiOperation, { type: "update-entry" }>): OperationEdits {
   const located = context.located!;
-  const { title, summary, body, appendSources } = operation.payload;
+  const { title, summary, body, appendSources, aliases } = operation.payload;
   const fields: (readonly [string, unknown])[] = [];
   const extra: PatchEdit[] = [];
 
@@ -558,6 +568,12 @@ function updateEntry(context: OperationContext, operation: Extract<WikiOperation
   }
 
   if (summary !== undefined) fields.push([METADATA_KEYS.summary, summary]);
+
+  if (aliases !== undefined) {
+    // The list replaces the old one; every other metadata key is carried as it was.
+    const { aliases: _previous, ...rest } = located.entity.metadata ?? {};
+    fields.push([METADATA_KEYS.metadata, aliases.length === 0 ? rest : { ...rest, aliases }]);
+  }
 
   if (title !== undefined) {
     const heading = headingEdits(located.text, located.entity, title);
@@ -729,7 +745,7 @@ function setGrounding(context: OperationContext, operation: Extract<WikiOperatio
  * could not accept — stays at the root for the same reason `writeGroundings`
  * keeps it: moving it would be a decision rather than a relocation.
  */
-function absorbRootGroundings(context: OperationContext, requested: readonly WikiGrounding[]): OperationEdits {
+function absorbRootGroundings(context: OperationContext, requested: readonly GroundingRequest[]): OperationEdits {
   const located = context.located!;
   if (located.metadataKind !== "frontmatter") {
     return reject(

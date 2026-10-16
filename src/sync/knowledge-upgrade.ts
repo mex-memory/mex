@@ -75,8 +75,12 @@ For verified multi-claim knowledge, use mex wiki apply operations with explicit 
   keeping its wording and meaning. Remove duplicated claim prose from the parent only
   after its replacement entities have been created and verified. Never delete or rename
   an existing scaffold file. Do not change source code, Git state, or project configuration.
-- Ground each new fact to every symbol whose change could make it false, using exact
-  returned ids and fingerprints, never guessed hashes. Preserve existing baselines until
+- Ground each new fact to every symbol whose change could make it false, using the exact
+  returned node ids only (MEX records the fingerprints; never copy or guess one).
+  Give each new fact 3 to 6 \`aliases\` in its create-entry payload, written from the
+  fact's own content: the symptom or goal a developer would put in plain words, plain
+  synonyms for its jargon, and the mistake it helps avoid; not its title or identifiers.
+  Preserve existing baselines until
   their corresponding claims have been verified against current code. Do not use reground
   to hide a flag. Preserve unrelated grounding and every navigation anchor.
 - Link each fact to the existing overview with a canonical refines relationship.

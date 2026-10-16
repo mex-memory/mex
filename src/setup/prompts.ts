@@ -1,3 +1,5 @@
+import { ALIAS_AUTHORING_GUIDANCE } from "../wiki/model/aliases.js";
+
 /**
  * Population prompt templates for mex setup.
  * Three variants based on project state:
@@ -13,10 +15,8 @@ The setup step has already built .mex/graph.db. Do not walk the source tree or
 open representative implementation files to learn what code does. Use the
 agent-facing graph commands from this project root instead:
 
-- \`mex graph scope "<task or domain>" --fingerprint\` — primary discovery tool. It
-  returns a compact JSONL manifest (meta, facts with node ids + signatures +
-  serialized fingerprints, summary). \`--fingerprint\` attaches the exact serialized
-  fingerprint you must copy into \`grounds_to\`.
+- \`mex graph scope "<task or domain>"\` — primary discovery tool. It returns a
+  compact JSONL manifest (meta, facts with node ids + signatures, summary).
 - \`mex graph get <id> --detail source\` — read the body of a node you intend to ground.
 - \`mex graph query where-defined <symbol>\` — resolve an exact symbol.
 - \`mex graph query who-calls <symbol>\` / \`what-calls <symbol>\` — follow calls.
@@ -25,7 +25,11 @@ agent-facing graph commands from this project root instead:
 Use the pre-analyzed brief only for high-level structure: folders, tooling,
 dependencies, and entry points. Use hydrated graph output for claims about
 specific code behavior. If a graph command returns GRAPH_UNAVAILABLE, report
-that setup cannot author trustworthy grounding; never invent ids or fingerprints.
+that setup cannot author trustworthy grounding; never invent node ids.
+
+You write only the node id in a grounding. MEX records the fingerprint and body
+hash from the graph when setup finishes, and rejects an id the graph does not
+hold. Never copy, type, or invent a fingerprint.
 
 The governing rule is: READ BROAD, GROUND TIGHT.
 
@@ -41,7 +45,6 @@ shadow the source being populated.
 
    grounds_to:
      - node: "<exact id from graph JSONL>"
-       fingerprint: "<exact fingerprint from the same graph fact>"
 
    If the file's frontmatter already has a \`mex:\` map, the list belongs inside
    it as \`mex.grounds_to\` (indented under \`mex:\`), not at the root. Keep one
@@ -75,7 +78,10 @@ shadow the source being populated.
     "payload": {"file": "context/<file>.md", "insertAt": {"at": "end-of-file"},
       "type": "fact", "title": "<short claim title>", "body": "<the claim>",
       "headingDepth": 2, "status": "promoted",
-      "groundsTo": [{"node": "<exact id>", "fingerprint": "<exact fingerprint>"}]}}
+      "groundsTo": [{"node": "<exact id>"}],
+      "aliases": ["<short phrase>", "<short phrase>", "<short phrase>"]}}
+
+   ${ALIAS_AUTHORING_GUIDANCE.replace(/\n/g, "\n   ")}
 
    Name the identifiers and literals the claim depends on in its body (for
    example \`parseBody()\`, \`302\`): drift checks compare them against what

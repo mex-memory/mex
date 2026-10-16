@@ -8,6 +8,7 @@ import {
   validateShape,
   validateString,
   type ValidationContext,
+  type ValidationResult,
   type Validator,
 } from "./validate.js";
 import { isCanonicalRepoPath } from "./path.js";
@@ -278,17 +279,37 @@ const shapeValidator = validateShape<WikiGrounding>({
 });
 
 /**
- * Validate a canonical grounding reference.
+ * A grounding as a caller may *ask* for it in an operation: the node alone, or
+ * the node with a fingerprint the caller copied.
  *
- * Both `node` and `fingerprint` are required: a node id alone cannot detect
- * drift, and an entity whose Markdown merely contains an arbitrary node id is
- * not verifiably grounded.
+ * A node id is all an agent has to supply. MEX derives the fingerprint and the
+ * body hash from the live graph when it writes, so an agent never has to carry
+ * a serialized fingerprint through its prompt. A fingerprint that *is* supplied
+ * is still checked against the graph (see `provenance.ts`), so this loosens
+ * what a caller must type, not what the graph must agree with.
  */
-export const validateGrounding: Validator<WikiGrounding> = (value, context) => {
+export type GroundingRequest = Omit<WikiGrounding, "fingerprint"> & { fingerprint?: string };
+
+const requestShapeValidator = validateShape<GroundingRequest>({
+  node: validateString(),
+  fingerprint: optional(validateString()),
+  bodyHash: optional(validateString()),
+  codeHash: optional(validateString()),
+  file: optional(validateString()),
+  commit: optional(validateString()),
+  verifiedAt: optional(validateString()),
+  reason: optional(validateString()),
+});
+
+function validateGroundingFields<T extends GroundingRequest>(
+  shape: Validator<T>,
+  value: unknown,
+  context: ValidationContext,
+): ValidationResult<T> {
   if (!isPlainObject(value)) {
     return reject(context, "MALFORMED_GROUNDING", "Expected a grounding object with `node` and `fingerprint`.");
   }
-  const base = shapeValidator(value, context);
+  const base = shape(value, context);
   if (!base.ok) {
     // Re-code the generic field diagnostics so consumers see a grounding
     // problem rather than an anonymous type error.
@@ -310,7 +331,7 @@ export const validateGrounding: Validator<WikiGrounding> = (value, context) => {
       contextDiagnostic(context, "MALFORMED_GROUNDING", `"${grounding.node}" is not a code-graph node id.`),
     );
   }
-  if (!isFingerprintShaped(grounding.fingerprint)) {
+  if (grounding.fingerprint !== undefined && !isFingerprintShaped(grounding.fingerprint)) {
     diagnostics.push(
       contextDiagnostic(context, "MALFORMED_GROUNDING", `"${grounding.fingerprint}" is not a serialized fingerprint (mh2:<K>:<base64url> or mh:<K>:<hex>).`),
     );
@@ -329,7 +350,24 @@ export const validateGrounding: Validator<WikiGrounding> = (value, context) => {
   return diagnostics.some((entry) => entry.severity === "error")
     ? { ok: false, diagnostics }
     : succeed(grounding, diagnostics);
-};
+}
+
+/**
+ * Validate a canonical grounding reference.
+ *
+ * Both `node` and `fingerprint` are required: a node id alone cannot detect
+ * drift, and an entity whose Markdown merely contains an arbitrary node id is
+ * not verifiably grounded.
+ */
+export const validateGrounding: Validator<WikiGrounding> = (value, context) =>
+  validateGroundingFields(shapeValidator, value, context);
+
+/**
+ * Validate a grounding an operation asks for. The fingerprint may be absent;
+ * the operation derives it from the graph before anything is written.
+ */
+export const validateGroundingRequest: Validator<GroundingRequest> = (value, context) =>
+  validateGroundingFields(requestShapeValidator, value, context);
 
 /**
  * Proof that a grounding came from live graph output.
@@ -372,8 +410,8 @@ export function asGraphDerived(
  * assertion is never sufficient on its own.
  */
 export function verifyGroundingProvenance(
-  groundings: readonly WikiGrounding[],
-  verify: (grounding: WikiGrounding) => boolean,
+  groundings: readonly GroundingRequest[],
+  verify: (grounding: GroundingRequest) => boolean,
   context: ValidationContext = { path: "groundsTo" },
 ): WikiDiagnostic[] {
   const diagnostics: WikiDiagnostic[] = [];

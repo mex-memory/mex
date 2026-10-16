@@ -1,6 +1,7 @@
 import type { WikiDiagnostic } from "./diagnostic.js";
 import { normalizeEntityId, type EntityId } from "./ids.js";
-import { validateGrounding, type WikiGrounding } from "./grounding.js";
+import { validateGroundingRequest, type GroundingRequest } from "./grounding.js";
+import { validateAliases } from "./aliases.js";
 import { validateRelationRef, type WikiRelationRef } from "./relation.js";
 import { validateSource, type WikiSource } from "./source.js";
 import { isContentHash } from "./hash.js";
@@ -151,7 +152,18 @@ export interface CreateEntryPayload {
   sources?: WikiSource[];
   /** Explicit original producer attribution; omitted for legacy creations. */
   provenance?: WikiProvenance;
-  groundsTo?: WikiGrounding[];
+  /**
+   * Groundings as the caller names them. A node id is enough: MEX derives the
+   * fingerprint and body hash from the live graph when it writes. A fingerprint
+   * that is supplied must still match the graph.
+   */
+  groundsTo?: GroundingRequest[];
+  /**
+   * Short phrases a developer would type for the problem this fact answers or
+   * the outcome it describes, stored as `metadata.aliases`. At most 8, each at
+   * most 80 characters; 3 to 6 is the target for a code-linked fact.
+   */
+  aliases?: string[];
   /**
    * The entity's open metadata map, §8.3's extension point.
    *
@@ -175,6 +187,8 @@ export interface UpdateEntryPayload {
   body?: string;
   /** Append evidence without replacing the original producer or source history. */
   appendSources?: WikiSource[];
+  /** Replace the entity's `metadata.aliases`; an empty list removes them. */
+  aliases?: string[];
 }
 
 /**
@@ -212,7 +226,8 @@ export interface RemoveSourcePayload {
 }
 
 export interface SetGroundingPayload {
-  groundsTo: WikiGrounding[];
+  /** Node ids, each optionally with the fingerprint to check; MEX writes the graph's own. */
+  groundsTo: GroundingRequest[];
   /**
    * Rewrite inline `mex://` anchors in the body to match.
    *
@@ -404,7 +419,8 @@ const createEntryShape = validateShape<CreateEntryPayload>({
   relations: optional(validateArray(validateRelationRef)),
   sources: optional(validateArray(validateSource)),
   provenance: optional(validateAuthoringProvenance),
-  groundsTo: optional(validateArray(validateGrounding)),
+  groundsTo: optional(validateArray(validateGroundingRequest)),
+  aliases: optional(validateAliases),
   metadata: optional(metadataMapValidator),
   headingDepth: optional(validateInteger({ min: 1, max: 6 })),
 });
@@ -414,8 +430,22 @@ const createEntryValidator: Validator<CreateEntryPayload> = (value, context) => 
     const evidence = validateAuthoringSources(value.sources, { ...context, path: `${context.path}.sources` }, MAX_AUTHORING_SOURCES);
     if (!evidence.ok) return evidence;
   }
-  const result = createEntryShape(value, context);
-  if (!result.ok) return result;
+  const shaped = createEntryShape(value, context);
+  if (!shaped.ok) return shaped;
+  // Aliases written straight into `metadata` meet the same bounds as the
+  // dedicated field. A topic's aliases are alternative names, not search
+  // phrases, so they keep their own, looser rules.
+  const rawAliases = shaped.value.metadata?.["aliases"];
+  let result = shaped;
+  if (rawAliases !== undefined && shaped.value.type !== "topic") {
+    const aliases = validateAliases(rawAliases, { ...context, path: `${context.path}.metadata.aliases` });
+    if (!aliases.ok) return aliases;
+    result = {
+      ok: true,
+      value: { ...shaped.value, metadata: { ...shaped.value.metadata, aliases: aliases.value } },
+      diagnostics: shaped.diagnostics,
+    };
+  }
   const payload = result.value;
 
   if ((payload.adopt === undefined) === (payload.insertAt === undefined)) {
@@ -457,12 +487,13 @@ const updateEntryValidator: Validator<UpdateEntryPayload> = (value, context) => 
     summary: optional(validateString()),
     body: optional(validateString({ allowEmpty: true })),
     appendSources: optional(validateAuthoringSources),
+    aliases: optional(validateAliases),
   });
   const result = shape(value, context);
   if (!result.ok) return result;
   if (result.value.title === undefined && result.value.summary === undefined && result.value.body === undefined
-    && (result.value.appendSources?.length ?? 0) === 0) {
-    return reject(context, "INVALID_OPERATION_PAYLOAD", "update-entry must change title, summary, body, or append evidence.");
+    && result.value.aliases === undefined && (result.value.appendSources?.length ?? 0) === 0) {
+    return reject(context, "INVALID_OPERATION_PAYLOAD", "update-entry must change title, summary, body, aliases, or append evidence.");
   }
   return result;
 };
@@ -519,7 +550,7 @@ const PAYLOAD_VALIDATORS: { [K in WikiOperationType]: Validator<WikiOperationPay
   "add-source": validateShape<AddSourcePayload>({ source: validateSource }),
   "remove-source": validateShape<RemoveSourcePayload>({ sourceIdentity: validateString() }),
   "set-grounding": validateShape<SetGroundingPayload>({
-    groundsTo: validateArray(validateGrounding),
+    groundsTo: validateArray(validateGroundingRequest),
     updateAnchors: optional((value, context) =>
       typeof value === "boolean"
         ? succeed(value)

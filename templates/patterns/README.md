@@ -37,9 +37,9 @@ triggers:
 edges:
   - target: "[related file path, e.g. context/conventions.md]"
     condition: "[when to follow this edge]"
+# Name the node id only; MEX records the fingerprint.
 grounds_to:
   - node: "function:<tier-1-id>"
-    fingerprint: "mh2:64:<base64url-fingerprint>"
 last_updated: [YYYY-MM-DD]
 ---
 
@@ -83,9 +83,9 @@ triggers:
 edges:
   - target: "[related file path]"
     condition: "[when to follow this edge]"
+# Name the node id only; MEX records the fingerprint.
 grounds_to:
   - node: "function:<tier-1-id>"
-    fingerprint: "mh2:64:<base64url-fingerprint>"
 last_updated: [YYYY-MM-DD]
 ---
 

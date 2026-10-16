@@ -18,7 +18,7 @@ edges:
   - target: patterns/release-performance-gate.md
     condition: when running or changing pinned release and packaging gates
 # Ground only setup behavior implemented by specific code symbols.
-# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh2:64:<base64url>" }
+# Entry shape: { node: "function:<tier-1-id>" } (MEX records the fingerprint)
 grounds_to: []
 last_updated: "2026-10-09"
 mex:
