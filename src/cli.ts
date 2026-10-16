@@ -501,7 +501,7 @@ program
  * run from subdirectories, and from there these reads used to answer
  * GRAPH_UNAVAILABLE.
  */
-async function graphReadRoot(cwd = process.cwd()): Promise<string> {
+export async function graphReadRoot(cwd = process.cwd()): Promise<string> {
   if (existsSync(resolve(cwd, ".mex", "graph.db"))) return cwd;
   const { resolveContextRoot } = await import("./context/root.js");
   return resolveContextRoot(cwd)?.projectRoot ?? cwd;
@@ -512,7 +512,7 @@ async function graphReadRoot(cwd = process.cwd()): Promise<string> {
  * directory, re-expressed relative to `root`. Symbols, node ids and absolute
  * paths pass through unchanged.
  */
-function rebaseGraphTarget(target: string, root: string, cwd = process.cwd()): string {
+export function rebaseGraphTarget(target: string, root: string, cwd = process.cwd()): string {
   if (resolve(root) === resolve(cwd)) return target;
   const match = /^(.*?)(:\d+(?:-\d+)?)?$/.exec(target);
   const path = match?.[1] ?? target;
