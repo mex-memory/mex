@@ -63,7 +63,8 @@ When existing prose already names a load-bearing function, method, or class,
 wrap only that existing visible mention, preserving its text:
 [\`symbolName()\`](mex://<exact-node-id>)
 
-The asymmetry is mandatory: a mex:// URI is exactly mex://<nodeId> and never
+The asymmetry is mandatory: fingerprints belong ONLY in grounds_to frontmatter,
+and MEX writes them there. A mex:// URI is exactly mex://<nodeId> and never
 contains a fingerprint.
 
 Make the migration idempotent. Before adding anything, inspect existing

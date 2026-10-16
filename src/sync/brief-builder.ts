@@ -86,7 +86,7 @@ entry's node id, write the node id only (drop the old node's fingerprint, keep
 its bodyHash): MEX records the fingerprint from the graph when the session ends
 and rejects an id the graph does not hold. Never copy or invent a fingerprint.
 Never erase a prior bodyHash to make drift disappear. Inline navigation is
-exactly \`mex://<nodeId>\`, never with a fingerprint in the URI.
+exactly \`mex://<nodeId>\`: fingerprints belong ONLY in grounds_to and never in an URI.
 Anchor only load-bearing symbol mentions, without changing their visible text.
 Before finishing, re-read each changed file and verify the ids resolve,
 no grounding or anchor is duplicated, and unrelated prose remains untouched.`;
