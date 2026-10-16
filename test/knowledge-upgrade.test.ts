@@ -77,6 +77,33 @@ describe("existing knowledge upgrade", () => {
     writeFileSync(f.file, readFileSync(f.file, "utf8").replace("type: component", "type: fact"));
     expect(planKnowledgeUpgrade(f.config).candidates).toEqual([]);
   });
+  it("skips entities with no prose of their own, including a file-level overview that only carries the file's grounding", () => {
+    const f = fixture();
+    const grounding = "grounds_to:\n  - node: function:1111111111111111\n    fingerprint: mh:4:11111111\n";
+    const section = (id: string, title: string, body: string) =>
+      `<!-- mex:entity\nid: ${id}\ntype: component\nstatus: promoted\nrevision: 1\n${grounding}-->\n## ${title}\n\n${body}`;
+    const empty = "mx_01ARZ3NDEKTSV4RRFFQ69G5FB1";
+    const prose = "mx_01ARZ3NDEKTSV4RRFFQ69G5FB2";
+    const overview = `---\nmex:\n  id: ${ID}\n  type: component\n  status: promoted\n  revision: 1\n  grounds_to:\n    - node: function:1111111111111111\n      fingerprint: mh:4:11111111\n---\n# Queue\n\n`;
+    writeFileSync(f.file, overview + section(empty, "Overview", "   \n\n") + section(prose, "Retries", "Retries three times, then gives up.\n"));
+    // The file-level entity and the blank section hold nothing to split.
+    expect(planKnowledgeUpgrade(f.config).candidates.map(entry => entry.id)).toEqual([prose]);
+  });
+  it("counts what a finished pass left instead of re-listing the candidates it reviewed", async () => {
+    const f = fixture(); const d = dependencies();
+    await runKnowledgeUpgrade(f.config, { apply: true }, d);
+    const lines = d.write.mock.calls.map(call => String(call[0]));
+    expect(lines).toContain("Reviewed 1: 0 no longer broad, 1 kept as already focused. No review candidates remain.");
+    expect(lines.join("\n")).not.toContain("remain in this scope");
+  });
+  it("reports how many candidates are left beyond a bounded batch", async () => {
+    const f = fixture(); const d = dependencies();
+    const id = (index: number) => `mx_${String(index).padStart(26, "0")}`;
+    writeFileSync(f.file, Array.from({ length: 53 }, (_, index) => `<!-- mex:entity\nid: ${id(index)}\ntype: component\nstatus: promoted\nrevision: 1\ngrounds_to:\n  - node: function:1111111111111111\n    fingerprint: mh:4:11111111\n-->\n## Unit ${index}\n\nBehavior ${index}.\n\n`).join(""));
+    await runKnowledgeUpgrade(f.config, { apply: true }, d);
+    const lines = d.write.mock.calls.map(call => String(call[0]));
+    expect(lines).toContain(`Reviewed 50: 0 no longer broad, 50 kept as already focused. 3 review candidates remain beyond this batch: mex wiki upgrade --after ${id(49)}`);
+  });
   it("bounds large reviews and resumes after a preserved parent even if it loses its grounding", () => {
     const f = fixture();
     const id = (index: number) => `mx_${String(index).padStart(26, "0")}`;

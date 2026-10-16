@@ -17,7 +17,14 @@ const SPEC_TYPES = new Set(["spec", "requirement", "constraint", "acceptance_cri
 export interface KnowledgeUpgradeCandidate { id: string; title: string; file: string }
 export interface KnowledgeUpgradePlan { candidates: KnowledgeUpgradeCandidate[]; truncated: boolean }
 
-/** Conservative review candidates, not a claim that prose can be split mechanically. */
+/**
+ * Conservative review candidates, not a claim that prose can be split mechanically.
+ *
+ * An entity with no prose of its own is never one. A file-level overview whose
+ * claims already live in section entities holds only the file's root grounding
+ * and an empty body; there is nothing in it to split, and its health is carried
+ * by the sections.
+ */
 export function planKnowledgeUpgrade(config: MexConfig, after?: string): KnowledgeUpgradePlan {
   const inventory = inventoryScaffold({ scaffoldRoot: config.scaffoldRoot, exclude: config.wiki?.exclude });
   const diagnostics = [...inventory.diagnostics, ...inventory.files.flatMap(file => file.parsed.diagnostics)];
@@ -46,6 +53,7 @@ export function planKnowledgeUpgrade(config: MexConfig, after?: string): Knowled
     for (const { entity } of file.parsed.entities) {
       if (entity.location!.metadataStart <= markerOffset) continue;
       if (entity.type === "fact" || entity.status === "archived" || !entity.groundsTo.length
+        || entity.body.trim() === ""
         || !(WIKI_ENTITY_TYPES as readonly string[]).includes(entity.type)) continue;
       if (candidates.length === MAX_REVIEW_ENTITIES) { truncated = true; continue; }
       candidates.push({ id: entity.id, title: entity.title, file: file.path });
@@ -107,6 +115,26 @@ export interface KnowledgeUpgradeDependencies {
   pickTool?: typeof pickSyncTool;
 }
 
+/**
+ * What a finished pass left, counted against the entities it was shown.
+ *
+ * An entity the agent judged already focused is still a candidate afterwards,
+ * so counting every candidate again would report work that is done. Only the
+ * candidates this batch did not reach are `remaining`.
+ */
+function reviewOutcome(config: MexConfig, plan: KnowledgeUpgradePlan, after: string | undefined): string {
+  const reviewed = new Set(plan.candidates.map(entry => entry.id));
+  const still = planKnowledgeUpgrade(config, after).candidates.filter(entry => reviewed.has(entry.id)).length;
+  const changed = reviewed.size - still;
+  const outcome = `Reviewed ${reviewed.size}: ${changed} no longer broad, ${still} kept as already focused.`;
+  if (!plan.truncated) return `${outcome} No review candidates remain.`;
+  const last = plan.candidates.at(-1)!.id;
+  let next: KnowledgeUpgradePlan | null = null;
+  try { next = planKnowledgeUpgrade(config, last); } catch { /* the entity is gone; the batch hint above still applies */ }
+  const count = next === null ? "More" : `${next.candidates.length}${next.truncated ? "+" : ""}`;
+  return `${outcome} ${count} review candidates remain beyond this batch: mex wiki upgrade --after ${last}`;
+}
+
 export async function runKnowledgeUpgrade(
   config: MexConfig,
   options: { apply?: boolean; dryRun?: boolean; tool?: string; after?: string },
@@ -152,5 +180,6 @@ export async function runKnowledgeUpgrade(
   const rebuilt = await (dependencies.rebuild ?? rebuildWikiIndexAfterSync)(config);
   const after = await (dependencies.check ?? runDriftCheck)(config);
   write(`Wiki index rebuilt: ${rebuilt.entityCount} entities. Drift score: ${report.score} → ${after.score}/100.`);
-  write(`${planKnowledgeUpgrade(config, options.after).candidates.length} broad code-linked review candidates remain in this scope; unchanged candidates can already be focused. Review the working-tree diff. Nothing was committed or pushed.`);
+  write(reviewOutcome(config, plan, options.after));
+  write("Review the working-tree diff. Nothing was committed or pushed.");
 }
