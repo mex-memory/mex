@@ -321,6 +321,34 @@ describe("the settle lock and again-marker", () => {
   });
 });
 
+describe("the settle worker's refresh log", () => {
+  it("logs how the graph refresh worked, and why when it had to extract in full", async () => {
+    const project = await createHookProject();
+    await startSession(project, "s-mode");
+    project.fx.writeSource("src/billing.ts", BILLING_V2);
+    const stdout = JSON.stringify({
+      state: "succeeded",
+      refresh: { mode: "full", fallbackReason: "a non-corpus compiler input changed", filesChanged: 1, filesReextracted: 12, publication: "full", filesRewritten: 12 },
+    });
+    const cli = fakeCli({ refresh: ok(stdout) });
+    await runSettleWorker(project.fx.root, { sessionId: "s-mode", runCli: cli.run });
+
+    expect(cli.calls[0]).toEqual(["graph", "refresh", "--json"]);
+    const log = readFileSync(join(project.fx.context.localDir, HOOK_LOG_NAME), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(log.find((e) => e.event === "settle")).toMatchObject({
+      refresh: { code: 0, mode: "full", reason: "a non-corpus compiler input changed", changed: 1, reextracted: 12 },
+    });
+  });
+
+  it("still settles when the refresh output carries no mode", async () => {
+    const project = await createHookProject();
+    await startSession(project, "s-nomode");
+    project.fx.writeSource("src/billing.ts", BILLING_V2);
+    const pass = await settleOnce(project.fx.context, { sessionId: "s-nomode", runCli: fakeCli().run });
+    expect(pass.refresh).toEqual({ code: 0, ms: 5 });
+  });
+});
+
 describe("the settle worker's failures", () => {
   it("logs the refresh failure with its stderr and does not re-record anything", async () => {
     const project = await createHookProject();

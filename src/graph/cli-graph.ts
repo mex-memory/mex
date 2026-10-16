@@ -10,6 +10,7 @@ import {
 } from "./maintenance.js";
 import { inspectGraphStatus } from "./status.js";
 import { coverageFields, readStoredGraphCoverage, type GraphCoverageObservation } from "./coverage.js";
+import { describeRefreshWork } from "./refresh-work.js";
 
 export interface GraphCommandOptions {
   /** Project root to inspect or maintain (defaults to cwd). */
@@ -224,6 +225,7 @@ function printMaintenance(verb: "refreshed" | "rebuilt", result: GraphMaintenanc
     `Code graph ${verb}: ${result.nodesCreated} nodes, ${result.edgesCreated} edges `
       + `across ${result.filesIndexed} files in ${result.durationMs}ms; status ${result.status.status}.`,
   );
+  if (verb === "refreshed") console.log(describeRefreshWork(result.refresh));
   printSkippedSources(result.skipped);
   printDeclinedInputs(result.declinedInputs);
   if (result.recoveryPath) {

@@ -20,6 +20,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { readRefreshWork, type RefreshWorkSummary } from "../../graph/refresh-work.js";
 import { mutateFlags } from "../flags.js";
 import { openGraphReader } from "../graph-reader.js";
 import { ensureContextIndex } from "../index-store.js";
@@ -200,7 +201,8 @@ export interface SettlePass {
   touched: number;
   eligible: number;
   flagged: number;
-  refresh: { code: number | null; ms: number } | null;
+  /** `mode`, `reason`, `changed` and `reextracted` say how the graph refresh worked, when it said. */
+  refresh: ({ code: number | null; ms: number } & Partial<RefreshWorkSummary>) | null;
   reground: { ids: number; ok: number; failed: number; ms: number } | null;
   skipped?: string;
 }
@@ -253,8 +255,8 @@ export async function settleOnce(root: ContextRoot, options: SettleOptions): Pro
   recordReview(root.localDir, review, now());
   const pass: SettlePass = { touched: review.entries.length, eligible: review.eligible.length, flagged: review.flagged.length, refresh: null, reground: null };
 
-  const refresh = runCli(["graph", "refresh"], REFRESH_TIMEOUT_MS);
-  pass.refresh = { code: refresh.code, ms: refresh.ms };
+  const refresh = runCli(["graph", "refresh", "--json"], REFRESH_TIMEOUT_MS);
+  pass.refresh = { code: refresh.code, ms: refresh.ms, ...(refresh.code === 0 ? readRefreshWork(refresh.stdout) : null) };
   if (refresh.code !== 0) {
     appendLog(root, { event: "settle-refresh-failed", code: refresh.code, ms: refresh.ms, stderr: tail(refresh.stderr || refresh.stdout) });
     pass.skipped = "refresh-failed";
