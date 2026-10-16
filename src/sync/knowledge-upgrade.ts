@@ -175,7 +175,10 @@ export async function runKnowledgeUpgrade(
   const blocked = report.issues.filter(issue => issue.code.startsWith("GROUNDING_")
     && issue.severity !== "info" && (issue.entity ? ids.has(issue.entity.id) : files.has(issue.file.replaceAll("\\", "/"))));
   if (blocked.length) throw new Error("Review flagged or unverified candidate groundings with mex check / mex sync before upgrading. No agent was started.");
-  const ok = (dependencies.runAgent ?? runToolInteractive)(tool, buildKnowledgeUpgradeBrief(plan), config.projectRoot);
+  // A bounded review of many entities routinely outlasts sync's 15-minute bound, and a
+  // killed session leaves partial knowledge edits behind. Like setup population, the
+  // user drives this interactive session and ends it themselves.
+  const ok = (dependencies.runAgent ?? runToolInteractive)(tool, buildKnowledgeUpgradeBrief(plan), config.projectRoot, { timeoutMs: null });
   if (!ok) throw new Error("Knowledge upgrade session failed; inspect any partial working-tree changes before retrying.");
   const rebuilt = await (dependencies.rebuild ?? rebuildWikiIndexAfterSync)(config);
   const after = await (dependencies.check ?? runDriftCheck)(config);
