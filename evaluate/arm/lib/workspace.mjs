@@ -1,6 +1,6 @@
 // Per-session subject checkouts for the agent-arm test.
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { runSync } from "../../compare/lib/process.mjs";
 
 // Line endings follow the subject clone's core.autocrlf: grounding baselines hash the
@@ -212,6 +212,39 @@ export function buildIndexCache({ subjectRoot, cacheDir, key, base, scaffoldComm
     removeWorkspace(subjectRoot, template, { removeParent: true });
   }
   return target;
+}
+
+/**
+ * Rebuild only the context index of a cached base: the cached Graph and Wiki indexes are reused
+ * as they are (no graph work), the template checkout supplies the scaffold's Markdown, and the
+ * current frozen CLI recomputes entities and vectors. Used after the ranking changed which
+ * entries are embedded.
+ */
+export function refreshContextIndexCache({ subjectRoot, cachePath, base, scaffoldCommit, cliBin, env, depsDir = null, projectName = "project", aliasesFile = null }) {
+  const template = join(dirname(cachePath), `${basename(cachePath)}.template`, projectName);
+  removeWorkspace(subjectRoot, template, { removeParent: true });
+  try {
+    createWorkspace({ subjectRoot, workspace: template, base, scaffoldCommit, depsDir, stripPrototype: true });
+    for (const name of INDEX_FILES) copyFileSync(join(cachePath, name), join(template, ".mex", name));
+    const local = join(template, ".mex", "local");
+    mkdirSync(local, { recursive: true });
+    const cachedAliases = join(cachePath, CONTEXT_ALIASES);
+    const aliases = existsSync(cachedAliases) ? cachedAliases : aliasesFile;
+    if (aliases) copyFileSync(aliases, join(local, CONTEXT_ALIASES));
+    const started = Date.now();
+    const result = runMex(cliBin, ["context", "index"], template, env);
+    if (result.code !== 0) throw new Error(`mex context index failed for ${cachePath}: ${result.stderr || result.stdout}`);
+    const contextIndexMs = Date.now() - started;
+    copyFileSync(join(local, CONTEXT_INDEX), join(cachePath, CONTEXT_INDEX));
+    if (aliases) copyFileSync(join(local, CONTEXT_ALIASES), join(cachePath, CONTEXT_ALIASES));
+    const infoPath = join(cachePath, "build-info.json");
+    const info = existsSync(infoPath) ? JSON.parse(readFileSync(infoPath, "utf8")) : {};
+    writeFileSync(infoPath, `${JSON.stringify({ ...info, contextIndexRefreshedAt: new Date().toISOString(), contextIndexRefreshMs: contextIndexMs }, null, 2)}
+`);
+    return { contextIndexMs };
+  } finally {
+    removeWorkspace(subjectRoot, template, { removeParent: true });
+  }
 }
 
 /** Copy cached indexes into a session checkout; rebuild there if they are not fresh. */

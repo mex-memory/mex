@@ -3,14 +3,14 @@
 // pinned subject. See evaluate/arm/README.md.
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSchedule } from "../compare/lib/schedule.mjs";
 import { runSync } from "../compare/lib/process.mjs";
 import { aliasCoverage, installProductHooks } from "./lib/hooks.mjs";
 import { buildBlindReview, generateReport, loadRows } from "./lib/report.mjs";
 import { MEX_PROMPTS, runAgentSession } from "./lib/session.mjs";
-import { armPath, buildIndexCache, createWorkspace, git, installContextIndex, installIndexes, mexEntrypoint, removeWorkspace, resolveCommit } from "./lib/workspace.mjs";
+import { armPath, buildIndexCache, createWorkspace, git, installContextIndex, installIndexes, mexEntrypoint, refreshContextIndexCache, removeWorkspace, resolveCommit } from "./lib/workspace.mjs";
 
 const fileSha = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -20,7 +20,7 @@ export function parseArgs(argv) {
   const value = (i) => { if (argv[i + 1] === undefined) throw new Error(`${argv[i]} needs a value`); return argv[i + 1]; };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (["--prepare", "--run", "--blind", "--report"].includes(arg)) args.mode = arg.slice(2);
+    if (["--prepare", "--run", "--blind", "--report", "--refresh-context-index"].includes(arg)) args.mode = arg.slice(2);
     else if (arg === "--suite") args.suite = resolve(value(i++));
     else if (arg === "--subject") args.subject = resolve(value(i++));
     else if (arg === "--cli-bin") args.cliBin = resolve(value(i++));
@@ -39,8 +39,8 @@ export function parseArgs(argv) {
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (args.mexPrompt !== undefined && !MEX_PROMPTS.includes(args.mexPrompt)) throw new Error(`--mex-prompt must be one of ${MEX_PROMPTS.join(", ")}`);
-  if (!args.mode) throw new Error("choose --prepare, --run, --blind or --report");
-  for (const key of ["suite", "output"]) if (!args[key]) throw new Error(`--${key} is required`);
+  if (!args.mode) throw new Error("choose --prepare, --run, --blind, --report or --refresh-context-index");
+  for (const key of args.mode === "refresh-context-index" ? ["output"] : ["suite", "output"]) if (!args[key]) throw new Error(`--${key} is required`);
   if (["prepare", "run"].includes(args.mode)) {
     // --deps is checked against the suite later: a subject without node_modules (Python) sets "requiresDeps": false.
     for (const key of ["subject", "cliBin", "model"]) if (!args[key]) throw new Error(`--${key === "cliBin" ? "cli-bin" : key} is required for --${args.mode}`);
@@ -157,6 +157,39 @@ function prepare(args, suite) {
   process.stdout.write(`prepared ${suite.tasks.length} tasks; index caches in ${join(args.output, "index-cache")}\n`);
 }
 
+/**
+ * `--refresh-context-index`: rebuild the cached context indexes of a prepared output with the
+ * current frozen CLI (graphs and Wiki indexes are reused), and re-pin the CLI in prepare.json.
+ */
+function refreshContextIndexes(args) {
+  const path = join(args.output, "prepare.json");
+  const prepared = JSON.parse(readFileSync(path, "utf8"));
+  const cliBin = args.cliBin ?? prepared.cli.bin;
+  const env = sessionEnv({ cliBin, armSpec: { withCli: true, withHooks: false } });
+  const aliasesFile = prepared.hooks?.aliases?.file ?? null;
+  const done = new Set();
+  for (const info of Object.values(prepared.tasks)) {
+    if (!info.cachePath || done.has(info.cachePath)) continue;
+    done.add(info.cachePath);
+    const { contextIndexMs } = refreshContextIndexCache({ subjectRoot: prepared.subject.root, cachePath: info.cachePath, base: info.base, scaffoldCommit: info.scaffold, cliBin, env, depsDir: prepared.deps, projectName: prepared.projectName, aliasesFile });
+    process.stdout.write(`refreshed ${info.indexKey} in ${contextIndexMs} ms
+`);
+  }
+  copyFileSync(path, join(args.output, `prepare.before-index-refresh-${Date.now()}.json`));
+  const entry = mexEntrypoint(cliBin);
+  prepared.cli = { bin: cliBin, entrypoint: entry, sha256: fileSha(entry), version: runSync(process.execPath, [entry, "--version"]).stdout.trim() };
+  if (prepared.hooks) {
+    prepared.hooks.hookBin = join(cliBin, process.platform === "win32" ? "mex-hook.cmd" : "mex-hook");
+    prepared.hooks.semantic = semanticStatus(cliBin, env);
+    if (aliasesFile) {
+      const aliasIds = Object.keys(JSON.parse(readFileSync(aliasesFile, "utf8")));
+      prepared.hooks.aliasCoverage = Object.fromEntries([...done].map((cachePath) => [basename(cachePath), aliasCoverage(join(cachePath, "context-index.json"), aliasIds)]));
+    }
+  }
+  prepared.contextIndexRefreshedAt = new Date().toISOString();
+  writeJson(path, prepared);
+}
+
 /** `mex context semantic status`: the machine-level extra the R3 recipe needs. */
 function semanticStatus(cliBin, env) {
   const result = runSync(process.execPath, [mexEntrypoint(cliBin), "context", "semantic", "status", "--json"], { env });
@@ -232,6 +265,7 @@ async function run(args, suite) {
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
+  if (args.mode === "refresh-context-index") return refreshContextIndexes(args);
   const suite = JSON.parse(readFileSync(args.suite, "utf8"));
   if (["prepare", "run"].includes(args.mode) && !args.deps && suite.requiresDeps !== false) throw new Error(`--deps is required for --${args.mode} (a suite without node_modules sets "requiresDeps": false)`);
   if (args.mode === "prepare") return prepare(args, suite);
