@@ -1,10 +1,11 @@
 // One agent session in a prepared checkout, plus its post-session measurements.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeAdapter } from "../../adapters/agents/claude.mjs";
 import { ANSWER_SCHEMA } from "../../compare/lib/answer.mjs";
 import { runSync, runTimed } from "../../compare/lib/process.mjs";
 import { forcedCompliance, summarizeCalls } from "./classify.mjs";
+import { anyHookEntries, contextStatus, CONTEXT_LOG, summarizeContextLog, waitForSettle } from "./hooks.mjs";
 import { git, runMex } from "./workspace.mjs";
 
 export const CHANGE_SCHEMA = {
@@ -32,23 +33,33 @@ const MEX_FORCE_CHANGE = " Before editing, run `mex impact <symbol|file>` for wh
 const MEX_STEER_COMMON = "This repository has MEX installed: project knowledge in `.mex/` (start at `.mex/ROUTER.md` and read the files it routes you to) and a code graph CLI, `mex`, on PATH. Start with `mex graph scope \"<task>\"`. When you know an exact symbol name, use `mex graph query <where-defined|who-calls|what-calls> <symbol>` and `mex graph get <id...>`. Treat source returned by the graph as already read.";
 const MEX_STEER_CHANGE = " Before editing a symbol, run `mex impact <symbol|file>`. After your change, run `mex graph refresh` and then `mex check` to see whether any `.mex` knowledge drifted.";
 
-export function buildPrompt(task, { mexPrompt = "none", withMex = false } = {}) {
+/**
+ * The suite's appended instruction, the same text in every arm, for example
+ * `{ qa: "Keep the answer concise.", change: "Keep the summary concise." }`.
+ */
+export function appendedInstruction(appendPrompt, task) {
+  if (!appendPrompt) return "";
+  const text = typeof appendPrompt === "string" ? appendPrompt : appendPrompt[task.type === "change" ? "change" : "qa"];
+  return text ? `\n\n${text}` : "";
+}
+
+export function buildPrompt(task, { mexPrompt = "none", withMex = false, appendPrompt = null } = {}) {
   const change = task.type === "change";
   const steer = !withMex ? ""
     : mexPrompt === "steered" ? `\n\n${MEX_STEER_COMMON}${change ? MEX_STEER_CHANGE : ""}`
     : mexPrompt === "forced" ? `\n\n${MEX_FORCE_COMMON}${change ? MEX_FORCE_CHANGE : ""}`
     : "";
-  return `${task.prompt}${steer}${task.type === "change" ? CHANGE_SUFFIX : QA_SUFFIX}`;
+  return `${task.prompt}${steer}${task.type === "change" ? CHANGE_SUFFIX : QA_SUFFIX}${appendedInstruction(appendPrompt, task)}`;
 }
 
-export function claudeInvocation({ task, model, claudeCommand = ["claude"], mexPrompt = "none", withMex = false }) {
+export function claudeInvocation({ task, model, claudeCommand = ["claude"], mexPrompt = "none", withMex = false, appendPrompt = null }) {
   const tools = task.type === "change" ? ["Read", "Grep", "Glob", "Bash", "Edit", "Write"] : ["Read", "Grep", "Glob", "Bash"];
   const [command, ...prefix] = claudeCommand;
   return {
     command,
     args: [
       ...prefix,
-      "-p", buildPrompt(task, { mexPrompt, withMex }),
+      "-p", buildPrompt(task, { mexPrompt, withMex, appendPrompt }),
       "--output-format", "stream-json", "--verbose",
       // Project sources load the checkout's CLAUDE.md (the MEX arm's entry
       // point); user settings, plugins and hooks stay out of both arms.
@@ -98,6 +109,7 @@ export function runHiddenTests(workspace, hiddenTests, env) {
   if (!hiddenTests) return null;
   if (hiddenTests.fromCommit) git(workspace, ["checkout", hiddenTests.fromCommit, "--", ...hiddenTests.files]);
   if (hiddenTests.runner === "hereby") return runHerebyTests(workspace, hiddenTests, env);
+  if (hiddenTests.runner === "django") return runDjangoTests(workspace, hiddenTests, env);
   const vitest = join(workspace, "node_modules", "vitest", "vitest.mjs");
   if (!existsSync(vitest)) return { ok: false, error: "vitest is not installed in the workspace" };
   const result = runSync(process.execPath, [vitest, "--run", "--coverage.enabled=false", ...hiddenTests.files], { cwd: workspace, env });
@@ -114,6 +126,34 @@ function runHerebyTests(workspace, hiddenTests, env) {
   const pick = (word) => Number(output.match(new RegExp(`(\\d+) ${word}`))?.[1] ?? 0);
   const passed = pick("passing"), failed = pick("failing");
   return { ok: result.code === 0 && failed === 0 && passed > 0, exitCode: result.code, passed, failed, total: passed + failed, output: output.slice(-20_000) };
+}
+
+/**
+ * Read a Django test runner's summary: `Ran N tests`, then `OK` or
+ * `FAILED (failures=a, errors=b, skipped=c)`. Skipped tests are neither passed nor failed.
+ */
+export function djangoCounts(output) {
+  const clean = String(output).replace(/\x1b\[[0-9;]*m/g, "");
+  const ran = clean.match(/^Ran (\d+) tests?\b/m);
+  const total = ran ? Number(ran[1]) : 0;
+  const detail = clean.match(/^(OK|FAILED)\s*(?:\(([^)\n]*)\))?\s*$/m);
+  const parts = Object.fromEntries([...(detail?.[2] ?? "").matchAll(/([a-z ]+)=(\d+)/g)].map((match) => [match[1].trim(), Number(match[2])]));
+  const failed = (parts.failures ?? 0) + (parts.errors ?? 0) + (parts["unexpected successes"] ?? 0);
+  const skipped = parts.skipped ?? 0;
+  return { passed: Math.max(0, total - failed - skipped), failed, skipped, total, status: detail?.[1] ?? null };
+}
+
+/** Django-style hidden tests: `runtests.py <labels> --parallel 1` from the checkout, with the checkout on PYTHONPATH. */
+function runDjangoTests(workspace, hiddenTests, env) {
+  const python = hiddenTests.python;
+  if (!python || !existsSync(python)) return { ok: false, error: `python is not available (${python ?? "no interpreter set"})` };
+  const runner = join(workspace, "tests", "runtests.py");
+  if (!existsSync(runner)) return { ok: false, error: "tests/runtests.py is missing in the workspace" };
+  const labels = String(hiddenTests.tests ?? "").split(/\s+/).filter(Boolean);
+  const result = runSync(python, [runner, ...labels, "--parallel", "1"], { cwd: workspace, env: { ...env, PYTHONPATH: workspace, PYTHONDONTWRITEBYTECODE: "1" } });
+  const output = `${result.stdout}\n${result.stderr}`.replace(/\x1b\[[0-9;]*m/g, "");
+  const counts = djangoCounts(output);
+  return { ok: result.code === 0 && counts.status === "OK" && counts.failed === 0 && counts.passed > 0, exitCode: result.code, passed: counts.passed, failed: counts.failed, skipped: counts.skipped, total: counts.total, output: output.slice(-20_000) };
 }
 
 function agentDiff(workspace) {
@@ -160,8 +200,8 @@ export async function waitForPushSettle(workspace, timeoutMs = 20 * 60 * 1000) {
   return { waitMs: Date.now() - started, timedOut: existsSync(lock) && Date.now() - started >= timeoutMs };
 }
 
-export async function runAgentSession({ task, armId, armSpec, workspace, env, cliBin, model, timeoutMs, outputPrefix, claudeCommand, mexPrompt = "none" }) {
-  const invocation = claudeInvocation({ task, model, claudeCommand, mexPrompt, withMex: armSpec.withMex });
+export async function runAgentSession({ task, armId, armSpec, workspace, env, cliBin, model, timeoutMs, outputPrefix, claudeCommand, mexPrompt = "none", appendPrompt = null }) {
+  const invocation = claudeInvocation({ task, model, claudeCommand, mexPrompt, withMex: armSpec.withMex, appendPrompt });
   const processResult = await runTimed(invocation.command, invocation.args, { cwd: workspace, env, timeoutMs });
   writeFileSync(`${outputPrefix}.jsonl`, processResult.stdout);
   const parsed = claudeAdapter.parseTranscript(processResult.stdout, { ...task, gold: [] });
@@ -185,7 +225,7 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
     const leaked = calls.classified.filter((entry) => entry.category.startsWith("mex:"));
     if (leaked.length) violations.push(`files arm used MEX ${leaked.length} time(s)`);
   }
-  const outsideReads = calls.classified.filter((entry) => entry.outside && /hono-mex|[\\/]\.mex[\\/]|mex-test-tmp[\\/]arm/i.test(entry.path ?? ""));
+  const outsideReads = calls.classified.filter((entry) => entry.outside && /(?:hono|ts|dj)-mex|[\\/]\.mex[\\/]|mex-test-tmp[\\/]arm/i.test(entry.path ?? ""));
   if (outsideReads.length) violations.push(`${outsideReads.length} call(s) touched another checkout`);
 
   let result;
@@ -198,8 +238,26 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
     result = { answer: parsed.structured.ok ? parsed.structured.value : null };
   }
 
-  const settle = armSpec.withPush ? await waitForPushSettle(workspace) : null;
-  if (settle?.timedOut) violations.push("push settle worker did not finish");
+  const settle = armSpec.withPush ? await waitForPushSettle(workspace) : armSpec.withHooks ? await waitForSettle(workspace) : null;
+  if (settle?.timedOut) violations.push(armSpec.withHooks ? "settle worker did not finish within the cap" : "push settle worker did not finish");
+
+  // The hooks' own record of the session, taken before the harness runs anything of its own.
+  const contextLog = join(workspace, ".mex", "local", CONTEXT_LOG);
+  let hooks = null;
+  if (armSpec.withHooks) {
+    if (existsSync(contextLog)) copyFileSync(contextLog, `${outputPrefix}.context-log.jsonl`);
+    hooks = summarizeContextLog(contextLog);
+    const status = contextStatus({ cliBin, workspace, env });
+    writeFileSync(`${outputPrefix}.context-status.json`, status.raw);
+    if (hooks) hooks.status = { ok: status.ok, flagged: status.flagged, eligible: status.eligible, flaggedIds: status.flaggedIds, eligibleIds: status.eligibleIds };
+    if (!hooks || hooks.hookEvents === 0) violations.push("MEX arm session with zero hook events");
+    const used = Object.keys(hooks?.promptNotes ?? {});
+    if (armSpec.lexical && used.some((note) => /^R3\//.test(note))) violations.push("lexical arm ran the semantic recipe");
+    if (armSpec.semantic && used.some((note) => /^R2w\//.test(note))) violations.push("semantic arm fell back to the lexical recipe");
+  } else if (!armSpec.withMex) {
+    if (existsSync(contextLog)) violations.push("files arm has a context log");
+    if (anyHookEntries(workspace) > 0) violations.push("files arm has hook entries");
+  }
   const diff = agentDiff(workspace);
   writeFileSync(`${outputPrefix}.patch`, diff.patch);
   let mexCheck = null;
@@ -217,6 +275,7 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
     agent: "claude",
     process: { code: processResult.code, signal: processResult.signal, timedOut: processResult.timedOut, elapsedMs: processResult.elapsedMs, stderr: String(processResult.stderr ?? "").slice(-4000) },
     ...(settle ? { settleWait: settle } : {}),
+    ...(hooks ? { hooks } : {}),
     providerFailure: parsed.providerFailure ?? null,
     metrics: {
       newTokens: usage.newTokens, processed: usage.reportedTotal, uncachedInput: usage.uncachedInput,
