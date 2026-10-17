@@ -215,6 +215,11 @@ export const OverviewResponseSchema = z.object({
   activity: OverviewActivityPanelSchema,
   context: OverviewContextPanelSchema,
   operation: OverviewOperationPanelSchema,
+  /** Signals for asking about team sharing again; no Relay or author details. */
+  sharing: z.object({
+    relayPublished: z.boolean(),
+    moreThanOneContributor: z.boolean(),
+  }).strict().optional(),
 }).strict();
 
 export type OverviewIdentityPanel = z.infer<typeof OverviewIdentityPanelSchema>;

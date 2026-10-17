@@ -92,6 +92,7 @@ import {
 } from "../components/ui";
 import { boundedNextCursor, MAX_WORKBENCH_PAGES } from "../lib/bounds";
 import styles from "../styles/relay.module.css";
+import { TeamAccessCard, useTeamAccessReprompt } from "./TeamAccessCard";
 
 const PAGE_SIZE = 25;
 const OPEN_STATES: readonly RelayState[] = ["published", "acknowledged"];
@@ -725,6 +726,7 @@ export function RelayPage() {
     ),
     retry: false,
   });
+  const teamAccessReprompt = useTeamAccessReprompt(api, relays.data?.pages.some(page => page.items.length > 0) ?? false);
   const draftRows = useMemo(() => {
     const rows = new Map<string, RelayDraftSummary>();
     for (const page of drafts.data?.pages ?? []) for (const item of page.items) rows.set(item.id, item);
@@ -1203,6 +1205,7 @@ export function RelayPage() {
           </AlertAction>
         </Alert>
       ) : null}
+      {teamAccessReprompt ? <TeamAccessCard api={api} reprompt /> : null}
       {selectionNotice ? <div className={styles.selectionNotice} role="status">{selectionNotice}</div> : null}
       {capabilities === undefined ? (
         <StatePanel state="loading" title="Checking Relay capability" detail="Confirming which handoff reads and actions are available." />

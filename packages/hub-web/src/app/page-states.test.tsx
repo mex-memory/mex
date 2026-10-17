@@ -49,6 +49,21 @@ function pending<T>(): Promise<T> {
 const unavailable = (reason: string) => ({ availability: "unavailable" as const, reason });
 
 describe("Home states", () => {
+  it.each([
+    [{ relayPublished: true, moreThanOneContributor: false }, true],
+    [{ relayPublished: false, moreThanOneContributor: true }, true],
+    [{ relayPublished: false, moreThanOneContributor: false }, false],
+  ] as const)("re-asks a skipped person about the hosted beta when Overview sharing is %j", async (sharing, asked) => {
+    const api = createFixtureApi({ overviewFixture: "caught-up" });
+    const overview = await api.getOverview();
+    vi.spyOn(api, "getOverview").mockResolvedValue({ ...overview, sharing });
+    Object.assign(api, { getContactPreference: vi.fn().mockResolvedValue({ status: "skipped" }) });
+    renderRoute("/", api);
+    const card = await screen.findByRole("region", { name: "Share this memory with your team" }, { timeout: 10_000 });
+    if (asked) expect(await within(card).findByRole("button", { name: "Join the hosted beta" })).toBeVisible();
+    else expect(await within(card).findByText("Keep using this Hub with your team.")).toBeVisible();
+  });
+
   it("renders independently loading atlas panels from the Overview aggregate", async () => {
     renderRoute("/", apiWith({ getOverview: () => pending<OverviewResponse>() }));
 

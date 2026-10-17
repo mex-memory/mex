@@ -3,6 +3,7 @@ import { completeHubOnboarding, readHubOnboarding } from "./onboarding.js";
 import {
   AgentLoggingPolicySchema,
   HubOnboardingStateSchema,
+  HubRepositoryContributorsSchema,
   HUB_LIMITS,
   type ActivityActor,
   type ActivityDiagnostic,
@@ -336,6 +337,9 @@ export function createLocalHubReadServices(
     async completeOnboarding() {
       return HubOnboardingStateSchema.parse(await completeHubOnboarding(options.projectRoot));
     },
+    async repositoryContributors() {
+      return HubRepositoryContributorsSchema.parse({ moreThanOne: await hasMoreThanOneCommitAuthor(git) });
+    },
     async capabilities(): Promise<HubCapabilities> {
       const gitStatus = await gitCapability(git);
       return {
@@ -408,7 +412,7 @@ export function createLocalHubReadServices(
 
     async overview(): Promise<OverviewResponse> {
       const observedAt = now().toISOString();
-      const [repository, identity, inboxRead, relayRead, activity, graphRead, wikiRead] = await Promise.all([
+      const [repository, identity, inboxRead, relayRead, activity, graphRead, wikiRead, moreThanOneContributor] = await Promise.all([
         git.getRepoState(),
         readOverviewIdentity(team, observedAt),
         readOverviewInbox(inbox, observedAt),
@@ -416,7 +420,9 @@ export function createLocalHubReadServices(
         readOverviewActivity(timeline, observedAt),
         readOverviewGraph(graph, observedAt),
         readOverviewWiki(wiki, observedAt),
+        hasMoreThanOneCommitAuthor(git).catch(() => false),
       ]);
+      const sharing = readOverviewSharing(relayRead, moreThanOneContributor);
       const jobsRead = readOverviewJobs(options.jobs, observedAt);
       const shell = projectHomeResponse({
         observedAt,
@@ -437,6 +443,7 @@ export function createLocalHubReadServices(
         activity,
         context: projectOverviewContext(graphRead, wikiRead, observedAt),
         operation: projectOverviewOperation(jobsRead, observedAt),
+        sharing,
       };
     },
 
@@ -3672,6 +3679,40 @@ async function gitCapability(git: GitPort): Promise<CapabilityStatus> {
   } catch {
     return unavailable("Git repository state is not safely readable.");
   }
+}
+
+/**
+ * Reuses Overview's one open-Relay read; more open Relays than one page also
+ * means one was published.
+ */
+function readOverviewSharing(
+  relayRead: OverviewRelayCorpus,
+  moreThanOneContributor: boolean,
+): { relayPublished: boolean; moreThanOneContributor: boolean } {
+  const relayPublished = relayRead.availability === "available"
+    ? relayRead.items.length > 0
+    : relayRead.truncated === true;
+  return { relayPublished, moreThanOneContributor };
+}
+
+const CONTRIBUTOR_SCAN_PAGE = 200;
+const CONTRIBUTOR_SCAN_COMMITS = 1_000;
+
+/** Stop at the second distinct author; only the most recent commits are read. */
+async function hasMoreThanOneCommitAuthor(git: GitPort): Promise<boolean> {
+  const authors = new Set<string>();
+  let cursor: string | undefined;
+  for (let scanned = 0; scanned < CONTRIBUTOR_SCAN_COMMITS; scanned += CONTRIBUTOR_SCAN_PAGE) {
+    const page = await git.getHistory({ limit: CONTRIBUTOR_SCAN_PAGE, ...(cursor === undefined ? {} : { cursor }) });
+    for (const commit of page.items) {
+      const author = commit.author.email?.toLowerCase() ?? commit.author.name;
+      if (author) authors.add(author);
+      if (authors.size > 1) return true;
+    }
+    if (page.nextCursor === null) return false;
+    cursor = page.nextCursor;
+  }
+  return false;
 }
 
 type OverviewIdentityRead = OverviewResponse["identity"];

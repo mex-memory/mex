@@ -6,7 +6,7 @@ import { isTelemetryId } from "../global-config.js";
 
 export const TELEMETRY_EVENTS = [
   "cli.command_started", "cli.command_completed", "hub.session_started",
-  "hub.page_viewed", "hub.action_completed", "hub.job_completed",
+  "hub.page_viewed", "hub.action_completed", "hub.job_completed", "hub.team_access",
 ] as const;
 export type TelemetryEventName = typeof TELEMETRY_EVENTS[number];
 export const TELEMETRY_COMMANDS = [
@@ -37,6 +37,8 @@ export const TELEMETRY_ACTIONS = [
 export const TELEMETRY_JOB_KINDS = ["graph_refresh", "graph_rebuild", "wiki_refresh", "wiki_rebuild"] as const;
 export const TELEMETRY_OUTCOMES = ["success", "failure", "cancelled"] as const;
 export const TELEMETRY_STAGES = ["preview", "apply", "direct"] as const;
+/** Where people stop on the Hub's team-access card; no contact details or other values. */
+export const TELEMETRY_TEAM_ACCESS_STEPS = ["card_viewed", "button_clicked", "dialog_opened", "submitted"] as const;
 /** Persisted tool selections, never a claim about the agent invoking a command. */
 export const TELEMETRY_AI_TOOLS = ["claude", "codex", "copilot", "cursor", "opencode", "windsurf"] as const;
 export type TelemetryAiTool = typeof TELEMETRY_AI_TOOLS[number];
@@ -55,6 +57,7 @@ export interface TelemetryAttributes extends TelemetryProjectContext {
   stage?: "preview" | "apply" | "direct";
   duration_ms?: number;
   replayed?: boolean;
+  step?: "card_viewed" | "button_clicked" | "dialog_opened" | "submitted";
 }
 export type TelemetryProperties = Record<string, string | number | boolean | string[]>;
 export interface TelemetryEvent {
@@ -89,6 +92,7 @@ export function eventAttributes(name: string, value: unknown): TelemetryAttribut
   else if (name === "hub.page_viewed") required = ["page"];
   else if (name === "hub.action_completed") { required = ["action", "stage", "outcome", "duration_ms"]; optional = ["replayed"]; }
   else if (name === "hub.job_completed") required = ["job_kind", "outcome", "duration_ms"];
+  else if (name === "hub.team_access") required = ["step"];
   else required = [];
   optional.push("scaffold_id", "configured_ai_tools");
   if (Object.keys(value).some((key) => !required.includes(key) && !optional.includes(key))) return undefined;
@@ -101,6 +105,7 @@ export function eventAttributes(name: string, value: unknown): TelemetryAttribut
   if (value.job_kind !== undefined && !includes(TELEMETRY_JOB_KINDS, value.job_kind)) return undefined;
   if (value.outcome !== undefined && !includes(TELEMETRY_OUTCOMES, value.outcome)) return undefined;
   if (value.stage !== undefined && !includes(TELEMETRY_STAGES, value.stage)) return undefined;
+  if (value.step !== undefined && !includes(TELEMETRY_TEAM_ACCESS_STEPS, value.step)) return undefined;
   if (value.replayed !== undefined && (typeof value.replayed !== "boolean" || value.stage !== "apply")) return undefined;
   if (value.duration_ms !== undefined && (typeof value.duration_ms !== "number"
     || !Number.isFinite(value.duration_ms) || value.duration_ms < 0 || value.duration_ms > 86_400_000)) return undefined;

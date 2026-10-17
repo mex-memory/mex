@@ -39,6 +39,7 @@ running processes or tool accounts to determine which agent is in use.
 | `hub.page_viewed` | Fixed page category | Understand navigation without sending URLs |
 | `hub.action_completed` | Fixed action, stage, outcome, duration in ms; optional apply replay flag | Understand explicit actions and distinguish preview from apply |
 | `hub.job_completed` | Fixed job kind, outcome, duration in ms | Understand graph/Wiki job results |
+| `hub.team_access` | Fixed step: `card_viewed`, `button_clicked`, `dialog_opened`, or `submitted` | Count where people stop on the Hub's team-access card; never the details they enter |
 
 Commands use names such as `wiki.query` and `relay.draft.save`. Stages are
 `preview`, `apply`, or `direct`; the program derives the stage without sending
@@ -51,7 +52,8 @@ watcher, not the end of that later session.
 Hub pages are categories such as `knowledge_detail`, never a knowledge ID or a
 URL. Validated Hub actions and terminal job results are recorded on the local
 server. Ordinary API reads, polling, SSE, typing, and repeated renders do not
-produce usage events. Page events are capped at 60 per minute per Hub process.
+produce usage events. Page and team-access events share a cap of 60 per minute
+per Hub process.
 
 CLI telemetry/configuration controls and explicitly pure discovery/read
 surfaces stay silent: `capabilities`, `logging`, `timeline`, Team list/show/
@@ -149,7 +151,7 @@ be shared through Git. `MEX_HOME` relocates the global `.mex` directory.
 ## Voluntary feedback and contact
 
 `mex feedback` opens the separate [hosted feedback form](https://tally.so/r/KYjv4k).
-The Hub's **Request access** dialog and the optional setup contact step use
+The Hub's **Join the hosted beta** dialog and the optional setup contact step use
 Web3Forms while keeping the user in the Hub. Terminal setup offers the same
 optional contact submission. Submitting setup contact requires an email; name
 is optional, and skipping never blocks setup.

@@ -22,6 +22,14 @@ function fixture(status: "unasked" | "submitted" | "skipped" = "unasked") {
 }
 
 describe("setup completion", () => {
+  it("ends with the team-access card as the what's-next step", async () => {
+    const harness = fixture(); harness.render();
+    const next = await screen.findByRole("region", { name: "What’s next" });
+    expect(within(next).getByRole("heading", { name: "Share this memory with your team" })).toBeVisible();
+    expect(await within(next).findByRole("button", { name: "Join the hosted beta" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Optional contact details" })).toBeVisible();
+  });
+
   it("shows the fresh-session guide and versioned commands without installing or submitting automatically", async () => {
     const user = userEvent.setup(); const harness = fixture(); harness.render();
     expect(await screen.findByLabelText("Email")).toBeVisible();

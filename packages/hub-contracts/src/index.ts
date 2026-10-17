@@ -102,6 +102,9 @@ export const HubOnboardingStateSchema = z.object({ completed: z.boolean() }).str
 export const HubOnboardingCompleteRequestSchema = z.object({ completed: z.literal(true) }).strict();
 export type HubOnboardingState = z.infer<typeof HubOnboardingStateSchema>;
 export type HubOnboardingCompleteRequest = z.infer<typeof HubOnboardingCompleteRequestSchema>;
+/** Whether recent history has more than one distinct commit author; never the authors themselves. */
+export const HubRepositoryContributorsSchema = z.object({ moreThanOne: z.boolean() }).strict();
+export type HubRepositoryContributors = z.infer<typeof HubRepositoryContributorsSchema>;
 
 /** Shared primitives for route-private contract entry points. */
 export const HubIsoTimestampSchema = isoTimestamp;

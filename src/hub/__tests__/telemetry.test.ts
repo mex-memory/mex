@@ -19,6 +19,20 @@ describe("Hub telemetry projection", () => {
     expect(sink).toHaveBeenCalledTimes(61);
   });
 
+  it("records team-access steps as fixed categories under the shared browser-event cap", () => {
+    const sink = vi.fn();
+    const telemetry = new HubTelemetry(sink, () => 100_000);
+    telemetry.teamAccess("card_viewed");
+    telemetry.teamAccess("submitted");
+    expect(sink.mock.calls).toEqual([
+      ["hub.team_access", { step: "card_viewed" }],
+      ["hub.team_access", { step: "submitted" }],
+    ]);
+    for (let i = 0; i < 100; i += 1) telemetry.pageViewed("home");
+    telemetry.teamAccess("button_clicked");
+    expect(sink).toHaveBeenCalledTimes(60);
+  });
+
   it("records safe outcome metadata without changing results or propagating delivery errors", async () => {
     const sink = vi.fn(() => { throw new Error("delivery failed"); });
     let now = 500;

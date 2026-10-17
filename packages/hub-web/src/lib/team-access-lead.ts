@@ -24,21 +24,21 @@ export const TEAM_ACCESS_TEAM_SIZES = ["Just me", "2–10", "11–50", "50+"] as
 export const TEAM_ACCESS_FOUND_MEX = ["GitHub", "X", "friend", "community", "search", "other"] as const;
 export const TEAM_ACCESS_INSTALL_REASONS = ["Agent memory", "team consistency", "token cost", "curiosity"] as const;
 export const TEAM_ACCESS_REPO_KINDS = ["Work", "personal"] as const;
-export const TEAM_ACCESS_OTHERS_USE_AGENTS = ["Yes", "No"] as const;
+export const TEAM_ACCESS_ENGINEERS_USING_AGENTS = ["Just me", "2–5", "6–20", "21+"] as const;
 export const TEAM_ACCESS_NEEDS = ["Local only is fine", "Shared team memory", "Not sure"] as const;
 
 export interface TeamAccessContact {
-  name: string;
   email: string;
 }
 
 export interface TeamAccessFollowUp extends TeamAccessContact {
+  engineersUsingAgents: string;
+  name: string;
   company: string;
   teamSize: string;
   foundMex: string;
   installReason: string;
   repoKind: string;
-  othersUseAgents: string;
   need: string;
   missing: string;
 }
@@ -87,22 +87,16 @@ function includeAllowed(
   if (allowed.includes(value)) payload[key] = value;
 }
 
-export function validateTeamAccessContact(name: string, email: string): {
-  name?: string;
-  email?: string;
-} {
-  const errors: { name?: string; email?: string } = {};
-  if (boundName(name) === "") errors.name = "Enter your name.";
+export function validateTeamAccessEmail(email: string): { email?: string } {
   const trimmedEmail = boundEmail(email);
-  if (trimmedEmail === "") errors.email = "Enter your email.";
-  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) errors.email = "Enter a valid email.";
-  return errors;
+  if (trimmedEmail === "") return { email: "Enter your email." };
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) return { email: "Enter a valid email." };
+  return {};
 }
 
 export function buildTeamAccessContactPayload(contact: TeamAccessContact, accessKey = getWeb3FormsAccessKey()) {
   return {
     access_key: accessKey,
-    name: boundName(contact.name),
     email: boundEmail(contact.email),
     subject: TEAM_ACCESS_SUBJECT,
     from_name: TEAM_ACCESS_FROM_NAME,
@@ -113,19 +107,20 @@ export function buildTeamAccessContactPayload(contact: TeamAccessContact, access
 export function buildTeamAccessFollowUpPayload(details: TeamAccessFollowUp, accessKey = getWeb3FormsAccessKey()) {
   const payload: Record<string, string> = {
     access_key: accessKey,
-    name: boundName(details.name),
     email: boundEmail(details.email),
     subject: TEAM_ACCESS_FOLLOW_UP_SUBJECT,
     from_name: TEAM_ACCESS_FROM_NAME,
     source: TEAM_ACCESS_SOURCE,
   };
+  includeAllowed(payload, "engineers_using_agents", details.engineersUsingAgents, TEAM_ACCESS_ENGINEERS_USING_AGENTS);
+  const name = boundName(details.name);
+  if (name !== "") payload.name = name;
   const company = boundCompany(details.company);
   if (company !== "") payload.company = company;
   includeAllowed(payload, "team_size", details.teamSize, TEAM_ACCESS_TEAM_SIZES);
   includeAllowed(payload, "found_mex", details.foundMex, TEAM_ACCESS_FOUND_MEX);
   includeAllowed(payload, "install_reason", details.installReason, TEAM_ACCESS_INSTALL_REASONS);
   includeAllowed(payload, "repo_kind", details.repoKind, TEAM_ACCESS_REPO_KINDS);
-  includeAllowed(payload, "others_use_agents", details.othersUseAgents, TEAM_ACCESS_OTHERS_USE_AGENTS);
   includeAllowed(payload, "i_need", details.need, TEAM_ACCESS_NEEDS);
   const missing = boundMissing(details.missing);
   if (missing !== "") payload.whats_missing = missing;

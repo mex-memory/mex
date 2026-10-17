@@ -6,6 +6,8 @@ import {
   HubOnboardingCompleteRequestSchema,
   HubOnboardingStateSchema,
   type HubOnboardingState,
+  HubRepositoryContributorsSchema,
+  type HubRepositoryContributors,
   ActivityRequestSchema,
   ActivityResponseSchema,
   BootstrapRequestSchema,
@@ -183,7 +185,7 @@ import {
   validationFailed,
 } from "./http/errors.js";
 import { readBoundedJson, readStrictQuery } from "./http/request.js";
-import { HUB_PAGE_EVENT_BODY_BYTES, HubPageViewSchema, HubTelemetry, type HubTelemetrySink } from "./telemetry.js";
+import { HUB_PAGE_EVENT_BODY_BYTES, HubPageViewSchema, HubTeamAccessEventSchema, HubTelemetry, type HubTelemetrySink } from "./telemetry.js";
 import {
   type HubSession,
   HubSessionManager,
@@ -242,6 +244,7 @@ export interface HubReadServices {
   setLoggingPolicy?(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
   onboardingState?(): Promise<HubOnboardingState> | HubOnboardingState;
   completeOnboarding?(): Promise<HubOnboardingState> | HubOnboardingState;
+  repositoryContributors?(): Promise<HubRepositoryContributors> | HubRepositoryContributors;
   capabilities(): Promise<HubCapabilities> | HubCapabilities;
   home(): Promise<HomeResponse> | HomeResponse;
   overview?(): Promise<OverviewResponse> | OverviewResponse;
@@ -426,6 +429,13 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     telemetry.pageViewed(request.page);
     // Accepted locally is not a delivery promise. Opt-out and rate-limited
     // events take the same quiet path without queuing or persisting anything.
+    return new Response(null, { status: 204 });
+  });
+
+  app.post("/api/v1/telemetry/team-access", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(HubTeamAccessEventSchema, await readBoundedJson(context.req.raw, HUB_PAGE_EVENT_BODY_BYTES));
+    telemetry.teamAccess(request.step);
     return new Response(null, { status: 204 });
   });
 
@@ -818,6 +828,12 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     if (!options.services.completeOnboarding) throw unavailable("The Hub tour state is unavailable in this build.");
     parseInput(HubOnboardingCompleteRequestSchema, await readBoundedJson(context.req.raw));
     return resourceResponse(HubOnboardingStateSchema, await options.services.completeOnboarding());
+  });
+
+  app.get("/api/v1/repository/contributors", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.repositoryContributors) throw unavailable("Repository contributors are unavailable in this build.");
+    return resourceResponse(HubRepositoryContributorsSchema, await options.services.repositoryContributors());
   });
 
   app.get("/api/v1/health", async () => resourceResponse(

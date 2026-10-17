@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { CheckCircle2, Mail, ShieldCheck, type LucideIcon } from "lucide-react";
 import { Button } from "../components/primitives/button";
 import {
@@ -18,11 +18,12 @@ import {
 import { Input } from "../components/primitives/input";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { cn } from "../lib/utils";
+import type { HubTeamAccessStep } from "../api/telemetry";
 import {
+  TEAM_ACCESS_ENGINEERS_USING_AGENTS,
   TEAM_ACCESS_FOUND_MEX,
   TEAM_ACCESS_INSTALL_REASONS,
   TEAM_ACCESS_NEEDS,
-  TEAM_ACCESS_OTHERS_USE_AGENTS,
   TEAM_ACCESS_REPO_KINDS,
   TEAM_ACCESS_TEAM_SIZES,
   boundCompany,
@@ -32,7 +33,7 @@ import {
   buildTeamAccessContactPayload,
   buildTeamAccessFollowUpPayload,
   submitTeamAccessPayload,
-  validateTeamAccessContact,
+  validateTeamAccessEmail,
 } from "../lib/team-access-lead";
 import styles from "../styles/team-access.module.css";
 
@@ -56,7 +57,7 @@ function AccessPanelIntro({
           <Icon />
         </span>
         <div className={styles.copy}>
-          <p className={styles.eyebrow}>From mex</p>
+          <p className={styles.eyebrow}>Share this memory with your team</p>
           <DialogTitle className={styles.title}>{title}</DialogTitle>
           <DialogDescription className={styles.description}>{description}</DialogDescription>
         </div>
@@ -106,14 +107,17 @@ export default function TeamAccessDialog({
   open,
   onOpenChange,
   onContactSent,
+  onStep,
   finalFocus,
 }: {
   open: boolean;
   onOpenChange(open: boolean): void;
   onContactSent(): void;
+  onStep?(step: HubTeamAccessStep): void;
   finalFocus(): HTMLElement | null;
 }) {
   const [step, setStep] = useState<PanelStep>("contact");
+  const [engineersUsingAgents, setEngineersUsingAgents] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [company, setCompany] = useState("");
@@ -121,12 +125,12 @@ export default function TeamAccessDialog({
   const [foundMex, setFoundMex] = useState("");
   const [installReason, setInstallReason] = useState("");
   const [repoKind, setRepoKind] = useState("");
-  const [othersUseAgents, setOthersUseAgents] = useState("");
   const [need, setNeed] = useState("");
   const [missing, setMissing] = useState("");
-  const [fieldErrors, setFieldErrors] = useState<{ name?: string; email?: string }>({});
+  const [fieldErrors, setFieldErrors] = useState<{ email?: string }>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const engineersUsingAgentsId = useId();
   const nameId = useId();
   const emailId = useId();
   const companyId = useId();
@@ -134,9 +138,12 @@ export default function TeamAccessDialog({
   const foundMexId = useId();
   const installReasonId = useId();
   const repoKindId = useId();
-  const othersUseAgentsId = useId();
   const needId = useId();
   const missingId = useId();
+
+  useEffect(() => {
+    if (open) onStep?.("dialog_opened");
+  }, [open, onStep]);
 
   const rememberContactSent = () => {
     onContactSent();
@@ -152,25 +159,21 @@ export default function TeamAccessDialog({
   };
 
   const submitContact = async () => {
-    const nextName = boundName(name);
     const nextEmail = boundEmail(email);
-    const errors = validateTeamAccessContact(nextName, nextEmail);
+    const errors = validateTeamAccessEmail(nextEmail);
     setFieldErrors(errors);
     setSubmitError(null);
-    if (errors.name || errors.email) return;
+    if (errors.email) return;
 
     setSubmitting(true);
     try {
-      const result = await submitTeamAccessPayload(buildTeamAccessContactPayload({
-        name: nextName,
-        email: nextEmail,
-      }));
+      const result = await submitTeamAccessPayload(buildTeamAccessContactPayload({ email: nextEmail }));
       if (!result.ok) {
         setSubmitError(result.message);
         return;
       }
+      onStep?.("submitted");
       rememberContactSent();
-      setName(nextName);
       setEmail(nextEmail);
       setStep("details");
     } finally {
@@ -189,14 +192,14 @@ export default function TeamAccessDialog({
     setSubmitting(true);
     try {
       const result = await submitTeamAccessPayload(buildTeamAccessFollowUpPayload({
-        name,
         email,
+        engineersUsingAgents,
+        name: boundName(name),
         company: boundCompany(company),
         teamSize,
         foundMex,
         installReason,
         repoKind,
-        othersUseAgents,
         need,
         missing: boundMissing(missing),
       }));
@@ -224,33 +227,18 @@ export default function TeamAccessDialog({
             }}
           >
             <AccessPanelIntro
-              description="This Hub already works with your team. Request design-partner access for shared team memory."
+              description="This Hub already works with your team."
               icon={Mail}
-              title="Request access"
+              title="Join the hosted beta"
             />
             <AccessPanelBody>
               <FieldGroup className={styles.fields}>
-                <Field data-invalid={fieldErrors.name !== undefined || undefined}>
-                  <FieldLabel htmlFor={nameId}>Name</FieldLabel>
-                  <Input
-                    aria-invalid={fieldErrors.name !== undefined || undefined}
-                    autoComplete="name"
-                    autoFocus
-                    disabled={submitting}
-                    id={nameId}
-                    maxLength={200}
-                    name="name"
-                    onChange={(event) => setName(event.currentTarget.value)}
-                    placeholder="Ada Lovelace"
-                    value={name}
-                  />
-                  {fieldErrors.name ? <FieldError>{fieldErrors.name}</FieldError> : null}
-                </Field>
                 <Field data-invalid={fieldErrors.email !== undefined || undefined}>
                   <FieldLabel htmlFor={emailId}>Email</FieldLabel>
                   <Input
                     aria-invalid={fieldErrors.email !== undefined || undefined}
                     autoComplete="email"
+                    autoFocus
                     disabled={submitting}
                     id={emailId}
                     maxLength={320}
@@ -271,7 +259,7 @@ export default function TeamAccessDialog({
             </AccessPanelBody>
             <DialogFooter className={cn(styles.footer, "mx-0 mb-0 rounded-none bg-transparent px-[22px] pt-[14px] pb-[18px]")}>
               <Button disabled={submitting} type="submit">
-                {submitting ? "Sending…" : "Request access"}
+                {submitting ? "Sending…" : "Join the hosted beta"}
               </Button>
             </DialogFooter>
           </form>
@@ -292,6 +280,20 @@ export default function TeamAccessDialog({
             />
             <AccessPanelBody>
               <FieldGroup className={styles.fields}>
+                <OptionalChoice disabled={submitting} id={engineersUsingAgentsId} label="How many engineers use agents on your repos?" onChange={setEngineersUsingAgents} options={TEAM_ACCESS_ENGINEERS_USING_AGENTS} value={engineersUsingAgents} />
+                <Field>
+                  <FieldLabel htmlFor={nameId}>Name</FieldLabel>
+                  <Input
+                    autoComplete="name"
+                    disabled={submitting}
+                    id={nameId}
+                    maxLength={200}
+                    name="name"
+                    onChange={(event) => setName(event.currentTarget.value)}
+                    placeholder="Ada Lovelace"
+                    value={name}
+                  />
+                </Field>
                 <Field>
                   <FieldLabel htmlFor={companyId}>Company</FieldLabel>
                   <Input
@@ -309,7 +311,6 @@ export default function TeamAccessDialog({
                 <OptionalChoice disabled={submitting} id={foundMexId} label="How did you find mex?" onChange={setFoundMex} options={TEAM_ACCESS_FOUND_MEX} value={foundMex} />
                 <OptionalChoice disabled={submitting} id={installReasonId} label="Why did you install it?" onChange={setInstallReason} options={TEAM_ACCESS_INSTALL_REASONS} value={installReason} />
                 <OptionalChoice disabled={submitting} id={repoKindId} label="Your repo is" onChange={setRepoKind} options={TEAM_ACCESS_REPO_KINDS} value={repoKind} />
-                <OptionalChoice disabled={submitting} id={othersUseAgentsId} label="Do others use agents on this repo?" onChange={setOthersUseAgents} options={TEAM_ACCESS_OTHERS_USE_AGENTS} value={othersUseAgents} />
                 <OptionalChoice disabled={submitting} id={needId} label="I need" onChange={setNeed} options={TEAM_ACCESS_NEEDS} value={need} />
                 <Field>
                   <FieldLabel htmlFor={missingId}>What’s missing?</FieldLabel>
