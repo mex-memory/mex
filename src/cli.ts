@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
 import { VERSION } from "./version.js";
+import { unsupportedNodeMessage } from "./node-version.js";
 import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
 import { setGlobalConfigKey } from "./global-config.js";
 import { createCliTelemetry, telemetryProjectLocation } from "./cli-telemetry.js";
@@ -349,6 +350,16 @@ program
   .option("--no-open", "Show the Hub link without opening a browser")
   .option("--tool <tool>", "Terminal setup: preselect an AI tool (repeatable; none for no tool; --yes skips review)", (value: string, previous: string[] = []) => [...previous, value])
   .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
+  .addHelpText(
+    "after",
+    "\nSetup modes:\n"
+      + "  Terminal (default, or --cli)  Runs setup in this terminal. --tool, --yes and --dry-run\n"
+      + "                                apply only here.\n"
+      + "  Browser (--browser)           Runs setup in the local browser Hub. It cannot be combined\n"
+      + "                                with --cli, --tool, --yes or --dry-run.\n"
+      + "\n--no-open prints the Hub link instead of opening it in a browser. In the terminal\n"
+      + "mode this is the link to the finishing Hub page; in the browser mode it is the setup link.\n",
+  )
   .action(async (_opts, command: Command) => {
     await runSetupCommand(command.optsWithGlobals());
   });
@@ -1392,7 +1403,12 @@ if (process.argv[1]) {
     // argv[1] is missing or not on disk (e.g. test fixtures) — not the main entry.
   }
 }
-if (isMainModule) {
+// Refuse unsupported Node before any command runs, so it cannot fail halfway.
+const unsupportedNode = isMainModule ? unsupportedNodeMessage(process.versions.node) : null;
+if (unsupportedNode !== null) {
+  console.error(unsupportedNode);
+  process.exitCode = 1;
+} else if (isMainModule) {
   if (!isFirstRunNoticeExemptCommand(process.argv[2])) showFirstRunNotice();
   const commandArgv = process.argv.slice(2);
   const teamJsonContext = inspectTeamJsonInvocation(commandArgv);

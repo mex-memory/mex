@@ -68,6 +68,19 @@ describe("setup entry points", () => {
     expect(mocks.setup).not.toHaveBeenCalled();
   });
 
+  it("describes both setup modes, the browser conflicts, and --no-open in --help (#275)", async () => {
+    const { program } = await import("../src/cli.js");
+    const command = program.commands.find(command => command.name() === "setup")!;
+    let help = "";
+    command.configureOutput({ writeOut: (text) => { help += text; } });
+    command.outputHelp();
+    expect(help).toContain("Setup modes:");
+    expect(help).toContain("Terminal (default, or --cli)");
+    expect(help).toContain("Browser (--browser)");
+    expect(help.replace(/\s+/g, " ")).toContain("It cannot be combined with --cli, --tool, --yes or --dry-run.");
+    expect(help).toContain("--no-open prints the Hub link instead of opening it in a browser.");
+  });
+
   it("keeps the TUI explicitly available", async () => {
     const { program } = await import("../src/cli.js");
     await program.parseAsync(["tui"], { from: "user" });

@@ -115,7 +115,7 @@ Prefer browser setup?
 npx mex-agent@0.8.4 setup --browser
 ```
 
-The browser runs the same setup engine with a background Claude Code or Codex session and manual population fallback. `--browser --no-open` prints its link without launching a browser. The existing `--cli` flag remains an alias for the default terminal flow.
+The browser runs the same setup engine with a background Claude Code or Codex session and manual population fallback. `--browser --no-open` prints its link without launching a browser. The existing `--cli` flag remains an alias for the default terminal flow. `--tool`, `--yes`, and `--dry-run` are terminal-only, so `--browser` cannot be combined with them or with `--cli`; setup stops with an error naming the conflicting option. `mex setup --help` summarizes both modes.
 
 For scripts, use `--yes` with repeatable `--tool <name>` flags (or `--tool none`). Piped input/output and CI also use plain output. These runs reuse saved choices, default to no integrations when none are saved, and never launch an agent or browser or wait for input. Exit codes are `0` for completed preparation or a successful dry run, `2` when population is still required, `1` for failure, and `130`/`143` for interruption. After a population checkpoint, rerun `mex setup` to continue. Once preparation is complete, `mex setup --browser` opens the commit and completion page.
 
