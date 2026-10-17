@@ -27,6 +27,10 @@ const HealthPage = lazy(async () => ({ default: (await import("../pages/HealthPa
 const SettingsPage = lazy(async () => ({ default: (await import("../pages/SettingsPage")).SettingsPage }));
 const SetupLayout = lazy(async () => ({ default: (await import("../pages/SetupPage")).SetupLayout }));
 
+/** How to get back in once a one-use link or its session is no longer valid (#276). */
+export const HUB_RELAUNCH_DETAIL = "Each Hub link works once, within 5 minutes. Close this tab, then run `mex hub` again"
+  + " (or rerun the setup command you used, such as `mex setup --browser`) and open the new link it prints.";
+
 function SessionBoundary() {
   const session = useSession();
   const capabilities = useCapabilities();
@@ -48,7 +52,7 @@ function SessionBoundary() {
         <StatePanel
           state="unavailable"
           title={expired ? "This Hub session has expired" : "A Hub session is required"}
-          detail="Close this tab and run `mex hub` again. A fresh one-use link will create a new local session."
+          detail={HUB_RELAUNCH_DETAIL}
         />
       </div>
     );
@@ -175,7 +179,9 @@ export function HubApplication({ api, startupError }: { api: HubApi; startupErro
       <div className={styles.desktopOnly}>
         {startupError ? (
           <div className={styles.fullPageState}>
-            <StatePanel state="error" title="The one-use Hub link was not accepted" detail={startupError.message} />
+            {startupError instanceof HubApiError && startupError.problem.code === "UNAUTHORIZED"
+              ? <StatePanel state="unavailable" title="This Hub link has expired or was already used" detail={HUB_RELAUNCH_DETAIL} />
+              : <StatePanel state="error" title="The one-use Hub link was not accepted" detail={startupError.message} />}
           </div>
         ) : <AppRoutes />}
       </div>

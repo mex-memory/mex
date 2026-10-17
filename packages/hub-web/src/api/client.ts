@@ -368,6 +368,28 @@ export function clearBootstrapFragment(): void {
   window.history.replaceState(window.history.state, "", clean);
 }
 
+/**
+ * Exchange a one-use link for a session and return the startup error, if any.
+ * A used or expired link is not an error while this browser still holds a
+ * valid session, e.g. when the same link is opened again (#276).
+ */
+export async function openBootstrapSession(
+  api: Pick<HubApi, "bootstrap" | "getSession">,
+  token: string,
+): Promise<Error | null> {
+  try {
+    await api.bootstrap(token);
+    return null;
+  } catch (error) {
+    try {
+      await api.getSession();
+      return null;
+    } catch {
+      return error instanceof Error ? error : new Error("The bootstrap request failed.");
+    }
+  }
+}
+
 export class HttpHubApi implements HubApi {
   #csrfToken: string | null = null;
   #pageViewPending = false;

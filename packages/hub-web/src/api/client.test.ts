@@ -6,6 +6,7 @@ import {
   fixturesEnabled,
   inboxFixtureVariant,
   memberFixtureVariant,
+  openBootstrapSession,
   overviewFixtureVariant,
   relayFixtureVariant,
   readBootstrapToken,
@@ -89,6 +90,30 @@ describe("bootstrap fragment handling", () => {
     ["#unknown=value", null],
   ])("reads %s without persisting it", (hash, expected) => {
     expect(readBootstrapToken(hash)).toBe(expected);
+  });
+
+  it("opens a session from an accepted one-use link", async () => {
+    const api = { bootstrap: vi.fn().mockResolvedValue({ expiresAt: session.expiresAt }), getSession: vi.fn() };
+    await expect(openBootstrapSession(api, "secret-token")).resolves.toBeNull();
+    expect(api.getSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps an active session when the same link is opened again (#276)", async () => {
+    const used = new HubApiError({ type: "about:blank", title: "Authentication required", status: 401, code: "UNAUTHORIZED",
+      detail: "The bootstrap token is invalid, expired, or already used.", requestId: "11111111-1111-4111-8111-111111111111" });
+    const api = { bootstrap: vi.fn().mockRejectedValue(used), getSession: vi.fn().mockResolvedValue(session) };
+    await expect(openBootstrapSession(api, "secret-token")).resolves.toBeNull();
+    expect(api.getSession).toHaveBeenCalledOnce();
+  });
+
+  it("reports the rejected link when there is no session to keep (#276)", async () => {
+    const expired = new HubApiError({ type: "about:blank", title: "Authentication required", status: 401, code: "UNAUTHORIZED",
+      detail: "The bootstrap token is invalid, expired, or already used.", requestId: "11111111-1111-4111-8111-111111111111" });
+    const api = {
+      bootstrap: vi.fn().mockRejectedValue(expired),
+      getSession: vi.fn().mockRejectedValue(new HubApiError({ ...expired.problem, detail: "A valid local Hub session is required." })),
+    };
+    await expect(openBootstrapSession(api, "secret-token")).resolves.toBe(expired);
   });
 
   it("cannot enable populated fixtures in a production build", () => {

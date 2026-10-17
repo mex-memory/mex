@@ -186,6 +186,7 @@ import { readBoundedJson, readStrictQuery } from "./http/request.js";
 import { HUB_PAGE_EVENT_BODY_BYTES, HubPageViewSchema, HubTelemetry, type HubTelemetrySink } from "./telemetry.js";
 import {
   type HubSession,
+  HubSecurityError,
   HubSessionManager,
 } from "./security/session.js";
 import {
@@ -357,7 +358,16 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
 
   app.use("*", async (context, next) => {
     context.set("requestId", requestId());
-    options.security.assertHost(context.req.raw.headers);
+    try {
+      options.security.assertHost(context.req.raw.headers);
+    } catch (error) {
+      // A person who opened the Hub at another address (e.g. localhost) gets a
+      // readable page instead of a bare 400 (#276). The Host check is unchanged.
+      if (!(error instanceof HubSecurityError) || !isPageNavigation(context)) throw error;
+      const response = wrongAddressPage(options.security.expectedOrigin(), error.message);
+      applySecurityHeaders(response, context.get("requestId"), false);
+      return response;
+    }
     await next();
     applySecurityHeaders(
       context.res,
@@ -1432,4 +1442,34 @@ function applySecurityHeaders(response: Response, requestId: string, apiResponse
 
 function isReadMethod(method: string): boolean {
   return method === "GET" || method === "HEAD";
+}
+
+/** A browser opening a page, as opposed to an API or asset request. */
+function isPageNavigation(context: Context): boolean {
+  return isReadMethod(context.req.method)
+    && !context.req.path.startsWith("/api/")
+    && context.req.header("accept")?.includes("text/html") === true;
+}
+
+/** Plain HTML, without scripts or inline styles, so the Hub CSP still applies. */
+function wrongAddressPage(expectedOrigin: string, reason: string): Response {
+  const origin = escapeHtml(expectedOrigin);
+  const body = [
+    "<!doctype html>",
+    '<html lang="en"><head><meta charset="UTF-8" /><title>Open the MEX Project Hub from its link</title></head><body>',
+    "<h1>Open the MEX Project Hub from its link</h1>",
+    `<p>This Hub only answers at <a href="${origin}/">${origin}/</a>. ${escapeHtml(reason)}</p>`,
+    "<p>Open the link printed in the terminal that started the Hub. Each link works once, within 5 minutes. "
+      + "If yours has expired, run <code>mex hub</code> again (or rerun the setup command you used, such as "
+      + "<code>mex setup --browser</code>) and open the new link it prints.</p>",
+    "</body></html>",
+  ].join("\n");
+  return new Response(body, {
+    status: 400,
+    headers: { "content-type": "text/html; charset=UTF-8", "cache-control": "no-store" },
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
 }

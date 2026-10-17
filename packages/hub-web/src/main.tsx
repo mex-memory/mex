@@ -5,7 +5,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserHubApplication } from "./app/App";
-import { clearBootstrapFragment, readBootstrapToken, resolveApi } from "./api/client";
+import { clearBootstrapFragment, openBootstrapSession, readBootstrapToken, resolveApi } from "./api/client";
 import { createHubQueryClient } from "./api/query-client";
 import "./styles/global.css";
 
@@ -15,9 +15,7 @@ const token = readBootstrapToken();
 
 if (token) {
   try {
-    await api.bootstrap(token);
-  } catch (error) {
-    startupError = error instanceof Error ? error : new Error("The bootstrap request failed.");
+    startupError = await openBootstrapSession(api, token);
   } finally {
     clearBootstrapFragment();
   }
