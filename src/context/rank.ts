@@ -259,10 +259,16 @@ export interface GateResult {
  * The frozen gate: the first candidate in rank order that passes every check
  * injects; a second only when it reaches `ratio` of the first one's score.
  */
-export function gateCandidates(list: readonly RankedCandidate[], recipe: Recipe): GateResult {
-  const p: RecipeThresholds = recipe.thresholds;
-  const dense = recipe.dense;
-  const window = list.slice(0, GATE_WINDOW);
+export function gateCandidates(list: readonly RankedCandidate[], recipe: Recipe, windowed = false): GateResult {
+  const p: RecipeThresholds = windowed ? recipe.windowed.thresholds : recipe.thresholds;
+  // A windowed prompt is gated on its lexical score by both recipes; the dense recipe's cosine only vetoes.
+  const dense = windowed ? false : recipe.dense;
+  let ranked = list;
+  if (windowed && recipe.dense) {
+    const min = recipe.windowed.cosineMin ?? -Infinity;
+    ranked = list.filter((r) => r.norm > 0 && (r.cos ?? -1) >= min).sort((a, b) => b.norm - a.norm || a.doc.order - b.doc.order);
+  }
+  const window = ranked.slice(0, GATE_WINDOW);
   const selected: RankedCandidate[] = [];
   const decisions: GatedCandidate[] = window.map((candidate, rank) => ({ rank: rank + 1, candidate, decision: "not-reached" }));
   let first = 0;

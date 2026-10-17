@@ -126,7 +126,7 @@ export async function composePrompt(index: ContextIndex, prompt: string, options
     }
   }
 
-  const gate: GateResult = gateCandidates(output.list, recipe);
+  const gate: GateResult = gateCandidates(output.list, recipe, output.windows.length > 1);
   const byId = new Map(index.entities.map((e) => [e.id, e]));
   const shown = options.shown ?? new Set<string>();
   const alreadyShown: string[] = [];

@@ -52,12 +52,27 @@ export interface RecipeThresholds {
   fnMin?: number;
 }
 
+/**
+ * The gate for a prompt that was cut into several windows. A window holds at
+ * most `WINDOWING.capWords` words, so it carries fewer matching words than a
+ * whole question, and the best of many windows is a maximum, so the runner-up
+ * is flattered too: the floor and corroboration are lower and the lead over the
+ * fourth candidate carries the weight, with a second entry only when it is
+ * nearly as good as the first. The dense recipe uses this same lexical gate and
+ * adds the cosine as a veto (a candidate under `cosineMin` is dropped first).
+ */
+export interface WindowedGate {
+  thresholds: RecipeThresholds;
+  cosineMin?: number;
+}
+
 export interface Recipe {
   name: RecipeName;
   /** `facts`: type fact only. `wiki`: typed sections that carry body text. */
   candidates: "facts" | "wiki";
   dense: boolean;
   thresholds: RecipeThresholds;
+  windowed: WindowedGate;
 }
 
 export const RECIPES: Readonly<Record<RecipeName, Recipe>> = {
@@ -66,12 +81,14 @@ export const RECIPES: Readonly<Record<RecipeName, Recipe>> = {
     candidates: "wiki",
     dense: true,
     thresholds: { floor: 0.2591, G: 5, ratio: 0.2, max: 2, tauD: 0.6, margin: 0, fnMin: 0 },
+    windowed: { thresholds: { floor: 0.293, G: 3, ratio: 0.9, max: 2, margin: 0.45 }, cosineMin: 0.45 },
   },
   R2w: {
     name: "R2w",
     candidates: "wiki",
     dense: false,
     thresholds: { floor: 0.41859999999999997, G: 5, ratio: 0.5, max: 2, margin: 0.45 },
+    windowed: { thresholds: { floor: 0.293, G: 3, ratio: 0.9, max: 2, margin: 0.45 } },
   },
 };
 
@@ -100,7 +117,7 @@ export interface WindowParams {
 export const WINDOWING: WindowParams = {
   singleMaxWords: 56,
   capWords: 40,
-  minWords: 8,
+  minWords: 10,
   maxWindows: 12,
   identScope: "window",
   groupScope: "window",
