@@ -1,6 +1,6 @@
 // The product hooks (`mex hooks`, `mex-hook`, `mex context`) as the agent-arm test uses them.
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { git, runMex } from "./workspace.mjs";
 
 export const CONTEXT_LOG = "context-log.jsonl";
@@ -47,9 +47,17 @@ export function installProductHooks({ workspace, cliBin, env }) {
   if (result.code !== 0) throw new Error(`mex hooks install failed in ${workspace}: ${result.stderr || result.stdout}`);
   const commands = managedHookCommands(workspace);
   if (!commands.length) throw new Error(`mex hooks install wrote no MEX hook entries in ${workspace}`);
+  // The entries must run the frozen CLI's `mex-hook`, found through the arm's PATH, not some other install.
+  const status = runMex(cliBin, ["hooks", "status", "--tool", "claude", "--json"], workspace, env);
+  let installed = null;
+  try { installed = JSON.parse(status.stdout).data?.installed ?? null; } catch { installed = null; }
+  const inside = installed?.target && resolve(installed.target).toLowerCase().startsWith(resolve(cliBin).toLowerCase());
+  if (installed?.kind !== "bin" || installed.exists !== true || !inside) {
+    throw new Error(`the installed hook command does not resolve to the frozen CLI (${JSON.stringify(installed)}), cliBin ${cliBin}`);
+  }
   git(workspace, ["add", "-A"]);
   git(workspace, ["commit", "-q", "--allow-empty", "-m", "eval: MEX hooks installed"]);
-  return { commands: commands.map(({ event, matcher, command }) => ({ event, matcher, command })) };
+  return { commands: commands.map(({ event, matcher, command }) => ({ event, matcher, command })), resolvesTo: installed.target };
 }
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
