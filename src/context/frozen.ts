@@ -81,7 +81,7 @@ export const RECIPES: Readonly<Record<RecipeName, Recipe>> = {
     candidates: "wiki",
     dense: true,
     thresholds: { floor: 0.2591, G: 5, ratio: 0.2, max: 2, tauD: 0.6, margin: 0, fnMin: 0 },
-    windowed: { thresholds: { floor: 0.293, G: 3, ratio: 0.9, max: 2, margin: 0.45 }, cosineMin: 0.45 },
+    windowed: { thresholds: { floor: 0.293, G: 3, ratio: 0.9, max: 2, margin: 0.6 }, cosineMin: 0.5 },
   },
   R2w: {
     name: "R2w",
