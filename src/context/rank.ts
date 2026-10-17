@@ -7,8 +7,9 @@
  * and the order of every stage are frozen (see `frozen.ts`).
  */
 
-import { DENSE_TOP_N, GATE_WINDOW, RRF_K, type Recipe, type RecipeThresholds } from "./frozen.js";
+import { DENSE_TOP_N, GATE_WINDOW, RRF_K, WINDOWING, type Recipe, type RecipeThresholds, type WindowParams } from "./frozen.js";
 import { extractIdentifiers, queryWords, tokens, wholeIdentifier, type QueryIdentifier } from "./tokenize.js";
+import { promptWindows } from "./windows.js";
 
 /** What the scorer needs to know about one candidate. */
 export interface RankableEntity {
@@ -48,6 +49,8 @@ export interface RankedCandidate {
   groups: number;
   /** 0, 2 or 3: how strongly a prompt identifier matched a linked symbol or file. */
   exact: number;
+  /** The prompt window this candidate scored best in (0 for a single-window prompt). */
+  window?: number;
   cos?: number;
   denseRank?: number;
   rrf?: number;
@@ -60,6 +63,8 @@ export interface RankOutput {
   identifiers: QueryIdentifier[];
   idfSum: number;
   list: RankedCandidate[];
+  /** The texts that were scored: the prompt itself, or its windows. */
+  windows: string[];
 }
 
 export function buildRankIndex(entities: readonly RankableEntity[], projectWords: ReadonlySet<string> = new Set()): RankIndex {
@@ -96,9 +101,15 @@ const idfOf = (index: RankIndex, term: string): number => {
   return Math.log(1 + (index.docs.length - n + 0.5) / (n + 0.5));
 };
 
-export function rankQuery(index: RankIndex, prompt: string): RankOutput {
-  const words = queryWords(prompt, index.projectWords);
-  const identifiers = extractIdentifiers(prompt);
+/** Score one text against every candidate. The frozen scorer, unchanged. */
+function rankText(
+  index: RankIndex,
+  text: string,
+  scope: { identifiers?: readonly QueryIdentifier[]; groupWords?: readonly string[] } = {},
+): RankOutput {
+  const words = queryWords(text, index.projectWords);
+  const identifiers = scope.identifiers ? [...scope.identifiers] : extractIdentifiers(text);
+  const groupWords = scope.groupWords ?? words;
   const idf = new Map(words.map((term) => [term, idfOf(index, term)]));
   const idfSum = words.reduce((sum, term) => sum + idf.get(term)!, 0) || 1;
 
@@ -131,27 +142,65 @@ export function rankQuery(index: RankIndex, prompt: string): RankOutput {
 
   // Corroboration: how many distinct query words the candidate contains.
   for (const r of list) {
-    r.groups = words.filter((w) => r.doc.tf.has(w)).length;
+    r.groups = groupWords.filter((w) => r.doc.tf.has(w)).length;
     if (r.groups < 2 && !r.exact) r.score *= 0.6;
   }
   for (const r of list) r.norm = r.score / idfSum;
   list.sort((a, b) => b.score - a.score || a.doc.order - b.doc.order);
-  return { words, identifiers, idfSum, list };
+  return { words, identifiers, idfSum, list, windows: [text] };
+}
+
+/**
+ * Rank the candidates for a prompt. A prompt of up to `windowing.singleMaxWords`
+ * words is scored as one text, exactly as the frozen recipe always did. A longer
+ * prompt is cut into windows (`promptWindows`), each is scored on its own and
+ * against its own query-term weight, and a candidate keeps its best window.
+ */
+export function rankQuery(index: RankIndex, prompt: string, windowing: WindowParams = WINDOWING): RankOutput {
+  const windows = promptWindows(prompt, windowing);
+  if (windows.length === 1) return rankText(index, prompt);
+
+  const words = queryWords(prompt, index.projectWords);
+  const identifiers = extractIdentifiers(prompt);
+  const scope = {
+    ...(windowing.identScope === "prompt" ? { identifiers } : {}),
+    ...(windowing.groupScope === "prompt" ? { groupWords: words } : {}),
+  };
+  const best = new Map<RankDoc, RankedCandidate>();
+  let idfSum = 0;
+  windows.forEach((text, k) => {
+    const ranked = rankText(index, text, scope);
+    for (const r of ranked.list) {
+      const held = best.get(r.doc);
+      if (held === undefined || r.norm > held.norm) best.set(r.doc, { ...r, window: k });
+    }
+    idfSum = Math.max(idfSum, ranked.idfSum);
+  });
+  const list = [...best.values()];
+  list.sort((a, b) => b.norm - a.norm || a.doc.order - b.doc.order);
+  return { words, identifiers, idfSum, list, windows };
 }
 
 /** Reciprocal-rank fusion of the lexical ranking with the dense ranking. */
 export function fuseDense(
   index: RankIndex,
   lexical: RankOutput,
-  queryVector: Float32Array,
+  queryVectors: Float32Array | readonly Float32Array[],
   docVectors: ReadonlyMap<string, Float32Array>,
 ): RankOutput {
+  const queries: readonly Float32Array[] = queryVectors instanceof Float32Array ? [queryVectors] : queryVectors;
   const scored = index.docs.map((doc) => {
     const v = docVectors.get(doc.entity.id);
     let cos = -1;
     if (v !== undefined) {
-      cos = 0;
-      for (let k = 0; k < v.length; k += 1) cos += v[k]! * queryVector[k]!;
+      // The best window decides, as in the lexical channel.
+      cos = Number.NEGATIVE_INFINITY;
+      for (const queryVector of queries) {
+        let dot = 0;
+        for (let k = 0; k < v.length; k += 1) dot += v[k]! * queryVector[k]!;
+        cos = Math.max(cos, dot);
+      }
+      if (cos === Number.NEGATIVE_INFINITY) cos = -1;
     }
     return { doc, cos };
   });
@@ -174,7 +223,7 @@ export function fuseDense(
     r.fn = r.rrf / (2 / (RRF_K + 1));
   }
   list.sort((a, b) => b.rrf! - a.rrf! || a.doc.order - b.doc.order);
-  return { words: lexical.words, identifiers: lexical.identifiers, idfSum: lexical.idfSum, list };
+  return { words: lexical.words, identifiers: lexical.identifiers, idfSum: lexical.idfSum, list, windows: lexical.windows };
 }
 
 // ---------------------------------------------------------------------------

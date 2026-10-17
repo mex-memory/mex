@@ -75,6 +75,37 @@ export const RECIPES: Readonly<Record<RecipeName, Recipe>> = {
   },
 };
 
+/**
+ * How a long prompt is cut into windows before scoring. A prompt of at most
+ * `singleMaxWords` words is one window and ranks exactly as it always did;
+ * longer prompts are scored window by window, each normalised by its own
+ * query-term weight, so a task description does not dilute the one sentence
+ * that names the problem.
+ */
+export interface WindowParams {
+  /** A prompt of at most this many words is a single window. */
+  singleMaxWords: number;
+  /** The most words one window may hold (a longer sentence is cut). */
+  capWords: number;
+  /** A sentence shorter than this is merged into its neighbour. */
+  minWords: number;
+  /** Windows scored per prompt; the rest are ignored. */
+  maxWindows: number;
+  /** `window`: identifiers are read from the window; `prompt`: from the whole prompt. */
+  identScope: "window" | "prompt";
+  /** `window`: corroboration counts query words of the window; `prompt`: of the whole prompt. */
+  groupScope: "window" | "prompt";
+}
+
+export const WINDOWING: WindowParams = {
+  singleMaxWords: 56,
+  capWords: 40,
+  minWords: 8,
+  maxWindows: 12,
+  identScope: "window",
+  groupScope: "window",
+};
+
 /** How many ranked candidates reach the gate. */
 export const GATE_WINDOW = 12;
 
