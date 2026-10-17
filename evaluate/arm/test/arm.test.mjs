@@ -150,7 +150,7 @@ test("workspaces add the scaffold only for the MEX arm and leave dependency targ
     createWorkspace({ subjectRoot: subject, workspace: mex, base, scaffoldCommit: scaffold, depsDir: deps });
     assert.equal(existsSync(join(files, ".mex")), false);
     assert.equal(existsSync(join(files, "CLAUDE.md")), false);
-    assert.equal(readFileSync(join(mex, ".mex", "ROUTER.md"), "utf8"), "# router\n");
+    assert.equal(readFileSync(join(mex, ".mex", "ROUTER.md"), "utf8").replace(/\r\n/g, "\n"), "# router\n", "line endings follow the machine");
     assert.equal(readFileSync(join(mex, "node_modules", "keep.txt"), "utf8"), "keep");
     assert.equal(git(mex, ["status", "--porcelain"]).stdout.trim(), "");
     removeWorkspace(subject, files); removeWorkspace(subject, mex);
@@ -179,7 +179,8 @@ test("grounding lines are counted only in the .mex part of a patch", () => {
 });
 
 test("arm specs separate the scaffold from the CLI", () => {
-  assert.deepEqual(armSpecFor({ scaffold: false }), { withMex: false, withCli: false });
-  assert.deepEqual(armSpecFor({ scaffold: true }), { withMex: true, withCli: true });
-  assert.deepEqual(armSpecFor({ scaffold: true, cli: false }), { withMex: true, withCli: false });
+  const pick = ({ withMex, withCli }) => ({ withMex, withCli });
+  assert.deepEqual(pick(armSpecFor({ scaffold: false })), { withMex: false, withCli: false });
+  assert.deepEqual(pick(armSpecFor({ scaffold: true })), { withMex: true, withCli: true });
+  assert.deepEqual(pick(armSpecFor({ scaffold: true, cli: false })), { withMex: true, withCli: false });
 });

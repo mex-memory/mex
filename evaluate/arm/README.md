@@ -42,3 +42,32 @@ Hand-edited grounding hashes are counted as a loop-close violation, not as an in
 
 - **Change tasks:** graded by the upstream PR's hidden tests, restored over the agent's version after the session.
 - **Q&A tasks:** graded blind against each task's `answerPoints`. Record `{ correct, pointsMet, notes, labeler }` per `blindId` in `grades.json`, then rerun `--report`.
+
+## Product hooks suites (`*-hooks.json`)
+
+These suites compare three arms on Hono, TypeScript and Django: `files` (repository only), `mex-r2w` (scaffold plus the product hooks, prompts use the lexical recipe) and `mex-r3` (scaffold plus the product hooks, semantic extra installed). They use the product's `mex hooks install --tool claude`, `mex-hook` and `mex context`, not the prototype in `push/`.
+
+| Suite field | Meaning |
+|---|---|
+| `arms.<id>.hooks` | Install the product hooks in each session checkout and commit them as setup state, so the session diff is the agent's work only. |
+| `arms.<id>.lexical` | Sets `MEX_HOOK_LEXICAL=1` for the session (recipe R2w). Other arms never inherit it. |
+| `arms.<id>.semantic` | Needs `mex context semantic install` (machine level); the run is invalid if a prompt used the lexical recipe. |
+| `projectName` | Folder name of every checkout (`<output>/ws/<run>/<projectName>`). The context index turns the folder name into stop words, so it is the same in every arm and in the index template, and never a run id. |
+| `appendPrompt` | `{ qa, change }`: one concise-answer instruction appended to the prompt in every arm. |
+| `requiresDeps`, `python` | `false` for a subject without `node_modules`; the Python used by the `django` test runner. |
+
+Extra inputs: `--aliases <file>` (Hono and TypeScript: `{ "<entity id>": ["phrase", ...] }`, written to `.mex/local/context-aliases.json`; `--prepare` reports how many ids each scaffold has). `--deps` is optional for suites that set `requiresDeps: false`.
+
+What changes in a hooks session:
+- The scaffold's prototype hook files, prototype settings and prototype `CLAUDE.md` block are removed from the checkout (the scaffold ref is untouched); a `CLAUDE.md` block written by `mex setup` stays.
+- `--prepare` builds the Graph and Wiki indexes and the context index (with the alias overlay) once per base and scaffold; sessions copy them.
+- The frozen CLI's bin is first on `PATH` for MEX arms, `MEX_CLI` points the settle worker at it.
+- After the agent exits, the harness waits for the settle worker (`.mex/local/context-settle.lock`, cap 10 minutes, recorded as `settleWait` and not as agent time), copies `context-log.jsonl` to `artifacts/<run>.context-log.jsonl`, and stores `mex context status --json` after settle as `artifacts/<run>.context-status.json`.
+- The row's `hooks` field summarises the log: events per kind (count, injected, time), injected ids and characters, whether the session budget was hit, Stop blocks and the ids they listed, each settle pass (refresh mode, reason, changed, re-extracted, regrounded ids, failures).
+- A MEX arm with zero hook events is invalid; so is a `files` arm with hook entries or a context log.
+
+### Fake runs
+
+`test/fake-hooks-agent.mjs` (`--fake-agent`) replays a scripted session and runs the checkout's hook commands from `.claude/settings.json` with Claude Code-style payloads, so the wiring and the end-of-session work can be exercised without a model. `test/make-fake-fixes.mjs` writes the `FAKE_AGENT_FIXES` file that lets it apply the upstream fix for change tasks. `FAKE_AGENT_TOUCH_FACT=1` edits code a fact links to; `FAKE_AGENT_CONFIRM=1` answers the Stop block with `mex context confirm`. It cannot show that Claude Code itself calls the hooks.
+
+Unit tests: `node --test evaluate/arm/test/arm.test.mjs evaluate/arm/test/hooks.test.mjs`.
