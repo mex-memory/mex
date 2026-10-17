@@ -932,6 +932,39 @@ describe("Health states", () => {
     expect(await screen.findByRole("heading", { name: "Inspecting system health" })).toBeVisible();
   });
 
+  it("shows the CLI recovery command for a migration-required Wiki instead of no repair", async () => {
+    const fixture = createFixtureApi();
+    const health = await fixture.getHealth();
+    renderRoute("/health", apiWith({ getHealth: () => Promise.resolve({
+      ...health,
+      components: health.components.map((component) => component.wiki ? {
+        ...component,
+        status: "degraded",
+        summary: "Legacy Knowledge requires an explicit migration before Hub reads can continue.",
+        wiki: {
+          ...component.wiki,
+          indexStatus: "migration_required",
+          indexedAt: null,
+          schemaVersion: null,
+          indexedRevision: null,
+          allowedJobKinds: [],
+          recommendedJobKind: null,
+          activeJobId: null,
+          recoveryCommand: { label: "Preview the required Wiki migration", command: "mex wiki migrate --dry-run" },
+        },
+      } : component),
+    }) }));
+
+    const wikiHeading = await screen.findByRole("heading", { name: "Project Wiki" });
+    const wikiRow = wikiHeading.closest<HTMLElement>("[role='listitem']");
+    expect(wikiRow).not.toBeNull();
+    expect(within(wikiRow!).getByText("Migration required")).toBeVisible();
+    expect(within(wikiRow!).getByText("CLI action required")).toBeVisible();
+    expect(within(wikiRow!).queryByText("No repair recommended")).toBeNull();
+    expect(within(wikiRow!).getByText("Preview the required Wiki migration")).toBeVisible();
+    expect(within(wikiRow!).getByText("mex wiki migrate --dry-run")).toBeVisible();
+  });
+
   it("renders a bounded health error with retry", async () => {
     renderRoute("/health", apiWith({ getHealth: () => Promise.reject(new Error("database detail")) }));
 

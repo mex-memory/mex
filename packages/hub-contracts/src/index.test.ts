@@ -1752,6 +1752,48 @@ describe("Hub API contracts", () => {
       components: [{ ...response.components[0], graph: { ...graph, parseHealth: { ...graph.parseHealth, failed: 1 } } }],
     }).success).toBe(false);
   });
+
+  it("keeps the Wiki recovery command optional, nullable, and bounded", () => {
+    const details = {
+      indexStatus: "migration_required",
+      observedAt: "2026-08-23T00:00:00.000Z",
+      indexedAt: null,
+      schemaVersion: null,
+      indexedRevision: null,
+      allowedJobKinds: [],
+      recommendedJobKind: null,
+      activeJobId: null,
+    } as const;
+    const response = (recoveryCommand: unknown) => ({
+      status: "degraded",
+      observedAt: "2026-08-23T00:00:00.000Z",
+      components: [{
+        id: "wiki",
+        label: "Wiki index",
+        status: "degraded",
+        summary: "Migration required.",
+        diagnostics: [],
+        wiki: { ...details, recoveryCommand },
+      }],
+    });
+    const recovery = { label: "Preview the required Wiki migration", command: "mex wiki migrate --dry-run" };
+
+    expect(HealthResponseSchema.safeParse(response(undefined)).success).toBe(true);
+    expect(HealthResponseSchema.safeParse(response(null)).success).toBe(true);
+    expect(HealthResponseSchema.safeParse(response(recovery)).success).toBe(true);
+    expect(HealthResponseSchema.safeParse(response({
+      ...recovery,
+      command: "m".repeat(201),
+    })).success).toBe(false);
+    expect(HealthResponseSchema.safeParse(response({
+      ...recovery,
+      label: "",
+    })).success).toBe(false);
+    expect(HealthResponseSchema.safeParse(response({
+      ...recovery,
+      reason: "Hub runs it for you",
+    })).success).toBe(false);
+  });
 });
 
 function teamMemberGolden() {

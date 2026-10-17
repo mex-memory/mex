@@ -22,6 +22,7 @@ import {
   projectSchemaDefinition,
 } from "./team/cli/contract-projection.js";
 import type { ContractWikiIndexState } from "./wiki/query/contract-session.js";
+import { WIKI_MIGRATION_RECOVERY } from "./wiki/migration/recovery.js";
 import { VERSION } from "./version.js";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1 as const;
@@ -2731,7 +2732,10 @@ function nextInitializationAction(
     };
   }
   if (wikiIndexState === "migration_required") {
-    return { command: "mex wiki migrate --dry-run --json", reason: "Preview the required Wiki migration." };
+    return {
+      command: `${WIKI_MIGRATION_RECOVERY.command} --json`,
+      reason: `${WIKI_MIGRATION_RECOVERY.label}.`,
+    };
   }
   if (wikiIndexState === "degraded" || wikiIndexState === "unavailable") {
     return { command: "mex capabilities --json", reason: "Retry after Wiki index inspection is available." };

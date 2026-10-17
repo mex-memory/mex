@@ -142,11 +142,18 @@ function ActionControls({
 }
 
 function WikiHealthReadout({ wiki }: { wiki: WikiHealthDetails }) {
+  const recoveryCommand = wiki.recoveryCommand ?? null;
   return (
     <div className={healthStyles.wikiReadout}>
       <div className={healthStyles.indexBanner}>
         <span><small>Wiki index status</small><strong>{sentenceCase(wiki.indexStatus)}</strong></span>
-        <StatusPill tone={stateTone(wiki.indexStatus)}>{wiki.recommendedJobKind ? `${sentenceCase(wiki.recommendedJobKind)} recommended` : "No repair recommended"}</StatusPill>
+        <StatusPill tone={stateTone(wiki.indexStatus)}>
+          {wiki.recommendedJobKind
+            ? `${sentenceCase(wiki.recommendedJobKind)} recommended`
+            : recoveryCommand
+              ? "CLI action required"
+              : "No repair recommended"}
+        </StatusPill>
       </div>
       <dl className={healthStyles.wikiFacts}>
         <div><dt>Indexed</dt><dd>{formatDate(wiki.indexedAt)}</dd></div>
@@ -154,6 +161,12 @@ function WikiHealthReadout({ wiki }: { wiki: WikiHealthDetails }) {
         <div><dt>Revision</dt><dd className={healthStyles.mono}>{wiki.indexedRevision?.slice(0, 12) ?? "Not indexed"}</dd></div>
         <div><dt>Observed</dt><dd>{formatDate(wiki.observedAt)}</dd></div>
       </dl>
+      {recoveryCommand && !wiki.recommendedJobKind ? (
+        <div className={healthStyles.recoveryCommand}>
+          <small>{recoveryCommand.label}</small>
+          <code className={healthStyles.mono}>{recoveryCommand.command}</code>
+        </div>
+      ) : null}
     </div>
   );
 }

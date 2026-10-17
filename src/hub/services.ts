@@ -201,6 +201,7 @@ import {
   TEAM_READABLE_ENTITY_TYPES,
   WIKI_ENTITY_TYPES,
 } from "../wiki/model/entity.js";
+import { WIKI_MIGRATION_RECOVERY } from "../wiki/migration/recovery.js";
 
 interface HubJobReader {
   list(request?: { limit?: number }): {
@@ -1629,6 +1630,9 @@ function projectWikiHealthStatus(
     allowedJobKinds,
     recommendedJobKind,
     activeJobId,
+    recoveryCommand: status.state === "migration_required"
+      ? { ...WIKI_MIGRATION_RECOVERY }
+      : null,
   };
   return {
     id: "wiki",
@@ -1679,7 +1683,7 @@ function wikiHealthSummary(status: WikiIndexStatus): string {
     case "degraded": return "Wiki health could not be established safely; retry after the local writer or observation race settles.";
     case "rebuild_required": return "The Wiki index requires an explicit compatible rebuild.";
     case "corrupt": return "The Wiki index failed integrity checks and cannot be read safely.";
-    case "migration_required": return "Legacy Knowledge requires an explicit migration before Hub reads can continue.";
+    case "migration_required": return "Legacy Knowledge requires an explicit migration before Hub reads can continue. Preview it with mex wiki migrate --dry-run, then apply the migration with the CLI.";
   }
 }
 
