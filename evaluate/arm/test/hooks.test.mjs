@@ -126,10 +126,13 @@ test("the prototype hooks leave a hooks checkout, but a scaffold from setup is k
     createWorkspace({ subjectRoot: subject, workspace: kept, base, scaffoldCommit: prototype, stripPrototype: false });
     assert.equal(existsSync(join(kept, ".claude", "hooks", "mex-push.mjs")), true, "other suites keep the prototype");
 
-    const setup = scaffold("setup", "<!-- mex-agent:skills:start -->\n## MEX agent skills\n- Read .mex/AGENTS.md first.\n<!-- mex-agent:skills:end -->\n", false);
+    const setup = scaffold("setup", "# Project notes\n\n<!-- mex-agent:skills:start -->\n## MEX agent skills\n- Read .mex/AGENTS.md first.\n<!-- mex-agent:skills:end -->\n", false);
     const standard = join(root, "ws-standard");
     createWorkspace({ subjectRoot: subject, workspace: standard, base, scaffoldCommit: setup, stripPrototype: true });
-    assert.match(readFileSync(join(standard, "CLAUDE.md"), "utf8"), /Read \.mex\/AGENTS\.md first/);
+    const rest = readFileSync(join(standard, "CLAUDE.md"), "utf8");
+    assert.doesNotMatch(rest, /Read \.mex\/AGENTS\.md first/, "setup's pull-style block goes too");
+    assert.match(rest, /# Project notes/, "the rest of the file stays");
+    assert.equal(git(standard, ["status", "--porcelain"]).stdout.trim(), "", "the stripped state is committed");
     for (const workspace of [stripped, kept, standard]) removeWorkspace(subject, workspace);
   } finally {
     rmSync(root, { recursive: true, force: true });

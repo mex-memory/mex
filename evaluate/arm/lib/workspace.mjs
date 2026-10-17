@@ -112,7 +112,10 @@ const SKILLS_BLOCK = /<!-- mex-agent:skills:start -->[\s\S]*?<!-- mex-agent:skil
  * Scaffolds written for the earlier push prototype carry its hook script, its
  * settings and its own `CLAUDE.md` wording. The product hooks replace all of
  * that, so those three leave the checkout (the scaffold ref itself is never
- * touched). A scaffold without them is left as it is.
+ * touched). The `mex-agent:skills` block goes whoever wrote it: setup's block
+ * tells agents to pull knowledge through the CLI, which the hooks arms do not
+ * measure, and every repo's hooks arm must see the same instructions (only the
+ * block `mex hooks install` writes).
  */
 export function stripPrototypeHooks(workspace) {
   if (existsSync(join(workspace, PROTOTYPE_HOOK))) git(workspace, ["rm", "-qf", "--", PROTOTYPE_HOOK]);
@@ -122,8 +125,7 @@ export function stripPrototypeHooks(workspace) {
   if (existsSync(instructions)) {
     const text = readFileSync(instructions, "utf8");
     const block = text.match(SKILLS_BLOCK)?.[0] ?? "";
-    // Only the prototype's wording goes; a block `mex setup` wrote stays.
-    if (block.includes("shown to you automatically")) {
+    if (block) {
       const rest = text.replace(block, "");
       if (rest.trim() === "") git(workspace, ["rm", "-qf", "--", "CLAUDE.md"]);
       else { writeFileSync(instructions, rest); git(workspace, ["add", "--", "CLAUDE.md"]); }
