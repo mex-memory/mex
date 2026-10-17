@@ -2,14 +2,15 @@
 // Agent-arm test: the same Claude Code sessions with and without MEX on a
 // pinned subject. See evaluate/arm/README.md.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSchedule } from "../compare/lib/schedule.mjs";
 import { runSync } from "../compare/lib/process.mjs";
+import { aliasCoverage, installProductHooks } from "./lib/hooks.mjs";
 import { buildBlindReview, generateReport, loadRows } from "./lib/report.mjs";
 import { MEX_PROMPTS, runAgentSession } from "./lib/session.mjs";
-import { armPath, buildIndexCache, createWorkspace, git, installIndexes, mexEntrypoint, removeWorkspace, resolveCommit } from "./lib/workspace.mjs";
+import { armPath, buildIndexCache, createWorkspace, git, installContextIndex, installIndexes, mexEntrypoint, removeWorkspace, resolveCommit } from "./lib/workspace.mjs";
 
 const fileSha = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -24,6 +25,7 @@ export function parseArgs(argv) {
     else if (arg === "--subject") args.subject = resolve(value(i++));
     else if (arg === "--cli-bin") args.cliBin = resolve(value(i++));
     else if (arg === "--deps") args.deps = resolve(value(i++));
+    else if (arg === "--aliases") args.aliases = resolve(value(i++));
     else if (arg === "--output") args.output = resolve(value(i++));
     else if (arg === "--model") args.model = value(i++);
     else if (arg === "--tasks") args.tasks = value(i++).split(",").map((id) => id.trim());
@@ -40,14 +42,42 @@ export function parseArgs(argv) {
   if (!args.mode) throw new Error("choose --prepare, --run, --blind or --report");
   for (const key of ["suite", "output"]) if (!args[key]) throw new Error(`--${key} is required`);
   if (["prepare", "run"].includes(args.mode)) {
-    for (const key of ["subject", "cliBin", "deps", "model"]) if (!args[key]) throw new Error(`--${key === "cliBin" ? "cli-bin" : key} is required for --${args.mode}`);
+    // --deps is checked against the suite later: a subject without node_modules (Python) sets "requiresDeps": false.
+    for (const key of ["subject", "cliBin", "model"]) if (!args[key]) throw new Error(`--${key === "cliBin" ? "cli-bin" : key} is required for --${args.mode}`);
   }
   return args;
 }
 
 // An arm may carry the scaffold without the CLI (Markdown only); `cli` defaults to `scaffold`.
-// `push` arms deliver knowledge through the scaffold's Claude Code hooks, which need the CLI.
-export const armSpecFor = (arm) => ({ withMex: Boolean(arm.scaffold), withCli: Boolean(arm.scaffold) && arm.cli !== false, withPush: Boolean(arm.scaffold) && arm.push === true });
+// `push` arms deliver knowledge through the earlier prototype's hooks (kept for old suites).
+// `hooks` arms install the product's hooks (`mex hooks install`); `lexical` sets MEX_HOOK_LEXICAL=1 for the
+// session, and `semantic` expects the semantic extra, so the prompt recipe is R3 instead of R2w.
+export function armSpecFor(arm) {
+  const withMex = Boolean(arm.scaffold);
+  const withHooks = withMex && arm.hooks === true;
+  if (arm.hooks && !withMex) throw new Error("a hooks arm needs the scaffold");
+  if ((arm.lexical || arm.semantic) && !withHooks) throw new Error("lexical and semantic only apply to hooks arms");
+  if (arm.lexical && arm.semantic) throw new Error("an arm is lexical or semantic, not both");
+  return { withMex, withCli: withMex && arm.cli !== false, withPush: withMex && arm.push === true, withHooks, lexical: withHooks && arm.lexical === true, semantic: withHooks && arm.semantic === true };
+}
+
+/** Environment variables the product's hooks read; an arm gets exactly the ones it is meant to have. */
+const HOOK_ENV = ["MEX_HOOK_LEXICAL", "MEX_CLI", "MEX_PUSH_LOG"];
+
+/** The environment of one session (or of the index builds for it). */
+export function sessionEnv({ baseEnv = process.env, cliBin, armSpec, pushLog = null }) {
+  const env = { ...baseEnv, PATH: armPath(baseEnv.PATH, { cliBin, withMex: armSpec.withCli }) };
+  for (const name of HOOK_ENV) delete env[name];
+  if (armSpec.withPush && pushLog) env.MEX_PUSH_LOG = pushLog;
+  if (armSpec.withHooks) {
+    env.MEX_CLI = mexEntrypoint(cliBin);
+    if (armSpec.lexical) env.MEX_HOOK_LEXICAL = "1";
+  }
+  return env;
+}
+
+/** The folder name of every checkout of the subject. It feeds the project stop words, so it is neutral and constant. */
+export const projectNameOf = (suite) => suite.projectName ?? "project";
 
 const PUSH_HOOK = join(".claude", "hooks", "mex-push.mjs");
 
@@ -82,18 +112,32 @@ const indexKey = (base, scaffold) => `${base.slice(0, 12)}-${scaffold.slice(0, 1
 
 function prepare(args, suite) {
   mkdirSync(args.output, { recursive: true });
-  const mexEnv = { ...process.env, PATH: armPath(process.env.PATH, { cliBin: args.cliBin, withMex: true }) };
+  const projectName = projectNameOf(suite);
+  const mexEnv = sessionEnv({ cliBin: args.cliBin, armSpec: { withCli: true, withHooks: false } });
   const scaffolds = Object.fromEntries(Object.entries(suite.scaffolds).map(([name, ref]) => [name, resolveCommit(args.subject, ref)]));
   const tasks = {};
   const baselines = {};
-  // Graph and Wiki indexes only matter when some arm has the CLI.
-  const needsIndexes = Object.values(suite.arms).some((arm) => armSpecFor(arm).withCli);
+  const coverage = {};
+  const specs = Object.values(suite.arms).map(armSpecFor);
+  // Graph and Wiki indexes only matter when some arm has the CLI; the context index when some arm has hooks.
+  const needsIndexes = specs.some((spec) => spec.withCli);
+  const needsHooks = specs.some((spec) => spec.withHooks);
+  const semantic = needsHooks ? semanticStatus(args.cliBin, mexEnv) : null;
+  if (specs.some((spec) => spec.semantic) && semantic?.state !== "installed") throw new Error(`a semantic arm needs the semantic extra (mex context semantic install); status: ${semantic?.state ?? "unknown"}`);
+  let aliasesFile = null, aliasIds = null;
+  if (needsHooks && args.aliases) {
+    aliasesFile = join(args.output, "context-aliases.json");
+    copyFileSync(args.aliases, aliasesFile);
+    aliasIds = Object.keys(JSON.parse(readFileSync(aliasesFile, "utf8")));
+  }
+  const hooks = needsHooks ? { aliasesFile } : null;
   for (const task of suite.tasks) {
     const base = resolveCommit(args.subject, task.base);
     const scaffold = scaffolds[task.scaffold];
     const key = indexKey(base, scaffold);
-    const cachePath = !needsIndexes ? null : buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv, depsDir: args.deps });
+    const cachePath = !needsIndexes ? null : buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv, depsDir: args.deps, projectName, hooks });
     if (cachePath) baselines[key] = JSON.parse(readFileSync(join(cachePath, "check-baseline.json"), "utf8"));
+    if (cachePath && hooks && !coverage[key]) coverage[key] = aliasCoverage(join(cachePath, "context-index.json"), aliasIds ?? []);
     tasks[task.id] = { base, scaffold, indexKey: key, cachePath, hiddenFrom: task.hiddenTests?.fromCommit ? resolveCommit(args.subject, task.hiddenTests.fromCommit) : null };
   }
   const entry = mexEntrypoint(args.cliBin);
@@ -101,14 +145,22 @@ function prepare(args, suite) {
     schemaVersion: 1, suiteId: suite.id, suiteSha256: fileSha(args.suite), preparedAt: new Date().toISOString(),
     subject: { root: args.subject, scaffolds, autocrlf: git(args.subject, ["config", "--get", "core.autocrlf"], { allowFailure: true }).stdout.trim() || null },
     cli: { bin: args.cliBin, entrypoint: entry, sha256: fileSha(entry), version: runSync(process.execPath, [entry, "--version"]).stdout.trim() },
-    deps: args.deps, indexedWithDeps: true, model: args.model, mexPrompt: args.mexPrompt ?? "none",
-    agent: { claudeVersion: runSync("claude", ["--version"]).stdout.trim() },
+    deps: args.deps ?? null, indexedWithDeps: Boolean(args.deps), model: args.model, mexPrompt: args.mexPrompt ?? "none", projectName,
+    ...(suite.python ? { python: { path: suite.python, version: runSync(suite.python, ["--version"]).stdout.trim() } } : {}),
+    ...(needsHooks ? { hooks: { hookBin: join(args.cliBin, process.platform === "win32" ? "mex-hook.cmd" : "mex-hook"), semantic, aliases: aliasesFile ? { file: aliasesFile, sha256: fileSha(aliasesFile), ids: aliasIds.length } : null, aliasCoverage: coverage } } : {}),
+    agent: { claudeVersion: runSync(args.claude[0], [...args.claude.slice(1), "--version"]).stdout.trim() },
     node: process.version, platform: `${process.platform}-${process.arch}`,
     tasks,
   };
   writeJson(join(args.output, "prepare.json"), prepared);
   writeJson(join(args.output, "baselines.json"), baselines);
   process.stdout.write(`prepared ${suite.tasks.length} tasks; index caches in ${join(args.output, "index-cache")}\n`);
+}
+
+/** `mex context semantic status`: the machine-level extra the R3 recipe needs. */
+function semanticStatus(cliBin, env) {
+  const result = runSync(process.execPath, [mexEntrypoint(cliBin), "context", "semantic", "status", "--json"], { env });
+  try { return JSON.parse(result.stdout).data; } catch { return { state: "unknown" }; }
 }
 
 function loadPrepared(args, suite) {
@@ -146,25 +198,30 @@ async function run(args, suite) {
     }
     const task = item.task, info = prepared.tasks[task.id], armSpec = armSpecFor(suite.arms[item.armId]);
     const pushLog = join(artifacts, `${item.runId}.push.jsonl`);
-    const env = { ...process.env, PATH: armPath(process.env.PATH, { cliBin: args.cliBin, withMex: armSpec.withCli }), ...(armSpec.withPush ? { MEX_PUSH_LOG: pushLog } : {}) };
-    const workspace = join(args.output, "ws", item.runId);
-    removeWorkspace(args.subject, workspace);
+    const env = sessionEnv({ cliBin: args.cliBin, armSpec, pushLog });
+    // <run>/<project name>: the folder name is the same in every arm and in the index template.
+    const workspace = join(args.output, "ws", item.runId, projectNameOf(suite));
+    removeWorkspace(args.subject, workspace, { removeParent: true });
     process.stderr.write(`[arm] ${item.runId}\n`);
     let row;
     try {
-      const created = createWorkspace({ subjectRoot: args.subject, workspace, base: info.base, scaffoldCommit: armSpec.withMex ? info.scaffold : null, depsDir: args.deps, appendInstructions: suite.appendInstructions === true, basePatches: suite.basePatches ?? [] });
+      const created = createWorkspace({ subjectRoot: args.subject, workspace, base: info.base, scaffoldCommit: armSpec.withMex ? info.scaffold : null, depsDir: args.deps, appendInstructions: suite.appendInstructions === true, basePatches: suite.basePatches ?? [], stripPrototype: armSpec.withHooks });
       const indexes = armSpec.withCli ? installIndexes({ workspace, cachePath: info.cachePath, cliBin: args.cliBin, env }) : null;
+      if (armSpec.withHooks) {
+        indexes.context = installContextIndex({ workspace, cachePath: info.cachePath });
+        indexes.hooks = installProductHooks({ workspace, cliBin: args.cliBin, env });
+      }
       if (armSpec.withPush) { if (existsSync(pushLog)) renameSync(pushLog, `${pushLog}.old-${Date.now()}`); indexes.push = preparePush(workspace, env); }
       const session = await runAgentSession({
-        task: { ...task, hiddenTests: task.hiddenTests ? { ...task.hiddenTests, fromCommit: info.hiddenFrom } : null },
+        task: { ...task, hiddenTests: task.hiddenTests ? { ...task.hiddenTests, fromCommit: info.hiddenFrom, ...(suite.python ? { python: task.hiddenTests.python ?? suite.python } : {}) } : null },
         armId: item.armId, armSpec, workspace, env, cliBin: args.cliBin, model: args.model,
         timeoutMs: task.type === "change" ? args.timeoutChangeMs : args.timeoutQaMs,
-        outputPrefix: join(artifacts, item.runId), claudeCommand: args.claude, mexPrompt: prepared.mexPrompt ?? "none",
+        outputPrefix: join(artifacts, item.runId), claudeCommand: args.claude, mexPrompt: prepared.mexPrompt ?? "none", appendPrompt: suite.appendPrompt ?? null,
       });
       row = { runId: item.runId, taskId: task.id, taskType: task.type, arm: item.armId, repetition: item.repetition, orderIndex: item.orderIndex, indexKey: info.indexKey, workspaceHead: created.head, indexes, startedFrom: info.base, ...session, ...(armSpec.withPush ? { push: summarizePushLog(pushLog) } : {}) };
     } finally {
       if (row) writeJson(resultPath, row);
-      try { removeWorkspace(args.subject, workspace); } catch (error) { process.stderr.write(`[arm] cleanup of ${item.runId} failed, continuing: ${error.message}\n`); }
+      try { removeWorkspace(args.subject, workspace, { removeParent: true }); } catch (error) { process.stderr.write(`[arm] cleanup of ${item.runId} failed, continuing: ${error.message}\n`); }
     }
     if (row.providerFailure?.type === "rate_limit") {
       throw new Error(`usage limit reached during ${item.runId}; rerun with --resume after it resets`);
@@ -176,6 +233,7 @@ async function run(args, suite) {
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const suite = JSON.parse(readFileSync(args.suite, "utf8"));
+  if (["prepare", "run"].includes(args.mode) && !args.deps && suite.requiresDeps !== false) throw new Error(`--deps is required for --${args.mode} (a suite without node_modules sets "requiresDeps": false)`);
   if (args.mode === "prepare") return prepare(args, suite);
   if (args.mode === "run") return run(args, suite);
   const prepared = JSON.parse(readFileSync(join(args.output, "prepare.json"), "utf8"));

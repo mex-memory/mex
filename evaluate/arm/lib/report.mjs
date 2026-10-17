@@ -80,32 +80,75 @@ export function generateReport({ suite, rows, grades = null, salt, baselines = {
     }
   }
 
-  const [control, treatment] = armIds;
-  const pairs = [];
+  const [control, ...treatments] = armIds;
+
+  // Tokens are never added together: uncached input, cache writes, cache reads and output stay apart, with the cost the agent reported.
+  const TOKEN_KEYS = [["Input (uncached)", "uncachedInput"], ["Cache write", "cacheWrite"], ["Cache read", "cacheRead"], ["Output", "output"]];
+  lines.push("", "## Tokens and cost per task and arm (medians)", "", `| Task | Arm | ${TOKEN_KEYS.map(([label]) => label).join(" | ")} | Cost (USD) |`, `|---|---|${TOKEN_KEYS.map(() => "---").join("|")}|---|`);
   for (const task of suite.tasks) {
-    for (const row of valid.filter((entry) => entry.taskId === task.id && entry.arm === treatment)) {
-      const other = valid.find((entry) => entry.taskId === task.id && entry.arm === control && entry.repetition === row.repetition);
-      if (other) pairs.push({ taskId: task.id, repetition: row.repetition, treatment: row, control: other });
+    for (const arm of armIds) {
+      const subset = valid.filter((row) => row.taskId === task.id && row.arm === arm);
+      lines.push(`| ${task.id} | ${arm} | ${TOKEN_KEYS.map(([, key]) => fmt(median(subset.map((row) => row.metrics[key])))).join(" | ")} | ${fmt(median(subset.map((row) => row.metrics.costUsd)), 3)} |`);
     }
   }
-  lines.push("", `## Paired deltas (${treatment} − ${control})`, "", `Matched pairs: ${pairs.length}. Intervals are 95% percentile bootstraps of the mean paired delta.`, "", `| Metric | Total ${control} | Total ${treatment} | Total change | Mean paired delta | 95% CI |`, "|---|---|---|---|---|---|");
-  for (const [label, key] of [["New tokens", "newTokens"], ["Processed tokens", "processed"], ["Wall time (ms)", "elapsedMs"], ["Tool calls", "toolCalls"]]) {
-    const deltas = pairs.map((pair) => pair.treatment.metrics[key] - pair.control.metrics[key]);
-    const totalControl = pairs.reduce((sum, pair) => sum + (pair.control.metrics[key] ?? 0), 0);
-    const totalTreatment = pairs.reduce((sum, pair) => sum + (pair.treatment.metrics[key] ?? 0), 0);
-    const ci = bootstrapMean(deltas);
-    lines.push(`| ${label} | ${fmt(totalControl)} | ${fmt(totalTreatment)} | ${totalControl ? pct((totalTreatment - totalControl) / totalControl) : "–"} | ${fmt(ci.mean)} | ${ci.low === null ? "–" : `${fmt(ci.low)} … ${fmt(ci.high)}`} |`);
+  lines.push("", "Totals per arm over valid rows:", "", `| Arm | Rows | ${TOKEN_KEYS.map(([label]) => label).join(" | ")} | Cost (USD) |`, `|---|---|${TOKEN_KEYS.map(() => "---").join("|")}|---|`);
+  for (const arm of armIds) {
+    const subset = valid.filter((row) => row.arm === arm);
+    const total = (key) => subset.reduce((sum, row) => sum + (Number(row.metrics[key]) || 0), 0);
+    lines.push(`| ${arm} | ${subset.length} | ${TOKEN_KEYS.map(([, key]) => fmt(total(key))).join(" | ")} | ${fmt(total("costUsd"), 3)} |`);
   }
 
-  const mexRows = valid.filter((row) => row.arm === treatment);
-  lines.push("", `## Allocation (${treatment} arm, mean share per session)`, "", "| Category | Share of calls | Share of returned chars |", "|---|---|---|");
-  for (const category of CATEGORIES) {
-    const calls = mean(mexRows.map((row) => row.allocation?.[category]?.callShare ?? 0));
-    const chars = mean(mexRows.map((row) => row.allocation?.[category]?.charShare ?? 0));
-    if (calls || chars) lines.push(`| ${category} | ${pct(calls)} | ${pct(chars)} |`);
+  for (const treatment of treatments) {
+    const pairs = [];
+    for (const task of suite.tasks) {
+      for (const row of valid.filter((entry) => entry.taskId === task.id && entry.arm === treatment)) {
+        const other = valid.find((entry) => entry.taskId === task.id && entry.arm === control && entry.repetition === row.repetition);
+        if (other) pairs.push({ taskId: task.id, repetition: row.repetition, treatment: row, control: other });
+      }
+    }
+    lines.push("", `## Paired deltas (${treatment} − ${control})`, "", `Matched pairs: ${pairs.length}. Intervals are 95% percentile bootstraps of the mean paired delta.`, "", `| Metric | Total ${control} | Total ${treatment} | Total change | Mean paired delta | 95% CI |`, "|---|---|---|---|---|---|");
+    for (const [label, key] of [["New tokens", "newTokens"], ...TOKEN_KEYS, ["Processed tokens", "processed"], ["Cost (USD)", "costUsd"], ["Wall time (ms)", "elapsedMs"], ["Tool calls", "toolCalls"]]) {
+      const digits = key === "costUsd" ? 3 : 0;
+      const deltas = pairs.map((pair) => pair.treatment.metrics[key] - pair.control.metrics[key]);
+      const totalControl = pairs.reduce((sum, pair) => sum + (pair.control.metrics[key] ?? 0), 0);
+      const totalTreatment = pairs.reduce((sum, pair) => sum + (pair.treatment.metrics[key] ?? 0), 0);
+      const ci = bootstrapMean(deltas);
+      lines.push(`| ${label} | ${fmt(totalControl, digits)} | ${fmt(totalTreatment, digits)} | ${totalControl ? pct((totalTreatment - totalControl) / totalControl) : "–"} | ${fmt(ci.mean, digits)} | ${ci.low === null ? "–" : `${fmt(ci.low, digits)} … ${fmt(ci.high, digits)}`} |`);
+    }
+
+    const armRows = valid.filter((row) => row.arm === treatment);
+    lines.push("", `## Allocation (${treatment} arm, mean share per session)`, "", "| Category | Share of calls | Share of returned chars |", "|---|---|---|");
+    for (const category of CATEGORIES) {
+      const calls = mean(armRows.map((row) => row.allocation?.[category]?.callShare ?? 0));
+      const chars = mean(armRows.map((row) => row.allocation?.[category]?.charShare ?? 0));
+      if (calls || chars) lines.push(`| ${category} | ${pct(calls)} | ${pct(chars)} |`);
+    }
+    const baselineControl = valid.filter((row) => row.arm === control);
+    lines.push("", `Fallbacks per ${treatment} session: median ${fmt(median(armRows.map((row) => row.metrics.fallbacks)))}; ${control} discovery calls per session: median ${fmt(median(baselineControl.map((row) => row.allocation?.discovery?.calls ?? 0)))}.`);
   }
-  const baselineControl = valid.filter((row) => row.arm === control);
-  lines.push("", `Fallbacks per ${treatment} session: median ${fmt(median(mexRows.map((row) => row.metrics.fallbacks)))}; ${control} discovery calls per session: median ${fmt(median(baselineControl.map((row) => row.allocation?.discovery?.calls ?? 0)))}.`, "Fallback causes (empty / wrong / verify / skipped) need transcript review; record them in grades.json under `fallbackCauses`.");
+  lines.push("", "Fallback causes (empty / wrong / verify / skipped) need transcript review; record them in grades.json under `fallbackCauses`.");
+
+  // What the product hooks did, per session: events, what they injected, the end-of-session work.
+  const hookRows = valid.filter((row) => row.hooks);
+  if (hookRows.length) {
+    lines.push("", "## Hooks (per session)", "", "Events counted per kind with how many injected something; chars are what the hooks sent to the agent; hook time is in-session only (the settle worker is separate).", "",
+      "| Run | Prompt (inj) | Read (inj) | Edit (inj) | Grep (inj) | Bash (inj) | Hook ms | Injected chars | Budget hit | Stop blocks | Block ids | Settle passes | Refresh mode | Regrounded | Failures | Settle wait (s) |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    const cell = (hooks, kind) => `${hooks.perEvent[kind].count} (${hooks.perEvent[kind].injected})`;
+    for (const row of hookRows) {
+      const hooks = row.hooks;
+      const modes = [...new Set(hooks.settle.passes.map((pass) => pass.refresh?.mode).filter(Boolean))].join("/") || "–";
+      lines.push(`| ${row.runId} | ${["prompt", "read", "edit", "grep", "bash"].map((kind) => cell(hooks, kind)).join(" | ")} | ${fmt(hooks.hookMs)} | ${fmt(hooks.injectedChars)} | ${hooks.budgetHit ? "yes" : "no"} | ${hooks.stopBlocks.count} | ${hooks.stopBlocks.ids.join(", ") || "–"} | ${hooks.settle.count} | ${modes} | ${hooks.settle.regrounded} | ${hooks.failures.length} | ${fmt((row.settleWait?.waitMs ?? 0) / 1000, 1)} |`);
+    }
+    lines.push("", "Per arm (valid rows, mean per session):", "", "| Arm | Rows | Hook events | Hook ms | Injected chars | Sessions with a Stop block | Sessions with failures |", "|---|---|---|---|---|---|---|");
+    for (const arm of treatments) {
+      const subset = hookRows.filter((row) => row.arm === arm);
+      if (!subset.length) continue;
+      lines.push(`| ${arm} | ${subset.length} | ${fmt(mean(subset.map((row) => row.hooks.hookEvents)), 1)} | ${fmt(mean(subset.map((row) => row.hooks.hookMs)))} | ${fmt(mean(subset.map((row) => row.hooks.injectedChars)))} | ${subset.filter((row) => row.hooks.stopBlocks.count > 0).length} | ${subset.filter((row) => row.hooks.failures.length > 0).length} |`);
+    }
+  }
+  const treatment = treatments.join(", ");
+  const mexRows = valid.filter((row) => treatments.includes(row.arm));
 
   const forced = mexRows.filter((row) => row.compliance);
   if (forced.length) {
