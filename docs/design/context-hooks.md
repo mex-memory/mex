@@ -33,7 +33,7 @@ hook event ─► light entry (mex-hook) ─► src/context composer ─► pack
 
 Chosen by a sealed held-out evaluation: 70 questions over Hono and TypeScript, split into dev and test halves; thresholds were frozen on dev and the test half was run once.
 
-- **Primary (R3)**: candidates are `fact` entities. Field-weighted BM25 over title (×3), body, linked-code tokens and aliases (×3), with stop words and an exact identifier/backtick/path boost. It is fused by RRF (k=60) with an `all-MiniLM-L6-v2` (q8) dense channel over `title. aliases. symbol words. body[0:900]`.
+- **Primary (R3)**: candidates are `fact` entities (since the long-prompt work, every typed section with a body as well; see Long prompts below). Field-weighted BM25 over title (×3), body, linked-code tokens and aliases (×3), with stop words and an exact identifier/backtick/path boost. It is fused by RRF (k=60) with an `all-MiniLM-L6-v2` (q8) dense channel over `title. aliases. symbol words. body[0:900]`.
   - Gate: normalised floor 0.2591; exact identifier hit or at least 5 query-term groups; cosine at least 0.6; at most 2 facts; a second fact only at a ratio of at least 0.2 of the first.
   - Test half: helped 17/24, 3 of 20 injected wrong, 0/10 false injections.
 - **Fallback (R2w)**: lexical only, used when the semantic extra is not installed. Candidates are all typed Wiki sections (fact, convention, decision, guide, pattern, component) with body text. Floor 0.4186, G 5, ratio 0.5, margin 0.45.
@@ -42,6 +42,51 @@ Chosen by a sealed held-out evaluation: 70 questions over Hono and TypeScript, s
 - **Abstention is logged**, with a reason (`no-index`, `below-floor`, `uncorroborated`, …).
 
 The semantic channel is opt-in. Its library and model are installed under a MEX-managed directory on request: about 68 MB on Windows, of which the model is 23 MB. A stock install is about 500 MB, because the library hard-depends on native runtimes for every platform plus a second, web runtime; the installer stubs `sharp`, removes the web runtime and keeps only this platform's CPU binaries. (The WebAssembly runtime would be about 56 MB, but its quantised kernels differ from the native ones enough to move one held-out injection across the cosine threshold, so it is not used.) When the extra is absent, R2w is used, with no error.
+
+### Long prompts (windows)
+
+The recipes above were calibrated on one- and two-sentence questions. Real task prompts run from 5 words to pasted pages. The normalised score divides by the weight of every query word, so a 55-word task description scored below the floor even when its one matching sentence scored 0.64 alone: with the thresholds above, all six pilot prompts abstained. The fix keeps the frozen recipes for prompts that fit in one window and changes only how a longer prompt is scored and gated. Parameters are frozen in `frozen.ts` (`WINDOWING`, `RECIPES[*].windowed`) and recorded, with the evidence, in the evaluation folder as `ablation\frozen-v3.json`.
+
+- **One window = unchanged.** A prompt of at most 40 words (the window size) ranks and gates exactly as before. `scripts/context-window-parity.mjs` compares a baseline build with the current one on the lexical recipe: all 65 prompts of the 70-question set that have at most 40 words give identical injected ids, scores, normalised scores, corroboration counts and gate decisions (the 5 longer ones differ by design).
+- **Prose only.** Fenced blocks, stack frames, test-runner summaries and runs of at least three code-like lines are removed before scoring (`proseOf`). A paste says what the user is looking at, not what they ask, and its identifiers belong to the pasted file. Measured on dev, treating identifiers found in pasted blocks as exact-match evidence made the very long bucket worse (more wrong sends, fewer hits). With under 10 words of prose, the whole text is scored.
+- **Windows.** The prose is cut into sentences (a sentence under 10 words is merged into its neighbour, one over 40 words is cut), and overlapping runs of consecutive sentences of at most 40 words become windows (at most 12; a window contained in another is dropped). Each window is scored by the frozen scorer against its own query-word weight, with its own identifiers and its own corroboration count; a candidate keeps its best window. Because the best window does not depend on the other windows, the score of the sentence that carries the question does not depend on how much is pasted around it. The dense channel embeds each window and takes the best cosine.
+- **Gate for a windowed prompt.** The maximum over many windows flatters the runner-up too, so the lead over the fourth candidate carries the weight. Both recipes use the same lexical gate: floor 0.293, at least 3 query-word groups in one window (or an identifier hit), a second entry only at 0.9 of the first, lead over the fourth 0.45 (lexical) or 0.6 (semantic), at most 2 entries. The semantic recipe adds its cosine as a veto: candidates with a best-window cosine under 0.5 are dropped before the gate, and the fusion only orders the rest.
+- **R3 candidates** are now the same typed sections as the lexical recipe plus every fact, so a convention or decision can be sent by the primary recipe too. The dense text of a non-fact is unchanged (title, aliases, symbol words, first 900 characters); a file-context prefix and 350-character chunks were measured on dev and did not improve precision.
+
+Measured on the development half (24 with-fact and 12 without-fact questions per bucket; "correct" is the share of injections that carry a gold entry; false sends are injections on questions without a fact):
+
+| Dev | Old R2w | New R2w | Old R3 | New R3 |
+|---|---|---|---|---|
+| Short (original) | 14/24, 14/18, 1/12 | 15/24, 15/19, 1/12 | 13/24, 13/17, 1/12 | 13/24, 13/16, 1/12 |
+| Medium (60-96 words) | 4/24, 4/6, 0/12 | 14/24, 14/16, 0/12 | 9/24, 9/13, 1/12 | 16/24, 16/20, 1/12 |
+| Very long (305-1,500 words) | 0/24 | 10/24, 10/15, 3/12 | 0/24 | 11/24, 11/14, 1/12 |
+
+Methods tried on dev (lexical recipe, thresholds searched per method under the same rule; the rule needed at least 70% of the short bucket's helped in the medium and very long buckets):
+
+| Method | Medium helped | Very long helped | Verdict |
+|---|---|---|---|
+| Whole prompt, normalised as before | 4 | 0 | the bug |
+| Truncate to the first 500 or 1,000 characters | 4 | 0 to 1 | fails whenever the question is not at the start: with the question at the start, middle or end of the very long prompts, 500 characters found 3 of 16, 0 of 15 and 0 of 17 hits (dev and test pooled, lexical) against 7, 7 and 7 for windows | 
+| Keep only the 8 to 16 rarest query words (whole prompt) | 0 to 2 | 0 | loses the corroboration that separates a match from a coincidence |
+| Rare-word reduction inside each window | 10 | 7 | worse than plain windows |
+| Length-aware sigmoid of the raw score (five length tiers) | 0 to 2 | 0 | the raw scores here sit far from the tier midpoints; no setting passed |
+| Evidence gate (resolved identifier, two words in one entry's title, aliases and symbol names, or one rare word of at least 5 letters present in 2 to 25 entries) in place of the corroboration count | 14 | 10 | the same as the corroboration count once the lead rule is in place, so the simpler count stays |
+| Windows, pasted blocks kept | 11 to 12 | 1 to 5 | many wrong sends from pasted identifiers |
+| Windows over prose (shipped) | 14 to 16 | 10 to 11 | |
+
+A rising floor with the number of windows and a rule that drops a second entry coming from a distant window were also searched and gave no gain, so neither is in the gate. The false-send growth that many windows could cause is bounded instead by prose-only scoring, the cap of 12 windows, the 0.9 second-entry ratio and the lead rule. A one-line "may apply" pointer tier for a rejected-but-clear leader was not built.
+
+Test half (v3 is a second look; the single one-shot run used v2, which differed only by keeping prompts up to 56 words whole and gave R2w 17/24 on the short bucket instead of 16/24, and the same numbers elsewhere):
+
+| Test | Old R2w | New R2w | Old R3 | New R3 |
+|---|---|---|---|---|
+| Short | 17/24, 17/22, 0/10 | 16/24, 16/19, 0/10 | 17/24, 17/20, 0/10 | 17/24, 17/21, 0/10 |
+| Medium | 15/24, 15/15, 0/10 | 15/24, 15/17, 0/10 | 15/24, 15/16, 0/10 | 17/24, 17/21, 0/10 |
+| Very long | 0/24 | 11/24, 11/25, 4/10 | 0/24 | 12/24, 12/26, 4/10 |
+
+The very long bucket does not meet the precision rule on test. In that set one unrelated paragraph, taken from another question's prompt, is pasted into every prompt; it is a real question about another topic, so the entry it matches is sent. 10 of the 14 wrong R2w injections (and 8 of 14 for R3) and 3 of the 4 R2w false sends (2 of 4 for R3) match only that paragraph. Without them R2w is 11 of 15 correct and R3 12 of 18. Nothing in a prompt's content separates a pasted paragraph from the question, so this is reported, not tuned away: the gate is precision-first for one coherent question, and a prompt about two topics may get the wrong one.
+
+Latency (cold process per prompt, Windows): hook entry point, lexical 220 to 260 ms and semantic 770 to 850 ms on short, medium and very long prompts alike, including the 1,500-word prompt; `mex context prompt`, lexical about 440 ms and semantic 900 to 1,000 ms.
 
 ## Packets
 
@@ -83,7 +128,7 @@ Setup, GROW and `wiki apply` write 3–6 short symptom or goal phrases per code-
 - **Commands**: `mex context index`, `mex context prompt "<text>" [--session <id>] [--lexical] [--explain] [--json]`, `mex context semantic install|status|remove`. The project root is the nearest ancestor with a real `.mex/` scaffold (`root.ts`), so they work from any subdirectory and from inside `.mex/`. The per-machine `~/.mex` is never taken for a project.
 - **Index** (`.mex/local/context-index.json`): entities come from the Wiki parser (`parseWikiMarkdown`), graph rows from a read-only open of `.mex/graph.db`. It records the Markdown digests, a hash of the graph snapshot metadata and the alias overlay digest. Freshness is checked cheaply first (one stat per Markdown file plus the graph identity); bytes are hashed only when a file looks touched, and an identical digest keeps the index. `.mex/local/**` is never read as Wiki Markdown.
 - **Aliases** come from each entity's `metadata.aliases`, plus an optional checkout-local overlay `.mex/local/context-aliases.json` (`{ "<entity id>": ["phrase", ...] }`) for tooling that must not edit tracked prose. This is the seam for authoring.
-- **Recipe selection**: R3 when an embedder loads and the scaffold has facts, otherwise R2w. A failing model falls back to R2w with a `CONTEXT_SEMANTIC_FAILED` warning. Fact vectors are cached in the index by model id and document-text hash.
+- **Recipe selection**: R3 when an embedder loads and the scaffold has candidates (facts or typed sections with a body), otherwise R2w. A failing model falls back to R2w with a `CONTEXT_SEMANTIC_FAILED` warning. Entry vectors are cached in the index by model id and document-text hash.
 - **Gate decisions are reported** per candidate (`selected`, `below-floor`, `uncorroborated`, `low-cosine`, `weak-margin`, `below-ratio`, `already-shown`, ...) and as the abstention reason.
 - **Session de-duplication** runs after the gate, so the frozen scores and margins are computed over the full candidate set; entries already shown are then dropped.
 - **Writers**: `src/context/local-state.ts` is the only module that mutates the filesystem. It writes the index, session files (`.mex/local/context-sessions/`, bounded and pruned) and the managed semantic directory (`<MEX home>/semantic/`).
