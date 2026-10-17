@@ -6,7 +6,8 @@
  * only for a prompt.
  */
 
-import { composePrompt } from "../compose.js";
+import { candidatePool, composePrompt } from "../compose.js";
+import { RECIPES } from "../frozen.js";
 import { openGraphReader } from "../graph-reader.js";
 import { saveContextIndex } from "../index-file.js";
 import { ensureContextIndex } from "../index-store.js";
@@ -36,7 +37,7 @@ export async function handlePrompt(root: ContextRoot, prompt: string, sessionId:
   recordBase(root, index);
 
   let embedder = null;
-  if (!options.lexical && index.entities.some((e) => e.type === "fact") && semanticStatus(undefined, { measure: false }).state === "installed") {
+  if (!options.lexical && candidatePool(index, RECIPES.R3).length > 0 && semanticStatus(undefined, { measure: false }).state === "installed") {
     embedder = (await loadEmbedder()).embedder;
   }
   const shown = sessionId === null ? new Set<string>() : loadShown(root.localDir, sessionId);

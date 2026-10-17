@@ -63,7 +63,7 @@ export interface Recipe {
 export const RECIPES: Readonly<Record<RecipeName, Recipe>> = {
   R3: {
     name: "R3",
-    candidates: "facts",
+    candidates: "wiki",
     dense: true,
     thresholds: { floor: 0.2591, G: 5, ratio: 0.2, max: 2, tauD: 0.6, margin: 0, fnMin: 0 },
   },

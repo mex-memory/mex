@@ -38,22 +38,22 @@ export function decodeVector(data: string): Float32Array {
   return new Float32Array(copy.buffer);
 }
 
-export interface FactVectors {
+export interface EntityVectors {
   vectors: Map<string, Float32Array>;
   /** How many vectors had to be (re)computed; the caller persists the index if above zero. */
   computed: number;
 }
 
 /**
- * Vectors for these facts, from the index's cache where the text hash still
+ * Vectors for these entities, from the index's cache where the text hash still
  * matches and from the embedder where it does not. New vectors are written
  * into `index.vectors` (in memory); saving the index is the caller's decision.
  */
-export async function ensureFactVectors(
+export async function ensureEntityVectors(
   index: ContextIndex,
   facts: readonly ContextEntity[],
   embedder: Embedder,
-): Promise<FactVectors> {
+): Promise<EntityVectors> {
   const cache = (index.vectors[embedder.modelId] ??= {});
   const vectors = new Map<string, Float32Array>();
   let computed = 0;
@@ -73,9 +73,9 @@ export async function ensureFactVectors(
   return { vectors, computed };
 }
 
-/** Drop cached vectors for entities that are no longer facts, so the cache cannot grow without bound. */
-export function pruneVectorCache(index: ContextIndex, factIds: ReadonlySet<string>): void {
+/** Drop cached vectors for entities that are no longer candidates, so the cache cannot grow without bound. */
+export function pruneVectorCache(index: ContextIndex, keepIds: ReadonlySet<string>): void {
   for (const byId of Object.values(index.vectors)) {
-    for (const id of Object.keys(byId)) if (!factIds.has(id)) delete byId[id];
+    for (const id of Object.keys(byId)) if (!keepIds.has(id)) delete byId[id];
   }
 }

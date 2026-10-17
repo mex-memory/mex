@@ -8,7 +8,7 @@
  * (and later the hook entry points) own those.
  */
 
-import { ensureFactVectors, type Embedder } from "./dense.js";
+import { ensureEntityVectors, type Embedder } from "./dense.js";
 import { RECIPES, WIKI_CANDIDATE_TYPES, type Recipe } from "./frozen.js";
 import { formatPacket, resolveLiveState, type LiveStateResolver } from "./packet.js";
 import {
@@ -55,6 +55,15 @@ export function isWikiCandidate(entity: ContextEntity): boolean {
   return entity.level > 0 && WIKI_CANDIDATE_TYPES.has(entity.type) && hasBody(entity);
 }
 
+/** Everything the dense recipe may rank: the typed sections with a body, and every fact. */
+export const isDenseCandidate = (entity: ContextEntity): boolean => entity.type === "fact" || isWikiCandidate(entity);
+
+/** The entities a recipe ranks. */
+export function candidatePool(index: ContextIndex, recipe: Recipe): ContextEntity[] {
+  if (recipe.candidates === "facts") return index.entities.filter((e) => e.type === "fact");
+  return index.entities.filter(recipe.dense ? isDenseCandidate : isWikiCandidate);
+}
+
 const toRankable = (entity: ContextEntity): RankableEntity => ({
   id: entity.id,
   title: entity.title,
@@ -87,9 +96,8 @@ export async function composePrompt(index: ContextIndex, prompt: string, options
   if (/^<task-notification>/.test(text)) return done(emptyResult("task-notification"));
   if (index.entities.length === 0) return done(emptyResult("no-index"));
 
-  const facts = index.entities.filter((e) => e.type === "fact");
-  let recipe: Recipe = options.embedder && facts.length > 0 ? RECIPES.R3 : RECIPES.R2w;
-  let pool = recipe.name === "R3" ? facts : index.entities.filter(isWikiCandidate);
+  let recipe: Recipe = options.embedder && candidatePool(index, RECIPES.R3).length > 0 ? RECIPES.R3 : RECIPES.R2w;
+  let pool = candidatePool(index, recipe);
   if (pool.length === 0) return done(emptyResult("no-candidates", recipe.name));
 
   const projectWords = new Set(index.projectWords);
@@ -99,9 +107,11 @@ export async function composePrompt(index: ContextIndex, prompt: string, options
   if (recipe.dense) {
     try {
       const embedder = options.embedder!;
-      const { vectors, computed } = await ensureFactVectors(index, facts, embedder);
+      const { vectors, computed } = await ensureEntityVectors(index, pool, embedder);
       vectorsComputed = computed;
-      output = fuseDense(rankIndex, output, await embedder.embed(text), vectors);
+      const queryVectors: Float32Array[] = [];
+      for (const window of output.windows) queryVectors.push(await embedder.embed(window));
+      output = fuseDense(rankIndex, output, queryVectors, vectors);
     } catch (error) {
       diagnostics.push({
         code: "CONTEXT_SEMANTIC_FAILED",
@@ -110,7 +120,7 @@ export async function composePrompt(index: ContextIndex, prompt: string, options
         remediation: "Run `mex context semantic status` to check the install.",
       });
       recipe = RECIPES.R2w;
-      pool = index.entities.filter(isWikiCandidate);
+      pool = candidatePool(index, recipe);
       if (pool.length === 0) return done(emptyResult("no-candidates", recipe.name));
       output = rankQuery(buildRankIndex(pool.map(toRankable), projectWords), text);
     }

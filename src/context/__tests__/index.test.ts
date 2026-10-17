@@ -2,7 +2,7 @@ import { existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyOperation } from "../../wiki/operations/apply.js";
-import { ensureFactVectors } from "../dense.js";
+import { ensureEntityVectors } from "../dense.js";
 import {
   ensureContextIndex,
   indexPathOf,
@@ -225,13 +225,13 @@ describe("invalidation", () => {
     const embedder = fakeEmbedder();
     const first = await ensureContextIndex(fx.context);
     const facts = first.index.entities.filter((e) => e.type === "fact");
-    await ensureFactVectors(first.index, facts, embedder);
+    await ensureEntityVectors(first.index, facts, embedder);
     saveContextIndex(fx.context.localDir, first.index);
     expect(Object.keys(first.index.vectors[embedder.modelId]!)).toHaveLength(facts.length);
 
     const forced = await ensureContextIndex(fx.context, "force");
     expect(Object.keys(forced.index.vectors[embedder.modelId]!)).toHaveLength(facts.length);
-    const refreshed = await ensureFactVectors(forced.index, forced.index.entities.filter((e) => e.type === "fact"), embedder);
+    const refreshed = await ensureEntityVectors(forced.index, forced.index.entities.filter((e) => e.type === "fact"), embedder);
     expect(refreshed.computed).toBe(0);
   });
 });

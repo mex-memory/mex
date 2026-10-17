@@ -11,8 +11,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { buildEnvelope, exitCodeOf, renderEnvelope, CONTEXT_EXIT, type ContextEnvelope } from "./envelope.js";
-import { composePrompt } from "./compose.js";
-import { ensureFactVectors, pruneVectorCache, type Embedder } from "./dense.js";
+import { candidatePool, composePrompt } from "./compose.js";
+import { RECIPES } from "./frozen.js";
+import { ensureEntityVectors, pruneVectorCache, type Embedder } from "./dense.js";
 import { ensureContextIndex, indexPathOf, saveContextIndex } from "./index-store.js";
 import { resolveContextRoot, type ContextRoot } from "./root.js";
 import {
@@ -115,13 +116,13 @@ async function indexCommand(io: ContextIo, flags: ContextFlags): Promise<void> {
   const diagnostics = [...ensured.diagnostics];
   let vectors: IndexSummary["vectors"] = null;
   if (flags.lexical !== true) {
-    const facts = ensured.index.entities.filter((e) => e.type === "fact");
-    if (facts.length > 0 && semanticStatus(undefined, { measure: false }).state === "installed") {
+    const candidates = candidatePool(ensured.index, RECIPES.R3);
+    if (candidates.length > 0 && semanticStatus(undefined, { measure: false }).state === "installed") {
       const loaded = await loadEmbedder();
       if (loaded.embedder !== null) {
         try {
-          const { computed } = await ensureFactVectors(ensured.index, facts, loaded.embedder);
-          pruneVectorCache(ensured.index, new Set(facts.map((f) => f.id)));
+          const { computed } = await ensureEntityVectors(ensured.index, candidates, loaded.embedder);
+          pruneVectorCache(ensured.index, new Set(candidates.map((e) => e.id)));
           vectors = {
             model: loaded.embedder.modelId,
             cached: Object.keys(ensured.index.vectors[loaded.embedder.modelId] ?? {}).length,
@@ -132,7 +133,7 @@ async function indexCommand(io: ContextIo, flags: ContextFlags): Promise<void> {
           diagnostics.push({
             code: "CONTEXT_SEMANTIC_FAILED",
             severity: "warning",
-            message: `Fact vectors could not be computed: ${error instanceof Error ? error.message : String(error)}`,
+            message: `Entry vectors could not be computed: ${error instanceof Error ? error.message : String(error)}`,
           });
         } finally {
           await loaded.embedder.dispose?.();
@@ -154,7 +155,7 @@ async function indexCommand(io: ContextIo, flags: ContextFlags): Promise<void> {
     [
       `Context index: ${summary.entities} entities (${summary.facts} facts, ${summary.linked} code-linked), graph ${summary.graph}.`,
       `Types: ${Object.entries(summary.byType).map(([t, n]) => `${t} ${n}`).join(", ") || "none"}.`,
-      vectors ? `Fact vectors: ${vectors.cached} cached for ${vectors.model} (${vectors.computed} computed now).` : "Fact vectors: none (the semantic extra is not installed).",
+      vectors ? `Entry vectors: ${vectors.cached} cached for ${vectors.model} (${vectors.computed} computed now).` : "Entry vectors: none (the semantic extra is not installed).",
       `Wrote ${summary.path}`,
     ].join("\n"),
   );
@@ -234,8 +235,8 @@ async function promptCommand(io: ContextIo, textParts: string | readonly string[
   const diagnostics = [...ensured.diagnostics];
 
   let embedder: Embedder | null = null;
-  const hasFacts = ensured.index.entities.some((e) => e.type === "fact");
-  if (flags.lexical !== true && hasFacts && semanticStatus(undefined, { measure: false }).state === "installed") {
+  const hasCandidates = candidatePool(ensured.index, RECIPES.R3).length > 0;
+  if (flags.lexical !== true && hasCandidates && semanticStatus(undefined, { measure: false }).state === "installed") {
     const loaded = await loadEmbedder();
     embedder = loaded.embedder;
     if (embedder === null && loaded.reason !== undefined) {
