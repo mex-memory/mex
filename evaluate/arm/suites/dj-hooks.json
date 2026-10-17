@@ -1,0 +1,628 @@
+{
+  "schemaVersion": 1,
+  "id": "dj-hooks-arm",
+  "description": "Product hooks (mex hooks, mex context): files vs lexical vs semantic prompt recipe, Django. Hidden tests run with the suite's Python.",
+  "repetitions": 3,
+  "projectName": "django",
+  "appendInstructions": true,
+  "basePatches": [],
+  "requiresDeps": false,
+  "python": "C:/mex-test-tmp/arm-dj/venv/Scripts/python.exe",
+  "appendPrompt": {
+    "qa": "Keep the answer concise: lead with the direct answer, then give only the symbols and evidence it rests on. Do not restate the question or describe your process.",
+    "change": "Keep the summary concise: a few sentences on what you changed and why. Do not describe your process."
+  },
+  "arms": {
+    "files": {
+      "label": "repository files only",
+      "scaffold": false
+    },
+    "mex-r2w": {
+      "label": "MEX scaffold and product hooks, lexical prompt recipe (MEX_HOOK_LEXICAL=1)",
+      "scaffold": true,
+      "hooks": true,
+      "lexical": true
+    },
+    "mex-r3": {
+      "label": "MEX scaffold and product hooks, semantic extra installed (prompt recipe R3)",
+      "scaffold": true,
+      "hooks": true,
+      "semantic": true
+    }
+  },
+  "scaffolds": {
+    "default": "refs/eval/scaffold"
+  },
+  "tasks": [
+    {
+      "id": "dj-modelform-model-validation",
+      "type": "qa",
+      "base": "d430084791a61b31cecec132bce3dca19194f7f2",
+      "scaffold": "default",
+      "prompt": "A model has `slug` and `site` fields and a `UniqueConstraint(fields=['slug', 'site'], name=...)` in `Meta.constraints`, plus another model that uses `unique_together`. My ModelForm lists only `slug` (the view assigns `site` to the instance after `is_valid()`), and `is_valid()` happily accepts a slug that already exists for that site, after which `save()` raises an IntegrityError. When the form contains both fields, the same duplicate is reported as a normal form error instead. I also noticed that if a form subclass overrides `clean()` and forgets to call the parent implementation, duplicate checks stop happening altogether. What decides which of the model's uniqueness rules and constraints a ModelForm validates, at which point of form validation they run, and why are some of them skipped?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "BaseModelForm._post_clean",
+            "path": "django/forms/models.py",
+            "startLine": 479,
+            "endLine": 513
+          },
+          {
+            "symbol": "BaseModelForm._get_validation_exclusions",
+            "path": "django/forms/models.py",
+            "startLine": 396,
+            "endLine": 439
+          },
+          {
+            "symbol": "BaseModelForm.clean (sets _validate_unique/_validate_constraints)",
+            "path": "django/forms/models.py",
+            "startLine": 441,
+            "endLine": 444
+          },
+          {
+            "symbol": "BaseModelForm.validate_unique / validate_constraints",
+            "path": "django/forms/models.py",
+            "startLine": 515,
+            "endLine": 535
+          },
+          {
+            "symbol": "Model._get_unique_checks",
+            "path": "django/db/models/base.py",
+            "startLine": 1484,
+            "endLine": 1550
+          },
+          {
+            "symbol": "Model.validate_constraints",
+            "path": "django/db/models/base.py",
+            "startLine": 1695,
+            "endLine": 1713
+          },
+          {
+            "symbol": "UniqueConstraint.validate (returns early when a field is excluded)",
+            "path": "django/db/models/constraints.py",
+            "startLine": 585,
+            "endLine": 699
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "ModelForm validation of the model happens in the form's post-clean step, after the form's own field cleaning and clean(): the cleaned data is copied onto the instance (construct_instance), the instance's full_clean() is run with validate_unique=False and validate_constraints=False, and only then the form itself calls the model's validate_unique() and validate_constraints() and merges any ValidationError into the form errors",
+          "Both of those two steps are switched on by flags (_validate_unique / _validate_constraints) that start False and are set True only inside ModelForm.clean(); a subclass clean() that does not call super().clean() therefore skips unique and constraint validation completely",
+          "Each of those calls receives an exclude set built by _get_validation_exclusions(): model fields that are not on the form (or are left out by Meta.fields/exclude), fields that already have a form or model error, and fields that are optional on the form but required on the model and were left empty",
+          "The model side drops every check that involves an excluded field: Model._get_unique_checks omits any unique, unique_together or unique_for_* check naming an excluded field, and UniqueConstraint.validate (reached through Model.validate_constraints) returns without checking when any of its fields (or fields referenced by its expressions) is excluded. A rule that includes the field the form omits is thus never checked at validation time and the duplicate only surfaces as an IntegrityError at save(); the checks that do run are queries (exists(), ignoring the instance's own pk)"
+        ]
+      },
+      "difficulty": "The form half is findable from 'ModelForm' (35 hits in forms/models.py), but the reason the duplicate slips through is a chain across three files: the exclusion rules in the form, the exclude-aware unique-check gathering in Model, and the early returns inside each constraint class. The flags that make a missing super().clean() call matter are set in a different method from the one that reads them.",
+      "grepTest": {
+        "phrases": "'ModelForm', 'unique together', 'IntegrityError', 'exclude'",
+        "hits": "ModelForm: forms/models.py 35, contrib/admin/options.py 21; 'unique together|validate_unique' 16 lines (forms/models.py 10, db/models/base.py 6); IntegrityError appears only in backends/utils (no hit on the answer); 'exclude' 59 in forms/models.py, 43 in db/models/base.py, 23 in constraints.py",
+        "verdict": "Not answerable from one comment. A grep for validate_unique finds the form and model entry points (points 1-2), but the exclusion rules, the _get_unique_checks filtering and the UniqueConstraint early return need three more reads; the 'forgot super().clean()' flag is only found by tracing _validate_unique. Medium."
+      },
+      "origin": "new at HEAD; logic present at T0 as well (django/forms/models.py, db/models/base.py and constraints.py changed in (T0,HEAD] only for unrelated formset/CheckConstraint details; the exclusion and early-return logic is unchanged)",
+      "risks": "docs/topics/forms/modelforms.txt (Validation on a ModelForm, lines 231-252) states the order of steps (form clean, then full_clean with validate_unique=False and validate_constraints=False, then validate_unique/validate_constraints) and the note about calling super().clean(); so points 1-2 are partly in docs. The docstring of Model._get_unique_checks says unique checks cannot be done for excluded fields. The exclusion rules in point 3 and the constraint early return are not in docs. Ambiguity: 'why skipped' could be answered only with the exclusion idea; graders should require the concrete exclusion categories."
+    },
+    {
+      "id": "dj-view-exception-to-response",
+      "type": "qa",
+      "base": "d430084791a61b31cecec132bce3dca19194f7f2",
+      "scaffold": "default",
+      "prompt": "A view in my project sometimes raises an exception. If it raises Http404, PermissionDenied or a SuspiciousOperation subclass, the client gets a 404, 403 or 400 page in production, and a middleware that wraps the response just sees an ordinary response object. If it raises a plain ValueError, my middleware still never sees an exception: production serves my custom 500 page, and with DEBUG on the browser shows a technical error page. Yet in a test that requests the same view through the test client, the ValueError is raised straight into the test, while the other three come back as ordinary responses. How does an exception raised inside the view travel back out through the middleware stack, what decides between these outcomes, why does the test client treat only some of them differently, and where can a middleware step in before the exception turns into a response?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "convert_exception_to_response",
+            "path": "django/core/handlers/exception.py",
+            "startLine": 25,
+            "endLine": 61
+          },
+          {
+            "symbol": "response_for_exception",
+            "path": "django/core/handlers/exception.py",
+            "startLine": 64,
+            "endLine": 160
+          },
+          {
+            "symbol": "get_exception_response",
+            "path": "django/core/handlers/exception.py",
+            "startLine": 163,
+            "endLine": 171
+          },
+          {
+            "symbol": "handle_uncaught_exception",
+            "path": "django/core/handlers/exception.py",
+            "startLine": 174,
+            "endLine": 187
+          },
+          {
+            "symbol": "BaseHandler.load_middleware (wraps every layer, collects process_exception hooks)",
+            "path": "django/core/handlers/base.py",
+            "startLine": 27,
+            "endLine": 104
+          },
+          {
+            "symbol": "BaseHandler._get_response",
+            "path": "django/core/handlers/base.py",
+            "startLine": 176,
+            "endLine": 228
+          },
+          {
+            "symbol": "BaseHandler.process_exception_by_middleware",
+            "path": "django/core/handlers/base.py",
+            "startLine": 358,
+            "endLine": 367
+          },
+          {
+            "symbol": "ClientMixin.store_exc_info / check_exception",
+            "path": "django/test/client.py",
+            "startLine": 795,
+            "endLine": 810
+          },
+          {
+            "symbol": "Client.request (connects store_exc_info to got_request_exception)",
+            "path": "django/test/client.py",
+            "startLine": 1093,
+            "endLine": 1101
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "When the handler loads the middleware (load_middleware) the innermost handler and every middleware layer are wrapped in convert_exception_to_response, so no exception ever propagates from one layer to the next: each middleware receives a response. The only chance to see the raw exception is a middleware's process_exception hook, which _get_response runs (process_exception_by_middleware) around the view call and the template-response render, and which may return a response that replaces the exception",
+          "Exceptions that reach the wrapper are mapped by response_for_exception: Http404 gives a 404 (technical 404 page when DEBUG, otherwise the URLconf's handler404), PermissionDenied a 403 via handler403, MultiPartParserError/BadRequest/SuspiciousOperation a 400 (handler400, or a technical page under DEBUG; SuspiciousOperation is also logged on the django.security.<ClassName> logger)",
+          "Any other exception takes the final branch: the got_request_exception signal is sent, then handle_uncaught_exception re-raises when DEBUG_PROPAGATE_EXCEPTIONS is set, returns the technical 500 page when DEBUG is on, and otherwise calls the URLconf's handler500 view; the failure is logged by log_response. (A failing 4xx handler falls back to this same path)",
+          "The test client connects its store_exc_info receiver to got_request_exception only for the duration of one request, so exc_info is recorded only for that last branch; after the handler returns a response, check_exception stores exc_info on the response and re-raises it unless raise_request_exception is False. 404/403/400 conversions never send the signal, so they remain plain responses in tests"
+        ]
+      },
+      "difficulty": "Three separate layers cooperate (middleware-chain construction in core/handlers/base.py, the exception-type table in core/handlers/exception.py, and a signal-based side channel in django/test/client.py); 'Http404' and 'middleware' have dozens of hits elsewhere (views/generic, shortcuts, contrib), and the test-client behaviour is only explained by a signal whose name is not in the prompt.",
+      "grepTest": {
+        "phrases": "'Http404', 'middleware', 'DEBUG', '500', 'raise_request_exception'",
+        "hits": "Http404: views/generic/dates.py 12, shortcuts.py 7, core/handlers/exception.py 11 (the answer file is not the top hit); middleware: core/handlers/base.py 64, middleware/cache.py 37, utils/decorators.py 29; DEBUG: test/runner.py 32, views/debug.py 22; '500': views/defaults.py 6, core/handlers/exception.py 6",
+        "verdict": "Grepping 'Http404' or '500' reaches response_for_exception (points 2-3) but not why middleware sees responses (load_middleware wrapping) nor the test-client re-raise (needs got_request_exception, which the prompt never mentions). Medium."
+      },
+      "origin": "new at HEAD; present at T0 as well (core/handlers/exception.py changed only by the iscoroutinefunction import and thread_sensitive=True)",
+      "risks": "The docstring of convert_exception_to_response states point 1 in one sentence ('applied to all middleware ... the next middleware can rely on getting a response'). docs/topics/http/middleware.txt documents process_exception and the exception-to-response conversion; docs/topics/testing/tools.txt documents raise_request_exception. Points 2-4 details (the signal side channel, DEBUG_PROPAGATE_EXCEPTIONS) are not in docs. Ambiguity: the prompt asks four sub-questions; graders should accept partial credit per answer point."
+    },
+    {
+      "id": "dj-update-joins-and-inheritance",
+      "type": "qa",
+      "base": "d430084791a61b31cecec132bce3dca19194f7f2",
+      "scaffold": "default",
+      "prompt": "`Entry.objects.filter(rating=5).update(rating=6)` runs as one plain UPDATE. When the filter spans a relation, as in `Entry.objects.filter(blog__name='x').update(rating=5)`, it is still a single UPDATE on most databases but with an `id IN (SELECT ...)` condition, whereas on MySQL it becomes a SELECT followed by a separate UPDATE. For a model that inherits from a concrete parent, `Restaurant.objects.update(name='z', stars=3)` with `name` living on the parent's table gives me a SELECT and two UPDATE statements, and the number returned seems to come from only one of them. How does the ORM turn an update that involves joins or inherited fields into SQL, what decides when the extra SELECT is needed, and which statement's row count is returned?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "QuerySet.update",
+            "path": "django/db/models/query.py",
+            "startLine": 1437,
+            "endLine": 1477
+          },
+          {
+            "symbol": "UpdateQuery.add_update_values",
+            "path": "django/db/models/sql/subqueries.py",
+            "startLine": 81,
+            "endLine": 104
+          },
+          {
+            "symbol": "UpdateQuery.add_related_update",
+            "path": "django/db/models/sql/subqueries.py",
+            "startLine": 122,
+            "endLine": 128
+          },
+          {
+            "symbol": "UpdateQuery.get_related_updates",
+            "path": "django/db/models/sql/subqueries.py",
+            "startLine": 130,
+            "endLine": 145
+          },
+          {
+            "symbol": "SQLUpdateCompiler.pre_sql_setup",
+            "path": "django/db/models/sql/compiler.py",
+            "startLine": 2191,
+            "endLine": 2254
+          },
+          {
+            "symbol": "SQLUpdateCompiler.execute_sql",
+            "path": "django/db/models/sql/compiler.py",
+            "startLine": 2138,
+            "endLine": 2157
+          },
+          {
+            "symbol": "DatabaseFeatures.update_can_self_select (MySQL)",
+            "path": "django/db/backends/mysql/features.py",
+            "startLine": 138,
+            "endLine": 139
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "QuerySet.update() clones the query into an UpdateQuery and add_update_values() routes each assigned field by the concrete model that owns its column: fields of the queried model go into the query's own values, fields defined on an ancestor model go into related_updates, grouped per ancestor",
+          "SQLUpdateCompiler.pre_sql_setup leaves the query alone when it touches only one table (count_active_tables() == 1) and has no related updates; otherwise, because an UPDATE cannot portably contain joins, it builds a primary-key SELECT from a copy of the query (keeping the original filters and joins) and replaces the WHERE with `pk IN (<that subquery>)` (the single-statement fast path)",
+          "It instead runs that SELECT immediately and filters on the literal list of ids (plus the ancestor primary-key values, kept in related_ids) when there are related updates, so that all the statements act on the same rows, or when the query has joins and the backend cannot select from the table being updated (features.update_can_self_select is False on MySQL, True on MariaDB and the other backends)",
+          "execute_sql runs the main UPDATE and then one extra UPDATE per ancestor from get_related_updates(), each filtered by that ancestor's ids; the returned count is that of the first non-empty update (the primary one if it has values to set, otherwise the first ancestor update) and later counts are discarded"
+        ]
+      },
+      "difficulty": "'update' has 200+ hits in django/; the behaviour is split between QuerySet.update, UpdateQuery (subqueries.py, ancestor routing), SQLUpdateCompiler.pre_sql_setup (the rewrite and the pre-select decision) and a backend feature flag whose name shares no word with the prompt.",
+      "grepTest": {
+        "phrases": "'update(', 'pk__in', 'inheritance', 'subquery'",
+        "hits": "update( : db/models/query.py 22, sql/query.py 9, deletion.py 9, test/client.py 8; pk__in: query.py 5, contenttypes/fields.py 4, sql/compiler.py 3, sql/subqueries.py 2; inheritance: db/models/base.py 8, options.py 4; subquery|subselect: sql/query.py 23, sql/compiler.py 21, expressions.py 16",
+        "verdict": "No single grep lands on the answer. 'update_can_self_select' (not in the prompt) is the shortcut to point 3; from the prompt words the agent has to read QuerySet.update -> UpdateQuery -> SQLUpdateCompiler. Medium-hard."
+      },
+      "origin": "new at HEAD; present at T0 as well (subqueries.py and mysql/features.py unchanged in the relevant parts; compiler.py changed elsewhere)",
+      "risks": "docs/ref/models/querysets.txt (update(), lines ~3024-3030) has an admonition stating that on MySQL update() may run a SELECT followed by an UPDATE when filtering on related tables, and bulk_update() notes an extra query per ancestor, so the MySQL half of point 3 and the existence of extra queries are partly in docs. The docstring of pre_sql_setup explains the 'munge the where' and 'pull out the id values' idea. Behaviour verified on SQLite only (single UPDATE with IN-subquery for the join; SELECT + 2 UPDATEs for the inheritance case); the MySQL branch is derived from code, not run."
+    },
+    {
+      "id": "dj-template-override-extends-cache",
+      "type": "qa",
+      "base": "d430084791a61b31cecec132bce3dca19194f7f2",
+      "scaffold": "default",
+      "prompt": "A project configures two directories in TEMPLATES['DIRS'], turns on APP_DIRS and lists no explicit loaders. One of its own templates is named exactly like a template shipped by an installed app (`page.html`) and starts with `{% extends 'page.html' %}` to wrap the app's version, yet this does not recurse forever. Rendering the same page twice does not read the files from disk again, but under runserver a saved edit to one of those template files shows up on the next request without a restart. What decides the order in which template sources are searched, how does the self-extending template get the other file, why does the second render not touch the disk, and what makes the edit show up?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "Engine.__init__ (default loaders wrapped in the cached loader)",
+            "path": "django/template/engine.py",
+            "startLine": 37,
+            "endLine": 41
+          },
+          {
+            "symbol": "Engine.find_template",
+            "path": "django/template/engine.py",
+            "startLine": 155,
+            "endLine": 163
+          },
+          {
+            "symbol": "ExtendsNode.find_template (history passed as skip)",
+            "path": "django/template/loader_tags.py",
+            "startLine": 99,
+            "endLine": 115
+          },
+          {
+            "symbol": "Loader.get_template (skips origins in skip)",
+            "path": "django/template/loaders/base.py",
+            "startLine": 8,
+            "endLine": 35
+          },
+          {
+            "symbol": "cached.Loader.get_template",
+            "path": "django/template/loaders/cached.py",
+            "startLine": 28,
+            "endLine": 66
+          },
+          {
+            "symbol": "cached.Loader.cache_key",
+            "path": "django/template/loaders/cached.py",
+            "startLine": 72,
+            "endLine": 93
+          },
+          {
+            "symbol": "template_changed / reset_loaders (django.template.autoreload)",
+            "path": "django/template/autoreload.py",
+            "startLine": 33,
+            "endLine": 61
+          },
+          {
+            "symbol": "BaseReloader.notify_file_changed",
+            "path": "django/utils/autoreload.py",
+            "startLine": 386,
+            "endLine": 390
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "With no explicit loaders the Engine builds the default list: the filesystem loader (searches TEMPLATES['DIRS'] in order), then the app_directories loader when APP_DIRS is on (the 'templates' folders of INSTALLED_APPS, in that order), and wraps them together in the cached loader; Engine.find_template asks the loaders in order and the first matching origin wins",
+          "ExtendsNode.find_template keeps a history of the origins already used in the render context and passes it as `skip` to engine.find_template; Loader.get_template ignores (and records as 'Skipped to avoid recursion') any origin in skip, so `{% extends 'page.html' %}` inside the project's page.html resolves to the next matching origin, the app's file, instead of itself",
+          "The cached loader stores the compiled Template per cache key (missing templates are cached too, as TemplateDoesNotExist), so a second get_template/extends does not re-read or re-parse the file; the key is the template name, plus a hash of those skipped origins whose template_name equals the requested name, so the same name requested at different positions of an extends chain gets separate entries",
+          "django.template.autoreload hooks the dev server's autoreloader: on autoreload_started it watches every template directory (engine DIRS and the loaders' get_dirs(), excluding Django's own), and on file_changed for a non-.py file under one of them it calls reset_loaders(), which calls reset() on each loader (cached.Loader clears its cache) and on the form renderer's engine, and returns True so the reloader does not restart the process"
+        ]
+      },
+      "difficulty": "The question mixes four mechanisms that live in four modules (engine default loaders, ExtendsNode history, the cached loader's key, template/autoreload + utils/autoreload). 'extends' is selective (loader_tags.py), but the skip-aware cache key and the signal-return-value protocol that suppresses a restart are only reachable by following cached.Loader and file_changed.",
+      "grepTest": {
+        "phrases": "'extends', 'recurs', 'template cache|cached', 'autoreload'",
+        "hits": "extends: template/loader_tags.py 16 (+1 base.py); 'recurs' hits are related.py 14, sql/query.py 8 (not templates); autoreload: utils/autoreload.py 7, runserver.py 4, template/autoreload.py 2; get_template_cache|template_changed|reset_loaders: cached.py 5, template/autoreload.py 3",
+        "verdict": "'extends' leads straight to ExtendsNode.find_template whose docstring explains point 2, and the autoreload module is findable by name; the engine defaults, the skip-aware cache key and the restart-suppression protocol need further reads. Medium."
+      },
+      "origin": "new at HEAD; present at T0 as well (django/template/engine.py, loader_tags.py, loaders/*, template/autoreload.py and the notify_file_changed code are unchanged between T0 and HEAD)",
+      "risks": "ExtendsNode.find_template's docstring states point 2; docs/howto/overriding-templates.txt shows extending a template of the same name; docs/ref/templates/api.txt documents the cached loader and that it is enabled automatically when OPTIONS['loaders'] is not specified. The cache-key detail and the reset_loaders/restart-suppression protocol are not in docs. Behaviour verified at HEAD: with two DIRS holding page.html (child extends 'page.html'), the render combines both, a second render opens no file, and the cache holds 'page.html' and a hashed 'page.html-<sha1>' key."
+    },
+    {
+      "id": "dj-drift-mailers",
+      "type": "qa",
+      "base": "d430084791a61b31cecec132bce3dca19194f7f2",
+      "scaffold": "default",
+      "prompt": "How does Django decide which mail server or backend an outgoing message is delivered through when I call `send_mail()` in a view and `EmailMessage(...).send()` in a management command? Where is that configured, can messages from the same process go through different configurations (say transactional mail through one provider and bulk mail through another), and how do tests keep these calls away from a real server while letting me inspect what would have been sent?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "MailersHandler (create_connection builds a backend per alias)",
+            "path": "django/core/mail/handler.py",
+            "startLine": 11,
+            "endLine": 78
+          },
+          {
+            "symbol": "mailers = MailersHandler()",
+            "path": "django/core/mail/__init__.py",
+            "startLine": 69,
+            "endLine": 69
+          },
+          {
+            "symbol": "get_connection (deprecated, only without MAILERS)",
+            "path": "django/core/mail/__init__.py",
+            "startLine": 74,
+            "endLine": 101
+          },
+          {
+            "symbol": "send_mail (using argument)",
+            "path": "django/core/mail/__init__.py",
+            "startLine": 114,
+            "endLine": 184
+          },
+          {
+            "symbol": "EmailMessage.send",
+            "path": "django/core/mail/message.py",
+            "startLine": 387,
+            "endLine": 425
+          },
+          {
+            "symbol": "BaseEmailBackend.__init__ (alias and OPTIONS kwargs)",
+            "path": "django/core/mail/backends/base.py",
+            "startLine": 29,
+            "endLine": 71
+          },
+          {
+            "symbol": "_check_email_settings_conflicts",
+            "path": "django/conf/__init__.py",
+            "startLine": 63,
+            "endLine": 70
+          },
+          {
+            "symbol": "setup_test_environment (swaps every MAILERS backend for locmem)",
+            "path": "django/test/utils.py",
+            "startLine": 120,
+            "endLine": 164
+          },
+          {
+            "symbol": "locmem EmailBackend.send_messages (sent_using)",
+            "path": "django/core/mail/backends/locmem.py",
+            "startLine": 28,
+            "endLine": 37
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "Delivery is configured with the MAILERS setting, a dict of alias -> {'BACKEND': dotted path (default: the SMTP backend), 'OPTIONS': kwargs for the backend}; the module-level mail.mailers handler imports the backend class and instantiates it with alias=... and the OPTIONS for each alias, and mailers.default is the 'default' alias",
+          "send_mail(), send_mass_mail(), mail_admins()/mail_managers() and EmailMessage.send() take a `using=<alias>` argument to pick a configuration; without it the 'default' alias is used, so different messages in one process can go through different aliases (an unknown alias raises MailerDoesNotExist, and `using` cannot be combined with connection, fail_silently or auth_user/auth_password)",
+          "The older mechanism, the EMAIL_BACKEND/EMAIL_HOST/EMAIL_PORT/... settings, mail.get_connection() and the connection/fail_silently/auth_user/auth_password arguments, is deprecated (RemovedInDjango2028Warning) and honoured only while MAILERS is not defined (the backends then read the EMAIL_* settings themselves); defining both raises ImproperlyConfigured",
+          "In tests, setup_test_environment replaces the BACKEND of every MAILERS alias with the locmem backend (EMAIL_BACKEND is replaced only when MAILERS is not configured), SimpleTestCase resets mail.outbox, and locmem stores a copy of each message in mail.outbox with `sent_using` set to the alias used"
+        ]
+      },
+      "difficulty": "The prompt names only the public send APIs; the answer spans conf (global_settings/__init__), core/mail (handler, __init__, message, backends) and test/utils. A stale answer (single EMAIL_BACKEND setting, get_connection(), EmailMessage.connection) is plausible because most of that machinery still exists as a deprecated path.",
+      "grepTest": {
+        "phrases": "'send_mail', 'EmailMessage', 'outbox', 'EMAIL_BACKEND'",
+        "hits": "send_mail: utils/log.py 3, middleware/common.py 2, core/mail/__init__.py 2; outbox: locmem.py 6, test/utils.py 2, testcases.py 2; EMAIL_BACKEND: utils/log.py 8, test/utils.py 6, core/mail/__init__.py 2, checks/mail.py 2; MAILERS (not in the prompt): core/mail/__init__.py 12, checks/mail.py 11, deprecation.py 10",
+        "verdict": "An agent that greps send_mail reaches core/mail/__init__.py and sees mailers/using quickly, so the HEAD half is medium; the value of the task is that a T0-written knowledge entry (EMAIL_BACKEND + get_connection) is now misleading for the main path. Docs make the HEAD answer easy to cross-check (see risks)."
+      },
+      "origin": "drift: PR for #35514 (0f581cd29d4) replaced the EMAIL_BACKEND/EMAIL_* settings model with the dictionary-based MAILERS setting",
+      "risks": "docs/topics/email.txt and docs/ref/settings.txt describe MAILERS in detail at HEAD, so the HEAD answer is documented; the difficulty is entirely whether an agent trusts a stale knowledge entry. After the 2026-08-20 rename the warning class is RemovedInDjango2028Warning (it was RemovedInDjango70Warning in the original commit); graders should not penalise either spelling. If the T0 scaffold describes the mail stack only briefly the drift may not bite.",
+      "drift": {
+        "t0Answer": "At T0 there is one global configuration: settings.EMAIL_BACKEND (a dotted path, default SMTP) plus EMAIL_HOST/EMAIL_PORT/EMAIL_HOST_USER/EMAIL_HOST_PASSWORD/EMAIL_USE_TLS/EMAIL_USE_SSL/... which the backend's __init__ reads itself. mail.get_connection(backend=None, fail_silently=False, **kwds) does import_string(backend or settings.EMAIL_BACKEND)(fail_silently=..., **kwds); send_mail()/send_mass_mail() use the `connection` argument or build one with get_connection(username=auth_user, password=auth_password, fail_silently=...); EmailMessage.send() uses self.get_connection() which caches get_connection() on the message. To use a different server in the same process you create a connection object with get_connection(backend=..., host=..., ...) and pass it as `connection=` (or EmailMessage(connection=...)). In tests setup_test_environment sets settings.EMAIL_BACKEND to the locmem backend and mail.outbox is a plain list of copied messages.",
+        "headAnswer": "At HEAD the MAILERS setting (alias -> BACKEND/OPTIONS) is the configuration; django.core.mail.mailers (MailersHandler) builds backend instances by alias, `using=` selects the alias on send_mail/send_mass_mail/mail_admins/mail_managers/EmailMessage.send, and 'default' is used otherwise. EMAIL_BACKEND and the other EMAIL_* settings, get_connection(), and the connection/fail_silently/auth_user/auth_password arguments are deprecated and work only while MAILERS is undefined (mixing raises ImproperlyConfigured); EmailMessage.get_connection() no longer exists. Tests replace the BACKEND of every MAILERS alias with locmem and mail.outbox messages carry sent_using.",
+        "staleAnswer": "Describing a single EMAIL_BACKEND/EMAIL_HOST... configuration, get_connection() as the way to pick a server, passing connection= objects to use another server, or setup_test_environment overriding EMAIL_BACKEND follows T0.",
+        "commits": [
+          "0f581cd29d4 Fixed #35514 -- Implemented dictionary-based MAILERS.",
+          "f25ad7c086 Refs #35514 -- Added error for missing EMAIL_FILE_PATH setting.",
+          "0d0e7f1503 Refs #37293 -- Aliased RemovedInDjango70Warning to RemovedInDjango2028Warning."
+        ],
+        "tickets": [
+          "#35514"
+        ],
+        "files": [
+          "django/core/mail/__init__.py",
+          "django/core/mail/handler.py",
+          "django/core/mail/message.py",
+          "django/core/mail/backends/base.py",
+          "django/core/mail/backends/locmem.py",
+          "django/conf/__init__.py",
+          "django/conf/global_settings.py",
+          "django/test/utils.py"
+        ]
+      }
+    },
+    {
+      "id": "dj-drift-unmanaged-migrations",
+      "type": "qa",
+      "base": "d430084791a61b31cecec132bce3dca19194f7f2",
+      "scaffold": "default",
+      "prompt": "Part of my project is a model mapped to an existing legacy table, declared with `managed = False`. When I later add a column, change a field's type or remove a column on that model and run `makemigrations`, does Django write a migration that captures the change? Does running `migrate` then alter the real table? And when such a model has a foreign key, does the very first migration that creates it treat that foreign key like the one for a normal model? Which parts of the migration machinery decide each of these?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "MigrationAutodetector._detect_changes (all non-proxy models are tracked, managed or not)",
+            "path": "django/db/migrations/autodetector.py",
+            "startLine": 150,
+            "endLine": 170
+          },
+          {
+            "symbol": "MigrationAutodetector.generate_created_models",
+            "path": "django/db/migrations/autodetector.py",
+            "startLine": 641,
+            "endLine": 853
+          },
+          {
+            "symbol": "MigrationAutodetector._generate_added_field (no default prompt for unmanaged)",
+            "path": "django/db/migrations/autodetector.py",
+            "startLine": 1134,
+            "endLine": 1197
+          },
+          {
+            "symbol": "MigrationAutodetector.generate_altered_fields",
+            "path": "django/db/migrations/autodetector.py",
+            "startLine": 1241,
+            "endLine": 1370
+          },
+          {
+            "symbol": "Operation.allow_migrate_model",
+            "path": "django/db/migrations/operations/base.py",
+            "startLine": 148,
+            "endLine": 158
+          },
+          {
+            "symbol": "Options.can_migrate",
+            "path": "django/db/models/options.py",
+            "startLine": 395,
+            "endLine": 411
+          },
+          {
+            "symbol": "AddField.database_forwards",
+            "path": "django/db/migrations/operations/fields.py",
+            "startLine": 111,
+            "endLine": 123
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "makemigrations does write migrations for field additions, alterations and removals on an unmanaged model: since the change the autodetector no longer splits unmanaged models into a separate group with only create/delete tracking; _detect_changes puts every non-proxy model (managed or not) into the same old/new model key sets, so the generate_added/altered/removed_fields steps, constraints, options and renames all apply",
+          "The migration state keeps the unmanaged model (ModelState with options managed=False) and applies those operations to it, so historical models used by later operations and RunPython see the new fields",
+          "migrate still does not touch the database for them: schema-changing operations such as AddField/AlterField/RemoveField guard their database_forwards/backwards with allow_migrate_model(), which returns False for a model whose Options.can_migrate() is False (proxy, swapped or not managed), so the state changes but no SQL runs",
+          "Creation of an unmanaged model is handled like a managed one: the related fields (foreign keys, M2M) are part of the CreateModel or separate AddField operations with the same dependencies; and for unmanaged models the interactive questioner is skipped when adding a non-null field without default or altering null to non-null (the follow-up change), because no column is really being added"
+        ]
+      },
+      "difficulty": "A stale 'unmanaged models are only created/deleted by migrations' answer is natural and was true at T0. The behaviour is split between the autodetector (what operations are generated and when the questioner is consulted) and the operations layer (allow_migrate_model/can_migrate), two packages whose names share no word with each other.",
+      "grepTest": {
+        "phrases": "'unmanaged', 'managed', 'makemigrations', 'legacy table'",
+        "hits": "'unmanaged' appears in only 4 files of django/ (compiler.py, operations/base.py, executor.py, commands/migrate.py), none in autodetector.py at HEAD; 'managed': migrations/autodetector.py 7, related.py 5, inspectdb.py 5, options.py 3, introspection.py 3; makemigrations: checks/commands.py 4, commands/makemigrations.py 3",
+        "verdict": "From HEAD alone the autodetector has no 'unmanaged' branch left, so the evidence is the absence of special-casing plus the is_managed checks around the questioner; the operations-layer half is found through 'managed' in operations/base.py. Medium. A T0-written note ('only create and delete operations are generated for unmanaged models') would be directly wrong."
+      },
+      "origin": "drift: #35813 (7b8504eaab, committed 2026-07-10) made makemigrations track all changes to unmanaged models; #37224 (8f52e9199b) then skipped the questioner for them",
+      "risks": "docs/ref/models/options.txt (managed) was extended by the same commit to state that makemigrations now tracks changes, and docs/releases/6.2.txt records it, so the HEAD answer is documented. The questioner point is a second, smaller change (8f52e9199b); graders may treat point 4 as optional. The prompt's foreign-key sentence is verified by probe: at T0 the unmanaged CreateModel omitted the foreign key field entirely, at HEAD it is included.",
+      "drift": {
+        "t0Answer": "At T0 unmanaged models were collected into separate old_unmanaged_keys/new_unmanaged_keys sets in _detect_changes. Only creation (CreateModel, without the related-field operations: an unmanaged model's foreign keys and M2M fields were omitted, 'Don't add operations which modify the database for unmanaged models'), deletion, and a few options such as db_table, db_table_comment and managed itself (AlterModelOptions) were generated. Adding, altering or removing a field, constraints, indexes etc. on an unmanaged model produced no operation, so makemigrations reported no changes and the migration state silently drifted from the model.",
+        "headAnswer": "At HEAD unmanaged models are treated like managed ones by the autodetector: field additions/alterations/removals, constraints and renames are all generated, creation includes the foreign key and M2M fields, and the questioner is not asked for defaults on unmanaged models. migrate still never alters their tables because the operations' allow_migrate_model()/Options.can_migrate() reject unmanaged models.",
+        "staleAnswer": "Saying that makemigrations ignores field changes on managed=False models (only CreateModel/DeleteModel and a few Meta options are tracked), or that their foreign keys are left out of the creating migration, follows T0.",
+        "commits": [
+          "7b8504eaab Fixed #35813 -- Made migrations track all changes to unmanaged models.",
+          "8f52e9199b Fixed #37224 -- Skipped questioner for field changes on unmanaged models."
+        ],
+        "tickets": [
+          "#35813",
+          "#37224"
+        ],
+        "files": [
+          "django/db/migrations/autodetector.py",
+          "docs/ref/models/options.txt",
+          "docs/releases/6.2.txt"
+        ]
+      }
+    },
+    {
+      "id": "dj-change-exclude-in-none",
+      "type": "change",
+      "base": "3fb37ef41103ad0624ed9e8c3f7b9190f4264ae2",
+      "scaffold": "default",
+      "prompt": "Bug report: when the list given to an `__in` lookup contains None, `exclude()` effectively ignores the None. Take a model with a nullable CharField `name` and two rows, one named 'i1' and one whose name is NULL. `Model.objects.exclude(name__in=[None])` returns both rows, and `exclude(name__in=[None, 'i1'])` still returns the NULL-name row, although `exclude(name=None)` correctly drops it and, read as Python, the list says NULL should be matched. Make a None inside an `__in` list count as a match for NULL when the filter is negated, so those exclusions drop the NULL-name row, without changing what `filter(name__in=[...])` returns and without changing `exclude()` for lists that contain no None. Add tests for it and make sure the existing query tests, including the composite primary key filter tests, keep passing.",
+      "mergeCommit": "cec10f992be8eed5ed90506375ae5794cbb7069e",
+      "srcFiles": [
+        "django/db/models/sql/query.py"
+      ],
+      "hiddenTests": {
+        "runner": "django",
+        "tests": "queries.tests.NullInExcludeTest composite_pk.test_filter",
+        "fromCommit": "cec10f992be8eed5ed90506375ae5794cbb7069e",
+        "files": [
+          "tests/queries/tests.py",
+          "tests/composite_pk/test_filter.py"
+        ]
+      },
+      "testFiles": {
+        "tests": [
+          "tests/queries/tests.py",
+          "tests/composite_pk/test_filter.py"
+        ]
+      },
+      "testCommand": "set PYTHONPATH=<checkout>&& C:\\mex-test-tmp\\arm-dj\\venv\\Scripts\\python.exe <checkout>\\tests\\runtests.py queries.tests.NullInExcludeTest composite_pk.test_filter --parallel 1",
+      "gold": {
+        "code": [
+          {
+            "symbol": "Query.build_filter (negated lookup: IS NOT NULL clause added at base)",
+            "path": "django/db/models/sql/query.py",
+            "startLine": 1616,
+            "endLine": 1646
+          },
+          {
+            "symbol": "In.process_rhs (None removed from the literal list)",
+            "path": "django/db/models/lookups.py",
+            "startLine": 514,
+            "endLine": 538
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "difficulty": "The symptom is in exclude() but the cause is the interplay of three pieces: In.process_rhs silently strips None from the literal list, build_filter wraps negated nullable lookups as NOT (col IS NOT NULL AND col IN (...)), and that wrapper never looks at the rhs values. The fix is a 12-line condition in build_filter that adds `col IS NULL` with OR when the rhs holds a None; a guess in the lookup class would break filter() and the composite-pk tuple lookups.",
+      "origin": "Django commit cec10f992b (Fixed #20024), parent 3fb37ef411 on main, committed to main 2026-04-02 (authored 2025-10-31; after T0)",
+      "review": "Source diff: 1 file, +12/-2 lines (django/db/models/sql/query.py); tests: queries/tests.py (-6, drops @expectedFailure on test_col_not_in_list_containing_null) and composite_pk/test_filter.py (+17/-6, one test split into four). Hidden test that flips: NullInExcludeTest.test_col_not_in_list_containing_null; the four composite_pk tests pass at base and must keep passing. RISKS: only exclude(name__in=[None]) is pinned by the hidden tests, other shapes of the fix would pass; the prompt states the expected semantics (NULL matched) because the Trac ticket's behaviour was once declared a known failure; verified deterministic 3/3 at each commit on Windows.",
+      "grepTest": {
+        "phrases": "'exclude', '__in', 'IS NOT NULL', 'None'",
+        "hits": "No src hit for 'name__in' semantics; 'IS NOT NULL' appears 3 times in sql/query.py (the fix site is one of them, in a comment block); exclude/None appear in hundreds of places",
+        "verdict": "Hard: the prompt gives the user-level symptom; locating build_filter's negation branch and understanding why In.process_rhs hides the None requires reading the lookup and the query builder together."
+      }
+    },
+    {
+      "id": "dj-change-filteredrelation-alias-sep",
+      "type": "change",
+      "base": "439b936753e5a679ffcf40cff5918c5637f7c72b",
+      "scaffold": "default",
+      "prompt": "Bug report: an annotation alias that contains a double underscore is mistaken for a relationship traversal. Say `Book` has a foreign key `editor` to `Editor` (which has a `name` field), and I write `Book.objects.annotate(editor__name=FilteredRelation('editor', condition=Q(editor__isnull=False)))`. Then `.values('editor__name')` and `.values_list('editor__name')` return the editor's name column, as if I had typed the real lookup, instead of what the alias stands for (the related row, i.e. its primary key, exactly like `.values('editor')` gives for the relation). In the same way `.order_by('editor__name')` sorts by the editor's name column rather than by the aliased relation (without a Meta.ordering on Editor, by editor primary key). Aliases created by annotate()/alias() with ordinary expressions are already honoured in these places. Make the alias win in values()/values_list() and order_by(), add tests, and keep the existing queryset and FilteredRelation tests passing.",
+      "mergeCommit": "73cc09f14f13fedddc14d6ba5b287cb33c24e4a4",
+      "srcFiles": [
+        "django/db/models/sql/compiler.py",
+        "django/db/models/sql/query.py"
+      ],
+      "hiddenTests": {
+        "runner": "django",
+        "tests": "filtered_relation",
+        "fromCommit": "73cc09f14f13fedddc14d6ba5b287cb33c24e4a4",
+        "files": [
+          "tests/filtered_relation/tests.py"
+        ]
+      },
+      "testFiles": {
+        "tests": [
+          "tests/filtered_relation/tests.py"
+        ]
+      },
+      "testCommand": "set PYTHONPATH=<checkout>&& C:\\mex-test-tmp\\arm-dj\\venv\\Scripts\\python.exe <checkout>\\tests\\runtests.py filtered_relation --parallel 1",
+      "gold": {
+        "code": [
+          {
+            "symbol": "Query.add_fields (values()/values_list() names split on LOOKUP_SEP)",
+            "path": "django/db/models/sql/query.py",
+            "startLine": 2268,
+            "endLine": 2325
+          },
+          {
+            "symbol": "Query.add_ordering (order_by names validated by splitting on LOOKUP_SEP)",
+            "path": "django/db/models/sql/query.py",
+            "startLine": 2327,
+            "endLine": 2361
+          },
+          {
+            "symbol": "SQLCompiler.find_ordering_name (pieces = name.split(LOOKUP_SEP))",
+            "path": "django/db/models/sql/compiler.py",
+            "startLine": 1066,
+            "endLine": 1129
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "difficulty": "The symptom shows up in values()/order_by(), but the cause is that three separate name-resolution sites each split the name on '__' and only consult annotations, never the Query._filtered_relations map where FilteredRelation aliases are kept. The fix is a small helper used in three places across two files; an agent that patches only one site (e.g. values) leaves order_by wrong, and the compiler site is not reachable from the Query code.",
+      "origin": "Django commit 73cc09f14f (Fixed #36945), parent 439b936753 on main, committed to main 2026-08-29 (authored 2026-08-19; after T0)",
+      "review": "Source diff: 2 files, +12/-3 lines in django/db/models/sql/{compiler,query}.py; tests: 2 new tests (23 lines) in tests/filtered_relation/tests.py. At base both new tests fail (values returns the editor's name; order_by sorts by name), at the merge commit all 66 tests pass (1 skipped) deterministically (3/3 runs each, ~2-6 s). RISKS: the order_by test depends on Editor having no Meta.ordering, so the prompt states the pk fallback; the alias contains the lookup separator, which is an unusual naming choice that the prompt has to state explicitly; no flaky behaviour observed.",
+      "grepTest": {
+        "phrases": "'FilteredRelation', 'LOOKUP_SEP', '_filtered_relations', 'values'",
+        "hits": "FilteredRelation: sql/query.py 15, models/__init__.py 2, query.py 4; _filtered_relations: query.py 2, compiler.py 2, sql/query.py 9; LOOKUP_SEP in sql/: compiler.py 8 and query.py many",
+        "verdict": "Hard: FilteredRelation greps land on build_filter/join code, not on the three name-splitting sites; the agent must reason that annotations are consulted before splitting but filtered relations are not."
+      }
+    }
+  ]
+}

@@ -1,0 +1,835 @@
+{
+  "schemaVersion": 1,
+  "id": "ts-hooks-arm",
+  "description": "Product hooks (mex hooks, mex context): files vs lexical vs semantic prompt recipe, TypeScript (needs the 4 MiB file-limit CLI)",
+  "repetitions": 3,
+  "projectName": "ts",
+  "appendInstructions": true,
+  "basePatches": [
+    {
+      "file": "AGENTS.md",
+      "deleteFrom": "## ❌ DO NOT create coding PRs",
+      "deleteTo": "---"
+    },
+    {
+      "file": "AGENTS.md",
+      "deleteFrom": "**You MUST read and follow",
+      "deleteTo": ""
+    }
+  ],
+  "appendPrompt": {
+    "qa": "Keep the answer concise: lead with the direct answer, then give only the symbols and evidence it rests on. Do not restate the question or describe your process.",
+    "change": "Keep the summary concise: a few sentences on what you changed and why. Do not describe your process."
+  },
+  "arms": {
+    "files": {
+      "label": "repository files only",
+      "scaffold": false
+    },
+    "mex-r2w": {
+      "label": "MEX scaffold and product hooks, lexical prompt recipe (MEX_HOOK_LEXICAL=1)",
+      "scaffold": true,
+      "hooks": true,
+      "lexical": true
+    },
+    "mex-r3": {
+      "label": "MEX scaffold and product hooks, semantic extra installed (prompt recipe R3)",
+      "scaffold": true,
+      "hooks": true,
+      "semantic": true
+    }
+  },
+  "scaffolds": {
+    "default": "refs/eval/scaffold-push2"
+  },
+  "tasks": [
+    {
+      "id": "ts-evolving-array-type",
+      "type": "qa",
+      "base": "b465fdbfe175",
+      "scaffold": "default",
+      "prompt": "With noImplicitAny on, `let items = [];` followed later by `items.push(1); items.push('a');` gives `items` the type (string | number)[] when it is read afterwards, with no implicit-any complaint, and `items[0] = true` widens it further. But if I read `items` before anything has been added, or capture it in a closure before the additions, I get an error that it implicitly has type any[] in some locations. What makes the type of such a variable grow, which compiler phases take part, and when does it give up?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "getTypeForVariableLikeDeclaration (empty array initializer gives autoArrayType)",
+            "path": "src/compiler/checker.ts",
+            "startLine": 11893,
+            "endLine": 11902
+          },
+          {
+            "symbol": "bindCallExpressionFlow (array mutation flow node for push/unshift)",
+            "path": "src/compiler/binder.ts",
+            "startLine": 2227,
+            "endLine": 2254
+          },
+          {
+            "symbol": "onExit (array mutation flow node for element assignment)",
+            "path": "src/compiler/binder.ts",
+            "startLine": 1992,
+            "endLine": 2015
+          },
+          {
+            "symbol": "getTypeAtFlowArrayMutation",
+            "path": "src/compiler/checker.ts",
+            "startLine": 29236,
+            "endLine": 29265
+          },
+          {
+            "symbol": "isEvolvingArrayOperationTarget",
+            "path": "src/compiler/checker.ts",
+            "startLine": 28697,
+            "endLine": 28714
+          },
+          {
+            "symbol": "checkIdentifier (implicit any[] error)",
+            "path": "src/compiler/checker.ts",
+            "startLine": 31213,
+            "endLine": 31221
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "A non-const, non-exported, non-ambient variable declared with an empty array literal initializer gets the special autoArrayType (control-flow tracked any[]) when noImplicitAny is on or the file is JS",
+          "The binder adds an ArrayMutation flow node for each call of push/unshift on a narrowable reference (bindCallExpressionFlow) and for each `x[n] = value` assignment (the binary-expression onExit)",
+          "During flow analysis getTypeAtFlowArrayMutation takes the evolving array type from the antecedent and adds the element type of each pushed argument or assigned value (only if the index is number-like), and the final type is a subtype-reduced union array, or any[] if nothing was added",
+          "A reference that is itself the target of the operation (x in x.length, x.push(..), x[n] = ..) is typed any[] instead of the evolved type, so these operations never error; when a plain read still resolves to the unevolved auto type (read before any addition, or across a function boundary) checkIdentifier reports the 'implicitly has type any[] in some locations' error"
+        ]
+      },
+      "difficulty": "The behaviour is split between the checker (declared type, flow analysis, error) and the binder (flow nodes that exist only for push/unshift/element assignment); neither 'push' nor 'array' is selective in either file, and the identifiers (autoArrayType, ArrayMutation, EvolvingArray) share no word with the prompt.",
+      "grepTest": {
+        "phrases": "'implicitly has type any[]', 'unshift', 'empty array'",
+        "hits": "first phrase matches only the diagnostic text (diagnosticMessages.json -> checkIdentifier); 'unshift' 14 hits in checker.ts; 'empty array' 8 hits in checker.ts",
+        "verdict": "Not answerable from one comment. The diagnostic leads to checkIdentifier, which names autoArrayType but not how it grows; the binder half (two mutation sites) is only reachable by following FlowArrayMutation. Medium-hard."
+      },
+      "origin": "new at HEAD; present at T0 as well",
+      "risks": "Comments next to getFlowTypeOfReference tail (checker.ts 29016-29021) and isEvolvingArrayOperationTarget describe points 3-4 partially."
+    },
+    {
+      "id": "ts-effects-call-flow",
+      "type": "qa",
+      "base": "b465fdbfe175",
+      "scaffold": "default",
+      "prompt": "I have `function fail(): never { throw new Error(); }` and code after the statement `fail();` is treated as dead and stops narrowing. But if I declare `const fail = () => { throw new Error(); }` with no annotation, or call it as `x = fail()`, or through `getHelpers()[0].fail()`, nothing after the call is affected. The same holds for helper functions that throw unless a condition holds. Which calls does the compiler treat as ending or narrowing the flow, which phases decide, and why those restrictions?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "maybeBindExpressionFlowIfCall",
+            "path": "src/compiler/binder.ts",
+            "startLine": 1779,
+            "endLine": 1788
+          },
+          {
+            "symbol": "isDottedName",
+            "path": "src/compiler/utilities.ts",
+            "startLine": 7525,
+            "endLine": 7532
+          },
+          {
+            "symbol": "getTypeOfDottedName",
+            "path": "src/compiler/checker.ts",
+            "startLine": 28758,
+            "endLine": 28790
+          },
+          {
+            "symbol": "getExplicitTypeOfSymbol",
+            "path": "src/compiler/checker.ts",
+            "startLine": 28722,
+            "endLine": 28752
+          },
+          {
+            "symbol": "getEffectsSignature",
+            "path": "src/compiler/checker.ts",
+            "startLine": 28792,
+            "endLine": 28826
+          },
+          {
+            "symbol": "hasTypePredicateOrNeverReturnType",
+            "path": "src/compiler/checker.ts",
+            "startLine": 28828,
+            "endLine": 28831
+          },
+          {
+            "symbol": "getTypeAtFlowCall",
+            "path": "src/compiler/checker.ts",
+            "startLine": 29217,
+            "endLine": 29234
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "The binder creates a FlowCall node only for calls that are an expression statement or an operand of a comma expression and whose callee is a dotted name (identifiers, this, property accesses, parentheses); calls nested inside other expressions, or with element-access/call callee parts, get none",
+          "When flow analysis meets that node, getEffectsSignature resolves the callee with getTypeOfDottedName, which accepts only function, method, class and value-module symbols, or variables/properties/parameters that have an explicit type annotation (getExplicitTypeOfSymbol); this avoids circularities where inferring a callee's type would need flow analysis of the same code",
+          "The signature only counts if it has a type predicate (is/asserts) or its annotated return type is never (hasTypePredicateOrNeverReturnType); a lone non-generic signature is used directly, several signatures go through overload resolution, and the outcome is cached in the node links",
+          "Consumers: getTypeAtFlowCall narrows by assertion or yields the unreachable never type for never-returning calls, and isReachableFlowNodeWorker treats such calls (or asserts of a false literal) as ending reachability, which also drives the unreachable-code diagnostics"
+        ]
+      },
+      "difficulty": "The words never/throw/narrowing are everywhere; the restriction lives in two places that do not mention each other (a syntactic filter in the binder and an annotation-only type lookup in the checker), and the relevant identifiers (FlowCall, EffectsSignature, dotted name) are absent from the prompt.",
+      "grepTest": {
+        "phrases": "'never.*return', 'asserts', 'needs an explicit type annotation'",
+        "hits": "never.*return 15 hits in checker.ts; 'asserts' 13 in checker.ts and 17 in debug.ts; the diagnostic 'needs an explicit type annotation' gives getExplicitTypeOfSymbol",
+        "verdict": "Diagnostic text gets half of point 2 quickly; points 1, 3 and 4 need the binder and flow-consumer reads. Medium-hard."
+      },
+      "origin": "new at HEAD; logic present at T0 (the circular getEffectsSignature crash fixed by PR 63026 sits in this path)",
+      "risks": "A comment above getTypeOfDottedName (checker.ts 28754-28757) states the restriction in point 2 almost verbatim, and the comment in maybeBindExpressionFlowIfCall claims 'at least one argument' which the code does not check; the answer key follows the code."
+    },
+    {
+      "id": "ts-discriminant-narrowing",
+      "type": "qa",
+      "base": "b465fdbfe175",
+      "scaffold": "default",
+      "prompt": "Given a union of object types that each have a `kind` property, `if (msg.kind === 'a')` narrows `msg`. It also narrows when I first write `const k = msg.kind; if (k === 'a')`, and when I destructure `const { kind, payload } = msg; if (kind === 'a') { payload }`. It stops working if `k` is declared with `let`, if `msg` is a property I assign to elsewhere in a loop, or if `kind` is typed as plain string in every member. With a union of a hundred members the check is still instant. Explain which phases decide each of these cases and where the information comes from.",
+      "gold": {
+        "code": [
+          {
+            "symbol": "isNarrowingExpression",
+            "path": "src/compiler/binder.ts",
+            "startLine": 1242,
+            "endLine": 1267
+          },
+          {
+            "symbol": "createFlowCondition",
+            "path": "src/compiler/binder.ts",
+            "startLine": 1380,
+            "endLine": 1399
+          },
+          {
+            "symbol": "createUnionOrIntersectionProperty (check flags)",
+            "path": "src/compiler/checker.ts",
+            "startLine": 15567,
+            "endLine": 15749
+          },
+          {
+            "symbol": "isDiscriminantProperty",
+            "path": "src/compiler/checker.ts",
+            "startLine": 27967,
+            "endLine": 27980
+          },
+          {
+            "symbol": "getCandidateDiscriminantPropertyAccess",
+            "path": "src/compiler/checker.ts",
+            "startLine": 29470,
+            "endLine": 29512
+          },
+          {
+            "symbol": "getKeyPropertyName",
+            "path": "src/compiler/checker.ts",
+            "startLine": 28029,
+            "endLine": 28050
+          },
+          {
+            "symbol": "narrowTypeByDiscriminantProperty",
+            "path": "src/compiler/checker.ts",
+            "startLine": 29552,
+            "endLine": 29565
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "The binder only creates a FlowCondition node when isNarrowingExpression accepts the condition: reference chains of identifiers/this/property accesses/element accesses with literal or entity-name keys, comparisons, typeof and so on; conditions on other expressions add no node, so nothing can narrow",
+          "A property is a discriminant only if the synthesized union property carries CheckFlags.Discriminant (HasNonUniformType plus HasLiteralType, set while creating the union property from its constituents) and its type is not generic; isDiscriminantProperty caches the answer on the symbol links, so a property typed plain string in every member never discriminates",
+          "getCandidateDiscriminantPropertyAccess accepts `ref.prop`, `ref[key]`, an identifier that is a const (isConstantVariable) initialised from such an access without a type annotation, and a const destructured binding element from the same reference; a `let` alias or a differently matching reference is not a candidate",
+          "narrowTypeByDiscriminant keeps the union constituents whose property type is comparable with the narrowed property type; for === and !== on a union with at least 10 object members the checker instead builds a map from literal key to constituent (getKeyPropertyName / mapTypesByKeyProperty, only if the key property is a unit type with mostly unique values), which makes narrowing large unions fast"
+        ]
+      },
+      "difficulty": "'discriminant' has 100 hits in checker.ts and the prompt does not contain it; the four answer parts sit in two binder functions and four far-apart checker functions plus a flag set in union-property creation.",
+      "grepTest": {
+        "phrases": "'kind ===' (no useful hit), 'narrow' (thousands), 'destructure', 'alias' (too common); the identifier 'discriminant' is not in the prompt",
+        "hits": "'discriminant' checker.ts 100, types.ts 5; 'isNarrowingExpression' binder.ts only",
+        "verdict": "No single grep reaches more than one of the four parts; an agent has to know to look for CheckFlags and the key-property map. Hard-ish (medium-hard) rather than hard because 'discriminant' is easy to guess."
+      },
+      "origin": "new at HEAD; logic present at T0 (HEAD adds parenthesised-initializer aliases via PR 61788)",
+      "risks": "Comments above mapTypesByKeyProperty and getKeyPropertyName state the >=10 threshold and the unit-type rule verbatim."
+    },
+    {
+      "id": "ts-const-enum-inlining",
+      "type": "qa",
+      "base": "b465fdbfe175",
+      "scaffold": "default",
+      "prompt": "In a normal tsc build a reference such as `Color.Red` to a const enum declared in another file is replaced by the number in the JavaScript output (with the original text as a trailing comment) and the enum declaration itself disappears. When the same files are compiled one at a time, the way Babel, esbuild or transpile-only tools do, the reference stays as a property access, the enum object is emitted, and using an enum declared in a .d.ts file is an error. What decides each of these outcomes, and which phases cooperate?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "substituteConstantValue",
+            "path": "src/compiler/transformers/ts.ts",
+            "startLine": 2721,
+            "endLine": 2737
+          },
+          {
+            "symbol": "tryGetConstEnumValue",
+            "path": "src/compiler/transformers/ts.ts",
+            "startLine": 2739,
+            "endLine": 2745
+          },
+          {
+            "symbol": "shouldEmitEnumDeclaration",
+            "path": "src/compiler/transformers/ts.ts",
+            "startLine": 1790,
+            "endLine": 1793
+          },
+          {
+            "symbol": "getConstantValue (checker)",
+            "path": "src/compiler/checker.ts",
+            "startLine": 51072,
+            "endLine": 51090
+          },
+          {
+            "symbol": "preserveConstEnums (computed option)",
+            "path": "src/compiler/utilities.ts",
+            "startLine": 9196,
+            "endLine": 9201
+          },
+          {
+            "symbol": "checkConstEnumAccess",
+            "path": "src/compiler/checker.ts",
+            "startLine": 41768,
+            "endLine": 41806
+          },
+          {
+            "symbol": "markAliasReferenced",
+            "path": "src/compiler/checker.ts",
+            "startLine": 30813,
+            "endLine": 30832
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "Inlining happens in the TypeScript transformer: substituteConstantValue replaces property/element accesses that the checker resolves to a const enum member (resolver.getConstantValue -> checker getConstantValue, only when the member's enum is const) by a literal and adds the original text as a trailing comment unless removeComments is set",
+          "tryGetConstEnumValue returns undefined when the isolatedModules computed option is on (which verbatimModuleSyntax implies), so no substitution happens in per-file mode",
+          "preserveConstEnums is a computed option that is also true whenever isolatedModules (or verbatimModuleSyntax) is on, so shouldEmitEnumDeclaration keeps the const enum declaration and the object exists at runtime; otherwise const enum declarations are dropped",
+          "The checker compensates in per-file mode: checkConstEnumAccess errors for accessing an ambient (declare / .d.ts) const enum unless the project that built it preserves const enums, and import aliases of const enums are not elided (markAliasReferenced marks them referenced when isolatedModules is on) so the import survives in the output"
+        ]
+      },
+      "difficulty": "Prompt words (const enum, inline, per-file) hit types.ts and unrelated 'inline' refactors; the logic is split across the TS transformer, the emit resolver in the checker, computed options in utilities.ts and the import-elision logic, and no prompt word names isolatedModules.",
+      "grepTest": {
+        "phrases": "'const enum', 'inline', 'preserveConstEnums'",
+        "hits": "'const enum' types.ts 67, checker.ts 40, services/types.ts 15; 'inline' -> inlineVariable.ts/convertToAsyncFunction.ts/classFields.ts (noise); preserveConstEnums checker 16, utilities 3, transformers/ts.ts 3",
+        "verdict": "'inline' is a false trail; a careful agent will land on tryGetConstEnumValue via preserveConstEnums or getConstantValue and recover points 1-3, but points 3-4 (computed option and alias elision/ambient error) require separate reads. Medium-hard."
+      },
+      "origin": "new at HEAD; behaviour present at T0",
+      "risks": "Comments in markAliasReferenced and in checkConstEnumAccess state parts of point 4."
+    },
+    {
+      "id": "ts-switch-exhaustive-flow",
+      "type": "qa",
+      "base": "b465fdbfe175",
+      "scaffold": "default",
+      "prompt": "A function declared to return string has a switch over a parameter whose type is a union, with a case returning for every member and no default. There is no 'not all code paths return a value' error, and for the same function without a return annotation the inferred return type does not include undefined. If someone adds a member to the union in a different file, an error appears inside this function although it was not edited. The same holds for a switch on typeof. What makes this work, in which phases, and why is it not decided while binding?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "bindSwitchStatement",
+            "path": "src/compiler/binder.ts",
+            "startLine": 1717,
+            "endLine": 1737
+          },
+          {
+            "symbol": "createFlowSwitchClause",
+            "path": "src/compiler/binder.ts",
+            "startLine": 1401,
+            "endLine": 1404
+          },
+          {
+            "symbol": "isReachableFlowNodeWorker (SwitchClause branch)",
+            "path": "src/compiler/checker.ts",
+            "startLine": 28908,
+            "endLine": 28916
+          },
+          {
+            "symbol": "isExhaustiveSwitchStatement",
+            "path": "src/compiler/checker.ts",
+            "startLine": 39369,
+            "endLine": 39382
+          },
+          {
+            "symbol": "computeExhaustiveSwitchStatement",
+            "path": "src/compiler/checker.ts",
+            "startLine": 39384,
+            "endLine": 39409
+          },
+          {
+            "symbol": "functionHasImplicitReturn",
+            "path": "src/compiler/checker.ts",
+            "startLine": 39411,
+            "endLine": 39413
+          },
+          {
+            "symbol": "checkAllCodePathsInNonVoidFunctionReturnOrThrow",
+            "path": "src/compiler/checker.ts",
+            "startLine": 39549,
+            "endLine": 39599
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "For a switch without a default clause the binder adds a synthetic FlowSwitchClause node with clauseStart equal to clauseEnd (the 'no case matched' path) as an antecedent of the post-switch label; it cannot know exhaustiveness because that depends on types",
+          "In the checker, reachability analysis (isReachableFlowNodeWorker) treats that zero-width clause node as unreachable when isExhaustiveSwitchStatement is true, so the function's end flow node becomes unreachable, functionHasImplicitReturn is false and checkAllCodePathsInNonVoidFunctionReturnOrThrow reports nothing; inferred return types likewise get no undefined",
+          "Exhaustiveness is computed lazily and cached in the node links (isExhaustive), with an in-progress marker so a circular query resolves to false; for typeof switches it compares the TypeFacts not-equal masks of the operand constraint, otherwise the base constraint of the switch expression must be a literal union whose members are all contained in the case clause types (any non-unit case disqualifies it)",
+          "Because the answer is derived from checker types on demand, changing the union elsewhere flips the result for this function without it being edited; the flow type computation at the post-switch label uses the same bypass node (getTypeAtFlowBranchLabel) to drop the unmatched path"
+        ]
+      },
+      "difficulty": "The binder half is a two-line synthetic node that looks like a no-op; the error text lives in diagnosticMessages.json and one checker function that never mentions switches; the word 'exhaustive' exists but the prompt avoids it.",
+      "grepTest": {
+        "phrases": "'not all code paths', 'exhaustive', 'switch'",
+        "hits": "'not all code paths' only in diagnosticMessages.json; 'exhaustive' checker.ts 22, binder.ts 2, completions.ts 3",
+        "verdict": "'exhaustive' leads to isExhaustiveSwitchStatement in one grep, which gives points 3-4; points 1-2 require tracing the diagnostic back through functionHasImplicitReturn to the flow node and then to the binder. Medium-hard."
+      },
+      "origin": "new at HEAD; logic present at T0",
+      "risks": "A comment in bindSwitchStatement (binder.ts 1726-1728) calls possiblyExhaustive 'backwards compatibility only', which is a trap for agents that stop there; the comment in isReachableFlowNodeWorker states half of point 2."
+    },
+    {
+      "id": "ts-build-pseudo-uptodate",
+      "type": "qa",
+      "base": "b465fdbfe175",
+      "scaffold": "default",
+      "prompt": "In a solution with two composite projects where `app` references `lib`, I change only the body of a function in lib. Running `tsc -b` rebuilds lib but does not recompile app: it merely touches app's output files, and lib's .d.ts files keep their old modification times. If I change an exported type in lib instead, app is rebuilt. Running `tsc -b` a second time in a fresh process afterwards still treats app as current even though lib's inputs are newer than app's outputs. Explain how the compiler decides this, what is persisted for the fresh-process case, and who touches what.",
+      "gold": {
+        "code": [
+          {
+            "symbol": "getWriteFileCallback (d.ts signature compare)",
+            "path": "src/compiler/builder.ts",
+            "startLine": 1909,
+            "endLine": 1992
+          },
+          {
+            "symbol": "getBuildInfo (latestChangedDtsFile)",
+            "path": "src/compiler/builder.ts",
+            "startLine": 1235,
+            "endLine": 1567
+          },
+          {
+            "symbol": "queueReferencingProjects",
+            "path": "src/compiler/tsbuildPublic.ts",
+            "startLine": 1890,
+            "endLine": 1948
+          },
+          {
+            "symbol": "getUpToDateStatusWorker",
+            "path": "src/compiler/tsbuildPublic.ts",
+            "startLine": 1469,
+            "endLine": 1791
+          },
+          {
+            "symbol": "getLatestChangedDtsTime",
+            "path": "src/compiler/tsbuildPublic.ts",
+            "startLine": 1868,
+            "endLine": 1877
+          },
+          {
+            "symbol": "updateOutputTimestampsWorker",
+            "path": "src/compiler/tsbuildPublic.ts",
+            "startLine": 1816,
+            "endLine": 1866
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "For composite projects the builder's write-file wrapper hashes every emitted .d.ts and compares it with the stored emit signature; an unchanged declaration is not written at all (skippedDtsWrite), a changed one sets hasChangedEmitSignature and records latestChangedDtsFile; a declaration that differs only in its map is marked differsOnlyInMap so --build does not treat it as a change",
+          "When lib finishes, the build result is flagged DeclarationOutputUnchanged if no emit signature changed, and queueReferencingProjects uses it: referencing projects that were up to date become UpToDateWithUpstreamTypes (only timestamps to be refreshed), otherwise they become OutOfDateWithUpstream and are rebuilt",
+          "In a fresh process the answer comes from persisted state: latestChangedDtsFile is written into lib's .tsbuildinfo (composite only), and getUpToDateStatusWorker, when an upstream project's newest input is newer than app's oldest output, calls getLatestChangedDtsTime (the modified time of that d.ts file) and, if it is not newer than app's oldest output, reports UpToDateWithUpstreamTypes ('pseudo up to date') instead of out of date",
+          "A project with that status is handled as an UpdateOutputFileStamps task (updateOutputTimestampsWorker), which only touches app's outputs so later timestamp comparisons succeed; no program is created or emitted for it"
+        ]
+      },
+      "difficulty": "The behaviour is the product of an emit-time decision in builder.ts, a persisted field in the buildinfo, and status logic in tsbuildPublic.ts; the prompt's words (up to date, touch, timestamps) only find the status half.",
+      "grepTest": {
+        "phrases": "'up to date', 'timestamp', 'differsOnlyInMap'",
+        "hits": "'up to date' diagnosticMessages.json 5, tsbuildPublic.ts 4; 'timestamp' tsbuildPublic.ts 37, sys.ts 17; differsOnlyInMap builder.ts 3, tsbuildPublic.ts 2",
+        "verdict": "'timestamp' lands in tsbuildPublic.ts and gives points 2 and 4 quickly; point 1 (builder write-file wrapper) and the persisted latestChangedDtsFile need a second file and the buildinfo writer. Medium-hard."
+      },
+      "origin": "new at HEAD; logic present at T0",
+      "risks": "Comments in getUpToDateStatusWorker ('psuedo up to date') and in handleNewSignature state parts of points 1 and 3."
+    },
+    {
+      "id": "ts-drift-unreachable-phase",
+      "type": "qa",
+      "base": "b465fdbfe175",
+      "scaffold": "default",
+      "prompt": "In an editor the statements after an unconditional `return` are faded, and with the right setting tsc reports them as errors; the same happens after a call to a function declared to return never. After I delete the `return`, the fading disappears on the next keystroke even though the parser reuses unchanged syntax nodes between edits. Which stage works out that the code is dead, which stage creates the diagnostic and picks error or fade, how are several dead statements merged into one span, and what keeps the result from going stale across re-parses?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "bindChildren (marks unreachable nodes, clears stale flag on rebind)",
+            "path": "src/compiler/binder.ts",
+            "startLine": 1102,
+            "endLine": 1118
+          },
+          {
+            "symbol": "checkSourceElementWorker (unreachable gate)",
+            "path": "src/compiler/checker.ts",
+            "startLine": 49094,
+            "endLine": 49098
+          },
+          {
+            "symbol": "checkSourceElementUnreachable",
+            "path": "src/compiler/checker.ts",
+            "startLine": 49278,
+            "endLine": 49335
+          },
+          {
+            "symbol": "isSourceElementUnreachable",
+            "path": "src/compiler/checker.ts",
+            "startLine": 49337,
+            "endLine": 49356
+          },
+          {
+            "symbol": "isPotentiallyExecutableNode",
+            "path": "src/compiler/utilities.ts",
+            "startLine": 12436,
+            "endLine": 12447
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "The binder only detects reachability: while binding with the current flow being unreachableFlow it sets NodeFlags.Unreachable on potentially executable nodes; because incrementally parsed files reuse nodes, bindChildren first clears the flag on every potentially executable node before deciding again, so no stale mark survives; the binder creates no diagnostic",
+          "The checker creates the diagnostic: checkSourceElementWorker calls checkSourceElementUnreachable for each source element unless allowUnreachableCode is true, and the per-file reportedUnreachableNodes set is reset when the file check finishes",
+          "isSourceElementUnreachable is true for nodes the binder flagged (except const enums without preserveConstEnums and non-instantiated namespaces) and otherwise for nodes whose flowNode fails isReachableFlowNode, which is how statements after a never-returning call are caught",
+          "checkSourceElementUnreachable extends the span backwards and forwards over adjacent unreachable executable statements and reports one diagnostic via addErrorOrSuggestion, as an error only when allowUnreachableCode === false and otherwise as a Suggestion (the faded hint)"
+        ],
+        "expectedDrift": [
+          "bindChildren/checkUnreachable (src/compiler/binder.ts)",
+          "checkSourceElementUnreachable (src/compiler/checker.ts)"
+        ]
+      },
+      "difficulty": "Searching for the diagnostic finds the checker site but not the binder flag, and the binder still has unreachableFlow/FlowFlags.Unreachable machinery that looks like it reports; a stale comment in getTypeAtFlowNode says the opposite of the truth.",
+      "origin": "drift: PR 62751 (09e31cf04a1) moved the unreachable-code diagnostics from the binder to the checker",
+      "drift": {
+        "t0Answer": "At T0 the binder both detects and reports: bindChildren calls checkUnreachable (binder.ts 3804-3845), which, when currentFlow is unreachableFlow and the node is a reportable statement/class/enum/instantiated module, switches to reportedUnreachableFlow and (unless allowUnreachableCode is true) emits the span through errorOrSuggestionOnRange, pushing to file.bindDiagnostics when unreachableCodeIsError(options) (allowUnreachableCode === false, non-ambient, not an uninitialised var) or to file.bindSuggestionDiagnostics otherwise; eachUnreachableRange (binder.ts 3852-3883) groups the following executable statements. The checker only had a separate per-statement check (checker.ts 48999-49001) for statements whose flowNode isReachableFlowNode rejects, i.e. after never-returning calls.",
+        "headAnswer": "At HEAD the binder only marks NodeFlags.Unreachable (binder.ts 1102-1118; it also clears stale marks on re-bind) and the checker alone creates the diagnostic (checkSourceElementUnreachable, checker.ts 49278-49335), handling both binder-flagged code and never-call code in one path and grouping adjacent statements itself.",
+        "staleAnswer": "Saying the binder reports unreachable code through bindDiagnostics/bindSuggestionDiagnostics (checkUnreachable, reportedUnreachableFlow, unreachableCodeIsError) follows T0; the comment at checker.ts 29121 ('Unreachable code errors are reported in the binding phase') is also stale at HEAD.",
+        "commits": [
+          "09e31cf04a1 Move unreachable checks to checker (#62751)",
+          "486fce7a129 Fix unreachable code detection persisting after incremental edits (#62783)",
+          "2dfdbbabae9 Fixed crash when adding unreachable code diagnostic in situations with missing nodes (#62914)"
+        ],
+        "files": [
+          "src/compiler/binder.ts",
+          "src/compiler/checker.ts",
+          "src/compiler/types.ts",
+          "src/compiler/utilities.ts"
+        ]
+      },
+      "grepTest": {
+        "phrases": "'unreachable' (HEAD), 'allowUnreachableCode', 'return' (too common)",
+        "hits": "HEAD: unreachable checker 40, binder 27; allowUnreachableCode checker 3. T0: unreachable lands in binder.ts checkUnreachable (the pre-move design)",
+        "verdict": "On HEAD alone, checkSourceElementUnreachable plus the binder flag answer most points in about four reads, so the HEAD half is medium. It stays a drift task because the T0 design (binder reports) differs, and the stale-flag/incremental point needs the binder and the node-reuse reasoning. Borderline: kept as the only drift candidate with a real phase move."
+      }
+    },
+    {
+      "id": "ts-drift-outdir-layout",
+      "type": "qa",
+      "base": "b465fdbfe175",
+      "scaffold": "default",
+      "prompt": "A tsconfig.json at /proj sets `outDir` to `dist` and includes only files under `src`; it sets no `rootDir`. Where does the JavaScript for src/index.ts end up, does tsc say anything about the layout, and where else does the compiler rely on the same notion of the source root, for example when mapping a package's exports pointing into dist back to source files?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "getCommonSourceDirectory",
+            "path": "src/compiler/emitter.ts",
+            "startLine": 636,
+            "endLine": 665
+          },
+          {
+            "symbol": "getComputedCommonSourceDirectory",
+            "path": "src/compiler/emitter.ts",
+            "startLine": 668,
+            "endLine": 682
+          },
+          {
+            "symbol": "verifyCompilerOptions (rootDir layout check)",
+            "path": "src/compiler/program.ts",
+            "startLine": 4262,
+            "endLine": 4289
+          },
+          {
+            "symbol": "sourceFileMayBeEmitted",
+            "path": "src/compiler/utilities.ts",
+            "startLine": 6661,
+            "endLine": 6688
+          },
+          {
+            "symbol": "getLoadModuleFromTargetExportOrImport (source guesses)",
+            "path": "src/compiler/moduleNameResolver.ts",
+            "startLine": 2894,
+            "endLine": 2900
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "With a config file and no rootDir, the common source directory is now the directory of the tsconfig (not computed from the input files), so src/index.ts is emitted to dist/src/index.js",
+          "To warn about the change, verifyCompilerOptions computes the directory the old inference would have produced (getComputedCommonSourceDirectory over the emitted files) and, when it differs from the config directory, reports an error on the outDir (or declarationDir/outFile) option saying the common source directory is ./src and rootDir must be set explicitly to adjust the layout",
+          "The same configFilePath rule is used by sourceFileMayBeEmitted (to decide whether an output path would overwrite its input) and by the package exports/imports resolution that guesses source files for outputs under outDir, which previously applied only to composite projects"
+        ],
+        "expectedDrift": [
+          "getCommonSourceDirectory (src/compiler/emitter.ts)"
+        ]
+      },
+      "difficulty": "'outDir' and 'rootDir' occur in dozens of places across program, commandLineParser, utilities and moduleNameResolver; the change is a one-condition edit (composite dropped) in three files plus one new check, and an agent has to find all of them to answer the second half.",
+      "grepTest": {
+        "phrases": "'outDir', 'rootDir', 'common source directory'",
+        "hits": "rootDir: moduleNameResolver 27, watchUtilities 26, resolutionCache 12; outDir: program 12, commandLineParser 9, utilities 7; 'common source directory': program 3, moduleNameResolver 2, utilities 1",
+        "verdict": "The phrase 'common source directory' leads to getCommonSourceDirectory (point 1) quickly, but the diagnostic block in verifyCompilerOptions and the two consumers are separate reads; the T0 value (no config-dir rule) is only visible from history. Medium-hard."
+      },
+      "origin": "drift: PR 62418 (7affa9e5403) made rootDir default to the tsconfig directory",
+      "risks": "A comment in getCommonSourceDirectory ('Project compilations never infer their root from the input source paths') states point 1; the answer key follows the code. Note the new error only fires when the old inference would differ from the config directory.",
+      "drift": {
+        "t0Answer": "At T0 getCommonSourceDirectory (emitter.ts 636-665) used the tsconfig directory only for composite projects (`options.composite && options.configFilePath`); a non-composite project inferred the root from the emitted input files, so with only files under src the root was src and src/index.ts was emitted to dist/index.js, with no diagnostic. sourceFileMayBeEmitted and the exports-to-source guesses in moduleNameResolver used the same composite-only condition.",
+        "headAnswer": "At HEAD any project with a config file and no rootDir uses the config directory, so the output is dist/src/index.js, and verifyCompilerOptions reports TS5011 on outDir when the old inferred root would have differed.",
+        "staleAnswer": "Saying the output is dist/index.js (root inferred from the inputs unless composite) with no diagnostic follows T0.",
+        "commits": [
+          "7affa9e5403 Assume rootDir is the current configuration directory (#62418)"
+        ],
+        "files": [
+          "src/compiler/emitter.ts",
+          "src/compiler/program.ts",
+          "src/compiler/utilities.ts",
+          "src/compiler/moduleNameResolver.ts",
+          "src/compiler/diagnosticMessages.json"
+        ]
+      }
+    },
+    {
+      "id": "ts-drift-context-sensitive-this",
+      "type": "qa",
+      "base": "b465fdbfe175",
+      "scaffold": "default",
+      "prompt": "A generic function is declared as `declare function make<T>(o: { consume(x: T): void; produce(): T }): T`. It is called as `make({ consume(x) { x.toFixed(); }, produce() { return 1; } })`. What type does `x` get, does it depend on the order of the two methods, and does it change if `produce` mentions `this`? Which compiler stages determine this, and how does an arrow function inside `produce` that uses `this` count?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "bindContainer (seenThisKeyword handling)",
+            "path": "src/compiler/binder.ts",
+            "startLine": 1027,
+            "endLine": 1038
+          },
+          {
+            "symbol": "bindContainer (restore after container)",
+            "path": "src/compiler/binder.ts",
+            "startLine": 1059,
+            "endLine": 1059
+          },
+          {
+            "symbol": "hasContextSensitiveParameters",
+            "path": "src/compiler/utilities.ts",
+            "startLine": 10880,
+            "endLine": 10897
+          },
+          {
+            "symbol": "isContextSensitive",
+            "path": "src/compiler/checker.ts",
+            "startLine": 21180,
+            "endLine": 21218
+          },
+          {
+            "symbol": "isContextSensitiveFunctionLikeDeclaration",
+            "path": "src/compiler/checker.ts",
+            "startLine": 21220,
+            "endLine": 21222
+          },
+          {
+            "symbol": "checkFunctionExpressionOrObjectLiteralMethod ",
+            "path": "src/compiler/checker.ts",
+            "startLine": 39601,
+            "endLine": 39639
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "`x` is inferred as number, and the order of the two methods does not matter, because `produce` is not context sensitive and is checked in the first inference pass, contributing the candidate number for T before `consume` (context sensitive: untyped parameter x) is contextually typed in the later pass",
+          "A non-arrow function or method with all parameters annotated, or none, is context sensitive only if it mentions `this` (hasContextSensitiveParameters tests NodeFlags.ContainsThis); the binder sets that flag per function container when it sees a ThisKeyword, saving and restoring seenThisKeyword around each container and letting arrow functions (the propagating containers) pass `this` use up to the enclosing function",
+          "If `produce` uses `this`, directly or inside an arrow function, it becomes context sensitive and is deferred together with `consume`, so inference of T no longer gets its candidate first and the result depends on processing order in the deferred pass",
+          "Deferral is the checker's SkipContextSensitive check mode: inferTypeArguments checks arguments with SkipContextSensitive first, and checkFunctionExpressionOrObjectLiteralMethod answers context-sensitive functions in that mode with anyFunctionType or a signature that keeps only the non-contextual parts"
+        ],
+        "expectedDrift": [
+          "hasContextSensitiveParameters (src/compiler/utilities.ts)",
+          "bindContainer (src/compiler/binder.ts)"
+        ]
+      },
+      "difficulty": "The behaviour is a binder-computed flag consumed in utilities.ts and the checker's inference pipeline; the prompt words (generic, method, this) hit hundreds of lines and none of the identifiers.",
+      "grepTest": {
+        "phrases": "'context sensitive', 'contextually typed', 'this'",
+        "hits": "'context.sensitive' checker.ts 10, utilities.ts 2; isContextSensitive checker.ts 36; 'contextually typed' checker.ts 20",
+        "verdict": "At HEAD, hasContextSensitiveParameters (utilities.ts, 17 lines) with its ContainsThis test gives point 2 in about two greps; binder flag propagation and the first-pass/second-pass mechanics need two more files/regions. At T0 the same function is unconditional, so the trap is the stale answer. Medium-hard."
+      },
+      "origin": "drift: PR 62243 (366da34ae60) stopped treating this-less functions as context sensitive",
+      "risks": "The hasContextSensitiveParameters comment ('implicit this parameter which is subject to contextual typing') states half of point 2; HEAD also changed getApparentTypeOfContextualType to skip any/unknown fallbacks in the same PR, which the question does not depend on.",
+      "drift": {
+        "t0Answer": "At T0 hasContextSensitiveParameters (utilities.ts 10828-10845) returned true for every non-arrow function or method without an explicit this parameter (it has an implicit contextually typed `this`), and the binder recorded ContainsThis only for interfaces. So `produce() { return 1; }` was context sensitive, was deferred with `consume`, and both were processed left to right in the second pass; with consume first, T was fixed before produce contributed, so x was unknown (or an error), and swapping the order of the methods changed the result.",
+        "headAnswer": "At HEAD only functions that mention `this` (directly or through arrow functions) are context sensitive; produce is checked in the first pass, T is inferred as number, x is number, and the method order does not matter.",
+        "staleAnswer": "Saying x is unknown / that the order of the methods matters, or that every method is context sensitive because of its implicit this, follows T0.",
+        "commits": [
+          "366da34ae60 Improve inference by not considering thisless functions to be context-sensitive (#62243)",
+          "b92ec99cac0 Fixed a crash caused by circularly-reentrant getEffectsSignature (#63026), which added PropagatesThisKeyword to the container flags"
+        ],
+        "files": [
+          "src/compiler/binder.ts",
+          "src/compiler/utilities.ts",
+          "src/compiler/checker.ts",
+          "src/compiler/types.ts"
+        ]
+      }
+    },
+    {
+      "id": "ts-change-refproj-default-import",
+      "type": "change",
+      "base": "114327939c934ce3580ae2a1353aaa3c1cff0ed1",
+      "scaffold": "default",
+      "prompt": "Bug report: in a monorepo using TypeScript project references, an app project (module esnext, moduleResolution bundler) default-imports from a referenced composite library project that is also module esnext and only has named exports. tsc finishes with no diagnostics, although the import should fail with a 'module has no default export' error. It happens both when the import path points at the library's source file and when it points at the library's generated declaration file in its output folder. Make the compiler report the error in both cases, add a test for it, and make sure the existing project reference tests still pass.",
+      "mergeCommit": "66edca11c98ade9a5e2a2b019fdad7d58ee9d4ac",
+      "srcFiles": [
+        "src/compiler/checker.ts"
+      ],
+      "hiddenTests": {
+        "runner": "hereby",
+        "tests": "projectReferences",
+        "fromCommit": "66edca11c98ade9a5e2a2b019fdad7d58ee9d4ac",
+        "files": [
+          "src/testRunner/unittests/tsc/projectReferences.ts",
+          "tests/baselines/reference/tsc/projectReferences/referenced-project-with-esnext-module-disallows-synthetic-default-imports.js"
+        ]
+      },
+      "testFiles": {
+        "cases": [],
+        "baselines": [
+          "tests/baselines/reference/tsc/projectReferences/referenced-project-with-esnext-module-disallows-synthetic-default-imports.js"
+        ]
+      },
+      "testCommand": "npx hereby runtests --tests=\"projectReferences\"  (new case is in src/testRunner/unittests/tsc/projectReferences.ts, subScenario 'referenced project with esnext module disallows synthetic default imports')",
+      "gold": {
+        "code": [
+          {
+            "symbol": "canHaveSyntheticDefault",
+            "path": "src/compiler/checker.ts"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "difficulty": "Needs the checker's synthetic-default logic joined with program-level project reference redirects (getRedirectFromSourceFile/getRedirectFromOutput) and per-project emit module format; the symptom is a missing diagnostic, so there is nothing to grep for.",
+      "origin": "microsoft/TypeScript PR 63038 (fixes issue 62241); base is its parent on the strada branch",
+      "review": "15-line fix, one new baseline. RISKS: the hidden test is a unit test in src/testRunner (the hidden file list includes src/testRunner/unittests/tsc/projectReferences.ts), unlike the compiler/fourslash tests; the issue text sets allowSyntheticDefaultImports false while the test does not, so the prompt describes the test scenario; the bug is not a 5.9-to-6.0 regression, so it is outside the AGENTS.md accepted categories (no AGENTS.md at this base, so no refusal). Alternate with a regression label: PR 63239 (9059e5bda0b, program.ts +3, unit test plus many tscWatch/tsserver baselines).",
+      "grepTest": {
+        "phrases": "'no default export', 'project reference', 'synthetic default'",
+        "hits": "'synthetic default' checker.ts 9; canHaveSyntheticDefault checker.ts 4; the TS1192 text is in diagnosticMessages.json",
+        "verdict": "Locating canHaveSyntheticDefault is easy; knowing that the referenced project's emit module format must be consulted through the program's redirect lookups (getRedirectFromSourceFile/getRedirectFromOutput, getEmitModuleFormatOfFile) is the hard part. Medium-hard."
+      }
+    },
+    {
+      "id": "ts-change-flow-container-crash",
+      "type": "change",
+      "base": "8a55156f23f259eef8b8bc30f9f02e57db3e8ae4",
+      "scaffold": "default",
+      "prompt": "Bug report: tsc crashes with `RangeError: Maximum call stack size exceeded` (the stack shows the checker repeatedly resolving a `typeof` type query inside a function return type annotation) on this input: `unionOfDifferentReturnType1(true);` followed by `const unionOfDifferentReturnType1: { (a: any): number; } | { (a: number): typeof Date; };`. The previous release reported ordinary errors for this file. The same code shape with a parameter narrowed by typeof and then referenced through `typeof` inside a function type or a callable object type annotation should produce normal diagnostics, and a function type that mentions `typeof a` for a narrowed parameter `a` must still see the narrowed type. Fix the crash without changing unrelated checking behaviour, add compiler tests with reference baselines, and make sure the existing control-flow tests still pass.",
+      "mergeCommit": "b92ec99cac0014eab0f846dd81dcb903a8699574",
+      "srcFiles": [
+        "src/compiler/binder.ts"
+      ],
+      "hiddenTests": {
+        "runner": "hereby",
+        "tests": "controlFlowFunctionLikeCircular1|controlFlowForFunctionLike1",
+        "fromCommit": "b92ec99cac0014eab0f846dd81dcb903a8699574",
+        "files": [
+          "tests/cases/compiler/controlFlowFunctionLikeCircular1.ts",
+          "tests/cases/compiler/controlFlowForFunctionLike1.ts",
+          "tests/baselines/reference/controlFlowFunctionLikeCircular1.errors.txt",
+          "tests/baselines/reference/controlFlowFunctionLikeCircular1.symbols",
+          "tests/baselines/reference/controlFlowFunctionLikeCircular1.types",
+          "tests/baselines/reference/controlFlowForFunctionLike1.errors.txt",
+          "tests/baselines/reference/controlFlowForFunctionLike1.symbols",
+          "tests/baselines/reference/controlFlowForFunctionLike1.types"
+        ]
+      },
+      "testFiles": {
+        "cases": [
+          "tests/cases/compiler/controlFlowFunctionLikeCircular1.ts",
+          "tests/cases/compiler/controlFlowForFunctionLike1.ts"
+        ],
+        "baselines": [
+          "tests/baselines/reference/controlFlowFunctionLikeCircular1.errors.txt",
+          "tests/baselines/reference/controlFlowFunctionLikeCircular1.symbols",
+          "tests/baselines/reference/controlFlowFunctionLikeCircular1.types",
+          "tests/baselines/reference/controlFlowForFunctionLike1.errors.txt",
+          "tests/baselines/reference/controlFlowForFunctionLike1.symbols",
+          "tests/baselines/reference/controlFlowForFunctionLike1.types"
+        ]
+      },
+      "testCommand": "npx hereby runtests --tests=controlFlowFunctionLikeCircular1 ; npx hereby runtests --tests=controlFlowForFunctionLike1",
+      "gold": {
+        "code": [
+          {
+            "symbol": "getContainerFlags",
+            "path": "src/compiler/binder.ts"
+          },
+          {
+            "symbol": "bindContainer",
+            "path": "src/compiler/binder.ts"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "difficulty": "The stack overflow shows up in the checker (isThisInTypeQuery / checkIdentifier) but the cause is which type-level function-like nodes the binder treats as control-flow containers after an earlier inference change; the crash location does not point at binder.ts.",
+      "origin": "microsoft/TypeScript PR 63026 (fixes issue 63015); base is its parent on the strada branch",
+      "review": "8 added / 4 removed lines in binder.ts, 8 new test files. RISKS: the prompt includes the second behaviour (narrowed typeof stays visible in function types) because the second test file pins it; whether the crash reproduces at the base without a build is not verified; the first baseline has many unrelated errors (duplicate function names across files) so the baseline text must match exactly. This is a crash, so it is inside the AGENTS.md accepted categories; no AGENTS.md at this base.",
+      "grepTest": {
+        "phrases": "'Maximum call stack', 'typeof' type query, 'RangeError'",
+        "hits": "no src hit for the error text; the stack frames point into checker.ts (isThisInTypeQuery, checkIdentifier)",
+        "verdict": "The crash location is the checker but the fix is in binder.ts container flags; nothing in the prompt names IsControlFlowContainer (11 hits in binder.ts). Hard."
+      }
+    },
+    {
+      "id": "ts-change-unreachable-crash",
+      "type": "change",
+      "base": "b78f0899ab6ffe1890f1adff6f5acd82da31f5d8",
+      "scaffold": "default",
+      "prompt": "Bug report: tsc crashes with `Debug Failure. Expected -2 >= 0` while type checking a badly malformed file. The input is `export async function arrayFromAsync<T>(asyncIterable!: AsyncIterable<T>): Promise<T[]> { const out = []; for await (const v of asyncIterable) { out.push(await v); } return out; }` (note the stray `!` after the parameter name), compiled with strict and a recent target. The previous release only printed the many syntax and semantic errors for this file. Fix the crash so that the normal diagnostics are reported, add a compiler test with reference baselines, and make sure the related existing tests still pass.",
+      "mergeCommit": "2dfdbbabae955186f821925c629a37d8df76bab2",
+      "srcFiles": [
+        "src/compiler/checker.ts"
+      ],
+      "hiddenTests": {
+        "runner": "hereby",
+        "tests": "reachabilityChecksNoCrash1",
+        "fromCommit": "2dfdbbabae955186f821925c629a37d8df76bab2",
+        "files": [
+          "tests/cases/compiler/reachabilityChecksNoCrash1.ts",
+          "tests/baselines/reference/reachabilityChecksNoCrash1.errors.txt",
+          "tests/baselines/reference/reachabilityChecksNoCrash1.js",
+          "tests/baselines/reference/reachabilityChecksNoCrash1.symbols",
+          "tests/baselines/reference/reachabilityChecksNoCrash1.types"
+        ]
+      },
+      "testFiles": {
+        "cases": [
+          "tests/cases/compiler/reachabilityChecksNoCrash1.ts"
+        ],
+        "baselines": [
+          "tests/baselines/reference/reachabilityChecksNoCrash1.errors.txt",
+          "tests/baselines/reference/reachabilityChecksNoCrash1.js",
+          "tests/baselines/reference/reachabilityChecksNoCrash1.symbols",
+          "tests/baselines/reference/reachabilityChecksNoCrash1.types"
+        ]
+      },
+      "testCommand": "npx hereby runtests --tests=reachabilityChecksNoCrash1",
+      "gold": {
+        "code": [
+          {
+            "symbol": "checkSourceElementUnreachable",
+            "path": "src/compiler/checker.ts"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": [
+          "checkSourceElementUnreachable (src/compiler/checker.ts)"
+        ]
+      },
+      "difficulty": "The prompt gives only the assertion text and a malformed input; the cause (a statement whose start position is negative because of missing syntax nodes when the unreachable-code span is built) needs the parser's missing-node behaviour, the checker's span computation and the diagnostic position assertion to be connected.",
+      "grepTest": {
+        "phrases": "'Expected -2 >= 0' (not in src), 'Debug Failure', 'assertDiagnosticLocation'",
+        "hits": "assertDiagnosticLocation is in utilities.ts and fires from createFileDiagnostic; callers number in the dozens; the prompt does not name the unreachable-code path",
+        "verdict": "Without the stack trace the failing caller must be found by reproducing or by reasoning about negative positions; with a build the stack gives it immediately, so the task depends on the agent building. Medium-hard; this is the weakest 'hard' claim among the change tasks."
+      },
+      "origin": "microsoft/TypeScript PR 62914 (fixes issue 62912); base is its parent on the strada branch",
+      "review": "13 changed lines in checker.ts (7 added, 6 removed), base 2025-12 so no AGENTS.md notice; it is a nightly crash so inside the accepted categories. RISKS: the baseline errors.txt is 35 lines of syntax noise that must match exactly; the repro needs a build; this fix relates to the first drift task (it touches checkSourceElementUnreachable) so both tasks can leak into each other if run in one session."
+    }
+  ]
+}
