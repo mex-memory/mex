@@ -162,11 +162,14 @@ function runDjangoTests(workspace, hiddenTests, env) {
  * (`core.autocrlf=false`), and a script the agent runs on Windows (Python's text mode) writes
  * whole files back with CRLF, which would otherwise make every such file a whole-file hunk.
  * A file committed with CRLF keeps it; only line ends the agent introduced are normalised.
+ * The diff runs under the same setting: when the stat data is current, git reads the worktree
+ * file in place of the staged blob, and without it that read sees the CRLF bytes again.
  */
 export function agentDiff(workspace) {
-  git(workspace, ["-c", "core.autocrlf=input", "-c", "core.safecrlf=false", "add", "-A"]);
-  const nameStatus = git(workspace, ["diff", "--cached", "--name-status", "HEAD"]).stdout.trim();
-  const patch = git(workspace, ["diff", "--cached", "HEAD"]).stdout;
+  const lf = ["-c", "core.autocrlf=input", "-c", "core.safecrlf=false"];
+  git(workspace, [...lf, "add", "-A"]);
+  const nameStatus = git(workspace, [...lf, "diff", "--cached", "--name-status", "HEAD"]).stdout.trim();
+  const patch = git(workspace, [...lf, "diff", "--cached", "HEAD"]).stdout;
   const files = nameStatus ? nameStatus.split("\n").map((line) => line.split("\t").slice(1).join("\t")) : [];
   return { files, patch };
 }

@@ -1,6 +1,6 @@
 // Regressions for what the 7-session pilot found in the harness (2026-10-18).
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -25,6 +25,10 @@ test("the session patch shows only real changes when the agent wrote a whole fil
     lines.splice(10, 0, "has_native_boolean_field = False");
     writeFileSync(join(root, "features.py"), `${lines.join("\r\n")}\r\n`);
     writeFileSync(join(root, "kept.txt"), "crlf\r\nfrom the start\r\nand one more\r\n");
+    // Old enough that git trusts the stat data and reads the worktree file instead of the staged blob,
+    // which is how the real sessions hit it: that read must see the same line ends as the staging did.
+    const past = new Date(Date.now() - 60_000);
+    for (const name of ["features.py", "kept.txt"]) utimesSync(join(root, name), past, past);
     const diff = agentDiff(root);
     assert.deepEqual(diff.files.sort(), ["features.py", "kept.txt"]);
     const hunks = diff.patch.split("\n").filter((line) => line.startsWith("@@")).map((line) => line.replace(/ @@.*/, " @@"));
