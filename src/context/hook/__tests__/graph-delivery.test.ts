@@ -58,4 +58,41 @@ describe("graph delivery", () => {
     writeFileSync(path, JSON.stringify(index));
     expect(p.text(await p.run({ ...edit, session_id: "no-facts" }))).toContain("check callers: #buildReport");
   });
+
+  it("still gives an edited symbol its impact note when a search note already named it, once", async () => {
+    const p = await createHookProject();
+    // The pilot's case: a search note lists the symbol (here as a definition); the agent then edits it.
+    const search = toolPayload("seen", "Grep", { pattern: "calculateOrderTotal", path: join(p.fx.root, "src/report.ts") }, { content: "4: return calculateOrderTotal(items);" });
+    expect(p.text(await p.run(search))).toContain("#calculateOrderTotal src/billing.ts:1-3");
+    const index = JSON.parse(readFileSync(indexPathOf(p.fx.context.localDir), "utf8")); index.entities = [];
+    writeFileSync(indexPathOf(p.fx.context.localDir), JSON.stringify(index));
+    p.fx.writeSource("src/billing.ts", readFileSync(join(p.fx.root, "src/billing.ts"), "utf8").replace("return items.length;", "return items.length + 1;"));
+    const edit = toolPayload("seen", "Edit", { file_path: join(p.fx.root, "src/billing.ts") });
+    expect(p.text(await p.run(edit))).toContain("#calculateOrderTotal src/billing.ts:1-3 · check callers: #buildReport");
+    p.fx.writeSource("src/billing.ts", readFileSync(join(p.fx.root, "src/billing.ts"), "utf8").replace("return items.length + 1;", "return items.length + 2;"));
+    expect(await p.run(edit)).toBe("");
+    const logs = readFileSync(join(p.fx.context.localDir, HOOK_LOG_NAME), "utf8").trim().split("\n").map(s => JSON.parse(s));
+    // A silent edit says why in the log.
+    expect(logs.at(-1)).toMatchObject({ event: "edit", chars: 0, note: "nothing-touched" });
+  });
+
+  it("judges an edit that rewrote the whole file with CRLF line ends by its real change", async () => {
+    const p = await createHookProject();
+    // The checkout keeps LF (core.autocrlf=false); a Python script on Windows writes CRLF back.
+    p.git("config", "core.autocrlf", "false");
+    const crlf = (text: string): string => text.replace(/\r?\n/g, "\r\n");
+    const path = join(p.fx.root, "src/billing.ts");
+    p.fx.writeSource("src/billing.ts", crlf(readFileSync(path, "utf8").replace("return items.length;", "return items.length + 1;")));
+    const note = p.text(await p.run(toolPayload("crlf", "Edit", { file_path: path })));
+    expect(note).toContain(p.ids.total);
+    expect(note).not.toContain(p.ids.discount);
+    expect(note).not.toContain(p.ids.invoice);
+    expect(note).toContain("check callers: #buildReport");
+    // Line ends alone are no change at all.
+    p.git("checkout", "--", "src/billing.ts");
+    p.fx.writeSource("src/billing.ts", crlf(readFileSync(path, "utf8")));
+    expect(await p.run(toolPayload("crlf-only", "Edit", { file_path: path }))).toBe("");
+    const logs = readFileSync(join(p.fx.context.localDir, HOOK_LOG_NAME), "utf8").trim().split("\n").map(s => JSON.parse(s));
+    expect(logs.at(-1)).toMatchObject({ event: "edit", chars: 0, note: "no-change" });
+  });
 });

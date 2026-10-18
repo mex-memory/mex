@@ -219,7 +219,7 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
       // Graph uses only the budget left after knowledge; never turn graph into knowledge pointers.
       if (result.graphChars && used + result.text.length > budget) {
         result = { ...result, text: result.text.slice(0, result.text.length - result.graphChars).trimEnd(),
-          remember: result.remember.filter((k) => !k.startsWith("graph:")), graphNodes: [], graphChars: 0 };
+          remember: result.remember.filter((k) => !k.startsWith("graph:") && !k.startsWith("impact:")), graphNodes: [], graphChars: 0 };
       }
       const decision = decideBudget({ used, budget, text: result.text, pointers: result.pointers ?? [] });
       if (decision.kind === "pointers") result = { ...result, text: decision.text, note: "budget-pointers" };
@@ -320,7 +320,9 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
         if (diffs === null) return none("no-diff");
         // The file is now checked as it stands, so a later Bash call need not diff it again.
         const outcome = afterKnowledge(composeEdit(ctx, { diffs }), composeGraphEdit(ctx, diffs)) ?? none("nothing-touched");
-        return { ...outcome, stats: { [file]: fileSignature(root.projectRoot, file) } };
+        // An empty outcome still carries the change's dedup key; it was silent, so say why in the log.
+        const note = outcome.text === "" ? { note: diffs.size === 0 ? "no-change" : "nothing-touched" } : {};
+        return { ...outcome, ...note, stats: { [file]: fileSignature(root.projectRoot, file) } };
       }
       case "grep": {
         const hits = grepToolHits(payload, root.projectRoot);
@@ -365,7 +367,8 @@ function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, 
     if (diffs !== null) {
       const edit = composeEdit(ctx, { diffs }, PACKET_CHAR_LIMIT - (grep === null ? 0 : grep.text.length + 2));
       if (edit !== null) parts.push(edit);
-      if (edit !== null) note = undefined;
+      if (edit !== null && edit.text !== "") note = undefined;
+      else if (grep === null) note = diffs.size === 0 ? "no-change" : "nothing-touched";
     }
   }
   const outcome: Handled = {

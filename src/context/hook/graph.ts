@@ -11,6 +11,8 @@ export const GRAPH_MAX_HITS = 60;
 export const GRAPH_MAX_FILES = 5;
 export const graphEnabled = (): boolean => process.env.MEX_HOOK_GRAPH !== "0";
 const key = (id: string): string => `graph:${id}`;
+/** An impact note says something a location note does not, so it has its own memory: once per edited symbol. */
+const impactKey = (id: string): string => `impact:${id}`;
 const location = (n: GraphNodeRow): string => `#${n.name} ${n.file}:${n.start}-${n.end}`;
 
 /** Code-shaped names only: plain prose words, regexes and common search terms abstain. */
@@ -30,19 +32,27 @@ function render(ctx: EventContext, nodes: readonly GraphNodeRow[], mode: "defini
     if (visited.has(node.id)) continue;
     if (visited.size >= 12) break;
     visited.add(node.id);
-    if (ids.length >= 12 || seen.has(key(node.id)) || isTestPath(node.file) || node.end <= node.start) continue;
+    // An edited symbol shown earlier as a search hit or a caller has still not had its callers
+    // named as the ones to check, so impact skips only symbols it already reported, and keeps
+    // callers the session has seen: they are exactly what the edit may break.
+    const impact = mode === "impact";
+    if (ids.length >= 12 || seen.has(impact ? impactKey(node.id) : key(node.id)) || isTestPath(node.file) || node.end <= node.start) continue;
     const related = mode === "definition" ? [] : ctx.reader.callers(node.id, 12)
-      .filter((n) => !isTestPath(n.file) && !seen.has(key(n.id)) && n.id !== node.id).slice(0, 3);
+      .filter((n) => !isTestPath(n.file) && (impact || !seen.has(key(n.id))) && n.id !== node.id).slice(0, 3);
     // Impact without another production caller adds nothing to check.
     if (mode === "impact" && related.length === 0) continue;
     const suffix = related.length ? ` · ${mode === "impact" ? "check callers" : "callers"}: ${related.map(location).join("; ")}` : "";
     const line = `- ${location(node)}${suffix}`;
     if (lines.join("\n").length + line.length + 1 > cap) continue;
     lines.push(line);
+    if (impact) seen.add(impactKey(node.id));
     for (const n of [node, ...related]) { seen.add(key(n.id)); ids.push(n.id); }
     if (lines.length > GRAPH_MAX_NODES) break;
   }
-  return ids.length ? { text: lines.join("\n"), remember: ids.map(key), ids: [], graphNodes: ids, graphChars: lines.join("\n").length } : null;
+  if (!ids.length) return null;
+  const remember = [...new Set(ids)].map(key);
+  if (mode === "impact") remember.push(...[...seen].filter((k) => k.startsWith("impact:") && !ctx.shown.has(k)));
+  return { text: lines.join("\n"), remember, ids: [], graphNodes: ids, graphChars: lines.join("\n").length };
 }
 
 export function composeGraphPrompt(ctx: EventContext, prompt: string): EventOutcome | null {
