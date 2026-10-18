@@ -157,8 +157,14 @@ function runDjangoTests(workspace, hiddenTests, env) {
   return { ok: result.code === 0 && counts.status === "OK" && counts.failed === 0 && counts.passed > 0, exitCode: result.code, passed: counts.passed, failed: counts.failed, skipped: counts.skipped, total: counts.total, output: output.slice(-20_000) };
 }
 
-function agentDiff(workspace) {
-  git(workspace, ["add", "-A"]);
+/**
+ * The agent's work as one patch. Staged with `core.autocrlf=input`: the checkouts keep LF
+ * (`core.autocrlf=false`), and a script the agent runs on Windows (Python's text mode) writes
+ * whole files back with CRLF, which would otherwise make every such file a whole-file hunk.
+ * A file committed with CRLF keeps it; only line ends the agent introduced are normalised.
+ */
+export function agentDiff(workspace) {
+  git(workspace, ["-c", "core.autocrlf=input", "-c", "core.safecrlf=false", "add", "-A"]);
   const nameStatus = git(workspace, ["diff", "--cached", "--name-status", "HEAD"]).stdout.trim();
   const patch = git(workspace, ["diff", "--cached", "HEAD"]).stdout;
   const files = nameStatus ? nameStatus.split("\n").map((line) => line.split("\t").slice(1).join("\t")) : [];

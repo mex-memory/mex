@@ -103,6 +103,9 @@ if (change) {
 
 // 3b. FAKE_AGENT_TOUCH_FACT=1: change code a recorded fact is linked to, so the Stop hook has something to review.
 // With FAKE_AGENT_CONFIRM=1 the agent then vouches for the listed entities, as a real agent answering the block would.
+// FAKE_AGENT_CRLF=1 writes the edited file back with CRLF line ends, as a Python script in text mode does on
+// Windows. FAKE_AGENT_IGNORE_BLOCK=1 ends the session at a Stop block, as a headless host does when the agent's
+// last act was its structured answer.
 let touched = null;
 if (process.env.FAKE_AGENT_TOUCH_FACT === "1") {
   try {
@@ -111,9 +114,10 @@ if (process.env.FAKE_AGENT_TOUCH_FACT === "1") {
     const symbol = entity?.symbols.find((candidate) => candidate.end - candidate.start >= 4);
     if (entity && symbol) {
       const file = join(cwd, symbol.file);
-      const lines = readFileSync(file, "utf8").split("\n");
-      lines.splice(symbol.start + 1, 0, "// fake agent edit inside a linked symbol");
-      writeFileSync(file, lines.join("\n"));
+      const lines = readFileSync(file, "utf8").split(/\r?\n/);
+      const comment = /\.py$/.test(file) ? "#" : "//";
+      lines.splice(symbol.start, 0, `${lines[symbol.start].match(/^\s*/)[0]}${comment} fake agent edit inside a linked symbol`);
+      writeFileSync(file, lines.join(process.env.FAKE_AGENT_CRLF === "1" ? "\r\n" : "\n"));
       touched = { id: entity.id, file: symbol.file };
       toolStep("Edit", { file_path: file, old_string: "a", new_string: "b" });
     }
@@ -123,7 +127,7 @@ if (process.env.FAKE_AGENT_TOUCH_FACT === "1") {
 // 4. Stop.
 const stop = runHooks({ hook_event_name: "Stop", stop_hook_active: false });
 const blocked = stop.find((entry) => /"decision"\s*:\s*"block"/.test(entry.stdout));
-if (blocked) {
+if (blocked && process.env.FAKE_AGENT_IGNORE_BLOCK !== "1") {
   if (process.env.FAKE_AGENT_CONFIRM === "1") {
     let reason = "";
     try { reason = JSON.parse(blocked.stdout).reason ?? ""; } catch { /* unreadable block */ }
