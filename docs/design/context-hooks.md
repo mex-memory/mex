@@ -460,6 +460,19 @@ From the seven-session pilot (Django and Hono heavy tasks):
   location notes' `graph:<id>` memory. Impact now remembers `impact:<id>`, once per
   edited symbol, and lists callers the session has seen. A silent edit or Bash
   check logs `nothing-touched` or `no-change`.
+- **Impact notes for shell edits.** The pilot agents mostly edited through Python
+  scripts run in Bash, which no Edit hook sees. A Bash command that may write
+  (anything but read-only programs, `sed` without `-i`, `find` without
+  `-exec/-delete`, no `>` into a file) and names project files (arguments, inline
+  scripts, `cd` targets) gets one diff of those files, started before the graph
+  opens. Hunks not seen before (ids of their removed and added lines, seeded at the
+  first prompt and recorded by Edit and Bash events) go to the same impact
+  composer, with the same caps, `impact:<id>` memory and budget, when at most five
+  files changed. Warm in-process time on Django and Hono: read-only or unnamed
+  commands 25-27 ms as before, writing commands that name a file 91-101 ms. A
+  whole-tree diff would cost about 200 ms on Django, so a command that names no
+  file gets no note. Prompts of at most 40 words: 130 of 130 outputs
+  byte-identical; the 66 agent-run prompt outputs are unchanged.
 - **Blocks the host never delivers.** A headless session ends at the agent's
   structured answer, so a Stop block raised after it never reached the agent and,
   as the worker started only on a later Stop, nothing settled. The block now starts
