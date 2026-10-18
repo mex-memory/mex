@@ -180,7 +180,9 @@ Rules frozen after replaying the 18 pilot sessions:
 
 - **Prompt:** only after knowledge abstains. Verify code-shaped identifiers
   (camel case, snake case, or a bare name in backticks) by exact case-sensitive
-  lookup. Send callable definitions only, with their indexed location. A name
+  lookup. Send callable definitions only, with their indexed location; a prompt
+  of more than 40 words may also name a class that spans at least five lines
+  (see "Long prompts, second round" below). A name
   resolving to more than three declarations abstains. Plain prose, member calls
   such as `items.push(...)`, and task notifications provide no independent gate.
   Segment matches and unverified prose words do not trigger a note.
@@ -317,3 +319,114 @@ Final checks also passed 14 rebuilt-entry, graph-delivery and budget tests after
 copying the successful scratch build into ignored `dist/`; emitted public
 `index.d.ts` is byte-for-byte unchanged. `MEX_HOOK_GRAPH=0` replay sends zero
 graph notes/chars while retaining 39,043 knowledge characters over the sessions.
+
+## Long prompts, second round (2026-10-18)
+
+Task prompts of 100 to 300 words reach the gate with the relevant entry near the
+top, but a long prompt shares a few words with almost every entry, so the leader
+rarely clears the lead over the fourth candidate. This round measured fixes for
+that, with prompts of 40 words or fewer left untouched.
+
+### New labelled set
+
+54 new prompts, 18 per project (Hono, TypeScript, Django): 36 with a gold entry
+from the scaffold knowledge (a few accept a second, equally relevant entry) and
+18 on topics no entry covers, many of them sharing vocabulary with entries.
+They are bug reports, trace requests and change requests of 54 to 378 words:
+41-100 words (21), 101-200 (18), 201-300 (9) and 300+ (6). None is taken from or
+paraphrases the agent-run task prompts. Split dev/test by alternation within
+project, length and kind. Run with `scripts/context-rank-eval.mjs` (same file
+format as the earlier sets).
+
+### Baseline (unchanged by this round)
+
+Helped/with-fact, injections carrying gold/injections, false sends/no-fact; gate
+computed in-process by the product's own functions on copies of the pilot index
+caches (identical ids to the CLI on every prompt).
+
+| Bucket | R2w dev | R2w test | R3 dev | R3 test |
+|---|---|---|---|---|
+| New 41-100 | 3/6, 3/4, 1/3 | 6/8, 6/7, 0/4 | 5/6, 5/7, 1/3 | 7/8, 7/7, 0/4 |
+| New 101-200 | 5/6, 5/6, 0/3 | 4/7, 4/4, 0/2 | 3/6, 3/3, 0/3 | 6/7, 6/6, 0/2 |
+| New 201-300 | 1/4, 1/1, 0/2 | 2/2, 2/2, 0/1 | 3/4, 4/5, 1/2 | 1/2, 1/1, 0/1 |
+| New 300+ | 1/2, 1/1, 0/1 | 1/1, 1/1, 0/2 | 1/2, 1/1, 0/1 | 1/1, 1/1, 0/2 |
+| Old medium (60-96) | 14/24, 14/16, 0/12 | 15/24, 15/17, 0/10 | 16/24, 16/20, 1/12 | 17/24, 17/21, 0/10 |
+| Old very long (305-1,500) | 10/24, 10/15, 3/12 | 11/24, 11/25, 4/10 | 11/24, 11/14, 1/12 | 12/24, 12/26, 4/10 |
+
+On dev, the gold entry is the top-ranked candidate in 48 of 68 long with-fact
+prompts (lexical order), but only 34 (R2w) and 39 (R3) are sent: the ranking is
+mostly right and the lead rule is what holds recall back.
+
+### Methods measured on dev (long prompts: helped/66, gold/injections, false sends/33)
+
+| Method | R2w | R3 |
+|---|---|---|
+| Current gate | 34, 34/43, 4 | 39, 40/50, 4 |
+| Lead measured inside the leader's best window | 45, 46/77, 12 | 44, 45/71, 8 |
+| Same, plus candidates sharing a code file with the leader not counted as competitors | 48, 49/82, 12 | 46, 47/76, 8 |
+| Sharing a code file not counted as competition (global lead) | 34, 34/46, 5 | 42, 43/58, 4 |
+| Lead on the sum of the two best windows (0.35 / 0.45) | 39, 39/60, 10 / 32, 32/40, 4 | 46, 47/69, 8 / 44, 45/61, 7 |
+| Rare-term weighting (idf squared), current thresholds | 27, 27/38, 6 | 33, 33/41, 4 |
+| A prose word equal to a linked symbol name as identifier evidence | 33-34, no gain | 38-39, no gain |
+| Lexical score times (cosine − 0.4) as the order and lead (R3) | — | best 49, 49/78, 11 |
+| Title evidence (frozen below) | 37, 37/46, 4 | 40, 41/51, 4 |
+
+A grid over floor (0.25-0.5), lead (0.2-0.6), corroboration (3-5), idf exponent
+(1, 1.5, 2) and lead reference (global or in-window), and a second, stricter
+path for an in-window leader (floor, corroboration, lead, code-linked leader,
+cosine floor or top cosine, topic present in at least two windows, near-tied
+same-code competitor, sent alone) found no setting that raised helped without
+raising false sends or wrong injections, except the title-evidence path.
+
+### Title evidence: frozen on dev, tested once, not adopted
+
+Rule: in a windowed prompt, a first candidate that passes the floor and
+corroboration but fails only the lead over the fourth candidate is still sent,
+alone, when its best window holds at least 3 distinct words of its title and it
+leads every other candidate inside that window by at least 0.3 of its own score;
+the semantic recipe also requires that no candidate in the gate list has a
+higher cosine.
+
+| | R2w dev | R2w test | R3 dev | R3 test |
+|---|---|---|---|---|
+| Long prompts, current | 34, 34/43, 4 | 39, 39/56, 4 | 39, 40/50, 4 | 44, 44/62, 4 |
+| Long prompts, title evidence | 37, 37/46, 4 | 39, 39/56, 4 | 40, 41/51, 4 | 45, 45/64, 5 |
+
+On test the lexical recipe is unchanged and the semantic recipe gains one entry
+(new set, 101-200 words) and one send on a very long no-fact prompt; that send
+matches only the unrelated pasted paragraph (an answer to the other question in
+the prompt). On the 33 agent-run prompts (in-process, the hook's ranking) it adds four
+lexical sends: two exactly relevant (evolving array types; middleware converts
+exceptions to responses), one partial (never-returning calls, for a dead-code
+trace) and one unrelated (package.json exports, for a default-import bug). The
+acceptance rule was no rise in false sends in any bucket and higher recall on
+long prompts for both recipes, so the rule is not shipped.
+
+### Graph tier: classes in long prompts (shipped)
+
+The prompt note named callables only, so a bug report naming `ExpressionWrapper`
+and `RawSQL` got no note. A prompt of more than 40 words may now also name a
+class, when the class spans at least five lines (`GRAPH_MIN_CLASS_LINES`;
+shorter classes are markers such as exception subclasses, and two of those were
+the only new noise on the first replay). Prompts of 40 words or fewer keep the
+callable-only rule.
+
+- Pilot replay (18 sessions): noise unchanged (2), useful 21 → 22 (a field class
+  later opened in a semantic-arm session), no other change.
+- The 33 agent-run prompts through the built hook, both recipes: 10 of 66
+  outputs change, all graph notes on prompts where knowledge abstains: the
+  SmartRouter, RegExpRouter and TrieRouter classes (router decision, gold
+  SmartRouter), UniqueConstraint (gold `UniqueConstraint.validate`, both
+  recipes), EmailMessage (gold `EmailMessage.send`, both), FilteredRelation
+  (alias bug; gold is in the query compiler, partial, both), the BooleanField
+  classes and ExpressionWrapper (SQLite literal bug, next to the gold
+  `NegatedExpression.as_sql`, partial, lexical) and the CharField classes
+  (exclude bug, neutral, semantic). No unrelated note.
+
+### Parity
+
+`scripts/context-window-parity.mjs` against a build of the previous head: 65 of
+65 prompts of at most 40 words identical, and all 59 longer prompts of the
+evaluation sets and the new set identical (knowledge is unchanged). Through the
+hook entry point, all 130 outputs (65 prompts, both recipes) of at most 40 words
+are byte-identical. The context suite passes 166 tests.
