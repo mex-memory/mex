@@ -1,16 +1,21 @@
 /**
- * The Stop event: one question at the end of a session, then the settle worker.
+ * The Stop event: record what the session touched, then start the settle worker.
  *
- * When the session touched code that MEX entities describe and nobody vouched
- * for them (neither rewrote their prose nor ran `mex context confirm`), the
- * hook blocks the stop once and lists them. The agent either rewrites the
- * prose that is now false or confirms the ones that still hold. It never asks
- * twice in a session, and `context.stopReview: "off"` never asks at all.
+ * The session never blocks (a product decision: `mex check` and `mex sync` keep
+ * the facts fresh). Entities the session touched and nobody vouched for
+ * (neither rewrote their prose nor ran `mex context confirm`) are recorded as
+ * flagged in `context-flags.json` and logged, and the detached settle worker
+ * (see `settle.ts`) refreshes the graph and re-records the vouched-for ones,
+ * unless the touched code and what vouches for it are the same as at the last run.
  *
- * Either way the hook starts the detached settle worker (see `settle.ts`),
- * unless the touched code and what vouches for it are the same as at the last
- * run; a block starts it as well, since the host may never deliver the block.
+ * The in-session review stays behind an opt-in: with `MEX_HOOK_STOP_REVIEW=1`
+ * (and `context.stopReview` not `off`) the hook blocks the stop once and lists
+ * the unvouched entities, so the agent rewrites or confirms them. A block also
+ * starts the worker, since a host may never deliver it.
  */
+
+/** The opt-in for the in-session review at Stop; off by default. */
+export const stopReviewEnabled = (): boolean => process.env.MEX_HOOK_STOP_REVIEW === "1";
 
 import { loadConfiguredContextConfig } from "../../config.js";
 import { openGraphReader } from "../graph-reader.js";
@@ -89,7 +94,7 @@ export async function handleStop(input: StopInput): Promise<StopOutcome> {
 
   const config = loadConfiguredContextConfig(root.scaffoldRoot);
   const unvouched = review.flagged.filter((entry) => entry.touchedNow);
-  const block = config.stopReview === "ask" && unvouched.length > 0 && sessionId !== null && !input.stopHookActive && !loadStopAsked(root.localDir, sessionId);
+  const block = stopReviewEnabled() && config.stopReview === "ask" && unvouched.length > 0 && sessionId !== null && !input.stopHookActive && !loadStopAsked(root.localDir, sessionId);
   if (block && sessionId !== null) recordStopAsked(root.localDir, sessionId);
 
   // A block starts the worker too. A host may end the session without delivering the block
@@ -108,5 +113,6 @@ export async function handleStop(input: StopInput): Promise<StopOutcome> {
     const reason = composeStopReason(unvouched, sessionId);
     return { stdout: JSON.stringify({ decision: "block", reason }), log: { ...base, blocked: true, settle, chars: reason.length, text: reason } };
   }
-  return { stdout: "", log: { ...base, settle } };
+  // Without the review, the entities it would have listed are still logged, so a run can count them.
+  return { stdout: "", log: { ...base, settle, ...(unvouched.length > 0 ? { blocked: false, unvouched: unvouched.map((e) => e.entity.id) } : {}) } };
 }

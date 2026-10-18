@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildGraph, cleanupProjects, createProject, graphSymbol, writeEntities } from "../../__tests__/fixture.js";
 import { loadFlags } from "../../flags.js";
 import { ensureContextIndex } from "../../index-store.js";
@@ -21,6 +21,11 @@ import {
   type CliRunner,
 } from "../settle.js";
 import { BILLING_V1, createHookProject, git, promptPayload, toolPayload, type HookProject } from "./fixture.js";
+
+// The in-session review is opt-in; these tests exercise it unless one says otherwise.
+beforeEach(() => {
+  vi.stubEnv("MEX_HOOK_STOP_REVIEW", "1");
+});
 
 afterEach(async () => {
   // A stub worker started in a project may still be exiting; Windows then refuses to remove the directory.
@@ -190,6 +195,19 @@ describe("a complete-list claim stays flagged (the Hono CORS renewal)", () => {
 });
 
 describe("the Stop hook", () => {
+  it("by default never blocks or injects, yet flags, logs and settles", async () => {
+    vi.stubEnv("MEX_HOOK_STOP_REVIEW", "");
+    const project = await createHookProject();
+    await startSession(project, "s-quiet-stop");
+    project.fx.writeSource("src/billing.ts", BILLING_V2);
+    const stop = await handleStop({ root: project.fx.context, sessionId: "s-quiet-stop", stopHookActive: false, start: { entry: stubWorker(project, 0) } });
+    expect(stop.stdout).toBe("");
+    expect(stop.log).toMatchObject({ settle: "started", blocked: false, unvouched: expect.arrayContaining(Object.values(project.ids)) });
+    expect(loadStopAsked(project.fx.context.localDir, "s-quiet-stop")).toBe(false);
+    // `mex context status` and the packets read these.
+    expect(Object.values(loadFlags(project.fx.context.localDir).entities).map((e) => e.status)).toEqual(["flagged", "flagged", "flagged"]);
+  });
+
   it("blocks once with a compact list, then never again in the session", async () => {
     const project = await createHookProject();
     await startSession(project, "s-block");
