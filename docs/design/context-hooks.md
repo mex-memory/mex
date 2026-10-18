@@ -154,7 +154,7 @@ The rule, a product decision: after a session changes code MEX may refresh the g
 - **Flags** (`context-flags.json`, `flags.ts`): `flagged` or `eligible` (with its basis), why, since, and the last re-record error. Packets and `mex context status` read it; `liveStateFrom` reports a flagged entity as `changed` even while the graph still says fresh.
 - **`mex context confirm <id...> [--session <id>] [--note <text>]`** records the confirmation in the session file (the newest session when none is named) and makes an already-flagged entity eligible at once. Unknown ids are reported; none known is an error.
 - **`mex context status`** lists flagged and eligible entities, their location and reason, whether a settle worker runs, and the last settle log entry.
-- **Stop event**: reviews the session; flags every touched entity; when `context.stopReview` is `ask` (default; `off` disables) and entities touched now are neither edited nor confirmed, it blocks **once per session** with a list of at most 1,500 characters (id, title, `.mex` location, why, and the exact `mex context confirm <ids> --session <id>` command; overflow is counted and left to `status`). It does not block while Claude Code reports the stop is already continuing from a block. Then it starts the settle worker, unless the review digest equals the one the session last settled.
+- **Stop event**: reviews the session; flags every touched entity; when `context.stopReview` is `ask` (default; `off` disables) and entities touched now are neither edited nor confirmed, it blocks **once per session** with a list of at most 1,500 characters (id, title, `.mex` location, why, and the exact `mex context confirm <ids> --session <id>` command; overflow is counted and left to `status`). It does not block while Claude Code reports the stop is already continuing from a block. Then it starts the settle worker, unless the review digest (each entity's code digest and what vouches for it) equals the one the session last settled. A block starts the worker too: a headless host may end the session without delivering it.
 - **Settle worker** (`mex-hook settle --project <dir> --session <id>`, `hook/settle.ts`): started detached, `windowsHide`, retried on exit code 0xC0000142. A lock file (`context-settle.lock`, the worker's pid; a dead pid is taken over) allows one worker; a Stop while it runs leaves `context-settle.again` and the worker goes round once more (at most four passes). Each pass: review, flag, one `mex graph refresh` (timing recorded; on failure the exit code and the last 1,500 characters of stderr go to the log as `settle-refresh-failed` and nothing is re-recorded), one batch `mex wiki reground <ids> --apply --json` of the eligible ids (chunks of 80), flags cleared and `reconciled` set for each success, the error kept on each failure, then a forced rebuild of the context index. Every pass is logged as `settle` in `context-log.jsonl`.
 - **Batch reground**: `mex wiki reground <id...> --apply` opens one fresh graph snapshot, runs the unchanged single-id service for each id (so every safety check holds per id), and reports a result per id; one refused entity never blocks or rolls back the others, and the exit status is nonzero when any failed. One id prints exactly as before.
 - **Install**: `mex hooks install|status|remove` also manage a `Stop` entry; the `CLAUDE.md` block tells agents what to do with the end-of-session list.
@@ -430,3 +430,45 @@ callable-only rule.
 evaluation sets and the new set identical (knowledge is unchanged). Through the
 hook entry point, all 130 outputs (65 prompts, both recipes) of at most 40 words
 are byte-identical. The context suite passes 166 tests.
+
+### Graph-anchored evidence: measured, not shipped (2026-10-18)
+
+Rule tried: in a windowed prompt, a leader that passes the floor and
+corroboration but fails only the lead is sent alone when an identifier in the
+prompt's prose resolves to a graph node (as the graph identifier tier resolves
+it, classes allowed) and the leader is grounded to that node, its file, or a
+caller or callee of it. Dev, long prompts: R2w 34 → 36 of 66 (both gold, no new
+false send) at file or neighbour level, nothing at node level; R3 unchanged at
+39. Test, once (file level): no change in any bucket for either recipe. The 33
+agent-run prompts: three new sends, two relevant (the router fallback fact for
+the router decision, both recipes) and one unrelated (QuerySet result caching
+for the FilteredRelation alias bug). Long prompts rarely name a code identifier:
+the gold entry is graph-reached in 8 of 68 long dev prompts. Short of the bar
+(recall up on long prompts for both recipes, no new false sends), so not shipped.
+
+## Pilot fixes (2026-10-18)
+
+From the seven-session pilot (Django and Hono heavy tasks):
+
+- **Line ends.** Agents edit through Python scripts, whose text mode writes CRLF on
+  Windows into LF checkouts. Every such file was one whole-file hunk, so every fact
+  linked to it read as touched (the Stop block listed facts nobody had edited) and
+  no edit fitted inside a symbol. The edit, Bash and Stop diffs now pass
+  `--ignore-cr-at-eol`; a CRLF-only rewrite is no change.
+- **Impact notes after a search.** An edited symbol that a search note had already
+  named (as a hit or as a caller) got no impact note, because impact shared the
+  location notes' `graph:<id>` memory. Impact now remembers `impact:<id>`, once per
+  edited symbol, and lists callers the session has seen. A silent edit or Bash
+  check logs `nothing-touched` or `no-change`.
+- **Blocks the host never delivers.** A headless session ends at the agent's
+  structured answer, so a Stop block raised after it never reached the agent and,
+  as the worker started only on a later Stop, nothing settled. The block now starts
+  the worker as well; a confirmation afterwards changes the review digest and runs
+  it again.
+- **Refused regrounds are explained in the log.** The settle entry lists each
+  refused id with its first reason (`reground.refused`). In the pilot that was a
+  fact whose PostgreSQL and SQLite links name `minimum_database_version` variable
+  nodes minted from the values at scaffold time; the task base has other values,
+  so the ids do not exist there and the fact's "missing" label and the refusal are
+  both correct. Variables this small carry no neighbours, so reconciliation cannot
+  rebind them; the fact needs relinking by a person.
