@@ -165,3 +165,153 @@ The rule, a product decision: after a session changes code MEX may refresh the g
 - **Refresh mode.** `mex graph refresh` prints `Refresh: incremental|full (<reason>), N changed, M re-extracted.` or `Refresh: nothing changed.`; `--json` already carried `refresh`. The settle worker runs the refresh with `--json` and logs `mode`, `reason`, `changed`, `reextracted` in the `settle` entry.
 - **Root resolution tests.** `graphReadRoot` and `rebaseGraphTarget` are exported and covered, plus spawned-CLI checks from a subdirectory.
 - **Not done here.** `maxSourceFileBytes` stays a constant; an issue is drafted separately.
+
+
+## Graph tier (offline pilot replay, 2026-10-18)
+
+Knowledge remains first. The light graph reader also supplies prepared, read-only
+exact-name, enclosing-symbol, range, caller, callee and caller-count queries.
+Call edges rank production paths before tests **before** applying their row limit;
+this includes `testRunner` and `unittests`. Graph hints never index or refresh code.
+
+Rules frozen after replaying the 18 pilot sessions:
+
+- **Prompt:** only after knowledge abstains. Verify code-shaped identifiers
+  (camel case, snake case, or a bare name in backticks) by exact case-sensitive
+  lookup. Send callable definitions only, with their indexed location. A name
+  resolving to more than three declarations abstains. Plain prose, member calls
+  such as `items.push(...)`, and task notifications provide no independent gate.
+  Segment matches and unverified prose words do not trigger a note.
+- **Grep/search:** require at least one verified identifier in the search pattern,
+  at most 60 returned hits in at most five files. Inspect the first 12 hits,
+  prepend exact definitions, then enclosing symbols and up to three production
+  callers. A file-name-only result can identify a verified definition. Single-file
+  `line:content` results use the tool's explicit path. Bash accepts only a simple
+  search command's pattern; compound commands and pipelines abstain.
+- **Edit:** match base-side diff ranges to an enclosing indexed symbol, and send
+  its other production callers to check. At most five files and 20 hunks per file;
+  no note without a production caller. Multi-symbol hunks or locations that no
+  longer enclose a complete hunk can abstain. Existing knowledge diff handling
+  and Stop/settle rules remain unchanged.
+- **Read:** no graph injection. The offline candidate required a range of at most
+  200 lines inside one symbol and listed callers. It added no useful notes.
+- **Caps:** 1,200 graph characters per event, three primary symbols, three callers
+  per symbol, at most 12 named node ids. One-line declarations are omitted. Graph
+  lines are atomic; an oversized note is dropped. Knowledge and graph together
+  remain under 4,000 event characters. Graph fits only in the remaining 12,000
+  character session budget; it never displaces knowledge or becomes a pointer.
+- **Memory/ablation:** every named graph node gets a `graph:<id>` session key,
+  including callers. Undelivered nodes are not remembered. `MEX_HOOK_GRAPH=0`
+  disables graph notes while retaining knowledge. Delivered graph notes log
+  `kind: "graph"`, `graphNodes`, and `graphChars` separately from knowledge ids;
+  `chars` remains the complete packet length. Existing event logs count silence.
+
+### Replay method and limits
+
+`scripts/context-graph-replay.mjs` calls the production event and graph composers,
+not a second implementation. It copies each cache's database and context index
+before opening them, joins transcript tool uses/results, and replays all 18 prompts,
+61 Reads, 48 Greps, 70 Bash calls and 11 Edit/Write calls. All explicit edits had
+structured patch ranges or an original file from which to recover their ranges.
+Shell edits without transcript diff ranges are not synthesized. The source
+checkouts, cache inputs and indexes are never maintained. No API, model or paid
+sessions are used.
+
+Existing arms retain their observed prompt knowledge gates, including semantic
+abstentions, from the pilot logs. The files arm gets a lexical counterfactual
+knowledge gate, using the harness's actual prompt builder (including JSON and
+concise-answer suffixes). Tool knowledge uses the real composer on each copied base graph.
+This preserves the base snapshot, not an exact replay of later graph refreshes;
+source positions after repeated edits can differ. The pilot never triggered settle.
+
+A useful note names an unopened gold file/symbol **or verified definition location**
+that appears in a later Read/search. Read ranges determine whether a symbol was
+opened; reading another part of the same file does not open every symbol. Noise
+has neither a gold target nor any later use. The remaining notes are neutral
+(often a gold target already read). The detailed JSON records both gold usefulness
+and definition usefulness, node locations, opened status and the first later use.
+`Lead` is the largest number of intervening tool calls for one eligible target in
+a session. It is a navigation opportunity, not measured causal turns saved; leads
+are not summed because their intervals overlap. Same-tool hits do not count as a
+future use.
+
+The wider 60-hit/five-file gate recovered useful notes without adding noise versus
+30/three or 10/two. Callable-only prompt hints and excluding one-line declarations
+removed option-property and enum-member noise. Bare member calls were rejected:
+`items.push(...)` otherwise resolved to an unrelated indexed `push` function.
+The Read candidate added only neutral/noise output, so silence remains the default.
+All tuning used these same sessions; this is development evidence, not a held-out
+quality estimate.
+
+| Task | Arm | Useful | Noise | Neutral | Graph chars | Total chars | Lead |
+|---|---|---:|---:|---:|---:|---:|---:|
+| error-convention | files | 0 | 0 | 0 | 0 | 1035 | 0 |
+| error-convention | mex-r2w | 0 | 0 | 1 | 387 | 2461 | 0 |
+| error-convention | mex-r3 | 0 | 0 | 0 | 0 | 1192 | 0 |
+| lambda-edge-binary | files | 1 | 0 | 0 | 360 | 2346 | 2 |
+| lambda-edge-binary | mex-r2w | 1 | 0 | 0 | 308 | 2404 | 1 |
+| lambda-edge-binary | mex-r3 | 2 | 0 | 0 | 332 | 1481 | 1 |
+| ts-evolving-array-type | files | 1 | 0 | 0 | 438 | 5491 | 1 |
+| ts-evolving-array-type | mex-r2w | 2 | 0 | 0 | 1170 | 6194 | 3 |
+| ts-evolving-array-type | mex-r3 | 2 | 0 | 0 | 741 | 6755 | 3 |
+| ts-change-refproj-default-import | files | 3 | 0 | 0 | 1694 | 2829 | 21 |
+| ts-change-refproj-default-import | mex-r2w | 3 | 0 | 1 | 1995 | 3989 | 3 |
+| ts-change-refproj-default-import | mex-r3 | 1 | 1 | 1 | 1138 | 1898 | 2 |
+| dj-view-exception-to-response | files | 2 | 0 | 0 | 551 | 2503 | 2 |
+| dj-view-exception-to-response | mex-r2w | 2 | 0 | 0 | 663 | 3026 | 1 |
+| dj-view-exception-to-response | mex-r3 | 1 | 0 | 0 | 378 | 3770 | 0 |
+| dj-change-exclude-in-none | files | 0 | 1 | 0 | 92 | 1017 | 0 |
+| dj-change-exclude-in-none | mex-r2w | 0 | 0 | 1 | 269 | 1194 | 0 |
+| dj-change-exclude-in-none | mex-r3 | 0 | 0 | 1 | 269 | 269 | 0 |
+
+TypeScript freshness investigation: both task caches use scaffold commit
+`125ebae0970d`, whose source history is based at `968d5deb8b5`. Task bases are
+`b465fdbfe175` (question) and `114327939c93` (change). The former has 106 fresh,
+22 changed and eight missing facts; the latter has 110 fresh, 19 changed and seven
+missing, before the agent edits anything. These are actual stored-versus-current
+body-hash mismatches, not commit-id inequality or a cached health verdict. For
+example, `bindInStrictMode` changed from `getStrictOptionValue(opts, "alwaysStrict")`
+to `getAlwaysStrict(opts)` between scaffold source and task base; its grounding
+hash is `c7e7a558...` while the question graph records `e186e67d...`. The old prose
+still names the old helper. The label is correct; no product freshness change or
+automatic regrounding is warranted.
+
+Across the selected replay: **21 useful, two noise, five neutral**, 10,785 graph
+characters. Eighteen useful notes reach gold targets; three reach other verified
+definitions later used. Files: 7 useful / 1 noise / 3,135 graph chars; lexical:
+8 / 0 / 4,792; semantic: 6 / 1 / 2,858. The 30-hit/three-file cap gives
+14 useful / 2 noise / 8,201 chars; 10-hit/two-file gives 10 / 2 / 5,701.
+Enabling the Read candidate gives 21 useful / 3 noise / 15 neutral / 13,379 chars:
+zero additional useful notes, 2,594 additional characters. The two remaining
+noise notes concern an emit-format helper (semantic bug-fix session) and a class
+definition from a Django search (files session). Caller trails are structural,
+not proof that a caller needs changing.
+
+### Latency and verification
+
+An isolated warm full-runner replay (one warmup then three timed invocations per
+Read/Grep payload, copied graph/index, no session dedup) measured:
+
+| Path | Samples | p50 ms | p95 ms | Max ms |
+|---|---:|---:|---:|---:|
+| Read runner | 183 | 12.3 | 17.1 | 20.5 |
+| Grep runner | 144 | 12.9 | 62.6 | 84.0 |
+| Read composer | 61 | 1.0 | 2.8 | 4.7 |
+| Grep composer | 48 | 2.2 | 42.7 | 57.2 |
+
+Runner timing includes index load, graph open, selection and bounded log writes;
+process startup is excluded. A preliminary run concurrent with typecheck had
+scheduling outliers up to 1.7 seconds, including Read where graph injection is
+disabled; it is retained in scratch evidence and is not used as the warm budget
+estimate. Repeat with `--warm-latency --label isolated` on an otherwise idle machine.
+
+The context suite passes 164 tests. Typecheck passes. The normal build command is
+blocked in this checkout by sandbox ancestor-directory traversal in the config
+bundler; the same source/configuration builds in an isolated scratch copy with
+local workspace-package links. Git staging is blocked by `.git/index.lock`
+permissions, so implementation, tests and evidence remain uncommitted. No push.
+
+Final checks also passed 14 rebuilt-entry, graph-delivery and budget tests after
+copying the successful scratch build into ignored `dist/`; emitted public
+`index.d.ts` is byte-for-byte unchanged. `MEX_HOOK_GRAPH=0` replay sends zero
+graph notes/chars while retaining 39,043 knowledge characters over the sessions.

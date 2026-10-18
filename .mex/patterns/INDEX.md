@@ -11,6 +11,7 @@ Lookup table for project-specific pattern files.
 
 | Pattern | Use when |
 |---------|----------|
+| [`context-hook-replay.md`](context-hook-replay.md) | Changing hook evidence gates, graph hints, caps, or offline transcript replay |
 | [`release-preparation.md`](release-preparation.md) | Auditing merged release scope, exact-commit CI, version pins, upgrade notes, and package contents before publication |
 | [`dependency-manifest-discovery.md`](dependency-manifest-discovery.md) | Reviewing recursive dependency discovery, manifest precedence, containment, or corpus limits |
 | [`usage-telemetry.md`](usage-telemetry.md) | Changing CLI/Hub event coverage, opt-out, queue delivery, or usage measurement |
