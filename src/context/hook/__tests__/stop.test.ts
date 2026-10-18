@@ -195,20 +195,27 @@ describe("the Stop hook", () => {
     await startSession(project, "s-block");
     project.fx.writeSource("src/billing.ts", BILLING_V2);
 
-    const first = JSON.parse(await project.run({ hook_event_name: "Stop", session_id: "s-block" })) as { decision: string; reason: string };
+    const blocked = await handleStop({ root: project.fx.context, sessionId: "s-block", stopHookActive: false, start: { entry: stubWorker(project, 0) } });
+    // The block starts the worker as well: a host may end the session without delivering it.
+    expect(blocked.log).toMatchObject({ blocked: true, settle: "started" });
+    const first = JSON.parse(blocked.stdout) as { decision: string; reason: string };
     expect(first.decision).toBe("block");
     expect(first.reason.length).toBeLessThanOrEqual(STOP_REASON_LIMIT);
     for (const id of Object.values(project.ids)) expect(first.reason).toContain(id);
     expect(first.reason).toContain("mex context confirm");
     expect(loadStopAsked(project.fx.context.localDir, "s-block")).toBe(true);
     expect(Object.keys(loadFlags(project.fx.context.localDir).entities)).toHaveLength(3);
-    const log = readFileSync(join(project.fx.context.localDir, HOOK_LOG_NAME), "utf8");
-    expect(log).toContain('"event":"stop-block"');
 
-    // Asked once: the same session is not asked again.
+    // Asked once: the same session is not asked again, and the unchanged review needs no second run.
     const again = await handleStop({ root: project.fx.context, sessionId: "s-block", stopHookActive: false, start: { entry: stubWorker(project, 0) } });
     expect(again.stdout).toBe("");
-    expect(again.log).toMatchObject({ settle: "started" });
+    expect(again.log).toMatchObject({ settle: "unchanged" });
+
+    // A confirmation after the block changes the review, so the next Stop runs the worker again.
+    recordConfirmation(project.fx.context.localDir, "s-block", [project.ids.discount]);
+    const answered = await handleStop({ root: project.fx.context, sessionId: "s-block", stopHookActive: true, start: { entry: stubWorker(project, 0) } });
+    expect(answered.stdout).toBe("");
+    expect(answered.log).toMatchObject({ settle: "started", eligible: [project.ids.discount] });
   });
 
   it("does not block when the hook is already continuing from a block", async () => {

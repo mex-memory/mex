@@ -7,8 +7,9 @@
  * prose that is now false or confirms the ones that still hold. It never asks
  * twice in a session, and `context.stopReview: "off"` never asks at all.
  *
- * Either way the hook ends by starting the detached settle worker (see
- * `settle.ts`), unless the touched code is the same as at the last run.
+ * Either way the hook starts the detached settle worker (see `settle.ts`),
+ * unless the touched code and what vouches for it are the same as at the last
+ * run; a block starts it as well, since the host may never deliver the block.
  */
 
 import { loadConfiguredContextConfig } from "../../config.js";
@@ -88,17 +89,24 @@ export async function handleStop(input: StopInput): Promise<StopOutcome> {
 
   const config = loadConfiguredContextConfig(root.scaffoldRoot);
   const unvouched = review.flagged.filter((entry) => entry.touchedNow);
-  if (config.stopReview === "ask" && unvouched.length > 0 && sessionId !== null && !input.stopHookActive && !loadStopAsked(root.localDir, sessionId)) {
-    recordStopAsked(root.localDir, sessionId);
-    const reason = composeStopReason(unvouched, sessionId);
-    return { stdout: JSON.stringify({ decision: "block", reason }), log: { ...base, blocked: true, chars: reason.length, text: reason } };
-  }
+  const block = config.stopReview === "ask" && unvouched.length > 0 && sessionId !== null && !input.stopHookActive && !loadStopAsked(root.localDir, sessionId);
+  if (block && sessionId !== null) recordStopAsked(root.localDir, sessionId);
 
+  // A block starts the worker too. A host may end the session without delivering the block
+  // (a headless run whose last act was its structured answer), and then no second Stop comes.
+  // When the agent does answer, its confirmations change the digest and the next Stop runs
+  // the worker again, or tells the running one to go round once more.
   const digest = reviewDigest(review);
-  if (sessionId !== null) {
-    if (loadSettled(root.localDir, sessionId) === digest) return { stdout: "", log: { ...base, settle: "unchanged" } };
-    recordSettled(root.localDir, sessionId, digest);
+  let settle: string;
+  if (sessionId !== null && loadSettled(root.localDir, sessionId) === digest) {
+    settle = "unchanged";
+  } else {
+    if (sessionId !== null) recordSettled(root.localDir, sessionId, digest);
+    settle = await startSettle(root, sessionId, input.start);
   }
-  const settle = await startSettle(root, sessionId, input.start);
+  if (block) {
+    const reason = composeStopReason(unvouched, sessionId);
+    return { stdout: JSON.stringify({ decision: "block", reason }), log: { ...base, blocked: true, settle, chars: reason.length, text: reason } };
+  }
   return { stdout: "", log: { ...base, settle } };
 }

@@ -57,9 +57,13 @@ export function codeDigest(entity: Pick<ContextEntity, "code">, diffs: ReadonlyM
   return createHash("sha1").update(parts.join("\n")).digest("hex").slice(0, 12);
 }
 
-/** Digest of everything the session changed in the given entities' code; the settle worker skips a run when it has not moved. */
+/**
+ * Digest of everything the session changed in the given entities' code and of
+ * what vouches for each; the settle worker skips a run when neither has moved,
+ * so a confirmation after an earlier run still gets its entity re-recorded.
+ */
 export function reviewDigest(review: Review): string {
-  return createHash("sha1").update(review.entries.map((e) => `${e.entity.id}:${e.digest}`).sort().join("\n")).digest("hex").slice(0, 16);
+  return createHash("sha1").update(review.entries.map((e) => `${e.entity.id}:${e.digest}:${e.basis ?? "-"}`).sort().join("\n")).digest("hex").slice(0, 16);
 }
 
 export interface ReviewInput {
