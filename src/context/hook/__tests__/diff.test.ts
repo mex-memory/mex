@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseUnifiedZero, readHead, touches } from "../diff.js";
+import { diffAgainstHead, parseUnifiedZero, readHead, touches } from "../diff.js";
 import { readRange } from "../events.js";
 import { git } from "./fixture.js";
 
@@ -88,6 +88,26 @@ describe("readRange", () => {
     expect(readRange({ limit: 30 })).toEqual([1, 30]);
     expect(readRange({ offset: 400 })).toEqual([400, 2399]);
     expect(readRange({ offset: Number.NaN, limit: -5 })).toBeNull();
+  });
+});
+
+describe("diffAgainstHead", () => {
+  it("ignores line-end churn: a CRLF rewrite of an LF file shows only the lines that changed", () => {
+    // The pilot's checkout: core.autocrlf=false, LF files, and an agent's Python script on
+    // Windows writing the whole file back with CRLF while changing one line.
+    const root = temp();
+    git(root, "init", "-q");
+    git(root, "config", "core.autocrlf", "false");
+    const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+    writeFileSync(join(root, "a.py"), `${lines.join("\n")}\n`);
+    writeFileSync(join(root, "b.py"), `${lines.join("\n")}\n`);
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "one");
+    writeFileSync(join(root, "a.py"), `${lines.map((l, i) => (i === 19 ? "changed" : l)).join("\r\n")}\r\n`);
+    writeFileSync(join(root, "b.py"), `${lines.join("\r\n")}\r\n`);
+    const diffs = diffAgainstHead(root)!;
+    expect(diffs.get("a.py")?.ranges).toEqual([[20, 20]]);
+    expect(diffs.has("b.py")).toBe(false);
   });
 });
 

@@ -119,7 +119,10 @@ export function parseUnifiedZero(diff: string): Map<string, FileDiff> {
 }
 
 function diffArgs(files?: readonly string[]): string[] | null {
-  const args = ["diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", "--relative", "HEAD"];
+  // `--ignore-cr-at-eol`: a tool that rewrites a whole file with CRLF line ends (Python's text
+  // mode on Windows does) changes every line's bytes but none of its code. Without it the hunk
+  // is the whole file, every fact linked to it reads as touched and no edit fits inside a symbol.
+  const args = ["diff", "-U0", "--ignore-cr-at-eol", "--no-color", "--no-ext-diff", "--no-renames", "--relative", "HEAD"];
   if (files !== undefined) {
     if (files.length === 0) return null;
     // `:(literal)` so a file name with glob characters means exactly itself.
