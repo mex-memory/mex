@@ -30,3 +30,13 @@ test("injection uptake, redundancy, off-gold followups, graph absence and gold l
  assert.equal(m.discoveryCalls,3);assert.equal(m.injectionsUsed,1);assert.equal(m.injectionsIgnored,1);assert.equal(m.redundantSearches,2);assert.equal(m.turnsToGoldFile,2);assert.equal(m.wikiShowCalls,1);assert.equal(m.offGoldInjections.length,1);assert.equal(m.offGoldInjections[0].followingCalls.length,5);assert.equal(m.graphInjections,1);
  assert.equal(measureSession({raw:"",calls:[],task:{},entries:[]}).turnsToGoldFile,null);
 });
+test("a note's prose words are not symbols: 'in the' and backticked None never make an injection used",()=>{
+ // The pilot's Django note: "Facts that describe the code you touched", "used in the compiler", `None`.
+ const text="MEX: you changed django/db/backends/base/features.py. edited #minimum_database_version in django/db/backends/base/features.py; skipped when that is `None`, used in the compiler via `connection.ops.compiler()`";
+ const entries=[{event:"bash",ids:["mx_A"],chars:text.length,text,toolCallIndex:0}];
+ const prose=[{name:"Bash",input:{command:"python -c 'print(None)' # run the tests"}}];
+ const m=measureSession({raw:"",calls:prose,entries,task:{gold:{}}});
+ assert.deepEqual(m.injections[0].symbols,["minimum_database_version","connection.ops.compiler"]);
+ assert.equal(m.injectionsUsed,0);
+ assert.equal(measureSession({raw:"",calls:[{name:"Grep",input:{pattern:"minimum_database_version"}}],entries,task:{gold:{}}}).injectionsUsed,1);
+});

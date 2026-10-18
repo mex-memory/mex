@@ -38,7 +38,12 @@ export function isSearch(call) {
 }
 const norm = (s) => String(s ?? "").replaceAll("\\", "/");
 const pathsIn = (text) => [...new Set([...norm(text).matchAll(/(?:[\w.@-]+\/)+[\w.@-]+\.[\w]+/g)].map((m) => m[0]))];
-const symbolsIn = (text) => [...new Set([...text.matchAll(/\bin #?([\w.$]+)|`([\w.$#]+)`/g)].map((m) => m[1] ?? m[2]))];
+// Symbols a note names: `#name` (graph and edit notes) and backticked code. A bare "in <word>" also
+// matched prose ("in the", "in using"), and such words occur in nearly every later call, so an
+// injection read as used whatever the agent did. Short or keyword-like spans are not symbols either.
+const NOT_SYMBOLS = new Set(["None", "True", "False", "null", "undefined", "true", "false", "this", "self", "the"]);
+const symbolsIn = (text) => [...new Set([...text.matchAll(/#([A-Za-z_$][\w.$]*)|`#?([A-Za-z_$][\w.$]*)(?:\(\))?`/g)].map((m) => m[1] ?? m[2]))]
+  .filter((name) => name.length >= 4 && !NOT_SYMBOLS.has(name));
 function touches(call, paths, symbols) {
   if (!["Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "Bash"].includes(call.name)) return false;
   // Match inputs, never tool output (which would count the injection itself).
