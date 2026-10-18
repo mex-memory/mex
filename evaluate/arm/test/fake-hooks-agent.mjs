@@ -119,7 +119,9 @@ if (process.env.FAKE_AGENT_TOUCH_FACT === "1") {
       lines.splice(symbol.start, 0, `${lines[symbol.start].match(/^\s*/)[0]}${comment} fake agent edit inside a linked symbol`);
       writeFileSync(file, lines.join(process.env.FAKE_AGENT_CRLF === "1" ? "\r\n" : "\n"));
       touched = { id: entity.id, file: symbol.file };
-      toolStep("Edit", { file_path: file, old_string: "a", new_string: "b" });
+      // FAKE_AGENT_SHELL_EDIT=1 reports the change as a Bash script naming the file, as the pilot agents edited.
+      if (process.env.FAKE_AGENT_SHELL_EDIT === "1") toolStep("Bash", { command: `python - <<'E'\np = '${symbol.file}'\ns = open(p).read()\nopen(p, 'w').write(s)\nE` }, { tool_response: { stdout: "" } });
+      else toolStep("Edit", { file_path: file, old_string: "a", new_string: "b" });
     }
   } catch (error) { process.stderr.write(`fake agent: could not touch a fact: ${error.message}\n`); }
 }

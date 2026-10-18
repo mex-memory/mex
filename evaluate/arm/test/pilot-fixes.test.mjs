@@ -1,6 +1,8 @@
 // Regressions for what the 7-session pilot found in the harness (2026-10-18).
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -37,6 +39,30 @@ test("the session patch shows only real changes when the agent wrote a whole fil
     assert.ok(!hunks.some((h) => h.startsWith("@@ -1,30 ")), "never a whole-file hunk");
     const changed = diff.patch.split("\n").filter((line) => /^[+-](?![+-]{2} )/.test(line));
     assert.deepEqual(changed, ["+has_native_boolean_field = False", "+and one more\r"], "the agent's line ends are normalised; a CRLF file keeps its own");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the fake agent can report its fact edit as a shell script that names the file", () => {
+  const root = tmp();
+  try {
+    git(root, ["init", "-q"]);
+    mkdirSync(join(root, ".mex", "local"), { recursive: true });
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "a.py"), "def f():\n    x = 1\n    y = 2\n    z = 3\n    return x\n");
+    writeFileSync(join(root, ".mex", "local", "context-index.json"), JSON.stringify({ entities: [{ id: "mx_A", type: "fact", code: ["src/a.py"], symbols: [{ file: "src/a.py", start: 1, end: 5, name: "f" }] }] }));
+    // A recording hook stands in for mex-hook.
+    writeFileSync(join(root, "record.mjs"), "import { appendFileSync, readFileSync } from 'node:fs'; appendFileSync('payloads.jsonl', readFileSync(0, 'utf8') + '\\n');\n");
+    writeFileSync(join(root, ".claude", "settings.json"), JSON.stringify({ hooks: { PostToolUse: [{ matcher: "Edit|Bash", hooks: [{ type: "command", command: `"${process.execPath.replaceAll("\\", "/")}" record.mjs` }] }] } }));
+    const agent = fileURLToPath(new URL("fake-hooks-agent.mjs", import.meta.url));
+    const result = spawnSync(process.execPath, [agent, "-p", "Fix it. Do not commit."], { cwd: root, encoding: "utf8", env: { ...process.env, FAKE_AGENT_TOUCH_FACT: "1", FAKE_AGENT_SHELL_EDIT: "1" } });
+    assert.equal(result.status, 0, result.stderr);
+    const payloads = readFileSync(join(root, "payloads.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    assert.deepEqual(payloads.map((p) => p.tool_name), ["Bash"]);
+    assert.match(payloads[0].tool_input.command, /p = 'src\/a\.py'/);
+    assert.match(readFileSync(join(root, "src", "a.py"), "utf8"), /# fake agent edit inside a linked symbol/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
