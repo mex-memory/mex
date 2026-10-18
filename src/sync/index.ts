@@ -10,6 +10,9 @@ import { rebuildWikiIndexAfterSync } from "./wiki-index.js";
 import { findScaffoldFiles } from "../drift/index.js";
 import { captureGroundingBaselines, groundingReviewNodeIds, loadGroundingRuntime, persistMovedGroundings, previewGroundingBaseline, type MovedByNeighborsNotice } from "../graph/runtime.js";
 import { movedByNeighborsMessage } from "../drift/checkers/grounding.js";
+import { ensureContextIndex } from "../context/index-store.js";
+import { clearSessionReviews, sessionReviewSnapshot, type SessionReviewSnapshot } from "../context/review.js";
+import { resolveContextRoot } from "../context/root.js";
 import { writeGroundings } from "../markdown.js";
 import { buildAgentCommand } from "../agent-command.js";
 import { createAgentPromptSession } from "../agent-prompt.js";
@@ -125,6 +128,33 @@ const SYNC_NOTICE_CODES: ReadonlySet<DriftIssue["code"]> = new Set([
 ]);
 
 /** Run targeted sync: detect → brief → AI → verify → ask → loop */
+/**
+ * Session-touched entities (`GROUNDING_REVIEW`): the snapshot at the start of a
+ * run, then clearing the ones the run rewrote or confirmed. Any failure keeps
+ * the flags, so check keeps reporting them, which is the safe side.
+ */
+async function sessionReviewStart(config: MexConfig): Promise<SessionReviewSnapshot | undefined> {
+  try {
+    const root = resolveContextRoot(config.projectRoot);
+    if (root === null) return undefined;
+    const { index } = await ensureContextIndex(root, "if-stale");
+    return sessionReviewSnapshot(root.localDir, index);
+  } catch {
+    return undefined;
+  }
+}
+
+async function clearReviewedSessionEntities(config: MexConfig, snapshot: SessionReviewSnapshot | undefined): Promise<void> {
+  try {
+    const root = resolveContextRoot(config.projectRoot);
+    if (root === null) return;
+    const { index } = await ensureContextIndex(root, "if-stale");
+    clearSessionReviews(root.localDir, index, snapshot);
+  } catch {
+    // The flags stay.
+  }
+}
+
 export async function runSync(
   config: MexConfig,
   opts: { dryRun?: boolean; includeWarnings?: boolean },
@@ -134,6 +164,7 @@ export async function runSync(
   let cycle = 0;
   let mode: SyncMode | null = null;
   let activeTool: AiTool | null = null;
+  const reviewStart = opts.dryRun ? undefined : await sessionReviewStart(config);
 
   while (true) {
     cycle++;
@@ -165,6 +196,8 @@ export async function runSync(
         }
       }
     }
+    // A session-touched entity this run rewrote or confirmed has had its review.
+    if (!opts.dryRun) await clearReviewedSessionEntities(config, reviewStart);
     const report = await runDriftCheck(config);
     // Notices, not repairs. A completed rebind (#229) has nothing left to do.
     // A body that changed only in comments (#236) needs a review of the new
@@ -314,6 +347,8 @@ export async function runSync(
         console.log(chalk.yellow("Grounding review could not finish. Existing baselines are preserved for entries that were not accepted."));
       }
     }
+
+    if (ok) await clearReviewedSessionEntities(config, reviewStart);
 
     // The session may have re-recorded or rewritten Wiki entities. Rebuild the
     // index so `wiki query`, `wiki for-code` and the Hub show it; a rebuild that

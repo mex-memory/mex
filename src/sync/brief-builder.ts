@@ -69,6 +69,10 @@ the repaired prose actually makes. Keep broad files sparse.
   user explicitly accepts that entry in sync's grounding review; completing the
   agent session does not accept it. A link on a Wiki entity follows WIKI ENTITY
   REVIEW below.
+- GROUNDING_REVIEW: an agent session touched this entity's code and nobody
+  outside it has read the prose since. Read the linked code and the prose; if the
+  prose is now false, rewrite just that prose; if it holds, run
+  \`mex context confirm <id>\`. Either one clears the review.
 - MOVED: sync may have already durably rebound a high-confidence move. Verify the
   grounds_to id and every inline mex:// anchor for that symbol use the new id,
   and retain its previous bodyHash. Identity repair does not establish that the
