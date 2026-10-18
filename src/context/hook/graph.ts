@@ -1,4 +1,5 @@
 /** Precision-first structural hints. No graph maintenance, source reads or heavy imports. */
+import { WINDOWING } from "../frozen.js";
 import type { GraphNodeRow } from "../graph-reader.js";
 import type { EventContext, EventOutcome, GrepHit } from "./events.js";
 import { isTestPath } from "./events.js";
@@ -50,8 +51,24 @@ export function composeGraphPrompt(ctx: EventContext, prompt: string): EventOutc
     const matches = ctx.reader!.exactName(name, 4);
     return matches.length <= 3 ? matches : [];
   });
-  return render(ctx, nodes.filter(n => n.kind === "function" || n.kind === "method"), "definition");
+  const long = wordCount(prompt) > WINDOWING.singleMaxWords;
+  return render(ctx, nodes.filter((n) => promptDefinition(n, long)), "definition");
 }
+
+/** A class shorter than this is a marker (an exception subclass, a metaclass shell): its location adds nothing to its name. */
+export const GRAPH_MIN_CLASS_LINES = 5;
+
+/**
+ * Which verified definitions a prompt note may name: callables always; a class
+ * only in a prompt longer than one scoring window (a task or bug report naming
+ * the classes involved), and only when it spans at least `GRAPH_MIN_CLASS_LINES`.
+ */
+export function promptDefinition(node: GraphNodeRow, longPrompt: boolean): boolean {
+  if (node.kind === "function" || node.kind === "method") return true;
+  return longPrompt && node.kind === "class" && node.end - node.start + 1 >= GRAPH_MIN_CLASS_LINES;
+}
+
+const wordCount = (text: string): number => (text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
 
 export function composeGraphSearch(ctx: EventContext, hits: readonly GrepHit[], pattern = "", limits = { hits: GRAPH_MAX_HITS, files: GRAPH_MAX_FILES }): EventOutcome | null {
   if (!graphEnabled() || !ctx.reader || hits.length === 0 || hits.length > limits.hits || new Set(hits.map((h) => h.file)).size > limits.files) return null;

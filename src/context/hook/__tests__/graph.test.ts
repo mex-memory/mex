@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openGraphReader } from "../../graph-reader.js";
 import { buildGraph, cleanupProjects, createProject } from "../../__tests__/fixture.js";
-import { afterKnowledge, composeGraphEdit, composeGraphPrompt, composeGraphSearch, GRAPH_CAP } from "../graph.js";
+import { afterKnowledge, composeGraphEdit, composeGraphPrompt, composeGraphSearch, GRAPH_CAP, GRAPH_MIN_CLASS_LINES, promptDefinition } from "../graph.js";
 import { bashSearchPattern } from "../run.js";
 import type { EventContext } from "../events.js";
 
@@ -69,6 +69,38 @@ describe("graph tier", () => {
       expect(composeGraphSearch(ctx, Array(61).fill(hits[0]), "calculateInvoice")).toBeNull();
       expect(composeGraphSearch(ctx, Array.from({ length: 6 }, (_, i) => ({ file: `src/${i}.ts`, line: 1 })), "calculateInvoice")).toBeNull();
     } finally { reader.close(); }
+  });
+
+  it("names a class only for a prompt longer than one window, and never a marker class", async () => {
+    const fx = createProject();
+    fx.writeSource("src/store.ts", [
+      "export class InvoiceStore {",
+      "  private items: number[] = [];",
+      "  add(n: number) {",
+      "    this.items.push(n);",
+      "  }",
+      "}",
+      "export class InvoiceError extends Error {",
+      "  code = 1;",
+      "}",
+      "",
+    ].join("\n"));
+    await buildGraph(fx);
+    const { reader } = openGraphReader(fx.context.scaffoldRoot);
+    const ctx = { ...fx.context, reader, shown: new Set<string>(), head: null, index: { entities: [] } } as unknown as EventContext;
+    try {
+      expect(composeGraphPrompt(ctx, "Why does InvoiceStore throw InvoiceError?")).toBeNull();
+      const filler = Array.from({ length: 40 }, (_, i) => `word${i}`).join(" ");
+      const note = composeGraphPrompt(ctx, `Bug report: InvoiceStore throws InvoiceError when an item is added twice. ${filler}`)!;
+      expect(note.text).toContain("#InvoiceStore src/store.ts:1-6");
+      expect(note.text).not.toContain("InvoiceError");
+      const cls = { id: "c", name: "C", file: "a.ts", start: 10, end: 14, bodyHash: "", kind: "class" };
+      expect(promptDefinition(cls, true)).toBe(true);
+      expect(promptDefinition(cls, false)).toBe(false);
+      expect(promptDefinition({ ...cls, end: 10 + GRAPH_MIN_CLASS_LINES - 2 }, true)).toBe(false);
+      expect(promptDefinition({ ...cls, kind: "method" }, false)).toBe(true);
+      expect(promptDefinition({ ...cls, kind: "interface" }, true)).toBe(false);
+    } finally { reader?.close(); }
   });
 
   it("edit impact is bounded, gives other production callers, and knowledge retains priority", async () => {
