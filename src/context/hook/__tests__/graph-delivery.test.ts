@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupProjects } from "../../__tests__/fixture.js";
 import { loadInjectedChars, loadShown } from "../../session.js";
 import { indexPathOf } from "../../index-file.js";
-import { HOOK_LOG_NAME } from "../run.js";
+import { commandFiles, HOOK_LOG_NAME, mayWriteFiles } from "../run.js";
 import { createHookProject, promptPayload, toolPayload } from "./fixture.js";
 
 afterEach(() => { cleanupProjects(); vi.unstubAllEnvs(); });
@@ -94,5 +94,50 @@ describe("graph delivery", () => {
     expect(await p.run(toolPayload("crlf-only", "Edit", { file_path: path }))).toBe("");
     const logs = readFileSync(join(p.fx.context.localDir, HOOK_LOG_NAME), "utf8").trim().split("\n").map(s => JSON.parse(s));
     expect(logs.at(-1)).toMatchObject({ event: "edit", chars: 0, note: "no-change" });
+  });
+});
+
+describe("shell edits", () => {
+  it("tells writing commands from read-only ones", () => {
+    for (const command of ["python - <<'E'\nopen('a.py','w').write('x')\nE", "sed -i 's/a/b/' src/a.ts", "cat > a.txt <<EOF", "node fix.mjs", "npx prettier --write src", "git checkout -- src/a.ts", "find . -name '*.pyc' -delete", "echo x > a.txt"]) {
+      expect(mayWriteFiles(command), command).toBe(true);
+    }
+    for (const command of ["rg -n foo src", "cd src && grep -rn foo . | head -20", "sed -n 1,40p a.py", "git diff --stat", "git log --oneline -5 2>/dev/null", "cat a.py 2>&1 | head", "ls -la; wc -l a.py", ""]) {
+      expect(mayWriteFiles(command), command).toBe(false);
+    }
+  });
+
+  it("finds the files a command names, from arguments, inline scripts and cd targets", async () => {
+    const p = await createHookProject();
+    expect(commandFiles(p.fx.root, "sed -i 's/a/b/' src/billing.ts missing.py")).toEqual(["src/billing.ts"]);
+    expect(commandFiles(p.fx.root, "cd src; python - <<'E'\np='report.ts'\nopen(p).read()\nE")).toEqual(["src/report.ts"]);
+    expect(commandFiles(p.fx.root, `node -e "x" ${join(p.fx.root, "src/billing.ts")} .mex/config.json`)).toEqual(["src/billing.ts"]);
+  });
+
+  it("gives a shell edit the impact note, once per symbol, and never for changes made before the session", async () => {
+    const p = await createHookProject();
+    const path = indexPathOf(p.fx.context.localDir);
+    const index = JSON.parse(readFileSync(path, "utf8")); index.entities = [];
+    writeFileSync(path, JSON.stringify(index));
+    const billing = join(p.fx.root, "src/billing.ts");
+    // A change already in the working tree when the session starts is not the agent's.
+    p.fx.writeSource("src/billing.ts", readFileSync(billing, "utf8").replace("return items.length;", "return items.length * 1;"));
+    await p.run(promptPayload("shell", "Fix the order total"));
+    const bash = (command: string) => toolPayload("shell", "Bash", { command }, { stdout: "" });
+    // The agent's script edits applyDiscount (no production caller): the earlier hunk in the same file is not reported.
+    p.fx.writeSource("src/billing.ts", readFileSync(billing, "utf8").replace("return total - 1;", "return total - 3;"));
+    expect(await p.run(bash("cd src && python - <<'E'\np = 'billing.ts'\nE"))).toBe("");
+    // A read-only command starts no git process and reports nothing, even with a new change waiting.
+    p.fx.writeSource("src/billing.ts", readFileSync(billing, "utf8").replace("return items.length * 1;", "return items.length + 1;"));
+    expect(await p.run(bash("cat src/billing.ts"))).toBe("");
+    const note = p.text(await p.run(bash("cd src && python - <<'E'\np = 'billing.ts'\nE")));
+    expect(note).toContain("MEX graph (impact");
+    expect(note).toContain("#calculateOrderTotal src/billing.ts:1-3 · check callers: #buildReport");
+    // The same symbol edited again: no second note.
+    p.fx.writeSource("src/billing.ts", readFileSync(billing, "utf8").replace("return items.length + 1;", "return items.length + 2;"));
+    expect(await p.run(bash("sed -i s/2/3/ src/billing.ts"))).toBe("");
+    // A writing command that names no file is not diffed (a whole-tree diff costs too much per call).
+    p.fx.writeSource("src/report.ts", readFileSync(join(p.fx.root, "src/report.ts"), "utf8").replace("return calculateOrderTotal(items);", "return calculateOrderTotal(items) + 0;"));
+    expect(await p.run(bash("python fix.py"))).toBe("");
   });
 });

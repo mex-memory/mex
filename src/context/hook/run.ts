@@ -9,19 +9,21 @@
  * line in `.mex/local/context-log.jsonl`.
  */
 
-import { join } from "node:path";
+import { statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { loadConfiguredContextConfig } from "../../config.js";
 import { loadFlaggedIds } from "../flags.js";
 import { loadContextIndex } from "../index-file.js";
+import type { ContextIndex } from "../types.js";
 import { openGraphReader } from "../graph-reader.js";
 import { PACKET_CHAR_LIMIT } from "../packet.js";
 import { appendBoundedLine } from "../local-state.js";
 import { resolveContextRoot, type ContextRoot } from "../root.js";
 import { isValidSessionId, loadInjectedChars, loadShown, loadStats, recordShown, recordStats } from "../session.js";
-import { afterKnowledge, composeGraphEdit, composeGraphSearch, graphEnabled } from "./graph.js";
+import { afterKnowledge, composeGraphEdit, composeGraphSearch, graphEnabled, GRAPH_MAX_FILES, joinGraph } from "./graph.js";
 import { decideBudget } from "./budget.js";
-import { diffAgainstHead, diffAgainstHeadAsync, fileSignature, readHead } from "./diff.js";
+import { diffAgainstHead, diffAgainstHeadAsync, fileSignature, hunksKey, hunksValue, newHunks, readHead, type FileDiff } from "./diff.js";
 import {
   composeEdit,
   composeGrep,
@@ -107,7 +109,87 @@ export function renderHookOutput(event: Exclude<HookEvent, "stop">, additionalCo
   return JSON.stringify({ hookSpecificOutput: { hookEventName: HOST_EVENT_NAME[event], additionalContext } });
 }
 
-const SEARCH_COMMAND = /(^|[\s|;&(])(rg|grep|egrep|fgrep|ag|ack)(\s|$)|\bgit\s+grep\b/;
+/** A Bash diff of more files than this is a checkout-wide change (a formatter, a branch switch): no impact note. */
+export const BASH_DIFF_MAX_FILES = 200;
+
+/** Commands that only read: their first word, when no segment redirects output into a file. */
+const READ_ONLY = new Set([
+  "cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "ag", "ack", "ls", "dir", "tree", "wc", "echo", "printf",
+  "pwd", "cd", "pushd", "popd", "which", "where", "type", "file", "stat", "du", "df", "sort", "uniq", "cut", "tr", "nl", "diff", "cmp",
+  "true", "false", "date", "env", "test", "[", "basename", "dirname", "realpath", "readlink", "column", "jq", "od", "xxd", "hexdump",
+]);
+const GIT_READ_ONLY = new Set(["log", "show", "status", "diff", "grep", "ls-files", "rev-parse", "blame", "branch", "describe", "shortlog", "cat-file", "ls-tree"]);
+
+/**
+ * Whether a shell command may have written files. Errs towards yes: only commands made of
+ * read-only programs (with no `>` into a file, no `sed -i`, no `find -exec/-delete`) say no.
+ * A yes costs one `git diff`; a wrong no misses an impact note.
+ */
+export function mayWriteFiles(command: string): boolean {
+  if (command.trim() === "") return false;
+  for (const raw of command.split(/&&|\|\||[;|\n]/)) {
+    const segment = raw.replace(/\d?>&\d|\d?>\s*\/dev\/null|\d?>\s*nul\b/gi, "").trim();
+    if (segment === "") continue;
+    if (/>/.test(segment)) return true;
+    const words = segment.split(/\s+/).filter((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+    const program = (words[0] ?? "").replace(/^.*[\\/]/, "").replace(/\.exe$/i, "");
+    if (program === "git") {
+      if (!GIT_READ_ONLY.has(words.find((word, i) => i > 0 && !word.startsWith("-")) ?? "")) return true;
+      continue;
+    }
+    if (program === "sed") {
+      if (words.some((word) => /^-[A-Za-z]*i/.test(word) || word.startsWith("--in-place"))) return true;
+      continue;
+    }
+    if (program === "find") {
+      if (words.some((word) => /^-(exec|execdir|delete|ok|fprint)/.test(word))) return true;
+      continue;
+    }
+    if (program === "awk") continue;
+    if (!READ_ONLY.has(program)) return true;
+  }
+  return false;
+}
+
+/** At most this many files named by one command are diffed. */
+export const BASH_NAMED_MAX_FILES = 20;
+
+/**
+ * Project files a command names: path-like words (in arguments, or in an inline script such as
+ * `p = 'django/db/backends/base/operations.py'`), read relative to the project root and to any
+ * directory the command `cd`s into. Only existing files inside the project and outside `.mex/`.
+ */
+export function commandFiles(projectRoot: string, command: string): string[] {
+  const dirs = [projectRoot];
+  for (const match of command.matchAll(/(?:^|[\s;&|(])cd\s+("[^"]+"|'[^']+'|[^\s;&|)]+)/g)) {
+    const dir = match[1]!.replace(/^["']|["']$/g, "");
+    dirs.push(isAbsolute(dir) || /^\/[a-z]\//i.test(dir) ? dir.replace(/^\/([a-z])\//i, "$1:/") : join(projectRoot, dir));
+  }
+  const out = new Set<string>();
+  for (const match of command.slice(0, 64 * 1024).matchAll(/[\w.@~:\\/-]*[\w-]\.[A-Za-z][A-Za-z0-9]{0,5}\b/g)) {
+    const word = match[0].replace(/^\/([a-z])\//i, "$1:/");
+    for (const dir of dirs) {
+      const file = projectRelative(projectRoot, isAbsolute(word) ? word : join(dir, word));
+      if (file === null || out.has(file)) continue;
+      try {
+        if (statSync(join(projectRoot, file)).isFile()) { out.add(file); break; }
+      } catch {
+        // Not a file here; try the next directory.
+      }
+    }
+    if (out.size >= BASH_NAMED_MAX_FILES) break;
+  }
+  return [...out];
+}
+
+/** The entries of `diffs` for `files`. */
+function only(diffs: ReadonlyMap<string, FileDiff>, files: readonly string[]): Map<string, FileDiff> {
+  const fold = (file: string): string => (process.platform === "win32" ? file.toLowerCase() : file);
+  const wanted = new Set(files.map(fold));
+  return new Map([...diffs].filter(([file]) => wanted.has(fold(file))));
+}
+
+const SEARCH_COMMAND =/(^|[\s|;&(])(rg|grep|egrep|fgrep|ag|ack)(\s|$)|\bgit\s+grep\b/;
 
 /** Extract only a simple shell search's pattern; mixed command output is ambiguous. */
 export function bashSearchPattern(command: string): string {
@@ -294,6 +376,8 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
     }
     edited = { file, diff: diffAgainstHeadAsync(root.projectRoot, [file]) };
   }
+  // A Bash call's diff, when it needs one, also starts now.
+  const bash = event === "bash" ? planBash(root, payload, loaded.index, sessionId) : null;
 
   const { reader } = openGraphReader(root.scaffoldRoot);
   try {
@@ -322,7 +406,9 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
         const outcome = afterKnowledge(composeEdit(ctx, { diffs }), composeGraphEdit(ctx, diffs)) ?? none("nothing-touched");
         // An empty outcome still carries the change's dedup key; it was silent, so say why in the log.
         const note = outcome.text === "" ? { note: diffs.size === 0 ? "no-change" : "nothing-touched" } : {};
-        return { ...outcome, ...note, stats: { [file]: fileSignature(root.projectRoot, file) } };
+        // The hunks this event reported, so a later Bash call does not report them as its own.
+        const hunks = Object.fromEntries([...diffs].map(([name, diff]) => [hunksKey(name), hunksValue(diff)]));
+        return { ...outcome, ...note, stats: { [file]: fileSignature(root.projectRoot, file), ...hunks } };
       }
       case "grep": {
         const hits = grepToolHits(payload, root.projectRoot);
@@ -330,7 +416,7 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
         return outcome ?? none("no-fact-hits");
       }
       case "bash":
-        return handleBash(root, payload, ctx, sessionId);
+        return await handleBash(root, payload, ctx, bash!);
       default:
         return none("unhandled");
     }
@@ -349,21 +435,56 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
  * started. The prompt event seeds the signatures, so changes already in the
  * working tree before the session began are not mistaken for the agent's.
  */
-function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, sessionId: string | null): Handled {
+interface BashPlan {
+  command: string;
+  current: Record<string, string>;
+  recorded: Record<string, string>;
+  moved: string[];
+  /** The diff of the named and moved files, started before the graph opens; null when the command names none. */
+  diff: Promise<Map<string, FileDiff> | null> | null;
+}
+
+/**
+ * What a Bash call must check. A command that may write files (a script, an in-place sed) gets
+ * one diff of the files it names plus the linked files that moved; the new hunks are what the
+ * shell edited, and they get the edit event's impact note. Naming is the cheap evidence: a diff of
+ * the whole tree costs about 200 ms on a 7,000-file checkout, a scoped one about 50 ms, so a command
+ * that names no file gets no note.
+ */
+function planBash(root: ContextRoot, payload: HookPayload, index: ContextIndex, sessionId: string | null): BashPlan {
+  const command = text(object(payload.tool_input)["command"]) ?? "";
+  const linkedFiles = [...new Set(index.entities.filter((e) => e.type === "fact").flatMap((e) => e.code))];
+  const current: Record<string, string> = Object.fromEntries(linkedFiles.map((file) => [file, fileSignature(root.projectRoot, file)]));
+  const recorded = sessionId === null ? {} : loadStats(root.localDir, sessionId);
+  const moved = linkedFiles.filter((file) => recorded[file] !== current[file]);
+  const named = sessionId !== null && graphEnabled() && mayWriteFiles(command) ? commandFiles(root.projectRoot, command) : [];
+  return { command, current, recorded, moved, diff: named.length > 0 ? diffAgainstHeadAsync(root.projectRoot, [...new Set([...named, ...moved])]) : null };
+}
+
+async function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, plan: BashPlan): Promise<Handled> {
+  const { command, current, recorded, moved } = plan;
   const parts: EventOutcome[] = [];
   const hits = bashGrepHits(payload, root.projectRoot);
   const grep = composeGrep(ctx, hits);
-  const graph = composeGraphSearch(ctx, hits, bashSearchPattern(text(object(payload.tool_input)["command"]) ?? ""));
   if (grep !== null) parts.push(grep);
 
-  const linkedFiles = [...new Set(ctx.index.entities.filter((e) => e.type === "fact").flatMap((e) => e.code))];
-  const current = Object.fromEntries(linkedFiles.map((file) => [file, fileSignature(root.projectRoot, file)]));
-  const recorded = sessionId === null ? {} : loadStats(root.localDir, sessionId);
-  const moved = linkedFiles.filter((file) => recorded[file] !== current[file]);
+  const all = plan.diff === null ? null : await plan.diff;
+  let impact: EventOutcome | null = null;
+  if (all !== null && ctx.reader !== null && all.size <= BASH_DIFF_MAX_FILES) {
+    const fresh = new Map<string, FileDiff>();
+    for (const [file, diff] of all) {
+      const added = file.startsWith(".mex/") ? null : newHunks(diff, recorded[hunksKey(file)]);
+      if (added !== null) fresh.set(file, added);
+      current[hunksKey(file)] = hunksValue(diff);
+    }
+    if (fresh.size > 0 && fresh.size <= GRAPH_MAX_FILES) impact = composeGraphEdit(ctx, fresh);
+  }
+  const shown = impact === null ? ctx.shown : new Set([...ctx.shown, ...impact.remember]);
+  const search = composeGraphSearch({ ...ctx, shown }, hits, bashSearchPattern(command));
 
   let note = grep === null ? "no-change" : undefined;
   if (moved.length > 0) {
-    const diffs = diffAgainstHead(root.projectRoot, moved);
+    const diffs = all === null ? diffAgainstHead(root.projectRoot, moved) : only(all, moved);
     if (diffs !== null) {
       const edit = composeEdit(ctx, { diffs }, PACKET_CHAR_LIMIT - (grep === null ? 0 : grep.text.length + 2));
       if (edit !== null) parts.push(edit);
@@ -381,5 +502,5 @@ function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, 
     stats: current,
   };
   if (note !== undefined && outcome.text === "") outcome.note = note;
-  return { ...(afterKnowledge(outcome, graph) ?? outcome), stats: current };
+  return { ...(afterKnowledge(outcome, joinGraph(impact, search)) ?? outcome), stats: current };
 }

@@ -110,6 +110,13 @@ export function composeGraphEdit(ctx: EventContext, diffs: ReadonlyMap<string, F
   return render(ctx, nodes, "impact");
 }
 
+/** Two graph notes as one, so the budget can still drop the graph tail whole. */
+export function joinGraph(first: EventOutcome | null, second: EventOutcome | null): EventOutcome | null {
+  if (!first || !second) return first ?? second;
+  const text = `${first.text}\n\n${second.text}`;
+  return { text, ids: [], remember: [...first.remember, ...second.remember], graphNodes: [...(first.graphNodes ?? []), ...(second.graphNodes ?? [])], graphChars: text.length };
+}
+
 /** Knowledge wins the event cap. Graph lines are atomic, including their dedup keys. */
 export function afterKnowledge(knowledge: EventOutcome | null, graph: EventOutcome | null, cap = 4000): EventOutcome | null {
   if (!graph || (knowledge?.text.length ?? 0) + graph.text.length + (knowledge?.text ? 2 : 0) > cap) return knowledge;

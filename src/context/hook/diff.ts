@@ -63,14 +63,17 @@ export interface FileDiff {
   ranges: Array<[number, number]>;
   /** Hash of the hunks, so an unchanged change is recognisable on the next call. */
   signature: string;
+  /** Per range, a hash of its removed and added lines only (no line numbers), so a hunk is recognisable after lines above it moved. */
+  hunkIds?: string[];
 }
 
 const posix = (path: string): string => path.replace(/\\/g, "/");
 
 /** Parse `git diff -U0` output into per-file base-side ranges. */
 export function parseUnifiedZero(diff: string): Map<string, FileDiff> {
-  const files = new Map<string, { ranges: Array<[number, number]>; hunks: string[] }>();
-  let current: { ranges: Array<[number, number]>; hunks: string[] } | null = null;
+  type Parsed = { ranges: Array<[number, number]>; hunks: string[]; bodies: string[][] };
+  const files = new Map<string, Parsed>();
+  let current: Parsed | null = null;
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
       current = null;
@@ -81,7 +84,7 @@ export function parseUnifiedZero(diff: string): Map<string, FileDiff> {
     if (minus) {
       if (minus[1] !== undefined) {
         const name = posix(minus[1]);
-        current = files.get(name) ?? { ranges: [], hunks: [] };
+        current = files.get(name) ?? { ranges: [], hunks: [], bodies: [] };
         files.set(name, current);
       } else {
         current = null;
@@ -92,7 +95,7 @@ export function parseUnifiedZero(diff: string): Map<string, FileDiff> {
     if (plus) {
       const name = posix(plus[1]!);
       if (current === null) {
-        current = files.get(name) ?? { ranges: [], hunks: [] };
+        current = files.get(name) ?? { ranges: [], hunks: [], bodies: [] };
         files.set(name, current);
       }
       continue;
@@ -106,14 +109,19 @@ export function parseUnifiedZero(diff: string): Map<string, FileDiff> {
       // lines, not when it merely follows its last line or precedes its first.
       current.ranges.push(count === 0 ? [start + 0.5, start + 0.5] : [start, start + count - 1]);
       current.hunks.push(line);
+      current.bodies.push([]);
       continue;
     }
-    if (current !== null && (line.startsWith("+") || line.startsWith("-"))) current.hunks.push(line);
+    if (current !== null && (line.startsWith("+") || line.startsWith("-"))) {
+      current.hunks.push(line);
+      current.bodies.at(-1)?.push(line);
+    }
   }
   const out = new Map<string, FileDiff>();
   for (const [file, value] of files) {
     if (value.ranges.length === 0) continue;
-    out.set(file, { ranges: value.ranges, signature: createHash("sha1").update(value.hunks.join("\n")).digest("hex").slice(0, 12) });
+    const hash = (lines: readonly string[]): string => createHash("sha1").update(lines.join("\n")).digest("hex").slice(0, 12);
+    out.set(file, { ranges: value.ranges, signature: hash(value.hunks), hunkIds: value.bodies.map((body) => hash(body).slice(0, 8)) });
   }
   return out;
 }
@@ -145,6 +153,20 @@ export async function diffAgainstHeadAsync(cwd: string, files?: readonly string[
   if (args === null) return new Map();
   const text = await runGitAsync(cwd, args);
   return text === null ? null : parseUnifiedZero(text);
+}
+
+/** Session stats key for the last seen hunks of a file, so a Bash call reports only what it changed. */
+export const hunksKey = (file: string): string => `hunks:${file}`;
+
+/** The value recorded under {@link hunksKey}: the file's hunk ids. */
+export const hunksValue = (diff: FileDiff): string => (diff.hunkIds ?? [diff.signature]).join(",");
+
+/** Only the hunks of `diff` that `recorded` (a {@link hunksValue}) does not hold, or null when none is new. */
+export function newHunks(diff: FileDiff, recorded: string | undefined): FileDiff | null {
+  const seen = new Set((recorded ?? "").split(","));
+  const keep = diff.ranges.map((_, i) => i).filter((i) => !seen.has(diff.hunkIds?.[i] ?? diff.signature));
+  if (keep.length === 0) return null;
+  return { ranges: keep.map((i) => diff.ranges[i]!), signature: diff.signature, hunkIds: keep.map((i) => diff.hunkIds?.[i] ?? diff.signature) };
 }
 
 /** A cheap change signature for a source file: size and modification time, or "gone". */
