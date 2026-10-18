@@ -168,13 +168,13 @@ export function generateReport({ suite, rows, grades = null, salt, baselines = {
   const hookRows = valid.filter((row) => row.hooks);
   if (hookRows.length) {
     lines.push("", "## Hooks (per session)", "", "Events counted per kind with how many injected something; chars are what the hooks sent to the agent; hook time is in-session only (the settle worker is separate).", "",
-      "| Run | Prompt (inj) | Read (inj) | Edit (inj) | Grep (inj) | Bash (inj) | Hook ms | Injected chars | Budget hit | Stop blocks | Block ids | Settle passes | Refresh mode | Regrounded | Failures | Settle wait (s) |",
-      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+      "| Run | Prompt (inj) | Read (inj) | Edit (inj) | Grep (inj) | Bash (inj) | Hook ms | Injected chars | Budget hit | Stop blocks | Block ids | Flagged at stop | Settle passes | Refresh mode | Regrounded | Failures | Settle wait (s) |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     const cell = (hooks, kind) => `${hooks.perEvent[kind].count} (${hooks.perEvent[kind].injected})`;
     for (const row of hookRows) {
       const hooks = row.hooks;
       const modes = [...new Set(hooks.settle.passes.map((pass) => pass.refresh?.mode).filter(Boolean))].join("/") || "–";
-      lines.push(`| ${row.runId} | ${["prompt", "read", "edit", "grep", "bash"].map((kind) => cell(hooks, kind)).join(" | ")} | ${fmt(hooks.hookMs)} | ${fmt(hooks.injectedChars)} | ${hooks.budgetHit ? "yes" : "no"} | ${hooks.stopBlocks.count}${hooks.stopBlocks.undelivered ? ` (${hooks.stopBlocks.undelivered} undelivered)` : ""} | ${hooks.stopBlocks.ids.join(", ") || "–"} | ${hooks.settle.count} | ${modes} | ${hooks.settle.regrounded} | ${hooks.failures.length} | ${fmt((row.settleWait?.waitMs ?? 0) / 1000, 1)} |`);
+      lines.push(`| ${row.runId} | ${["prompt", "read", "edit", "grep", "bash"].map((kind) => cell(hooks, kind)).join(" | ")} | ${fmt(hooks.hookMs)} | ${fmt(hooks.injectedChars)} | ${hooks.budgetHit ? "yes" : "no"} | ${hooks.stopBlocks.count}${hooks.stopBlocks.undelivered ? ` (${hooks.stopBlocks.undelivered} undelivered)` : ""} | ${hooks.stopBlocks.ids.join(", ") || "–"} | ${(hooks.stopFlagged ?? []).length} | ${hooks.settle.count} | ${modes} | ${hooks.settle.regrounded} | ${hooks.failures.length} | ${fmt((row.settleWait?.waitMs ?? 0) / 1000, 1)} |`);
     }
     lines.push("", "Per arm (valid rows, mean per session):", "", "| Arm | Rows | Hook events | Hook ms | Injected chars | Sessions with a Stop block | Sessions with failures |", "|---|---|---|---|---|---|---|");
     for (const arm of treatments) {

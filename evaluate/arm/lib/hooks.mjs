@@ -146,13 +146,17 @@ export function summarizeContextLog(path) {
   for (const bucket of Object.values(perEvent)) bucket.ids = uniq(bucket.ids);
   const stopEntries = entries.filter((entry) => entry.event === "stop" || entry.event === "stop-block");
   // A block the agent answered is followed by another Stop. One that is the session's last Stop never
-  // reached the agent: a headless session ends when the agent gives its structured answer.
-  const undelivered = stopEntries.length > 0 && stopEntries.at(-1).event === "stop-block" ? 1 : 0;
+  // reached the agent: a headless session ends when the agent gives its structured answer. A Stop that
+  // only records flagged facts (`blocked: false`, the default since the review became opt-in) blocks nothing.
+  const last = stopEntries.at(-1);
+  const undelivered = last !== undefined && last.event === "stop-block" && last.blocked !== false ? 1 : 0;
   return {
     hookEvents: events.length, events, perEvent, hookMs, injectedChars, budgetHit, promptNotes,
     stopBlocks: { count: stopBlocks.length, undelivered, items: stopBlocks, ids: uniq(stopBlocks.flatMap((block) => block.listed)) },
     stopEligible: uniq(stopEntries.flatMap((entry) => (Array.isArray(entry.eligible) ? entry.eligible : []))),
     stopFlagged: uniq(stopEntries.flatMap((entry) => (Array.isArray(entry.flagged) ? entry.flagged : []))),
+    // Touched now and vouched for by nobody: what an in-session review would have listed.
+    stopUnvouched: uniq(stopEntries.flatMap((entry) => (Array.isArray(entry.unvouched) ? entry.unvouched : entry.event === "stop-block" && Array.isArray(entry.flagged) ? entry.flagged : []))),
     settle: { count: settles.length, passes: settles, regrounded: settles.reduce((sum, pass) => sum + (pass.reground?.ok ?? 0), 0), regroundFailed: settles.reduce((sum, pass) => sum + (pass.reground?.failed ?? 0), 0) },
     failures, errors, malformedLines: malformed,
   };

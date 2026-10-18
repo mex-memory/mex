@@ -268,6 +268,6 @@ test("the report keeps token kinds apart, adds cost, and shows hook metrics per 
   assert.match(report, /## Paired deltas \(mex-r2w − files\)/);
   assert.match(report, /## Paired deltas \(mex-r3 − files\)/);
   assert.match(report, /## Hooks \(per session\)/);
-  assert.match(report, /\| 01-t-r01-mex-r2w \| 1 \(1\) \| 1 \(1\) \| 1 \(1\) \| 1 \(1\) \| 1 \(1\) \| 400 \| 2100 \| no \| 1 \| mx_C \| 1 \| incremental \| 1 \| 0 \| 12\.0 \|/);
+  assert.match(report, /\| 01-t-r01-mex-r2w \| 1 \(1\) \| 1 \(1\) \| 1 \(1\) \| 1 \(1\) \| 1 \(1\) \| 400 \| 2100 \| no \| 1 \| mx_C \| 0 \| 1 \| incremental \| 1 \| 0 \| 12\.0 \|/);
   assert.match(report, /0\.300/);
 });

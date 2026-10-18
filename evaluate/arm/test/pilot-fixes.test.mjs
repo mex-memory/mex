@@ -88,3 +88,19 @@ test("a Stop block that is the session's last Stop is counted as undelivered, an
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a non-blocking Stop is never undelivered, and its flagged facts are still counted", () => {
+  const root = tmp();
+  try {
+    const path = join(root, "context-log.jsonl");
+    const stop = { event: "stop", ms: 160, touched: 2, eligible: [], flagged: ["mx_A", "mx_B"], settle: "started", blocked: false, unvouched: ["mx_A", "mx_B"] };
+    writeFileSync(path, JSON.stringify(stop));
+    const summary = summarizeContextLog(path);
+    assert.equal(summary.stopBlocks.count, 0);
+    assert.equal(summary.stopBlocks.undelivered, 0);
+    assert.deepEqual(summary.stopFlagged, ["mx_A", "mx_B"]);
+    assert.deepEqual(summary.stopUnvouched, ["mx_A", "mx_B"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
