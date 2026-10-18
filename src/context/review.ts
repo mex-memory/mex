@@ -151,3 +151,54 @@ export function recordReview(localDir: string, review: Review, now: Date = new D
     }
   });
 }
+
+/** What a sync run starts from: when it started and the prose of every entity awaiting review. */
+export interface SessionReviewSnapshot {
+  since: string;
+  prose: Record<string, string>;
+}
+
+export function sessionReviewSnapshot(localDir: string, index: ContextIndex, now: Date = new Date()): SessionReviewSnapshot {
+  const flags = loadFlags(localDir);
+  const byId = new Map(index.entities.map((entity) => [entity.id, entity]));
+  const prose: Record<string, string> = {};
+  for (const id of new Set([...Object.keys(flags.entities), ...Object.keys(flags.review)])) {
+    const entity = byId.get(id);
+    if (entity !== undefined) prose[id] = proseHash(entity);
+  }
+  return { since: now.toISOString(), prose };
+}
+
+/**
+ * Clear what has had its review. A re-recorded entity's mark goes when its
+ * prose differs from the prose it was re-recorded with, or the entity is gone.
+ * With a snapshot (a sync run), an entity also counts as reviewed when its
+ * prose changed since the run started or it was confirmed after the start; a
+ * flagged entity then leaves the flags too. An unchanged, unconfirmed entity
+ * stays. A confirmation clears a mark itself (`mex context confirm`).
+ * Returns the ids cleared.
+ */
+export function clearSessionReviews(localDir: string, index: ContextIndex, snapshot?: SessionReviewSnapshot): string[] {
+  const flags = loadFlags(localDir);
+  if (Object.keys(flags.review).length === 0 && Object.keys(flags.entities).length === 0) return [];
+  const byId = new Map(index.entities.map((entity) => [entity.id, entity]));
+  const revisedSinceStart = (id: string): boolean => {
+    const entity = byId.get(id);
+    return snapshot !== undefined && entity !== undefined && snapshot.prose[id] !== undefined && proseHash(entity) !== snapshot.prose[id];
+  };
+  const marks = Object.entries(flags.review).filter(([id, mark]) => {
+    const entity = byId.get(id);
+    return entity === undefined || proseHash(entity) !== mark.prose || revisedSinceStart(id);
+  }).map(([id]) => id);
+  const entities = snapshot === undefined ? [] : Object.entries(flags.entities).filter(([id, entry]) =>
+    revisedSinceStart(id) || (entry.basis === "confirmed" && entry.updatedAt >= snapshot.since)).map(([id]) => id);
+  if (marks.length === 0 && entities.length === 0) return [];
+  mutateFlags(localDir, (stored) => {
+    for (const id of marks) delete stored.review[id];
+    for (const id of entities) {
+      delete stored.entities[id];
+      delete stored.review[id];
+    }
+  });
+  return [...new Set([...marks, ...entities])];
+}

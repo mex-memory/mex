@@ -209,6 +209,10 @@ export type IssueCode =
   | "GROUNDING_NEARBY_DRIFT"
   | "GROUNDING_NO_BASELINE"
   | "GROUNDING_MOVED"
+  // An entity an agent session touched that nobody outside the session has
+  // reviewed: still flagged, or re-recorded on the session's word (warning).
+  // From `.mex/local/context-flags.json`; see src/drift/checkers/session-review.ts.
+  | "GROUNDING_REVIEW"
   // ── Wiki adoption (emitted by src/drift/checkers/wiki-adoption.ts; #227) ──
   // A knowledge file migration would adopt but has not, such as a pattern
   // added after setup (warning).

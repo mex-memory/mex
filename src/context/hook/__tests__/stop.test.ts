@@ -443,3 +443,32 @@ describe("the prose baseline", () => {
     expect(pass).toMatchObject({ touched: 3, eligible: 1, flagged: 2 });
   });
 });
+
+describe("check keeps session-touched entities in view", () => {
+  it("reports re-recorded and flagged entities as GROUNDING_REVIEW until the prose is revised or confirmed", async () => {
+    const { checkSessionReview } = await import("../../../drift/checkers/session-review.js");
+    const { clearSessionReviews } = await import("../../review.js");
+    const { runContextConfirm } = await import("../../cli.js");
+    const project = await createHookProject();
+    await startSession(project, "s-review");
+    project.fx.writeSource("src/billing.ts", BILLING_V2);
+    // total and discount are confirmed inside the session; invoice is left alone.
+    recordConfirmation(project.fx.context.localDir, "s-review", [project.ids.total, project.ids.discount]);
+    const pass = await settleOnce(project.fx.context, { sessionId: "s-review", runCli: fakeCli().run });
+    expect(pass.reground).toMatchObject({ ok: 2, failed: 0 });
+
+    // The re-record made their links current, so drift checks fall silent: the review mark keeps them in check.
+    const review = () => checkSessionReview(project.fx.root, project.fx.context.scaffoldRoot);
+    expect(review().map((issue) => [issue.code, issue.severity, issue.entity?.id]).sort()).toEqual(
+      [project.ids.total, project.ids.discount, project.ids.invoice].map((id) => ["GROUNDING_REVIEW", "warning", id]).sort());
+    expect(review().every((issue) => issue.file === ".mex/context/billing.md")).toBe(true);
+
+    // A revised prose clears its mark (what `mex sync` does each cycle)...
+    editProse(project, TOTALS_PROSE, `${TOTALS_PROSE} Now it also counts one extra.`);
+    const { index } = await ensureContextIndex(project.fx.context, "if-stale");
+    expect(clearSessionReviews(project.fx.context.localDir, index)).toEqual([project.ids.total]);
+    // ...and so does a confirmation after the re-record.
+    await runContextConfirm({ write: () => undefined, writeError: () => undefined, setExitCode: () => undefined, cwd: project.fx.root }, [project.ids.discount], { json: true });
+    expect(review().map((issue) => issue.entity?.id)).toEqual([project.ids.invoice]);
+  });
+});

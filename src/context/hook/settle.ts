@@ -22,6 +22,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { readRefreshWork, type RefreshWorkSummary } from "../../graph/refresh-work.js";
 import { mutateFlags } from "../flags.js";
+import { proseHash } from "./base.js";
 import { openGraphReader } from "../graph-reader.js";
 import { ensureContextIndex } from "../index-store.js";
 import { removeLocalFile, writeTextAtomic, writeTextExclusive } from "../local-state.js";
@@ -284,11 +285,20 @@ export async function settleOnce(root: ContextRoot, options: SettleOptions): Pro
     }
     const at = now().toISOString();
     const digestOf = new Map(review.eligible.map((entry) => [entry.entity.id, entry.digest]));
+    const entryOf = new Map(review.eligible.map((entry) => [entry.entity.id, entry]));
     mutateFlags(root.localDir, (flags) => {
       for (const outcome of outcomes) {
         if (outcome.ok) {
           delete flags.entities[outcome.id];
           flags.reconciled[outcome.id] = digestOf.get(outcome.id) ?? at;
+          // Current links again, so `check` sees no drift; the prose still awaits a review.
+          const entry = entryOf.get(outcome.id);
+          if (entry !== undefined) {
+            flags.review[outcome.id] = {
+              title: entry.entity.title, file: entry.entity.file, line: entry.entity.line, why: entry.why,
+              basis: entry.basis ?? "confirmed", since: at, prose: proseHash(entry.entity),
+            };
+          }
         } else if (flags.entities[outcome.id] !== undefined) {
           flags.entities[outcome.id]!.error = (outcome.error ?? "refused").slice(0, 300);
         }

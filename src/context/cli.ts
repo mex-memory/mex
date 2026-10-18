@@ -364,6 +364,8 @@ async function confirmCommand(io: ContextIo, ids: readonly string[], flags: Cont
     // An entity already flagged becomes eligible at once, whichever session the Stop hook runs in.
     mutateFlags(root.localDir, (stored) => {
       for (const id of confirmed) {
+        // A confirmation after the re-record is the review the mark was waiting for.
+        delete stored.review[id];
         const entry = stored.entities[id];
         if (entry === undefined) continue;
         entry.status = "eligible";

@@ -21,6 +21,7 @@ import { checkAnchorLink } from "./checkers/anchor-link.js";
 import { checkWikiAdoption } from "./checkers/wiki-adoption.js";
 import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
+import { checkSessionReview } from "./checkers/session-review.js";
 import { toPosix } from "../paths.js";
 import {
   loadReadOnlyGroundingRuntime,
@@ -352,6 +353,10 @@ export async function runDriftCheckWithGraphStatus(
     const brokenLinkIssues = checkBrokenLinks(scaffoldFiles, projectRoot, scaffoldRoot);
     allIssues.push(...brokenLinkIssues);
     checkerIssueCounts.push(["broken-link", brokenLinkIssues.length]);
+
+    const sessionReviewIssues = checkSessionReview(projectRoot, scaffoldRoot);
+    allIssues.push(...sessionReviewIssues);
+    checkerIssueCounts.push(["session-review", sessionReviewIssues.length]);
 
     const score = computeScore(allIssues);
     const verboseLog = opts.verbose

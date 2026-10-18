@@ -11,6 +11,12 @@
  * `reconciled` remembers when an entity's links were last re-recorded, so the
  * same uncommitted change is not asked about again at every Stop.
  *
+ * `review` holds entities the settle worker re-recorded on the session's word
+ * (its prose edit or confirmation): their links are current again, so `check`
+ * no longer sees drift, yet nobody outside the session has read the prose.
+ * `mex check` reports them, and flagged ones, as `GROUNDING_REVIEW` until
+ * their prose changes (a `mex sync` rewrite) or someone confirms them.
+ *
  * Reads are bounded and tolerant (damaged file: nothing flagged); writes go
  * through `local-state.ts`, the context feature's only writer.
  */
@@ -24,6 +30,7 @@ const FLAGS_SCHEMA_VERSION = 1;
 const MAX_FLAGS_BYTES = 2 * 1024 * 1024;
 export const MAX_FLAGGED_ENTITIES = 1000;
 export const MAX_RECONCILED = 1000;
+export const MAX_REVIEW = 1000;
 
 export type FlagStatus = "flagged" | "eligible";
 export type FlagBasis = "edited" | "confirmed";
@@ -46,16 +53,30 @@ export interface FlagEntry {
   error?: string;
 }
 
+/** An entity re-recorded after a session, awaiting a review of its prose. */
+export interface ReviewMark {
+  title: string;
+  file: string;
+  line: number;
+  why: string;
+  basis: FlagBasis;
+  since: string;
+  /** Hash of the title and body when it was re-recorded; a change means someone revised it. */
+  prose: string;
+}
+
 export interface FlagsFile {
   schemaVersion: number;
   entities: Record<string, FlagEntry>;
   /** Entity id to when its links were last re-recorded by the settle worker. */
   reconciled: Record<string, string>;
+  /** Re-recorded on a session's word, not yet reviewed. */
+  review: Record<string, ReviewMark>;
 }
 
 export const flagsPathOf = (localDir: string): string => join(localDir, FLAGS_FILE_NAME);
 
-const emptyFlags = (): FlagsFile => ({ schemaVersion: FLAGS_SCHEMA_VERSION, entities: {}, reconciled: {} });
+const emptyFlags = (): FlagsFile => ({ schemaVersion: FLAGS_SCHEMA_VERSION, entities: {}, reconciled: {}, review: {} });
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -74,7 +95,11 @@ export function loadFlags(localDir: string): FlagsFile {
     if (isRecord(value["reconciled"])) {
       for (const [id, at] of Object.entries(value["reconciled"])) if (typeof at === "string") reconciled[id] = at;
     }
-    return { schemaVersion: FLAGS_SCHEMA_VERSION, entities, reconciled };
+    const review: Record<string, ReviewMark> = {};
+    if (isRecord(value["review"])) {
+      for (const [id, mark] of Object.entries(value["review"])) if (isRecord(mark) && typeof mark["prose"] === "string") review[id] = mark as unknown as ReviewMark;
+    }
+    return { schemaVersion: FLAGS_SCHEMA_VERSION, entities, reconciled, review };
   } catch {
     return emptyFlags();
   }
@@ -95,6 +120,10 @@ function bounded(flags: FlagsFile): FlagsFile {
   const reconciled = Object.entries(flags.reconciled);
   if (reconciled.length > MAX_RECONCILED) {
     flags.reconciled = Object.fromEntries(byAge(reconciled, (at) => at).slice(-MAX_RECONCILED));
+  }
+  const review = Object.entries(flags.review);
+  if (review.length > MAX_REVIEW) {
+    flags.review = Object.fromEntries(byAge(review, (mark) => mark.since).slice(-MAX_REVIEW));
   }
   return flags;
 }
