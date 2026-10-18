@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { summarizeContextLog } from "../lib/hooks.mjs";
 import { agentDiff } from "../lib/session.mjs";
 import { git } from "../lib/workspace.mjs";
 
@@ -37,3 +38,23 @@ test("the session patch shows only real changes when the agent wrote a whole fil
   }
 });
 
+test("a Stop block that is the session's last Stop is counted as undelivered, and refused regrounds say why", () => {
+  const root = tmp();
+  try {
+    const path = join(root, "context-log.jsonl");
+    const block = { event: "stop-block", ms: 150, touched: 2, eligible: [], flagged: ["mx_A", "mx_B"], blocked: true, settle: "started", chars: 200, text: "- mx_A ... - mx_B ..." };
+    const settle = { event: "settle", loop: 0, ms: 9000, touched: 2, eligible: 1, flagged: 1, refresh: { code: 0, ms: 5000 }, reground: { ids: 1, ok: 0, failed: 1, ms: 900, refused: [{ id: "mx_A", error: "variable:x is unverified" }] } };
+    // The pilot's R2w session: the agent's structured answer ended the session; the block never reached it.
+    writeFileSync(path, [block, settle].map((line) => JSON.stringify(line)).join("\n"));
+    let summary = summarizeContextLog(path);
+    assert.equal(summary.stopBlocks.undelivered, 1);
+    assert.equal(summary.settle.count, 1);
+    assert.deepEqual(summary.failures[0].refused, [{ id: "mx_A", error: "variable:x is unverified" }]);
+    // Answered: another Stop follows the block.
+    writeFileSync(path, [block, { event: "stop", ms: 400, touched: 2, eligible: ["mx_A"], flagged: [], settle: "queued" }].map((line) => JSON.stringify(line)).join("\n"));
+    summary = summarizeContextLog(path);
+    assert.equal(summary.stopBlocks.undelivered, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

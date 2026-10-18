@@ -123,7 +123,7 @@ export function summarizeContextLog(path) {
         refresh: entry.refresh ? { code: entry.refresh.code ?? null, ms: entry.refresh.ms ?? null, mode: entry.refresh.mode ?? null, reason: entry.refresh.reason ?? null, changed: entry.refresh.changed ?? null, reextracted: entry.refresh.reextracted ?? null } : null,
         reground: entry.reground ?? null, skipped: entry.skipped ?? null,
       });
-      if (entry.skipped === "refresh-failed" || (entry.reground?.failed ?? 0) > 0) failures.push({ event: "settle", loop: entry.loop ?? 0, skipped: entry.skipped ?? null, regroundFailed: entry.reground?.failed ?? 0 });
+      if (entry.skipped === "refresh-failed" || (entry.reground?.failed ?? 0) > 0) failures.push({ event: "settle", loop: entry.loop ?? 0, skipped: entry.skipped ?? null, regroundFailed: entry.reground?.failed ?? 0, refused: entry.reground?.refused ?? [] });
       continue;
     }
     if (name === "settle-error" || name === "settle-refresh-failed") { failures.push({ event: name, error: entry.error ?? entry.stderr ?? null, code: entry.code ?? null }); continue; }
@@ -145,9 +145,12 @@ export function summarizeContextLog(path) {
   }
   for (const bucket of Object.values(perEvent)) bucket.ids = uniq(bucket.ids);
   const stopEntries = entries.filter((entry) => entry.event === "stop" || entry.event === "stop-block");
+  // A block the agent answered is followed by another Stop. One that is the session's last Stop never
+  // reached the agent: a headless session ends when the agent gives its structured answer.
+  const undelivered = stopEntries.length > 0 && stopEntries.at(-1).event === "stop-block" ? 1 : 0;
   return {
     hookEvents: events.length, events, perEvent, hookMs, injectedChars, budgetHit, promptNotes,
-    stopBlocks: { count: stopBlocks.length, items: stopBlocks, ids: uniq(stopBlocks.flatMap((block) => block.listed)) },
+    stopBlocks: { count: stopBlocks.length, undelivered, items: stopBlocks, ids: uniq(stopBlocks.flatMap((block) => block.listed)) },
     stopEligible: uniq(stopEntries.flatMap((entry) => (Array.isArray(entry.eligible) ? entry.eligible : []))),
     stopFlagged: uniq(stopEntries.flatMap((entry) => (Array.isArray(entry.flagged) ? entry.flagged : []))),
     settle: { count: settles.length, passes: settles, regrounded: settles.reduce((sum, pass) => sum + (pass.reground?.ok ?? 0), 0), regroundFailed: settles.reduce((sum, pass) => sum + (pass.reground?.failed ?? 0), 0) },
