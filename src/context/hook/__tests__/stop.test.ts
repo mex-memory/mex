@@ -382,7 +382,8 @@ describe("the settle worker's failures", () => {
     recordConfirmation(project.fx.context.localDir, "s-partial", [project.ids.total, project.ids.discount]);
     const cli = fakeCli({ failing: [project.ids.discount] });
     const pass = await settleOnce(project.fx.context, { sessionId: "s-partial", runCli: cli.run });
-    expect(pass.reground).toMatchObject({ ids: 2, ok: 1, failed: 1 });
+    // The log names the refused id and why, so a failed reground can be read from the log alone.
+    expect(pass.reground).toMatchObject({ ids: 2, ok: 1, failed: 1, refused: [{ id: project.ids.discount, error: "refused: fake" }] });
     const flags = loadFlags(project.fx.context.localDir);
     expect(flags.entities[project.ids.total]).toBeUndefined();
     expect(flags.entities[project.ids.discount]).toMatchObject({ status: "eligible", error: "refused: fake" });

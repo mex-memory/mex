@@ -203,7 +203,8 @@ export interface SettlePass {
   flagged: number;
   /** `mode`, `reason`, `changed` and `reextracted` say how the graph refresh worked, when it said. */
   refresh: ({ code: number | null; ms: number } & Partial<RefreshWorkSummary>) | null;
-  reground: { ids: number; ok: number; failed: number; ms: number } | null;
+  /** `refused` names each id the reground did not re-record, with the first reason it gave. */
+  reground: { ids: number; ok: number; failed: number; ms: number; refused?: Array<{ id: string; error: string }> } | null;
   skipped?: string;
 }
 
@@ -293,7 +294,8 @@ export async function settleOnce(root: ContextRoot, options: SettleOptions): Pro
         }
       }
     });
-    pass.reground = { ids: ids.length, ok: outcomes.filter((o) => o.ok).length, failed: outcomes.filter((o) => !o.ok).length, ms };
+    const refused = outcomes.filter((o) => !o.ok).map((o) => ({ id: o.id, error: (o.error ?? "refused").slice(0, 300) }));
+    pass.reground = { ids: ids.length, ok: outcomes.length - refused.length, failed: refused.length, ms, ...(refused.length ? { refused } : {}) };
   }
 
   // The index must describe the refreshed graph and the re-recorded links.
