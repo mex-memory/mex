@@ -2,7 +2,11 @@
   "schemaVersion": 1,
   "id": "ts-hooks-arm",
   "description": "Product hooks (mex hooks, mex context): files vs lexical vs semantic prompt recipe, TypeScript (needs the 4 MiB file-limit CLI)",
-  "repetitions": 3,
+  "repetitions": {
+    "qa": 1,
+    "change": 2,
+    "heavy": 2
+  },
   "projectName": "ts",
   "appendInstructions": true,
   "basePatches": [
@@ -830,6 +834,133 @@
       },
       "origin": "microsoft/TypeScript PR 62914 (fixes issue 62912); base is its parent on the strada branch",
       "review": "13 changed lines in checker.ts (7 added, 6 removed), base 2025-12 so no AGENTS.md notice; it is a nightly crash so inside the accepted categories. RISKS: the baseline errors.txt is 35 lines of syntax noise that must match exactly; the repro needs a build; this fix relates to the first drift task (it touches checkSourceElementUnreachable) so both tasks can leak into each other if run in one session."
+    },
+    {
+      "id": "ts-heavy-watch-edit-trace",
+      "type": "qa",
+      "base": "b465fdbfe175304d9b977da137b2c178ae1091d3",
+      "scaffold": "default",
+      "prompt": "While `tsc --watch` is running on a project, I save an edit to one of its source files. Trace what happens from the moment the operating system reports the change until the compiler has printed its new error summary and written the updated JavaScript: how is the change noticed and batched, how does the compiler reuse the previous compilation instead of starting from scratch, how does it decide which files have to be re-checked and re-emitted (and why does an edit that only changes a function body behave differently from one that changes an exported signature), and where do the diagnostics and the final status line come from?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "onSourceFileChange (version bump, schedules update)",
+            "path": "src/compiler/watchPublic.ts",
+            "startLine": 1056,
+            "endLine": 1067
+          },
+          {
+            "symbol": "scheduleProgramUpdate (250 ms debounce)",
+            "path": "src/compiler/watchPublic.ts",
+            "startLine": 881,
+            "endLine": 891
+          },
+          {
+            "symbol": "updateProgramWithWatchStatus / updateProgram",
+            "path": "src/compiler/watchPublic.ts",
+            "startLine": 899,
+            "endLine": 918
+          },
+          {
+            "symbol": "synchronizeProgram (up-to-date check, reports 'File change detected', afterProgramCreate)",
+            "path": "src/compiler/watchPublic.ts",
+            "startLine": 613,
+            "endLine": 680
+          },
+          {
+            "symbol": "createNewProgram (creates builder program from the old one)",
+            "path": "src/compiler/watchPublic.ts",
+            "startLine": 682,
+            "endLine": 723
+          },
+          {
+            "symbol": "isProgramUptoDate",
+            "path": "src/compiler/program.ts",
+            "startLine": 1228,
+            "endLine": 1321
+          },
+          {
+            "symbol": "tryReuseStructureFromOldProgram",
+            "path": "src/compiler/program.ts",
+            "startLine": 2345,
+            "endLine": 2596
+          },
+          {
+            "symbol": "createBuilderProgramState (diff against old state, changed files)",
+            "path": "src/compiler/builder.ts",
+            "startLine": 321,
+            "endLine": 503
+          },
+          {
+            "symbol": "getNextAffectedFile",
+            "path": "src/compiler/builder.ts",
+            "startLine": 635,
+            "endLine": 698
+          },
+          {
+            "symbol": "BuilderState.getFilesAffectedByWithOldState",
+            "path": "src/compiler/builderState.ts",
+            "startLine": 375,
+            "endLine": 392
+          },
+          {
+            "symbol": "BuilderState.updateShapeSignature",
+            "path": "src/compiler/builderState.ts",
+            "startLine": 431,
+            "endLine": 460
+          },
+          {
+            "symbol": "getFilesAffectedByUpdatedShapeWhenModuleEmit",
+            "path": "src/compiler/builderState.ts",
+            "startLine": 588,
+            "endLine": 625
+          },
+          {
+            "symbol": "builder getSemanticDiagnostics / emit (loops over affected files)",
+            "path": "src/compiler/builder.ts",
+            "startLine": 2187,
+            "endLine": 2215
+          },
+          {
+            "symbol": "createWatchCompilerHost afterProgramCreate -> emitFilesAndReportErrors",
+            "path": "src/compiler/watch.ts",
+            "startLine": 875,
+            "endLine": 891
+          },
+          {
+            "symbol": "emitFilesAndReportErrors",
+            "path": "src/compiler/watch.ts",
+            "startLine": 564,
+            "endLine": 631
+          },
+          {
+            "symbol": "getWatchErrorSummaryDiagnosticMessage",
+            "path": "src/compiler/watch.ts",
+            "startLine": 260,
+            "endLine": 264
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "The per-file watcher registered when the file was read (watchFilePath) calls onSourceFileChange, which updates the cached file state and bumps the file's version (nextSourceFileVersion), then scheduleProgramUpdate: it clears any pending timer and sets a 250 ms timer so a burst of saves is batched. When the timer fires, updateProgramWithWatchStatus marks that 'File change detected. Starting incremental compilation...' should be reported and calls updateProgram, which (for a plain source edit) calls synchronizeProgram",
+          "synchronizeProgram asks isProgramUptoDate (program.ts) whether the current program still matches: root names, options, each source file's version from the watch host, invalidated module resolutions. If not, createNewProgram builds a new builder program through the host's createProgram (EmitAndSemanticDiagnostics builder), passing the previous builder program as the old program; createProgram then calls tryReuseStructureFromOldProgram, which reuses the unchanged SourceFile objects and structure (re-reading and re-parsing only changed files and checking that imports and options did not change) and the resolution cache keeps module resolutions",
+          "The builder program state is created from the old state (createBuilderProgramState / BuilderState.create): files whose version changed since the old state are put in the changed set, while unchanged files keep their previous signature, cached semantic diagnostics and emit state, and the references map is rebuilt",
+          "When diagnostics or emit are asked for, getNextAffectedFile takes each changed file and calls BuilderState.getFilesAffectedBy: updateShapeSignature computes the file's new declaration signature (hash of its declaration output). If the signature is the same, as for a body-only change, only the changed file is affected; if it differs (exported signature changed), the files that reference it from the referencedMap (and, for non-module/global files, all files) are added. Affected files lose their cached semantic diagnostics and are queued for emit",
+          "afterProgramCreate of the watch host calls emitFilesAndReportErrors: syntactic and options/global diagnostics, then builder getSemanticDiagnostics (re-checks only affected files, reuses cached results for the rest) and builder emit (emits only affected files through the host's writeFile), the sorted diagnostics are reported through the diagnostic reporter, and the summary goes through onWatchStatusChange using getWatchErrorSummaryDiagnosticMessage ('Found N errors. Watching for file changes.')"
+        ]
+      },
+      "difficulty": "A five-stage pipeline in four large files that do not mention each other's names: host watch loop (watchPublic.ts), program reuse (program.ts, 5k lines), builder state and affected-file computation (builder.ts, builderState.ts), and reporting (watch.ts). The word 'watch' hits hundreds of lines (sys.ts 455, editorServices 363, resolutionCache 283), and the body-versus-signature distinction lives in a separate module from the watch loop.",
+      "grepTest": {
+        "phrases": "'watch', 'affected', 'incremental', '250', 'Watching for file changes'",
+        "hits": "watch: sys.ts 455, editorServices.ts 363, resolutionCache.ts 283, watchPublic.ts 201; affected: builder.ts 192; incremental: builder.ts 96, tsbuildPublic.ts 35; 'Watching for file changes' only diagnosticMessages.json (2); '250' 3 hits in watchPublic.ts.",
+        "verdict": "'Watching for file changes' leads to the end of the pipeline and 'watch' to the start, but the middle (why a body edit does not re-check importers) needs builder.ts and builderState.ts, which share no vocabulary with the prompt except 'affected'. Medium-hard; the tsc -b task (ts-build-pseudo-uptodate) covers different code (tsbuildPublic.ts)."
+      },
+      "heavinessEstimate": "Expect 30-45 tool calls. Files: watchPublic.ts (1200 lines, 8 regions), watch.ts, program.ts (isProgramUptoDate, tryReuseStructureFromOldProgram, 250 lines), builder.ts (2200 lines: state creation, getNextAffectedFile, handleDtsMayChangeOf*, emit, getSemanticDiagnostics), builderState.ts, builderPublic.ts, executeCommandLine.ts (to see how --watch starts), sys.ts (watchFile). 12+ greps and many partial reads of large files.",
+      "origin": "new at HEAD; the pipeline exists at T0 as well, line numbers differ",
+      "risks": "scheduleProgramUpdate carries a comment about the 250 ms batching, and builder.ts has doc comments on affected files; neither states the end-to-end answer. The overlap with ts-build-pseudo-uptodate is the shared builder/signature idea, but that task's gold is tsbuildPublic.ts. 'Found N errors. Watching for file changes.' is a documented tsc message, so point 5's last clause can be guessed. If the grader wants strictness, require the signature-versus-body distinction (point 4) and the reuse of the old program (point 2).",
+      "verified_summary": "gold lines pinned with git show eval-head; no run needed",
+      "heavy": true
     }
-  ]
+  ],
+  "orderOffset": 1
 }

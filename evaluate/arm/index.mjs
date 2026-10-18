@@ -10,17 +10,20 @@ import { runSync } from "../compare/lib/process.mjs";
 import { aliasCoverage, installProductHooks } from "./lib/hooks.mjs";
 import { buildBlindReview, generateReport, loadRows } from "./lib/report.mjs";
 import { MEX_PROMPTS, runAgentSession } from "./lib/session.mjs";
-import { armPath, buildIndexCache, createWorkspace, git, installContextIndex, installIndexes, mexEntrypoint, refreshContextIndexCache, removeWorkspace, resolveCommit } from "./lib/workspace.mjs";
+import { median } from "./lib/measures.mjs";
+import { armPath, buildIndexCache, createWorkspace, git, installContextIndex, installIndexes, mexEntrypoint, refreshContextIndexCache, removeWorkspace, resetWorkspace, resolveCommit, verifyWorkspace } from "./lib/workspace.mjs";
 
 const fileSha = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 
 export function parseArgs(argv) {
-  const args = { mode: null, tasks: null, arms: null, repetition: null, resume: false, timeoutQaMs: 900_000, timeoutChangeMs: 1_800_000, claude: ["claude"] };
+  const args = { mode: null, tasks: null, arms: null, repetition: null, resume: false, warmup: true, timeoutQaMs: 900_000, timeoutChangeMs: 1_800_000, claude: ["claude"] };
   const value = (i) => { if (argv[i + 1] === undefined) throw new Error(`${argv[i]} needs a value`); return argv[i + 1]; };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (["--prepare", "--run", "--blind", "--report", "--refresh-context-index"].includes(arg)) args.mode = arg.slice(2);
+    if (["--prepare", "--run", "--blind", "--report", "--plan", "--refresh-context-index"].includes(arg)) args.mode = arg.slice(2);
+    else if (arg === "--no-warmup") args.warmup = false;
+    else if (arg === "--pilot") args.pilot = resolve(value(i++));
     else if (arg === "--suite") args.suite = resolve(value(i++));
     else if (arg === "--subject") args.subject = resolve(value(i++));
     else if (arg === "--cli-bin") args.cliBin = resolve(value(i++));
@@ -40,7 +43,7 @@ export function parseArgs(argv) {
   }
   if (args.mexPrompt !== undefined && !MEX_PROMPTS.includes(args.mexPrompt)) throw new Error(`--mex-prompt must be one of ${MEX_PROMPTS.join(", ")}`);
   if (!args.mode) throw new Error("choose --prepare, --run, --blind, --report or --refresh-context-index");
-  for (const key of args.mode === "refresh-context-index" ? ["output"] : ["suite", "output"]) if (!args[key]) throw new Error(`--${key} is required`);
+  for (const key of args.mode === "plan" ? ["suite"] : args.mode === "refresh-context-index" ? ["output"] : ["suite", "output"]) if (!args[key]) throw new Error(`--${key} is required`);
   if (["prepare", "run"].includes(args.mode)) {
     // --deps is checked against the suite later: a subject without node_modules (Python) sets "requiresDeps": false.
     for (const key of ["subject", "cliBin", "model"]) if (!args[key]) throw new Error(`--${key === "cliBin" ? "cli-bin" : key} is required for --${args.mode}`);
@@ -110,6 +113,33 @@ export function summarizePushLog(path) {
 
 const indexKey = (base, scaffold) => `${base.slice(0, 12)}-${scaffold.slice(0, 12)}`;
 
+export function selectedSchedule(suite, args = {}) {
+  const tasks = suite.tasks.filter((t) => args.tasks ? args.tasks.includes(t.id) : t.fullRun !== false);
+  if (args.tasks?.some((id) => !suite.tasks.some((t) => t.id === id))) throw new Error("unknown task selection");
+  const arms = args.arms ?? Object.keys(suite.arms);
+  if (arms.some((id) => !suite.arms[id])) throw new Error("unknown arm selection");
+  const selected = buildSchedule(tasks, arms, suite.repetitions).filter((item) => !args.repetition || item.repetition === args.repetition)
+    .map((item) => ({ ...item, runId: item.runId.replace(/^\d+-/, `${String(suite.tasks.indexOf(item.task) + 1).padStart(2, "0")}-`) }));
+  const groups = [];
+  for (let i = 0; i < selected.length; i += arms.length) groups.push(selected.slice(i, i + arms.length));
+  // Rebalance after every selection, including a repetition-only resume slice.
+  const offset = suite.orderOffset ?? 0;
+  const rotatedArms = arms.map((_, i) => arms[(i + offset) % arms.length]);
+  return buildSchedule(groups.map((_, i) => ({ id: String(i), repetitions: 1 })), rotatedArms).map((item) => ({
+    ...groups[item.taskIndex].find((row) => row.armId === item.armId), orderIndex: item.orderIndex,
+  }));
+}
+
+export function buildPlan(suite, args = {}) {
+  const schedule = selectedSchedule(suite, args);
+  const pilot = args.pilot ? loadRows(args.pilot, suite) : [];
+  const medians = Object.fromEntries(Object.keys(suite.arms).map((arm) => [arm, median(pilot.filter((r) => r.arm === arm).map((r) => r.metrics.costUsd))]));
+  const estimatedMeasuredUsd = pilot.length ? schedule.reduce((s,r) => s + (medians[r.armId] ?? 0), 0) : null;
+  return { suite: suite.id, sessions: schedule.length, firstPosition: Object.fromEntries(Object.keys(suite.arms).map((id) => [id, schedule.filter((r) => r.orderIndex === 0 && r.armId === id).length])),
+    estimatedMeasuredUsd, estimateBasis: "pilot median real cost per arm; heavy tasks may cost more", warmup: args.warmup !== false,
+    warmupEstimateUsd: schedule.length * 0.025, schedule: schedule.filter((r) => r.orderIndex === 0).map((r) => ({ task: r.task.id, repetition: r.repetition, arms: schedule.filter((x) => x.task.id === r.task.id && x.repetition === r.repetition).map((x) => x.armId) })) };
+}
+
 function prepare(args, suite) {
   mkdirSync(args.output, { recursive: true });
   const projectName = projectNameOf(suite);
@@ -131,11 +161,14 @@ function prepare(args, suite) {
     aliasIds = Object.keys(JSON.parse(readFileSync(aliasesFile, "utf8")));
   }
   const hooks = needsHooks ? { aliasesFile } : null;
-  for (const task of suite.tasks) {
+  let seedCache = null;
+  const selectedTasks = suite.tasks.filter((task) => args.tasks ? args.tasks.includes(task.id) : task.fullRun !== false);
+  for (const task of selectedTasks) {
     const base = resolveCommit(args.subject, task.base);
     const scaffold = scaffolds[task.scaffold];
     const key = indexKey(base, scaffold);
-    const cachePath = !needsIndexes ? null : buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv, depsDir: args.deps, projectName, hooks });
+    const cachePath = !needsIndexes ? null : buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv, depsDir: args.deps, projectName, hooks, seedCache });
+    if (cachePath) seedCache = cachePath;
     if (cachePath) baselines[key] = JSON.parse(readFileSync(join(cachePath, "check-baseline.json"), "utf8"));
     if (cachePath && hooks && !coverage[key]) coverage[key] = aliasCoverage(join(cachePath, "context-index.json"), aliasIds ?? []);
     tasks[task.id] = { base, scaffold, indexKey: key, cachePath, hiddenFrom: task.hiddenTests?.fromCommit ? resolveCommit(args.subject, task.hiddenTests.fromCommit) : null };
@@ -154,7 +187,7 @@ function prepare(args, suite) {
   };
   writeJson(join(args.output, "prepare.json"), prepared);
   writeJson(join(args.output, "baselines.json"), baselines);
-  process.stdout.write(`prepared ${suite.tasks.length} tasks; index caches in ${join(args.output, "index-cache")}\n`);
+  process.stdout.write(`prepared ${selectedTasks.length} tasks; index caches in ${join(args.output, "index-cache")}\n`);
 }
 
 /**
@@ -215,51 +248,74 @@ function loadPrepared(args, suite) {
 async function run(args, suite) {
   const prepared = loadPrepared(args, suite);
   const armIds = Object.keys(suite.arms);
-  const schedule = buildSchedule(suite.tasks, armIds, suite.repetitions)
-    .filter((item) => !args.tasks || args.tasks.includes(item.task.id))
-    .filter((item) => !args.arms || args.arms.includes(item.armId))
-    .filter((item) => !args.repetition || item.repetition === args.repetition);
+  const schedule = selectedSchedule(suite, args);
   const runsDir = join(args.output, "runs"), artifacts = join(args.output, "artifacts");
   mkdirSync(runsDir, { recursive: true }); mkdirSync(artifacts, { recursive: true });
-  for (const item of schedule) {
-    const resultPath = join(runsDir, `${item.runId}.json`);
-    if (existsSync(resultPath)) {
-      const existing = JSON.parse(readFileSync(resultPath, "utf8"));
-      if (!args.resume) throw new Error(`${item.runId} already exists; use --resume`);
-      if (existing.valid) continue;
-      renameSync(resultPath, join(runsDir, `${item.runId}.invalid-${Date.now()}.json.txt`));
-    }
-    const task = item.task, info = prepared.tasks[task.id], armSpec = armSpecFor(suite.arms[item.armId]);
-    const pushLog = join(artifacts, `${item.runId}.push.jsonl`);
-    const env = sessionEnv({ cliBin: args.cliBin, armSpec, pushLog });
-    // <run>/<project name>: the folder name is the same in every arm and in the index template.
-    const workspace = join(args.output, "ws", item.runId, projectNameOf(suite));
-    removeWorkspace(args.subject, workspace, { removeParent: true });
-    process.stderr.write(`[arm] ${item.runId}\n`);
-    let row;
-    try {
-      const created = createWorkspace({ subjectRoot: args.subject, workspace, base: info.base, scaffoldCommit: armSpec.withMex ? info.scaffold : null, depsDir: args.deps, appendInstructions: suite.appendInstructions === true, basePatches: suite.basePatches ?? [], stripPrototype: armSpec.withHooks });
-      const indexes = armSpec.withCli ? installIndexes({ workspace, cachePath: info.cachePath, cliBin: args.cliBin, env }) : null;
-      if (armSpec.withHooks) {
-        indexes.context = installContextIndex({ workspace, cachePath: info.cachePath });
-        indexes.hooks = installProductHooks({ workspace, cliBin: args.cliBin, env });
+  const workspace = join(args.output, "ws", "persistent", projectNameOf(suite));
+  const setupHeads = new Map();
+  removeWorkspace(args.subject, workspace, { removeParent: true });
+  try {
+    for (const item of schedule) {
+      const resultPath = join(runsDir, `${item.runId}.json`);
+      if (existsSync(resultPath)) {
+        const existing = JSON.parse(readFileSync(resultPath, "utf8"));
+        if (!args.resume) throw new Error(`${item.runId} already exists; use --resume`);
+        if (existing.valid) continue;
+        renameSync(resultPath, join(runsDir, `${item.runId}.invalid-${Date.now()}.json.txt`));
       }
-      if (armSpec.withPush) { if (existsSync(pushLog)) renameSync(pushLog, `${pushLog}.old-${Date.now()}`); indexes.push = preparePush(workspace, env); }
-      const session = await runAgentSession({
-        task: { ...task, hiddenTests: task.hiddenTests ? { ...task.hiddenTests, fromCommit: info.hiddenFrom, ...(suite.python ? { python: task.hiddenTests.python ?? suite.python } : {}) } : null },
-        armId: item.armId, armSpec, workspace, env, cliBin: args.cliBin, model: args.model,
-        timeoutMs: task.type === "change" ? args.timeoutChangeMs : args.timeoutQaMs,
-        outputPrefix: join(artifacts, item.runId), claudeCommand: args.claude, mexPrompt: prepared.mexPrompt ?? "none", appendPrompt: suite.appendPrompt ?? null,
-      });
-      row = { runId: item.runId, taskId: task.id, taskType: task.type, arm: item.armId, repetition: item.repetition, orderIndex: item.orderIndex, indexKey: info.indexKey, workspaceHead: created.head, indexes, startedFrom: info.base, ...session, ...(armSpec.withPush ? { push: summarizePushLog(pushLog) } : {}) };
-    } finally {
-      if (row) writeJson(resultPath, row);
-      try { removeWorkspace(args.subject, workspace, { removeParent: true }); } catch (error) { process.stderr.write(`[arm] cleanup of ${item.runId} failed, continuing: ${error.message}\n`); }
+      const task = item.task, info = prepared.tasks[task.id], armSpec = armSpecFor(suite.arms[item.armId]);
+      if (!info) throw new Error(`${task.id} was not prepared; prepare the selected tasks first`);
+      const pushLog = join(artifacts, `${item.runId}.push.jsonl`);
+      const temp = join(args.output, "temp", item.runId);
+      mkdirSync(temp, { recursive: true });
+      const env = sessionEnv({ baseEnv: { ...process.env, TEMP: temp, TMP: temp, TMPDIR: temp }, cliBin: args.cliBin, armSpec, pushLog });
+      // The persistent folder keeps the project name constant across every arm.
+
+      process.stderr.write(`[arm] ${item.runId}\n`);
+      let row;
+      try {
+        const setupStarted = Date.now(), timings = {};
+        const key = `${info.indexKey}-${item.armId}`, cached = setupHeads.get(key);
+        let created;
+        if (cached) { const t = Date.now(); resetWorkspace(workspace, cached.head, args.deps); timings.resetMs = Date.now() - t; created = { head: cached.head }; }
+        else created = createWorkspace({ subjectRoot: args.subject, workspace, base: info.base, scaffoldCommit: armSpec.withMex ? info.scaffold : null, depsDir: args.deps, appendInstructions: suite.appendInstructions === true, basePatches: suite.basePatches ?? [], stripPrototype: armSpec.withHooks, reuse: true });
+        const copyStarted = Date.now();
+        const indexes = armSpec.withCli ? installIndexes({ workspace, cachePath: info.cachePath, cliBin: args.cliBin, env }) : null;
+        if (armSpec.withHooks) {
+          indexes.context = installContextIndex({ workspace, cachePath: info.cachePath });
+          timings.indexCopyMs = Date.now() - copyStarted;
+          const t = Date.now();
+          indexes.hooks = cached?.hooks ?? installProductHooks({ workspace, cliBin: args.cliBin, env });
+          timings.hooksMs = Date.now() - t;
+        }
+        if (armSpec.withPush) { if (existsSync(pushLog)) renameSync(pushLog, `${pushLog}.old-${Date.now()}`); indexes.push = preparePush(workspace, env); }
+        const head = git(workspace, ["rev-parse", "HEAD"]).stdout.trim();
+        setupHeads.set(key, { head, hooks: indexes?.hooks });
+        const verificationStarted = Date.now();
+        const verify = () => verifyWorkspace({ workspace, head, base: info.base, cachePath: armSpec.withCli ? info.cachePath : null, withHooks: armSpec.withHooks, allowedSetupPaths: (suite.basePatches ?? []).map((p) => p.file) });
+        const independence = verify();
+        timings.verifyMs = Date.now() - verificationStarted;
+        timings.totalMs = Date.now() - setupStarted;
+        timings.otherMs = timings.totalMs - (timings.resetMs ?? Object.values(created.timings ?? {}).reduce((s,n)=>s+n,0)) - (timings.indexCopyMs ?? 0) - (timings.hooksMs ?? 0) - timings.verifyMs;
+        const session = await runAgentSession({
+          task: { ...task, hiddenTests: task.hiddenTests ? { ...task.hiddenTests, fromCommit: info.hiddenFrom, ...(suite.python ? { python: task.hiddenTests.python ?? suite.python } : {}) } : null },
+          armId: item.armId, armSpec, workspace, env, cliBin: args.cliBin, model: args.model,
+          timeoutMs: task.type === "change" ? args.timeoutChangeMs : args.timeoutQaMs,
+          outputPrefix: join(artifacts, item.runId), claudeCommand: args.claude, mexPrompt: prepared.mexPrompt ?? "none", appendPrompt: suite.appendPrompt ?? null,
+          verifyWorkspace: verify,
+          warmup: args.warmup && Object.values(suite.arms).some((arm) => arm.hooks), validateCache: Object.values(suite.arms).some((arm) => arm.hooks), sharedPrefixTokens: suite.sharedPrefixTokens ?? 5656,
+        });
+        row = { runId: item.runId, taskId: task.id, taskType: task.type, arm: item.armId, repetition: item.repetition, orderIndex: item.orderIndex, indexKey: info.indexKey, workspaceHead: head, setup: { ...timings, create: created.timings, reused: Boolean(cached) }, independence, indexes, startedFrom: info.base, ...session, ...(armSpec.withPush ? { push: summarizePushLog(pushLog) } : {}) };
+      } finally {
+        if (row) writeJson(resultPath, row);
+
+      }
+      if (row.providerFailure?.type === "rate_limit") {
+        throw new Error(`usage limit reached during ${item.runId}; rerun with --resume after it resets`);
+      }
     }
-    if (row.providerFailure?.type === "rate_limit") {
-      throw new Error(`usage limit reached during ${item.runId}; rerun with --resume after it resets`);
-    }
-  }
+  } finally { removeWorkspace(args.subject, workspace, { removeParent: true }); }
+  for (const row of loadRows(args.output, suite)) writeJson(join(runsDir, `${row.runId}.json`), row);
   process.stdout.write(`ran ${schedule.length} scheduled session(s)\n`);
 }
 
@@ -267,12 +323,13 @@ export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   if (args.mode === "refresh-context-index") return refreshContextIndexes(args);
   const suite = JSON.parse(readFileSync(args.suite, "utf8"));
+  if (args.mode === "plan") { process.stdout.write(`${JSON.stringify(buildPlan(suite, args), null, 2)}\n`); return; }
   if (["prepare", "run"].includes(args.mode) && !args.deps && suite.requiresDeps !== false) throw new Error(`--deps is required for --${args.mode} (a suite without node_modules sets "requiresDeps": false)`);
   if (args.mode === "prepare") return prepare(args, suite);
   if (args.mode === "run") return run(args, suite);
   const prepared = JSON.parse(readFileSync(join(args.output, "prepare.json"), "utf8"));
   const salt = prepared.preparedAt;
-  const rows = loadRows(args.output);
+  const rows = loadRows(args.output, suite);
   if (args.mode === "blind") {
     const { review, reveal } = buildBlindReview(suite, rows, salt);
     writeJson(join(args.output, "blind-review.json"), review);

@@ -1,0 +1,35 @@
+{
+  "repos": [
+    {
+      "name": "hono",
+      "suite": "evaluate/arm/suites/hono-hooks.json",
+      "subject": "C:\\mex-test-tmp\\arm\\hono-mex",
+      "cliBin": "C:\\mex-test-tmp\\arm\\mex-cli-hooks\\node_modules\\.bin",
+      "deps": "C:\\mex-test-tmp\\arm\\hono-deps\\node_modules",
+      "output": "C:/mex-test-tmp/full-run/hono",
+      "model": "claude-sonnet-5-5",
+      "pilot": "C:/mex-test-tmp/pilot-hooks/hono",
+      "aliases": "C:\\mex-test-tmp\\pilot-hooks\\hono\\context-aliases.json"
+    },
+    {
+      "name": "ts",
+      "suite": "evaluate/arm/suites/ts-hooks.json",
+      "subject": "C:\\mex-test-tmp\\arm-ts\\ts-mex",
+      "cliBin": "C:\\mex-test-tmp\\arm-ts\\mex-cli-hooks-4mb\\node_modules\\.bin",
+      "deps": "C:\\mex-test-tmp\\arm-ts\\ts-deps\\node_modules",
+      "output": "C:/mex-test-tmp/full-run/ts",
+      "model": "claude-sonnet-5-5",
+      "pilot": "C:/mex-test-tmp/pilot-hooks/ts",
+      "aliases": "C:\\mex-test-tmp\\pilot-hooks\\ts\\context-aliases.json"
+    },
+    {
+      "name": "dj",
+      "suite": "evaluate/arm/suites/dj-hooks.json",
+      "subject": "C:\\mex-test-tmp\\arm-dj\\dj-mex",
+      "cliBin": "C:\\mex-test-tmp\\arm\\mex-cli-hooks\\node_modules\\.bin",
+      "output": "C:/mex-test-tmp/full-run/dj",
+      "model": "claude-sonnet-5-5",
+      "pilot": "C:/mex-test-tmp/pilot-hooks/dj"
+    }
+  ]
+}

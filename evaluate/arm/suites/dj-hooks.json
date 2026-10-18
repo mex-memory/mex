@@ -2,7 +2,11 @@
   "schemaVersion": 1,
   "id": "dj-hooks-arm",
   "description": "Product hooks (mex hooks, mex context): files vs lexical vs semantic prompt recipe, Django. Hidden tests run with the suite's Python.",
-  "repetitions": 3,
+  "repetitions": {
+    "qa": 1,
+    "change": 2,
+    "heavy": 2
+  },
   "projectName": "django",
   "appendInstructions": true,
   "basePatches": [],
@@ -623,6 +627,202 @@
         "hits": "FilteredRelation: sql/query.py 15, models/__init__.py 2, query.py 4; _filtered_relations: query.py 2, compiler.py 2, sql/query.py 9; LOOKUP_SEP in sql/: compiler.py 8 and query.py many",
         "verdict": "Hard: FilteredRelation greps land on build_filter/join code, not on the three name-splitting sites; the agent must reason that annotations are consulted before splitting but filtered relations are not."
       }
+    },
+    {
+      "id": "dj-heavy-bool-literal-sqlite",
+      "type": "change",
+      "base": "b5d9dbdf2bba8df4c85cd0db308b3a467d763d02",
+      "scaffold": "default",
+      "prompt": "Performance regression on SQLite: a filter on an indexed BooleanField, such as `Stock.objects.filter(short=True)`, now compiles to `WHERE \"stock\".\"short\"` (the bare column) instead of `WHERE \"stock\".\"short\" = True`. The same happens when you filter on an annotation that is itself a boolean-valued column expression, for example `.annotate(flag=F(\"short\")).filter(flag=True)` or `.annotate(flag=ExpressionWrapper(F(\"short\"), output_field=BooleanField())).filter(flag=True)`. On databases that have no native boolean datatype and keep booleans in integer columns, an index on the column can only be used when the comparison against the literal is spelled out, so these queries now scan the whole table. Some other backends already carry a workaround for exactly this; SQLite does not. Make SQLite (and any backend without a native boolean type) compare such expressions against the literal again, while genuine conditions must stay as they are, without a redundant `= True`: Exists() subqueries, Q objects used as conditions, CASE expressions are compared as before, and conditional RawSQL is trusted to stand on its own. Do not special-case each backend: put the decision in the one shared place all backends already consult, driven by a database feature flag named `has_native_boolean_field` (False by default, True on PostgreSQL), which the tests use to decide when to skip. Add tests for the new behaviour and make sure the existing lookup tests, and the other tests that build boolean conditions (expressions, queries, aggregation), still pass.",
+      "mergeCommit": "4bbc27c8686f10f9556cef02dbfa9f5157fbcf56",
+      "srcFiles": [
+        "django/db/backends/base/features.py",
+        "django/db/backends/base/operations.py",
+        "django/db/backends/mysql/operations.py",
+        "django/db/backends/oracle/operations.py",
+        "django/db/backends/postgresql/features.py",
+        "django/db/models/lookups.py"
+      ],
+      "hiddenTests": {
+        "runner": "django",
+        "tests": "lookup",
+        "fromCommit": "4bbc27c8686f10f9556cef02dbfa9f5157fbcf56",
+        "files": [
+          "tests/lookup/tests.py"
+        ]
+      },
+      "testFiles": {
+        "tests": [
+          "tests/lookup/tests.py"
+        ]
+      },
+      "testCommand": "set PYTHONPATH=<checkout>&& C:\\mex-test-tmp\\arm-dj\\venv\\Scripts\\python.exe <checkout>\\tests\\runtests.py lookup --parallel 1",
+      "gold": {
+        "code": [
+          {
+            "symbol": "BaseDatabaseOperations.conditional_expression_supported_in_where_clause (base default: always True)",
+            "path": "django/db/backends/base/operations.py",
+            "startLine": 717,
+            "endLine": 722
+          },
+          {
+            "symbol": "DatabaseOperations.conditional_expression_supported_in_where_clause (MySQL workaround)",
+            "path": "django/db/backends/mysql/operations.py",
+            "startLine": 396,
+            "endLine": 407
+          },
+          {
+            "symbol": "DatabaseOperations.conditional_expression_supported_in_where_clause (Oracle variant)",
+            "path": "django/db/backends/oracle/operations.py",
+            "startLine": 708,
+            "endLine": 721
+          },
+          {
+            "symbol": "Exact.as_sql (drops '= True' when the lhs is supported directly in WHERE)",
+            "path": "django/db/models/lookups.py",
+            "startLine": 388,
+            "endLine": 402
+          },
+          {
+            "symbol": "Lookup.as_oracle (wraps unsupported conditional operands in CASE WHEN)",
+            "path": "django/db/models/lookups.py",
+            "startLine": 149,
+            "endLine": 160
+          },
+          {
+            "symbol": "NegatedExpression.as_sql (caller: CASE WHEN fallback when the operand is not WHERE-supported)",
+            "path": "django/db/models/expressions.py",
+            "startLine": 1584,
+            "endLine": 1607
+          },
+          {
+            "symbol": "BaseDatabaseFeatures (place for has_native_boolean_field next to has_native_uuid_field)",
+            "path": "django/db/backends/base/features.py",
+            "startLine": 82,
+            "endLine": 82
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "difficulty": "The symptom is only visible in the generated SQL. The cause spans the lookup layer (Exact.as_sql asks the backend whether a conditional lhs may stand alone in WHERE), the backend operations (base default returns True, MySQL and Oracle each override it with different rules), and four other callers of the same hook (NegatedExpression, Case/Exists select_format, OrderBy.as_oracle, Lookup.as_oracle) that would change behaviour on SQLite if the base default changes carelessly. The solution is to move the Oracle-style decision into the base class behind a new feature flag and delete the two backend overrides. Measured: a naive version (flag added, base hook simply returns the flag) fixes the plain-column test but still fails test_exact_booleanfield_annotation, because Exists, Q/WhereNode, CASE and conditional RawSQL (and ExpressionWrapper unwrapping) have to be exempted; the other suites do not catch the mistake.",
+      "grepTest": {
+        "phrases": "'boolean', '= True', 'has_native', 'conditional_expression_supported'",
+        "hits": "'boolean' lands first in vendored jquery/xregexp, then django/db/models/expressions.py (15); '= True' 70 hits in base/features.py alone; 'has_native' only the uuid/json/duration flags; 'conditional_expression_supported' 11 hits in 5 files (base ops, mysql ops, oracle ops, lookups, expressions).",
+        "verdict": "The last phrase is the one selective handle, and an agent only tries it after reading Exact.as_sql or the MySQL test that is skipUnless(mysql). Nothing says why SQLite lost the literal comparison, so the agent must read both backend overrides and decide how to generalise them. Medium-hard."
+      },
+      "heavinessEstimate": "Expect 28-40 tool calls. Files an agent must open: tests/lookup/tests.py (the MySQL-only tests it must generalise), django/db/models/lookups.py (Exact.as_sql and Lookup.as_oracle), django/db/models/expressions.py (NegatedExpression, Case, Exists, OrderBy callers), backends/base/operations.py, backends/mysql/operations.py, backends/oracle/operations.py, backends/base/features.py, backends/postgresql/features.py, backends/sqlite3/(operations and features, to confirm there is no override). About 8 greps (the hook name, 'boolean', supports_boolean_expr_in_select_clause, has_native_*), one to three runs of the lookup tests plus a regression run of expressions/queries, and writing the test edits. Hard to finish in under 25 calls without prior knowledge of the hook.",
+      "origin": "Django commit 4bbc27c868 (Fixed #36492), parent b5d9dbdf2b on main, committed 2026-06-03 (after T0)",
+      "risks": "The prompt names the feature flag `has_native_boolean_field` because the hidden tests use it in @skipIfDBFeature; without that name every solution errors, so the name is part of the spec. Source diff is 84 changed lines in 6 files (above the 2-5 file band; a minimal solution touches 3: features, base ops, lookups plus deleting the MySQL/Oracle overrides). The grader only runs the `lookup` label. Extra suites (expressions queries aggregation annotations ordering lookup, 1161 tests, ~5 s) pass at both base and merge and also passed on a naive variant, so they are only a safety net. Only SQLite is exercised locally, so MySQL/Oracle behaviour is unverified.",
+      "verified": {
+        "base_hidden": "2 errors (AttributeError no attribute 'has_native_boolean_field') / 139 tests, x3",
+        "merge_hidden": "OK, 139 tests, skipped=2, x3"
+      },
+      "verified_summary": "base: 2 errors/139 x3; merge: OK x3",
+      "heavy": true
+    },
+    {
+      "id": "dj-heavy-admin-delete-trace",
+      "type": "qa",
+      "base": "d430084791a61b31cecec132bce3dca19194f7f2",
+      "scaffold": "default",
+      "prompt": "In the Django admin, the page that asks for confirmation before deleting an object lists the related objects that would be deleted along with it. It switches to a different message, with no confirm button, when one of those related objects is protected from deletion or when the account lacks permission to delete one of the related types. Trace what happens from requesting that page through to the confirming POST: how is the list of related objects, and each refusal reason, worked out; what is checked again when the form is submitted; what is written to the admin history and at which point relative to the actual deletion; and how does the deletion itself then proceed?",
+      "gold": {
+        "code": [
+          {
+            "symbol": "ModelAdmin.delete_view (POST wrapped in an atomic block)",
+            "path": "django/contrib/admin/options.py",
+            "startLine": 2504,
+            "endLine": 2509
+          },
+          {
+            "symbol": "ModelAdmin._delete_view",
+            "path": "django/contrib/admin/options.py",
+            "startLine": 2511,
+            "endLine": 2576
+          },
+          {
+            "symbol": "ModelAdmin.get_deleted_objects (hook)",
+            "path": "django/contrib/admin/options.py",
+            "startLine": 2496,
+            "endLine": 2501
+          },
+          {
+            "symbol": "get_deleted_objects (utils)",
+            "path": "django/contrib/admin/utils.py",
+            "startLine": 127,
+            "endLine": 191
+          },
+          {
+            "symbol": "NestedObjects.collect (catches ProtectedError/RestrictedError)",
+            "path": "django/contrib/admin/utils.py",
+            "startLine": 204,
+            "endLine": 220
+          },
+          {
+            "symbol": "PROTECT on_delete handler",
+            "path": "django/db/models/deletion.py",
+            "startLine": 34,
+            "endLine": 44
+          },
+          {
+            "symbol": "Collector.collect (on_delete dispatch, protected aggregation, restricted check)",
+            "path": "django/db/models/deletion.py",
+            "startLine": 271,
+            "endLine": 431
+          },
+          {
+            "symbol": "ModelAdmin.log_deletions",
+            "path": "django/contrib/admin/options.py",
+            "startLine": 1051,
+            "endLine": 1064
+          },
+          {
+            "symbol": "LogEntryManager.log_actions",
+            "path": "django/contrib/admin/models.py",
+            "startLine": 27,
+            "endLine": 54
+          },
+          {
+            "symbol": "ModelAdmin.delete_model",
+            "path": "django/contrib/admin/options.py",
+            "startLine": 1477,
+            "endLine": 1481
+          },
+          {
+            "symbol": "Collector.delete",
+            "path": "django/db/models/deletion.py",
+            "startLine": 466,
+            "endLine": 552
+          },
+          {
+            "symbol": "delete_confirmation.html (three branches: perms_lacking, protected, confirm)",
+            "path": "django/contrib/admin/templates/admin/delete_confirmation.html",
+            "startLine": 22,
+            "endLine": 47
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "Both the page request (GET) and the confirming POST go through ModelAdmin.delete_view/_delete_view (the POST inside transaction.atomic). The view first requires delete permission on the object itself (PermissionDenied otherwise), then calls the ModelAdmin.get_deleted_objects hook, which delegates to admin.utils.get_deleted_objects; the same call is repeated on the POST, so the checks are re-evaluated at submit time",
+          "get_deleted_objects builds a NestedObjects collector (a deletion Collector subclass with force_collection=True) and calls collect([obj]). NestedObjects.collect records a parent-to-child edge for each collected object (via source_attr) and a per-model set of objects, then runs the normal Collector.collect, which dispatches every reverse relation to its on_delete handler (CASCADE recurses; PROTECT raises ProtectedError from the handler, RESTRICT is checked after the cascade). NestedObjects catches ProtectedError/RestrictedError and stores the blocking objects in .protected instead of failing",
+          "The nested edge graph is turned into a tree of display strings by nested(format_callback). The callback checks, for each object whose model is registered in the admin site, that model's ModelAdmin.has_delete_permission(request, obj) and adds its verbose name to perms_needed when it is lacking; it links to the change page when the URL reverses, otherwise plain text. The result is (to_delete tree, model_count, perms_needed, protected) where protected objects are formatted with the same callback",
+          "The template picks one of three branches: perms_lacking (cannot delete, lists the types), protected (lists the protected objects), else the confirmation with the tree and a confirm form. On POST, a non-empty protected list falls through and re-renders the 'Cannot delete' page; non-empty perms_needed raises PermissionDenied; only when both are empty does the deletion go ahead",
+          "On a confirmed POST the view first computes obj_display and the id, then calls log_deletions (LogEntry.objects.log_actions with action_flag=DELETION, content type, object_repr, user), and only afterwards delete_model, which calls obj.delete(). Logging has to come first because the object (its pk and str) is gone afterwards; both happen inside the atomic block so they roll back together. Model.delete builds a new Collector, runs collect and Collector.delete, which sorts instances, sends pre_delete, does fast deletes and field updates, deletes batches in dependency order, and sends post_delete"
+        ]
+      },
+      "difficulty": "Three layers cooperate: the admin views (options.py), the admin's display collector (utils.py NestedObjects), and the core deletion machinery (db/models/deletion.py with the PROTECT/RESTRICT handlers and the error types), plus the LogEntry model and a template with three branches. The refusal reasons come from different mechanisms (exceptions caught during collection versus a per-object permission callback), and the ordering of the history write relative to the deletion is only visible in one view method.",
+      "grepTest": {
+        "phrases": "'get_deleted_objects', 'NestedObjects', 'Are you sure', 'protected', 'related objects'",
+        "hits": "get_deleted_objects: options.py 4, utils.py 1, actions.py 1; NestedObjects: utils.py 2, options.py 2; 'Are you sure' mostly locale .po files plus the template; 'protected' options.py 15, deletion.py 14, encoding.py 7, utils.py 6; 'related objects' query.py 11, related_descriptors.py 6.",
+        "verdict": "An agent can reach utils.get_deleted_objects in two greps, but that file only shows the display side; why protected objects are available at all (ProtectedError raised in deletion.py handlers and swallowed in NestedObjects.collect), the logging order (options.py) and the final deletion (deletion.py, base.py) need three more files. No single grep lands on the whole answer. Medium."
+      },
+      "heavinessEstimate": "Expect 25-35 tool calls for an agent with no prior knowledge. Files to open: contrib/admin/options.py (_delete_view, log_deletions, delete_model, plus the delete_selected action in actions.py for comparison), contrib/admin/utils.py (get_deleted_objects, NestedObjects), db/models/deletion.py (large: Collector.collect 160 lines, delete 85 lines, handlers), contrib/admin/models.py, db/models/base.py, the delete_confirmation template and likely templatetags/admin_list or object_delete_summary for the display, and tests to confirm behaviour. Roughly 10 greps ('delete_view', 'perms_needed', 'protected', 'log_deletions', 'ProtectedError', 'Collector') and 12+ file reads.",
+      "origin": "new at HEAD; the code paths exist unchanged at T0 as far as checked (log_deletions came in 5.1)",
+      "risks": "ModelAdmin.get_deleted_objects, log_deletions and delete_model all have docstrings, and docs/ref/contrib/admin/index.txt documents get_deleted_objects and log_deletions, so points 1 and 5 are partly stated in prose. The exact internals of Collector.delete (point 5, last sentence) are not in the docs; graders should give partial credit per answer point.",
+      "verified_summary": "gold spans pinned with ast on eval-head",
+      "heavy": true
     }
-  ]
+  ],
+  "orderOffset": 2
 }

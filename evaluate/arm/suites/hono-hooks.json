@@ -2,7 +2,11 @@
   "schemaVersion": 1,
   "id": "hono-hooks-arm",
   "description": "Product hooks (mex hooks, mex context): files vs lexical vs semantic prompt recipe, Hono",
-  "repetitions": 3,
+  "repetitions": {
+    "qa": 1,
+    "change": 2,
+    "heavy": 2
+  },
   "projectName": "hono",
   "appendPrompt": {
     "qa": "Keep the answer concise: lead with the direct answer, then give only the symbols and evidence it rests on. Do not restate the question or describe your process.",
@@ -63,7 +67,8 @@
           "several matched handlers/middleware run through compose(), and a non-finalized context afterwards is an error"
         ]
       },
-      "origin": "August request-dispatch, gold re-pinned from 0293343d (#dispatch +1, fetch +1)"
+      "origin": "August request-dispatch, gold re-pinned from 0293343d (#dispatch +1, fetch +1)",
+      "fullRun": false
     },
     {
       "id": "middleware-composition",
@@ -98,7 +103,8 @@
           "when no handler produced a response and the context is not finalized, onNotFound supplies the response"
         ]
       },
-      "origin": "August middleware-composition; compose spans unchanged at 52febbcc"
+      "origin": "August middleware-composition; compose spans unchanged at 52febbcc",
+      "fullRun": false
     },
     {
       "id": "router-decision",
@@ -131,7 +137,8 @@
           "the choice is locked in lazily at the first match, so routes cannot be added after the first request has been matched (adding throws)"
         ]
       },
-      "origin": "new: decision question answered by decisions.md"
+      "origin": "new: decision question answered by decisions.md",
+      "fullRun": false
     },
     {
       "id": "error-convention",
@@ -169,7 +176,8 @@
           "a thrown error is caught in compose/dispatch and routed to the error handler; the default errorHandler returns err.getResponse() for HTTPException-like errors and otherwise logs and returns a 500"
         ]
       },
-      "origin": "new: convention question answered by conventions.md"
+      "origin": "new: convention question answered by conventions.md",
+      "fullRun": false
     },
     {
       "id": "lambda-empty-query",
@@ -291,7 +299,174 @@
           "defaultIsContentTypeBinary (src/adapter/aws-lambda/handler.ts)"
         ]
       },
-      "origin": "stale trap: honojs/hono#5424 (0d86899d) changed defaultIsContentTypeBinary; scaffold claim kept from before it"
+      "origin": "stale trap: honojs/hono#5424 (0d86899d) changed defaultIsContentTypeBinary; scaffold claim kept from before it",
+      "fullRun": false
+    },
+    {
+      "id": "hono-heavy-jsx-attr-names",
+      "type": "change",
+      "base": "fa2c74fe5c3ce996d025d9d97bf5670c207bb82e",
+      "scaffold": "default",
+      "prompt": "Security bug report: Hono's JSX renderers trust the keys of an element's props. If an application spreads attacker-influenced data into an element, for example `<div {...userProps}>` where one key is `\" onfocus=\"alert(1)` (or any key containing a quote, space, `<`, `>`, `/`, `=`, a backtick, a backslash or a control character), the key is written verbatim into the opening tag, so extra attributes or even new elements can be injected. The client-side DOM renderer (hono/jsx/dom) has the same defect in another shape: such a name makes the DOM throw, which aborts the render or a later update. Fix every place that emits attributes: (1) normal string rendering of elements, including elements inside `<svg>`, (2) the attribute helper in the jsx-runtime module that precompiled JSX uses, which must produce nothing for an invalid name whatever the value is (string, number, style object or promise) and must keep rendering valid ones exactly as before, (3) the DOM renderer, which must silently skip an invalid name both when first rendering and when an element is updated or its attribute removed, while any other error thrown by setAttribute or removeAttribute must still propagate. Ordinary names such as `class`, `data-foo`, `aria-label`, `viewBox`, `xml:lang`, `data.foo`, `data_foo` and non-ASCII letters stay valid; an empty name is invalid. Valid attributes next to an invalid one must still be rendered, in order. Add tests and make sure the existing JSX tests still pass.",
+      "mergeCommit": "66daa2edef8965544c04fcad82c596ab2acdb5ee",
+      "srcFiles": [
+        "src/jsx/base.ts",
+        "src/jsx/jsx-runtime.ts",
+        "src/jsx/dom/render.ts",
+        "src/jsx/utils.ts"
+      ],
+      "hiddenTests": {
+        "fromCommit": "66daa2edef8965544c04fcad82c596ab2acdb5ee",
+        "files": [
+          "src/jsx/index.test.tsx",
+          "src/jsx/jsx-runtime.test.tsx",
+          "src/jsx/dom/index.test.tsx"
+        ]
+      },
+      "testFiles": {
+        "tests": [
+          "src/jsx/index.test.tsx",
+          "src/jsx/jsx-runtime.test.tsx",
+          "src/jsx/dom/index.test.tsx"
+        ]
+      },
+      "testCommand": "node <checkout>\\node_modules\\vitest\\vitest.mjs --run --coverage.enabled=false src/jsx/index.test.tsx src/jsx/jsx-runtime.test.tsx src/jsx/dom/index.test.tsx",
+      "gold": {
+        "code": [
+          {
+            "symbol": "JSXNode.toStringToBuffer (attribute loop, key normalisation)",
+            "path": "src/jsx/base.ts",
+            "startLine": 172,
+            "endLine": 241
+          },
+          {
+            "symbol": "jsxAttr (attribute helper of the automatic/precompiled runtime)",
+            "path": "src/jsx/jsx-runtime.ts",
+            "startLine": 16,
+            "endLine": 46
+          },
+          {
+            "symbol": "applyProps (DOM attribute set/remove)",
+            "path": "src/jsx/dom/render.ts",
+            "startLine": 158,
+            "endLine": 254
+          },
+          {
+            "symbol": "normalizeIntrinsicElementKey (shared key helper module)",
+            "path": "src/jsx/utils.ts",
+            "startLine": 11,
+            "endLine": 12
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "difficulty": "Attributes are written in three independent places with three different mechanisms (string builder in JSXNode, the precompiled-JSX helper in jsx-runtime, and DOM setAttribute/removeAttribute with a different failure mode), so a fix in one leaves the others open; the DOM side must distinguish the invalid-name exception from other errors, and the string side must reject before the style/function/dangerouslySetInnerHTML branches. The symptom is a missing escape, not an error message, so nothing is greppable.",
+      "grepTest": {
+        "phrases": "'attribute', 'setAttribute', 'escape', 'XSS'",
+        "hits": "'attribute' src/jsx/intrinsic-elements.ts 202 (type declarations), dom/render.ts 22, base.ts 9; 'setAttribute' dom/render.ts 3 + dom/intrinsic-element/components.ts 2; 'escape' components.ts 24, streaming.ts 18, base.ts 18, jsx-runtime.ts 8; 'XSS' no hit.",
+        "verdict": "Escaping of values is easy to find; escaping of keys has no existing hook. The agent has to enumerate every emitter of attribute text (base.ts, jsx-runtime.ts, dom/render.ts, plus the intrinsic-element components that call setAttribute) and decide where validation belongs. Medium-hard."
+      },
+      "heavinessEstimate": "Expect 25-35 tool calls. Files to open: src/jsx/base.ts (JSXNode.toStringToBuffer, 70 lines), src/jsx/jsx-runtime.ts, src/jsx/dom/render.ts (applyProps, 100 lines, set and remove branches), src/jsx/utils.ts, the three test files (index.test.tsx is ~2000 lines; the DOM test needs the jsdom setup), and likely src/jsx/dom/intrinsic-element/components.ts and src/jsx/streaming.ts while checking other emitters. About 8 greps (attribute, setAttribute, jsxAttr, toStringToBuffer, escapeToBuffer) and 3-4 vitest runs across the multiple vitest projects.",
+      "origin": "honojs/hono commit 66daa2ed (Merge commit from fork, GHSA fix), parent fa2c74fe on main, committed 2026-04-15",
+      "risks": "The upstream commit also adds `isValidAttributeName` to src/jsx/utils.ts with a unit test in src/jsx/utils.test.ts; that file is deliberately excluded from the hidden tests because it imports the new helper by name and would fail any solution that picks another name. Diff is 73 changed lines in 4 files (low end of the band). The prompt lists the allowed and rejected characters taken from the tests; a solution with a slightly different character class can still pass if it handles the tested names. The upstream DOM test sets global.DOMException; solutions that validate names up front instead of catching InvalidCharacterError also pass. jsdom is used for the DOM tests, so failures specific to real browsers are not covered.",
+      "verified": {
+        "base": "5 test-file entries failed (the 3 files run under several vitest projects), 20 failed / 1043 passed (16 unique tests), x3, ~7-8 s warm",
+        "merge": "5 passed, 1063 passed, x3"
+      },
+      "verified_summary": "base: 20 failed/1043 passed x3; merge: 1063 passed x3",
+      "heavy": true
+    },
+    {
+      "id": "hono-heavy-validator-body-trace",
+      "type": "qa",
+      "base": "52febbcc30bc509d5e4987577e63906fe08fc471",
+      "scaffold": "default",
+      "prompt": "A POST route checks its input in a piece of middleware before the handler runs. Consider four requests to routes that validate (1) a JSON body sent with Content-Type application/json, (2) the same bytes sent with Content-Type text/plain, (3) a truncated, malformed JSON text sent with application/json, and (4) a url-encoded form body, sent to a route that validates the form. What does the user-supplied checking function receive in each case, and what does the client get back? And in case (1), once the middleware has run, how can the handler read the request body again through the request object (a request body stream can only be read once) and also fetch the validated result? Trace the pieces end to end.",
+      "gold": {
+        "code": [
+          {
+            "symbol": "validator (middleware: per-target value extraction, JSON/form parsing, 400s, addValidatedData)",
+            "path": "src/validator/validator.ts",
+            "startLine": 89,
+            "endLine": 171
+          },
+          {
+            "symbol": "content-type regexes (jsonRegex, multipartRegex, urlencodedRegex)",
+            "path": "src/validator/validator.ts",
+            "startLine": 24,
+            "endLine": 26
+          },
+          {
+            "symbol": "HonoRequest.#cachedBody (per-representation body cache, rebuilds from another cached form)",
+            "path": "src/request.ts",
+            "startLine": 217,
+            "endLine": 244
+          },
+          {
+            "symbol": "HonoRequest.json (parses the cached text)",
+            "path": "src/request.ts",
+            "startLine": 258,
+            "endLine": 260
+          },
+          {
+            "symbol": "HonoRequest.addValidatedData / valid",
+            "path": "src/request.ts",
+            "startLine": 344,
+            "endLine": 359
+          },
+          {
+            "symbol": "bufferToFormData",
+            "path": "src/utils/buffer.ts",
+            "startLine": 106,
+            "endLine": 117
+          },
+          {
+            "symbol": "HTTPException.getResponse",
+            "path": "src/http-exception.ts",
+            "startLine": 66,
+            "endLine": 77
+          },
+          {
+            "symbol": "default errorHandler (HTTPException becomes its response)",
+            "path": "src/hono-base.ts",
+            "startLine": 35,
+            "endLine": 42
+          },
+          {
+            "symbol": "compose (catches the thrown exception, calls onError)",
+            "path": "src/compose.ts",
+            "startLine": 50,
+            "endLine": 59
+          }
+        ],
+        "knowledge": [],
+        "answerPoints": [
+          "The validator middleware chooses the value by target. For json it only parses when the Content-Type header matches a JSON media-type regex; it reads the body with c.req.json() and passes the parsed object to the checking function (case 1)",
+          "A missing or non-matching Content-Type (case 2, text/plain) is not an error: the body is not parsed and the checking function receives an empty object {}; the request is then not rejected by the middleware itself, whatever the checking function returns decides the outcome",
+          "Malformed JSON (case 3): c.req.json() rejects (JSON.parse of the cached text), the middleware catches it and throws HTTPException(400, 'Malformed JSON in request body'); compose catches the exception and the app's error handler turns it into the 400 response (the default handler uses getResponse(); an app.onError replaces that)",
+          "Form target (case 4): only multipart/form-data or application/x-www-form-urlencoded content types are parsed; the body is read once as an ArrayBuffer, converted to FormData with bufferToFormData and stored in bodyCache.formData; the FormData is flattened to an object where repeated keys (and keys ending in []) become arrays (so a=1&b=2&b=3 gives {a:'1', b:['2','3']}); a failure to parse throws HTTPException(400, 'Malformed FormData request.' + detail)",
+          "Re-reading and results: HonoRequest keeps a bodyCache with one promise per representation, and #cachedBody returns the cached promise or, if another representation is already cached, rebuilds a new Response from it (JSON is re-stringified, original Content-Type carried over except for FormData) so a second c.req.json()/text()/formData() works without touching the consumed stream. After the checking function returns a non-Response value, the middleware calls c.req.addValidatedData(target, value) (private #validatedData) and calls next; the handler reads it with c.req.valid(target). If the checking function returns a Response, that response is returned and next is not called"
+        ]
+      },
+      "difficulty": "The answer is split across the validator middleware (content-type gating, per-target parsing, the two 400 paths), the request class (a caching layer that is the reason a one-shot stream can be re-read, plus the validated-data store) and the exception/error-handling pipeline. The counter-intuitive result (wrong Content-Type is passed on as {} instead of rejected) is only visible in the middleware's switch.",
+      "grepTest": {
+        "phrases": "'validator', 'c.req.valid', 'json', 'cache', 'Malformed'",
+        "hits": "validator: validator.ts 8, validator/index.ts 3; 'c.req.valid' only request.ts 1 (doc comment); json: utils/types.ts 26, context.ts 25, request.ts 15; cache: middleware/cache/index.ts 71 (unrelated), request.ts 26; 'Malformed JSON' validator.ts + its test.",
+        "verdict": "A grep for 'validator' lands on validator.ts and gives points 1-4 but not the cache that makes re-reading possible; 'cache' lands first on the unrelated cache middleware. The prompt avoids the words bodyCache, addValidatedData, HTTPException. No comment or doc states the full answer. Medium."
+      },
+      "heavinessEstimate": "Expect 15-25 tool calls (smaller codebase than the others, so this is the lightest of the six). Files: src/validator/validator.ts, src/validator/index.ts and utils.ts, src/request.ts (500 lines, cache and valid), src/utils/body.ts (parseBody, which the agent may confuse with the validator path), src/utils/buffer.ts, src/http-exception.ts, src/hono-base.ts and src/compose.ts for the error path, plus validator.test.ts to confirm the empty-object behaviour. 6-8 greps. The text/plain claim is counter-intuitive, so a careful agent also writes a probe or reads the tests.",
+      "origin": "new at 52febbcc; behaviour verified with a vitest probe run on that commit (cases 1-4 produced exactly the outputs above)",
+      "risks": "The prompt contains the words 'validate' and 'request body stream', so a grep for validator reaches validator.ts quickly; points 1-4 are also derivable from validator.test.ts. HonoRequest.json/text docs describe caching only implicitly. The error path (point 3, second half) overlaps with the existing error-convention task (HTTPException, getResponse, compose); grade it as one point. Line numbers were pinned from `git show 52febbcc:<path>`, no checkout was needed.",
+      "verified_probe": {
+        "1": "200 handler got body again ({\"a\":1} via json() and text()), valid('json') = {a:1}",
+        "2": "200, checking function received {} and valid('json') = {}",
+        "3": "400 'Malformed JSON in request body'",
+        "4": "200, form value {a:'1', b:['2','3'], 'c[]':['x']}; parseBody() gives b:'3' (last wins), formData() still readable"
+      },
+      "verified_summary": "probe at 52febbcc reproduced all four cases",
+      "heavy": true
     }
-  ]
+  ],
+  "orderOffset": 0
 }
