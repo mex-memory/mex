@@ -206,9 +206,9 @@ describe("grep", () => {
     expect(other).toBe("");
   });
 
-  it("is silent when no hit lands in code with a fact, or the fact was already shown", async () => {
+  it("offers graph navigation without a fact and deduplicates both tiers", async () => {
     project = await createHookProject();
-    expect(await project.run(grepCall("s-grep-none", "src/report.ts:4:  return calculateOrderTotal(items);"))).toBe("");
+    expect(project.text(await project.run(grepCall("s-grep-none", "src/report.ts:4:  return calculateOrderTotal(items);")))).toContain("MEX graph");
     expect(await project.run(grepCall("s-grep-seen", "src/billing.ts:2:  return items.length;"))).not.toBe("");
     expect(await project.run(grepCall("s-grep-seen", "src/billing.ts:2:  return items.length;"))).toBe("");
   });

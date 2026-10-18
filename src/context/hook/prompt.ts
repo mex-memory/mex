@@ -16,6 +16,7 @@ import type { ContextRoot } from "../root.js";
 import { loadEmbedder, semanticStatus } from "../semantic.js";
 import { loadShown, loadStats } from "../session.js";
 import type { ContextIndex } from "../types.js";
+import { composeGraphPrompt } from "./graph.js";
 import { ensureBase } from "./base.js";
 import { fileSignature, readHead } from "./diff.js";
 import type { Handled } from "./run.js";
@@ -60,6 +61,13 @@ export async function handlePrompt(root: ContextRoot, prompt: string, sessionId:
   if (sessionId !== null && Object.keys(loadStats(root.localDir, sessionId)).length === 0) {
     const files = new Set(index.entities.filter((e) => e.type === "fact").flatMap((e) => e.code));
     stats = Object.fromEntries([...files].map((file) => [file, fileSignature(root.projectRoot, file)]));
+  }
+  if (!result.packet) {
+    const { reader } = openGraphReader(root.scaffoldRoot);
+    try {
+      const graph = composeGraphPrompt({ ...root, index, reader, shown, head: null }, prompt);
+      if (graph) return { ...graph, stats, note: "graph-identifier" };
+    } finally { reader?.close(); }
   }
   return {
     ...(stats === undefined ? {} : { stats }),

@@ -37,6 +37,8 @@ export interface EventOutcome {
   ids: string[];
   /** One entry per fact in the text, for the budget's degraded form. */
   pointers?: PointerEntry[];
+  graphNodes?: string[];
+  graphChars?: number;
 }
 
 export interface EventContext {
@@ -66,7 +68,7 @@ export function projectRelative(projectRoot: string, path: string): string | nul
 }
 
 export function isTestPath(path: string): boolean {
-  return /(^|\/)(__tests__|tests?|specs?|e2e|__mocks__)(\/|$)/i.test(path) || /\.(test|spec)\.[a-z0-9]+$/i.test(path);
+  return /(^|\/)(__tests__|tests?|specs?|e2e|__mocks__|testRunner|unittests)(\/|$)/i.test(path) || /\.(test|spec)\.[a-z0-9]+$/i.test(path);
 }
 
 export function isDocPath(path: string): boolean {

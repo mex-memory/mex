@@ -25,6 +25,7 @@ export interface GraphNodeRow {
   start: number;
   end: number;
   bodyHash: string | null;
+  kind?: string;
 }
 
 export interface GraphReader {
@@ -35,6 +36,10 @@ export interface GraphReader {
   enclosing(file: string, line: number): GraphNodeRow | null;
   /** Up to `limit` callers of a node, found by its id (never by name). */
   callers(id: string, limit: number): GraphNodeRow[];
+  callees(id: string, limit: number): GraphNodeRow[];
+  exactName(name: string, limit: number): GraphNodeRow[];
+  inRange(file: string, start: number, end: number, limit: number): GraphNodeRow[];
+  callerCount(id: string): number;
   close(): void;
 }
 
@@ -55,19 +60,26 @@ export function openGraphReader(scaffoldRoot: string): { reader: GraphReader | n
     return { reader: null, reason: error instanceof Error ? error.message.split("\n")[0]! : String(error) };
   }
   const lookup = db.prepare(
-    "SELECT id, name, file_path AS file, start_line AS start, end_line AS end, body_hash AS bodyHash FROM nodes WHERE id = ?",
+    "SELECT id, name, file_path AS file, start_line AS start, end_line AS end, body_hash AS bodyHash, kind FROM nodes WHERE id = ?",
   );
   const enclosingStatement = db.prepare(
-    `SELECT id, name, file_path AS file, start_line AS start, end_line AS end, body_hash AS bodyHash FROM nodes
+    `SELECT id, name, file_path AS file, start_line AS start, end_line AS end, body_hash AS bodyHash, kind FROM nodes
      WHERE file_path = ? AND start_line <= ? AND end_line >= ? AND kind <> 'file'
      ORDER BY (end_line - start_line) ASC, start_line DESC LIMIT 1`,
   );
-  const callerStatement = db.prepare(
-    `SELECT n.id AS id, n.name AS name, n.file_path AS file, n.start_line AS start, n.end_line AS end, n.body_hash AS bodyHash
-     FROM edges e JOIN nodes n ON n.id = e.source
-     WHERE e.target = ? AND e.kind = 'calls' AND e.source <> e.target
-     ORDER BY n.file_path, n.start_line LIMIT ?`,
-  );
+  const columns = "n.id, n.name, n.file_path AS file, n.start_line AS start, n.end_line AS end, n.body_hash AS bodyHash, n.kind";
+  // Rank before LIMIT: a popular symbol's test callbacks must not hide production callers.
+  const testRank = `CASE WHEN ${["*/test/*", "*/tests/*", "*/spec/*", "*/specs/*", "*/e2e/*", "*/__tests__/*", "*/__mocks__/*", "*/testrunner/*", "*/unittests/*", "*.test.*", "*.spec.*"].map((pattern) => `('/' || lower(n.file_path)) GLOB '${pattern}'`).join(" OR ")} THEN 1 ELSE 0 END`;
+  const order = `${testRank}, n.file_path, n.start_line, n.id`;
+  const callerStatement = db.prepare(`SELECT DISTINCT ${columns} FROM edges e JOIN nodes n ON n.id = e.source
+    WHERE e.target = ? AND e.kind = 'calls' AND e.source <> e.target ORDER BY ${order} LIMIT ?`);
+  const calleeStatement = db.prepare(`SELECT DISTINCT ${columns} FROM edges e JOIN nodes n ON n.id = e.target
+    WHERE e.source = ? AND e.kind = 'calls' AND e.source <> e.target ORDER BY ${order} LIMIT ?`);
+  const exactStatement = db.prepare(`SELECT ${columns} FROM nodes n WHERE n.name = ? AND n.kind NOT IN ('file', 'import') ORDER BY ${order} LIMIT ?`);
+  const rangeStatement = db.prepare(`SELECT ${columns} FROM nodes n WHERE n.file_path = ? AND n.start_line <= ? AND n.end_line >= ?
+    AND n.kind NOT IN ('file', 'import') ORDER BY (n.end_line - n.start_line), n.start_line, n.id LIMIT ?`);
+  const countStatement = db.prepare("SELECT count(DISTINCT source) AS count FROM edges WHERE target = ? AND kind = 'calls' AND source <> target");
+  const cap = (limit: number): number => Number.isFinite(limit) ? Math.max(0, Math.min(100, Math.floor(limit))) : 0;
   return {
     reader: {
       enclosing(file, line) {
@@ -75,8 +87,12 @@ export function openGraphReader(scaffoldRoot: string): { reader: GraphReader | n
         return row ? { ...row, bodyHash: row.bodyHash ?? null } : null;
       },
       callers(id, limit) {
-        return (callerStatement.all(id, limit) as GraphNodeRow[]).map((row) => ({ ...row, bodyHash: row.bodyHash ?? null }));
+        return (callerStatement.all(id, cap(limit)) as GraphNodeRow[]).map((row) => ({ ...row, bodyHash: row.bodyHash ?? null }));
       },
+      callees(id, limit) { return calleeStatement.all(id, cap(limit)) as GraphNodeRow[]; },
+      exactName(name, limit) { return exactStatement.all(name, cap(limit)) as GraphNodeRow[]; },
+      inRange(file, start, end, limit) { return rangeStatement.all(file, end, start, cap(limit)) as GraphNodeRow[]; },
+      callerCount(id) { return (countStatement.get(id) as { count: number }).count; },
       identity() {
         const rows = db
           .prepare(

@@ -19,6 +19,7 @@ import { PACKET_CHAR_LIMIT } from "../packet.js";
 import { appendBoundedLine } from "../local-state.js";
 import { resolveContextRoot, type ContextRoot } from "../root.js";
 import { isValidSessionId, loadInjectedChars, loadShown, loadStats, recordShown, recordStats } from "../session.js";
+import { afterKnowledge, composeGraphEdit, composeGraphSearch, graphEnabled } from "./graph.js";
 import { decideBudget } from "./budget.js";
 import { diffAgainstHead, diffAgainstHeadAsync, fileSignature, readHead } from "./diff.js";
 import {
@@ -108,8 +109,25 @@ export function renderHookOutput(event: Exclude<HookEvent, "stop">, additionalCo
 
 const SEARCH_COMMAND = /(^|[\s|;&(])(rg|grep|egrep|fgrep|ag|ack)(\s|$)|\bgit\s+grep\b/;
 
+/** Extract only a simple shell search's pattern; mixed command output is ambiguous. */
+export function bashSearchPattern(command: string): string {
+  if (/[|;&<>\n]/.test(command)) return "";
+  const tokens = command.match(/"[^"\n]*"|'[^'\n]*'|[^\s]+/g)?.map(t => t.replace(/^["']|["']$/g, "")) ?? [];
+  if (tokens[0] === "git" && tokens[1] === "grep") tokens.shift();
+  if (!["rg", "grep", "egrep", "fgrep", "ag", "ack"].includes(tokens.shift() ?? "")) return "";
+  while (tokens.length) {
+    const token = tokens.shift()!;
+    if (token === "--") return tokens.shift() ?? "";
+    if (token === "-e" || token === "--regexp") return tokens.shift() ?? "";
+    if (/^(--glob|--iglob|--type|--type-not|--max-count|--max-columns|-g|-t|-T|-A|-B|-C|-m)$/.test(token)) { tokens.shift(); continue; }
+    if (token.startsWith("-")) continue;
+    return token;
+  }
+  return "";
+}
+
 /** Output lines that look like `path:line:` from a Bash search command. */
-function bashGrepHits(payload: HookPayload, projectRoot: string): GrepHit[] {
+export function bashGrepHits(payload: HookPayload, projectRoot: string): GrepHit[] {
   const command = text(object(payload.tool_input)["command"]) ?? "";
   if (!SEARCH_COMMAND.test(command)) return [];
   const response = payload.tool_response;
@@ -118,12 +136,24 @@ function bashGrepHits(payload: HookPayload, projectRoot: string): GrepHit[] {
 }
 
 /** Hits from the Grep tool, whichever output mode it ran in. */
-function grepToolHits(payload: HookPayload, projectRoot: string): GrepHit[] {
+export function grepToolHits(payload: HookPayload, projectRoot: string): GrepHit[] {
   const response = payload.tool_response;
-  if (typeof response === "string") return parseGrepLines(response.slice(0, 256 * 1024), projectRoot);
+  const input = object(payload.tool_input);
+  const parse = (content: string): GrepHit[] => {
+    const bounded = content.slice(0, 256 * 1024);
+    const hits = parseGrepLines(bounded, projectRoot);
+    if (hits.length) return hits;
+    const path = text(input["path"]);
+    const file = path ? projectRelative(projectRoot, path) : null;
+    return file ? bounded.split(/\r?\n/).flatMap((line) => {
+      const match = /^(\d+):/.exec(line);
+      return match ? [{ file, line: Number(match[1]) }] : [];
+    }) : [];
+  };
+  if (typeof response === "string") return parse(response);
   const body = object(response);
   const content = text(body["content"]);
-  if (content !== undefined) return parseGrepLines(content.slice(0, 256 * 1024), projectRoot);
+  if (content !== undefined) return parse(content);
   const names = body["filenames"];
   return Array.isArray(names) ? hitsFromFileList(names.filter((n): n is string => typeof n === "string"), projectRoot) : [];
 }
@@ -185,7 +215,13 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
     // The session's injection budget: whole packets while there is room, pointers past it, nothing far past it.
     if (sessionId !== null && result.text.trim() !== "") {
       const budget = loadConfiguredContextConfig(root.scaffoldRoot).sessionBudgetChars;
-      const decision = decideBudget({ used: loadInjectedChars(root.localDir, sessionId), budget, text: result.text, pointers: result.pointers ?? [] });
+      const used = loadInjectedChars(root.localDir, sessionId);
+      // Graph uses only the budget left after knowledge; never turn graph into knowledge pointers.
+      if (result.graphChars && used + result.text.length > budget) {
+        result = { ...result, text: result.text.slice(0, result.text.length - result.graphChars).trimEnd(),
+          remember: result.remember.filter((k) => !k.startsWith("graph:")), graphNodes: [], graphChars: 0 };
+      }
+      const decision = decideBudget({ used, budget, text: result.text, pointers: result.pointers ?? [] });
       if (decision.kind === "pointers") result = { ...result, text: decision.text, note: "budget-pointers" };
       else if (decision.kind === "exhausted") result = { ...result, text: "", ids: [], note: "budget-exhausted" };
     }
@@ -217,6 +253,9 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
       injected: result.ids.length,
       ids: result.ids,
       chars: result.text.length,
+      graphNodes: delivered ? result.graphNodes ?? [] : [],
+      graphChars: delivered ? result.graphChars ?? 0 : 0,
+      ...(delivered && result.graphChars ? { kind: "graph" } : {}),
       ...(result.note === undefined ? {} : { note: result.note }),
       ...(delivered ? { text: result.text.slice(0, LOG_TEXT_CHARS) } : {}),
     });
@@ -241,17 +280,16 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
   const none = (note: string): Handled => ({ text: "", remember: [], ids: [], note });
   const loaded = loadContextIndex(root.localDir);
   if (loaded.index === null) return none(`no-index:${loaded.state}`);
-  if (!loaded.index.entities.some((e) => e.type === "fact")) return none("no-facts");
 
   // An edit needs the file's diff, which is a process start. Start it now, so it runs
-  // while the graph opens and the session loads; and not at all for a file no fact links.
+  // while the graph opens and the session loads. With graph disabled, unlinked files skip it.
   const input = object(payload.tool_input);
   let edited: { file: string; diff: ReturnType<typeof diffAgainstHeadAsync> } | null = null;
   if (event === "edit") {
     const path = text(input["file_path"]);
     const file = path === undefined ? null : projectRelative(root.projectRoot, path);
     if (file === null) return none("outside-project");
-    if (!loaded.index.entities.some((e) => e.type === "fact" && e.code.includes(file))) {
+    if (!graphEnabled() && !loaded.index.entities.some((e) => e.type === "fact" && e.code.includes(file))) {
       return { ...none("not-linked"), stats: { [file]: fileSignature(root.projectRoot, file) } };
     }
     edited = { file, diff: diffAgainstHeadAsync(root.projectRoot, [file]) };
@@ -281,11 +319,12 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
         const diffs = await diff;
         if (diffs === null) return none("no-diff");
         // The file is now checked as it stands, so a later Bash call need not diff it again.
-        const outcome = composeEdit(ctx, { diffs }) ?? none("nothing-touched");
+        const outcome = afterKnowledge(composeEdit(ctx, { diffs }), composeGraphEdit(ctx, diffs)) ?? none("nothing-touched");
         return { ...outcome, stats: { [file]: fileSignature(root.projectRoot, file) } };
       }
       case "grep": {
-        const outcome = composeGrep(ctx, grepToolHits(payload, root.projectRoot));
+        const hits = grepToolHits(payload, root.projectRoot);
+        const outcome = afterKnowledge(composeGrep(ctx, hits), composeGraphSearch(ctx, hits, text(input["pattern"]) ?? ""));
         return outcome ?? none("no-fact-hits");
       }
       case "bash":
@@ -310,7 +349,9 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
  */
 function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, sessionId: string | null): Handled {
   const parts: EventOutcome[] = [];
-  const grep = ctx.reader === null ? null : composeGrep(ctx, bashGrepHits(payload, root.projectRoot));
+  const hits = bashGrepHits(payload, root.projectRoot);
+  const grep = composeGrep(ctx, hits);
+  const graph = composeGraphSearch(ctx, hits, bashSearchPattern(text(object(payload.tool_input)["command"]) ?? ""));
   if (grep !== null) parts.push(grep);
 
   const linkedFiles = [...new Set(ctx.index.entities.filter((e) => e.type === "fact").flatMap((e) => e.code))];
@@ -332,8 +373,10 @@ function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, 
     remember: parts.flatMap((p) => p.remember),
     ids: parts.flatMap((p) => p.ids),
     pointers: parts.flatMap((p) => p.pointers ?? []),
+    graphNodes: parts.flatMap((p) => p.graphNodes ?? []),
+    graphChars: parts.reduce((sum, p) => sum + (p.graphChars ?? 0), 0),
     stats: current,
   };
   if (note !== undefined && outcome.text === "") outcome.note = note;
-  return outcome;
+  return { ...(afterKnowledge(outcome, graph) ?? outcome), stats: current };
 }
