@@ -60,6 +60,10 @@ export interface RecipeThresholds {
  * fourth candidate carries the weight, with a second entry only when it is
  * nearly as good as the first. The dense recipe uses this same lexical gate and
  * adds the cosine as a veto (a candidate under `cosineMin` is dropped first).
+ * Without that veto, three common words in one window of a long task prompt are
+ * a coincidence often enough that the lexical recipe needs four (or an
+ * identifier hit); the dense recipe keeps three, since its cosine already
+ * rejects the coincidences and a fourth word cost it a correct entry on dev.
  */
 export interface WindowedGate {
   thresholds: RecipeThresholds;
@@ -88,7 +92,7 @@ export const RECIPES: Readonly<Record<RecipeName, Recipe>> = {
     candidates: "wiki",
     dense: false,
     thresholds: { floor: 0.41859999999999997, G: 5, ratio: 0.5, max: 2, margin: 0.45 },
-    windowed: { thresholds: { floor: 0.293, G: 3, ratio: 0.9, max: 2, margin: 0.45 } },
+    windowed: { thresholds: { floor: 0.293, G: 4, ratio: 0.9, max: 2, margin: 0.45 } },
   },
 };
 

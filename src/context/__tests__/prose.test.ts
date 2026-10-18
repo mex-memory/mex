@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { composePrompt } from "../compose.js";
-import { RECIPES, WINDOWING } from "../frozen.js";
+import { RECIPES, WINDOWING, type Recipe } from "../frozen.js";
 import { ensureContextIndex } from "../index-store.js";
-import { gateCandidates, buildRankIndex, rankQuery, type RankableEntity } from "../rank.js";
+import { gateCandidates, buildRankIndex, rankQuery, type RankableEntity, type RankedCandidate } from "../rank.js";
 import { promptWindows, proseOf } from "../windows.js";
 import { cleanupProjects, createProject, STANDARD_FACTS, writeEntities, type Fixture } from "./fixture.js";
 
@@ -88,6 +88,26 @@ describe("the windowed gate", () => {
     expect(gateCandidates(out.list, RECIPES.R3, true).selected).toEqual([]);
     for (const r of out.list) r.cos = 0.9;
     expect(gateCandidates(out.list, RECIPES.R3, true).selected.map((r) => r.doc.entity.id)).toEqual(["mx_0"]);
+  });
+
+  it("needs four query words in one window, or an identifier hit, for the lexical recipe", () => {
+    // A clear leader over the fourth candidate, so only corroboration decides.
+    const ranked = (groups: number, exact: number): RankedCandidate[] =>
+      [0.6, 0.2, 0.15, 0.1].map((norm, order) => ({
+        doc: { entity: facts()[order]!, order, tf: new Map(), len: 10, symNames: [], symFiles: [] },
+        score: norm,
+        norm,
+        groups: order === 0 ? groups : 1,
+        exact: order === 0 ? exact : 0,
+        cos: 0.9,
+      }));
+    const picked = (list: RankedCandidate[], recipe: Recipe): string[] =>
+      gateCandidates(list, recipe, true).selected.map((r) => r.doc.entity.id);
+    expect(gateCandidates(ranked(3, 0), RECIPES.R2w, true).window[0]!.decision).toBe("uncorroborated");
+    expect(picked(ranked(4, 0), RECIPES.R2w)).toEqual(["mx_0"]);
+    expect(picked(ranked(3, 2), RECIPES.R2w)).toEqual(["mx_0"]);
+    // The dense recipe keeps three: its cosine veto already rejects coincidences.
+    expect(picked(ranked(3, 0), RECIPES.R3)).toEqual(["mx_0"]);
   });
 });
 
