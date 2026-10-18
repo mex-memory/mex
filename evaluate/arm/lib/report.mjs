@@ -3,12 +3,29 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CATEGORIES } from "./classify.mjs";
+import { claudeAdapter } from "../../adapters/agents/claude.mjs";
+import { firstCall, measureSession, neutralizeRows } from "./measures.mjs";
+import { readContextLog } from "./hooks.mjs";
 
-export function loadRows(outputDir) {
+export function loadRows(outputDir, suite = null) {
   const dir = join(outputDir, "runs");
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter((name) => name.endsWith(".json"))
+  const rows = readdirSync(dir).filter((name) => name.endsWith(".json"))
     .map((name) => JSON.parse(readFileSync(join(dir, name), "utf8")));
+  for (const row of rows) {
+    const path = join(outputDir, "artifacts", `${row.runId}.jsonl`);
+    if (!existsSync(path)) continue;
+    const raw = readFileSync(path, "utf8"), task = suite?.tasks.find((t) => t.id === row.taskId) ?? { gold: {} };
+    const parsed = claudeAdapter.parseTranscript(raw, { ...task, gold: [] });
+    row.firstCall = firstCall(raw);
+    row.metrics.costUsd = parsed.usage.reportedCostUsd;
+    for (const [key, value] of Object.entries({ uncachedInput: parsed.usage.uncachedInput, cacheWrite: parsed.usage.cacheWrite, cacheRead: parsed.usage.cacheRead, output: parsed.usage.output, newTokens: parsed.usage.newTokens, processed: parsed.usage.reportedTotal })) row.metrics[key] = value;
+    const cachedIndex = join(outputDir, "index-cache", row.indexKey, "context-index.json");
+    row.measures = measureSession({ raw, calls: parsed.toolCalls, entries: readContextLog(join(outputDir, "artifacts", `${row.runId}.context-log.jsonl`)).entries,
+      task, answer: JSON.stringify(parsed.rawResult), contextIndex: existsSync(cachedIndex) ? JSON.parse(readFileSync(cachedIndex, "utf8")) : null });
+    for (const key of ["discoveryCalls", "redundantSearches", "turnsToGoldFile", "wikiShowCalls"]) row.metrics[key] = row.measures[key];
+  }
+  return neutralizeRows(rows);
 }
 
 const median = (values) => {
@@ -65,18 +82,38 @@ const fmt = (value, digits = 0) => (value === null || value === undefined || Num
 const pct = (value) => (value === null ? "–" : `${(value * 100).toFixed(1)}%`);
 
 export function generateReport({ suite, rows, grades = null, salt, baselines = {} }) {
+  neutralizeRows(rows);
   const valid = rows.filter((row) => row.valid);
   const armIds = Object.keys(suite.arms);
   const lines = [`# ${suite.id} agent-arm report`, "", `Rows: ${rows.length} (${valid.length} valid, ${rows.length - valid.length} invalid).`, ""];
+  lines.push("## Primary measures", "", "Processed tokens count all input, cache and output tokens. Neutral cost reprices a cold first call using the median warm first-call prefix in this output. Warm-up usage is excluded. Injection uptake is a bounded heuristic, not proof of causation.", "",
+    "| Arm | Rows | Processed tokens | Neutral USD | Real USD | Discovery calls | Used / ignored injections | Redundant searches | Off-gold prompt injections | Median calls to gold file | Wiki shows | Graph / knowledge injections |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|");
+  for (const arm of armIds) {
+    const subset = valid.filter((r) => r.arm === arm);
+    const sum = (key) => subset.reduce((s, r) => s + (r.measures?.[key] ?? r.metrics[key] ?? 0), 0);
+    lines.push(`| ${arm} | ${subset.length} | ${fmt(sum("processed"))} | ${subset.some((r) => r.metrics.neutralCostUsd === null) ? "unavailable" : fmt(sum("neutralCostUsd"), 4)} | ${fmt(sum("costUsd"), 4)} | ${sum("discoveryCalls")} | ${sum("injectionsUsed")} / ${sum("injectionsIgnored")} | ${sum("redundantSearches")} | ${subset.reduce((s,r) => s + (r.measures?.offGoldInjections.length ?? 0),0)} | ${fmt(median(subset.map((r) => r.measures?.turnsToGoldFile)), 1)} | ${sum("wikiShowCalls")} | ${sum("graphInjections")} / ${sum("knowledgeInjections")} |`);
+  }
+  lines.push("", "## Discovery and gold-file latency", "", "A missing gold-file visit stays missing; latency medians exclude it.", "",
+    "| Run | Discovery | Redundant | Calls to gold file | Wiki shows | Alignment |", "|---|---|---|---|---|---|");
+  for (const row of valid.filter((r) => r.measures)) {
+    const m=row.measures;
+    lines.push(`| ${row.runId} | ${m.discoveryCalls} | ${m.redundantSearches} | ${fmt(m.turnsToGoldFile)} | ${m.wikiShowCalls} | ${m.alignment} |`);
+  }
+  lines.push("", "## Injection uptake", "", "Each packet is one hook injection. Follow-up calls are listed for off-gold prompt packets; complete inputs remain in the row.", "",
+    "| Run | Kind / hook | IDs | After call | Uptake | Off gold | Following calls |", "|---|---|---|---|---|---|---|");
+  for (const row of valid) for (const packet of row.measures?.injections ?? []) {
+    lines.push(`| ${row.runId} | ${packet.kind} / ${packet.event} | ${packet.ids.join(", ") || "none"} | ${packet.afterToolCall} | ${packet.used ? "used" : "ignored"} | ${packet.offGold ? "yes" : "no"} | ${packet.followingCalls.map((c,i)=>`${packet.afterToolCall+i+1}:${c.name}`).join(", ") || "none"} |`);
+  }
 
-  lines.push("## Per task and arm", "", "| Task | Arm | Valid | Correct | Median new tokens | Median processed | Median time (s) | Median turns | Median tool calls | Median MEX calls | Median fallbacks |", "|---|---|---|---|---|---|---|---|---|---|---|");
+  lines.push("## Per task and arm", "", "| Task | Arm | Valid | Correct | Median new tokens | Median processed | Median time (s) | Median turns | Median tool calls | Median MEX calls | Median discovery calls |", "|---|---|---|---|---|---|---|---|---|---|---|");
   for (const task of suite.tasks) {
     for (const arm of armIds) {
       const subset = valid.filter((row) => row.taskId === task.id && row.arm === arm);
       const graded = subset.map((row) => correctness(row, grades, salt)).filter((value) => value !== null);
       const correct = graded.length ? `${graded.filter(Boolean).length}/${graded.length}` : "ungraded";
       const pick = (key) => median(subset.map((row) => row.metrics[key]));
-      lines.push(`| ${task.id} | ${arm} | ${subset.length} | ${correct} | ${fmt(pick("newTokens"))} | ${fmt(pick("processed"))} | ${fmt((pick("elapsedMs") ?? NaN) / 1000, 1)} | ${fmt(pick("turns"))} | ${fmt(pick("toolCalls"))} | ${fmt(pick("mexCalls"))} | ${fmt(pick("fallbacks"))} |`);
+      lines.push(`| ${task.id} | ${arm} | ${subset.length} | ${correct} | ${fmt(pick("newTokens"))} | ${fmt(pick("processed"))} | ${fmt((pick("elapsedMs") ?? NaN) / 1000, 1)} | ${fmt(pick("turns"))} | ${fmt(pick("toolCalls"))} | ${fmt(pick("mexCalls"))} | ${fmt(pick("discoveryCalls"))} |`);
     }
   }
 
@@ -107,8 +144,8 @@ export function generateReport({ suite, rows, grades = null, salt, baselines = {
       }
     }
     lines.push("", `## Paired deltas (${treatment} − ${control})`, "", `Matched pairs: ${pairs.length}. Intervals are 95% percentile bootstraps of the mean paired delta.`, "", `| Metric | Total ${control} | Total ${treatment} | Total change | Mean paired delta | 95% CI |`, "|---|---|---|---|---|---|");
-    for (const [label, key] of [["New tokens", "newTokens"], ...TOKEN_KEYS, ["Processed tokens", "processed"], ["Cost (USD)", "costUsd"], ["Wall time (ms)", "elapsedMs"], ["Tool calls", "toolCalls"]]) {
-      const digits = key === "costUsd" ? 3 : 0;
+    for (const [label, key] of [["Processed tokens", "processed"], ["Neutral cost (USD)", "neutralCostUsd"], ["Real cost (USD)", "costUsd"], ...TOKEN_KEYS, ["Wall time (ms)", "elapsedMs"], ["Discovery calls", "discoveryCalls"], ["Tool calls", "toolCalls"]]) {
+      const digits = key.endsWith("CostUsd") || key === "costUsd" ? 3 : 0;
       const deltas = pairs.map((pair) => pair.treatment.metrics[key] - pair.control.metrics[key]);
       const totalControl = pairs.reduce((sum, pair) => sum + (pair.control.metrics[key] ?? 0), 0);
       const totalTreatment = pairs.reduce((sum, pair) => sum + (pair.treatment.metrics[key] ?? 0), 0);
@@ -124,9 +161,8 @@ export function generateReport({ suite, rows, grades = null, salt, baselines = {
       if (calls || chars) lines.push(`| ${category} | ${pct(calls)} | ${pct(chars)} |`);
     }
     const baselineControl = valid.filter((row) => row.arm === control);
-    lines.push("", `Fallbacks per ${treatment} session: median ${fmt(median(armRows.map((row) => row.metrics.fallbacks)))}; ${control} discovery calls per session: median ${fmt(median(baselineControl.map((row) => row.allocation?.discovery?.calls ?? 0)))}.`);
+    lines.push("", `Discovery calls per ${treatment} session: median ${fmt(median(armRows.map((row) => row.metrics.discoveryCalls)))}; ${control}: median ${fmt(median(baselineControl.map((row) => row.metrics.discoveryCalls)))}.`);
   }
-  lines.push("", "Fallback causes (empty / wrong / verify / skipped) need transcript review; record them in grades.json under `fallbackCauses`.");
 
   // What the product hooks did, per session: events, what they injected, the end-of-session work.
   const hookRows = valid.filter((row) => row.hooks);

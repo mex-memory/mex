@@ -1,11 +1,12 @@
 // One agent session in a prepared checkout, plus its post-session measurements.
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeAdapter } from "../../adapters/agents/claude.mjs";
 import { ANSWER_SCHEMA } from "../../compare/lib/answer.mjs";
 import { runSync, runTimed } from "../../compare/lib/process.mjs";
 import { forcedCompliance, summarizeCalls } from "./classify.mjs";
-import { anyHookEntries, contextStatus, CONTEXT_LOG, summarizeContextLog, waitForSettle } from "./hooks.mjs";
+import { anyHookEntries, contextStatus, CONTEXT_LOG, readContextLog, summarizeContextLog, waitForSettle } from "./hooks.mjs";
+import { firstCall, measureSession } from "./measures.mjs";
 import { git, runMex } from "./workspace.mjs";
 
 export const CHANGE_SCHEMA = {
@@ -200,8 +201,36 @@ export async function waitForPushSettle(workspace, timeoutMs = 20 * 60 * 1000) {
   return { waitMs: Date.now() - started, timedOut: existsSync(lock) && Date.now() - started >= timeoutMs };
 }
 
-export async function runAgentSession({ task, armId, armSpec, workspace, env, cliBin, model, timeoutMs, outputPrefix, claudeCommand, mexPrompt = "none", appendPrompt = null }) {
+export async function runWarmup({ invocation, workspace, env, outputPrefix, timeoutMs = 120_000 }) {
+  const local = join(workspace, ".mex", "local"), snapshot = `${outputPrefix}.warmup-local`;
+  const hadLocal = existsSync(local);
+  if (hadLocal) cpSync(local, snapshot, { recursive: true });
+  const args = [...invocation.args];
+  args[args.indexOf("-p") + 1] = "Reply with OK.";
+  args.push("--max-turns", "1");
+  let result;
+  try {
+    result = await runTimed(invocation.command, args, { cwd: workspace, env, timeoutMs });
+    writeFileSync(`${outputPrefix}.warmup.jsonl`, result.stdout);
+    const settle = await waitForSettle(workspace);
+    // A structured answer may need more turns than the cap allows; one API call is enough to warm the cache.
+    if (settle.timedOut || result.timedOut || !firstCall(result.stdout)) throw new Error("warm-up made no API call or settle timed out");
+  } finally {
+    // Includes context-sessions/{hash}.json and .stat.json (budget/shown state),
+    // context-flags.json, context-log.jsonl, settle lock/again, and future local state.
+    if (existsSync(local)) rmSync(local, { recursive: true, force: true });
+    if (hadLocal) { mkdirSync(local, { recursive: true }); cpSync(snapshot, local, { recursive: true }); }
+    rmSync(snapshot, { recursive: true, force: true });
+  }
+  if (git(workspace, ["status", "--porcelain"]).stdout.trim()) throw new Error("warm-up changed the prepared workspace");
+  const parsed = claudeAdapter.parseTranscript(result.stdout, { gold: [] });
+  return { usage: parsed.usage, costUsd: parsed.usage.reportedCostUsd, firstCall: firstCall(result.stdout), exitCode: result.code, elapsedMs: result.elapsedMs };
+}
+
+export async function runAgentSession({ task, armId, armSpec, workspace, env, cliBin, model, timeoutMs, outputPrefix, claudeCommand, mexPrompt = "none", appendPrompt = null, warmup = false, validateCache = warmup, verifyWorkspace = null, sharedPrefixTokens = 5656 }) {
   const invocation = claudeInvocation({ task, model, claudeCommand, mexPrompt, withMex: armSpec.withMex, appendPrompt });
+  const warmupResult = warmup ? await runWarmup({ invocation, workspace, env, outputPrefix }) : null;
+  if (verifyWorkspace) verifyWorkspace();
   const processResult = await runTimed(invocation.command, invocation.args, { cwd: workspace, env, timeoutMs });
   writeFileSync(`${outputPrefix}.jsonl`, processResult.stdout);
   const parsed = claudeAdapter.parseTranscript(processResult.stdout, { ...task, gold: [] });
@@ -209,6 +238,8 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
   writeFileSync(`${outputPrefix}.calls.json`, `${JSON.stringify(calls.classified, null, 2)}\n`);
 
   const violations = [];
+  const first = firstCall(processResult.stdout);
+  if (validateCache && (!first || first.cacheRead < sharedPrefixTokens)) violations.push("cold-start");
   if (processResult.timedOut) violations.push("session timeout");
   if (processResult.code !== 0) violations.push(`agent exited ${processResult.code}`);
   if (parsed.malformedLines) violations.push(`${parsed.malformedLines} malformed stream line(s)`);
@@ -271,7 +302,11 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
   if (hiddenTests?.output) writeFileSync(`${outputPrefix}.tests.txt`, hiddenTests.output);
 
   const usage = parsed.usage;
+  const contextIndexPath = join(workspace, ".mex", "local", "context-index.json");
+  const measures = measureSession({ raw: processResult.stdout, calls: parsed.toolCalls, entries: readContextLog(contextLog).entries, task,
+    answer: JSON.stringify(parsed.rawResult), contextIndex: existsSync(contextIndexPath) ? JSON.parse(readFileSync(contextIndexPath, "utf8")) : null });
   return {
+    firstCall: first, warmup: warmupResult, measures, cacheValidation: { enabled: validateCache, minimumReadTokens: sharedPrefixTokens },
     agent: "claude",
     process: { code: processResult.code, signal: processResult.signal, timedOut: processResult.timedOut, elapsedMs: processResult.elapsedMs, stderr: String(processResult.stderr ?? "").slice(-4000) },
     ...(settle ? { settleWait: settle } : {}),
@@ -281,12 +316,14 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
       newTokens: usage.newTokens, processed: usage.reportedTotal, uncachedInput: usage.uncachedInput,
       cacheWrite: usage.cacheWrite, cacheRead: usage.cacheRead, output: usage.output,
       cacheUseRatio: usage.cacheUseRatio, costUsd: usage.reportedCostUsd,
+      neutralCostUsd: first?.cacheRead > 0 ? usage.reportedCostUsd : null,
       elapsedMs: processResult.elapsedMs, turns: parsed.turns, toolCalls: calls.totalCalls,
       mexCalls: calls.mexCalls, fallbacks: calls.fallbacks, handHashEdits: calls.handHashEdits,
       // False in the MEX arm means the agent never touched the scaffold or CLI;
       // check the pilot for this before trusting the instructions were loaded.
       mexEngaged: calls.classified.some((entry) => entry.category.startsWith("mex:") || entry.category.startsWith("knowledge-")),
       permissionDenials: parsed.permissionDenials,
+      discoveryCalls: measures.discoveryCalls, redundantSearches: measures.redundantSearches, turnsToGoldFile: measures.turnsToGoldFile, wikiShowCalls: measures.wikiShowCalls,
     },
     allocation: calls.allocation,
     compliance: armSpec.withMex && mexPrompt === "forced" ? forcedCompliance(parsed.toolCalls, task.type) : null,
