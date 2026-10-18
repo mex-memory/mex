@@ -25,7 +25,7 @@ node evaluate/arm/index.mjs --report --suite ... --output <dir> # reads grades.j
 ```
 
 - **`--prepare`** resolves every commit, then builds the Graph and Wiki indexes and a clean-state `mex check` baseline once per base and scaffold. It also records the CLI hash, Claude Code version, Node version, platform and `core.autocrlf`.
-- **`--run`** creates a fresh worktree per session and adds the scaffold for the `mex` arm only. It links the dependencies and commits, so the session diff is exactly the agent's work. After the session, it records the classified calls, the patch, `mex check` (`mex` arm), and the hidden tests (change tasks).
+- **`--run`** reuses one workspace per repository. Before each session it unlinks dependencies, checks out the pinned base/setup commit, cleans ignored artifacts, restores independent copies of cached indexes, and verifies HEAD, source identity, clean status, cache hashes and absent session state. Setup commits contain only scaffold, hooks and explicitly listed instruction patches; their ancestor is the task's original base. After the session it records the classified calls, patch, `mex check` and hidden tests.
 - **Usage limits:** a usage-limit error stops the run. `--resume` skips valid rows and reruns invalid ones.
 
 ## Validity
@@ -60,7 +60,7 @@ Extra inputs: `--aliases <file>` (Hono and TypeScript: `{ "<entity id>": ["phras
 
 What changes in a hooks session:
 - The scaffold's prototype hook files, prototype settings and prototype `CLAUDE.md` block are removed from the checkout (the scaffold ref is untouched); a `CLAUDE.md` block written by `mex setup` stays.
-- `--prepare` builds the Graph and Wiki indexes and the context index (with the alias overlay) once per base and scaffold; sessions copy them.
+- `--prepare` builds the first graph, then seeds later task bases from the previous cache and uses incremental `graph refresh` (the product may choose a full extraction when configuration changes). Wiki/context indexes and provenance remain specific to each base/scaffold. Sessions use independent file copies, never hardlinks to mutable databases.
 - The frozen CLI's bin is first on `PATH` for MEX arms, `MEX_CLI` points the settle worker at it.
 - After the agent exits, the harness waits for the settle worker (`.mex/local/context-settle.lock`, cap 10 minutes, recorded as `settleWait` and not as agent time), copies `context-log.jsonl` to `artifacts/<run>.context-log.jsonl`, and stores `mex context status --json` after settle as `artifacts/<run>.context-status.json`.
 - The row's `hooks` field summarises the log: events per kind (count, injected, time), injected ids and characters, whether the session budget was hit, Stop blocks and the ids they listed, each settle pass (refresh mode, reason, changed, re-extracted, regrounded ids, failures).
@@ -71,3 +71,38 @@ What changes in a hooks session:
 `test/fake-hooks-agent.mjs` (`--fake-agent`) replays a scripted session and runs the checkout's hook commands from `.claude/settings.json` with Claude Code-style payloads, so the wiring and the end-of-session work can be exercised without a model. `test/make-fake-fixes.mjs` writes the `FAKE_AGENT_FIXES` file that lets it apply the upstream fix for change tasks. `FAKE_AGENT_TOUCH_FACT=1` edits code a fact links to; `FAKE_AGENT_CONFIRM=1` answers the Stop block with `mex context confirm`. It cannot show that Claude Code itself calls the hooks.
 
 Unit tests: `node --test evaluate/arm/test/arm.test.mjs evaluate/arm/test/hooks.test.mjs`.
+
+## Full run
+
+`full-run.example.json` pins three separate subjects, outputs and dependency copies. Review these local paths before use. The semantic model must already be installed: the harness checks its status and only reads it. Prepare never installs or updates it. On a restricted checkout, copy dependencies into the writable scratch folder first; test runners can write caches inside `node_modules`.
+
+```powershell
+node evaluate/arm/parallel.mjs --plan --config evaluate/arm/full-run.example.json
+node evaluate/arm/parallel.mjs --prepare --config evaluate/arm/full-run.example.json
+node evaluate/arm/parallel.mjs --run --resume --config evaluate/arm/full-run.example.json
+```
+
+The launcher defaults to `--plan`. Only explicit `--prepare` or `--run` starts children. Outputs must be distinct and non-nested, subjects distinct; each child gets its own temporary folder. Cleanup matches its own workspace path and unlinks dependency junctions before any reset or removal. Do not start two processes against the same output. Each repository's sessions remain serial; the three repositories run concurrently.
+
+`index.mjs --plan --suite <suite> [--pilot <pilot-output>]` prints the selected sessions, repetitions, arm order and first-position counts, plus measured-cost estimates from pilot medians and a separate warm-up allowance. It does not run a CLI or create output. Heavy work may exceed these medians.
+
+The default selection is **123 measured sessions**: Hono 30, TypeScript 51, Django 42. Hono's regular questions have `fullRun: false`; they remain available via explicit `--tasks`. `repetitions` accepts a number or an object keyed by task id, `qa`, `change`, `heavy`, or `default`; task-level `repetitions` overrides it. Questions run once, changes twice, all five heavy tasks twice. `orderOffset` staggers repository orders, including a filtered selection; both each repository and the combined full run balance first positions within one. Resuming skips completed rows without changing their intended order.
+
+### Cache and accounting
+
+Hooks suites warm **every arm** immediately before each measured session using the same invocation, environment, workspace, tools, settings and hooks, with prompt `Reply with OK.` and `--max-turns 1`. `warmup` records usage, cost and elapsed time separately; none enters session metrics. The harness waits for settle, restores the entire original `.mex/local` snapshot (including session budget/statistics, shown ids, flags, logs and locks), requires clean Git status and rechecks index hashes. Unexpected source/database changes fail preparation for that session. `--no-warmup` disables the call, while cache validation still applies.
+
+The measured first call needs at least `sharedPrefixTokens` cache-read tokens (default 5,656, the smallest warm pilot prefix); otherwise the row has violation `cold-start`. The suite can pin a different threshold for another model/system prompt.
+
+Cost and model token totals come from the **last cumulative result**; continuation-local `usage` is summed only when cumulative `modelUsage` is absent. Assistant message inputs/cache totals independently audit accounting. `metrics.neutralCostUsd` reprices a zero-read first call's shared-prefix write as a read, using the median positive first-call cache read in that output and the model price table. Missing evidence or an unknown cold model produces an unavailable neutral cost. Reports recompute historical transcripts without changing source rows. Processed tokens and neutral cost are primary; actual paid cost remains visible. The pilot's exact R3 total is $0.5245082; its published $0.53 summary used rounded displayed values.
+
+### Delivery measures and verification
+
+Rows retain `measures`: discovery calls (Grep/Glob and shell searches), each injection's paths/symbols and use within five subsequent tool calls or in the final answer, ignored injections, redundant symbol searches after a supplied location, off-gold prompt packets and their subsequent calls, calls until the first gold-file read/edit, wiki-show follow-ups, and graph/knowledge packet counts. Timestamps align hook logs with tool calls; missing timestamps are labelled partial. These are lexical uptake heuristics, not causal evidence. Legacy search-hit notes count as graph packets; explicit `kind: graph` is supported.
+
+```powershell
+node --test evaluate/arm/test/*.test.mjs
+node evaluate/arm/verify-heavy.mjs --config evaluate/arm/full-run.example.json --output C:/mex-test-tmp/grader-check
+```
+
+Grader verification never runs an agent. It restores upstream tests at the base, reruns them with the upstream fix, verifies that failure is a test failure rather than a startup failure, checks question answer keys/source spans, and removes all worktrees. `--python <interpreter>` permits an explicitly recorded verification override. See [FULL-RUN-VERIFICATION.md](FULL-RUN-VERIFICATION.md) for pilot tables, measured setup timings, grader results and expected Stop-review coverage.
