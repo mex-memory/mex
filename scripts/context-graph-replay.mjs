@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Offline pilot replay using production composers. No model, API, source checkout or index maintenance.
  * node scripts/context-graph-replay.mjs [--pilot DIR] [--suites DIR] [--scratch DIR]
- *   [--max-hits 60] [--max-files 5] [--read-candidate] [--label baseline]
+ *   [--max-hits 60] [--max-files 5] [--read-candidate] [--label baseline] [--source-root DIR]
  * Copies graph/index before opening. Detailed notes and coverage go to scratch, never pilot inputs.
  */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -21,8 +21,8 @@ const label = option('--label', args.includes('--read-candidate') ? 'read' : 'ba
 if (!/^[\w-]+$/.test(label)) throw new Error('Invalid label');
 const limits = { hits: Number(option('--max-hits', 60)), files: Number(option('--max-files', 5)) };
 mkdirSync(scratch, { recursive: true });
-const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const server = await createServer({ root: repo, configFile: false, server: { middlewareMode: true }, appType: 'custom' });
+const repo = resolve(option('--source-root', resolve(dirname(fileURLToPath(import.meta.url)), '..')));
+const server = await createServer({ root: repo, cacheDir: join(scratch, 'vite-cache', label), configFile: false, optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true }, appType: 'custom' });
 const json = p => JSON.parse(readFileSync(p, 'utf8'));
 const jsonl = p => existsSync(p) ? readFileSync(p, 'utf8').trim().split(/\r?\n/).filter(Boolean).map(JSON.parse) : [];
 const posix = p => p.replace(/\\/g, '/');
@@ -31,7 +31,7 @@ try {
   const { openGraphReader } = await server.ssrLoadModule('/src/context/graph-reader.ts');
   const graph = await server.ssrLoadModule('/src/context/hook/graph.ts');
   const events = await server.ssrLoadModule('/src/context/hook/events.ts');
-  const { runHook, grepToolHits, bashGrepHits, bashSearchPattern } = await server.ssrLoadModule('/src/context/hook/run.ts');
+  const { runHook, grepToolHits, bashGrepHits, bashSearchPattern, mayWriteFiles } = await server.ssrLoadModule('/src/context/hook/run.ts');
   const { composePrompt } = await server.ssrLoadModule('/src/context/compose.ts');
   const { liveStateFrom } = await server.ssrLoadModule('/src/context/packet.ts');
   const { decideBudget } = await server.ssrLoadModule('/src/context/hook/budget.ts');
@@ -61,7 +61,7 @@ try {
         for (const row of rows) {
           const content = Array.isArray(row.message?.content) ? row.message.content : [];
           for (const c of content) {
-            if (c.type === 'tool_use') { const call = { ...c, turn: calls.length + 1 }; calls.push(call); pending.set(c.id, call); }
+            if (c.type === 'tool_use' && !pending.has(c.id)) { const call = { ...c, turn: calls.length + 1 }; calls.push(call); pending.set(c.id, call); }
             if (c.type === 'tool_result' && pending.has(c.tool_use_id)) {
               Object.assign(pending.get(c.tool_use_id), { response: c.content, result: row.tool_use_result, error: c.is_error === true });
             }
@@ -99,7 +99,9 @@ try {
         });
         const ctx = { projectRoot: root, localDir: join(scratch, 'state', run.runId), index, reader, shown: new Set(), head: null };
         let used = 0, graphChars = 0, useful = 0, noise = 0, neutral = 0, lead = 0, notes = 0, knowledgeChars = 0;
-        const coverage = { prompt: 1, read: 0, grep: 0, bash: 0, edit: 0, failed: 0, unmappedEdits: 0 };
+        const declared = existsSync(`${artifact}.calls.json`) ? json(`${artifact}.calls.json`) : [];
+        const coverage = { prompt: 1, read: 0, grep: 0, bash: 0, edit: 0, failed: 0, unmappedEdits: 0,
+          unmappedBashEdits: 0, missingCalls: declared.filter(c => !pending.has(c.id)).length };
         const deliver = (knowledge, note, turn, event) => {
           let out = graph.afterKnowledge(knowledge, note);
           if (!out) return;
@@ -107,11 +109,16 @@ try {
           if (!out) return;
           const decision = decideBudget({ used, budget: 12000, text: out.text, pointers: out.pointers ?? [] });
           if (decision.kind !== 'full') {
-            if (decision.kind === 'pointers') { used += decision.text.length; knowledgeChars += decision.text.length; }
+            if (decision.kind === 'pointers') {
+              used += decision.text.length; knowledgeChars += decision.text.length;
+              details.push({ run: run.runId, turn, event, text: decision.text, ids: out.ids, graphNodes: [],
+                gold: gold.some(g => decision.text.includes(g.path) || (g.symbol && decision.text.includes(g.symbol.split(/\s+\(/)[0]))) });
+            }
             return;
           }
           used += out.text.length; graphChars += out.graphChars ?? 0; knowledgeChars += out.text.length - (out.graphChars ?? 0);
           for (const key of out.remember) ctx.shown.add(key);
+          details.push({ run: run.runId, turn, event, text: out.text, ids: out.ids, graphNodes: out.graphNodes ?? [], gold: gold.some(g => out.text.includes(g.path) || (g.symbol && out.text.includes(g.symbol.split(/\s+\(/)[0]))) });
           if (!out.graphNodes?.length) return;
           notes++;
           const nodes = [...reader.nodes(out.graphNodes).values()];
@@ -124,7 +131,7 @@ try {
           const bad = !nodes.some(isGold) && !nodes.some(n => laterUse(n, turn));
           if (good) { useful++; lead = Math.max(lead, Math.max(...future.map(x => x.later.turn - turn - 1))); }
           else if (bad) noise++; else neutral++;
-          details.push({ run: run.runId, turn, event, chars: out.graphChars, usefulGold, usefulDefinition, noise: bad,
+          /* graph diagnostics */ details.push({ diagnostic: true, run: run.runId, turn, event, chars: out.graphChars, usefulGold, usefulDefinition, noise: bad,
             nodes: nodes.map(n => ({ id: n.id, name: n.name, file: n.file, start: n.start, end: n.end, gold: isGold(n), opened: isOpened(n), later: laterUse(n, turn)?.turn ?? null })), text: note.text });
         };
         // Use observed prompt gates for existing arms (including semantic); files is a lexical counterfactual.
@@ -151,6 +158,7 @@ try {
             knowledge = events.composeRead(ctx, { ...call.input, file });
             if (args.includes('--read-candidate')) note = graph.composeGraphReadCandidate(ctx, file, call.input.offset, call.input.limit);
           } else if (event === 'grep' || event === 'bash') {
+            if (event === 'bash' && mayWriteFiles(call.input.command ?? '')) coverage.unmappedBashEdits++;
             const hits = hitsOf(call);
             knowledge = events.composeGrep(ctx, hits);
             note = graph.composeGraphSearch(ctx, hits, call.input.pattern ?? bashSearchPattern(call.input.command ?? ''), limits);
@@ -159,7 +167,7 @@ try {
             const file = rel(call.input.file_path ?? result.filePath);
             const patches = result.structuredPatch ?? [];
             let diffs = new Map();
-            if (patches.length) diffs.set(file, { signature: call.id, ranges: patches.map(p => [p.oldStart, p.oldStart + Math.max(1,p.oldLines) - 1]) });
+            if (patches.length) diffs.set(file, { signature: call.id, ranges: patches.flatMap(patchRanges) });
             else if (result.originalFile && call.input.old_string) {
               const at = result.originalFile.indexOf(call.input.old_string);
               if (at >= 0) { const start = result.originalFile.slice(0, at).split('\n').length; diffs.set(file, { signature: call.id, ranges: [[start, start + call.input.old_string.split('\n').length - 1]] }); }
@@ -189,7 +197,7 @@ try {
             }
           }
         }
-        tables.push({ project, task: task.id, arm: run.arm, useful, noise, neutral, notes, graphChars, totalChars: used, lead, coverage });
+        tables.push({ run: run.runId, project, task: task.id, arm: run.arm, useful, noise, neutral, notes, graphChars, totalChars: used, lead, coverage });
         if (project === 'ts' && !health.some(h => h.key === run.indexKey)) {
           const live = liveStateFrom(reader, index.entities);
           const facts = index.entities.filter(e => e.type === 'fact');
@@ -203,10 +211,28 @@ try {
   const quantile = (a, p) => a.sort((x,y) => x-y)[Math.min(a.length-1, Math.floor(a.length*p))] ?? 0;
   const latency = Object.fromEntries(['read','grep','bash','edit'].map(event => { const a = times.filter(t => t.event === event).map(t=>t.ms); return [event, { n: a.length, p50: quantile(a,.5), p95: quantile(a,.95), max: quantile(a,1) }]; }));
   const warmLatency = Object.fromEntries(['read', 'grep'].map(event => { const a = warmTimes.filter(t => t.event === event).map(t=>t.ms); return [event, { n: a.length, p50: quantile(a,.5), p95: quantile(a,.95), max: quantile(a,1) }]; }));
-  const result = { warmLatency, methodology: 'Observed knowledge prompt gates for MEX arms; files lexical counterfactual. Production tool composers on copied base snapshots. Read ranges track opened symbols. Lead=max intervening tool calls per session, not causal savings. Definition locations count if later used; noise has neither gold nor later use. No source checkout, API or model. Shell edits and unmapped edits reported, not fabricated.', limits, readCandidate: args.includes('--read-candidate'), sessions: tables, latency, health, notes: details };
+  const result = { warmLatency, methodology: 'Observed knowledge prompt gates for MEX arms; files lexical counterfactual. Production tool composers on copied base snapshots. Read ranges track opened symbols. Lead=max intervening tool calls per session, not causal savings. Definition locations count if later used; noise has neither gold nor later use. No source checkout, API or model. Shell commands run through search composers; shell write ranges and unmapped edits are unavailable and counted, not fabricated. Structured patches exclude context lines.', limits, readCandidate: args.includes('--read-candidate'), sessions: tables, latency, health, notes: details };
   writeFileSync(join(scratch, `replay-${label}.json`), JSON.stringify(result, null, 2));
   let md = '| Task | Arm | Useful | Noise | Neutral | Graph chars | Total chars | Lead |\n|---|---|---:|---:|---:|---:|---:|---:|\n';
   for (const r of tables) md += `| ${r.task} | ${r.arm} | ${r.useful} | ${r.noise} | ${r.neutral} | ${r.graphChars} | ${r.totalChars} | ${r.lead} |\n`;
   writeFileSync(join(scratch, `replay-${label}.md`), md);
-  console.log(md); console.log(JSON.stringify({ latency, warmLatency, coverage: tables.map(r=>({task:r.task,arm:r.arm,...r.coverage})) }));
+  console.log(JSON.stringify({ sessions: tables.length, chars: tables.reduce((sum,r)=>sum+r.totalChars,0), latency }));
 } finally { await server.close(); }
+
+/** Structured patches include context; only the removed/added run is touch evidence. */
+function patchRanges(patch) {
+  if (!Array.isArray(patch.lines)) return [[patch.oldStart, patch.oldStart + Math.max(1, patch.oldLines) - 1]];
+  const ranges = [];
+  let line = patch.oldStart, start = null, removed = 0;
+  const flush = () => {
+    if (start !== null) ranges.push(removed ? [start, start + removed - 1] : [start - 0.5, start - 0.5]);
+    start = null; removed = 0;
+  };
+  for (const text of patch.lines) {
+    if (text.startsWith('-')) { start ??= line; removed++; line++; }
+    else if (text.startsWith('+')) start ??= line;
+    else if (text.startsWith(' ')) { flush(); line++; }
+  }
+  flush();
+  return ranges;
+}
