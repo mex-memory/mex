@@ -36,6 +36,7 @@ export function parseArgs(argv) {
     else if (arg === "--cli-bin") args.cliBin = resolve(value(i++));
     else if (arg === "--deps") args.deps = resolve(value(i++));
     else if (arg === "--aliases") args.aliases = resolve(value(i++));
+    else if (arg === "--graph-seeds") args.graphSeeds = resolve(value(i++));
     else if (arg === "--output") args.output = resolve(value(i++));
     else if (arg === "--model") args.model = value(i++);
     else if (arg === "--tasks") args.tasks = value(i++).split(",").map((id) => id.trim());
@@ -184,7 +185,10 @@ function prepare(args, suite) {
     const base = resolveCommit(args.subject, task.base);
     const scaffold = scaffolds[task.scaffold];
     const key = indexKey(base, scaffold ?? base);
-    const cachePath = !needsIndexes ? null : buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv, depsDir: args.deps, projectName, hooks, seedCache });
+    // With --graph-seeds, each base starts from its own prebuilt graph (build-graph-seeds.mjs)
+    // or builds in full; a refresh across distant bases can need more memory than a build.
+    const seed = args.graphSeeds ? (existsSync(join(args.graphSeeds, base, "graph.db")) ? join(args.graphSeeds, base) : null) : seedCache;
+    const cachePath = !needsIndexes ? null : buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv, depsDir: args.deps, projectName, hooks, seedCache: seed });
     if (cachePath) seedCache = cachePath;
     if (cachePath) baselines[key] = JSON.parse(readFileSync(join(cachePath, "check-baseline.json"), "utf8"));
     if (cachePath && hooks && !coverage[key]) coverage[key] = aliasCoverage(join(cachePath, "context-index.json"), aliasIds ?? []);
