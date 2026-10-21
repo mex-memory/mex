@@ -7,7 +7,9 @@ import { relativePath } from "./suite.mjs";
 
 // Line endings follow the subject clone's core.autocrlf: grounding baselines hash the
 // checked-out bytes, so checkouts must match the platform the scaffold was written on.
-const GIT_IDENTITY = ["-c", "user.name=mex-eval", "-c", "user.email=eval@localhost"];
+// Subject repositories may install commit hooks (husky); harness commits must never run them.
+const NO_HOOKS = process.platform === "win32" ? "NUL" : "/dev/null";
+const GIT_IDENTITY = ["-c", "user.name=mex-eval", "-c", "user.email=eval@localhost", "-c", `core.hooksPath=${NO_HOOKS}`];
 const SCAFFOLD_PATHS = [".mex", "CLAUDE.md", ".claude"];
 const INDEX_FILES = ["graph.db", "wiki.db"];
 // The product hooks read these from `.mex/local/`: the ranking index and the optional alias overlay.
