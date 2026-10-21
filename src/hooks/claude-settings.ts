@@ -8,6 +8,8 @@
  * in the file is left as the user wrote it (order and indentation included).
  */
 
+import { hookSwitches } from "./switches.js";
+
 export const MEX_HOOK_MARKER = "--mex-managed";
 export const HOOK_TIMEOUT_SECONDS = 30;
 
@@ -21,12 +23,21 @@ export interface HookSpec {
 /** The entries MEX installs. The command is the same for all; the host's payload says which event it is. */
 export const HOOK_SPECS: readonly HookSpec[] = [
   { event: "UserPromptSubmit", label: "UserPromptSubmit" },
-  { event: "PostToolUse", matcher: "Read", label: "PostToolUse Read" },
-  { event: "PostToolUse", matcher: "Edit|Write|MultiEdit", label: "PostToolUse Edit|Write|MultiEdit" },
   { event: "PostToolUse", matcher: "Grep", label: "PostToolUse Grep" },
   { event: "PostToolUse", matcher: "Bash", label: "PostToolUse Bash" },
   { event: "Stop", label: "Stop" },
 ];
+
+/** Install-time switches; matching runtime switches also protect old installations. */
+export function hookSpecs(env: NodeJS.ProcessEnv = process.env): readonly HookSpec[] {
+  const flags = hookSwitches(env);
+  const specs = HOOK_SPECS.filter(s =>
+    s.event === "UserPromptSubmit" ? flags.prompt : s.event === "Stop" ? flags.stop :
+    s.matcher === "Grep" ? flags.grep : flags.bash && (flags.search || flags.read || flags.edit));
+  if (flags.read) specs.push({ event: "PostToolUse", matcher: "Read", label: "PostToolUse Read" });
+  if (flags.edit) specs.push({ event: "PostToolUse", matcher: "Edit|Write|MultiEdit", label: "PostToolUse Edit|Write|MultiEdit" });
+  return specs;
+}
 
 export function isManagedCommand(command: unknown): boolean {
   return typeof command === "string" && /(^|\s)--mex-managed(\s|$)/.test(command);
@@ -106,6 +117,7 @@ export interface SettingsPlan {
  * group is never mixed with ours.
  */
 export function planInstall(current: string | null, command: string): SettingsPlan {
+  const specs = hookSpecs();
   let settings: Json;
   try {
     settings = parseSettings(current);
@@ -118,7 +130,7 @@ export function planInstall(current: string | null, command: string): SettingsPl
   next["hooks"] = hooks;
 
   const kept = new Set<unknown>();
-  for (const spec of HOOK_SPECS) {
+  for (const spec of specs) {
     const group = groupsOf(hooks, spec.event).find((g) => isObject(g) && g.matcher === spec.matcher && managedHooksIn(g).length > 0);
     if (group === undefined) continue;
     const hook = managedHooksIn(group)[0]!;
@@ -128,7 +140,7 @@ export function planInstall(current: string | null, command: string): SettingsPl
     kept.add(hook);
   }
   stripManaged(hooks, kept);
-  for (const spec of HOOK_SPECS) {
+  for (const spec of specs) {
     const present = groupsOf(hooks, spec.event).some((g) => isObject(g) && g.matcher === spec.matcher && managedHooksIn(g).some((h) => kept.has(h)));
     if (present) continue;
     const entry: Json = spec.matcher === undefined ? { hooks: [desiredHook(command)] } : { matcher: spec.matcher, hooks: [desiredHook(command)] };
@@ -136,8 +148,8 @@ export function planInstall(current: string | null, command: string): SettingsPl
     (hooks[spec.event] as unknown[]).push(entry);
   }
 
-  if (JSON.stringify(next) === before) return { action: "noop", text: null, entries: HOOK_SPECS.length };
-  return { action: current === null ? "create" : "update", text: serialize(next, detectStyle(current)), entries: HOOK_SPECS.length };
+  if (JSON.stringify(next) === before) return { action: "noop", text: null, entries: specs.length };
+  return { action: current === null ? "create" : "update", text: serialize(next, detectStyle(current)), entries: specs.length };
 }
 
 /** Delete every marked hook (except those in `keep`); drop the groups, events and `hooks` object that this leaves empty. */
@@ -216,7 +228,7 @@ export function inspectSettings(current: string | null, expectedCommand: string 
   }
   const hooks: Json = isObject(settings["hooks"]) ? settings["hooks"] : {};
   const claimed = new Set<unknown>();
-  const entries: EntryStatus[] = HOOK_SPECS.map((spec) => {
+  const entries: EntryStatus[] = hookSpecs().map((spec) => {
     const group = groupsOf(hooks, spec.event).find((g) => isObject(g) && g.matcher === spec.matcher && managedHooksIn(g).length > 0);
     if (group === undefined) return { label: spec.label, state: "missing", command: null };
     const hook = managedHooksIn(group)[0]!;

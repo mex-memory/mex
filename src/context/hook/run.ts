@@ -12,9 +12,11 @@
 import { statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { bashReads, bashSearchCwd, bashSearchPattern, bashSearchSegment, shellSegments } from "../../hooks/shell.js";
+export { bashSearchPattern } from "../../hooks/shell.js";
 import { loadConfiguredContextConfig } from "../../config.js";
 import { loadFlaggedIds } from "../flags.js";
-import { loadContextIndex } from "../index-file.js";
+import { loadContextIndex, readBounded } from "../index-file.js";
 import type { ContextIndex } from "../types.js";
 import { openGraphReader } from "../graph-reader.js";
 import { PACKET_CHAR_LIMIT } from "../packet.js";
@@ -62,6 +64,8 @@ export interface HookEnvironment {
   cwd: string;
   /** Disable the semantic recipe (tests; `MEX_HOOK_LEXICAL=1`). */
   lexical?: boolean;
+  /** The host entry supplies the installed event policy; offline callers may exercise every composer. */
+  tools?: { read: boolean; edit: boolean; search: boolean };
 }
 
 export interface HookResult {
@@ -189,32 +193,38 @@ function only(diffs: ReadonlyMap<string, FileDiff>, files: readonly string[]): M
   return new Map([...diffs].filter(([file]) => wanted.has(fold(file))));
 }
 
-const SEARCH_COMMAND =/(^|[\s|;&(])(rg|grep|egrep|fgrep|ag|ack)(\s|$)|\bgit\s+grep\b/;
-
-/** Extract only a simple shell search's pattern; mixed command output is ambiguous. */
-export function bashSearchPattern(command: string): string {
-  if (/[|;&<>\n]/.test(command)) return "";
-  const tokens = command.match(/"[^"\n]*"|'[^'\n]*'|[^\s]+/g)?.map(t => t.replace(/^["']|["']$/g, "")) ?? [];
-  if (tokens[0] === "git" && tokens[1] === "grep") tokens.shift();
-  if (!["rg", "grep", "egrep", "fgrep", "ag", "ack"].includes(tokens.shift() ?? "")) return "";
-  while (tokens.length) {
-    const token = tokens.shift()!;
-    if (token === "--") return tokens.shift() ?? "";
-    if (token === "-e" || token === "--regexp") return tokens.shift() ?? "";
-    if (/^(--glob|--iglob|--type|--type-not|--max-count|--max-columns|-g|-t|-T|-A|-B|-C|-m)$/.test(token)) { tokens.shift(); continue; }
-    if (token.startsWith("-")) continue;
-    return token;
-  }
-  return "";
-}
-
 /** Output lines that look like `path:line:` from a Bash search command. */
 export function bashGrepHits(payload: HookPayload, projectRoot: string): GrepHit[] {
   const command = text(object(payload.tool_input)["command"]) ?? "";
-  if (!SEARCH_COMMAND.test(command)) return [];
+  const segment = bashSearchSegment(command);
+  if (segment === null) return [];
   const response = payload.tool_response;
   const stdout = typeof response === "string" ? response : text(object(response)["stdout"]) ?? "";
-  return parseGrepLines(stdout.slice(0, 256 * 1024), projectRoot);
+  const cwd = bashSearchCwd(command, projectRoot);
+  let bounded = stdout.slice(0, 256 * 1024);
+  const mixedSearches = shellSegments(command).filter(part => bashSearchSegment(part) !== null).length > 1;
+  const pattern = bashSearchPattern(command);
+  if (mixedSearches && /^[\w$]+$/.test(pattern)) {
+    const insensitive = /(?:^|\s)-[A-Za-z]*i|--ignore-case/.test(segment);
+    const literal = insensitive ? pattern.toLowerCase() : pattern;
+    bounded = bounded.split(/\r?\n/).filter(line => (insensitive ? line.toLowerCase() : line).includes(literal)).join("\n");
+  }
+  const hits = parseGrepLines(bounded, cwd).flatMap(hit => {
+    const file = projectRelative(projectRoot, join(cwd, hit.file));
+    return file === null ? [] : [{ ...hit, file }];
+  });
+  const files = commandFiles(cwd, segment);
+  if (hits.length > 0) {
+    if (!mixedSearches || files.length === 0) return hits;
+    const names = new Set(files.map(file => projectRelative(projectRoot, join(cwd, file))));
+    return hits.filter(hit => names.has(hit.file));
+  }
+  if (files.length !== 1) return [];
+  const file = projectRelative(projectRoot, join(cwd, files[0]!));
+  return file === null ? [] : bounded.split(/\r?\n/).flatMap(line => {
+    const match = /^(\d+):/.exec(line);
+    return match ? [{ file, line: Number(match[1]) }] : [];
+  });
 }
 
 /** Hits from the Grep tool, whichever output mode it ran in. */
@@ -293,7 +303,7 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
     // The prompt path needs the Markdown parser and the ranker; tool events never load them.
     let result: Handled = event === "prompt"
       ? await (await import("./prompt.js")).handlePrompt(root, text(payload.prompt) ?? "", sessionId, { lexical: env.lexical === true })
-      : await handleTool(root, payload, event, sessionId);
+      : await handleTool(root, payload, event, sessionId, env.tools);
     // The session's injection budget: whole packets while there is room, pointers past it, nothing far past it.
     if (sessionId !== null && result.text.trim() !== "") {
       const budget = loadConfiguredContextConfig(root.scaffoldRoot).sessionBudgetChars;
@@ -330,7 +340,7 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
       }
     }
     appendLog(root, {
-      event,
+      event: event === "bash" && bashSearchSegment(text(object(payload.tool_input)["command"]) ?? "") !== null && shellSegments(text(object(payload.tool_input)["command"]) ?? "").length > 1 ? "search-compound" : event,
       ms: Math.round(performance.now() - started),
       injected: result.ids.length,
       ids: result.ids,
@@ -358,7 +368,7 @@ export type Handled = EventOutcome & {
 // tools
 // ---------------------------------------------------------------------------
 
-async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclude<HookEvent, "prompt" | "stop">, sessionId: string | null): Promise<Handled> {
+async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclude<HookEvent, "prompt" | "stop">, sessionId: string | null, tools = { read: true, edit: true, search: true }): Promise<Handled> {
   const none = (note: string): Handled => ({ text: "", remember: [], ids: [], note });
   const loaded = loadContextIndex(root.localDir);
   if (loaded.index === null) return none(`no-index:${loaded.state}`);
@@ -366,6 +376,14 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
   // An edit needs the file's diff, which is a process start. Start it now, so it runs
   // while the graph opens and the session loads. With graph disabled, unlinked files skip it.
   const input = object(payload.tool_input);
+  const shown = sessionId === null ? new Set<string>() : loadShown(root.localDir, sessionId);
+  if (event === "read") {
+    const path = text(input["file_path"]);
+    const file = path === undefined ? null : projectRelative(root.projectRoot, path);
+    if (file === null) return none("outside-project");
+    if (!loaded.index.entities.some(e => e.type === "fact" && e.code.includes(file) && !shown.has(e.id))) return none("no-unseen-facts");
+  }
+  if (event === "bash" && !tools.edit && bashSearchSegment(text(input["command"]) ?? "") === null && (!tools.read || bashReads(text(input["command"]) ?? "", root.projectRoot).length === 0)) return none("unsupported-command");
   let edited: { file: string; diff: ReturnType<typeof diffAgainstHeadAsync> } | null = null;
   if (event === "edit") {
     const path = text(input["file_path"]);
@@ -377,7 +395,7 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
     edited = { file, diff: diffAgainstHeadAsync(root.projectRoot, [file]) };
   }
   // A Bash call's diff, when it needs one, also starts now.
-  const bash = event === "bash" ? planBash(root, payload, loaded.index, sessionId) : null;
+  const bash = event === "bash" ? planBash(root, payload, loaded.index, sessionId, tools.edit) : null;
 
   const { reader } = openGraphReader(root.scaffoldRoot);
   try {
@@ -386,7 +404,7 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
       localDir: root.localDir,
       index: loaded.index,
       reader,
-      shown: sessionId === null ? new Set<string>() : loadShown(root.localDir, sessionId),
+      shown,
       head: readHead(root.projectRoot),
       flagged: loadFlaggedIds(root.localDir),
     };
@@ -416,7 +434,7 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
         return outcome ?? none("no-fact-hits");
       }
       case "bash":
-        return await handleBash(root, payload, ctx, bash!);
+        return await handleBash(root, payload, ctx, bash!, tools);
       default:
         return none("unhandled");
     }
@@ -451,8 +469,9 @@ interface BashPlan {
  * the whole tree costs about 200 ms on a 7,000-file checkout, a scoped one about 50 ms, so a command
  * that names no file gets no note.
  */
-function planBash(root: ContextRoot, payload: HookPayload, index: ContextIndex, sessionId: string | null): BashPlan {
+function planBash(root: ContextRoot, payload: HookPayload, index: ContextIndex, sessionId: string | null, edits = true): BashPlan {
   const command = text(object(payload.tool_input)["command"]) ?? "";
+  if (!edits) return { command, current: {}, recorded: {}, moved: [], diff: null };
   const linkedFiles = [...new Set(index.entities.filter((e) => e.type === "fact").flatMap((e) => e.code))];
   const current: Record<string, string> = Object.fromEntries(linkedFiles.map((file) => [file, fileSignature(root.projectRoot, file)]));
   const recorded = sessionId === null ? {} : loadStats(root.localDir, sessionId);
@@ -461,12 +480,22 @@ function planBash(root: ContextRoot, payload: HookPayload, index: ContextIndex, 
   return { command, current, recorded, moved, diff: named.length > 0 ? diffAgainstHeadAsync(root.projectRoot, [...new Set([...named, ...moved])]) : null };
 }
 
-async function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, plan: BashPlan): Promise<Handled> {
+async function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, plan: BashPlan, tools: { read: boolean; edit: boolean; search: boolean }): Promise<Handled> {
   const { command, current, recorded, moved } = plan;
   const parts: EventOutcome[] = [];
-  const hits = bashGrepHits(payload, root.projectRoot);
+  const hits = tools.search ? bashGrepHits(payload, root.projectRoot) : [];
   const grep = composeGrep(ctx, hits);
   if (grep !== null) parts.push(grep);
+  if (tools.read && grep === null && hits.length === 0) for (const read of bashReads(command, root.projectRoot)) {
+    if (read.tail !== undefined) {
+      const source = readBounded(join(root.projectRoot, read.file), 4 * 1024 * 1024);
+      if (!("text" in source)) continue;
+      const lines = source.text.split("\n").length - (source.text.endsWith("\n") ? 1 : 0);
+      read.offset = Math.max(1, lines - read.tail + 1); read.limit = read.tail;
+    }
+    const outcome = composeRead(ctx, read);
+    if (outcome !== null) { parts.push(outcome); break; }
+  }
 
   const all = plan.diff === null ? null : await plan.diff;
   let impact: EventOutcome | null = null;
@@ -482,14 +511,16 @@ async function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventCon
   const shown = impact === null ? ctx.shown : new Set([...ctx.shown, ...impact.remember]);
   const search = composeGraphSearch({ ...ctx, shown }, hits, bashSearchPattern(command));
 
-  let note = grep === null ? "no-change" : undefined;
+  const searching = tools.search && bashSearchSegment(command) !== null;
+  let note = grep === null ? searching ? hits.length === 0 ? "no-search-hits" : "no-new-search-context" : "no-change" : undefined;
   if (moved.length > 0) {
     const diffs = all === null ? diffAgainstHead(root.projectRoot, moved) : only(all, moved);
     if (diffs !== null) {
-      const edit = composeEdit(ctx, { diffs }, PACKET_CHAR_LIMIT - (grep === null ? 0 : grep.text.length + 2));
+      const available = Math.max(0, PACKET_CHAR_LIMIT - parts.reduce((sum, part) => sum + part.text.length + 2, 0));
+      const edit = composeEdit(ctx, { diffs }, available);
       if (edit !== null) parts.push(edit);
       if (edit !== null && edit.text !== "") note = undefined;
-      else if (grep === null) note = diffs.size === 0 ? "no-change" : "nothing-touched";
+      else if (grep === null && !searching) note = diffs.size === 0 ? "no-change" : "nothing-touched";
     }
   }
   const outcome: Handled = {
@@ -502,5 +533,6 @@ async function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventCon
     stats: current,
   };
   if (note !== undefined && outcome.text === "") outcome.note = note;
-  return { ...(afterKnowledge(outcome, joinGraph(impact, search)) ?? outcome), stats: current };
+  const combined = afterKnowledge(outcome, joinGraph(impact, search)) ?? outcome;
+  return { ...combined, ...(combined.text ? { note: undefined } : {}), stats: current };
 }

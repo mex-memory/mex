@@ -21,6 +21,38 @@ const PROMPT = "The order total looks wrong: does the order total count the item
 const read = (session: string, file: string, range: { offset?: number; limit?: number } = {}) =>
   toolPayload(session, "Read", { file_path: join(project.fx.root, file), ...range });
 
+describe("shell exploration", () => {
+  it("routes shell source reads through range selection and session dedup", async () => {
+    const p = await createHookProject();
+    for (const command of ["sed -n '1,3p' src/billing.ts", "head -n 3 src/billing.ts", "cat src/billing.ts", "nl -ba src/billing.ts"]) {
+      const payload = toolPayload(command, "Bash", { command });
+      const first = await p.run(payload);
+      expect(p.text(first)).toContain("Order totals count the items");
+      expect(await p.run(payload)).not.toBe(first);
+    }
+    const tail = p.text(await p.run(toolPayload("tail", "Bash", {command:"tail -n 3 src/billing.ts"})));
+    expect(tail).toContain("Invoices print the plain total");
+    expect(tail).not.toContain("Order totals count the items");
+  });
+
+  it("logs compound searches and their actual silence reason", async () => {
+    const p = await createHookProject();
+    await p.run(toolPayload("search", "Bash", {command:"rg calculateOrderTotal src | head"}, {stdout:""}));
+    const log = readFileSync(join(p.fx.context.localDir, HOOK_LOG_NAME), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(log.at(-1)).toMatchObject({event:"search-compound",note:"no-search-hits"});
+    const payload = toolPayload("search", "Bash", {command:"pwd && rg -n calculateOrderTotal src | head"}, {stdout:"src/report.ts:4: return calculateOrderTotal(items);"});
+    expect(p.text(await p.run(payload))).toContain("calculateOrderTotal");
+    expect(await p.run(payload)).toBe("");
+    const last = JSON.parse(readFileSync(join(p.fx.context.localDir, HOOK_LOG_NAME), "utf8").trim().split("\n").at(-1)!);
+    expect(last).toMatchObject({event:"search-compound",note:"no-new-search-context"});
+    const single = await p.run(toolPayload("single", "Bash", {command:"cd src && grep -n calculateOrderTotal report.ts | head"}, {stdout:"4: return calculateOrderTotal(items);"}));
+    expect(p.text(single)).toContain("calculateOrderTotal");
+    const mixed = p.text(await p.run(toolPayload("mixed", "Bash", {command:"rg -n calculateOrderTotal src/report.ts; rg -n formatInvoice src/billing.ts"}, {stdout:"src/report.ts:4: return calculateOrderTotal(items);\nsrc/billing.ts:9: function formatInvoice()"})));
+    expect(mixed).toContain("calculateOrderTotal");
+    expect(mixed).not.toContain("formatInvoice");
+  });
+});
+
 describe("hook output", () => {
   it("prints hookSpecificOutput.additionalContext for a matching prompt", async () => {
     project = await createHookProject();

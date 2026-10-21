@@ -1,8 +1,8 @@
 /**
  * Which command a hook entry runs.
  *
- * Preferably the `mex-hook` bin, when it resolves on PATH: it is short, and it
- * follows the installed package. Otherwise `node "<absolute dist/hook.js>"`,
+ * Prefer `node "<absolute dist/hook.js>"` to avoid a package shim on each event.
+ * Fall back to the `mex-hook` bin when no bundle can be found.
  * which works from a checkout or a package that is not on PATH. Both end in
  * the marker argument that makes an entry MEX's, and neither needs a shell
  * feature, so the same string works in a POSIX shell and on Windows.
@@ -64,10 +64,11 @@ export function findHookEntry(options: ResolveOptions = {}): string | null {
 const forwardSlashes = (path: string): string => path.replace(/\\/g, "/");
 
 export function resolveHookCommand(options: ResolveOptions = {}): HookCommand | null {
-  const bin = findBinOnPath(options);
-  if (bin !== null) return { kind: "bin", command: `${BIN} ${MEX_HOOK_MARKER}`, target: bin };
   const entry = findHookEntry(options);
-  if (entry === null) return null;
+  if (entry === null) {
+    const bin = findBinOnPath(options);
+    return bin === null ? null : { kind: "bin", command: `${BIN} ${MEX_HOOK_MARKER}`, target: bin };
+  }
   const absolute = resolve(entry);
   // Forward slashes survive both a POSIX shell and Windows' own argument parsing.
   return { kind: "node", command: `node "${forwardSlashes(absolute)}" ${MEX_HOOK_MARKER}`, target: absolute };

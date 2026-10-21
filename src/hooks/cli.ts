@@ -60,7 +60,7 @@ function summarize(plan: HooksPlan, dryRun: boolean): string {
   const lines: string[] = [];
   if (plan.operation === "install") {
     lines.push(dryRun ? "Would install MEX hooks for Claude Code." : "Installed MEX hooks for Claude Code.");
-    if (plan.command) lines.push("Command: " + plan.command.command + " (" + (plan.command.kind === "bin" ? "the mex-hook bin on PATH" : "the built hook bundle; no mex-hook on PATH") + ")");
+    if (plan.command) lines.push("Command: " + plan.command.command + " (" + (plan.command.kind === "bin" ? "the mex-hook bin on PATH" : "the built hook bundle") + ")");
   } else {
     const noun = plan.entries === 1 ? "entry" : "entries";
     lines.push((dryRun ? "Would remove" : "Removed") + " MEX hooks for Claude Code (" + plan.entries + " " + noun + ").");

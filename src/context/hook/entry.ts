@@ -1,13 +1,13 @@
 /**
  * `mex-hook`: the light entry point agent hosts call on every event.
  *
- * It imports the context composer and a few helpers, never the CLI, so a hook
- * starts in about the time Node itself does. Whatever happens, the process
+ * It rejects irrelevant payloads before importing the runner or composers.
+ * Whatever happens, the process
  * exits 0: a hook that fails would fail the agent's turn.
  */
 
 import { readFileSync } from "node:fs";
-import { runHook } from "./run.js";
+import { hookSwitches, preflightHook } from "../../hooks/preflight.js";
 
 function readStdin(): string {
   try {
@@ -34,10 +34,14 @@ async function main(): Promise<void> {
     process.exitCode = 0;
     return;
   }
-  const { stdout } = await runHook(readStdin(), {
+  const raw = readStdin();
+  if (!await preflightHook(raw, process.cwd(), process.env["CLAUDE_PROJECT_DIR"])) return;
+  const { runHook } = await import("./run.js");
+  const { stdout } = await runHook(raw, {
     projectDir: process.env["CLAUDE_PROJECT_DIR"],
     cwd: process.cwd(),
     lexical: process.env["MEX_HOOK_LEXICAL"] === "1",
+    tools: hookSwitches(),
   });
   if (stdout !== "") process.stdout.write(stdout);
   process.exitCode = 0;

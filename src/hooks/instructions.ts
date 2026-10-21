@@ -17,12 +17,7 @@ export const MAX_HOOK_INSTRUCTION_PREVIEW_BYTES = 8 * 1024;
 export function renderHookInstructionBlock(eol: "\n" | "\r\n" = "\n"): string {
   return [
     HOOK_INSTRUCTIONS_START,
-    "## Project knowledge (MEX)",
-    '- This repository keeps curated, code-linked knowledge in `.mex/`. The entries relevant to your work are shown to you automatically as "MEX knowledge": when a task starts, and when you read, search or edit source files. Use them to orient; they say how the code works and where to look.',
-    "- An entry marked ⚠ describes code that changed after it was written: check the code before relying on it, and say so if the entry is wrong.",
-    '- Need more? `mex wiki query "<two or three words>"`, then `mex wiki show <id>` for one entry\'s text. This is cheaper than opening `.mex` files, which are mostly metadata.',
-    "- If your code change makes an entry false, rewrite that entry's prose at the `.mex` line shown with it; do not search `.mex` for entries, the affected ones are listed when you edit code. Never edit the `mex:entity` comment blocks, ids or fingerprints: MEX re-records code links itself.",
-    "- Entries your change touched stay flagged as changed until someone re-checks them (`mex check`, `mex sync`). If one still holds, `mex context confirm <ids>` lets MEX re-record it after the session.",
+    "MEX notes are curated project knowledge linked to code locations, not complete answers. Read the code when details matter. ⚠ means linked code changed: verify the note before relying on it. Do not open or edit `.mex` files by hand except as an edit note directs.",
     HOOK_INSTRUCTIONS_END,
   ].join(eol);
 }

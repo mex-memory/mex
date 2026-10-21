@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupProjects } from "../../__tests__/fixture.js";
 import { createHookProject, toolPayload } from "./fixture.js";
@@ -15,7 +16,18 @@ afterEach(() => {
 // The bundle is a build output: these run when `npm run build` has produced it.
 describe.skipIf(!existsSync(built))("dist/hook.js", () => {
   const run = (input: string, cwd: string, env: Record<string, string> = {}) =>
-    spawnSync(process.execPath, [built], { input, cwd, encoding: "utf8", env: { ...process.env, MEX_HOOK_LEXICAL: "1", ...env }, windowsHide: true });
+    spawnSync(process.execPath, [built], { input, cwd, encoding: "utf8", env: { ...process.env, MEX_HOOK_LEXICAL: "1", MEX_HOOK_READ: "1", ...env }, windowsHide: true });
+
+  it("rejects a no-op before loading sqlite", () => {
+    const script = `await import(${JSON.stringify(pathToFileURL(built).href)}); await new Promise(r=>setImmediate(r)); console.error(process.moduleLoadList.filter(s=>/sqlite/i.test(s)).join(''));`;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      input: JSON.stringify({hook_event_name:"PostToolUse",tool_name:"Bash",tool_input:{command:"pwd"}}),
+      encoding:"utf8",windowsHide:true,env:{...process.env,MEX_HOOK_READ:"0",MEX_HOOK_EDIT:"0"},
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr.trim()).toBe("");
+  });
 
   it("exits 0 with no output for empty, garbage and unhandled input", async () => {
     const project = await createHookProject();
