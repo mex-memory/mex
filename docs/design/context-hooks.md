@@ -24,10 +24,10 @@ hook event ─► light entry (mex-hook) ─► src/context composer ─► pack
 | Event | Input | Selection | Model |
 |---|---|---|---|
 | `prompt` | user prompt text | ranking (below) plus gate | optional MiniLM |
-| `read` | file plus read range | facts whose code links overlap the range; ⚠ when the linked code changed | none |
-| `edit` | edited files (Edit/Write/MultiEdit and Bash diff) | facts linked to touched lines, with the `.mex` line to update | none |
-| `grep` | search results | for the top hits: enclosing symbol, linked fact, callers; tests and docs marked | none |
-| `stop` | session diff | touched-but-unseen facts get one prompt; settle worker afterwards | none |
+| `read` (opt-in) | file plus read range | facts with resolved links of at most 300 lines overlapping the range; ⚠ when linked code changed | none |
+| `edit` (opt-in) | edited files (Edit/Write/MultiEdit and Bash diff) | precisely cited claims touched by a hunk, with a body-line pointer | none |
+| `grep` | search results | linked claims and verified definition or enclosing-symbol locations | none |
+| `stop` | session diff | flag touched facts and start settle; review prompt is opt-in | none |
 
 ## Prompt ranking (frozen recipe)
 
@@ -47,11 +47,14 @@ The semantic channel is opt-in. Its library and model are installed under a MEX-
 
 The recipes above were calibrated on one- and two-sentence questions. Real task prompts run from 5 words to pasted pages. The normalised score divides by the weight of every query word, so a 55-word task description scored below the floor even when its one matching sentence scored 0.64 alone: with the thresholds above, all six pilot prompts abstained. The fix keeps the frozen recipes for prompts that fit in one window and changes only how a longer prompt is scored and gated. Parameters are frozen in `frozen.ts` (`WINDOWING`, `RECIPES[*].windowed`) and recorded, with the evidence, in the evaluation folder as `ablation\frozen-v3.json`.
 
-- **One window = unchanged.** A prompt of at most 40 words (the window size) ranks and gates exactly as before. `scripts/context-window-parity.mjs` compares a baseline build with the current one on the lexical recipe: all 65 prompts of the 70-question set that have at most 40 words give identical injected ids, scores, normalised scores, corroboration counts and gate decisions (the 5 longer ones differ by design).
+- **Short prompts keep their output.** A prompt of at most 40 words ranks, gates and renders as before, unless `MEX_PROMPT_SHORT_POLICY=1` explicitly enables the revised policy, including the experimental independent margin. Both recipes passed 130/130 short packet and explanation comparisons. `MEX_PROMPT_INDEPENDENT_MARGIN=1` alone does not change short prompts.
 - **Prose only.** Fenced blocks, stack frames, test-runner summaries and runs of at least three code-like lines are removed before scoring (`proseOf`). A paste says what the user is looking at, not what they ask, and its identifiers belong to the pasted file. Measured on dev, treating identifiers found in pasted blocks as exact-match evidence made the very long bucket worse (more wrong sends, fewer hits). With under 10 words of prose, the whole text is scored.
-- **Windows.** The prose is cut into sentences (a sentence under 10 words is merged into its neighbour, one over 40 words is cut), and overlapping runs of consecutive sentences of at most 40 words become windows (at most 12; a window contained in another is dropped). Each window is scored by the frozen scorer against its own query-word weight, with its own identifiers and its own corroboration count; a candidate keeps its best window. Because the best window does not depend on the other windows, the score of the sentence that carries the question does not depend on how much is pasted around it. The dense channel embeds each window and takes the best cosine.
+- **Windows.** The prose is cut into sentences (a sentence under 10 words is merged into its neighbour, one over 40 words is cut). A cut's tail of fewer than 10 words is merged into the preceding chunk, which may then exceed 40 words. Overlapping runs become windows (at most 12; a window contained in another is dropped). Each window is scored by the frozen scorer against its own query-word weight, with its own identifiers and its own corroboration count; a candidate keeps its best window. The dense channel embeds each window and takes the best cosine.
 - **Gate for a windowed prompt.** The maximum over many windows flatters the runner-up too, so the lead over the fourth candidate carries the weight. Both recipes use the same lexical gate: floor 0.293, at least 4 (lexical) or 3 (semantic) query-word groups in one window (or an identifier hit), a second entry only at 0.9 of the first, lead over the fourth 0.45 (lexical) or 0.6 (semantic), at most 2 entries. The semantic recipe adds its cosine as a veto: candidates with a best-window cosine under 0.5 are dropped before the gate, and the fusion only orders the rest.
-- **R3 candidates** are now the same typed sections as the lexical recipe plus every fact, so a convention or decision can be sent by the primary recipe too. The dense text of a non-fact is unchanged (title, aliases, symbol words, first 900 characters); a file-context prefix and 350-character chunks were measured on dev and did not improve precision.
+- **Candidates.** R3 ranks the same typed sections as the lexical recipe plus every fact. For prompts over 40 words, component and guide entries are excluded at the gate, after ranking, so corpus statistics and cached vectors stay intact. Conventions, decisions and patterns remain eligible. The dense text of a non-fact is unchanged (title, aliases, symbol words, first 900 characters).
+- **Independent margins are experimental.** `MEX_PROMPT_INDEPENDENT_MARGIN=1` enables the independent-grounding competitor rule and exact-symbol margin bypass for revised prompts. It is off by default: replay lost labelled gold hits and added irrelevant sends. The normal floor, corroboration and semantic veto still apply.
+- **Related pointer.** A revised prompt packet containing one full fact may add one body-free title/id pointer to an unseen fact sharing a grounding node. The pointer has its own `pointer:<id>` memory and does not suppress a later full fact. It is navigation, not a guaranteed answer.
+- **Abstentions.** A windowed semantic veto reports `low-cosine-veto`; graph fallback logs its own reason alongside `knowledge:<reason>`. Revised prompts with no lexical matches return before embedding. The hook loads the local model only on the first embedding request.
 
 Measured on the development half (24 with-fact and 12 without-fact questions per bucket; "correct" is the share of injections that carry a gold entry; false sends are injections on questions without a fact):
 
@@ -107,8 +110,8 @@ code: src/x.ts:120-180 #symbol · more: mex wiki show <id>
 ## Freshness and end of session
 
 - Health is computed live for the entities a packet shows: graph `bodyHash` against the grounded hash. Cached Wiki-index health is never trusted after edits.
-- `stop` never blocks the session (a product decision, 2026-10-18: `mex check` and `mex sync` keep the facts fresh). It records the touched facts in the session flags and starts a detached settle worker, which refreshes the graph and re-records (regrounds) **only** entities whose prose the agent edited or explicitly confirmed. Every other touched entity stays flagged "changed, re-check". The Hono complete-set CORS wrong renewal is the regression fixture. The earlier in-session question is opt-in (`MEX_HOOK_STOP_REVIEW=1`).
-- `mex check` reports every session-touched entity as `GROUNDING_REVIEW` (warning), from `.mex/local/context-flags.json`: those still flagged, and those the worker re-recorded on the session's word (a re-record makes the links current, so the body-hash checks fall silent while the prose may still be wrong; these keep a review mark). The message names the fact, what the session changed (`why`) and the fact's current links. `mex sync` hands them to its session like other grounding findings; an entity whose prose the run rewrote, or that was confirmed during the run, is cleared; an unchanged, unconfirmed one stays. `mex context confirm` clears a mark at any time.
+- `stop` does not block by default. It records touched facts in the session flags and starts a detached settle worker for tracked indexed source edits even when no fact was touched. That path refreshes only, with no reground when no entity is eligible. Reground remains limited to entities whose prose the agent edited or explicitly confirmed. Every other touched entity stays flagged "changed, re-check". The earlier in-session question is opt-in (`MEX_HOOK_STOP_REVIEW=1`).
+- `mex check` reports resolved session-touched entities as `GROUNDING_REVIEW` (warning), including those the worker re-recorded on the session's word. An unresolved link cannot establish hunk overlap; never-resolved links and old flags without current symbols remain `GROUNDING_UNVERIFIED`, not file-level review. Stop and check also compare edited Markdown with HEAD for lost ids, headings and changed entity counts (`WIKI_ENTITY_DAMAGED`); damaged files cannot qualify for reground. `mex sync` hands review findings to its session; an entity whose prose the run rewrote, or that was confirmed during the run, is cleared; an unchanged, unconfirmed one stays. `mex context confirm` clears a review mark.
 - `wiki reground` accepts several ids in one snapshot (batch).
 
 ## Authoring
@@ -118,6 +121,16 @@ Setup, GROW and `wiki apply` write 3–6 short symptom or goal phrases per code-
 ## Installation
 
 `mex hooks install --tool claude` (with `--dry-run` and `remove`) writes the hook entries to `.claude/settings.json` and preserves user-owned entries. Other hosts come later, through the same composer.
+
+The default set is UserPromptSubmit, PostToolUse Grep, PostToolUse Bash and Stop. Export `MEX_HOOK_READ=1` or `MEX_HOOK_EDIT=1` to add Read or Edit|Write|MultiEdit, including the corresponding shell paths. Export `MEX_HOOK_PROMPT=0`, `MEX_HOOK_STOP=0`, `MEX_HOOK_SEARCH=0`, `MEX_HOOK_GREP=0` or `MEX_HOOK_BASH=0` to disable those paths. Search disables both Grep and shell search; Bash may remain for opted-in reads or edits. Rerun install after changing switches to update host matchers; the runtime also checks them for older installations. Read/edit require exactly `1`, so unset or `0` disables them. `MEX_HOOK_GRAPH=0` disables graph notes; `MEX_HOOK_GRAPH_IMPACT=1` separately enables impact notes on enabled edit paths. `MEX_HOOK_LEXICAL=1` forces lexical prompt ranking.
+
+Install also replaces the managed `CLAUDE.md` block, preserving text outside its markers:
+
+```text
+<!-- mex-agent:hooks:start -->
+MEX notes are curated project knowledge linked to code locations, not complete answers. Read the code when details matter. ⚠ means linked code changed: verify the note before relying on it. Do not open or edit `.mex` files by hand except as an edit note directs.
+<!-- mex-agent:hooks:end -->
+```
 
 ## Evaluation gate
 
@@ -134,16 +147,19 @@ Setup, GROW and `wiki apply` write 3–6 short symptom or goal phrases per code-
 - **Recipe selection**: R3 when an embedder loads and the scaffold has candidates (facts or typed sections with a body), otherwise R2w. A failing model falls back to R2w with a `CONTEXT_SEMANTIC_FAILED` warning. Entry vectors are cached in the index by model id and document-text hash.
 - **Gate decisions are reported** per candidate (`selected`, `below-floor`, `uncorroborated`, `low-cosine`, `weak-margin`, `below-ratio`, `already-shown`, ...) and as the abstention reason.
 - **Session de-duplication** runs after the gate, so the frozen scores and margins are computed over the full candidate set; entries already shown are then dropped.
-- **Writers**: `src/context/local-state.ts` is the only module that mutates the filesystem. It writes the index, session files (`.mex/local/context-sessions/`, bounded and pruned) and the managed semantic directory (`<MEX home>/semantic/`).
+- **State writes** use the bounded helpers in `src/context/local-state.ts` for the index, session files (`.mex/local/context-sessions/`, bounded and pruned) and the managed semantic directory (`<MEX home>/semantic/`). The composer itself does not write files.
 - **Parity**: `scripts/context-parity.mjs` replays the held-out question files through the built CLI and compares injected ids with the reference harness.
 - **Reference details not ported**: the reference's second "code noise" stop list is consumed only by the segment channel, which the frozen recipes disable (`seg: 0`), so it never affected a result. The reference hard-coded one repository's name as a stop word; the port derives the project-name words per project (index field `projectWords`). The reference's term table was a plain object, so the query word "constructor" matched every document through the prototype chain; the port uses a `Map`.
 
 ## Milestone 2 (implemented): hooks
 
-- **Entry point**: `mex-hook` (`dist/hook.js`, package `bin`) is its own bundle from `src/context/hook/entry.ts`. It never imports the CLI; tool events load only light modules (the graph is opened through `graph-reader.ts` rather than the graph's database module, the index file is read through `index-file.ts`), and the prompt handler, which needs the Markdown parser and the ranker, is a dynamic import. Cold wall time on Hono (Windows, bare `node -e 0` is about 65 ms): read, grep and Bash about 125-160 ms, edit about 190 ms (one `git diff` process), lexical prompt about 170-210 ms.
-- **Dispatch** is by the payload (`hook_event_name`, `tool_name`): `UserPromptSubmit` is `prompt`; `PostToolUse` Read, Edit|Write|MultiEdit, Grep and Bash are `read`, `edit`, `grep` and `bash`. Any error exits 0 with no output and a line in `.mex/local/context-log.jsonl` (capped at 256 KB, newest half kept). Every event is logged with its duration, the injected ids and the text.
-- **Dedup keys** share the session file: a bare id (text shown), `edit:<id>` (shown as touched by an edit, a different message) and `diff:<file>:<hash>` (this exact change was checked). A prompt that starts with `<task-notification>` is skipped.
-- **read**: facts whose code links overlap the lines read (`offset`/`limit`, otherwise the file), changed ones first, at most two plus a one-line pointer. **edit/bash**: `git diff -U0 HEAD` hunks are base-side, so they are matched against where each fact's code stood at HEAD, recorded on the first event for a HEAD in `.mex/local/context-base.json` (the graph moves as code changes). An insertion counts as touching a symbol only when it falls inside it. A size-and-mtime signature per linked file (seeded at the first prompt) lets a Bash call that changed nothing skip git. **grep**: hits from the Grep tool or `path:line:` output of a Bash `rg`/`grep` map to the enclosing symbol, its fact and up to three callers by node id, tests and docs marked, in a note of at most 1200 characters; silent unless a hit sits in code with a fact not yet shown.
+- **Entry point**: `mex-hook` (`dist/hook.js`, package `bin`) is its own bundle from `src/context/hook/entry.ts`. It never imports the CLI; tool events load only light modules (the graph is opened through `graph-reader.ts` rather than the graph's database module, the index file is read through `index-file.ts`), and the prompt handler, which needs the Markdown parser and the ranker, is a dynamic import. Read and edit have no default host matcher. A forced invocation of a disabled path exits at preflight; handled search, prompt and Stop paths still pay process startup. `scripts/benchmark-hook-runtime.mjs` measures those cold costs separately from composer work.
+- **Dispatch and preflight** are by the payload (`hook_event_name`, `tool_name`). Before importing the runner, preflight rejects invalid or disabled events, empty or background-task prompts, empty searches and irrelevant shell calls. Opted-in reads resolve the root and check the context index and session memory for an unseen linked fact before opening the graph. A preflight rejection emits nothing and has no runner log. Handled events log duration, ids and text in `.mex/local/context-log.jsonl` (capped at 256 KB, newest half kept). Entry failures exit 0 silently; runner failures are logged when possible.
+- **Dedup keys** share the session file: a bare id (text shown), `pointer:<id>` (prompt navigation only), `edit:<id>` (shown as touched by an edit, a different message) and `diff:<file>:<hash>` (this exact change was checked). A prompt that starts with `<task-notification>` is skipped.
+- **read** (opt-in): resolved code links of at most 300 lines must overlap the range read (`offset`/`limit`, otherwise the file). Changed facts come first; at most two receive 200-character opening/tail excerpts, with a counted overflow pointer. Supported shell `sed`, `head`, `tail`, `cat` and `nl` reads use the same composer when enabled; tail ranges require the source length. Reads add no graph note.
+- **edit/bash** (opt-in): `git diff -U0 HEAD --ignore-cr-at-eol` hunks are matched against resolved locations recorded for HEAD in `.mex/local/context-base.json`. Explicit body citations to `file:line[-line]` narrow the overlap. Broad symbol overlap can flag a fact for review but does not request a prose edit. At most three precisely cited claims get a title and pointer to the first body line, or `mex wiki show` if that line cannot be verified; an unseen claim also gets up to 400 body characters. Repeated claims omit the body. The instruction says to rewrite only if the claim may now be false, take no action if it is still true, and never edit entity blocks, ids or fingerprints. Conservative unresolved flags produce no edit request. A size-and-mtime signature lets an unchanged Bash call skip git.
+- **grep**: line hits map to the enclosing symbol and an unseen fact grounded to that node; file-only hits can supply one linked fact per file. Groundings over 300 lines are excluded. At most two facts from five files fit in 1,200 characters, with 220-character opening/tail excerpts. Excerpts shrink to 140 source characters when available before a fact is dropped. Factless locations belong to the graph tier; grep adds no caller lists. The note labels locations and asks the agent to read bodies to verify.
+- **See also**: read and grep may add at most one unseen title/id pointer per delivered fact when space permits. Evidence is an authored relationship, a shared grounding node, or a uniquely resolved referenced symbol enclosing recorded evidence. Shared prose alone is insufficient. These pointers carry no body and do not mark the neighbour as fully shown.
 - **Session budget**: the injected characters per `session_id` are summed over all events (session file). Default 12,000, set with `context.sessionBudgetChars` in `.mex/config.json` (a positive integer up to 1,000,000; anything else means the default). After dedup, a packet that would push the total over the budget becomes one pointer per entry, `MEX: <title> applies (<health>) — mex wiki show <id>`, at most 120 characters; pointers count toward the total. From 1.5 times the budget nothing more is sent and the log says `budget-exhausted`.
 - **Install**: `mex hooks install|status|remove --tool claude [--dry-run]` merges marked entries into `.claude/settings.json` (a command ending in `--mex-managed` is MEX's; nothing else is touched) and keeps a short block in `CLAUDE.md` under `mex-agent:hooks` markers, through the shared managed-block machinery (which gained a removal planner). The command is `mex-hook` when it resolves on PATH, otherwise `node "<abs>/dist/hook.js"`.
 
@@ -156,9 +172,9 @@ The rule, a product decision: after a session changes code MEX may refresh the g
 - **`mex context confirm <id...> [--session <id>] [--note <text>]`** records the confirmation in the session file (the newest session when none is named) and makes an already-flagged entity eligible at once. Unknown ids are reported; none known is an error.
 - **`mex context status`** lists flagged and eligible entities, their location and reason, whether a settle worker runs, and the last settle log entry.
 - **Stop event**: reviews the session; flags every touched entity and logs the unvouched ones (`blocked: false`, `unvouched`); never blocks unless `MEX_HOOK_STOP_REVIEW=1`. With that opt-in, when `context.stopReview` is `ask` (default; `off` disables) and entities touched now are neither edited nor confirmed, it blocks **once per session** with a list of at most 1,500 characters (id, title, `.mex` location, why, and the exact `mex context confirm <ids> --session <id>` command; overflow is counted and left to `status`). It does not block while Claude Code reports the stop is already continuing from a block. Then it starts the settle worker, unless the review digest (each entity's code digest and what vouches for it) equals the one the session last settled. A block starts the worker too: a headless host may end the session without delivering it.
-- **Settle worker** (`mex-hook settle --project <dir> --session <id>`, `hook/settle.ts`): started detached, `windowsHide`, retried on exit code 0xC0000142. A lock file (`context-settle.lock`, the worker's pid; a dead pid is taken over) allows one worker; a Stop while it runs leaves `context-settle.again` and the worker goes round once more (at most four passes). Each pass: review, flag, one `mex graph refresh` (timing recorded; on failure the exit code and the last 1,500 characters of stderr go to the log as `settle-refresh-failed` and nothing is re-recorded), one batch `mex wiki reground <ids> --apply --json` of the eligible ids (chunks of 80), flags cleared and `reconciled` set for each success, the error kept on each failure, then a forced rebuild of the context index. Every pass is logged as `settle` in `context-log.jsonl`.
+- **Settle worker** (`mex-hook settle --project <dir> --session <id>`, `hook/settle.ts`): started detached, `windowsHide`, retried on exit code 0xC0000142. A lock file (`context-settle.lock`, the worker's pid; a dead pid is taken over) allows one worker; a Stop while it runs leaves `context-settle.again` and the worker goes round once more (at most four passes). Each pass: review, flag, one `mex graph refresh` (on failure the exit code and the last 1,500 characters of stderr go to the log as `settle-refresh-failed` and nothing is re-recorded), batch `mex wiki reground <ids> --apply --json` for eligible ids only (chunks of 80), flags cleared and `reconciled` set for each success, the error kept on each failure, then update the context index if stale. Current indexes are reused. Each pass logs review, refresh, index and total timings as `settle` in `context-log.jsonl`.
 - **Batch reground**: `mex wiki reground <id...> --apply` opens one fresh graph snapshot, runs the unchanged single-id service for each id (so every safety check holds per id), and reports a result per id; one refused entity never blocks or rolls back the others, and the exit status is nonzero when any failed. One id prints exactly as before.
-- **Install**: `mex hooks install|status|remove` also manage a `Stop` entry; the `CLAUDE.md` block tells agents what to do with the end-of-session list.
+- **Install**: `mex hooks install|status|remove` also manage a `Stop` entry; the short `CLAUDE.md` block explains notes and directs manual knowledge edits only when an edit note asks.
 
 ## Milestone 4 (implemented): authoring and fixes
 
@@ -167,6 +183,7 @@ The rule, a product decision: after a session changes code MEX may refresh the g
 - **Upgrade review.** `mex wiki upgrade` no longer lists entities with a blank body (a file-level overview whose claims live in sections holds only the file's grounding), and its closing line counts what the pass reviewed and what remains beyond a bounded batch instead of re-listing candidates that were judged already focused.
 - **Refresh mode.** `mex graph refresh` prints `Refresh: incremental|full (<reason>), N changed, M re-extracted.` or `Refresh: nothing changed.`; `--json` already carried `refresh`. The settle worker runs the refresh with `--json` and logs `mode`, `reason`, `changed`, `reextracted` in the `settle` entry.
 - **Root resolution tests.** `graphReadRoot` and `rebaseGraphTarget` are exported and covered, plus spawned-CLI checks from a subdirectory.
+- **Incremental references.** Before incremental publication, edges with endpoints outside the indexed corpus are dropped; a surviving source can retain an unresolved reference. Missing reference sources are dropped, missing targets are demoted, candidate lists are filtered and invalid import targets are cleared. Affected file records retain `INCREMENTAL_REFERENCE_OUTSIDE_CORPUS` diagnostics. Full-build validation stays strict. Compiler extraction stops visiting further projects once every source has an owner.
 - **Not done here.** `maxSourceFileBytes` stays a constant; an issue is drafted separately.
 
 
@@ -177,7 +194,7 @@ exact-name, enclosing-symbol, range, caller, callee and caller-count queries.
 Call edges rank production paths before tests **before** applying their row limit;
 this includes `testRunner` and `unittests`. Graph hints never index or refresh code.
 
-Rules frozen after replaying the 18 pilot sessions:
+Current rules (the pilot measurements below describe the earlier rules):
 
 - **Prompt:** only after knowledge abstains. Verify code-shaped identifiers
   (camel case, snake case, or a bare name in backticks) by exact case-sensitive
@@ -187,21 +204,27 @@ Rules frozen after replaying the 18 pilot sessions:
   resolving to more than three declarations abstains. Plain prose, member calls
   such as `items.push(...)`, and task notifications provide no independent gate.
   Segment matches and unverified prose words do not trigger a note.
-- **Grep/search:** require at least one verified identifier in the search pattern,
-  at most 60 returned hits in at most five files. Inspect the first 12 hits,
-  prepend exact definitions, then enclosing symbols and up to three production
-  callers. A file-name-only result can identify a verified definition. Single-file
-  `line:content` results use the tool's explicit path. Bash accepts only a simple
-  search command's pattern; compound commands and pipelines abstain.
-- **Edit:** match base-side diff ranges to an enclosing indexed symbol, and send
+- **Grep/search:** require a verified identifier in the pattern and at most 60
+  hits in five files. Resolve definitions within hit files; if none is there,
+  a name with exactly one definition in the repository may name that definition
+  outside those files. More than three scoped definitions get one counted
+  summary instead of an arbitrary list. Inspect the first 12 hits for enclosing
+  symbols. Filter callbacks, test paths and spans over 300 lines. No search
+  caller lists; a trace/flow/chain pattern may add one unseen callee location.
+  File-only or count output can identify a definition. Single-file
+  `line:content` results use the explicit path. Bash uses the first search in
+  supported compound commands and pipelines; mixed stdout attribution remains
+  conservative and may be ambiguous.
+- **Edit:** off by default (`MEX_HOOK_GRAPH_IMPACT=1` enables it on edit paths).
+  Match base-side diff ranges to an enclosing indexed symbol, and send
   its other production callers to check. At most five files and 20 hunks per file;
   no note without a production caller. Multi-symbol hunks or locations that no
   longer enclose a complete hunk can abstain. Existing knowledge diff handling
   and Stop/settle rules remain unchanged.
 - **Read:** no graph injection. The offline candidate required a range of at most
   200 lines inside one symbol and listed callers. It added no useful notes.
-- **Caps:** 1,200 graph characters per event, three primary symbols, three callers
-  per symbol, at most 12 named node ids. One-line declarations are omitted. Graph
+- **Caps:** 1,200 graph characters per event, three primary rows, at most 12 named
+  node ids; impact can list three callers per symbol, search one callee in total. Graph
   lines are atomic; an oversized note is dropped. Knowledge and graph together
   remain under 4,000 event characters. Graph fits only in the remaining 12,000
   character session budget; it never displaces knowledge or becomes a pointer.
