@@ -18,11 +18,11 @@ async function fixture() {
 }
 
 describe("graph tier", () => {
-  it("extracts only the pattern of a simple shell search", () => {
+  it("extracts the first shell search pattern", () => {
     expect(bashSearchPattern('rg -n -g "*.ts" "calculateInvoice" src')).toBe("calculateInvoice");
     expect(bashSearchPattern("git grep -n -e calculateInvoice")).toBe("calculateInvoice");
-    expect(bashSearchPattern("rg return src; echo calculateInvoice")).toBe("");
-    expect(bashSearchPattern("rg calculateInvoice src | head")).toBe("");
+    expect(bashSearchPattern("rg return src; echo calculateInvoice")).toBe("return");
+    expect(bashSearchPattern("rg calculateInvoice src | head")).toBe("calculateInvoice");
   });
   it("queries exact names, ranges, counts and both edge directions; ranks tests last before the limit", async () => {
     const { reader } = await fixture();
