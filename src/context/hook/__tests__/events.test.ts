@@ -109,22 +109,33 @@ describe("read", () => {
 });
 
 describe("edit and Bash diff", () => {
+  const citeClaims = () => {
+    const path = indexPathOf(project.fx.context.localDir);
+    const index = JSON.parse(readFileSync(path, "utf8"));
+    for (const entity of index.entities) {
+      if (entity.type !== "fact") continue;
+      for (const symbol of entity.symbols) entity.body += ` Evidence: ${symbol.file}:${symbol.start + 1}-${symbol.end}.`;
+    }
+    writeFileSync(path, JSON.stringify(index));
+  };
   const editCall = (session: string, file = "src/billing.ts") => toolPayload(session, "Edit", { file_path: join(project.fx.root, file), old_string: "a", new_string: "b" });
 
   it("names the facts whose linked code the edit touched, with the .mex line to update", async () => {
     project = await createHookProject();
+    citeClaims();
     project.fx.writeSource("src/billing.ts", BILLING_V1.replace("return total - 1;", "return total - 2;"));
     const text = project.text(await project.run(editCall("s-edit")));
-    expect(text).toContain("you changed src/billing.ts");
+    expect(text).toContain("a cited claim may need checking");
     expect(text).toContain("Discounts subtract one flat unit");
     expect(text).not.toContain("Order totals count the items");
-    expect(text).toMatch(/rewrite its prose at \.mex\/context\/billing\.md:\d+/);
+    expect(text).toMatch(/\.mex\/context\/billing\.md:\d+/);
     expect(text).toContain("Never edit <!-- mex:entity --> blocks, ids or fingerprints");
     expect(text).not.toMatch(/re-?record (the )?fingerprint/i);
   });
 
   it("does not ask again about a fact it already raised", async () => {
     project = await createHookProject();
+    citeClaims();
     project.fx.writeSource("src/billing.ts", BILLING_V1.replace("return total - 1;", "return total - 2;"));
     expect(await project.run(editCall("s-twice"))).not.toBe("");
     project.fx.writeSource("src/billing.ts", BILLING_V1.replace("return total - 1;", "return total - 3;"));
@@ -133,6 +144,7 @@ describe("edit and Bash diff", () => {
 
   it("matches hunks against where the code stood at HEAD, not where the rebuilt graph puts it", async () => {
     project = await createHookProject();
+    citeClaims();
     // Session start: the first event records where each fact's code stood.
     await project.run(promptPayload("s-base", PROMPT));
     // Four lines are added above everything and one line of formatInvoice changes; the graph is rebuilt,
@@ -147,6 +159,7 @@ describe("edit and Bash diff", () => {
 
   it("is silent when the edit touches no linked code, and for files no fact links", async () => {
     project = await createHookProject();
+    citeClaims();
     project.fx.writeSource("src/billing.ts", `${BILLING_V1}\nexport const NOTE = 1;\n`);
     expect(await project.run(editCall("s-quiet"))).toBe("");
     project.fx.writeSource("src/report.ts", "// changed\n");
@@ -155,6 +168,7 @@ describe("edit and Bash diff", () => {
 
   it("finds edits made through Bash and does not look again when nothing changed", async () => {
     project = await createHookProject();
+    citeClaims();
     const bash = (session: string, command = "sed -i s/1/2/ src/billing.ts") => toolPayload(session, "Bash", { command }, { stdout: "", stderr: "" });
     await project.run(promptPayload("s-bash", PROMPT));
     expect(await project.run(bash("s-bash"))).toBe("");
@@ -166,6 +180,7 @@ describe("edit and Bash diff", () => {
 
   it("does not blame the agent for changes that were already in the working tree when the session began", async () => {
     project = await createHookProject();
+    citeClaims();
     project.fx.writeSource("src/billing.ts", BILLING_V1.replace("return total - 1;", "return total - 2;"));
     await project.run(promptPayload("s-dirty", PROMPT));
     const bash = toolPayload("s-dirty", "Bash", { command: "ls" }, { stdout: "x" });
@@ -183,13 +198,11 @@ describe("grep", () => {
       grepCall("s-grep", "src/billing.ts:2:  return items.length;\nsrc/report.ts:4:  return calculateOrderTotal(items);\ntests/billing.test.ts:4:  return calculateOrderTotal([1, 2]);"),
     );
     const text = project.text(stdout);
-    expect(text).toContain("in #calculateOrderTotal (src/billing.ts:1-3)");
-    expect(text).toContain("fact [fresh]");
+    expect(text).toContain("location src/billing.ts:1-3 #calculateOrderTotal");
+    expect(text).toContain("[fresh]");
     expect(text).toContain("Order totals count the items");
-    expect(text).toContain("callers:");
-    expect(text).toContain("#buildReport src/report.ts:3");
-    expect(text).toContain("#checksTotal tests/billing.test.ts:3 [test]");
-    expect(text).toContain("tests/billing.test.ts:4 [test]");
+    expect(text).not.toContain("callers:");
+    expect(text).not.toContain("#checksTotal");
     expect(text.length).toBeLessThanOrEqual(GREP_NOTE_CHAR_LIMIT);
   });
 
@@ -208,7 +221,7 @@ describe("grep", () => {
 
   it("offers graph navigation without a fact and deduplicates both tiers", async () => {
     project = await createHookProject();
-    expect(project.text(await project.run(grepCall("s-grep-none", "src/report.ts:4:  return calculateOrderTotal(items);")))).toContain("MEX graph");
+    expect(project.text(await project.run(grepCall("s-grep-none", "src/report.ts:4:  return calculateOrderTotal(items);")))).toContain("#buildReport src/report.ts:3");
     expect(await project.run(grepCall("s-grep-seen", "src/billing.ts:2:  return items.length;"))).not.toBe("");
     expect(await project.run(grepCall("s-grep-seen", "src/billing.ts:2:  return items.length;"))).toBe("");
   });

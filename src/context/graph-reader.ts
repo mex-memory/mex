@@ -37,7 +37,8 @@ export interface GraphReader {
   /** Up to `limit` callers of a node, found by its id (never by name). */
   callers(id: string, limit: number): GraphNodeRow[];
   callees(id: string, limit: number): GraphNodeRow[];
-  exactName(name: string, limit: number): GraphNodeRow[];
+  exactName(name: string, limit: number, files?: readonly string[]): GraphNodeRow[];
+  exactNameCount?(name: string, files?: readonly string[]): number;
   inRange(file: string, start: number, end: number, limit: number): GraphNodeRow[];
   callerCount(id: string): number;
   close(): void;
@@ -90,7 +91,21 @@ export function openGraphReader(scaffoldRoot: string): { reader: GraphReader | n
         return (callerStatement.all(id, cap(limit)) as GraphNodeRow[]).map((row) => ({ ...row, bodyHash: row.bodyHash ?? null }));
       },
       callees(id, limit) { return calleeStatement.all(id, cap(limit)) as GraphNodeRow[]; },
-      exactName(name, limit) { return exactStatement.all(name, cap(limit)) as GraphNodeRow[]; },
+      exactName(name, limit, files) {
+        if (files === undefined) return exactStatement.all(name, cap(limit)) as GraphNodeRow[];
+        const scope = [...new Set(files)].slice(0, 5);
+        if (scope.length === 0) return [];
+        return db.prepare(`SELECT ${columns} FROM nodes n WHERE n.name = ? AND n.kind NOT IN ('file', 'import')
+          AND n.file_path IN (${scope.map(() => "?").join(",")}) ORDER BY ${order} LIMIT ?`)
+          .all(name, ...scope, cap(limit)) as GraphNodeRow[];
+      },
+      exactNameCount(name, files) {
+        const scope = files === undefined ? undefined : [...new Set(files)].slice(0, 5);
+        if (scope?.length === 0) return 0;
+        return (db.prepare(`SELECT count(*) AS count FROM nodes n WHERE n.name = ? AND n.kind NOT IN ('file', 'import')
+          ${scope ? `AND n.file_path IN (${scope.map(() => "?").join(",")})` : ""}`)
+          .get(name, ...(scope ?? [])) as { count: number }).count;
+      },
       inRange(file, start, end, limit) { return rangeStatement.all(file, end, start, cap(limit)) as GraphNodeRow[]; },
       callerCount(id) { return (countStatement.get(id) as { count: number }).count; },
       identity() {

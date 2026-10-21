@@ -59,7 +59,7 @@ describe("graph tier", () => {
   it("searches uses back to definitions and production callers; rejects broad and generic searches", async () => {
     const { reader, ctx } = await fixture();
     try {
-      const hits = [{ file: "src/use.ts", line: 3 }];
+      const hits = [{ file: "src/core.ts", line: 2 }, { file: "src/use.ts", line: 3 }];
       const note = composeGraphSearch(ctx, hits, "calculateInvoice")!;
       expect(note.text).toContain("#calculateInvoice src/core.ts:1-3");
       expect(note.text).toContain("#sendInvoice src/use.ts:2-4");
@@ -105,6 +105,7 @@ describe("graph tier", () => {
 
   it("edit impact is bounded, gives other production callers, and knowledge retains priority", async () => {
     const { reader, ctx } = await fixture();
+    vi.stubEnv("MEX_HOOK_GRAPH_IMPACT", "1");
     try {
       const note = composeGraphEdit(ctx, new Map([["src/core.ts", { ranges: [[2, 2]], signature: "x" }]]))!;
       expect(note.text).toContain("check callers: #sendInvoice");
