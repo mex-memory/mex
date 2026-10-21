@@ -99,8 +99,12 @@ export function composeGraphSearch(ctx: EventContext, hits: readonly GrepHit[], 
   let verified = false;
   let summarized = false;
   for (const name of names) {
-    const matches = ctx.reader.exactName(name, 100, files).filter(n => files.includes(n.file));
-    verified ||= matches.length > 0 || ctx.reader.exactName(name, 1).length > 0;
+    const scoped = ctx.reader.exactName(name, 100, files).filter(n => files.includes(n.file));
+    // A name defined once in the whole repository cannot collide, so its definition
+    // is worth naming even when the hits are only uses in other files.
+    const global = scoped.length === 0 ? ctx.reader.exactName(name, 2) : [];
+    const matches = global.length === 1 ? global : scoped;
+    verified ||= matches.length > 0 || global.length > 0;
     if (matches.length > 3) {
       const remember = [`definitions:${name}:${files.join(",")}`];
       if (ctx.shown.has(remember[0]!)) { summarized = true; continue; }
