@@ -1,13 +1,15 @@
 // One agent session in a prepared checkout, plus its post-session measurements.
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { claudeAdapter } from "../../adapters/agents/claude.mjs";
 import { ANSWER_SCHEMA } from "../../compare/lib/answer.mjs";
 import { runSync, runTimed } from "../../compare/lib/process.mjs";
 import { forcedCompliance, summarizeCalls } from "./classify.mjs";
-import { anyHookEntries, contextStatus, CONTEXT_LOG, readContextLog, summarizeContextLog, waitForSettle } from "./hooks.mjs";
+import { anyHookEntries, contextStatus, CONTEXT_LOG, readContextLog, settleTelemetry, summarizeContextLog, waitForSettle } from "./hooks.mjs";
 import { firstCall, measureSession } from "./measures.mjs";
 import { git, runMex } from "./workspace.mjs";
+import { parseSession, testCommandTime } from "./telemetry.mjs";
+import { relativePath } from "./suite.mjs";
 
 export const CHANGE_SCHEMA = {
   type: "object",
@@ -50,7 +52,11 @@ export function buildPrompt(task, { mexPrompt = "none", withMex = false, appendP
     : mexPrompt === "steered" ? `\n\n${MEX_STEER_COMMON}${change ? MEX_STEER_CHANGE : ""}`
     : mexPrompt === "forced" ? `\n\n${MEX_FORCE_COMMON}${change ? MEX_FORCE_CHANGE : ""}`
     : "";
-  return `${task.prompt}${steer}${task.type === "change" ? CHANGE_SUFFIX : QA_SUFFIX}${appendedInstruction(appendPrompt, task)}`;
+  return `${task.prompt}${steer}`;
+}
+
+export function sharedInstructions(task, appendPrompt = null) {
+  return `${task.type === "change" ? CHANGE_SUFFIX : QA_SUFFIX}${appendedInstruction(appendPrompt, task)}\nRun only targeted tests for this task; never run the full test suite. Use at most 3 test workers (workerCount=3 or --maxWorkers=3; vitest --maxWorkers=2).`;
 }
 
 export function claudeInvocation({ task, model, claudeCommand = ["claude"], mexPrompt = "none", withMex = false, appendPrompt = null }) {
@@ -61,6 +67,7 @@ export function claudeInvocation({ task, model, claudeCommand = ["claude"], mexP
     args: [
       ...prefix,
       "-p", buildPrompt(task, { mexPrompt, withMex, appendPrompt }),
+      "--append-system-prompt", sharedInstructions(task, appendPrompt),
       "--output-format", "stream-json", "--verbose",
       // Project sources load the checkout's CLAUDE.md (the MEX arm's entry
       // point); user settings, plugins and hooks stay out of both arms.
@@ -100,20 +107,21 @@ function parseChangeResult(raw) {
 
 function vitestCounts(output) {
   const clean = output.replace(/\x1b\[[0-9;]*m/g, "");
-  const line = clean.match(/Tests\s+([^\n]+)/)?.[1] ?? "";
+  const line = clean.match(/Tests:?\s+([^\n]+)/)?.[1] ?? "";
   const pick = (word) => Number(line.match(new RegExp(`(\\d+)\\s+${word}`))?.[1] ?? 0);
-  return { passed: pick("passed"), failed: pick("failed"), total: Number(line.match(/\((\d+)\)/)?.[1] ?? 0) };
+  return { passed: pick("passed"), failed: pick("failed"), total: Number(line.match(/\((\d+)\)/)?.[1] ?? line.match(/(\d+)\s+total/)?.[1] ?? 0) || pick("passed") + pick("failed") + pick("skipped") };
 }
 
 /** Restore the hidden tests over the agent's version and run them. */
 export function runHiddenTests(workspace, hiddenTests, env) {
   if (!hiddenTests) return null;
   if (hiddenTests.fromCommit) git(workspace, ["checkout", hiddenTests.fromCommit, "--", ...hiddenTests.files]);
+  if (hiddenTests.command) return runPackageTests(workspace, hiddenTests, env);
   if (hiddenTests.runner === "hereby") return runHerebyTests(workspace, hiddenTests, env);
   if (hiddenTests.runner === "django") return runDjangoTests(workspace, hiddenTests, env);
   const vitest = join(workspace, "node_modules", "vitest", "vitest.mjs");
   if (!existsSync(vitest)) return { ok: false, error: "vitest is not installed in the workspace" };
-  const result = runSync(process.execPath, [vitest, "--run", "--coverage.enabled=false", ...hiddenTests.files], { cwd: workspace, env });
+  const result = runSync(process.execPath, [vitest, "--run", "--maxWorkers=2", "--coverage.enabled=false", ...hiddenTests.files], { cwd: workspace, env });
   const counts = vitestCounts(`${result.stdout}\n${result.stderr}`);
   return { ok: result.code === 0 && counts.failed === 0 && counts.passed > 0, exitCode: result.code, ...counts, output: `${result.stdout}\n${result.stderr}`.slice(-20_000) };
 }
@@ -122,11 +130,26 @@ export function runHiddenTests(workspace, hiddenTests, env) {
 function runHerebyTests(workspace, hiddenTests, env) {
   const hereby = join(workspace, "node_modules", "hereby", "bin", "hereby.js");
   if (!existsSync(hereby)) return { ok: false, error: "hereby is not installed in the workspace" };
-  const result = runSync(process.execPath, [hereby, "runtests", `--tests=${hiddenTests.tests}`], { cwd: workspace, env });
+  const result = runSync(process.execPath, [hereby, "runtests", `--tests=${hiddenTests.tests}`], { cwd: workspace, env: { ...env, workerCount: String(hiddenTests.workerCount ?? 3) } });
   const output = `${result.stdout}\n${result.stderr}`.replace(/\x1b\[[0-9;]*m/g, "");
   const pick = (word) => Number(output.match(new RegExp(`(\\d+) ${word}`))?.[1] ?? 0);
   const passed = pick("passing"), failed = pick("failing");
   return { ok: result.code === 0 && failed === 0 && passed > 0, exitCode: result.code, passed, failed, total: passed + failed, output: output.slice(-20_000) };
+}
+
+export function runPackageTests(workspace, spec, env) {
+  const cwd = spec.cwd ? join(workspace, relativePath(spec.cwd)) : workspace;
+  const [command, ...args] = spec.command;
+  const vitest = args.some((a) => /(?:^|\/)vitest(?:$|\.)/.test(a));
+  const cap = Math.min(spec.workerCount ?? 3, vitest ? 2 : 3);
+  const argv = [...args, `--maxWorkers=${cap}`];
+  // Package-manager shims are scripts on this platform; use the installed JS entry.
+  const result = command === "pnpm"
+    ? runSync(process.execPath, [spec.pnpmEntry ?? join(dirname(process.execPath), "node_modules", "corepack", "dist", "pnpm.js"), ...argv], { cwd, env: { ...env, JEST_WORKERS: String(cap), NX_PARALLEL: "1" }, timeoutMs: spec.timeoutMs ?? 300_000 })
+    : runSync(command, argv, { cwd, env, timeoutMs: spec.timeoutMs ?? 300_000 });
+  const output = `${result.stdout}\n${result.stderr}`;
+  const counts = vitestCounts(output);
+  return { ok: result.code === 0 && counts.failed === 0 && counts.passed > 0, exitCode: result.code, ...counts, output: output.slice(-20_000), command: [command, ...argv] };
 }
 
 /**
@@ -168,8 +191,8 @@ function runDjangoTests(workspace, hiddenTests, env) {
 export function agentDiff(workspace) {
   const lf = ["-c", "core.autocrlf=input", "-c", "core.safecrlf=false"];
   git(workspace, [...lf, "add", "-A"]);
-  const nameStatus = git(workspace, [...lf, "diff", "--cached", "--name-status", "HEAD"]).stdout.trim();
-  const patch = git(workspace, [...lf, "diff", "--cached", "HEAD"]).stdout;
+  const nameStatus = git(workspace, [...lf, "diff", "--cached", "--ignore-cr-at-eol", "--name-status", "HEAD"]).stdout.trim();
+  const patch = git(workspace, [...lf, "diff", "--cached", "--ignore-cr-at-eol", "HEAD"]).stdout;
   const files = nameStatus ? nameStatus.split("\n").map((line) => line.split("\t").slice(1).join("\t")) : [];
   return { files, patch };
 }
@@ -178,10 +201,10 @@ function summarizeCheck(stdout) {
   try {
     const report = JSON.parse(stdout);
     const counts = {};
-    for (const issue of report.issues ?? []) counts[issue.code] = (counts[issue.code] ?? 0) + 1;
+    for (const issue of report.issues ?? []) if (issue.code !== "SCAFFOLD_ORPHANED") counts[issue.code] = (counts[issue.code] ?? 0) + 1;
     const grounding = (report.issues ?? []).filter((issue) => String(issue.code).startsWith("GROUNDING_"))
       .map(({ code, severity, file, message }) => ({ code, severity, file, message }));
-    return { score: report.score ?? null, counts, grounding };
+    return { score: report.score ?? null, counts, grounding, excludedFromDeltas: ["SCAFFOLD_ORPHANED"] };
   } catch {
     return { score: null, counts: {}, grounding: [], error: "mex check output was not JSON" };
   }
@@ -242,7 +265,8 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
   if (verifyWorkspace) verifyWorkspace();
   const processResult = await runTimed(invocation.command, invocation.args, { cwd: workspace, env, timeoutMs });
   writeFileSync(`${outputPrefix}.jsonl`, processResult.stdout);
-  const parsed = claudeAdapter.parseTranscript(processResult.stdout, { ...task, gold: [] });
+  const parsed = parseSession(processResult.stdout, task);
+  const testTime = testCommandTime(processResult.stdout, parsed.toolCalls);
   const calls = summarizeCalls(parsed.toolCalls, workspace);
   writeFileSync(`${outputPrefix}.calls.json`, `${JSON.stringify(calls.classified, null, 2)}\n`);
 
@@ -315,6 +339,8 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
   const measures = measureSession({ raw: processResult.stdout, calls: parsed.toolCalls, entries: readContextLog(contextLog).entries, task,
     answer: JSON.stringify(parsed.rawResult), contextIndex: existsSync(contextIndexPath) ? JSON.parse(readFileSync(contextIndexPath, "utf8")) : null });
   return {
+    accounting: parsed.accounting, testCommandTime: testTime,
+    ...settleTelemetry(hooks, settle),
     firstCall: first, warmup: warmupResult, measures, cacheValidation: { enabled: validateCache, minimumReadTokens: sharedPrefixTokens },
     agent: "claude",
     process: { code: processResult.code, signal: processResult.signal, timedOut: processResult.timedOut, elapsedMs: processResult.elapsedMs, stderr: String(processResult.stderr ?? "").slice(-4000) },
@@ -327,6 +353,7 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
       cacheUseRatio: usage.cacheUseRatio, costUsd: usage.reportedCostUsd,
       neutralCostUsd: first?.cacheRead > 0 ? usage.reportedCostUsd : null,
       elapsedMs: processResult.elapsedMs, turns: parsed.turns, toolCalls: calls.totalCalls,
+      testCommandMs: testTime.ms, agentMinusTestMs: testTime.ms === null ? null : Math.max(0, processResult.elapsedMs - testTime.ms),
       mexCalls: calls.mexCalls, fallbacks: calls.fallbacks, handHashEdits: calls.handHashEdits,
       // False in the MEX arm means the agent never touched the scaffold or CLI;
       // check the pilot for this before trusting the instructions were loaded.

@@ -123,7 +123,7 @@ export function summarizeContextLog(path) {
         refresh: entry.refresh ? { code: entry.refresh.code ?? null, ms: entry.refresh.ms ?? null, mode: entry.refresh.mode ?? null, reason: entry.refresh.reason ?? null, changed: entry.refresh.changed ?? null, reextracted: entry.refresh.reextracted ?? null } : null,
         reground: entry.reground ?? null, skipped: entry.skipped ?? null,
       });
-      if (entry.skipped === "refresh-failed" || (entry.reground?.failed ?? 0) > 0) failures.push({ event: "settle", loop: entry.loop ?? 0, skipped: entry.skipped ?? null, regroundFailed: entry.reground?.failed ?? 0, refused: entry.reground?.refused ?? [] });
+      if (entry.skipped === "refresh-failed" || (entry.refresh?.code ?? 0) !== 0 || (entry.reground?.failed ?? 0) > 0) failures.push({ event: "settle", loop: entry.loop ?? 0, skipped: entry.skipped ?? null, regroundFailed: entry.reground?.failed ?? 0, refused: entry.reground?.refused ?? [] });
       continue;
     }
     if (name === "settle-error" || name === "settle-refresh-failed") { failures.push({ event: name, error: entry.error ?? entry.stderr ?? null, code: entry.code ?? null }); continue; }
@@ -155,11 +155,20 @@ export function summarizeContextLog(path) {
     stopBlocks: { count: stopBlocks.length, undelivered, items: stopBlocks, ids: uniq(stopBlocks.flatMap((block) => block.listed)) },
     stopEligible: uniq(stopEntries.flatMap((entry) => (Array.isArray(entry.eligible) ? entry.eligible : []))),
     stopFlagged: uniq(stopEntries.flatMap((entry) => (Array.isArray(entry.flagged) ? entry.flagged : []))),
+    settleLaunched: entries.some((entry) => entry.settleLaunched === true || entry.settle === "started" || entry.event === "settle-launched") || settles.length > 0 || failures.some((entry) => entry.event.startsWith("settle")),
     // Touched now and vouched for by nobody: what an in-session review would have listed.
     stopUnvouched: uniq(stopEntries.flatMap((entry) => (Array.isArray(entry.unvouched) ? entry.unvouched : entry.event === "stop-block" && Array.isArray(entry.flagged) ? entry.flagged : []))),
     settle: { count: settles.length, passes: settles, regrounded: settles.reduce((sum, pass) => sum + (pass.reground?.ok ?? 0), 0), regroundFailed: settles.reduce((sum, pass) => sum + (pass.reground?.failed ?? 0), 0) },
     failures, errors, malformedLines: malformed,
   };
+}
+
+export function settleTelemetry(hooks, wait) {
+  const launched = Boolean(hooks?.settleLaunched || wait?.sawWorker);
+  const outcome = wait?.timedOut ? "timed-out"
+    : hooks?.failures.some((f) => f.event.startsWith("settle")) ? "failed"
+    : hooks?.settle.count ? "completed" : launched ? "launched-no-outcome" : "not-launched";
+  return { settleLaunched: launched, settleOutcome: outcome };
 }
 
 /** `mex context status --json` after settle: flagged and eligible entities. */

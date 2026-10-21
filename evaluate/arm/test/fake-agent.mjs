@@ -2,7 +2,7 @@
 // Stand-in for `claude -p` that emits a minimal stream-json transcript, so the
 // run pipeline can be exercised end to end without a model session.
 const prompt = process.argv[process.argv.indexOf("-p") + 1] ?? "";
-const change = prompt.includes("Do not commit");
+const change = (process.argv[process.argv.indexOf("--append-system-prompt") + 1] ?? prompt).includes("Do not commit");
 const usage = { input_tokens: 12, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 7 };
 const structured = change
   ? { summary: "No change made; fake agent run.", filesChanged: [], testsRun: "none" }

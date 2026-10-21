@@ -1,5 +1,8 @@
 {
   "schemaVersion": 1,
+  "subjectType": "compiler",
+  "workerCount": 3,
+  "workerConfig": { "file": "test.config", "values": { "workerCount": 3 } },
   "id": "ts-hooks-arm",
   "description": "Product hooks (mex hooks, mex context): files vs lexical vs semantic prompt recipe, TypeScript (needs the 4 MiB file-limit CLI)",
   "repetitions": {

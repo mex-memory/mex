@@ -1,8 +1,9 @@
 // Per-session subject checkouts for the agent-arm test.
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { runSync } from "../../compare/lib/process.mjs";
+import { relativePath } from "./suite.mjs";
 
 // Line endings follow the subject clone's core.autocrlf: grounding baselines hash the
 // checked-out bytes, so checkouts must match the platform the scaffold was written on.
@@ -41,22 +42,65 @@ export function runMex(cliBin, args, cwd, env) {
   return runSync(process.execPath, [mexEntrypoint(cliBin), ...args], { cwd, env });
 }
 
-function linkDependencies(workspace, depsDir) {
+function dependencyPaths(workspace) {
+  return ["node_modules", ...git(workspace, ["ls-tree", "-r", "--name-only", "HEAD"]).stdout.split("\n")
+    .filter((p) => p.endsWith("/package.json") && !p.includes("node_modules/"))
+    .map((p) => `${p.slice(0, -"package.json".length)}node_modules`)];
+}
+
+const DEPENDENCY_OVERLAY = ".arm-shared-dependencies.json";
+
+// Keep local package imports bound to this checkout while sharing external modules.
+function dependencyOverlay(source, target, installRoot, workspace) {
+  mkdirSync(target, { recursive: true });
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const from = join(source, entry.name), to = join(target, entry.name);
+    if (entry.name.startsWith("@") && entry.isDirectory()) dependencyOverlay(from, to, installRoot, workspace);
+    else if (statSync(from).isDirectory()) {
+      const actual = realpathSync(from), rel = relative(installRoot, actual);
+      const local = !isAbsolute(rel) && !rel.startsWith("..") && !rel.split(sep).includes("node_modules");
+      symlinkSync(local ? join(workspace, rel) : from, to, "junction");
+    } else copyFileSync(from, to);
+  }
+}
+
+function removeDependencyOverlay(path, workspace) {
+  const absolute = resolve(path);
+  if (!absolute.startsWith(`${resolve(workspace)}${sep}`)) throw new Error("dependency cleanup escaped workspace");
+  if (lstatSync(path).isSymbolicLink()) { unlinkSync(path); return; }
+  if (!statSync(path).isDirectory()) { unlinkSync(path); return; }
+  for (const entry of readdirSync(path)) removeDependencyOverlay(join(path, entry), workspace);
+  rmdirSync(path);
+}
+
+export function linkDependencies(workspace, depsDir) {
   if (!depsDir) return;
-  const target = join(workspace, "node_modules");
-  if (existsSync(target)) throw new Error(`${target} already exists`);
-  symlinkSync(depsDir, target, "junction");
+  const multiPackage = existsSync(join(dirname(depsDir), "pnpm-workspace.yaml"));
+  for (const path of multiPackage ? dependencyPaths(workspace) : ["node_modules"]) {
+    const source = path === "node_modules" ? depsDir : join(dirname(depsDir), path);
+    if (!existsSync(source)) continue;
+    const target = join(workspace, path);
+    if (existsSync(target)) throw new Error(`${target} already exists`);
+    mkdirSync(dirname(target), { recursive: true });
+    if (multiPackage) {
+      dependencyOverlay(source, target, dirname(depsDir), workspace);
+      writeFileSync(join(target, DEPENDENCY_OVERLAY), JSON.stringify({ source }));
+    } else symlinkSync(source, target, "junction");
+  }
 }
 
 /** Unlink the dependency junction itself; never recurse through it. */
 export function unlinkDependencies(workspace) {
-  const target = join(workspace, "node_modules");
-  try {
-    if (lstatSync(target).isSymbolicLink()) unlinkSync(target);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+  for (const path of dependencyPaths(workspace)) {
+    const target = join(workspace, path);
+    try {
+      if (lstatSync(target).isSymbolicLink()) unlinkSync(target);
+      else if (existsSync(join(target, DEPENDENCY_OVERLAY))) removeDependencyOverlay(target, workspace);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (existsSync(target)) throw new Error(`refusing to continue: ${target} is not a removable link`);
   }
-  if (existsSync(target)) throw new Error(`refusing to continue: ${target} is not a removable link`);
 }
 
 /** Every arm: drop a marked section (from the line starting `deleteFrom` up to the line equal to `deleteTo`). */
@@ -76,7 +120,7 @@ function applyBasePatch(workspace, patch) {
  * Check out the task base, add the scaffold for the MEX arm, link the shared
  * dependencies, and commit, so the session diff is exactly the agent's work.
  */
-export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit = null, depsDir = null, appendInstructions = false, basePatches = [], stripPrototype = false, reuse = false }) {
+export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit = null, depsDir = null, appendInstructions = false, basePatches = [], stripPrototype = false, reuse = false, workerConfig = null }) {
   const timings = {}, started = Date.now();
   if (existsSync(workspace) && !reuse) throw new Error(`workspace already exists: ${workspace}`);
   mkdirSync(dirname(workspace), { recursive: true });
@@ -84,10 +128,9 @@ export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit =
   else git(subjectRoot, ["worktree", "add", "--detach", workspace, base]);
   timings.checkoutMs = Date.now() - started;
   const scaffoldStarted = Date.now();
-  // `appendInstructions` keeps the base's own CLAUDE.md and appends the
-  // scaffold's MEX block, as `mex setup` does for an existing file.
+  // Every arm keeps the base's own CLAUDE.md; a scaffold contributes managed blocks.
   const ownInstructions = join(workspace, "CLAUDE.md");
-  const baseInstructions = appendInstructions && existsSync(ownInstructions) ? readFileSync(ownInstructions, "utf8") : null;
+  const baseInstructions = existsSync(ownInstructions) ? readFileSync(ownInstructions, "utf8") : null;
   for (const path of SCAFFOLD_PATHS) {
     if (baseInstructions !== null && path === "CLAUDE.md") continue;
     if (existsSync(join(workspace, path))) git(workspace, ["rm", "-r", "-q", "--", path]);
@@ -98,11 +141,20 @@ export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit =
     if (!present.includes(".mex")) throw new Error(`scaffold commit ${scaffoldCommit} has no .mex directory`);
     git(workspace, ["checkout", scaffoldCommit, "--", ...present]);
     if (baseInstructions !== null && present.includes("CLAUDE.md")) {
-      writeFileSync(ownInstructions, `${baseInstructions.trimEnd()}\n\n${readFileSync(ownInstructions, "utf8")}`);
+      const scaffoldText = readFileSync(ownInstructions, "utf8");
+      const blocks = scaffoldText.match(/<!-- ((?:mex|mex-agent)(?::[a-z-]+)+):start -->[\s\S]*?<!-- \1:end -->/g) ?? [];
+      writeFileSync(ownInstructions, `${baseInstructions.trimEnd()}${blocks.length ? `\n\n${blocks.join("\n\n")}` : ""}\n`);
       git(workspace, ["add", "--", "CLAUDE.md"]);
     }
   }
   if (scaffoldCommit && stripPrototype) stripPrototypeHooks(workspace);
+  if (workerConfig) {
+    const path = relativePath(workerConfig.file), target = join(workspace, path);
+    const previous = existsSync(target) ? JSON.parse(readFileSync(target, "utf8")) : {};
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, `${JSON.stringify({ ...previous, ...workerConfig.values }, null, 2)}\n`);
+    git(workspace, ["add", "-f", "--", path]);
+  }
   timings.scaffoldMs = Date.now() - scaffoldStarted;
   const commitStarted = Date.now();
   git(workspace, ["commit", "-q", "--allow-empty", "-m", scaffoldCommit ? "eval: base with MEX scaffold" : "eval: base without MEX"]);

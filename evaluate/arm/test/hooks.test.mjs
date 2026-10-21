@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { aliasCoverage, anyHookEntries, managedHookCommands, summarizeContextLog, waitForSettle } from "../lib/hooks.mjs";
 import { generateReport } from "../lib/report.mjs";
-import { appendedInstruction, buildPrompt, claudeInvocation, djangoCounts, runHiddenTests } from "../lib/session.mjs";
+import { appendedInstruction, sharedInstructions, buildPrompt, claudeInvocation, djangoCounts, runHiddenTests } from "../lib/session.mjs";
 import { createWorkspace, git, removeWorkspace } from "../lib/workspace.mjs";
 import { armSpecFor, projectNameOf, sessionEnv } from "../index.mjs";
 
@@ -83,8 +83,8 @@ test("every arm gets the same appended instruction, and it never mentions MEX", 
   const appendPrompt = { qa: "Keep the answer concise.", change: "Keep the summary concise." };
   const qa = { type: "qa", prompt: "Why?" }, change = { type: "change", prompt: "Fix" };
   for (const withMex of [false, true]) {
-    assert.match(buildPrompt(qa, { withMex, appendPrompt }), /Keep the answer concise\.$/);
-    assert.match(buildPrompt(change, { withMex, appendPrompt }), /Keep the summary concise\.$/);
+    assert.match(sharedInstructions(qa, appendPrompt), /Keep the answer concise\./);
+    assert.match(sharedInstructions(change, appendPrompt), /Keep the summary concise\./);
   }
   assert.equal(buildPrompt(qa, { withMex: false, appendPrompt }), buildPrompt(qa, { withMex: true, appendPrompt }));
   assert.equal(appendedInstruction("Short.", qa), "\n\nShort.");

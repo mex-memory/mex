@@ -21,7 +21,7 @@ if (process.argv.includes("--version")) {
   process.exit(0);
 }
 const prompt = process.argv[process.argv.indexOf("-p") + 1] ?? "";
-const change = prompt.includes("Do not commit");
+const change = (process.argv[process.argv.indexOf("--append-system-prompt") + 1] ?? prompt).includes("Do not commit");
 const cwd = process.cwd();
 const sessionId = randomUUID();
 const usage = { input_tokens: 12, cache_creation_input_tokens: 0, cache_read_input_tokens: process.env.FAKE_COLD_START === "1" ? 0 : 6000, output_tokens: 7 };
@@ -71,7 +71,7 @@ if (process.argv.includes("--max-turns") && prompt === "Reply with OK.") {
   runHooks({ hook_event_name: "Stop", stop_hook_active: false });
   events.push({ type: "assistant", message: { id: "warmup", model: "fake", content: [{type:"text",text:"OK"}], usage } });
   events.push({ type: "result", result: "OK", num_turns: 1, usage, total_cost_usd: 0 });
-  process.stdout.write(`${events.map(JSON.stringify).join("\n")}\n`);
+  await new Promise((done) => process.stdout.write(`${events.map(JSON.stringify).join("\n")}\n`, done));
   process.exit(0);
 }
 
@@ -148,5 +148,5 @@ const total = (key) => usage[key] * Math.max(messages, 1);
 const structured = change
   ? { summary: `Fake agent run; applied the recorded fix to ${changed.length} file(s).`, filesChanged: changed, testsRun: "none" }
   : { answer: "The fake agent answers after reading one linked file.", symbols: ["fetch"], evidence: [{ path: target, line: 1 }], complete: false };
-events.push({ type: "result", structured_output: structured, num_turns: Math.max(messages, 1), usage: { input_tokens: total("input_tokens"), cache_creation_input_tokens: 0, cache_read_input_tokens: total("cache_read_input_tokens"), output_tokens: total("output_tokens") }, total_cost_usd: 0 });
-process.stdout.write(`${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+events.push({ type: "result", structured_output: structured, num_turns: Math.max(messages, 1), usage: { input_tokens: total("input_tokens"), cache_creation_input_tokens: 0, cache_read_input_tokens: total("cache_read_input_tokens"), output_tokens: total("output_tokens") }, total_cost_usd: Number(process.env.FAKE_AGENT_COST_USD ?? 0) });
+await new Promise((done) => process.stdout.write(`${events.map((event) => JSON.stringify(event)).join("\n")}\n`, done));

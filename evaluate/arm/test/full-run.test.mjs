@@ -11,11 +11,11 @@ test("filtered schedules balance first arm and full selection counts all heavy t
  const firstTotals={files:0,"mex-r2w":0,"mex-r3":0};
  for(const repo of ["hono","ts","dj"]){
   const suite=JSON.parse(readFileSync(new URL(`../suites/${repo}-hooks.json`,import.meta.url)));
-  const p=buildPlan(suite);total+=p.sessions;
+  const legacy={arms:Object.keys(suite.arms)}; const p=buildPlan(suite,legacy);total+=p.sessions;
   for(const [arm,n]of Object.entries(p.firstPosition))firstTotals[arm]+=n;
   assert.ok(Math.max(...Object.values(p.firstPosition))-Math.min(...Object.values(p.firstPosition))<=1);
-  for(const task of suite.tasks.filter(t=>t.heavy))assert.equal(selectedSchedule(suite).filter(r=>r.task.id===task.id).length,6);
-  const slice=selectedSchedule(suite,{tasks:suite.tasks.filter(t=>t.type==="qa").slice(0,4).map(t=>t.id)});
+  for(const task of suite.tasks.filter(t=>t.heavy))assert.equal(selectedSchedule(suite,legacy).filter(r=>r.task.id===task.id).length,6);
+  const slice=selectedSchedule(suite,{...legacy,tasks:suite.tasks.filter(t=>t.type==="qa").slice(0,4).map(t=>t.id)});
   const counts=Object.keys(suite.arms).map(a=>slice.filter(r=>r.armId===a&&r.orderIndex===0).length);
   assert.ok(Math.max(...counts)-Math.min(...counts)<=1);
  }

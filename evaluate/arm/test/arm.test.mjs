@@ -71,7 +71,7 @@ test("invocations give change tasks edit tools and Q&A tasks none", () => {
   const change = claudeInvocation({ task: { type: "change", prompt: "Fix" }, model: "m" });
   assert.equal(qa.args[qa.args.indexOf("--tools") + 1], "Read,Grep,Glob,Bash");
   assert.equal(change.args[change.args.indexOf("--tools") + 1], "Read,Grep,Glob,Bash,Edit,Write");
-  assert.match(buildPrompt({ type: "change", prompt: "Fix" }), /Do not commit/);
+  assert.match(change.args[change.args.indexOf("--append-system-prompt") + 1], /Do not commit/);
   assert.ok(!qa.args.some((arg) => /mex/i.test(arg)), "prompts and flags never mention MEX");
 });
 
@@ -79,7 +79,7 @@ test("the steered policy names MEX only in the MEX arm's prompt", () => {
   const qa = { type: "qa", prompt: "Why?" }, change = { type: "change", prompt: "Fix" };
   assert.match(buildPrompt(qa, { mexPrompt: "steered", withMex: true }), /mex graph scope/);
   assert.doesNotMatch(buildPrompt(qa, { mexPrompt: "steered", withMex: true }), /mex impact/);
-  assert.match(buildPrompt(change, { mexPrompt: "steered", withMex: true }), /mex impact[\s\S]*Do not commit/);
+  assert.match(buildPrompt(change, { mexPrompt: "steered", withMex: true }), /mex impact/);
   assert.doesNotMatch(buildPrompt(change, { mexPrompt: "steered", withMex: false }), /mex/i);
   assert.doesNotMatch(buildPrompt(change, { mexPrompt: "none", withMex: true }), /mex/i);
   assert.match(buildPrompt(qa, { mexPrompt: "forced", withMex: true }), /First, read `\.mex\/ROUTER\.md`[\s\S]*before reading or searching any source file/);
@@ -149,7 +149,7 @@ test("workspaces add the scaffold only for the MEX arm and leave dependency targ
     createWorkspace({ subjectRoot: subject, workspace: files, base: scaffold, depsDir: deps });
     createWorkspace({ subjectRoot: subject, workspace: mex, base, scaffoldCommit: scaffold, depsDir: deps });
     assert.equal(existsSync(join(files, ".mex")), false);
-    assert.equal(existsSync(join(files, "CLAUDE.md")), false);
+    assert.equal(readFileSync(join(files, "CLAUDE.md"), "utf8").trim(), "managed");
     assert.equal(readFileSync(join(mex, ".mex", "ROUTER.md"), "utf8").replace(/\r\n/g, "\n"), "# router\n", "line endings follow the machine");
     assert.equal(readFileSync(join(mex, "node_modules", "keep.txt"), "utf8"), "keep");
     assert.equal(git(mex, ["status", "--porcelain"]).stdout.trim(), "");

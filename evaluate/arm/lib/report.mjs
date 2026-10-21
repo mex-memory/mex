@@ -2,8 +2,9 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { pairedRatio } from "./statistics.mjs";
+import { parseSession, testCommandTime } from "./telemetry.mjs";
 import { CATEGORIES } from "./classify.mjs";
-import { claudeAdapter } from "../../adapters/agents/claude.mjs";
 import { firstCall, measureSession, neutralizeRows } from "./measures.mjs";
 import { readContextLog } from "./hooks.mjs";
 
@@ -16,7 +17,15 @@ export function loadRows(outputDir, suite = null) {
     const path = join(outputDir, "artifacts", `${row.runId}.jsonl`);
     if (!existsSync(path)) continue;
     const raw = readFileSync(path, "utf8"), task = suite?.tasks.find((t) => t.id === row.taskId) ?? { gold: {} };
-    const parsed = claudeAdapter.parseTranscript(raw, { ...task, gold: [] });
+    const parsed = parseSession(raw, task);
+    if (!parsed.usage.accountingValid) {
+      row.valid = false;
+      row.violations = [...new Set([...(row.violations ?? []), `token accounting: ${parsed.usage.accountingReason}`])];
+    }
+    row.accounting = parsed.accounting;
+    row.testCommandTime = testCommandTime(raw, parsed.toolCalls);
+    row.metrics.testCommandMs = row.testCommandTime.ms;
+    row.metrics.agentMinusTestMs = row.testCommandTime.ms === null ? null : Math.max(0, row.metrics.elapsedMs - row.testCommandTime.ms);
     row.firstCall = firstCall(raw);
     row.metrics.costUsd = parsed.usage.reportedCostUsd;
     for (const [key, value] of Object.entries({ uncachedInput: parsed.usage.uncachedInput, cacheWrite: parsed.usage.cacheWrite, cacheRead: parsed.usage.cacheRead, output: parsed.usage.output, newTokens: parsed.usage.newTokens, processed: parsed.usage.reportedTotal })) row.metrics[key] = value;
@@ -82,9 +91,10 @@ const fmt = (value, digits = 0) => (value === null || value === undefined || Num
 const pct = (value) => (value === null ? "–" : `${(value * 100).toFixed(1)}%`);
 
 export function generateReport({ suite, rows, grades = null, salt, baselines = {} }) {
+  if (rows.some((r) => r.mode === "calibration")) throw new Error("calibration rows cannot feed main reports");
   neutralizeRows(rows);
   const valid = rows.filter((row) => row.valid);
-  const armIds = Object.keys(suite.arms);
+  const armIds = Object.keys(suite.arms).filter((id) => rows.some((r) => r.arm === id));
   const lines = [`# ${suite.id} agent-arm report`, "", `Rows: ${rows.length} (${valid.length} valid, ${rows.length - valid.length} invalid).`, ""];
   lines.push("## Primary measures", "", "Processed tokens count all input, cache and output tokens. Neutral cost reprices a cold first call using the median warm first-call prefix in this output. Warm-up usage is excluded. Injection uptake is a bounded heuristic, not proof of causation.", "",
     "| Arm | Rows | Processed tokens | Neutral USD | Real USD | Discovery calls | Used / ignored injections | Redundant searches | Off-gold prompt injections | Median calls to gold file | Wiki shows | Graph / knowledge injections |",
@@ -117,7 +127,37 @@ export function generateReport({ suite, rows, grades = null, salt, baselines = {
     }
   }
 
-  const [control, ...treatments] = armIds;
+  const control = "files", treatments = armIds.filter((id) => id !== control);
+
+  lines.push("", "## Task outcomes (all tasks)", "", "Win/loss counts compare paired processed tokens; correctness is shown separately. Invalid or missing pairs are excluded.", "", "| Task | Stratum | Pairs | Token wins / losses / ties | Correct files / treatment |", "|---|---|---|---|---|");
+  const allPairs = [];
+  for (const treatment of treatments) for (const row of valid.filter((r) => r.arm === treatment)) {
+    const other = valid.find((r) => r.arm === control && r.taskId === row.taskId && r.repetition === row.repetition);
+    if (other) allPairs.push({ taskId: row.taskId, treatment: row, control: other });
+  }
+  for (const task of suite.tasks) {
+    const pairs = allPairs.filter((p) => p.taskId === task.id);
+    const win = pairs.filter((p) => p.treatment.metrics.processed < p.control.metrics.processed).length;
+    const loss = pairs.filter((p) => p.treatment.metrics.processed > p.control.metrics.processed).length;
+    const correct = (side) => { const scores = pairs.map((p) => correctness(p[side], grades, salt)).filter((v) => v !== null); return scores.length ? `${scores.filter(Boolean).length}/${scores.length}` : "ungraded"; };
+    lines.push(`| ${task.id} | ${task.stratum ?? (task.heavy ? "heavy" : "light")} | ${pairs.length} | ${win} / ${loss} / ${pairs.length - win - loss} | ${correct("control")} / ${correct("treatment")} |`);
+  }
+  lines.push("", "## Paired geometric ratios", "", "Treatment / files; equal task weight, geometric mean over repetitions within task. Bootstrap resamples whole tasks (10,000 draws, 95% percentile CI); signed-rank check uses task mean log ratios. Nonpositive or unavailable metrics are excluded. Light controls are separate.", "", "| Arm | Stratum | Metric | Tasks / pairs | Ratio | Cluster 95% CI | Wilcoxon p |", "|---|---|---|---|---|---|---|");
+  for (const treatment of treatments) for (const stratum of ["heavy", "light"]) for (const key of ["processed", "costUsd"]) {
+    const pairs = allPairs.filter((p) => p.treatment.arm === treatment && (suite.tasks.find((t) => t.id === p.taskId)?.stratum ?? (suite.tasks.find((t) => t.id === p.taskId)?.heavy ? "heavy" : "light")) === stratum);
+    const result = pairedRatio(pairs, key);
+    lines.push(`| ${treatment} | ${stratum} | ${key} | ${result.tasks} / ${result.pairs} | ${fmt(result.ratio, 3)} | ${fmt(result.low, 3)} … ${fmt(result.high, 3)} | ${fmt(result.wilcoxon?.p, 4)} |`);
+  }
+  lines.push("", "## Delivery cost and time", "", "Cost per success includes all valid attempts' paid cost; ungraded answers remain ungraded. Test time uses the union of timestamped test tool intervals; missing timestamps stay unavailable.", "", "| Arm | Kind | Correct / graded | USD per success | Median agent minus tests (ms) |", "|---|---|---|---|---|");
+  for (const arm of armIds) for (const kind of ["qa", "change"]) {
+    const subset = valid.filter((r) => r.arm === arm && r.taskType === kind);
+    const graded = subset.map((r) => correctness(r, grades, salt)).filter((v) => v !== null);
+    const successes = graded.filter(Boolean).length;
+    const paid = subset.every((r) => Number.isFinite(r.metrics.costUsd)) ? subset.reduce((s, r) => s + r.metrics.costUsd, 0) : null;
+    lines.push(`| ${arm} | ${kind} | ${successes} / ${graded.length} | ${graded.length !== subset.length || paid === null ? "ungraded/unavailable" : successes ? fmt(paid / successes, 4) : "no successes"} | ${fmt(median(subset.map((r) => r.metrics.agentMinusTestMs)))} |`);
+  }
+  lines.push("", "## Session audit", "", "| Run | Hooks fired | Settle launched / outcome | Resume / restart | Accounting |", "|---|---|---|---|---|");
+  for (const row of rows) lines.push(`| ${row.runId} | ${row.arm === "files" ? "n/a" : row.hooks?.hookEvents > 0 ? "yes" : "MISSING"} | ${row.settleLaunched ?? "unknown"} / ${row.settleOutcome ?? "unknown"} | ${row.execution?.resumeCount ?? "unknown"} / ${row.execution?.restartCount ?? "unknown"} | ${row.accounting?.status ?? "legacy"} |`);
 
   // Tokens are never added together: uncached input, cache writes, cache reads and output stay apart, with the cost the agent reported.
   const TOKEN_KEYS = [["Input (uncached)", "uncachedInput"], ["Cache write", "cacheWrite"], ["Cache read", "cacheRead"], ["Output", "output"]];

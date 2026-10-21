@@ -10,6 +10,9 @@ import { runSync } from "../compare/lib/process.mjs";
 import { aliasCoverage, installProductHooks } from "./lib/hooks.mjs";
 import { buildBlindReview, generateReport, loadRows } from "./lib/report.mjs";
 import { MEX_PROMPTS, runAgentSession } from "./lib/session.mjs";
+import { calibrationSummary, calibrationMarkdown } from "./lib/calibration.mjs";
+import { validateSuite } from "./lib/suite.mjs";
+import { instructionSnapshot, assertInstructionParity } from "./lib/instructions.mjs";
 import { median } from "./lib/measures.mjs";
 import { armPath, buildIndexCache, createWorkspace, git, installContextIndex, installIndexes, mexEntrypoint, refreshContextIndexCache, removeWorkspace, resetWorkspace, resolveCommit, verifyWorkspace } from "./lib/workspace.mjs";
 
@@ -21,7 +24,11 @@ export function parseArgs(argv) {
   const value = (i) => { if (argv[i + 1] === undefined) throw new Error(`${argv[i]} needs a value`); return argv[i + 1]; };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (["--prepare", "--run", "--blind", "--report", "--plan", "--refresh-context-index"].includes(arg)) args.mode = arg.slice(2);
+    if (["--prepare", "--run", "--blind", "--report", "--plan", "--validate-suite", "--refresh-context-index", "--calibrate"].includes(arg)) args.mode = arg.slice(2);
+    else if (arg === "--calibration") args.calibration = true;
+    else if (arg === "--reps") args.reps = Number(value(i++));
+    else if (arg === "--token-threshold") args.tokenThreshold = Number(value(i++));
+    else if (arg === "--turn-threshold") args.turnThreshold = Number(value(i++));
     else if (arg === "--no-warmup") args.warmup = false;
     else if (arg === "--pilot") args.pilot = resolve(value(i++));
     else if (arg === "--suite") args.suite = resolve(value(i++));
@@ -41,12 +48,15 @@ export function parseArgs(argv) {
     else if (arg === "--mex-prompt") args.mexPrompt = value(i++);
     else throw new Error(`unknown argument: ${arg}`);
   }
+  if (args.mode === "calibrate") args.calibration = true;
+  for (const key of ["reps", "tokenThreshold", "turnThreshold"]) if (args[key] !== undefined && (!Number.isInteger(args[key]) || args[key] < 1)) throw new Error(`${key} must be a positive integer`);
+  if (args.calibration && args.arms && args.arms.join(",") !== "files") throw new Error("calibration runs only files");
   if (args.mexPrompt !== undefined && !MEX_PROMPTS.includes(args.mexPrompt)) throw new Error(`--mex-prompt must be one of ${MEX_PROMPTS.join(", ")}`);
   if (!args.mode) throw new Error("choose --prepare, --run, --blind, --report or --refresh-context-index");
-  for (const key of args.mode === "plan" ? ["suite"] : args.mode === "refresh-context-index" ? ["output"] : ["suite", "output"]) if (!args[key]) throw new Error(`--${key} is required`);
+  for (const key of ["plan", "validate-suite"].includes(args.mode) ? ["suite"] : args.mode === "refresh-context-index" ? ["output"] : ["suite", "output"]) if (!args[key]) throw new Error(`--${key} is required`);
   if (["prepare", "run"].includes(args.mode)) {
     // --deps is checked against the suite later: a subject without node_modules (Python) sets "requiresDeps": false.
-    for (const key of ["subject", "cliBin", "model"]) if (!args[key]) throw new Error(`--${key === "cliBin" ? "cli-bin" : key} is required for --${args.mode}`);
+    for (const key of args.calibration ? ["subject", "model"] : ["subject", "cliBin", "model"]) if (!args[key]) throw new Error(`--${key === "cliBin" ? "cli-bin" : key} is required for --${args.mode}`);
   }
   return args;
 }
@@ -114,12 +124,14 @@ export function summarizePushLog(path) {
 const indexKey = (base, scaffold) => `${base.slice(0, 12)}-${scaffold.slice(0, 12)}`;
 
 export function selectedSchedule(suite, args = {}) {
-  const tasks = suite.tasks.filter((t) => args.tasks ? args.tasks.includes(t.id) : t.fullRun !== false);
+  const tasks = suite.tasks.filter((t) => args.tasks ? args.tasks.includes(t.id) : args.calibration || t.fullRun !== false);
   if (args.tasks?.some((id) => !suite.tasks.some((t) => t.id === id))) throw new Error("unknown task selection");
-  const arms = args.arms ?? Object.keys(suite.arms);
+  const arms = args.calibration ? ["files"] : args.arms ?? (suite.arms["mex-r3"] ? ["files", "mex-r3"] : Object.keys(suite.arms));
   if (arms.some((id) => !suite.arms[id])) throw new Error("unknown arm selection");
-  const selected = buildSchedule(tasks, arms, suite.repetitions).filter((item) => !args.repetition || item.repetition === args.repetition)
-    .map((item) => ({ ...item, runId: item.runId.replace(/^\d+-/, `${String(suite.tasks.indexOf(item.task) + 1).padStart(2, "0")}-`) }));
+  const mainPair = !args.arms && suite.arms["mex-r3"] && !args.calibration;
+  const scheduledTasks = args.calibration || mainPair ? tasks.map((t) => ({ ...t, repetitions: args.calibration ? args.reps ?? 2 : args.reps ?? suite.mainRepetitions ?? 3 })) : tasks;
+  const selected = buildSchedule(scheduledTasks, arms, args.calibration ? args.reps ?? 2 : args.reps ?? suite.mainRepetitions ?? suite.repetitions).filter((item) => !args.repetition || item.repetition === args.repetition)
+    .map((item) => ({ ...item, runId: item.runId.replace(/^\d+-/, `${String(suite.tasks.findIndex((t) => t.id === item.task.id) + 1).padStart(2, "0")}-`) }));
   const groups = [];
   for (let i = 0; i < selected.length; i += arms.length) groups.push(selected.slice(i, i + arms.length));
   // Rebalance after every selection, including a repetition-only resume slice.
@@ -141,14 +153,19 @@ export function buildPlan(suite, args = {}) {
 }
 
 function prepare(args, suite) {
+  for (const task of selectedSchedule(suite, args).map((item) => item.task)) {
+    const modern = args.calibration || !args.arms && suite.arms["mex-r3"] || task.heavy;
+    if (modern && (["repoSourceLoc", "goldFiles", "directories", "packages", "goldLinesChanged"].some((key) => !Number.isFinite(task.complexity?.[key])) || task.heavy && task.complexity?.promptNamesGold !== false)) throw new Error(`compute and store complexity before preparation: ${task.id} (complexity.mjs)`);
+  }
   mkdirSync(args.output, { recursive: true });
   const projectName = projectNameOf(suite);
   const mexEnv = sessionEnv({ cliBin: args.cliBin, armSpec: { withCli: true, withHooks: false } });
-  const scaffolds = Object.fromEntries(Object.entries(suite.scaffolds).map(([name, ref]) => [name, resolveCommit(args.subject, ref)]));
+  const scaffolds = args.calibration ? {} : Object.fromEntries(Object.entries(suite.scaffolds ?? {}).map(([name, ref]) => [name, resolveCommit(args.subject, ref)]));
   const tasks = {};
   const baselines = {};
   const coverage = {};
-  const specs = Object.values(suite.arms).map(armSpecFor);
+  const activeArms = args.calibration ? { files: suite.arms.files } : Object.fromEntries([...new Set(selectedSchedule(suite, args).map((r) => r.armId))].map((id) => [id, suite.arms[id]]));
+  const specs = Object.values(activeArms).map(armSpecFor);
   // Graph and Wiki indexes only matter when some arm has the CLI; the context index when some arm has hooks.
   const needsIndexes = specs.some((spec) => spec.withCli);
   const needsHooks = specs.some((spec) => spec.withHooks);
@@ -162,22 +179,34 @@ function prepare(args, suite) {
   }
   const hooks = needsHooks ? { aliasesFile } : null;
   let seedCache = null;
-  const selectedTasks = suite.tasks.filter((task) => args.tasks ? args.tasks.includes(task.id) : task.fullRun !== false);
+  const selectedTasks = suite.tasks.filter((task) => args.tasks ? args.tasks.includes(task.id) : args.calibration || task.fullRun !== false);
   for (const task of selectedTasks) {
     const base = resolveCommit(args.subject, task.base);
     const scaffold = scaffolds[task.scaffold];
-    const key = indexKey(base, scaffold);
+    const key = indexKey(base, scaffold ?? base);
     const cachePath = !needsIndexes ? null : buildIndexCache({ subjectRoot: args.subject, cacheDir: join(args.output, "index-cache"), key, base, scaffoldCommit: scaffold, cliBin: args.cliBin, env: mexEnv, depsDir: args.deps, projectName, hooks, seedCache });
     if (cachePath) seedCache = cachePath;
     if (cachePath) baselines[key] = JSON.parse(readFileSync(join(cachePath, "check-baseline.json"), "utf8"));
     if (cachePath && hooks && !coverage[key]) coverage[key] = aliasCoverage(join(cachePath, "context-index.json"), aliasIds ?? []);
-    tasks[task.id] = { base, scaffold, indexKey: key, cachePath, hiddenFrom: task.hiddenTests?.fromCommit ? resolveCommit(args.subject, task.hiddenTests.fromCommit) : null };
+    const parityWorkspace = join(args.output, "instruction-check", projectName);
+    let instructions = null;
+    try {
+      for (const id of Object.keys(activeArms)) {
+        const spec = armSpecFor(activeArms[id]);
+        createWorkspace({ subjectRoot: args.subject, workspace: parityWorkspace, base, scaffoldCommit: spec.withMex ? scaffold : null, basePatches: suite.basePatches ?? [], workerConfig: suite.workerConfig ?? null, stripPrototype: spec.withHooks, reuse: true });
+        if (spec.withHooks) installProductHooks({ workspace: parityWorkspace, cliBin: args.cliBin, env: mexEnv });
+        const snapshot = instructionSnapshot(parityWorkspace);
+        if (instructions) assertInstructionParity(instructions, snapshot);
+        else instructions = snapshot;
+      }
+    } finally { removeWorkspace(args.subject, parityWorkspace, { removeParent: true }); }
+    tasks[task.id] = { instructions, base, scaffold, indexKey: key, cachePath, hiddenFrom: task.hiddenTests?.fromCommit ? resolveCommit(args.subject, task.hiddenTests.fromCommit) : null };
   }
-  const entry = mexEntrypoint(args.cliBin);
+  const entry = args.cliBin ? mexEntrypoint(args.cliBin) : null;
   const prepared = {
-    schemaVersion: 1, suiteId: suite.id, suiteSha256: fileSha(args.suite), preparedAt: new Date().toISOString(),
+    schemaVersion: 1, mode: args.calibration ? "calibration" : "main", suiteId: suite.id, suiteSha256: fileSha(args.suite), preparedAt: new Date().toISOString(),
     subject: { root: args.subject, scaffolds, autocrlf: git(args.subject, ["config", "--get", "core.autocrlf"], { allowFailure: true }).stdout.trim() || null },
-    cli: { bin: args.cliBin, entrypoint: entry, sha256: fileSha(entry), version: runSync(process.execPath, [entry, "--version"]).stdout.trim() },
+    cli: entry ? { bin: args.cliBin, entrypoint: entry, sha256: fileSha(entry), version: runSync(process.execPath, [entry, "--version"]).stdout.trim() } : null,
     deps: args.deps ?? null, indexedWithDeps: Boolean(args.deps), model: args.model, mexPrompt: args.mexPrompt ?? "none", projectName,
     ...(suite.python ? { python: { path: suite.python, version: runSync(suite.python, ["--version"]).stdout.trim() } } : {}),
     ...(needsHooks ? { hooks: { hookBin: join(args.cliBin, process.platform === "win32" ? "mex-hook.cmd" : "mex-hook"), semantic, aliases: aliasesFile ? { file: aliasesFile, sha256: fileSha(aliasesFile), ids: aliasIds.length } : null, aliasCoverage: coverage } } : {}),
@@ -233,8 +262,9 @@ function loadPrepared(args, suite) {
   const path = join(args.output, "prepare.json");
   if (!existsSync(path)) throw new Error("run --prepare first");
   const prepared = JSON.parse(readFileSync(path, "utf8"));
+  if ((prepared.mode ?? "main") !== (args.calibration ? "calibration" : "main")) throw new Error("calibration and main outputs cannot mix");
   if (prepared.suiteSha256 !== fileSha(args.suite)) throw new Error("suite changed after --prepare");
-  if (fileSha(prepared.cli.entrypoint) !== prepared.cli.sha256) throw new Error("frozen MEX CLI changed after --prepare");
+  if (prepared.cli && fileSha(prepared.cli.entrypoint) !== prepared.cli.sha256) throw new Error("frozen MEX CLI changed after --prepare");
   if (prepared.model !== args.model) throw new Error(`model differs from the prepared run (${prepared.model})`);
   // Runs prepared before the option existed used no MEX prompt.
   const mexPrompt = prepared.mexPrompt ?? "none";
@@ -253,6 +283,10 @@ async function run(args, suite) {
   mkdirSync(runsDir, { recursive: true }); mkdirSync(artifacts, { recursive: true });
   const workspace = join(args.output, "ws", "persistent", projectNameOf(suite));
   const setupHeads = new Map();
+  const journalPath = join(args.output, "execution.json");
+  const previous = existsSync(journalPath) ? JSON.parse(readFileSync(journalPath, "utf8")) : { launches: 0, resumeCount: 0, attempts: {} };
+  const execution = { ...previous, launches: previous.launches + 1, resumeCount: previous.resumeCount + (args.resume ? 1 : 0) };
+  writeJson(journalPath, execution);
   removeWorkspace(args.subject, workspace, { removeParent: true });
   try {
     for (const item of schedule) {
@@ -263,12 +297,14 @@ async function run(args, suite) {
         if (existing.valid) continue;
         renameSync(resultPath, join(runsDir, `${item.runId}.invalid-${Date.now()}.json.txt`));
       }
+      execution.attempts[item.runId] = (execution.attempts[item.runId] ?? 0) + 1;
+      writeJson(journalPath, execution);
       const task = item.task, info = prepared.tasks[task.id], armSpec = armSpecFor(suite.arms[item.armId]);
       if (!info) throw new Error(`${task.id} was not prepared; prepare the selected tasks first`);
       const pushLog = join(artifacts, `${item.runId}.push.jsonl`);
       const temp = join(args.output, "temp", item.runId);
       mkdirSync(temp, { recursive: true });
-      const env = sessionEnv({ baseEnv: { ...process.env, TEMP: temp, TMP: temp, TMPDIR: temp }, cliBin: args.cliBin, armSpec, pushLog });
+      const env = sessionEnv({ baseEnv: { ...process.env, ...suite.testEnv, workerCount: String(suite.workerCount ?? 3), JEST_WORKERS: String(suite.workerCount ?? 3), NX_PARALLEL: "1", TEMP: temp, TMP: temp, TMPDIR: temp }, cliBin: args.cliBin, armSpec, pushLog });
       // The persistent folder keeps the project name constant across every arm.
 
       process.stderr.write(`[arm] ${item.runId}\n`);
@@ -278,7 +314,7 @@ async function run(args, suite) {
         const key = `${info.indexKey}-${item.armId}`, cached = setupHeads.get(key);
         let created;
         if (cached) { const t = Date.now(); resetWorkspace(workspace, cached.head, args.deps); timings.resetMs = Date.now() - t; created = { head: cached.head }; }
-        else created = createWorkspace({ subjectRoot: args.subject, workspace, base: info.base, scaffoldCommit: armSpec.withMex ? info.scaffold : null, depsDir: args.deps, appendInstructions: suite.appendInstructions === true, basePatches: suite.basePatches ?? [], stripPrototype: armSpec.withHooks, reuse: true });
+        else created = createWorkspace({ subjectRoot: args.subject, workspace, base: info.base, scaffoldCommit: armSpec.withMex ? info.scaffold : null, depsDir: args.deps, appendInstructions: suite.appendInstructions === true, basePatches: suite.basePatches ?? [], workerConfig: suite.workerConfig ?? null, stripPrototype: armSpec.withHooks, reuse: true });
         const copyStarted = Date.now();
         const indexes = armSpec.withCli ? installIndexes({ workspace, cachePath: info.cachePath, cliBin: args.cliBin, env }) : null;
         if (armSpec.withHooks) {
@@ -292,20 +328,21 @@ async function run(args, suite) {
         const head = git(workspace, ["rev-parse", "HEAD"]).stdout.trim();
         setupHeads.set(key, { head, hooks: indexes?.hooks });
         const verificationStarted = Date.now();
-        const verify = () => verifyWorkspace({ workspace, head, base: info.base, cachePath: armSpec.withCli ? info.cachePath : null, withHooks: armSpec.withHooks, allowedSetupPaths: (suite.basePatches ?? []).map((p) => p.file) });
+        const verify = () => verifyWorkspace({ workspace, head, base: info.base, cachePath: armSpec.withCli ? info.cachePath : null, withHooks: armSpec.withHooks, allowedSetupPaths: [...(suite.basePatches ?? []).map((p) => p.file), ...(suite.workerConfig ? [suite.workerConfig.file] : [])] });
         const independence = verify();
+        const instructionParity = assertInstructionParity(info.instructions ?? instructionSnapshot(workspace), instructionSnapshot(workspace));
         timings.verifyMs = Date.now() - verificationStarted;
         timings.totalMs = Date.now() - setupStarted;
         timings.otherMs = timings.totalMs - (timings.resetMs ?? Object.values(created.timings ?? {}).reduce((s,n)=>s+n,0)) - (timings.indexCopyMs ?? 0) - (timings.hooksMs ?? 0) - timings.verifyMs;
         const session = await runAgentSession({
-          task: { ...task, hiddenTests: task.hiddenTests ? { ...task.hiddenTests, fromCommit: info.hiddenFrom, ...(suite.python ? { python: task.hiddenTests.python ?? suite.python } : {}) } : null },
+          task: { ...task, hiddenTests: task.hiddenTests ? { ...task.hiddenTests, workerCount: suite.workerCount ?? 3, fromCommit: info.hiddenFrom, ...(suite.python ? { python: task.hiddenTests.python ?? suite.python } : {}) } : null },
           armId: item.armId, armSpec, workspace, env, cliBin: args.cliBin, model: args.model,
           timeoutMs: task.type === "change" ? args.timeoutChangeMs : args.timeoutQaMs,
           outputPrefix: join(artifacts, item.runId), claudeCommand: args.claude, mexPrompt: prepared.mexPrompt ?? "none", appendPrompt: suite.appendPrompt ?? null,
           verifyWorkspace: verify,
           warmup: args.warmup && Object.values(suite.arms).some((arm) => arm.hooks), validateCache: Object.values(suite.arms).some((arm) => arm.hooks), sharedPrefixTokens: suite.sharedPrefixTokens ?? 5656,
         });
-        row = { runId: item.runId, taskId: task.id, taskType: task.type, arm: item.armId, repetition: item.repetition, orderIndex: item.orderIndex, indexKey: info.indexKey, workspaceHead: head, setup: { ...timings, create: created.timings, reused: Boolean(cached) }, independence, indexes, startedFrom: info.base, ...session, ...(armSpec.withPush ? { push: summarizePushLog(pushLog) } : {}) };
+        row = { runId: item.runId, taskId: task.id, taskType: task.type, arm: item.armId, repetition: item.repetition, orderIndex: item.orderIndex, indexKey: info.indexKey, workspaceHead: head, mode: args.calibration ? "calibration" : "main", execution: { launch: execution.launches, resumeCount: execution.resumeCount, restartCount: execution.attempts[item.runId] - 1 }, instructionParity, setup: { ...timings, create: created.timings, reused: Boolean(cached) }, independence, indexes, startedFrom: info.base, ...session, ...(armSpec.withPush ? { push: summarizePushLog(pushLog) } : {}) };
       } finally {
         if (row) writeJson(resultPath, row);
 
@@ -322,12 +359,28 @@ async function run(args, suite) {
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   if (args.mode === "refresh-context-index") return refreshContextIndexes(args);
-  const suite = JSON.parse(readFileSync(args.suite, "utf8"));
+  if (args.calibration) {
+    args.output = args.output ? join(args.output, "calibration") : args.output;
+  }
+  const suite = validateSuite(JSON.parse(readFileSync(args.suite, "utf8")));
+  if (args.mode === "validate-suite") { process.stdout.write(`valid suite ${suite.id}: ${suite.tasks.length} tasks\n`); return; }
   if (args.mode === "plan") { process.stdout.write(`${JSON.stringify(buildPlan(suite, args), null, 2)}\n`); return; }
-  if (["prepare", "run"].includes(args.mode) && !args.deps && suite.requiresDeps !== false) throw new Error(`--deps is required for --${args.mode} (a suite without node_modules sets "requiresDeps": false)`);
+  if (["prepare", "run", "calibrate"].includes(args.mode) && !args.deps && suite.requiresDeps !== false) throw new Error(`--deps is required for --${args.mode} (a suite without node_modules sets "requiresDeps": false)`);
+  if (args.mode === "calibrate") {
+    // Calibration prepares and runs only the control in its own namespace.
+    for (const key of ["subject", "model"]) if (!args[key]) throw new Error(`${key} required for calibration`);
+    if (!existsSync(join(args.output, "prepare.json"))) prepare(args, suite);
+    await run(args, suite);
+    const summary = calibrationSummary(suite, loadRows(args.output, suite), { repetitions: args.reps ?? 2, tokenThreshold: args.tokenThreshold ?? 150_000, turnThreshold: args.turnThreshold ?? 20 });
+    writeJson(join(args.output, "summary.json"), summary);
+    writeFileSync(join(args.output, "summary.md"), calibrationMarkdown(summary));
+    process.stdout.write(calibrationMarkdown(summary));
+    return;
+  }
   if (args.mode === "prepare") return prepare(args, suite);
   if (args.mode === "run") return run(args, suite);
   const prepared = JSON.parse(readFileSync(join(args.output, "prepare.json"), "utf8"));
+  if (prepared.mode === "calibration") throw new Error("calibration rows never feed main reports");
   const salt = prepared.preparedAt;
   const rows = loadRows(args.output, suite);
   if (args.mode === "blind") {

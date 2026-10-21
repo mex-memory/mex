@@ -67,12 +67,18 @@ export function measureSession({ raw, calls, entries = [], task, answer = "", co
     const paths = pathsIn(text);
     const symbols = [...new Set([...symbolsIn(text), ...entities.flatMap((x) => x.symbols ?? []).map((s) => typeof s === "string" ? s : s.name).filter((s) => s && text.includes(s))])];
     const cited = [...paths, ...symbols, ...(e.ids ?? [])].some((s) => String(answer).includes(s));
-    const used = calls.slice(after, after + 5).some((c) => touches(c, paths, symbols)) || cited;
+    const known = calls.slice(0, after).map((c) => norm(JSON.stringify(c.input ?? {})) + " " + norm(c.output));
+    const novelPaths = paths.filter((p) => !known.some((text) => text.includes(p)));
+    const novelSymbols = symbols.filter((s) => !known.some((text) => text.includes(s)));
     const gold = task.gold?.knowledge ?? [];
     const sources = [...paths, ...entities.map((x) => x.file ?? x.path ?? x.source?.file).filter(Boolean)];
     const offGold = e.event === "prompt" && gold.length > 0 && !gold.some((g) =>
       e.ids?.includes(g) || sources.some((p) => norm(g).includes(p.replace(/^\.mex\//, ""))));
     const graph = e.kind === "graph" || e.event === "graph" || e.note?.startsWith("graph") || /^MEX \(search hits/.test(text);
+    const alignedEntry = Number.isFinite(at) || Number.isInteger(e.toolCallIndex);
+    const used = alignedEntry && (graph
+      ? calls.slice(after, after + 5).some((c) => touches(c, novelPaths, novelSymbols))
+      : calls.slice(after, after + 5).some((c) => touches(c, paths, symbols)) || cited);
     return { event: e.event, kind: graph ? "graph" : "knowledge", ids: e.ids ?? [], afterToolCall: after, paths, symbols, used, offGold,
       followingCalls: offGold ? calls.slice(after).map((c) => ({ name: c.name, input: c.input })) : [] };
   });
