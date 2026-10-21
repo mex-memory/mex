@@ -86,11 +86,12 @@ export async function handleStop(input: StopInput): Promise<StopOutcome> {
   const { root, sessionId } = input;
   const review = await currentReview(root, sessionId);
   if (review === null) return { stdout: "", log: { note: "no-git" } };
-  if (review.entries.length === 0) return { stdout: "", log: { touched: 0 } };
+  const damaged = review.damaged ?? [];
+  if (review.entries.length === 0 && !review.sourceDigest) return { stdout: "", log: { touched: 0, ...(damaged.length ? { damaged } : {}) } };
 
   // From here on the entities read as changed in packets, even before the graph is refreshed.
   recordReview(root.localDir, review);
-  const base = { touched: review.entries.length, eligible: review.eligible.map((e) => e.entity.id), flagged: review.flagged.map((e) => e.entity.id) };
+  const base = { touched: review.entries.length, eligible: review.eligible.map((e) => e.entity.id), flagged: review.flagged.map((e) => e.entity.id), ...(damaged.length ? { damaged } : {}) };
 
   const config = loadConfiguredContextConfig(root.scaffoldRoot);
   const unvouched = review.flagged.filter((entry) => entry.touchedNow);
@@ -106,8 +107,8 @@ export async function handleStop(input: StopInput): Promise<StopOutcome> {
   if (sessionId !== null && loadSettled(root.localDir, sessionId) === digest) {
     settle = "unchanged";
   } else {
-    if (sessionId !== null) recordSettled(root.localDir, sessionId, digest);
     settle = await startSettle(root, sessionId, input.start);
+    if (sessionId !== null && settle !== "failed") recordSettled(root.localDir, sessionId, digest);
   }
   if (block) {
     const reason = composeStopReason(unvouched, sessionId);

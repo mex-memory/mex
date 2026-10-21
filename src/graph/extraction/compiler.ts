@@ -770,6 +770,9 @@ export function buildTypeScriptExtraction(
   };
 
   for (const project of processingOrder) {
+    // Later projects cannot contribute facts once every candidate has an owner.
+    // Avoid constructing another program and checker for those empty projects.
+    if (candidates.length > 0 && claimed.size === candidates.length) break;
     // Program creation parses every root file; a single malformed source (e.g.
     // a hostile test fixture) can hit a TS-internal assertion. Isolate the
     // failure to this project so its files fall back to tree-sitter extraction

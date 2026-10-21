@@ -12,6 +12,22 @@ import {
 
 const temporaryRoots: string[] = [];
 
+it("does not construct another project after every source has an owner", async () => {
+  const ts = await import("typescript");
+  const root = project({
+    "tsconfig.json": JSON.stringify({ include: ["src/**/*.ts"] }),
+    "src/tsconfig.json": JSON.stringify({ include: ["**/*.ts"] }),
+    "src/value.ts": "export function value() { return 1; }\n",
+  });
+  let programs = 0;
+  const result = buildTypeScriptExtraction(root, ["src/value.ts"], {
+    programFactory(options) { programs++; return ts.createProgram(options); },
+  });
+  expect(programs).toBe(1);
+  expect(result.files.map((file) => file.filePath)).toEqual(["src/value.ts"]);
+  expect(result.projects).toHaveLength(2);
+});
+
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });

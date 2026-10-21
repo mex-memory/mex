@@ -15,8 +15,13 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
+import { openSqlite } from "../graph/db/sqlite.js";
+import { parseWikiMarkdown } from "../wiki/markdown/codec.js";
+import type { DriftIssue } from "../types.js";
 import { baseLocations, loadBase, proseHash } from "./hook/base.js";
-import { diffAgainstHead, readHead, type FileDiff } from "./hook/diff.js";
+import { diffAgainstHead, readHead, runGit, type FileDiff } from "./hook/diff.js";
 import { findTouched, facts } from "./hook/events.js";
 import { loadFlags, mutateFlags, type FlagBasis, type FlagEntry } from "./flags.js";
 import type { GraphReader } from "./graph-reader.js";
@@ -43,6 +48,9 @@ export interface ReviewEntry {
 
 export interface Review {
   head: string | null;
+  /** Tracked indexed source changes, even when no knowledge entry links them. */
+  sourceDigest?: string | null;
+  damaged?: DriftIssue[];
   /** Everything touched or still flagged, vouched for or not. */
   entries: ReviewEntry[];
   /** Vouched for: the settle worker re-records these. */
@@ -63,7 +71,57 @@ export function codeDigest(entity: Pick<ContextEntity, "code">, diffs: ReadonlyM
  * so a confirmation after an earlier run still gets its entity re-recorded.
  */
 export function reviewDigest(review: Review): string {
-  return createHash("sha1").update(review.entries.map((e) => `${e.entity.id}:${e.digest}:${e.basis ?? "-"}`).sort().join("\n")).digest("hex").slice(0, 16);
+  return createHash("sha1").update(`${review.sourceDigest ?? ""}\n${review.entries.map((e) => `${e.entity.id}:${e.digest}:${e.basis ?? "-"}`).sort().join("\n")}`).digest("hex").slice(0, 16);
+}
+
+function indexedSourceDigest(root: ContextRoot, diffs: ReadonlyMap<string, FileDiff>): string | null {
+  const path = join(root.scaffoldRoot, "graph.db");
+  let db;
+  try {
+    if (lstatSync(path).isSymbolicLink() || realpathSync(path) !== join(realpathSync(root.scaffoldRoot), "graph.db")) return null;
+    if ((existsSync(`${path}-wal`) && lstatSync(`${path}-wal`).size > 0)
+      || (existsSync(`${path}-journal`) && lstatSync(`${path}-journal`).size > 0)) return null;
+    db = openSqlite(path, { readOnly: true, immutable: true });
+    const lookup = db.prepare("SELECT 1 FROM files WHERE path = ?");
+    const parts = [...diffs].filter(([file]) => lookup.get(file) !== undefined)
+      .map(([file, diff]) => `${file}:${diff.signature}`).sort();
+    return parts.length === 0 ? null : createHash("sha1").update(parts.join("\n")).digest("hex").slice(0, 16);
+  } catch { return null; } finally { db?.close(); }
+}
+
+/** Compare touched canonical Markdown with HEAD before a damaged entity can disappear from an index. Read-only. */
+export function checkEditedEntities(projectRoot: string, scaffoldRoot: string): DriftIssue[] {
+  const prefix = relative(projectRoot, scaffoldRoot).replaceAll("\\", "/");
+  const changed = runGit(projectRoot, ["diff", "--name-only", "-z", "--no-renames", "HEAD", "--", `${prefix}/`]);
+  if (changed === null) return [];
+  const issues: DriftIssue[] = [];
+  for (const file of changed.split("\0").filter((file) => file.endsWith(".md")).slice(0, 1000)) {
+    const before = runGit(projectRoot, ["show", `HEAD:${file}`]);
+    if (before === null) continue;
+    const old = parseWikiMarkdown({ path: file, text: before }).entities.map((entry) => entry.entity);
+    if (old.length === 0) continue;
+    const path = resolve(projectRoot, file);
+    let after = "";
+    try {
+      const stat = lstatSync(path);
+      const canonical = realpathSync(path);
+      const boundary = realpathSync(scaffoldRoot) + sep;
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024 || !canonical.startsWith(boundary)) throw new Error("unreadable Markdown");
+      after = readFileSync(path, "utf8");
+    } catch { /* A missing or unsafe file has lost every previously recorded entity. */ }
+    const current = parseWikiMarkdown({ path: file, text: after }).entities.map((entry) => entry.entity);
+    const byId = new Map(current.map((entity) => [entity.id, entity]));
+    for (const entity of old) {
+      const now = byId.get(entity.id);
+      if (now !== undefined && (entity.location.headingDepth === 0 || now.location.headingDepth > 0)) continue;
+      issues.push({ code: "WIKI_ENTITY_DAMAGED", severity: "warning", file,
+        line: entity.location.startLine, entity: { id: entity.id, title: entity.title },
+        message: `Edited knowledge lost or damaged entity ${entity.id}: restore its id, metadata and heading.` });
+    }
+    if (old.length !== current.length) issues.push({ code: "WIKI_ENTITY_DAMAGED", severity: "warning", file, line: null,
+      message: `Edited knowledge entity count changed from ${old.length} to ${current.length}; check ids and headings.` });
+  }
+  return issues.slice(0, 1000);
 }
 
 export interface ReviewInput {
@@ -80,13 +138,16 @@ export interface ReviewInput {
 export function reviewSession(input: ReviewInput): Review | null {
   const { root, index } = input;
   const head = readHead(root.projectRoot);
-  const candidates = facts(index).filter((entity) => entity.groundings.length > 0 && entity.code.length > 0);
-  const flags = loadFlags(root.localDir);
-  if (candidates.length === 0) return { head, entries: [], eligible: [], flagged: [] };
-
-  const linkedFiles = [...new Set(candidates.flatMap((entity) => entity.code))];
-  const diffs = diffAgainstHead(root.projectRoot, linkedFiles);
+  const diffs = diffAgainstHead(root.projectRoot);
   if (diffs === null) return null;
+  const sourceDigest = indexedSourceDigest(root, diffs);
+  const damaged = checkEditedEntities(root.projectRoot, root.scaffoldRoot);
+  const damagedFiles = new Set(damaged.map((issue) => issue.file));
+  const linked = facts(index).filter((entity) => entity.groundings.length > 0 && entity.code.length > 0);
+  const resolved = input.reader?.nodes(linked.flatMap((entity) => entity.groundings.map((link) => link.node))) ?? new Map();
+  const candidates = linked.filter((entity) => entity.groundings.some((link) => resolved.has(link.node)));
+  const flags = loadFlags(root.localDir);
+  if (candidates.length === 0) return { head, sourceDigest, damaged, entries: [], eligible: [], flagged: [] };
 
   const live = liveStateFrom(input.reader, candidates);
   const base = baseLocations(root.localDir, head, candidates, live);
@@ -114,7 +175,8 @@ export function reviewSession(input: ReviewInput): Review | null {
     const confirmation = confirmed[entity.id] ?? (flags.entities[entity.id]?.status === "eligible" && flags.entities[entity.id]?.basis === "confirmed"
       ? { at: flags.entities[entity.id]!.updatedAt, ...(flags.entities[entity.id]!.note === undefined ? {} : { note: flags.entities[entity.id]!.note! }) }
       : undefined);
-    const basis: FlagBasis | null = wasEdited ? "edited" : confirmation !== undefined ? "confirmed" : null;
+    const file = relative(root.projectRoot, join(root.scaffoldRoot, entity.file)).replaceAll("\\", "/");
+    const basis: FlagBasis | null = damagedFiles.has(file) ? null : wasEdited ? "edited" : confirmation !== undefined ? "confirmed" : null;
     entries.push({
       entity,
       why,
@@ -126,7 +188,7 @@ export function reviewSession(input: ReviewInput): Review | null {
     });
   }
   entries.sort((a, b) => a.first - b.first || (a.entity.id < b.entity.id ? -1 : 1));
-  return { head, entries, eligible: entries.filter((e) => e.basis !== null), flagged: entries.filter((e) => e.basis === null) };
+  return { head, sourceDigest, damaged, entries, eligible: entries.filter((e) => e.basis !== null), flagged: entries.filter((e) => e.basis === null) };
 }
 
 /** Write the review into the flags: eligible entries become eligible, the rest stay flagged. */
