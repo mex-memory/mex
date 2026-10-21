@@ -1,12 +1,13 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupProjects } from "../../__tests__/fixture.js";
 import { loadInjectedChars, loadShown } from "../../session.js";
 import { indexPathOf } from "../../index-file.js";
 import { commandFiles, HOOK_LOG_NAME, mayWriteFiles } from "../run.js";
 import { createHookProject, promptPayload, toolPayload } from "./fixture.js";
 
+beforeEach(() => { vi.stubEnv("MEX_HOOK_GRAPH_IMPACT", "1"); });
 afterEach(() => { cleanupProjects(); vi.unstubAllEnvs(); });
 
 describe("graph delivery", () => {
@@ -17,7 +18,7 @@ describe("graph delivery", () => {
     writeFileSync(path, JSON.stringify(index));
     const search = (session: string, tool = "Grep") => toolPayload(session, tool,
       tool === "Grep" ? { pattern: "calculateOrderTotal", path: join(p.fx.root, "src/report.ts") } : { command: "rg -n calculateOrderTotal src" },
-      tool === "Grep" ? { content: "4: return calculateOrderTotal(items);" } : { stdout: "src/report.ts:4: return calculateOrderTotal(items);" });
+      tool === "Grep" ? { content: "src/billing.ts:2: return items.length;\nsrc/report.ts:4: return calculateOrderTotal(items);" } : { stdout: "src/billing.ts:2: return items.length;\nsrc/report.ts:4: return calculateOrderTotal(items);" });
     const first = p.text(await p.run(search("graph")));
     expect(first).toContain("MEX graph");
     expect(first).toContain("src/billing.ts:1-3");
@@ -62,13 +63,13 @@ describe("graph delivery", () => {
   it("still gives an edited symbol its impact note when a search note already named it, once", async () => {
     const p = await createHookProject();
     // The pilot's case: a search note lists the symbol (here as a definition); the agent then edits it.
-    const search = toolPayload("seen", "Grep", { pattern: "calculateOrderTotal", path: join(p.fx.root, "src/report.ts") }, { content: "4: return calculateOrderTotal(items);" });
-    expect(p.text(await p.run(search))).toContain("#calculateOrderTotal src/billing.ts:1-3");
+    const search = toolPayload("seen", "Grep", { pattern: "calculateOrderTotal", path: join(p.fx.root, "src/report.ts") }, { content: "src/billing.ts:2: return items.length;\nsrc/report.ts:4: return calculateOrderTotal(items);" });
+    expect(p.text(await p.run(search))).toContain("src/billing.ts:1-3 #calculateOrderTotal");
     const index = JSON.parse(readFileSync(indexPathOf(p.fx.context.localDir), "utf8")); index.entities = [];
     writeFileSync(indexPathOf(p.fx.context.localDir), JSON.stringify(index));
     p.fx.writeSource("src/billing.ts", readFileSync(join(p.fx.root, "src/billing.ts"), "utf8").replace("return items.length;", "return items.length + 1;"));
     const edit = toolPayload("seen", "Edit", { file_path: join(p.fx.root, "src/billing.ts") });
-    expect(p.text(await p.run(edit))).toContain("#calculateOrderTotal src/billing.ts:1-3 · check callers: #buildReport");
+    expect(p.text(await p.run(edit))).toContain("#calculateOrderTotal src/billing.ts:1-3 | check callers: #buildReport");
     p.fx.writeSource("src/billing.ts", readFileSync(join(p.fx.root, "src/billing.ts"), "utf8").replace("return items.length + 1;", "return items.length + 2;"));
     expect(await p.run(edit)).toBe("");
     const logs = readFileSync(join(p.fx.context.localDir, HOOK_LOG_NAME), "utf8").trim().split("\n").map(s => JSON.parse(s));
@@ -84,7 +85,7 @@ describe("graph delivery", () => {
     const path = join(p.fx.root, "src/billing.ts");
     p.fx.writeSource("src/billing.ts", crlf(readFileSync(path, "utf8").replace("return items.length;", "return items.length + 1;")));
     const note = p.text(await p.run(toolPayload("crlf", "Edit", { file_path: path })));
-    expect(note).toContain(p.ids.total);
+    expect(note).toContain("#calculateOrderTotal");
     expect(note).not.toContain(p.ids.discount);
     expect(note).not.toContain(p.ids.invoice);
     expect(note).toContain("check callers: #buildReport");
@@ -132,7 +133,7 @@ describe("shell edits", () => {
     expect(await p.run(bash("cat src/billing.ts"))).toBe("");
     const note = p.text(await p.run(bash("cd src && python - <<'E'\np = 'billing.ts'\nE")));
     expect(note).toContain("MEX graph (impact");
-    expect(note).toContain("#calculateOrderTotal src/billing.ts:1-3 · check callers: #buildReport");
+    expect(note).toContain("#calculateOrderTotal src/billing.ts:1-3 | check callers: #buildReport");
     // The same symbol edited again: no second note.
     p.fx.writeSource("src/billing.ts", readFileSync(billing, "utf8").replace("return items.length + 1;", "return items.length + 2;"));
     expect(await p.run(bash("sed -i s/2/3/ src/billing.ts"))).toBe("");

@@ -12,6 +12,7 @@
  * this file was already checked".
  */
 
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { GraphNodeRow, GraphReader } from "../graph-reader.js";
 import { formatPacket, liveStateFrom, PACKET_CHAR_LIMIT, type LiveLocation, type PacketEntry } from "../packet.js";
@@ -24,8 +25,11 @@ export const READ_MAX_FACTS = 2;
 export const EDIT_MAX_FACTS = 3;
 export const GREP_NOTE_CHAR_LIMIT = 1200;
 export const GREP_MAX_FILES = 5;
-export const GREP_MAX_FACTS = 3;
-export const GREP_MAX_CALLERS = 3;
+export const GREP_MAX_FACTS = 2;
+export const MAX_GROUNDING_LINES = 300;
+export const GREP_MAX_CALLERS = 0;
+export const READ_BODY_CHARS = 200;
+export const GREP_BODY_CHARS = 220;
 const POINTER_IDS = 3;
 
 export interface EventOutcome {
@@ -37,6 +41,11 @@ export interface EventOutcome {
   ids: string[];
   /** One entry per fact in the text, for the budget's degraded form. */
   pointers?: PointerEntry[];
+  /** Locations already carried by knowledge, also used for same-event graph dedup. */
+  knowledgeNodes?: string[];
+  /** Atomic graph rows allow the combined composer to drop duplicates before delivery. */
+  graphRows?: Array<{ text: string; nodes: string[]; remember: string[] }>;
+  graphHeader?: string;
   graphNodes?: string[];
   graphChars?: number;
 }
@@ -132,8 +141,7 @@ export function composeRead(ctx: EventContext, input: ReadInput): EventOutcome |
   const inRange = linked
     .map((entity) => ({ entity, state: live(entity) }))
     .filter(({ state }) => {
-      if (range === null) return true;
-      return locationsIn(state.locations, input.file).some((l) => l.start <= range[1] && l.end >= range[0]);
+      return locationsIn(state.locations, input.file).some((l) => l.end - l.start + 1 <= MAX_GROUNDING_LINES && (range === null || (l.start <= range[1] && l.end >= range[0])));
     })
     .filter(({ entity }) => !ctx.shown.has(entity.id));
   if (inRange.length === 0) return null;
@@ -144,13 +152,16 @@ export function composeRead(ctx: EventContext, input: ReadInput): EventOutcome |
   const stale = (entry: (typeof inRange)[number]): number => (entry.state.health === "fresh" ? 1 : 0);
   inRange.sort((a, b) => stale(a) - stale(b) || firstLine(a) - firstLine(b));
 
-  const entries: PacketEntry[] = inRange.slice(0, READ_MAX_FACTS).map(({ entity, state }) => ({ entity, live: state }));
+  const entries: PacketEntry[] = inRange.slice(0, READ_MAX_FACTS).map(({ entity, state }) => ({
+    entity: { ...entity, body: claimExcerpt(entity.body, READ_BODY_CHARS) }, live: state,
+  }));
   const rest = inRange.slice(READ_MAX_FACTS).map(({ entity }) => entity.id);
   const footer = rest.length > 0 ? [`+${rest.length} more fact${rest.length === 1 ? "" : "s"} about ${input.file}: mex wiki show ${oneLineList(rest)}`] : [];
-  const packet = formatPacket(entries, "read", { maxEntries: READ_MAX_FACTS, footer });
+  const packet = formatPacket(entries, "read", { maxEntries: READ_MAX_FACTS, bodyChars: READ_BODY_CHARS + 5, footer: [...footer, ...seeAlso(ctx, entries.map(e => e.entity))] });
   if (packet.shown.length === 0) return null;
   const ids = packet.shown.map((entry) => entry.entity.id);
-  return { text: packet.text, remember: ids, ids, pointers: packet.shown.map(pointerOf) };
+  const nodes = shownLocationNodes(ctx, packet.shown);
+  return { text: packet.text, remember: [...ids, ...nodes.map(id => `graph:${id}`)], ids, knowledgeNodes: nodes, pointers: packet.shown.map(pointerOf) };
 }
 
 // ---------------------------------------------------------------------------
@@ -159,9 +170,9 @@ export function composeRead(ctx: EventContext, input: ReadInput): EventOutcome |
 
 export interface TouchedFact {
   entity: ContextEntity;
-  /** First touched line of the entity's code at HEAD (for ordering), or a huge number when none could be located. */
+  /** First touched line of the entity's code at HEAD (for ordering). */
   first: number;
-  /** Why it counts as touched, in a few words: the symbol the change fell in, or that the symbol could not be located. */
+  /** The grounded symbol overlapped by the hunk. */
   why: string;
 }
 
@@ -169,9 +180,8 @@ export interface TouchedFact {
  * The facts a change touches, judged on the base side.
  *
  * A fact is touched when a hunk overlaps one of its linked symbols as the code
- * stood at HEAD, or when it links a changed file but none of its symbols could
- * be located there (deleted, or never resolved), since the change may well have
- * been to it. `base` is where each fact's code stood at HEAD (see `base.ts`).
+ * stood at HEAD. Unresolved links do not establish an overlap. `base` records
+ * where each fact's code stood at HEAD (see `base.ts`).
  */
 export function findTouched(
   candidates: readonly ContextEntity[],
@@ -190,12 +200,11 @@ export function findTouched(
       if (!entity.code.some((code) => sameFile(code, file))) continue;
       const ranges = diffs.get(file)!.ranges;
       const here = locationsIn(base[entity.id] ?? [], file);
-      if (here.length === 0) {
-        hit = true;
-        reasons.push(`${file} changed; its linked code could not be located at HEAD`);
-      } else {
+      // An unresolved link is not evidence that this edit touched the claim.
+      if (here.length > 0) {
         for (const location of here) {
-          if (touches(ranges, location.start, location.end)) {
+          const cited = citedLocations(entity, location);
+          if (cited.some(l => touches(ranges, l.start, l.end))) {
             hit = true;
             first = Math.min(first, location.start);
             reasons.push(`edited #${location.name.replace(/^#/, "")} in ${file}`);
@@ -209,7 +218,7 @@ export function findTouched(
 }
 
 export const EDIT_INSTRUCTION =
-  "If your change makes a fact false, read a few lines at its .mex line (offset/limit) and rewrite just that prose. Never edit <!-- mex:entity --> blocks, ids or fingerprints: MEX re-records code links itself.";
+  "Only if the claim may now be false, read its body and rewrite just that prose; no action if still true. Never edit <!-- mex:entity --> blocks, ids or fingerprints: MEX re-records code links itself.";
 
 export interface EditInput {
   /** Files changed, each with the diff against HEAD (null diff: git could not say). */
@@ -225,9 +234,7 @@ export const diffKey = (file: string, diff: FileDiff): string => `diff:${file}:$
  * Facts whose linked code a change touched.
  *
  * A fact is touched when a hunk overlaps one of its linked symbols as the code
- * stood at HEAD, or when it links the file but none of its symbols could be
- * located there (the symbol was deleted or never resolved), since the change
- * may well have been to it.
+ * stood at HEAD. A never-resolved link cannot establish touch.
  */
 export function composeEdit(ctx: EventContext, input: EditInput, charLimit = PACKET_CHAR_LIMIT): EventOutcome | null {
   const files = [...input.diffs.keys()].filter((file) => input.only === undefined || input.only.some((o) => sameFile(o, file)));
@@ -242,25 +249,27 @@ export function composeEdit(ctx: EventContext, input: EditInput, charLimit = PAC
 
   const touched = findTouched(candidates, fresh, input.diffs, base, (entity) => ctx.shown.has(`edit:${entity.id}`));
   if (touched.length === 0) return { text: "", remember, ids: [] };
-  touched.sort((a, b) => a.first - b.first);
+  // A broad symbol overlap remains checker evidence, but is not a prose request.
+  const precise = touched.filter(({ entity }) => fresh.some(file => locationsIn(base[entity.id] ?? [], file)
+    .some(location => citedLocations(entity, location).some(l => l !== location && touches(input.diffs.get(file)!.ranges, l.start, l.end)))));
+  precise.sort((a, b) => a.first - b.first);
 
-  const entries: PacketEntry[] = touched.slice(0, EDIT_MAX_FACTS).map(({ entity }) => ({
-    entity,
-    live: live(entity),
-    extra: `if this change makes it false, rewrite its prose at .mex/${entity.file}:${entity.line}`,
-  }));
-  const names = fresh.slice(0, 3).join(", ") + (fresh.length > 3 ? ` +${fresh.length - 3} more` : "");
-  const preamble = `MEX: you changed ${names}. Facts that describe the code you touched:`;
-  const budget = Math.max(0, charLimit - preamble.length - 2);
-  const packet = formatPacket(entries, "edit", {
-    maxEntries: EDIT_MAX_FACTS,
-    footer: [EDIT_INSTRUCTION],
-    charLimit: budget,
-    bodyChars: 400,
+  const selected = precise.slice(0, EDIT_MAX_FACTS);
+  const lines = selected.map(({ entity }) => {
+    const bodyLine = firstBodyLine(ctx, entity);
+    const pointer = bodyLine === null ? `mex wiki show ${entity.id}` : `.mex/${entity.file}:${bodyLine}`;
+    const body = ctx.shown.has(entity.id) ? "" : ` - ${trimTo(entity.body, 400)}`;
+    return `- ${entity.title}${body} | ${pointer}`;
   });
-  if (packet.shown.length === 0) return { text: "", remember, ids: [] };
-  const ids = packet.shown.map((entry) => entry.entity.id);
-  return { text: `${preamble}\n\n${packet.text}`, remember: [...remember, ...ids.map((id) => `edit:${id}`)], ids, pointers: packet.shown.map(pointerOf) };
+  while (lines.length && (`MEX: a cited claim may need checking:\n${lines.join("\n")}\n${EDIT_INSTRUCTION}`).length > charLimit) {
+    lines.pop(); selected.pop();
+  }
+  const ids = selected.map(({ entity }) => entity.id);
+  if (!ids.length) return { text: "", remember, ids: [] };
+  return { text: `MEX: a cited claim may need checking:\n${lines.join("\n")}\n${EDIT_INSTRUCTION}`,
+    remember: [...remember, ...ids.map(id => `edit:${id}`)], ids,
+    pointers: selected.map(({ entity }) => ({ id: entity.id, title: entity.title, health: live(entity).health })) };
+
 }
 
 // ---------------------------------------------------------------------------
@@ -303,29 +312,12 @@ interface GrepFinding {
   fact: ContextEntity | null;
   moreFacts: number;
   health: LiveHealth;
-  callers: GraphNodeRow[];
-}
-
-const tag = (file: string): string => (isTestPath(file) ? " [test]" : isDocPath(file) ? " [docs]" : "");
-const where = (node: Pick<GraphNodeRow, "file" | "start">): string => `${node.file}:${node.start}`;
-const symbolName = (name: string): string => `#${name.replace(/^#/, "")}`;
-
-/** Callers distinct by place: one function can appear as several graph nodes at one line. */
-function distinctByPlace(callers: readonly GraphNodeRow[]): GraphNodeRow[] {
-  const seen = new Set<string>();
-  return callers.filter((caller) => {
-    const key = where(caller);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 /**
  * A short note about where search hits land: for the top hits (five files at
- * most), the enclosing symbol, the fact linked to it and a few callers found
- * by node id. Silent unless some hit sits in code that has a fact the agent
- * has not been shown.
+ * most), the enclosing symbol and up to two facts linked by node id. Silent
+ * unless a hit sits in code with a fact the agent has not been shown.
  */
 export function composeGrep(ctx: EventContext, hits: readonly GrepHit[]): EventOutcome | null {
   if (ctx.reader === null || hits.length === 0) return null;
@@ -348,62 +340,148 @@ export function composeGrep(ctx: EventContext, hits: readonly GrepHit[]): EventO
   for (const hit of top) {
     if (hit.line === null) continue;
     const node = ctx.reader.enclosing(hit.file, hit.line);
-    if (node === null || seenNodes.has(node.id)) continue;
+    if (node === null || node.end - node.start + 1 > MAX_GROUNDING_LINES || seenNodes.has(node.id)) continue;
     seenNodes.add(node.id);
     const linked = (factsByNode.get(node.id) ?? []).filter((entity) => !ctx.shown.has(entity.id) && !usedFacts.has(entity.id));
-    if (linked.length === 0) {
-      findings.push({ hit, node, fact: null, moreFacts: 0, health: "none", callers: [] });
-      continue;
-    }
+    if (linked.length === 0) continue;
     if (findings.filter((f) => f.fact !== null).length >= GREP_MAX_FACTS) continue;
     const fact = linked[0]!;
     usedFacts.add(fact.id);
     const health = liveStateFrom(ctx.reader, [fact], ctx.flagged)(fact).health;
-    findings.push({ hit, node, fact, moreFacts: linked.length - 1, health, callers: distinctByPlace(ctx.reader.callers(node.id, GREP_MAX_CALLERS * 3)).slice(0, GREP_MAX_CALLERS) });
+    findings.push({ hit, node, fact, moreFacts: linked.length - 1, health });
   }
   // File-only output (no line numbers) can still point at a file's facts, one per file.
   for (const hit of top) {
     if (hit.line !== null || findings.length >= GREP_MAX_FACTS * 2) continue;
-    const fact = linkedTo(ctx.index, hit.file).find((entity) => !ctx.shown.has(entity.id) && !usedFacts.has(entity.id));
+    const fact = linkedTo(ctx.index, hit.file).find((entity) => !ctx.shown.has(entity.id) && !usedFacts.has(entity.id) && liveStateFrom(ctx.reader, [entity])(entity).locations.some(l => sameFile(l.file, hit.file) && l.end - l.start + 1 <= MAX_GROUNDING_LINES));
     if (fact === undefined || findings.filter((f) => f.fact !== null).length >= GREP_MAX_FACTS) continue;
     usedFacts.add(fact.id);
-    findings.push({ hit, node: null, fact, moreFacts: 0, health: liveStateFrom(ctx.reader, [fact], ctx.flagged)(fact).health, callers: [] });
+    findings.push({ hit, node: null, fact, moreFacts: 0, health: liveStateFrom(ctx.reader, [fact], ctx.flagged)(fact).health });
   }
 
   const withFacts = findings.filter((f) => f.fact !== null);
   if (withFacts.length === 0) return null;
-  // Lines with a fact come first, so trimming lines never costs one.
-  findings.sort((a, b) => (b.fact === null ? 0 : 1) - (a.fact === null ? 0 : 1));
+  // Factless locations are covered by the graph tier; spend this budget on claims.
+  findings.splice(0, findings.length, ...withFacts);
 
   const render = (bodyChars: number, lines: number): string => {
-    const out: string[] = ["MEX (search hits that land in code with recorded knowledge):"];
+    const out: string[] = ["MEX (search hits; read code bodies to verify):"];
     for (const finding of findings.slice(0, lines)) {
-      const place = finding.hit.line === null ? finding.hit.file : `${finding.hit.file}:${finding.hit.line}`;
-      if (finding.fact === null) {
-        out.push(`- ${place}${tag(finding.hit.file)}${finding.node ? ` in ${symbolName(finding.node.name)}` : ""}`);
-        continue;
-      }
-      const symbol = finding.node ? ` in ${symbolName(finding.node.name)} (${finding.node.file}:${finding.node.start}-${finding.node.end})` : "";
-      const label = finding.health === "fresh" ? "fresh" : finding.health === "changed" ? "changed ⚠ verify" : finding.health;
-      const extra = finding.moreFacts > 0 ? ` (+${finding.moreFacts} more)` : "";
-      const callers = finding.callers.length > 0
-        ? ` · callers: ${finding.callers.map((c) => `${symbolName(c.name)} ${where(c)}${tag(c.file)}`).join("; ")}`
-        : "";
-      out.push(
-        `- ${place}${tag(finding.hit.file)}${symbol} · fact [${label}]${extra}: ${trimTo(finding.fact.title, 120)}${bodyChars > 0 ? ` — ${trimTo(finding.fact.body, bodyChars)}` : ""}${callers} · mex wiki show ${finding.fact.id}`,
-      );
+      if (finding.fact === null) continue;
+      const location = finding.node ? `${finding.node.file}:${finding.node.start}-${finding.node.end} #${finding.node.name}` : finding.hit.file;
+      const label = finding.health === "changed" ? "changed; verify" : finding.health;
+      out.push(`- location ${location} [${label}] ${trimTo(finding.fact.title, 100)}: ${claimExcerpt(finding.fact.body, bodyChars)} | ${finding.fact.id}`);
     }
     return out.join("\n");
   };
 
-  let text = "";
-  search: for (let lines = findings.length; lines >= withFacts.length; lines -= 1) {
-    for (const bodyChars of [220, 140, 80, 0]) {
-      text = render(bodyChars, lines);
-      if (text.length <= GREP_NOTE_CHAR_LIMIT) break search;
+  let bodyChars = GREP_BODY_CHARS;
+  let text = render(bodyChars, findings.length);
+  while (text.length > GREP_NOTE_CHAR_LIMIT) {
+    if (bodyChars > 140) bodyChars = Math.max(140, bodyChars - 20);
+    else {
+      const dropped = findings.pop();
+      if (dropped?.fact) withFacts.splice(withFacts.indexOf(dropped), 1);
+      if (!findings.length) return null;
     }
+    text = render(bodyChars, findings.length);
   }
-  if (text.length > GREP_NOTE_CHAR_LIMIT) text = text.slice(0, GREP_NOTE_CHAR_LIMIT - 1) + "…";
+  const also = seeAlso(ctx, withFacts.map(f => f.fact!)).join("\n");
+  if (also && text.length + also.length + 1 <= GREP_NOTE_CHAR_LIMIT) text += `\n${also}`;
   const ids = withFacts.map((f) => f.fact!.id);
-  return { text, remember: ids, ids, pointers: withFacts.map((f) => ({ id: f.fact!.id, title: f.fact!.title, health: f.health })) };
+  const nodes = withFacts.flatMap(f => f.node ? [f.node.id] : []);
+  return { text, remember: [...ids, ...nodes.map(id => `graph:${id}`)], ids,
+    knowledgeNodes: nodes,
+    pointers: withFacts.map((f) => ({ id: f.fact!.id, title: f.fact!.title, health: f.health })) };
+}
+
+/** Explicit file:line citations narrow a claim; absent citations retain the recorded span. */
+export function citedLocations(entity: ContextEntity, location: LiveLocation): LiveLocation[] {
+  const cited = [...entity.body.matchAll(/([\w./-]+\.[a-zA-Z]+):(\d+)(?:-(\d+))?/g)]
+    .filter(m => sameFile(m[1]!, location.file))
+    .map(m => ({ ...location, start: Number(m[2]), end: Number(m[3] ?? m[2]) }))
+    .filter(l => l.start >= location.start && l.end <= location.end && l.end >= l.start);
+  return cited.length ? cited : [location];
+}
+
+function shownLocationNodes(ctx: EventContext, entries: readonly PacketEntry[]): string[] {
+  const ids = entries.flatMap(e => e.entity.groundings.map(g => g.node));
+  const nodes = ctx.reader?.nodes(ids);
+  return entries.flatMap(entry => entry.entity.groundings.flatMap(g => {
+    const node = nodes?.get(g.node) ?? entry.entity.symbols.find(s => s.node === g.node);
+    return node && entry.live.locations.slice(0, 3).some(l => sameFile(l.file, node.file) && l.start === node.start && l.end === node.end) ? [g.node] : [];
+  }));
+}
+
+/** Read only the known artifact, with containment and size bounds; never scan .mex. */
+function artifactLines(ctx: EventContext, entity: ContextEntity): string[] | null {
+  const root = resolve(ctx.projectRoot, ".mex");
+  const path = resolve(root, entity.file);
+  const rel = relative(root, path);
+  if (rel.startsWith("..") || isAbsolute(rel)) return null;
+  try {
+    const physical = relative(realpathSync(root), realpathSync(path));
+    if (physical.startsWith("..") || isAbsolute(physical)) return null;
+    if (statSync(path).size > 256 * 1024) return null;
+    return readFileSync(path, "utf8").split(/\r?\n/);
+  } catch { return null; }
+}
+
+export function firstBodyLine(ctx: EventContext, entity: ContextEntity): number | null {
+  const lines = artifactLines(ctx, entity);
+  if (!lines) return null;
+  let comment = false;
+  for (let i = Math.max(0, entity.line - 1); i < Math.min(lines.length, entity.line + 200); i++) {
+    const line = lines[i]!.trim();
+    if (line.startsWith("<!--")) comment = true;
+    if (comment) { if (line.includes("-->")) comment = false; continue; }
+    if (/^#{1,6}\s/.test(line)) {
+      if (i !== entity.line - 1) return null;
+      continue;
+    }
+    if (!line) continue;
+    return i + 1;
+  }
+  return null;
+}
+
+/** At most one undisclosed neighbour per delivered fact, as a title/id pointer only. */
+export function seeAlso(ctx: EventContext, delivered: readonly ContextEntity[]): string[] {
+  const used = new Set([...ctx.shown, ...delivered.map(e => e.id)]);
+  const out: string[] = [];
+  const referenced = (entity: ContextEntity): string[] => [...new Set(
+    [...entity.body.matchAll(/`([A-Za-z_$][\w$]*)/g)].map(m => m[1]!)
+      .filter(name => /[a-z][A-Z]|[a-zA-Z]_[a-zA-Z]|^[A-Z]/.test(name)),
+  )].slice(0, 12);
+  for (const entity of delivered) {
+    const lines = artifactLines(ctx, entity);
+    // Section metadata immediately preceding the heading owns its relationships.
+    const prefix = lines?.slice(0, entity.line).join("\n") ?? "";
+    const marker = prefix.lastIndexOf("<!-- mex:entity");
+    const metadata = marker >= 0 ? prefix.slice(marker) : entity.level === 0 ? prefix : "";
+    const targets = new Set([...metadata.matchAll(/target:\s*["']?(mx_[A-Za-z0-9]+)/g)].map(m => m[1]!));
+    const candidates = facts(ctx.index).filter(other => !used.has(other.id));
+    let neighbour = candidates.find(other => targets.has(other.id) ||
+      other.groundings.some(g => entity.groundings.some(link => link.node === g.node)));
+    if (!neighbour && ctx.reader) {
+      // A fact can cite an enclosing class while grounding its precise method.
+      // Require a unique definition enclosing recorded evidence, not shared prose.
+      const symbols = referenced(entity).flatMap(name => {
+        const nodes = ctx.reader!.exactName(name, 2);
+        return nodes.length === 1 ? [{ name, node: nodes[0]! }] : [];
+      });
+      neighbour = candidates.find(other => symbols.some(({ name, node }) => referenced(other).includes(name) &&
+        [...entity.symbols, ...other.symbols].some(s => sameFile(s.file, node.file) && s.start >= node.start && s.end <= node.end)));
+    }
+    if (neighbour) { out.push(`see also: ${trimTo(neighbour.title, 90)} \u00b7 ${neighbour.id}`); used.add(neighbour.id); }
+  }
+  return out;
+}
+
+/** Keep the opening and deciding tail when a claim exceeds the prose budget. */
+export function claimExcerpt(body: string, max: number): string {
+  if (body.length <= max) return body;
+  const first = Math.floor(max * 0.35);
+  const last = max - first;
+  return `${body.slice(0, first)} ... ${body.slice(-last)}`;
 }
