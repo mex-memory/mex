@@ -29,6 +29,10 @@ import type {
 } from "./types.js";
 
 export interface ComposeOptions {
+  /** Experimental independent-grounding margin; replay showed a recall regression. */
+  independentMargin?: boolean;
+  /** Evaluate the revised prompt policy on prompts of at most 40 words. Off by default. */
+  shortPromptPolicy?: boolean;
   /** `.mex` directory, for live health. */
   scaffoldRoot: string;
   /** Ids this session has already seen. */
@@ -91,6 +95,8 @@ export async function composePrompt(index: ContextIndex, prompt: string, options
   const done = (result: PromptResult, vectorsComputed = 0): ComposeOutcome => ({ result, vectorsComputed, diagnostics });
 
   const text = prompt.trim();
+  const revised = text.split(/\s+/).length > 40 || options.shortPromptPolicy === true || process.env.MEX_PROMPT_SHORT_POLICY === "1";
+  const independentMargin = revised && (options.independentMargin === true || options.shortPromptPolicy === true || process.env.MEX_PROMPT_SHORT_POLICY === "1" || process.env.MEX_PROMPT_INDEPENDENT_MARGIN === "1");
   if (text === "") return done(emptyResult("empty-prompt"));
   // A background-task completion arrives as a prompt; it is not a new task.
   if (/^<task-notification>/.test(text)) return done(emptyResult("task-notification"));
@@ -103,6 +109,8 @@ export async function composePrompt(index: ContextIndex, prompt: string, options
   const projectWords = new Set(index.projectWords);
   const rankIndex = buildRankIndex(pool.map(toRankable), projectWords);
   let output = rankQuery(rankIndex, text);
+  // Dense-only candidates cannot clear either gate. Avoid model work for empty lexical matches.
+  if (revised && output.list.length === 0) return done(emptyResult("no-match", recipe.name));
   let vectorsComputed = 0;
   if (recipe.dense) {
     try {
@@ -126,7 +134,10 @@ export async function composePrompt(index: ContextIndex, prompt: string, options
     }
   }
 
-  const gate: GateResult = gateCandidates(output.list, recipe, output.windows.length > 1);
+  const excluded = new Set(index.entities.filter((e) => e.type === "component" || e.type === "guide").map((e) => e.id));
+  // Keep the ranking corpus intact so exclusions do not change IDF or cached vectors.
+  const candidatesForGate = revised ? output.list.filter((r) => !excluded.has(r.doc.entity.id)) : output.list;
+  const gate: GateResult = gateCandidates(candidatesForGate, recipe, output.windows.length > 1, independentMargin);
   const byId = new Map(index.entities.map((e) => [e.id, e]));
   const shown = options.shown ?? new Set<string>();
   const alreadyShown: string[] = [];
@@ -168,14 +179,20 @@ export async function composePrompt(index: ContextIndex, prompt: string, options
     const top = gate.window[0]?.decision;
     const reason: AbstentionReason = gate.selected.length > 0
       ? "already-shown"
-      : top === undefined ? "no-match" : (top as AbstentionReason);
+      : top === undefined ? (recipe.dense && output.windows.length > 1 && candidatesForGate.some((r) => r.norm > 0) ? "low-cosine-veto" : "no-match") : (top as AbstentionReason);
     return done({ ...base, abstention: reason }, vectorsComputed);
   }
 
   const entities = kept.map((candidate) => byId.get(candidate.doc.entity.id)!);
+  // A pointer is navigation only; it must not suppress a later full fact delivery.
+  const nodes = new Set(entities.filter((e) => e.type === "fact").flatMap((e) => e.groundings.map((g) => g.node)));
+  const related = revised && nodes.size > 0 ? output.list.slice().sort((a, b) => b.norm - a.norm || a.doc.order - b.doc.order)
+    .filter((r) => r.norm > 0).map((r) => byId.get(r.doc.entity.id)!)
+    .find((e) => e.type === "fact" && !entities.some((sent) => sent.id === e.id) && !shown.has(e.id) && !shown.has(`pointer:${e.id}`) && e.groundings.some((g) => nodes.has(g.node))) : undefined;
+  if (related && entities.length < 2) entities.push({ ...related, type: "pointer", body: "" });
   const resolve = (options.liveState ?? ((list) => resolveLiveState(options.scaffoldRoot, list)))(entities);
   const formatted = formatPacket(
-    entities.map((entity) => ({ entity, live: resolve(entity) })),
+    entities.map((entity) => ({ entity, live: entity.type === "pointer" ? { health: "none" as const, locations: [] } : resolve(entity) })),
     recipe.dense ? "semantic" : "lexical",
   );
   return done(

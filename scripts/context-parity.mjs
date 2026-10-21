@@ -36,6 +36,12 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+if (process.argv[2] === "--replay") {
+  const rows = JSON.parse(readFileSync(process.argv[3], "utf8")).rows.filter((row) => row.words <= 40);
+  const changed = rows.filter((row) => JSON.stringify(row.before.injected) !== JSON.stringify(row.after.injected) || JSON.stringify(row.before.candidates) !== JSON.stringify(row.after.candidates));
+  console.log(`Short-prompt parity: ${rows.length - changed.length}/${rows.length} identical selections and candidate explanations.`);
+  process.exit(changed.length === 0 ? 0 : 1);
+}
 
 function parseArguments(argv) {
   const options = { questions: [], references: [], recipes: [], cli: resolve(SCRIPT_DIR, "..", "dist", "cli.js"), subdir: "" };

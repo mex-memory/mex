@@ -23,6 +23,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+// JSON-only composer replay also checks the actual packet bytes in both recipes.
+if (process.argv[2] === "--replay") {
+  const rows = JSON.parse(readFileSync(process.argv[3], "utf8")).rows.filter((row) => row.words <= 40);
+  const changed = rows.filter((row) => row.before.packet !== row.after.packet);
+  console.log(`Prompts of at most 40 words: ${rows.length - changed.length} byte-identical packets, ${changed.length} different.`);
+  process.exit(changed.length === 0 ? 0 : 1);
+}
 const options = { baseline: null, current: resolve(SCRIPT_DIR, "..", "dist", "cli.js"), sets: [], limit: 40 };
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i += 1) {
