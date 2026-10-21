@@ -1,3 +1,4 @@
+import { normalizeIncrementalReferences } from "./incremental-references.js";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -1136,6 +1137,7 @@ async function stageCorpus(
     internal.onBuildProgress?.({ phase: "resolve" });
     timeGraphPhase("stage.resolve", () =>
       stageFrameworkAndFallbackResolution(root, files, configSources, sourceSpool));
+    if (!("reason" in plan)) normalizeIncrementalReferences(files);
     timeGraphPhase("stage.validate", () => validateStagedCorpus(files));
     const fingerprints = timeGraphPhase("stage.fingerprints", () => stageFingerprints(
       files,
