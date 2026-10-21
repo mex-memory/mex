@@ -92,6 +92,7 @@ export type AbstentionReason =
   | "below-floor"
   | "uncorroborated"
   | "low-cosine"
+  | "low-cosine-veto"
   | "low-fused-score"
   | "dense-only"
   | "weak-margin"

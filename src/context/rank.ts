@@ -259,7 +259,7 @@ export interface GateResult {
  * The frozen gate: the first candidate in rank order that passes every check
  * injects; a second only when it reaches `ratio` of the first one's score.
  */
-export function gateCandidates(list: readonly RankedCandidate[], recipe: Recipe, windowed = false): GateResult {
+export function gateCandidates(list: readonly RankedCandidate[], recipe: Recipe, windowed = false, independentMargin = false): GateResult {
   const p: RecipeThresholds = windowed ? recipe.windowed.thresholds : recipe.thresholds;
   // A windowed prompt is gated on its lexical score by both recipes; the dense recipe's cosine only vetoes.
   const dense = windowed ? false : recipe.dense;
@@ -291,8 +291,9 @@ export function gateCandidates(list: readonly RankedCandidate[], recipe: Recipe,
     }
     const sc = dense ? r.fn! : r.norm;
     if (selected.length === 0) {
-      if (p.margin) {
-        const ref = window[3];
+      if (p.margin && !(independentMargin && r.exact === 3)) {
+        const grounded = r.doc.entity.code.length > 0 || r.doc.entity.symbolNames.length > 0 || r.doc.entity.symbolFiles.length > 0;
+        const ref = independentMargin && grounded ? ranked.find((other) => other !== r && !sharesGrounding(r.doc.entity, other.doc.entity)) : window[3];
         const refScore = ref ? (dense ? ref.fn! : ref.norm) : 0;
         if (sc - refScore < p.margin * sc) {
           entry.decision = "weak-margin";
@@ -314,4 +315,11 @@ export function gateCandidates(list: readonly RankedCandidate[], recipe: Recipe,
     }
   }
   return { selected, window: decisions };
+}
+
+/** Only grounded names and files establish a sibling; prose overlap does not. */
+export function sharesGrounding(a: RankableEntity, b: RankableEntity): boolean {
+  const files = new Set([...a.code, ...a.symbolFiles]);
+  const names = new Set(a.symbolNames);
+  return [...b.code, ...b.symbolFiles].some((file) => files.has(file)) || b.symbolNames.some((name) => names.has(name));
 }

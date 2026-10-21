@@ -7,7 +7,7 @@
  */
 
 import { candidatePool, composePrompt } from "../compose.js";
-import { RECIPES } from "../frozen.js";
+import { DENSE_MODEL_ID, RECIPES } from "../frozen.js";
 import { openGraphReader } from "../graph-reader.js";
 import { saveContextIndex } from "../index-file.js";
 import { ensureContextIndex } from "../index-store.js";
@@ -37,16 +37,22 @@ export async function handlePrompt(root: ContextRoot, prompt: string, sessionId:
   // The first event of a session pins where linked code stood at HEAD, for the edit events after it.
   recordBase(root, index);
 
+  let loaded: Awaited<ReturnType<typeof loadEmbedder>> | undefined;
   let embedder = null;
   if (!options.lexical && candidatePool(index, RECIPES.R3).length > 0 && semanticStatus(undefined, { measure: false }).state === "installed") {
-    embedder = (await loadEmbedder()).embedder;
+    // The composer can reject a prompt without ever starting the local model.
+    embedder = { modelId: DENSE_MODEL_ID, embed: async (text: string) => {
+      loaded ??= await loadEmbedder();
+      if (!loaded.embedder) throw new Error(loaded.reason ?? "Semantic model unavailable");
+      return loaded.embedder.embed(text);
+    } };
   }
   const shown = sessionId === null ? new Set<string>() : loadShown(root.localDir, sessionId);
   let outcome;
   try {
     outcome = await composePrompt(index, prompt, { scaffoldRoot: root.scaffoldRoot, shown, embedder });
   } finally {
-    await embedder?.dispose?.();
+    await loaded?.embedder?.dispose?.();
   }
   if (outcome.vectorsComputed > 0) {
     try {
@@ -70,13 +76,13 @@ export async function handlePrompt(root: ContextRoot, prompt: string, sessionId:
     const { reader } = openGraphReader(root.scaffoldRoot);
     try {
       const graph = composeGraphPrompt({ ...root, index, reader, shown, head: null }, prompt);
-      if (graph) return { ...graph, stats, note: "graph-identifier" };
+      if (graph) return { ...graph, stats, note: `graph-identifier; knowledge:${result.abstention ?? "no-match"}` };
     } finally { reader?.close(); }
   }
   return {
     ...(stats === undefined ? {} : { stats }),
     text: result.packet,
-    remember: result.injected.map((i) => i.id),
+    remember: result.injected.map((i) => i.type === "pointer" ? `pointer:${i.id}` : i.id),
     ids: result.injected.map((i) => i.id),
     pointers: result.injected.map((i) => ({ id: i.id, title: i.title, health: i.health })),
     note: result.abstention ?? `${result.recipe}/${result.channel}`,

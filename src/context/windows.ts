@@ -90,7 +90,11 @@ function shaped(parts: readonly string[], params: WindowParams): string[] {
       cut.push(part);
       continue;
     }
-    for (let at = 0; at < words.length; at += params.capWords) cut.push(words.slice(at, at + params.capWords).join(" "));
+    for (let at = 0; at < words.length; at += params.capWords) {
+      const remainder = words.length - at;
+      if (at > 0 && remainder < params.minWords) cut[cut.length - 1] += ` ${words.slice(at).join(" ")}`;
+      else cut.push(words.slice(at, at + params.capWords).join(" "));
+    }
   }
   return cut;
 }
