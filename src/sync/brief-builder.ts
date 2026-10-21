@@ -69,6 +69,8 @@ the repaired prose actually makes. Keep broad files sparse.
   user explicitly accepts that entry in sync's grounding review; completing the
   agent session does not accept it. A link on a Wiki entity follows WIKI ENTITY
   REVIEW below.
+- WIKI_ENTITY_DAMAGED: an edited knowledge file lost an entity, id or heading.
+  Restore its structure before reviewing prose or re-recording code links.
 - GROUNDING_REVIEW: an agent session touched this entity's code and nobody
   outside it has read the prose since. Read the linked code and the prose; if the
   prose is now false, rewrite just that prose; if it holds, run

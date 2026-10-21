@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildGraph, cleanupProjects, createProject, graphSymbol, writeEntities } from "../../__tests__/fixture.js";
-import { loadFlags } from "../../flags.js";
+import { loadFlags, mutateFlags } from "../../flags.js";
+import { checkSessionReview } from "../../../drift/checkers/session-review.js";
 import { ensureContextIndex } from "../../index-store.js";
 import { reviewSession } from "../../review.js";
 import { loadConfirmed, loadStopAsked, recordConfirmation } from "../../session.js";
@@ -75,6 +76,53 @@ function editProse(project: HookProject, from: string, to: string): void {
 }
 
 const TOTALS_PROSE = "so a discount never changes it.";
+
+describe("refresh and integrity without a touched fact", () => {
+  it("refreshes indexed source with no linked fact and never regrounds it", async () => {
+    const project = await createHookProject();
+    // This indexed function has no knowledge grounding.
+    project.fx.writeSource("src/report.ts", "export function buildReport(): number { return 42; }\n");
+    const cli = fakeCli();
+    const pass = await settleOnce(project.fx.context, { sessionId: "source-only", runCli: cli.run });
+    expect(pass).toMatchObject({ touched: 0, eligible: 0, refresh: { code: 0 }, reground: null });
+    expect(cli.calls.map((args) => args.slice(0, 2))).toEqual([["graph", "refresh"]]);
+    const start = { entry: stubWorker(project, 0) };
+    const stop = await handleStop({ root: project.fx.context, sessionId: "source-only", stopHookActive: false, start });
+    expect(stop).toMatchObject({ stdout: "", log: { touched: 0, settle: "started" } });
+    expect((await handleStop({ root: project.fx.context, sessionId: "source-only", stopHookActive: false, start })).log).toMatchObject({ settle: "unchanged" });
+  });
+
+  it.each(["heading", "id"])("reports a damaged %s after the entity vanishes from the index", async (damage) => {
+    const project = await createHookProject();
+    const path = join(project.fx.context.scaffoldRoot, "context/billing.md");
+    const before = readFileSync(path, "utf8");
+    writeFileSync(path, damage === "heading" ? before.replace("### Order totals count the items", "Order totals count the items") : before.replace(project.ids.total, "broken-id"));
+    await ensureContextIndex(project.fx.context, "force");
+    const stop = await handleStop({ root: project.fx.context, sessionId: "damage", stopHookActive: false });
+    expect(stop.log["damaged"]).toEqual(expect.arrayContaining([expect.objectContaining({ code: "WIKI_ENTITY_DAMAGED", entity: expect.objectContaining({ id: project.ids.total }) })]));
+    expect(checkSessionReview(project.fx.root, project.fx.context.scaffoldRoot)).toEqual(expect.arrayContaining([expect.objectContaining({ code: "WIKI_ENTITY_DAMAGED", entity: expect.objectContaining({ id: project.ids.total }) })]));
+  });
+
+  it("does not treat an unresolved grounding as a file-level code review", async () => {
+    const project = await createHookProject();
+    const path = join(project.fx.context.scaffoldRoot, "context/billing.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace(/node: [^\r\n]+/g, "node: function:missing"));
+    project.fx.writeSource("src/billing.ts", BILLING_V2);
+    const cli = fakeCli();
+    const pass = await settleOnce(project.fx.context, { sessionId: "unresolved", runCli: cli.run });
+    expect(pass).toMatchObject({ touched: 0, eligible: 0, reground: null, refresh: { code: 0 } });
+    expect(Object.keys(loadFlags(project.fx.context.localDir).entities)).toHaveLength(0);
+    // Old flags cannot turn a never-resolved link into a file-level review either.
+    mutateFlags(project.fx.context.localDir, (flags) => {
+      flags.entities[project.ids.total] = { title: "Order totals", file: "context/billing.md", line: 1,
+        why: "file changed", status: "flagged", since: "2026-01-01", updatedAt: "2026-01-01" };
+    });
+    expect(checkSessionReview(project.fx.root, project.fx.context.scaffoldRoot)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "GROUNDING_UNVERIFIED", verdict: "unverified", entity: expect.objectContaining({ id: project.ids.total }) }),
+    ]));
+    expect(checkSessionReview(project.fx.root, project.fx.context.scaffoldRoot).some((issue) => issue.code === "GROUNDING_REVIEW")).toBe(false);
+  });
+});
 
 describe("the rule: only edited or confirmed entities are re-recorded", () => {
   it("re-records the edited and the confirmed, and leaves the merely touched flagged", async () => {

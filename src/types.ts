@@ -167,6 +167,7 @@ export interface Claim {
 export type Severity = "error" | "warning" | "info";
 
 export type IssueCode =
+  | "WIKI_ENTITY_DAMAGED"
   | "STALE_FILE"
   | "MISSING_PATH"
   | "DEAD_COMMAND"

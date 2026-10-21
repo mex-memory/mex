@@ -207,6 +207,7 @@ export interface SettlePass {
   /** `refused` names each id the reground did not re-record, with the first reason it gave. */
   reground: { ids: number; ok: number; failed: number; ms: number; refused?: Array<{ id: string; error: string }> } | null;
   skipped?: string;
+  timings?: { reviewMs: number; indexMs: number; totalMs: number };
 }
 
 interface RegroundOutcome {
@@ -247,21 +248,26 @@ async function freshReview(root: ContextRoot, sessionId: string | null): Promise
 
 /** One pass: review, refresh, re-record the vouched-for entities, rebuild the index. */
 export async function settleOnce(root: ContextRoot, options: SettleOptions): Promise<SettlePass> {
+  const started = performance.now();
   const runCli = options.runCli ?? defaultCliRunner(root.projectRoot);
   const now = options.now ?? (() => new Date());
   const review = await freshReview(root, options.sessionId);
-  if (review === null || review.entries.length === 0) {
+  const reviewMs = Math.round(performance.now() - started);
+  if (review === null || (review.entries.length === 0 && !review.sourceDigest)) {
     return { touched: 0, eligible: 0, flagged: 0, refresh: null, reground: null, skipped: review === null ? "no-git" : "nothing-touched" };
   }
   // Flag first: from here on, packets show these entities as changed even though the graph is not refreshed yet.
   recordReview(root.localDir, review, now());
-  const pass: SettlePass = { touched: review.entries.length, eligible: review.eligible.length, flagged: review.flagged.length, refresh: null, reground: null };
+  const timings = { reviewMs, indexMs: 0, totalMs: 0 };
+  const pass: SettlePass = { touched: review.entries.length, eligible: review.eligible.length, flagged: review.flagged.length, refresh: null, reground: null,
+    timings };
 
   const refresh = runCli(["graph", "refresh", "--json"], REFRESH_TIMEOUT_MS);
   pass.refresh = { code: refresh.code, ms: refresh.ms, ...(refresh.code === 0 ? readRefreshWork(refresh.stdout) : null) };
   if (refresh.code !== 0) {
     appendLog(root, { event: "settle-refresh-failed", code: refresh.code, ms: refresh.ms, stderr: tail(refresh.stderr || refresh.stdout) });
     pass.skipped = "refresh-failed";
+    timings.totalMs = Math.round(performance.now() - started);
     return pass;
   }
 
@@ -309,7 +315,10 @@ export async function settleOnce(root: ContextRoot, options: SettleOptions): Pro
   }
 
   // The index must describe the refreshed graph and the re-recorded links.
-  await ensureContextIndex(root, "force");
+  const indexStarted = performance.now();
+  await ensureContextIndex(root, "if-stale");
+  timings.indexMs = Math.round(performance.now() - indexStarted);
+  timings.totalMs = Math.round(performance.now() - started);
   return pass;
 }
 
