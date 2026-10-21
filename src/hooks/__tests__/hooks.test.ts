@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { HOOK_INSTRUCTIONS_END, HOOK_INSTRUCTIONS_START } from "../instructions.js";
-import { HOOK_SPECS, isManagedCommand, MEX_HOOK_MARKER } from "../claude-settings.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HOOK_INSTRUCTIONS_END, HOOK_INSTRUCTIONS_START, renderHookInstructionBlock } from "../instructions.js";
+import { HOOK_SPECS, hookSpecs, isManagedCommand, MEX_HOOK_MARKER, planInstall, inspectSettings } from "../claude-settings.js";
 import { findBinOnPath, resolveHookCommand } from "../command.js";
 import { runHooksInstall, runHooksRemove, runHooksStatus, type HooksIo } from "../cli.js";
 
@@ -21,6 +21,7 @@ beforeEach(() => {
   writeFileSync(entry, "// hook\n");
 });
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(root, { recursive: true, force: true });
   rmSync(bin, { recursive: true, force: true });
 });
@@ -73,13 +74,39 @@ const USER_SETTINGS = {
 };
 
 describe("mex hooks install", () => {
+  it("keeps event types switchable and removes old matchers during upgrade", () => {
+    vi.stubEnv("MEX_HOOK_READ", "1"); vi.stubEnv("MEX_HOOK_EDIT", "1");
+    const old = planInstall(null, `mex-hook ${MEX_HOOK_MARKER}`);
+    expect(old.entries).toBe(6);
+    vi.stubEnv("MEX_HOOK_READ", "0"); vi.stubEnv("MEX_HOOK_EDIT", "0");
+    expect(inspectSettings(old.text, `mex-hook ${MEX_HOOK_MARKER}`).strays).toBe(2);
+    const upgraded = planInstall(old.text, `mex-hook ${MEX_HOOK_MARKER}`);
+    expect(upgraded.entries).toBe(4);
+    expect(JSON.parse(upgraded.text!).hooks.PostToolUse.map((g: any) => g.matcher)).toEqual(["Grep", "Bash"]);
+    expect(inspectSettings(upgraded.text, `mex-hook ${MEX_HOOK_MARKER}`).strays).toBe(0);
+    vi.stubEnv("MEX_HOOK_SEARCH", "0");
+    expect(hookSpecs().map(s => s.event)).toEqual(["UserPromptSubmit", "Stop"]);
+    expect(hookSpecs({MEX_HOOK_PROMPT:"0",MEX_HOOK_STOP:"0",MEX_HOOK_GREP:"0",MEX_HOOK_BASH:"0"})).toEqual([]);
+  });
+
+  it("replaces a long managed block in place and preserves repository instructions", () => {
+    const prefix = "Read AGENTS.md before proceeding.\n\n";
+    const suffix = "\n\nFollow the repository build guide.\n";
+    writeFileSync(join(root, "AGENTS.md"), "Repository rules.\n");
+    writeFileSync(claudeMd(), `${prefix}${HOOK_INSTRUCTIONS_START}\n${"old instructions ".repeat(200)}\n${HOOK_INSTRUCTIONS_END}${suffix}`);
+    runHooksInstall(run().io);
+    expect(readFileSync(claudeMd(), "utf8")).toBe(prefix + renderHookInstructionBlock() + suffix);
+    expect(readFileSync(join(root, "AGENTS.md"), "utf8")).toBe("Repository rules.\n");
+    expect(renderHookInstructionBlock().length).toBeLessThanOrEqual(450);
+  });
+
   it("creates the settings entries and the CLAUDE.md block", () => {
     const r = run();
     runHooksInstall(r.io, { tool: "claude" });
     expect(r.exit()).toBe(0);
     const settings = readJson();
     expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
-    expect(settings.hooks.PostToolUse.map((g: any) => g.matcher)).toEqual(["Read", "Edit|Write|MultiEdit", "Grep", "Bash"]);
+    expect(settings.hooks.PostToolUse.map((g: any) => g.matcher)).toEqual(["Grep", "Bash"]);
     expect(settings.hooks.Stop).toHaveLength(1);
     const commands = [...settings.hooks.UserPromptSubmit, ...settings.hooks.PostToolUse, ...settings.hooks.Stop].flatMap((g: any) => g.hooks.map((h: any) => h.command));
     expect(commands).toHaveLength(HOOK_SPECS.length);
@@ -89,17 +116,17 @@ describe("mex hooks install", () => {
     }
     const md = readFileSync(claudeMd(), "utf8");
     expect(md).toContain(HOOK_INSTRUCTIONS_START);
-    expect(md).toContain("Never edit the `mex:entity` comment blocks");
+    expect(md).toContain("Read the code when details matter");
     expect(md).toContain(HOOK_INSTRUCTIONS_END);
   });
 
-  it("prefers the mex-hook bin when it resolves on PATH", () => {
+  it("uses the bundle directly even when a package shim is on PATH", () => {
     const r = run({ shim: true });
     runHooksInstall(r.io, { tool: "claude" });
-    expect(readJson().hooks.UserPromptSubmit[0].hooks[0].command).toBe(`mex-hook ${MEX_HOOK_MARKER}`);
+    expect(readJson().hooks.UserPromptSubmit[0].hooks[0].command).toBe(`node "${entry.replace(/\\/g, "/")}" ${MEX_HOOK_MARKER}`);
     const s = run({ shim: true });
     runHooksStatus(s.io, { tool: "claude" });
-    expect(s.out.join("\n")).toContain("mex-hook bin on PATH");
+    expect(s.out.join("\n")).toContain("node with the hook bundle");
   });
 
   it("is idempotent: a second install changes no byte", () => {
@@ -152,7 +179,7 @@ describe("mex hooks install", () => {
     writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
     runHooksInstall(run().io, { tool: "claude" });
     const after = readJson();
-    expect(after.hooks.PostToolUse.map((g: any) => g.matcher)).toEqual(["Read", "Edit|Write|MultiEdit", "Grep", "Bash"]);
+    expect(after.hooks.PostToolUse.map((g: any) => g.matcher)).toEqual(["Grep", "Bash"]);
     expect(JSON.stringify(after)).not.toContain("/old/place");
   });
 
@@ -243,7 +270,7 @@ describe("mex hooks remove", () => {
     settings.hooks.PostToolUse[0].hooks.unshift({ type: "command", command: "echo mine" });
     writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
     runHooksRemove(run().io, { tool: "claude" });
-    expect(readJson()).toEqual({ hooks: { PostToolUse: [{ matcher: "Read", hooks: [{ type: "command", command: "echo mine" }] }] } });
+    expect(readJson()).toEqual({ hooks: { PostToolUse: [{ matcher: "Grep", hooks: [{ type: "command", command: "echo mine" }] }] } });
   });
 
   it("is a no-op when nothing is installed, and --dry-run writes nothing", () => {
@@ -275,8 +302,15 @@ describe("mex hooks status", () => {
     expect(installed.state).toBe("installed");
     expect(installed.installed.kind).toBe("node");
     expect(installed.instructionsPresent).toBe(true);
-    // A mex-hook bin appeared on PATH after the install: the entries are current but not what install would write.
-    expect(status({ shim: true }).state).toBe("outdated");
+    // A package shim appearing does not invalidate the direct bundle command.
+    expect(status({ shim: true }).state).toBe("installed");
+    const old = readJson();
+    const previous = join(bin, "previous.js");
+    writeFileSync(previous, "// previous entry\n");
+    old.hooks.UserPromptSubmit[0].hooks[0].command = `node "${previous.replace(/\\/g, "/")}" ${MEX_HOOK_MARKER}`;
+    writeFileSync(settingsPath(), JSON.stringify(old));
+    expect(status().state).toBe("outdated");
+    runHooksInstall(run().io, { tool: "claude" });
 
     const settings = readJson();
     settings.hooks.PostToolUse.pop();
@@ -315,7 +349,7 @@ describe("hook command resolution", () => {
       expect(findBinOnPath({ env: { PATH: shimDir } })).toBeNull();
       writeFileSync(join(shimDir, process.platform === "win32" ? "mex-hook.cmd" : "mex-hook"), "x");
       expect(findBinOnPath({ env: { PATH: shimDir } })).toContain("mex-hook");
-      expect(resolveHookCommand({ env: { PATH: shimDir }, entryCandidates: [entry] })).toMatchObject({ kind: "bin", command: `mex-hook ${MEX_HOOK_MARKER}` });
+      expect(resolveHookCommand({ env: { PATH: shimDir }, entryCandidates: [] })).toMatchObject({ kind: "bin", command: `mex-hook ${MEX_HOOK_MARKER}` });
     } finally {
       rmSync(shimDir, { recursive: true, force: true });
     }

@@ -258,7 +258,7 @@ export function hooksStatus(cwd: string, options: ResolveOptions = {}): HooksSta
   else if (counts.installed + counts.outdated === 0) state = "none";
   else if (installed?.exists === false) state = "broken";
   else if (counts.missing > 0) state = "partial";
-  else if (counts.outdated > 0) state = "outdated";
+  else if (counts.outdated > 0 || settings.strays > 0) state = "outdated";
   else state = "installed";
   return { tool: "claude", settingsPath: paths.settings, settingsExists: settingsFile.bytes !== null, settings, installed, available, instructionsPresent: present, state };
 }
