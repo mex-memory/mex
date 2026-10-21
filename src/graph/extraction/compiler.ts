@@ -1132,6 +1132,24 @@ function restoreCapture(capture: CompilerFileCapture, rootPrefix: string): Captu
 }
 
 /**
+ * The context for the child visits of the canonical rewrites, which only
+ * reorder type members and need no lexical environments. The transformation's
+ * own context asserts on them: a getter inside a getter's type literal
+ * (`{ get a(): { get b(): T } }`) starts a lexical environment while the
+ * enclosing one is suspended, the compiler throws "Lexical environment is
+ * suspended", and the whole graph build failed.
+ */
+function withoutLexicalEnvironments(context: ts.TransformationContext): ts.TransformationContext {
+  return {
+    ...context,
+    startLexicalEnvironment: () => {},
+    suspendLexicalEnvironment: () => {},
+    resumeLexicalEnvironment: () => {},
+    endLexicalEnvironment: () => undefined,
+  };
+}
+
+/**
  * What an importer can observe of a file: the SHA-256 of its declaration
  * emit, without comments, or undefined when it cannot be emitted. Bodies,
  * private implementation and comments are absent; every exported and
@@ -1159,8 +1177,9 @@ function fileDeclarationSignature(program: ts.Program, sourceFile: ts.SourceFile
   // with what it checked first; a union means the same in any order, so its
   // members are sorted and the signature is a function of the code (#209).
   const canonical = ts.transform(declarations, [(context) => {
+    const children = withoutLexicalEnvironments(context);
     const visit = (node: ts.Node): ts.Node => {
-      const visited = ts.visitEachChild(node, visit, context);
+      const visited = ts.visitEachChild(node, visit, children);
       if (!ts.isUnionTypeNode(visited)) return visited;
       const members = visited.types
         .map((type) => ({ type, text: printer.printNode(ts.EmitHint.Unspecified, type, declarations) }))
@@ -2887,8 +2906,9 @@ function renderSignature(checker: ts.TypeChecker, signature: ts.Signature, enclo
 
 function printCanonical(printer: ts.Printer, node: ts.Node, sourceFile: ts.SourceFile): string {
   const transformed = ts.transform(node, [(context) => {
+    const children = withoutLexicalEnvironments(context);
     const visit = (current: ts.Node): ts.Node => {
-      const visited = ts.visitEachChild(current, visit, context);
+      const visited = ts.visitEachChild(current, visit, children);
       if (ts.isTypeLiteralNode(visited)) {
         // A mapped or spread object type lists its properties in the type-id
         // order of its key literals. Members are ordered by name, stably, so

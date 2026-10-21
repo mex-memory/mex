@@ -227,6 +227,22 @@ describe("TypeScript compiler extraction", () => {
     ]));
   });
 
+  it("renders accessors nested in type literals without failing the extraction", () => {
+    // A getter in a getter's type made the canonical rewrite throw
+    // "Lexical environment is suspended", which failed a whole repository build.
+    const root = project({
+      "settings.ts": [
+        "export type Nested = { get inner(): { get value(): string | number } };",
+        "export function read(source: { get inner(): { get value(): string | number } }): Nested {",
+        "  return source;",
+        "}",
+        "",
+      ].join("\n"),
+    });
+    const file = buildTypeScriptExtraction(root, ["settings.ts"]).files[0]!;
+    expect(file.nodes.find((node) => node.name === "read")).toBeDefined();
+  });
+
   it("preserves symbol and reference identity across LF and CRLF checkouts", () => {
     const source = [
       "export function helper() {}",
