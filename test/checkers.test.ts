@@ -804,6 +804,102 @@ describe("checkDependencies", () => {
     expect(issues[0].claim.value).toBe("mex-definitely-missing-test");
     expect(issues[0].code).toBe("DEPENDENCY_MISSING");
   });
+
+  it("stays silent when the only manifest is a requirements.txt that lists flask (#207)", () => {
+    writeFileSync(join(tmpDir, "requirements.txt"), "flask>=2\n");
+    // 9.9.9 is not in `flask>=2`. Reading the file would report VERSION_MISMATCH.
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "flask" }),
+      claim({ kind: "version", value: "flask 9.9.9" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("suppresses DEPENDENCY_MISSING for an unread requirements.txt beside package.json (#207)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ dependencies: { express: "4.18.0" } })
+    );
+    writeFileSync(join(tmpDir, "requirements.txt"), [
+      "-r other.txt",
+      "git+https://github.com/pallets/flask.git@2.3.0#egg=flask",
+      "requests>=2.28; python_version >= '3.8'",
+      "flask>=2",
+    ].join("\n"));
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "Express" }),
+      claim({ kind: "dependency", value: "flask" }),
+      claim({ kind: "dependency", value: "left-pad" }),
+      claim({ kind: "version", value: "express 9.9.9" }),
+      // Include, VCS, and marker lines are not packages in the corpus.
+      claim({ kind: "version", value: "flask 9.9.9" }),
+      claim({ kind: "version", value: "requests 9.9.9" }),
+      claim({ kind: "version", value: "other.txt 9.9.9" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("VERSION_MISMATCH");
+    expect(issues[0].claim.value).toBe("express 9.9.9");
+  });
+
+  it("suppresses DEPENDENCY_MISSING for an unread requirements.txt beside pyproject.toml (#207)", () => {
+    writeFileSync(join(tmpDir, "pyproject.toml"), [
+      "[project]",
+      'name = "svc"',
+      'dependencies = ["fastapi>=0.115", "sentence-transformers>=3.0"]',
+      "",
+    ].join("\n"));
+    writeFileSync(join(tmpDir, "requirements.txt"), "flask>=2\n");
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "FastAPI" }),
+      claim({ kind: "dependency", value: "sentence_transformers" }),
+      claim({ kind: "dependency", value: "flask" }),
+      claim({ kind: "dependency", value: "boto3" }),
+      claim({ kind: "version", value: "fastapi 9.9.9" }),
+      claim({ kind: "version", value: "sentence_transformers 9.9.9" }),
+    ], tmpDir);
+    expect(issues.map((issue) => [issue.code, issue.claim.value])).toEqual([
+      ["VERSION_MISMATCH", "fastapi 9.9.9"],
+      ["VERSION_MISMATCH", "sentence_transformers 9.9.9"],
+    ]);
+  });
+
+  it("does not parse setup.py beside package.json (#207)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ dependencies: { express: "4.18.0" } })
+    );
+    writeFileSync(
+      join(tmpDir, "setup.py"),
+      'from setuptools import setup\nsetup(install_requires=["flask"])\n'
+    );
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "Express" }),
+      claim({ kind: "dependency", value: "flask" }),
+      claim({ kind: "dependency", value: "left-pad" }),
+      claim({ kind: "version", value: "express 9.9.9" }),
+      claim({ kind: "version", value: "flask 9.9.9" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("VERSION_MISMATCH");
+    expect(issues[0].claim.value).toBe("express 9.9.9");
+  });
+
+  it("treats an empty requirements.txt beside package.json as unread (#207)", () => {
+    writeFileSync(
+      join(tmpDir, "package.json"),
+      JSON.stringify({ dependencies: { express: "4.18.0" } })
+    );
+    writeFileSync(join(tmpDir, "requirements.txt"), "");
+    const issues = checkDependencies([
+      claim({ kind: "dependency", value: "Express" }),
+      claim({ kind: "version", value: "express 4.18.0" }),
+      claim({ kind: "dependency", value: "left-pad" }),
+      claim({ kind: "version", value: "express 9.9.9" }),
+    ], tmpDir);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe("VERSION_MISMATCH");
+    expect(issues[0].claim.value).toBe("express 9.9.9");
+  });
 });
 
 // ── Cross-file Checker ──
