@@ -83,8 +83,9 @@ export function checkDependencies(
   projectRoot: string
 ): DriftIssue[] {
   const issues: DriftIssue[] = [];
-  const deps = loadAllDependencies(projectRoot);
-  if (!deps) return issues;
+  const loaded = loadAllDependencies(projectRoot);
+  if (!loaded) return issues;
+  const { entries: deps, unreadPython } = loaded;
 
   const depClaims = claims.filter(
     (c) => c.kind === "dependency" && !c.negated
@@ -106,6 +107,13 @@ export function checkDependencies(
     // Fuzzy match: "React" → "react", "Express" → "express"
     const found = findDependency(deps, name);
     if (!found) {
+      // requirements.txt and setup.py are presence-only (#207). Claim has no
+      // ecosystem, so an unmatched name cannot be told apart from a package
+      // that lives only in the unread file. Suppress DEPENDENCY_MISSING while
+      // one is present, including a genuinely undeclared npm name. A name this
+      // corpus declares was found above and is still checked; version claims
+      // below are unchanged.
+      if (unreadPython) continue;
       issues.push({
         code: "DEPENDENCY_MISSING",
         severity: "warning",
@@ -168,9 +176,16 @@ const MAX_MANIFESTS = 1_024;
 const MAX_MANIFEST_BYTES = 1_048_576;
 const MAX_TOTAL_MANIFEST_BYTES = 8_388_608;
 
-function discoverManifests(projectRoot: string): string[] | null {
+interface ManifestWalk {
+  manifests: string[];
+  /** A real requirements.txt or setup.py was seen and left unread (#207). */
+  unreadPython: boolean;
+}
+
+function discoverManifests(projectRoot: string): ManifestWalk | null {
   const pending = [resolve(projectRoot)];
   const manifests: string[] = [];
+  let unreadPython = false;
   let inspected = 0;
   try {
     while (pending.length) {
@@ -186,6 +201,13 @@ function discoverManifests(projectRoot: string): string[] | null {
           else if (entry.isFile() && (entry.name === "package.json" || entry.name === "pyproject.toml")) {
             manifests.push(path);
             if (manifests.length > MAX_MANIFESTS) return null;
+          } else if (entry.isFile() && (entry.name === "requirements.txt" || entry.name === "setup.py")) {
+            // Presence only (#207). Not opened, and not counted toward
+            // MAX_MANIFESTS or either byte budget. Parsing `-r` includes, VCS
+            // lines, or a dynamic setup.py install_requires would name some
+            // packages and miss others, and a requirements file that tripped
+            // the size cap or JSON.parse would discard a good package.json.
+            unreadPython = true;
           }
         }
       } finally { directory.closeSync(); }
@@ -196,7 +218,8 @@ function discoverManifests(projectRoot: string): string[] | null {
   const rank = (path: string) => path === resolve(projectRoot, "package.json") ? 0
     : path === resolve(projectRoot, "pyproject.toml") ? 1 : 2;
   const key = (path: string) => relative(projectRoot, path).split(sep).join("/");
-  return manifests.sort((a, b) => rank(a) - rank(b) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+  manifests.sort((a, b) => rank(a) - rank(b) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+  return { manifests, unreadPython };
 }
 
 function readManifest(path: string, remaining: number): string | null {
@@ -215,18 +238,23 @@ function readManifest(path: string, remaining: number): string | null {
   } finally { closeSync(descriptor); }
 }
 
-function loadAllDependencies(projectRoot: string): DepEntry[] | null {
+interface LoadedDependencies {
+  entries: DepEntry[];
+  unreadPython: boolean;
+}
+
+function loadAllDependencies(projectRoot: string): LoadedDependencies | null {
   const entries: DepEntry[] = [];
 
   // Repositories can contain independent applications in nested directories.
   // Discover dependency manifests recursively, while ignoring dependency
   // directories and Git metadata so we only inspect manifests belonging to
   // the repository itself.
-  const manifests = discoverManifests(projectRoot);
-  if (!manifests) return null;
+  const discovered = discoverManifests(projectRoot);
+  if (!discovered) return null;
   let remaining = MAX_TOTAL_MANIFEST_BYTES;
 
-  for (const manifest of manifests) {
+  for (const manifest of discovered.manifests) {
     try {
       const content = readManifest(manifest, remaining);
       if (content === null) return null;
@@ -257,7 +285,9 @@ function loadAllDependencies(projectRoot: string): DepEntry[] | null {
   // that returns a few entries out of many is therefore worse than one that
   // returns none: it switches the checker on and measures claims against a
   // list it knows is incomplete. Parse a shape fully or leave it out.
-  return entries.length ? entries : null;
+  // requirements.txt and setup.py stay out of this list on purpose (#207):
+  // seeing one does not make an empty understood corpus non-empty.
+  return entries.length ? { entries, unreadPython: discovered.unreadPython } : null;
 }
 
 /** A dependency table whose keys are package names, not extra/group names. */

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `mex check` no longer reports `DEPENDENCY_MISSING` when a `requirements.txt` or `setup.py` sits beside a `package.json` or `pyproject.toml`. Those two files are recognized during manifest discovery and left unread: they are not opened, not parsed, and not counted toward the manifest limit or either byte budget, so an oversized requirements file cannot discard a good manifest. A project whose only manifest is one of them stays silent. Names the understood manifest declares are still matched, PEP 503 spelling included, and a version it declares is still compared (#207).
+
 ## [0.8.4] - 2026-10-14
 
 ### Added
