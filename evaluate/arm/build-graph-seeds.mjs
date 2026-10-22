@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Build one full graph per task base, for `--prepare --graph-seeds <out>`. Bases run one at a
 // time and a finished seed is skipped, so the script can be rerun after a stop.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { createWorkspace, removeWorkspace, resolveCommit, runMex } from "./lib/workspace.mjs";
 
 const args = {};
@@ -14,12 +15,33 @@ const subject = resolve(args.subject), cliBin = resolve(args["cli-bin"]), out = 
 const tasks = args.tasks ? args.tasks.split(",").map((id) => suite.tasks.find((t) => t.id === id) ?? (() => { throw new Error(`unknown task ${id}`); })()) : suite.tasks;
 const bases = [...new Set(tasks.map((t) => resolveCommit(subject, t.base)))];
 const projectName = suite.projectName ?? "project";
+// While `<out>/PAUSE` exists no new base starts, so another heavy job can run between builds.
+const pauseFile = join(out, "PAUSE");
+
+/** Delete a tree without following links: links are unlinked, real directories are walked. */
+function removeTree(path) {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) return unlinkSync(path);
+  for (const name of readdirSync(path)) removeTree(join(path, name));
+  rmdirSync(path);
+}
+
+/** A workspace killed while its dependency overlay was half built has no removable marker. */
+function removeLeftover(workspace) {
+  try {
+    removeWorkspace(subject, workspace, { removeParent: true });
+  } catch {
+    if (existsSync(dirname(workspace))) removeTree(dirname(workspace));
+    execFileSync("git", ["-C", subject, "worktree", "prune"]);
+  }
+}
 
 for (const [i, base] of bases.entries()) {
   const target = join(out, base);
   if (existsSync(join(target, "graph.db"))) { console.log(`[${i + 1}/${bases.length}] ${base.slice(0, 10)} exists`); continue; }
+  while (existsSync(pauseFile)) await new Promise((done) => setTimeout(done, 15000));
   const workspace = join(out, `${base}.work`, projectName);
-  removeWorkspace(subject, workspace, { removeParent: true });
+  removeLeftover(workspace);
   const started = Date.now();
   try {
     createWorkspace({ subjectRoot: subject, workspace, base, depsDir: args.deps ? resolve(args.deps) : null });
@@ -34,7 +56,7 @@ for (const [i, base] of bases.entries()) {
   } catch (error) {
     console.log(`[${i + 1}/${bases.length}] ${base.slice(0, 10)} FAILED: ${String(error.message).slice(-800)}`);
   } finally {
-    removeWorkspace(subject, workspace, { removeParent: true });
+    removeLeftover(workspace);
   }
 }
 console.log("done");
