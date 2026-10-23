@@ -4,16 +4,37 @@ import { appendFileSync } from "node:fs";
  * Opt-in per-phase wall-clock timing for graph maintenance.
  *
  * Disabled unless `MEX_GRAPH_PHASE_TIMINGS` names a file. When enabled, each
- * flush appends one JSON line of accumulated phase totals to that file. Nothing
- * is ever printed, and no path or source content enters a record: phase names
- * are fixed labels and values are milliseconds or counts.
+ * flush appends one JSON line of accumulated phase totals to that file. A flag
+ * value is not a path: `1`, `true`, `yes` or `on` keeps timings off and prints
+ * one warning, instead of writing to a file named `1` in the working directory,
+ * and `0`, `false`, `no` or `off` keeps them off silently. Nothing else is
+ * printed, and no path or source content enters a record: phase names are fixed
+ * labels and values are milliseconds or counts.
  */
 const PHASE_TIMINGS_ENV = "MEX_GRAPH_PHASE_TIMINGS";
+const ON_FLAG_VALUES = new Set(["1", "true", "yes", "on"]);
+const OFF_FLAG_VALUES = new Set(["0", "false", "no", "off"]);
 
 const totals = new Map<string, number>();
+let warnedAboutFlagValue = false;
+
+function timingsPath(): string | undefined {
+  const value = process.env[PHASE_TIMINGS_ENV];
+  if (value === undefined || value === "") return undefined;
+  const flag = value.trim().toLowerCase();
+  if (OFF_FLAG_VALUES.has(flag)) return undefined;
+  if (ON_FLAG_VALUES.has(flag)) {
+    if (!warnedAboutFlagValue) {
+      warnedAboutFlagValue = true;
+      process.stderr.write(`mex: ${PHASE_TIMINGS_ENV} must name a file, not "${value}"; phase timings are off.\n`);
+    }
+    return undefined;
+  }
+  return value;
+}
 
 function enabled(): boolean {
-  return typeof process.env[PHASE_TIMINGS_ENV] === "string" && process.env[PHASE_TIMINGS_ENV] !== "";
+  return timingsPath() !== undefined;
 }
 
 export function recordGraphPhase(phase: string, milliseconds: number): void {
@@ -43,14 +64,15 @@ export async function timeGraphPhaseAsync<T>(phase: string, run: () => Promise<T
 
 /** Append the accumulated totals under one fixed label, then reset them. */
 export function flushGraphPhaseTimings(label: string): void {
-  if (!enabled()) {
+  const path = timingsPath();
+  if (path === undefined) {
     totals.clear();
     return;
   }
   const phases = Object.fromEntries([...totals.entries()].map(([phase, ms]) => [phase, Math.round(ms * 10) / 10]));
   totals.clear();
   try {
-    appendFileSync(process.env[PHASE_TIMINGS_ENV]!, `${JSON.stringify({ label, pid: process.pid, phases })}\n`);
+    appendFileSync(path, `${JSON.stringify({ label, pid: process.pid, phases })}\n`);
   } catch {
     // Diagnostics must never change the outcome of a maintenance operation.
   }
