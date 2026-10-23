@@ -1871,3 +1871,77 @@ describe("budget accounting honesty", () => {
     expect(records.at(-1)?.textFallbackFiles).not.toContain("main.ts");
   });
 });
+
+describe("runGraphScope --fingerprint", () => {
+  let fpRoot: string;
+  let fpEngine: GraphEngine;
+  let fpDeps: AgentCommandDeps;
+  let fpDb: ReturnType<typeof openSqlite>;
+  const task = "checkout discount";
+  const sourcedIds = (records: Record<string, unknown>[]): string[] => [...new Set(records
+    .filter((record) => record.type === "source")
+    .flatMap((record) => (record.ranges as Array<{ nodeIds: string[] }>).flatMap((range) => range.nodeIds)))];
+
+  beforeAll(async () => {
+    fpRoot = mkdtempSync(join(tmpdir(), "mex-scope-fingerprint-"));
+    // Two ~120-line functions: their source alone fills the default 3,500-token budget.
+    const steps = Array.from({ length: 120 }, (_, i) => (
+      `  total += cart.length * ${i} + applyDiscount(${i}); // step ${i} of the checkout pipeline`
+    ));
+    const tiers = Array.from({ length: 120 }, (_, i) => (
+      `  if (total > ${i}) total = total - ${i} * 0.01; // discount tier ${i}`
+    ));
+    writeFileSync(join(fpRoot, "big.ts"), [
+      "export function checkout(cart: string[]): number {", "  let total = 0;", ...steps, "  return total;", "}", "",
+      "export function applyDiscount(total: number): number {", ...tiers, "  return total;", "}", "",
+    ].join("\n"));
+    writeFileSync(join(fpRoot, "cart.ts"), [
+      "export function addItem(cart: string[], item: string): string[] {", "  return [...cart, item];", "}", "",
+      "export function checkout(cart: string[]): number {", "  return applyDiscount(cart.length * 10);", "}", "",
+      "function applyDiscount(total: number): number {", "  return total > 50 ? total * 0.9 : total;", "}", "",
+    ].join("\n"));
+    fpEngine = createGraphEngine({ rootDir: fpRoot });
+    await fpEngine.build(fpRoot);
+    fpDb = openSqlite(join(fpRoot, ".mex", "graph.db"));
+    fpDeps = { open: () => ({ graph: fpEngine, db: fpDb, close: () => {} }), write: (line) => lines.push(line) };
+  });
+
+  afterAll(() => {
+    fpDb.close();
+    fpEngine.close();
+    rmSync(fpRoot, { recursive: true, force: true });
+  });
+
+  it("returns a fingerprinted fact for every source-backed node in the default source detail", () => {
+    const records = capture(() => runGraphScope(task, fpRoot, fpDeps, { fingerprint: true }));
+    const sourced = sourcedIds(records);
+    expect(sourced.length).toBeGreaterThan(0);
+    for (const id of sourced) {
+      const fact = records.find((record) => record.type === "fact" && record.id === id);
+      expect(fact?.fingerprint, id).toEqual(expect.any(String));
+    }
+    const summary = records.at(-1)!;
+    expect(summary).toMatchObject({ type: "summary", status: "ok" });
+    expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(3500);
+  });
+
+  it("counts source-backed nodes in returnedNodes, not only fact records", () => {
+    const records = capture(() => runGraphScope(task, fpRoot, fpDeps, {}));
+    const sourced = sourcedIds(records);
+    const factIds = records.filter((record) => record.type === "fact").map((record) => record.id as string);
+    expect(sourced.length).toBeGreaterThan(0);
+    expect(records.at(-1)!.returnedNodes).toBe(new Set([...sourced, ...factIds]).size);
+  });
+
+  it.each(["minimal", "standard", "source"] as const)(
+    "adds fingerprints at %s detail only when --fingerprint is set",
+    (detail) => {
+      const on = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, fingerprint: true }));
+      const off = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail }));
+      const onFacts = on.filter((record) => record.type === "fact");
+      expect(onFacts.length).toBeGreaterThan(0);
+      for (const fact of onFacts) expect(fact.fingerprint).toEqual(expect.any(String));
+      for (const fact of off.filter((record) => record.type === "fact")) expect(fact).not.toHaveProperty("fingerprint");
+    },
+  );
+});

@@ -609,6 +609,40 @@ export function runGraphScope(
       plannedSources, primaryNodeOrder, exactNodeOrder, flowAnswerCandidateIds,
       reservedPrimaryNodeIds, globallyReservedSourceOrder, nodeById,
     ), nodeById);
+    // `--fingerprint` puts fingerprints on fact records, which are admitted
+    // after every source spill. Each source admission also holds room for the
+    // facts of its nodes, so returned source keeps its fingerprints.
+    const fingerprintFactTokens = new Map<string, number>();
+    if (opts.fingerprint && opts.detail === "source") {
+      for (const candidate of selection.candidates) {
+        const node = nodeById.get(candidate.id);
+        const fact = node && !stale.has(node.filePath) ? factFor(session, candidate.id, opts.detail, true) : null;
+        if (fact) {
+          fingerprintFactTokens.set(candidate.id, estimateTokens(
+            scopeFactRecord(fact, candidate.score, candidate.reasons, opts),
+          ));
+        }
+      }
+    }
+    const heldFactIds = new Set<string>();
+    let factTokenReserve = 0;
+    /** Fact tokens admitting `record` would add to the reserve. */
+    const factTokensFor = (record: Rec): number => {
+      const ids = new Set((record.ranges as SourceRange[]).flatMap((range) => range.nodeIds));
+      let tokens = 0;
+      for (const id of ids) if (!heldFactIds.has(id)) tokens += fingerprintFactTokens.get(id) ?? 0;
+      return tokens;
+    };
+    const holdFacts = (records: Rec[]): void => {
+      for (const record of records) {
+        factTokenReserve += factTokensFor(record);
+        for (const range of record.ranges as SourceRange[]) range.nodeIds.forEach((id) => heldFactIds.add(id));
+      }
+    };
+    // Hard-ledger room left once the summary and the held facts are set aside.
+    const roomAboveFactReserve = (): number => (
+      ctx.effectiveMax - ledger.estimatedTokens - summaryTokenReserve - factTokenReserve
+    );
     for (const planned of sourceAdmissions) {
       const { record, phase } = planned;
       // A large atomic answer may fail the source-share fit while a later
@@ -620,8 +654,9 @@ export function runGraphScope(
         continue;
       }
       const admission = admitSourceWithinShare(
-        record, sourceShare - sourceTokens, ledger, planned.atomic,
+        record, sourceShare - sourceTokens - factTokenReserve - factTokensFor(record), ledger, planned.atomic,
       );
+      holdFacts(admission.admitted);
       sourceRecords.push(...admission.admitted);
       sourceTokens += admission.tokens;
       truncated ||= admission.trimmed;
@@ -634,13 +669,11 @@ export function runGraphScope(
         for (const deferred of unresolved) {
           const spill = admitSourceWithinShare(
             deferred,
-            Math.max(
-              0,
-              ctx.effectiveMax - ledger.estimatedTokens - summaryTokenReserve - flowTokenReserve,
-            ),
+            Math.max(0, roomAboveFactReserve() - flowTokenReserve - factTokensFor(deferred)),
             ledger,
             true,
           );
+          holdFacts(spill.admitted);
           sourceRecords.push(...spill.admitted);
           sourceTokens += spill.tokens;
           stillDeferred.push(...spill.deferred);
@@ -674,13 +707,11 @@ export function runGraphScope(
       }
       const spill = admitSourceWithinShare(
         deferred.record,
-        Math.max(
-          0,
-          ctx.effectiveMax - ledger.estimatedTokens - summaryTokenReserve - flowTokenReserve,
-        ),
+        Math.max(0, roomAboveFactReserve() - flowTokenReserve - factTokensFor(deferred.record)),
         ledger,
         true,
       );
+      holdFacts(spill.admitted);
       sourceRecords.push(...spill.admitted);
       if (spill.trimmed || spill.deferred.length > 0) truncated = true;
     }
@@ -688,7 +719,7 @@ export function runGraphScope(
     const flowRecords: Rec[] = [];
     let returnedEdges = 0;
     for (const { record, stepCount } of plannedFlowRecords) {
-      if (ledger.tryAdd(record)) {
+      if (estimateTokens(record) <= roomAboveFactReserve() && ledger.tryAdd(record)) {
         flowRecords.push(record);
         returnedEdges += stepCount;
       } else truncated = true;
@@ -696,8 +727,14 @@ export function runGraphScope(
 
     for (const deferred of ordinaryDeferredSources) {
       const spill = admitSourceWithinShare(
-        deferred.record, ctx.effectiveMax, ledger, deferred.atomic,
+        deferred.record,
+        fingerprintFactTokens.size > 0
+          ? Math.max(0, roomAboveFactReserve() - factTokensFor(deferred.record))
+          : ctx.effectiveMax,
+        ledger,
+        deferred.atomic,
       );
+      holdFacts(spill.admitted);
       sourceRecords.push(...spill.admitted);
       if (spill.trimmed || spill.deferred.length > 0) truncated = true;
     }
@@ -706,7 +743,14 @@ export function runGraphScope(
     const flowIds = new Set(flowRecords.flatMap((record) =>
       (record.steps as Array<{ source: string; target: string }>).flatMap((step) => [step.source, step.target])));
     const facts: Array<{ record: Rec; node: GraphNode }> = [];
-    for (const candidate of selection.candidates) {
+    // The reserve is for source-backed nodes, so their facts go before flow-only ones.
+    const factCandidates = fingerprintFactTokens.size > 0
+      ? [
+        ...selection.candidates.filter((candidate) => sourcedIds.has(candidate.id)),
+        ...selection.candidates.filter((candidate) => !sourcedIds.has(candidate.id)),
+      ]
+      : selection.candidates;
+    for (const candidate of factCandidates) {
       if (opts.detail === "source" && !sourcedIds.has(candidate.id) && !flowIds.has(candidate.id)) continue;
       const fact = factFor(session, candidate.id, opts.detail, opts.fingerprint);
       const node = nodeById.get(candidate.id);
@@ -814,7 +858,8 @@ export function runGraphScope(
     ]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: selection.matchedCount,
-      returnedNodes: facts.length,
+      // Source-mode answers can return nodes as source alone, with no fact record.
+      returnedNodes: new Set([...finalSourcedIds, ...facts.map((fact) => fact.node.id)]).size,
       returnedEdges,
       truncated,
       suggestedNextCommands: suggestions,
