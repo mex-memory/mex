@@ -27,6 +27,9 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
   const mode = resolveSetupMode(mexDir, options.mode);
   const selectedTools = [...new Set(options.tools ?? loadConfiguredAiTools(mexDir))];
   if (options.dryRun) return previewSetup(projectRoot, mode, selectedTools, options.tools !== undefined);
+  if (mode === "code-repo" && !existsSync(resolve(projectRoot, ".git"))) {
+    throw new SetupError("No Git repository found. Run `git init` first, then rerun setup.");
+  }
   const interactive = Boolean(stdin.isTTY && stdout.isTTY && !options.yes && !process.env.CI && process.env.TERM !== "dumb");
   const abort = new AbortController();
   let cancelCode = 130;

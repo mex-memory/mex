@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stdin, stdout } from "node:process";
@@ -35,6 +35,7 @@ describe("terminal completion after the finishing browser closes", () => {
   it.each([true, false])("rechecks the browser's commit result (committed: %s)", async committed => {
     state.committed = committed; state.inspectedAfterHub = false;
     const root = mkdtempSync(join(tmpdir(), "mex-terminal-completion-")); roots.push(root);
+    mkdirSync(join(root, ".git"));
     vi.spyOn(process, "cwd").mockReturnValue(root);
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.stubEnv("CI", ""); vi.stubEnv("TERM", "xterm");
