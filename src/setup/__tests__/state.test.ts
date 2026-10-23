@@ -25,6 +25,41 @@ describe("setup state and scaffold ownership", () => {
     expect(detectProjectState(root, join(root, ".mex"))).toBe("existing");
   });
 
+  it.each([
+    "src/main/java/com/acme/App.java",
+    "packages/client/src/features/account/index.ts",
+  ])("recognizes a codebase whose only source is deeply nested at %s", (source) => {
+    const root = fixture();
+    const path = join(root, source);
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, "// Project source\n");
+
+    expect(detectProjectState(root, join(root, ".mex"))).toBe("existing");
+  });
+
+  it("recognizes deep sources alongside an already populated scaffold", () => {
+    const root = fixture();
+    const mex = join(root, ".mex");
+    writePopulatedScaffold(mex);
+    const path = join(root, "src/main/java/com/acme/App.java");
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, "class App {}\n");
+
+    expect(detectProjectState(root, mex)).toBe("partial");
+  });
+
+  it.each(["node_modules", ".mex", "vendor", ".git"])(
+    "ignores sources nested inside %s when classifying an empty project",
+    (ignored) => {
+      const root = fixture();
+      const path = join(root, "nested", ignored, "src/main/java/com/acme/App.java");
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, "class App {}\n");
+
+      expect(detectProjectState(root, join(root, ".mex"))).toBe("fresh");
+    },
+  );
+
   it("recognizes a fully populated scaffold and rejects remaining placeholders", () => {
     const root = fixture();
     const mex = join(root, ".mex");

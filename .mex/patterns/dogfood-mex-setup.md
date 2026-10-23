@@ -64,6 +64,10 @@ global `mex`.
 
 ## Gotchas
 
+- Source-based setup state detection must recognize deeply nested layouts such
+  as `src/main/java/com/acme/App.java`. Iterate until the first source match
+  without a depth cap, retaining the dependency, Git, and `.mex` exclusions;
+  the presence of a populated scaffold still distinguishes partial setup.
 - Unflagged `setup` now opens terminal setup; `--cli` remains a compatibility
   alias. Browser drivers must pass `setup --browser` or use `hub` explicitly.
   Bare `mex` uses terminal setup for incomplete/agent-memory projects and the

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { globSync } from "glob";
+import { globIterateSync } from "glob";
 import chalk from "chalk";
 import {
   findConfig,
@@ -236,20 +236,20 @@ export function isScaffoldPopulated(mexDir: string): boolean {
 export function detectProjectState(projectRoot: string, mexDir: string): ProjectState {
   const scaffoldPopulated = isScaffoldPopulated(mexDir);
 
-  // Count source files
+  // Find a source file at any depth, stopping after the first match.
   const patterns = SOURCE_EXTENSIONS.map(
     (ext) => `**/${ext}`
   );
-  const sourceFiles = globSync(patterns, {
+  const sourceFiles = globIterateSync(patterns, {
     cwd: projectRoot,
     ignore: ["**/node_modules/**", "**/.mex/**", "**/vendor/**", "**/.git/**"],
-    maxDepth: 4,
     nodir: true,
   });
+  const hasSourceFiles = !sourceFiles.next().done;
 
-  if (scaffoldPopulated && sourceFiles.length > 0) {
+  if (scaffoldPopulated && hasSourceFiles) {
     return "partial";
-  } else if (sourceFiles.length > 0) {
+  } else if (hasSourceFiles) {
     return "existing";
   } else {
     return "fresh";
