@@ -19,6 +19,9 @@ import { appendTerminalSetupEvent } from "./terminal-events.js";
 import { waitForTerminalReturn } from "./terminal-return.js";
 
 const CONTINUE = "Run `mex setup` to continue. Existing authored files are preserved.";
+const AGENT_CONTINUE = "\nYou are the population agent. Follow the prompt below in this session.\n"
+  + "When done, run `mex setup` again to finalize. Existing authored files are preserved.\n"
+  + "Do not commit until that run exits with code 0.";
 
 /** The terminal owns presentation and interaction; all writes use the shared setup engine. */
 export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupRunResult> {
@@ -66,7 +69,9 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
       });
       for (const note of result.anchorNotes) console.log(`Action needed: ${note}`);
       if (!result.ready) {
-        console.log(`\nSetup paused: scaffold population is still required.\n${CONTINUE}`);
+        // Without a terminal the caller is the population agent itself (#285);
+        // a person running --yes in a terminal keeps the wording for people.
+        console.log(`\nSetup paused: scaffold population is still required.\n${stdin.isTTY && stdout.isTTY ? CONTINUE : AGENT_CONTINUE}`);
         if (result.prompt) console.log(`\nPopulation prompt:\n\n${result.prompt}`);
         return { outcome: "paused", exitCode: 2, message: "Scaffold population is still required." };
       }

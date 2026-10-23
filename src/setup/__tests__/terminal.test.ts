@@ -7,7 +7,12 @@ import * as population from "../headless-population.js";
 import { runHeadlessSetup } from "../headless.js";
 
 const roots: string[] = [];
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
+const restoreTTY: (() => void)[] = [];
+afterEach(() => {
+  vi.restoreAllMocks(); vi.unstubAllEnvs();
+  for (const restore of restoreTTY.splice(0)) restore();
+  for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true });
+});
 function project() {
   const root = mkdtempSync(join(tmpdir(), "mex-terminal-")); roots.push(root);
   vi.spyOn(process, "cwd").mockReturnValue(root);
@@ -67,4 +72,34 @@ describe("terminal setup outcomes", () => {
       populate: async () => { populate(root); return { tool: null, completed: true }; },
     })).toMatchObject({ ready: true, stage: "ready", mode: "agent-memory" });
   });
+
+  it("paused setup without a terminal addresses the population agent (#285)", async () => {
+    const out = await pausedOutput(false);
+    expect(out).toContain("You are the population agent. Follow the prompt below in this session.");
+    expect(out).toContain("When done, run `mex setup` again to finalize.");
+    expect(out).toContain("Do not commit until that run exits with code 0.");
+    expect(out).not.toContain("Run `mex setup` to continue.");
+    expect(out).toContain("Population prompt:");
+  });
+
+  it("paused --yes setup in a terminal keeps the wording for people (#285)", async () => {
+    const out = await pausedOutput(true);
+    expect(out).toContain("Run `mex setup` to continue. Existing authored files are preserved.");
+    expect(out).not.toContain("population agent");
+    expect(out).toContain("Population prompt:");
+  });
 });
+
+/** Run a plain --yes setup to its population pause with or without a terminal. */
+async function pausedOutput(terminal: boolean): Promise<string> {
+  project();
+  for (const stream of [process.stdin, process.stdout]) {
+    const original = Object.getOwnPropertyDescriptor(stream, "isTTY");
+    Object.defineProperty(stream, "isTTY", { value: terminal, configurable: true });
+    restoreTTY.push(() => original ? Object.defineProperty(stream, "isTTY", original) : delete (stream as { isTTY?: boolean }).isTTY);
+  }
+  const lines: string[] = [];
+  vi.mocked(console.log).mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(" ")); });
+  expect(await runSetup({ mode: "agent-memory", tools: ["codex"], yes: true })).toMatchObject({ outcome: "paused", exitCode: 2 });
+  return lines.join("\n");
+}
