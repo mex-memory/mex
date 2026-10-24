@@ -34,6 +34,28 @@ describe("setup population launcher", () => {
     expect(selectSetupAgent(["cursor"], () => true)).toBeNull();
   });
 
+  it("lists only the agents it probed, and stops probing after the chosen one", () => {
+    const project = fixture();
+    const available = vi.fn((command: string) => command === "claude");
+    expect(launchSetupPopulation(["claude", "codex"], "prompt", project, {
+      isAvailable: available,
+      run: () => true,
+    })).toEqual({ tool: "claude", unavailable: [], completed: true });
+    expect(available).toHaveBeenCalledWith("claude");
+    expect(available).not.toHaveBeenCalledWith("codex");
+  });
+
+  it("reports no unavailable agent when the selection contains none that setup can drive", () => {
+    // An empty `unavailable` with `tool: null` is the signal that no selected tool is Claude Code
+    // or Codex, which is a different reason from a missing CLI.
+    const project = fixture();
+    const available = vi.fn(() => true);
+    expect(launchSetupPopulation(["cursor", "windsurf"], "prompt", project, {
+      isAvailable: available,
+    })).toEqual({ tool: null, unavailable: [], completed: false });
+    expect(available).not.toHaveBeenCalled();
+  });
+
   it("keeps a large prompt off argv while the agent can read every byte", () => {
     const project = fixture();
     const prompt = `# Population\n\n${"x".repeat(12 * 1024)}\n`;
@@ -48,7 +70,7 @@ describe("setup population launcher", () => {
     expect(launchSetupPopulation(["codex"], prompt, project, {
       isAvailable: () => true,
       run,
-    })).toEqual({ tool: "codex", completed: true });
+    })).toEqual({ tool: "codex", unavailable: [], completed: true });
     expect(run).toHaveBeenCalledWith(
       "codex",
       expect.stringMatching(/^Read the full setup population prompt from `\.mex\/local\/setup-population-[^/]+\/prompt\.md`/u),
@@ -62,13 +84,13 @@ describe("setup population launcher", () => {
     const unavailableProject = fixture();
     expect(launchSetupPopulation(["codex"], "prompt", unavailableProject, {
       isAvailable: () => false,
-    })).toEqual({ tool: null, completed: false });
+    })).toEqual({ tool: null, unavailable: ["codex"], completed: false });
 
     const failedProject = fixture();
     expect(launchSetupPopulation(["claude"], "prompt", failedProject, {
       isAvailable: () => true,
       run: () => false,
-    })).toEqual({ tool: "claude", completed: false });
+    })).toEqual({ tool: "claude", unavailable: [], completed: false });
     expect(readdirSync(join(failedProject, ".mex", "local"))).toEqual([]);
     expect(() => readdirSync(join(unavailableProject, ".mex", "local"))).toThrow();
   });

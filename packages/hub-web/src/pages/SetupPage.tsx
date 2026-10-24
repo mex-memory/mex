@@ -272,7 +272,7 @@ export function SetupPage() {
               {currentRun.message}
             </p>
           ) : null}
-          {view !== "progress" && currentRun.transcriptId && api.subscribeToSetupTranscript ? (
+          {view !== "progress" && currentRun.populationTool && currentRun.transcriptId && api.subscribeToSetupTranscript ? (
             <SetupTranscript runId={currentRun.transcriptId} api={api} />
           ) : null}
           {view === "configure" || view === "git" || view === "cancelled" || (view === "failed" && !currentRun.prompt) ? (

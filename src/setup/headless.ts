@@ -15,6 +15,7 @@ import { classifySetupAgentAssetsError } from "./agent-errors.js";
 import type { GraphMaintenanceProgress } from "../team/contracts/graph.js";
 import { describeGroundingDrift } from "../graph/grounding-failures.js";
 import { launchHeadlessSetupPopulation, type HeadlessPopulationActivity, type HeadlessPopulationTranscript } from "./headless-population.js";
+import type { SetupAgentTool } from "./population.js";
 import {
   detectProjectState,
   ensureToolAnchors,
@@ -122,6 +123,20 @@ export interface HeadlessSetupResult {
   readonly message: string;
   /** What finalization changed or left for review (dropped references, drifted facts); already part of `message`. */
   readonly groundingNotice?: string;
+}
+
+/**
+ * Setup can drive only Claude Code and Codex automatically, so a run that launched no agent needs
+ * to say why: either no selected tool is one of those two, or their CLIs were absent from PATH.
+ */
+function automaticPopulationUnavailableMessage(unavailable: readonly SetupAgentTool[]): string {
+  if (unavailable.length === 0) {
+    return "None of the selected tools can run setup automatically (supported: Claude Code, Codex). Paste this prompt into your tool, then continue setup.";
+  }
+  const names = unavailable
+    .map((tool) => `${AI_TOOLS[tool].name} (\`${AI_TOOLS[tool].cli ?? tool}\`)`)
+    .join(", ");
+  return `${names} ${unavailable.length === 1 ? "was" : "were"} selected but not found on PATH for this process. Install ${unavailable.length === 1 ? "it" : "them"} or restart \`mex\` from a new terminal, or paste this prompt manually.`;
 }
 
 const STEP_LABELS: Record<SetupProgressStep, string> = {
@@ -285,6 +300,7 @@ export async function runHeadlessSetup(
 
   let populationFinished = scaffoldPopulatedAtStart;
   let populationTool: "claude" | "codex" | null = null;
+  let populationUnavailable: readonly SetupAgentTool[] = [];
   let populationCompleted = false;
 
   if (!populationFinished && options.confirmPopulation !== true) {
@@ -299,6 +315,7 @@ export async function runHeadlessSetup(
       onTranscript: options.onPopulationTranscript,
     });
     populationTool = launched.tool;
+    populationUnavailable = launched.unavailable;
     populationCompleted = launched.completed;
     throwIfSetupAborted(options.signal);
     if (launched.completed) {
@@ -326,7 +343,9 @@ export async function runHeadlessSetup(
         ? "The agent exited successfully, but required scaffold placeholders remain."
         : options.confirmPopulation === true
           ? "Required scaffold placeholders remain. Finish the manual population prompt, then check again."
-          : "Setup is waiting for population. Complete the prompt in your AI tool, then continue setup.",
+          : populationTool === null
+            ? automaticPopulationUnavailableMessage(populationUnavailable)
+            : "Setup is waiting for population. Complete the prompt in your AI tool, then continue setup.",
     };
   }
 
