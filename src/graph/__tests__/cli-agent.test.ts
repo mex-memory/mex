@@ -246,6 +246,71 @@ describe("runGraphScope", () => {
     expect(records[0]!.message).toContain("use at least");
   });
 
+  it("--fingerprint defaults to the fact manifest and fingerprints every fact (#290)", () => {
+    const records = capture(() => runGraphScope("run", root, deps, { fingerprint: true }));
+    expect(records[0]).toMatchObject({ type: "meta", command: "graph scope", detail: "standard" });
+    const facts = records.filter((r) => r.type === "fact");
+    expect(facts.length).toBeGreaterThan(0);
+    for (const fact of facts) expect(fact.fingerprint).toMatch(/^mh2?:/);
+    expect(records.at(-1)).toMatchObject({ type: "summary", returnedNodes: facts.length });
+  });
+
+  it.each(["minimal", "standard"] as const)("--fingerprint with --detail %s fingerprints every fact (#290)", (detail) => {
+    const records = capture(() => runGraphScope("run", root, deps, { detail, fingerprint: true }));
+    expect(records[0]).toMatchObject({ type: "meta", detail });
+    const facts = records.filter((r) => r.type === "fact");
+    expect(facts.length).toBeGreaterThan(0);
+    for (const fact of facts) expect(fact.fingerprint).toMatch(/^mh2?:/);
+  });
+
+  it("refuses --fingerprint with explicit --detail source before opening a graph (#290)", () => {
+    let opened = false;
+    const records = capture(() => runGraphScope("run", root, {
+      ...deps, open: () => { opened = true; throw new Error("must not open"); },
+    }, { detail: "source", fingerprint: true }));
+    expect(opened).toBe(false);
+    expect(records).toEqual([expect.objectContaining({
+      type: "error", code: "INVALID_OPTION", option: "detail", expected: ["minimal", "standard"],
+    })]);
+    expect(records[0]!.message).toContain("mex graph get <id> --detail source");
+  });
+
+  it("fingerprints every match even when their source would spend the budget (#290)", async () => {
+    const isolated = mkdtempSync(join(tmpdir(), "mex-scope-fingerprint-"));
+    // Nine large matching declarations: in source detail their bodies spend
+    // the default budget, which left fingerprints for only two of them.
+    const body = Array.from({ length: 120 }, (_, line) => `  total += price * ${line + 1};`).join("\n");
+    for (const file of ["alpha", "beta", "gamma"]) {
+      const declarations = ["Base", "Tax", "Discount"].map((part) => (
+        `export function compute${part}Price${file}(price: number): number {\n  let total = 0;\n${body}\n  return total;\n}\n`
+      ));
+      writeFileSync(join(isolated, `${file}.ts`), declarations.join("\n"));
+    }
+    const isolatedEngine = createGraphEngine({ rootDir: isolated });
+    await isolatedEngine.build(isolated);
+    const db = openSqlite(join(isolated, ".mex", "graph.db"));
+    const isolatedDeps: AgentCommandDeps = {
+      open: () => ({ graph: isolatedEngine, db, close: () => {} }), write: (line) => lines.push(line),
+    };
+    try {
+      const sourced = capture(() => runGraphScope("compute price", isolated, isolatedDeps, {}));
+      expect(sourced.filter((r) => r.type === "source").length).toBeGreaterThan(0);
+      expect(sourced.at(-1)).toMatchObject({ truncated: true });
+
+      const records = capture(() => runGraphScope("compute price", isolated, isolatedDeps, { fingerprint: true }));
+      const facts = records.filter((r) => r.type === "fact");
+      for (const fact of facts) expect(fact.fingerprint).toMatch(/^mh2?:/);
+      const declarations = ["alpha", "beta", "gamma"].flatMap((file) => (
+        ["Base", "Tax", "Discount"].map((part) => `compute${part}Price${file}`)));
+      expect(facts.map((fact) => fact.name), JSON.stringify(records)).toEqual(expect.arrayContaining(declarations));
+      expect(records.at(-1)).toMatchObject({ type: "summary", returnedNodes: facts.length });
+    } finally {
+      db.close();
+      isolatedEngine.close();
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
   it("caps the number of returned facts at maxNodes", () => {
     const records = capture(() => runGraphScope("run", root, deps, { maxNodes: 1 }));
     expect(records.filter((r) => r.type === "fact")).toHaveLength(1);

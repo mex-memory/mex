@@ -21,7 +21,8 @@ import {
 import { FingerprintStore } from "./fingerprint-store.js";
 import { serializeFingerprint } from "./fingerprint.js";
 import {
-  BudgetLedger, DEFAULT_OPTIONS, estimateTokens, resolveOptions, resolveScopeOptions, SCHEMA_VERSION, type AgentOptions,
+  BudgetLedger, DEFAULT_OPTIONS, estimateTokens, fingerprintRequested, resolveOptions, resolveScopeOptions,
+  SCHEMA_VERSION, type AgentOptions,
 } from "./agent-protocol.js";
 import { identifierComponents, isLowValueGraphPath, planGraphQuery } from "./retrieval/query.js";
 import {
@@ -305,6 +306,16 @@ export function runGraphScope(
   rawOptions: RawOptions = {},
 ): void {
   const output = deps.write ?? console.log;
+  if (fingerprintRequested(rawOptions) && rawOptions.detail === "source") {
+    writeJson(output, {
+      type: "error", code: "INVALID_OPTION", option: "detail",
+      message: "--fingerprint attaches fingerprints to fact records, which --detail source has no room for. "
+        + "Use --detail standard (the default with --fingerprint) or minimal, "
+        + "then read a node's body with `mex graph get <id> --detail source`.",
+      expected: ["minimal", "standard"],
+    });
+    return;
+  }
   return withAgentGraphSession(rootDir, deps, output, "stable", (session, write) => {
     const indexedFiles = session.graph.getIndexedFiles?.() ?? [];
     const opts = resolveScopeOptions(rawOptions, indexedFiles.length);

@@ -54,11 +54,22 @@ export function resolveOptions(raw: Partial<Record<keyof AgentOptions, unknown>>
     maxOutputTokens: num(raw.maxOutputTokens, DEFAULT_OPTIONS.maxOutputTokens),
     maxSourceLines: num(raw.maxSourceLines, DEFAULT_OPTIONS.maxSourceLines),
     depth: num(raw.depth, DEFAULT_OPTIONS.depth),
-    fingerprint: raw.fingerprint === true || raw.fingerprint === "true",
+    fingerprint: fingerprintRequested(raw),
   };
 }
 
-/** Adaptive one-call defaults used only by broad Scope retrieval. */
+export function fingerprintRequested(raw: Partial<Record<keyof AgentOptions, unknown>>): boolean {
+  return raw.fingerprint === true || raw.fingerprint === "true";
+}
+
+/**
+ * Adaptive one-call defaults used only by broad Scope retrieval.
+ *
+ * Fingerprints ride on fact records, which source detail admits only after
+ * source text has spent the budget. With `fingerprint` the default is
+ * therefore the standard fact manifest; explicit source detail is refused by
+ * the caller instead of silently returning no fingerprints (#290).
+ */
 export function resolveScopeOptions(
   raw: Partial<Record<keyof AgentOptions, unknown>> = {},
   indexedFiles: number,
@@ -70,7 +81,7 @@ export function resolveScopeOptions(
       : { maxOutputTokens: 6000, maxFiles: 6 };
   return resolveOptions({
     ...raw,
-    detail: raw.detail ?? "source",
+    detail: raw.detail ?? (fingerprintRequested(raw) ? "standard" : "source"),
     maxNodes: raw.maxNodes ?? 24,
     maxFiles: raw.maxFiles ?? adaptive.maxFiles,
     maxFlowSteps: raw.maxFlowSteps ?? 8,
