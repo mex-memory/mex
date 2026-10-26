@@ -87,6 +87,13 @@ describe("factBudgetForRank", () => {
 });
 
 describe("rankSubsystemCandidates: structure", () => {
+  it("keeps installed managed skill runtimes out of project coverage and its size target", () => {
+    const source = [...filesIn("src/alpha", 3), ...filesIn("src/beta", 3), ...filesIn("src/gamma", 3)];
+    const installed = [".claude", ".agents"].flatMap((client) =>
+      filesIn(`${client}/skills/mex-statechart/upstream/scripts`, 200, "mjs"));
+    expect(rankSubsystemCandidates({ files: [...source, ...installed] }))
+      .toEqual(rankSubsystemCandidates({ files: source }));
+  });
   it("splits a src wrapper into its folders, ranked by size when there is no history", () => {
     const files = [...filesIn("src/router", 20), ...filesIn("src/http", 12), ...filesIn("src/utils", 5), ...filesIn("scripts", 3)];
     const plan = rankSubsystemCandidates({ files });

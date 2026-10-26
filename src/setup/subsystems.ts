@@ -13,6 +13,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, lstatSync } from "node:fs";
 import { resolve, posix } from "node:path";
 import { openGraphDatabase } from "../graph/db/database.js";
+import { AGENT_SKILL_TARGETS, OFFICIAL_MEX_SKILLS } from "../agent-skills/types.js";
+
+const managedSkillRoots = Object.values(AGENT_SKILL_TARGETS).flatMap((target) =>
+  OFFICIAL_MEX_SKILLS.map((skill) => `${target.skillsDirectory}/${skill}/`));
+
+function isManagedSkillSource(path: string): boolean {
+  return managedSkillRoots.some((root) => path.toLowerCase().startsWith(root));
+}
 
 export interface FactBudget {
   readonly min: number;
@@ -163,6 +171,7 @@ function normalizePath(path: string): string {
 /** Whether a repo-relative file path belongs to tests, fixtures, generated, vendored or docs code. */
 export function isExcludedSourcePath(path: string): boolean {
   const normalized = normalizePath(path);
+  if (isManagedSkillSource(normalized)) return true;
   const segments = normalized.split("/");
   if (segments.slice(0, -1).some(isExcludedFolderName)) return true;
   return EXCLUDED_FILE_PATTERNS.some((pattern) => pattern.test(normalized));
@@ -249,7 +258,9 @@ function isLowValuePath(path: string): boolean {
  * 4. Each kept subsystem gets a fact budget by rank.
  */
 export function rankSubsystemCandidates(inputs: SubsystemInputs): SubsystemPlan {
-  const indexed = [...new Set(inputs.files.map(normalizePath))];
+  // Installed agent runtimes are MEX's tooling, not the project's subsystems.
+  // Git can list hidden managed assets that the source-tree/Graph walks omit.
+  const indexed = [...new Set(inputs.files.map(normalizePath))].filter((file) => !isManagedSkillSource(file));
   const files = indexed.filter((file) => !isExcludedSourcePath(file)).sort();
   const total = files.length;
   const target = subsystemTarget(indexed.length);

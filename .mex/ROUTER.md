@@ -30,14 +30,15 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
-- Local working-tree state diagrams add the managed `mex-statechart` skill,
+- PR #317 (`codex/state-diagrams`) adds state diagrams through the managed `mex-statechart` skill,
   bounded TLA+/TLC generation helpers, a private artifact contract, and a lazy
   Hub Diagrams viewer. Previews are ignored checkout-local output; reviewed
   Save creates an immutable `.mex/diagrams/<id>` Markdown-owned bundle without
   staging or sharing. Saved diagrams are excluded from Wiki adoption/writes.
   Real checker, browser, installer and packed Hub paths have local coverage;
-  pinned Linux runtime calibration and interactive native-client certification
-  remain outstanding. See `docs/design/state-diagrams-qualification.md`.
+  pinned Linux route calibration is recorded, and PR CI handles final platform
+  verification. Teammate Claude Code qualification remains outstanding. Codex CLI simple rendering and complex-chart text fallback are
+  verified. See `docs/design/state-diagrams-qualification.md`.
 - 0.8.4 is tagged and published on GitHub at `v0.8.4`, commit `56db5cf`, dated
   October 14. Exact-release CI run `38571566062` passed Node 22/24, portability,
   browser, packed-install, evaluators, and pinned performance. Finalization

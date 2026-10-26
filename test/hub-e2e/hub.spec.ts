@@ -2032,6 +2032,7 @@ test.describe("populated development fixture", () => {
       { href: "/", label: "Overview" },
       { href: "/knowledge", label: "Context" },
       { href: "/code", label: "Code" },
+      { href: "/diagrams", label: "Diagrams" },
       { href: "/inbox", label: "Inbox" },
       { href: "/relays", label: "Relays" },
       { href: "/activity", label: "Activity" },

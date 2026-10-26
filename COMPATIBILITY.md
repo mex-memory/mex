@@ -436,9 +436,11 @@ open an issue at <https://github.com/mex-memory/mex/issues>.
 
 `mex-statechart` is a managed Claude Code/Codex skill. Native fenced Mermaid is
 preferred when the client actually renders the required syntax. Codex CLI
-0.160.1 and Claude Code 2.1.238 are the locally identified client versions;
-interactive native rendering is not certified by the automated Hub tests.
-Claude native statechart coverage is unestablished. The deterministic terminal
+0.160.1 renders the tested simple statecharts natively; nested/parallel syntax
+requires the text fallback. Real broken-invariant path order and raw temporal
+trace text were verified at 120/80 columns in the interactive CLI through a local
+fixed replay, independently of Hub tests. Claude Code qualification is delegated
+to the [client handoff](docs/design/state-diagrams-client-handoff.md). The deterministic terminal
 projection preserves states, transitions, conditions, rules and numbered paths.
 Images are optional exports; Hub viewing is optional and never starts merely
 because an artifact was generated.

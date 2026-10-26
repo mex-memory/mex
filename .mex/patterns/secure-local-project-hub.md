@@ -243,3 +243,8 @@ preview/apply services.
 
 - [ ] Update `.mex/ROUTER.md` when a real Hub capability lands
 - [ ] Record any new security, packaging, or job-lifecycle trap here
+
+Installed official skill runtimes under `.claude/skills/` and `.agents/skills/`
+are tooling, not project setup subsystems. The setup planner uses the shared
+managed-skill registry to exclude those roots from ranking and size targets; a
+Git file listing can otherwise include hidden helpers that Graph/tree walks omit.

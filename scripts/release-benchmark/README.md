@@ -62,9 +62,9 @@ static dependency closure; none may enter Home or the initial shell closure.
 The fixture adds one saved, explicitly incomplete snapshot through the real
 repository service. It does not change the frozen Graph/Wiki input corpus.
 
-Only the two owned asset leaves use deterministic build calibration. Their six
-heap leaves are deliberately `null` pending the first pinned Linux calibration.
-They are measured by local characterization, and enforcing runtime qualification
-fails closed with `budget_missing`; an unknown budget is never confirmable noise
-or an implicit pass. Do not copy local timing/heap numbers into the frozen file.
-The existing budgets and runner identity remain unchanged.
+The two owned asset leaves and six heap leaves are calibrated from pinned Linux
+CI run 40311997168; `docs/design/state-diagrams-calibration.json` retains samples,
+formulas, limits, source commit and report hash. Every unrelated budget and the
+runner identity remain unchanged. Missing budgets still fail closed with
+`budget_missing`; an unknown budget is never confirmable noise or an implicit
+pass. Do not copy local timing/heap numbers into the frozen file.

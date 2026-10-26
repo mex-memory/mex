@@ -112,6 +112,24 @@ function frozenAllowedCalibrationProjection(value) {
 }
 
 describe("release benchmark contract", () => {
+  it("binds diagram route limits to retained pinned measurements without changing unrelated budgets", () => {
+    const record = JSON.parse(readFileSync(new URL("../../docs/design/state-diagrams-calibration.json", import.meta.url), "utf8"));
+    expect(record.source.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
+    expect(createHash("sha256").update(JSON.stringify(withoutStatechartBudgets(budgets))).digest("hex"))
+      .toBe(record.unownedBudgetSha256);
+    for (const route of ["diagrams", "diagramDetail"]) {
+      expect(budgets.assets.routes[route]).toEqual(record.assets[route].limits);
+      for (const field of ["jsBytes", "cssBytes", "fontBytes"]) {
+        expect(record.assets[route].limits[field]).toBe(assetBudgetCandidate(record.assets[route].measured[field]));
+      }
+      for (const profile of ["small", "medium", "large"]) {
+        const measured = record.heap[profile][route];
+        expect(measured.samples).toHaveLength(budgets.samples.idleMemory);
+        expect(measured.p95).toBe(Math.max(...measured.samples));
+        expect(budgets.runtime.browserHeapBytes[profile][route]).toBe(runtimeBudgetCandidate(measured.p95));
+      }
+    }
+  });
   it("composes owned Graph timing calibration with the original frozen budget guard", () => {
     const digest = (value) => createHash("sha256")
       .update(JSON.stringify(frozenAllowedCalibrationProjection(value)))
@@ -1241,7 +1259,7 @@ describe("release benchmark contract", () => {
     }
 
     const exactMetrics = committedConfirmableRuntimeMetrics();
-    expect(exactMetrics).toHaveLength(114);
+    expect(exactMetrics).toHaveLength(120);
     for (const metric of exactMetrics) {
       expect(runtimeMaterialityPolicy(metric)).not.toBeNull();
       const violation = runtimeViolation(metric);

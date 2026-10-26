@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "kind": "state-diagrams-route-calibration",
+  "source": {
+    "runId": 40311997168,
+    "jobId": 121535195917,
+    "repositoryHead": "c74c7c9586e01d55610edb8c0b6cb79a6c1be1a0",
+    "url": "https://github.com/mex-memory/mex/actions/runs/40311997168",
+    "reportSha256": "1202d3783700ea23a96201206d97f9fa546c36fc1f4ab7903a4a700e3ddf937e",
+    "environment": {
+      "os": "ubuntu-24.04",
+      "platform": "linux",
+      "architecture": "x64",
+      "node": "v22.22.0",
+      "pinnedBudgetEnvironment": true
+    }
+  },
+  "runtimeFormula": "ceil(measured p95 * 1.15)",
+  "assetFormula": "ceil(built bytes * 1.05)",
+  "samples": 5,
+  "unownedBudgetSha256": "99e9f184e493fc7b6556830a11d4968f2c68e6916167e3ebddec99d880e717be",
+  "assets": {
+    "diagrams": {
+      "measured": {
+        "jsBytes": 78353,
+        "cssBytes": 3999,
+        "fontBytes": 0
+      },
+      "limits": {
+        "jsBytes": 82271,
+        "cssBytes": 4199,
+        "fontBytes": 0
+      }
+    },
+    "diagramDetail": {
+      "measured": {
+        "jsBytes": 618714,
+        "cssBytes": 3999,
+        "fontBytes": 0
+      },
+      "limits": {
+        "jsBytes": 649650,
+        "cssBytes": 4199,
+        "fontBytes": 0
+      }
+    }
+  },
+  "heap": {
+    "small": {
+      "diagrams": {
+        "samples": [
+          5668144,
+          5668252,
+          5675084,
+          5678732,
+          5686880
+        ],
+        "min": 5668144,
+        "median": 5675084,
+        "p95": 5686880,
+        "max": 5686880,
+        "limit": 6539912
+      },
+      "diagramDetail": {
+        "samples": [
+          8587436,
+          8589296,
+          8590164,
+          8590216,
+          8593460
+        ],
+        "min": 8587436,
+        "median": 8590164,
+        "p95": 8593460,
+        "max": 8593460,
+        "limit": 9882479
+      }
+    },
+    "medium": {
+      "diagrams": {
+        "samples": [
+          5679572,
+          5680428,
+          5680448,
+          5681372,
+          5681992
+        ],
+        "min": 5679572,
+        "median": 5680448,
+        "p95": 5681992,
+        "max": 5681992,
+        "limit": 6534291
+      },
+      "diagramDetail": {
+        "samples": [
+          8582708,
+          8587788,
+          8588724,
+          8588776,
+          8588972
+        ],
+        "min": 8582708,
+        "median": 8588724,
+        "p95": 8588972,
+        "max": 8588972,
+        "limit": 9877318
+      }
+    },
+    "large": {
+      "diagrams": {
+        "samples": [
+          5677692,
+          5680476,
+          5680544,
+          5681216,
+          5681964
+        ],
+        "min": 5677692,
+        "median": 5680544,
+        "p95": 5681964,
+        "max": 5681964,
+        "limit": 6534259
+      },
+      "diagramDetail": {
+        "samples": [
+          8581228,
+          8588528,
+          8589412,
+          8590200,
+          8596412
+        ],
+        "min": 8581228,
+        "median": 8589412,
+        "p95": 8596412,
+        "max": 8596412,
+        "limit": 9885874
+      }
+    }
+  }
+}

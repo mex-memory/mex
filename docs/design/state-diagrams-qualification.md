@@ -62,7 +62,8 @@ Explicit checking has one checker per helper, a 60-second total deadline,
 limit. The baseline Node child has a 256 MiB heap and export images cap at
 16 million pixels. Cancellation kills/settles the owned process group and never
 produces a passed check from partial output. Windows uses its process-tree kill
-mechanism; Windows execution was not performed on this Mac.
+mechanism; Windows execution of real TLC and the packed helper passed in GitHub CI run
+40311997052, alongside Linux and macOS.
 
 ## Verification
 
@@ -102,8 +103,10 @@ mechanism; Windows execution was not performed on this Mac.
   unchanged. The renderer and statechart schemas remain outside their static
   closures. Both owned Diagrams routes are measured by the existing harness.
   Local small/medium/large runtime characterization completed and audited ordinary
-  reads/outbound requests. Its report contains Linux-budget crossings and six
-  uncalibrated Diagrams heap leaves; it is diagnostic, not an enforcing pass.
+  reads/outbound requests; it remains diagnostic. Pinned Linux CI run 40311997168
+  supplied five heap samples per owned route/profile and deterministic assets.
+  The two asset leaves and six heap leaves now use those recorded measurements
+  and the existing 1.05/1.15 formulas. No unrelated budget was changed.
 
 Ignored local artifacts include `test-results/statechart/local-characterization.json`
 and the viewer QA PNG. Detailed command logs are retained under
@@ -119,9 +122,10 @@ are under `/private/tmp/mex-statechart-acceptance`.
    publication. Occupied targets and symlink escapes refuse safely.
 3. **Deterministic bounds — pass locally.** Artifact, file/UTF-8, trace, graph,
    subprocess, retention, collection and response bounds are checked. Pinned
-   runtime acceptance remains pending as described below.
+   exact-head runtime acceptance remains pending as described below.
 4. **Focused tests and typecheck — pass.** The final focused boundary run passes
-   106 tests; workspace typechecks pass. The full-root attempt and isolated
+   106 tests before integration; the current-main follow-up passes 70 focused
+   tests and workspace typechecks. The full-root attempt and isolated
    reruns are reported separately above, without calling the first run clean.
 5. **Build and packaging — pass.** Production build, real packed helper and
    packed Hub lifecycles pass. Both model directions and reference/fixed
@@ -129,7 +133,7 @@ are under `/private/tmp/mex-statechart-acceptance`.
    reference inputs. Graph evaluator/protocol code was not changed.
 6. **Diff and local scope — pass.** `git diff --check` is clean, staging is
    unchanged, generated runtime/build/measurement outputs stay ignored, and
-   unrelated uncommitted work is retained. No project Git publication occurred.
+   unrelated uncommitted work is retained. The initial qualification was local; the user subsequently authorized PR #317.
 7. **Existing protocol ownership — pass.** Existing Graph/Wiki/Team shapes,
    defaults, errors and read boundaries remain covered; the new private leaf
    and feature-owned snapshot namespace do not become Wiki/Team entities.
@@ -145,10 +149,12 @@ for that recovery model; these are runtime observations, not drawing counts.
 
 The source-only explanation already covers retained files on pause, successful
 agent exit being insufficient while placeholders remain, and finalization being
-separate from the reviewed commit. Current `src/setup/headless.ts:323` still
-rejects exit-zero population with remaining placeholders; its finalization
-message explicitly calls for review/commit. `src/setup/terminal.ts:244` retains
-the late Hub import and retry loop.
+separate from the reviewed commit. The initial evaluation used the pre-rebase setup implementation. After integrating
+main `340f3e8`, source inspection reconfirmed placeholder refusal in
+`src/setup/headless.ts:582`, late Hub import in `src/setup/terminal.ts:269` and
+the retry loop at line 296. The integration added one-paste/subsystem setup
+behavior; the earlier model is not an exhaustive model of those additions. Its
+recorded inputs were not silently rebaselined.
 
 Useful MEX context is the specific clean-rebuild recovery in
 `.mex/patterns/dogfood-mex-setup.md:135`: an old process can retain references to
@@ -176,17 +182,27 @@ that MEX uniquely discovers the recovery or improves every diagram.
 
 ## Remaining qualification and capability limits
 
-- Codex CLI 0.160.1 rendering is being qualified locally. Claude Code testing is
-  delegated to a teammate; see `state-diagrams-client-handoff.md`. No Claude
-  certification is claimed from the installed binary, Hub tests or code inspection.
+- Codex CLI 0.160.1 presentation is qualified for the cases in
+  `state-diagrams-codex-rendering.md`: native simple statecharts, ordered finite
+  trace text and full raw temporal text. Nested/parallel syntax is unsupported by
+  its native renderer and uses MEX text. Claude Code testing is delegated to a
+  teammate through `state-diagrams-client-handoff.md`; no Claude certification is
+  inferred from Hub tests or code inspection.
 - The enforcing performance invocation refused this host: macOS arm64 /
-  Node 22.17.1 is not Ubuntu 24.04 x64 / Node 22.22.0. The six owned heap limits
-  remain explicitly null until pinned calibration; enforcing mode fails closed
-  rather than accepting local measurements. Exact-head CI qualification also
-  requires a future committed revision, outside this local-only task.
-- Windows execution and Linux screenshot refresh/qualification were not run
-  locally. The CRLF, portable-path and process-tree code paths are present, but
-  are not a substitute for execution on those platforms.
+  Node 22.17.1 is not Ubuntu 24.04 x64 / Node 22.22.0. Pinned CI subsequently
+  supplied calibration recorded in `state-diagrams-calibration.json`; the six new
+  heap limits are finite. Exact-head enforcing CI is rerun after that calibration.
+  Initial raw Home/other-route heap crossings were also present in exact-base
+  run 40303551675 and assessed as advisory by the unchanged existing policy; no
+  frozen Home/shared budget or confirmation policy was relaxed.
+- The real-checker/packed-helper matrix has passed on Linux, macOS and Windows
+  in run 40311997052. The broader existing portability and Linux browser jobs
+  are running on PR #317. Initial browser CI passed 103 cases and exposed one
+  stale sidebar expectation, now corrected; its actual nested-state Linux PNG
+  was reviewed. Full-root CI passed 5,728 tests and found two setup integration
+  failures: installed skill helpers were being counted as project subsystems.
+  The setup planner now excludes official installed skill roots from coverage
+  ranking and size targets, with a regression test; exact-head CI is rerun.
 - The pure-data projection helper verifies finite scalar valuations and mapped
   actions. Complex concurrent/compound projections may remain unverified and
   require the retained baseline workflow/proof plus human review. Raw temporal
