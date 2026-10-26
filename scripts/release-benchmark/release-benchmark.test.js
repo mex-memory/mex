@@ -702,7 +702,13 @@ describe("release benchmark contract", () => {
     expect(record.measured).toEqual(calibration.measured);
     expect(record.limits).toEqual(calibration.limits);
     expect(record.files).toEqual(calibration.files);
-    const budgetsText = readFileSync(new URL("./budgets.json", import.meta.url), "utf8").replace(/\r\n/gu, "\n");
+    // Preserve the exact earlier operational file after removing only the two
+    // additive diagram leaves. This keeps the setup calibration's frozen hash.
+    const budgetsText = readFileSync(new URL("./budgets.json", import.meta.url), "utf8")
+      .replace(/\r\n/gu, "\n")
+      .replace(/^      "(?:diagrams|diagramDetail)": [^\n]*\n/gmu, "")
+      .replace(/, "diagrams": (?:null|[0-9]+), "diagramDetail": (?:null|[0-9]+)/gu, "");
+    expect(JSON.parse(budgetsText)).toEqual(withoutStatechartBudgets(budgets));
     expect(createHash("sha256").update(budgetsText).digest("hex"))
       .toBe(record.unchangedOperationalBudgetsSha256);
     for (const [field, extension] of [["jsBytes", ".js"], ["cssBytes", ".css"], ["fontBytes", ".woff2"]]) {
