@@ -20,3 +20,6 @@ test/fixtures/wiki-migration/** -text
 
 # Capabilities goldens pin the CLI's exact LF JSON output on every platform.
 test/fixtures/capabilities/*.json text eol=lf
+
+# The vendored statechart workflow is pinned byte-for-byte, including its EOF.
+skills/mex-statechart/upstream/** -text whitespace=-blank-at-eof

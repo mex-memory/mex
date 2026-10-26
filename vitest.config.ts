@@ -7,6 +7,7 @@ const contractsSrc = resolve(dirname(fileURLToPath(import.meta.url)), "packages/
 export default defineConfig({
   resolve: {
     alias: {
+      "@mex/hub-contracts/statechart": resolve(contractsSrc, "statechart.ts"),
       "@mex/hub-contracts/contact": resolve(contractsSrc, "contact.ts"),
       "@mex/hub-contracts/setup": resolve(contractsSrc, "setup.ts"),
     },

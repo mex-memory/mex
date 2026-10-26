@@ -48,7 +48,7 @@ describe("managed agent asset installation", () => {
     const report = sync(fixture, [client]);
 
     expect(report).toMatchObject({ applied: true, changed: true, conflicted: false });
-    for (const skill of ["mex-inbox", "mex-relay"] as const) {
+    for (const skill of ["mex-inbox", "mex-relay", "mex-statechart"] as const) {
       expect(exists(fixture.project, `${skillRoot}/${skill}/SKILL.md`)).toBe(true);
       expectInstalledBytes(fixture, skill, `${skillRoot}/${skill}`);
     }
@@ -62,12 +62,12 @@ describe("managed agent asset installation", () => {
     const report = sync(fixture, ["codex", "claude", "codex"]);
 
     expect(report.clients).toEqual(["claude", "codex"]);
-    expect(report.actions).toHaveLength(6);
+    expect(report.actions).toHaveLength(8);
     for (const [clientRoot, instructions] of [
       [".claude/skills", "CLAUDE.md"],
       [".agents/skills", "AGENTS.md"],
     ] as const) {
-      for (const skill of ["mex-inbox", "mex-relay"] as const) {
+      for (const skill of ["mex-inbox", "mex-relay", "mex-statechart"] as const) {
         expectInstalledBytes(fixture, skill, `${clientRoot}/${skill}`);
         const metadata = readMetadata(fixture.project, `${clientRoot}/${skill}`);
         expect(metadata).toMatchObject({
@@ -96,7 +96,7 @@ describe("managed agent asset installation", () => {
     const report = sync(fixture, ["claude"]);
 
     expect(report).toMatchObject({ applied: true, changed: false, conflicted: false });
-    expect(report.actions.map((action) => action.action)).toEqual(["noop", "noop", "noop"]);
+    expect(report.actions.map((action) => action.action)).toEqual(["noop", "noop", "noop", "noop"]);
     expect(statSync(skillPath).ino).toBe(before.skillInode);
     expect(statSync(instructionPath).ino).toBe(before.instructionInode);
     expect(snapshotTree(fixture.project)).toEqual(before.tree);
@@ -176,7 +176,7 @@ describe("managed agent asset installation", () => {
     expect(actionFor(report, "mex-inbox")).toMatchObject({ action: "update" });
     expect(read(fixture.project, ".claude/skills/mex-inbox/SKILL.md")).toBe("inbox v2\n");
     expect(readMetadata(fixture.project, ".claude/skills/mex-inbox").packageVersion).toBe("2.0.0");
-    expect(readdirSync(join(fixture.project, ".claude/skills"))).toEqual(["mex-inbox", "mex-relay"]);
+    expect(readdirSync(join(fixture.project, ".claude/skills"))).toEqual(["mex-inbox", "mex-relay", "mex-statechart"]);
   });
 
   it("preserves a modified managed copy and reports its exact conflict path", () => {
@@ -782,6 +782,7 @@ describe("managed agent asset installation", () => {
       .toEqual([
         expect.objectContaining({ path: ".claude/skills/mex-inbox/SKILL.md" }),
         expect.objectContaining({ path: ".claude/skills/mex-relay/SKILL.md" }),
+        expect.objectContaining({ path: ".claude/skills/mex-statechart/SKILL.md" }),
       ]);
     expect(read(fixture.project, ".gitignore")).toBe(beforeIgnore);
     const resolution = plan.warnings.find((warning) => warning.skill === "mex-inbox")!.resolution!;
@@ -868,6 +869,7 @@ describe("managed agent asset installation", () => {
           skill: "mex-relay",
           path: ".claude/skills/mex-relay",
         }),
+        expect.objectContaining({ skill: "mex-statechart", path: ".claude/skills/mex-statechart" }),
       ]);
     expect(snapshotTree(fixture.project)).toEqual(before);
   });
@@ -891,7 +893,7 @@ describe("managed agent asset installation", () => {
       dryRun: true,
     });
     expect(plan.warnings.filter((warning) => warning.code === "ignore-check-failed"))
-      .toHaveLength(2);
+      .toHaveLength(3);
   });
 
   it("creates and updates instruction files without changing user-owned bytes", () => {
@@ -1126,6 +1128,8 @@ interface Fixture {
 function createFixture(): Fixture {
   const project = temporaryRoot("mex-agent-assets-project-");
   const source = temporaryRoot("mex-agent-assets-source-");
+  write(source, "mex-statechart/SKILL.md", "statechart v1\n");
+  write(source, "mex-statechart/scripts/runtime.mjs", "export const runtime = true;\n");
   write(source, "mex-inbox/SKILL.md", "inbox v1\n");
   write(source, "mex-inbox/references/workflow.md", "inbox reference\n");
   write(source, "mex-relay/SKILL.md", "relay v1\n");

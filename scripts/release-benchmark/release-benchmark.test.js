@@ -59,10 +59,17 @@ const PRE_GRAPH_TIMING_LIMITS = {
 
 const PRE_SETTINGS_ROUTE_JS_BYTES = 8035;
 
+function withoutStatechartBudgets(value) {
+  const result = structuredClone(value);
+  delete result.assets.routes.diagrams; delete result.assets.routes.diagramDetail;
+  for (const profile of ["small", "medium", "large"]) { delete result.runtime.browserHeapBytes[profile].diagrams; delete result.runtime.browserHeapBytes[profile].diagramDetail; }
+  return result;
+}
+
 // Restores the Settings route JS limit that PR #195 recalibrated, so every
 // earlier frozen-budget guard keeps hashing its original state.
 function beforeSettingsRouteJsCalibration(value) {
-  const projected = structuredClone(value);
+  const projected = withoutStatechartBudgets(value);
   projected.calibration.status = "pinned-A-G-Settings-34286120355-Graph-timing-34288560611";
   projected.assets.routes.settings.jsBytes = PRE_SETTINGS_ROUTE_JS_BYTES;
   return projected;
@@ -79,6 +86,8 @@ function beforeGraphTimingCalibration(value) {
 
 function frozenAllowedCalibrationProjection(value) {
   const projected = beforeGraphTimingCalibration(value);
+  delete projected.assets.routes.diagrams; delete projected.assets.routes.diagramDetail;
+  for (const profile of ["small", "medium", "large"]) { delete projected.runtime.browserHeapBytes[profile].diagrams; delete projected.runtime.browserHeapBytes[profile].diagramDetail; }
   projected.calibration.status = "__RELAY_CALIBRATION_STATUS__";
   projected.assets.maxJsChunkBytes = "__OVERVIEW_INITIAL_JS_CALIBRATION__";
   projected.assets.initial.jsBytes = "__OVERVIEW_INITIAL_JS_CALIBRATION__";
@@ -354,7 +363,7 @@ describe("release benchmark contract", () => {
     expect(evidence.files.reduce((total, file) => total + file.bytes, 0)).toBe(evidence.measuredBytes);
     expect(assetBudgetCandidate(evidence.measuredBytes)).toBe(evidence.budgetBytes);
     expect(budgets.assets.routes.settings.jsBytes).toBe(evidence.budgetBytes);
-    const beforeSettings = structuredClone(budgets);
+    const beforeSettings = withoutStatechartBudgets(budgets);
     beforeSettings.calibration.status = evidence.previousCalibrationStatus;
     delete beforeSettings.assets.routes.settings.jsBytes;
     expect(createHash("sha256").update(JSON.stringify(beforeSettings)).digest("hex"))
@@ -719,7 +728,7 @@ describe("release benchmark contract", () => {
       mkdirSync(join(output, ".vite"));
       mkdirSync(join(output, "assets"));
       const pages = ["HomePage", "SearchPage", "ContextPage", "KnowledgePage", "SymbolPage",
-        "CapabilityPage", "WorkstreamsPage", "SpecsPage", "InboxPage", "RelayPage",
+        "CapabilityPage", "WorkstreamsPage", "DiagramsPage", "StatechartCanvas", "SpecsPage", "InboxPage", "RelayPage",
         "MembersPage", "ActivityPage", "JobsPage", "HealthPage", "SettingsPage", "SetupPage"];
       const manifest = {
         "index.html": { file: "assets/index.js", isEntry: true, dynamicImports: pages },
@@ -1960,7 +1969,7 @@ function committedConfirmableRuntimeMetrics() {
     "browserHeapBytes",
   ]) {
     for (const [profile, entries] of Object.entries(budgets.runtime[name])) {
-      for (const metric of Object.keys(entries)) {
+      for (const metric of Object.keys(entries).filter(metric => Number.isFinite(entries[metric]))) {
         metrics.push(`runtime.${name}.${profile}.${metric}`);
       }
     }

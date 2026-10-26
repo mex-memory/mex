@@ -1,3 +1,4 @@
+import type { DiagramCollection, DiagramDetail, DiagramSavePlan } from "@mex/hub-contracts/statechart";
 import {
   AgentLoggingPolicySchema,
   HubOnboardingStateSchema,
@@ -196,6 +197,10 @@ export interface FixtureApiOptions {
 }
 
 export interface HubApi {
+  listDiagrams?(): Promise<DiagramCollection>;
+  getDiagram?(kind: "preview" | "saved", id: string): Promise<DiagramDetail>;
+  previewDiagramSave?(id: string, revision: string): Promise<DiagramSavePlan>;
+  saveDiagram?(token: string): Promise<DiagramDetail>;
   getContactPreference?(): Promise<ContactPreference>;
   rememberContactPreference?(request: ContactPreferenceRequest): Promise<ContactPreference>;
   submitSetupContact?(request: SetupContactRequest): Promise<SetupContactResponse>;
@@ -615,6 +620,25 @@ export class HttpHubApi implements HubApi {
     request: RelayOperationApplyRequest,
   ): Promise<RelayOperationApplyResponse> {
     return await (await loadRelayClient()).applyRelayOperation(this.#relayTransport, request);
+  }
+
+  async listDiagrams(): Promise<DiagramCollection> {
+    const { DiagramCollectionSchema } = await import("@mex/hub-contracts/statechart");
+    return this.#request("/diagrams", DiagramCollectionSchema);
+  }
+  async getDiagram(kind: "preview" | "saved", id: string): Promise<DiagramDetail> {
+    const { DiagramDetailSchema, DiagramIdSchema } = await import("@mex/hub-contracts/statechart");
+    DiagramIdSchema.parse(id);
+    return this.#request(`/diagrams/${kind}/${id}`, DiagramDetailSchema);
+  }
+  async previewDiagramSave(id: string, revision: string): Promise<DiagramSavePlan> {
+    const { DiagramSavePlanSchema, DiagramIdSchema } = await import("@mex/hub-contracts/statechart");
+    DiagramIdSchema.parse(id);
+    return this.#request(`/diagrams/preview/${id}/save-preview`, DiagramSavePlanSchema, { method: "POST", body: JSON.stringify({ revision }) }, true);
+  }
+  async saveDiagram(token: string): Promise<DiagramDetail> {
+    const { DiagramDetailSchema } = await import("@mex/hub-contracts/statechart");
+    return this.#request("/diagrams/save", DiagramDetailSchema, { method: "POST", body: JSON.stringify({ token }) }, true);
   }
 
   listSpecs(request: SpecListRequest): Promise<SpecListResponse> {

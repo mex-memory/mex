@@ -6,6 +6,7 @@ export function hubContractAliases(packageRoot, command) {
     : "../hub-contracts/src";
   const extension = command === "build" ? "js" : "ts";
   return {
+    "@mex/hub-contracts/statechart": resolve(packageRoot, source, `statechart.${extension}`),
     "@mex/hub-contracts/ids": resolve(packageRoot, source, `ids.${extension}`),
     "@mex/hub-contracts/overview": resolve(packageRoot, source, `overview.${extension}`),
     "@mex/hub-contracts/contact": resolve(packageRoot, source, `contact.${extension}`),

@@ -431,3 +431,35 @@ may be removed in 0.8.0 or 1.0.0.
 If you find behaviour that diverges from this document — an undocumented
 breaking change, an unclear case, or a contract you need that isn't covered —
 open an issue at <https://github.com/mex-memory/mex/issues>.
+
+## State diagrams (working-tree feature)
+
+`mex-statechart` is a managed Claude Code/Codex skill. Native fenced Mermaid is
+preferred when the client actually renders the required syntax. Codex CLI
+0.160.1 and Claude Code 2.1.238 are the locally identified client versions;
+interactive native rendering is not certified by the automated Hub tests.
+Claude native statechart coverage is unestablished. The deterministic terminal
+projection preserves states, transitions, conditions, rules and numbered paths.
+Images are optional exports; Hub viewing is optional and never starts merely
+because an artifact was generated.
+
+Explicit checking requires Java 11+ and checksum-verified TLC 1.7.4. The skill
+helper can explicitly install the pinned jar into a selected scratch/tool cache;
+MEX installation, upgrades and Hub reads never install Java/TLC or execute a
+model. The pinned upstream workflow also provides PNG QA with Pele 1.8.0 and
+resvg 2.6.2. Hub rendering uses lazy Mermaid 11.12.0 in strict mode.
+
+Temporary registration is ignored checkout-local state (24-hour maximum, up to
+20 previews). Reviewed Save creates a new `.mex/diagrams/<id>/record.md` plus
+bounded companion files. The Markdown owns the recorded metadata and dependency
+hashes; Graph/Wiki rebuilds do not renew them. Save never stages, commits or
+pushes. Java and disposable indexes are unnecessary for reading saved results.
+
+Model checking, graph projection validity, source mapping, implementation
+reproduction and current evidence freshness are independent observations.
+Missing/partial pure-data projection leaves diagram validity unverified;
+unmapped implementation evidence leaves alignment unverified even when TLC
+passes. Concurrent/nested visual structure is supported; a complex projection
+must be reviewed, with omissions disclosed and unprojectable temporal traces
+retained as text. See `skills/mex-statechart/references/toolchain.md` and
+`references/artifact.md` for limits, setup and regeneration.

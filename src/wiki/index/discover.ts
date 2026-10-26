@@ -186,6 +186,8 @@ export function discoverMarkdownFiles(options: DiscoverOptions): DiscoveryResult
     for (const entry of [...entries].sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))) {
       const absolute = join(directory, entry.name);
       const rel = relativeToRoot(absolute);
+      // Diagram bundles have their own canonical owner; never adopt them as Wiki.
+      if (rel.toLowerCase() === "diagrams" || rel.toLowerCase().startsWith("diagrams/")) continue;
 
       if (entry.isSymbolicLink()) {
         const target = resolveSymlink(absolute);

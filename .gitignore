@@ -15,7 +15,7 @@ result
 Thumbs.db
 
 # Per-user Claude Code config. Keep personal settings and unrelated skills
-# ignored while allowing MEX's two official project skills to be committed.
+# ignored while allowing MEX's official project skills to be committed.
 .claude/*
 !.claude/skills/
 .claude/skills/*
@@ -23,6 +23,8 @@ Thumbs.db
 !.claude/skills/mex-inbox/**
 !.claude/skills/mex-relay/
 !.claude/skills/mex-relay/**
+!.claude/skills/mex-statechart/
+!.claude/skills/mex-statechart/**
 
 # Code graph build artifact (rebuilt by `mex graph`)
 .mex/graph.db*
@@ -50,3 +52,6 @@ claude-talks
 MEX_NATIVE_CODE_GRAPH_BENCHMARK_REPORT.md
 CODE_GRAPH_STARTER_ISSUES_DRAFT.md
 docs/launch/
+
+# Bundled statechart helper is produced by build:node, shipped in the tarball.
+skills/mex-statechart/scripts/runtime.mjs

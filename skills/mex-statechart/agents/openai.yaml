@@ -1,0 +1,4 @@
+interface:
+  display_name: "MEX Statechart"
+  short_description: "Explain behavior with checked state diagrams"
+  default_prompt: "Use $mex-statechart to explain this behavior with a checked state diagram."

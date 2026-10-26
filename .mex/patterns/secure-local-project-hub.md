@@ -11,12 +11,12 @@ edges:
     condition: "when persisting a Hub job or migrating team.db"
   - target: "context/architecture.md"
     condition: "when wiring a real Graph or Wiki adapter"
-last_updated: 2026-10-19
+last_updated: 2026-10-26
 mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
   status: promoted
-  revision: 12
+  revision: 13
   title: secure-local-project-hub
   grounds_to:
     - node: function:188820af31f0d74c6518f6926f559877
@@ -75,6 +75,18 @@ preview/apply services.
    then verify a clean packed installation can bootstrap and load it.
 
 ## Gotchas
+
+- State diagrams use the private `@mex/hub-contracts/statechart` leaf. Keep its
+  schemas and Mermaid runtime out of shell/Home closures; scoped-only component
+  data words must not emit global Tailwind utilities. The managed helper is
+  minified to fit the existing setup diff limits, and setup review derives its
+  selected skill roots from the shared official-skill list.
+- Diagram `record.md` owns saved claims and hashes; exclude its entire bundle
+  from Wiki discovery and protect Wiki writes independently of configurable
+  defaults. Preview reads never create or clean the store. Expiry/eviction is
+  an explicit registration write; Save uses a bounded process-local exact
+  revision review and publishes a new immutable bundle. Keep model checking,
+  source mapping, reproduction and freshness separate in every projection.
 
 - Setup failures need a browser-safe explanation at the producer. Use the
   internal `SetupError.userMessage` contract for expected failures; retain raw

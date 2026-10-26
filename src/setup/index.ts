@@ -169,10 +169,10 @@ const warn = (msg: string) => console.log(`${chalk.yellow("!")} ${msg}`);
 export function setupCommitCheckpointCommands(selectedTools: readonly AiTool[]): string[] {
   const commands = ["git status --short", "git add .mex"];
   if (selectedTools.includes("claude")) {
-    commands.push("git add CLAUDE.md .claude/skills/mex-inbox .claude/skills/mex-relay");
+    commands.push("git add CLAUDE.md .claude/skills/mex-inbox .claude/skills/mex-relay .claude/skills/mex-statechart");
   }
   if (selectedTools.includes("codex")) {
-    commands.push("git add AGENTS.md .agents/skills/mex-inbox .agents/skills/mex-relay");
+    commands.push("git add AGENTS.md .agents/skills/mex-inbox .agents/skills/mex-relay .agents/skills/mex-statechart");
   }
   if (selectedTools.includes("cursor")) commands.push("git add .cursorrules");
   if (selectedTools.includes("windsurf")) commands.push("git add .windsurfrules");

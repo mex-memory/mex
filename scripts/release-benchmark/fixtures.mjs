@@ -324,7 +324,7 @@ export function fixtureInputSizes(root) {
   const graphPaths = graphInputFiles(root);
   const wikiPaths = filesUnder(join(root, ".mex"))
     .filter((path) => /\.mdx?$/iu.test(path))
-    .filter((path) => !toPosix(relative(join(root, ".mex"), path)).startsWith("events/"));
+    .filter((path) => !["events/", "diagrams/", "local/"].some(prefix => toPosix(relative(join(root, ".mex"), path)).startsWith(prefix)));
   return {
     graphBytes: totalBytes(graphPaths),
     graphFiles: graphPaths.length,

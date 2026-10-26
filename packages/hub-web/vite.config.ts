@@ -72,6 +72,7 @@ export default defineConfig(({ command }) => ({
     target: "es2022",
     rollupOptions: {
       output: {
+        manualChunks(id) { if (id.includes("/node_modules/dompurify/")) return "diagram-sanitizer"; },
         entryFileNames: "assets/[name]-[hash].js",
         chunkFileNames: "assets/[name]-[hash].js",
         assetFileNames: "assets/[name]-[hash][extname]",

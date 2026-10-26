@@ -1,3 +1,5 @@
+import { DiagramCollectionSchema, DiagramDetailSchema, DiagramIdSchema, DiagramSaveRequestSchema, DiagramSavePlanSchema, DiagramSaveApplySchema } from "@mex/hub-contracts/statechart";
+import type { DiagramRepository } from "../statechart/repository.js";
 import {
   AgentLoggingPolicySchema,
   AgentLoggingUpdateRequestSchema,
@@ -243,6 +245,7 @@ export interface HubSetupService {
 }
 
 export interface HubReadServices {
+  diagrams?: Pick<DiagramRepository, "list" | "get" | "previewSave" | "applySave">;
   loggingPolicy?(): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
   setLoggingPolicy?(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
   onboardingState?(): Promise<HubOnboardingState> | HubOnboardingState;
@@ -847,6 +850,33 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     readStrictQuery(context.req.raw, []);
     if (!options.services.repositoryContributors) throw unavailable("Repository contributors are unavailable in this build.");
     return resourceResponse(HubRepositoryContributorsSchema, await options.services.repositoryContributors());
+  });
+
+  app.get("/api/v1/diagrams", (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.diagrams) throw unavailable("Diagram storage is unavailable.");
+    return resourceResponse(DiagramCollectionSchema, options.services.diagrams.list());
+  });
+  app.get("/api/v1/diagrams/:kind/:id", (context) => {
+    readStrictQuery(context.req.raw, []);
+    const kind = context.req.param("kind");
+    if (kind !== "preview" && kind !== "saved") throw notFound("Unknown diagram collection.");
+    const id = parseInput(DiagramIdSchema, context.req.param("id"));
+    if (!options.services.diagrams) throw unavailable("Diagram storage is unavailable.");
+    return resourceResponse(DiagramDetailSchema, options.services.diagrams.get(kind, id));
+  });
+  app.post("/api/v1/diagrams/preview/:id/save-preview", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const id = parseInput(DiagramIdSchema, context.req.param("id"));
+    const request = parseInput(DiagramSaveRequestSchema, await readBoundedJson(context.req.raw));
+    if (!options.services.diagrams) throw unavailable("Diagram storage is unavailable.");
+    return resourceResponse(DiagramSavePlanSchema, options.services.diagrams.previewSave(id, request.revision));
+  });
+  app.post("/api/v1/diagrams/save", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(DiagramSaveApplySchema, await readBoundedJson(context.req.raw));
+    if (!options.services.diagrams) throw unavailable("Diagram storage is unavailable.");
+    return resourceResponse(DiagramDetailSchema, await options.services.diagrams.applySave(request.token));
   });
 
   app.get("/api/v1/health", async () => resourceResponse(

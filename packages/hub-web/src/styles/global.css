@@ -10,6 +10,9 @@
 @source not "../app/**/*.test.tsx";
 @source not "../components/**/*.test.tsx";
 @source not "../pages/**/*.test.tsx";
+/* The diagram workbench uses scoped CSS; its data words are not utilities. */
+@source not "../pages/DiagramsPage.tsx";
+@source not "../components/StatechartCanvas.tsx";
 
 @custom-variant dark (&:is(.dark *));
 

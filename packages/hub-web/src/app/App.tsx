@@ -19,6 +19,7 @@ const NotFoundPage = lazy(async () => ({ default: (await import("../pages/Capabi
 const ActivityPage = lazy(async () => ({ default: (await import("../pages/ActivityPage")).ActivityPage }));
 const MembersPage = lazy(async () => ({ default: (await import("../pages/MembersPage")).MembersPage }));
 const WorkstreamsPage = lazy(async () => ({ default: (await import("../pages/WorkstreamsPage")).WorkstreamsPage }));
+const DiagramsPage = lazy(async () => ({ default: (await import("../pages/DiagramsPage")).DiagramsPage }));
 const SpecsPage = lazy(async () => ({ default: (await import("../pages/SpecsPage")).SpecsPage }));
 const InboxPage = lazy(async () => ({ default: (await import("../pages/InboxPage")).InboxPage }));
 const RelayPage = lazy(async () => ({ default: (await import("../pages/RelayPage")).RelayPage }));
@@ -155,6 +156,8 @@ export function AppRoutes() {
         <Route path="code" element={<CodePage />} />
         <Route path="code/symbols/:id" element={<SymbolPage />} />
         <Route path="workstreams" element={<WorkstreamsPage />} />
+        <Route path="diagrams" element={<DiagramsPage />} />
+        <Route path="diagrams/:kind/:id" element={<DiagramsPage />} />
         <Route path="specs" element={<SpecsPage />} />
         <Route path="specs/:id" element={<SpecsPage />} />
         <Route path="playbooks" element={<RoadmapPage page="playbooks" />} />

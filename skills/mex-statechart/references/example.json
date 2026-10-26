@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "title": "A bounded job",
+  "summary": "A job starts and completes; checker results describe only this small model.",
+  "scope": "One job; no retries or external services.",
+  "subject": "Job lifecycle",
+  "reader": "Developer",
+  "classification": "proposed",
+  "createdAt": "2026-10-26T00:00:00.000Z",
+  "states": [
+    {
+      "id": "ready",
+      "label": "Ready",
+      "evidence": []
+    },
+    {
+      "id": "running",
+      "label": "Working",
+      "evidence": []
+    },
+    {
+      "id": "done",
+      "label": "Complete",
+      "evidence": []
+    }
+  ],
+  "transitions": [
+    {
+      "id": "start",
+      "from": "ready",
+      "to": "running",
+      "event": "Start work",
+      "condition": "A request is ready",
+      "evidence": [],
+      "rules": [
+        "Safe"
+      ]
+    },
+    {
+      "id": "finish",
+      "from": "running",
+      "to": "done",
+      "event": "Finish work",
+      "condition": "Work has completed",
+      "evidence": [],
+      "rules": [
+        "Safe"
+      ]
+    }
+  ],
+  "initial": [
+    "ready"
+  ],
+  "rules": [
+    {
+      "id": "Safe",
+      "label": "Job state stays in its declared domain",
+      "kind": "invariant",
+      "provenance": "Explicit fixture rule for a finite qualification model.",
+      "evidence": []
+    }
+  ],
+  "evidence": [],
+  "mapping": [],
+  "files": [
+    {
+      "name": "Job.tla",
+      "content": "---- MODULE Job ----\nEXTENDS Naturals\nVARIABLE pc\nInit == pc = 0\nStart == /\\ pc = 0 /\\ pc' = 1\nFinish == /\\ pc = 1 /\\ pc' = 2\nStay == /\\ pc = 2 /\\ UNCHANGED pc\nNext == Start \\/ Finish \\/ Stay\nSpec == Init /\\ [][Next]_pc\nSafe == pc \\in 0..2\nNoDone == pc < 2\nNeverDone == pc # 2\nEventuallyDone == <>(pc = 2)\n====\n"
+    },
+    {
+      "name": "Job.cfg",
+      "content": "SPECIFICATION Spec\nINVARIANT Safe\n"
+    },
+    {
+      "name": "Projection.json",
+      "content": "{\"states\":[{\"state\":\"ready\",\"values\":{\"pc\":0}},{\"state\":\"running\",\"values\":{\"pc\":1}},{\"state\":\"done\",\"values\":{\"pc\":2}}],\"actions\":{\"Start\":\"start\",\"Finish\":\"finish\"}}"
+    }
+  ],
+  "diagram": {
+    "validity": "unverified",
+    "mermaid": "stateDiagram-v2\n  state \"Ready\" as ready\n  state \"Working\" as running\n  state \"Complete\" as done\n  [*] --> ready\n  ready --> running : Start work\n  running --> done : Finish work\n"
+  },
+  "check": {
+    "outcome": "incomplete",
+    "bounds": "pc in 0..2; one worker; 60 seconds; 512 MiB heap. Internal stuttering is omitted from the overview.",
+    "results": [
+      {
+        "rule": "Safe",
+        "outcome": "incomplete",
+        "detail": "Awaiting real TLC execution."
+      }
+    ],
+    "modelStates": null,
+    "modelTransitions": null
+  },
+  "traces": [],
+  "reproduction": {
+    "outcome": "not-applicable",
+    "detail": "Design fixture without an implementation; TLC is model evidence only.",
+    "evidence": []
+  },
+  "omissions": [
+    "External services, concurrency, retry and internal stuttering."
+  ],
+  "toolchain": {
+    "upstream": "backnotprop/pstack@fad8d01588a1b1ae803f87c8a1e0de79e28cffec",
+    "tlc": "1.7.4",
+    "java": "Explicit local runtime",
+    "renderer": "Mermaid 11.12.0",
+    "regeneration": "Use mex-statechart to regenerate a new preview with the recorded model and config."
+  }
+}

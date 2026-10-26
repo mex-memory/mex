@@ -6,6 +6,7 @@ import { defineConfig } from "tsup";
  *  - index → dist/index.js + dist/index.d.ts (library entry consumed via `exports`)
  */
 export default defineConfig([
+  { entry: { runtime: "src/statechart/helper.ts" }, format: ["esm"], target: "node22", outDir: "skills/mex-statechart/scripts", minify: true, outExtension: () => ({ js: ".mjs" }), clean: false, splitting: false, dts: false, noExternal: ["@mex/hub-contracts", "zod"] },
   {
     entry: { cli: "src/cli-bootstrap.ts", "graph-candidate": "src/graph/candidate-entry.ts", "setup-graph": "src/setup/next-graph-entry.ts" },
     format: ["esm"],

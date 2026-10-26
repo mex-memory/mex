@@ -1,3 +1,4 @@
+import { DiagramRepository } from "../statechart/repository.js";
 import { readAgentLoggingPolicy, setAgentLoggingPolicy } from "../logging/policy.js";
 import { completeHubOnboarding, readHubOnboarding } from "./onboarding.js";
 import {
@@ -329,6 +330,7 @@ export function createLocalHubReadServices(
   const timeline = new TimelineReader(options.projectRoot, canonicalActivity, actors);
 
   return {
+    diagrams: new DiagramRepository(options.projectRoot, now),
     loggingPolicy() {
       return AgentLoggingPolicySchema.parse(readAgentLoggingPolicy(options.projectRoot));
     },

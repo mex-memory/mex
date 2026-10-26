@@ -1,3 +1,6 @@
+import { DiagramRepository } from "../../src/statechart/repository.js";
+import { exampleArtifact } from "../../src/statechart/fixtures.js";
+import { renameSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -124,6 +127,12 @@ const relayDraftInput = normalizeRelayProductDraftInput({
 });
 
 if (mode === "canonical") {
+  const diagrams = new DiagramRepository(root, () => new Date(FIXED_TIME));
+  const diagramPreview = await diagrams.register(exampleArtifact("incomplete"));
+  const diagramDetail = diagrams.get("preview", diagramPreview.id);
+  const diagramSaved = await diagrams.applySave(diagrams.previewSave(diagramPreview.id, diagramDetail.revision).token);
+  renameSync(join(root, ".mex/diagrams", diagramSaved.id), join(root, ".mex/diagrams", "d".repeat(32)));
+  rmSync(join(root, ".mex/local/diagrams"), { recursive: true });
   for (const member of [
     {
       id: publisherMemberId,

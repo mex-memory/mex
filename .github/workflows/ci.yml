@@ -122,6 +122,10 @@ jobs:
           src/graph/__tests__/fingerprint-store-transactions.test.ts
           src/graph/__tests__/store-statements.test.ts
           src/graph/__tests__/engine-continuity-resources.test.ts
+          src/statechart/__tests__/contract.test.ts
+          src/statechart/__tests__/repository.test.ts
+          src/statechart/__tests__/checker.test.ts
+          test/hub-diagrams-integration.test.ts
       - name: Run terminal setup acceptance in a Windows console
         # node-pty is not a project dependency (#311): only this job needs it.
         if: runner.os == 'Windows'

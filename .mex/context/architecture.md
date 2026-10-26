@@ -23,12 +23,12 @@ edges:
 # Broad overview: keep this empty unless a claim depends on a few specific symbols.
 # Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh2:64:<base64url>" }
 grounds_to: []
-last_updated: "2026-10-08"
+last_updated: "2026-10-26"
 mex:
   id: mx_01M1M0CJ5C5XQV0HM5VM787WQS
   type: architecture
   status: promoted
-  revision: 10
+  revision: 11
   title: architecture
   relations:
     - type: related_to
@@ -91,8 +91,15 @@ relations:
 - **Code Graph (`src/graph/`)** — deterministic extraction, versioned SQLite storage, immutable read sessions, provenance/freshness checks, retrieval, impact, and explicit refresh/rebuild recovery.
 - **Wiki (`src/wiki/`)** — treats repository Markdown as canonical, owns migration/validation/indexing, and exposes bounded query plus repository-adapter services.
 - **Team workflows (`src/team/`)** — canonical Members, Activity, Workstreams, Inbox, and Relay records plus signed preview/apply services and isolated checkout-local state.
+- **State diagrams (`src/statechart/`, `skills/mex-statechart/`)** — the invoking
+  agent models behavior in scratch space and explicitly checks it with pinned
+  TLC. One private artifact contract connects checking, Mermaid/text projection,
+  temporary registration and reviewed snapshots. Hub reads these data bundles
+  without executing models or regeneration instructions. Snapshot metadata and
+  dependency baselines live in `.mex/diagrams/<id>/record.md`; companions retain
+  model inputs. Graph/Wiki indexes do not own or renew those baselines.
 - **Project Hub (`src/hub/`, `packages/hub-contracts`, `packages/hub-web`)** — `launchHub()` opens the loopback server. Incomplete checkouts get a setup-only process that shares the CLI setup phases through `runHeadlessSetup()`. Claude Code and Codex run as owned background children. Their structured streams supply activity timing and a separate read-only transcript of assistant messages with compact fixed tool labels; command details and tool results are dropped before transcript retention. Cursor-based SSE replays a bounded process-memory history without copying it into run snapshots. After code setup finishes and the committed scaffold identity passes the existing Team authority check, an explicit action promotes the same listener and session into the full Hub. The promoted dashboard then shows a first-run spotlight tour once per checkout. It overlays the live sidebar rather than replacing it, records completion in `.mex/local/hub-onboarding.json` through `/api/v1/settings/onboarding`, and does not run during setup. Existing committed code projects retain Health recovery for missing disposable indexes; Agent memory keeps its separate completion path.
-- **Drift and agent workflows (`src/drift/`, `src/sync/`, `src/agent-skills/`)** — check grounded knowledge, prepare bounded repair briefs, and install the governed Inbox/Relay integrations.
+- **Drift and agent workflows (`src/drift/`, `src/sync/`, `src/agent-skills/`)** — check grounded knowledge, prepare bounded repair briefs, and install the managed Inbox/Relay/statechart integrations.
 
 <!-- mex:entity
 id: mx_01M1M0CJ3B8XKJ8NJGYRMYJ59C

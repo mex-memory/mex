@@ -1,0 +1,34 @@
+name: Statechart checker qualification
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  checker:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: npm ci
+      - name: Fetch and verify immutable TLC 1.7.4
+        shell: bash
+        run: |
+          curl --fail --location --retry 2 --output "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          node --input-type=module -e 'import { readFileSync } from "node:fs"; import { createHash } from "node:crypto"; import { join } from "node:path"; if (createHash("sha256").update(readFileSync(join(process.env.RUNNER_TEMP, "tla2tools.jar"))).digest("hex") !== "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88") throw new Error("TLC checksum mismatch");'
+          echo "TLA2TOOLS=$RUNNER_TEMP/tla2tools.jar" >> "$GITHUB_ENV"
+      - run: npm run test:statechart:checker
+      - run: npm run test:statechart:package

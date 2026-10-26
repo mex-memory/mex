@@ -246,8 +246,8 @@ Setup installs small host-agent instructions that point to `.mex/AGENTS.md` for 
 
 | Integration | Setup behavior | Explicit skill commands |
 | --- | --- | --- |
-| **Claude Code** | Installs or updates the project anchor and skills under `.claude/skills/` | `/mex-inbox`, `/mex-relay` |
-| **Codex** | Installs or updates the project anchor and skills under `.agents/skills/` | `$mex-inbox`, `$mex-relay` |
+| **Claude Code** | Installs or updates the project anchor and skills under `.claude/skills/` | `/mex-inbox`, `/mex-relay`, `/mex-statechart` |
+| **Codex** | Installs or updates the project anchor and skills under `.agents/skills/` | `$mex-inbox`, `$mex-relay`, `$mex-statechart` |
 | **Cursor, Windsurf, GitHub Copilot, OpenCode** | Installs the appropriate instruction anchor/template | No official MEX skill command in 0.8 |
 
 For an existing setup missing your Claude Code or Codex assets, preview and sync that integration explicitly:
@@ -467,3 +467,17 @@ MEX keeps team memory in repository files and provides local retrieval and revie
 - Read the [graph retrieval benchmark results](https://github.com/mex-memory/mex/blob/v0.8.4/evaluate/RESULTS.md), including the blind-graded comparison against an ordinary file-search baseline.
 - Inspect the CLI locally with `mex capabilities --json` and `mex commands`.
 - Join the [MEX community on Discord](https://discord.gg/FEdNsQ4Qt4) or visit [mexmemory.com](https://mexmemory.com).
+
+### Explain behavior with a state diagram
+
+Ask your agent to “explain this lifecycle using a state diagram,” or invoke
+`$mex-statechart` in Codex / `/mex-statechart` in Claude Code. The managed skill
+uses TLA+ and TLC, delivers Mermaid in supporting chats, and supplies a readable
+terminal fallback. Relevant MEX context is retained only when it improves a
+state, condition, rule or recovery explanation.
+
+Generation stays in scratch space. Optionally register a temporary preview and
+open **Diagrams** through the normal Hub flow. **Review Save** shows the exact
+snapshot files before adding them to `.mex/diagrams/`; sharing remains a separate
+Git action. A passing model check does not prove implementation correctness or
+current evidence freshness. See [compatibility and toolchain boundaries](COMPATIBILITY.md#state-diagrams-working-tree-feature).

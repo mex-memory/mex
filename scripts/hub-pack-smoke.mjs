@@ -19,7 +19,7 @@ import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const OFFICIAL_SKILLS = ["mex-inbox", "mex-relay"];
+const OFFICIAL_SKILLS = ["mex-inbox", "mex-relay", "mex-statechart"];
 const npmCli = process.env.npm_execpath;
 if (!npmCli) {
   throw new Error("The packed Hub smoke must run through npm so its CLI entry is known.");
@@ -148,7 +148,7 @@ try {
   verifyInstalledPackageSkillTrees(installed);
   const declaration = readFileSync(join(installed, "dist", "index.d.ts"), "utf8");
   if (
-    /Hub(?:Job|Api|Session|Capabilities|Activity|Wiki)|Activity(?:Request|Response|Item|Diagnostic)|CodeWorkspace|CodeKnowledge(?:Request|Response)|GraphHealthDetails|WikiHealthDetails|WikiEntity(?:List|Detail)(?:Request|Response)|Wiki(?:Relations|Backlinks)(?:Request|Response)|WikiSearchResult|RepositoryGraphPort|RepositoryWiki|createRepositoryWikiPort|runHubCommand|TeamRelay|RelayHandoff/.test(
+    /StatechartArtifact|DiagramRepository|DiagramDetail|Hub(?:Job|Api|Session|Capabilities|Activity|Wiki)|Activity(?:Request|Response|Item|Diagnostic)|CodeWorkspace|CodeKnowledge(?:Request|Response)|GraphHealthDetails|WikiHealthDetails|WikiEntity(?:List|Detail)(?:Request|Response)|Wiki(?:Relations|Backlinks)(?:Request|Response)|WikiSearchResult|RepositoryGraphPort|RepositoryWiki|createRepositoryWikiPort|runHubCommand|TeamRelay|RelayHandoff/.test(
       declaration,
     )
   ) {
@@ -215,7 +215,7 @@ try {
     || firstSkillSync.applied !== true
     || firstSkillSync.changed !== false
     || firstSkillSync.conflicted !== false
-    || firstSkillSync.actions.length !== 6
+    || firstSkillSync.actions.length !== 2 * (OFFICIAL_SKILLS.length + 1)
     || firstSkillSync.actions.some((action) => action.action !== "noop")
     || JSON.stringify(snapshotAgentSurfaces(project)) !== JSON.stringify(afterSetup)
   ) {
@@ -233,7 +233,7 @@ try {
     secondSkillSync.applied !== true
     || secondSkillSync.changed !== false
     || secondSkillSync.conflicted !== false
-    || secondSkillSync.actions.length !== 6
+    || secondSkillSync.actions.length !== 2 * (OFFICIAL_SKILLS.length + 1)
     || secondSkillSync.actions.some((action) => action.action !== "noop")
     || JSON.stringify(secondSkillSync.warnings) !== JSON.stringify(firstSkillSync.warnings)
     || JSON.stringify(afterSecondSkillSync) !== JSON.stringify(afterFirstSkillSync)
@@ -251,7 +251,7 @@ try {
     dryRunSkillSync.applied !== false
     || dryRunSkillSync.changed !== false
     || dryRunSkillSync.conflicted !== false
-    || dryRunSkillSync.actions.length !== 6
+    || dryRunSkillSync.actions.length !== 2 * (OFFICIAL_SKILLS.length + 1)
     || dryRunSkillSync.actions.some((action) => action.action !== "noop")
     || JSON.stringify(dryRunSkillSync.warnings) !== JSON.stringify(firstSkillSync.warnings)
     || JSON.stringify(afterDryRunSkillSync) !== JSON.stringify(afterFirstSkillSync)
@@ -348,6 +348,10 @@ try {
   ) {
     throw new Error("The packed capability manifest expanded the compact Relay resolver descriptor.");
   }
+  const diagramCandidate = join(work, "diagram-candidate.json");
+  writeFileSync(diagramCandidate, readFileSync(join(installed, "skills/mex-statechart/references/example.json")));
+  const diagramPreview = JSON.parse(run(process.execPath,
+    [join(installed, "skills/mex-statechart/scripts/runtime.mjs"), "register", diagramCandidate, project], project));
   run(process.execPath, [cli, "graph", "rebuild", "--root", project, "--json"], project);
   const graphScope = run(process.execPath, [
     cli,
@@ -420,6 +424,9 @@ try {
   if (!session.ok || typeof sessionBody.csrfToken !== "string") {
     throw new Error("The packaged Hub session API did not load.");
   }
+  const diagramResponse = await fetch(`${url.origin}/api/v1/diagrams/preview/${diagramPreview.id}`, { headers: { cookie }, redirect: "error" });
+  const diagramDetail = await diagramResponse.json();
+  if (!diagramResponse.ok || diagramDetail.outcome !== "incomplete" || diagramDetail.alignment !== "unverified") throw new Error("Packed Hub lost the incomplete preview or fabricated implementation alignment.");
   const logging = await fetch(`${url.origin}/api/v1/settings/logging`, {
     headers: { cookie }, redirect: "error",
   });
@@ -717,6 +724,13 @@ try {
     throw new Error("Reading packaged Home, Activity, Search, Code, Knowledge, or Health mutated protected project state.");
   }
 
+  const diagramHeaders = { cookie, origin: url.origin, "content-type": "application/json", "x-mex-csrf": sessionBody.csrfToken };
+  const diagramReviewResponse = await fetch(`${url.origin}/api/v1/diagrams/preview/${diagramPreview.id}/save-preview`, { method: "POST", headers: diagramHeaders, body: JSON.stringify({ revision: diagramDetail.revision }), redirect: "error" });
+  const diagramReview = await diagramReviewResponse.json();
+  if (!diagramReviewResponse.ok || !diagramReview.writes?.length) throw new Error("Packed diagram save did not return its exact reviewed writes.");
+  const diagramSaveResponse = await fetch(`${url.origin}/api/v1/diagrams/save`, { method: "POST", headers: diagramHeaders, body: JSON.stringify({ token: diagramReview.token }), redirect: "error" });
+  const savedDiagram = await diagramSaveResponse.json();
+  if (!diagramSaveResponse.ok || savedDiagram.kind !== "saved") throw new Error("Packed Hub could not save its reviewed diagram snapshot.");
   const beforeMaintenance = snapshotProtectedProjectState(project, { includeRuntimeState: false });
 
   for (const kind of ["graph_refresh", "graph_rebuild"]) {
@@ -855,6 +869,11 @@ try {
   if (JSON.stringify(afterWikiMaintenance) !== JSON.stringify(beforeWikiMaintenance)) {
     throw new Error("Packaged Wiki maintenance mutated canonical Wiki, Graph, Activity, members, source, or Git state.");
   }
+
+  const reopenedDiagram = await fetch(`${url.origin}/api/v1/diagrams/saved/${savedDiagram.id}`, { headers: { cookie }, redirect: "error" });
+  const reopenedDiagramBody = await reopenedDiagram.json();
+  if (!reopenedDiagram.ok || JSON.stringify(reopenedDiagramBody.artifact) !== JSON.stringify(diagramDetail.artifact)) throw new Error("Graph/Wiki rebuilds changed the saved checked artifact or renewed its baseline.");
+  for (const write of diagramReview.writes) if (readFileSync(join(project, write.path), "utf8") !== write.content) throw new Error("Diagram Save did not retain exactly its reviewed files.");
 
   // Preference changes are checkout-only. Exercise both surfaces with exact
   // revisions after ordinary-read/maintenance assertions, before stopping Hub.
@@ -1435,16 +1454,16 @@ function verifyInstalledAgentAssets(project, installed, packageVersion) {
       skillsRoot: join(project, ".claude", "skills"),
       instructions: join(project, "CLAUDE.md"),
       originalInstructions: "# Consumer Claude instructions\n\nKeep this line byte-for-byte.\n",
-      explicit: ["/mex-inbox", "/mex-relay"],
-      foreignExplicit: ["$mex-inbox", "$mex-relay"],
+      explicit: ["/mex-inbox", "/mex-relay", "/mex-statechart"],
+      foreignExplicit: ["$mex-inbox", "$mex-relay", "$mex-statechart"],
     },
     {
       name: "codex",
       skillsRoot: join(project, ".agents", "skills"),
       instructions: join(project, "AGENTS.md"),
       originalInstructions: "# Consumer Codex instructions\n\nKeep this line byte-for-byte.\n",
-      explicit: ["$mex-inbox", "$mex-relay"],
-      foreignExplicit: ["/mex-inbox", "/mex-relay"],
+      explicit: ["$mex-inbox", "$mex-relay", "$mex-statechart"],
+      foreignExplicit: ["/mex-inbox", "/mex-relay", "/mex-statechart"],
     },
   ];
 

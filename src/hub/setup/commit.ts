@@ -1,3 +1,4 @@
+import { AGENT_SKILL_TARGETS, OFFICIAL_MEX_SKILLS } from "../../agent-skills/types.js";
 import { execFile } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { constants } from "node:fs";
@@ -411,16 +412,16 @@ function fileSummary(file: ReviewedFile): SetupCommitFile {
   }
   return { path: file.path, status: file.status, additions, deletions, diffCharacters: file.diff.length, truncated: file.truncated };
 }
+function skillRoots(tool: AiTool): string[] {
+  return tool === "claude" || tool === "codex" ? OFFICIAL_MEX_SKILLS.map(skill => `${AGENT_SKILL_TARGETS[tool].skillsDirectory}/${skill}`) : [];
+}
 function scopePrefixes(tools: readonly AiTool[]): string[] {
-  return [".mex", ...tools.flatMap((tool) => [ANCHORS[tool], ...(tool === "claude" ? [".claude/skills/mex-inbox", ".claude/skills/mex-relay"] : tool === "codex" ? [".agents/skills/mex-inbox", ".agents/skills/mex-relay"] : [])])];
+  return [".mex", ...tools.flatMap(tool => [ANCHORS[tool], ...skillRoots(tool)])];
 }
 function inScope(path: string, tools: readonly AiTool[]): boolean {
   if (path === ".mex/config.json" || path === ".mex/.gitignore" || /^\.mex\/[^/]+\.md$/u.test(path)
     || /^\.mex\/(?:context|patterns)\/.+\.md$/u.test(path)) return true;
-  return tools.some((tool) => path === ANCHORS[tool]
-    || ((tool === "claude" || tool === "codex")
-      && path.startsWith(`${tool === "claude" ? ".claude" : ".agents"}/skills/`)
-      && /^\.(?:claude|agents)\/skills\/mex-(?:inbox|relay)\/.+/u.test(path)));
+  return tools.some(tool => path === ANCHORS[tool] || skillRoots(tool).some(root => path.startsWith(`${root}/`)));
 }
 function safePath(path: string): boolean {
   return path.length <= 1_024 && !/[\\\x00-\x1f\x7f]/u.test(path)

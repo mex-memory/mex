@@ -82,6 +82,7 @@ export const navigationItems: readonly NavigationItem[] = [
     placement: "primary",
     availability: { kind: "runtime", capability: "graph" },
   },
+  { id: "diagrams", label: "Diagrams", path: "/diagrams", icon: Network, group: "project-memory", placement: "primary", availability: { kind: "always" } },
   {
     id: "inbox",
     label: "Inbox",

@@ -75,7 +75,9 @@
     "typecheck": "npm run typecheck --workspace @mex/hub-contracts && tsc --noEmit && npm run typecheck --workspace @mex/hub-web",
     "prepare": "npm run build",
     "benchmark:telemetry": "npm run build && node scripts/benchmark-telemetry.mjs",
-    "benchmark:telemetry:test": "node --test scripts/benchmark-telemetry.test.js"
+    "benchmark:telemetry:test": "node --test scripts/benchmark-telemetry.test.js",
+    "test:statechart:checker": "vitest run --config vitest.statechart.config.ts",
+    "test:statechart:package": "node scripts/statechart-pack-smoke.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",
