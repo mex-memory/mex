@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-10-14
+last_updated: 2026-10-26
 ---
 
 # Session Bootstrap
@@ -30,6 +30,18 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
+- PR #280's follow-up preserves identified npm missing-dependency checks beside
+  unread `requirements.txt` or `setup.py` manifests. Optional `Claim.ecosystem`
+  carries explicit enclosing-heading evidence or scoped npm syntax into name
+  and version matching. Whole heading labels avoid inventing npm evidence from
+  generic `Node` or mixed-language headings; unlabelled missing names remain
+  conservative. Cross-file versions distinguish identified ecosystems while
+  keeping an unlabelled version that matches neither candidate visible.
+  Reconstruction verification passed 258 focused tests (one existing skip),
+  build, typecheck, and built public-entry reproductions of both review findings.
+  The optional public field requires a minor release under `COMPATIBILITY.md`;
+  no release version is selected here. Exact-head CI remains the merge gate.
+  See the dependency manifest discovery pattern for regression guidance.
 - 0.8.4 is tagged and published on GitHub at `v0.8.4`, commit `56db5cf`, dated
   October 14. Exact-release CI run `38571566062` passed Node 22/24, portability,
   browser, packed-install, evaluators, and pinned performance. Finalization

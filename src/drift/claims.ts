@@ -3,10 +3,12 @@ import { visit } from "unist-util-visit";
 import {
   parseMarkdown,
   getHeadingAtLine,
+  getTextContent,
   isNegatedSection,
   isNegatedText,
 } from "../markdown.js";
 import type { Claim } from "../types.js";
+import { dependencyEcosystem, headingDependencyEcosystem } from "./dependency-ecosystem.js";
 import type { Root, Code, Content, InlineCode, ListItem, Strong, Text } from "mdast";
 
 const KNOWN_EXTENSIONS = /\.(ts|js|tsx|jsx|py|go|rs|rb|java|json|yaml|yml|toml|md|css|scss|html|vue|svelte|sh)$/;
@@ -99,6 +101,22 @@ export function extractClaims(filePath: string, source: string): Claim[] {
 
   const tree = parseMarkdown(content);
   const claims: Claim[] = [];
+
+  // Retain explicit parent-heading evidence through neutral subsections.
+  // A mixed heading clears inherited evidence; a sibling pops its subtree.
+  const ecosystems = new WeakMap<Strong, NonNullable<Claim["ecosystem"]>>();
+  const headings: Array<{ depth: number; ecosystem: Claim["ecosystem"] }> = [];
+  visit(tree, (node, _index, parent) => {
+    if (node.type === "heading" && parent === tree) {
+      while (headings.length && headings[headings.length - 1].depth >= node.depth) headings.pop();
+      const explicit = headingDependencyEcosystem(getTextContent(node));
+      const ecosystem = explicit === undefined ? headings[headings.length - 1]?.ecosystem : explicit ?? undefined;
+      headings.push({ depth: node.depth, ecosystem });
+    } else if (node.type === "strong") {
+      const ecosystem = headings[headings.length - 1]?.ecosystem;
+      if (ecosystem) ecosystems.set(node, ecosystem);
+    }
+  });
 
   // Negation is not always heading-scoped: a bullet that records a deletion
   // sits under an ordinary heading. Nor is a raw line the right unit, because
@@ -205,6 +223,11 @@ export function extractClaims(filePath: string, source: string): Claim[] {
     // satisfy.
     if (!declarationStrong.has(node)) return;
 
+    const evidence = (value: string) => {
+      const ecosystem = dependencyEcosystem({ value, section: heading, ecosystem: ecosystems.get(node) });
+      return ecosystem ? { ecosystem } : {};
+    };
+
     // When the entry names its packages in code, those are the dependency:
     // `**Radix UI + \`class-variance-authority\`**` is one package, not a
     // package called "Radix UI + ". Reading the surrounding prose instead
@@ -224,6 +247,7 @@ export function extractClaims(filePath: string, source: string): Claim[] {
           line,
           section: heading,
           negated,
+          ...evidence(child.value),
         });
       }
       return;
@@ -249,6 +273,7 @@ export function extractClaims(filePath: string, source: string): Claim[] {
       line,
       section: heading,
       negated,
+      ...evidence(name),
     });
     if (versionMatch) {
       claims.push({
@@ -258,6 +283,7 @@ export function extractClaims(filePath: string, source: string): Claim[] {
         line,
         section: heading,
         negated,
+        ...evidence(name),
       });
     }
   });

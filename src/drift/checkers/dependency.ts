@@ -1,6 +1,7 @@
 import { opendirSync, openSync, readSync, closeSync, fstatSync, constants } from "node:fs";
 import { resolve, relative, sep } from "node:path";
 import type { Claim, DriftIssue } from "../../types.js";
+import { dependencyEcosystem } from "../dependency-ecosystem.js";
 
 /** Runtimes, platforms, databases, protocols, and architectural terms that appear in stack docs but aren't installable packages */
 const KNOWN_RUNTIMES = new Set([
@@ -105,15 +106,12 @@ export function checkDependencies(
     if (NON_PACKAGE_LABELS.has(name) || isConceptAcronym(claim.value)) continue;
 
     // Fuzzy match: "React" → "react", "Express" → "express"
-    const found = findDependency(deps, name);
+    const ecosystem = dependencyEcosystem(claim);
+    const found = findDependency(deps, name, ecosystem);
     if (!found) {
-      // requirements.txt and setup.py are presence-only (#207). Claim has no
-      // ecosystem, so an unmatched name cannot be told apart from a package
-      // that lives only in the unread file. Suppress DEPENDENCY_MISSING while
-      // one is present, including a genuinely undeclared npm name. A name this
-      // corpus declares was found above and is still checked; version claims
-      // below are unchanged.
-      if (unreadPython) continue;
+      // Unread Python manifests make Python and unlabelled names uncertain,
+      // but do not invalidate the understood npm corpus (#207).
+      if (unreadPython && ecosystem !== "npm") continue;
       issues.push({
         code: "DEPENDENCY_MISSING",
         severity: "warning",
@@ -132,7 +130,7 @@ export function checkDependencies(
 
     const name = match[1].trim().toLowerCase();
     const claimedVersion = match[2];
-    const found = findDependency(deps, name);
+    const found = findDependency(deps, name, dependencyEcosystem(claim));
 
     if (found && !found.version.includes(claimedVersion)) {
       issues.push({
@@ -162,11 +160,14 @@ interface DepEntry {
 /** A claimed name against the manifest list. Prose uses the import spelling
  *  (`sentence_transformers`, `Tree.Sitter`) where the manifest carries the
  *  distribution name, so a normalizing ecosystem matches either. */
-function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined {
-  const exact = deps.find((d) => d.name.toLowerCase() === claimed);
+function findDependency(deps: DepEntry[], claimed: string, ecosystem?: Claim["ecosystem"]): DepEntry | undefined {
+  // Only Python entries normalize. Keep that registry distinction for exact
+  // names too: unrelated npm/PyPI packages can have the same spelling.
+  const belongs = (entry: DepEntry) => !ecosystem || (entry.normalizes ? "python" : "npm") === ecosystem;
+  const exact = deps.find((d) => belongs(d) && d.name.toLowerCase() === claimed);
   if (exact) return exact;
   const normalized = normalizeName(claimed);
-  return deps.find((d) => d.normalizes && normalizeName(d.name) === normalized);
+  return deps.find((d) => belongs(d) && d.normalizes && normalizeName(d.name) === normalized);
 }
 
 // Discovery may recurse arbitrarily deep, but must not retain or read an
