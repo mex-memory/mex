@@ -22,6 +22,10 @@ try {
   run(process.execPath, [helper, "check", candidate, checked], consumer);
   const a = JSON.parse(readFileSync(checked, "utf8")); if (a.check.outcome !== "passed" || a.diagram.validity !== "valid") throw new Error("Packed helper did not check the real model and graph.");
   const terminal = run(process.execPath, [helper, "terminal", checked], consumer); if (!terminal.includes("Ready -- Start work --> Working") || !terminal.includes("model check: passed")) throw new Error("Packed terminal projection is unreadable.");
+  const draft = join(scratch, "draft.json"), normalized = join(scratch, "normalized.json"); writeFileSync(draft, JSON.stringify({ ...a, diagram: { validity: "unverified", mermaid: "" } }));
+  run(process.execPath, [helper, "normalize", draft, normalized], consumer); if (JSON.parse(readFileSync(normalized, "utf8")).diagram.mermaid !== a.diagram.mermaid) throw new Error("Packed normalize did not derive the graph's Mermaid.");
+  const view = join(scratch, "view"), shown = run(process.execPath, [helper, "show", checked, view, "--text-only"], consumer);
+  if (!shown.includes("Ready -- Start work --> Working") || readFileSync(join(view, "diagram.mmd"), "utf8") !== a.diagram.mermaid) throw new Error("Packed show did not deliver the checked graph.");
   const chart = join(scratch, "agreed.mmd");
   writeFileSync(chart, 'stateDiagram-v2\n  state "Ready" as ready\n  state "Complete" as done\n  [*] --> ready\n  ready --> done : Finish work\n');
   run(process.execPath, [helper, "workflow", "from-chart", chart], consumer, { JAVA: undefined });

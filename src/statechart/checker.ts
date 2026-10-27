@@ -2,7 +2,7 @@ import { configurationRules } from "./configuration.js";
 import { projectChecker, checkerTraceText } from "./projection.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { StatechartArtifactSchema, STATECHART_LIMITS as L, type StatechartArtifact } from "@mex/hub-contracts/statechart";
@@ -11,7 +11,7 @@ export const UPSTREAM = "backnotprop/pstack@fad8d01588a1b1ae803f87c8a1e0de79e28c
 let running = false;
 
 /** One owned process group, bounded output/time; cancellation always settles children. */
-export async function boundedProcess(file: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number; watch?: string; maxWatchBytes?: number }): Promise<{ output: string; code: number | null; stopped: "cancelled" | "resource-limited" | null }> {
+export async function boundedProcess(file: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number; capMs?: number; watch?: string; maxWatchBytes?: number }): Promise<{ output: string; code: number | null; stopped: "cancelled" | "resource-limited" | null }> {
   return new Promise((done) => {
     let output = "", size = 0, stopped: "cancelled" | "resource-limited" | null = null;
     const child = spawn(file, args, { cwd: options.cwd, env: options.env ?? process.env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
@@ -22,7 +22,8 @@ export async function boundedProcess(file: string, args: string[], options: { cw
     };
     const abort = () => stop("cancelled"); options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) abort();
-    const timer = setTimeout(() => stop("resource-limited"), Math.min(options.timeoutMs ?? L.checkerMs, L.checkerMs));
+    const cap = options.capMs ?? L.checkerMs;
+    const timer = setTimeout(() => stop("resource-limited"), Math.min(options.timeoutMs ?? cap, cap));
     const watch = setInterval(() => { if (options.watch) { try { if (statSync(options.watch).size > (options.maxWatchBytes ?? L.checkerBytes)) stop("resource-limited"); } catch { /* Not emitted yet. */ } } }, 100);
     for (const stream of [child.stdout, child.stderr]) stream.on("data", (b: Buffer) => { size += b.length; if (size > L.checkerBytes) stop("resource-limited"); else output += b.toString("utf8"); });
     child.on("error", () => { /* close follows error and is the single settlement boundary */ });
@@ -36,7 +37,16 @@ export function resolveTlc(env: NodeJS.ProcessEnv = process.env): { jar: string;
   if (!candidate) return null;
   const jar = resolve(candidate);
   try { if (statSync(jar).size > 5 * 1024 * 1024 || createHash("sha256").update(readFileSync(jar)).digest("hex") !== TLC_SHA256) return null; } catch { return null; }
-  return { jar, java: env.JAVA || "java" };
+  return { jar, java: javaBinary(env.JAVA) };
+}
+
+/** JAVA may name a JDK or bin directory (Windows environment names are
+ * case-insensitive, so a `Java` directory variable is read as JAVA). */
+export function javaBinary(value: string | undefined): string {
+  if (!value) return "java";
+  const exe = process.platform === "win32" ? "java.exe" : "java";
+  try { if (statSync(value).isDirectory()) { const found = [join(value, exe), join(value, "bin", exe)].find(p => existsSync(p)); if (found) return found; } } catch { /* Not a local path; spawn resolves the command. */ }
+  return value;
 }
 
 /** Checker inputs are executed only by this explicit scratch-space generation action. */
@@ -70,6 +80,7 @@ export async function checkArtifact(input: unknown, options: { signal?: AbortSig
     const temporal = /Temporal properties were violated|Action property .+ is violated|Property .+ is violated/.test(r.output);
     if (Buffer.byteLength(checkerTraceText(r.output)) > 64 * 1024) return incomplete("resource-limited", "The full counterexample exceeded the bounded trace size; reduce model scope and rerun.");
     const success = r.code === 0 && /Model checking completed\. No error has been found\./.test(r.output);
+    if (!success && !broken && !temporal && /Error: Deadlock reached\./u.test(r.output)) return incomplete("incomplete", "TLC reached a deadlock: a model state with no enabled next step. Give intended terminal states an explicit stuttering step, or set CHECK_DEADLOCK FALSE in the authored configuration; no passed result is inferred.");
     if (!success && !broken && !temporal) return incomplete("incomplete", "TLC did not complete the configured model. Inspect bounded scratch diagnostics during generation; no passed result is inferred.");
     const goal = a.rules.find(x => x.id === broken)?.kind === "goal";
     const outcome = success ? "passed" : goal ? "goal-reached" : "violated";

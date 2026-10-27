@@ -439,8 +439,11 @@ preferred when the client actually renders the required syntax. Codex CLI
 0.160.1 renders the tested simple statecharts natively; nested/parallel syntax
 requires the text fallback. Real broken-invariant path order and raw temporal
 trace text were verified at 120/80 columns in the interactive CLI through a local
-fixed replay, independently of Hub tests. Claude Code qualification is delegated
-to the [client handoff](docs/design/state-diagrams-client-handoff.md). The deterministic terminal
+fixed replay, independently of Hub tests. Claude Code 2.1.311 renders fenced
+Mermaid in neither its terminal nor its desktop app (observed on Windows), so the
+skill delivers there through the helper's `show` command: the deterministic text
+view in chat plus a rendered PNG that the agent opens, which the desktop app
+displays inline. The deterministic terminal
 projection preserves states, transitions, conditions, rules and numbered paths.
 Images are optional exports; Hub viewing is optional and never starts merely
 because an artifact was generated.

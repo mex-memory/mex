@@ -1,6 +1,22 @@
 # Internal artifact v1
 
-Start with [example.json](example.json), replacing every fixture claim with evidence for the actual subject. Validate with `node <skill-dir>/scripts/runtime.mjs validate /scratch/artifact.json`. The normative private Zod contract ships in the bundled helper and lives in `packages/hub-contracts/src/statechart.ts` in MEX source. It is not a public package API.
+Start with [example.json](example.json), replacing every fixture claim with evidence for the actual subject. Leave `diagram.mermaid` empty and run `node <skill-dir>/scripts/runtime.mjs normalize /scratch/draft.json /scratch/artifact.json`: it writes the exact Mermaid projection of your states and transitions and validates the result. `validate` checks an artifact without changing it. The normative private Zod contract ships in the bundled helper and lives in `packages/hub-contracts/src/statechart.ts` in MEX source. It is not a public package API.
+
+Exact shapes (objects are strict: unknown keys are rejected). Every id matches `^[A-Za-z][A-Za-z0-9_]{0,63}$` (no hyphens or dots); a state id must not be a Mermaid keyword such as `state`, `end`, `note`, `choice`, `fork` or `join`.
+
+```text
+states:      { id, label, evidence: [ids], parent?, region? }
+transitions: { id, from, to, event, condition, evidence: [ids], rules: [ids] }
+rules:       { id, label, kind, provenance, evidence: [ids] }
+evidence:    { id, path, line?, sha256 | null, kind, explains: [ids], note }
+mapping:     { model, targets: [ids], evidence: [ids] }
+files:       { name, content }   name: ^[A-Za-z][A-Za-z0-9_-]{0,63}\.(tla|cfg|json|mmd|txt|md)$
+diagram:     { validity, mermaid }
+check:       { outcome, bounds, results: [{ rule, outcome, detail }], modelStates, modelTransitions }
+traces:      { id, rule, kind, steps: [{ state, transition? }], raw, loopTo? }
+reproduction:{ outcome, detail, evidence: [ids] }
+toolchain:   { upstream, tlc, java, renderer, regeneration }
+```
 
 Required fields:
 
@@ -18,4 +34,4 @@ Required fields:
 - `reproduction`: outcome (`reproduced`, `not-reproduced`, `partial`, `not-attempted`, `not-applicable`), detail and evidence ids. Retain observable entry point/tests, what they establish and limits.
 - `omissions`, `toolchain` (upstream, tlc, java, renderer, regeneration instruction as inert text). Do not retain the agent conversation, private prompts or raw unbounded tool history.
 
-`terminal` projects the same states, transitions, conditions, rules and path numbering. Deliver the artifact's Mermaid fence in chat. PNG export QA uses the attributed workflow. Register copies only validated artifact data to `.mex/local/diagrams/<opaque id>` (24h TTL, up to 20 previews). It does not launch Hub. Hub Save shows exact portable working-tree writes in `.mex/diagrams/<new id>`, creates an immutable bundle, and never stages/commits/pushes. `record.md` is the canonical metadata/baseline owner; companions are retained inputs. Opening never executes any file or regeneration instruction. Old results remain visible when Java/indexes are unavailable; freshness is separate from the recorded check.
+`terminal` projects the same states, transitions, conditions, rules and path numbering. Deliver with `show` as SKILL.md step 7 describes for the client. PNG export QA uses the attributed workflow. Register copies only validated artifact data to `.mex/local/diagrams/<opaque id>` (24h TTL, up to 20 previews). It does not launch Hub. Hub Save shows exact portable working-tree writes in `.mex/diagrams/<new id>`, creates an immutable bundle, and never stages/commits/pushes. `record.md` is the canonical metadata/baseline owner; companions are retained inputs. Opening never executes any file or regeneration instruction. Old results remain visible when Java/indexes are unavailable; freshness is separate from the recorded check.

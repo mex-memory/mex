@@ -82,3 +82,18 @@ it("reopens a Git-style CRLF Markdown snapshot without renewing its recorded inp
   writeFileSync(join(r, record.path), record.content.replace(/\n/g, "\r\n"));
   expect(new DiagramRepository(r).get("saved", saved.id).artifact).toEqual(a);
 });
+it("keeps listing readable diagrams when one snapshot is unreadable", async () => {
+  const r = root(), repo = new DiagramRepository(r), p = await repo.register(exampleArtifact()), d = repo.get("preview", p.id);
+  const plan = repo.previewSave(p.id, d.revision), saved = await repo.applySave(plan.token), bad = "f".repeat(32);
+  mkdirSync(join(r, ".mex/diagrams", bad)); writeFileSync(join(r, ".mex/diagrams", bad, "record.md"), plan.writes[0]!.content.replace('"schemaVersion": 1', '"schemaVersion": 2'));
+  expect(repo.list().items.map(i => i.id)).toEqual([p.id, saved.id]); expect(() => repo.get("saved", bad)).toThrow(/schemaVersion/);
+});
+it("treats Git line-ending conversion as unchanged evidence and verifies large sources", async () => {
+  const r = root(), a = exampleArtifact(), lf = "one\ntwo\n", large = "x".repeat(200 * 1024) + "\n";
+  writeFileSync(join(r, "code.ts"), lf.replace(/\n/g, "\r\n")); writeFileSync(join(r, "large.ts"), large);
+  const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+  a.evidence.push({ id: "source", path: "code.ts", sha256: sha(lf), kind: "code", explains: ["start"], note: "Recorded from an LF checkout." }, { id: "large", path: "large.ts", sha256: sha(large), kind: "code", explains: ["start"], note: "A source file over the companion size limit." });
+  const repo = new DiagramRepository(r), p = await repo.register(a);
+  expect(repo.get("preview", p.id).freshness.map(f => f.status)).toEqual(["unchanged", "unchanged"]);
+  writeFileSync(join(r, "code.ts"), "one\r\nthree\r\n"); expect(repo.get("preview", p.id).freshness[0]?.status).toBe("changed");
+});

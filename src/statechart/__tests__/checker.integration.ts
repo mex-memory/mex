@@ -36,3 +36,8 @@ it("preserves quoted configuration constants when isolating a failing rule", asy
   const result = await checkArtifact(a);
   expect(result.check.results.map(r => [r.rule, r.outcome])).toEqual([["NoDone", "violated"], ["Safe", "passed"]]);
 });
+it("names a deadlock instead of reporting a generic incomplete run", async () => {
+  const a = exampleArtifact(); a.files[0]!.content = a.files[0]!.content.replace(String.raw`Next == Start \/ Finish \/ Stay`, String.raw`Next == Start \/ Finish`);
+  expect(a.files[0]!.content).not.toContain("Stay\nSpec");
+  const result = await checkArtifact(a); expect(result.check.outcome).toBe("incomplete"); expect(result.check.results[0]?.detail).toMatch(/deadlock/);
+});

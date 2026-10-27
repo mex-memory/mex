@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { Command, InvalidArgumentError } from "commander";
-import { execFileSync, execSync, spawnSync } from "node:child_process";
+import { exec, execFileSync, spawnSync } from "node:child_process";
 import {
   lstatSync,
   readFileSync,
@@ -246,20 +246,21 @@ describe("built CLI main-module guard", () => {
   beforeAll(async () => {
     // Allow preserved-dist investigations without rebuilding shared CLI assets.
     if (process.env.MEX_TEST_PREBUILT === "1") return;
-    // Vitest 3's fork worker RPC has a fixed 60-second response deadline. Give
-    // its task update one turn before this synchronous production build blocks
-    // the worker event loop.
-    await yieldToVitestRpc();
+    // Vitest 3's fork worker RPC has a fixed 60-second response deadline, so
+    // the production build runs asynchronously instead of blocking the worker.
+    // A build killed part-way leaves dist without its Hub assets for every
+    // later suite, so its bound is generous rather than tight.
     // Vitest sets NODE_ENV=test. The build must still select React's production
     // condition and must not leave a development Hub bundle in dist/.
-    execSync("npm run build", {
-      cwd: repoRoot,
-      env: { ...process.env, NODE_ENV: "test" },
-      stdio: "pipe",
-      // execSync blocks Vitest's hook timer, so bound the child build itself.
-      timeout: 60_000,
+    await new Promise<void>((resolve, reject) => {
+      exec("npm run build", {
+        cwd: repoRoot,
+        env: { ...process.env, NODE_ENV: "test" },
+        timeout: 240_000,
+        maxBuffer: 16 * 1024 * 1024,
+      }, (error) => (error ? reject(error) : resolve()));
     });
-  }, 65_000);
+  }, 245_000);
 
   beforeEach(async () => {
     // The cases below intentionally use synchronous child processes to exercise

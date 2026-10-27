@@ -9,6 +9,14 @@ import { artifactError } from "../team/artifacts/errors.js";
 const MAX_SAVE_RESPONSE_BYTES = 900 * 1024;
 const LOCAL = ".mex/local/diagrams", SAVED = ".mex/diagrams";
 const hash = (s: string | Uint8Array) => createHash("sha256").update(s).digest("hex");
+// Evidence baselines are compared, never executed; large sources stay verifiable.
+const EVIDENCE_BYTES = 4 * 1024 * 1024;
+/** Git line-ending conversion (core.autocrlf) must not flag shared evidence as changed. */
+function sameBaseline(bytes: Uint8Array, sha256: string): boolean {
+  if (hash(bytes) === sha256) return true;
+  const lf = Buffer.from(bytes).toString("latin1").replace(/\r\n/gu, "\n");
+  return hash(Buffer.from(lf, "latin1")) === sha256 || hash(Buffer.from(lf.replace(/\n/gu, "\r\n"), "latin1")) === sha256;
+}
 const freshId = () => randomBytes(16).toString("hex");
 function problem(code: "NOT_FOUND" | "REVISION_CONFLICT" | "VALIDATION_FAILED", detail: string): never { throw artifactError(code, "Diagram unavailable", detail); }
 function markdownText(value: string): string {
@@ -66,7 +74,11 @@ export class DiagramRepository {
   list(): DiagramCollection {
     const items: DiagramCollection["items"] = [];
     for (const kind of ["preview", "saved"] as const) for (const id of this.#names(kind === "preview" ? LOCAL : SAVED, kind === "preview" ? L.previews : L.snapshots)) {
-      const r = this.#read(kind, id); if (!r || (r.expiresAt && Date.parse(r.expiresAt) <= +this.now())) continue;
+      // One unreadable or newer-format snapshot must not hide every other diagram;
+      // opening it directly still reports the exact validation problem.
+      let r: { artifact: StatechartArtifact; expiresAt: string | null } | null;
+      try { r = this.#read(kind, id); } catch { this.root.assertCurrent(); continue; }
+      if (!r || (r.expiresAt && Date.parse(r.expiresAt) <= +this.now())) continue;
       items.push({ id, title: r.artifact.title, summary: r.artifact.summary, outcome: r.artifact.check.outcome, kind, expiresAt: r.expiresAt });
     }
     return { items, truncated: false };
@@ -76,7 +88,7 @@ export class DiagramRepository {
     if (r.expiresAt && Date.parse(r.expiresAt) <= +this.now()) problem("NOT_FOUND", "This temporary diagram has expired. Ask the agent to generate a new preview.");
     const freshness = r.artifact.evidence.map(e => {
       let status: DiagramDetail["freshness"][number]["status"] = "unverified";
-      try { const file = tryReadContainedArtifact(this.root.path, e.path, L.fileBytes, "exact"); status = !file ? "missing" : e.sha256 ? hash(file.bytes) === e.sha256 ? "unchanged" : "changed" : "unverified"; } catch { /* Containment/read failure is unavailable evidence, never fresh. */ }
+      try { const file = tryReadContainedArtifact(this.root.path, e.path, EVIDENCE_BYTES, "exact"); status = !file ? "missing" : e.sha256 ? sameBaseline(file.bytes, e.sha256) ? "unchanged" : "changed" : "unverified"; } catch { /* Containment/read failure is unavailable evidence, never fresh. */ }
       return { evidence: e.id, status };
     });
     const code = r.artifact.evidence.filter(e => e.kind === "code");
