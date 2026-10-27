@@ -67,6 +67,11 @@ export const SetupStatusSchema = z.object({
     total: z.number().int().positive().max(1_024),
     message: z.string().min(1).max(512),
   }).strict().optional(),
+  /** Present when the checkout is already set up: the status-first rerun summary and drift notes. */
+  setupHealth: z.object({
+    summary: z.string().min(1).max(512),
+    notes: z.array(z.string().min(1).max(512)).max(4),
+  }).strict().optional(),
 }).strict();
 
 export const SetupStartRequestSchema = z.object({

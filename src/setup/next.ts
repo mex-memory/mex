@@ -1,3 +1,6 @@
+import { populationWarning, fillPopulationPlaceholders, populationPlaceholderFiles, unpopulatedScaffoldFiles } from "./population-audit.js";
+import { withSetupLock } from "./setup-lock.js";
+import { describeUnfinishedSetup } from "./unfinished.js";
 /**
  * `mex setup next`: the one-paste setup for agents MEX cannot launch itself.
  *
@@ -41,6 +44,7 @@ import {
   SHARED_UNIT_SLUG,
   createPlanState,
   loadPlanState,
+  isUnstartedSetupPlan,
   savePlanState,
   subsystemWikiFile,
   unitBatchFile,
@@ -115,7 +119,6 @@ function folder(path: string, remainder?: boolean): string {
 /** Run one step of the one-paste setup. Never throws for an expected problem: the output says what to do. */
 export async function runSetupNext(options: SetupNextOptions): Promise<SetupNextResult> {
   const root = resolve(options.projectRoot);
-  cleanupStaleSetupPrompts(root);
   const mexDir = resolve(root, ".mex");
   const progress = (line: string) => { try { options.onProgress?.(line); } catch { /* observation only */ } };
   let mode: SetupMode;
@@ -124,6 +127,23 @@ export async function runSetupNext(options: SetupNextOptions): Promise<SetupNext
   if (mode === "code-repo" && !existsSync(resolve(root, ".git"))) {
     return blocked("No Git repository found. Run `git init` first, then run `mex setup next` again.");
   }
+  // A completed older scaffold needs no queue or setup writes (#284).
+  if (existsSync(resolve(mexDir, "ROUTER.md")) && describeUnfinishedSetup(root) === null && !options.retry) {
+    const { assessSetupHealth, describeSetupHealth } = await import("./health.js");
+    const health = await assessSetupHealth(root);
+    if (health.healthy) return { status: "complete", exitCode: 0, progress: null, output: describeSetupHealth(health) };
+  }
+  try {
+    return await withSetupLock(mexDir, () => runSetupNextLocked(options, root, mexDir, mode, progress));
+  } catch (error) {
+    return blocked(error instanceof SetupError ? error.userMessage : error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function runSetupNextLocked(
+  options: SetupNextOptions, root: string, mexDir: string, mode: SetupMode, progress: (line: string) => void,
+): Promise<SetupNextResult> {
+  cleanupStaleSetupPrompts(root);
   mkdirSync(resolve(root, ".mex", "local"), { recursive: true });
   const release = acquireLock(root, options.now ?? Date.now);
   if (release === null) {
@@ -147,6 +167,29 @@ async function step(
   if (loaded.notice) notes.push(`Warning: ${loaded.notice}`);
   let state = loaded.state;
   let mode = savedMode;
+  if (state?.queue?.finalized === true && isScaffoldPopulated(mexDir) && populationPlaceholderFiles(mexDir).length === 0) {
+    const warning = await populationWarning(root, mexDir, mode);
+    syncSetupNotice(root, null);
+    return {
+      status: "complete", exitCode: 0, progress: countSetupUnits(state),
+      output: "MEX setup is already complete. There is nothing left to do." + (warning ? `\n${warning}` : ""),
+    };
+  }
+  // Older authored scaffolds need finalization only. Do not invent another
+  // population plan (or replace a completed one) for harmless leftover tokens.
+  if (loaded.notice === undefined && isScaffoldPopulated(mexDir)
+    && (state === null || state.finalizedAt !== undefined || state.queue?.finalized === true
+      || (state.queue?.mode === "single" && isUnstartedSetupPlan(root, state))
+      || (populationPlaceholderFiles(mexDir).length > 0 && isUnstartedSetupPlan(root, state)))) {
+    const result = await runHeadlessSetup({
+      projectRoot: root, mode, tools: loadConfiguredAiTools(mexDir),
+      confirmPopulation: true, signal: options.signal, onMessage: progress,
+    });
+    return {
+      status: result.ready ? "complete" : "blocked", exitCode: result.ready ? 0 : 1,
+      progress: state === null ? null : countSetupUnits(state), output: result.message,
+    };
+  }
   if (state !== null && state.queue === undefined) {
     // Background sessions stopped part-way: this flow continues the same plan.
     state.queue = { mode: "units" };
@@ -535,7 +578,7 @@ async function settle(
       done(undefined, "The scaffold is populated.");
       return null;
     }
-    return again(`Required placeholders remain in ${placeholderFiles(mexDir).join(", ") || "the scaffold"}. The task is not finished yet.`);
+    return again(`Required project knowledge is missing in ${placeholderFiles(mexDir).join(", ") || "the scaffold"}. Complete only those files; preserve completed knowledge. The task is not finished yet.`);
   }
 
   const batchPath = resolve(root, unit.batchFile!);
@@ -589,7 +632,8 @@ async function writePrompt(root: string, state: SetupPlanState, unit: Unit, mode
       case "single": {
         const prompt = await buildSetupPopulationPrompt(mode, brief.state, brief.brief, root);
         // The agent was not launched by setup: `mex setup next` checks and finalizes, not `mex setup`.
-        return prompt.replace(POPULATION_FINISH, QUEUE_POPULATION_FINISH);
+        return `Continue only the missing project knowledge in ${placeholderFiles(resolve(root, ".mex")).join(", ")}. Preserve completed files and facts; do not restart population.\n\n`
+          + prompt.replace(POPULATION_FINISH, QUEUE_POPULATION_FINISH);
       }
       case "shared":
         return buildSetupUnitPrompt(root, state, brief.brief);
@@ -636,6 +680,7 @@ async function finish(
     return blocked([...notes, "The shared scaffold files still have required placeholders, so setup cannot finalize yet. "
       + `Run \`${SETUP_NEXT_COMMAND}\` to get that task again.`].join("\n"), counts);
   }
+  notes.push(...fillPopulationPlaceholders(root, mexDir, progress));
   let groundingNotice = "";
   if (mode === "code-repo") {
     progress("Finalizing: capturing grounding baselines and indexing the Wiki…");
@@ -674,6 +719,8 @@ async function finish(
       };
     }
   }
+  const auditNotice = await populationWarning(root, mexDir, mode);
+  if (auditNotice !== null) notes.push(auditNotice);
   queue.finalized = true;
   state.finalizedAt = new Date((options.now ?? Date.now)()).toISOString();
   delete queue.awaiting;
@@ -766,14 +813,7 @@ function fileHash(path: string): string | null {
 
 /** The required scaffold files that still hold a template placeholder. */
 function placeholderFiles(mexDir: string): string[] {
-  return ["AGENTS.md", "ROUTER.md", ...SHARED_CONTEXT_FILES].filter((file) => {
-    try {
-      const content = readFileSync(resolve(mexDir, file), "utf8");
-      return content.includes("[Project Name]") || content.includes("[YYYY-MM-DD]");
-    } catch {
-      return true;
-    }
-  }).map((file) => `.mex/${file}`);
+  return unpopulatedScaffoldFiles(mexDir).map(file => `.mex/${file}`);
 }
 
 /** One `mex setup next` at a time per project; a lock from a dead or very old call is taken over. */
@@ -815,8 +855,9 @@ function computePlan(root: string): SubsystemPlan | null {
  * Keep the Wiki usable while setup is unfinished. Without an index, a scaffold
  * whose files are not yet migrated reads as `migration_required` (#268), which
  * blocks Wiki reads and the Hub. Rebuilding the disposable index over the
- * current files makes it valid and fresh without migrating templates the
- * agents are still filling; finalize migrates and indexes for real. Returns a
+ * current files makes it valid and fresh. Templates already have their Wiki
+ * identities, and fact batches stamp new subsystem files; finalization adopts
+ * only remaining legacy knowledge and repairs missing section links. Returns a
  * warning when the index could not be rebuilt.
  */
 export async function ensureWikiIndexUsable(projectRoot: string): Promise<string | null> {

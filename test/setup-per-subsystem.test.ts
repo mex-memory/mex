@@ -73,7 +73,12 @@ function simulatedAgent(root: string, options: { badOnce?: string[] } = {}) {
       for (const file of walkMarkdown(join(root, ".mex")).filter((path) => shared.some((name) => path.replaceAll("\\", "/").endsWith(`.mex/${name}`)))) {
         const text = readFileSync(file, "utf8");
         const filled = text.replaceAll("[Project Name]", "fixture").replaceAll("[YYYY-MM-DD]", "2026-10-23");
-        if (filled !== text) writeFileSync(file, filled);
+        if (filled !== text) {
+          // Project knowledge goes in the project sections, not after MEX-managed boilerplate.
+          const slot = /^## (?:What This Is|Current (?:Project|Operational) State)[^\n]*\r?\n/mu.exec(filled);
+          const at = slot ? slot.index + slot[0].length : filled.length;
+          writeFileSync(file, filled.slice(0, at) + "\nAuthored project guidance from source inspection.\n" + filled.slice(at));
+        }
       }
       write(".mex/local/setup-ops/shared.json", [fact("setup_shared_entry", "context/architecture.md", "Inputs are trimmed by parsealpha", [{ file: "src/alpha/parse.ts", symbol: "parsealpha" }])]);
     } else if (prompt.startsWith("You are writing the MEX knowledge for one subsystem")) {
@@ -171,7 +176,7 @@ describe("per-subsystem setup on a real graph", () => {
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toContain("COVERAGE — cover the whole project");
     expect(subsystemLaunch.prompts).toEqual([]);
-    expect(existsSync(join(root, SETUP_PLAN_STATE_FILE))).toBe(false);
+    expect(loadPlanState(root).state).toMatchObject({ queue: { mode: "single" }, shared: { state: "pending" }, subsystems: [] });
   }, 240_000);
 
   it("runs per-subsystem sessions on a small repository when the only agent has file tools, and says which agent runs", async () => {

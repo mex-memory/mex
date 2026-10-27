@@ -154,13 +154,15 @@ describe("setup state and scaffold ownership", () => {
     expect(detectProjectState(root, join(root, ".mex"))).toBe("fresh");
   });
 
-  it("recognizes a fully populated scaffold and rejects remaining placeholders", () => {
+  it("recognizes authored scaffold files even with leftover placeholders", () => {
     const root = fixture();
     const mex = join(root, ".mex");
     writePopulatedScaffold(mex);
     expect(isScaffoldPopulated(mex)).toBe(true);
     writeFileSync(join(mex, "context", "setup.md"), "last_updated: [YYYY-MM-DD]\n");
     expect(isScaffoldPopulated(mex)).toBe(false);
+    writeFileSync(join(mex, "context", "setup.md"), "last_updated: [YYYY-MM-DD]\n\nRun the development server with npm run dev.\n");
+    expect(isScaffoldPopulated(mex)).toBe(true);
   });
 
   it("never overwrites an existing scaffold file on rerun", () => {
@@ -235,6 +237,6 @@ function writePopulatedScaffold(mex: string): void {
   ]) {
     const path = join(mex, file);
     mkdirSync(join(path, ".."), { recursive: true });
-    writeFileSync(path, "last_updated: 2026-09-02\n# Ready\n");
+    writeFileSync(path, "last_updated: 2026-09-02\n# Ready\nRun npm test before publishing.\n");
   }
 }

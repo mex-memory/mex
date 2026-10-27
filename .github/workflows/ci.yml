@@ -126,6 +126,12 @@ jobs:
           src/statechart/__tests__/repository.test.ts
           src/statechart/__tests__/checker.test.ts
           test/hub-diagrams-integration.test.ts
+      - name: Run platform-sensitive setup end-to-end tests
+        # The full interruption matrix runs on Linux in `npm run test`; here only the
+        # cases that touch process launching, line endings and killing a process tree.
+        run: >-
+          npx vitest run --maxWorkers=1 test/setup-e2e-matrix.test.ts
+          -t "populates through the real launcher|fresh clone|setup process is killed|second setup"
       - name: Run terminal setup acceptance in a Windows console
         # node-pty is not a project dependency (#311): only this job needs it.
         if: runner.os == 'Windows'

@@ -99,9 +99,10 @@ describe("classification over the corpus", () => {
     expect(result.abstentions.every((entry) => entry.target?.at === "heading" && entry.target.depth === 3)).toBe(true);
   });
 
-  it("makes a decision of a log entry, and abstains on the log itself", () => {
+  it("makes a decision of a log entry, and gives the log a file-level entity rather than a decision", () => {
     const result = classified("context/decisions.md");
-    expect(result.candidates.map((candidate) => candidate.title)).toEqual([
+    const entries = result.candidates.filter((candidate) => candidate.target.at === "heading");
+    expect(entries.map((candidate) => candidate.title)).toEqual([
       "Store raw mail before parsing it",
       "One queue owns a ticket",
       "Queue rules are data, not code",
@@ -111,11 +112,16 @@ describe("classification over the corpus", () => {
       "A single outbound sender",
       "Reassign rather than share ownership",
     ]);
-    expect(result.candidates.every((candidate) => candidate.type === "decision")).toBe(true);
-    // The two containers, and the two entries that state no decision.
+    expect(entries.every((candidate) => candidate.type === "decision")).toBe(true);
+    // The log is the file other files' edges and its entries' `refines` point
+    // at (#286), so the file itself is an entity, adopted after its entries.
+    const file = result.candidates.filter((candidate) => candidate.target.at === "file");
+    expect(file.map((candidate) => candidate.type)).toEqual(["architecture"]);
+    expect(orderForAdoption(result.candidates).at(-1)?.target.at).toBe("file");
+    // The two entries that state no decision. The two containers are not
+    // abstentions: the rule decides they group entries, so there is nothing
+    // for a person to settle (#286).
     expect(result.abstentions.map((entry) => (entry.target?.at === "heading" ? entry.target.text : null))).toEqual([
-      "Decision Log",
-      "Open questions",
       "Raw store retention",
       "Multi-region ingest",
     ]);
@@ -127,9 +133,8 @@ describe("classification over the corpus", () => {
       "context/decisions.md",
     );
     const result = classifyFile(file);
-    expect(result.candidates.map((candidate) => candidate.title)).toEqual(["A real one"]);
+    expect(result.candidates.map((candidate) => candidate.title)).toEqual(["A real one", "decisions"]);
     expect(result.abstentions.map((entry) => (entry.target?.at === "heading" ? entry.target.text : null))).toEqual([
-      "Decision Log",
       "Just a note",
     ]);
   });
@@ -231,7 +236,7 @@ describe("classification over the corpus", () => {
     // sum it is, so a change says which rule moved.
     const architecture = 4 + 1; // four components, plus the file
     const conventions = 9 + 1;
-    const decisions = 8; // ten entries, two of which state no decision
+    const decisions = 8 + 1; // ten entries, two of which state no decision, plus the file
     const setup = 6 + 1;
     const risks = 6; // a register is a list, not one claim
     const patterns = 6; // one file-level entity each
@@ -275,7 +280,7 @@ describe("adoption order", () => {
       rule: "hypothetical",
     };
     const ordered = orderForAdoption([container, ...classifyFile(file).candidates]);
-    expect(ordered.map((candidate) => candidate.title)).toEqual(["One", "Decision Log"]);
+    expect(ordered.map((candidate) => candidate.title)).toEqual(["One", "Decision Log", "decisions"]);
   });
 });
 
@@ -401,7 +406,7 @@ describe("why the adoption order is what it is", () => {
       rule: "the container, hypothetically adopted",
     };
     const ordered = orderForAdoption([container, ...classifyFile(file).candidates]);
-    expect(ordered.map((candidate) => candidate.title)).toEqual(["One queue owns a ticket", "Decision Log"]);
+    expect(ordered.map((candidate) => candidate.title)).toEqual(["One queue owns a ticket", "Decision Log", "decisions"]);
   });
 });
 

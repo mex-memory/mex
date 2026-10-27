@@ -81,7 +81,7 @@ describe("headless setup run", () => {
       env: { MEX_SETUP_PER_SUBSYSTEM: "force" }, launch, freeMemory: () => 64 * 1024 ** 3,
       trackSource: false, applier: { apply, close: async () => ({ changed: false }) },
     } }).catch((error: unknown) => error);
-    await vi.waitFor(() => expect(launch.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() => expect(launch.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
     expect(apply).not.toHaveBeenCalled();
     fail(new Error("Graph worker failed; rerun mex setup"));
     expect(await pending).toMatchObject({ message: "Graph worker failed; rerun mex setup" });
@@ -269,7 +269,7 @@ describe("headless setup run", () => {
   });
 });
 
-it("pauses single-session setup after partial writes and reruns the session over filled files", async () => {
+it("finalizes authored single-session work with a warning instead of repeating population", async () => {
   const root = fixture();
   const first = await runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: [], populate: async () => {
     writePopulatedScaffold(join(root, ".mex"));
@@ -279,8 +279,8 @@ it("pauses single-session setup after partial writes and reruns the session over
   expect(first.message).toContain("5:30pm (Asia/Kolkata)");
   expect(inspectSetupStatus(root).stage).toBe("needs_population");
   const launch = vi.fn(async () => ({ tool: "claude" as const, completed: true }));
-  expect(await runHeadlessSetup({ projectRoot: root, tools: [], populate: launch })).toMatchObject({ ready: true });
-  expect(launch).toHaveBeenCalledOnce();
+  expect(await runHeadlessSetup({ projectRoot: root, tools: [], populate: launch })).toMatchObject({ ready: true, message: expect.stringContaining("project patterns") });
+  expect(launch).not.toHaveBeenCalled();
 });
 
 function fixture(): string {

@@ -169,7 +169,7 @@ describe("Hub setup wizard", () => {
       status: "paused", stage: "needs_population", prompt: "Set up MEX for this project. Run `mex setup next --start` first.", message,
     });
     renderSetup(harness.api);
-    const notice = await screen.findByText("Setup 3/9, not finished");
+    const notice = await screen.findByText("Setup 3/9, not finished", {}, { timeout: 5_000 });
     expect(notice.closest("p")).toHaveTextContent("run `mex setup next --start` in your agent's chat");
   });
 
@@ -500,6 +500,28 @@ describe("Hub setup wizard", () => {
     expect(await screen.findByRole("radio", { name: /Agent memory/ }, { timeout: 5_000 })).toBeChecked();
     expect(screen.queryByText("Git repository required")).toBeNull();
     expect(screen.getByRole("button", { name: "Start setup" })).toBeEnabled();
+  });
+
+  it("opens an already set-up checkout on its status above the completion guide, not the setup flow (#284)", async () => {
+    const user = userEvent.setup();
+    const setupHealth = {
+      summary: "MEX is already set up here (17 entities, 4 facts, graph behind the code).",
+      notes: ["1 source file has changed since the graph was built. Run `mex sync` to review knowledge the change may affect."],
+    };
+    const harness = setupHarness({
+      hasScaffold: true, populated: true, graphReady: true, wikiReady: true, stage: "ready", ready: true, setupHealth,
+    });
+    renderSetup(harness.api);
+    expect(await screen.findByRole("heading", { name: "MEX is already set up" }, { timeout: 5_000 })).toBeVisible();
+    const panel = screen.getByRole("status", { name: "Setup status" });
+    expect(panel).toHaveTextContent(setupHealth.summary);
+    expect(panel).toHaveTextContent(setupHealth.notes[0]!);
+    expect(panel).toHaveTextContent("mex setup --force");
+    expect(screen.queryByRole("button", { name: /Start setup|Finish setup/ })).toBeNull();
+    // The completion guide stays below the status.
+    expect(screen.getByRole("heading", { name: "You’re ready" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Open Hub" }));
+    expect(harness.api.startSetup).toHaveBeenCalledWith(expect.objectContaining({ confirmPopulation: true, openHub: true }));
   });
 
   it("shows failed agent diagnostics and keeps manual completion and retry available", async () => {

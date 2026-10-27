@@ -230,6 +230,9 @@ export function SetupPage() {
   const resume = status.hasScaffold
     || status.stage === "needs_finalize"
     || currentRun.status !== "idle";
+  // Opening setup on a checkout that is already set up shows its status, not the wizard (#284).
+  const alreadySetUp = status.setupHealth && currentRun.status === "idle" && !committedSetup
+    && (view === "ready" || view === "complete") ? status.setupHealth : null;
   const showWelcome = !welcomeDismissed && !resume && (view === "configure" || view === "git");
 
   if (showWelcome) {
@@ -247,7 +250,7 @@ export function SetupPage() {
         <div className={styles.intro}>
           <span className={styles.icon}><Sparkles aria-hidden="true" /></span>
           <div>
-            <h2 id="setup-title">{headingFor(view, status)}</h2>
+            <h2 id="setup-title">{alreadySetUp ? "MEX is already set up" : headingFor(view, status)}</h2>
             <p>{status.projectName}</p>
           </div>
         </div>
@@ -372,6 +375,8 @@ export function SetupPage() {
               onContinue={() => start.mutate({ mode, tools: tools as SetupStartRequest["tools"], confirmPopulation: true, ...(view === "ready" ? { openHub: true } : {}) })}
             />
           ) : null}
+          {/* The completion guide stays: the status only summarizes what setup found. */}
+          {alreadySetUp ? <AlreadySetUp health={alreadySetUp} /> : null}
           {(view === "ready" && currentRun.status !== "failed" && !recoveryWarning) || view === "complete" ? (
             <SetupCompletion api={api} agentMemory={view === "complete"} pending={start.isPending}
               onOpen={() => start.mutate({ mode, tools: tools as SetupStartRequest["tools"], confirmPopulation: true, openHub: true })} />
@@ -697,6 +702,21 @@ function PopulationPanel({
         </div>
       </div>
     </>
+  );
+}
+
+/** The status of a checkout that is already set up: the terminal's rerun summary (#284). */
+function AlreadySetUp({ health }: { health: NonNullable<SetupStatus["setupHealth"]> }) {
+  return (
+    <aside className={styles.integrationAdvisory} role="status" aria-label="Setup status">
+      <strong>{health.summary}</strong>
+      {health.notes.length > 0 ? <ul>{health.notes.map(note => <li key={note}>{note}</li>)}</ul> : null}
+      <p>
+        Setup has nothing left to do here. Check memory health with <code>mex check</code>,
+        repair knowledge drift with <code>mex sync</code>, or run <code>mex setup --force</code> in a terminal
+        to run the full setup again.
+      </p>
+    </aside>
   );
 }
 

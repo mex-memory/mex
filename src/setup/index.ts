@@ -1,3 +1,4 @@
+import { scaffoldIsAuthored } from "./population-audit.js";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Glob, Ignore } from "glob";
@@ -188,6 +189,8 @@ export interface SetupRunOptions {
   tools?: AiTool[];
   /** Plain, noninteractive setup. Never starts an agent or a browser. */
   yes?: boolean;
+  /** Run the full flow even on a set-up checkout instead of reporting its status (#284). */
+  force?: boolean;
   port?: number;
   openBrowser?: boolean;
 }
@@ -218,21 +221,7 @@ export function parseSetupTools(values: readonly string[]): AiTool[] {
 // ── Step functions ──
 
 export function isScaffoldPopulated(mexDir: string): boolean {
-  const required = [
-    "AGENTS.md",
-    "ROUTER.md",
-    "context/architecture.md",
-    "context/stack.md",
-    "context/conventions.md",
-    "context/decisions.md",
-    "context/setup.md",
-  ];
-  return required.every((file) => {
-    const path = resolve(mexDir, file);
-    if (!existsSync(path)) return false;
-    const content = readFileSync(path, "utf-8");
-    return !content.includes("[Project Name]") && !content.includes("[YYYY-MM-DD]");
-  });
+  return scaffoldIsAuthored(mexDir);
 }
 
 export function detectProjectState(projectRoot: string, mexDir: string): ProjectState {

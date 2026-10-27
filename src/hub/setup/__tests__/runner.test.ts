@@ -9,6 +9,7 @@ import { SetupError } from "../../../setup/errors.js";
 const mocks = vi.hoisted(() => ({ inspect: vi.fn(), execute: vi.fn(), status: vi.fn(), initial: vi.fn() }));
 vi.mock("../../../setup/headless.js", () => ({ inspectSetupStatus: mocks.inspect, runHeadlessSetup: mocks.execute }));
 vi.mock("../readiness.js", () => ({ initialSetupStatus: mocks.initial, projectSetupStatus: mocks.status, hasPendingSetupChanges: async () => true }));
+vi.mock("../../../setup/setup-lock.js", () => ({ assertSetupAvailable: () => {}, withSetupLock: async (_root: string, run: () => Promise<unknown>) => run() }));
 
 import { HubSetupRunner } from "../runner.js";
 

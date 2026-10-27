@@ -20,6 +20,7 @@ import {
 import { createPlanState, loadPlanState, savePlanState, type SetupPlanState } from "../subsystem-state.js";
 import type { SubsystemPlan } from "../subsystems.js";
 import { populateDuringGraph } from "../concurrent-graph.js";
+import { setupTemplatesDirectory } from "../phases.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -32,7 +33,7 @@ function project(populated = false): string {
   for (const file of SHARED_FILES) {
     const path = join(root, ".mex", file);
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, populated ? `# ${file}\n\nFilled.\n` : `# [Project Name]\n\nlast_updated: [YYYY-MM-DD]\n`);
+    writeFileSync(path, populated ? `# ${file}\n\nFilled.\n` : readFileSync(join(setupTemplatesDirectory(), file), "utf8"));
   }
   return root;
 }
@@ -393,7 +394,10 @@ describe("one session per subsystem", () => {
     const root = project(true);
     const state = createPlanState(plan(5));
     state.shared.state = "done";
-    const h = harness(root, { a: ["ok"], b: ["hang"], c: [action] }, { delayMs: 20 });
+    // a finished in an earlier run, so the three slots go to b, c and d at once
+    // and no freed slot can race c's failure.
+    state.subsystems[0]!.state = "done";
+    const h = harness(root, { b: ["hang"], c: [action], d: ["hang"] }, { delayMs: 20 });
     const { promise } = run(root, state, h);
     const error = await promise.catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(SubsystemPhaseStoppedError);
@@ -401,7 +405,7 @@ describe("one session per subsystem", () => {
     expect((error as Error).message).toContain("Population stopped with 1 of 5 subsystems done; rerun `mex setup` to continue where it stopped");
     const stored = loadPlanState(root).state!;
     expect(stored.subsystems.map((unit) => unit.state)).toEqual(["done", "pending", "pending", "pending", "pending"]);
-    expect(h.launches.map((entry) => entry.slug)).not.toContain("d");
+    expect(h.launches.map((entry) => entry.slug)).toEqual(["b", "c", "d"]);
     expect(h.launches.map((entry) => entry.kind)).not.toContain("final");
   });
 

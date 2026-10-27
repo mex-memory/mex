@@ -352,6 +352,12 @@ function createWithStructure(context: OperationContext, payload: CreateEntryPayl
       `${payload.title} was written without a parent link: the file-level entity of ${file.path} is ${fileLevel.entity.status === "archived" ? "archived" : "not one an entry can refine"}.`);
   }
 
+  // Decision entries written as prose must be adopted before their container.
+  // Setup stamps the log at finish; creating a fact must not adopt it early.
+  if (file.path === "context/decisions.md") {
+    return withNotice(createInto(context, payload, id), file.path,
+      `${payload.title} was written without a parent link: ${file.path} gets its container after decision adoption.`);
+  }
   const typed = fileEntityTypeFor(file.path, file.parsed.legacy.type);
   if ("refusal" in typed) {
     return withNotice(createInto(context, payload, id), file.path,

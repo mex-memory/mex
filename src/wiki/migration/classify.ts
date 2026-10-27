@@ -145,11 +145,16 @@ const CONTEXT_ROLES: Record<string, Role> = {
     rule: "section 13.2: risk section to `risk`; the register itself is not a claim",
   },
   "context/decisions.md": {
-    // Handled by the decision-log rule below, which is depth-3 and conditional.
-    fileType: null,
+    // Entries are handled by the decision-log rule below, which is depth-3 and
+    // conditional. The log itself stays a container rather than a decision,
+    // but it is the file other files' edges point at ("why the architecture is
+    // structured this way") and the parent its entries refine (#286), so it
+    // takes a file-level entity: the reasoning half of the architecture, as
+    // the stack file is its technology half. Adopted last, after its entries.
+    fileType: "architecture",
     sectionType: null,
     sectionDepth: 3,
-    rule: "section 13.2: decision only when the section expresses an actual decision",
+    rule: "section 13.2: decision only when the section expresses an actual decision; the log itself to a file-level `architecture`",
   },
 };
 
@@ -250,9 +255,6 @@ export function isSubstantial(sectionText: string): boolean {
   return weight.lines >= SUBSTANTIAL_SECTION_LINES && weight.words >= SUBSTANTIAL_SECTION_WORDS;
 }
 
-/** A `##` heading whose text names a decision log, under which `###` entries live. */
-const DECISION_LOG_HEADING = /^decision log$/i;
-
 /** The structural marker a decision entry carries. Not a reading of the prose. */
 const DECISION_MARKER = /^\*\*Decision:\*\*/m;
 
@@ -299,7 +301,9 @@ export function classifyFile(file: InventoryFile): FileClassification {
 
   // A file that already carries entities has been migrated. Section 13.3: a
   // file with valid ids is skipped, never regenerated.
-  if (file.parsed.entities.length > 0) {
+  const partialDecisionLog = file.path === "context/decisions.md"
+    && !file.parsed.entities.some((entry) => entry.metadataKind === "frontmatter");
+  if (file.parsed.entities.length > 0 && !partialDecisionLog) {
     return { ...result, skipped: true, skipReason: ALREADY_ADOPTED_REASON };
   }
 
@@ -348,21 +352,16 @@ export function classifyFile(file: InventoryFile): FileClassification {
     return result;
   }
 
-  // Decision log: depth-3 entries under a depth-2 heading that names the log,
-  // each carrying the structural decision marker.
+  // Decision log: depth-3 entries under a depth-2 heading that groups them
+  // (the log itself), each carrying the structural decision marker.
   if (file.path === "context/decisions.md") {
     file.headings.forEach((heading, index) => {
-      if (heading.depth === 1) return;
-      if (heading.depth === 2) {
-        result.abstentions.push({
-          file: file.path,
-          target: targetOf(heading, index),
-          reason: DECISION_LOG_HEADING.test(heading.title.trim())
-            ? "A decision log is a container for its entries, not a decision of its own."
-            : "A depth-2 heading in a decisions file groups entries; it makes no claim of its own.",
-        });
-        return;
-      }
+      // A previous run or wiki apply may already have adopted some entries.
+      if (file.parsed.entities.some((entry) => entry.entity.location.headingStart === heading.start)) return;
+      // A depth-2 heading groups entries and makes no claim of its own; the
+      // rule decides that, so it is not an abstention for a person to settle.
+      // Its prose belongs to the file-level entity, as the title does (#286).
+      if (heading.depth <= 2) return;
       if (heading.depth !== 3) {
         result.abstentions.push({
           file: file.path,
@@ -391,7 +390,6 @@ export function classifyFile(file: InventoryFile): FileClassification {
         rule: role.rule,
       });
     });
-    return result;
   }
 
   if (role.sectionType !== null) {

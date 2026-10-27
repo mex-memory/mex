@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import { assertSetupAvailable, withSetupLock } from "../../setup/setup-lock.js";
 import type {
   SetupRun,
   SetupStartRequest,
@@ -230,6 +232,11 @@ export class HubSetupRunner {
         "A setup run is already in progress for this checkout.",
       );
     }
+    try { assertSetupAvailable(resolve(this.projectRoot, ".mex")); }
+    catch (error) {
+      if (!(error instanceof SetupError)) throw error;
+      throw new HubHttpError(409, "JOB_ALREADY_RUNNING", "Another setup is running", error.userMessage);
+    }
     this.commitService?.clear();
     const status = initialSetupStatus(this.projectRoot);
     if (request.mode === "code-repo" && !status.hasGit) {
@@ -293,6 +300,7 @@ export class HubSetupRunner {
 
   private async execute(request: SetupStartRequest, signal: AbortSignal): Promise<void> {
     try {
+      await withSetupLock(resolve(this.projectRoot, ".mex"), async () => {
       if (this.commitService) await this.commitService.verifyRecovery();
       const current = inspectSetupStatus(this.projectRoot);
       const canFinishExisting = !this.finalizeOnly && request.confirmPopulation === true
@@ -404,6 +412,7 @@ export class HubSetupRunner {
       if (signal.aborted) throw new Error("Setup was cancelled.");
       if (this.finalizeOnly && result.ready) this.finalizationComplete = true;
       await this.finishFromResult(result, signal, request.openHub === true);
+      });
     } catch (error) {
       // Child output and arbitrary filesystem exceptions are never a browser payload.
       const message = (signal.aborted ? "Setup was cancelled. You can resume it when ready."
@@ -439,6 +448,7 @@ export class HubSetupRunner {
         + (result.groundingNotice ? ` ${result.groundingNotice}` : "")
       : status.stage === "complete"
         ? "Agent memory is ready. Your selected AI tools can use this workspace."
+          + (result.groundingNotice ? ` ${result.groundingNotice}` : "")
         : result.message;
     this.run = {
       status: paused ? "paused" : result.ready || result.populated ? "succeeded" : "paused",

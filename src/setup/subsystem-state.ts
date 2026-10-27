@@ -10,7 +10,7 @@
  * Paths an agent writes to are always derived from a validated slug, never read
  * back from the file, so an edited state file cannot redirect a write.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { PopulationAgentUsage } from "./population-activity.js";
 import { isBackgroundAgentTool, type BackgroundAgentTool } from "../agent-command.js";
@@ -20,6 +20,31 @@ import { SETUP_OPS_DIRECTORY } from "./prompts.js";
 export const SETUP_PLAN_STATE_FILE = ".mex/local/setup-plan.json";
 export const SETUP_PLAN_STATE_KIND = "mex-setup-subsystem-plan";
 export const SETUP_PLAN_STATE_VERSION = 1;
+
+/** Inspect resume metadata without moving corrupt files or following local links. */
+export function readSetupPlanSnapshot(projectRoot: string): SetupPlanState | null {
+  try {
+    for (const directory of [resolve(projectRoot, ".mex"), resolve(projectRoot, ".mex/local")]) {
+      const stat = lstatSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+    }
+    const path = resolve(projectRoot, SETUP_PLAN_STATE_FILE);
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 8 * 1024 * 1024) return null;
+    return parsePlanState(readFileSync(path, "utf8")).state;
+  } catch { return null; }
+}
+
+/** Earlier setup versions queued all work for an authored scaffold with one
+ * leftover token. Only an undispatched plan with no run or batch evidence may
+ * be bypassed; real interrupted work must continue from its recorded units. */
+export function isUnstartedSetupPlan(projectRoot: string, state: SetupPlanState): boolean {
+  return state.graph === undefined && !state.queue?.awaiting?.length
+    && [state.shared, ...state.subsystems, state.final].every(unit => unit.state === "pending"
+      && unit.runs.length === 0 && unit.reason === undefined && !unit.applied && unit.facts === undefined)
+    && [SHARED_UNIT_SLUG, ...state.subsystems.map(unit => unit.slug)].every(slug =>
+      !existsSync(resolve(projectRoot, unitBatchFile(slug))));
+}
 /** The unit that fills the shared scaffold files writes its facts here. */
 export const SHARED_UNIT_SLUG = "shared";
 

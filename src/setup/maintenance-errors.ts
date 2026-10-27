@@ -137,8 +137,10 @@ export function setupWikiFailureMessage(
   stage: SetupWikiFinalizationStage,
   diagnostics: readonly WikiDiagnostic[],
 ): string {
-  const label = stage === "plan" ? "Wiki migration planning"
+  const label = stage === "ids" ? "Adding Wiki ids"
+    : stage === "plan" ? "Wiki migration planning"
     : stage === "migration" ? "Wiki migration"
+      : stage === "links" ? "Wiki section linking"
       : stage === "index" ? "Wiki indexing" : "Wiki validation";
   const diagnostic = diagnostics.find((entry) => entry.severity === "error" && Object.hasOwn(WIKI_DIAGNOSTICS, entry.code));
   if (!diagnostic) return `${label} could not finish. Review the .mex files and retry setup after correcting the problem.`;

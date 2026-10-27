@@ -9,6 +9,7 @@ import { buildSetupUnitPrompt, discoverSkippedSourceFolders } from "../subsystem
 import * as links from "../subsystem-links.js";
 import type { SetupBatchApplier } from "../subsystem-apply.js";
 import * as nextGraph from "../next-graph.js";
+import { setupTemplatesDirectory } from "../phases.js";
 
 vi.mock("../next-graph.js", () => ({ ensureNextGraph: vi.fn(async () => ({ status: "ready" })) }));
 
@@ -177,7 +178,7 @@ it("records final skipped while shared files are unfilled, then resumes the shar
   const f = fixture();
   f.state.shared.state = "skipped";
   f.state.subsystems[0]!.state = "done";
-  f.write(".mex/AGENTS.md", "# [Project Name]\n");
+  f.write(".mex/AGENTS.md", readFileSync(join(setupTemplatesDirectory(), "AGENTS.md"), "utf8"));
   f.save();
   const result = await f.next();
   expect(result.status).toBe("blocked");

@@ -36,6 +36,10 @@ export async function projectSetupStatus(projectRoot: string): Promise<SetupStat
   const status = inspectSetupStatus(projectRoot);
   const ready = status.ready && status.mode === "code-repo"
     && await hasCommittedHubIdentity(projectRoot);
+  // The same status-first summary the terminal prints on a rerun (#284).
+  const health = ready || (status.ready && status.mode === "agent-memory")
+    ? await import("../../setup/health.js").then(({ assessSetupHealth }) => assessSetupHealth(projectRoot))
+    : null;
   return {
     mode: status.mode,
     projectName: status.projectName,
@@ -53,6 +57,7 @@ export async function projectSetupStatus(projectRoot: string): Promise<SetupStat
       ? setupCommitCheckpointCommands(status.configuredTools)
       : [],
     ...unfinishedStatus(projectRoot),
+    ...(health?.healthy ? { setupHealth: { summary: health.summary, notes: health.notes.slice(0, 4) } } : {}),
   };
 }
 

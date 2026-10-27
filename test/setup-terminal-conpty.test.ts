@@ -418,7 +418,11 @@ process.stdin.on("data", (chunk) => {
         else if (entry.name.endsWith(".md")) {
           const text = fs.readFileSync(file, "utf8");
           const next = text.replaceAll("[Project Name]", "PTY fixture").replaceAll("[Agent / Workspace Name]", "PTY fixture").replaceAll("[YYYY-MM-DD]", "2026-01-01");
-          if (next !== text) fs.writeFileSync(file, next);
+          if (next !== text) {
+            const slot = /^## (?:What This Is|Current (?:Project|Operational) State)[^\n]*\r?\n/m.exec(next);
+            const at = slot ? slot.index + slot[0].length : next.length;
+            fs.writeFileSync(file, next.slice(0, at) + "\nAuthored project guidance from source inspection.\n" + next.slice(at));
+          }
         }
       }
     };

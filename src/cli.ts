@@ -186,13 +186,9 @@ async function reportSetupCommandError(error: unknown): Promise<void> {
 
 async function runSetupCommand(options: {
   browser?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean; tool?: string[]; yes?: boolean;
+  force?: boolean;
 }): Promise<void> {
   try {
-    if (!options.dryRun) {
-      const { cleanupStaleSetupPrompts } = await import("./agent-prompt.js");
-      const { findSetupProjectRoot } = await import("./setup/entry.js");
-      cleanupStaleSetupPrompts(findSetupProjectRoot());
-    }
     if (options.browser) {
       await runBrowserCommand({ ...options, setup: true });
       return;
@@ -205,6 +201,7 @@ async function runSetupCommand(options: {
       openBrowser: options.open,
       ...(options.tool === undefined ? {} : { tools: setup.parseSetupTools(options.tool) }),
       ...(options.yes ? { yes: true } : {}),
+      ...(options.force ? { force: true } : {}),
     });
     process.exitCode = result.exitCode;
   } catch (error) {
@@ -349,20 +346,24 @@ const setupCommand = program
   .command("setup")
   .description("Set up MEX in the terminal; use --browser for browser setup")
   .option("--cli", "Run setup in the terminal (the default)")
-  .addOption(new Option("--browser", "Run setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes"]))
+  .addOption(new Option("--browser", "Run setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force"]))
   .option("--mode <mode>", "Template mode: code-repo or agent-memory (preserves saved mode)")
   .option("--dry-run", "Show what would happen without making changes")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
   .option("--no-open", "Show the Hub link without opening a browser")
   .option("--tool <tool>", "Terminal setup: preselect an AI tool (repeatable; none for no tool; --yes skips review)", (value: string, previous: string[] = []) => [...previous, value])
   .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
+  .option("--force", "Terminal setup: run the full flow even when MEX is already set up here")
   .addHelpText(
     "after",
     "\nSetup modes:\n"
-      + "  Terminal (default, or --cli)  Runs setup in this terminal. --tool, --yes and --dry-run\n"
-      + "                                apply only here.\n"
+      + "  Terminal (default, or --cli)  Runs setup in this terminal. --tool, --yes, --force and\n"
+      + "                                --dry-run apply only here.\n"
       + "  Browser (--browser)           Runs setup in the local browser Hub. It cannot be combined\n"
-      + "                                with --cli, --tool, --yes or --dry-run.\n"
+      + "                                with --cli, --tool, --yes, --force or --dry-run.\n"
+      + "\nOn a checkout that is already set up, setup reports its status and does no work;\n"
+      + "it finishes only what is missing otherwise. --force runs the full flow; authored\n"
+      + "files are always preserved.\n"
       + "\n--no-open prints the Hub link instead of opening it in a browser. In the terminal\n"
       + "mode this is the link to the finishing Hub page; in the browser mode it is the setup link.\n"
       + "\nNo agent CLI MEX can launch? Paste one prompt into your agent instead: it runs\n"
@@ -631,6 +632,7 @@ graphCommand
   .option("--max-nodes <n>", "maximum results to return")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
+  .option("--include-tests", "also return callers/callees in test files when other results exist")
   .action(async (relation, target, options) => {
     const { createGraphCliWriter } = await import("./graph-cli-output.js");
     return import("./graph/cli-agent.js").then(({ runGraphQuery }) => runGraphQuery(relation, target, process.cwd(), { write: createGraphCliWriter() }, options));
@@ -1028,6 +1030,7 @@ program
   .option("--max-nodes <n>", "maximum impacted nodes to return")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
+  .option("--include-tests", "also return impacted nodes in test files when other results exist")
   .action(async (target, options) => {
     const { createGraphCliWriter } = await import("./graph-cli-output.js");
     return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), { write: createGraphCliWriter() }, options));

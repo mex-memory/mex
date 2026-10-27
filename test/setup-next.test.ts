@@ -15,6 +15,7 @@ import { readNextGraph } from "../src/setup/next-graph.js";
 import { SETUP_HANDOFF_PROMPT, describeUnfinishedSetup } from "../src/setup/unfinished.js";
 import { createRepositoryWikiPort } from "../src/wiki/application-adapter.js";
 import { projectSetupStatus } from "../src/hub/setup/readiness.js";
+import { inventoryScaffold } from "../src/wiki/migration/inventory.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -64,7 +65,12 @@ function fillPlaceholders(root: string): void {
   for (const file of walkMarkdown(join(root, ".mex"))) {
     const text = readFileSync(file, "utf8");
     const filled = text.replaceAll("[Project Name]", "fixture").replaceAll("[YYYY-MM-DD]", "2026-10-24");
-    if (filled !== text) writeFileSync(file, filled);
+    if (filled !== text) {
+      // Project knowledge goes in the project sections, not after MEX-managed boilerplate.
+      const slot = /^## (?:What This Is|Current (?:Project|Operational) State)[^\n]*\r?\n/mu.exec(filled);
+      const at = slot ? slot.index + slot[0].length : filled.length;
+      writeFileSync(file, filled.slice(0, at) + "\nAuthored project guidance from source inspection.\n" + filled.slice(at));
+    }
   }
 }
 
@@ -165,6 +171,8 @@ describe("mex setup next on a real graph", () => {
     expect(result.output).toContain("Start this task in its own subagent, in a fresh context");
     expect(result.output).toContain("As soon as any task finishes, run `mex setup next` again without waiting for the others.");
     expect(result.taskFile).toBe(".mex/local/setup-next/shared.md");
+    // Template identities exist before an agent writes its first fact (#286).
+    expect(readFileSync(join(root, ".mex/context/architecture.md"), "utf8")).toMatch(/^mex:\r?\n {2}id: mx_/mu);
     expect(result.output).toContain("The code graph is still building");
     expect(readNextGraph(root)?.status).toBe("running");
     doTask(root, taskText(root, result), { badOnce });
@@ -211,6 +219,16 @@ describe("mex setup next on a real graph", () => {
     expect(inspectSetupStatus(root)).toMatchObject({ stage: "ready", ready: true });
     expect(await wikiState(root)).toBe("fresh");
     expect(readFileSync(join(root, ".mex/context/beta.md"), "utf8")).toContain("routebeta caps input at 64 characters");
+    // Subsystem files created by batches also have a parent and linked facts.
+    const inventory = inventoryScaffold({ scaffoldRoot: join(root, ".mex") });
+    for (const unit of state.subsystems) {
+      const file = inventory.files.find(entry => entry.path === `context/${unit.slug}.md`)!;
+      const parent = file.parsed.entities.find(entry => entry.metadataKind === "frontmatter")!;
+      expect(parent, unit.slug).toBeDefined();
+      for (const fact of file.parsed.entities.filter(entry => entry.entity.type === "fact")) {
+        expect(fact.entity.relations).toContainEqual(expect.objectContaining({ type: "refines", target: parent.entity.id }));
+      }
+    }
     expect(readdirSync(join(root, ".mex/local/setup-next")).filter((name) => name.endsWith(".md"))).toEqual([]);
 
     expect(outputs.join("\n")).not.toContain("Next task: its instructions are in .mex/local/setup-next/final.md");
@@ -227,7 +245,7 @@ describe("mex setup next on a real graph", () => {
     // Calling again is safe: nothing left to do.
     const again = await next(root);
     expect(again).toMatchObject({ status: "complete", exitCode: 0 });
-    expect(again.output).toBe("MEX setup is already complete. There is nothing left to do.");
+    expect(again.output).toContain("MEX setup is already complete. There is nothing left to do.");
     expect(navigation.map((file) => readFileSync(join(root, ".mex", file), "utf8"))).toEqual(before);
   }, 300_000);
 
@@ -315,7 +333,8 @@ describe("mex setup next on a real graph", () => {
     doTask(root, task);
     result = await next(root, {});
     expect(result.status).toBe("complete");
-    expect(result.output).toContain("MEX setup is complete.");
+    // The fixture only fills the template slots, so setup finishes with the thin-knowledge warning.
+    expect(result.output).toContain("Warning: Population finished without project patterns");
     expect(inspectSetupStatus(root).ready).toBe(true);
   }, 300_000);
 

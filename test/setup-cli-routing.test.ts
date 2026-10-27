@@ -19,6 +19,14 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); process.exitCode = 0; });
 
 describe("setup entry points", () => {
+  it("leaves prompt cleanup to the setup engine after the status shortcut", async () => {
+    const prompts = await import("../src/agent-prompt.js");
+    const cleanup = vi.spyOn(prompts, "cleanupStaleSetupPrompts");
+    const { program } = await import("../src/cli.js");
+    await program.parseAsync(["setup"], { from: "user" });
+    expect(mocks.setup).toHaveBeenCalledOnce();
+    expect(cleanup).not.toHaveBeenCalled();
+  });
   it("routes `mex setup next` to the one-step command, prints its output and keeps its exit code", async () => {
     mocks.next.mockResolvedValue({ status: "task", exitCode: 0, progress: { done: 1, total: 5 }, output: "MEX setup 1/5: subsystem src/a/" });
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -92,8 +100,16 @@ describe("setup entry points", () => {
     expect(help).toContain("Setup modes:");
     expect(help).toContain("Terminal (default, or --cli)");
     expect(help).toContain("Browser (--browser)");
-    expect(help.replace(/\s+/g, " ")).toContain("It cannot be combined with --cli, --tool, --yes or --dry-run.");
+    expect(help.replace(/\s+/g, " ")).toContain("It cannot be combined with --cli, --tool, --yes, --force or --dry-run.");
+    expect(help.replace(/\s+/g, " ")).toContain("On a checkout that is already set up, setup reports its status and does no work;");
     expect(help).toContain("--no-open prints the Hub link instead of opening it in a browser.");
+  });
+
+  it("passes --force to terminal setup so a set-up checkout reruns the full flow (#284)", async () => {
+    const { program } = await import("../src/cli.js");
+    await program.parseAsync(["setup", "--force", "--no-open"], { from: "user" });
+    expect(mocks.setup).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ force: true, openBrowser: false }));
+    expect(mocks.hub).not.toHaveBeenCalled();
   });
 
   it("keeps the TUI explicitly available", async () => {

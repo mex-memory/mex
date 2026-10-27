@@ -1,4 +1,4 @@
 {"type":"meta","protocolVersion":3,"schemaVersion":3,"command":"graph get","detail":"source","maxNodes":2,"maxFiles":4,"maxFlowSteps":0,"maxOutputTokens":1500}
 {"type":"error","code":"NODE_NOT_FOUND","id":"function:missing"}
 {"type":"source","filePath":"src/a.ts","ranges":[{"startLine":1,"endLine":3,"nodeIds":["function:leaf"],"content":"1: export function leaf() {\n2:   return 1;\n3: }","truncated":false,"reason":"complete-symbol"}]}
-{"type":"summary","matchedNodes":2,"returnedNodes":1,"returnedEdges":0,"maxOutputTokens":1500,"truncated":false,"suggestedNextCommands":[],"status":"ok","evidenceStrength":"strong","coveredTerms":[],"returnedFiles":[],"sourceBackedNodes":[],"textFallbackFiles":[],"warnings":[],"omittedCounts":{},"estimatedOutputTokens":192}
+{"type":"summary","matchedNodes":2,"returnedNodes":1,"returnedEdges":0,"maxOutputTokens":1500,"truncated":false,"suggestedNextCommands":[],"status":"ok","evidenceStrength":"strong","coveredTerms":[],"returnedFiles":[],"textFallbackFiles":[],"warnings":[],"omittedCounts":{},"estimatedOutputTokens":186}

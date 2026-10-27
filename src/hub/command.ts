@@ -21,6 +21,7 @@ import { normalizeSetupMode, type SetupMode } from "../setup/phases.js";
 import { createProjectTelemetryCapture, startHubTelemetry } from "../telemetry/index.js";
 import { emitHubTelemetry } from "./telemetry.js";
 import { dirname, join } from "node:path";
+import { assertSetupAvailable } from "../setup/setup-lock.js";
 import { fileURLToPath } from "node:url";
 
 export interface RunHubCommandOptions {
@@ -149,6 +150,7 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
 /** Setup-only Hub: same session/assets/server, no Team/Graph/Wiki jobs until ready. */
 export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Promise<void> {
   if (options.signal?.aborted) return;
+  assertSetupAvailable(join(options.projectRoot, ".mex"));
   const captureEvent = createProjectTelemetryCapture(options.projectRoot);
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
   let stopTelemetry: (() => Promise<void>) | undefined;

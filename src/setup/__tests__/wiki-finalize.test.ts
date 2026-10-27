@@ -35,7 +35,7 @@ describe("setup Wiki finalization", () => {
     expect(existsSync(join(scaffoldRoot, "wiki.db"))).toBe(false);
   });
 
-  it("adopts files added since an earlier setup without telling the user to run migration (#227)", async () => {
+  it("adopts files added since an earlier setup without telling the user to run migration (#227, #286)", async () => {
     const projectRoot = fixture();
     const scaffoldRoot = join(projectRoot, ".mex");
     mkdirSync(join(scaffoldRoot, "context"), { recursive: true });
@@ -52,10 +52,12 @@ describe("setup Wiki finalization", () => {
 
     const result = await finalizeSetupWiki({ projectRoot, scaffoldRoot, onWarning: (message) => warnings.push(message) });
 
-    expect(result).toMatchObject({ ready: true, migrated: true, plannedEntities: 1, abstentions: 1 });
+    expect(result).toMatchObject({ ready: true, migrated: true, stampedFiles: 1, plannedEntities: 1, abstentions: 0 });
     expect(readFileSync(join(scaffoldRoot, "patterns", "add-route.md"), "utf8")).toContain("mex:");
-    // The untyped file is reported once, as the migration abstention it is.
-    expect(warnings).toEqual([expect.stringContaining("Wiki migration left context/routing.md for review")]);
+    // A context file no rule types takes its folder's type at finish (#286)
+    // instead of being left for a person to classify.
+    expect(readFileSync(join(scaffoldRoot, "context", "routing.md"), "utf8")).toMatch(/mex:\n {2}id: mx_\w+\n {2}type: component\n/u);
+    expect(warnings).toEqual([]);
     expect(result.diagnostics.filter((entry) => entry.code.startsWith("KNOWLEDGE_"))).toEqual([]);
   });
 
@@ -87,11 +89,13 @@ describe("setup Wiki finalization", () => {
     expect(existsSync(join(scaffoldRoot, "wiki.db"))).toBe(true);
     expect(warnings[0]).toContain("notes.md");
     expect(progress).toEqual([
+      "Checking Wiki ids...",
       "Planning Wiki migration...",
       "Applying Wiki migration...",
+      "Linking Wiki sections...",
       "Rebuilding Wiki index...",
       "Validating Wiki scaffold...",
-      "Wiki migration and index are ready.",
+      "Wiki ids, links and index are ready.",
     ]);
   });
 
@@ -141,6 +145,9 @@ describe("setup Wiki finalization", () => {
       "utf8",
     );
     const before = readFileSync(brokenPath, "utf8");
+    const healthyPath = join(scaffoldRoot, "context", "worker.md");
+    const healthy = "---\nname: worker\n---\n\n# Worker\n\nRetain this overview unchanged on failure.\n";
+    writeFileSync(healthyPath, healthy);
     const progress: string[] = [];
 
     const result = await finalizeSetupWiki({
@@ -158,9 +165,10 @@ describe("setup Wiki finalization", () => {
     expect(result.reason).toContain("blocked");
     expect(result.diagnostics.some((entry) => entry.severity === "error")).toBe(true);
     expect(readFileSync(brokenPath, "utf8")).toBe(before);
+    expect(readFileSync(healthyPath, "utf8")).toBe(healthy);
     expect(existsSync(join(scaffoldRoot, "events", "operations.jsonl"))).toBe(false);
     expect(existsSync(join(scaffoldRoot, "wiki.db"))).toBe(false);
-    expect(progress).toEqual(["Planning Wiki migration..."]);
+    expect(progress).toEqual(["Checking Wiki ids..."]);
   });
 
   it("honors configured read-only paths during migration", async () => {
