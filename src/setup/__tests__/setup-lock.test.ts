@@ -167,6 +167,55 @@ describe("setup lock (#310)", () => {
     expect(existsSync(gate)).toBe(false);
   });
 
+  it("refuses a second setup while an agent from a killed setup is still active", () => {
+    const mexDir = join(fixture(), ".mex");
+    writeLock(mexDir, { pid: exitedPid(), host: hostname() });
+    writePlan(mexDir, { shared: "running", final: "pending" });
+
+    expect(() => acquireSetupLock(mexDir)).toThrow(/An agent from that setup is still running/u);
+    expect(() => assertSetupAvailable(mexDir)).toThrow(/An agent from that setup is still running/u);
+    // Nothing changed: the abandoned lock and the plan are both intact.
+    expect(existsSync(join(mexDir, "local", "setup.lock"))).toBe(true);
+    expect(existsSync(join(mexDir, "local", "setup-plan.json"))).toBe(true);
+  });
+
+  it("reclaims a lock whose earlier run went quiet", () => {
+    const mexDir = join(fixture(), ".mex");
+    writeLock(mexDir, { pid: exitedPid(), host: hostname() });
+    writePlan(mexDir, { shared: "running", final: "pending" });
+    ageFile(join(mexDir, "local", "setup-plan.json"), 60 * 60_000);
+
+    acquireSetupLock(mexDir).release();
+    expect(existsSync(join(mexDir, "local", "setup.lock"))).toBe(false);
+  });
+
+  it("a recently written batch file keeps a quiet plan's lock live", () => {
+    const mexDir = join(fixture(), ".mex");
+    writeLock(mexDir, { pid: exitedPid(), host: hostname() });
+    writePlan(mexDir, { shared: "done", subsystems: [{ state: "running", slug: "router" }], final: "pending" });
+    ageFile(join(mexDir, "local", "setup-plan.json"), 60 * 60_000);
+    writeBatch(mexDir, "router");
+
+    expect(() => acquireSetupLock(mexDir)).toThrow(/An agent from that setup is still running/u);
+  });
+
+  it("a plan with no running units does not block a reclaim", () => {
+    const mexDir = join(fixture(), ".mex");
+    writeLock(mexDir, { pid: exitedPid(), host: hostname() });
+    writePlan(mexDir, { shared: "done", final: "pending" });
+
+    acquireSetupLock(mexDir).release();
+  });
+
+  it("an unreadable plan does not block a reclaim", () => {
+    const mexDir = join(fixture(), ".mex");
+    writeLock(mexDir, { pid: exitedPid(), host: hostname() });
+    mkdirSync(join(mexDir, "local"), { recursive: true });
+    writeFileSync(join(mexDir, "local", "setup-plan.json"), "not json");
+
+    acquireSetupLock(mexDir).release();
+  });
+
   it("releases the lock when the run fails", async () => {
     const mexDir = join(fixture(), ".mex");
     await expect(withSetupLock(mexDir, async () => { throw new Error("failed"); })).rejects.toThrow("failed");
@@ -192,6 +241,26 @@ function writeLock(mexDir: string, owner: { pid: number; host: string; token?: s
   const path = join(mexDir, SETUP_LOCK_FILE);
   if (replace) rmSync(path, { force: true });
   writeFileSync(path, `${JSON.stringify({ token: "abandoned", startedAt: new Date().toISOString(), ...owner })}\n`);
+}
+
+function writePlan(mexDir: string, units: { shared: string; subsystems?: { state: string; slug: string }[]; final: string }): void {
+  mkdirSync(join(mexDir, "local"), { recursive: true });
+  writeFileSync(join(mexDir, "local", "setup-plan.json"), JSON.stringify({
+    shared: { state: units.shared, runs: [] },
+    subsystems: (units.subsystems ?? []).map((unit) => ({ state: unit.state, slug: unit.slug, runs: [] })),
+    final: { state: units.final, runs: [] },
+  }));
+}
+
+function writeBatch(mexDir: string, slug: string): void {
+  const dir = join(mexDir, "local", "setup-ops");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${slug}.json`), "{}\n");
+}
+
+function ageFile(path: string, msAgo: number): void {
+  const old = new Date(Date.now() - msAgo);
+  utimesSync(path, old, old);
 }
 
 /** The pid of a process that has already exited. */
