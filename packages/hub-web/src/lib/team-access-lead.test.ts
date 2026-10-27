@@ -11,7 +11,7 @@ import {
   buildTeamAccessFollowUpPayload,
   readTeamAccessState,
   submitTeamAccessPayload,
-  validateTeamAccessContact,
+  validateTeamAccessEmail,
   writeTeamAccessState,
 } from "./team-access-lead";
 
@@ -22,16 +22,12 @@ afterEach(() => {
 });
 
 describe("team-access lead payloads", () => {
-  it("builds a closed contact payload without repo or machine fields", () => {
+  it("builds an email-only contact payload without repo or machine fields", () => {
     __setWeb3FormsAccessKeyForTests("public-test-key");
-    const payload = buildTeamAccessContactPayload({
-      name: "  Ada Lovelace  ",
-      email: " ada@example.com ",
-    });
+    const payload = buildTeamAccessContactPayload({ email: " ada@example.com " });
 
     expect(payload).toEqual({
       access_key: "public-test-key",
-      name: "Ada Lovelace",
       email: "ada@example.com",
       subject: TEAM_ACCESS_SUBJECT,
       from_name: "mex Hub",
@@ -41,7 +37,6 @@ describe("team-access lead payloads", () => {
       "access_key",
       "email",
       "from_name",
-      "name",
       "source",
       "subject",
     ]);
@@ -50,26 +45,26 @@ describe("team-access lead payloads", () => {
   it("omits empty optional follow-up fields and keeps the same contact identity", () => {
     __setWeb3FormsAccessKeyForTests("public-test-key");
     const payload = buildTeamAccessFollowUpPayload({
-      name: "Ada Lovelace",
       email: "ada@example.com",
+      engineersUsingAgents: "",
+      name: "  ",
       company: "  ",
       teamSize: "",
       foundMex: "",
       installReason: "",
       repoKind: "",
-      othersUseAgents: "",
       need: "",
       missing: "",
     });
 
     expect(payload).toEqual({
       access_key: "public-test-key",
-      name: "Ada Lovelace",
       email: "ada@example.com",
       subject: TEAM_ACCESS_FOLLOW_UP_SUBJECT,
       from_name: "mex Hub",
       source: TEAM_ACCESS_SOURCE,
     });
+    expect(payload).not.toHaveProperty("name");
     expect(payload).not.toHaveProperty("company");
     expect(payload).not.toHaveProperty("i_want");
     expect(payload).not.toHaveProperty("repo");
@@ -79,25 +74,26 @@ describe("team-access lead payloads", () => {
   it("includes only allowlisted optional answers", () => {
     __setWeb3FormsAccessKeyForTests("public-test-key");
     const payload = buildTeamAccessFollowUpPayload({
-      name: "Ada Lovelace",
       email: "ada@example.com",
+      engineersUsingAgents: "6–20",
+      name: "Ada Lovelace",
       company: "Analytical Engines",
       teamSize: "2–10",
       foundMex: "GitHub",
       installReason: "Agent memory",
       repoKind: "Work",
-      othersUseAgents: "Yes",
       need: "Shared team memory",
       missing: "Shared follow-up",
     });
 
     expect(payload).toMatchObject({
+      engineers_using_agents: "6–20",
+      name: "Ada Lovelace",
       company: "Analytical Engines",
       team_size: "2–10",
       found_mex: "GitHub",
       install_reason: "Agent memory",
       repo_kind: "Work",
-      others_use_agents: "Yes",
       i_need: "Shared team memory",
       whats_missing: "Shared follow-up",
     });
@@ -105,12 +101,12 @@ describe("team-access lead payloads", () => {
       "access_key",
       "company",
       "email",
+      "engineers_using_agents",
       "found_mex",
       "from_name",
       "i_need",
       "install_reason",
       "name",
-      "others_use_agents",
       "repo_kind",
       "source",
       "subject",
@@ -121,11 +117,19 @@ describe("team-access lead payloads", () => {
     expect(payload).not.toHaveProperty("path");
   });
 
-  it("rejects blank or malformed contact details before submit", () => {
-    expect(validateTeamAccessContact("", "ada@example.com")).toEqual({ name: "Enter your name." });
-    expect(validateTeamAccessContact("Ada", "")).toEqual({ email: "Enter your email." });
-    expect(validateTeamAccessContact("Ada", "not-an-email")).toEqual({ email: "Enter a valid email." });
-    expect(validateTeamAccessContact("Ada", "ada@example.com")).toEqual({});
+  it("asks only for a valid email before submit", () => {
+    expect(validateTeamAccessEmail("")).toEqual({ email: "Enter your email." });
+    expect(validateTeamAccessEmail("not-an-email")).toEqual({ email: "Enter a valid email." });
+    expect(validateTeamAccessEmail("ada@example.com")).toEqual({});
+  });
+
+  it("drops an engineer count outside the offered answers", () => {
+    __setWeb3FormsAccessKeyForTests("public-test-key");
+    const payload = buildTeamAccessFollowUpPayload({
+      email: "ada@example.com", engineersUsingAgents: "500", name: "", company: "", teamSize: "",
+      foundMex: "", installReason: "", repoKind: "", need: "", missing: "",
+    });
+    expect(payload).not.toHaveProperty("engineers_using_agents");
   });
 });
 
@@ -136,7 +140,7 @@ describe("team-access Web3Forms submit", () => {
       ok: true,
       json: async () => ({ success: true }),
     });
-    const payload = buildTeamAccessContactPayload({ name: "Ada", email: "ada@example.com" });
+    const payload = buildTeamAccessContactPayload({ email: "ada@example.com" });
     const result = await submitTeamAccessPayload(payload, fetchImpl as unknown as typeof fetch);
 
     expect(result).toEqual({ ok: true });

@@ -14,11 +14,12 @@ import type { GraphStatus } from "../team/contracts/graph.js";
 import { GRAPH_CORPUS_LIMITS, GraphCorpusLimitError } from "./corpus-policy.js";
 import { openGraphDatabase } from "./db/database.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
-import { createGraphEngineFromOpenDatabase } from "./engine-impl.js";
+import { createGraphReadEngine } from "./read-engine.js";
 import type { GraphEngine, IndexedFileInfo } from "./engine.js";
 import {
   inspectGraphSidecars,
   inspectGraphStatusWithFreshObservation,
+  revalidateGraphReadObservation,
   resolveContainedGraphDatabasePath,
   type GraphSidecarProbe,
   type InternalGraphFreshObservationToken,
@@ -88,6 +89,8 @@ interface ImmutableGraphReadHooks {
 
 export interface LoadFreshGraphReadSessionOptions {
   dbPath?: string;
+  /** @internal Apply verifies selected source bytes as it adopts groundings. */
+  sourceScope?: ReadonlySet<string>;
   loadSession?: boolean;
   /**
    * Also adopt a store whose only unproven input is config content, reported
@@ -175,7 +178,7 @@ export function openImmutableGraphReadSessionSync(
     }
     pendingDb = openGraphDatabase(boundFile.databasePath, { readOnly: true, immutable: true });
     const sharedDb = pendingDb;
-    graph = createGraphEngineFromOpenDatabase({ rootDir: projectRoot, dbPath: canonicalDbPath }, sharedDb);
+    graph = createGraphReadEngine(sharedDb);
     pendingDb = null;
     const validation = validateReadPath(
       projectRoot,
@@ -292,7 +295,7 @@ export async function openImmutableGraphReadSession(
     pendingDb = openGraphDatabase(boundFile.databasePath, { readOnly: true, immutable: true });
     await options.afterDatabaseOpen?.(pendingDb);
     const sharedDb = pendingDb;
-    graph = createGraphEngineFromOpenDatabase({ rootDir: projectRoot, dbPath: canonicalDbPath }, sharedDb);
+    graph = createGraphReadEngine(sharedDb);
     pendingDb = null;
 
     if (!options.deferPostOpenValidation) {
@@ -371,7 +374,10 @@ export async function loadFreshGraphReadSession(
 ): Promise<InternalFreshGraphReadResult> {
   const dbPath = options.dbPath ?? resolve(projectRoot, ".mex", "graph.db");
   const inspectObservation = options.inspectObservation ?? inspectGraphStatusWithFreshObservation;
-  const audit = options.structuralAudit ? { structuralAudit: options.structuralAudit } : {};
+  const audit = {
+    ...(options.structuralAudit ? { structuralAudit: options.structuralAudit } : {}),
+    ...(options.sourceScope ? { sourceScope: options.sourceScope } : {}),
+  };
   const inspection = await inspectObservation({ projectRoot, dbPath, ...audit });
   await options.afterStatusInspection?.(inspection);
   const { graphStatus } = inspection;
@@ -443,10 +449,12 @@ export async function loadFreshGraphReadSession(
       validate: () => ownedBase.validate(),
       revalidateFreshness: async () => {
         const before = session.validate();
-        // The bound observation already passed the structural audit. Handing
-        // its identity back lets the final inspection skip re-auditing that
-        // exact file while still re-proving sources, Git, snapshot and sidecars.
-        const finalInspection = await inspectObservation({
+        // A production observation owns its original source/config identities.
+        // Reuse that baseline for one complete final proof rather than starting
+        // a second two-pass inspection. Injected inspectors keep their contract.
+        const boundProof = options.inspectObservation || degradations.length > 0
+          ? null : revalidateGraphReadObservation(freshObservation);
+        const finalInspection = await (boundProof ?? inspectObservation({
           projectRoot,
           dbPath,
           ...audit,
@@ -454,7 +462,7 @@ export async function loadFreshGraphReadSession(
             canonicalDbPath: freshObservation.canonicalDbPath,
             databaseIdentity: freshObservation.databaseIdentity,
           },
-        });
+        }));
         // Output is committed under the class it was labelled with. A store
         // that changed class mid-read — drifted while being read as fresh, or
         // repaired while being read as drifted — carries a label the buffered
@@ -556,7 +564,7 @@ function createIndexedSourceReader(
 }
 
 /** Read one exact byte buffer through a contained, identity-stable file descriptor. */
-function readStableContainedSource(projectRoot: string, filePath: string): Buffer {
+export function readStableContainedSource(projectRoot: string, filePath: string): Buffer {
   const lexicalRoot = resolve(projectRoot);
   const canonicalRoot = resolveRealPath(lexicalRoot);
   const absolutePath = resolve(lexicalRoot, filePath);

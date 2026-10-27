@@ -370,6 +370,86 @@ export const validateGroundingRequest: Validator<GroundingRequest> = (value, con
   validateGroundingFields(requestShapeValidator, value, context);
 
 /**
+ * Code named by where it is rather than by its graph id: a file and a symbol
+ * in it (`parseBody`, `Router.add`), or a file and a line inside the code.
+ *
+ * An operation that writes a grounding resolves this against the same graph
+ * snapshot it derives the fingerprint from, so the Markdown it writes holds the
+ * node id, fingerprint and body hash exactly as for a grounding named by id.
+ * Nothing about the reference itself is ever written. A reference that names
+ * nothing, or more than one thing, is refused with the candidates; the write
+ * never guesses.
+ */
+export interface CodeNameReference {
+  /** Repository-relative path; `./` and `\` are tolerated and normalized at resolution. */
+  file: string;
+  /** A declaration's name, optionally qualified (`Router.add`, `Router::add`, `module.func`). */
+  symbol?: string;
+  /** A 1-based line inside the code; resolves to the innermost named declaration around it. */
+  line?: number;
+  /** Why this entity is grounded here. */
+  reason?: string;
+}
+
+/** What an operation may name a grounding as: a node id, or a file and a symbol or line. */
+export type GroundingTarget = GroundingRequest | CodeNameReference;
+
+/** Upper bounds that keep a reference from carrying an unbounded string into resolution. */
+export const CODE_REFERENCE_MAX_PATH = 1024;
+export const CODE_REFERENCE_MAX_SYMBOL = 512;
+
+/** True for a target named by file and symbol or line, rather than by node id. */
+export function isCodeNameReference(target: GroundingTarget): target is CodeNameReference {
+  return !("node" in target) || (target as { node?: unknown }).node === undefined;
+}
+
+const CODE_REFERENCE_KEYS = new Set(["file", "symbol", "line", "reason"]);
+
+/**
+ * Validate a grounding target: a node grounding as before, or a code-name
+ * reference. Which one is decided by `node` alone, so a payload that mixes the
+ * two forms is refused rather than silently read as one of them.
+ */
+export const validateGroundingTarget: Validator<GroundingTarget> = (value, context) => {
+  if (!isPlainObject(value) || "node" in value) {
+    const request = validateGroundingRequest(value, context);
+    if (!request.ok || !isPlainObject(value) || (value["symbol"] === undefined && value["line"] === undefined)) return request;
+    return reject(context, "MALFORMED_GROUNDING", "Name the code either by `node`, or by `file` with `symbol` or `line`, never both.");
+  }
+  const diagnostics: WikiDiagnostic[] = [];
+  const fail = (message: string): void => {
+    diagnostics.push(contextDiagnostic(context, "MALFORMED_GROUNDING", message));
+  };
+  const unknown = Object.keys(value).filter((key) => !CODE_REFERENCE_KEYS.has(key));
+  if (unknown.length > 0) {
+    fail(`A code reference takes \`file\` with \`symbol\` or \`line\` (and an optional \`reason\`), not ${unknown.map((key) => `\`${key}\``).join(", ")}.`);
+  }
+  const { file, symbol, line, reason } = value;
+  if (typeof file !== "string" || file.trim() === "") {
+    fail("A code reference needs `file`, the repository-relative path of the source file.");
+  } else if (file.length > CODE_REFERENCE_MAX_PATH) {
+    fail(`A code reference's \`file\` is at most ${CODE_REFERENCE_MAX_PATH} characters.`);
+  }
+  if ((symbol === undefined) === (line === undefined)) {
+    fail("A code reference needs exactly one of `symbol` (a declaration name) or `line` (a 1-based line number).");
+  }
+  if (symbol !== undefined && (typeof symbol !== "string" || symbol.trim() === "" || symbol.length > CODE_REFERENCE_MAX_SYMBOL)) {
+    fail(`\`symbol\` must be a declaration name of 1 to ${CODE_REFERENCE_MAX_SYMBOL} characters.`);
+  }
+  if (line !== undefined && (typeof line !== "number" || !Number.isSafeInteger(line) || line < 1)) {
+    fail("`line` must be a positive whole line number.");
+  }
+  if (reason !== undefined && typeof reason !== "string") fail("`reason` must be a string.");
+  if (diagnostics.length > 0) return { ok: false, diagnostics };
+  return succeed({
+    file: file as string,
+    ...(symbol === undefined ? {} : { symbol: symbol as string }),
+    ...(line === undefined ? {} : { line: line as number }),
+    ...(reason === undefined ? {} : { reason: reason as string }),
+  });
+};
+
+/**
  * Proof that a grounding came from live graph output.
  *
  * The build spec's §12.4 invariant is that an agent cannot invent a node id or

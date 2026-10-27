@@ -166,7 +166,7 @@ export async function runKnowledgeUpgrade(
   }
   if (!(dependencies.available ?? isCliAvailable)(AI_TOOLS[tool].cli!)) throw new Error(`${tool} CLI is not available.`);
   await (dependencies.ensureFreshGraph ?? (async () => {
-    await createRepositoryGraphPort(config.projectRoot).withFreshGroundingSnapshot(() => undefined);
+    await createRepositoryGraphPort(config.projectRoot, { candidateExecution: "process" }).withFreshGroundingSnapshot(() => undefined);
   }))();
   const report = await (dependencies.check ?? runDriftCheck)(config);
   const ids = new Set(plan.candidates.map(entry => entry.id));

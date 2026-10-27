@@ -18,7 +18,7 @@ export async function rebuildWikiIndexAfterSync(config: MexConfig): Promise<{ en
       import("../wiki/model/diagnostic.js"),
     ]);
   const { value, unavailable } = await publishWithGraph(
-    createRepositoryGraphPort(config.projectRoot),
+    createRepositoryGraphPort(config.projectRoot, { candidateExecution: "process" }),
     (graph) => wikiPrepareRebuildIndex({
       scaffoldRoot: resolve(config.scaffoldRoot),
       ...(config.wiki?.exclude === undefined ? {} : { exclude: config.wiki.exclude }),

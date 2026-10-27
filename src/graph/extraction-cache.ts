@@ -43,6 +43,22 @@ const EXTRACTION_CACHE_FORMAT = 4;
 const AFFECTED_FILE_FLOOR = 100;
 const AFFECTED_SHARE_LIMIT = 0.7;
 
+/**
+ * The re-extraction closure the compiler may reach before an incremental
+ * refresh stops being cheaper than a build. The planner above bounds the
+ * closure before any program exists; the compiler knows the real closure once
+ * it has compared declaration signatures, and falls back to a full extraction
+ * past this many files. On a 387-file repository a refresh reaching 63% of
+ * the files took as long as a build, and a refresh also holds every previous
+ * capture in memory, so the break-even sits lower on a large corpus.
+ */
+const CLOSURE_FILE_FLOOR = 100;
+const CLOSURE_SHARE_LIMIT = 0.5;
+
+export function incrementalClosureBudget(compilerFiles: number): number {
+  return Math.max(CLOSURE_FILE_FLOOR, Math.floor(CLOSURE_SHARE_LIMIT * compilerFiles));
+}
+
 /** A tree-sitter file's staged extraction, without its write times. */
 export interface CachedTreeFile {
   language: Language;

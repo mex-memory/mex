@@ -11,12 +11,12 @@ edges:
     condition: "when persisting a Hub job or migrating team.db"
   - target: "context/architecture.md"
     condition: "when wiring a real Graph or Wiki adapter"
-last_updated: 2026-10-09
+last_updated: 2026-10-19
 mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
   status: promoted
-  revision: 11
+  revision: 12
   title: secure-local-project-hub
   grounds_to:
     - node: function:188820af31f0d74c6518f6926f559877
@@ -194,6 +194,14 @@ preview/apply services.
   optional follow-up) from the browser to `https://api.web3forms.com`. CSP
   `connect-src` names that host only; Hub must not proxy repo, path, graph, or
   machine data, and page load must not initiate that request.
+- Reused cards own their styles and keep page-only hooks outside the shared
+  module. A Home stylesheet import carries its full CSS and class map into
+  Setup and Relays even when the dialog stays lazy. Check every affected route
+  against the unchanged deterministic asset budgets.
+- Co-mounted setup and invitation forms share one contact preference. Let setup
+  own the query and pass its state into the card; submitting or skipping either
+  form updates both views before navigation. Independent mount-time reads can
+  leave a second contact request active after a successful submission.
 - Keep optional Home dialogs and their styles behind an explicit open-on-demand
   import; even shared dialog controls can exceed Home's frozen asset budget.
   Bound external submissions across both the request and response-body read,

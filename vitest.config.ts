@@ -37,8 +37,11 @@ export default defineConfig({
     // temp dirs where that guard does not fire, so disable telemetry globally.
     // Subprocesses spawned with `{ ...process.env }` inherit this.
     // telemetry.test.ts manages MEX_TELEMETRY itself for its enable-path cases.
+    // Likewise, tests must never start a real agent CLI found on PATH: setup
+    // finds none while this is set (tests inject fake agents explicitly).
     env: {
       MEX_TELEMETRY: "0",
+      MEX_SETUP_BACKGROUND_AGENTS: "0",
     },
     // The root suite opens many independent immutable SQLite snapshots. Keep
     // cross-file concurrency below the platform resource cliff so a busy test

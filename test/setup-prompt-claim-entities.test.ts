@@ -17,25 +17,17 @@ describe("population guidance for code-linked claims", () => {
     it(`asks for one entity per code-linked claim (${name})`, () => {
       expect(prompt).toContain("One code-linked claim per entity");
       expect(prompt).toContain('"type": "create-entry"');
-      expect(prompt).toContain("mex wiki apply <op.json> --apply");
+      expect(prompt).toContain("mex wiki apply .mex/local/setup-ops/<subsystem>.json --apply");
     });
 
     it(`asks to ground every symbol a claim depends on (${name})`, () => {
-      expect(prompt).toContain("grounded to **every** symbol whose change could make it false");
+      expect(prompt).toContain("Ground a claim to every symbol whose change could make it false");
     });
 
-    it(`asks for 3 to 6 aliases written from the fact itself (${name})`, () => {
-      expect(prompt).toContain('"aliases": ["<short phrase>"');
-      expect(prompt).toContain("3 to 6 short `aliases`");
-      expect(prompt).toContain("the symptom someone would observe");
-      expect(prompt).toContain("write them from what the fact itself says");
-      expect(prompt).toContain("Do not restate the title");
-    });
-
-    it(`connects split claims with supported canonical relationships (${name})`, () => {
-      expect(prompt).toContain("mex wiki link-sections --apply");
-      expect(prompt).toContain("File-level edges alone do not connect");
-      expect(prompt).toContain("never invent connections");
+    it(`leaves structural links to MEX instead of asking the agent to wire them (${name})`, () => {
+      expect(prompt).not.toContain("link-sections");
+      expect(prompt).toContain("MEX links each fact to its file");
+      expect(prompt).toContain("Never invent connections");
     });
   }
 
@@ -43,7 +35,5 @@ describe("population guidance for code-linked claims", () => {
     const router = readFileSync(new URL("../templates/ROUTER.md", import.meta.url), "utf8");
     expect(router).toContain("grounded to every symbol whose change could make it false");
     expect(router).toContain("mex wiki link-sections");
-    expect(router).toContain("Ground with node ids only; MEX records the fingerprints.");
-    expect(router).toContain("3 to 6 `aliases`");
   });
 });

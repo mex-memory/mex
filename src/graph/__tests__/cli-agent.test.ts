@@ -98,6 +98,8 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+const RANK_THREE_ANSWER = "function:third-answer";
+
 describe("semantic query source reservation", () => {
   const node = (id: string, name: string, filePath: string, signature?: string): GraphNode => ({
     id, kind: "function", name, qualifiedName: name, signature,
@@ -225,7 +227,11 @@ describe("runGraphScope", () => {
       type: "summary", status: "ok", evidenceStrength: "strong",
       returnedFiles: expect.arrayContaining(["main.ts"]), textFallbackFiles: [], suggestedNextCommands: [],
     });
-    expect(summary.sourceBackedNodes).toEqual(expect.arrayContaining(facts.map((fact) => fact.id)));
+    // Source records already carry their node ids; the summary does not repeat them (#289).
+    expect(summary).not.toHaveProperty("sourceBackedNodes");
+    const sourcedIds = sources.flatMap((source) => (source.ranges as SourceRange[]).flatMap((range) => range.nodeIds));
+    expect(sourcedIds).toEqual(expect.arrayContaining(facts.map((fact) => fact.id)));
+    expect(summary.returnedNodes).toBe(new Set([...sourcedIds, ...facts.map((fact) => fact.id as string)]).size);
     expect(typeof summary.estimatedOutputTokens).toBe("number");
     expect(typeof summary.truncated).toBe("boolean");
     expect(records.findIndex((r) => r.type === "source")).toBeLessThan(records.findIndex((r) => r.type === "fact"));
@@ -237,6 +243,69 @@ describe("runGraphScope", () => {
     expect(source.length).toBeGreaterThan(0);
     const joined = JSON.stringify(source);
     expect(joined).toContain("helper");
+  });
+
+  it("counts nodes returned only as source in returnedNodes (#289)", async () => {
+    const isolated = mkdtempSync(join(tmpdir(), "mex-scope-returned-"));
+    // Mid-sized matching declarations: their source spends the budget before
+    // every source-backed declaration can also get a fact record.
+    const body = Array.from({ length: 24 }, (_, line) => `  total += path.length * ${line + 1};`).join("\n");
+    writeFileSync(join(isolated, "routes.ts"), Array.from({ length: 12 }, (_, index) => (
+      `export function routeHandler${index}(path: string): number {\n  let total = 0;\n${body}\n  return total;\n}\n`
+    )).join("\n"));
+    const isolatedEngine = createGraphEngine({ rootDir: isolated });
+    await isolatedEngine.build(isolated);
+    const db = openSqlite(join(isolated, ".mex", "graph.db"));
+    const isolatedDeps: AgentCommandDeps = {
+      open: () => ({ graph: isolatedEngine, db, close: () => {} }), write: (line) => lines.push(line),
+    };
+    try {
+      const records = capture(() => runGraphScope("route handler", isolated, isolatedDeps, {}));
+      const sourcedIds = records.filter((r) => r.type === "source")
+        .flatMap((source) => (source.ranges as SourceRange[]).flatMap((range) => range.nodeIds));
+      const factIds = records.filter((r) => r.type === "fact").map((fact) => fact.id as string);
+      const returned = new Set([...sourcedIds, ...factIds]);
+      expect(returned.size).toBeGreaterThan(factIds.length);
+      expect(records.at(-1)).toMatchObject({ type: "summary", returnedNodes: returned.size });
+    } finally {
+      db.close();
+      isolatedEngine.close();
+      rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
+  it("renders source from a CRLF checkout without carriage returns (#289)", async () => {
+    const isolated = mkdtempSync(join(tmpdir(), "mex-scope-crlf-"));
+    writeFileSync(join(isolated, "crlf.ts"), [
+      "export function parseRoute(path: string): string[] {",
+      "  return path.split(\"/\");",
+      "}",
+      "export function matchRoute(path: string): boolean {",
+      "  return parseRoute(path).length > 0;",
+      "}",
+      "",
+    ].join("\r\n"));
+    const isolatedEngine = createGraphEngine({ rootDir: isolated });
+    await isolatedEngine.build(isolated);
+    const db = openSqlite(join(isolated, ".mex", "graph.db"));
+    const isolatedDeps: AgentCommandDeps = {
+      open: () => ({ graph: isolatedEngine, db, close: () => {} }), write: (line) => lines.push(line),
+    };
+    try {
+      const scoped = capture(() => runGraphScope("match route", isolated, isolatedDeps, {}));
+      const id = (scoped.find((r) => r.type === "source")!.ranges as SourceRange[])[0]!.nodeIds[0]!;
+      const fetched = capture(() => runGraphGet([id], isolated, isolatedDeps));
+      for (const records of [scoped, fetched]) {
+        const sources = records.filter((r) => r.type === "source");
+        expect(sources.length).toBeGreaterThan(0);
+        expect(JSON.stringify(sources)).toContain("parseRoute");
+        expect(JSON.stringify(sources)).not.toContain("\\r");
+      }
+    } finally {
+      db.close();
+      isolatedEngine.close();
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 
   it("rejects an output-token budget too small for honest protocol framing", () => {
@@ -716,9 +785,6 @@ describe("runGraphScope", () => {
         && (record.steps as GraphEdge[]).some((step) => step.source === parent.id
           && step.target === helper.id))).toBe(true);
       expect(records.at(-1)).toMatchObject({ type: "summary", status: "ok" });
-      expect(records.at(-1)!.sourceBackedNodes).toEqual(expect.arrayContaining([
-        parent.id, helper.id,
-      ]));
       expect(records.at(-1)!.estimatedOutputTokens as number).toBeLessThanOrEqual(3000);
     } finally {
       rmSync(isolated, { recursive: true, force: true });
@@ -816,7 +882,9 @@ describe("runGraphScope", () => {
         "How does Framework assemble pipeline stages with handlers?",
         isolated,
         cohesiveDeps,
-        { maxOutputTokens: 1200, maxSourceLines: 200, maxFiles: 3 },
+        // Below the whole cohesive file, now that the summary reserve is no
+        // larger than the summary (#305); at 1200 the file fits.
+        { maxOutputTokens: 900, maxSourceLines: 200, maxFiles: 3 },
       ));
       expect(constrained.at(-1)).toMatchObject({
         type: "summary", status: "partial", truncated: true,
@@ -827,7 +895,7 @@ describe("runGraphScope", () => {
     }
   });
 
-  it("admits a rank-three file's compact primary before an earlier file's optional bodies", () => {
+  function runRankThreeFixture(maxOutputTokens: number): Record<string, unknown>[] {
     const isolated = mkdtempSync(join(tmpdir(), "mex-source-fairness-"));
     const dense = "x".repeat(120);
     const firstLines = Array.from({ length: 240 }, (_, index) => `// first filler ${index + 1}`);
@@ -942,28 +1010,57 @@ describe("runGraphScope", () => {
         "locate the pipeline declaration answer",
         isolated,
         fairnessDeps,
-        { maxOutputTokens: 3500, maxSourceLines: 200, maxFiles: 3 },
+        { maxOutputTokens, maxSourceLines: 200, maxFiles: 3 },
       ));
-      const sourceRecords = records.filter((record) => record.type === "source");
-      const targetIndex = sourceRecords.findIndex((record) => (record.ranges as Array<{ nodeIds: string[] }>)
-        .some((range) => range.nodeIds.includes(target.id)));
-      const optionalIndex = sourceRecords.findIndex((record) => record.filePath === "first.ts"
-        && (record.ranges as Array<{ startLine: number }>).some((range) => range.startLine > 25));
-      expect(targetIndex, JSON.stringify(records)).toBeGreaterThanOrEqual(0);
-      expect(optionalIndex === -1 || optionalIndex > targetIndex).toBe(true);
-      expect(sourceRecords[targetIndex]).toMatchObject({
-        filePath: "third.ts",
-        ranges: [expect.objectContaining({ startLine: 170, endLine: 175, truncated: false })],
-      });
-      expect(records.at(-1)).toMatchObject({
-        type: "summary",
-        returnedFiles: expect.arrayContaining(["first.ts", "second.ts", "third.ts"]),
-        maxOutputTokens: 3500,
-      });
-      expect(records.at(-1)!.estimatedOutputTokens as number).toBeLessThanOrEqual(3500);
+      return records;
     } finally {
       rmSync(isolated, { recursive: true, force: true });
     }
+  }
+
+  it("admits a rank-three file's compact primary before an earlier file's optional bodies", () => {
+    const records = runRankThreeFixture(3500);
+    const target = { id: RANK_THREE_ANSWER };
+    const sourceRecords = records.filter((record) => record.type === "source");
+    const targetIndex = sourceRecords.findIndex((record) => (record.ranges as Array<{ nodeIds: string[] }>)
+      .some((range) => range.nodeIds.includes(target.id)));
+    const optionalIndex = sourceRecords.findIndex((record) => record.filePath === "first.ts"
+      && (record.ranges as Array<{ startLine: number }>).some((range) => range.startLine > 25));
+    expect(targetIndex, JSON.stringify(records)).toBeGreaterThanOrEqual(0);
+    expect(optionalIndex === -1 || optionalIndex > targetIndex).toBe(true);
+    expect(sourceRecords[targetIndex]).toMatchObject({
+      filePath: "third.ts",
+      ranges: [expect.objectContaining({ startLine: 170, endLine: 175, truncated: false })],
+    });
+    expect(records.at(-1)).toMatchObject({
+      type: "summary",
+      returnedFiles: expect.arrayContaining(["first.ts", "second.ts", "third.ts"]),
+      maxOutputTokens: 3500,
+    });
+    expect(records.at(-1)!.estimatedOutputTokens as number).toBeLessThanOrEqual(3500);
+  });
+
+  // More budget never returns less of the answer (#305): once the rank-three
+  // compact answer fits, it is returned at every larger budget, and a budget
+  // that omits it says so.
+  it("returns the rank-three compact answer at every budget from the first that fits", () => {
+    let firstFit: number | null = null;
+    const misses: number[] = [];
+    for (let budget = 3000; budget <= 6000; budget += 25) {
+      const records = runRankThreeFixture(budget);
+      const summary = records.at(-1)!;
+      expect(summary.estimatedOutputTokens as number, `budget ${budget}`).toBeLessThanOrEqual(budget);
+      const answered = records.some((record) => record.type === "source" && record.filePath === "third.ts"
+        && (record.ranges as Array<{ startLine: number; endLine: number; truncated: boolean }>)
+          .some((range) => range.startLine === 170 && range.endLine === 175 && !range.truncated));
+      if (answered) firstFit ??= budget;
+      else {
+        if (firstFit !== null) misses.push(budget);
+        expect(summary.status, `budget ${budget}`).toBe("partial");
+      }
+    }
+    expect(firstFit).not.toBeNull();
+    expect(misses).toEqual([]);
   });
 
   it("completes a later file's first bounded direct answer after an oversized decoy", () => {
@@ -1758,6 +1855,123 @@ describe("runImpact", () => {
   });
 });
 
+describe("test-file call results (#289)", () => {
+  let project: string;
+  let projectEngine: GraphEngine;
+  let projectDeps: AgentCommandDeps;
+  let projectDb: ReturnType<typeof openSqlite>;
+
+  beforeAll(async () => {
+    project = mkdtempSync(join(tmpdir(), "mex-test-callers-"));
+    mkdirSync(join(project, "src"));
+    writeFileSync(join(project, "src", "lib.ts"), [
+      "export function compose(value: number): number { return value * 2; }",
+      "export function onlyTested(value: number): number { return value + 1; }",
+      "export function measure(value: number): number { return value - 1; }",
+      "",
+    ].join("\n"));
+    writeFileSync(join(project, "src", "app.ts"), [
+      "import { compose } from \"./lib\";",
+      "export function run(): number { return compose(1); }",
+      "",
+    ].join("\n"));
+    // A 252-line caller: its own span is too long to report as a location.
+    writeFileSync(join(project, "src", "big.ts"), [
+      "import { measure } from \"./lib\";",
+      "export function bigCaller(): number {",
+      "  let total = 0;",
+      ...Array.from({ length: 248 }, (_, index) => `  total += ${index};`),
+      "  return measure(total);",
+      "}",
+      "",
+    ].join("\n"));
+    writeFileSync(join(project, "src", "lib.test.ts"), [
+      "import { compose, onlyTested } from \"./lib\";",
+      "declare function it(name: string, body: () => void): void;",
+      "function testHelper(): number { return compose(0); }",
+      ...Array.from({ length: 5 }, (_, index) => `it("case ${index}", () => { compose(${index}); testHelper(); });`),
+      "it(\"only\", () => { onlyTested(1); });",
+      "",
+    ].join("\n"));
+    projectEngine = createGraphEngine({ rootDir: project });
+    await projectEngine.build(project);
+    projectDb = openSqlite(join(project, ".mex", "graph.db"));
+    projectDeps = { open: () => ({ graph: projectEngine, db: projectDb, close: () => {} }), write: (line) => lines.push(line) };
+  });
+
+  afterAll(() => {
+    projectDb.close();
+    projectEngine.close();
+    rmSync(project, { recursive: true, force: true });
+  });
+
+  const names = (records: Record<string, unknown>[], type: string) => records
+    .filter((record) => record.type === type).map((record) => String(record.name));
+
+  it("who-calls leaves test callers out while a real caller exists, and says how many", () => {
+    const records = capture(() => runGraphQuery("who-calls", "compose", project, projectDeps));
+    expect(names(records, "result")).toEqual(["run"]);
+    const summary = records.at(-1)!;
+    expect(summary).toMatchObject({ type: "summary", returnedNodes: 1, omittedTestNodes: 6 });
+    expect(summary.matchedNodes).toBe(7);
+    expect(summary.suggestedNextCommands).toContain("mex graph query who-calls compose --include-tests");
+  });
+
+  it("--include-tests returns test callers after the real caller", () => {
+    const records = capture(() => runGraphQuery("who-calls", "compose", project, projectDeps, { includeTests: true }));
+    const results = names(records, "result");
+    expect(results[0]).toBe("run");
+    expect(results).toHaveLength(7);
+    expect(records.at(-1)).not.toHaveProperty("omittedTestNodes");
+  });
+
+  it("keeps test callers when only tests call the target", () => {
+    const records = capture(() => runGraphQuery("who-calls", "onlyTested", project, projectDeps));
+    expect(names(records, "result")).toHaveLength(1);
+    expect(records.at(-1)).not.toHaveProperty("omittedTestNodes");
+  });
+
+  it("keeps test callers of a target that is itself in a test file", () => {
+    const records = capture(() => runGraphQuery("who-calls", "testHelper", project, projectDeps));
+    expect(names(records, "result")).toHaveLength(5);
+    expect(records.at(-1)).not.toHaveProperty("omittedTestNodes");
+  });
+
+  it("impact ranks real callers first and leaves test callers out with a count", () => {
+    const records = capture(() => runImpact("compose", project, projectDeps));
+    expect(names(records, "caller")).toEqual(["run"]);
+    expect(records.at(-1)).toMatchObject({ type: "summary", omittedTestNodes: 6 });
+    expect(records.at(-1)!.suggestedNextCommands).toContain("mex impact compose --include-tests");
+
+    const all = capture(() => runImpact("compose", project, projectDeps, { includeTests: true }));
+    const callers = names(all, "caller");
+    expect(callers[0]).toBe("run");
+    expect(callers).toHaveLength(7);
+  });
+
+  it("call results carry the line of the call", () => {
+    const callers = capture(() => runGraphQuery("who-calls", "compose", project, projectDeps));
+    expect(callers.find((record) => record.name === "run")).toMatchObject({ filePath: "src/app.ts", callLine: 2 });
+    // what-calls: the call is in the queried function's file.
+    const callees = capture(() => runGraphQuery("what-calls", "run", project, projectDeps));
+    expect(callees.find((record) => record.name === "compose")).toMatchObject({ filePath: "src/lib.ts", callLine: 2 });
+    const impact = capture(() => runImpact("compose", project, projectDeps));
+    expect(impact.find((record) => record.type === "caller" && record.name === "run")).toMatchObject({ callLine: 2 });
+    const downstream = capture(() => runImpact("run", project, projectDeps, { direction: "callees" }));
+    expect(downstream.find((record) => record.type === "callee" && record.name === "compose")).toMatchObject({ callLine: 2 });
+  });
+
+  it("reports a declaration over 200 lines by its start and length, not its full span", () => {
+    const records = capture(() => runGraphQuery("who-calls", "measure", project, projectDeps));
+    const caller = records.find((record) => record.name === "bigCaller")!;
+    expect(caller).toMatchObject({ filePath: "src/big.ts", lineStart: 2, lineCount: 252, callLine: 252 });
+    expect(caller).not.toHaveProperty("lineEnd");
+    // Short declarations keep their full span.
+    const short = capture(() => runGraphQuery("who-calls", "compose", project, projectDeps));
+    expect(short.find((record) => record.name === "run")).toMatchObject({ lineStart: 2, lineEnd: 2 });
+  });
+});
+
 describe("budget accounting honesty", () => {
   it("emits confidence-gated directed flow records and accounts every returned step", () => {
     const full = capture(() => runGraphScope("run", root, deps, { detail: "standard" }));
@@ -1869,5 +2083,139 @@ describe("budget accounting honesty", () => {
     expect(records.some((record) => record.type === "flow")).toBe(false);
     expect(records.at(-1)?.returnedFiles).not.toContain("main.ts");
     expect(records.at(-1)?.textFallbackFiles).not.toContain("main.ts");
+  });
+});
+
+describe("runGraphScope --fingerprint", () => {
+  let fpRoot: string;
+  let fpEngine: GraphEngine;
+  let fpDeps: AgentCommandDeps;
+  let fpDb: ReturnType<typeof openSqlite>;
+  const task = "checkout discount";
+  const sourcedIds = (records: Record<string, unknown>[]): string[] => [...new Set(records
+    .filter((record) => record.type === "source")
+    .flatMap((record) => (record.ranges as Array<{ nodeIds: string[] }>).flatMap((range) => range.nodeIds)))];
+
+  beforeAll(async () => {
+    fpRoot = mkdtempSync(join(tmpdir(), "mex-scope-fingerprint-"));
+    // Two ~120-line functions: their source alone fills the default 3,500-token budget.
+    const steps = Array.from({ length: 120 }, (_, i) => (
+      `  total += cart.length * ${i} + applyDiscount(${i}); // step ${i} of the checkout pipeline`
+    ));
+    const tiers = Array.from({ length: 120 }, (_, i) => (
+      `  if (total > ${i}) total = total - ${i} * 0.01; // discount tier ${i}`
+    ));
+    writeFileSync(join(fpRoot, "big.ts"), [
+      "export function checkout(cart: string[]): number {", "  let total = 0;", ...steps, "  return total;", "}", "",
+      "export function applyDiscount(total: number): number {", ...tiers, "  return total;", "}", "",
+    ].join("\n"));
+    writeFileSync(join(fpRoot, "cart.ts"), [
+      "export function addItem(cart: string[], item: string): string[] {", "  return [...cart, item];", "}", "",
+      "export function checkout(cart: string[]): number {", "  return applyDiscount(cart.length * 10);", "}", "",
+      "function applyDiscount(total: number): number {", "  return total > 50 ? total * 0.9 : total;", "}", "",
+    ].join("\n"));
+    fpEngine = createGraphEngine({ rootDir: fpRoot });
+    await fpEngine.build(fpRoot);
+    fpDb = openSqlite(join(fpRoot, ".mex", "graph.db"));
+    fpDeps = { open: () => ({ graph: fpEngine, db: fpDb, close: () => {} }), write: (line) => lines.push(line) };
+    // A real graph build; the default hook timeout is too tight on a loaded runner.
+  }, 30_000);
+
+  afterAll(() => {
+    fpDb.close();
+    fpEngine.close();
+    rmSync(fpRoot, { recursive: true, force: true });
+  });
+
+  it("returns a fingerprinted fact for every source-backed node in the default source detail", () => {
+    const records = capture(() => runGraphScope(task, fpRoot, fpDeps, { fingerprint: true }));
+    const sourced = sourcedIds(records);
+    expect(sourced.length).toBeGreaterThan(0);
+    for (const id of sourced) {
+      const fact = records.find((record) => record.type === "fact" && record.id === id);
+      expect(fact?.fingerprint, id).toEqual(expect.any(String));
+    }
+    const summary = records.at(-1)!;
+    expect(summary).toMatchObject({ type: "summary", status: "ok" });
+    expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(3500);
+  });
+
+  it("counts source-backed nodes in returnedNodes, not only fact records", () => {
+    const records = capture(() => runGraphScope(task, fpRoot, fpDeps, {}));
+    const sourced = sourcedIds(records);
+    const factIds = records.filter((record) => record.type === "fact").map((record) => record.id as string);
+    expect(sourced.length).toBeGreaterThan(0);
+    expect(records.at(-1)!.returnedNodes).toBe(new Set([...sourced, ...factIds]).size);
+  });
+
+  it.each(["minimal", "standard", "source"] as const)(
+    "adds fingerprints at %s detail only when --fingerprint is set",
+    (detail) => {
+      const on = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, fingerprint: true }));
+      const off = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail }));
+      const onFacts = on.filter((record) => record.type === "fact");
+      expect(onFacts.length).toBeGreaterThan(0);
+      for (const fact of onFacts) expect(fact.fingerprint).toEqual(expect.any(String));
+      for (const fact of off.filter((record) => record.type === "fact")) expect(fact).not.toHaveProperty("fingerprint");
+    },
+  );
+
+  it.each(["minimal", "standard"] as const)(
+    "prioritizes fingerprint facts ahead of flows at %s detail",
+    (detail) => {
+      const off = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, maxOutputTokens: 1500 }));
+      const on = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, maxOutputTokens: 1500, fingerprint: true }));
+      const facts = on.filter((record) => record.type === "fact");
+      expect(facts.length).toBeGreaterThan(0);
+      expect(facts.length).toBeGreaterThanOrEqual(off.filter(record => record.type === "fact").length);
+      for (const fact of facts) expect(fact.fingerprint).toEqual(expect.any(String));
+      // Flows keep their bounded share.
+      expect(on.some((record) => record.type === "flow")).toBe(true);
+      expect(on.at(-1)!.estimatedOutputTokens as number).toBeLessThanOrEqual(1500);
+    },
+  );
+
+  it("gives a flow endpoint returned as source a fingerprint even when it is not a ranked candidate", () => {
+    const records = capture(() => runGraphScope(task, fpRoot, fpDeps, {
+      fingerprint: true, maxNodes: 1, maxOutputTokens: 3500,
+    }));
+    const sourced = sourcedIds(records);
+    expect(sourced.length).toBeGreaterThan(0);
+    const facts = records.filter((record) => record.type === "fact");
+    for (const id of sourced) {
+      expect(facts.find((fact) => fact.id === id)?.fingerprint, id).toEqual(expect.any(String));
+    }
+    expect(facts.some((fact) => fact.score === 0)).toBe(true);
+  });
+
+  it.each(["minimal", "standard"] as const)(
+    "reports partial with a warning, not no-match, when no fingerprint fits at %s detail",
+    (detail) => {
+      const records = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, maxOutputTokens: 500, fingerprint: true }));
+      const summary = records.at(-1)!;
+      expect(summary.status).toBe("partial");
+      expect(summary.warnings).toContainEqual(expect.stringMatching(/^Fingerprints omitted: \d+ fact\(s\)/));
+      expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(500);
+      const off = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, maxOutputTokens: 500 }));
+      expect(off.at(-1)!.warnings).not.toContainEqual(expect.stringMatching(/^Fingerprints omitted/));
+    },
+  );
+
+  it("never returns source without its fingerprint, or no fingerprints without saying so", () => {
+    for (const detail of ["minimal", "standard", "source"] as const) {
+      for (const maxOutputTokens of [1000, 1500, 2000, 3500, 6000]) {
+        const records = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, maxOutputTokens, fingerprint: true }));
+        const facts = records.filter((record) => record.type === "fact");
+        for (const id of sourcedIds(records)) {
+          expect(facts.find((fact) => fact.id === id)?.fingerprint, `${detail} ${maxOutputTokens} ${id}`)
+            .toEqual(expect.any(String));
+        }
+        const summary = records.at(-1)!;
+        expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(maxOutputTokens);
+        if (!facts.some((fact) => typeof fact.fingerprint === "string")) {
+          expect(summary.status, `${detail} ${maxOutputTokens}`).toBe("partial");
+        }
+      }
+    }
   });
 });

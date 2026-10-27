@@ -11,8 +11,12 @@ export const HubPageViewSchema = z.object({
   ]),
 }).strict();
 
+export const HubTeamAccessEventSchema = z.object({
+  step: z.enum(["card_viewed", "button_clicked", "dialog_opened", "submitted"]),
+}).strict();
+
 export type HubTelemetrySink = (
-  name: "hub.session_started" | "hub.page_viewed" | "hub.action_completed" | "hub.job_completed",
+  name: "hub.session_started" | "hub.page_viewed" | "hub.action_completed" | "hub.job_completed" | "hub.team_access",
   attributes: TelemetryAttributes,
 ) => void;
 
@@ -31,16 +35,25 @@ export class HubTelemetry {
   ) {}
 
   pageViewed(page: z.infer<typeof HubPageViewSchema>["page"]): void {
-    if (!this.sink) return;
+    if (this.withinBrowserEventLimit()) emitHubTelemetry(this.sink, "hub.page_viewed", { page });
+  }
+
+  teamAccess(step: z.infer<typeof HubTeamAccessEventSchema>["step"]): void {
+    if (this.withinBrowserEventLimit()) emitHubTelemetry(this.sink, "hub.team_access", { step });
+  }
+
+  /** Browser-reported events share one per-minute budget. */
+  private withinBrowserEventLimit(): boolean {
+    if (!this.sink) return false;
     const now = this.now();
     if (now < this.pageWindowStart || now - this.pageWindowStart >= 60_000) {
       this.pageWindowStart = now;
       this.pageWindowCount = 0;
     }
     // One process-wide counter: no session, user, URL, or growing key map.
-    if (this.pageWindowCount >= PAGE_EVENTS_PER_MINUTE) return;
+    if (this.pageWindowCount >= PAGE_EVENTS_PER_MINUTE) return false;
     this.pageWindowCount += 1;
-    emitHubTelemetry(this.sink, "hub.page_viewed", { page });
+    return true;
   }
 
   async action<T>(

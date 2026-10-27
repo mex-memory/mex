@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { runLog, runTimeline } from "../src/events.js";
 import { createRepositoryGraphPort } from "../src/graph/application-adapter.js";
 import type { MexConfig } from "../src/types.js";
@@ -244,6 +244,8 @@ describe("built CLI main-module guard", () => {
   const yieldToVitestRpc = () => new Promise<void>((resolve) => setImmediate(resolve));
 
   beforeAll(async () => {
+    // Allow preserved-dist investigations without rebuilding shared CLI assets.
+    if (process.env.MEX_TEST_PREBUILT === "1") return;
     // Vitest 3's fork worker RPC has a fixed 60-second response deadline. Give
     // its task update one turn before this synchronous production build blocks
     // the worker event loop.
@@ -935,6 +937,7 @@ describe("built CLI main-module guard", () => {
         {
           cwd: fixture,
           encoding: "utf8",
+          timeout: 30_000,
           env: {
             ...process.env,
             HOME: userHome,
@@ -944,6 +947,7 @@ describe("built CLI main-module guard", () => {
           },
         },
       );
+      expect(result.error, result.stderr).toBeUndefined();
       expect(result.status, result.stderr).toBe(1);
       expect(result.stderr).toBe("");
       expect(result.stdout.endsWith("\n")).toBe(true);
@@ -965,14 +969,26 @@ describe("built CLI main-module guard", () => {
   }, 40_000);
 
   it("does not auto-parse when dist/cli.js is imported as a module", () => {
-    const result = spawnSync(
-      process.execPath,
-      ["-e", "import('./dist/cli.js').then(() => console.log('imported'))"],
-      { cwd: repoRoot, encoding: "utf8" },
-    );
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("imported");
-    expect(result.stdout).not.toContain(pkg.version);
+    const fixture = mkdtempSync(join(tmpdir(), "mex-cli-import-"));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        ["-e", `import(${JSON.stringify(pathToFileURL(cliPath).href)}).then(() => console.log('imported'))`],
+        {
+          cwd: fixture,
+          encoding: "utf8",
+          timeout: 10_000,
+          env: { ...process.env, HOME: fixture, MEX_HOME: fixture },
+        },
+      );
+      expect(result.error, result.stderr).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe("imported\n");
+      expect(result.stderr).toBe("");
+      expect(readdirSync(fixture)).toEqual([]);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it("backfills scaffold_id on an existing scaffold when an explicit log write loads config", () => {

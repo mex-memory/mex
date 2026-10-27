@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import { assertSetupAvailable, withSetupLock } from "../../setup/setup-lock.js";
 import type {
   SetupRun,
   SetupStartRequest,
@@ -10,7 +12,7 @@ import type {
   SetupCommitDiff,
   SetupCommitDiffRequest,
 } from "@mex/hub-contracts/setup";
-import { SETUP_ACTIVITY_LIMIT } from "@mex/hub-contracts/setup";
+import { SETUP_ACTIVITY_LIMIT, SETUP_COVERAGE_SUBSYSTEM_LIMIT } from "@mex/hub-contracts/setup";
 import {
   inspectSetupStatus,
   runHeadlessSetup,
@@ -20,7 +22,7 @@ import { HubHttpError } from "../http/errors.js";
 import { setupCommitCheckpointCommands, SetupFinalizationError } from "../../setup/index.js";
 import { SetupPopulationError } from "../../setup/population.js";
 import { SetupError } from "../../setup/errors.js";
-import { initialSetupStatus, projectSetupStatus } from "./readiness.js";
+import { initialSetupStatus, projectSetupStatus, hasPendingSetupChanges } from "./readiness.js";
 import { SetupTranscriptStore } from "./transcript.js";
 import { SetupCommitService } from "./commit.js";
 import { SetupGlobalInstaller } from "../../setup/global-install.js";
@@ -30,6 +32,7 @@ const ACTIVITY_EMIT_INTERVAL_MS = 500;
 const TRANSCRIPT_EMIT_INTERVAL_MS = 200;
 
 export interface HubSetupRunnerOptions {
+  readonly finalizeOnly?: boolean;
   readonly projectRoot: string;
   readonly now?: () => Date;
   readonly onReady?: (signal: AbortSignal) => void | Promise<void>;
@@ -43,6 +46,8 @@ export class HubSetupRunner {
   private readonly now: () => Date;
   private readonly onReady?: (signal: AbortSignal) => void | Promise<void>;
   private readonly initialMode?: "code-repo" | "agent-memory";
+  private readonly finalizeOnly: boolean;
+  private finalizationComplete = false;
   private readonly listeners = new Set<HubSetupListener>();
   private run: SetupRun;
   private controller: AbortController | null = null;
@@ -63,15 +68,21 @@ export class HubSetupRunner {
     this.now = options.now ?? (() => new Date());
     this.onReady = options.onReady;
     this.initialMode = options.initialMode;
+    this.finalizeOnly = options.finalizeOnly === true;
     this.run = idleRun(this.withInitialMode(initialSetupStatus(this.projectRoot)), this.now());
   }
 
   async status(): Promise<SetupStatus> {
     const status = await projectSetupStatus(this.projectRoot);
+    if (this.finalizeOnly && !this.finalizationComplete) return { ...status, ready: false, stage: "needs_finalize" };
+    if (this.finalizeOnly && status.ready && await hasPendingSetupChanges(this.projectRoot)) {
+      return { ...status, ready: false, stage: "needs_commit" };
+    }
     return this.run.status === "idle" ? this.withInitialMode(status) : status;
   }
 
   private withInitialMode(status: SetupStatus): SetupStatus {
+    if (this.finalizeOnly && !this.finalizationComplete) return { ...status, ready: false, stage: "needs_finalize" };
     return this.initialMode && status.mode !== this.initialMode
       ? { ...status, mode: this.initialMode, ready: false,
         stage: this.initialMode === "code-repo" && !status.hasGit ? "needs_git" : "needs_setup" }
@@ -221,6 +232,11 @@ export class HubSetupRunner {
         "A setup run is already in progress for this checkout.",
       );
     }
+    try { assertSetupAvailable(resolve(this.projectRoot, ".mex")); }
+    catch (error) {
+      if (!(error instanceof SetupError)) throw error;
+      throw new HubHttpError(409, "JOB_ALREADY_RUNNING", "Another setup is running", error.userMessage);
+    }
     this.commitService?.clear();
     const status = initialSetupStatus(this.projectRoot);
     if (request.mode === "code-repo" && !status.hasGit) {
@@ -284,9 +300,10 @@ export class HubSetupRunner {
 
   private async execute(request: SetupStartRequest, signal: AbortSignal): Promise<void> {
     try {
+      await withSetupLock(resolve(this.projectRoot, ".mex"), async () => {
       if (this.commitService) await this.commitService.verifyRecovery();
       const current = inspectSetupStatus(this.projectRoot);
-      const canFinishExisting = request.confirmPopulation === true
+      const canFinishExisting = !this.finalizeOnly && request.confirmPopulation === true
         && current.ready && current.mode === request.mode
         && JSON.stringify(current.configuredTools) === JSON.stringify(request.tools);
       const result: HeadlessSetupResult = canFinishExisting ? {
@@ -305,7 +322,7 @@ export class HubSetupRunner {
         projectRoot: this.projectRoot,
         mode: request.mode,
         tools: request.tools,
-        ...(request.confirmPopulation === undefined ? {} : { confirmPopulation: request.confirmPopulation }),
+        ...(this.finalizeOnly ? { confirmPopulation: true } : request.confirmPopulation === undefined ? {} : { confirmPopulation: request.confirmPopulation }),
         signal,
         onPopulationPrompt: (prompt) => { this.run = { ...this.run, prompt }; },
         onAnchorNotes: (anchorNotes) => { this.run = { ...this.run, anchorNotes: [...anchorNotes] }; },
@@ -331,6 +348,20 @@ export class HubSetupRunner {
             this.transcriptTimer = setTimeout(() => this.notifyTranscript(), TRANSCRIPT_EMIT_INTERVAL_MS);
             this.transcriptTimer.unref();
           }
+        },
+        onPopulationCoverage: (coverage) => {
+          if (signal.aborted || this.run.status !== "running" || this.controller?.signal !== signal) return;
+          this.run = {
+            ...this.run,
+            populationCoverage: {
+              phase: coverage.phase,
+              total: coverage.total,
+              done: coverage.done,
+              skipped: coverage.skipped,
+              subsystems: coverage.subsystems.slice(0, SETUP_COVERAGE_SUBSYSTEM_LIMIT).map((entry) => ({ path: entry.path.slice(0, 512), state: entry.state })),
+            },
+          };
+          // The progress event that follows each coverage change emits the run.
         },
         onPopulationActivity: (activity) => {
           if (signal.aborted || this.run.status !== "running" || this.controller?.signal !== signal) return;
@@ -379,7 +410,9 @@ export class HubSetupRunner {
         },
       });
       if (signal.aborted) throw new Error("Setup was cancelled.");
+      if (this.finalizeOnly && result.ready) this.finalizationComplete = true;
       await this.finishFromResult(result, signal, request.openHub === true);
+      });
     } catch (error) {
       // Child output and arbitrary filesystem exceptions are never a browser payload.
       const message = (signal.aborted ? "Setup was cancelled. You can resume it when ready."
@@ -411,8 +444,11 @@ export class HubSetupRunner {
     const paused = status.stage === "needs_population" || status.stage === "needs_commit";
     const message = status.stage === "needs_commit"
       ? "Graph and Wiki are ready. Review and commit the canonical MEX files, then check again to open the Hub."
+        + (result.coverageNotice ? ` ${result.coverageNotice}` : "")
+        + (result.groundingNotice ? ` ${result.groundingNotice}` : "")
       : status.stage === "complete"
         ? "Agent memory is ready. Your selected AI tools can use this workspace."
+          + (result.groundingNotice ? ` ${result.groundingNotice}` : "")
         : result.message;
     this.run = {
       status: paused ? "paused" : result.ready || result.populated ? "succeeded" : "paused",
@@ -425,6 +461,7 @@ export class HubSetupRunner {
       populationTool: result.populationTool,
       populationCompleted: result.populationCompleted,
       ...(this.run.populationActivity === undefined ? {} : { populationActivity: this.run.populationActivity }),
+      ...(this.run.populationCoverage === undefined ? {} : { populationCoverage: this.run.populationCoverage }),
       ...(this.run.transcriptId === undefined ? {} : { transcriptId: this.run.transcriptId }),
       commitCommands: result.commitCommands,
       anchorNotes: result.anchorNotes,

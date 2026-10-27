@@ -3,6 +3,7 @@ import { completeHubOnboarding, readHubOnboarding } from "./onboarding.js";
 import {
   AgentLoggingPolicySchema,
   HubOnboardingStateSchema,
+  HubRepositoryContributorsSchema,
   HUB_LIMITS,
   type ActivityActor,
   type ActivityDiagnostic,
@@ -90,6 +91,8 @@ import {
   type WikiRelationsResponse,
 } from "@mex/hub-contracts";
 import { createHash } from "node:crypto";
+import type { RepositoryWikiPort } from "../wiki/application-adapter.js";
+import type { WikiMigrationJobPreview } from "@mex/hub-contracts";
 import { basename } from "node:path";
 import type {
   GraphImpactResult,
@@ -201,6 +204,7 @@ import {
   TEAM_READABLE_ENTITY_TYPES,
   WIKI_ENTITY_TYPES,
 } from "../wiki/model/entity.js";
+import { WIKI_MIGRATION_RECOVERY } from "../wiki/migration/recovery.js";
 
 interface HubJobReader {
   list(request?: { limit?: number }): {
@@ -278,6 +282,7 @@ export interface HubRelayHandoffService {
 }
 
 export interface LocalHubReadServicesOptions {
+  readonly migration?: ReturnType<typeof createHubWikiMigration>;
   readonly projectRoot: string;
   readonly scaffoldId: string;
   readonly jobs: HubJobReader;
@@ -335,6 +340,9 @@ export function createLocalHubReadServices(
     },
     async completeOnboarding() {
       return HubOnboardingStateSchema.parse(await completeHubOnboarding(options.projectRoot));
+    },
+    async repositoryContributors() {
+      return HubRepositoryContributorsSchema.parse({ moreThanOne: await hasMoreThanOneCommitAuthor(git) });
     },
     async capabilities(): Promise<HubCapabilities> {
       const gitStatus = await gitCapability(git);
@@ -408,7 +416,7 @@ export function createLocalHubReadServices(
 
     async overview(): Promise<OverviewResponse> {
       const observedAt = now().toISOString();
-      const [repository, identity, inboxRead, relayRead, activity, graphRead, wikiRead] = await Promise.all([
+      const [repository, identity, inboxRead, relayRead, activity, graphRead, wikiRead, moreThanOneContributor] = await Promise.all([
         git.getRepoState(),
         readOverviewIdentity(team, observedAt),
         readOverviewInbox(inbox, observedAt),
@@ -416,7 +424,9 @@ export function createLocalHubReadServices(
         readOverviewActivity(timeline, observedAt),
         readOverviewGraph(graph, observedAt),
         readOverviewWiki(wiki, observedAt),
+        hasMoreThanOneCommitAuthor(git).catch(() => false),
       ]);
+      const sharing = readOverviewSharing(relayRead, moreThanOneContributor);
       const jobsRead = readOverviewJobs(options.jobs, observedAt);
       const shell = projectHomeResponse({
         observedAt,
@@ -437,6 +447,7 @@ export function createLocalHubReadServices(
         activity,
         context: projectOverviewContext(graphRead, wikiRead, observedAt),
         operation: projectOverviewOperation(jobsRead, observedAt),
+        sharing,
       };
     },
 
@@ -982,7 +993,9 @@ export function createLocalHubReadServices(
       };
     },
 
-    async assertJobStartAllowed(kind): Promise<void> {
+    previewWikiMigration: options.migration ? () => options.migration!.preview() : undefined,
+
+    async assertJobStartAllowed(kind, migrationPreview): Promise<void> {
       if (!["graph_refresh", "graph_rebuild", "wiki_refresh", "wiki_rebuild"].includes(kind)) return;
       // Preserve the job manager's authoritative 409 contention response (and
       // active job ID). A running writer can make graph status deliberately
@@ -1009,6 +1022,12 @@ export function createLocalHubReadServices(
             "The requested Wiki operation is not safe for the current index state.",
           );
         }
+        if (status.state === "migration_required" && kind === "wiki_rebuild") {
+          if (!options.migration) throw new HubHttpError(503, "CAPABILITY_UNAVAILABLE", "Migration unavailable", "Wiki migration is not connected.");
+          options.migration.assertReviewed(migrationPreview);
+          return;
+        }
+        if (migrationPreview !== undefined) throw new HubHttpError(409, "REVISION_CONFLICT", "Wiki state changed", "Inspect Wiki Health and preview again.");
         return;
       }
       if (!graph) {
@@ -1629,6 +1648,9 @@ function projectWikiHealthStatus(
     allowedJobKinds,
     recommendedJobKind,
     activeJobId,
+    recoveryCommand: status.state === "migration_required"
+      ? { ...WIKI_MIGRATION_RECOVERY }
+      : null,
   };
   return {
     id: "wiki",
@@ -1656,8 +1678,8 @@ function allowedWikiOperations(
     case "corrupt":
     case "rebuild_required": return ["wiki_rebuild"];
     case "fresh": return ["wiki_refresh", "wiki_rebuild"];
-    case "degraded":
-    case "migration_required": return [];
+    case "migration_required": return ["wiki_rebuild"];
+    case "degraded": return [];
   }
 }
 
@@ -1666,7 +1688,7 @@ function recommendedWikiOperation(
   allowed: readonly ("wiki_refresh" | "wiki_rebuild")[],
 ): "wiki_refresh" | "wiki_rebuild" | null {
   if (status.state === "stale" && allowed.includes("wiki_refresh")) return "wiki_refresh";
-  if (["missing", "corrupt", "rebuild_required"].includes(status.state)
+  if (["missing", "corrupt", "rebuild_required", "migration_required"].includes(status.state)
     && allowed.includes("wiki_rebuild")) return "wiki_rebuild";
   return null;
 }
@@ -1679,7 +1701,7 @@ function wikiHealthSummary(status: WikiIndexStatus): string {
     case "degraded": return "Wiki health could not be established safely; retry after the local writer or observation race settles.";
     case "rebuild_required": return "The Wiki index requires an explicit compatible rebuild.";
     case "corrupt": return "The Wiki index failed integrity checks and cannot be read safely.";
-    case "migration_required": return "Legacy Knowledge requires an explicit migration before Hub reads can continue.";
+    case "migration_required": return "Legacy Knowledge requires an explicit migration before Hub reads can continue. Preview and apply it here, or use mex wiki migrate --dry-run as the CLI alternative.";
   }
 }
 
@@ -3674,6 +3696,40 @@ async function gitCapability(git: GitPort): Promise<CapabilityStatus> {
   }
 }
 
+/**
+ * Reuses Overview's one open-Relay read; more open Relays than one page also
+ * means one was published.
+ */
+function readOverviewSharing(
+  relayRead: OverviewRelayCorpus,
+  moreThanOneContributor: boolean,
+): { relayPublished: boolean; moreThanOneContributor: boolean } {
+  const relayPublished = relayRead.availability === "available"
+    ? relayRead.items.length > 0
+    : relayRead.truncated === true;
+  return { relayPublished, moreThanOneContributor };
+}
+
+const CONTRIBUTOR_SCAN_PAGE = 200;
+const CONTRIBUTOR_SCAN_COMMITS = 1_000;
+
+/** Stop at the second distinct author; only the most recent commits are read. */
+async function hasMoreThanOneCommitAuthor(git: GitPort): Promise<boolean> {
+  const authors = new Set<string>();
+  let cursor: string | undefined;
+  for (let scanned = 0; scanned < CONTRIBUTOR_SCAN_COMMITS; scanned += CONTRIBUTOR_SCAN_PAGE) {
+    const page = await git.getHistory({ limit: CONTRIBUTOR_SCAN_PAGE, ...(cursor === undefined ? {} : { cursor }) });
+    for (const commit of page.items) {
+      const author = commit.author.email?.toLowerCase() ?? commit.author.name;
+      if (author) authors.add(author);
+      if (authors.size > 1) return true;
+    }
+    if (page.nextCursor === null) return false;
+    cursor = page.nextCursor;
+  }
+  return false;
+}
+
 type OverviewIdentityRead = OverviewResponse["identity"];
 type OverviewContextAvailable = Extract<OverviewContextPanel, { availability: "available" }>;
 type OverviewGraphRead = OverviewContextAvailable["graph"];
@@ -4161,5 +4217,47 @@ function unavailableSearch(reason: string): SearchResponse["groups"]["wiki"] {
     revision: null,
     code: "CAPABILITY_UNAVAILABLE",
     detail: reason,
+  };
+}
+
+/** One bounded, expiring review; the adapter revalidates its exact source revisions on apply. */
+export function createHubWikiMigration(wiki: RepositoryWikiPort) {
+  let retained: { preview: Awaited<ReturnType<RepositoryWikiPort["planMigration"]>>; expires: number } | undefined;
+  function reviewed(revision: string | undefined) {
+    if (!retained || retained.expires <= Date.now() || revision !== retained.preview.previewRevision) {
+      throw new HubHttpError(409, "REVISION_CONFLICT", "Migration preview changed", "Preview the Wiki migration again before applying it.");
+    }
+    return retained.preview;
+  }
+  return {
+    async preview(): Promise<WikiMigrationJobPreview> {
+      retained = undefined;
+      const status = await wiki.inspectIndex();
+      if (status.state !== "migration_required" || !allowedWikiOperations(status).includes("wiki_rebuild")) {
+        throw new HubHttpError(409, "REVISION_CONFLICT", "Wiki state changed", "Inspect Wiki Health before previewing a migration.");
+      }
+      const preview = await wiki.planMigration();
+      const report = JSON.stringify({
+        filesScanned: preview.report.filesScanned,
+        proposedByType: preview.report.proposedByType,
+        idsPreserved: preview.report.idsPreserved,
+        legacyEdges: preview.report.legacyEdges,
+        groundings: preview.report.groundings,
+        filesUnchanged: preview.report.filesUnchanged,
+        diagnostics: [...preview.report.diagnostics, ...preview.validation.diagnostics].map(projectWikiDiagnostic),
+      }, null, 2);
+      const canApply = preview.validation.valid && !preview.report.diagnostics.some(d => d.severity === "error")
+        && Buffer.byteLength(report, "utf8") <= 16 * 1024;
+      if (canApply) retained = { preview, expires: Date.now() + 5 * 60_000 };
+      return { revision: preview.previewRevision, report: truncateUtf8(report, 16 * 1024), canApply };
+    },
+    assertReviewed(revision: string | undefined): void { reviewed(revision); },
+    async apply(revision: string | undefined, signal: AbortSignal): Promise<void> {
+      signal.throwIfAborted();
+      const preview = reviewed(revision);
+      retained = undefined;
+      await wiki.applyMigration(preview);
+      signal.throwIfAborted();
+    },
   };
 }

@@ -1,9 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { resolve } from "node:path";
-import { globSync } from "glob";
-import YAML from "yaml";
+import { existsSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
+import { parseJsonc } from "../../jsonc.js";
+import { RepositoryInventory } from "../repository.js";
 import type { Claim, DriftIssue } from "../../types.js";
 
 const PLACEHOLDER_WORDS = /(?:^|[/_-])(?:new|example|your|sample|my|foo|bar|placeholder|template)(?:[/_.-]|$)/i;
@@ -17,11 +16,14 @@ const SCOPED_PACKAGE = /^@([\w-]+)\/([\w-]+)(\/.*)?$/;
 /** URLs are not filesystem paths */
 const URL_PATTERN = /^(?:https?|ftp|file):\/\/|^\/\//;
 
+const SOURCE_EXTENSION = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs)$/;
+
 /** Check that all claimed paths exist on disk */
 export function checkPaths(
   claims: Claim[],
   projectRoot: string,
-  scaffoldRoot: string
+  scaffoldRoot: string,
+  repository = new RepositoryInventory(projectRoot),
 ): DriftIssue[] {
   const issues: DriftIssue[] = [];
   const pathClaims = claims.filter(
@@ -29,7 +31,10 @@ export function checkPaths(
   );
 
   // Collect workspace package names once for all claims
-  const workspaceNames = collectWorkspaceNames(projectRoot);
+  const packages = new Set(repository.manifests?.flatMap((pkg) => [pkg.name, ...Object.keys(pkg.dependencies)]).filter((name): name is string => !!name));
+  const aliases = collectAliases(repository);
+  const files = [...new Set([...(repository.files ?? []), ...repository.scaffoldFiles(scaffoldRoot)])];
+  const suffixMatches = new Map<string, string[]>();
   const ignoredPaths = collectIgnoredPaths(
     pathClaims.map((c) => c.value),
     projectRoot
@@ -46,9 +51,36 @@ export function checkPaths(
     // path -- `documents/upload`, `owner/repo`. What separates them from a real
     // reference is that nothing by the name of their first segment exists, so
     // treat those as prose rather than reporting a file that was never claimed.
-    if (isUnrootedReference(claim.value, projectRoot, scaffoldRoot)) continue;
-
-    if (pathExists(claim.value, projectRoot, scaffoldRoot, workspaceNames)) continue;
+    const alias = resolveAlias(claim.value, aliases, repository);
+    if (alias === true) continue;
+    const packageName = claim.value.match(SCOPED_PACKAGE)?.slice(1, 3).join("/");
+    if (alias === null && packageName) {
+      if (packages.has(`@${packageName}`)) continue;
+      // An inline import specifier may discuss a transitive package or another
+      // registry. It is not a claim that the project declares a direct dependency;
+      // explicit dependency claims are checked by checkDependencies.
+      continue;
+    }
+    if (alias === null && packages.has(claim.value.split("/")[0])) continue;
+    if (alias === null && isUnrootedReference(claim.value, projectRoot, scaffoldRoot)) continue;
+    const lookup = claim.value.startsWith("/") ? claim.value.slice(1) : claim.value;
+    if (alias === null && pathExists(lookup, projectRoot, scaffoldRoot)) continue;
+    if (alias === null && repository.files) {
+      const suffix = lookup.replace(/^\.\//, "").replace(/\/$/, "");
+      if (!suffixMatches.has(suffix)) suffixMatches.set(suffix, files.filter((file) => {
+        const module = file.replace(SOURCE_EXTENSION, "");
+        const candidates = [file];
+        if (module !== file) {
+          candidates.push(module);
+          if (module.endsWith("/index")) candidates.push(module.slice(0, -6));
+        }
+        return candidates.some((candidate) => candidate === suffix || candidate.endsWith(`/${suffix}`)) && repository.safeFile(file);
+      }));
+      // Prose names files by base name or a partial path. The check asks whether
+      // the referenced file exists, so any tracked file it names satisfies it;
+      // several matches (`package.json`, `index.ts`) are not drift.
+      if (suffixMatches.get(suffix)!.length > 0) continue;
+    } else if (alias === null && repository.files === null) continue;
 
     // A path the repository deliberately ignores is created at runtime, so its
     // absence from a clean checkout is expected rather than drift: `.mex/local/`
@@ -59,7 +91,10 @@ export function checkPaths(
     // Bare filenames that aren't found even after recursive search are genuinely missing.
     const isPattern = claim.source.includes("patterns/");
     const isPlaceholder = PLACEHOLDER_WORDS.test(claim.value);
-    const severity = isPattern || isPlaceholder ? "warning" : "error";
+    // A capitalized bare name may be a prose name with an extension-shaped suffix.
+    // Keep it visible as a warning; lowercase filenames and directory paths remain errors.
+    const isProseName = /^[A-Z][^/\\]*\.[A-Za-z0-9]+$/u.test(claim.value);
+    const severity = isPattern || isPlaceholder || isProseName ? "warning" : "error";
 
     issues.push({
       code: "MISSING_PATH",
@@ -71,7 +106,43 @@ export function checkPaths(
     });
   }
 
-  return issues;
+  const namedInSource = collectSourceLiterals(issues, repository);
+  return issues.filter((issue) => !namedInSource.has(issue.claim!.value));
+}
+
+/**
+ * Build scripts can intentionally name absent legacy inputs. Accept only an
+ * exact quoted path in tracked source, never Markdown or an arbitrary substring.
+ * Git selects matching files in one bounded subprocess; safe reads then verify
+ * literals without following symlinks. Failure retains the original findings.
+ */
+function collectSourceLiterals(issues: DriftIssue[], repository: RepositoryInventory): Set<string> {
+  const found = new Set<string>();
+  const candidates = [...new Set(issues.map((issue) => issue.claim!.value))]
+    .filter((value) => value.includes("/") && SOURCE_EXTENSION.test(value) && !/[\n\r"'`]/.test(value));
+  if (!candidates.length || candidates.length > 64 || candidates.join("\n").length > 16_384) return found;
+  try {
+    const output = execFileSync("git", ["grep", "-l", "-z", "-F", "-f", "-", "--", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs", "*.py", "*.go", "*.rs"], {
+      cwd: repository.root, input: candidates.join("\n") + "\n", encoding: "utf8",
+      maxBuffer: 1_048_576, timeout: 5000, stdio: ["pipe", "pipe", "ignore"],
+    });
+    const files = output.split("\0").filter(Boolean);
+    if (files.length > 1024) return found;
+    let remaining = 8_388_608;
+    for (const file of files) {
+      // Tests often retain obsolete example paths; they do not establish that
+      // production code still names an input.
+      if (/(?:^|\/)(?:__tests__|test|tests)\/|\.(?:test|spec)\./.test(file)) continue;
+      const content = repository.readBounded(file, Math.min(remaining, 1_048_576));
+      if (content === null) continue;
+      remaining -= Buffer.byteLength(content);
+      for (const value of candidates) {
+        if (["'", '"', "`"].some((quote) => content.includes(quote + value + quote))) found.add(value);
+      }
+      if (remaining <= 0) break;
+    }
+  } catch { /* Git unavailable, no matches, timeout or output limit: retain findings. */ }
+  return found;
 }
 
 /**
@@ -89,7 +160,12 @@ function isUnrootedReference(
   projectRoot: string,
   scaffoldRoot: string
 ): boolean {
-  if (value.startsWith("/")) return false;
+  if (value.startsWith("/") && !value.startsWith("//")) {
+    const first = value.slice(1).split("/")[0];
+    return !!first && first !== "." && first !== ".."
+      && !existsSync(resolve(projectRoot, first))
+      && !existsSync(resolve(scaffoldRoot, first));
+  }
 
   const trimmed = value.replace(/\/+$/, "");
   const isDirectoryRef = trimmed !== value;
@@ -113,7 +189,18 @@ function isUnrootedReference(
  */
 function collectIgnoredPaths(values: string[], projectRoot: string): Set<string> {
   const ignored = new Set<string>();
-  const candidates = [...new Set(values)].filter((v) => v.length > 0);
+  const candidates = [...new Set(values)].filter((value) => {
+    // One outside path makes Git reject the entire batch. Check both separator
+    // styles regardless of the host, and keep excluded values as normal claims.
+    if (!value || /^(?:[/\\]|[A-Za-z]:)/.test(value) || /[\r\n\0]/.test(value)) return false;
+    let depth = 0;
+    for (const segment of value.split(/[/\\]/)) {
+      if (segment === "..") {
+        if (--depth < 0) return false;
+      } else if (segment && segment !== ".") depth++;
+    }
+    return true;
+  });
   if (candidates.length === 0) return ignored;
 
   try {
@@ -142,145 +229,72 @@ function collectIgnoredPaths(values: string[], projectRoot: string): Set<string>
   return ignored;
 }
 
-/**
- * Collect the `name` field from each workspace's package.json.
- * Reads the root `workspaces` field (npm, yarn, bun) or falls back to
- * `pnpm-workspace.yaml` when that field is absent (pnpm monorepos).
- */
-function collectWorkspaceNames(projectRoot: string): Set<string> {
-  const names = new Set<string>();
-  const patterns = collectWorkspacePatterns(projectRoot);
+function pathExists(value: string, projectRoot: string, scaffoldRoot: string): boolean {
+  if (existsSync(resolve(projectRoot, value))) return true;
+  if (scaffoldRoot !== projectRoot && existsSync(resolve(scaffoldRoot, value))) return true;
+  if (value.startsWith(".mex/") && existsSync(resolve(projectRoot, value.slice(5)))) return true;
+  return false;
+}
 
-  for (const pattern of patterns) {
-    const dirs = globSync(pattern, {
-      cwd: projectRoot,
-      ignore: ["node_modules/**"],
-    });
-    for (const dir of dirs) {
-      const pkgPath = resolve(projectRoot, dir, "package.json");
-      if (!existsSync(pkgPath)) continue;
-      try {
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-        if (pkg.name) names.add(pkg.name);
-      } catch {
-        // Skip malformed package.json
+interface Alias { pattern: string; targets: string[] }
+function collectAliases(repository: RepositoryInventory): Alias[] {
+  const aliases: Alias[] = [];
+  const cache = new Map<string, { base: string; paths: Record<string, string[]> }>();
+  let remaining = 8_388_608;
+  const load = (file: string, depth = 0): { base: string; paths: Record<string, string[]> } | null => {
+    if (cache.has(file)) return cache.get(file)!;
+    if (depth > 8 || remaining <= 0) return null;
+    const content = repository.readBounded(file, Math.min(remaining, 1_048_576));
+    if (content === null) return null;
+    remaining -= Buffer.byteLength(content);
+    let config;
+    try {
+      const parsed = parseJsonc(content);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      config = parsed as { extends?: string; compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> } };
+    } catch { return null; }
+    const directory = dirname(resolve(repository.root, file));
+    let parent: ReturnType<typeof load> = null;
+    if (typeof config.extends === "string" && config.extends.startsWith(".")) {
+      let extended = resolve(directory, config.extends);
+      if (!extended.endsWith(".json")) extended += ".json";
+      parent = load(relative(repository.root, extended).replace(/\\/g, "/"), depth + 1);
+    }
+    const options = config.compilerOptions ?? {};
+    const result = { base: options.baseUrl ? resolve(directory, options.baseUrl) : parent?.base ?? directory,
+      paths: options.paths ?? parent?.paths ?? {} };
+    // Inherited mappings retain the directory in which they were authored.
+    if (!options.paths && parent) result.base = parent.base;
+    cache.set(file, result);
+    return result;
+  };
+  const configs = repository.files?.filter((file) => /(^|\/)tsconfig[^/]*\.json$/.test(file)) ?? [];
+  for (const file of configs.slice(0, 1024)) {
+    const config = load(file);
+    if (!config) continue;
+    for (const [pattern, targets] of Object.entries(config.paths)) {
+      if (Array.isArray(targets)) aliases.push({ pattern, targets: targets.filter((target) => typeof target === "string").map((target) => resolve(config.base, target)) });
+    }
+  }
+  return aliases;
+}
+
+/** null means not an alias; false means an alias with no existing target. */
+function resolveAlias(value: string, aliases: Alias[], repository: RepositoryInventory): boolean | null {
+  let matched = false;
+  for (const alias of aliases) {
+    const star = alias.pattern.indexOf("*");
+    const head = star < 0 ? alias.pattern : alias.pattern.slice(0, star);
+    const tail = star < 0 ? "" : alias.pattern.slice(star + 1);
+    if (star < 0 ? value !== head : !value.startsWith(head) || !value.endsWith(tail) || value.length < head.length + tail.length) continue;
+    matched = true;
+    const capture = star < 0 ? "" : value.slice(head.length, value.length - tail.length);
+    for (const target of alias.targets) {
+      const path = target.replace("*", capture);
+      for (const extension of ["", ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".json", "/index.ts", "/index.tsx", "/index.js"]) {
+        if (repository.safeFile(relative(repository.root, path + extension))) return true;
       }
     }
   }
-
-  return names;
-}
-
-function collectWorkspacePatterns(projectRoot: string): string[] {
-  const rootPkgPath = resolve(projectRoot, "package.json");
-  if (existsSync(rootPkgPath)) {
-    try {
-      const rootPkg: { workspaces?: string[] | { packages?: string[] } } = JSON.parse(
-        readFileSync(rootPkgPath, "utf-8")
-      );
-      const patterns = Array.isArray(rootPkg.workspaces)
-        ? rootPkg.workspaces
-        : rootPkg.workspaces?.packages ?? [];
-      if (patterns.length > 0) return patterns;
-    } catch {
-      // Fall through to pnpm-workspace.yaml
-    }
-  }
-
-  const pnpmWorkspacePath = resolve(projectRoot, "pnpm-workspace.yaml");
-  if (!existsSync(pnpmWorkspacePath)) return [];
-
-  try {
-    const doc = YAML.parse(readFileSync(pnpmWorkspacePath, "utf-8")) as {
-      packages?: string[];
-    } | null;
-    return Array.isArray(doc?.packages) ? doc.packages : [];
-  } catch {
-    return [];
-  }
-}
-
-function pathExists(
-  value: string,
-  projectRoot: string,
-  scaffoldRoot: string,
-  workspaceNames: Set<string>
-): boolean {
-  // Try project root first (e.g. src/index.ts)
-  if (existsSync(resolve(projectRoot, value))) return true;
-
-  // Try scaffold root (e.g. context/architecture.md when scaffold is in .mex/)
-  if (scaffoldRoot !== projectRoot) {
-    if (existsSync(resolve(scaffoldRoot, value))) return true;
-  }
-
-  // If path starts with .mex/, also check without that prefix
-  // (handles the case where this repo IS the scaffold, not deployed inside .mex/)
-  if (value.startsWith(".mex/")) {
-    const withoutPrefix = value.slice(".mex/".length);
-    if (existsSync(resolve(projectRoot, withoutPrefix))) return true;
-  }
-
-  // Resolve scoped package references (e.g. @acme/ui, @acme/shared/utils)
-  const scopedMatch = value.match(SCOPED_PACKAGE);
-  if (scopedMatch) {
-    const pkgName = `@${scopedMatch[1]}/${scopedMatch[2]}`;
-
-    // Try Node's module resolution first (works for installed npm packages)
-    try {
-      const req = createRequire(resolve(projectRoot, "noop.js"));
-      req.resolve(`${pkgName}/package.json`);
-      return true;
-    } catch {
-      // Fall through to workspace check
-    }
-
-    // Check workspace names (handles package managers that don't symlink
-    // all workspaces into node_modules, e.g. bun)
-    if (workspaceNames.has(pkgName)) return true;
-  }
-
-  // Bare filenames: search recursively — the file may exist in a subdirectory
-  if (!value.includes("/")) {
-    // `dot: true` so a file that lives in a hidden directory is found:
-    // a backticked `deploy.yml` normally sits in `.github/workflows/`.
-    const matches = globSync(`**/${value}`, {
-      cwd: projectRoot,
-      ignore: ["node_modules/**", ".mex/**", "dist/**", ".git/**"],
-      maxDepth: 5,
-      dot: true,
-    });
-    if (matches.length > 0) return true;
-
-    // The project search skips the scaffold, so a scaffold file naming another
-    // scaffold file -- `INDEX.md`, or a pattern by its filename -- found
-    // nothing. Search the scaffold too when it is a directory of its own.
-    if (scaffoldRoot !== projectRoot && existsSync(scaffoldRoot)) {
-      const inScaffold = globSync(`**/${value}`, {
-        cwd: scaffoldRoot,
-        ignore: ["node_modules/**"],
-        maxDepth: 5,
-        dot: true,
-      });
-      if (inScaffold.length > 0) return true;
-    }
-  }
-
-  // Documentation inside a subproject names paths from that subproject's root:
-  // a backend's own docs say `routes/quiz.ts`, not
-  // `server/src/routes/quiz.ts`. Accept the claim when exactly that suffix
-  // exists somewhere in the repository, so a real file is not reported missing
-  // because the reader started from a different directory than the author.
-  if (value.includes("/") && !value.startsWith("/")) {
-    const suffix = value.replace(/^\.\//, "").replace(/\/$/, "");
-    const matches = globSync(`**/${suffix}`, {
-      cwd: projectRoot,
-      ignore: ["node_modules/**", "dist/**", ".git/**"],
-      maxDepth: 6,
-      dot: true,
-    });
-    if (matches.length > 0) return true;
-  }
-
-  return false;
+  return matched ? false : null;
 }

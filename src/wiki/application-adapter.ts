@@ -494,10 +494,13 @@ export class RepositoryWikiPort implements WikiPort<
       // Promote at most 25 targets from the existing bounded outgoing scan;
       // retain room for disconnected records and never fabricate relationships.
       const parents = new Map<string, ContractEntitySummary>();
+      // Reuse bounded first pages only within this immutable read session.
+      const firstRelationPages = new Map<string, ContractPage<ContractRelationHit>>();
       const initialIds = new Set(page.items.map(entity => entity.id));
       for (const entity of page.items) {
         if (parents.size === 25) break;
         const edges = session.relations({ entityId: entity.id, direction: "outgoing", includeArchived: true, limit: 100 });
+        firstRelationPages.set(entity.id, edges);
         for (const hit of edges.items) {
           if (hit.relation.type === "refines" && hit.entity !== null
             && !initialIds.has(hit.entity.id)
@@ -517,10 +520,11 @@ export class RepositoryWikiPort implements WikiPort<
       sources: for (const node of nodes) {
         let cursor: string | undefined;
         for (let pageIndex = 0; pageIndex < 2; pageIndex += 1) {
-          const edges = session.relations({
-            entityId: node.ref.id, direction: "outgoing", includeArchived: true,
-            limit: 100, ...(cursor === undefined ? {} : { cursor }),
-          });
+          const edges = (pageIndex === 0 ? firstRelationPages.get(node.ref.id) : undefined)
+            ?? session.relations({
+              entityId: node.ref.id, direction: "outgoing", includeArchived: true,
+              limit: 100, ...(cursor === undefined ? {} : { cursor }),
+            });
           for (const hit of edges.items) {
             if (!included.has(hit.relation.target.id)) {
               if (hit.entity !== null && (WIKI_ENTITY_TYPES as readonly string[]).includes(hit.entity.type)) {
@@ -953,7 +957,8 @@ export class RepositoryWikiPort implements WikiPort<
     return {
       ...projectSummary(summary),
       groundingHealth: aggregateWikiGroundingHealth(
-        projectGroundings(groundings, stableObservationTime(session), graph, summaryFact(session, summary, graph)),
+        projectGroundings(groundings, stableObservationTime(session), graph,
+          groundings.length === 0 ? undefined : summaryFact(session, summary, graph)),
       ),
     };
   }
@@ -2478,12 +2483,13 @@ export class RepositoryWikiPort implements WikiPort<
         throw new Error("injected-operation-index-refresh-failure");
       };
     }
-    return (grounding, context) => {
+    const resolver: GroundingResolver = (grounding, context) => {
           if (this.#options.__internal?.failOperationIndexRefresh?.() === true) {
             throw new Error("injected-operation-index-refresh-failure");
           }
           return resolveGrounding(grounding, graph, context);
         };
+    return Object.assign(resolver, graph.revision === undefined ? {} : { graphRevision: graph.revision });
   }
 
   async #withStableGrounding<T>(

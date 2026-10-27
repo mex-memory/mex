@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, opendirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 
 /** Refuse oversized context; never silently truncate evidence before review. */
@@ -35,6 +35,7 @@ export function createAgentPromptSession(
   try {
     const path = resolve(directory, "prompt.md");
     writeFileSync(path, prompt, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    writeFileSync(resolve(directory, "owner.json"), JSON.stringify({ pid: process.pid }), { encoding: "utf8", flag: "wx", mode: 0o600 });
     const pointer = relative(root, path).replaceAll("\\", "/");
     const label = purpose === "setup-population" ? "setup population" : "agent review";
     return {
@@ -46,6 +47,42 @@ export function createAgentPromptSession(
     rmSync(directory, { recursive: true, force: true });
     throw error;
   }
+}
+
+/** Best-effort housekeeping; live owners and recent legacy folders are retained. */
+export function cleanupStaleSetupPrompts(projectRoot: string, now = Date.now()): void {
+  const local = resolve(projectRoot, ".mex/local");
+  try {
+    requireDirectory(resolve(projectRoot, ".mex"), ".mex");
+    requireDirectory(local, ".mex/local");
+    const entries = opendirSync(local);
+    try {
+      for (let scanned = 0; scanned < 1024; scanned += 1) {
+        const entry = entries.readSync();
+        if (entry === null) break;
+        if (!entry.name.startsWith("setup-population-") || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const directory = resolve(local, entry.name);
+        try {
+          const stats = lstatSync(directory);
+          if (stats.isSymbolicLink() || !stats.isDirectory()) continue;
+          try {
+            const ownerPath = resolve(directory, "owner.json");
+            const ownerStats = lstatSync(ownerPath);
+            if (!ownerStats.isFile() || ownerStats.size > 1024) continue;
+            const owner = JSON.parse(readFileSync(ownerPath, "utf8")) as { pid?: unknown };
+            if (typeof owner.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0) {
+              try { process.kill(owner.pid, 0); continue; }
+              catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue;
+              }
+            }
+          } catch { /* Unknown ownership uses the conservative one-hour fallback. */ }
+          // A dead parent may have left a live child: use the age fallback then too.
+          if (now - stats.mtimeMs > 60 * 60_000) rmSync(directory, { recursive: true, force: true });
+        } catch { /* A disappearing or inaccessible folder must not block setup. */ }
+      }
+    } finally { entries.closeSync(); }
+  } catch { /* Setup may not have created .mex/local yet. */ }
 }
 
 function requireDirectory(path: string, label: string): void {

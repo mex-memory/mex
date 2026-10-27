@@ -144,51 +144,6 @@
   border-radius: 14px;
 }
 
-/*
- * Team invite in the right rail. Keep it quieter than Activity so the product
- * memory sits first and the waitlist reads as a close, not a peer hero.
- */
-.updatesCard {
-  --card-spacing: 14px;
-  min-width: 0;
-  border-radius: 14px;
-  background: var(--card);
-}
-
-.updatesCard .panelHeader h2 {
-  color: var(--muted-foreground);
-  font-size: 14px;
-  font-weight: 580;
-  letter-spacing: -0.01em;
-}
-
-.updatesContent {
-  display: grid;
-  gap: 8px;
-}
-
-.updatesLead {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12.5px;
-  font-weight: 500;
-  line-height: 1.45;
-}
-
-.updatesBody {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.updatesActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
 .focusCard {
   background: var(--card);
 }

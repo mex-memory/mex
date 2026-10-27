@@ -1,5 +1,5 @@
 /**
- * Incremental refresh — reparse what changed, re-resolve everything.
+ * Incremental refresh — reparse what changed, re-resolve everything by default.
  *
  * The update is the easy half. The hard half is **invalidation**, and it is
  * where an incremental index normally starts lying: deleting a file leaves the
@@ -8,8 +8,9 @@
  * shows up as a confidently wrong answer, months later, to a question nobody
  * thinks to check.
  *
- * So this refreshes exactly one thing incrementally — **parsing** — and derives
- * everything else from scratch. `resolveIndexState` is the same function the
+ * Full refresh derives health and set diagnostics from scratch. Apply opts
+ * into retaining cached grounding verdicts outside reparsed files; set-level
+ * diagnostics still use all rows. `resolveIndexState` is the same function the
  * rebuild calls, over the same rows, so a dangling reference and a resolved one
  * are recomputed on every refresh whether or not the file involved was in the
  * changed set. There is no second resolver to disagree with the first, which is
@@ -96,6 +97,8 @@ export interface RefreshOptions {
    * on code, and code changes without the scaffold changing at all.
    */
   resolveGrounding?: GroundingResolver;
+  /** Apply-only: all other refresh callers resolve the whole Wiki. */
+  targetedGroundings?: boolean;
   /** Cancellation and bounded phase progress for explicit maintenance jobs. */
   maintenance?: WikiMaintenanceContext;
   /** Existing operation/migration lease; prevents self-contention. */
@@ -270,6 +273,7 @@ export function prepareWikiRefresh(options: RefreshOptions): PrepareWikiRefreshR
           now: now(),
           scaffoldDiagnostics: observation.diagnostics,
           resolveGrounding: options.resolveGrounding,
+          ...(options.targetedGroundings ? { groundingFiles: reparsed } : {}),
         });
         maintenanceBoundary(options.maintenance, "validate");
       });

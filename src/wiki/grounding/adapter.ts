@@ -72,6 +72,9 @@ export interface GroundedNode {
  * what would make drift disappear behind a helpful-looking cache update.
  */
 export interface GroundingGraph {
+  readonly revision?: string;
+  /** Apply's exact-byte proof for explicitly named source paths. */
+  verifySource?(path: string): void;
   /** A stable parse gap permits direct verified targets, but proves no absence. */
   readonly incompleteReason?: string;
   /** The node under this id, or null when the graph has no such node. */
@@ -107,7 +110,34 @@ export interface GroundingGraph {
    * this from resolution or ordinary reads: it writes checkout-local state.
    */
   rememberBody?(nodeId: string, bodyHash: string): void;
+  /**
+   * The declarations in one indexed source file, for resolving code a caller
+   * names by `file` and `symbol` or `line` (see `code-reference.ts`).
+   *
+   * Scoped to the one file the caller names, so it answers "what is declared
+   * here", never "what code is there at all". Null when the graph does not hold
+   * the file, or holds it only through an incomplete parse. Optional: a graph
+   * without it refuses such references and still accepts node ids.
+   */
+  declarationsInFile?(filePath: string): readonly CodeDeclaration[] | null;
 }
+
+/** One declaration in a file, as reference resolution sees it. */
+export interface CodeDeclaration {
+  id: string;
+  kind: string;
+  name: string;
+  /** The graph's qualified name, `::`-separated (`Router::add`). */
+  qualifiedName: string;
+  signature?: string;
+  startLine: number;
+  endLine: number;
+  /** True when the node has a body hash, which is what a grounding is checked against. */
+  hasBody: boolean;
+}
+
+/** At most this many declarations are read for one file. */
+export const MAX_DECLARATIONS_PER_FILE = 5_000;
 
 /** Evidence about a changed body; see `src/graph/grounding-evidence.ts`. */
 export type ChangeEvidence = GroundingChangeEvidence;
@@ -155,6 +185,23 @@ export function createGroundingGraph(
     },
     rememberBody(nodeId, bodyHash) {
       evidence?.rememberBody(nodeId, bodyHash);
+    },
+    declarationsInFile(filePath) {
+      const nodes = new GraphStore(db).getNodesByFile(filePath);
+      if (nodes.length === 0) return null;
+      return nodes
+        .sort((left, right) => left.startLine - right.startLine || right.endLine - left.endLine)
+        .slice(0, MAX_DECLARATIONS_PER_FILE)
+        .map((node) => ({
+          id: node.id,
+          kind: node.kind,
+          name: node.name,
+          qualifiedName: node.qualifiedName,
+          ...(node.signature === undefined ? {} : { signature: node.signature }),
+          startLine: node.startLine,
+          endLine: node.endLine,
+          hasBody: node.bodyHash !== undefined && node.bodyHash !== null,
+        }));
     },
   };
 }

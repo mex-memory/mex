@@ -122,6 +122,19 @@ jobs:
           src/graph/__tests__/fingerprint-store-transactions.test.ts
           src/graph/__tests__/store-statements.test.ts
           src/graph/__tests__/engine-continuity-resources.test.ts
+      - name: Run platform-sensitive setup end-to-end tests
+        # The full interruption matrix runs on Linux in `npm run test`; here only the
+        # cases that touch process launching, line endings and killing a process tree.
+        run: >-
+          npx vitest run --maxWorkers=1 test/setup-e2e-matrix.test.ts
+          -t "populates through the real launcher|fresh clone|setup process is killed|second setup"
+      - name: Run terminal setup acceptance in a Windows console
+        # node-pty is not a project dependency (#311): only this job needs it.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          npm install --no-save --package-lock=false --no-audit --no-fund node-pty@1.1.0
+          npx vitest run --maxWorkers=1 test/setup-terminal-conpty.test.ts
       - run: npm run build
       - name: Smoke test the packed install
         run: npm run test:hub:package

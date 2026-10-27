@@ -1,17 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { globSync } from "glob";
-import { graphManifest, graphManifestDiffersOnlyByConfig } from "./engine-impl.js";
+import { discoverGraphReadPaths } from "./read-discovery.js";
+import { GRAPH_CORPUS_LIMITS } from "./corpus-policy.js";
+import { graphManifest, graphManifestDiffersOnlyByConfig } from "./manifest.js";
 import type { GraphEngine, GraphNeighbor, IndexedFileInfo } from "./engine.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
-import { isSupportedSourceFile, SUPPORTED_SOURCE_GLOB } from "./extraction/index.js";
+import { isSupportedSourceFile, SUPPORTED_SOURCE_GLOB } from "./extraction/grammars.js";
 import {
   coverageFields, coverageReportable, hasGraphCoverageCache, readGraphCoverageObservation,
   type GraphCoverageObservation,
 } from "./coverage.js";
 import type { GraphEdge, GraphNode } from "./types.js";
 import {
-  compactFact, groupByFile, planFileSource, readNodeSource, selectScope, sourceHash,
+  compactFact, groupByFile, planFileSource, readNodeSource, selectScope, sourceHash, splitSourceLines,
   type CompactFact, type DetailLevel, type RankedScopeFile, type ScopedCandidate, type SourceRange,
 } from "./scope.js";
 import {
@@ -23,7 +24,7 @@ import { serializeFingerprint } from "./fingerprint.js";
 import {
   BudgetLedger, DEFAULT_OPTIONS, estimateTokens, resolveOptions, resolveScopeOptions, SCHEMA_VERSION, type AgentOptions,
 } from "./agent-protocol.js";
-import { identifierComponents, isLowValueGraphPath, planGraphQuery } from "./retrieval/query.js";
+import { identifierComponents, isLowValueGraphPath, isTestGraphPath, planGraphQuery } from "./retrieval/query.js";
 import {
   loadFreshGraphReadSession,
   openImmutableGraphReadSessionSync,
@@ -75,6 +76,8 @@ export interface AgentCommandDeps {
 
 type RawOptions = Partial<Record<keyof AgentOptions, unknown>>;
 type Rec = Record<string, unknown>;
+/** A node `graph scope` may return a fact for: a ranked candidate, or an unranked flow endpoint. */
+type FactEntry = Pick<ScopedCandidate, "id" | "score" | "reasons">;
 type ImpactDirection = "callers" | "callees" | "both";
 
 /** Agent-facing blast radius. Output is newline-delimited JSON (JSONL). */
@@ -115,8 +118,21 @@ export function runImpact(
 
     // Definitions and directed dependencies share one returned-node cap.
     const rootsSorted = roots.sort(byId);
+    const impacted = new Map<string, ImpactNeighbor>();
+    for (const entry of transitiveCallNeighbors(session.graph, rootsSorted, opts.depth, direction)) impacted.set(entry.node.id, entry);
+    // Nearest first; within a depth, production code before tests, fixtures
+    // and other low-value paths, as `graph query` already orders call results.
+    const ordered = [...impacted.values()].sort((a, b) => a.depth - b.depth
+      || Number(isLowValueGraphPath(a.node.filePath)) - Number(isLowValueGraphPath(b.node.filePath))
+      || a.node.id.localeCompare(b.node.id));
+    const rootsById = new Map(rootsSorted.map((node) => [node.id, node]));
+    const { kept: shown, omitted: omittedTestNodes } = withoutTestResults(
+      session, ordered, (entry) => entry.node, (entry) => rootsById.get(entry.root), opts.includeTests,
+    );
+    const testsCommand = omittedTestNodes > 0 ? [includeTestsCommand("mex impact", target)] : [];
+
     const ctx = beginResponse("impact", opts, undefined,
-      rootsSorted.length > 0 ? [`mex graph get ${rootsSorted[0]!.id} --detail source`] : [],
+      [...(rootsSorted.length > 0 ? [`mex graph get ${rootsSorted[0]!.id} --detail source`] : []), ...testsCommand],
       direction === "callers" ? {} : { direction });
     const ledger = ctx.ledger;
     const meta = ctx.meta;
@@ -146,10 +162,6 @@ export function runImpact(
       for (const root of rootsSorted) if (!admitDefinition(root)) break;
     }
 
-    const impacted = new Map<string, { node: GraphNode; depth: number; root: string }>();
-    for (const entry of transitiveCallNeighbors(session.graph, rootsSorted, opts.depth, direction)) impacted.set(entry.node.id, entry);
-    const ordered = [...impacted.values()].sort((a, b) => a.depth - b.depth || a.node.id.localeCompare(b.node.id));
-
     // Grounding is keyed by node, so an excluded node must not reappear
     // through it. Nodes omitted only by the returned-node cap still count.
     const affectedIds = [...new Set([...roots.map((node) => node.id), ...impacted.keys()])]
@@ -170,17 +182,20 @@ export function runImpact(
       if (ledger.tryAdd(record)) groundingRecords.push(record); else truncated = true;
     }
 
-    for (const entry of ordered) {
+    for (const entry of shown) {
       if (emittedNodes.length >= opts.maxNodes) { truncated = true; break; }
       const fact = factFor(session, entry.node.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
       // Reached by following call edges, which is exactly what drifted
       // resolution can get wrong.
+      const callLine = impactCallLine(session.graph, entry, direction);
       const record: Rec = markResolutionStale(session,
         {
           type: direction === "callers" ? "caller" : direction === "callees" ? "callee" : "dependency",
           depth: entry.depth, root: entry.root,
-          ...agentFactFields(fact, opts), ...callbackEnclosingSymbol(session, entry.node),
+          ...agentFactFields(fact, opts),
+          ...(callLine !== undefined ? { callLine } : {}),
+          ...callbackEnclosingSymbol(session, entry.node),
         });
       if (!ledger.tryAdd(record)) { truncated = true; break; }
       factRecords.push(record);
@@ -211,7 +226,11 @@ export function runImpact(
       returnedNodes: emittedNodes.length,
       returnedEdges: 0,
       truncated,
-      suggestedNextCommands: emittedNodes.length > 0 ? [`mex graph get ${emittedNodes[0]!.id} --detail source`] : [],
+      omittedTestNodes,
+      suggestedNextCommands: [
+        ...(emittedNodes.length > 0 ? [`mex graph get ${emittedNodes[0]!.id} --detail source`] : []),
+        ...testsCommand,
+      ],
     })));
   });
 }
@@ -246,27 +265,34 @@ export function runGraphQuery(
     if (emitTargetSourceDrifted(session, write, target, nodes)) return;
 
     // Preserve (queried target, result) pairs; dedupe by that pair, not by result id alone.
-    const pairs: Array<{ targetId: string; node: GraphNode }> = [];
+    const pairs: Array<{ targetId: string; node: GraphNode; callLine?: number }> = [];
     const seen = new Set<string>();
     for (const queried of nodes.sort(byId)) {
-      const related = relation === "where-defined" ? [queried] : relatedCallNodes(session.graph, queried, relation);
-      for (const node of related) {
+      const related = relation === "where-defined" ? [{ node: queried }] : relatedCallNodes(session.graph, queried, relation);
+      for (const { node, callLine } of related) {
         const key = `${queried.id} ${node.id}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        pairs.push({ targetId: queried.id, node });
+        pairs.push({ targetId: queried.id, node, ...(callLine !== undefined ? { callLine } : {}) });
       }
     }
 
-    const anticipated = pairs.length > 0 && opts.detail !== "source"
-      ? [`mex graph get ${pairs[0]!.node.id} --detail source`] : [];
+    const targetsById = new Map(nodes.map((node) => [node.id, node]));
+    const { kept: shownPairs, omitted: omittedTestNodes } = relation === "where-defined"
+      ? { kept: pairs, omitted: 0 }
+      : withoutTestResults(session, pairs, (pair) => pair.node, (pair) => targetsById.get(pair.targetId), opts.includeTests);
+    const testsCommand = omittedTestNodes > 0 ? [includeTestsCommand(`mex graph query ${relation}`, target)] : [];
+    const anticipated = [
+      ...(shownPairs.length > 0 && opts.detail !== "source" ? [`mex graph get ${shownPairs[0]!.node.id} --detail source`] : []),
+      ...testsCommand,
+    ];
     const ctx = beginResponse(`graph query ${relation}`, opts, undefined, anticipated);
     const ledger = ctx.ledger;
     const meta = ctx.meta;
 
     const entries: Array<{ record: Rec; node: GraphNode }> = [];
     let truncated = false;
-    for (const pair of pairs) {
+    for (const pair of shownPairs) {
       if (entries.length >= opts.maxNodes) { truncated = true; break; }
       const fact = factFor(session, pair.node.id, opts.detail, opts.fingerprint);
       if (!fact) continue;
@@ -274,7 +300,9 @@ export function runGraphQuery(
       // resolution; the call relations are edges and are not.
       const base: Rec = {
         type: "result", relation, target: pair.targetId,
-        ...agentFactFields(fact, opts), ...callbackEnclosingSymbol(session, pair.node),
+        ...agentFactFields(fact, opts),
+        ...(pair.callLine !== undefined ? { callLine: pair.callLine } : {}),
+        ...callbackEnclosingSymbol(session, pair.node),
       };
       const record: Rec = relation === "where-defined" ? base : markResolutionStale(session, base);
       if (!ledger.tryAdd(record)) { truncated = true; break; }
@@ -292,7 +320,11 @@ export function runGraphQuery(
       returnedNodes: entries.length,
       returnedEdges: 0,
       truncated,
-      suggestedNextCommands: entries.length > 0 && opts.detail !== "source" ? [`mex graph get ${entries[0]!.node.id} --detail source`] : [],
+      omittedTestNodes,
+      suggestedNextCommands: [
+        ...(entries.length > 0 && opts.detail !== "source" ? [`mex graph get ${entries[0]!.node.id} --detail source`] : []),
+        ...testsCommand,
+      ],
     })));
   });
 }
@@ -609,7 +641,54 @@ export function runGraphScope(
       plannedSources, primaryNodeOrder, exactNodeOrder, flowAnswerCandidateIds,
       reservedPrimaryNodeIds, globallyReservedSourceOrder, nodeById,
     ), nodeById);
-    for (const planned of sourceAdmissions) {
+    // `--fingerprint` puts fingerprints on fact records, which are admitted
+    // after every source spill. Each source admission also holds room for the
+    // facts of its nodes, so returned source keeps its fingerprints.
+    const fingerprintFactTokens = new Map<string, number>();
+    // A flow endpoint can come back as source without being a ranked
+    // candidate. With `--fingerprint` it gets an unranked fact too, or its
+    // returned source would have no fingerprint.
+    const unrankedSourceFacts: FactEntry[] = [];
+    if (opts.fingerprint && opts.detail === "source") {
+      const ranked = new Set(selection.candidates.map((candidate) => candidate.id));
+      const flowEndpoints = plannedFlowRecords.flatMap(({ record }) => (
+        record.steps as Array<{ source: string; target: string }>
+      ).flatMap((step) => [step.source, step.target]))
+        .filter((id) => !ranked.has(id))
+        .map((id): FactEntry => ({ id, score: 0, reasons: [] }));
+      for (const entry of [...selection.candidates, ...flowEndpoints]) {
+        if (fingerprintFactTokens.has(entry.id)) continue;
+        const node = nodeById.get(entry.id);
+        const fact = node && !stale.has(node.filePath) ? factFor(session, entry.id, opts.detail, true) : null;
+        if (fact) {
+          fingerprintFactTokens.set(entry.id, estimateTokens(
+            scopeFactRecord(fact, entry.score, entry.reasons, opts),
+          ));
+          if (!ranked.has(entry.id)) unrankedSourceFacts.push(entry);
+        }
+      }
+    }
+    const heldFactIds = new Set<string>();
+    let factTokenReserve = 0;
+    /** Fact tokens admitting `record` would add to the reserve. */
+    const factTokensFor = (record: Rec): number => {
+      const ids = new Set((record.ranges as SourceRange[]).flatMap((range) => range.nodeIds));
+      let tokens = 0;
+      for (const id of ids) if (!heldFactIds.has(id)) tokens += fingerprintFactTokens.get(id) ?? 0;
+      return tokens;
+    };
+    const holdFacts = (records: Rec[]): void => {
+      for (const record of records) {
+        factTokenReserve += factTokensFor(record);
+        for (const range of record.ranges as SourceRange[]) range.nodeIds.forEach((id) => heldFactIds.add(id));
+      }
+    };
+    // Hard-ledger room left once the summary and the held facts are set aside.
+    const roomAboveFactReserve = (): number => (
+      ctx.effectiveMax - ledger.estimatedTokens - summaryTokenReserve - factTokenReserve
+    );
+    const admissionTokens = sourceAdmissions.map((planned) => estimateTokens(planned.record));
+    for (const [admissionIndex, planned] of sourceAdmissions.entries()) {
       const { record, phase } = planned;
       // A large atomic answer may fail the source-share fit while a later
       // compact answer still fits. Continue trying answer admissions, but hold
@@ -620,8 +699,9 @@ export function runGraphScope(
         continue;
       }
       const admission = admitSourceWithinShare(
-        record, sourceShare - sourceTokens, ledger, planned.atomic,
+        record, sourceShare - sourceTokens - factTokenReserve - factTokensFor(record), ledger, planned.atomic,
       );
+      holdFacts(admission.admitted);
       sourceRecords.push(...admission.admitted);
       sourceTokens += admission.tokens;
       truncated ||= admission.trimmed;
@@ -629,18 +709,27 @@ export function runGraphScope(
       // A complete answer that only crossed the 75% source-share boundary gets
       // its hard-ledger opportunity immediately. Letting later small answers
       // spend that capacity first starved the earlier, stronger declaration.
+      // It must not take the room of later compact answers that still fit the
+      // share on their own (#305): at some budgets an earlier file's large
+      // second declaration spilled into exactly the space a later file's
+      // compact answer needed, so more budget returned less of the answer.
+      // Held back here, it gets the same opportunity after those answers.
       if (phase === "answer" && planned.atomic && unresolved.length > 0) {
+        const shareLeft = sourceShare - sourceTokens;
+        const laterCompactAnswers = sourceAdmissions.slice(admissionIndex + 1).reduce((total, later, offset) => (
+          later.phase === "answer" && admissionTokens[admissionIndex + 1 + offset]! <= shareLeft
+            ? total + admissionTokens[admissionIndex + 1 + offset]!
+            : total
+        ), 0);
         const stillDeferred: Rec[] = [];
         for (const deferred of unresolved) {
           const spill = admitSourceWithinShare(
             deferred,
-            Math.max(
-              0,
-              ctx.effectiveMax - ledger.estimatedTokens - summaryTokenReserve - flowTokenReserve,
-            ),
+            Math.max(0, roomAboveFactReserve() - flowTokenReserve - factTokensFor(deferred) - laterCompactAnswers),
             ledger,
             true,
           );
+          holdFacts(spill.admitted);
           sourceRecords.push(...spill.admitted);
           sourceTokens += spill.tokens;
           stillDeferred.push(...spill.deferred);
@@ -674,21 +763,37 @@ export function runGraphScope(
       }
       const spill = admitSourceWithinShare(
         deferred.record,
-        Math.max(
-          0,
-          ctx.effectiveMax - ledger.estimatedTokens - summaryTokenReserve - flowTokenReserve,
-        ),
+        Math.max(0, roomAboveFactReserve() - flowTokenReserve - factTokensFor(deferred.record)),
         ledger,
         true,
       );
+      holdFacts(spill.admitted);
       sourceRecords.push(...spill.admitted);
       if (spill.trimmed || spill.deferred.length > 0) truncated = true;
+    }
+
+    const factRecordFor = (entry: FactEntry): { record: Rec; node: GraphNode } | null => {
+      const fact = factFor(session, entry.id, opts.detail, opts.fingerprint);
+      const node = nodeById.get(entry.id);
+      if (!fact || !node || stale.has(node.filePath)) return null;
+      return { record: scopeFactRecord(fact, entry.score, entry.reasons, opts), node };
+    };
+    // Outside source detail nothing holds room for facts, and flows would fill
+    // a small budget first. With `--fingerprint`, facts go ahead of flows but
+    // leave them their bounded share; the facts are still emitted after them.
+    const earlyFacts = new Map<string, { record: Rec; node: GraphNode }>();
+    if (opts.fingerprint && opts.detail !== "source") {
+      for (const candidate of selection.candidates) {
+        const fact = factRecordFor(candidate);
+        if (fact && estimateTokens(fact.record) <= roomAboveFactReserve() - flowTokenReserve
+          && ledger.tryAdd(fact.record)) earlyFacts.set(candidate.id, fact);
+      }
     }
 
     const flowRecords: Rec[] = [];
     let returnedEdges = 0;
     for (const { record, stepCount } of plannedFlowRecords) {
-      if (ledger.tryAdd(record)) {
+      if (estimateTokens(record) <= roomAboveFactReserve() && ledger.tryAdd(record)) {
         flowRecords.push(record);
         returnedEdges += stepCount;
       } else truncated = true;
@@ -696,8 +801,14 @@ export function runGraphScope(
 
     for (const deferred of ordinaryDeferredSources) {
       const spill = admitSourceWithinShare(
-        deferred.record, ctx.effectiveMax, ledger, deferred.atomic,
+        deferred.record,
+        fingerprintFactTokens.size > 0
+          ? Math.max(0, roomAboveFactReserve() - factTokensFor(deferred.record))
+          : ctx.effectiveMax,
+        ledger,
+        deferred.atomic,
       );
+      holdFacts(spill.admitted);
       sourceRecords.push(...spill.admitted);
       if (spill.trimmed || spill.deferred.length > 0) truncated = true;
     }
@@ -706,14 +817,36 @@ export function runGraphScope(
     const flowIds = new Set(flowRecords.flatMap((record) =>
       (record.steps as Array<{ source: string; target: string }>).flatMap((step) => [step.source, step.target])));
     const facts: Array<{ record: Rec; node: GraphNode }> = [];
-    for (const candidate of selection.candidates) {
+    // The reserve is for source-backed nodes, so their facts go before flow-only ones.
+    const factCandidates: FactEntry[] = fingerprintFactTokens.size > 0
+      ? [
+        ...selection.candidates.filter((candidate) => sourcedIds.has(candidate.id)),
+        ...unrankedSourceFacts.filter((entry) => sourcedIds.has(entry.id)),
+        ...selection.candidates.filter((candidate) => !sourcedIds.has(candidate.id)),
+      ]
+      : selection.candidates;
+    // Facts `--fingerprint` asked for that the budget could not hold.
+    let omittedFingerprintFacts = 0;
+    for (const candidate of factCandidates) {
       if (opts.detail === "source" && !sourcedIds.has(candidate.id) && !flowIds.has(candidate.id)) continue;
-      const fact = factFor(session, candidate.id, opts.detail, opts.fingerprint);
-      const node = nodeById.get(candidate.id);
-      if (!fact || !node || stale.has(node.filePath)) continue;
-      const record = scopeFactRecord(fact, candidate.score, candidate.reasons, opts);
-      if (ledger.tryAdd(record)) facts.push({ record, node }); else truncated = true;
+      const early = earlyFacts.get(candidate.id);
+      if (early) {
+        facts.push(early);
+        continue;
+      }
+      const fact = factRecordFor(candidate);
+      if (!fact) continue;
+      if (ledger.tryAdd(fact.record)) facts.push(fact);
+      else {
+        truncated = true;
+        if (opts.fingerprint) omittedFingerprintFacts += 1;
+      }
     }
+    // A returned source node whose fact did not fit has lost its fingerprint.
+    const unfingerprintedSourceNodes = opts.fingerprint
+      ? [...sourcedIds].filter((id) => fingerprintFactTokens.has(id)
+        && !facts.some((fact) => fact.node.id === id)).length
+      : 0;
 
     const finalSourcedIds = new Set(sourceRecords.flatMap((record) =>
       (record.ranges as SourceRange[]).flatMap((range) => range.nodeIds)));
@@ -777,6 +910,9 @@ export function runGraphScope(
       ...(highPriorityEvidenceOmitted
         ? [`High-priority evidence omitted: ${omittedHighPrioritySourceFiles.length} source file(s), ${omittedHighPriorityFlowSteps} flow step(s).`]
         : []),
+      ...(omittedFingerprintFacts > 0
+        ? [`Fingerprints omitted: ${omittedFingerprintFacts} fact(s) did not fit the output budget; raise --max-output-tokens or narrow the task.`]
+        : []),
       ...(isConfigDrifted(session)
         ? ["Graph build configuration changed after this index was built; flows and other resolved relationships may be out of date."]
         : []),
@@ -784,9 +920,15 @@ export function runGraphScope(
         ? ["Some indexed files did not parse completely; this answer may be missing symbols they define."]
         : []),
     ];
+    // `--fingerprint` exists to return fingerprints. An answer without any, or
+    // with returned source that lost its fingerprint, is not complete; nor is
+    // it a no-match when the facts matched but did not fit.
+    const fingerprintsMissing = unfingerprintedSourceNodes > 0
+      || (omittedFingerprintFacts > 0 && !facts.some((fact) => fact.record.fingerprint !== undefined));
     const status = returnedFiles.length === 0 && facts.length === 0 && flowRecords.length === 0
+      && !fingerprintsMissing
       ? "no-match"
-      : highPriorityEvidenceOmitted ? "partial"
+      : highPriorityEvidenceOmitted || fingerprintsMissing ? "partial"
         : materiallyReliesOnTextOnly ? "degraded"
           : "ok";
     const suggestions = status === "partial" && facts.length > 0
@@ -814,7 +956,8 @@ export function runGraphScope(
     ]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: selection.matchedCount,
-      returnedNodes: facts.length,
+      // Source-mode answers can return nodes as source alone, with no fact record.
+      returnedNodes: new Set([...finalSourcedIds, ...facts.map((fact) => fact.node.id)]).size,
       returnedEdges,
       truncated,
       suggestedNextCommands: suggestions,
@@ -822,7 +965,6 @@ export function runGraphScope(
       evidenceStrength: selection.evidenceStrength,
       coveredTerms: selection.coveredTerms,
       returnedFiles,
-      sourceBackedNodes: [...finalSourcedIds],
       textFallbackFiles,
       warnings,
     })));
@@ -929,12 +1071,11 @@ const SIZE_PROBE = 9_999_999;
 /** Slack over the anticipated summary size (covers node-id/name length variance). */
 const RESERVE_PAD = 16;
 const SUMMARY_LIST_KEYS = [
-  "sourceBackedNodes", "coveredTerms", "returnedFiles", "textFallbackFiles",
+  "coveredTerms", "returnedFiles", "textFallbackFiles",
   "suggestedNextCommands", "warnings",
 ] as const;
 type SummaryListKey = typeof SUMMARY_LIST_KEYS[number];
 const SUMMARY_LIST_LIMITS: Record<SummaryListKey, number> = {
-  sourceBackedNodes: 24,
   coveredTerms: 12,
   returnedFiles: 6,
   textFallbackFiles: 6,
@@ -990,10 +1131,10 @@ function summarySkeleton(suggestions: string[]): Rec {
     status: "degraded", evidenceStrength: "moderate",
     coveredTerms: Array(12).fill("identifier-component"),
     returnedFiles: Array(6).fill("path/to/a/representative/source-file.ts"),
-    sourceBackedNodes: Array(24).fill("method:0123456789abcdef0123456789abcdef"),
     textFallbackFiles: Array(6).fill("path/to/a/representative/source-file.ts"),
     warnings: Array(3).fill("Representative graph health warning."),
-    omittedCounts: Object.fromEntries(SUMMARY_LIST_KEYS.map((key) => [key, SIZE_PROBE])),
+    omittedCounts: Object.fromEntries(SUMMARY_LIST_KEYS
+      .map((key) => [key, SIZE_PROBE])),
   };
 }
 
@@ -1014,17 +1155,17 @@ function summaryRecord(
     returnedEdges: number;
     truncated: boolean;
     suggestedNextCommands: string[];
+    /** Call results in test files left out because other results exist. */
+    omittedTestNodes?: number;
     status?: "ok" | "partial" | "degraded" | "no-match";
     evidenceStrength?: "strong" | "moderate" | "weak" | "none";
     coveredTerms?: string[];
     returnedFiles?: string[];
-    sourceBackedNodes?: string[];
     textFallbackFiles?: string[];
     warnings?: string[];
   },
 ): Rec {
   const capped = capSummaryLists({
-    sourceBackedNodes: fields.sourceBackedNodes ?? [],
     coveredTerms: fields.coveredTerms ?? [],
     returnedFiles: fields.returnedFiles ?? [],
     textFallbackFiles: fields.textFallbackFiles ?? [],
@@ -1038,6 +1179,7 @@ function summaryRecord(
     matchedNodes: fields.matchedNodes,
     returnedNodes: fields.returnedNodes,
     returnedEdges: fields.returnedEdges,
+    ...(fields.omittedTestNodes ? { omittedTestNodes: fields.omittedTestNodes } : {}),
     maxOutputTokens: ctx.effectiveMax,
     truncated: fields.truncated || omitted || ctx.ledger.droppedAny || ctx.ledger.overBudget,
     suggestedNextCommands: capped.values.suggestedNextCommands,
@@ -1048,7 +1190,6 @@ function summaryRecord(
     evidenceStrength: fields.evidenceStrength ?? (fields.returnedNodes > 0 ? "strong" : "none"),
     coveredTerms: capped.values.coveredTerms,
     returnedFiles: capped.values.returnedFiles,
-    sourceBackedNodes: capped.values.sourceBackedNodes,
     textFallbackFiles: capped.values.textFallbackFiles,
     warnings: capped.values.warnings,
     omittedCounts: capped.omittedCounts,
@@ -1172,7 +1313,7 @@ function graphGetFullSourceBudget(opts: AgentOptions, fullSource: Rec): number {
 }
 
 function readNodeSourceBuffer(node: GraphNode, source: string, maxLines: number): SourceRange {
-  const lines = source.split("\n");
+  const lines = splitSourceLines(source);
   const body = lines.slice(node.startLine - 1, node.endLine);
   const truncated = maxLines > 0 && body.length > maxLines;
   const kept = truncated ? body.slice(0, maxLines) : body;
@@ -1194,6 +1335,9 @@ function emitAll(write: (line: string) => void, meta: Rec, records: Rec[]): void
   for (const record of records) write(JSON.stringify(record));
 }
 
+/** Longest declaration whose full line range a fact record reports. */
+const MAX_REPORTED_SPAN_LINES = 200;
+
 /**
  * Scope is the high-frequency discovery command, so its default manifest avoids
  * repeating response-level state on every fact. Source records already carry
@@ -1203,8 +1347,16 @@ function agentFactFields(fact: CompactFact, opts: AgentOptions): Rec {
   const { detail: _detail, sourceIncluded: _sourceIncluded, bodyHash, qualifiedName, signature, ...core } = fact;
   const compactSignature = signature?.replace(/\s+/g, " ").trim();
   const signatureLimit = opts.detail === "standard" ? 320 : 180;
+  // A whole-declaration span such as lines 1486-54200 is not a location
+  // anyone can use (#289). A long declaration keeps its start line and says
+  // how long it is instead of inviting a read of the whole range.
+  const lineCount = fact.lineEnd - fact.lineStart + 1;
+  const located = lineCount > MAX_REPORTED_SPAN_LINES
+    ? Object.fromEntries(Object.entries(core).map(([key, value]) => (
+      key === "lineEnd" ? ["lineCount", lineCount] : [key, value])))
+    : core;
   return {
-    ...core,
+    ...located,
     ...(qualifiedName !== fact.name ? { qualifiedName } : {}),
     ...(compactSignature ? {
       signature: compactSignature.length <= signatureLimit
@@ -2514,11 +2666,52 @@ function callbackEnclosingSymbol(session: AgentGraphSession, node: GraphNode): R
   return {};
 }
 
-function relatedCallNodes(graph: GraphEngine, queried: GraphNode, relation: Exclude<QueryRelation, "where-defined">): GraphNode[] {
+/**
+ * Leave out call results in test files while any other result can be shown.
+ * Test callbacks otherwise crowd real callers out of the node cap (#289). A
+ * target that is itself in a test file keeps its test results, and results
+ * that are only tests are all shown, so neither case becomes an empty answer.
+ */
+function withoutTestResults<T>(
+  session: AgentGraphSession,
+  entries: T[],
+  nodeOf: (entry: T) => GraphNode,
+  targetOf: (entry: T) => GraphNode | undefined,
+  includeTests: boolean,
+): { kept: T[]; omitted: number } {
+  if (includeTests) return { kept: entries, omitted: 0 };
+  const omittable = (entry: T) => isTestGraphPath(nodeOf(entry).filePath)
+    && !isTestGraphPath(targetOf(entry)?.filePath ?? "");
+  const kept = entries.filter((entry) => !omittable(entry));
+  // Drifted results are never emitted, so they cannot stand in for the tests.
+  if (!kept.some((entry) => !isDriftedFile(session, nodeOf(entry).filePath))) return { kept: entries, omitted: 0 };
+  return { kept, omitted: entries.length - kept.length };
+}
+
+/** The command an agent reruns to see the omitted test results. */
+function includeTestsCommand(command: string, target: string): string {
+  const argument = /^[\w./:@#-]+$/.test(target) ? target : JSON.stringify(target);
+  return `${command} ${argument} --include-tests`;
+}
+
+/**
+ * Call neighbors of a queried node, each with `callLine`: the line of its
+ * first call, in the caller's file (the result for who-calls, the queried
+ * node for what-calls). Untyped fallback edges carry no line.
+ */
+function relatedCallNodes(
+  graph: GraphEngine,
+  queried: GraphNode,
+  relation: Exclude<QueryRelation, "where-defined">,
+): Array<{ node: GraphNode; callLine?: number }> {
   const typed = relation === "who-calls"
     ? (graph.getIncoming?.(queried.id, ["calls"]) ?? [])
     : (graph.getOutgoing?.(queried.id, ["calls"]) ?? []);
   if (typed.length > 0) {
+    const firstCallLine = new Map<string, number>();
+    for (const { node, edge } of typed) {
+      if (edge.line !== undefined) firstCallLine.set(node.id, Math.min(edge.line, firstCallLine.get(node.id) ?? edge.line));
+    }
     return dedupeNeighbors(typed)
       .sort((left, right) => {
         const pathDelta = Number(isLowValueGraphPath(left.node.filePath)) - Number(isLowValueGraphPath(right.node.filePath));
@@ -2527,12 +2720,15 @@ function relatedCallNodes(graph: GraphEngine, queried: GraphNode, relation: Excl
         if (lineDelta !== 0) return lineDelta;
         return left.node.id.localeCompare(right.node.id);
       })
-      .map((entry) => entry.node);
+      .map(({ node }) => {
+        const callLine = firstCallLine.get(node.id);
+        return callLine === undefined ? { node } : { node, callLine };
+      });
   }
   const fallback = relation === "who-calls" ? graph.getCallers(queried.id) : graph.getCallees(queried.id);
   return fallback.sort((left, right) =>
     Number(isLowValueGraphPath(left.filePath)) - Number(isLowValueGraphPath(right.filePath)) || left.id.localeCompare(right.id),
-  );
+  ).map((node) => ({ node }));
 }
 
 function dedupeNeighbors(entries: GraphNeighbor[]): GraphNeighbor[] {
@@ -2551,18 +2747,26 @@ function nodesForFile(session: AgentGraphSession, rootDir: string, target: strin
   return rows.map((row) => session.graph.getNode(row.id)).filter((node): node is GraphNode => node !== null);
 }
 
+interface ImpactNeighbor {
+  node: GraphNode;
+  depth: number;
+  root: string;
+  /** The node this one was reached from: the one it calls, or that calls it. */
+  via: string;
+}
+
 function transitiveCallNeighbors(
   graph: GraphEngine,
   roots: readonly GraphNode[],
   maxDepth: number,
   direction: ImpactDirection,
-): Array<{ node: GraphNode; depth: number; root: string }> {
+): ImpactNeighbor[] {
   // One multi-source breadth-first walk visits a shared caller once. Repeating
   // the entire walk for every definition made file-seed work scale with both
   // the number of definitions and the size of their overlapping call trees.
   const seen = new Set(roots.map((node) => node.id));
-  const queue = roots.map((node) => ({ node, depth: 0, root: node.id }));
-  const results: Array<{ node: GraphNode; depth: number; root: string }> = [];
+  const queue: Array<Omit<ImpactNeighbor, "via"> & { via?: string }> = roots.map((node) => ({ node, depth: 0, root: node.id }));
+  const results: ImpactNeighbor[] = [];
   for (let head = 0; head < queue.length; head += 1) {
     const current = queue[head]!;
     if (current.depth >= maxDepth) continue;
@@ -2572,12 +2776,28 @@ function transitiveCallNeighbors(
     for (const neighbor of neighbors.sort(byId)) {
       if (seen.has(neighbor.id)) continue;
       seen.add(neighbor.id);
-      const entry = { node: neighbor, depth: current.depth + 1, root: current.root };
+      const entry = { node: neighbor, depth: current.depth + 1, root: current.root, via: current.node.id };
       results.push(entry);
       queue.push(entry);
     }
   }
   return results;
+}
+
+/** First line on which `callerId` calls `calleeId`, from typed call edges. */
+function firstCallLine(graph: GraphEngine, callerId: string, calleeId: string): number | undefined {
+  let first: number | undefined;
+  for (const { node, edge } of graph.getOutgoing?.(callerId, ["calls"]) ?? []) {
+    if (node.id === calleeId && edge.line !== undefined) first = Math.min(edge.line, first ?? edge.line);
+  }
+  return first;
+}
+
+/** The call that links an impacted node to the node it was reached from. */
+function impactCallLine(graph: GraphEngine, entry: ImpactNeighbor, direction: ImpactDirection): number | undefined {
+  if (direction === "callees") return firstCallLine(graph, entry.via, entry.node.id);
+  return firstCallLine(graph, entry.node.id, entry.via)
+    ?? (direction === "both" ? firstCallLine(graph, entry.via, entry.node.id) : undefined);
 }
 
 /**
@@ -2792,7 +3012,7 @@ function groundingOmissionRecords(scaffold: CommittedGroundingObservation): Rec[
 
 function liveUnindexedFiles(indexedFiles: IndexedFileInfo[], rootDir: string): string[] {
   const indexed = new Set(indexedFiles.map((file) => file.path));
-  return globSync(SUPPORTED_SOURCE_GLOB, {
+  return discoverGraphReadPaths(SUPPORTED_SOURCE_GLOB, {
     cwd: rootDir,
     ignore: [
       "**/node_modules/**", "**/.git/**", "**/dist/**", "**/build/**", "**/.mex/**",
@@ -2801,7 +3021,8 @@ function liveUnindexedFiles(indexedFiles: IndexedFileInfo[], rootDir: string): s
     nodir: true,
     absolute: false,
     dot: false,
-  }).map((file) => file.replaceAll("\\", "/"))
+    follow: false,
+  }, GRAPH_CORPUS_LIMITS.maxSourceFiles).map((file) => file.replaceAll("\\", "/"))
     .filter((file) => isSupportedSourceFile(file) && !indexed.has(file))
     .sort();
 }
@@ -2856,7 +3077,7 @@ function liveStaleFallbacks(
   const out: RankedScopeFile[] = [];
   for (const filePath of staleFiles) {
     let lines: string[];
-    try { lines = readFileSync(resolve(rootDir, filePath), "utf-8").split("\n"); }
+    try { lines = splitSourceLines(readFileSync(resolve(rootDir, filePath), "utf-8")); }
     catch { continue; }
     const matched = terms.filter((term) => lines.some((line) => line.toLowerCase().includes(term)));
     if (matched.length === 0) continue;

@@ -1,4 +1,4 @@
-import { GraphCandidateProcessError } from "../graph/candidate-process.js";
+import { graphHeapRecovery, GraphCandidateProcessError } from "../graph/candidate-process.js";
 import { IndexInUseError, IndexPathError } from "../wiki/index/dbfile.js";
 import { WikiSourceReadError } from "../wiki/index/source-read.js";
 import { WIKI_DIAGNOSTICS, type WikiDiagnostic } from "../wiki/model/diagnostic.js";
@@ -20,7 +20,7 @@ const RECOVERY_BY_CODE: Readonly<Record<string, string>> = {
   GRAPH_INDEX_NOT_REPAIRABLE: "The code graph cannot be repaired safely. Run `mex graph rebuild`, then retry setup.",
   GRAPH_MAINTENANCE_LOCKED: "Another graph operation is active. Wait for it to finish, then retry setup.",
   GRAPH_MAINTENANCE_GATE_STALE: "An interrupted graph operation left .mex/graph.db.lock.gate behind. Verify no MEX process is running before removing that gate, then retry setup.",
-  GRAPH_MAINTENANCE_CANCELLED: "Graph maintenance was interrupted. Retry setup when ready.",
+  GRAPH_MAINTENANCE_CANCELLED: "Setup itself cancelled the graph build; the worker did not fail. Retry setup when ready.",
   GRAPH_MAINTENANCE_PATH_UNSAFE: "A graph database or maintenance path is unsafe. Check .mex for redirected or conflicting paths, correct them, then retry setup.",
   GRAPH_MAINTENANCE_RACE: "The graph or project files changed during maintenance. Wait for other writers to finish, then retry setup.",
   GRAPH_CANDIDATE_INVALID: "The rebuilt graph failed validation. Run `mex graph rebuild` to inspect its diagnostics, resolve the reported problems, then retry setup.",
@@ -53,6 +53,13 @@ export function classifySetupMaintenanceError(
           : error.category === "cancelled"
             ? RECOVERY_BY_CODE.GRAPH_MAINTENANCE_CANCELLED
             : graphWorkerRecovery(error);
+    const diagnostic = error.diagnostic;
+    const details = [error.category, diagnostic?.reason,
+      diagnostic?.exitCode == null ? undefined : `exit code ${diagnostic.exitCode}`,
+      diagnostic?.signal ? `signal ${diagnostic.signal}` : undefined].filter(Boolean);
+    recovery = `Graph worker (${details.join("; ")}). ${error.category === "cancelled"
+      ? "Setup itself cancelled the graph build; the worker did not fail. Retry setup to continue."
+      : recovery}`;
   } else if (error instanceof IndexInUseError) {
     recovery = "The Wiki index is busy or changed during publication. Close other processes using it, then retry setup.";
   } else if (error instanceof IndexPathError || error instanceof WikiSourceReadError) {
@@ -71,7 +78,7 @@ export function classifySetupMaintenanceError(
 
 function graphWorkerRecovery(error: GraphCandidateProcessError): string {
   if (error.diagnostic?.resourceFailure === "heap-limit") {
-    return "The graph worker reached Node's JavaScript heap limit. Retry setup with a larger heap using NODE_OPTIONS=--max-old-space-size=<MB>, sized for your available memory.";
+    return graphHeapRecovery(error.diagnostic);
   }
   switch (error.diagnostic?.reason) {
     case "entrypoint-missing":
@@ -98,7 +105,9 @@ function graphWorkerRecovery(error: GraphCandidateProcessError): string {
       return `${status} Check the worker diagnostics, then retry setup.`;
     }
     default:
-      return "The graph worker could not complete the build. Check the worker diagnostics or run `mex graph rebuild`, then retry setup.";
+      return error.diagnostic
+        ? "The graph worker reported a build error. Check the worker diagnostics or run `mex graph rebuild`, then retry setup."
+        : "The graph worker returned no further diagnostic. Run `mex graph rebuild` to inspect a fresh build, then retry setup.";
   }
 }
 
@@ -128,8 +137,10 @@ export function setupWikiFailureMessage(
   stage: SetupWikiFinalizationStage,
   diagnostics: readonly WikiDiagnostic[],
 ): string {
-  const label = stage === "plan" ? "Wiki migration planning"
+  const label = stage === "ids" ? "Adding Wiki ids"
+    : stage === "plan" ? "Wiki migration planning"
     : stage === "migration" ? "Wiki migration"
+      : stage === "links" ? "Wiki section linking"
       : stage === "index" ? "Wiki indexing" : "Wiki validation";
   const diagnostic = diagnostics.find((entry) => entry.severity === "error" && Object.hasOwn(WIKI_DIAGNOSTICS, entry.code));
   if (!diagnostic) return `${label} could not finish. Review the .mex files and retry setup after correcting the problem.`;

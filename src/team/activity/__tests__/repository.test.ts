@@ -276,7 +276,8 @@ describe("ActivityRepository", () => {
     await expect(publication.publish()).resolves.toMatchObject({ id: firstId });
   });
 
-  it("counts malformed canonical candidates toward the 2,048-record ceiling", async () => {
+  // Each operation scans the whole corpus; keep their hang guards independent.
+  it.each(["read", "get", "preview"] as const)("counts malformed canonical candidates toward the 2,048-record ceiling (%s)", async (operation) => {
     const root = temporaryRoot();
     const month = join(root, ".mex/events/activity", timestamp.slice(0, 7));
     mkdirSync(month, { recursive: true });
@@ -284,14 +285,18 @@ describe("ActivityRepository", () => {
     for (const eventId of ids) writeFileSync(join(month, `${eventId}.md`), "malformed\n");
     const repository = fixedRepository(root, fakeGit(), firstId);
 
-    const read = repository.readAll();
-    expect(read.sourceTruncated).toBe(false);
-    expect(read.untrustedIds).toHaveLength(2_048);
-    expect(read.diagnostics).toHaveLength(100);
-    expect(() => repository.get(ids[0]!)).toThrowError(MexPortError);
-    await expect(repository.previewCreate({
-      actor: { kind: "unknown" }, action: "workstream.created", subjects: [],
-    })).rejects.toMatchObject({ problem: { code: "VALIDATION_FAILED" } });
+    if (operation === "read") {
+      const read = repository.readAll();
+      expect(read.sourceTruncated).toBe(false);
+      expect(read.untrustedIds).toHaveLength(2_048);
+      expect(read.diagnostics).toHaveLength(100);
+    } else if (operation === "get") {
+      expect(() => repository.get(ids[0]!)).toThrowError(MexPortError);
+    } else {
+      await expect(repository.previewCreate({
+        actor: { kind: "unknown" }, action: "workstream.created", subjects: [],
+      })).rejects.toMatchObject({ problem: { code: "VALIDATION_FAILED" } });
+    }
   });
 
   it("fails closed at the 32 MiB aggregate Activity byte ceiling", async () => {

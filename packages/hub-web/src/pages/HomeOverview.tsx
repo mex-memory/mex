@@ -1005,7 +1005,7 @@ export function HomeOverview() {
         </div>
         <div className={homeStyles.asideColumn}>
           <LatestActivityCard activity={data.activity} onRetry={() => void refresh()} />
-          <TeamAccessCard api={api} />
+          <TeamAccessCard api={api} reprompt={Boolean(data.sharing?.relayPublished || data.sharing?.moreThanOneContributor)} />
         </div>
         <OperationCard operation={data.operation} />
       </div>

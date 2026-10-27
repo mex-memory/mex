@@ -59,6 +59,21 @@ const TEAM_NOW = "2026-08-27T04:05:06.000Z";
 const RELAY_DIRTY_PUBLICATION_WARNING = "MEX recorded that local changes existed when this Relay was published; it did not record their paths, diff, or contents.";
 
 describe("Project Hub HTTP application", () => {
+  it("authenticates migration previews and forwards only the reviewed job revision", async () => {
+    const previewWikiMigration = vi.fn(async () => ({ revision: "a".repeat(64), report: "Files scanned: 1", canApply: true }));
+    const assertJobStartAllowed = vi.fn();
+    const app = fixtureApp({ services: { ...readServices(), previewWikiMigration, assertJobStartAllowed }, jobs: jobService() });
+    const path = `${ORIGIN}/api/v1/jobs/wiki-migration/preview`;
+    expect((await app.request(path, mutation({}))).status).toBe(401);
+    expect(previewWikiMigration).not.toHaveBeenCalled();
+    const { cookie, csrfToken } = await authenticatedSession(app);
+    const headers = { host: HOST, origin: ORIGIN, cookie, "content-type": "application/json", "x-mex-csrf": csrfToken };
+    expect((await app.request(path, { method: "POST", headers, body: "{}" })).status).toBe(200);
+    expect(previewWikiMigration).toHaveBeenCalledOnce();
+    expect((await app.request(path, { method: "POST", headers, body: '{"path":"private"}' })).status).toBe(400);
+    await app.request(`${ORIGIN}/api/v1/jobs`, { method: "POST", headers, body: JSON.stringify({ kind: "wiki_rebuild", migrationPreview: "a".repeat(64) }) });
+    expect(assertJobStartAllowed).toHaveBeenCalledWith("wiki_rebuild", "a".repeat(64));
+  });
   it("accepts only authenticated bounded page categories and never treats reads as telemetry", async () => {
     const telemetry = vi.fn();
     const app = fixtureApp({ telemetry });

@@ -259,7 +259,7 @@ describe("grounding renewal requires an exact reviewed entry", () => {
     writeFileSync(scaffold, writeGroundings(readFileSync(scaffold, "utf-8"), stripped));
     writeFileSync(source, EDITED);
     const result = await captureGroundingBaselines(config);
-    expect(result).toEqual({ captured: 0, skipped: 1 });
+    expect(result).toMatchObject({ captured: 0, skipped: 1, driftCount: 1, failures: [{ kind: "drift" }] });
     expect(extractGroundings(readFileSync(scaffold, "utf-8"))[0]!.bodyHash).toBe(baseline.bodyHash);
     const runtime = await loadGroundingRuntime(config);
     expect(runtime!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)).toEqual(baseline);
@@ -304,7 +304,7 @@ describe("grounding renewal requires an exact reviewed entry", () => {
     else writeFileSync(source, EDITED.replace("subtotal * 0.21", "subtotal * 0.25"));
     const before = readFileSync(scaffold, "utf-8");
     expect(await captureGroundingBaselines(config, { acceptedGroundings: [acceptance] }))
-      .toEqual({ captured: 0, skipped: 1 });
+      .toMatchObject({ captured: 0, skipped: 1, driftCount: 1, failures: [{ kind: "drift" }] });
     expect(readFileSync(scaffold, "utf-8")).toBe(before);
     const after = await loadGroundingRuntime(config);
     expect(after!.fingerprints.getGroundedSource(".mex/context/architecture.md", nodeId)).toEqual(baseline);

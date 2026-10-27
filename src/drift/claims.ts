@@ -10,7 +10,7 @@ import type { Claim } from "../types.js";
 import type { Root, Code, Content, InlineCode, ListItem, Strong, Text } from "mdast";
 
 const KNOWN_EXTENSIONS = /\.(ts|js|tsx|jsx|py|go|rs|rb|java|json|yaml|yml|toml|md|css|scss|html|vue|svelte|sh)$/;
-const COMMAND_PREFIXES = /^(npm|yarn|pnpm|bun|make|cargo|python|pip|go|node|npx|tsx)\s/;
+const COMMAND_PREFIXES = /^(?:cd\s+[^&\n]+&&\s*)?(npm|yarn|pnpm|bun|make|cargo|python|pip|go|node|npx|tsx|nx)\s/;
 const DEPENDENCY_SECTION_PATTERNS = /key\s*libraries|core\s*technologies|dependencies|stack|tech/i;
 /** Paths with angle brackets or square brackets are template placeholders, not real paths */
 const TEMPLATE_PLACEHOLDER = /[<>\[\]{}]/;
@@ -23,6 +23,7 @@ const IP_OR_CIDR = /^(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?$/;
 
 /** Inline file extension references like `.yaml` describe a type, not a file. */
 const EXTENSION_ONLY = /^\.[A-Za-z0-9]+$/;
+const COMPOUND_SUFFIX = /^\.(?:d\.ts|test\.(?:ts|tsx|js|jsx))$/;
 
 /** Common shell commands that can contain path-like arguments. */
 const SHELL_COMMAND_PREFIX = /^(?:sudo\s+)?(?:ls|cd|cat|grep|find|kubectl|helm|docker|git)\s+/;
@@ -43,6 +44,12 @@ const DOTTED_KEY_WITH_SLASH = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+\/[A-Za-z0-9_
  */
 const PACKAGE_NAME = /^@?[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
+/**
+ * A lowerCamelCase word (`safeOutboundRequest`) is a code identifier: registry
+ * package names are lowercase, and display names (`React`, `NestJS`) start upper.
+ */
+const CODE_IDENTIFIER = /^[a-z][a-z0-9]*[A-Z]/;
+
 /** Things that look like paths but are actually code snippets, URL routes, or other non-path content */
 function isNotAPath(value: string): boolean {
   // URL routes: /voice/incoming, /api/users — start with / but have no file extension
@@ -55,7 +62,7 @@ function isNotAPath(value: string): boolean {
   if (IP_OR_CIDR.test(value)) return true;
 
   // File extensions: .yaml, .yml
-  if (EXTENSION_ONLY.test(value)) return true;
+  if (EXTENSION_ONLY.test(value) || COMPOUND_SUFFIX.test(value)) return true;
 
   // Shell commands with path-like arguments: sudo ls /var/lib/kubelet
   if (SHELL_COMMAND_PREFIX.test(value)) return true;
@@ -107,6 +114,7 @@ export function extractClaims(filePath: string, source: string): Claim[] {
   // governs: a paragraph describing an unrelated removal elsewhere must not
   // silence every path it happens to mention.
   const negatedByContext = collectNegatedReferences(tree);
+  const examplesByContext = collectContextualExamples(tree);
 
   // A stack doc declares a dependency as `- **name** — description`, so only
   // bold that opens a list item is a declaration. Collected up front because
@@ -144,7 +152,7 @@ export function extractClaims(filePath: string, source: string): Claim[] {
     // Path claims: contains / or ends in known extension
     if (node.value.includes("/") || KNOWN_EXTENSIONS.test(node.value)) {
       // Skip commands, template placeholders, and non-path content
-      if (!COMMAND_PREFIXES.test(node.value) && !TEMPLATE_PLACEHOLDER.test(node.value) && !isNotAPath(node.value)) {
+      if (!COMMAND_PREFIXES.test(node.value) && !TEMPLATE_PLACEHOLDER.test(node.value) && !isNotAPath(node.value) && !examplesByContext.has(node)) {
         claims.push({
           kind: "path",
           value: node.value,
@@ -217,6 +225,11 @@ export function extractClaims(filePath: string, source: string): Claim[] {
         // `bun test` in a dependency entry names a tool's command. A package
         // name never contains whitespace.
         if (/\s/.test(child.value)) continue;
+        if (CODE_IDENTIFIER.test(child.value)) continue;
+        // A mixed-case identifier embedded in a descriptive label names a
+        // class (for example a validation pipe), rather than a package. A
+        // code-leading label remains an explicit package declaration.
+        if (node.children[0] !== child && /^[A-Z][a-z0-9]+[A-Z]/.test(child.value)) continue;
         claims.push({
           kind: "dependency",
           value: child.value,
@@ -263,6 +276,26 @@ export function extractClaims(filePath: string, source: string): Claim[] {
   });
 
   return claims;
+}
+
+/** A member expression beside its receiver's siblings is code, not a file; dotted filenames alone remain claims. */
+function collectContextualExamples(tree: Root): Set<InlineCode> {
+  const examples = new Set<InlineCode>();
+  visit(tree, "paragraph", (paragraph) => {
+    const codes: InlineCode[] = [];
+    visit(paragraph, "inlineCode", (node: InlineCode) => { codes.push(node); });
+    const prose = paragraph.children.map((node) => "value" in node ? node.value : "").join(" ");
+    for (const node of codes) {
+      const member = /^([a-zA-Z_$][\w$]*)\.([a-zA-Z_$][\w$]*)$/.exec(node.value);
+      if (member && codes.some((other) => other !== node && (
+        // A sibling member with no known file extension identifies a receiver.
+        (/\b(?:methods?|response)\b/i.test(prose) && other.value.startsWith(`${member[1]}.`)
+          && /^[\w$]+\.[\w$]+$/.test(other.value) && !KNOWN_EXTENSIONS.test(other.value))
+        || other.value.endsWith(`#${member[2]}()`)
+      ))) examples.add(node);
+    }
+  });
+  return examples;
 }
 
 /**

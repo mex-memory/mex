@@ -92,6 +92,7 @@ export interface HubJobPage {
 
 export interface HubJobStartRequest {
   kind: HubJobKind;
+  migrationPreview?: string;
 }
 
 export interface HubJobProgressUpdate {
@@ -101,6 +102,7 @@ export interface HubJobProgressUpdate {
 }
 
 export interface HubJobExecutorContext {
+  migrationPreview?: string;
   job: HubJobSnapshot;
   signal: AbortSignal;
   reportProgress(update: HubJobProgressUpdate): void;

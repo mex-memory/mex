@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { stdin } from "node:process";
 import { Box, Text, render, useInput, useStdin, useStdout, type Instance } from "ink";
 import type { AiTool } from "../types.js";
+import { isBackgroundAgentTool } from "../agent-command.js";
 import type { SetupProgressStep } from "./headless.js";
 
 const h = React.createElement;
@@ -20,6 +21,7 @@ export interface TerminalSetupView {
   phaseStartedAt?: number;
   lastActivityAt?: number;
   progress?: { completed?: number; total?: number; unit?: string };
+  concurrentPopulation?: string;
   error?: string;
   hubUrl?: string;
   populationAgent?: string | null;
@@ -180,6 +182,7 @@ function phaseLines(view: TerminalSetupView): Line[] {
 }
 
 function phaseLine(view: TerminalSetupView, step: SetupProgressStep, label: string): Line {
+  if (step === "population" && view.activeStep === "graph" && view.concurrentPopulation) return { text: `[now ] ${label}`, color: COLOR.accent, bold: true };
   if (view.completedSteps.includes(step)) return { text: `[done] ${label}`, color: COLOR.complete };
   if (view.screen === "hub") return { text: `[skip] ${label}`, color: COLOR.muted };
   if (view.activeStep === step) {
@@ -303,7 +306,7 @@ export function TerminalSetupHUD({ view, onAction }: { view: TerminalSetupView; 
       bold: continueFocused,
     }));
     const toolLines = view.tools.map((tool, index) => ({
-      text: `${index === selected ? ">" : " "} [${tool.selected ? "x" : " "}] ${plain(tool.name)}  ${tool.id === "claude" || tool.id === "codex" ? tool.cliAvailable ? "CLI ready" : "CLI not found" : "integration only"}`,
+      text: `${index === selected ? ">" : " "} [${tool.selected ? "x" : " "}] ${plain(tool.name)}  ${isBackgroundAgentTool(tool.id) ? tool.cliAvailable ? "CLI ready" : "CLI not found" : "integration only"}`,
       color: index === selected ? COLOR.accent : COLOR.ink,
       backgroundColor: index === selected ? COLOR.selected : undefined,
       bold: index === selected,
@@ -313,19 +316,24 @@ export function TerminalSetupHUD({ view, onAction }: { view: TerminalSetupView; 
       rail = visibleChoices([...toolLines.map(item => spaceChoices ? [item, { text: "" }] : [item]), continueLines], selected, bodyHeight);
       const tool = view.tools[selected];
       const native = tool?.id === "claude" || tool?.id === "codex";
+      const background = tool !== undefined && isBackgroundAgentTool(tool.id);
       content = [
         { text: continueFocused ? "CONTINUE" : native ? "NATIVE SETUP" : "INTEGRATION", color: COLOR.cyan, bold: true },
         { text: tool?.name ?? (selectedCount ? "Your selected tools" : "Manual setup"), color: COLOR.accent, bold: true },
         { text: "" },
         ...wrapped(continueFocused
           ? selectedCount
-            ? "Start with only the checked tools. A selected Claude or Codex CLI can populate project knowledge."
+            ? "Start with only the checked tools. A selected agent CLI can populate project knowledge."
             : "Start without selecting a tool. MEX will show a prompt to complete project knowledge manually."
           : native
             ? tool.cliAvailable
               ? `${tool.selected ? "Enter starts setup with this tool selected." : "Enter selects this tool and starts setup."} Its CLI is available.`
               : "Enter adds its instructions and starts setup. CLI not found; population may need the manual prompt."
-            : "Enter adds this integration and starts setup. Populate project knowledge with a selected Claude or Codex CLI, or the manual prompt.", contentWidth, bodyHeight - 5),
+            : background
+              ? tool.cliAvailable
+                ? `${tool.selected ? "Enter starts setup with this tool selected." : "Enter selects this tool and starts setup."} Its CLI is available; MEX runs it in the background to populate project knowledge.`
+                : "Enter adds its instructions and starts setup. CLI not found; population may need the manual prompt."
+              : "Enter adds this integration and starts setup. Populate project knowledge with an installed agent CLI, or paste one prompt into your agent.", contentWidth, bodyHeight - 5),
         { text: "" },
         { text: `${selectedCount} selected`, color: COLOR.cyan },
       ];

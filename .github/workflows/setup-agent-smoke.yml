@@ -1,0 +1,20 @@
+name: Setup fake-agent smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - run: npm ci
+      - run: npx vitest run test/setup-e2e-matrix.test.ts test/setup-next.test.ts test/setup-per-subsystem.test.ts --maxWorkers=2
+        env:
+          MEX_TELEMETRY: "0"
+          MEX_SETUP_BACKGROUND_AGENTS: "0"

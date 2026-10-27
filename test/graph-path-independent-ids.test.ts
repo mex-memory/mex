@@ -33,8 +33,8 @@ afterEach(() => {
 /** A home-directory style checkout path that a v2 build would have embedded. */
 const OLD_CHECKOUT = "C:/Users/someone/work/app";
 
-// `renderPage` returns a type from another module, so its signature needs an
-// import type; it calls only `element`, whose id is unaffected. `renderApp`
+// `renderPage` returns a type from another module. A v2 extractor printed it
+// as an absolute import type; it is now printed by name. It calls only `element`, whose id is unaffected. `renderApp`
 // is affected too, and its only neighbour is the affected `renderPage`.
 const FILES: Record<string, string> = {
   "tsconfig.json": JSON.stringify({
@@ -134,7 +134,7 @@ function nodeNamed(root: string, name: string): NodeRow {
 
 /** The identity a v2 extractor produced for this node in a checkout at OLD_CHECKOUT. */
 function v2Identity(node: NodeRow): { id: string; identityKey: string; signature: string | null } {
-  const withPath = (value: string) => value.replaceAll('import("./', `import("${OLD_CHECKOUT}/`);
+  const withPath = (value: string) => value.replaceAll("JSX.Element", `import("${OLD_CHECKOUT}/src/jsx/base").JSX.Element`);
   const identityKey = withPath(node.identity_key);
   return {
     id: generateCanonicalCompilerNodeId(node.kind, identityKey),
@@ -181,7 +181,7 @@ describe("path-independent TypeScript node ids (#240)", () => {
     expect(nodes(second.root)).toEqual(nodes(first.root));
     expect(edges(second.root)).toEqual(edges(first.root));
     expect(nodeNamed(first.root, "renderPage").signature)
-      .toBe('(title: string, items: string[]): import("./src/jsx/base").JSX.Element');
+      .toBe("(title: string, items: string[]): JSX.Element");
 
     for (const { root } of [first, second]) {
       const posixRoot = root.replaceAll("\\", "/");

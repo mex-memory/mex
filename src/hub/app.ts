@@ -6,6 +6,8 @@ import {
   HubOnboardingCompleteRequestSchema,
   HubOnboardingStateSchema,
   type HubOnboardingState,
+  HubRepositoryContributorsSchema,
+  type HubRepositoryContributors,
   ActivityRequestSchema,
   ActivityResponseSchema,
   BootstrapRequestSchema,
@@ -50,6 +52,8 @@ import {
   JobPageRequestSchema,
   JobPageResponseSchema,
   JobStartRequestSchema,
+  WikiMigrationJobPreviewSchema,
+  type WikiMigrationJobPreview,
   SearchRequestSchema,
   SearchResponseSchema,
   SessionResponseSchema,
@@ -183,9 +187,10 @@ import {
   validationFailed,
 } from "./http/errors.js";
 import { readBoundedJson, readStrictQuery } from "./http/request.js";
-import { HUB_PAGE_EVENT_BODY_BYTES, HubPageViewSchema, HubTelemetry, type HubTelemetrySink } from "./telemetry.js";
+import { HUB_PAGE_EVENT_BODY_BYTES, HubPageViewSchema, HubTeamAccessEventSchema, HubTelemetry, type HubTelemetrySink } from "./telemetry.js";
 import {
   type HubSession,
+  HubSecurityError,
   HubSessionManager,
 } from "./security/session.js";
 import {
@@ -242,6 +247,7 @@ export interface HubReadServices {
   setLoggingPolicy?(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
   onboardingState?(): Promise<HubOnboardingState> | HubOnboardingState;
   completeOnboarding?(): Promise<HubOnboardingState> | HubOnboardingState;
+  repositoryContributors?(): Promise<HubRepositoryContributors> | HubRepositoryContributors;
   capabilities(): Promise<HubCapabilities> | HubCapabilities;
   home(): Promise<HomeResponse> | HomeResponse;
   overview?(): Promise<OverviewResponse> | OverviewResponse;
@@ -317,7 +323,8 @@ export interface HubReadServices {
     request: CodeKnowledgeRequest,
   ): Promise<CodeKnowledgeResponse> | CodeKnowledgeResponse;
   health(): Promise<HealthResponse> | HealthResponse;
-  assertJobStartAllowed?(kind: HubJobKind): Promise<void> | void;
+  previewWikiMigration?(): Promise<WikiMigrationJobPreview>;
+  assertJobStartAllowed?(kind: HubJobKind, migrationPreview?: string): Promise<void> | void;
 }
 
 interface HubEnvironment {
@@ -357,7 +364,16 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
 
   app.use("*", async (context, next) => {
     context.set("requestId", requestId());
-    options.security.assertHost(context.req.raw.headers);
+    try {
+      options.security.assertHost(context.req.raw.headers);
+    } catch (error) {
+      // A person who opened the Hub at another address (e.g. localhost) gets a
+      // readable page instead of a bare 400 (#276). The Host check is unchanged.
+      if (!(error instanceof HubSecurityError) || !isPageNavigation(context)) throw error;
+      const response = wrongAddressPage(options.security.expectedOrigin(), error.message);
+      applySecurityHeaders(response, context.get("requestId"), false);
+      return response;
+    }
     await next();
     applySecurityHeaders(
       context.res,
@@ -426,6 +442,13 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     telemetry.pageViewed(request.page);
     // Accepted locally is not a delivery promise. Opt-out and rate-limited
     // events take the same quiet path without queuing or persisting anything.
+    return new Response(null, { status: 204 });
+  });
+
+  app.post("/api/v1/telemetry/team-access", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(HubTeamAccessEventSchema, await readBoundedJson(context.req.raw, HUB_PAGE_EVENT_BODY_BYTES));
+    telemetry.teamAccess(request.step);
     return new Response(null, { status: 204 });
   });
 
@@ -820,6 +843,12 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     return resourceResponse(HubOnboardingStateSchema, await options.services.completeOnboarding());
   });
 
+  app.get("/api/v1/repository/contributors", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.repositoryContributors) throw unavailable("Repository contributors are unavailable in this build.");
+    return resourceResponse(HubRepositoryContributorsSchema, await options.services.repositoryContributors());
+  });
+
   app.get("/api/v1/health", async () => resourceResponse(
     HealthResponseSchema,
     await options.services.health(),
@@ -971,6 +1000,13 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     });
   });
 
+  app.post("/api/v1/jobs/wiki-migration/preview", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    parseInput(JobCancelRequestSchema, await readBoundedJson(context.req.raw));
+    if (!options.services.previewWikiMigration) throw unavailable("Wiki migration is not connected in this build.");
+    return resourceResponse(WikiMigrationJobPreviewSchema, await options.services.previewWikiMigration());
+  });
+
   app.post("/api/v1/jobs", async (context) => {
     const jobs = requireJobs(options.jobs);
     const request = parseInput(
@@ -978,7 +1014,7 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       await readBoundedJson(context.req.raw),
     );
     return telemetry.action("job.start", "direct", async () => {
-      await options.services.assertJobStartAllowed?.(request.kind);
+      await options.services.assertJobStartAllowed?.(request.kind, request.migrationPreview);
       return resourceResponse(HubJobSnapshotSchema, await jobs.start(request), 202);
     });
   });
@@ -1432,4 +1468,34 @@ function applySecurityHeaders(response: Response, requestId: string, apiResponse
 
 function isReadMethod(method: string): boolean {
   return method === "GET" || method === "HEAD";
+}
+
+/** A browser opening a page, as opposed to an API or asset request. */
+function isPageNavigation(context: Context): boolean {
+  return isReadMethod(context.req.method)
+    && !context.req.path.startsWith("/api/")
+    && context.req.header("accept")?.includes("text/html") === true;
+}
+
+/** Plain HTML, without scripts or inline styles, so the Hub CSP still applies. */
+function wrongAddressPage(expectedOrigin: string, reason: string): Response {
+  const origin = escapeHtml(expectedOrigin);
+  const body = [
+    "<!doctype html>",
+    '<html lang="en"><head><meta charset="UTF-8" /><title>Open the MEX Project Hub from its link</title></head><body>',
+    "<h1>Open the MEX Project Hub from its link</h1>",
+    `<p>This Hub only answers at <a href="${origin}/">${origin}/</a>. ${escapeHtml(reason)}</p>`,
+    "<p>Open the link printed in the terminal that started the Hub. Each link works once, within 5 minutes. "
+      + "If yours has expired, run <code>mex hub</code> again (or rerun the setup command you used, such as "
+      + "<code>mex setup --browser</code>) and open the new link it prints.</p>",
+    "</body></html>",
+  ].join("\n");
+  return new Response(body, {
+    status: 400,
+    headers: { "content-type": "text/html; charset=UTF-8", "cache-control": "no-store" },
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
 }

@@ -4,6 +4,14 @@ import type { SetupRun } from "../api/types";
 import styles from "../styles/setup.module.css";
 
 type PopulationActivity = NonNullable<SetupRun["populationActivity"]>;
+type PopulationCoverage = NonNullable<SetupRun["populationCoverage"]>;
+
+const COVERAGE_STATE_LABELS: Record<PopulationCoverage["subsystems"][number]["state"], string> = {
+  pending: "waiting",
+  running: "in progress",
+  done: "done",
+  skipped: "skipped — rerun setup to retry",
+};
 type PopulationEvent = PopulationActivity["events"][number];
 
 const TARGET_LABELS: Record<NonNullable<PopulationEvent["target"]>, string> = {
@@ -17,11 +25,19 @@ const TARGET_LABELS: Record<NonNullable<PopulationEvent["target"]>, string> = {
   patterns: "project patterns",
 };
 
+const PROVIDER_NAMES: Record<NonNullable<SetupRun["populationTool"]>, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+  copilot: "Copilot",
+  opencode: "OpenCode",
+};
+
 /** Activity timestamps remain independent of the read-only session transcript. */
 export function SetupPopulationActivity({ run, children }: { run: SetupRun; children?: ReactNode }) {
   const activity = run.populationActivity;
   const tool = activity?.tool ?? run.populationTool;
-  const provider = tool === "claude" ? "Claude Code" : tool === "codex" ? "Codex" : "Your agent";
+  const provider = tool ? PROVIDER_NAMES[tool] : "Your agent";
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -53,6 +69,7 @@ export function SetupPopulationActivity({ run, children }: { run: SetupRun; chil
           ? `Last activity ${formatDuration(now - lastActivityAt)} ago`
           : "Waiting for the first activity report"}
       </p>
+      {run.populationCoverage ? <SubsystemCoverage coverage={run.populationCoverage} /> : null}
       {quiet ? (
         <p className={styles.activityQuiet}>
           No new activity reported for {formatDuration(now - quietSince!)}. {provider} may still be working.
@@ -78,6 +95,29 @@ export function SetupPopulationActivity({ run, children }: { run: SetupRun; chil
         </details>
       ) : null}
     </section>
+  );
+}
+
+/** One session per subsystem on larger repositories: how far the plan is. */
+function SubsystemCoverage({ coverage }: { coverage: PopulationCoverage }) {
+  const phase = coverage.phase === "shared"
+    ? "Filling the shared files first"
+    : coverage.phase === "final" ? "Writing patterns, routing rows and edges" : null;
+  return (
+    <div className={styles.activityCoverage}>
+      <p>
+        <strong>{coverage.done}/{coverage.total} subsystems done</strong>
+        {coverage.skipped > 0 ? ` · ${coverage.skipped} skipped` : ""}
+        {phase ? ` · ${phase}` : ""}
+      </p>
+      <ul aria-label="Subsystem progress">
+        {coverage.subsystems.map((entry) => (
+          <li key={entry.path} data-state={entry.state}>
+            <span>{entry.path}/</span> <span>{COVERAGE_STATE_LABELS[entry.state]}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

@@ -11,10 +11,10 @@
  * scratch by {@link resolveIndexState}, over the rows, on every rebuild and
  * every refresh.
  *
- * That is why a refresh cannot drift from a rebuild: the only thing refresh
- * skips is *parsing* the files that did not change. Every derived fact is
- * recomputed from the table both times, by the same function, so there is no
- * second implementation to disagree with the first. It also answers the hard
+ * Full refresh and rebuild share these derivations. Apply can retain cached
+ * grounding verdicts outside its reparsed files; their graph identity remains
+ * attached, and global diagnostics still use the complete stored set. This
+ * also answers the hard
  * half of §4.5 for free — deleting a file makes the relations that pointed into
  * it dangle, and adding one *resolves* a dangling reference, without either
  * case needing to be handled.
@@ -380,11 +380,11 @@ interface EntityRow {
  * code graph: the index must build in a checkout that has no graph, and the
  * layering lint keeps the graph behind one door in `src/wiki/grounding/`.
  */
-export type GroundingResolver = (
+export type GroundingResolver = ((
   grounding: WikiGrounding,
   /** The entity's title and body, so a change can be weighed against the fact it supports. */
   context?: { fact?: string },
-) => GroundingResolution;
+) => GroundingResolution) & { readonly graphRevision?: string };
 
 export interface ResolveOptions {
   scaffoldRoot: string;
@@ -404,6 +404,8 @@ export interface ResolveOptions {
    * verdict, and nothing looked.
    */
   resolveGrounding?: GroundingResolver;
+  /** Apply alone retains cached verdicts outside reparsed files. */
+  groundingFiles?: readonly string[];
   /**
    * Diagnostics that belong to the scaffold rather than to any one file —
    * discovery problems, chiefly. They are supplied on every call, by both the
@@ -434,17 +436,13 @@ export function resolveIndexState(db: SqliteDatabase, meta: ResolveOptions): voi
             THEN 1 ELSE 0 END`,
   ).run();
 
-  // 3. Grounding health, re-derived for every row from the caller's resolver.
-  const groundingDiagnostics = resolveGroundings(db, meta.resolveGrounding);
+  // 3. Full resolution, or apply's explicitly selected grounding files.
+  const groundingDiagnostics = resolveGroundings(db, meta.resolveGrounding, meta.groundingFiles);
 
   // 4. Set-level diagnostics, replaced entirely.
   //
-  // The grounding ones are global rather than file-scoped, and the distinction
-  // is the one §33.1 turned on: a global diagnostic must be re-derivable from
-  // the whole set on *both* paths. These are — every grounding row is resolved
-  // on every rebuild and every refresh, from the same resolver. The read errors
-  // that had to become file-scoped were exactly the opposite: a refresh only
-  // ever saw the changed set, so it could not re-derive the rest.
+  // Grounding diagnostics come from every stored verdict, including retained
+  // rows. Shadowing and relation targets always use the complete current set.
   db.prepare(`DELETE FROM wiki_diagnostics WHERE scope = 'global'`).run();
   writeDiagnostics(db, "global", null, [
     ...(meta.scaffoldDiagnostics ?? []),
@@ -491,12 +489,10 @@ interface GroundingRow {
 /**
  * Re-derive every grounding verdict, and report the ones that are not fresh.
  *
- * Wholesale, always, on both paths — like shadowing and target resolution and
- * for the same reason. A grounding's health depends on code that changes
- * without the scaffold changing at all, so there is no changed set that could
- * scope it: the file whose entity went stale is the file nobody touched.
+ * Full maintenance resolves every row. Apply alone resolves reparsed files
+ * and retains the other cached verdicts, including their resolution identity.
  *
- * With no resolver every verdict column is cleared. That is what makes a
+ * With no resolver selected verdict columns are cleared. That is what makes a
  * refresh of an index built without a graph agree with a rebuild without one,
  * and it is why the columns are nullable rather than defaulted.
  *
@@ -504,21 +500,20 @@ interface GroundingRow {
  * its own diagnostic naming both claimants, and a second warning about the
  * loser's grounding is noise pointing at a row no query returns.
  */
-function resolveGroundings(db: SqliteDatabase, resolve?: GroundingResolver): WikiDiagnostic[] {
-  db.prepare(`UPDATE wiki_groundings SET state = NULL, resolved_node = NULL, health = NULL, resolution = NULL`).run();
-  if (resolve === undefined) return [];
+function resolveGroundings(db: SqliteDatabase, resolve?: GroundingResolver, files?: readonly string[]): WikiDiagnostic[] {
+  const selected = files === undefined ? null : new Set(files);
 
   const rows = db
     .prepare(
       `SELECT g.entity_key, g.ordinal, e.id AS entity_id, e.file AS file, e.shadowed AS shadowed,
               e.title AS entity_title, e.body AS entity_body,
               g.node_id, g.fingerprint, g.body_hash, g.code_hash, g.file AS grounding_file,
-              g.commit_sha, g.verified_at, g.reason
+              g.commit_sha, g.verified_at, g.reason, g.resolution
          FROM wiki_groundings g
          JOIN wiki_entities e ON e.entity_key = g.entity_key
         ORDER BY g.entity_key, g.ordinal`,
     )
-    .all() as Array<GroundingRow & { shadowed: number; entity_title: string; entity_body: string }>;
+    .all() as Array<GroundingRow & { shadowed: number; entity_title: string; entity_body: string; resolution: string | null }>;
 
   const update = db.prepare(
     `UPDATE wiki_groundings SET state = ?, resolved_node = ?, health = ?, resolution = ? WHERE entity_key = ? AND ordinal = ?`,
@@ -526,16 +521,21 @@ function resolveGroundings(db: SqliteDatabase, resolve?: GroundingResolver): Wik
   const diagnostics: WikiDiagnostic[] = [];
 
   for (const row of rows) {
-    const resolution = resolve(groundingOf(row), { fact: `${row.entity_title}\n\n${row.entity_body}` });
-    const resolvedNode = "resolvedNode" in resolution ? resolution.resolvedNode : null;
-    update.run(
-      resolution.state,
-      resolvedNode,
-      resolution.health,
-      canonicalJson(resolution),
-      row.entity_key,
-      row.ordinal,
-    );
+    const refresh = selected === null || selected.has(row.file);
+    const resolution: GroundingResolution | null = refresh
+      ? resolve?.(groundingOf(row), { fact: `${row.entity_title}\n\n${row.entity_body}` }) ?? null
+      : row.resolution === null ? null : JSON.parse(row.resolution) as GroundingResolution;
+    if (refresh) {
+      update.run(
+        resolution?.state ?? null,
+        resolution && "resolvedNode" in resolution ? resolution.resolvedNode : null,
+        resolution?.health ?? null,
+        resolution === null ? null : canonicalJson({ ...resolution, graphRevision: resolve?.graphRevision ?? null }),
+        row.entity_key,
+        row.ordinal,
+      );
+    }
+    if (resolution === null) continue;
     if (row.shadowed === 1) continue;
     const entry = groundingDiagnostic(row, resolution);
     if (entry !== null) diagnostics.push(entry);

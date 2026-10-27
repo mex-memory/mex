@@ -2374,8 +2374,15 @@ test.describe("built production Hub", () => {
 
   test.beforeAll(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "mex-hub-browser-"));
-    mkdirSync(join(projectRoot, ".mex"), { recursive: true });
+    mkdirSync(join(projectRoot, ".mex", "context"), { recursive: true });
     writeFileSync(join(projectRoot, ".mex", "ROUTER.md"), "# Browser fixture\n");
+    // A finalized scaffold carries canonical Wiki entities; without one the
+    // committed scaffold reads as never finalized and opens finalize-only setup.
+    writeFileSync(
+      join(projectRoot, ".mex", "context", "architecture.md"),
+      "---\nname: architecture\nmex:\n  id: mx_01HZ0000000000000000000001\n  type: architecture\n"
+        + "  status: promoted\n  revision: 1\n  title: Architecture\n---\n\n# Architecture\n\nBrowser fixture.\n",
+    );
     writeFileSync(
       join(projectRoot, ".mex", "config.json"),
       JSON.stringify({
@@ -2404,7 +2411,7 @@ test.describe("built production Hub", () => {
     );
     processHandle = spawn(process.execPath, [join(root, "dist", "cli.js"), "hub", "--no-open"], {
       cwd: projectRoot,
-      env: { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" },
+      env: { ...process.env, MEX_HOME: join(projectRoot, ".mex", "local", "browser-home"), MEX_TELEMETRY: "0", NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     bootstrapUrl = await readBootstrapUrl(processHandle);
@@ -2472,11 +2479,12 @@ test.describe("built production Hub", () => {
     await expect.poll(() => contactAssetRequests.length).toBe(1);
     expect(setupAssetRequests).toEqual([]);
     expect(teamAccessDialogRequests).toEqual([]);
-    const requestAccess = page.getByRole("button", { name: "Request access", exact: true });
+    const requestAccess = page.getByRole("button", { name: "Join the hosted beta", exact: true });
     await requestAccess.click();
-    const teamAccessDialog = page.getByRole("dialog", { name: "Request access", exact: true });
+    const teamAccessDialog = page.getByRole("dialog", { name: "Join the hosted beta", exact: true });
     await expect(teamAccessDialog).toBeVisible();
-    await expect(teamAccessDialog.getByRole("textbox", { name: "Name", exact: true })).toBeFocused();
+    await expect(teamAccessDialog.getByRole("textbox", { name: "Email", exact: true })).toBeFocused();
+    await expect(teamAccessDialog.getByRole("textbox", { name: "Name", exact: true })).toHaveCount(0);
     expect(teamAccessDialogRequests).toHaveLength(1);
     for (const width of [1024, 1440]) {
       await page.setViewportSize({ width, height: 900 });
@@ -2591,7 +2599,7 @@ test.describe("built production Hub", () => {
     expect(response?.headers()["content-security-policy"]).toContain("default-src 'self'");
     await expectAccessible(page);
     // Each of the eight full-page navigations discovers that this operational
-    // process has no setup wizard. Its legacy Wiki scaffold needs migration. Accept
+    // process has no setup wizard. Its finalized Wiki has no local index yet. Accept
     // only those exact failures, with their real endpoint and Problem Details.
     const expectedFailures = [
       ...Array.from({ length: 8 }, () => `${productionOrigin}/api/v1/setup`),
@@ -2605,10 +2613,10 @@ test.describe("built production Hub", () => {
       expect(candidate.contentType).toBe("application/problem+json; charset=UTF-8");
       expect(await candidate.body).toEqual({
         type: "about:blank",
-        title: setup ? "Capability unavailable" : "Migration required",
+        title: setup ? "Capability unavailable" : "Index missing",
         status: 503,
-        code: setup ? "CAPABILITY_UNAVAILABLE" : "MIGRATION_REQUIRED",
-        detail: setup ? "Setup is not available in this Hub process." : "The local state requires an explicit supported migration.",
+        code: setup ? "CAPABILITY_UNAVAILABLE" : "INDEX_MISSING",
+        detail: setup ? "Setup is not available in this Hub process." : "The required local index is missing.",
         instance: new URL(candidate.url).pathname,
         requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
       });

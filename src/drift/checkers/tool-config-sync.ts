@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { DriftIssue } from "../../types.js";
-import { MEX_ANCHOR_END, MEX_ANCHOR_START, isToolConfigCopy } from "../../tool-config.js";
+import { MEX_ANCHOR_END, MEX_ANCHOR_START, MEX_SETUP_NOTICE_END, MEX_SETUP_NOTICE_START, isToolConfigCopy } from "../../tool-config.js";
 import { MEX_INSTRUCTIONS_END, MEX_INSTRUCTIONS_START } from "../../agent-skills/instructions.js";
 
 /**
@@ -32,6 +32,8 @@ const TOOL_CONFIG_FILES: ReadonlyArray<string> = [
 const MANAGED_BLOCKS: ReadonlyArray<readonly [string, string]> = [
 	[MEX_INSTRUCTIONS_START, MEX_INSTRUCTIONS_END],
 	[MEX_ANCHOR_START, MEX_ANCHOR_END],
+	// Present only while setup is unfinished; it says how to continue.
+	[MEX_SETUP_NOTICE_START, MEX_SETUP_NOTICE_END],
 ];
 
 /** Remove every mex-managed block, leaving the user-owned remainder. */

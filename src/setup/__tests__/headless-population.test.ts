@@ -64,20 +64,23 @@ describe("headless population process", () => {
     expect(buildAgentCommand("codex", "prompt", "interactive")).toEqual({ command: "codex", args: ["prompt"] });
     expect(buildAgentCommand("claude", "prompt", "interactive")).toEqual({ command: "claude", args: ["prompt"] });
     expect(buildAgentCommand("opencode", "prompt", "interactive")).toEqual({ command: "opencode", args: ["run", "prompt"] });
-    expect(buildAgentCommand("cursor", "prompt", "headless")).toBeNull();
+    expect(buildAgentCommand("windsurf", "prompt", "headless")).toBeNull();
+    expect(buildAgentCommand("cursor", "prompt", "interactive")).toBeNull();
     expect(buildAgentCommand("codex", "prompt", "headless", { allowNonGit: true })?.args)
       .toEqual(["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "prompt"]);
   });
 
   it("pre-approves only the mex commands headless Claude population needs", () => {
     for (const shell of ["Bash", "PowerShell"]) {
-      for (const command of ["mex graph scope", "mex graph get", "mex graph query", "mex wiki query", "mex wiki apply", "mex wiki link-sections", "mex impact", "mex logging", "mex log"]) {
+      for (const command of ["mex graph scope", "mex graph get", "mex graph query", "mex wiki query", "mex wiki apply", "mex wiki validate", "mex wiki --help", "mex --help", "mex impact", "mex logging", "mex log"]) {
         expect(HEADLESS_CLAUDE_ALLOWED_TOOLS).toContain(`${shell}(${command}:*)`);
       }
     }
     for (const rule of HEADLESS_CLAUDE_ALLOWED_TOOLS) {
-      expect(rule).toMatch(/^(Bash|PowerShell)\(mex [a-z]+( [a-z-]+)?:\*\)$/);
-      expect(rule).not.toMatch(/refresh|rebuild|setup|sync|member|relay|inbox|git/);
+      expect(rule).toMatch(/^(Bash|PowerShell)\(mex (--help|[a-z]+( [a-z-]+)?):\*\)$/);
+      expect(rule).not.toContain("link-sections");
+      // The one-paste loop's `mex setup next` is the only setup form allowed.
+      expect(rule.replace("mex setup next:", "")).not.toMatch(/refresh|rebuild|setup|sync|member|relay|inbox|git/);
     }
   });
 
@@ -283,7 +286,8 @@ describe("headless population process", () => {
       selectedTools: ["cursor", "claude", "codex", "opencode"],
       __internal: { ...fixture.options.__internal, isAvailable: available },
     })).resolves.toEqual({ tool: "codex", completed: true });
-    expect(available.mock.calls).toEqual([["claude"], ["codex"]]);
+    // Cursor's documented command is `agent`; every selected background agent is tried in order.
+    expect(available.mock.calls).toEqual([["agent"], ["claude"], ["codex"]]);
     expect(fixture.spawn).toHaveBeenCalledTimes(1);
   });
 
@@ -416,6 +420,60 @@ describe("headless population process", () => {
     expect(String(error)).not.toContain(fixture.root);
     expect(fixture.spawn).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["claude", { type: "result", subtype: "error_during_execution", is_error: true, result: "Claude AI usage limit reached|1760000000" }],
+    ["codex", { type: "error", message: "You've hit your usage limit. Try again later." }],
+  ] as const)("reports a %s usage limit as its own category, not as a failed run", async (tool, event) => {
+    const fixture = agentFixture(`
+      process.stdout.write('{"type":"system","subtype":"init"}\\n' + 'reading rate limit middleware code '.repeat(10) + '\\n');
+      process.stdout.write(${JSON.stringify(JSON.stringify(event) + "\n")});
+      process.exitCode = 1;
+    `);
+    const error = await launchHeadlessSetupPopulation({ ...fixture.options, selectedTools: [tool] }).catch((error: unknown) => error);
+    expect(error).toMatchObject({ category: "usage_limit", message: expect.stringContaining("usage limit") });
+  });
+
+  it("does not take agent text that mentions limits for a usage limit", async () => {
+    const fixture = agentFixture(`
+      process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'the rate limit middleware has a usage limit option' } }) + '\\n');
+      process.exitCode = 2;
+    `);
+    const error = await launchHeadlessSetupPopulation(fixture.options).catch((error: unknown) => error);
+    expect(error).toMatchObject({ category: "failed" });
+  });
+
+  it("reports the token usage the agent recorded, once, when it closes", async () => {
+    const fixture = agentFixture(`
+      process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1200, cached_input_tokens: 800, output_tokens: 90 } }) + '\\n');
+    `);
+    const usage = vi.fn();
+    await expect(launchHeadlessSetupPopulation({ ...fixture.options, onUsage: usage })).resolves.toEqual({ tool: "codex", completed: true });
+    expect(usage).toHaveBeenCalledExactlyOnceWith({ inputTokens: 1200, cachedInputTokens: 800, outputTokens: 90 });
+  });
+});
+
+describe("usage limits across process streams", () => {
+  it.each(["assistant", "stderr"])("pauses on %s when the session did not finish cleanly", async (stream) => {
+    const event = { type: "assistant", error: "rate_limit", message: { content: [{ type: "text", text: "You've hit your limit ? resets 5:30pm (Asia/Kolkata)" }] } };
+    const body = stream === "assistant"
+      ? `emitSuccess(); process.stdout.write(${JSON.stringify(JSON.stringify(event))});`
+      : `process.stderr.write('x'.repeat(20000)); process.stderr.write("You've hit your limit ? resets 5:30pm (Asia/Kolkata)"); process.exitCode = 1;`;
+    const fixture = agentFixture(body);
+    await expect(launchHeadlessSetupPopulation({ ...fixture.options, selectedTools: ["claude"] })).rejects.toMatchObject({
+      category: "usage_limit", resetTime: "5:30pm (Asia/Kolkata)", message: expect.stringContaining("finished work is kept"),
+    });
+  });
+
+  it("treats a limit notice on stderr as advisory when the session finished cleanly", async () => {
+    const fixture = agentFixture(`emitSuccess(); process.stderr.write("You've hit your limit ? resets 5:30pm (Asia/Kolkata)");`);
+    await expect(launchHeadlessSetupPopulation({ ...fixture.options, selectedTools: ["claude"] })).resolves.toMatchObject({ completed: true });
+  });
+});
+
+it("does not classify stderr about a rate limit middleware failure as account quota", async () => {
+  const fixture = agentFixture(`process.stderr.write('Failed reading rate limit middleware: file not found'); process.exitCode = 2;`);
+  await expect(launchHeadlessSetupPopulation(fixture.options)).rejects.toMatchObject({ category: "failed" });
 });
 
 function agentFixture(body: string) {

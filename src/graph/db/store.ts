@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import type { EdgeKind, GraphEdge, GraphNode, Language, NodeKind, ReferenceKind } from "../types.js";
 import { identifierComponents, isLowValueGraphPath, planGraphQuery } from "../retrieval/query.js";
 import type { SqliteDatabase, SqliteStatement } from "./sqlite.js";
+import { timeGraphPhase } from "../phase-timing.js";
 
 /** An unresolved reference row: a name a node points at, bound after indexing. */
 export interface UnresolvedRefRecord {
@@ -177,7 +178,7 @@ function rowToNode(row: NodeRow): GraphNode {
 }
 
 function rowToEdge(row: EdgeRow): GraphEdge {
-  return {
+  const edge: GraphEdge = {
     source: row.source,
     target: row.target,
     kind: row.kind as EdgeKind,
@@ -189,6 +190,19 @@ function rowToEdge(row: EdgeRow): GraphEdge {
     column: row.col ?? undefined,
     provenance: (row.provenance as GraphEdge["provenance"]) ?? undefined,
   };
+  // Restore the support entry `storedEdgeEvidence` leaves out. A row written
+  // before that still holds it.
+  if (edge.evidence) {
+    const own = edgeSupport(edge);
+    const ownKey = canonicalString(own);
+    if (!edge.evidence.some((entry) => canonicalString(entry) === ownKey)) {
+      edge.evidence = [...edge.evidence, own]
+        .map((entry) => [canonicalString(entry), entry] as const)
+        .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+        .map(([, entry]) => entry);
+    }
+  }
+  return edge;
 }
 
 function canonicalJson(value: unknown): unknown {
@@ -226,6 +240,16 @@ function mergedEdgeEvidence(left: GraphEdge, right: GraphEdge): Array<Record<str
     .map(([, entry]) => entry);
 }
 
+/**
+ * The stored form of an edge row's merged evidence: without the support entry
+ * that restates the row's own columns, which {@link rowToEdge} restores. That
+ * entry is in every row and was most of the edge table's evidence bytes.
+ */
+function storedEdgeEvidence(row: GraphEdge, merged: Array<Record<string, unknown>>): string {
+  const ownKey = canonicalString(edgeSupport(row));
+  return canonicalString(merged.filter((entry) => canonicalString(entry) !== ownKey));
+}
+
 function strongerEdge(left: GraphEdge, right: GraphEdge): GraphEdge {
   const confidenceDelta = (right.confidence ?? 1) - (left.confidence ?? 1);
   if (confidenceDelta > 0) return right;
@@ -238,6 +262,7 @@ type ReusableStatement =
   | "findEdge"
   | "updateEdge"
   | "insertEdge"
+  | "appendEdge"
   | "upsertFile"
   | "insertUnresolvedRef"
   | "insertImportBinding"
@@ -316,6 +341,65 @@ export class GraphStore {
     this.db.exec("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')");
   }
 
+  /**
+   * {@link insertEdge} for every edge of a full publication, in order, folded
+   * in memory: the same rows, row ids and merged evidence, without a lookup
+   * and two existence probes per edge. Only an empty edge table can be
+   * folded this way; otherwise each edge is inserted on its own. Returns the
+   * number of rows inserted.
+   */
+  insertEdges(edges: Iterable<GraphEdge>): number {
+    if (this.db.prepare("SELECT 1 FROM edges LIMIT 1").get()) {
+      let inserted = 0;
+      for (const edge of edges) if (this.insertEdge(edge)) inserted++;
+      return inserted;
+    }
+    const nodeIds = new Set((this.db.prepare("SELECT id FROM nodes").all() as Array<{ id: string }>).map((row) => row.id));
+    const rows = new Map<string, EdgeRow>();
+    for (const edge of edges) {
+      if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue;
+      // The key the uniqueness index and `insertEdge`'s lookup compare.
+      const key = JSON.stringify([edge.source, edge.target, edge.kind, edge.line ?? -1, edge.column ?? -1]);
+      const row = rows.get(key);
+      if (!row) {
+        rows.set(key, {
+          source: edge.source,
+          target: edge.target,
+          kind: edge.kind,
+          metadata: edge.metadata ? canonicalString(edge.metadata) : null,
+          line: edge.line ?? null,
+          col: edge.column ?? null,
+          provenance: edge.provenance ?? null,
+          confidence: edge.confidence ?? 1,
+          resolution_method: edge.resolutionMethod ?? null,
+          evidence: storedEdgeEvidence(edge, mergedEdgeEvidence(edge, edge)),
+        });
+        continue;
+      }
+      const existing = rowToEdge(row);
+      const winner = strongerEdge(existing, edge);
+      row.metadata = winner.metadata ? canonicalString(winner.metadata) : null;
+      row.provenance = winner.provenance ?? null;
+      row.confidence = winner.confidence ?? 1;
+      row.resolution_method = winner.resolutionMethod ?? null;
+      row.evidence = storedEdgeEvidence(winner, mergedEdgeEvidence(existing, edge));
+    }
+    const append = this.statement(
+      "appendEdge",
+      `INSERT INTO edges (
+         source, target, kind, metadata, line, col, provenance,
+         confidence, resolution_method, evidence
+       ) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    );
+    for (const row of rows.values()) {
+      append.run(
+        row.source, row.target, row.kind, row.metadata, row.line, row.col,
+        row.provenance, row.confidence, row.resolution_method, row.evidence,
+      );
+    }
+    return rows.size;
+  }
+
   /** Insert an edge, skipping it unless both endpoints exist (FK safety). */
   insertEdge(edge: GraphEdge): boolean {
     const existingRow = this.statement(
@@ -342,7 +426,7 @@ export class GraphStore {
         winner.provenance ?? null,
         winner.confidence ?? 1,
         winner.resolutionMethod ?? null,
-        canonicalString(mergedEdgeEvidence(existing, edge)),
+        storedEdgeEvidence(winner, mergedEdgeEvidence(existing, edge)),
         edge.source,
         edge.target,
         edge.kind,
@@ -372,7 +456,7 @@ export class GraphStore {
         edge.provenance ?? null,
         edge.confidence ?? 1,
         edge.resolutionMethod ?? null,
-        canonicalString(mergedEdgeEvidence(edge, edge)),
+        storedEdgeEvidence(edge, mergedEdgeEvidence(edge, edge)),
         edge.source,
         edge.target,
       );
@@ -590,19 +674,23 @@ export class GraphStore {
 
   /** Clear only derived graph/index rows; authored grounding snapshots survive. */
   clearDerivedGraph(): void {
-    this.db.exec("DELETE FROM source_chunks_fts");
-    this.db.exec("DELETE FROM source_chunks");
-    this.db.exec("DELETE FROM import_bindings");
-    this.db.exec("DELETE FROM node_aliases");
-    // Clear fingerprint dependents in bulk before deleting nodes. Relying on
-    // the node FK cascade here makes SQLite scan the large LSH table once per
-    // node because its lookup index is band-oriented rather than node-oriented.
-    this.db.exec("DELETE FROM lsh_buckets");
-    this.db.exec("DELETE FROM node_fingerprints");
-    this.db.exec("DELETE FROM nodes");
-    this.db.exec("DELETE FROM files");
-    this.db.exec("DELETE FROM file_row_digests");
-    this.db.exec("DELETE FROM file_extraction_cache");
+    timeGraphPhase("publish.clear.dependents", () => {
+      this.db.exec("DELETE FROM source_chunks_fts");
+      this.db.exec("DELETE FROM source_chunks");
+      this.db.exec("DELETE FROM import_bindings");
+      this.db.exec("DELETE FROM node_aliases");
+      // Clear fingerprint dependents in bulk before deleting nodes. Relying on
+      // the node FK cascade here makes SQLite scan the large LSH table once per
+      // node because its lookup index is band-oriented rather than node-oriented.
+      this.db.exec("DELETE FROM lsh_buckets");
+      this.db.exec("DELETE FROM node_fingerprints");
+    });
+    timeGraphPhase("publish.clear.nodes", () => this.db.exec("DELETE FROM nodes"));
+    timeGraphPhase("publish.clear.filesAndCaches", () => {
+      this.db.exec("DELETE FROM files");
+      this.db.exec("DELETE FROM file_row_digests");
+      this.db.exec("DELETE FROM file_extraction_cache");
+    });
   }
 
   // --- Incremental publication (issue #209) -----------------------------------

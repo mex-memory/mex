@@ -102,6 +102,9 @@ export const HubOnboardingStateSchema = z.object({ completed: z.boolean() }).str
 export const HubOnboardingCompleteRequestSchema = z.object({ completed: z.literal(true) }).strict();
 export type HubOnboardingState = z.infer<typeof HubOnboardingStateSchema>;
 export type HubOnboardingCompleteRequest = z.infer<typeof HubOnboardingCompleteRequestSchema>;
+/** Whether recent history has more than one distinct commit author; never the authors themselves. */
+export const HubRepositoryContributorsSchema = z.object({ moreThanOne: z.boolean() }).strict();
+export type HubRepositoryContributors = z.infer<typeof HubRepositoryContributorsSchema>;
 
 /** Shared primitives for route-private contract entry points. */
 export const HubIsoTimestampSchema = isoTimestamp;
@@ -3119,6 +3122,10 @@ export const WikiHealthDetailsSchema = z.object({
   allowedJobKinds: z.array(z.enum(["wiki_refresh", "wiki_rebuild"])).max(2),
   recommendedJobKind: z.enum(["wiki_refresh", "wiki_rebuild"]).nullable(),
   activeJobId: hubJobId.nullable(),
+  recoveryCommand: z.object({
+    label: z.string().min(1).max(200),
+    command: z.string().min(1).max(200),
+  }).strict().nullable().optional(),
 }).strict().superRefine((value, context) => {
   if (
     value.recommendedJobKind !== null
@@ -3217,7 +3224,16 @@ export const JobPageResponseSchema = z.object({
 
 export const JobStartRequestSchema = z.object({
   kind: HubJobKindSchema,
+  migrationPreview: revision.optional(),
+}).strict().refine(value => value.migrationPreview === undefined || value.kind === "wiki_rebuild",
+  "A migration preview is only valid for a Wiki rebuild.");
+
+export const WikiMigrationJobPreviewSchema = z.object({
+  revision,
+  report: utf8Text(16 * 1024),
+  canApply: z.boolean(),
 }).strict();
+export type WikiMigrationJobPreview = z.infer<typeof WikiMigrationJobPreviewSchema>;
 
 export const JobCancelRequestSchema = z.object({}).strict();
 

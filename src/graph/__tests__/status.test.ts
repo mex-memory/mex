@@ -45,6 +45,32 @@ import {
 const NOW = new Date("2026-08-22T12:00:00.000Z");
 const roots: string[] = [];
 
+describe("scoped source freshness", () => {
+  it("applies default and configured corpus exclusions and supported extensions", async () => {
+    const root = temporaryRoot();
+    source(root, ".mex/config.json", JSON.stringify({ graph: { ignore: ["scripts/**"] } }));
+    source(root, "src/a.ts", "export function a() { return 1; }\n");
+    const excluded = ["build/task.ts", "scripts/task.ts", "notes.txt", ".hidden/task.ts"];
+    for (const path of excluded) source(root, path, "export function ignored() {}\n");
+    await build(root);
+    const scoped = await inspectGraphStatus({ projectRoot: root, sourceScope: new Set([...excluded, "src/a.ts"]) });
+    expect(scoped.status).toBe("fresh");
+    expect(scoped.changes.total).toBe(0);
+    expect((await inspect(root)).status).toBe(scoped.status);
+  });
+
+  it.each(["new", "changed"])("still detects a %s eligible scoped file", async kind => {
+    const root = temporaryRoot();
+    source(root, "src/a.ts", "export function a() { return 1; }\n");
+    await build(root);
+    const path = kind === "new" ? "src/new-file.ts" : "src/a.ts";
+    source(root, path, "export function changed() { return 2; }\n");
+    const scoped = await inspectGraphStatus({ projectRoot: root, sourceScope: new Set([path]) });
+    expect(scoped.status).toBe("stale");
+    expect((await inspect(root)).status).toBe(scoped.status);
+  });
+});
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -1026,10 +1052,10 @@ describe("inspectGraphStatus", () => {
   it("rejects malformed reachable fingerprints before the reconciler can decode them", async () => {
     const root = temporaryRoot("mex-graph-fingerprint-shape-");
     source(root, "src/a.ts", `
-      export function alpha(value: number): number { return value + 1; }
-      export function beta(value: number): number { return value * 2; }
-      export function gamma(value: number): number { return value - 3; }
-      export function delta(value: number): number { return value / 4; }
+      export function alpha(value: number): number { const first = value + 1; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
+      export function beta(value: number): number { const first = value * 2; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
+      export function gamma(value: number): number { const first = value - 3; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
+      export function delta(value: number): number { const first = value / 4; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
     `);
     const dbPath = await build(root);
     const db = openSqlite(dbPath);
@@ -1075,10 +1101,10 @@ describe("inspectGraphStatus", () => {
   it("requires one correct LSH hash for every configured fingerprint band", async () => {
     const root = temporaryRoot("mex-graph-fingerprint-bands-");
     source(root, "src/a.ts", `
-      export function alpha(value: number): number { return value + 1; }
-      export function beta(value: number): number { return value * 2; }
-      export function gamma(value: number): number { return value - 3; }
-      export function delta(value: number): number { return value / 4; }
+      export function alpha(value: number): number { const first = value + 1; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
+      export function beta(value: number): number { const first = value * 2; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
+      export function gamma(value: number): number { const first = value - 3; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
+      export function delta(value: number): number { const first = value / 4; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
     `);
     const dbPath = await build(root);
     const db = openSqlite(dbPath);
@@ -1122,8 +1148,8 @@ describe("inspectGraphStatus", () => {
   ])("classifies $name as corrupt", async ({ corrupt, expected }) => {
     const root = temporaryRoot("mex-graph-orphan-buckets-");
     source(root, "src/a.ts", `
-      export function alpha(value: number): number { return value + 1; }
-      export function beta(value: number): number { return value * 2; }
+      export function alpha(value: number): number { const first = value + 1; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
+      export function beta(value: number): number { const first = value * 2; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
     `);
     const dbPath = await build(root);
     const db = openSqlite(dbPath);
@@ -1163,8 +1189,8 @@ describe("inspectGraphStatus", () => {
   ])("catches $name on its own", async ({ corrupt, expected }) => {
     const root = temporaryRoot("mex-graph-lsh-class-");
     source(root, "src/a.ts", `
-      export function alpha(value: number): number { return value + 1; }
-      export function beta(value: number): number { return value * 2; }
+      export function alpha(value: number): number { const first = value + 1; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
+      export function beta(value: number): number { const first = value * 2; const second = first * 2; const third = second - 3; if (third > 10) { return third / 4; } return first + second + third; }
     `);
     const dbPath = await build(root);
     expect((await inspect(root)).status).toBe("fresh");

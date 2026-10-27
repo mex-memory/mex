@@ -11,6 +11,7 @@ import { entityContentHash } from "../model/hash.js";
 import { entityTextOf } from "../markdown/codec.js";
 import type { WikiWriteOptions } from "./write.js";
 import type { ServiceResult } from "./read.js";
+import type { GroundingResolver } from "../index/write.js";
 
 export interface SectionLinksData {
   links: { source: string; target: string; file: string }[];
@@ -73,9 +74,10 @@ export function wikiLinkSections(options: WikiWriteOptions & { apply?: boolean }
   diagnostics.push(...planned.diagnostics);
   if (!planned.ok || !options.apply) return { data, diagnostics };
   const graph = options.graph;
+  const resolver: GroundingResolver = (grounding, context) => resolveGrounding(grounding, graph!, context);
   const applied = applyPlannedOperationBatch(planned.plan, { ...options,
     expectedPreviewRevision: planned.plan.previewRevision,
-    ...(graph ? { resolveGrounding: (grounding, context) => resolveGrounding(grounding, graph, context) } : {}),
+    ...(graph ? { resolveGrounding: Object.assign(resolver, graph.revision === undefined ? {} : { graphRevision: graph.revision }) } : {}),
   });
   diagnostics.push(...applied.diagnostics);
   data.applied = applied.ok;

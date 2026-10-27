@@ -140,13 +140,14 @@ describe("small-node reconciliation by callers and callees (#229)", () => {
     db.close();
   });
 
-  it("lets the committed body hash name an identical-text candidate, but only as AMBIGUOUS without neighbors", () => {
+  // Small sketches own no LSH buckets, so without shared neighbours there is
+  // no candidate for the committed body hash to name.
+  it("finds no identical-text candidate for a small node without neighbors", () => {
     const { db, reconciler } = graph([
       { id: "function:same-text", fingerprint: sketch(64, [], 15), bodyHash: "committed" },
       { id: "function:same-shape", fingerprint: sketch(64, [], 15), bodyHash: "other" },
     ]);
-    expect(reconciler.reconcile(MISSING, sketch(64, [], 15), "committed"))
-      .toEqual({ kind: "AMBIGUOUS", candidate: "function:same-text" });
+    expect(reconciler.reconcile(MISSING, sketch(64, [], 15), "committed")).toEqual({ kind: "GONE" });
     expect(reconciler.reconcile(MISSING, sketch(64, [], 15), "unknown")).toEqual({ kind: "GONE" });
     db.close();
   });

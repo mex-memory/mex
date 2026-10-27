@@ -500,8 +500,10 @@ describe("TypeScript compiler extraction", () => {
 
     const page = first.files.find((entry) => entry.filePath === "src/page.ts")!;
     const buildPage = page.nodes.find((node) => node.name === "buildPage")!;
-    // Precondition: the checker really prints a cross-module import type here.
-    expect(buildPage.signature).toBe('(): () => import("./src/jsx/base").JSX.Element');
+    // A cross-module type prints by name, as `typeToString` prints it, rather
+    // than as an import type; any import type the checker still emits is
+    // rewritten portably (see the next test).
+    expect(buildPage.signature).toBe("(): () => JSX.Element");
     const openHandle = first.files.find((entry) => entry.filePath === "src/ext.ts")!
       .nodes.find((node) => node.name === "openHandle")!;
     expect(openHandle.signature).toContain("Handle");

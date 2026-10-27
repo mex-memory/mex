@@ -3,10 +3,10 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useNavigate, useOutletContext } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import type { HubApi } from "../api/client";
+import { HubApiError, type HubApi } from "../api/client";
 import { HubApiProvider } from "../api/context";
 import { createFixtureApi } from "../dev/fixture-api";
-import { AppRoutes } from "./App";
+import { AppRoutes, HUB_RELAUNCH_DETAIL, HubApplication } from "./App";
 import { HubLayout, type HubOutletContext } from "./HubLayout";
 
 function renderRoute(route: string, api: HubApi = createFixtureApi()) {
@@ -503,5 +503,30 @@ describe("Project Hub routes", () => {
     await user.click(cancel);
     expect(await screen.findByRole("button", { name: "Cancelling…" })).toBeDisabled();
     expect(screen.getByText("Cancellation requested")).toBeVisible();
+  });
+});
+
+describe("Hub link recovery (#276)", () => {
+  const unauthorized = (detail: string) => new HubApiError({ type: "about:blank", title: "Authentication required", status: 401,
+    code: "UNAUTHORIZED", detail, requestId: "11111111-1111-4111-8111-111111111111" });
+
+  it("explains an expired or used link and how to get a new one", async () => {
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <HubApplication api={createFixtureApi()} startupError={unauthorized("The bootstrap token is invalid, expired, or already used.")} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("This Hub link has expired or was already used")).toBeVisible();
+    expect(screen.getByText(HUB_RELAUNCH_DETAIL)).toBeVisible();
+    expect(HUB_RELAUNCH_DETAIL).toContain("run `mex hub` again");
+    expect(HUB_RELAUNCH_DETAIL).toContain("rerun the setup command you used");
+  });
+
+  it("tells a visit without a session how to get a new link", async () => {
+    const api = createFixtureApi();
+    vi.spyOn(api, "getSession").mockRejectedValue(unauthorized("A valid local Hub session is required."));
+    renderRoute("/", api);
+    expect(await screen.findByText("This Hub session has expired")).toBeVisible();
+    expect(screen.getByText(HUB_RELAUNCH_DETAIL)).toBeVisible();
   });
 });

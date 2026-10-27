@@ -11,12 +11,12 @@ edges:
     condition: "when the regression involves Hub routes, browser sessions, or jobs"
   - target: "patterns/safe-graph-snapshot-evolution.md"
     condition: "when changing Graph maintenance or corpus inspection"
-last_updated: 2026-09-13
+last_updated: 2026-10-19
 mex:
   id: mx_01M1M0CJNG4SW0WCJF3NB547HE
   type: pattern
   status: promoted
-  revision: 7
+  revision: 8
   title: release-performance-gate
   grounds_to:
     - node: function:5f86a557c717597b411a71a82c000ded
@@ -91,6 +91,11 @@ calibration environment.
 - Tailwind scans comments inside declared source directories. A prose word can
   accidentally emit an unused utility. Compare deterministic CSS before
   changing a shared limit; keep explanatory comments free of accidental classes.
+- Wiki graph projection can repeat work even inside one immutable snapshot:
+  parent discovery and edge projection need the same first relation pages. Reuse
+  those bounded pages only within the request, and read claim bodies only when
+  grounding resolution consumes them. Preserve the final Wiki/Graph freshness
+  proofs, parent promotion, pagination, ordering, and truncation checks.
 - Removing a timer is insufficient if client collections, query pages, terminal
   job IDs, or observer subscriptions can grow forever. Bound both storage and
   pagination.
@@ -168,8 +173,10 @@ raw samples show a real regression or stable shift.
 
 ## Update Scaffold
 
-The 2026-09-13 revision adds dynamic validator and constants-barrel boundaries,
-and accidental Tailwind utility generation, from PR #197. Earlier calibration
+The 2026-10-19 revision records request-local Wiki graph projection reuse and
+ungrounded-body avoidance. The 2026-09-13 revision added dynamic validator and
+constants-barrel boundaries, and accidental Tailwind utility generation, from
+PR #197. Earlier calibration
 versus enforcement and accepted graph-isolation timing guidance remain. Existing
 grounding fingerprints and `bodyHash` baselines are retained unchanged.
 

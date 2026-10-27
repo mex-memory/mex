@@ -60,10 +60,12 @@ const teamAccessDialogKey = Object.keys(manifest).find((candidate) => (
   candidate === "src/pages/TeamAccessDialog.tsx"
   || manifest[candidate].src === "src/pages/TeamAccessDialog.tsx"
 ));
+// The card is shared with Setup and Relays, so its dialog import may live in a
+// shared chunk that Home loads statically; it must still be loaded only on demand.
 if (
   !teamAccessDialogKey
   || !manifest[teamAccessDialogKey].isDynamicEntry
-  || !(manifest[homeEntry.key].dynamicImports ?? []).includes(teamAccessDialogKey)
+  || ![...homeChunks].some((key) => (manifest[key]?.dynamicImports ?? []).includes(teamAccessDialogKey))
   || homeChunks.has(teamAccessDialogKey)
   || initialChunks.has(teamAccessDialogKey)
 ) {

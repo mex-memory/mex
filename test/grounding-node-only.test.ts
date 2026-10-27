@@ -6,6 +6,7 @@
  * must not do is loosen the rule: a node the graph does not hold, or a supplied
  * fingerprint that is not the graph's, still stops the file from being baselined.
  */
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -163,6 +164,51 @@ export function formatReceiptLine(name: string, cents: number): string {
     expect(result.skipped).toBe(1);
     expect(readFileSync(pattern, "utf-8")).toBe(content);
   }, 30_000);
+
+  describe("one unresolved reference does not hide the rest of its file", () => {
+    const UNKNOWN = "function:00000000000000000000000000000000";
+
+    it("still verifies the other groundings of a new file, reports each once, and writes nothing", async () => {
+      const { root, pattern, ids, fingerprints } = await project();
+      const content = `---\nname: checkout\ngrounds_to:\n  - node: "${ids.calculateCheckoutTotal}"\n  - node: "${UNKNOWN}"\n  - node: "${ids.formatReceiptLine}"\n    fingerprint: "${fingerprints.calculateCheckoutTotal}"\n---\n\n# Checkout\n`;
+      writeFileSync(pattern, content);
+
+      const result = await captureGroundingBaselines(config(root));
+      expect(result.captured).toBe(0);
+      expect(result.failures!.map((failure) => [failure.node, failure.kind]).sort()).toEqual([
+        [ids.formatReceiptLine, "new"], [UNKNOWN, "new"],
+      ].sort());
+      expect(result.failures!.filter((failure) => failure.node === UNKNOWN)).toHaveLength(1);
+      expect(result.failures!.some((failure) => failure.node === ids.calculateCheckoutTotal)).toBe(false);
+      expect(readFileSync(pattern, "utf-8")).toBe(content);
+    }, 30_000);
+
+    it("still verifies the other groundings of a committed file, so drift is reported", async () => {
+      const { root, pattern, ids, fingerprints } = await project();
+      const content = `---\nname: checkout\ngrounds_to:\n  - node: "${UNKNOWN}"\n  - node: "${ids.formatReceiptLine}"\n    fingerprint: "${fingerprints.calculateCheckoutTotal}"\n---\n\n# Checkout\n`;
+      // HEAD holds both references with fingerprints; the working copy has the agent's node-only rewrite of the first.
+      writeFileSync(pattern, content.replace(`"${UNKNOWN}"\n`, `"${UNKNOWN}"\n    fingerprint: "${FP_A}"\n`));
+      const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, stdio: "ignore" });
+      git("init", "-q");
+      git("add", ".mex/patterns/checkout.md");
+      git("commit", "-q", "-m", "committed grounding");
+      writeFileSync(pattern, content);
+
+      const result = await captureGroundingBaselines(config(root));
+      expect(result.captured).toBe(0);
+      expect(result.driftCount).toBe(2);
+      expect(result.failures!.map((failure) => [failure.node, failure.kind]).sort()).toEqual([
+        [ids.formatReceiptLine, "drift"], [UNKNOWN, "drift"],
+      ].sort());
+      expect(readFileSync(pattern, "utf-8")).toBe(content);
+    }, 30_000);
+
+    it("captures the whole file once the unresolved reference is gone", async () => {
+      const { root, pattern, ids } = await project();
+      writeFileSync(pattern, `---\nname: checkout\ngrounds_to:\n  - node: "${ids.calculateCheckoutTotal}"\n  - node: "${ids.formatReceiptLine}"\n---\n\n# Checkout\n`);
+      expect(await captureGroundingBaselines(config(root))).toEqual({ captured: 2, skipped: 0 });
+    }, 30_000);
+  });
 });
 
 describe("authoring prompts", () => {
@@ -181,7 +227,7 @@ describe("authoring prompts", () => {
   });
 
   it.each(prompts.slice(0, 2))("%s says MEX records the fingerprint", (_name, prompt) => {
-    expect(prompt).toContain("MEX records the fingerprint");
-    expect(prompt).toContain('"groundsTo": [{"node": "<exact id>"}]');
+    expect(prompt).toContain("MEX finds it and records the fingerprints");
+    expect(prompt).toContain('"groundsTo": [{"file": "src/x.ts", "symbol": "parseBody"}]');
   });
 });

@@ -18,7 +18,7 @@ vi.mock("../jobs/index.js", () => ({ HubJobManager: class {
 vi.mock("../jobs/graph.js", () => ({ createGraphJobExecutors: () => ({}) }));
 vi.mock("../jobs/wiki.js", () => ({ createWikiJobExecutors: () => ({}) }));
 vi.mock("../node-server.js", () => ({ startHubNodeServer: mocks.startServer }));
-vi.mock("../services.js", () => ({ createLocalHubReadServices: () => ({}) }));
+vi.mock("../services.js", () => ({ createLocalHubReadServices: () => ({}), createHubWikiMigration: () => ({}) }));
 vi.mock("../../team/local-state/index.js", () => ({ TeamLocalState: class {} }));
 vi.mock("../../graph/application-adapter.js", () => ({ createRepositoryGraphPort: () => ({}) }));
 vi.mock("../../wiki/application-adapter.js", () => ({ createRepositoryWikiPort: () => ({}) }));

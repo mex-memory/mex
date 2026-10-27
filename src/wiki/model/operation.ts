@@ -1,6 +1,6 @@
 import type { WikiDiagnostic } from "./diagnostic.js";
 import { normalizeEntityId, type EntityId } from "./ids.js";
-import { validateGroundingRequest, type GroundingRequest } from "./grounding.js";
+import { validateGroundingTarget, type GroundingTarget } from "./grounding.js";
 import { validateAliases } from "./aliases.js";
 import { validateRelationRef, type WikiRelationRef } from "./relation.js";
 import { validateSource, type WikiSource } from "./source.js";
@@ -155,9 +155,10 @@ export interface CreateEntryPayload {
   /**
    * Groundings as the caller names them. A node id is enough: MEX derives the
    * fingerprint and body hash from the live graph when it writes. A fingerprint
-   * that is supplied must still match the graph.
+   * that is supplied must still match the graph. Code may also be named by
+   * `file` with `symbol` or `line`, which MEX resolves to the node first.
    */
-  groundsTo?: GroundingRequest[];
+  groundsTo?: GroundingTarget[];
   /**
    * Short phrases a developer would type for the problem this fact answers or
    * the outcome it describes, stored as `metadata.aliases`. At most 8, each at
@@ -179,6 +180,12 @@ export interface CreateEntryPayload {
   metadata?: Record<string, unknown>;
   /** Heading depth for a block-level entity; omit for a file-level entity. */
   headingDepth?: number;
+  /**
+   * The `description` frontmatter of the file, used only when this operation
+   * creates the file. Without it a neutral description is derived from the
+   * entry's title. Ignored when the file already exists.
+   */
+  description?: string;
 }
 
 export interface UpdateEntryPayload {
@@ -226,8 +233,11 @@ export interface RemoveSourcePayload {
 }
 
 export interface SetGroundingPayload {
-  /** Node ids, each optionally with the fingerprint to check; MEX writes the graph's own. */
-  groundsTo: GroundingRequest[];
+  /**
+   * Node ids, each optionally with the fingerprint to check, or `file` with
+   * `symbol` or `line`; MEX resolves the reference and writes the graph's own.
+   */
+  groundsTo: GroundingTarget[];
   /**
    * Rewrite inline `mex://` anchors in the body to match.
    *
@@ -419,10 +429,11 @@ const createEntryShape = validateShape<CreateEntryPayload>({
   relations: optional(validateArray(validateRelationRef)),
   sources: optional(validateArray(validateSource)),
   provenance: optional(validateAuthoringProvenance),
-  groundsTo: optional(validateArray(validateGroundingRequest)),
+  groundsTo: optional(validateArray(validateGroundingTarget)),
   aliases: optional(validateAliases),
   metadata: optional(metadataMapValidator),
   headingDepth: optional(validateInteger({ min: 1, max: 6 })),
+  description: optional(validateString()),
 });
 
 const createEntryValidator: Validator<CreateEntryPayload> = (value, context) => {
@@ -550,7 +561,7 @@ const PAYLOAD_VALIDATORS: { [K in WikiOperationType]: Validator<WikiOperationPay
   "add-source": validateShape<AddSourcePayload>({ source: validateSource }),
   "remove-source": validateShape<RemoveSourcePayload>({ sourceIdentity: validateString() }),
   "set-grounding": validateShape<SetGroundingPayload>({
-    groundsTo: validateArray(validateGroundingRequest),
+    groundsTo: validateArray(validateGroundingTarget),
     updateAnchors: optional((value, context) =>
       typeof value === "boolean"
         ? succeed(value)

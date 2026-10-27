@@ -22,6 +22,7 @@ export interface SetupHubServices {
 }
 
 export interface CreateSetupHubServicesOptions {
+  readonly finalizeOnly?: boolean;
   readonly onReady?: (signal: AbortSignal) => void | Promise<void>;
   readonly initialMode?: "code-repo" | "agent-memory";
 }
@@ -33,6 +34,7 @@ export function createSetupHubServices(
   const setup = new HubSetupRunner({
     projectRoot,
     initialMode: options.initialMode,
+    finalizeOnly: options.finalizeOnly,
     ...(options.onReady === undefined ? {} : { onReady: options.onReady }),
   });
   const git = createRepositoryGitPort(projectRoot);

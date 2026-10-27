@@ -15,8 +15,9 @@ it("bounds parsed-file retention while reusing recently used library declaration
     const stagedInputs = [
       { filePath: "main.ts", source: "export const main = 1;\n" },
       { filePath: "tsconfig.json", source: JSON.stringify({ compilerOptions: { noLib: true }, files: ["main.ts"] }) },
-      ...Array.from({ length: 1024 }, (_, index) => ({ filePath: `cache/${index}.d.ts`, source: `export declare const value${index}: number;` })),
-      ...Array.from({ length: 6 }, (_, index) => ({ filePath: `large/${index}.d.ts`, source: `/*${" ".repeat(2 * 1024 * 1024)}*/` })),
+      // Past the shared cache's entry bound (16,384 files) and byte bound (64 MiB of text).
+      ...Array.from({ length: 17_000 }, (_, index) => ({ filePath: `cache/${index}.d.ts`, source: `export declare const value${index}: number;` })),
+      ...Array.from({ length: 20 }, (_, index) => ({ filePath: `large/${index}.d.ts`, source: `/*${" ".repeat(2 * 1024 * 1024)}*/` })),
     ];
     let reused = false;
     let entryEvicted = false;
@@ -28,14 +29,14 @@ it("bounds parsed-file retention while reusing recently used library declaration
         const first = read("cache/0.d.ts");
         reused = read("cache/0.d.ts") === first;
         const cold = read("cache/1.d.ts");
-        for (let index = 2; index < 1024; index++) {
+        for (let index = 2; index < 17_000; index++) {
           read(`cache/${index}.d.ts`);
-          if (index % 100 === 0) reused &&= read("cache/0.d.ts") === first;
+          if (index % 1000 === 0) reused &&= read("cache/0.d.ts") === first;
         }
         reused &&= read("cache/0.d.ts") === first;
         entryEvicted = read("cache/1.d.ts") !== cold;
         const large = read("large/0.d.ts");
-        for (let index = 1; index < 6; index++) read(`large/${index}.d.ts`);
+        for (let index = 1; index < 20; index++) read(`large/${index}.d.ts`);
         byteEvicted = read("large/0.d.ts") !== large;
         return ts.createProgram(options);
       },

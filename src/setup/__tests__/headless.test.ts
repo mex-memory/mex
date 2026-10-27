@@ -10,6 +10,7 @@ import { MEX_ANCHOR_START } from "../anchor.js";
 import { loadConfiguredAiTools, loadConfiguredSetupMode, hasConfiguredAiTools } from "../../config.js";
 import * as config from "../../config.js";
 import { SetupError } from "../errors.js";
+import * as phases from "../phases.js";
 
 const roots: string[] = [];
 
@@ -62,6 +63,31 @@ describe("headless setup status", () => {
 });
 
 describe("headless setup run", () => {
+  it("starts background sessions before graph completion and preserves the graph failure for recovery", async () => {
+    const root = gitRepo();
+    for (let index = 0; index < 8; index += 1) writeFileSync(join(root, "src", `feature${index}.ts`), `export const feature${index} = true;\n`);
+    let fail!: (error: Error) => void;
+    const graph = new Promise<void>((_resolve, reject) => { fail = reject; });
+    vi.spyOn(phases, "buildSetupGraph").mockImplementation(() => graph);
+    const launch = vi.fn(async (input: population.HeadlessPopulationOptions) => {
+      const batch = /(?:- Batch file: |JSON array in `)(\.mex\/local\/setup-ops\/[^`\s]+\.json)/u.exec(input.prompt)![1]!;
+      if (batch.endsWith("shared.json")) writePopulatedScaffold(join(root, ".mex"));
+      mkdirSync(join(root, ".mex/local/setup-ops"), { recursive: true });
+      writeFileSync(join(root, batch), "[]");
+      return { tool: "codex" as const, completed: true };
+    });
+    const apply = vi.fn();
+    const pending = runHeadlessSetup({ projectRoot: root, tools: [], perSubsystem: {
+      env: { MEX_SETUP_PER_SUBSYSTEM: "force" }, launch, freeMemory: () => 64 * 1024 ** 3,
+      trackSource: false, applier: { apply, close: async () => ({ changed: false }) },
+    } }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(launch.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
+    expect(apply).not.toHaveBeenCalled();
+    fail(new Error("Graph worker failed; rerun mex setup"));
+    expect(await pending).toMatchObject({ message: "Graph worker failed; rerun mex setup" });
+    const stored = JSON.parse(readFileSync(join(root, ".mex/local/setup-plan.json"), "utf8"));
+    expect(stored.graph).toMatchObject({ outcome: "failed", startedAt: expect.any(String), finishedAt: expect.any(String), durationMs: expect.any(Number) });
+  });
   it("returns an actionable expected error for malformed config without replacing it", async () => {
     const root = fixture();
     mkdirSync(join(root, ".mex"));
@@ -128,7 +154,9 @@ describe("headless setup run", () => {
       onProgress: ({ step }) => steps.push(step) });
     expect(result).toMatchObject({ mode: "code-repo", stage: "needs_population", ready: false });
     expect(existsSync(join(root, ".mex", "graph.db"))).toBe(true);
-    expect(existsSync(join(root, ".mex", "wiki.db"))).toBe(false);
+    // A provisional index keeps the paused Wiki readable, never `migration_required` (#268).
+    const { createRepositoryWikiPort } = await import("../../wiki/application-adapter.js");
+    expect((await createRepositoryWikiPort(root).inspectIndex()).state).toBe("fresh");
     expect(steps).toContain("graph");
     expect(() => execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: "ignore" })).toThrow();
   });
@@ -239,6 +267,20 @@ describe("headless setup run", () => {
     expect(existsSync(join(root, ".mex", "HEARTBEAT.md"))).toBe(true);
     expect(existsSync(join(root, ".cursorrules"))).toBe(true);
   });
+});
+
+it("finalizes authored single-session work with a warning instead of repeating population", async () => {
+  const root = fixture();
+  const first = await runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: [], populate: async () => {
+    writePopulatedScaffold(join(root, ".mex"));
+    throw new population.HeadlessPopulationError("usage_limit", "claude", "5:30pm (Asia/Kolkata)");
+  } });
+  expect(first).toMatchObject({ ready: false, stage: "needs_population" });
+  expect(first.message).toContain("5:30pm (Asia/Kolkata)");
+  expect(inspectSetupStatus(root).stage).toBe("needs_population");
+  const launch = vi.fn(async () => ({ tool: "claude" as const, completed: true }));
+  expect(await runHeadlessSetup({ projectRoot: root, tools: [], populate: launch })).toMatchObject({ ready: true, message: expect.stringContaining("project patterns") });
+  expect(launch).not.toHaveBeenCalled();
 });
 
 function fixture(): string {

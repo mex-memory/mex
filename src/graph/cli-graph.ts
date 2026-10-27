@@ -1,8 +1,11 @@
+export { runGraphStatus, formatGraphSourceChanges } from "./cli-status.js";
 import type {
-  GraphRefreshResult, GraphSourceChanges, GraphStatus,
+  GraphRefreshResult, GraphStatus,
 } from "../team/contracts/graph.js";
+import type { Diagnostic } from "../team/contracts/shared.js";
 import {
   GraphMaintenanceError,
+  ensureGraphCurrent,
   repairGraph,
   rebuildGraph,
   refreshGraph,
@@ -12,25 +15,27 @@ import { inspectGraphStatus } from "./status.js";
 import { coverageFields, readStoredGraphCoverage, type GraphCoverageObservation } from "./coverage.js";
 import { describeRefreshWork } from "./refresh-work.js";
 
+/**
+ * CLI maintenance builds in the graph worker, as the Hub does: the worker gets
+ * a heap sized to the machine (see `graphWorkerHeap`) and a heap failure is
+ * reported with its cause instead of crashing this process at Node's default
+ * limit, which a large TypeScript monorepo exceeds.
+ */
+const CLI_GRAPH_EXECUTION = { candidateExecution: "process" } as const;
+
 export interface GraphCommandOptions {
   /** Project root to inspect or maintain (defaults to cwd). */
   root?: string;
   /** Emit the complete machine-readable result. */
   json?: boolean;
-}
-
-/** Strictly read-only graph health/freshness command. */
-export async function runGraphStatus(options: GraphCommandOptions = {}): Promise<void> {
-  const rootDir = options.root ?? process.cwd();
-  const status = await inspectGraphStatus({ projectRoot: rootDir });
-  if (options.json) console.log(JSON.stringify(status, null, 2));
-  else printStatus(status);
+  /** Rebuild even when the existing graph is fresh. */
+  force?: boolean;
 }
 
 /** Explicit correctness-first refresh through the existing full semantic sync path. */
 export async function runGraphRefresh(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
-  const result = await refreshGraph(rootDir);
+  const result = await refreshGraph(rootDir, CLI_GRAPH_EXECUTION);
   const coverage = await readStoredGraphCoverage(rootDir, result.status.status === "fresh");
   if (options.json) console.log(JSON.stringify({ ...result, ...coverageFields(coverage) }, null, 2));
   else {
@@ -42,7 +47,7 @@ export async function runGraphRefresh(options: GraphCommandOptions = {}): Promis
 /** Explicit isolated candidate rebuild with atomic publication and recovery. */
 export async function runGraphRebuild(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
-  const result = await rebuildGraph(rootDir);
+  const result = await rebuildGraph(rootDir, CLI_GRAPH_EXECUTION);
   const coverage = await readStoredGraphCoverage(rootDir, result.status.status === "fresh");
   if (options.json) console.log(JSON.stringify({ ...result, ...coverageFields(coverage) }, null, 2));
   else {
@@ -51,17 +56,19 @@ export async function runGraphRebuild(options: GraphCommandOptions = {}): Promis
   }
 }
 
-/** Backward-compatible `mex graph`, now implemented as a safe rebuild. */
+/** Ensure a current graph, reusing a fresh store without writing. */
 export async function runGraph(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
-  const result = await rebuildGraph(rootDir);
+  const result = await ensureGraphCurrent(rootDir, { ...CLI_GRAPH_EXECUTION, force: options.force });
   const coverage = await readStoredGraphCoverage(rootDir, result.status.status === "fresh");
   if (options.json) {
     console.log(JSON.stringify({
+      operation: result.operation,
       filesIndexed: result.filesIndexed,
       nodesCreated: result.nodesCreated,
       edgesCreated: result.edgesCreated,
       durationMs: result.durationMs,
+      ...(result.refresh ? { refresh: result.refresh } : {}),
       health: {
         ok: result.status.parseHealth.ok,
         partial: result.status.parseHealth.partial,
@@ -75,10 +82,15 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
     }, null, 2));
     return;
   }
-  console.log(
-    `Code graph built: ${result.nodesCreated} nodes, ${result.edgesCreated} edges `
-      + `across ${result.filesIndexed} files in ${result.durationMs}ms → .mex/graph.db`,
-  );
+  if (result.operation === "unchanged") {
+    console.log(`Code graph already fresh; no files indexed (${result.durationMs}ms).`);
+  } else {
+    const action = result.operation === "refresh" ? "refreshed" : "built";
+    console.log(
+      `Code graph ${action}: ${result.nodesCreated} nodes, ${result.edgesCreated} edges `
+        + `across ${result.filesIndexed} files in ${result.durationMs}ms → .mex/graph.db`,
+    );
+  }
   printUnindexedSources(coverage);
   printSkippedSources(result.skipped);
   printDeclinedInputs(result.declinedInputs);
@@ -178,47 +190,6 @@ export function describeGraphMaintenanceFailure(error: unknown): string {
 }
 
 const MAX_DIAGNOSTICS_SHOWN = 20;
-
-function printStatus(status: GraphStatus): void {
-  const branch = status.currentRepo.branch ?? "detached/no branch";
-  const head = status.currentRepo.head?.slice(0, 12) ?? "no HEAD";
-  const changes = status.changes;
-  console.log(`Graph status: ${status.status}`);
-  console.log(`Repository: ${branch} @ ${head}${status.currentRepo.dirty ? " (dirty)" : ""}`);
-  if (status.inspected === false) {
-    console.log("Last successful index: not inspected");
-    console.log("Sources: not inspected");
-    console.log("Parse health: not inspected");
-  } else {
-    console.log(`Last successful index: ${status.lastSuccessfulIndexAt ?? "never"}`);
-    console.log(formatGraphSourceChanges(changes));
-    console.log(
-      `Parse health: ${status.parseHealth.ok} ok, ${status.parseHealth.partial} partial, `
-        + `${status.parseHealth.failed} failed`,
-    );
-  }
-  for (const diagnostic of status.diagnostics) {
-    console.log(`${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}`);
-  }
-  const command = status.diagnostics
-    .flatMap((diagnostic) => diagnostic.remediation ?? [])
-    .find((action) => action.command)?.command;
-  if (command) console.log(`Next: ${command}`);
-}
-
-/** Internal human-output formatter; JSON output retains the complete contract. */
-export function formatGraphSourceChanges(changes: GraphSourceChanges): string {
-  if (changes.truncated) {
-    const shown = changes.added.length + changes.modified.length + changes.deleted.length;
-    const omitted = Math.max(0, changes.total - shown);
-    const omission = omitted > 0 ? `${omitted} paths omitted` : "path details truncated";
-    return `Sources: ${changes.total} changed (`
-      + `${changes.added.length} added shown, ${changes.modified.length} modified shown, `
-      + `${changes.deleted.length} deleted shown; ${omission})`;
-  }
-  return `Sources: ${changes.total} changed `
-    + `(${changes.added.length} added, ${changes.modified.length} modified, ${changes.deleted.length} deleted)`;
-}
 
 function printMaintenance(verb: "refreshed" | "rebuilt", result: GraphMaintenanceResult): void {
   console.log(

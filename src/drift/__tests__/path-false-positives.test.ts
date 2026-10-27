@@ -38,6 +38,19 @@ const missingPaths = (markdown: string, extraFiles?: Record<string, string>) =>
     .map((issue) => issue.claim?.value);
 
 describe("MISSING_PATH false positives", () => {
+  it("downgrades capitalized bare prose names but keeps missing files as errors", () => {
+    const issues = runScaffold("Requires `Runtime.js` 18. The file `utils.js` and `src/app.js` are used.");
+    expect(issues.map((issue) => [issue.claim?.value, issue.severity])).toEqual([
+      ["Runtime.js", "warning"], ["utils.js", "error"], ["src/app.js", "error"],
+    ]);
+  });
+
+  it("treats an unrooted leading slash as a route but checks paths in real directories", () => {
+    expect(missingPaths("Serve `/index.html`, then load `/src/app.js` and `/src/real.js`.", { "src/real.js": "" }))
+      .toEqual(["/src/app.js"]);
+    expect(missingPaths("Serve `/index.html`.", { "index.html": "" })).toEqual([]);
+  });
+
   it("does not claim a file the document says was deleted (#143 defect 1)", () => {
     expect(
       missingPaths("# Changelog\n\n- Deleted orphaned files: `check_commands.js`\n")

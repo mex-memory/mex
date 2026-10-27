@@ -10,7 +10,7 @@ edges:
     condition: Before changing a capture, delivery, or persistence boundary
   - target: patterns/release-performance-gate.md
     condition: When evaluating a material command or Hub resource regression
-last_updated: 2026-09-09
+last_updated: 2026-10-19
 ---
 
 # Usage telemetry
@@ -60,6 +60,10 @@ installation or scaffold ID appended.
   timing the flush. Fixed setup sleeps can put first-use transport initialization
   inside the cancellation interval. Preserve the production grace and elapsed
   limit, and assert real cancellation, stopped queries and retained queue data.
+- A best-effort flush grace does not promise successful loopback delivery.
+  Positive transport tests await the actual outbox acknowledgement before
+  flushing; lifecycle-only batching tests stub the transport acknowledgement.
+  Keep real socket/DNS cancellation tests and production deadlines unchanged.
 - Fixtures should inject a silent sink. Tests that enable telemetry must isolate
   `MEX_HOME`, redirect only to loopback, and deny all other egress.
 - Read project metadata through the bounded, non-mutating telemetry reader;

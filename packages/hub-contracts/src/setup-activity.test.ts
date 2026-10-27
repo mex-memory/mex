@@ -50,3 +50,29 @@ describe("setup transcript boundary", () => {
     expect(SetupTranscriptBatchSchema.safeParse({ ...batch, runId: "provider-session-id" }).success).toBe(false);
   });
 });
+
+describe("setup per-subsystem coverage", () => {
+  const coverage = {
+    phase: "subsystems", total: 2, done: 1, skipped: 0,
+    subsystems: [{ path: "src/router", state: "done" }, { path: "src/jsx", state: "running" }],
+  };
+
+  it("accepts bounded per-subsystem progress and keeps it optional on a run", async () => {
+    const { SetupPopulationCoverageSchema, SetupRunSchema } = await import("./setup.js");
+    expect(SetupPopulationCoverageSchema.parse(coverage)).toEqual(coverage);
+    const run = {
+      status: "running", mode: "code-repo", stage: "needs_population", populated: false, ready: false, selectedTools: ["claude"],
+      prompt: null, populationTool: null, populationCompleted: false, commitCommands: [], anchorNotes: [],
+      message: "Running", progress: null, error: null, startedAt: null, finishedAt: null,
+    };
+    expect(SetupRunSchema.safeParse(run).success).toBe(true);
+    expect(SetupRunSchema.safeParse({ ...run, populationCoverage: coverage }).success).toBe(true);
+  });
+
+  it("rejects unknown states, extra fields and unbounded lists", async () => {
+    const { SetupPopulationCoverageSchema } = await import("./setup.js");
+    expect(SetupPopulationCoverageSchema.safeParse({ ...coverage, subsystems: [{ path: "src/x", state: "lost" }] }).success).toBe(false);
+    expect(SetupPopulationCoverageSchema.safeParse({ ...coverage, prompt: "private" }).success).toBe(false);
+    expect(SetupPopulationCoverageSchema.safeParse({ ...coverage, subsystems: Array(65).fill(coverage.subsystems[0]) }).success).toBe(false);
+  });
+});

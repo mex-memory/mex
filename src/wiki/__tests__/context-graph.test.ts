@@ -64,6 +64,35 @@ describe("Context graph repository reads", () => {
     expect({ bytes: readFileSync(index), mtime: statSync(index).mtimeMs, entries: readdirSync(target.scaffold) }).toEqual(before);
   });
 
+  it.each([false, true])("bounds repeated projection work within each read (grounded: %s)", async (grounded) => {
+    const target = fixture(16, false, grounded);
+    await createRepositoryWikiPort(target.root).rebuildIndex();
+    const reads: { bodies: string[]; relationRoots: string[] }[] = [];
+    const port = createRepositoryWikiPort(target.root, {
+      groundingBridge: { async withFreshGroundingSnapshot(callback) { return callback(snapshot()); } },
+      __internal: {
+        readAsync: (options, callback) => withWikiContractReadSessionAsync(options, async (session) => {
+          const bodies = vi.spyOn(session, "get");
+          const relations = vi.spyOn(session, "relations");
+          const result = await callback(session);
+          reads.push({
+            bodies: bodies.mock.calls.map(([entityId]) => entityId),
+            relationRoots: relations.mock.calls.map(([request]) => request.entityId),
+          });
+          return result;
+        }),
+      },
+    });
+    const first = await port.graphOverview();
+    const second = await port.graphOverview();
+    expect(first.nodes[0]?.groundingHealth).toBe(grounded ? "fresh" : "unverified");
+    expect(second).toEqual(first);
+    expect(reads).toEqual(Array.from({ length: 2 }, () => ({
+      bodies: grounded ? [id(0)] : [],
+      relationRoots: Array.from({ length: 16 }, (_, index) => id(index)),
+    })));
+  });
+
   it("caps the node set and relationships independently without dangling displayed endpoints", async () => {
     const large = fixture(101);
     const largePort = createRepositoryWikiPort(large.root);

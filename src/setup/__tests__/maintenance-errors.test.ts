@@ -34,6 +34,8 @@ describe("safe setup maintenance failures", () => {
     const result = classifySetupMaintenanceError(error, "graph");
     expect(result?.userMessage).toContain("Code graph setup could not finish.");
     expect(result?.userMessage).toContain("setup");
+    expect(result?.userMessage).toContain(`Graph worker (${category})`);
+    if (category === "cancelled") expect(result?.userMessage).toContain("Setup itself cancelled");
     expect(result?.userMessage).not.toContain(PRIVATE);
     expect(result?.message).toContain(PRIVATE);
   });

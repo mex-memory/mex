@@ -17,7 +17,9 @@
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
+import { incrementalClosureBudget } from "../extraction-cache.js";
 import { createGraphEngine, GraphSourceStagingError, type GraphRefreshStrategy } from "../engine-impl.js";
 import type { BuildResult } from "../engine.js";
 import { openGraphDatabase } from "../db/database.js";
@@ -27,7 +29,7 @@ import { createGroundingGraph, deriveGrounding, type GroundingGraph } from "../.
 import { resolveGrounding } from "../../wiki/grounding/resolve.js";
 import { diffGraphDumps, dumpGraphDatabase, type GraphDump } from "./graph-dump.js";
 import {
-  all, FIXTURES, PYTHON_FIXTURE, random, replace, TS_FIXTURE, write, writeTree,
+  all, FIXTURES, MONOREPO_FIXTURE, PYTHON_FIXTURE, random, replace, TS_FIXTURE, write, writeTree,
   type Edit, type Fixture,
 } from "./refresh-fixtures.js";
 
@@ -228,6 +230,53 @@ function withGroundingGraph<T>(root: string, dbPath: string, body: (graph: Groun
 // Grounding continuity (MOVED / AMBIGUOUS / GONE) reads node ids, aliases and
 // fingerprints; the alias equality above covers it table by table, and this
 // walks one grounded symbol across an incremental move end to end.
+describe("incremental refresh of a monorepo", () => {
+  it("builds programs only for the projects that read a changed file (#281)", async () => {
+    const root = tempDir("mex-incr-projects-");
+    const dbPath = join(tempDir("mex-incr-projects-store-"), "graph.db");
+    writeTree(root, MONOREPO_FIXTURE.files);
+    let built: string[] = [];
+    const countPrograms = (): void => {
+      built = [];
+    };
+    const run = async (operation: "build" | "sync"): Promise<BuildResult> => {
+      const engine = createGraphEngine({
+        rootDir: root,
+        dbPath,
+        compilerExtraction: {
+          programFactory(options: ts.CreateProgramOptions) {
+            built.push(String(options.rootNames.find((name) => !/\.d\.ts$/u.test(name))).replace(/^.*packages\/([^/]+)\/.*$/u, "$1"));
+            return ts.createProgram(options);
+          },
+        },
+        __internalRefreshStrategy: "incremental",
+      } as Parameters<typeof createGraphEngine>[0]);
+      try {
+        return operation === "build" ? await engine.build(root) : await engine.sync([]);
+      } finally {
+        engine.close();
+      }
+    };
+    await run("build");
+    expect(built.sort()).toEqual(["app", "core", "tools"]);
+
+    countPrograms();
+    replace("packages/tools/src/report.ts", "lint(source)", "lint(source.trim())")(root);
+    expect((await run("sync")).refresh?.mode).toBe("incremental");
+    expect(built).toEqual(["tools"]);
+
+    countPrograms();
+    replace("packages/core/src/math.ts", "return a + b;", "return b + a;")(root);
+    expect((await run("sync")).refresh?.mode).toBe("incremental");
+    expect(built.sort()).toEqual(["app", "core"]);
+
+    countPrograms();
+    write("packages/tools/src/extra.ts", "export const extra = 1;\n")(root);
+    await run("sync");
+    expect(built.sort()).toEqual(["app", "core", "tools"]);
+  }, 120_000);
+});
+
 describe("grounding across an incremental move", () => {
   it("resolves a grounded function moved to another file exactly as the oracle does", async () => {
     const body = "export function rotateRefreshToken(userId: string): number {\n  const windowSeconds = 3600;\n  const attempts = userId.length;\n  const budget = attempts * windowSeconds;\n  return budget > 100 ? budget : windowSeconds;\n}\n";
@@ -265,5 +314,70 @@ describe("grounding across an incremental move", () => {
     const moved = withGroundingGraph(harness.root, harness.incrementalDb, (graph) =>
       graph.getNode((incremental as { resolvedNode: string }).resolvedNode));
     expect(moved?.filePath).toBe("src/tokens.ts");
+  }, 240_000);
+});
+
+// A refresh whose re-extraction closure reaches past the budget costs more than
+// a build, so it must publish through the full path and say why.
+describe("incremental refresh falls back to a full extraction past the closure budget", () => {
+  const HUB_FILES = 130;
+  const hubFixture: Fixture = {
+    name: "hub",
+    files: {
+      "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true }, include: ["src"] }),
+      "package.json": JSON.stringify({ name: "fixture-hub", type: "module" }),
+      "src/hub.ts": "export function hub(value: number): number {\n  return value + 1;\n}\n",
+      ...Object.fromEntries(Array.from({ length: HUB_FILES }, (_, index) => [
+        `src/user${index}.ts`,
+        `import { hub } from "./hub";\n\nexport function use${index}(): number {\n  return hub(${index});\n}\n`,
+      ])),
+    },
+    edits: [],
+  };
+
+  it("budgets 100 files up to 200 compiler files, then half of them", () => {
+    expect(incrementalClosureBudget(10)).toBe(100);
+    expect(incrementalClosureBudget(200)).toBe(100);
+    expect(incrementalClosureBudget(1000)).toBe(500);
+  });
+
+  it("stays incremental below the budget, falls back above it, and matches a full build", async () => {
+    const harness = await startHarness(hubFixture);
+    const modeOf = (index: number): { mode?: string; fallbackReason?: string } | undefined =>
+      (harness.results[index]!.incremental as BuildResult & { refresh?: { mode?: string; fallbackReason?: string } }).refresh;
+
+    await step(harness, {
+      name: "leaf body edit",
+      apply: replace("src/user3.ts", "hub(3)", "hub(3) + 1"),
+    }, "leaf edit");
+    expect(modeOf(0)?.mode).toBe("incremental");
+
+    await step(harness, {
+      name: "hub signature change",
+      apply: replace("src/hub.ts", "value: number): number", "value: number, extra = 0): string"),
+    }, "hub signature edit");
+    expect(modeOf(1)?.mode).toBe("full");
+    expect(modeOf(1)?.fallbackReason).toMatch(/^the changed set reaches \d+ of 131 compiler files$/);
+  }, 240_000);
+
+  it("holds no previous cache payload when the fallback extraction starts", async () => {
+    const harness = await startHarness(hubFixture);
+    replace("src/hub.ts", "value: number): number", "value: number, extra = 0): string")(harness.root);
+    const retained: number[] = [];
+    const engine = createGraphEngine({
+      rootDir: harness.root,
+      dbPath: harness.incrementalDb,
+      __internalRefreshStrategy: "incremental",
+      __internalGraphEngineHooks: { beforeFullExtraction: (count: number) => retained.push(count) },
+    } as Parameters<typeof createGraphEngine>[0]);
+    try {
+      const result = await engine.sync([]) as BuildResult & { refresh?: { mode?: string } };
+      expect(result.refresh?.mode).toBe("full");
+    } finally {
+      engine.close();
+    }
+    expect(retained).toEqual([0]);
+    await refresh(harness.root, harness.fullDb, "full");
+    expectSameGraph(harness.incrementalDb, harness.fullDb, EXACT_TABLES, "fallback vs full build, cache rows included");
   }, 240_000);
 });

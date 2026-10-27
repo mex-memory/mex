@@ -1,5 +1,6 @@
-import { opendirSync, openSync, readSync, closeSync, fstatSync, constants } from "node:fs";
-import { resolve, relative, sep } from "node:path";
+import { RepositoryInventory } from "../repository.js";
+import { openSync, readSync, closeSync, fstatSync, constants } from "node:fs";
+import { resolve } from "node:path";
 import type { Claim, DriftIssue } from "../../types.js";
 
 /** Runtimes, platforms, databases, protocols, and architectural terms that appear in stack docs but aren't installable packages */
@@ -80,10 +81,11 @@ function isConceptAcronym(value: string): boolean {
 /** Check that claimed dependencies exist in manifests */
 export function checkDependencies(
   claims: Claim[],
-  projectRoot: string
+  projectRoot: string,
+  repository = new RepositoryInventory(projectRoot),
 ): DriftIssue[] {
   const issues: DriftIssue[] = [];
-  const deps = loadAllDependencies(projectRoot);
+  const deps = loadAllDependencies(projectRoot, repository);
   if (!deps) return issues;
 
   const depClaims = claims.filter(
@@ -157,47 +159,18 @@ interface DepEntry {
 function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined {
   const exact = deps.find((d) => d.name.toLowerCase() === claimed);
   if (exact) return exact;
+  const displayNames: Record<string, string[]> = {
+    nestjs: ["@nestjs/core", "@nestjs/common"], clickhouse: ["@clickhouse/client"], biome: ["@biomejs/biome"],
+  };
+  const display = deps.find((d) => displayNames[claimed]?.includes(d.name.toLowerCase()));
+  if (display) return display;
   const normalized = normalizeName(claimed);
   return deps.find((d) => d.normalizes && normalizeName(d.name) === normalized);
 }
 
-// Discovery may recurse arbitrarily deep, but must not retain or read an
-// unlimited corpus. Exceeding a budget abstains instead of checking a partial list.
-const MAX_DISCOVERY_ENTRIES = 100_000;
-const MAX_MANIFESTS = 1_024;
+// Manifest reads preserve the existing per-file and aggregate byte budgets.
 const MAX_MANIFEST_BYTES = 1_048_576;
 const MAX_TOTAL_MANIFEST_BYTES = 8_388_608;
-
-function discoverManifests(projectRoot: string): string[] | null {
-  const pending = [resolve(projectRoot)];
-  const manifests: string[] = [];
-  let inspected = 0;
-  try {
-    while (pending.length) {
-      const directory = opendirSync(pending.pop()!);
-      try {
-        for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
-          if (++inspected > MAX_DISCOVERY_ENTRIES) return null;
-          // Preserve glob's hidden-directory exclusion and avoid installed
-          // dependencies, Git metadata, directory junctions and file symlinks.
-          if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.isSymbolicLink()) continue;
-          const path = resolve(directory.path, entry.name);
-          if (entry.isDirectory()) pending.push(path);
-          else if (entry.isFile() && (entry.name === "package.json" || entry.name === "pyproject.toml")) {
-            manifests.push(path);
-            if (manifests.length > MAX_MANIFESTS) return null;
-          }
-        }
-      } finally { directory.closeSync(); }
-    }
-  } catch {
-    return null;
-  }
-  const rank = (path: string) => path === resolve(projectRoot, "package.json") ? 0
-    : path === resolve(projectRoot, "pyproject.toml") ? 1 : 2;
-  const key = (path: string) => relative(projectRoot, path).split(sep).join("/");
-  return manifests.sort((a, b) => rank(a) - rank(b) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
-}
 
 function readManifest(path: string, remaining: number): string | null {
   const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -215,15 +188,21 @@ function readManifest(path: string, remaining: number): string | null {
   } finally { closeSync(descriptor); }
 }
 
-function loadAllDependencies(projectRoot: string): DepEntry[] | null {
+function loadAllDependencies(projectRoot: string, repository: RepositoryInventory): DepEntry[] | null {
   const entries: DepEntry[] = [];
 
   // Repositories can contain independent applications in nested directories.
   // Discover dependency manifests recursively, while ignoring dependency
   // directories and Git metadata so we only inspect manifests belonging to
   // the repository itself.
-  const manifests = discoverManifests(projectRoot);
-  if (!manifests) return null;
+  const manifests = repository.files && repository.manifests && [
+      ...repository.manifests.map((pkg) => resolve(projectRoot, pkg.path)),
+      ...repository.files.filter((file) => /(^|\/)pyproject\.toml$/.test(file) && repository.safeFile(file)).map((file) => resolve(projectRoot, file)),
+    ].sort((a, b) => {
+      const rank = (file: string) => file === resolve(projectRoot, "package.json") ? 0 : file === resolve(projectRoot, "pyproject.toml") ? 1 : 2;
+      return rank(a) - rank(b) || a.localeCompare(b);
+    });
+  if (!manifests || manifests.length > 1024) return null;
   let remaining = MAX_TOTAL_MANIFEST_BYTES;
 
   for (const manifest of manifests) {
@@ -238,7 +217,7 @@ function loadAllDependencies(projectRoot: string): DepEntry[] | null {
           entries.push({ name, version: String(version) });
         }
 
-        for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
+        for (const [name, version] of Object.entries({ ...pkg.peerDependencies, ...pkg.optionalDependencies, ...pkg.devDependencies })) {
           entries.push({ name, version: String(version) });
         }
       } else {
@@ -257,7 +236,7 @@ function loadAllDependencies(projectRoot: string): DepEntry[] | null {
   // that returns a few entries out of many is therefore worse than one that
   // returns none: it switches the checker on and measures claims against a
   // list it knows is incomplete. Parse a shape fully or leave it out.
-  return entries.length ? entries : null;
+  return entries.length || repository?.manifests?.length ? entries : null;
 }
 
 /** A dependency table whose keys are package names, not extra/group names. */

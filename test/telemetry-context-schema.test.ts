@@ -50,6 +50,11 @@ describe("optional project context in the telemetry catalog", () => {
 
   it("allows either optional field independently and preserves an explicit empty selection", () => {
     expect(eventAttributes("hub.session_started", { scaffold_id: SCAFFOLD_ID })).toEqual({ scaffold_id: SCAFFOLD_ID });
+    expect(eventAttributes("hub.team_access", { step: "dialog_opened" })).toEqual({ step: "dialog_opened" });
+    expect(eventAttributes("hub.team_access", { step: "email_typed" })).toBeUndefined();
+    expect(eventAttributes("hub.team_access", {})).toBeUndefined();
+    expect(eventAttributes("hub.team_access", { step: "submitted", email: "ada@example.com" })).toBeUndefined();
+    expect(eventAttributes("hub.page_viewed", { page: "home", step: "submitted" })).toBeUndefined();
     expect(eventAttributes("hub.session_started", { configured_ai_tools: [] })).toEqual({ configured_ai_tools: [] });
     expect(eventAttributes("hub.session_started", { configured_ai_tools: [...TELEMETRY_AI_TOOLS] }))
       .toEqual({ configured_ai_tools: [...TELEMETRY_AI_TOOLS] });

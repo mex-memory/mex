@@ -20,6 +20,13 @@
 export const MEX_ANCHOR_START = "<!-- mex-anchor:start -->";
 export const MEX_ANCHOR_END = "<!-- mex-anchor:end -->";
 
+/**
+ * Delimiters of the short block MEX keeps in a managed instruction file while
+ * setup is unfinished (it says how to continue) and removes when setup completes.
+ */
+export const MEX_SETUP_NOTICE_START = "<!-- mex-setup:start -->";
+export const MEX_SETUP_NOTICE_END = "<!-- mex-setup:end -->";
+
 export type AnchorFormat = "markdown" | "json";
 
 export interface AnchorFile {
