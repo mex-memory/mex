@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-10-13
+last_updated: 2026-10-28
 ---
 
 # Session Bootstrap
@@ -30,6 +30,10 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
+- The agent-arm harness has a Codex adapter, ancestor-only repositories,
+  resource guards/sampling and a resumable serial base pipeline. See
+  `evaluate/arm/README.md` and `patterns/agent-arm-isolation.md`; fake-host
+  verification does not establish real-model or macOS sandbox behavior.
 - Benchmark-gap fixes (PR #274, unreleased): file impact lists external
   callers first at unchanged default limits, with optional `--direction`;
   graph errors exit nonzero; `file:line` targets; CRLF normalized before

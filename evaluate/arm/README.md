@@ -1,5 +1,160 @@
 # Agent-arm test
 
+## Codex on a small machine
+
+`suites/novu-codex.json` pins 13 change tasks, one repetition, and the three
+`files`, `mex-r2w`, `mex-r3` arms. It defaults to `agent: "codex"`,
+`model: "gpt-6.1-sol"`, `effort: "high"`, `sandbox: "workspace-write"` and no
+warm-up. `--agent`, `--model`, `--effort`, `--sandbox`, `--warmup` and
+`--no-warmup` override suite settings. Preparation pins the agent, model,
+effort and sandbox; run refuses a mismatch. Existing suites default to Claude.
+Use the frozen Codex CLI version whose offline feature list has been checked
+(the recorded probe used 0.163.0). The seven disabled feature names were
+confirmed with `codex features list`; `codex exec --help` confirms the launch
+flags. No model is needed for these preflight commands.
+
+The serial `--pipeline` mode combines preparation, sessions, hidden grading,
+reporting and cleanup one base at a time. Use a private subject clone holding
+the task objects and scaffold refs. Run only one harness per output directory.
+The launcher example contains one subject to fit a 16 GB machine:
+
+```sh
+node evaluate/arm/parallel.mjs --plan --config evaluate/arm/novu-codex.run.example.json
+node evaluate/arm/parallel.mjs --pipeline --resume --config /path/to/run.json
+```
+
+First capture the finished setup and sync workspaces into the private subject:
+
+```sh
+node evaluate/arm/capture-scaffold.mjs --workspace /path/to/setup --subject /path/to/subject --ref refs/eval/scaffold-aug
+node evaluate/arm/capture-scaffold.mjs --workspace /path/to/sync --subject /path/to/subject --ref refs/eval/scaffold-sep
+```
+
+Capture writes a local Git ref with canonical `.mex/` files and root AGENTS.md /
+CLAUDE.md. It excludes local state, databases and symlinks, uses a temporary Git
+index, leaves the subject's HEAD and index intact, and refuses replacement
+unless `--replace` is explicit. No Git sharing happens automatically.
+Keep the corresponding setup T0 and sync T1 graphs separately; the capture
+does not include generated indexes. Write their paths to `seed-graphs.json`:
+
+```json
+{ "aug": "/path/to/T0/graph.db", "sep": "/path/to/T1/graph.db" }
+```
+
+Supply it through `--seed-graphs` (or the run config's `seedGraphs`). The
+suite requires a seed at each chain boundary. Bases run in commit-time order.
+Each refresh copies its seed, records JSON refresh mode/fallback reason and
+time, then builds Wiki/context indexes. After every row for a base is valid,
+the next graph link is published atomically and the old cache, repositories,
+temporary directories and previous link are deleted. Only one link is retained
+between bases; the last is deleted on completion. The seed inputs are never
+modified. Rows, small manifests, reports and artifacts remain.
+
+`pipeline.json` pins the suite, scaffold commits, CLI hash, seed hashes, model,
+effort, sandbox and selected schedule. `--resume` skips finished rows, retries
+invalid rows and removes interrupted workspaces, templates, copied credential
+homes and obsolete links. A finished current cache survives a failure, so it
+need not rebuild. Configuration changes require a new output directory.
+Do not move the output or its inputs during a run. A crash before a completed
+cache is checkpointed can require rebuilding that cache. A hard crash leaves
+the isolated credential copy until the next resume cleanup.
+
+For the pilot, use `--pilot-tasks`, which selects PR 12875 and PR 12774:
+
+```sh
+node evaluate/arm/index.mjs --pipeline --resume --suite evaluate/arm/suites/novu-codex.json --subject /path/to/subject --cli-bin /path/to/frozen/node_modules/.bin --deps /path/to/deps/node_modules --seed-graphs /path/to/seed-graphs.json --pilot-tasks --effort high --output /path/to/pilot-high
+# Repeat with --effort xhigh and a separate --output for the top-effort comparison.
+```
+
+Use one model and effort in all arms of each comparison. Confirm that the
+selected model accepts `xhigh` in the director's real pilot. Add
+`--compare-base <base-SHA-or-task-ID>` to full-build that base too and save
+an exact comparison of every SQLite table. Equality includes metadata and FTS
+storage rows; operational timestamp differences can therefore make it false.
+The artifact lists each table's row count and hash, and retains both outcomes.
+For Graph databases it also records the existing graph evaluator's normalized
+semantic hash comparison, with operational timestamps/Git coordinates and
+storage bookkeeping excluded by that evaluator's established policy.
+
+### Codex isolation, validity and resources
+
+Each session gets a new `CODEX_HOME`, copied `auth.json` only, and a generated
+config pinning model/effort. It disables `memories`, `plugins`, `apps`,
+`browser_use`, `multi_agent`, `goals`, `skill_search`, and configures
+`web_search = "disabled"`. It copies no user AGENTS.md, settings, skills,
+plugins or sessions. API-key/provider environment overrides are removed.
+Rollouts are copied to `<run>.rollout/`, and the home is removed in `finally`.
+The source home is never modified. CLI feature/help probes do not establish
+that a real session exposes no web tool; the director verifies that boundary.
+
+Subject-authored AGENTS.md and CLAUDE.md prose is checked for parity, and
+subject `.agents/` content is retained in every arm as on the Claude path. For
+Codex, `.codex/` and `.claude/` executable project configuration
+is excluded uniformly in every arm. Only the chosen frozen product installer
+adds back Codex hook configuration in MEX arms. Setup's skills block is removed
+from root instruction files. The files arm has no `.mex`, Codex hooks or MEX
+managed block. R2w sets `MEX_HOOK_LEXICAL=1` during both installation and session;
+the installer must persist `--lexical` in its commands. R3 never inherits that
+variable. Missing/wrong recipe evidence in the hook log invalidates a row.
+Only hooks arms receive `--dangerously-bypass-hook-trust`.
+
+Every workspace has an independent ancestor-only object store, no alternate,
+remote, other ref or future reflog. Scaffold files are copied as blobs without
+importing scaffold commit objects. The harness checks all commit objects as
+well as reachable commits and rejects a task's fix commit. Hidden tests are
+restored from the private subject only after the session. Transcript Git
+probes using `--all`, `cat-file`, `fsck`, `reflog`, or `show`/`log` of a
+non-ancestor SHA invalidate the row. Command detection is heuristic and cannot
+prove the absence of concealed probes inside arbitrary scripts.
+
+Before graph preparation, sessions and grading, the resource guard waits for
+4 GiB available RAM and 5 GiB free disk (override with `--min-ram-gb` and
+`--min-disk-gb`, or suite `resources`). It logs and never kills for pressure.
+RAM uses macOS free+inactive+speculative pages, Linux MemAvailable, and Windows
+os.freemem. An independent sampler records the harness tree, descendants and
+settle-lock PIDs every five seconds, including while synchronous maintenance
+or test commands run. Each step has a resource CSV and sampled peak RSS.
+Short-lived processes can fall between samples. Sampling failures are explicit
+and invalidate measured rows. Windows sampling uses Toolhelp through a small
+native adapter because CIM can be denied; macOS/Linux use `ps`.
+
+`workspace-write` grants the workspace, the session temp directory and the
+supplied writable dependency directory (`--add-dir`) so test caches can work.
+Hidden commands support `{node}`, `{workspace}` and `{harness}` placeholders;
+the suite preserves the original targeted vitest files and 512 MiB Node cap,
+and replaces the unavailable machine-specific network helper with Node.
+Use `danger-full-access` only if a real targeted-test pilot proves that needed
+package-manager caches or executables remain inaccessible. Apply the same
+sandbox to every arm. No fake run can verify actual sandbox behavior.
+
+Codex rows sum every terminal turn's input, cached input, cache-write, output
+and reasoning usage. Processed is input+output; uncached is input-cached;
+reasoning is included in output. Exit 0, a terminal turn, valid accounting and
+a final message matching the complete output schema are required. JSONL lines
+are stamped on arrival for wall/test interval metrics. Subscription cost stays
+null. Optional `--estimate-list-price` requires explicit suite `listPrices`
+rates (`input`, `cachedInput`, `cacheWrite`, `output`, USD per million tokens)
+and stores a separately labelled estimate; it never becomes plan cost.
+
+### Model-free verification
+
+`test/fake-codex.mjs` replays the recorded probe, honors stdin / schema / output /
+workspace / home options, and executes the fake installer's Codex hooks with
+the recorded payload shapes. It verifies switch and environment propagation;
+it does not demonstrate that a real host fires the hooks or retrieves useful
+semantic knowledge. No real model session is started by these commands:
+
+```sh
+node --test evaluate/arm/test/*.test.mjs
+node evaluate/arm/test/codex-dry-run.mjs --source /path/to/small-scaffolded-subject --output /path/to/new-dry-output
+```
+
+The dry run clones with `--no-local`, clips two bases, builds a real seed graph
+with the frozen built CLI, refreshes it in the pipeline, full-builds and compares
+it, runs one synthetic change task across three fake-agent arms, grades real
+Node assertions, resumes without relaunches, prints RAM/disk/RSS, then deletes
+its subject, frozen CLI, seed and workspaces. Retained evidence is under output.
+
 ## Heavy-task runs
 
 The default hooks comparison selects **files and mex-r3, three repetitions**,
