@@ -10,6 +10,7 @@ import { createLocalHubReadServices } from "../../src/hub/services.js";
 import { HubAssetManifest } from "../../src/hub/static/assets.js";
 import { DiagramRepository } from "../../src/statechart/repository.js";
 import { recoveryDiagramFixture, nestedDiagramFixture } from "../../packages/hub-web/src/dev/diagram-fixtures";
+import { assertReleaseRouteReady } from "../../scripts/release-benchmark/browser.mjs";
 
 test("built diagram canvas preserves thin edges under the real Hub content security policy", async ({ page }) => {
   const root = mkdtempSync(join(tmpdir(), "mex-diagram-csp-"));
@@ -36,6 +37,7 @@ test("built diagram canvas preserves thin edges under the real Hub content secur
     const response = await page.goto(`${origin}${recovery.route}#token=${token}`);
     expect(response!.headers()["content-security-policy"]).toContain("style-src 'self'");
     await page.getByRole("button", { name: "Skip tour", exact: true }).click();
+    await assertReleaseRouteReady(page, "diagramDetail", {});
     const diagram = page.getByRole("region", { name: "State diagram", exact: true });
     await expect(diagram.getByRole("button", { name: "Active setup and population · initial state" })).toBeVisible();
     const edges = diagram.locator("svg").first().locator(":scope > path");
@@ -47,6 +49,7 @@ test("built diagram canvas preserves thin edges under the real Hub content secur
     await page.mouse.move(0, 0);
     await diagram.screenshot({ path: "test-results/statechart/production-recovery-graph.png" });
     await page.goto(`${origin}${nested.route}`);
+    await assertReleaseRouteReady(page, "diagramDetail", {});
     await expect(page.getByRole("group", { name: "Independent region connection", exact: true })).toBeVisible();
     await expect(page.getByRole("group", { name: "Independent region transferRegion", exact: true })).toBeVisible();
     expect(styleViolations).toEqual([]); expect(errors).toEqual([]);

@@ -11,7 +11,7 @@ edges:
     condition: "when the regression involves Hub routes, browser sessions, or jobs"
   - target: "patterns/safe-graph-snapshot-evolution.md"
     condition: "when changing Graph maintenance or corpus inspection"
-last_updated: 2026-10-19
+last_updated: 2026-10-29
 mex:
   id: mx_01M1M0CJNG4SW0WCJF3NB547HE
   type: pattern
@@ -77,6 +77,11 @@ calibration environment.
 
 ## Gotchas
 
+- Workbench readiness must identify the graph itself. The statechart canvas is
+  the named `States and transitions` group inside the `State diagram` region;
+  its zoom/fit controls also contain SVGs. A generic SVG locator can therefore
+  fail before measurements start. Exercise the actual readiness helper in the
+  production browser test, including nested/parallel diagrams.
 - Vitest sets `NODE_ENV=test`. Any test that invokes a production build can
   silently bundle React's development runtime unless the build wrapper sets the
   production condition before importing Vite.

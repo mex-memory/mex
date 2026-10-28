@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-10-28
+last_updated: 2026-10-29
 ---
 
 # Session Bootstrap
@@ -37,11 +37,16 @@ Then read this file fully before doing anything else in this session.
   staging or sharing. Saved diagrams are excluded from Wiki adoption/writes.
   Real checker, browser, installer and packed Hub paths have local coverage;
   pinned Linux route calibration is recorded, and PR CI handles final platform
-  verification. Teammate Claude Code qualification remains outstanding. Codex CLI simple rendering and complex-chart text fallback are
-  verified. See `docs/design/state-diagrams-qualification.md`.
-  The working-tree Hub canvas now follows the Context graph's native nodes,
+  verification. The user reported Claude app functionality working; client
+  acceptance testing continues after the terminal-delivery fixes. Codex CLI
+  simple rendering and complex-chart text fallback are verified. See
+  `docs/design/state-diagrams-qualification.md` for the current CI evidence.
+  The Hub canvas now follows the Context graph's native nodes,
   thin directed edges, selection and pan/zoom controls. It avoids embedded
   Mermaid styles blocked by production CSP; Mermaid export remains available.
+  The benchmark readiness helper selects the named state graph; toolbar SVGs
+  no longer collide with it. Follow-up pinned performance validation remains
+  required; budgets and calibration policy are unchanged.
 - 0.8.4 is tagged and published on GitHub at `v0.8.4`, commit `56db5cf`, dated
   October 14. Exact-release CI run `38571566062` passed Node 22/24, portability,
   browser, packed-install, evaluators, and pinned performance. Finalization

@@ -1,10 +1,66 @@
 # State diagrams: local implementation and qualification
 
-26 October 2026. Implementation of `state-diagrams-spec.md`, initially prepared
+Initial qualification: 26 October 2026. Updated 29 October 2026.
+Implementation of `state-diagrams-spec.md`, initially prepared
 locally. The user subsequently authorized a feature branch, push and PR; no
 release, issue or triage label is part of this work. The supplied spec and
 research were read in this checkout before implementation and remain unchanged.
 The separate uncommitted marketing research was left untouched.
+
+## Current qualification: 29 October 2026
+
+The viewer update in `cbda1b74e26f833f65cd144ef7825836aa73034d`
+replaces Hub's Mermaid browser renderer with a native React/SVG state graph.
+It follows the Context graph's visual language, retains state/transition
+identities, nested states and independent regions, and supports selection,
+ordered trace overlays, pan/zoom/fit and accessible behavior lists. Dense charts
+show events on selection with an all-events toggle. Diagrams has a distinct
+workflow sidebar icon. Mermaid remains the normalized export/client-delivery
+format; the Hub does not execute its embedded styles. The managed skill also
+offers to start Hub and open the specific registered preview after the user
+accepts, preserving normal authentication and separate Save review.
+
+Verified evidence for that commit:
+
+- [Main CI run 40740210076](https://github.com/mex-memory/mex/actions/runs/40740210076)
+  passed Node 22.22.0 and Node 24 checks, Windows/macOS storage portability and
+  the Hub browser job. The separate
+  [statechart checker qualification run 40740210028](https://github.com/mex-memory/mex/actions/runs/40740210028)
+  passed.
+- Local viewer verification passed 78 focused Hub tests, six browser cases
+  (including the built viewer under real Hub CSP), workspace typechecks and a
+  production build. Deterministic asset checks passed with every budget
+  unchanged: diagram detail loaded 136,826 JavaScript bytes and 4,134 CSS bytes.
+- The user's actual checkout-local setup/recovery preview was opened after a
+  rebuild/restart. It displayed nine states and eighteen transitions, the
+  retained passed check, partial reproduction, source mapping and unchanged
+  evidence. This verifies display of the recorded result; it does not re-run or
+  renew the model check, implementation reproduction or dependency baselines.
+
+The release-performance job in the main run failed operationally before
+producing a measurement report. Its generic SVG readiness locator matched the
+chart and three toolbar icons. This follow-up targets the named
+`States and transitions` group and exercises the actual benchmark readiness
+helper against the built production viewer for both the recovery graph and
+nested/parallel regions. The browser regression reproduces the four-SVG failure
+before the fix. A successful pinned CI measurement/enforcement run on the
+follow-up commit remains required; this operational failure supplies no
+performance calibration evidence. No budget, timeout, fixture, or confirmation
+policy is relaxed by the fix.
+
+Follow-up local verification passes all six diagram browser cases and workspace
+typechecks. The release-benchmark Vitest file passes 49 cases and fails the
+unmodified one-second child-shutdown marker assertion when run as a whole on
+this Mac. That probe passes in isolation, and a direct call to the unmodified
+startup helper also records termination. It exercises `startHub()` rather than
+the changed graph readiness selector. No probe timeout or shutdown code was
+changed; the full pinned CI run remains required.
+
+The user reported that the Claude app worked and that terminal Mermaid was
+unreadable. Current Claude delivery uses the text projection and PNG/file-reader
+or system-viewer fallback, with an optional direct Hub-opening offer. The user's
+hands-on testing of Codex terminal, app and Hub remains in progress; these notes
+do not certify post-fix acceptance across all clients.
 
 ## Implemented behavior
 
@@ -29,10 +85,11 @@ The separate uncommitted marketing research was left untouched.
    Reads do not initialize or clean storage. Opaque IDs are checkout-bound by the
    repository service. Expiry/eviction happens only on registration.
 5. The lazy Hub collection separates previews from saved snapshots. Detail has
-   strict Mermaid rendering, pan/zoom/fit, SVG state selection, numbered recorded
-   paths, conditions/rules/evidence inspection, keyboard controls and accessible
-   lists. All imported content remains data; models, mappings and regeneration
-   instructions never execute on a Hub read.
+   a native React/SVG state graph, pan/zoom/fit, state and event selection,
+   numbered recorded paths, conditions/rules/evidence inspection, keyboard
+   controls and accessible lists. Nested states and independent regions retain
+   their containers. All imported content remains data; models, mappings and
+   regeneration instructions never execute on a Hub read.
 6. Authenticated, exact-Origin/CSRF Save first returns the exact retained writes.
    Applying its process-local, revision-bound review creates a new immutable
    `.mex/diagrams/<id>` bundle. `record.md` contains readable verification,
@@ -65,7 +122,10 @@ produces a passed check from partial output. Windows uses its process-tree kill
 mechanism; Windows execution of real TLC and the packed helper passed in GitHub CI run
 40311997052, alongside Linux and macOS.
 
-## Verification
+## Initial implementation verification
+
+The following counts and run references record the initial implementation.
+Current viewer and follow-up CI evidence are reported above.
 
 - The real pinned TLC suite passes nine cases: required tooling, a passing
   invariant, ordered broken-invariant trace, expected goal witness, temporal
@@ -113,7 +173,7 @@ and the viewer QA PNG. Detailed command logs are retained under
 `/private/tmp/mex-statechart-*.log`; acceptance models, diagrams and the artifact
 are under `/private/tmp/mex-statechart-acceptance`.
 
-## Repository verification checklist
+## Initial repository verification checklist
 
 1. **Public API — pass.** `src/index.ts` is unchanged and packed declaration
    checks reject private diagram/Hub exports.
@@ -185,9 +245,10 @@ that MEX uniquely discovers the recovery or improves every diagram.
 - Codex CLI 0.160.1 presentation is qualified for the cases in
   `state-diagrams-codex-rendering.md`: native simple statecharts, ordered finite
   trace text and full raw temporal text. Nested/parallel syntax is unsupported by
-  its native renderer and uses MEX text. Claude Code testing is delegated to a
-  teammate through `state-diagrams-client-handoff.md`; no Claude certification is
-  inferred from Hub tests or code inspection.
+  its native renderer and uses MEX text. `state-diagrams-client-handoff.md`
+  records the original Claude test handoff. User-reported Claude app/terminal
+  behavior and ongoing post-fix acceptance are distinguished above; no complete
+  client certification is inferred from Hub tests or code inspection.
 - The enforcing performance invocation refused this host: macOS arm64 /
   Node 22.17.1 is not Ubuntu 24.04 x64 / Node 22.22.0. Pinned CI subsequently
   supplied calibration recorded in `state-diagrams-calibration.json`; the six new
@@ -195,14 +256,13 @@ that MEX uniquely discovers the recovery or improves every diagram.
   Initial raw Home/other-route heap crossings were also present in exact-base
   run 40303551675 and assessed as advisory by the unchanged existing policy; no
   frozen Home/shared budget or confirmation policy was relaxed.
-- The real-checker/packed-helper matrix has passed on Linux, macOS and Windows
-  in run 40311997052. The broader existing portability and Linux browser jobs
-  are running on PR #317. Initial browser CI passed 103 cases and exposed one
-  stale sidebar expectation, now corrected; its actual nested-state Linux PNG
-  was reviewed. Full-root CI passed 5,728 tests and found two setup integration
-  failures: installed skill helpers were being counted as project subsystems.
-  The setup planner now excludes official installed skill roots from coverage
-  ranking and size targets, with a regression test; exact-head CI is rerun.
+- The real-checker/packed-helper matrix passed on Linux, macOS and Windows in
+  run 40311997052. Subsequent checker qualification and the Node 22/24,
+  Windows/macOS portability and Hub browser jobs passed for `cbda1b7`, as linked
+  above. Earlier initial-CI sidebar and setup-subsystem expectation failures
+  were corrected; the setup planner excludes installed official skill roots
+  from coverage ranking and size targets. The current follow-up still requires
+  its own CI, including a completed pinned release-performance report.
 - The pure-data projection helper verifies finite scalar valuations and mapped
   actions. Complex concurrent/compound projections may remain unverified and
   require the retained baseline workflow/proof plus human review. Raw temporal
