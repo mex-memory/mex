@@ -10,13 +10,14 @@ export function listPriceEstimate(usage, rates = null) {
   for (const key of ["input", "cachedInput", "cacheWrite", "output"]) if (!Number.isFinite(rates[key]) || rates[key] < 0) throw new Error(`invalid list-price rate: ${key}`);
   return { usd: (Math.max(0, usage.uncachedInput - usage.cacheWrite) * rates.input + usage.cacheRead * rates.cachedInput + usage.cacheWrite * rates.cacheWrite + usage.output * rates.output) / 1e6, rates, basis: "optional list-price estimate, not subscription cost" };
 }
-/** The source home's `[windows]` sandbox mode; without it a fresh Windows home refuses every shell command. */
-export function windowsSandbox(sourceHome, platform = process.platform) {
-  if (platform !== "win32") return null;
-  let text = "";
-  try { text = readFileSync(join(sourceHome, "config.toml"), "utf8"); } catch { return null; }
-  const section = /^\[windows\][^\S\r\n]*\r?\n([\s\S]*?)(?=^\[|(?![\s\S]))/m.exec(text)?.[1] ?? "";
-  return /^\s*sandbox\s*=\s*"([^"]+)"/m.exec(section)?.[1] ?? null;
+/**
+ * The Windows sandbox mode for a fresh home. Without one, every shell command is refused. The
+ * elevated mode sets itself up per home through an elevation prompt, which an unattended session
+ * cannot answer (error 1223), so a fresh home uses the unelevated restricted-token sandbox.
+ * Other platforms need no setting.
+ */
+export function windowsSandbox(_sourceHome, platform = process.platform) {
+  return platform === "win32" ? "unelevated" : null;
 }
 export function codexConfig({ model, effort, windowsSandboxMode = null }) {
   const windows = windowsSandboxMode ? `\n[windows]\nsandbox = ${JSON.stringify(windowsSandboxMode)}\n` : "";

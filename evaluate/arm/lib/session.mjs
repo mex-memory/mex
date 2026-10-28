@@ -355,10 +355,19 @@ async function measuredSession({ task, armId, armSpec, workspace, env, cliBin, m
     if (hooks) hooks.status = { ok: status.ok, flagged: status.flagged, eligible: status.eligible, flaggedIds: status.flaggedIds, eligibleIds: status.eligibleIds };
     if (!hooks || hooks.hookEvents === 0) violations.push("MEX arm session with zero hook events");
     const used = Object.keys(hooks?.promptNotes ?? {});
-    if (armSpec.lexical && used.some((note) => /^R3\//.test(note))) violations.push("lexical arm ran the semantic recipe");
-    if (armSpec.semantic && used.some((note) => /^R2w\//.test(note))) violations.push("semantic arm fell back to the lexical recipe");
-    if (agent === "codex" && armSpec.lexical && !used.some((note) => /^R2w\//.test(note))) violations.push("lexical recipe not verified in hook log");
-    if (agent === "codex" && armSpec.semantic && !used.some((note) => /^R3\//.test(note))) violations.push("semantic recipe not verified in hook log");
+    // Each prompt line records the recipe it ran; notes such as `R3/hybrid` appear only when the gate sends.
+    const recipes = new Set(used.map((note) => /^R3\//.test(note) ? "semantic" : /^R2w\//.test(note) ? "lexical" : null).filter(Boolean));
+    try {
+      for (const line of existsSync(contextLog) ? readFileSync(contextLog, "utf8").split(/\r?\n/) : []) {
+        if (!line.trim()) continue;
+        const entry = JSON.parse(line);
+        if (entry.event === "prompt" && (entry.recipe === "lexical" || entry.recipe === "semantic")) recipes.add(entry.recipe);
+      }
+    } catch { /* an unreadable log leaves the recipe unverified below */ }
+    if (armSpec.lexical && recipes.has("semantic")) violations.push("lexical arm ran the semantic recipe");
+    if (armSpec.semantic && recipes.has("lexical")) violations.push("semantic arm fell back to the lexical recipe");
+    if (agent === "codex" && armSpec.lexical && !recipes.has("lexical")) violations.push("lexical recipe not verified in hook log");
+    if (agent === "codex" && armSpec.semantic && !recipes.has("semantic")) violations.push("semantic recipe not verified in hook log");
   } else if (!armSpec.withMex) {
     if (existsSync(contextLog)) violations.push("files arm has a context log");
     if (anyHookEntries(workspace, agent) > 0) violations.push("files arm has hook entries");

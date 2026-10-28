@@ -47,13 +47,17 @@ export function installProductHooks({ workspace, cliBin, env, tool = "claude" })
   if (result.code !== 0) throw new Error(`mex hooks install failed in ${workspace}: ${result.stderr || result.stdout}`);
   const commands = managedHookCommands(workspace, tool);
   if (!commands.length) throw new Error(`mex hooks install wrote no MEX hook entries in ${workspace}`);
-  // The entries must run the frozen CLI's `mex-hook`, found through the arm's PATH, not some other install.
+  // The entries must run the frozen CLI, never some other install: its `mex-hook` shim, or its own
+  // built bundle (`<node_modules>/mex-agent/dist/hook.js`, which install prefers).
   const status = runMex(cliBin, ["hooks", "status", "--tool", tool, "--json"], workspace, env);
   let installed = null;
   try { installed = JSON.parse(status.stdout).data?.installed ?? null; } catch { installed = null; }
-  const rel = installed?.target ? relative(resolve(cliBin), resolve(installed.target)) : "..";
-  const inside = rel && !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`);
-  if (installed?.kind !== "bin" || installed.exists !== true || !inside) {
+  const within = (dir) => {
+    const rel = installed?.target ? relative(resolve(dir), resolve(installed.target)) : "..";
+    return Boolean(rel) && !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`);
+  };
+  const inside = installed?.kind === "bin" ? within(cliBin) : installed?.kind === "node" && within(join(cliBin, "..", "mex-agent"));
+  if (installed?.exists !== true || !inside) {
     throw new Error(`the installed hook command does not resolve to the frozen CLI (${JSON.stringify(installed)}), cliBin ${cliBin}`);
   }
   git(workspace, ["add", "-A"]);
@@ -129,7 +133,8 @@ export function summarizeContextLog(path) {
     }
     if (name === "settle-error" || name === "settle-refresh-failed") { failures.push({ event: name, error: entry.error ?? entry.stderr ?? null, code: entry.code ?? null }); continue; }
     if (name === "error" || entry.error) { errors += 1; failures.push({ event: "error", during: entry.during ?? name, error: String(entry.error ?? "").slice(0, 300) }); continue; }
-    const kind = name === "stop-block" ? "stop" : name;
+    // The hook logs a multi-segment shell search as `search-compound`; it is a Bash event.
+    const kind = name === "stop-block" ? "stop" : name === "search-compound" ? "bash" : name;
     if (!perEvent[kind]) continue;
     const ids = Array.isArray(entry.ids) ? entry.ids : [];
     const chars = entry.chars ?? 0;

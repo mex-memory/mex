@@ -2,8 +2,8 @@
 // Agent-arm test: the same Claude Code sessions with and without MEX on a
 // pinned subject. See evaluate/arm/README.md.
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSchedule } from "../compare/lib/schedule.mjs";
 import { runSync } from "../compare/lib/process.mjs";
@@ -20,6 +20,18 @@ import { armPath, buildIndexCache, createWorkspace, git, installContextIndex, in
 
 const fileSha = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const writeJson = (path, value) => { writeFileSync(`${path}.tmp`, `${JSON.stringify(value, null, 2)}\n`); renameSync(`${path}.tmp`, path); };
+
+/** The first `name` executable on PATH, as an absolute path, or null. */
+function resolveOnPath(name, env = process.env) {
+  const exts = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";").filter(Boolean) : [""];
+  for (const dir of String(env.PATH ?? env.Path ?? "").split(delimiter).filter(Boolean)) {
+    for (const ext of exts) {
+      const candidate = join(dir, `${name}${ext.toLowerCase()}`);
+      try { if (statSync(candidate).isFile()) return candidate; } catch { /* not here */ }
+    }
+  }
+  return null;
+}
 
 export function parseArgs(argv) {
   const args = { mode: null, tasks: null, arms: null, repetition: null, resume: false, timeoutQaMs: 900_000, timeoutChangeMs: 1_800_000, claude: ["claude"], codex: ["codex"] };
@@ -67,6 +79,9 @@ export function parseArgs(argv) {
   if (args.calibration && args.arms && args.arms.join(",") !== "files") throw new Error("calibration runs only files");
   if (args.mexPrompt !== undefined && !MEX_PROMPTS.includes(args.mexPrompt)) throw new Error(`--mex-prompt must be one of ${MEX_PROMPTS.join(", ")}`);
   if (!args.mode) throw new Error("choose --prepare, --run, --blind, --report or --refresh-context-index");
+  // Arms filter PATH (a global npm folder can hold another `mex`), and Codex often lives in that
+  // same folder: resolve it now, from the PATH the harness started with.
+  if (args.codex.length === 1 && args.codex[0] === "codex") args.codex = [resolveOnPath("codex") ?? "codex"];
   for (const key of ["plan", "validate-suite"].includes(args.mode) ? ["suite"] : args.mode === "refresh-context-index" ? ["output"] : ["suite", "output"]) if (!args[key]) throw new Error(`--${key} is required`);
   if (["prepare", "run", "pipeline"].includes(args.mode)) {
     // --deps is checked against the suite later: a subject without node_modules (Python) sets "requiresDeps": false.
