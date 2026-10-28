@@ -1,0 +1,2200 @@
+{
+  "schemaVersion": 1,
+  "id": "novu-codex",
+  "subjectType": "pnpm",
+  "projectName": "novu",
+  "agent": "codex",
+  "model": "gpt-6.1-sol",
+  "effort": "high",
+  "sandbox": "workspace-write",
+  "warmup": false,
+  "workerCount": 2,
+  "testEnv": {
+    "NODE_ENV": "test",
+    "NX_DAEMON": "false"
+  },
+  "mainRepetitions": 1,
+  "defaultArms": [
+    "files",
+    "mex-r2w",
+    "mex-r3"
+  ],
+  "arms": {
+    "files": {
+      "label": "repository files only",
+      "scaffold": false
+    },
+    "mex-r2w": {
+      "label": "MEX scaffold and product hooks, lexical recipe R2w",
+      "scaffold": true,
+      "hooks": true,
+      "lexical": true
+    },
+    "mex-r3": {
+      "label": "MEX scaffold and product hooks, semantic extra installed (prompt recipe R3)",
+      "scaffold": true,
+      "hooks": true,
+      "semantic": true
+    }
+  },
+  "scaffolds": {
+    "aug": "refs/eval/scaffold-aug",
+    "sep": "refs/eval/scaffold-sep"
+  },
+  "requireGraphSeeds": true,
+  "pilotTasks": [
+    "novu-heavy-pr-12875",
+    "novu-heavy-pr-12774"
+  ],
+  "resources": {
+    "minRamGB": 4,
+    "minDiskGB": 5
+  },
+  "tasks": [
+    {
+      "id": "novu-heavy-pr-12875",
+      "type": "change",
+      "heavy": true,
+      "base": "aa2c754dd4c2938046083f0427a1a71d3264a05c",
+      "prompt": "The step editor lets me save a Liquid expression that later breaks the preview, and the reported issue is hard to understand. Make authoring-time checks agree with rendering so syntax that cannot be rendered is reported as a compilation issue before delivery. Keep valid single-quoted expressions, multiline tags, and JSON-encoded rich content working, with useful issue locations for nested expressions.",
+      "mergeCommit": "271d93ecc8da693d91cb0729971f243757482054",
+      "gold": {
+        "code": [
+          {
+            "path": "libs/application-generic/src/services/control-value-sanitizer.service.ts",
+            "symbol": "ControlValueSanitizerService",
+            "startLine": 2,
+            "endLine": 172,
+            "revision": "aa2c754dd4c2938046083f0427a1a71d3264a05c"
+          },
+          {
+            "path": "libs/application-generic/src/utils/issues.ts",
+            "symbol": "ControlIssues / usesDraft2020Schema / createSchemaValidationAjv / mapSchemaErrorsToControlIssues / processControlValuesBySchema",
+            "startLine": 1,
+            "endLine": 274,
+            "revision": "aa2c754dd4c2938046083f0427a1a71d3264a05c"
+          },
+          {
+            "path": "libs/application-generic/src/utils/template-parser/liquid-engine.ts",
+            "symbol": "buildLiquidParser",
+            "startLine": 2,
+            "endLine": 10,
+            "revision": "aa2c754dd4c2938046083f0427a1a71d3264a05c"
+          },
+          {
+            "path": "libs/application-generic/src/utils/template-parser/new-liquid-parser.ts",
+            "symbol": "extractLiquidTemplateVariables / processLiquidRawOutput / addVariable / parseByLiquid / processTemplates",
+            "startLine": 84,
+            "endLine": 1044,
+            "revision": "aa2c754dd4c2938046083f0427a1a71d3264a05c"
+          },
+          {
+            "path": "libs/application-generic/src/utils/template-parser/types.ts",
+            "symbol": "Variable / VariableDetails / ProcessContext",
+            "startLine": 16,
+            "endLine": 16,
+            "revision": "aa2c754dd4c2938046083f0427a1a71d3264a05c"
+          },
+          {
+            "path": "packages/framework/src/internal/index.ts",
+            "symbol": "module exports and changed statements",
+            "startLine": 30,
+            "endLine": 30,
+            "revision": "aa2c754dd4c2938046083f0427a1a71d3264a05c"
+          },
+          {
+            "path": "packages/framework/src/utils/compile-json-control-values.ts",
+            "symbol": "repairJsonString / renderLiquidJson / compileJsonControlValues / unescapeJsonWhitespace / escapeJsonWhitespace",
+            "startLine": 2,
+            "endLine": 23,
+            "revision": "aa2c754dd4c2938046083f0427a1a71d3264a05c"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 7,
+        "packages": 2,
+        "packageCount": 2,
+        "packagePaths": [
+          "libs/application-generic",
+          "packages/framework"
+        ],
+        "directories": 5,
+        "directoryCount": 5,
+        "directoryPaths": [
+          "libs/application-generic/src/services",
+          "libs/application-generic/src/utils",
+          "libs/application-generic/src/utils/template-parser",
+          "packages/framework/src/internal",
+          "packages/framework/src/utils"
+        ],
+        "goldLinesChanged": 925,
+        "promptNamesGold": false,
+        "baseSha": "aa2c754dd4c2938046083f0427a1a71d3264a05c",
+        "repoSourceLoc": 1118498,
+        "repoSourceFiles": 9178
+      },
+      "scaffold": "sep",
+      "hiddenTests": {
+        "fromCommit": "271d93ecc8da693d91cb0729971f243757482054",
+        "files": [
+          "packages/framework/src/utils/compile-json-control-values.test.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/framework",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/framework/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/utils/compile-json-control-values.test.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12774",
+      "type": "change",
+      "heavy": true,
+      "base": "947fbce8b6b0a9344a812c5db1558804069d5648",
+      "prompt": "Custom SMTP integrations need an editable TLS-options JSON object instead of a plain text value. Let users configure it in the integration form, reject malformed JSON and non-object values before saving, and keep the credential definition and form behavior consistent. Improve the setup guidance so TLS, DKIM, and troubleshooting are understandable.",
+      "mergeCommit": "316e53dc0476eb395544e24e44578df59c179f3a",
+      "gold": {
+        "code": [
+          {
+            "path": "apps/dashboard/src/components/integrations/components/credential-section.tsx",
+            "symbol": "FormLabel / SwitchInput / toSelectValue / fromSelectValue / DropdownInput",
+            "startLine": 21,
+            "endLine": 162,
+            "revision": "947fbce8b6b0a9344a812c5db1558804069d5648"
+          },
+          {
+            "path": "apps/dashboard/src/components/integrations/components/utils/helpers.ts",
+            "symbol": "isDemoIntegration / getDemoIntegrationTooltipMessage / configurationToCredential / cleanCredentials",
+            "startLine": 48,
+            "endLine": 58,
+            "revision": "947fbce8b6b0a9344a812c5db1558804069d5648"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/credentials/provider-credentials.ts",
+            "symbol": "mailJsConfig / mailgunConfig / mailjetConfig / nexmoConfig / mandrillConfig",
+            "startLine": 117,
+            "endLine": 165,
+            "revision": "947fbce8b6b0a9344a812c5db1558804069d5648"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 3,
+        "packages": 2,
+        "packageCount": 2,
+        "packagePaths": [
+          "apps/dashboard",
+          "packages/shared"
+        ],
+        "directories": 3,
+        "directoryCount": 3,
+        "directoryPaths": [
+          "apps/dashboard/src/components/integrations/components",
+          "apps/dashboard/src/components/integrations/components/utils",
+          "packages/shared/src/consts/providers/credentials"
+        ],
+        "goldLinesChanged": 63,
+        "promptNamesGold": false,
+        "baseSha": "947fbce8b6b0a9344a812c5db1558804069d5648",
+        "repoSourceLoc": 1111355,
+        "repoSourceFiles": 9152
+      },
+      "scaffold": "sep",
+      "hiddenTests": {
+        "fromCommit": "316e53dc0476eb395544e24e44578df59c179f3a",
+        "files": [
+          "packages/shared/src/consts/providers/credentials/nodemailer-tls-options.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/shared",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/shared/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/consts/providers/credentials/nodemailer-tls-options.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12786",
+      "type": "change",
+      "heavy": true,
+      "base": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0",
+      "prompt": "Two connections to the same chat or webhook service currently share the same custom content. Let a workflow author provide different custom content for each connection while retaining service-wide defaults and trigger-time overrides. Make saving, rendering, sending, previewing, duplicating, and syncing workflows agree. Renaming a connection should retain its custom content; disconnected entries should remain visible. Keep existing content working and prevent internal transport bookkeeping from appearing in provider payloads.",
+      "mergeCommit": "188faaf373a3f511c796de77de5811d6f42a0d2e",
+      "gold": {
+        "code": [
+          {
+            "path": "apps/api/src/app/bridge/usecases/sync/sync.usecase.ts",
+            "symbol": "BridgeSyncBuildContext / Sync",
+            "startLine": 15,
+            "endLine": 297,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/api/src/app/environments-v1/usecases/construct-framework-workflow/construct-framework-workflow.usecase.ts",
+            "symbol": "ContentOverrideProviderId / ProviderOverrideStepType / ISkipEvaluationContext / SkipFunction / PersistedControlSchema",
+            "startLine": 43,
+            "endLine": 572,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/api/src/app/integrations/usecases/update-integration/update-integration.usecase.ts",
+            "symbol": "UpdateIntegration",
+            "startLine": 10,
+            "endLine": 267,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/api/src/app/workflows-v2/dtos/create-step.dto.ts",
+            "symbol": "StepProviderOverrides / BaseStepConfigDto / InAppStepUpsertDto / EmailStepUpsertDto / SmsStepUpsertDto",
+            "startLine": 8,
+            "endLine": 177,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/api/src/app/workflows-v2/usecases/duplicate-workflow/duplicate-workflow.usecase.ts",
+            "symbol": "DUPLICABLE_WORKFLOW_ORIGINS / DuplicateWorkflowUseCase",
+            "startLine": 113,
+            "endLine": 113,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/api/src/app/workflows-v2/usecases/sync-to-environment/sync-to-environment.usecase.ts",
+            "symbol": "SYNCABLE_WORKFLOW_ORIGINS / SyncToEnvironmentUseCase",
+            "startLine": 178,
+            "endLine": 362,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/api/src/app/workflows-v2/workflow.controller.ts",
+            "symbol": "WorkflowController",
+            "startLine": 188,
+            "endLine": 188,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/control-input/control-input.tsx",
+            "symbol": "ControlInputProps / ControlInput",
+            "startLine": 2,
+            "endLine": 112,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/step-utils.ts",
+            "symbol": "findDigestStepBeforeCurrent / isBlockingIssue / getFirstErrorMessage / countIssues / getAllStepIssues",
+            "startLine": 146,
+            "endLine": 215,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/chat/chat-editor.tsx",
+            "symbol": "ContentOverrideProviderId / UiSchema / ProviderOverrideEditorExtras / ChatEditorProps / ChatEditorSelectAction",
+            "startLine": 4,
+            "endLine": 54,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/chat/chat-preview-panel.tsx",
+            "symbol": "ChatRenderOutput / GeneratePreviewResponseDto / ChatPreviewPanelProps / extractChatPreview / ChatOverridePreview",
+            "startLine": 8,
+            "endLine": 82,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/chat/preview/chat-block-editor-preview.tsx",
+            "symbol": "ChatRenderOutput / GeneratePreviewResponseDto / ContentSource / ProviderOverrides / ChatPreviewProviderOption",
+            "startLine": 3,
+            "endLine": 276,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/push/push-editor.tsx",
+            "symbol": "PushEditorProps / PushOverrideEditor / PushEditor",
+            "startLine": 13,
+            "endLine": 19,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/push/push-preview-panel.tsx",
+            "symbol": "GeneratePreviewResponseDto / PushRenderOutput / PushPreviewPanelProps / MobilePushPreview / extractPushPreview",
+            "startLine": 10,
+            "endLine": 97,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/annotated-override-json.tsx",
+            "symbol": "AnnotatedOverrideJson",
+            "startLine": 1,
+            "endLine": 33,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/content-override-panel.tsx",
+            "symbol": "OverrideChannel / ProviderOverrideOption / ProviderOverrides / ProviderOverrideEditorExtras / ContentOverridePanelProps",
+            "startLine": 1,
+            "endLine": 291,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/content-source-context.tsx",
+            "symbol": "ContentSourceContextValue / ContentSourceProvider / useContentSource / useOptionalContentSource",
+            "startLine": 2,
+            "endLine": 2,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/content-source-selector.tsx",
+            "symbol": "ContentSource / ProviderOverrideOption / ContentSourceSelectorProps / ContentSourceSelector",
+            "startLine": 1,
+            "endLine": 145,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/content-source.ts",
+            "symbol": "ContentOverrideProviderId / IProviderConfig / DEFAULT_CONTENT_SOURCE / PROVIDER_OVERRIDES_FIELD / OverrideChannel",
+            "startLine": 1,
+            "endLine": 151,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/escape-hatch-callout.tsx",
+            "symbol": "EscapeHatchCalloutProps / EscapeHatchCallout",
+            "startLine": 3,
+            "endLine": 3,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/merges-over-bar.tsx",
+            "symbol": "MergesOverRowProps / MergesOverRow / MergesOverBarProps / MergesOverBar",
+            "startLine": 1,
+            "endLine": 102,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-empty-state.tsx",
+            "symbol": "OverrideActionButtonProps / InlineKeyInput / OverrideEmptyStateProps / OverrideEmptyState",
+            "startLine": 1,
+            "endLine": 112,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-inheritance.ts",
+            "symbol": "ContentSource / OverrideContentSource / OverrideValues / OverrideInheritance / buildOverrideInheritance",
+            "startLine": 1,
+            "endLine": 97,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-issues.ts",
+            "symbol": "ContentOverrideProviderId / RuntimeIssue / OverrideServerIssue / OverrideIssues / getUnsupportedOverrideKeys",
+            "startLine": 1,
+            "endLine": 147,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-json.ts",
+            "symbol": "collectRootKeys / findDuplicateRootKey",
+            "startLine": 1,
+            "endLine": 83,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-key-chips.ts",
+            "symbol": "DecorationSet / Extension / ViewUpdate / createCornerDownRightIcon / OverriddenKeyChipWidget",
+            "startLine": 1,
+            "endLine": 103,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-options.ts",
+            "symbol": "ContentOverrideProviderId / IProviderConfig / IntegrationOverrideSource / IntegrationOverrides / OverrideChannel",
+            "startLine": 1,
+            "endLine": 204,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-preview.ts",
+            "symbol": "AnnotatedPreviewLine / PREVIEW_PANEL_CLASS / AnnotatedOverridePreview / ProviderOverrideMap / resolveOverrideForPreview",
+            "startLine": 1,
+            "endLine": 127,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-source-description.ts",
+            "symbol": "DEFAULT_CONTENT_LABEL / ALL_INTEGRATIONS_LABEL / OverrideSourceDescription / describeOverrideSource / getContentSourceLabel",
+            "startLine": 1,
+            "endLine": 72,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-source.ts",
+            "symbol": "DEFAULT_CONTENT_SOURCE / PROVIDER_OVERRIDES_FIELD / INTEGRATION_OVERRIDES_FIELD / OverrideChannel / ProviderOverrideSource",
+            "startLine": 1,
+            "endLine": 209,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-supported-fields.tsx",
+            "symbol": "SupportedField / ReferenceSection / buildSupportedFields / buildReferenceSections / OverrideSupportedFieldsProps",
+            "startLine": 2,
+            "endLine": 104,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/preview-source-bar.tsx",
+            "symbol": "PreviewSourceBarProps / PreviewSourceBar",
+            "startLine": 2,
+            "endLine": 3,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/provider-override-editor.tsx",
+            "symbol": "ProviderOverrides / AnnotateOverrideField / DescribeOverrideField / OverrideFieldSchema / formatOverrideJson",
+            "startLine": 1,
+            "endLine": 335,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/remove-override-modal.tsx",
+            "symbol": "OverrideContentSource / OverrideValues / RemoveOverrideCopy / joinNames / getRemoveOverrideCopy",
+            "startLine": 1,
+            "endLine": 139,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/resolved-payload-preview.tsx",
+            "symbol": "OverridePreviewLine / OverridePreviewLineOrigin / getOriginLabel / getOriginTooltip / ResolvedPayloadPreviewProps",
+            "startLine": 1,
+            "endLine": 135,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/use-provider-override-options.ts",
+            "symbol": "OverrideChannel / ProviderOverrides / useProviderOverrideOptions",
+            "startLine": 1,
+            "endLine": 45,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/tool/tool-editor.tsx",
+            "symbol": "ProviderOverrideEditorExtras / ToolEditorProps / ToolEditor",
+            "startLine": 1,
+            "endLine": 56,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/tool/tool-preview.tsx",
+            "symbol": "GeneratePreviewResponseDto / ToolRenderOutput / ProviderOverrideOption / ToolPreviewResult / ToolPreviewProps",
+            "startLine": 10,
+            "endLine": 199,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/tool/use-tool-override-provider-options.ts",
+            "symbol": "useToolOverrideProviderOptions",
+            "startLine": 2,
+            "endLine": 30,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/use-editor-preview.tsx",
+            "symbol": "UseEditorPreviewProps / sanitizeControlValuesForPreview / useDebounced / areKeysEqual / useEditorPreview",
+            "startLine": 16,
+            "endLine": 31,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/pages/edit-step-template-v2.tsx",
+            "symbol": "EditStepTemplateV2Page / fingerprintControls / StepTemplateFormProps / StepTemplateForm",
+            "startLine": 40,
+            "endLine": 126,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/dashboard/src/utils/default-values.ts",
+            "symbol": "deepMergeDefaults / getControlsDefaultValues / getLayoutControlsDefaultValues",
+            "startLine": 9,
+            "endLine": 60,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/worker/src/app/workflow/usecases/execute-bridge-job/execute-bridge-job.usecase.ts",
+            "symbol": "ExecuteBridgeJobResult / ExecuteBridgeJob / buildBridgeErrorRaw",
+            "startLine": 18,
+            "endLine": 232,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/worker/src/app/workflow/usecases/send-message/send-message-chat.usecase.ts",
+            "symbol": "IntegrationSelectionResult / hasChatContentOverride / UnifiedChannel / LegacyChannelWithBoundIntegration / MessageContext",
+            "startLine": 572,
+            "endLine": 742,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/worker/src/app/workflow/usecases/send-message/send-message-push.usecase.ts",
+            "symbol": "IntegrationSelectionResult / PushProviderOverride / SUBSCRIBER_ERROR_PATTERNS / isSubscriberError / serializePushProviderError",
+            "startLine": 641,
+            "endLine": 641,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/worker/src/app/workflow/usecases/send-message/send-message-tool.usecase.ts",
+            "symbol": "ToolStepOutputs / SendMessageTool",
+            "startLine": 344,
+            "endLine": 344,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "apps/worker/src/app/workflow/usecases/send-message/send-message.base.ts",
+            "symbol": "IntegrationFilterData / IntegrationSelectionResult / replaceArrays / BridgeProviderOverrides / applyExclusiveKeyGroups",
+            "startLine": 25,
+            "endLine": 128,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/dtos/workflow/provider-overrides.dto.ts",
+            "symbol": "PROVIDER_OVERRIDES_API_PROPERTY / ProviderOverridesDto",
+            "startLine": 29,
+            "endLine": 29,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/dtos/workflow/step-responses/chat-step.response.dto.ts",
+            "symbol": "ChatControlsMetadataResponseDto / ChatStepResponseDto",
+            "startLine": 7,
+            "endLine": 42,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/dtos/workflow/step-responses/tool-step.response.dto.ts",
+            "symbol": "ToolControlsMetadataResponseDto / ToolStepResponseDto",
+            "startLine": 6,
+            "endLine": 42,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/dtos/workflow/step.response.dto.ts",
+            "symbol": "StepResponseDto",
+            "startLine": 2,
+            "endLine": 33,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/services/workflow-data.container.ts",
+            "symbol": "IWorkflowPreferences / IWorkflowWithControlValues / WorkflowLookupData / WorkflowDataContainer",
+            "startLine": 19,
+            "endLine": 277,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/build-step-data/build-step-data.command.ts",
+            "symbol": "WorkflowStepSharedContext / BuildStepDataCommand",
+            "startLine": 4,
+            "endLine": 14,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/build-step-data/build-step-data.usecase.ts",
+            "symbol": "BuildStepDataUsecase / indexControlDocuments",
+            "startLine": 17,
+            "endLine": 256,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/build-step-issues/build-step-issues.command.ts",
+            "symbol": "BuildStepIssuesCommand",
+            "startLine": 2,
+            "endLine": 34,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/build-step-issues/build-step-issues.usecase.ts",
+            "symbol": "StepProviderOverrides / getChatProviderDisplayName / hasProviderContentOverride / BuildStepIssuesUsecase",
+            "startLine": 2,
+            "endLine": 350,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/preview/preview.usecase.ts",
+            "symbol": "PreviewUsecase",
+            "startLine": 15,
+            "endLine": 222,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/preview/utils/build-step-preview.ts",
+            "symbol": "mapProvidersToPreviewOverrides / buildStepPreview",
+            "startLine": 1,
+            "endLine": 42,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/update-workflow-v0/update-workflow.usecase.ts",
+            "symbol": "StepTemplateReference / UpdateWorkflowV0",
+            "startLine": 18,
+            "endLine": 795,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/upsert-control-values/upsert-control-values.command.ts",
+            "symbol": "UpsertControlValuesCommand",
+            "startLine": 27,
+            "endLine": 27,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/upsert-control-values/upsert-control-values.usecase.ts",
+            "symbol": "UpsertControlValuesUseCase",
+            "startLine": 20,
+            "endLine": 61,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/upsert-workflow/upsert-workflow.command.ts",
+            "symbol": "StepProviderOverrides / ChannelPreferenceData / WorkflowPreferenceData / WorkflowPreferencesUpsertData / PreferencesRequestUpsertDataCommand",
+            "startLine": 6,
+            "endLine": 84,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/usecases/upsert-workflow/upsert-workflow.usecase.ts",
+            "symbol": "StepProviderOverrides / UpsertWorkflowUseCase",
+            "startLine": 14,
+            "endLine": 689,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/utils/index.ts",
+            "symbol": "module exports and changed statements",
+            "startLine": 46,
+            "endLine": 46,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/utils/provider-overrides.ts",
+            "symbol": "ContentOverrideProviderId / JSONSchemaDto / ProviderOverrideConfig / RuntimeIssue / StepProviderOverrides",
+            "startLine": 8,
+            "endLine": 264,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/utils/sanitize-control-values.ts",
+            "symbol": "sanitizeEmptyInput / sanitizeRedirect / sanitizeAction / sanitizeInApp / sanitizeEmail",
+            "startLine": 121,
+            "endLine": 376,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/application-generic/src/utils/step-overrides.ts",
+            "symbol": "StepIntegrationOverrides / StepProviderOverrides / StepOverrideLevel / STEP_OVERRIDE_CONTROL_LEVELS / STEP_CONTROL_LEVELS",
+            "startLine": 1,
+            "endLine": 41,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "libs/dal/src/repositories/control-values/control-values.entity.ts",
+            "symbol": "ControlValuesEntity",
+            "startLine": 15,
+            "endLine": 16,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/dal/src/repositories/control-values/control-values.repository.ts",
+            "symbol": "DeleteManyValuesQuery / ControlValuesRepository",
+            "startLine": 16,
+            "endLine": 16,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "libs/dal/src/repositories/control-values/control-values.schema.ts",
+            "symbol": "ControlValuesModel / ControlValues",
+            "startLine": 10,
+            "endLine": 49,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/index.ts",
+            "symbol": "ToolContentOverrideProviderId / ResolvedExclusiveRouting / ResolvedRoutingValue / MergedProviderPreview / MergedToolPreview",
+            "startLine": 27,
+            "endLine": 50,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/integration-overrides-output.ts",
+            "symbol": "OverrideBlob / UnpackedProviderOverrideOutput / packProviderOverrideOutput / unpackProviderOverrideOutput",
+            "startLine": 1,
+            "endLine": 37,
+            "revision": "188faaf373a3f511c796de77de5811d6f42a0d2e"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/merge-provider-preview.ts",
+            "symbol": "MergedProviderPreview / mergeProviderPreview / MergedToolPreview / mergeToolProviderPreview",
+            "startLine": 1,
+            "endLine": 40,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/provider-override-registry.ts",
+            "symbol": "ProviderOverrideSeedWhenAbsent / ProviderOverrideConfig / PROVIDER_OVERRIDE_SCHEMAS / PROVIDER_OVERRIDE_KEYS / schemaBacked",
+            "startLine": 285,
+            "endLine": 293,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "packages/shared/src/dto/workflows/preview-step-response.dto.ts",
+            "symbol": "RenderOutput / ChatRenderOutput / ToolRenderOutput / SmsRenderOutput / PushRenderOutput",
+            "startLine": 4,
+            "endLine": 20,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "packages/shared/src/dto/workflows/step.dto.ts",
+            "symbol": "StepProviderOverrides / StepResponseDto / StepUpdateDto / StepCreateDto / StepDto",
+            "startLine": 15,
+            "endLine": 45,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "packages/shared/src/types/controls.ts",
+            "symbol": "ControlValuesLevelEnum",
+            "startLine": 5,
+            "endLine": 5,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          },
+          {
+            "path": "packages/shared/src/types/feature-flags.ts",
+            "symbol": "BooleanFlagKey / NumericFlagKey / FlagKey / FlagType / testFlagEnumValidity",
+            "startLine": 230,
+            "endLine": 230,
+            "revision": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 78,
+        "packages": 6,
+        "packageCount": 6,
+        "packagePaths": [
+          "apps/api",
+          "apps/dashboard",
+          "apps/worker",
+          "libs/application-generic",
+          "libs/dal",
+          "packages/shared"
+        ],
+        "directories": 34,
+        "directoryCount": 34,
+        "directoryPaths": [
+          "apps/api/src/app/bridge/usecases/sync",
+          "apps/api/src/app/environments-v1/usecases/construct-framework-workflow",
+          "apps/api/src/app/integrations/usecases/update-integration",
+          "apps/api/src/app/workflows-v2",
+          "apps/api/src/app/workflows-v2/dtos",
+          "apps/api/src/app/workflows-v2/usecases/duplicate-workflow",
+          "apps/api/src/app/workflows-v2/usecases/sync-to-environment",
+          "apps/dashboard/src/components/workflow-editor",
+          "apps/dashboard/src/components/workflow-editor/control-input",
+          "apps/dashboard/src/components/workflow-editor/steps",
+          "apps/dashboard/src/components/workflow-editor/steps/chat",
+          "apps/dashboard/src/components/workflow-editor/steps/chat/preview",
+          "apps/dashboard/src/components/workflow-editor/steps/push",
+          "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides",
+          "apps/dashboard/src/components/workflow-editor/steps/tool",
+          "apps/dashboard/src/pages",
+          "apps/dashboard/src/utils",
+          "apps/worker/src/app/workflow/usecases/execute-bridge-job",
+          "apps/worker/src/app/workflow/usecases/send-message",
+          "libs/application-generic/src/dtos/workflow",
+          "libs/application-generic/src/dtos/workflow/step-responses",
+          "libs/application-generic/src/services",
+          "libs/application-generic/src/usecases/build-step-data",
+          "libs/application-generic/src/usecases/build-step-issues",
+          "libs/application-generic/src/usecases/preview",
+          "libs/application-generic/src/usecases/preview/utils",
+          "libs/application-generic/src/usecases/update-workflow-v0",
+          "libs/application-generic/src/usecases/upsert-control-values",
+          "libs/application-generic/src/usecases/upsert-workflow",
+          "libs/application-generic/src/utils",
+          "libs/dal/src/repositories/control-values",
+          "packages/shared/src/consts/providers/provider-overrides",
+          "packages/shared/src/dto/workflows",
+          "packages/shared/src/types"
+        ],
+        "goldLinesChanged": 4598,
+        "promptNamesGold": false,
+        "baseSha": "7f491f96ddbc9e027be9b1218c5bcae67ca1ebc0",
+        "repoSourceLoc": 1101903,
+        "repoSourceFiles": 9114
+      },
+      "scaffold": "sep",
+      "hiddenTests": {
+        "fromCommit": "188faaf373a3f511c796de77de5811d6f42a0d2e",
+        "files": [
+          "packages/shared/src/consts/providers/provider-overrides/integration-overrides-output.spec.ts",
+          "packages/shared/src/consts/providers/provider-overrides/merge-provider-preview.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/shared",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/shared/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/consts/providers/provider-overrides/integration-overrides-output.spec.ts",
+          "src/consts/providers/provider-overrides/merge-provider-preview.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12871",
+      "type": "change",
+      "heavy": true,
+      "base": "4c0098937344590ab5faea7baef8eef08ba4c0a5",
+      "prompt": "Liquid whitespace control is not behaving correctly in JSON-based step controls: dash tags leave surrounding newlines behind. Fix rendering so whitespace-trimming tags behave as they do in ordinary Liquid, while plain tags keep their whitespace and newlines or literal backslash sequences supplied in values round-trip correctly. Keep callback behavior and error reporting compatible.",
+      "mergeCommit": "69c81cf577cad03d7ffc73034ffa3044e1da3589",
+      "gold": {
+        "code": [
+          {
+            "path": "libs/application-generic/src/usecases/execute-step-resolver/execute-step-resolver-request.usecase.ts",
+            "symbol": "DEFAULT_TIMEOUT / DEFAULT_RETRIES_LIMIT / RETRYABLE_HTTP_CODES / StepResolverRequestError / StepResolverResponse",
+            "startLine": 3,
+            "endLine": 350,
+            "revision": "4c0098937344590ab5faea7baef8eef08ba4c0a5"
+          },
+          {
+            "path": "packages/framework/src/client.ts",
+            "symbol": "isRuntimeInDevelopment / Client / buildSteps / ChannelStepOption",
+            "startLine": 26,
+            "endLine": 802,
+            "revision": "4c0098937344590ab5faea7baef8eef08ba4c0a5"
+          },
+          {
+            "path": "packages/framework/src/internal/index.ts",
+            "symbol": "module exports and changed statements",
+            "startLine": 30,
+            "endLine": 30,
+            "revision": "4c0098937344590ab5faea7baef8eef08ba4c0a5"
+          },
+          {
+            "path": "packages/framework/src/utils/compile-json-control-values.ts",
+            "symbol": "repairJsonString / compileJsonControlValues",
+            "startLine": 1,
+            "endLine": 21,
+            "revision": "4c0098937344590ab5faea7baef8eef08ba4c0a5"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 4,
+        "packages": 2,
+        "packageCount": 2,
+        "packagePaths": [
+          "libs/application-generic",
+          "packages/framework"
+        ],
+        "directories": 4,
+        "directoryCount": 4,
+        "directoryPaths": [
+          "libs/application-generic/src/usecases/execute-step-resolver",
+          "packages/framework/src",
+          "packages/framework/src/internal",
+          "packages/framework/src/utils"
+        ],
+        "goldLinesChanged": 286,
+        "promptNamesGold": false,
+        "baseSha": "4c0098937344590ab5faea7baef8eef08ba4c0a5",
+        "repoSourceLoc": 1101721,
+        "repoSourceFiles": 9113
+      },
+      "scaffold": "sep",
+      "hiddenTests": {
+        "fromCommit": "69c81cf577cad03d7ffc73034ffa3044e1da3589",
+        "files": [
+          "packages/framework/src/utils/compile-json-control-values.test.ts",
+          "packages/framework/src/utils/liquid.utils.test.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/framework",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/framework/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/utils/compile-json-control-values.test.ts",
+          "src/utils/liquid.utils.test.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12148",
+      "type": "change",
+      "heavy": true,
+      "base": "5c7191d75f29bcad18da9e43e333fc142111649c",
+      "prompt": "Push steps need the custom-content editing and preview support already available for chat. Add a schema-backed editor for Expo and an escape hatch for the other push services, preserve ordinary title/body output, and carry the custom payload through sending. Device destinations must still come from subscriber tokens, and documented Expo options must survive key conversion correctly.",
+      "mergeCommit": "f26e7c7a5524f92c352cb603474bdc0b6923da87",
+      "gold": {
+        "code": [
+          {
+            "path": "apps/api/src/app/environments-v1/usecases/construct-framework-workflow/construct-framework-workflow.usecase.ts",
+            "symbol": "ContentOverrideProviderId / ProviderOverrideStepType / ISkipEvaluationContext / SkipFunction / PersistedControlSchema",
+            "startLine": 68,
+            "endLine": 527,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "apps/api/src/app/environments-v1/usecases/output-renderers/push-output-renderer.usecase.ts",
+            "symbol": "PushOutputRendererCommand / PushOutputRendererUsecase",
+            "startLine": 2,
+            "endLine": 38,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/preview/step-preview-factory.tsx",
+            "symbol": "StepPreviewFactory",
+            "startLine": 8,
+            "endLine": 85,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/push/push-editor.tsx",
+            "symbol": "PushEditorProps / PushEditor",
+            "startLine": 1,
+            "endLine": 17,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/push/push-preview-panel.tsx",
+            "symbol": "GeneratePreviewResponseDto / PushRenderOutput / PushPreviewPanelProps / MobilePushPreview / extractPushPreview",
+            "startLine": 1,
+            "endLine": 130,
+            "revision": "f26e7c7a5524f92c352cb603474bdc0b6923da87"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/content-source.ts",
+            "symbol": "ContentOverrideProviderId / IProviderConfig / DEFAULT_CONTENT_SOURCE / PROVIDER_OVERRIDES_FIELD / OverrideChannel",
+            "startLine": 17,
+            "endLine": 17,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/override-preview.ts",
+            "symbol": "AnnotatedPreviewLine / PREVIEW_PANEL_CLASS / AnnotatedOverridePreview / ProviderOverrideMap / resolveOverrideForPreview",
+            "startLine": 112,
+            "endLine": 124,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides/use-provider-override-schema.ts",
+            "symbol": "OverrideSchemaState / LoadOutcome / useProviderOverrideSchema",
+            "startLine": 1,
+            "endLine": 38,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "apps/dashboard/src/components/workflow-editor/steps/step-editor-layout.tsx",
+            "symbol": "StepEditorLayoutProps / DisconnectResolverButton / StepEditorContent / StepEditorLayout",
+            "startLine": 68,
+            "endLine": 68,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "apps/worker/src/app/workflow/usecases/send-message/fcm-routing-overrides.ts",
+            "symbol": "TriggerOverrides / PushProviderOverride / PushRoutingCredentials / isFcmBroadcastRoutingOverride / hasDestinationRoutingOverride",
+            "startLine": 1,
+            "endLine": 135,
+            "revision": "f26e7c7a5524f92c352cb603474bdc0b6923da87"
+          },
+          {
+            "path": "apps/worker/src/app/workflow/usecases/send-message/send-message-push.usecase.ts",
+            "symbol": "IntegrationSelectionResult / SUBSCRIBER_ERROR_PATTERNS / isSubscriberError / serializePushProviderError / IPushProviderOverride",
+            "startLine": 43,
+            "endLine": 905,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "apps/worker/src/app/workflow/usecases/send-message/send-message.base.ts",
+            "symbol": "IntegrationFilterData / IntegrationSelectionResult / replaceArrays / BridgeProviderOverrides / combineProviderOverrides",
+            "startLine": 24,
+            "endLine": 72,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "libs/application-generic/src/types/novu-shared-provider-overrides.d.ts",
+            "symbol": "slackOverrideJsonSchema / slackOverrideLiquidTolerantJsonSchema / SLACK_OVERRIDE_KEYS / SLACK_PRIMARY_CONTENT_KEY / SLACK_OVERRIDE_SCHEMA_SUBPATH",
+            "startLine": 36,
+            "endLine": 36,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "libs/application-generic/src/utils/liquid-tolerant-validator.ts",
+            "symbol": "buildSchemaPathIndex / resolveSchemaPointer / toAbsoluteSchemaPaths / isLiquidToleranceBranchError / isCompositionError",
+            "startLine": 1,
+            "endLine": 156,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "libs/application-generic/src/utils/provider-overrides.ts",
+            "symbol": "ContentOverrideProviderId / ProviderOverrideConfig / RuntimeIssue / StepProviderOverrides / LIQUID_TOLERANT_SCHEMAS_BY_SUBPATH",
+            "startLine": 5,
+            "endLine": 163,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "libs/application-generic/src/utils/sanitize-control-values.ts",
+            "symbol": "sanitizeEmptyInput / sanitizeRedirect / sanitizeAction / sanitizeInApp / sanitizeEmail",
+            "startLine": 25,
+            "endLine": 363,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "packages/framework/src/schemas/providers/push/one-signal.schema.ts",
+            "symbol": "oneSignalProviderSchema",
+            "startLine": 1365,
+            "endLine": 1367,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "packages/providers/src/base.provider.ts",
+            "symbol": "CasingEnum / MergedPassthrough / BaseProvider",
+            "startLine": 10,
+            "endLine": 128,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "packages/providers/src/lib/push/expo/expo.provider.ts",
+            "symbol": "ExpoPushProvider",
+            "startLine": 10,
+            "endLine": 39,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "packages/providers/src/lib/push/fcm/fcm.provider.ts",
+            "symbol": "FcmPushProvider",
+            "startLine": 1,
+            "endLine": 140,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/exclusive-routing.ts",
+            "symbol": "ResolvedRoutingValue / ResolvedExclusiveRouting / sanitizeRoutingValue / readPassthroughBody / claimGroup",
+            "startLine": 1,
+            "endLine": 103,
+            "revision": "f26e7c7a5524f92c352cb603474bdc0b6923da87"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/expo-override.schema.ts",
+            "symbol": "expoOverrideJsonSchema",
+            "startLine": 1,
+            "endLine": 130,
+            "revision": "f26e7c7a5524f92c352cb603474bdc0b6923da87"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/fcm/fcm-override.generated.ts",
+            "symbol": "fcmOverrideJsonSchema",
+            "startLine": 1,
+            "endLine": 663,
+            "revision": "f26e7c7a5524f92c352cb603474bdc0b6923da87"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/fcm/fcm-override.liquid-tolerant.generated.ts",
+            "symbol": "fcmOverrideLiquidTolerantJsonSchema",
+            "startLine": 1,
+            "endLine": 1143,
+            "revision": "f26e7c7a5524f92c352cb603474bdc0b6923da87"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/fcm/index.ts",
+            "symbol": "module exports and changed statements",
+            "startLine": 1,
+            "endLine": 17,
+            "revision": "f26e7c7a5524f92c352cb603474bdc0b6923da87"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/fcm/keys.ts",
+            "symbol": "FCM_ROUTING_KEYS / FCM_OVERRIDE_KEYS / FCM_PRIMARY_CONTENT_KEY / FCM_OVERRIDE_SCHEMA_SUBPATH",
+            "startLine": 1,
+            "endLine": 33,
+            "revision": "f26e7c7a5524f92c352cb603474bdc0b6923da87"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/index.ts",
+            "symbol": "ToolContentOverrideProviderId / MergedProviderPreview / MergedToolPreview / ChatContentOverrideProviderId / ContentOverrideProviderId",
+            "startLine": 13,
+            "endLine": 45,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/provider-override-registry.ts",
+            "symbol": "ProviderOverrideSeedWhenAbsent / ProviderOverrideConfig / PROVIDER_OVERRIDE_SCHEMAS / PROVIDER_OVERRIDE_KEYS / schemaBacked",
+            "startLine": 2,
+            "endLine": 203,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "packages/shared/src/dto/workflows/preview-step-response.dto.ts",
+            "symbol": "RenderOutput / ChatRenderOutput / ToolRenderOutput / SmsRenderOutput / PushRenderOutput",
+            "startLine": 29,
+            "endLine": 29,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "packages/shared/src/dto/workflows/step.dto.ts",
+            "symbol": "StepProviderOverrides / StepResponseDto / StepUpdateDto / StepCreateDto / StepDto",
+            "startLine": 1,
+            "endLine": 5,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          },
+          {
+            "path": "packages/shared/src/types/feature-flags.ts",
+            "symbol": "BooleanFlagKey / NumericFlagKey / FlagKey / FlagType / testFlagEnumValidity",
+            "startLine": 222,
+            "endLine": 222,
+            "revision": "5c7191d75f29bcad18da9e43e333fc142111649c"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 31,
+        "packages": 7,
+        "packageCount": 7,
+        "packagePaths": [
+          "apps/api",
+          "apps/dashboard",
+          "apps/worker",
+          "libs/application-generic",
+          "packages/framework",
+          "packages/providers",
+          "packages/shared"
+        ],
+        "directories": 17,
+        "directoryCount": 17,
+        "directoryPaths": [
+          "apps/api/src/app/environments-v1/usecases/construct-framework-workflow",
+          "apps/api/src/app/environments-v1/usecases/output-renderers",
+          "apps/dashboard/src/components/workflow-editor/steps",
+          "apps/dashboard/src/components/workflow-editor/steps/preview",
+          "apps/dashboard/src/components/workflow-editor/steps/push",
+          "apps/dashboard/src/components/workflow-editor/steps/shared/provider-overrides",
+          "apps/worker/src/app/workflow/usecases/send-message",
+          "libs/application-generic/src/types",
+          "libs/application-generic/src/utils",
+          "packages/framework/src/schemas/providers/push",
+          "packages/providers/src",
+          "packages/providers/src/lib/push/expo",
+          "packages/providers/src/lib/push/fcm",
+          "packages/shared/src/consts/providers/provider-overrides",
+          "packages/shared/src/consts/providers/provider-overrides/fcm",
+          "packages/shared/src/dto/workflows",
+          "packages/shared/src/types"
+        ],
+        "goldLinesChanged": 3287,
+        "promptNamesGold": false,
+        "baseSha": "5c7191d75f29bcad18da9e43e333fc142111649c",
+        "repoSourceLoc": 1069459,
+        "repoSourceFiles": 8920
+      },
+      "scaffold": "sep",
+      "hiddenTests": {
+        "fromCommit": "f26e7c7a5524f92c352cb603474bdc0b6923da87",
+        "files": [
+          "packages/shared/src/consts/providers/provider-overrides/exclusive-routing.spec.ts",
+          "packages/shared/src/consts/providers/provider-overrides/merge-provider-preview.spec.ts",
+          "packages/shared/src/consts/providers/provider-overrides/provider-override-registry.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/shared",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/shared/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/consts/providers/provider-overrides/exclusive-routing.spec.ts",
+          "src/consts/providers/provider-overrides/merge-provider-preview.spec.ts",
+          "src/consts/providers/provider-overrides/provider-override-registry.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12758",
+      "type": "change",
+      "heavy": true,
+      "base": "54e25a857901966d663d330b6e0e24940d077adc",
+      "prompt": "Older notification feeds and message responses still expose unsafe click destinations from already-stored notifications, even though the current inbox protects them. Cover the legacy read and action-update responses as well. Remove unsafe destinations and invalid window targets from both the notification and its buttons, keep labels and other action data, preserve valid destinations, and avoid changing the stored notification just to return a safe response.",
+      "mergeCommit": "352ab8722cd703ea78725802f1b5a264b5b9bc62",
+      "gold": {
+        "code": [
+          {
+            "path": "apps/api/src/app/messages/usecases/get-messages/get-messages.usecase.ts",
+            "symbol": "GetMessages",
+            "startLine": 4,
+            "endLine": 66,
+            "revision": "54e25a857901966d663d330b6e0e24940d077adc"
+          },
+          {
+            "path": "apps/api/src/app/widgets/usecases/get-notifications-feed/get-notifications-feed.usecase.ts",
+            "symbol": "GetNotificationsFeed",
+            "startLine": 11,
+            "endLine": 98,
+            "revision": "54e25a857901966d663d330b6e0e24940d077adc"
+          },
+          {
+            "path": "apps/api/src/app/widgets/usecases/mark-action-as-done/update-message-actions.usecase.ts",
+            "symbol": "UpdateMessageActions",
+            "startLine": 3,
+            "endLine": 74,
+            "revision": "54e25a857901966d663d330b6e0e24940d077adc"
+          },
+          {
+            "path": "apps/api/src/app/widgets/usecases/mark-message-as-by-mark/mark-message-as-by-mark.usecase.ts",
+            "symbol": "MarkMessageAsByMark / mapMessageEntityToResponseDto",
+            "startLine": 19,
+            "endLine": 177,
+            "revision": "54e25a857901966d663d330b6e0e24940d077adc"
+          },
+          {
+            "path": "apps/api/src/app/widgets/usecases/mark-message-as/mark-message-as.usecase.ts",
+            "symbol": "MarkMessageAs",
+            "startLine": 20,
+            "endLine": 115,
+            "revision": "54e25a857901966d663d330b6e0e24940d077adc"
+          },
+          {
+            "path": "packages/shared/src/utils/in-app-redirect-url.ts",
+            "symbol": "IN_APP_REDIRECT_URL_REGEX / IN_APP_REDIRECT_TARGETS / InAppRedirectTarget / isValidInAppRedirectUrl / isValidInAppRedirectTarget",
+            "startLine": 44,
+            "endLine": 44,
+            "revision": "54e25a857901966d663d330b6e0e24940d077adc"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 6,
+        "packages": 2,
+        "packageCount": 2,
+        "packagePaths": [
+          "apps/api",
+          "packages/shared"
+        ],
+        "directories": 6,
+        "directoryCount": 6,
+        "directoryPaths": [
+          "apps/api/src/app/messages/usecases/get-messages",
+          "apps/api/src/app/widgets/usecases/get-notifications-feed",
+          "apps/api/src/app/widgets/usecases/mark-action-as-done",
+          "apps/api/src/app/widgets/usecases/mark-message-as",
+          "apps/api/src/app/widgets/usecases/mark-message-as-by-mark",
+          "packages/shared/src/utils"
+        ],
+        "goldLinesChanged": 89,
+        "promptNamesGold": false,
+        "baseSha": "54e25a857901966d663d330b6e0e24940d077adc",
+        "repoSourceLoc": 1063381,
+        "repoSourceFiles": 8851
+      },
+      "scaffold": "sep",
+      "hiddenTests": {
+        "fromCommit": "352ab8722cd703ea78725802f1b5a264b5b9bc62",
+        "files": [
+          "packages/shared/src/utils/in-app-redirect-url.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/shared",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/shared/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/utils/in-app-redirect-url.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12690",
+      "type": "change",
+      "heavy": true,
+      "base": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3",
+      "prompt": "Add Google Chat as a supported chat delivery service, including its integration configuration, subscriber webhook destinations, delivery construction, and documentation. It should work with both new endpoint records and the legacy stored webhook credential, and custom-content previews should fall back to the normal message text consistently.",
+      "mergeCommit": "67e2bc7393802a7f67820723ec4dbf462530ec6d",
+      "gold": {
+        "code": [
+          {
+            "path": "apps/dashboard/src/components/agents/provider-cards.tsx",
+            "symbol": "ConversationalProvider / IIntegration / getProviderCardDisplayName / CardProviderIcon / getSetupTimeLabel",
+            "startLine": 52,
+            "endLine": 52,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          },
+          {
+            "path": "apps/dashboard/src/components/integrations/components/hooks/use-integration-list.ts",
+            "symbol": "useIntegrationList",
+            "startLine": 58,
+            "endLine": 58,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          },
+          {
+            "path": "apps/dashboard/src/components/subscribers/credentials/chat-endpoint-types.ts",
+            "symbol": "ChatEndpointTypeOption / supportsConnectLink / getAddableEndpointTypes / getAddableToolEndpointTypes",
+            "startLine": 120,
+            "endLine": 120,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          },
+          {
+            "path": "libs/application-generic/src/factories/chat/chat.factory.ts",
+            "symbol": "ChatFactory",
+            "startLine": 4,
+            "endLine": 26,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          },
+          {
+            "path": "libs/application-generic/src/factories/chat/handlers/google-chat.handler.ts",
+            "symbol": "GoogleChatHandler",
+            "startLine": 1,
+            "endLine": 14,
+            "revision": "67e2bc7393802a7f67820723ec4dbf462530ec6d"
+          },
+          {
+            "path": "packages/framework/src/schemas/providers/chat/index.ts",
+            "symbol": "chatProviderSchemas",
+            "startLine": 9,
+            "endLine": 9,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          },
+          {
+            "path": "packages/framework/src/shared.ts",
+            "symbol": "IResponseError / checkIsResponseError / ChannelTypeEnum / IAttachmentOptions / ITriggerPayload",
+            "startLine": 171,
+            "endLine": 171,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          },
+          {
+            "path": "packages/providers/src/lib/chat/google-chat/google-chat.provider.ts",
+            "symbol": "GoogleChatMessageResponse / GoogleChatProvider",
+            "startLine": 1,
+            "endLine": 49,
+            "revision": "67e2bc7393802a7f67820723ec4dbf462530ec6d"
+          },
+          {
+            "path": "packages/providers/src/lib/chat/index.ts",
+            "symbol": "module exports and changed statements",
+            "startLine": 5,
+            "endLine": 5,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/channels/chat.ts",
+            "symbol": "chatProviders",
+            "startLine": 45,
+            "endLine": 45,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/conversational-providers.ts",
+            "symbol": "ConversationalProvider / CONVERSATIONAL_PROVIDERS / CONVERSATIONAL_PROVIDER_IDS",
+            "startLine": 20,
+            "endLine": 20,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/provider-overrides/provider-override-registry.ts",
+            "symbol": "ProviderOverrideSeedWhenAbsent / ProviderOverrideConfig / PROVIDER_OVERRIDE_SCHEMAS / PROVIDER_OVERRIDE_KEYS / schemaBacked",
+            "startLine": 134,
+            "endLine": 134,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          },
+          {
+            "path": "packages/shared/src/types/providers.ts",
+            "symbol": "CredentialsKeyEnum / ConfigurationKey / EmailProviderIdEnum / SmsProviderIdEnum / ChatProviderIdEnum",
+            "startLine": 149,
+            "endLine": 149,
+            "revision": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 13,
+        "packages": 5,
+        "packageCount": 5,
+        "packagePaths": [
+          "apps/dashboard",
+          "libs/application-generic",
+          "packages/framework",
+          "packages/providers",
+          "packages/shared"
+        ],
+        "directories": 13,
+        "directoryCount": 13,
+        "directoryPaths": [
+          "apps/dashboard/src/components/agents",
+          "apps/dashboard/src/components/integrations/components/hooks",
+          "apps/dashboard/src/components/subscribers/credentials",
+          "libs/application-generic/src/factories/chat",
+          "libs/application-generic/src/factories/chat/handlers",
+          "packages/framework/src",
+          "packages/framework/src/schemas/providers/chat",
+          "packages/providers/src/lib/chat",
+          "packages/providers/src/lib/chat/google-chat",
+          "packages/shared/src/consts/providers",
+          "packages/shared/src/consts/providers/channels",
+          "packages/shared/src/consts/providers/provider-overrides",
+          "packages/shared/src/types"
+        ],
+        "goldLinesChanged": 84,
+        "promptNamesGold": false,
+        "baseSha": "6fc9d02ea001faae1846f2e0023d4a2c83d36fd3",
+        "repoSourceLoc": 1043807,
+        "repoSourceFiles": 8708
+      },
+      "scaffold": "sep",
+      "hiddenTests": {
+        "fromCommit": "67e2bc7393802a7f67820723ec4dbf462530ec6d",
+        "files": [
+          "packages/shared/src/consts/providers/provider-overrides/provider-override-registry.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/shared",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/shared/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/consts/providers/provider-overrides/provider-override-registry.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12430",
+      "type": "change",
+      "heavy": true,
+      "base": "318a68127046a6c331d8b94e692dd1d87187a050",
+      "prompt": "Our email webhook verifier uses a binary HMAC key, but signatures currently assume that the stored key is plain text. Let an integration select plain text, base64, or hex key encoding, retaining the existing default. Carry the setting from saved credentials through delivery, sign with the decoded bytes, and reject encodings that decode to an empty key. Equivalent binary keys should produce equivalent signatures.",
+      "mergeCommit": "e95e72c6a3f2b31ea3417311bc5d35e0571e5f1e",
+      "gold": {
+        "code": [
+          {
+            "path": "libs/application-generic/src/dtos/credentials.dto.ts",
+            "symbol": "CredentialsDto",
+            "startLine": 4,
+            "endLine": 25,
+            "revision": "318a68127046a6c331d8b94e692dd1d87187a050"
+          },
+          {
+            "path": "libs/application-generic/src/factories/mail/handlers/email-webhook.handler.ts",
+            "symbol": "EmailWebhookHandler",
+            "startLine": 14,
+            "endLine": 18,
+            "revision": "318a68127046a6c331d8b94e692dd1d87187a050"
+          },
+          {
+            "path": "libs/dal/src/repositories/integration/integration.schema.ts",
+            "symbol": "Integration",
+            "startLine": 31,
+            "endLine": 31,
+            "revision": "318a68127046a6c331d8b94e692dd1d87187a050"
+          },
+          {
+            "path": "packages/providers/src/lib/email/email-webhook/email-webhook.provider.ts",
+            "symbol": "EmailWebhookUrlBlockedError / EmailWebhookProvider",
+            "startLine": 23,
+            "endLine": 163,
+            "revision": "318a68127046a6c331d8b94e692dd1d87187a050"
+          },
+          {
+            "path": "packages/shared/src/consts/providers/credentials/provider-credentials.ts",
+            "symbol": "mailJsConfig / mailgunConfig / mailjetConfig / nexmoConfig / mandrillConfig",
+            "startLine": 1021,
+            "endLine": 1021,
+            "revision": "318a68127046a6c331d8b94e692dd1d87187a050"
+          },
+          {
+            "path": "packages/shared/src/entities/integration/credential.interface.ts",
+            "symbol": "ICredentials",
+            "startLine": 139,
+            "endLine": 139,
+            "revision": "318a68127046a6c331d8b94e692dd1d87187a050"
+          },
+          {
+            "path": "packages/shared/src/types/providers.ts",
+            "symbol": "CredentialsKeyEnum / ConfigurationKey / EmailProviderIdEnum / SmsProviderIdEnum / ChatProviderIdEnum",
+            "startLine": 70,
+            "endLine": 70,
+            "revision": "318a68127046a6c331d8b94e692dd1d87187a050"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 7,
+        "packages": 4,
+        "packageCount": 4,
+        "packagePaths": [
+          "libs/application-generic",
+          "libs/dal",
+          "packages/providers",
+          "packages/shared"
+        ],
+        "directories": 7,
+        "directoryCount": 7,
+        "directoryPaths": [
+          "libs/application-generic/src/dtos",
+          "libs/application-generic/src/factories/mail/handlers",
+          "libs/dal/src/repositories/integration",
+          "packages/providers/src/lib/email/email-webhook",
+          "packages/shared/src/consts/providers/credentials",
+          "packages/shared/src/entities/integration",
+          "packages/shared/src/types"
+        ],
+        "goldLinesChanged": 77,
+        "promptNamesGold": false,
+        "baseSha": "318a68127046a6c331d8b94e692dd1d87187a050",
+        "repoSourceLoc": 1005291,
+        "repoSourceFiles": 8464
+      },
+      "scaffold": "aug",
+      "hiddenTests": {
+        "fromCommit": "e95e72c6a3f2b31ea3417311bc5d35e0571e5f1e",
+        "files": [
+          "packages/shared/src/consts/providers/channels/email.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/shared",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/shared/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/consts/providers/channels/email.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12413",
+      "type": "change",
+      "heavy": true,
+      "base": "68f5589d4e52939a631dfd054f56b2df38f58e80",
+      "prompt": "Commands copied from a specific agent's setup page should reconnect that agent instead of asking me to choose an agent and runtime again. They also need to work on local dashboards: browser login should return to that dashboard, staging should use the release-candidate command, and regional production APIs should stay regional. Keep the copied chat command and self-hosted scaffold command consistent, and fail clearly if the requested agent is missing.",
+      "mergeCommit": "5da36bf23e8861db33af995eaceb62372d2ac9b5",
+      "gold": {
+        "code": [
+          {
+            "path": "apps/dashboard/src/components/agents/agent-chat-setup-content.tsx",
+            "symbol": "AgentChatEmbedResources",
+            "startLine": 5,
+            "endLine": 5,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "apps/dashboard/src/components/agents/agent-chat-setup-guide.tsx",
+            "symbol": "AgentChatSetupGuideProps / AgentChatSetupGuide",
+            "startLine": 45,
+            "endLine": 45,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "apps/dashboard/src/components/agents/agent-chat-setup-steps.tsx",
+            "symbol": "AgentChatSetupStepsProps / AgentChatSetupSteps",
+            "startLine": 5,
+            "endLine": 69,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "apps/dashboard/src/components/agents/agent-code-setup-section.tsx",
+            "symbol": "maskSecretKey / ConnectRuntimeFlag / resolveConnectRuntime / buildConnectScaffoldParts / buildConnectScaffoldCommand",
+            "startLine": 46,
+            "endLine": 410,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "apps/dashboard/src/components/agents/agent-integration-guides/agent-chat-agent-integration-guide.tsx",
+            "symbol": "AgentChatAgentIntegrationGuideProps / AgentChatSetupGuideWithHeaderProps / AgentChatSetupGuideWithHeader / AgentChatConnectedRecapProps / AgentChatConnectedRecap",
+            "startLine": 171,
+            "endLine": 171,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/resolve-existing-agent.ts",
+            "symbol": "shouldSkipAgentConnectModePicker / resolveConnectModeForExistingAgent / ExistingAgentContext / resolveExistingAgentContext / resolveExistingAgentByIdentifier",
+            "startLine": 1,
+            "endLine": 40,
+            "revision": "5da36bf23e8861db33af995eaceb62372d2ac9b5"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/runner.ts",
+            "symbol": "AgentRecord / GeneratedAgentSpec / ConnectPipelineInput / ConnectPipelineResult / PipelineContext",
+            "startLine": 56,
+            "endLine": 563,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/types.ts",
+            "symbol": "ChannelChoice / CHANNEL_CHOICES / AgentChatSetupMode / AgentRuntimeChoice / AGENT_RUNTIME_CHOICES",
+            "startLine": 146,
+            "endLine": 146,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "packages/novu/src/index.ts",
+            "symbol": "AgentConnectMode / ChannelChoice / config / getCliVersion",
+            "startLine": 217,
+            "endLine": 281,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "packages/shared/src/utils/agent-chat-connect-prompt.ts",
+            "symbol": "AGENT_CHAT_DOCS_URL / AGENT_ONBOARDING_PLAYBOOK_URL / buildAgentChatTuiCommand / NOVU_CONNECT_AGENT_CHAT_TUI_COMMAND / signedInDashboardLine",
+            "startLine": 2,
+            "endLine": 36,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "packages/shared/src/utils/novu-connect-cli.ts",
+            "symbol": "NOVU_CLOUD_API_URL / NOVU_STAGING_API_URL / NovuConnectPackageTag / normalizeApiUrl / isNovuStagingApiUrl",
+            "startLine": 5,
+            "endLine": 45,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 11,
+        "packages": 3,
+        "packageCount": 3,
+        "packagePaths": [
+          "apps/dashboard",
+          "packages/novu",
+          "packages/shared"
+        ],
+        "directories": 6,
+        "directoryCount": 6,
+        "directoryPaths": [
+          "apps/dashboard/src/components/agents",
+          "apps/dashboard/src/components/agents/agent-integration-guides",
+          "packages/novu/src",
+          "packages/novu/src/commands/connect",
+          "packages/novu/src/commands/connect/pipeline",
+          "packages/shared/src/utils"
+        ],
+        "goldLinesChanged": 238,
+        "promptNamesGold": false,
+        "baseSha": "68f5589d4e52939a631dfd054f56b2df38f58e80",
+        "repoSourceLoc": 990800,
+        "repoSourceFiles": 8380
+      },
+      "scaffold": "aug",
+      "hiddenTests": {
+        "fromCommit": "5da36bf23e8861db33af995eaceb62372d2ac9b5",
+        "files": [
+          "packages/shared/src/utils/agent-chat-connect-prompt.spec.ts",
+          "packages/shared/src/utils/novu-connect-cli.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/shared",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/shared/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/utils/agent-chat-connect-prompt.spec.ts",
+          "src/utils/novu-connect-cli.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12469",
+      "type": "change",
+      "heavy": true,
+      "base": "dcc28933268d67e75308d5076e450463c9ccbd3a",
+      "prompt": "The dashboard's chat onboarding currently makes me run setup twice and choose information I already supplied. Produce one connection command that retains the chosen runtime, channel, and existing agent. The command-line flow should reuse that agent without a picker, and copied instructions should not ask for the same choices again. Keep the separate scaffold step for other channels where it is still needed.",
+      "mergeCommit": "b4fb7b9d091587e93e3cddcd3869ba37198d2794",
+      "gold": {
+        "code": [
+          {
+            "path": "apps/dashboard/src/components/agents/agent-chat-setup-guide.tsx",
+            "symbol": "AgentChatSetupGuideProps / AgentChatSetupGuide",
+            "startLine": 3,
+            "endLine": 49,
+            "revision": "dcc28933268d67e75308d5076e450463c9ccbd3a"
+          },
+          {
+            "path": "apps/dashboard/src/components/agents/agent-chat-setup-steps.tsx",
+            "symbol": "AgentChatSetupStepsProps / AgentChatSetupSteps",
+            "startLine": 1,
+            "endLine": 72,
+            "revision": "dcc28933268d67e75308d5076e450463c9ccbd3a"
+          },
+          {
+            "path": "apps/dashboard/src/components/agents/agent-code-setup-section.tsx",
+            "symbol": "maskSecretKey / ConnectRuntimeFlag / resolveConnectRuntime / buildConnectScaffoldParts / buildConnectScaffoldCommand",
+            "startLine": 48,
+            "endLine": 423,
+            "revision": "dcc28933268d67e75308d5076e450463c9ccbd3a"
+          },
+          {
+            "path": "apps/dashboard/src/components/agents/agent-integration-guides/agent-chat-agent-integration-guide.tsx",
+            "symbol": "AgentChatAgentIntegrationGuideProps / AgentChatSetupGuideWithHeaderProps / AgentChatSetupGuideWithHeader / AgentChatConnectedRecapProps / AgentChatConnectedRecap",
+            "startLine": 17,
+            "endLine": 171,
+            "revision": "dcc28933268d67e75308d5076e450463c9ccbd3a"
+          },
+          {
+            "path": "apps/dashboard/src/components/agents/agent-setup-steps.tsx",
+            "symbol": "IIntegration / AgentResponse / ConnectSummary / resolveProviderGuideReservedSteps / AgentChannelState",
+            "startLine": 373,
+            "endLine": 881,
+            "revision": "dcc28933268d67e75308d5076e450463c9ccbd3a"
+          },
+          {
+            "path": "apps/dashboard/src/hooks/use-agent-chat-prompt.ts",
+            "symbol": "useAgentChatPrompt",
+            "startLine": 1,
+            "endLine": 11,
+            "revision": "dcc28933268d67e75308d5076e450463c9ccbd3a"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/bridge/create-bridge-agent.ts",
+            "symbol": "createBridgeAgentFlow / pathBasename / toSummary",
+            "startLine": 5,
+            "endLine": 12,
+            "revision": "dcc28933268d67e75308d5076e450463c9ccbd3a"
+          },
+          {
+            "path": "packages/shared/src/utils/agent-chat-connect-prompt.ts",
+            "symbol": "NovuConnectTargetOptions / AGENT_CHAT_DOCS_URL / AGENT_ONBOARDING_PLAYBOOK_URL / BuildAgentChatTuiCommandOptions / buildAgentChatTuiCommandParts",
+            "startLine": 13,
+            "endLine": 66,
+            "revision": "dcc28933268d67e75308d5076e450463c9ccbd3a"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 8,
+        "packages": 3,
+        "packageCount": 3,
+        "packagePaths": [
+          "apps/dashboard",
+          "packages/novu",
+          "packages/shared"
+        ],
+        "directories": 5,
+        "directoryCount": 5,
+        "directoryPaths": [
+          "apps/dashboard/src/components/agents",
+          "apps/dashboard/src/components/agents/agent-integration-guides",
+          "apps/dashboard/src/hooks",
+          "packages/novu/src/commands/connect/pipeline/bridge",
+          "packages/shared/src/utils"
+        ],
+        "goldLinesChanged": 152,
+        "promptNamesGold": false,
+        "baseSha": "dcc28933268d67e75308d5076e450463c9ccbd3a",
+        "repoSourceLoc": 1010310,
+        "repoSourceFiles": 8502
+      },
+      "scaffold": "aug",
+      "hiddenTests": {
+        "fromCommit": "b4fb7b9d091587e93e3cddcd3869ba37198d2794",
+        "files": [
+          "packages/shared/src/utils/agent-chat-connect-prompt.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/shared",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/shared/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/utils/agent-chat-connect-prompt.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12455",
+      "type": "change",
+      "heavy": true,
+      "base": "80a8e389929ae113d426877d49c0fa39d2b8e8e2",
+      "prompt": "Scaffolded browser and self-hosted agent projects can end up with incompatible SDK releases on staging or local development. Make their generated dependencies use the appropriate prerelease distribution consistently, while production scaffolds keep stable dependencies and the command itself keeps its own release channel. Carry the selected environment through each scaffold path and avoid mixing local workspace aliases with downloaded SDK versions.",
+      "mergeCommit": "c6b01c8c3ec51c7fb4715f7464084ad90ee85885",
+      "gold": {
+        "code": [
+          {
+            "path": "packages/novu/src/commands/connect/index.ts",
+            "symbol": "UiBundle / loadInkUi / connectCommand / shouldUseLoggingMode",
+            "startLine": 1,
+            "endLine": 27,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/agent-chat/scaffold-agent-chat.ts",
+            "symbol": "ScaffoldAgentChatProjectInput / ScaffoldAgentChatProjectResult / defaultAgentChatScaffoldDirName / assertSafeScaffoldDirectoryName / resolveScaffoldAppName",
+            "startLine": 4,
+            "endLine": 451,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/ai-sdk/scaffold.ts",
+            "symbol": "scaffoldAiSdkProject",
+            "startLine": 13,
+            "endLine": 24,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/bridge-adapter/engine.ts",
+            "symbol": "ReconcileOptions / deferInkInput / runBridgeAdapterProjectSetup / scaffoldThenReconcile / reconcileProject",
+            "startLine": 105,
+            "endLine": 105,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/bridge-adapter/types.ts",
+            "symbol": "BridgeAdapterConnectOutcome / BridgeAdapterVariant / BridgeAdapterRequirementsSnapshot / BridgeAdapterSetupInput / BridgeAdapterScaffoldInput",
+            "startLine": 40,
+            "endLine": 40,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/bridge/scaffold-project.ts",
+            "symbol": "ScaffoldBridgeProjectInput / ScaffoldBridgeProjectResult / findWorkspaceRoot / scaffoldBridgeProject",
+            "startLine": 22,
+            "endLine": 89,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/custom-code/index.ts",
+            "symbol": "CustomCodeSetupInput / runCustomCodeProjectSetup",
+            "startLine": 56,
+            "endLine": 56,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/langchain/scaffold.ts",
+            "symbol": "scaffoldLangChainProject",
+            "startLine": 13,
+            "endLine": 24,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          },
+          {
+            "path": "packages/novu/src/commands/init/templates/index.ts",
+            "symbol": "resolveCliPackageJson / resolveFrameworkVersion / resolveCliTag / getTemplateFile / SRC_DIR_NAMES",
+            "startLine": 1,
+            "endLine": 320,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          },
+          {
+            "path": "packages/novu/src/commands/init/templates/types.ts",
+            "symbol": "TemplateTypeEnum / TemplateType / TemplateMode / GetTemplateFileArgs / InstallTemplateArgs",
+            "startLine": 48,
+            "endLine": 48,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          },
+          {
+            "path": "packages/shared/src/utils/novu-connect-cli.ts",
+            "symbol": "NOVU_CLOUD_API_URL / NOVU_STAGING_API_URL / NovuConnectPackageTag / NovuConnectTargetOptions / normalizeUrl",
+            "startLine": 5,
+            "endLine": 58,
+            "revision": "80a8e389929ae113d426877d49c0fa39d2b8e8e2"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 11,
+        "packages": 2,
+        "packageCount": 2,
+        "packagePaths": [
+          "packages/novu",
+          "packages/shared"
+        ],
+        "directories": 9,
+        "directoryCount": 9,
+        "directoryPaths": [
+          "packages/novu/src/commands/connect",
+          "packages/novu/src/commands/connect/pipeline/agent-chat",
+          "packages/novu/src/commands/connect/pipeline/ai-sdk",
+          "packages/novu/src/commands/connect/pipeline/bridge",
+          "packages/novu/src/commands/connect/pipeline/bridge-adapter",
+          "packages/novu/src/commands/connect/pipeline/custom-code",
+          "packages/novu/src/commands/connect/pipeline/langchain",
+          "packages/novu/src/commands/init/templates",
+          "packages/shared/src/utils"
+        ],
+        "goldLinesChanged": 227,
+        "promptNamesGold": false,
+        "baseSha": "80a8e389929ae113d426877d49c0fa39d2b8e8e2",
+        "repoSourceLoc": 1006930,
+        "repoSourceFiles": 8473
+      },
+      "scaffold": "aug",
+      "hiddenTests": {
+        "fromCommit": "c6b01c8c3ec51c7fb4715f7464084ad90ee85885",
+        "files": [
+          "packages/shared/src/utils/novu-connect-cli.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/shared",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/shared/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/utils/novu-connect-cli.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12403",
+      "type": "change",
+      "heavy": true,
+      "base": "5f9f2d7f2360462642a58ecceb1c0051bd5af80f",
+      "prompt": "The chat onboarding prompt and command-line handoff instructions disagree about what happens after connecting. Route copied setup instructions through the dedicated chat flow and keep success messages and handoffs consistent for managed, self-hosted, embedded, already-connected, and skipped outcomes. Only ask for an embed handoff when that outcome actually produced one, and preserve the existing channel choices for other flows.",
+      "mergeCommit": "68f5589d4e52939a631dfd054f56b2df38f58e80",
+      "gold": {
+        "code": [
+          {
+            "path": "libs/agent-evals/src/suites/agent-onboarding/catalog.ts",
+            "symbol": "descriptionText / connectCommands / firstConnectCall / judgePrompts / catalog",
+            "startLine": 52,
+            "endLine": 386,
+            "revision": "5f9f2d7f2360462642a58ecceb1c0051bd5af80f"
+          },
+          {
+            "path": "libs/agent-evals/src/suites/agent-onboarding/index.ts",
+            "symbol": "AGENT_ONBOARDING_DOC_PATH / agentOnboardingSuite",
+            "startLine": 11,
+            "endLine": 64,
+            "revision": "5f9f2d7f2360462642a58ecceb1c0051bd5af80f"
+          },
+          {
+            "path": "libs/agent-evals/src/suites/agent-onboarding/scenarios/dashboard-agent-chat/graders.ts",
+            "symbol": "graders",
+            "startLine": 1,
+            "endLine": 29,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "libs/agent-evals/src/suites/agent-onboarding/scenarios/dashboard-agent-chat/scenario.ts",
+            "symbol": "scenario",
+            "startLine": 1,
+            "endLine": 42,
+            "revision": "68f5589d4e52939a631dfd054f56b2df38f58e80"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/help-text.ts",
+            "symbol": "CONNECT_HELP_TEXT",
+            "startLine": 195,
+            "endLine": 212,
+            "revision": "5f9f2d7f2360462642a58ecceb1c0051bd5af80f"
+          },
+          {
+            "path": "packages/shared/src/utils/agent-chat-connect-prompt.ts",
+            "symbol": "AGENT_CHAT_DOCS_URL / AGENT_ONBOARDING_PLAYBOOK_URL / buildAgentChatTuiCommand / NOVU_CONNECT_AGENT_CHAT_TUI_COMMAND / signedInDashboardLine",
+            "startLine": 40,
+            "endLine": 50,
+            "revision": "5f9f2d7f2360462642a58ecceb1c0051bd5af80f"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 6,
+        "packages": 3,
+        "packageCount": 3,
+        "packagePaths": [
+          "libs/agent-evals",
+          "packages/novu",
+          "packages/shared"
+        ],
+        "directories": 4,
+        "directoryCount": 4,
+        "directoryPaths": [
+          "libs/agent-evals/src/suites/agent-onboarding",
+          "libs/agent-evals/src/suites/agent-onboarding/scenarios/dashboard-agent-chat",
+          "packages/novu/src/commands/connect",
+          "packages/shared/src/utils"
+        ],
+        "goldLinesChanged": 147,
+        "promptNamesGold": false,
+        "baseSha": "5f9f2d7f2360462642a58ecceb1c0051bd5af80f",
+        "repoSourceLoc": 990527,
+        "repoSourceFiles": 8377
+      },
+      "scaffold": "aug",
+      "hiddenTests": {
+        "fromCommit": "68f5589d4e52939a631dfd054f56b2df38f58e80",
+        "files": [
+          "packages/shared/src/utils/agent-chat-connect-prompt.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/shared",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/shared/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/utils/agent-chat-connect-prompt.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    },
+    {
+      "id": "novu-heavy-pr-12940",
+      "type": "change",
+      "heavy": true,
+      "base": "d03fc4904c95f31462650b993513b4d58cc0ccd1",
+      "prompt": "Newly scaffolded conversational projects using the AI SDK wait for a complete answer instead of streaming it. Update the generated handler and browser example so responses stream progressively using the supported response interface, and make the setup instructions and code-generation guidance agree. Preserve conversation context and metadata when generating the response.",
+      "mergeCommit": "351c229c6e5e6e2e3eb5174953994bbe653d2ed8",
+      "gold": {
+        "code": [
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/ai-sdk/agent-prompt.ts",
+            "symbol": "AI_SDK_AGENT_PROMPT",
+            "startLine": 30,
+            "endLine": 43,
+            "revision": "d03fc4904c95f31462650b993513b4d58cc0ccd1"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/ai-sdk/wiring-instructions.ts",
+            "symbol": "buildAiSdkWiringInstructions",
+            "startLine": 7,
+            "endLine": 7,
+            "revision": "d03fc4904c95f31462650b993513b4d58cc0ccd1"
+          },
+          {
+            "path": "packages/novu/src/commands/connect/pipeline/llm-auth/codegen/generate-support-agent.ts",
+            "symbol": "toCamelAgentName / buildSharedHandlerBody / buildOnActionHandler / buildAiSdkSearchNovuDocsTool / buildLangChainSearchNovuDocsTool",
+            "startLine": 78,
+            "endLine": 139,
+            "revision": "d03fc4904c95f31462650b993513b4d58cc0ccd1"
+          },
+          {
+            "path": "packages/novu/src/commands/init/templates/app-agent-ai-sdk/ts/app/novu/agents/support-agent.tsx",
+            "symbol": "supportAgent",
+            "startLine": 20,
+            "endLine": 68,
+            "revision": "d03fc4904c95f31462650b993513b4d58cc0ccd1"
+          },
+          {
+            "path": "packages/novu/src/commands/init/templates/app-agent-ai-sdk/ts/app/page.tsx",
+            "symbol": "Home",
+            "startLine": 25,
+            "endLine": 25,
+            "revision": "d03fc4904c95f31462650b993513b4d58cc0ccd1"
+          },
+          {
+            "path": "packages/shared/src/utils/connect-embed-prompt.ts",
+            "symbol": "CONNECT_EMBED_DOCS_INDEX / CONNECT_EMBED_TEMPLATE_URL / CONNECT_EMBED_TEMPLATE_LOCAL_PATH / ConnectEmbedRuntime / ConnectEmbedPromptInput",
+            "startLine": 248,
+            "endLine": 248,
+            "revision": "d03fc4904c95f31462650b993513b4d58cc0ccd1"
+          }
+        ],
+        "knowledge": [],
+        "expectedDrift": []
+      },
+      "complexity": {
+        "goldFiles": 6,
+        "packages": 2,
+        "packageCount": 2,
+        "packagePaths": [
+          "packages/novu",
+          "packages/shared"
+        ],
+        "directories": 5,
+        "directoryCount": 5,
+        "directoryPaths": [
+          "packages/novu/src/commands/connect/pipeline/ai-sdk",
+          "packages/novu/src/commands/connect/pipeline/llm-auth/codegen",
+          "packages/novu/src/commands/init/templates/app-agent-ai-sdk/ts/app",
+          "packages/novu/src/commands/init/templates/app-agent-ai-sdk/ts/app/novu/agents",
+          "packages/shared/src/utils"
+        ],
+        "goldLinesChanged": 28,
+        "promptNamesGold": false,
+        "baseSha": "d03fc4904c95f31462650b993513b4d58cc0ccd1",
+        "repoSourceLoc": 1148360,
+        "repoSourceFiles": 9329
+      },
+      "scaffold": "sep",
+      "hiddenTests": {
+        "fromCommit": "351c229c6e5e6e2e3eb5174953994bbe653d2ed8",
+        "files": [
+          "packages/novu/src/commands/init/templates/app-agent-ai-sdk.template.spec.ts"
+        ],
+        "runner": "pnpm",
+        "cwd": "packages/novu",
+        "command": [
+          "{node}",
+          "--max-old-space-size=512",
+          "--require",
+          "{harness}/no-network.cjs",
+          "{workspace}/packages/novu/node_modules/vitest/vitest.mjs",
+          "run",
+          "src/commands/init/templates/app-agent-ai-sdk.template.spec.ts"
+        ],
+        "workerCount": 2
+      }
+    }
+  ]
+}

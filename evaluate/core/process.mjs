@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import crossSpawn from "cross-spawn";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
 
@@ -13,11 +14,17 @@ export function runProcess(command, args = [], options = {}) {
   return new Promise((resolve) => {
     const started = performance.now();
     const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-    const child = spawn(command, args, {
+    const child = (options.resolveShims ? crossSpawn : spawn)(command, args, {
       cwd: options.cwd,
       env: options.env ?? process.env,
       stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      detached: options.killProcessTree && process.platform !== "win32",
     });
+    const kill = (signal) => {
+      if (!options.killProcessTree || !child.pid) { child.kill(signal); return; }
+      if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      else { try { process.kill(-child.pid, signal); } catch (e) { if (e.code !== "ESRCH") throw e; } }
+    };
     let stdout = "";
     let stderr = "";
     let stdoutBytes = 0;
@@ -33,16 +40,17 @@ export function runProcess(command, args = [], options = {}) {
       stdoutBytes += Buffer.byteLength(chunk);
       if (stdoutBytes > maxOutputBytes) {
         outputError ??= outputLimitError("stdout", maxOutputBytes);
-        child.kill("SIGTERM");
+        kill("SIGTERM");
         return;
       }
       stdout += chunk;
+      try { options.onStdout?.(chunk); } catch (error) { outputError ??= error; kill("SIGTERM"); }
     });
     child.stderr.on("data", (chunk) => {
       stderrBytes += Buffer.byteLength(chunk);
       if (stderrBytes > maxOutputBytes) {
         outputError ??= outputLimitError("stderr", maxOutputBytes);
-        child.kill("SIGTERM");
+        kill("SIGTERM");
         return;
       }
       stderr += chunk;
@@ -68,11 +76,14 @@ export function runProcess(command, args = [], options = {}) {
 
     child.on("error", (error) => finish(1, null, error));
     child.on("close", (code, signal) => finish(code, signal));
-    if (options.stdin !== undefined) child.stdin.end(options.stdin);
+    if (options.stdin !== undefined) {
+      child.stdin.on("error", () => { /* early agent exit is reported by close */ });
+      child.stdin.end(options.stdin);
+    }
     timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => { if (!settled) child.kill("SIGKILL"); }, 1_000).unref();
+      kill("SIGTERM");
+      setTimeout(() => { if (!settled) kill("SIGKILL"); }, 1_000).unref();
     }, options.timeoutMs ?? 300_000);
   });
 }

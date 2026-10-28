@@ -2,15 +2,15 @@
 
 export const CATEGORIES = Object.freeze([
   "mex:scope", "mex:exact", "mex:impact", "mex:timeline", "mex:wiki", "mex:maint",
-  "knowledge-read", "knowledge-edit", "discovery", "source-read", "test", "edit", "other",
+  "knowledge-read", "knowledge-edit", "discovery", "source-read", "test", "edit", "git", "other",
 ]);
 
 const MEX_INVOCATION = /(?:^|[\s;&|(])(?:npx\s+(?:-y\s+)?mex-agent(?:@\S+)?|mex(?:\.cmd)?|node\s+\S*(?:mex|dist)[\\/]\S*cli\.js)\s+(\S+)(?:\s+(\S+))?/;
 const NPX_MEX = /\bnpx\s+(?:-y\s+)?mex-agent\b/;
 const TEST_COMMAND = /\b(?:vitest|jest|bun\s+(?:run\s+)?test|npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+test|tsc)\b/;
-const DISCOVERY_COMMAND = /^(?:rg|grep|egrep|find|ls|tree|fd|git\s+grep|git\s+ls-files|dir)\b/;
+const DISCOVERY_COMMAND = /^(?:rg|grep|egrep|find|ls|tree|fd|git\s+grep|git\s+ls-files|dir|Get-ChildItem|Select-String)\b/i;
 // A read names a file; a bare `head -20` after a pipe is only a filter.
-const READ_COMMAND = /^(?:cat|head|tail|less|more|sed|awk|type|bat|nl|wc|git\s+show)\b(?:\s+-\S+(?:\s+\d+)?)*\s+[^-\s|]/;
+const READ_COMMAND = /^(?:cat|head|tail|less|more|sed|awk|type|bat|nl|wc|Get-Content|git\s+show)\b(?:\s+-\S+(?:\s+\d+)?)*\s+[^-\s|]/i;
 
 const normalizePath = (value) => String(value ?? "").replaceAll("\\", "/");
 
@@ -65,6 +65,7 @@ export function classifyBash(command) {
       return { category: isKnowledgePath(segment) ? "knowledge-edit" : "edit", npxMex: false };
     }
     if (DISCOVERY_COMMAND.test(segment)) best = isKnowledgePath(segment) ? "knowledge-read" : "discovery";
+    else if (/^(?:Set-Content|Add-Content|Out-File|apply_patch)\b/i.test(segment)) best = isKnowledgePath(segment) ? "knowledge-edit" : "edit";
   }
   return { category: best, npxMex: false };
 }
@@ -85,6 +86,8 @@ export function classifyCall(call) {
       return { category: isKnowledgePath(input.file_path ?? input.notebook_path) ? "knowledge-edit" : "edit", path: normalizePath(input.file_path ?? input.notebook_path) };
     case "Bash": {
       const result = classifyBash(input.command);
+      if (call.codex && /\bnode\s+--test\b|\bpnpm\s+--filter\s+\S+\s+(?:run\s+)?test\b/.test(input.command)) result.category = "test";
+      if (call.codex && result.category === "other" && shellSegments(input.command).some((s) => /^git\b/.test(s))) result.category = "git";
       return { ...result, command: String(input.command ?? "") };
     }
     default:
@@ -147,7 +150,8 @@ export function summarizeCalls(toolCalls, subjectRoot = "") {
     const handHash = isHandHashEdit(call);
     if (handHash) handHashEdits += 1;
     const touched = result.path ?? "";
-    const outside = Boolean(root && /^(?:[a-zA-Z]:|\/)/.test(touched) && !normalizePath(touched).toLowerCase().startsWith(root.toLowerCase()));
+    const casePath = (p) => process.platform === "win32" ? p.toLowerCase() : p;
+    const outside = Boolean(root && /^(?:[a-zA-Z]:|\/)/.test(touched) && casePath(touched) !== casePath(root) && !casePath(normalizePath(touched)).startsWith(`${casePath(root)}/`));
     if (outside) outsideRoot += 1;
     classified.push({ id: call.id ?? null, name: call.name, status: call.status, category, fallback, handHash, outside, path: result.path ?? null, command: result.command ?? null, outputChars });
   }

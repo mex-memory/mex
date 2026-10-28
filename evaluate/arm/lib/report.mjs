@@ -7,6 +7,9 @@ import { parseSession, testCommandTime } from "./telemetry.mjs";
 import { CATEGORIES } from "./classify.mjs";
 import { firstCall, measureSession, neutralizeRows } from "./measures.mjs";
 import { readContextLog } from "./hooks.mjs";
+import { parseCodex, codexTestTime } from "./codex.mjs";
+import { CHANGE_SCHEMA } from "./session.mjs";
+import { ANSWER_SCHEMA } from "../../compare/lib/answer.mjs";
 
 export function loadRows(outputDir, suite = null) {
   const dir = join(outputDir, "runs");
@@ -17,6 +20,18 @@ export function loadRows(outputDir, suite = null) {
     const path = join(outputDir, "artifacts", `${row.runId}.jsonl`);
     if (!existsSync(path)) continue;
     const raw = readFileSync(path, "utf8"), task = suite?.tasks.find((t) => t.id === row.taskId) ?? { gold: {} };
+    if (row.agent === "codex") {
+      const last = join(outputDir, "artifacts", `${row.runId}.last-message.json`);
+      const parsed = parseCodex(raw, existsSync(last) ? readFileSync(last, "utf8") : null, row.taskType === "change" ? CHANGE_SCHEMA : ANSWER_SCHEMA);
+      if (!parsed.usage.accountingValid || !parsed.structured.ok || parsed.malformedLines) {
+        row.valid = false;
+        row.violations = [...new Set([...(row.violations ?? []), "Codex artifacts failed accounting/schema validation"])];
+      }
+      row.accounting = parsed.accounting;
+      row.testCommandTime = codexTestTime(parsed.events, parsed.toolCalls);
+      Object.assign(row.metrics, { input: parsed.usage.input, processed: parsed.usage.reportedTotal, uncachedInput: parsed.usage.uncachedInput, cacheRead: parsed.usage.cacheRead, cacheWrite: parsed.usage.cacheWrite, output: parsed.usage.output, reasoning: parsed.usage.reasoning, newTokens: parsed.usage.newTokens, costUsd: null, neutralCostUsd: null, testCommandMs: row.testCommandTime.ms, agentMinusTestMs: row.testCommandTime.ms === null ? null : Math.max(0, row.metrics.elapsedMs - row.testCommandTime.ms) });
+      continue;
+    }
     const parsed = parseSession(raw, task);
     if (!parsed.usage.accountingValid) {
       row.valid = false;
@@ -92,6 +107,7 @@ const pct = (value) => (value === null ? "–" : `${(value * 100).toFixed(1)}%`)
 
 export function generateReport({ suite, rows, grades = null, salt, baselines = {} }) {
   if (rows.some((r) => r.mode === "calibration")) throw new Error("calibration rows cannot feed main reports");
+  if (rows.some((r) => r.agent === "codex")) return codexReport(suite, rows, grades, salt);
   neutralizeRows(rows);
   const valid = rows.filter((row) => row.valid);
   const armIds = Object.keys(suite.arms).filter((id) => rows.some((r) => r.arm === id));
@@ -258,4 +274,13 @@ export function generateReport({ suite, rows, grades = null, salt, baselines = {
     for (const row of invalid) lines.push(`- ${row.runId}: ${row.violations.join("; ")}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function codexReport(suite, rows, grades, salt) {
+  const lines = [`# ${suite.id} Codex report`, "", `Rows: ${rows.length} (${rows.filter((r) => r.valid).length} valid).`, "", "Usage is summed across turn.completed events. Processed = input + output; uncached = input - cached input. Reasoning is a subset of output. No dollar cost is assigned to the subscription plan.", "", "| Run | Valid | Correct | Input | Cached input | Cache write | Output | Reasoning | Processed | Uncached | Agent ms | Test ms | Agent minus test ms |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|"];
+  for (const r of rows) { const m = r.metrics; lines.push(`| ${r.runId} | ${r.valid} | ${correctness(r, grades, salt) ?? "ungraded"} | ${m.input} | ${m.cacheRead} | ${m.cacheWrite} | ${m.output} | ${m.reasoning} | ${m.processed} | ${m.uncachedInput} | ${m.elapsedMs} | ${m.testCommandMs ?? "unavailable"} | ${m.agentMinusTestMs ?? "unavailable"} |`); }
+  lines.push("", "| Run | Model / effort / sandbox | Hook recipes | Calls | Peak RSS bytes | Violations |", "|---|---|---|---|---|---|");
+  for (const r of rows) lines.push(`| ${r.runId} | ${r.model} / ${r.effort} / ${r.sandbox} | ${Object.keys(r.hooks?.promptNotes ?? {}).join(", ") || "none"} | ${r.metrics.toolCalls} | ${r.resources?.session?.peakRss ?? "unavailable"} | ${(r.violations ?? []).join("; ").replaceAll("|", "\\|")} |`);
+  lines.push("", "Fake sessions verify process wiring, isolation, parsing, hook recipe checks, grading and cleanup. They do not verify model behavior, Codex sandbox permissions for package-manager caches, semantic retrieval quality, or macOS execution. The director must run the real pilot with the same pinned CLI, model and effort for all arms.", "");
+  return lines.join("\n");
 }

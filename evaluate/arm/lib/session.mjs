@@ -1,6 +1,7 @@
 // One agent session in a prepared checkout, plus its post-session measurements.
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { claudeAdapter } from "../../adapters/agents/claude.mjs";
 import { ANSWER_SCHEMA } from "../../compare/lib/answer.mjs";
 import { runSync, runTimed } from "../../compare/lib/process.mjs";
@@ -10,6 +11,9 @@ import { firstCall, measureSession } from "./measures.mjs";
 import { git, runMex } from "./workspace.mjs";
 import { parseSession, testCommandTime } from "./telemetry.mjs";
 import { relativePath } from "./suite.mjs";
+import { runCodex, codexTestTime, listPriceEstimate } from "./codex.mjs";
+import { historyViolations, restoreFiles } from "./history.mjs";
+import { resourceGuard, startSampler } from "./resources.mjs";
 
 export const CHANGE_SCHEMA = {
   type: "object",
@@ -115,7 +119,10 @@ function vitestCounts(output) {
 /** Restore the hidden tests over the agent's version and run them. */
 export function runHiddenTests(workspace, hiddenTests, env) {
   if (!hiddenTests) return null;
-  if (hiddenTests.fromCommit) git(workspace, ["checkout", hiddenTests.fromCommit, "--", ...hiddenTests.files]);
+  if (hiddenTests.fromCommit) {
+    if (hiddenTests.sourceRoot) restoreFiles(hiddenTests.sourceRoot, workspace, hiddenTests.fromCommit, hiddenTests.files);
+    else git(workspace, ["checkout", hiddenTests.fromCommit, "--", ...hiddenTests.files]);
+  }
   if (hiddenTests.command) return runPackageTests(workspace, hiddenTests, env);
   if (hiddenTests.runner === "hereby") return runHerebyTests(workspace, hiddenTests, env);
   if (hiddenTests.runner === "django") return runDjangoTests(workspace, hiddenTests, env);
@@ -139,13 +146,15 @@ function runHerebyTests(workspace, hiddenTests, env) {
 
 export function runPackageTests(workspace, spec, env) {
   const cwd = spec.cwd ? join(workspace, relativePath(spec.cwd)) : workspace;
-  const [command, ...args] = spec.command;
+  const expand = (s) => s.replaceAll("{node}", process.execPath).replaceAll("{workspace}", workspace).replaceAll("{harness}", fileURLToPath(new URL("..", import.meta.url)));
+  const [command, ...args] = spec.command.map(expand);
   const vitest = args.some((a) => /(?:^|\/)vitest(?:$|\.)/.test(a));
   const cap = Math.min(spec.workerCount ?? 3, vitest ? 2 : 3);
   const argv = [...args, `--maxWorkers=${cap}`];
   // Package-manager shims are scripts on this platform; use the installed JS entry.
+  const pnpmEntry = spec.pnpmEntry ?? join(dirname(process.execPath), "node_modules", "corepack", "dist", "pnpm.js");
   const result = command === "pnpm"
-    ? runSync(process.execPath, [spec.pnpmEntry ?? join(dirname(process.execPath), "node_modules", "corepack", "dist", "pnpm.js"), ...argv], { cwd, env: { ...env, JEST_WORKERS: String(cap), NX_PARALLEL: "1" }, timeoutMs: spec.timeoutMs ?? 300_000 })
+    ? existsSync(pnpmEntry) ? runSync(process.execPath, [pnpmEntry, ...argv], { cwd, env: { ...env, JEST_WORKERS: String(cap), NX_PARALLEL: "1" }, timeoutMs: spec.timeoutMs ?? 300_000 }) : runSync("pnpm", argv, { cwd, env, timeoutMs: spec.timeoutMs ?? 300_000 })
     : runSync(command, argv, { cwd, env, timeoutMs: spec.timeoutMs ?? 300_000 });
   const output = `${result.stdout}\n${result.stderr}`;
   const counts = vitestCounts(output);
@@ -259,22 +268,51 @@ export async function runWarmup({ invocation, workspace, env, outputPrefix, time
   return { usage: parsed.usage, costUsd: parsed.usage.reportedCostUsd, firstCall: firstCall(result.stdout), exitCode: result.code, elapsedMs: result.elapsedMs };
 }
 
-export async function runAgentSession({ task, armId, armSpec, workspace, env, cliBin, model, timeoutMs, outputPrefix, claudeCommand, mexPrompt = "none", appendPrompt = null, warmup = false, validateCache = warmup, verifyWorkspace = null, sharedPrefixTokens = 5656 }) {
+export async function runAgentSession(options) {
+  const { resources = null, outputPrefix, workspace } = options;
+  const guard = resources ? await resourceGuard({ ...resources, path: workspace, label: "session" }) : null;
+  const sampler = resources ? startSampler({ path: workspace, csv: `${outputPrefix}.session.resources.csv` }) : null;
+  try {
+    const row = await measuredSession(options); row.resources = { guard, session: sampler ? await sampler.stop() : null };
+    if (sampler && (row.resources.session.error || !row.resources.session.samples)) { row.valid = false; row.violations.push("session resource sampling failed"); }
+    return row;
+  }
+  catch (error) { if (sampler) await sampler.stop(); throw error; }
+}
+
+async function measuredSession({ task, armId, armSpec, workspace, env, cliBin, model, timeoutMs, outputPrefix, claudeCommand, agent = "claude", codexCommand = ["codex"], effort = "high", sandbox = "workspace-write", writableDirs = [], listPrices = null, taskBase = task.base, resources = null, mexPrompt = "none", appendPrompt = null, warmup = false, validateCache = warmup, verifyWorkspace = null, sharedPrefixTokens = 5656 }) {
   const invocation = claudeInvocation({ task, model, claudeCommand, mexPrompt, withMex: armSpec.withMex, appendPrompt });
-  const warmupResult = warmup ? await runWarmup({ invocation, workspace, env, outputPrefix }) : null;
+  let warmupResult = null;
+  if (warmup && agent === "codex") {
+    const local = join(workspace, ".mex", "local"), snapshot = `${outputPrefix}.warmup-local`, hadLocal = existsSync(local);
+    if (hadLocal) cpSync(local, snapshot, { recursive: true });
+    try {
+      const warmed = await runCodex({ command: codexCommand, model, effort, sandbox, writableDirs, workspace, env, prompt: 'Reply with the required JSON and do not change files.', schema: task.type === "change" ? CHANGE_SCHEMA : ANSWER_SCHEMA, outputPrefix: `${outputPrefix}.warmup`, timeoutMs: 120_000, withHooks: armSpec.withHooks });
+      const settled = await waitForSettle(workspace);
+      if (warmed.code !== 0 || warmed.timedOut || settled.timedOut || !warmed.parsed.usage.accountingValid) throw new Error("Codex warm-up failed");
+      warmupResult = { usage: warmed.parsed.usage, elapsedMs: warmed.elapsedMs };
+    } finally {
+      rmSync(local, { recursive: true, force: true });
+      if (hadLocal) cpSync(snapshot, local, { recursive: true });
+      rmSync(snapshot, { recursive: true, force: true });
+    }
+  } else if (warmup) warmupResult = await runWarmup({ invocation, workspace, env, outputPrefix });
   if (verifyWorkspace) verifyWorkspace();
-  const processResult = await runTimed(invocation.command, invocation.args, { cwd: workspace, env, timeoutMs });
+  const processResult = agent === "codex"
+    ? await runCodex({ command: codexCommand, model, effort, sandbox, writableDirs, workspace, env, prompt: `${buildPrompt(task, { mexPrompt, withMex: armSpec.withMex })}${sharedInstructions(task, appendPrompt)}`, schema: task.type === "change" ? CHANGE_SCHEMA : ANSWER_SCHEMA, outputPrefix, timeoutMs, withHooks: armSpec.withHooks })
+    : await runTimed(invocation.command, invocation.args, { cwd: workspace, env, timeoutMs });
   writeFileSync(`${outputPrefix}.jsonl`, processResult.stdout);
-  const parsed = parseSession(processResult.stdout, task);
-  const testTime = testCommandTime(processResult.stdout, parsed.toolCalls);
+  const parsed = agent === "codex" ? processResult.parsed : parseSession(processResult.stdout, task);
+  const testTime = agent === "codex" ? codexTestTime(parsed.events, parsed.toolCalls) : testCommandTime(processResult.stdout, parsed.toolCalls);
   const calls = summarizeCalls(parsed.toolCalls, workspace);
   writeFileSync(`${outputPrefix}.calls.json`, `${JSON.stringify(calls.classified, null, 2)}\n`);
 
-  const violations = [];
+  const violations = taskBase ? historyViolations(parsed.toolCalls, workspace, taskBase) : [];
   const first = firstCall(processResult.stdout);
-  if (validateCache && (!first || first.cacheRead < sharedPrefixTokens)) violations.push("cold-start");
+  if (agent === "claude" && validateCache && (!first || first.cacheRead < sharedPrefixTokens)) violations.push("cold-start");
   if (processResult.timedOut) violations.push("session timeout");
   if (processResult.code !== 0) violations.push(`agent exited ${processResult.code}`);
+  if (processResult.error) violations.push(`agent capture failed: ${processResult.error.message}`);
   if (parsed.malformedLines) violations.push(`${parsed.malformedLines} malformed stream line(s)`);
   if (!parsed.usage.accountingValid) violations.push(`token accounting: ${parsed.usage.accountingReason}`);
   if (calls.npxMex) violations.push("npx mex-agent invoked (unpinned CLI)");
@@ -295,6 +333,7 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
   let result;
   if (task.type === "change") {
     const structured = parseChangeResult(parsed.rawResult);
+    if (agent === "codex" && !parsed.structured.ok) violations.push(parsed.structured.error);
     if (!structured.ok) violations.push(structured.error);
     result = { change: structured.value };
   } else {
@@ -318,20 +357,28 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
     const used = Object.keys(hooks?.promptNotes ?? {});
     if (armSpec.lexical && used.some((note) => /^R3\//.test(note))) violations.push("lexical arm ran the semantic recipe");
     if (armSpec.semantic && used.some((note) => /^R2w\//.test(note))) violations.push("semantic arm fell back to the lexical recipe");
+    if (agent === "codex" && armSpec.lexical && !used.some((note) => /^R2w\//.test(note))) violations.push("lexical recipe not verified in hook log");
+    if (agent === "codex" && armSpec.semantic && !used.some((note) => /^R3\//.test(note))) violations.push("semantic recipe not verified in hook log");
   } else if (!armSpec.withMex) {
     if (existsSync(contextLog)) violations.push("files arm has a context log");
-    if (anyHookEntries(workspace) > 0) violations.push("files arm has hook entries");
+    if (anyHookEntries(workspace, agent) > 0) violations.push("files arm has hook entries");
   }
   const diff = agentDiff(workspace);
   writeFileSync(`${outputPrefix}.patch`, diff.patch);
   let mexCheck = null;
   if (withCli) {
+    if (resources) await resourceGuard({ ...resources, path: workspace, label: "post-session graph refresh" });
     runMex(cliBin, ["graph", "refresh"], workspace, env);
     const check = runMex(cliBin, ["check", "--json"], workspace, env);
     writeFileSync(`${outputPrefix}.check.json`, check.stdout);
     mexCheck = summarizeCheck(check.stdout);
   }
-  const hiddenTests = task.type === "change" ? runHiddenTests(workspace, task.hiddenTests, env) : null;
+  const gradingGuard = resources && task.type === "change" ? await resourceGuard({ ...resources, path: workspace, label: "grading" }) : null;
+  const gradeSampler = resources && task.type === "change" ? startSampler({ path: workspace, csv: `${outputPrefix}.grade.resources.csv` }) : null;
+  let hiddenTests, gradingResources;
+  try { hiddenTests = task.type === "change" ? runHiddenTests(workspace, task.hiddenTests, env) : null; }
+  finally { gradingResources = gradeSampler ? await gradeSampler.stop() : null; }
+  if (gradeSampler && (gradingResources.error || !gradingResources.samples)) violations.push("grading resource sampling failed");
   if (hiddenTests?.output) writeFileSync(`${outputPrefix}.tests.txt`, hiddenTests.output);
 
   const usage = parsed.usage;
@@ -342,7 +389,7 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
     accounting: parsed.accounting, testCommandTime: testTime,
     ...settleTelemetry(hooks, settle),
     firstCall: first, warmup: warmupResult, measures, cacheValidation: { enabled: validateCache, minimumReadTokens: sharedPrefixTokens },
-    agent: "claude",
+    agent, ...(agent === "codex" ? { model, effort, sandbox, isolation: processResult.isolation, listPriceEstimate: listPriceEstimate(usage, listPrices) } : {}), gradingResources, gradingGuard,
     process: { code: processResult.code, signal: processResult.signal, timedOut: processResult.timedOut, elapsedMs: processResult.elapsedMs, stderr: String(processResult.stderr ?? "").slice(-4000) },
     ...(settle ? { settleWait: settle } : {}),
     ...(hooks ? { hooks } : {}),
@@ -350,6 +397,7 @@ export async function runAgentSession({ task, armId, armSpec, workspace, env, cl
     metrics: {
       newTokens: usage.newTokens, processed: usage.reportedTotal, uncachedInput: usage.uncachedInput,
       cacheWrite: usage.cacheWrite, cacheRead: usage.cacheRead, output: usage.output,
+      ...(agent === "codex" ? { input: usage.input, reasoning: usage.reasoning } : {}),
       cacheUseRatio: usage.cacheUseRatio, costUsd: usage.reportedCostUsd,
       neutralCostUsd: first?.cacheRead > 0 ? usage.reportedCostUsd : null,
       elapsedMs: processResult.elapsedMs, turns: parsed.turns, toolCalls: calls.totalCalls,

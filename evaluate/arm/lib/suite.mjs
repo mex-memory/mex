@@ -8,6 +8,9 @@ export function relativePath(path) {
 export function validateSuite(suite) {
   if (!suite.id || !suite.arms?.files || !Array.isArray(suite.tasks) || !suite.tasks.length) throw new Error("suite needs id, files arm and tasks");
   const ids = new Set();
+  if (suite.agent !== undefined && !["claude", "codex"].includes(suite.agent)) throw new Error("agent must be claude or codex");
+  if (suite.sandbox !== undefined && !["read-only", "workspace-write", "danger-full-access"].includes(suite.sandbox)) throw new Error("unsupported sandbox");
+  if (suite.effort !== undefined && !["minimal", "low", "medium", "high", "xhigh", "max"].includes(suite.effort)) throw new Error("unsupported effort");
   if (suite.workerCount !== undefined && (!Number.isInteger(suite.workerCount) || suite.workerCount < 1 || suite.workerCount > 3)) throw new Error("workerCount must be 1..3");
   if (suite.subjectType && !["node", "compiler", "python", "pnpm"].includes(suite.subjectType)) throw new Error("unsupported subjectType");
   if (suite.workerConfig) relativePath(suite.workerConfig.file);

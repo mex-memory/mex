@@ -1,0 +1,16 @@
+{
+  "repos": [
+    {
+      "name": "novu-codex",
+      "suite": "evaluate/arm/suites/novu-codex.json",
+      "subject": "/path/to/private-subject-clone",
+      "cliBin": "/path/to/frozen/node_modules/.bin",
+      "deps": "/path/to/writable-dependencies/node_modules",
+      "seedGraphs": "/path/to/seed-graphs.json",
+      "output": "/path/to/results-high",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "sandbox": "workspace-write"
+    }
+  ]
+}

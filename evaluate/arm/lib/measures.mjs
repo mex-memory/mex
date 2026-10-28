@@ -25,6 +25,7 @@ export function firstCall(raw) {
 export function neutralizeRows(rows) {
   const prefix = median(rows.map((r) => r.firstCall?.cacheRead).filter((n) => n > 0));
   for (const row of rows) {
+      if (row.agent === "codex") { row.metrics.costUsd = null; row.metrics.neutralCostUsd = null; continue; }
     const p = MODEL_PRICES[row.firstCall?.model];
     const cold = row.firstCall?.cacheRead === 0;
     row.metrics.neutralCostUsd = cold ? (prefix !== null && p && row.firstCall.cacheWrite >= prefix
@@ -53,6 +54,7 @@ function touches(call, paths, symbols) {
 export function measureSession({ raw, calls, entries = [], task, answer = "", contextIndex = null }) {
   const events = streamEvents(raw);
   const toolTimes = new Map();
+  for (const e of events) if (e.type === "item.started" && e.item?.id) toolTimes.set(e.item.id, Date.parse(e.timestamp));
   for (const e of events) if (e.type === "assistant") for (const b of e.message?.content ?? []) {
     if (b.type === "tool_use" && !toolTimes.has(b.id)) toolTimes.set(b.id, Date.parse(e.timestamp));
   }

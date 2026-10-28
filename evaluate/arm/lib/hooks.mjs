@@ -1,6 +1,6 @@
 // The product hooks (`mex hooks`, `mex-hook`, `mex context`) as the agent-arm test uses them.
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { git, runMex } from "./workspace.mjs";
 
 export const CONTEXT_LOG = "context-log.jsonl";
@@ -11,8 +11,8 @@ const SETTLE_CAP_MS = 10 * 60 * 1000;
 const localDir = (workspace) => join(workspace, ".mex", "local");
 
 /** The hook entries MEX wrote into a checkout's `.claude/settings.json` (commands ending in `--mex-managed`). */
-export function managedHookCommands(workspace) {
-  const path = join(workspace, ".claude", "settings.json");
+export function managedHookCommands(workspace, tool = "claude") {
+  const path = tool === "codex" ? join(workspace, ".codex", "hooks.json") : join(workspace, ".claude", "settings.json");
   if (!existsSync(path)) return [];
   try {
     const settings = JSON.parse(readFileSync(path, "utf8"));
@@ -20,15 +20,15 @@ export function managedHookCommands(workspace) {
     for (const [event, groups] of Object.entries(settings.hooks ?? {})) {
       for (const group of groups ?? []) for (const hook of group.hooks ?? []) if (typeof hook.command === "string") commands.push({ event, matcher: group.matcher ?? null, command: hook.command });
     }
-    return commands.filter((entry) => /--mex-managed\s*$/.test(entry.command));
+    return commands.filter((entry) => /(?:^|\s)--mex-managed(?:\s|$)/.test(entry.command));
   } catch {
     return [];
   }
 }
 
 /** Any hook at all in the checkout's project settings, however it got there. */
-export function anyHookEntries(workspace) {
-  const path = join(workspace, ".claude", "settings.json");
+export function anyHookEntries(workspace, tool = "claude") {
+  const path = tool === "codex" ? join(workspace, ".codex", "hooks.json") : join(workspace, ".claude", "settings.json");
   if (!existsSync(path)) return 0;
   try {
     return Object.values(JSON.parse(readFileSync(path, "utf8")).hooks ?? {}).reduce((sum, groups) => sum + (groups ?? []).reduce((n, group) => n + (group.hooks ?? []).length, 0), 0);
@@ -42,16 +42,17 @@ export function anyHookEntries(workspace) {
  * state, so the session diff is only the agent's work. The scaffold ref is not
  * touched: this happens per checkout, after the scaffold is in place.
  */
-export function installProductHooks({ workspace, cliBin, env }) {
-  const result = runMex(cliBin, ["hooks", "install", "--tool", "claude", "--json"], workspace, env);
+export function installProductHooks({ workspace, cliBin, env, tool = "claude" }) {
+  const result = runMex(cliBin, ["hooks", "install", "--tool", tool, "--json"], workspace, env);
   if (result.code !== 0) throw new Error(`mex hooks install failed in ${workspace}: ${result.stderr || result.stdout}`);
-  const commands = managedHookCommands(workspace);
+  const commands = managedHookCommands(workspace, tool);
   if (!commands.length) throw new Error(`mex hooks install wrote no MEX hook entries in ${workspace}`);
   // The entries must run the frozen CLI's `mex-hook`, found through the arm's PATH, not some other install.
-  const status = runMex(cliBin, ["hooks", "status", "--tool", "claude", "--json"], workspace, env);
+  const status = runMex(cliBin, ["hooks", "status", "--tool", tool, "--json"], workspace, env);
   let installed = null;
   try { installed = JSON.parse(status.stdout).data?.installed ?? null; } catch { installed = null; }
-  const inside = installed?.target && resolve(installed.target).toLowerCase().startsWith(resolve(cliBin).toLowerCase());
+  const rel = installed?.target ? relative(resolve(cliBin), resolve(installed.target)) : "..";
+  const inside = rel && !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`);
   if (installed?.kind !== "bin" || installed.exists !== true || !inside) {
     throw new Error(`the installed hook command does not resolve to the frozen CLI (${JSON.stringify(installed)}), cliBin ${cliBin}`);
   }

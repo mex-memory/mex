@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { runSync } from "../../compare/lib/process.mjs";
 import { relativePath } from "./suite.mjs";
+import { clipRepository, restoreFiles } from "./history.mjs";
+import { processTable } from "./resources.mjs";
 
 // Line endings follow the subject clone's core.autocrlf: grounding baselines hash the
 // checked-out bytes, so checkouts must match the platform the scaffold was written on.
@@ -61,7 +63,7 @@ function dependencyOverlay(source, target, installRoot, workspace) {
     else if (statSync(from).isDirectory()) {
       const actual = realpathSync(from), rel = relative(installRoot, actual);
       const local = !isAbsolute(rel) && !rel.startsWith("..") && !rel.split(sep).includes("node_modules");
-      symlinkSync(local ? join(workspace, rel) : from, to, "junction");
+      symlinkSync(local ? join(workspace, rel) : from, to, process.platform === "win32" ? "junction" : "dir");
     } else copyFileSync(from, to);
   }
 }
@@ -87,7 +89,7 @@ export function linkDependencies(workspace, depsDir) {
     if (multiPackage) {
       dependencyOverlay(source, target, dirname(depsDir), workspace);
       writeFileSync(join(target, DEPENDENCY_OVERLAY), JSON.stringify({ source }));
-    } else symlinkSync(source, target, "junction");
+    } else symlinkSync(source, target, process.platform === "win32" ? "junction" : "dir");
   }
 }
 
@@ -122,12 +124,12 @@ function applyBasePatch(workspace, patch) {
  * Check out the task base, add the scaffold for the MEX arm, link the shared
  * dependencies, and commit, so the session diff is exactly the agent's work.
  */
-export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit = null, depsDir = null, appendInstructions = false, basePatches = [], stripPrototype = false, reuse = false, workerConfig = null }) {
+export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit = null, depsDir = null, appendInstructions = false, basePatches = [], stripPrototype = false, reuse = false, workerConfig = null, agent = "claude" }) {
   const timings = {}, started = Date.now();
   if (existsSync(workspace) && !reuse) throw new Error(`workspace already exists: ${workspace}`);
   mkdirSync(dirname(workspace), { recursive: true });
   if (existsSync(workspace)) resetWorkspace(workspace, base);
-  else git(subjectRoot, ["worktree", "add", "--detach", workspace, base]);
+  else clipRepository(subjectRoot, workspace, base);
   timings.checkoutMs = Date.now() - started;
   const scaffoldStarted = Date.now();
   // Every arm keeps the base's own CLAUDE.md; a scaffold contributes managed blocks.
@@ -139,9 +141,18 @@ export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit =
   }
   for (const patch of basePatches) applyBasePatch(workspace, patch);
   if (scaffoldCommit) {
-    const present = git(workspace, ["ls-tree", "--name-only", scaffoldCommit, "--", ...SCAFFOLD_PATHS]).stdout.split("\n").filter(Boolean);
+    const scaffoldPaths = [...SCAFFOLD_PATHS, ...(agent === "codex" ? ["AGENTS.md"] : [])];
+    const ownAgents = existsSync(join(workspace, "AGENTS.md")) ? readFileSync(join(workspace, "AGENTS.md"), "utf8") : null;
+    const present = git(subjectRoot, ["ls-tree", "--name-only", scaffoldCommit, "--", ...scaffoldPaths]).stdout.split("\n").filter(Boolean);
     if (!present.includes(".mex")) throw new Error(`scaffold commit ${scaffoldCommit} has no .mex directory`);
-    git(workspace, ["checkout", scaffoldCommit, "--", ...present]);
+    const files = git(subjectRoot, ["ls-tree", "-r", "--name-only", scaffoldCommit, "--", ...present]).stdout.split("\n").filter(Boolean);
+    restoreFiles(subjectRoot, workspace, scaffoldCommit, files);
+    git(workspace, ["add", "-f", "--", ...present]);
+    if (agent === "codex" && ownAgents !== null && present.includes("AGENTS.md")) {
+      const blocks = readFileSync(join(workspace, "AGENTS.md"), "utf8").match(/<!-- ((?:mex|mex-agent)(?::[a-z-]+)+):start -->[\s\S]*?<!-- \1:end -->/g) ?? [];
+      writeFileSync(join(workspace, "AGENTS.md"), `${ownAgents.trimEnd()}${blocks.length ? `\n\n${blocks.join("\n\n")}` : ""}\n`);
+      git(workspace, ["add", "--", "AGENTS.md"]);
+    }
     if (baseInstructions !== null && present.includes("CLAUDE.md")) {
       const scaffoldText = readFileSync(ownInstructions, "utf8");
       const blocks = scaffoldText.match(/<!-- ((?:mex|mex-agent)(?::[a-z-]+)+):start -->[\s\S]*?<!-- \1:end -->/g) ?? [];
@@ -150,6 +161,20 @@ export function createWorkspace({ subjectRoot, workspace, base, scaffoldCommit =
     }
   }
   if (scaffoldCommit && stripPrototype) stripPrototypeHooks(workspace);
+  if (agent === "codex") {
+    // Project executable agent configuration is excluded uniformly; authored instructions survive.
+    for (const p of [".codex", ".claude"]) {
+      git(workspace, ["rm", "-rqf", "--ignore-unmatch", "--", p]);
+      rmSync(join(workspace, p), { recursive: true, force: true });
+    }
+    const instructionFiles = git(workspace, ["ls-files", "-z"]).stdout.split("\0").filter((p) => /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/.test(p) && !p.startsWith(".mex/"));
+    for (const p of instructionFiles) if (existsSync(join(workspace, p))) {
+      const original = readFileSync(join(workspace, p), "utf8");
+      const text = scaffoldCommit ? original.replace(SKILLS_BLOCK, "") : original.replace(/<!-- ((?:mex|mex-agent)(?::[a-z-]+)+):start -->[\s\S]*?<!-- \1:end -->\r?\n?/g, "");
+      if (text.trim()) { writeFileSync(join(workspace, p), text); git(workspace, ["add", "--", p]); }
+      else git(workspace, ["rm", "-qf", "--", p]);
+    }
+  }
   if (workerConfig) {
     const path = relativePath(workerConfig.file), target = join(workspace, path);
     const previous = existsSync(target) ? JSON.parse(readFileSync(target, "utf8")) : {};
@@ -178,7 +203,7 @@ export function verifyWorkspace({ workspace, head, base, cachePath = null, withH
   if (git(workspace, ["rev-parse", "HEAD"]).stdout.trim() !== head) throw new Error("workspace HEAD differs from prepared base");
   if (git(workspace, ["merge-base", "--is-ancestor", base, head], { allowFailure: true }).code !== 0) throw new Error("task base is not the prepared workspace ancestor");
   const changed = git(workspace, ["diff", "--name-only", base, head]).stdout.trim().split("\n").filter(Boolean);
-  if (changed.some((p) => !/^(?:\.mex(?:\/|$)|\.claude(?:\/|$)|CLAUDE\.md$)/.test(p) && !allowedSetupPaths.includes(p))) throw new Error("prepared source differs from task base");
+  if (changed.some((p) => !/^(?:\.mex(?:\/|$)|\.(?:claude|codex|agents)(?:\/|$)|(?:CLAUDE|AGENTS)\.md$)/.test(p) && !allowedSetupPaths.includes(p))) throw new Error("prepared source differs from task base");
   if (git(workspace, ["status", "--porcelain"]).stdout.trim()) throw new Error("workspace is dirty before session");
   const local = join(workspace, ".mex", "local");
   for (const name of ["context-sessions", "context-flags.json", "context-log.jsonl", "context-settle.lock", "context-settle.again"]) {
@@ -235,7 +260,13 @@ export function workspaceProcessPattern(workspace) {
 
 /** Stop processes an agent left running inside the workspace (e.g. orphaned test workers). */
 function stopStrayProcesses(workspace) {
-  if (process.platform !== "win32") return;
+  if (process.platform !== "win32") {
+    const pattern = new RegExp(workspaceProcessPattern(resolve(workspace)));
+    for (const p of processTable()) if (p.pid !== process.pid && p.pid !== process.ppid && pattern.test(p.command)) {
+      try { process.kill(p.pid, "SIGTERM"); } catch (e) { if (e.code !== "ESRCH") throw e; }
+    }
+    return;
+  }
   const quote = (value) => value.replace(/'/g, "''");
   const test = `$_.CommandLine -match '${quote(workspaceProcessPattern(workspace))}'`;
   runSync("powershell", ["-NoProfile", "-Command", `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($(${test})) -and $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`]);
@@ -271,10 +302,10 @@ function removeCheckout(subjectRoot, workspace) {
  * not pay for it. The folder name is part of the index (it supplies project stop
  * words), so the template and every session use the same `projectName`.
  */
-export function buildIndexCache({ subjectRoot, cacheDir, key, base, scaffoldCommit, cliBin, env, depsDir = null, projectName = "project", hooks = null, seedCache = null }) {
+export function buildIndexCache({ subjectRoot, cacheDir, key, base, scaffoldCommit, cliBin, env, depsDir = null, projectName = "project", hooks = null, seedCache = null, agent = "claude" }) {
   const target = join(cacheDir, key);
   const wanted = hooks ? [...INDEX_FILES, CONTEXT_INDEX] : INDEX_FILES;
-  if (wanted.every((name) => existsSync(join(target, name)))) return target;
+  if (wanted.every((name) => existsSync(join(target, name))) && existsSync(join(target, "build-info.json"))) return target;
   mkdirSync(target, { recursive: true });
   const template = join(cacheDir, `${key}.template`, projectName);
   removeWorkspace(subjectRoot, template, { removeParent: true });
@@ -290,9 +321,10 @@ export function buildIndexCache({ subjectRoot, cacheDir, key, base, scaffoldComm
     // Sessions link the dependencies, so the template must too: the compiler
     // reads their declarations, and a graph built without them makes every
     // session's first refresh fall back to a full extraction.
-    createWorkspace({ subjectRoot, workspace: template, base, scaffoldCommit, depsDir, stripPrototype: Boolean(hooks) });
-    if (seedCache) copyFileSync(join(seedCache, "graph.db"), join(template, ".mex", "graph.db"));
-    timed("graphMs", seedCache ? ["graph", "refresh"] : ["graph"]);
+    createWorkspace({ subjectRoot, workspace: template, base, scaffoldCommit, depsDir, stripPrototype: Boolean(hooks), agent });
+    if (seedCache) copyFileSync(statSync(seedCache).isFile() ? seedCache : join(seedCache, "graph.db"), join(template, ".mex", "graph.db"));
+    const graph = timed("graphMs", seedCache ? ["graph", "refresh", "--json"] : ["graph", "--json"]);
+    writeFileSync(join(target, "graph-result.json"), graph.stdout);
     timed("wikiIndexMs", ["wiki", "rebuild-index"]);
     // The clean-state check report every session's loop-close result is diffed against.
     writeFileSync(join(target, "check-baseline.json"), runMex(cliBin, ["check", "--json"], template, env).stdout);
@@ -305,7 +337,11 @@ export function buildIndexCache({ subjectRoot, cacheDir, key, base, scaffoldComm
       copyFileSync(join(local, CONTEXT_INDEX), join(target, CONTEXT_INDEX));
       if (hooks.aliasesFile) copyFileSync(join(local, CONTEXT_ALIASES), join(target, CONTEXT_ALIASES));
     }
-    writeFileSync(join(target, "build-info.json"), `${JSON.stringify({ key, base, scaffoldCommit, seedCache, graphMode: seedCache ? "refresh" : "build", timings, builtAt: new Date().toISOString() }, null, 2)}
+    let graphResult = null;
+    try { graphResult = JSON.parse(graph.stdout); } catch { /* kept as raw artifact */ }
+    const refresh = graphResult?.refresh ?? graphResult;
+    const unchanged = graphResult?.state === "succeeded" && graphResult?.filesIndexed === 0;
+    writeFileSync(join(target, "build-info.json"), `${JSON.stringify({ key, base, scaffoldCommit, seedCache, graphMode: seedCache ? "refresh" : "build", refreshMode: refresh?.mode ?? (unchanged ? "unchanged" : null), refreshResult: graphResult, fullExtractionFallback: seedCache ? refresh?.mode ? refresh.mode === "full" : unchanged ? false : null : false, fallbackReason: refresh?.fallbackReason ?? null, timings, builtAt: new Date().toISOString() }, null, 2)}
 `);
   } finally {
     removeWorkspace(subjectRoot, template, { removeParent: true });
