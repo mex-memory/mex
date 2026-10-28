@@ -27,6 +27,8 @@ export interface ResolveOptions {
   platform?: NodeJS.Platform;
   /** Where `dist/hook.js` may be; defaults to the places relative to this module. */
   entryCandidates?: readonly string[];
+  /** The environment whose MEX_HOOK_* switches the command records; defaults to the process's. */
+  switchEnv?: NodeJS.ProcessEnv;
 }
 
 const BIN = "mex-hook";
@@ -65,7 +67,7 @@ export function findHookEntry(options: ResolveOptions = {}): string | null {
 const forwardSlashes = (path: string): string => path.replace(/\\/g, "/");
 
 export function resolveHookCommand(options: ResolveOptions = {}): HookCommand | null {
-  const suffix = installedSwitchArgs().join(" ");
+  const suffix = installedSwitchArgs(options.switchEnv).join(" ");
   const marker = `${MEX_HOOK_MARKER}${suffix ? ` ${suffix}` : ""}`;
   const entry = findHookEntry(options);
   if (entry === null) {

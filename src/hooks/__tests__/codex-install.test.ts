@@ -24,6 +24,22 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 
 describe("Codex hooks installation", () => {
+  it.each(["codex", "claude"] as const)("status of a %s install judges it by its recorded switches, not the caller's environment", tool => {
+    vi.stubEnv("MEX_HOOK_EDIT", "1");
+    runHooksInstall(io, { tool });
+    vi.unstubAllEnvs();
+    out = [];
+    runHooksStatus(io, { tool, json: true });
+    const status = JSON.parse(out.join(""));
+    expect(status.data.state).toBe("installed");
+    expect(status.data.settings.strays).toBe(0);
+    // An explicit environment value still wins, and then the install reads as out of date.
+    vi.stubEnv("MEX_HOOK_EDIT", "0");
+    out = [];
+    runHooksStatus(io, { tool, json: true });
+    expect(JSON.parse(out.join("")).data.state).toBe("outdated");
+  });
+
   it("installs anchored matchers, timeout, AGENTS block and trust advice; remains byte-idempotent", () => {
     vi.stubEnv("MEX_HOOK_EDIT", "1");
     writeFileSync(join(root, "CLAUDE.md"), "keep Claude\n");

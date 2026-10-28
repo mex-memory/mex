@@ -1,8 +1,9 @@
 /**
- * `mex hooks install | status | remove` for Claude Code.
+ * `mex hooks install | status | remove` for Claude Code and Codex.
  *
  * Two files change, both only inside what MEX owns: the marked hook entries in
- * `.claude/settings.json`, and the short managed block in `CLAUDE.md`. Each
+ * the host's hook settings (`.claude/settings.json` or `.codex/hooks.json`), and
+ * the short managed block in its instructions (`CLAUDE.md` or `AGENTS.md`). Each
  * operation is planned first (pure text in, text out), can be shown as a diff
  * without writing, and is applied atomically per file. Nothing here touches
  * `.mex/`.
@@ -17,6 +18,7 @@ import {
   type HookTool,
   type HookHost,
   inspectSettings,
+  isManagedCommand,
   planInstall,
   planRemove,
   renderDiff,
@@ -25,6 +27,7 @@ import {
 } from "./claude-settings.js";
 import { describeInstalledCommand, resolveHookCommand, type HookCommand, type ResolveOptions } from "./command.js";
 import { planHookInstructionEdit, planHookInstructionRemoval } from "./instructions.js";
+import { applyInstalledSwitches } from "./switches.js";
 
 export const SETTINGS_RELATIVE = ".claude/settings.json";
 export const INSTRUCTIONS_RELATIVE = "CLAUDE.md";
@@ -286,12 +289,36 @@ export interface HooksStatus {
   state: "installed" | "partial" | "outdated" | "broken" | "none" | "unreadable";
 }
 
+/**
+ * The environment an installed MEX command runs with: its recorded switches,
+ * under any the caller's environment sets explicitly. Status judges the
+ * installation against this, so a switch chosen at install time is not drift.
+ */
+function installedSwitchEnv(current: string | null): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  let hooks: unknown;
+  try { hooks = JSON.parse(current ?? "{}")?.hooks; } catch { return env; }
+  if (hooks === null || typeof hooks !== "object") return env;
+  for (const groups of Object.values(hooks as Record<string, unknown>)) {
+    for (const group of Array.isArray(groups) ? groups : []) {
+      for (const hook of Array.isArray(group?.hooks) ? group.hooks : []) {
+        if (isManagedCommand(hook?.command)) {
+          applyInstalledSwitches((hook.command as string).split(/\s+/), env);
+          return env;
+        }
+      }
+    }
+  }
+  return env;
+}
+
 export function hooksStatus(cwd: string, options: ResolveOptions = {}, tool: HookTool = "claude"): HooksStatus {
   const paths = resolveHooksPaths(cwd, tool);
   const settingsFile = readRegular(paths.settings, "HOOKS_SETTINGS_UNSAFE");
-  const resolved = resolveHookCommand(options);
+  const switchEnv = installedSwitchEnv(decode(settingsFile.bytes));
+  const resolved = resolveHookCommand({ ...options, switchEnv });
   const available = resolved === null ? null : hostCommand(resolved, tool, decode(settingsFile.bytes));
-  const settings = inspectSettings(decode(settingsFile.bytes), available?.command ?? null, paths.host);
+  const settings = inspectSettings(decode(settingsFile.bytes), available?.command ?? null, hookHost(tool, switchEnv));
   const instructionsFile = readRegular(paths.instructions, "HOOKS_INSTRUCTIONS_UNSAFE");
   const present = planHookInstructionRemoval(instructionsFile.bytes).action === "remove";
 
