@@ -1210,7 +1210,7 @@ contextCommand
 // ── Hooks ──
 //
 // Installs the light `mex-hook` entry into an agent host's settings
-// (docs/design/context-hooks.md). Claude Code is the first host.
+// (docs/design/context-hooks.md). Claude Code and Codex share the runtime.
 
 function hooksIo(): import("./hooks/cli.js").HooksIo {
   return {
@@ -1229,8 +1229,8 @@ const hooksCommand = program
 
 hooksCommand
   .command("install")
-  .description("Add MEX's hook entries to the project's .claude/settings.json and a short instruction block to CLAUDE.md (your own entries are kept)")
-  .option("--tool <tool>", "the agent host (only claude for now)", "claude")
+  .description("Add MEX's project hooks and instruction block for Claude Code or Codex (your own entries are kept)")
+  .option("--tool <tool>", "the agent host: claude (default) or codex", "claude")
   .option("--dry-run", "show the diff without writing anything")
   .option("--json", "emit one JSON object")
   .action(async (options) => {
@@ -1241,7 +1241,7 @@ hooksCommand
 hooksCommand
   .command("status")
   .description("Show whether the hooks are installed, which command they run and whether it still resolves")
-  .option("--tool <tool>", "the agent host (only claude for now)", "claude")
+  .option("--tool <tool>", "the agent host: claude (default) or codex", "claude")
   .option("--json", "emit one JSON object")
   .action(async (options) => {
     const { runHooksStatus } = await import("./hooks/cli.js");
@@ -1251,7 +1251,7 @@ hooksCommand
 hooksCommand
   .command("remove")
   .description("Remove exactly the entries and block MEX installed, leaving everything else as it was")
-  .option("--tool <tool>", "the agent host (only claude for now)", "claude")
+  .option("--tool <tool>", "the agent host: claude (default) or codex", "claude")
   .option("--dry-run", "show the diff without writing anything")
   .option("--json", "emit one JSON object")
   .action(async (options) => {
@@ -1573,7 +1573,7 @@ program
     console.log("  mex context prompt <text>  Knowledge packet for a prompt (empty when nothing fits)");
     console.log("  mex context index      Build the checkout-local context index");
     console.log("  mex context semantic install|status|remove  Optional embeddings extra");
-    console.log("  mex hooks install|status|remove  Agent hooks that deliver project knowledge (Claude Code)");
+    console.log("  mex hooks install|status|remove  Agent hooks that deliver project knowledge (Claude Code or Codex)");
     console.log("  mex heartbeat          Run lightweight agent-memory health checks");
     console.log("  mex doctor             Friendly scaffold health summary");
     console.log("  mex tui                Open the interactive mex dashboard");

@@ -13,6 +13,9 @@ import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, ren
 import { dirname, join } from "node:path";
 import { resolveContextRoot } from "../context/root.js";
 import {
+  hookHost,
+  type HookTool,
+  type HookHost,
   inspectSettings,
   planInstall,
   planRemove,
@@ -44,7 +47,9 @@ export class HooksError extends Error {
   }
 }
 
-export const SUPPORTED_TOOLS = ["claude"] as const;
+export const SUPPORTED_TOOLS = ["claude", "codex"] as const;
+export const CODEX_TRUST_NOTICE = "Codex runs project hooks only after you trust them: open Codex in this project and review /hooks.\nUnattended runs can pass --dangerously-bypass-hook-trust; the project .codex/ layer must also be trusted.";
+const CREATED_MARKER = "--mex-created-settings";
 
 export function assertSupportedTool(tool: string | undefined): void {
   if (tool !== undefined && !(SUPPORTED_TOOLS as readonly string[]).includes(tool)) {
@@ -93,20 +98,45 @@ function writeAtomic(path: string, bytes: Uint8Array): void {
 
 export interface HooksPaths {
   projectRoot: string;
+  host: HookHost;
   settings: string;
   instructions: string;
 }
 
-export function resolveHooksPaths(cwd: string): HooksPaths {
+export function resolveHooksPaths(cwd: string, tool: HookTool = "claude"): HooksPaths {
   const root = resolveContextRoot(cwd);
   if (root === null) {
     throw new HooksError("HOOKS_NO_SCAFFOLD", `No MEX scaffold (.mex/) found at or above ${cwd}. Run \`mex setup\` in the project first.`);
   }
+  const host = hookHost(tool);
+  // Refuse a symlinked host directory too; checking only its leaf follows it.
+  try {
+    const dir = lstatSync(join(root.projectRoot, dirname(host.settings)));
+    if (!dir.isDirectory() || dir.isSymbolicLink()) throw new HooksError("HOOKS_SETTINGS_UNSAFE", "The project hook directory is not a regular directory.");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   return {
     projectRoot: root.projectRoot,
-    settings: join(root.projectRoot, ".claude", "settings.json"),
-    instructions: join(root.projectRoot, INSTRUCTIONS_RELATIVE),
+    host,
+    settings: join(root.projectRoot, host.settings),
+    instructions: join(root.projectRoot, host.instructions),
   };
+}
+
+/** Only marked MEX commands can assert that MEX originally created this file. */
+function createdSettings(current: string | null): boolean {
+  try {
+    const hooks = JSON.parse(current ?? "{}").hooks ?? {};
+    return Object.values(hooks).some(groups => Array.isArray(groups) && groups.some(group =>
+      Array.isArray(group?.hooks) && group.hooks.some((hook: { command?: unknown }) =>
+        typeof hook.command === "string" && /(?:^|\s)--mex-managed(?:\s|$)/.test(hook.command) && hook.command.split(/\s+/).includes(CREATED_MARKER))));
+  } catch { return false; }
+}
+
+function hostCommand(command: HookCommand, tool: HookTool, current: string | null): HookCommand {
+  if (tool === "claude") return command;
+  return { ...command, command: `${command.command} --host codex${current === null || createdSettings(current) ? ` ${CREATED_MARKER}` : ""}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +157,7 @@ export interface FileChange {
 }
 
 export interface HooksPlan {
+  tool: HookTool;
   operation: "install" | "remove";
   command: HookCommand | null;
   settings: FileChange;
@@ -136,11 +167,11 @@ export interface HooksPlan {
 }
 
 function settingsChange(paths: HooksPaths, file: ReadFile, plan: SettingsPlan): FileChange {
-  if (plan.action === "conflict") throw new HooksError("HOOKS_SETTINGS_UNSAFE", `${SETTINGS_RELATIVE}: ${plan.message}`);
+  if (plan.action === "conflict") throw new HooksError("HOOKS_SETTINGS_UNSAFE", `${paths.host.settings}: ${plan.message}`);
   const before = decode(file.bytes);
   const noop = plan.text === null;
   return {
-    relative: SETTINGS_RELATIVE,
+    relative: paths.host.settings,
     path: paths.settings,
     action: noop ? "noop" : plan.action === "remove" ? "update" : plan.action === "create" ? "create" : "update",
     before,
@@ -149,9 +180,9 @@ function settingsChange(paths: HooksPaths, file: ReadFile, plan: SettingsPlan): 
   };
 }
 
-export function planHooksInstall(cwd: string, options: ResolveOptions = {}): HooksPlan {
-  const paths = resolveHooksPaths(cwd);
-  const command = resolveHookCommand(options);
+export function planHooksInstall(cwd: string, options: ResolveOptions = {}, tool: HookTool = "claude"): HooksPlan {
+  const paths = resolveHooksPaths(cwd, tool);
+  let command = resolveHookCommand(options);
   if (command === null) {
     throw new HooksError(
       "HOOKS_NO_COMMAND",
@@ -159,39 +190,53 @@ export function planHooksInstall(cwd: string, options: ResolveOptions = {}): Hoo
     );
   }
   const settingsFile = readRegular(paths.settings, "HOOKS_SETTINGS_UNSAFE");
-  const settings = settingsChange(paths, settingsFile, planInstall(decode(settingsFile.bytes), command.command));
+  command = hostCommand(command, tool, decode(settingsFile.bytes));
+  const settingsPlan = planInstall(decode(settingsFile.bytes), command.command, paths.host);
+  const settings = settingsChange(paths, settingsFile, settingsPlan);
+  // Turning every event off must not discard the ownership marker and strand
+  // an empty file that a later remove could no longer identify as ours.
+  if (tool === "codex" && settingsPlan.entries === 0 && settingsPlan.text !== null && createdSettings(decode(settingsFile.bytes))) {
+    const remaining = JSON.parse(settingsPlan.text);
+    if (Object.keys(remaining).every(key => key === "hooks") && Object.keys(remaining.hooks ?? {}).length === 0) {
+      Object.assign(settings, { action: "remove", after: null, bytes: null, deleteFile: true });
+    }
+  }
 
   const instructionsFile = readRegular(paths.instructions, "HOOKS_INSTRUCTIONS_UNSAFE");
   const edit = planHookInstructionEdit(instructionsFile.bytes);
   if (edit.action === "conflict") {
-    throw new HooksError("HOOKS_INSTRUCTIONS_UNSAFE", `${INSTRUCTIONS_RELATIVE}: the MEX hooks block markers are malformed (${edit.reason}); fix or delete them and try again.`);
+    throw new HooksError("HOOKS_INSTRUCTIONS_UNSAFE", `${paths.host.instructions}: the MEX hooks block markers are malformed (${edit.reason}); fix or delete them and try again.`);
   }
   const instructions: FileChange = {
-    relative: INSTRUCTIONS_RELATIVE,
+    relative: paths.host.instructions,
     path: paths.instructions,
     action: edit.action === "noop" ? "noop" : edit.action === "create" ? "create" : "update",
     before: decode(instructionsFile.bytes),
     after: edit.desiredBytes === undefined ? decode(instructionsFile.bytes) : decode(edit.desiredBytes),
     bytes: edit.action === "noop" || edit.desiredBytes === undefined ? null : edit.desiredBytes,
   };
-  return { operation: "install", command, settings, instructions, entries: settings.action === "noop" ? 0 : 5 };
+  return { tool, operation: "install", command, settings, instructions, entries: settingsPlan.entries };
 }
 
-export function planHooksRemove(cwd: string): HooksPlan {
-  const paths = resolveHooksPaths(cwd);
+export function planHooksRemove(cwd: string, tool: HookTool = "claude"): HooksPlan {
+  const paths = resolveHooksPaths(cwd, tool);
   const settingsFile = readRegular(paths.settings, "HOOKS_SETTINGS_UNSAFE");
-  const plan = planRemove(decode(settingsFile.bytes));
+  const plan = planRemove(decode(settingsFile.bytes), paths.host);
   const settings = settingsChange(paths, settingsFile, plan);
+  // Ownership travels on marked commands, never on a user key or in global settings.
+  if (tool === "codex" && plan.action === "remove" && createdSettings(decode(settingsFile.bytes)) && plan.text !== null && Object.keys(JSON.parse(plan.text)).length === 0) {
+    Object.assign(settings, { action: "remove", after: null, bytes: null, deleteFile: true });
+  }
 
   const instructionsFile = readRegular(paths.instructions, "HOOKS_INSTRUCTIONS_UNSAFE");
   const removal = planHookInstructionRemoval(instructionsFile.bytes);
   if (removal.action === "conflict") {
-    throw new HooksError("HOOKS_INSTRUCTIONS_UNSAFE", `${INSTRUCTIONS_RELATIVE}: the MEX hooks block markers are malformed (${removal.reason}); fix or delete them and try again.`);
+    throw new HooksError("HOOKS_INSTRUCTIONS_UNSAFE", `${paths.host.instructions}: the MEX hooks block markers are malformed (${removal.reason}); fix or delete them and try again.`);
   }
   const instructions: FileChange =
     removal.action === "remove"
       ? {
-          relative: INSTRUCTIONS_RELATIVE,
+          relative: paths.host.instructions,
           path: paths.instructions,
           action: removal.empty ? "remove" : "update",
           before: decode(instructionsFile.bytes),
@@ -199,8 +244,8 @@ export function planHooksRemove(cwd: string): HooksPlan {
           bytes: removal.empty ? null : removal.desiredBytes!,
           deleteFile: removal.empty === true,
         }
-      : { relative: INSTRUCTIONS_RELATIVE, path: paths.instructions, action: "noop", before: decode(instructionsFile.bytes), after: decode(instructionsFile.bytes), bytes: null };
-  return { operation: "remove", command: null, settings, instructions, entries: plan.entries };
+      : { relative: paths.host.instructions, path: paths.instructions, action: "noop", before: decode(instructionsFile.bytes), after: decode(instructionsFile.bytes), bytes: null };
+  return { tool, operation: "remove", command: null, settings, instructions, entries: plan.entries };
 }
 
 /** The unified diff of everything a plan would write. */
@@ -228,7 +273,7 @@ export function applyHooksPlan(plan: HooksPlan): void {
 // ---------------------------------------------------------------------------
 
 export interface HooksStatus {
-  tool: "claude";
+  tool: HookTool;
   settingsPath: string;
   settingsExists: boolean;
   settings: SettingsStatus;
@@ -241,11 +286,12 @@ export interface HooksStatus {
   state: "installed" | "partial" | "outdated" | "broken" | "none" | "unreadable";
 }
 
-export function hooksStatus(cwd: string, options: ResolveOptions = {}): HooksStatus {
-  const paths = resolveHooksPaths(cwd);
-  const available = resolveHookCommand(options);
+export function hooksStatus(cwd: string, options: ResolveOptions = {}, tool: HookTool = "claude"): HooksStatus {
+  const paths = resolveHooksPaths(cwd, tool);
   const settingsFile = readRegular(paths.settings, "HOOKS_SETTINGS_UNSAFE");
-  const settings = inspectSettings(decode(settingsFile.bytes), available?.command ?? null);
+  const resolved = resolveHookCommand(options);
+  const available = resolved === null ? null : hostCommand(resolved, tool, decode(settingsFile.bytes));
+  const settings = inspectSettings(decode(settingsFile.bytes), available?.command ?? null, paths.host);
   const instructionsFile = readRegular(paths.instructions, "HOOKS_INSTRUCTIONS_UNSAFE");
   const present = planHookInstructionRemoval(instructionsFile.bytes).action === "remove";
 
@@ -260,5 +306,5 @@ export function hooksStatus(cwd: string, options: ResolveOptions = {}): HooksSta
   else if (counts.missing > 0) state = "partial";
   else if (counts.outdated > 0 || settings.strays > 0) state = "outdated";
   else state = "installed";
-  return { tool: "claude", settingsPath: paths.settings, settingsExists: settingsFile.bytes !== null, settings, installed, available, instructionsPresent: present, state };
+  return { tool, settingsPath: paths.settings, settingsExists: settingsFile.bytes !== null, settings, installed, available, instructionsPresent: present, state };
 }

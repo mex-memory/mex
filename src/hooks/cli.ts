@@ -12,6 +12,7 @@ import {
   assertSupportedTool,
   hooksStatus,
   HooksError,
+  CODEX_TRUST_NOTICE,
   planHooksInstall,
   planHooksRemove,
   renderPlanDiff,
@@ -53,17 +54,18 @@ function ok(io: HooksIo, flags: HooksFlags, data: unknown, human: string): void 
 }
 
 function summarize(plan: HooksPlan, dryRun: boolean): string {
+  const host = plan.tool === "codex" ? "Codex" : "Claude Code";
   const changes = [plan.settings, plan.instructions].filter((c) => c.action !== "noop");
   if (changes.length === 0) {
-    return plan.operation === "install" ? "MEX hooks for Claude Code are already installed; nothing to change." : "No MEX hooks were found; nothing to remove.";
+    return plan.operation === "install" ? `MEX hooks for ${host} are already installed; nothing to change.` : "No MEX hooks were found; nothing to remove.";
   }
   const lines: string[] = [];
   if (plan.operation === "install") {
-    lines.push(dryRun ? "Would install MEX hooks for Claude Code." : "Installed MEX hooks for Claude Code.");
+    lines.push(dryRun ? `Would install MEX hooks for ${host}.` : `Installed MEX hooks for ${host}.`);
     if (plan.command) lines.push("Command: " + plan.command.command + " (" + (plan.command.kind === "bin" ? "the mex-hook bin on PATH" : "the built hook bundle") + ")");
   } else {
     const noun = plan.entries === 1 ? "entry" : "entries";
-    lines.push((dryRun ? "Would remove" : "Removed") + " MEX hooks for Claude Code (" + plan.entries + " " + noun + ").");
+    lines.push((dryRun ? "Would remove" : "Removed") + ` MEX hooks for ${host} (` + plan.entries + " " + noun + ").");
   }
   const WOULD = { create: "would create", update: "would update", remove: "would delete" } as const;
   const DID = { create: "created", update: "updated", remove: "deleted" } as const;
@@ -77,7 +79,7 @@ function summarize(plan: HooksPlan, dryRun: boolean): string {
 export function runHooksInstall(io: HooksIo, flags: HooksFlags = {}): void {
   try {
     assertSupportedTool(flags.tool);
-    const plan = planHooksInstall(io.cwd, io.resolve);
+    const plan = planHooksInstall(io.cwd, io.resolve, flags.tool as "claude" | "codex" | undefined);
     const dryRun = flags.dryRun === true;
     if (!dryRun) applyHooksPlan(plan);
     const diff = dryRun ? renderPlanDiff(plan) : "";
@@ -87,11 +89,12 @@ export function runHooksInstall(io: HooksIo, flags: HooksFlags = {}): void {
       {
         dryRun,
         command: plan.command,
+        ...(plan.tool === "codex" ? { trust: CODEX_TRUST_NOTICE } : {}),
         settings: { path: plan.settings.relative, action: plan.settings.action },
         instructions: { path: plan.instructions.relative, action: plan.instructions.action },
         ...(dryRun ? { diff } : {}),
       },
-      `${summarize(plan, dryRun)}${dryRun && diff !== "" ? `\n\n${diff}` : ""}`,
+      `${summarize(plan, dryRun)}${plan.tool === "codex" && plan.operation === "install" ? `\n${CODEX_TRUST_NOTICE}` : ""}${dryRun && diff !== "" ? `\n\n${diff}` : ""}`,
     );
   } catch (error) {
     fail(io, flags, error);
@@ -101,7 +104,7 @@ export function runHooksInstall(io: HooksIo, flags: HooksFlags = {}): void {
 export function runHooksRemove(io: HooksIo, flags: HooksFlags = {}): void {
   try {
     assertSupportedTool(flags.tool);
-    const plan = planHooksRemove(io.cwd);
+    const plan = planHooksRemove(io.cwd, flags.tool as "claude" | "codex" | undefined);
     const dryRun = flags.dryRun === true;
     if (!dryRun) applyHooksPlan(plan);
     const diff = dryRun ? renderPlanDiff(plan) : "";
@@ -132,7 +135,7 @@ const STATE_TEXT: Record<HooksStatus["state"], string> = {
 };
 
 function describeStatus(status: HooksStatus): string {
-  const lines = [`MEX hooks for Claude Code: ${STATE_TEXT[status.state]}`];
+  const lines = [`MEX hooks for ${status.tool === "codex" ? "Codex" : "Claude Code"}: ${STATE_TEXT[status.state]}`];
   if (status.settings.parseError) lines.push(`  ${status.settings.parseError}`);
   if (status.installed) {
     const how =
@@ -151,15 +154,15 @@ function describeStatus(status: HooksStatus): string {
   for (const entry of status.settings.entries) lines.push(`  ${entry.state.padEnd(9)} ${entry.label}`);
   if (status.settings.strays > 0) lines.push(`  ${status.settings.strays} extra MEX entr${status.settings.strays === 1 ? "y" : "ies"} from an older install (install removes them)`);
   if (status.settings.userHooks > 0) lines.push(`  ${status.settings.userHooks} hook${status.settings.userHooks === 1 ? "" : "s"} of your own, never touched`);
-  lines.push(`  CLAUDE.md block: ${status.instructionsPresent ? "present" : "absent"}`);
+  lines.push(`  ${status.tool === "codex" ? "AGENTS.md" : "CLAUDE.md"} block: ${status.instructionsPresent ? "present" : "absent"}`);
   return lines.join("\n");
 }
 
 export function runHooksStatus(io: HooksIo, flags: HooksFlags = {}): void {
   try {
     assertSupportedTool(flags.tool);
-    const status = hooksStatus(io.cwd, io.resolve);
-    ok(io, flags, status, describeStatus(status));
+    const status = hooksStatus(io.cwd, io.resolve, flags.tool as "claude" | "codex" | undefined);
+    ok(io, flags, { ...status, ...(status.tool === "codex" ? { trust: CODEX_TRUST_NOTICE } : {}) }, `${describeStatus(status)}${status.tool === "codex" ? `\n${CODEX_TRUST_NOTICE}` : ""}`);
   } catch (error) {
     fail(io, flags, error);
   }

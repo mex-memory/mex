@@ -12,6 +12,7 @@ import { existsSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MEX_HOOK_MARKER } from "./claude-settings.js";
+import { installedSwitchArgs } from "./switches.js";
 
 export interface HookCommand {
   kind: "bin" | "node";
@@ -64,14 +65,16 @@ export function findHookEntry(options: ResolveOptions = {}): string | null {
 const forwardSlashes = (path: string): string => path.replace(/\\/g, "/");
 
 export function resolveHookCommand(options: ResolveOptions = {}): HookCommand | null {
+  const suffix = installedSwitchArgs().join(" ");
+  const marker = `${MEX_HOOK_MARKER}${suffix ? ` ${suffix}` : ""}`;
   const entry = findHookEntry(options);
   if (entry === null) {
     const bin = findBinOnPath(options);
-    return bin === null ? null : { kind: "bin", command: `${BIN} ${MEX_HOOK_MARKER}`, target: bin };
+    return bin === null ? null : { kind: "bin", command: `${BIN} ${marker}`, target: bin };
   }
   const absolute = resolve(entry);
   // Forward slashes survive both a POSIX shell and Windows' own argument parsing.
-  return { kind: "node", command: `node "${forwardSlashes(absolute)}" ${MEX_HOOK_MARKER}`, target: absolute };
+  return { kind: "node", command: `node "${forwardSlashes(absolute)}" ${marker}`, target: absolute };
 }
 
 /** What an installed command string runs, for `status`. */

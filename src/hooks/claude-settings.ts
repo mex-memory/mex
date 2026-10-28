@@ -20,6 +20,29 @@ export interface HookSpec {
   label: string;
 }
 
+export type HookTool = "claude" | "codex";
+
+/** Host differences stay at the settings boundary; the merge has one implementation. */
+export interface HookHost {
+  tool: HookTool;
+  settings: string;
+  instructions: string;
+  timeoutKey: string;
+  specs: readonly HookSpec[];
+}
+
+export function hookHost(tool: HookTool = "claude", env: NodeJS.ProcessEnv = process.env): HookHost {
+  const flags = hookSwitches(env);
+  const specs: HookSpec[] = [];
+  if (flags.prompt) specs.push({ event: "UserPromptSubmit", label: "UserPromptSubmit" });
+  if (flags.bash && (flags.search || flags.read || flags.edit)) specs.push({ event: "PostToolUse", matcher: "^Bash$", label: "PostToolUse Bash" });
+  if (flags.edit) specs.push({ event: "PostToolUse", matcher: "^apply_patch$", label: "PostToolUse apply_patch" });
+  if (flags.stop) specs.push({ event: "Stop", label: "Stop" });
+  return tool === "claude"
+    ? { tool, settings: ".claude/settings.json", instructions: "CLAUDE.md", timeoutKey: "timeout", specs: hookSpecs(env) }
+    : { tool, settings: ".codex/hooks.json", instructions: "AGENTS.md", timeoutKey: "timeout", specs };
+}
+
 /** The entries MEX installs. The command is the same for all; the host's payload says which event it is. */
 export const HOOK_SPECS: readonly HookSpec[] = [
   { event: "UserPromptSubmit", label: "UserPromptSubmit" },
@@ -54,17 +77,17 @@ export class SettingsError extends Error {
   }
 }
 
-function parseSettings(text: string | null): Json {
+function parseSettings(text: string | null, file = "settings.json"): Json {
   if (text === null || text.trim() === "") return {};
   let value: unknown;
   try {
     value = JSON.parse(text.replace(/^﻿/, ""));
   } catch (error) {
-    throw new SettingsError(`settings.json is not valid JSON (${error instanceof Error ? error.message : String(error)}); MEX will not rewrite it.`);
+    throw new SettingsError(`${file} is not valid JSON (${error instanceof Error ? error.message : String(error)}); MEX will not rewrite it.`);
   }
-  if (!isObject(value)) throw new SettingsError("settings.json is not a JSON object; MEX will not rewrite it.");
+  if (!isObject(value)) throw new SettingsError(`${file} is not a JSON object; MEX will not rewrite it.`);
   if (value["hooks"] !== undefined && !isObject(value["hooks"])) {
-    throw new SettingsError('settings.json has a "hooks" value that is not an object; MEX will not rewrite it.');
+    throw new SettingsError(`${file} has a "hooks" value that is not an object; MEX will not rewrite it.`);
   }
   return value;
 }
@@ -95,8 +118,8 @@ function groupsOf(hooks: Json, event: string): Group[] {
 const managedHooksIn = (group: Group): Json[] =>
   Array.isArray(group.hooks) ? (group.hooks as unknown[]).filter((hook): hook is Json => isObject(hook) && isManagedCommand(hook["command"])) : [];
 
-function desiredHook(command: string): Json {
-  return { type: "command", command, timeout: HOOK_TIMEOUT_SECONDS };
+function desiredHook(command: string, host: HookHost): Json {
+  return { type: "command", command, [host.timeoutKey]: HOOK_TIMEOUT_SECONDS };
 }
 
 export interface SettingsPlan {
@@ -116,11 +139,12 @@ export interface SettingsPlan {
  * dropped, and missing entries are appended as groups of their own; a user's
  * group is never mixed with ours.
  */
-export function planInstall(current: string | null, command: string): SettingsPlan {
-  const specs = hookSpecs();
+export function planInstall(current: string | null, command: string, host: HookHost = hookHost()): SettingsPlan {
+  const specs = host.specs;
+  if (host.tool === "codex" && current === null && specs.length === 0) return { action: "noop", text: null, entries: 0 };
   let settings: Json;
   try {
-    settings = parseSettings(current);
+    settings = parseSettings(current, host.tool === "codex" ? host.settings : "settings.json");
   } catch (error) {
     return { action: "conflict", text: null, entries: 0, message: (error as Error).message };
   }
@@ -136,14 +160,14 @@ export function planInstall(current: string | null, command: string): SettingsPl
     const hook = managedHooksIn(group)[0]!;
     hook["type"] = "command";
     hook["command"] = command;
-    hook["timeout"] = HOOK_TIMEOUT_SECONDS;
+    hook[host.timeoutKey] = HOOK_TIMEOUT_SECONDS;
     kept.add(hook);
   }
   stripManaged(hooks, kept);
   for (const spec of specs) {
     const present = groupsOf(hooks, spec.event).some((g) => isObject(g) && g.matcher === spec.matcher && managedHooksIn(g).some((h) => kept.has(h)));
     if (present) continue;
-    const entry: Json = spec.matcher === undefined ? { hooks: [desiredHook(command)] } : { matcher: spec.matcher, hooks: [desiredHook(command)] };
+    const entry: Json = spec.matcher === undefined ? { hooks: [desiredHook(command, host)] } : { matcher: spec.matcher, hooks: [desiredHook(command, host)] };
     if (!Array.isArray(hooks[spec.event])) hooks[spec.event] = [];
     (hooks[spec.event] as unknown[]).push(entry);
   }
@@ -182,10 +206,10 @@ function stripManaged(hooks: Json, keep: ReadonlySet<unknown> = new Set()): numb
 }
 
 /** Remove MEX's entries and nothing else. */
-export function planRemove(current: string | null): SettingsPlan {
+export function planRemove(current: string | null, host: HookHost = hookHost()): SettingsPlan {
   let settings: Json;
   try {
-    settings = parseSettings(current);
+    settings = parseSettings(current, host.tool === "codex" ? host.settings : "settings.json");
   } catch (error) {
     return { action: "conflict", text: null, entries: 0, message: (error as Error).message };
   }
@@ -219,16 +243,16 @@ export interface SettingsStatus {
   command: string | null;
 }
 
-export function inspectSettings(current: string | null, expectedCommand: string | null): SettingsStatus {
+export function inspectSettings(current: string | null, expectedCommand: string | null, host: HookHost = hookHost()): SettingsStatus {
   let settings: Json;
   try {
-    settings = parseSettings(current);
+    settings = parseSettings(current, host.tool === "codex" ? host.settings : "settings.json");
   } catch (error) {
     return { parseError: (error as Error).message, entries: [], strays: 0, userHooks: 0, command: null };
   }
   const hooks: Json = isObject(settings["hooks"]) ? settings["hooks"] : {};
   const claimed = new Set<unknown>();
-  const entries: EntryStatus[] = hookSpecs().map((spec) => {
+  const entries: EntryStatus[] = host.specs.map((spec) => {
     const group = groupsOf(hooks, spec.event).find((g) => isObject(g) && g.matcher === spec.matcher && managedHooksIn(g).length > 0);
     if (group === undefined) return { label: spec.label, state: "missing", command: null };
     const hook = managedHooksIn(group)[0]!;
