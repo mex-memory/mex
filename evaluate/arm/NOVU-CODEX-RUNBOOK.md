@@ -54,6 +54,7 @@ Every workspace (setup, sync and each session) is a repository whose history **e
 | 8 | **Sync at T1** | Codex | 30–60 min |
 | 9 | Check, then **pilot**: 2 tasks × 3 arms × 2 efforts = 12 sessions | Codex | 3–6 h |
 | 10 | **Full run**: 13 tasks × 3 arms = 39 sessions | Codex | 15–30 h, unattended |
+| 10.1 | Price the run at API list rates | no | 5 min |
 | 11 | Send results | no | 10 min |
 
 Steps 7 to 10 can each be interrupted and resumed. Nothing finished is redone.
@@ -406,6 +407,26 @@ caffeinate -dimsu node evaluate/arm/index.mjs --pipeline --resume $COMMON --effo
 - **Progress:** `ls ~/mex-eval/results-full-$EFFORT/runs | wc -l` counts finished rows (it should reach 39). `tail -5 ~/mex-eval/full-$EFFORT.log` shows the current step.
 - **Done:** the command ends normally and `report.md` lists 39 rows, all **Valid = true**.
 
+### 10.1 Price the run at API list rates
+Codex Pro is a subscription, so sessions carry no dollar cost. Every token is recorded, though, so we price the run as if it had used the API:
+
+1. Open OpenAI's API pricing page and find **`gpt-6.1-sol`**. Note three rates in dollars per **million** tokens: input, cached input and output. Reasoning tokens are billed as output and are already counted in output. If the page lists a separate cache-write price, note it too. **Record** the rates, the page URL and today's date in your notes. Don't guess a rate: if the model isn't listed, write that down and skip this step.
+2. Price the full run and both pilots, replacing `IN`, `CACHED` and `OUT` with the three rates (add `--cache-write <rate>` only if one is listed):
+```sh
+cd ~/mex-eval/harness
+for R in results-full-$EFFORT results-pilot-high results-pilot-xhigh; do
+  node evaluate/arm/list-price.mjs --runs $HOME/mex-eval/$R/runs --input IN --cached-input CACHED --output OUT \
+    --csv $HOME/mex-eval/$R/list-price.csv | tee $HOME/mex-eval/$R/list-price.md
+done
+```
+Each `list-price.md` has:
+- **per arm:** valid rows, correct rows, processed tokens and two prices;
+  - **Billed $:** uncached input at the input rate, cached input at the cached rate, output at the output rate. This is what the API would have charged.
+  - **Neutral $:** every input token at the full input rate. The prompt cache, and so the order the sessions ran in, can't move this number, so it's the fair comparison between arms.
+- **per MEX arm vs `files`:** the geometric mean of the per-task ratios for neutral $ and processed tokens. 1.000 means equal; 0.600 means 40% less.
+
+`list-price.csv` has the per-row prices.
+
 ---
 
 ## 11. What to send back
@@ -427,6 +448,7 @@ What the archive holds, so you know nothing is missing:
 - **`results-*/artifacts/`:** per session, the Codex event stream (`*.jsonl`), the Codex transcript (`*.rollout`), the agent's diff (`*.patch`), hidden-test output (`*.tests.txt`), the MEX hook log (`*.context-log.jsonl`), the knowledge check before and after (`*.check.json`), and memory samples (`*.resources.csv`). Also per base: refresh timing and mode.
 - **`results-*/report.md`:** the summary table.
 - **`pipeline.json`:** the exact configuration and hashes the run used.
+- **`results-*/list-price.md`** and **`list-price.csv`:** the list-price cost from 10.1.
 
 ---
 
@@ -460,6 +482,10 @@ Keep `~/mex-eval/notes.md` as you go. Copy this template:
 ## Full run
 - start / end / number of resumes and why:
 - anything unusual:
+## List-price cost
+- pricing page URL + date:
+- gpt-6.1-sol $/M: input / cached input / output / cache write (if listed):
+- full run: billed $ and neutral $ per arm; neutral ratio vs files per MEX arm:
 ```
 
 ---
