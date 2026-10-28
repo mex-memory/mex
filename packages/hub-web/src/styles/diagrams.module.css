@@ -1,45 +1,31 @@
-.page { display: grid; gap: 24px; min-width: 0; }
-.page h2 { font-size: 15px; font-weight: 500; margin-bottom: 14px; }
-.page h3 { font-size: 13px; font-weight: 500; }
-.heading { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
-.intro,.empty { font-size: 12px; color: var(--muted-foreground); max-width: 740px; line-height: 1.7; }
-.count { color: var(--muted-foreground); margin-left: 10px; font-size: 11px; }
-.collection { display: grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap: 12px; }
-.card { border: 1px solid var(--border); border-radius: 8px; padding: 22px; background: var(--card); text-decoration: none; }
-.card:hover { border-color: var(--primary); }
-.card h3 { font-size: 17px; margin: 10px 0; }
-.card p,.card small { color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
-.eyebrow { text-transform: uppercase; letter-spacing: .08em; color: var(--muted-foreground); font-size: 10px; }
-.statuses { display: flex; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 8px; margin: 0; }
-.statuses div { flex: 1; min-width: 140px; padding: 14px 18px; }
-.statuses dt { font-size: 10px; color: var(--muted-foreground); margin-bottom: 7px; }
-.statuses dd { margin: 0; font-size: 12px; }
-.notice { font-size: 11px; color: var(--muted-foreground); margin-top: -12px; }
-.workbench { display: grid; grid-template-columns: minmax(0,1fr) 275px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.toolbar { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); align-items: center; }
-.toolbar span { font-size: 10px; color: var(--muted-foreground); }
-.canvas { height: 520px; overflow: hidden; position: relative; touch-action: none; cursor: grab; background: #f6f7f4; color: #25352d; }
-.canvas:focus-visible { outline: 2px solid var(--primary); outline-offset: -3px; }
-.svg { display: grid; place-items: center; height: 100%; transform-origin: center; }
-.svg svg { max-width: 100%; max-height: 100%; }
-.details { padding: 20px; border-left: 1px solid var(--border); background: var(--card); max-height: 690px; overflow: auto; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-.details p { color: var(--muted-foreground); }
-.details h3 { margin-top: 24px; }
-.evidence { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
-.paths { border-top: 1px solid var(--border); padding: 16px; font-size: 12px; }
-.paths select { display: block; max-width: 100%; margin-top: 8px; padding: 8px; background: var(--background); border: 1px solid var(--border); border-radius: 4px; }
-.paths ol { padding-left: 24px; line-height: 2; }
-.paths button,.lists button { text-align: left; cursor: pointer; background: none; border: 0; padding: 4px 0; color: var(--foreground); font: inherit; }
-.lists { display: grid; grid-template-columns: 1fr 2fr; gap: 30px; }
-.lists ul { list-style: none; padding: 0; }
-.lists li { border-top: 1px solid var(--border); padding: 10px 0; font-size: 12px; }
-.lists p { margin: 3px 0; color: var(--muted-foreground); }
-.lists small { display: block; color: var(--muted-foreground); }
-.lists button[aria-pressed=true] { color: var(--primary); text-decoration: underline; }
-.page pre,.saveDialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-height: 1.7; background: var(--muted); padding: 12px; max-height: 360px; overflow: auto; }
-.page summary,.saveDialog summary { cursor: pointer; font-size: 12px; padding: 8px 0; overflow-wrap: anywhere; }
-.saveDialog { max-width: min(800px,calc(100% - 3rem)); max-height: 88vh; overflow: auto; }
-.writes { max-height: 45vh; overflow: auto; }
-@media(max-width:1200px) { .workbench { grid-template-columns: minmax(0,1fr) 240px; } .toolbar .panHelp { display: none; } }
-
-.ruleButton { font: inherit; text-align: left; background: none; border: 0; color: var(--foreground); cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 3px; }
+.page { display:grid; gap:20px; min-width:0; font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.page h2 { font-size:15px; font-weight:500; }
+.page h3 { font-size:13px; font-weight:500; }
+.heading { display:flex; justify-content:space-between; align-items:start; gap:20px; }
+.intro,.empty,.count,.notice,.card p,.card small,.details p,.lists p,.lists small,.eyebrow { color:var(--muted-foreground); }
+.collection { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
+.card,.statuses,.workbench { border:1px solid var(--border); border-radius:8px; }
+.card { padding:20px; background:var(--card); text-decoration:none; }
+.card:hover { border-color:var(--primary); }
+.card h3 { font-size:17px; margin:10px 0; }
+.eyebrow { text-transform:uppercase; letter-spacing:.08em; font-size:10px; }
+.count { margin-left:10px; font-size:11px; }
+.statuses { display:flex; flex-wrap:wrap; margin:0; }
+.statuses div { flex:1; min-width:140px; padding:14px 18px; }
+.statuses dt { font-size:10px; color:var(--muted-foreground); }
+.statuses dd { margin:0; }
+.notice { font-size:11px; margin-top:-12px; }
+.workbench { display:grid; grid-template-columns:minmax(0,1fr) minmax(220px,25%); overflow:hidden; }
+.details { padding:18px; border-left:1px solid var(--border); background:var(--card); max-height:760px; overflow:auto; }
+.evidence,.paths { border-top:1px solid var(--border); padding:16px; }
+.paths select { display:block; max-width:100%; margin-top:8px; padding:8px; background:var(--background); color:inherit; border:1px solid var(--border); border-radius:4px; }
+.paths ol { line-height:2; }
+.paths button,.lists button,.ruleButton { text-align:left; cursor:pointer; background:none; border:0; padding:0; color:inherit; font:inherit; }
+.lists { display:grid; grid-template-columns:1fr 2fr; gap:24px; }
+.lists p { margin:3px 0; }
+.lists small { display:block; }
+.lists button[aria-pressed=true],.ruleButton { color:var(--primary); text-decoration:underline; }
+.page pre,.saveDialog pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; line-height:1.7; background:var(--muted); padding:12px; max-height:360px; overflow:auto; }
+.page summary,.saveDialog summary { cursor:pointer; font-size:12px; padding:8px 0; overflow-wrap:anywhere; }
+.saveDialog { max-width:min(800px,calc(100% - 3rem)); max-height:88vh; overflow:auto; }
+.writes { max-height:45vh; overflow:auto; }

@@ -11,7 +11,7 @@ edges:
     condition: "when persisting a Hub job or migrating team.db"
   - target: "context/architecture.md"
     condition: "when wiring a real Graph or Wiki adapter"
-last_updated: 2026-10-26
+last_updated: 2026-10-28
 mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
@@ -77,10 +77,21 @@ preview/apply services.
 ## Gotchas
 
 - State diagrams use the private `@mex/hub-contracts/statechart` leaf. Keep its
-  schemas and Mermaid runtime out of shell/Home closures; scoped-only component
+  schemas and graph layout runtime out of shell/Home closures; scoped-only component
   data words must not emit global Tailwind utilities. The managed helper is
   minified to fit the existing setup diff limits, and setup review derives its
   selected skill roots from the shared official-skill list.
+- The diagram canvas uses React/SVG nodes with button semantics and explicit
+  SVG presentation attributes,
+  matching the Context graph. Hub's `style-src 'self'` blocks Mermaid's generated
+  embedded stylesheet, leaving curved paths filled black. Keep Mermaid in the
+  export/generation workflow; never relax CSP to display it. Verify the built
+  viewer through the real Hub headers (`diagrams-production.spec.ts`), as the
+  Vite fixture server alone cannot catch this failure. Keep transition identities,
+  independent-region containers and ordered trace overlays intact. Dense charts
+  reveal events on selection; all events remain available through the toggle,
+  keyboard focus and accessible lists. Fade lines/orbs rather than label opacity
+  so selection does not remove readable text contrast.
 - Diagram `record.md` owns saved claims and hashes; exclude its entire bundle
   from Wiki discovery and protect Wiki writes independently of configurable
   defaults. Preview reads never create or clean the store. Expiry/eviction is

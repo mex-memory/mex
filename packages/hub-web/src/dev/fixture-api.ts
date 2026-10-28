@@ -1,4 +1,4 @@
-import { diagramFixture, diagramFixturePlan, nestedDiagramFixture } from "./diagram-fixtures";
+import { diagramFixture, diagramFixturePlan, nestedDiagramFixture, recoveryDiagramFixture } from "./diagram-fixtures";
 import { isInboxCreate, isInboxUpdate } from "../lib/inbox-change";
 import type { FixtureApiOptions, HubApi, JobSubscription } from "../api/client";
 import type {
@@ -3476,7 +3476,7 @@ class FixtureHubApi implements HubApi {
     const { artifact: _artifact, revision: _revision, freshness: _freshness, alignment: _alignment, ...summary } = diagramFixture;
     return { items: [summary], truncated: false };
   }
-  async getDiagram(kind: "preview" | "saved", id: string) { return { ...(id === "2".repeat(32) ? nestedDiagramFixture() : structuredClone(diagramFixture)), kind, id, expiresAt: kind === "preview" ? diagramFixture.expiresAt : null }; }
+  async getDiagram(kind: "preview" | "saved", id: string) { return { ...(id === "2".repeat(32) ? nestedDiagramFixture() : id === "4".repeat(32) ? recoveryDiagramFixture() : structuredClone(diagramFixture)), kind, id, expiresAt: kind === "preview" ? diagramFixture.expiresAt : null }; }
   async previewDiagramSave() { return structuredClone(diagramFixturePlan); }
   async saveDiagram() { return { ...structuredClone(diagramFixture), kind: "saved" as const, expiresAt: null }; }
 

@@ -1,0 +1,13 @@
+.toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; border-bottom:1px solid var(--border); color:var(--muted-foreground); font-size:11px; }
+.toolbar button { color:inherit; background:none; border:1px solid var(--border); border-radius:5px; padding:5px 8px; font:inherit; cursor:pointer; }
+.canvas { position:relative; height:clamp(520px,68vh,760px); overflow:hidden; background:var(--background); touch-action:none; user-select:none; cursor:grab; }
+.world { position:absolute; top:0; left:0; transform-origin:0 0; overflow:visible; }
+.edge { pointer-events:stroke; cursor:pointer; }
+.node,.event { cursor:pointer; }
+.event:not([data-visible]):not(:focus-visible) { opacity:0; pointer-events:none; }
+.node:focus-visible,.event:focus-visible { outline:1px solid var(--ring); border-radius:5px; }
+.controls { position:absolute; right:16px; bottom:16px; display:flex; align-items:center; border:1px solid var(--border); border-radius:6px; background:var(--card); }
+.controls button { width:32px; height:30px; display:grid; place-items:center; color:var(--foreground); border:0; background:none; cursor:pointer; }
+.controls button:hover { background:var(--accent); }
+.controls span { padding:0 8px; font-size:10px; color:var(--muted-foreground); }
+.hint { position:absolute; left:16px; bottom:17px; max-width:calc(100% - 180px); margin:0; color:var(--muted-foreground); font-size:10px; line-height:16px; pointer-events:none; }
