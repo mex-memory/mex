@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runSetupNext } from "../next.js";
 import { runHeadlessSetup } from "../headless.js";
 import { SETUP_LOCK_FILE, acquireSetupLock, assertSetupAvailable, withSetupLock } from "../setup-lock.js";
+import { createPlanState, unitBatchFile } from "../subsystem-state.js";
 
 const roots: string[] = [];
 
@@ -14,6 +15,50 @@ afterEach(() => {
 });
 
 describe("setup lock (#310)", () => {
+  it.each(["shared", "subsystem", "final"])("protects recent output from an orphaned %s agent, then reclaims after silence", async unit => {
+    const root = fixture();
+    execFileSync("git", ["init", "--quiet"], { cwd: root });
+    const mexDir = join(root, ".mex");
+    writeLock(mexDir, { pid: exitedPid(), host: hostname() });
+    const now = new Date();
+    const old = new Date(now.getTime() - 16 * 60_000);
+    const state = createPlanState({ source: "tree", ranking: "size", sourceFiles: 1,
+      target: { min: 1, max: 1 }, candidates: [{ path: "src", files: 1, commits: null, budget: { min: 1, max: 1 } }] }, old);
+    (unit === "subsystem" ? state.subsystems[0]! : unit === "shared" ? state.shared : state.final).state = "running";
+    const planPath = join(mexDir, "local/setup-plan.json");
+    state.updatedAt = now.toISOString();
+    writeFileSync(planPath, JSON.stringify(state));
+    expect(() => acquireSetupLock(mexDir, () => now)).toThrow(/agent from an earlier setup/u);
+    state.updatedAt = old.toISOString();
+    writeFileSync(planPath, JSON.stringify(state));
+    const output = join(root, unitBatchFile(unit === "subsystem" ? "src" : "shared"));
+    mkdirSync(join(mexDir, "local/setup-ops"));
+    writeFileSync(output, "[]");
+    utimesSync(output, now, now);
+    const before = readFileSync(join(mexDir, SETUP_LOCK_FILE), "utf8");
+    expect(() => assertSetupAvailable(mexDir, () => now)).toThrow(/agent from an earlier setup/u);
+    expect(() => acquireSetupLock(mexDir, () => now)).toThrow(/agent from an earlier setup/u);
+    await expect(runHeadlessSetup({ projectRoot: root, tools: [] })).rejects.toThrow(/agent from an earlier setup/u);
+    expect(await runSetupNext({ projectRoot: root })).toMatchObject({ status: "blocked", exitCode: 1 });
+    expect(readFileSync(join(mexDir, SETUP_LOCK_FILE), "utf8")).toBe(before);
+    expect(readFileSync(planPath, "utf8")).toBe(JSON.stringify(state));
+    utimesSync(output, old, old);
+    expect(() => assertSetupAvailable(mexDir, () => now)).not.toThrow();
+    acquireSetupLock(mexDir, () => now).release();
+  });
+
+  it("reclaims with fresh output when the plan has no running unit", () => {
+    const root = fixture();
+    const mexDir = join(root, ".mex");
+    writeLock(mexDir, { pid: exitedPid(), host: hostname() });
+    const state = createPlanState({ source: "tree", ranking: "size", sourceFiles: 1,
+      target: { min: 1, max: 1 }, candidates: [{ path: "src", files: 1, commits: null, budget: { min: 1, max: 1 } }] });
+    writeFileSync(join(mexDir, "local/setup-plan.json"), JSON.stringify(state));
+    mkdirSync(join(mexDir, "local/setup-ops"));
+    writeFileSync(join(root, unitBatchFile("src")), "[]");
+    acquireSetupLock(mexDir).release();
+  });
+
   it("refuses a second setup while one holds the checkout, and frees it on release", () => {
     const mexDir = join(fixture(), ".mex");
     const first = acquireSetupLock(mexDir);

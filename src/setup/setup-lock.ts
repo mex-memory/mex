@@ -5,6 +5,8 @@ import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFi
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { SetupError } from "./errors.js";
+import { readSetupPlanSnapshot, unitBatchFile } from "./subsystem-state.js";
+import { SETUP_PROGRESS_FILE, SHARED_CONTEXT_FILES } from "./prompts.js";
 
 /** Checkout-local, inside the directory setup's ignore protection keeps out of Git. */
 export const SETUP_LOCK_FILE = "local/setup.lock";
@@ -72,7 +74,7 @@ export function assertSetupAvailable(mexDir: string, now: () => Date = () => new
  *
  * The lock is a file created exclusively. A lock whose owner is gone — same
  * host, process no longer running or a different process now using its pid —
- * is reclaimed, so a crashed or killed run never blocks the next one. A lock
+ * is reclaimed once any surviving agent's output has gone quiet. A lock
  * from another host is never reclaimed: its process cannot be checked from
  * here, and the message says how to clear it.
  */
@@ -132,10 +134,37 @@ function isAbandoned(path: string, owner: SetupLockOwner | null, now: Date): boo
   }
   if (owner.root !== undefined && owner.root !== dirname(dirname(path))) return true;
   if (owner.host !== hostname()) return false;
-  if (!processRunning(owner.pid)) return true;
+  if (!processRunning(owner.pid)) return !hasRecentAgentOutput(path, now);
   // A live pid that started after the lock was written is a reused pid, not the owner.
   const started = processStartedAt(owner.pid);
-  return started !== null && Date.parse(started) > Date.parse(owner.startedAt) + 1000;
+  return started !== null && Date.parse(started) > Date.parse(owner.startedAt) + 1000
+    && !hasRecentAgentOutput(path, now);
+}
+
+/** A killed parent can leave its agents writing; inspect only known, bounded output paths. */
+function hasRecentAgentOutput(lockPath: string, now: Date): boolean {
+  const projectRoot = dirname(dirname(dirname(lockPath)));
+  const state = readSetupPlanSnapshot(projectRoot);
+  if (state === null) return false;
+  const running = [state.shared, ...state.subsystems, state.final].some(unit => unit.state === "running");
+  if (!running) return false;
+  // Give a newly dispatched agent time to produce its first file, too.
+  const timeout = 15 * 60_000; // Same inactivity window as POPULATION_TIMEOUT_MS.
+  if (now.getTime() - Date.parse(state.updatedAt) <= timeout) return true;
+  const outputs = [SETUP_PROGRESS_FILE,
+    ...(state.shared.state === "running" || state.final.state === "running"
+      ? [unitBatchFile("shared"), ...SHARED_CONTEXT_FILES.map(file => `.mex/${file}`)] : []),
+    ...state.subsystems.filter(unit => unit.state === "running").map(unit => unitBatchFile(unit.slug)),
+  ];
+  return outputs.some(file => {
+    try {
+      const output = resolve(projectRoot, file);
+      const directory = lstatSync(dirname(output));
+      if (!directory.isDirectory() || directory.isSymbolicLink()) return false;
+      const stat = lstatSync(output);
+      return stat.isFile() && !stat.isSymbolicLink() && now.getTime() - stat.mtimeMs <= timeout;
+    } catch { return false; }
+  });
 }
 
 /** The start time of a running process, or null when it cannot be read. Only asked when a lock is contested. */
@@ -193,7 +222,7 @@ function busy(owner: SetupLockOwner | null): SetupError {
     ? ` If no setup is running there, delete .mex/${SETUP_LOCK_FILE}.`
     : "";
   return new SetupError(
-    `Another MEX setup is already running in this checkout${where}. Wait for it to finish or stop it, then rerun setup.${clear}`,
+    `Another MEX setup is already running in this checkout${where}. An agent from an earlier setup may still be running. Wait for it to finish or stop it, then rerun setup.${clear}`,
   );
 }
 
