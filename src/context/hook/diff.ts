@@ -65,13 +65,15 @@ export interface FileDiff {
   signature: string;
   /** Per range, a hash of its removed and added lines only (no line numbers), so a hunk is recognisable after lines above it moved. */
   hunkIds?: string[];
+  /** Retained only for patch attribution; ordinary Claude diffs keep their exact shape. */
+  chunks?: Array<{ oldStart: number; newStart: number; oldLines: string[]; newLines: string[] }>;
 }
 
 const posix = (path: string): string => path.replace(/\\/g, "/");
 
 /** Parse `git diff -U0` output into per-file base-side ranges. */
-export function parseUnifiedZero(diff: string): Map<string, FileDiff> {
-  type Parsed = { ranges: Array<[number, number]>; hunks: string[]; bodies: string[][] };
+export function parseUnifiedZero(diff: string, retainLines = false): Map<string, FileDiff> {
+  type Parsed = { ranges: Array<[number, number]>; hunks: string[]; bodies: string[][]; chunks: NonNullable<FileDiff["chunks"]> };
   const files = new Map<string, Parsed>();
   let current: Parsed | null = null;
   for (const line of diff.split("\n")) {
@@ -84,7 +86,7 @@ export function parseUnifiedZero(diff: string): Map<string, FileDiff> {
     if (minus) {
       if (minus[1] !== undefined) {
         const name = posix(minus[1]);
-        current = files.get(name) ?? { ranges: [], hunks: [], bodies: [] };
+        current = files.get(name) ?? { ranges: [], hunks: [], bodies: [], chunks: [] };
         files.set(name, current);
       } else {
         current = null;
@@ -95,12 +97,12 @@ export function parseUnifiedZero(diff: string): Map<string, FileDiff> {
     if (plus) {
       const name = posix(plus[1]!);
       if (current === null) {
-        current = files.get(name) ?? { ranges: [], hunks: [], bodies: [] };
+        current = files.get(name) ?? { ranges: [], hunks: [], bodies: [], chunks: [] };
         files.set(name, current);
       }
       continue;
     }
-    const hunk = /^@@ -(\d+)(?:,(\d+))? /.exec(line);
+    const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? /.exec(line);
     if (hunk && current !== null) {
       const start = Number(hunk[1]);
       const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
@@ -110,18 +112,21 @@ export function parseUnifiedZero(diff: string): Map<string, FileDiff> {
       current.ranges.push(count === 0 ? [start + 0.5, start + 0.5] : [start, start + count - 1]);
       current.hunks.push(line);
       current.bodies.push([]);
+      current.chunks.push({ oldStart: count === 0 ? start : start - 1, newStart: Number(hunk[4] === "0" ? Number(hunk[3]) + 1 : hunk[3]) - 1, oldLines: [], newLines: [] });
       continue;
     }
     if (current !== null && (line.startsWith("+") || line.startsWith("-"))) {
       current.hunks.push(line);
       current.bodies.at(-1)?.push(line);
+      const chunk = current.chunks.at(-1);
+      if (chunk) (line.startsWith("-") ? chunk.oldLines : chunk.newLines).push(line.slice(1).replace(/\r$/, ""));
     }
   }
   const out = new Map<string, FileDiff>();
   for (const [file, value] of files) {
     if (value.ranges.length === 0) continue;
     const hash = (lines: readonly string[]): string => createHash("sha1").update(lines.join("\n")).digest("hex").slice(0, 12);
-    out.set(file, { ranges: value.ranges, signature: hash(value.hunks), hunkIds: value.bodies.map((body) => hash(body).slice(0, 8)) });
+    out.set(file, { ranges: value.ranges, signature: hash(value.hunks), hunkIds: value.bodies.map((body) => hash(body).slice(0, 8)), ...(retainLines ? { chunks: value.chunks } : {}) });
   }
   return out;
 }
@@ -148,11 +153,11 @@ export function diffAgainstHead(cwd: string, files?: readonly string[]): Map<str
 }
 
 /** {@link diffAgainstHead}, started now and awaited later. */
-export async function diffAgainstHeadAsync(cwd: string, files?: readonly string[]): Promise<Map<string, FileDiff> | null> {
+export async function diffAgainstHeadAsync(cwd: string, files?: readonly string[], retainLines = false): Promise<Map<string, FileDiff> | null> {
   const args = diffArgs(files);
   if (args === null) return new Map();
   const text = await runGitAsync(cwd, args);
-  return text === null ? null : parseUnifiedZero(text);
+  return text === null ? null : parseUnifiedZero(text, retainLines);
 }
 
 /** Session stats key for the last seen hunks of a file, so a Bash call reports only what it changed. */

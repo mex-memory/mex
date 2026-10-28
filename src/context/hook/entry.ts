@@ -6,6 +6,7 @@
  * exits 0: a hook that fails would fail the agent's turn.
  */
 
+import { applyInstalledSwitches } from "../../hooks/switches.js";
 import { readFileSync } from "node:fs";
 import { hookSwitches, preflightHook } from "../../hooks/preflight.js";
 
@@ -29,6 +30,10 @@ async function settle(args: readonly string[]): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  applyInstalledSwitches(process.argv.slice(2));
+  const hostAt = process.argv.indexOf("--host");
+  const host = process.argv[hostAt + 1] === "codex" && hostAt >= 0 ? "codex" : undefined;
+  if (host) process.env.MEX_HOOK_HOST = host;
   if (process.argv[2] === "settle") {
     await settle(process.argv.slice(3));
     process.exitCode = 0;
@@ -40,6 +45,7 @@ async function main(): Promise<void> {
   const { stdout } = await runHook(raw, {
     projectDir: process.env["CLAUDE_PROJECT_DIR"],
     cwd: process.cwd(),
+    host,
     lexical: process.env["MEX_HOOK_LEXICAL"] === "1",
     tools: hookSwitches(),
   });

@@ -62,6 +62,7 @@ export async function handlePrompt(root: ContextRoot, prompt: string, sessionId:
     }
   }
   const result = outcome.result;
+  const recipe = result.recipe === "R3" ? "semantic" : "lexical";
   // Seed the source-file signatures once per session: the baseline a Bash call's changes are measured from.
   let stats: Record<string, string> | undefined;
   if (sessionId !== null && Object.keys(loadStats(root.localDir, sessionId)).length === 0) {
@@ -76,10 +77,11 @@ export async function handlePrompt(root: ContextRoot, prompt: string, sessionId:
     const { reader } = openGraphReader(root.scaffoldRoot);
     try {
       const graph = composeGraphPrompt({ ...root, index, reader, shown, head: null }, prompt);
-      if (graph) return { ...graph, stats, note: `graph-identifier; knowledge:${result.abstention ?? "no-match"}` };
+      if (graph) return { ...graph, stats, recipe, note: `graph-identifier; knowledge:${result.abstention ?? "no-match"}` };
     } finally { reader?.close(); }
   }
   return {
+    recipe,
     ...(stats === undefined ? {} : { stats }),
     text: result.packet,
     remember: result.injected.map((i) => i.type === "pointer" ? `pointer:${i.id}` : i.id),

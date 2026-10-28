@@ -1,5 +1,7 @@
 /** Cheap rejection before the runner, graph or composers are imported. */
+import { resolve } from "node:path";
 import { bashReads, bashSearchSegment, shellRelative } from "./shell.js";
+import { parseApplyPatch } from "./patch.js";
 import { hookSwitches } from "./switches.js";
 export { hookSwitches } from "./switches.js";
 
@@ -20,6 +22,12 @@ export async function preflightHook(raw: string, cwd: string, projectDir?: strin
     (Array.isArray(response.filenames) && response.filenames.length > 0)
   );
   if (tool === "Grep") return switches.grep && Boolean(hasOutput);
+  if (tool === "apply_patch") {
+    if (!switches.edit || typeof input.command !== "string") return false;
+    const { resolveContextRoot } = await import("../context/root.js");
+    const root = [projectDir, payload.cwd, cwd].filter((d): d is string => typeof d === "string").map(d => resolveContextRoot(d)).find(Boolean);
+    return root !== undefined && root !== null && parseApplyPatch(input.command, root.projectRoot, payload.cwd ?? root.projectRoot).length > 0;
+  }
   if (["Edit", "Write", "MultiEdit"].includes(tool)) return switches.edit;
   if (tool === "Bash" && !switches.bash) return false;
   const command = typeof input.command === "string" ? input.command : "";
@@ -29,7 +37,8 @@ export async function preflightHook(raw: string, cwd: string, projectDir?: strin
   const { resolveContextRoot } = await import("../context/root.js");
   const root = [projectDir, payload.cwd, cwd].filter((d): d is string => typeof d === "string" && d !== "").map(d => resolveContextRoot(d)).find(Boolean);
   if (!root) return false;
-  const reads = tool === "Bash" ? bashReads(command, root.projectRoot) : typeof input.file_path === "string" ? [{ file: shellRelative(root.projectRoot, input.file_path) }] : [];
+  const shellCwd = typeof payload.cwd === "string" ? payload.cwd : root.projectRoot;
+  const reads = tool === "Bash" ? bashReads(command, shellCwd).map(r => ({ ...r, file: shellRelative(root.projectRoot, resolve(shellCwd, r.file)) })) : typeof input.file_path === "string" ? [{ file: shellRelative(root.projectRoot, input.file_path) }] : [];
   if (reads.length === 0) return false;
   const { loadContextIndex } = await import("../context/index-file.js");
   const index = loadContextIndex(root.localDir).index;

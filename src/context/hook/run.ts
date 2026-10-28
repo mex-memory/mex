@@ -9,11 +9,13 @@
  * line in `.mex/local/context-log.jsonl`.
  */
 
-import { statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { statSync, realpathSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { bashReads, bashSearchCwd, bashSearchPattern, bashSearchSegment, shellSegments } from "../../hooks/shell.js";
+import { bashReads, bashSearchCwd, bashSearchPattern, bashSearchSegment, shellSegments, shellOutput } from "../../hooks/shell.js";
 export { bashSearchPattern } from "../../hooks/shell.js";
+import { attributePatch, parseApplyPatch, patchedFiles, type PatchFile } from "../../hooks/patch.js";
+import { effectiveSwitches } from "../../hooks/switches.js";
 import { loadConfiguredContextConfig } from "../../config.js";
 import { loadFlaggedIds } from "../flags.js";
 import { loadContextIndex, readBounded } from "../index-file.js";
@@ -53,6 +55,8 @@ export interface HookPayload {
   session_id?: unknown;
   prompt?: unknown;
   cwd?: unknown;
+  turn_id?: unknown;
+  model?: unknown;
   /** Set by Claude Code when the agent is continuing because a Stop hook blocked. */
   stop_hook_active?: unknown;
 }
@@ -62,6 +66,7 @@ export interface HookEnvironment {
   projectDir?: string;
   /** Where the process runs. */
   cwd: string;
+  host?: "claude" | "codex";
   /** Disable the semantic recipe (tests; `MEX_HOOK_LEXICAL=1`). */
   lexical?: boolean;
   /** The host entry supplies the installed event policy; offline callers may exercise every composer. */
@@ -90,6 +95,7 @@ export function classifyHook(payload: HookPayload): HookEvent | null {
     case "Edit":
     case "Write":
     case "MultiEdit":
+    case "apply_patch":
       return "edit";
     case "Grep":
       return "grep";
@@ -120,6 +126,7 @@ export const BASH_DIFF_MAX_FILES = 200;
 const READ_ONLY = new Set([
   "cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "ag", "ack", "ls", "dir", "tree", "wc", "echo", "printf",
   "pwd", "cd", "pushd", "popd", "which", "where", "type", "file", "stat", "du", "df", "sort", "uniq", "cut", "tr", "nl", "diff", "cmp",
+  "get-content", "gc", "select-string", "sls", "get-childitem", "gci", "select-object", "set-location",
   "true", "false", "date", "env", "test", "[", "basename", "dirname", "realpath", "readlink", "column", "jq", "od", "xxd", "hexdump",
 ]);
 const GIT_READ_ONLY = new Set(["log", "show", "status", "diff", "grep", "ls-files", "rev-parse", "blame", "branch", "describe", "shortlog", "cat-file", "ls-tree"]);
@@ -150,7 +157,7 @@ export function mayWriteFiles(command: string): boolean {
       continue;
     }
     if (program === "awk") continue;
-    if (!READ_ONLY.has(program)) return true;
+    if (!READ_ONLY.has(program.toLowerCase())) return true;
   }
   return false;
 }
@@ -194,13 +201,13 @@ function only(diffs: ReadonlyMap<string, FileDiff>, files: readonly string[]): M
 }
 
 /** Output lines that look like `path:line:` from a Bash search command. */
-export function bashGrepHits(payload: HookPayload, projectRoot: string): GrepHit[] {
+export function bashGrepHits(payload: HookPayload, projectRoot: string, shellCwd = projectRoot): GrepHit[] {
   const command = text(object(payload.tool_input)["command"]) ?? "";
   const segment = bashSearchSegment(command);
   if (segment === null) return [];
   const response = payload.tool_response;
-  const stdout = typeof response === "string" ? response : text(object(response)["stdout"]) ?? "";
-  const cwd = bashSearchCwd(command, projectRoot);
+  const stdout = shellOutput(response);
+  const cwd = bashSearchCwd(command, shellCwd);
   let bounded = stdout.slice(0, 256 * 1024);
   const mixedSearches = shellSegments(command).filter(part => bashSearchSegment(part) !== null).length > 1;
   const pattern = bashSearchPattern(command);
@@ -253,7 +260,7 @@ export function grepToolHits(payload: HookPayload, projectRoot: string): GrepHit
 export function appendLog(root: ContextRoot | null, entry: Record<string, unknown>): void {
   if (root === null) return;
   try {
-    appendBoundedLine(root.localDir, join(root.localDir, HOOK_LOG_NAME), JSON.stringify({ at: new Date().toISOString(), ...entry }), {
+    appendBoundedLine(root.localDir, join(root.localDir, HOOK_LOG_NAME), JSON.stringify({ at: new Date().toISOString(), host: process.env.MEX_HOOK_HOST === "codex" ? "codex" : "claude", recipe: process.env.MEX_HOOK_LEXICAL === "1" ? "lexical" : "semantic", switches: effectiveSwitches(), ...entry }), {
       maxBytes: HOOK_LOG_MAX_BYTES,
     });
   } catch {
@@ -281,9 +288,12 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
   const started = performance.now();
   let root: ContextRoot | null = null;
   let event: HookEvent | null = null;
+  let host = env.host ?? "claude";
+  const log = (entry: Record<string, unknown>) => appendLog(root, { host, recipe: env.lexical ? "lexical" : "semantic", requestedRecipe: env.lexical ? "lexical" : "semantic", switches: { ...effectiveSwitches(), ...(env.tools ?? { read: true, edit: true, search: true }) }, ...entry });
   try {
     const payload = parsePayload(raw);
     if (payload === null) return { stdout: "" };
+    host = env.host ?? (typeof payload.turn_id === "string" || payload.tool_name === "apply_patch" ? "codex" : "claude");
     event = classifyHook(payload);
     if (event === null) return { stdout: "" };
 
@@ -296,14 +306,14 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
 
     const sessionId = isValidSessionId(payload.session_id) ? payload.session_id : null;
     if (event === "stop") {
-      const stop = await (await import("./stop.js")).handleStop({ root, sessionId, stopHookActive: payload.stop_hook_active === true });
-      appendLog(root, { event: stop.log["blocked"] === true ? "stop-block" : "stop", ms: Math.round(performance.now() - started), ...stop.log });
+      const stop = await (await import("./stop.js")).handleStop({ root, sessionId, stopHookActive: payload.stop_hook_active === true, start: { env: { MEX_HOOK_HOST: host, MEX_HOOK_LEXICAL: env.lexical ? "1" : "0" } } });
+      log({ event: stop.log["blocked"] === true ? "stop-block" : "stop", ms: Math.round(performance.now() - started), ...stop.log });
       return { stdout: stop.stdout };
     }
     // The prompt path needs the Markdown parser and the ranker; tool events never load them.
     let result: Handled = event === "prompt"
       ? await (await import("./prompt.js")).handlePrompt(root, text(payload.prompt) ?? "", sessionId, { lexical: env.lexical === true })
-      : await handleTool(root, payload, event, sessionId, env.tools);
+      : await handleTool(root, payload, event, sessionId, env.tools, host);
     // The session's injection budget: whole packets while there is room, pointers past it, nothing far past it.
     if (sessionId !== null && result.text.trim() !== "") {
       const budget = loadConfiguredContextConfig(root.scaffoldRoot).sessionBudgetChars;
@@ -322,7 +332,7 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
       try {
         recordShown(root.localDir, sessionId, result.remember, new Date(), result.text.length);
       } catch (error) {
-        appendLog(root, { event, error: `session state: ${describeError(error)}` });
+        log({ event, error: `session state: ${describeError(error)}` });
       }
     } else if (sessionId !== null && result.remember.length > 0) {
       // Nothing was delivered, but a change was checked: remember that so it is not checked again.
@@ -339,7 +349,8 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
         // Forgetting costs one extra git diff.
       }
     }
-    appendLog(root, {
+    log({
+      ...(result.recipe ? { recipe: result.recipe } : {}),
       event: event === "bash" && bashSearchSegment(text(object(payload.tool_input)["command"]) ?? "") !== null && shellSegments(text(object(payload.tool_input)["command"]) ?? "").length > 1 ? "search-compound" : event,
       ms: Math.round(performance.now() - started),
       injected: result.ids.length,
@@ -353,13 +364,15 @@ export async function runHook(raw: string, env: HookEnvironment): Promise<HookRe
     });
     return { stdout: delivered ? renderHookOutput(event, result.text.slice(0, PACKET_CHAR_LIMIT)) : "" };
   } catch (error) {
-    appendLog(root, { event: "error", during: event, ms: Math.round(performance.now() - started), error: describeError(error) });
+    log({ event: "error", during: event, ms: Math.round(performance.now() - started), error: describeError(error) });
     return { stdout: "" };
   }
 }
 
 export type Handled = EventOutcome & {
   note?: string;
+  /** Actual prompt recipe, including a semantic-to-lexical fallback. */
+  recipe?: "lexical" | "semantic";
   /** Source-file signatures to remember for the session (see `session.ts`). */
   stats?: Record<string, string>;
 };
@@ -368,7 +381,7 @@ export type Handled = EventOutcome & {
 // tools
 // ---------------------------------------------------------------------------
 
-async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclude<HookEvent, "prompt" | "stop">, sessionId: string | null, tools = { read: true, edit: true, search: true }): Promise<Handled> {
+async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclude<HookEvent, "prompt" | "stop">, sessionId: string | null, tools = { read: true, edit: true, search: true }, host: "claude" | "codex" = "claude"): Promise<Handled> {
   const none = (note: string): Handled => ({ text: "", remember: [], ids: [], note });
   const loaded = loadContextIndex(root.localDir);
   if (loaded.index === null) return none(`no-index:${loaded.state}`);
@@ -376,6 +389,7 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
   // An edit needs the file's diff, which is a process start. Start it now, so it runs
   // while the graph opens and the session loads. With graph disabled, unlinked files skip it.
   const input = object(payload.tool_input);
+  const shellCwd = typeof payload.cwd === "string" && projectRelative(root.projectRoot, join(payload.cwd, "__cwd_check__")) !== null ? payload.cwd : root.projectRoot;
   const shown = sessionId === null ? new Set<string>() : loadShown(root.localDir, sessionId);
   if (event === "read") {
     const path = text(input["file_path"]);
@@ -384,8 +398,18 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
     if (!loaded.index.entities.some(e => e.type === "fact" && e.code.includes(file) && !shown.has(e.id))) return none("no-unseen-facts");
   }
   if (event === "bash" && !tools.edit && bashSearchSegment(text(input["command"]) ?? "") === null && (!tools.read || bashReads(text(input["command"]) ?? "", root.projectRoot).length === 0)) return none("unsupported-command");
+  const patch = event === "edit" && payload.tool_name === "apply_patch" ? parseApplyPatch(text(input["command"]) ?? "", root.projectRoot, shellCwd) : null;
+  let patched: { files: string[]; patch: PatchFile[]; diff: ReturnType<typeof diffAgainstHeadAsync> } | null = null;
+  if (patch !== null) {
+    if (!tools.edit) return none("disabled-edit");
+    if (/^Exit code: (?!0(?:\r?\n|$))-?\d+/.test(typeof payload.tool_response === "string" ? payload.tool_response : "")) return none("failed-patch");
+    const files = patchedFiles(patch);
+    if (!files.length) return none("outside-project");
+    if (!graphEnabled() && !loaded.index.entities.some(e => e.type === "fact" && e.code.some(f => files.includes(f)))) return none("not-linked");
+    patched = { files, patch, diff: diffAgainstHeadAsync(root.projectRoot, files, true) };
+  }
   let edited: { file: string; diff: ReturnType<typeof diffAgainstHeadAsync> } | null = null;
-  if (event === "edit") {
+  if (event === "edit" && patch === null) {
     const path = text(input["file_path"]);
     const file = path === undefined ? null : projectRelative(root.projectRoot, path);
     if (file === null) return none("outside-project");
@@ -395,7 +419,7 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
     edited = { file, diff: diffAgainstHeadAsync(root.projectRoot, [file]) };
   }
   // A Bash call's diff, when it needs one, also starts now.
-  const bash = event === "bash" ? planBash(root, payload, loaded.index, sessionId, tools.edit) : null;
+  const bash = event === "bash" ? planBash(root, payload, loaded.index, sessionId, tools.edit, shellCwd) : null;
 
   const { reader } = openGraphReader(root.scaffoldRoot);
   try {
@@ -417,6 +441,32 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
         return outcome ?? none("no-facts-in-range");
       }
       case "edit": {
+        if (patched !== null) {
+          const all = await patched.diff;
+          if (all === null) return none("no-diff");
+          const recorded = sessionId === null ? {} : loadStats(root.localDir, sessionId);
+          const fresh = new Map<string, FileDiff>();
+          for (const [file, diff] of all) {
+            const unseen = newHunks(diff, recorded[hunksKey(file)]);
+            const evidence = patched.patch.find(p => p.file === file || p.moveTo === file);
+            if (!unseen || !evidence) continue;
+            if (evidence.kind !== "delete" && !evidence.moveTo) {
+              try { if (projectRelative(root.projectRoot, realpathSync(join(root.projectRoot, file))) === null) continue; } catch { continue; }
+            }
+            const content = evidence.kind === "delete" || evidence.moveTo ? { text: "" } : readBounded(join(root.projectRoot, file), 4 * 1024 * 1024);
+            if (!("text" in content)) continue;
+            const attributed = attributePatch(evidence, content.text, diff);
+            if (attributed !== null) {
+              // Only newly seen HEAD hunks are eligible; attribution narrows their ranges.
+              const ranges = attributed.ranges.filter(([a, b]) => unseen.ranges.some(([x, y]) => a <= y && b >= x));
+              if (ranges.length) fresh.set(file, { ...attributed, ranges });
+            }
+          }
+          const outcome = afterKnowledge(composeEdit(ctx, { diffs: fresh }), composeGraphEdit(ctx, fresh)) ?? none("nothing-touched");
+          return { ...outcome, ...(outcome.text ? {} : { note: all.size === 0 ? "no-change" : "nothing-touched" }),
+            stats: { ...Object.fromEntries(patched.files.map(f => [f, fileSignature(root.projectRoot, f)])),
+              ...Object.fromEntries([...all].map(([f, d]) => [hunksKey(f), hunksValue(d)])) } };
+        }
         const { file, diff } = edited!;
         const diffs = await diff;
         if (diffs === null) return none("no-diff");
@@ -434,7 +484,7 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
         return outcome ?? none("no-fact-hits");
       }
       case "bash":
-        return await handleBash(root, payload, ctx, bash!, tools);
+        return await handleBash(root, payload, ctx, bash!, tools, host === "codex");
       default:
         return none("unhandled");
     }
@@ -455,6 +505,7 @@ async function handleTool(root: ContextRoot, payload: HookPayload, event: Exclud
  */
 interface BashPlan {
   command: string;
+  cwd: string;
   current: Record<string, string>;
   recorded: Record<string, string>;
   moved: string[];
@@ -469,24 +520,27 @@ interface BashPlan {
  * the whole tree costs about 200 ms on a 7,000-file checkout, a scoped one about 50 ms, so a command
  * that names no file gets no note.
  */
-function planBash(root: ContextRoot, payload: HookPayload, index: ContextIndex, sessionId: string | null, edits = true): BashPlan {
+function planBash(root: ContextRoot, payload: HookPayload, index: ContextIndex, sessionId: string | null, edits = true, cwd = root.projectRoot): BashPlan {
   const command = text(object(payload.tool_input)["command"]) ?? "";
-  if (!edits) return { command, current: {}, recorded: {}, moved: [], diff: null };
+  if (!edits) return { command, cwd, current: {}, recorded: {}, moved: [], diff: null };
   const linkedFiles = [...new Set(index.entities.filter((e) => e.type === "fact").flatMap((e) => e.code))];
   const current: Record<string, string> = Object.fromEntries(linkedFiles.map((file) => [file, fileSignature(root.projectRoot, file)]));
   const recorded = sessionId === null ? {} : loadStats(root.localDir, sessionId);
   const moved = linkedFiles.filter((file) => recorded[file] !== current[file]);
   const named = sessionId !== null && graphEnabled() && mayWriteFiles(command) ? commandFiles(root.projectRoot, command) : [];
-  return { command, current, recorded, moved, diff: named.length > 0 ? diffAgainstHeadAsync(root.projectRoot, [...new Set([...named, ...moved])]) : null };
+  return { command, cwd, current, recorded, moved, diff: named.length > 0 ? diffAgainstHeadAsync(root.projectRoot, [...new Set([...named, ...moved])]) : null };
 }
 
-async function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, plan: BashPlan, tools: { read: boolean; edit: boolean; search: boolean }): Promise<Handled> {
+async function handleBash(root: ContextRoot, payload: HookPayload, ctx: EventContext, plan: BashPlan, tools: { read: boolean; edit: boolean; search: boolean }, precisePipes = false): Promise<Handled> {
   const { command, current, recorded, moved } = plan;
   const parts: EventOutcome[] = [];
-  const hits = tools.search ? bashGrepHits(payload, root.projectRoot) : [];
+  const hits = tools.search ? bashGrepHits(payload, root.projectRoot, plan.cwd) : [];
   const grep = composeGrep(ctx, hits);
   if (grep !== null) parts.push(grep);
-  if (tools.read && grep === null && hits.length === 0) for (const read of bashReads(command, root.projectRoot)) {
+  if (tools.read && grep === null && hits.length === 0) for (const raw of bashReads(command, plan.cwd, precisePipes)) {
+    const file = projectRelative(root.projectRoot, resolve(plan.cwd, raw.file));
+    if (file === null) continue;
+    const read = { ...raw, file };
     if (read.tail !== undefined) {
       const source = readBounded(join(root.projectRoot, read.file), 4 * 1024 * 1024);
       if (!("text" in source)) continue;

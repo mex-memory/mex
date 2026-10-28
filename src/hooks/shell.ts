@@ -21,7 +21,7 @@ export const shellWords = (segment: string): string[] =>
   (segment.match(/"[^"\n]*"|'[^'\n]*'|[^\s]+/g) ?? []).map(t => t.replace(/^["']|["']$/g, ""));
 
 export function bashSearchSegment(command: string): string | null {
-  return shellSegments(command).find(segment => /^(?:(?:rg|grep|egrep|fgrep|ag|ack)\s|git\s+grep\s)/.test(segment)) ?? null;
+  return shellSegments(command).find(segment => /^(?:(?:rg|grep|egrep|fgrep|ag|ack)\s|git\s+grep\s)/.test(segment) || /^(?:Select-String|sls)\s/i.test(segment)) ?? null;
 }
 
 export function bashSearchCwd(command: string, root: string): string {
@@ -39,6 +39,17 @@ export function bashSearchPattern(command: string): string {
   const segment = bashSearchSegment(command);
   if (segment === null) return "";
   const tokens = shellWords(segment);
+  if (/^(?:Select-String|sls)$/i.test(tokens[0] ?? "")) {
+    const at = tokens.findIndex(t => /^-Pattern$/i.test(t));
+    if (at >= 0) return tokens[at + 1] ?? "";
+    tokens.shift();
+    while (tokens.length) {
+      const token = tokens.shift()!;
+      if (/^-(?:LiteralPath|Path|Encoding|Context)$/i.test(token)) { tokens.shift(); continue; }
+      if (!token.startsWith("-")) return token;
+    }
+    return "";
+  }
   if (tokens[0] === "git") tokens.shift();
   tokens.shift();
   while (tokens.length) {
@@ -61,7 +72,19 @@ export function shellRelative(root: string, path: string): string | null {
 export interface ShellRead { file: string; offset?: number; limit?: number; tail?: number }
 
 /** Only explicit file reads; pipelines reading stdin do not invent source ranges. */
-export function bashReads(command: string, root: string): ShellRead[] {
+export function bashReads(command: string, root: string, precisePipes = false): ShellRead[] {
+  // Codex commonly numbers a file before slicing it. Only this exact, single-file
+  // pipeline proves a range; compound/multi-file pipelines keep the old parser.
+  const slice = precisePipes ? /^(?:nl\s+-ba|cat)\s+("[^"\n]+"|'[^'\n]+'|[^\s|;]+)\s*\|\s*sed\s+-n\s+(['"]?)(\d+)(?:,(\d+))?p\2\s*$/.exec(command.trim()) : null;
+  if (slice) {
+    const offset = Number(slice[3]), end = Number(slice[4] ?? slice[3]);
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(end) || offset < 1 || end < offset) return [];
+    const path = slice[1]!.replace(/^["']|["']$/g, "");
+    const file = shellRelative(root, path);
+    return file === null ? [] : [{ file, offset, limit: end - offset + 1 }];
+  }
+  const powershell = powershellReads(command, root);
+  if (powershell !== null) return powershell;
   const reads: ShellRead[] = [];
   let cwd = root;
   for (const segment of shellSegments(command)) {
@@ -98,4 +121,66 @@ export function bashReads(command: string, root: string): ShellRead[] {
     }
   }
   return reads;
+}
+
+/** Literal PowerShell reads only. No expansion, script blocks, globs or execution. */
+export function powershellReads(command: string, root: string): ShellRead[] | null {
+  if (!/(?:^|[;(\s])(?:Get-Content|gc|type)\s|(?:^|[;(\s])cat\s.*(?:-(?:Path|TotalCount|Head|First|Tail)\b|\|\s*Select-Object)|\bSelect-Object\s+-(?:First|Last)/i.test(command)) return null;
+  const out: ShellRead[] = [];
+  let cwd = root;
+  const segments = shellSegments(command);
+  for (let s = 0; s < segments.length && out.length < 20; s++) {
+    let segment = segments[s]!;
+    if (/[<>`$*?{}]/.test(segment)) continue;
+    let offset: number | undefined, limit: number | undefined, tail: number | undefined;
+    const indexed = /^\((.+)\)\[(\d+)\.\.(\d+)\]$/.exec(segment);
+    if (indexed) {
+      const a = Number(indexed[2]), b = Number(indexed[3]);
+      if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || b < a) continue;
+      segment = indexed[1]!; offset = a + 1; limit = b - a + 1;
+    }
+    const words = shellWords(segment);
+    const program = words.shift() ?? "";
+    if (/^(?:cd|Set-Location)$/i.test(program) && words.length === 1) { cwd = resolve(cwd, words[0]!); continue; }
+    if (!/^(?:Get-Content|gc|cat|type)$/i.test(program)) continue;
+    const files: string[] = [];
+    let valid = true;
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i]!;
+      if (/^-(?:Path|LiteralPath)$/i.test(word)) {
+        if (!words[i + 1] || words[i + 1]!.startsWith("-")) { valid = false; break; }
+        files.push(words[++i]!);
+      } else if (/^-(?:TotalCount|Head|First|Tail)$/i.test(word)) {
+        const count = Number(words[++i]);
+        if (!Number.isSafeInteger(count) || count <= 0 || offset !== undefined || tail !== undefined) { valid = false; break; }
+        if (/^-Tail$/i.test(word)) tail = count;
+        else { offset = 1; limit = count; }
+      } else if (word.startsWith("-")) { valid = false; break; }
+      else files.push(word);
+    }
+    const select = /^Select-Object\s+-(First|Last)\s+(\d+)$/i.exec(segments[s + 1] ?? "");
+    if (select) {
+      s++;
+      const count = Number(select[2]);
+      if (!Number.isSafeInteger(count) || count <= 0 || tail !== undefined) valid = false;
+      else if (offset !== undefined && limit !== undefined) {
+        if (select[1]!.toLowerCase() === "last") offset += Math.max(0, limit - count);
+        limit = Math.min(limit, count);
+      } else if (select[1]!.toLowerCase() === "first") { offset = 1; limit = count; }
+      else tail = count;
+    } else if (/^Select-Object\b/i.test(segments[s + 1] ?? "")) valid = false;
+    if (!valid) continue;
+    for (const path of files) {
+      if (out.length >= 20) break;
+      const file = shellRelative(root, resolve(cwd, path));
+      if (file !== null) out.push({ file, ...(offset === undefined ? {} : { offset, limit }), ...(tail === undefined ? {} : { tail }) });
+    }
+  }
+  return out;
+}
+
+/** Codex wraps some tool results; Claude's stdout object still uses the same body. */
+export function shellOutput(response: unknown): string {
+  const body = typeof response === "string" ? response : response && typeof response === "object" && "stdout" in response && typeof response.stdout === "string" ? response.stdout : "";
+  return body.replace(/^Exit code: -?\d+\r?\nWall time: [^\r\n]*\r?\nOutput:\r?\n/, "");
 }
