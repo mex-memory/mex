@@ -19,6 +19,20 @@ const RECLAIM_GATE_FILE = "setup.lock.reclaim";
  */
 const UNREADABLE_LOCK_GRACE_MS = 10_000;
 
+/**
+ * How long an agent's output may be quiet before its run counts as dead.
+ * Matches POPULATION_TIMEOUT_MS in headless-population.ts: population stops
+ * an agent after this long without output, so a run quieter than this is dead
+ * and its lock is reclaimed as before.
+ */
+const AGENT_ACTIVITY_WINDOW_MS = 15 * 60_000;
+
+/** Largest setup plan read for the live-agent check (matches readSetupPlanSnapshot's cap). */
+const PLAN_READ_LIMIT = 8 * 1024 * 1024;
+
+/** Unit slugs are validated before they name a batch file, never read back as paths. */
+const UNIT_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+
 interface SetupLockOwner {
   readonly pid: number;
   readonly host: string;
@@ -59,7 +73,8 @@ export function assertSetupAvailable(mexDir: string, now: () => Date = () => new
   const path = resolve(mexDir, SETUP_LOCK_FILE);
   try { lstatSync(path); } catch { return; }
   const existing = readOwner(path);
-  if (!isAbandoned(path, existing, now())) throw busy(existing);
+  const verdict = lockVerdict(path, existing, now());
+  if (verdict !== "abandoned") throw verdict === "live-agent" ? agentBusy(existing) : busy(existing);
 }
 
 /**
@@ -104,8 +119,9 @@ export function acquireSetupLock(mexDir: string, now: () => Date = () => new Dat
       if (fd !== null) closeSync(fd);
       if (errorCode(error) !== "EEXIST") throw error;
       const existing = readOwner(path);
-      if (attempt < 2 && isAbandoned(path, existing, now()) && reclaim(path, now)) continue;
-      throw busy(existing);
+      const verdict = lockVerdict(path, existing, now());
+      if (attempt < 2 && verdict === "abandoned" && reclaim(path, now)) continue;
+      throw verdict === "live-agent" ? agentBusy(existing) : busy(existing);
     }
   }
   throw busy(readOwner(path));
@@ -121,21 +137,88 @@ function releaseSetupLock(path: string, token: string): void {
   }
 }
 
-function isAbandoned(path: string, owner: SetupLockOwner | null, now: Date): boolean {
+function lockVerdict(path: string, owner: SetupLockOwner | null, now: Date): "live-owner" | "live-agent" | "abandoned" {
+  let ownerGone: boolean;
   if (owner === null) {
     // A run that has just created its lock may not have written it yet.
     try {
-      return now.getTime() - lstatSync(path).mtimeMs > UNREADABLE_LOCK_GRACE_MS;
+      ownerGone = now.getTime() - lstatSync(path).mtimeMs > UNREADABLE_LOCK_GRACE_MS;
     } catch {
-      return true;
+      ownerGone = true;
+    }
+  } else if (owner.root !== undefined && owner.root !== dirname(dirname(path))) {
+    ownerGone = true;
+  } else if (owner.host !== hostname()) {
+    ownerGone = false;
+  } else if (!processRunning(owner.pid)) {
+    ownerGone = true;
+  } else {
+    // A live pid that started after the lock was written is a reused pid, not the owner.
+    const started = processStartedAt(owner.pid);
+    ownerGone = started !== null && Date.parse(started) > Date.parse(owner.startedAt) + 1000;
+  }
+  if (!ownerGone) return "live-owner";
+  return hasLiveAgent(path, now) ? "live-agent" : "abandoned";
+}
+
+/**
+ * Whether an agent from an earlier setup here is still producing output (#318).
+ *
+ * A killed setup's background agents can outlive its lock owner: killing only
+ * the setup process leaves its agents running, and a second setup that
+ * reclaims the lock then starts a second set over the same files. The stored
+ * plan says which units are still running; a running unit counts as live
+ * while the plan or that unit's batch file changed within the population
+ * quiet window. Anything older is a dead run, reclaimed as before.
+ *
+ * Read-only: never moves or rewrites the plan, and an unreadable plan is no
+ * signal at all. The graph build is the parent's own work, not an agent's, so
+ * a running graph alone never blocks a reclaim.
+ */
+function hasLiveAgent(path: string, now: Date): boolean {
+  const localDir = dirname(path);
+  let planMtimeMs: number;
+  const batchSlugs: string[] = [];
+  try {
+    const planPath = resolve(localDir, "setup-plan.json");
+    const stat = lstatSync(planPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > PLAN_READ_LIMIT) return false;
+    const parsed: unknown = JSON.parse(readFileSync(planPath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null) return false;
+    const record = parsed as Record<string, unknown>;
+    let anyRunning = false;
+    if (isUnitProgress(record.shared) && record.shared.state === "running") {
+      anyRunning = true;
+      batchSlugs.push("shared");
+    }
+    if (Array.isArray(record.subsystems)) {
+      for (const unit of record.subsystems) {
+        if (!isUnitProgress(unit) || unit.state !== "running") continue;
+        anyRunning = true;
+        if (typeof unit.slug === "string" && UNIT_SLUG_PATTERN.test(unit.slug)) batchSlugs.push(unit.slug);
+      }
+    }
+    if (isUnitProgress(record.final) && record.final.state === "running") anyRunning = true;
+    if (!anyRunning) return false;
+    planMtimeMs = stat.mtimeMs;
+  } catch {
+    return false;
+  }
+  const cutoff = now.getTime() - AGENT_ACTIVITY_WINDOW_MS;
+  if (planMtimeMs >= cutoff) return true;
+  for (const slug of batchSlugs) {
+    try {
+      const stat = lstatSync(resolve(localDir, "setup-ops", `${slug}.json`));
+      if (stat.isFile() && !stat.isSymbolicLink() && stat.mtimeMs >= cutoff) return true;
+    } catch {
+      // No batch file yet: the agent has produced nothing for this unit.
     }
   }
-  if (owner.root !== undefined && owner.root !== dirname(dirname(path))) return true;
-  if (owner.host !== hostname()) return false;
-  if (!processRunning(owner.pid)) return true;
-  // A live pid that started after the lock was written is a reused pid, not the owner.
-  const started = processStartedAt(owner.pid);
-  return started !== null && Date.parse(started) > Date.parse(owner.startedAt) + 1000;
+  return false;
+}
+
+function isUnitProgress(value: unknown): value is { state: unknown; slug?: unknown } {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** The start time of a running process, or null when it cannot be read. Only asked when a lock is contested. */
@@ -177,12 +260,19 @@ function reclaim(path: string, now: () => Date): boolean {
   }
   try {
     closeSync(fd);
-    if (!isAbandoned(path, readOwner(path), now())) return false;
+    if (lockVerdict(path, readOwner(path), now()) !== "abandoned") return false;
     try { unlinkSync(path); } catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
     return true;
   } finally {
     try { unlinkSync(gate); } catch { /* already gone */ }
   }
+}
+
+function agentBusy(owner: SetupLockOwner | null): SetupError {
+  const where = owner === null ? "" : ` (process ${owner.pid}, started ${owner.startedAt})`;
+  return new SetupError(
+    `Another MEX setup is already running in this checkout${where}. An agent from that setup is still running. Wait for it to finish or stop it, then run \`mex setup\` again.`,
+  );
 }
 
 function busy(owner: SetupLockOwner | null): SetupError {
