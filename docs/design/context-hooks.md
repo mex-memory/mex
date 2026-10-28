@@ -509,3 +509,71 @@ From the seven-session pilot (Django and Hono heavy tasks):
   so the ids do not exist there and the fact's "missing" label and the refusal are
   both correct. Variables this small carry no neighbours, so reconciliation cannot
   rebind them; the fact needs relinking by a person.
+
+
+## Codex project hooks
+
+Install with `mex hooks install --tool codex`, inspect with
+`mex hooks status --tool codex`, and remove with
+`mex hooks remove --tool codex`. Install and remove accept `--dry-run`.
+Only the project's `.codex/hooks.json` and the managed hooks block in `AGENTS.md`
+are edited. User hooks and the separate `mex-agent:skills` block are preserved;
+`CLAUDE.md` and global Codex configuration are untouched. A newly created hooks
+file carries `--mex-created-settings` on MEX's marked commands, so removal can
+safely delete it if no user content remains. Pre-existing empty files remain.
+
+Codex runs project hooks only after they are trusted: open Codex in the project
+and review `/hooks`. The project's `.codex/` layer must itself be trusted.
+Unattended runs can pass `--dangerously-bypass-hook-trust`.
+
+The shared runner handles UserPromptSubmit, PostToolUse `^Bash$`, PostToolUse
+`^apply_patch$` (edit switch only), and Stop. SessionStart needs no MEX entry.
+Codex UUID session ids use the same bounded state, dedup keys and injection
+budget as Claude Code. Payload `cwd` resolves the scaffold upwards, including
+when the shell starts in a project subdirectory. The optional install marker
+`--host codex` identifies the host even on Stop; direct replays identify Codex by
+`turn_id` or `apply_patch`. Otherwise the host is Claude. Every context log row,
+including detached settle rows, records host, lexical/semantic recipe and
+effective switches. Prompt rows record the actual ranking recipe (including a
+lexical fallback) as well as requestedRecipe; tool/settle rows label the selected
+arm, since they do not rank prompts. The existing prompt note retains recipe/channel.
+
+Codex commands prefer `mex-hook` on PATH, otherwise the absolute built hook
+bundle, quoted for spaces. Claude's existing bundle-first preference is retained.
+Both hosts use `--mex-managed` and a 30-second per-entry timeout.
+Install records non-default `MEX_HOOK_*` values on the command line using
+`--switch read=1` (and the other supported switch names); `MEX_HOOK_LEXICAL=1`
+becomes `--lexical`. This includes graph, graph_impact and stop_review. The entry
+applies these before preflight, and an explicitly supplied environment value
+wins. Default Claude installations keep their original command and settings.
+
+Shell reads/searches use the existing composers. Alongside POSIX cat, sed, nl,
+rg and grep, bounded literal PowerShell parsing supports Get-Content/gc/cat/type,
+-Path, -TotalCount/-Head/-First, -Tail, Select-Object -First/-Last, numeric
+`(Get-Content file)[a..b]` slices, and Select-String/sls (including a
+Get-ChildItem pipeline). Commands are never executed by the parser. Dynamic or
+unsupported expressions abstain. Codex execution headers are stripped from
+search output; Claude stdout objects retain their existing behavior.
+For Codex only, an exact single-file `nl -ba file | sed -n 'a,bp'` or
+`cat file | sed -n 'a,bp'` pipeline carries the actual slice. A fixture replay of
+lines 9?11 previously emitted the two earlier billing facts and a pointer;
+Codex now emits just the invoice fact in that range. Claude's replay is unchanged.
+
+An apply_patch event parses every update/add/delete/move name and diffs only
+those project files, skipping `.mex/` and escaping paths. With graph notes off,
+an unlinked patch starts no Git diff and scans no linked-file signatures. Hunk
+memory is shared with Bash. For an update, the runner reconstructs its preimage
+from unique patch postimage contexts and maps only its changed lines back to
+HEAD, excluding older dirty changes even inside the same Git hunk. Ambiguous
+contexts, very large line alignments and unmappable previously dirty lines abstain rather than assign
+unrelated changes. A context-free removal can use its uniquely matching removed
+HEAD lines. Equal-length prior replacements preserve positional correspondence;
+editing a previously inserted line maps to its original gap. A file delete or move judges the disappearing old path and
+any tracked destination diff. Additions without a HEAD grounding have no old
+claim to challenge. A comment inserted before a function is outside its body
+and correctly produces a silent edit outcome.
+
+Stop retains the default non-blocking flag-and-settle behavior and the opt-in
+review guard `stop_hook_active`. The worker uses Node detached spawn, ignored
+stdio and unref, with host/switch values inherited; it needs no Claude process
+or project-directory variable.

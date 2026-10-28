@@ -30,6 +30,11 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
+- Codex project hooks are implemented on `feat/codex-hooks`: shared marked
+  settings merge for `.codex/hooks.json`, a hooks block in `AGENTS.md`, persisted
+  switch arguments, apply_patch attribution and literal PowerShell reads/searches.
+  Project hook trust remains a Codex prerequisite. This is branch implementation;
+  see `docs/design/context-hooks.md` and `patterns/context-hook-replay.md`.
 - 0.8.4 is tagged and published on GitHub at `v0.8.4`, commit `56db5cf`, dated
   October 14. Exact-release CI run `38571566062` passed Node 22/24, portability,
   browser, packed-install, evaluators, and pinned performance. Finalization

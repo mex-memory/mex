@@ -5,7 +5,7 @@ triggers:
   - "context hooks"
   - "hook replay"
 grounds_to: []
-last_updated: "2026-10-18"
+last_updated: "2026-10-28"
 ---
 
 # Context hook replay
@@ -39,6 +39,15 @@ paths must stay light; prompt-only ranking and semantic dependencies load lazily
   scaffold/task source history can correctly yield changed labels before edits.
 - Measure full warm runner latency separately from composer latency and cold
   process start. Avoid concurrent builds or typechecks during timing.
+
+- Codex sends shell reads as Bash and edits as apply_patch. Replay the captured
+  payload shape through preflight and the shared runner, including trust/install
+  arguments with the host environment removed. A failed search is not a hit.
+- A patch's HEAD diff can contain earlier dirty lines in the same hunk. Attribute
+  with the patch's own before/after text, retain hunk memory, and test merged
+  hunks. A comment before a function is correctly outside its body.
+- Literal shell pipelines need range evidence: Codex's single-file nl/cat-to-sed
+  slice is narrower than a whole-file read. Keep the Claude replay unchanged.
 
 ## Verify
 
