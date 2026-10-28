@@ -58,6 +58,7 @@ All notable changes to this project will be documented in this file.
 
 ### Compatibility
 
+- Upgrading to 0.8.5: after installing the new CLI, run `mex skills sync --dry-run`, then `mex skills sync` in each existing MEX project to install `mex-statechart` and refresh managed agent instructions. Start a fresh agent session afterward; a completed setup does not need to run again just for the new skill. See the [0.8.5 upgrade instructions](COMPATIBILITY.md#upgrading-to-085).
 - Graph JSONL output (protocol v3, unchanged version): summaries no longer include `sourceBackedNodes`, which repeated node ids already in the source records; summaries of `graph query` and `impact` may include `omittedTestNodes`; call results may include `callLine`; and fact records for declarations over 200 lines carry `lineCount` in place of `lineEnd`. Pass `--include-tests` to restore test-file results (#289).
 - `GRAPH_INDEX_ORPHAN_CANDIDATE` (warning) and `GRAPH_INDEX_RECOVERY_DATA_PRESENT` (info) are new diagnostic codes in `mex graph status` output; the status value and exit code are unchanged. Graph schemas are unchanged (#205).
 - `mex setup` gains a terminal-only `--force` flag (it cannot be combined with `--browser`). Hub setup status gains an optional, additive `setupHealth` summary for a set-up checkout (#284).

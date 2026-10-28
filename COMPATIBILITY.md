@@ -52,6 +52,33 @@ shipping new versions.
 If you only use the `mex` CLI, most of this still applies, but CLI flags
 themselves are best-effort (see [CLI surface](#cli-surface) below).
 
+## Upgrading to 0.8.5
+
+Once 0.8.5 is available on npm, upgrade the CLI and run the skill-sync commands
+from the root of **each existing MEX project**:
+
+```bash
+npm install -g mex-agent@0.8.5
+mex skills sync --dry-run
+mex skills sync
+```
+
+Review the dry run and resolve any reported conflicts before applying the sync.
+Then start a fresh Claude Code or Codex session. Upgrading the npm package alone
+does not refresh the skill copies installed in a project.
+
+The same managed updater used for Inbox and Relay installs the new
+`mex-statechart` skill and updates the managed agent instructions for the
+Claude Code/Codex integrations selected during setup. Use `--tool claude` or
+`--tool codex` on both sync commands to target one integration explicitly.
+Locally edited managed files are preserved and reported as conflicts.
+
+A completed setup does not need to run again just to receive the new skill.
+Review the resulting project files and commit/push them if teammates should
+receive the updated integration through Git. If upgrading from 0.8.3 or earlier,
+also follow the [Graph and Wiki maintenance steps introduced in 0.8.4](#upgrading-to-084),
+using the 0.8.5 CLI.
+
 ## Graph and Wiki changes in 0.8.4
 
 The package-root exports and canonical Markdown grounding format are unchanged.
@@ -452,7 +479,8 @@ Explicit checking requires Java 11+ and checksum-verified TLC 1.7.4. The skill
 helper can explicitly install the pinned jar into a selected scratch/tool cache;
 MEX installation, upgrades and Hub reads never install Java/TLC or execute a
 model. The pinned upstream workflow also provides PNG QA with Pele 1.8.0 and
-resvg 2.6.2. Hub rendering uses lazy Mermaid 11.12.0 in strict mode.
+resvg 2.6.2. Hub renders a native React/SVG state graph under its normal content
+security policy; Mermaid remains available for client delivery and export.
 
 Temporary registration is ignored checkout-local state (24-hour maximum, up to
 20 previews). Reviewed Save creates a new `.mex/diagrams/<id>/record.md` plus

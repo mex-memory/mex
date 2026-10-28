@@ -386,6 +386,8 @@ Use `mex capabilities --json` for machine-readable capability discovery and `mex
 
 ## Upgrade and compatibility
 
+When upgrading to 0.8.5, follow the [0.8.5 upgrade instructions](COMPATIBILITY.md#upgrading-to-085): run `mex skills sync --dry-run`, then `mex skills sync` in each existing MEX project to install `mex-statechart`, and start a fresh agent session. Upgrading the CLI alone does not refresh project skill copies.
+
 For a global installation, upgrade the CLI and refresh the selected Claude Code/Codex skill copies:
 
 ```bash
