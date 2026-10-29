@@ -4,8 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-10-29
+
 ### Added
 
+- The managed `mex-statechart` skill explains flows, bugs and recovery paths with TLA+/TLC-checked state diagrams. Relevant MEX knowledge, code links and history help identify behavior and evidence; Mermaid and readable terminal output keep explanations in the agent conversation. Optional Hub previews offer an interactive state graph, path inspection and evidence; explicit reviewed Save creates an immutable Markdown-owned snapshot without staging, committing or pushing (#317).
+- Hub offers an opt-in hosted-beta interest form from setup, Relays and Overview; this is a signup flow, not hosted knowledge sync (#279).
 - Windows CI drives terminal setup through ConPTY, covering the tool picker, native agent handoff, recovery, and completion (#311).
 - Setup can launch background Cursor, GitHub Copilot and OpenCode CLI sessions alongside Claude Code and Codex. The selected agent needs to be installed and signed in.
 - `mex setup next` gives agents MEX cannot launch a one-paste setup flow: ask the agent to run `mex setup next --start` first, then follow its instructions until setup is complete. A new chat recovers complete batches without redoing them. Each call hands out several task files when work can run in parallel, applies ready batches, and continues the saved plan. Task prompts name source folders the code graph skips so agents can read them without trying to ground facts to unindexed code.

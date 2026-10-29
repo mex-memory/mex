@@ -79,6 +79,22 @@ receive the updated integration through Git. If upgrading from 0.8.3 or earlier,
 also follow the [Graph and Wiki maintenance steps introduced in 0.8.4](#upgrading-to-084),
 using the 0.8.5 CLI.
 
+### Graph and Wiki maintenance in 0.8.5
+
+Graph schema v4, Wiki index v5 and the `mh2:` fingerprint encoding are unchanged
+from 0.8.4. The TypeScript extractor advances from `typescript-5.9-v6` to
+`typescript-5.9-v7`; the first `mex graph refresh` rebuilds the graph. Some
+declarations whose types name an alias they do not import receive a new
+signature and node id. Keep the existing graph, refresh it, then run `mex check`
+and `mex sync` to review affected links. No Wiki schema migration is required
+when upgrading from 0.8.4; rebuild the Wiki index after reviewed knowledge edits
+as usual. Ordinary reads never perform these maintenance operations.
+
+Graph JSONL remains protocol v3. The read-output changes include omitted test
+counts, optional call locations and `lineCount` for long declarations; the
+redundant `sourceBackedNodes` summary field is removed. Consumers parsing these
+records should review the [0.8.5 changelog](CHANGELOG.md#085---2026-10-29).
+
 ## Graph and Wiki changes in 0.8.4
 
 The package-root exports and canonical Markdown grounding format are unchanged.
@@ -459,7 +475,7 @@ If you find behaviour that diverges from this document — an undocumented
 breaking change, an unclear case, or a contract you need that isn't covered —
 open an issue at <https://github.com/mex-memory/mex/issues>.
 
-## State diagrams (working-tree feature)
+## State diagrams in 0.8.5
 
 `mex-statechart` is a managed Claude Code/Codex skill. Native fenced Mermaid is
 preferred when the client actually renders the required syntax. Codex CLI

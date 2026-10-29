@@ -30,7 +30,15 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
-- PR #317 (`codex/state-diagrams`) adds state diagrams through the managed `mex-statechart` skill,
+- 0.8.5 release preparation on `codex/release-0.8.5` is authorized for direct
+  fast-forward publication to main without a PR, based on merged
+  main `a318e2d` (including PR #317 and #322). Package metadata, release notes,
+  changelog and English/translated upgrade guidance target October 29.
+  GitHub and npm both last publish 0.8.4. Tagging and the GitHub release follow
+  exact-commit CI; actual npm publication is reserved for the maintainer. See `docs/design/0.8.5-release-plan.md` for verification and remaining
+  release actions. Build/package checks use an isolated checkout to preserve
+  the running development Hub.
+- Merged PR #317 adds state diagrams through the managed `mex-statechart` skill,
   bounded TLA+/TLC generation helpers, a private artifact contract, and a lazy
   Hub Diagrams viewer. Previews are ignored checkout-local output; reviewed
   Save creates an immutable `.mex/diagrams/<id>` Markdown-owned bundle without
@@ -45,8 +53,9 @@ Then read this file fully before doing anything else in this session.
   thin directed edges, selection and pan/zoom controls. It avoids embedded
   Mermaid styles blocked by production CSP; Mermaid export remains available.
   The benchmark readiness helper selects the named state graph; toolbar SVGs
-  no longer collide with it. Follow-up pinned performance validation remains
-  required; budgets and calibration policy are unchanged.
+  no longer collide with it. Merged-main CI `40757352044` and real-checker CI
+  `40757351962` pass on `a318e2d`; release-candidate CI is still required after
+  release preparation is pushed. Budgets and calibration policy are unchanged.
 - 0.8.4 is tagged and published on GitHub at `v0.8.4`, commit `56db5cf`, dated
   October 14. Exact-release CI run `38571566062` passed Node 22/24, portability,
   browser, packed-install, evaluators, and pinned performance. Finalization
