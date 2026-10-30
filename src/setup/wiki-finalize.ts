@@ -1,5 +1,7 @@
 import { resolve } from "node:path";
 import { throwIfSetupAborted } from "./phases.js";
+import { stampScaffoldFiles } from "../wiki/migration/stamp.js";
+import { wikiLinkSections } from "../wiki/service/link-sections.js";
 import {
   createWikiEngine,
   type MigrationApplyResult,
@@ -8,8 +10,10 @@ import {
 } from "../wiki/service.js";
 
 export type SetupWikiFinalizationStage =
+  | "ids"
   | "plan"
   | "migration"
+  | "links"
   | "index"
   | "validation"
   | "complete";
@@ -30,6 +34,10 @@ export interface SetupWikiFinalizationResult {
   stage: SetupWikiFinalizationStage;
   reason: string | null;
   migrated: boolean;
+  /** Files the finish step gave a file-level id, apart from migration's own. */
+  stampedFiles: number;
+  /** Structural `refines` links added from sections to their enclosing knowledge. */
+  linkedSections: number;
   plannedEntities: number;
   indexedEntities: number;
   filesScanned: number;
@@ -41,6 +49,14 @@ export interface SetupWikiFinalizationResult {
 
 /**
  * Canonicalize and index the populated setup scaffold.
+ *
+ * Setup's own templates already carry their Wiki ids from placement (#286), so
+ * this no longer migrates them. It gives an id to each file still without one
+ * that migration would not adopt (a file holding only entities the population
+ * agent created, or one no rule types, which takes its folder's type), runs
+ * migration for what an older scaffold still needs (unadopted legacy files,
+ * the decision log's entries, legacy edges and root groundings), then links
+ * every section to its enclosing knowledge before indexing.
  *
  * Migration remains plan-first: the Wiki engine re-plans before apply and
  * refuses if the scaffold changed under the reviewed plan. Every underlying
@@ -66,6 +82,8 @@ export async function finalizeSetupWiki(
   let entitiesChecked = 0;
   let abstentions = 0;
   let migrated = false;
+  let stampedFiles = 0;
+  let linkedSections = 0;
 
   const collectDiagnostics = (entries: readonly WikiDiagnostic[]): void => {
     for (const entry of entries) {
@@ -94,6 +112,8 @@ export async function finalizeSetupWiki(
     stage,
     reason,
     migrated,
+    stampedFiles,
+    linkedSections,
     plannedEntities,
     indexedEntities,
     filesScanned,
@@ -102,6 +122,29 @@ export async function finalizeSetupWiki(
     warningCount: warnings.size,
     diagnostics: [...diagnostics.values()],
   });
+
+  options.onProgress?.("Checking Wiki ids...");
+  throwIfSetupAborted(options.signal);
+  // Stamping is a write too. Refuse structural errors before adding ids to
+  // otherwise healthy files in a scaffold that cannot safely be finalized.
+  const initial = await engine.validate({ projectRoot });
+  throwIfSetupAborted(options.signal);
+  if (hasErrors(initial)) {
+    collectDiagnostics(initial.diagnostics);
+    return result(false, "plan", "Wiki migration is blocked by errors in the populated scaffold.");
+  }
+  const stamped = stampScaffoldFiles({
+    scaffoldRoot,
+    scope: "remaining",
+    ...(options.exclude === undefined ? {} : { exclude: options.exclude }),
+    ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
+  });
+  throwIfSetupAborted(options.signal);
+  collectDiagnostics(withoutPendingIndex(stamped.diagnostics));
+  if (!stamped.applied || stamped.diagnostics.some((entry) => entry.severity === "error")) {
+    return result(false, "ids", "Wiki ids could not be added to the populated scaffold.");
+  }
+  stampedFiles = stamped.stamped.length;
 
   options.onProgress?.("Planning Wiki migration...");
   throwIfSetupAborted(options.signal);
@@ -126,10 +169,16 @@ export async function finalizeSetupWiki(
   // this run applies next or already reported above as one of its
   // abstentions, so telling the user to run `mex wiki migrate` here would be
   // wrong twice over (#227).
-  collectDiagnostics(withoutAdoptionGaps(preflight.diagnostics, ["KNOWLEDGE_NOT_ADOPTED", "KNOWLEDGE_UNTYPED"]));
+  const preflightFindings = withoutAdoptionGaps(preflight.diagnostics, ["KNOWLEDGE_NOT_ADOPTED", "KNOWLEDGE_UNTYPED"]);
+  const blocked = plan.data.blocked || hasErrors(plan) || hasErrors(preflight);
+  // Only the blocking findings, unless nothing runs after this: the rest
+  // describe the scaffold before this run converts edges and links sections
+  // (an entity orphaned here is linked a moment later, #286), and the final
+  // validation reports whatever still holds once it has.
+  collectDiagnostics(blocked ? preflightFindings : preflightFindings.filter((entry) => entry.severity === "error"));
   filesScanned = preflight.data.filesScanned;
   entitiesChecked = preflight.data.entitiesChecked;
-  if (plan.data.blocked || hasErrors(plan) || hasErrors(preflight)) {
+  if (blocked) {
     return result(false, "plan", "Wiki migration is blocked by errors in the populated scaffold.");
   }
 
@@ -142,6 +191,21 @@ export async function finalizeSetupWiki(
   if (!applied.data.applied || hasErrors(applied)) {
     return result(false, "migration", "Wiki migration could not be applied safely.");
   }
+
+  options.onProgress?.("Linking Wiki sections...");
+  throwIfSetupAborted(options.signal);
+  const linked = wikiLinkSections({
+    scaffoldRoot,
+    apply: true,
+    ...(options.exclude === undefined ? {} : { exclude: options.exclude }),
+    ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
+  });
+  throwIfSetupAborted(options.signal);
+  collectDiagnostics(withoutPendingIndex(linked.diagnostics));
+  if (hasErrors(linked) || (linked.data.links.length > 0 && !linked.data.applied)) {
+    return result(false, "links", "Wiki sections could not be linked to their files.");
+  }
+  linkedSections = linked.data.links.length;
 
   options.onProgress?.("Rebuilding Wiki index...");
   throwIfSetupAborted(options.signal);
@@ -166,7 +230,7 @@ export async function finalizeSetupWiki(
     return result(false, "validation", "Wiki scaffold validation found blocking errors.");
   }
 
-  options.onProgress?.("Wiki migration and index are ready.");
+  options.onProgress?.("Wiki ids, links and index are ready.");
   return result(true, "complete", null);
 }
 
@@ -176,6 +240,14 @@ function hasErrors(result: ServiceResult<unknown>): boolean {
 
 function migrationChangedFiles(result: ServiceResult<MigrationApplyResult>): readonly string[] {
   return result.data.report.diffs;
+}
+
+/**
+ * Drop "no index to refresh yet" from a write this step makes before it
+ * rebuilds the index anyway: the notice is true and already being acted on.
+ */
+function withoutPendingIndex(diagnostics: readonly WikiDiagnostic[]): WikiDiagnostic[] {
+  return diagnostics.filter((entry) => entry.code !== "INDEX_REFRESH_REQUIRED");
 }
 
 /** Drop the adoption-gap codes this stage of setup already accounts for (#227). */

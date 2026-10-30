@@ -3122,6 +3122,10 @@ export const WikiHealthDetailsSchema = z.object({
   allowedJobKinds: z.array(z.enum(["wiki_refresh", "wiki_rebuild"])).max(2),
   recommendedJobKind: z.enum(["wiki_refresh", "wiki_rebuild"]).nullable(),
   activeJobId: hubJobId.nullable(),
+  recoveryCommand: z.object({
+    label: z.string().min(1).max(200),
+    command: z.string().min(1).max(200),
+  }).strict().nullable().optional(),
 }).strict().superRefine((value, context) => {
   if (
     value.recommendedJobKind !== null
@@ -3220,7 +3224,16 @@ export const JobPageResponseSchema = z.object({
 
 export const JobStartRequestSchema = z.object({
   kind: HubJobKindSchema,
+  migrationPreview: revision.optional(),
+}).strict().refine(value => value.migrationPreview === undefined || value.kind === "wiki_rebuild",
+  "A migration preview is only valid for a Wiki rebuild.");
+
+export const WikiMigrationJobPreviewSchema = z.object({
+  revision,
+  report: utf8Text(16 * 1024),
+  canApply: z.boolean(),
 }).strict();
+export type WikiMigrationJobPreview = z.infer<typeof WikiMigrationJobPreviewSchema>;
 
 export const JobCancelRequestSchema = z.object({}).strict();
 

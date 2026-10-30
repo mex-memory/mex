@@ -42,6 +42,7 @@ export type {
   CompilerExtractionOptions,
   CompilerFileCapture,
   CompilerIncrementalInput,
+  CompilerProjectInputs,
   CompilerExtractionResult,
   CompilerFileExtraction,
   CompilerImportBinding,

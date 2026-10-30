@@ -1,5 +1,6 @@
 import { createHash, type Hash } from "node:crypto";
-import type { SetupAgentTool } from "./population.js";
+import { AI_TOOLS } from "../types.js";
+import type { BackgroundAgentTool } from "../agent-command.js";
 
 export type PopulationTranscriptKind = "assistant" | "command" | "file" | "tool" | "notice";
 export interface PopulationTranscriptSignal {
@@ -19,7 +20,7 @@ interface PartialText { key: string; length: number; hash: Hash }
 
 /** Assistant prose and fixed tool labels. Completion belongs to the separate decoder. */
 export function createPopulationTranscriptDecoder(
-  tool: SetupAgentTool,
+  tool: BackgroundAgentTool,
   onSignal: (signal: PopulationTranscriptSignal) => void,
 ): { write(chunk: Buffer): void; end(): void; dispose(): void } {
   const line = Buffer.alloc(MAX_LINE_BYTES);
@@ -229,6 +230,45 @@ export function createPopulationTranscriptDecoder(
     }
   };
 
+  // Cursor CLI stream-json (https://cursor.com/docs/cli/reference/output-format):
+  // assistant messages carry text blocks; tool calls start and complete by call_id.
+  const cursor = (event: Record<string, unknown>) => {
+    if (event.type === "assistant") {
+      const message = record(event.message);
+      const blocks = Array.isArray(message?.content) ? message.content.slice(0, MAX_BLOCKS) : [];
+      for (const value of blocks) {
+        const block = record(value);
+        if (block?.type !== "text" || typeof block.text !== "string" || !block.text) continue;
+        const hash = digest(block.text);
+        if (recentAssistant.has(hash)) continue;
+        rememberAssistant(block.text);
+        beginAssistant(`cursor:${hash}`);
+        append("assistant", block.text);
+      }
+    } else if (event.type === "tool_call" && event.subtype === "started") {
+      const call = record(event.tool_call);
+      const key = id(event.call_id);
+      if (call?.readToolCall) toolMarker(key, "tool", "Read a file");
+      else if (call?.writeToolCall) toolMarker(key, "file", "Updated a file");
+      else if (call) toolMarker(key, "tool", "Used a tool");
+    } else if (event.type === "result" && event.subtype === "success" && event.is_error !== true) {
+      const result = text(event.result);
+      if (result && !recentAssistant.has(digest(result))) {
+        beginAssistant("cursor:result");
+        append("assistant", result);
+        rememberAssistant(result);
+      }
+    }
+  };
+
+  // Copilot CLI and OpenCode document no event format: show one fixed notice, never their records.
+  let noticed = false;
+  const generic = () => {
+    if (noticed) return;
+    noticed = true;
+    append("notice", `${AI_TOOLS[tool].name} is working. Its output format is not documented, so MEX shows its activity but not its messages.`);
+  };
+
   const consumeLine = () => {
     recordCharacters = 0;
     recordTruncated = false;
@@ -239,7 +279,12 @@ export function createPopulationTranscriptDecoder(
     // Oversized records are discarded without generating noise for tool output.
     line.fill(0, 0, length);
     length = 0; oversized = false;
-    if (event) { if (tool === "claude") claude(event); else codex(event); }
+    if (event) {
+      if (tool === "claude") claude(event);
+      else if (tool === "codex") codex(event);
+      else if (tool === "cursor") cursor(event);
+      else generic();
+    }
     if (recordTruncated) {
       flush();
       emit("notice", "A large output record was truncated in the session view.");

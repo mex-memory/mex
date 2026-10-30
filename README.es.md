@@ -15,10 +15,10 @@ MEX mantiene la arquitectura, las decisiones, los requisitos y los traspasos de 
 [![Estrellas en GitHub](https://img.shields.io/github/stars/mex-memory/mex?style=flat)](https://github.com/mex-memory/mex/stargazers)
 [![Sitio web](https://img.shields.io/badge/website-mexmemory.com-4f7cff)](https://mexmemory.com)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/FEdNsQ4Qt4)
-[![Licencia: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mex-memory/mex/blob/v0.8.4/LICENSE)
+[![Licencia: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mex-memory/mex/blob/v0.8.5/LICENSE)
 [![CI](https://github.com/mex-memory/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/mex-memory/mex/actions/workflows/ci.yml)
-[![Node.js >=22.5](https://img.shields.io/badge/Node.js-%3E%3D22.5-339933?logo=node.js&logoColor=white)](https://github.com/mex-memory/mex/blob/v0.8.4/package.json)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](https://github.com/mex-memory/mex/blob/v0.8.4/package.json)
+[![Node.js >=22.5](https://img.shields.io/badge/Node.js-%3E%3D22.5-339933?logo=node.js&logoColor=white)](https://github.com/mex-memory/mex/blob/v0.8.5/package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](https://github.com/mex-memory/mex/blob/v0.8.5/package.json)
 [![Memoria para agentes](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](#agent-memory-mode)
 [![MCP: solo código fuente](https://img.shields.io/badge/MCP-source%20only-6f8cff)](#mcp-server)
 
@@ -26,7 +26,7 @@ MEX mantiene la arquitectura, las decisiones, los requisitos y los traspasos de 
 
 </div>
 
-> La descripción principal de esta traducción sigue correspondiendo a 0.8.0. La configuración, los comandos de instalación y las indicaciones de actualización se han ajustado para 0.8.4; los demás cambios de producto se documentan en el [README en inglés](README.md) y en las [notas de la versión 0.8.4](RELEASE_NOTES.md).
+> La descripción principal de esta traducción sigue correspondiendo a 0.8.0. La configuración, los comandos de instalación y las indicaciones de actualización se han ajustado para 0.8.5; los demás cambios de producto se documentan en el [README en inglés](README.md) y en las [notas de la versión 0.8.5](RELEASE_NOTES.md).
 
 ---
 
@@ -35,7 +35,7 @@ Una persona del equipo sabe por qué existe una restricción. Otra conoce el his
 **Lo que un ingeniero y su agente aprenden debería convertirse en contexto que el siguiente compañero pueda aprovechar.** MEX le da a ese conocimiento un lugar duradero en el repositorio: Markdown legible, explicaciones vinculadas al código, propuestas de Spec revisadas y traspasos estructurados. Las personas lo exploran y revisan en un Hub local; los agentes lo recuperan y ayudan a mantenerlo mediante las instrucciones del proyecto y la CLI.
 
 > [!IMPORTANT]
-> **[MEX 0.8.4](RELEASE_NOTES.md) inicia la configuración en un nuevo HUD de terminal**, cede la terminal a tu agente y termina con la revisión en Hub. Los errores de configuración conservan las instrucciones para recuperarse. También acelera las consultas y la actualización del Graph y reduce las huellas de grounding; [actualiza a todo el equipo antes de compartir el nuevo formato](#upgrade-and-compatibility).
+> **[MEX 0.8.5](RELEASE_NOTES.md) convierte las explicaciones complicadas del agente en diagramas de estados comprobados.** Pide a tu agente que explique un flujo, un fallo o una recuperación con un statechart; léelo en el chat o explóralo en Hub. Esta versión también incorpora una configuración paralela y reanudable y acelera la construcción del Graph. Si ya usas MEX, [sincroniza las skills del proyecto después de actualizar](#upgrade-and-compatibility).
 
 💬 **Únete a la comunidad de MEX en Discord** — conversa sobre ideas, pide ayuda, comparte tus comentarios y muestra lo que estás creando.
 
@@ -102,7 +102,7 @@ MEX requiere **Node.js 22.5 o posterior** y un repositorio Git. El flujo habitua
 Ejecuta lo siguiente desde la raíz del repositorio:
 
 ```bash
-npx mex-agent@0.8.4 setup
+npx mex-agent@0.8.5 setup
 ```
 
 El comando abre un HUD de terminal con un nuevo banner ASCII `mex` en cian. Usa las flechas para resaltar una herramienta y Enter para seleccionarla y comenzar; Espacio permite marcar integraciones adicionales. La fila Continue inicia con las opciones marcadas o sin agente. Las tareas largas muestran actividad animada, tiempo transcurrido y el trabajo más reciente; el análisis del Graph muestra recuentos reales de archivos. Si está disponible una CLI seleccionada de Claude Code o Codex, su sesión interactiva toma la terminal; sal de esa sesión para volver a MEX. MEX comprueba el scaffold antes de continuar y ofrece reintentar, completar manualmente o dejarlo para después si falta contenido. Se conservan las instrucciones existentes.
@@ -111,7 +111,7 @@ Tras la validación, se abre Hub para terminar. Revisa el diff exacto y elige **
 
 Mantén la terminal abierta mientras usas Hub; `q` o Ctrl+C lo detienen. `--no-open` muestra el enlace final sin abrir el navegador y `--port <n>` elige el puerto local. Pulsa `d` para ver más detalles del estado o del error. Los errores previstos incluyen instrucciones concretas de recuperación, por ejemplo para corregir una configuración mal formada o una regla de Git que oculta el scaffold. Los agentes tienen sus propios requisitos de instalación, cuenta y red.
 
-Para configurar desde el navegador, usa `npx mex-agent@0.8.4 setup --browser`; ejecuta el mismo motor con un agente en segundo plano y la alternativa de completar la memoria manualmente. `--browser --no-open` imprime el enlace sin abrirlo. `--cli` sigue siendo un alias del flujo de terminal predeterminado.
+Para configurar desde el navegador, usa `npx mex-agent@0.8.5 setup --browser`; ejecuta el mismo motor con un agente en segundo plano y la alternativa de completar la memoria manualmente. `--browser --no-open` imprime el enlace sin abrirlo. `--cli` sigue siendo un alias del flujo de terminal predeterminado.
 
 Para scripts, usa `--yes` y `--tool <name>` (repetible), o `--tool none`. CI y la entrada o salida redirigida también usan texto sin interacción: reutilizan las opciones guardadas, no seleccionan integraciones si no hay ninguna guardada y no inician agentes ni navegadores. Los códigos de salida son `0` para preparación o vista previa completada, `2` si falta completar la memoria, `1` para errores y `130`/`143` para interrupciones. `mex setup --dry-run` no modifica archivos. Tras instalar, `mex` abre Hub en un proyecto de código establecido o la configuración de terminal en uno incompleto; `mex hub` abre el navegador explícitamente y `mex tui` abre el panel de terminal.
 
@@ -129,9 +129,9 @@ Comparte el commit de configuración revisado mediante un push siguiendo el fluj
 Clona el repositorio y la rama del equipo, o actualízalos con un pull de Git. Si la configuración de 0.8 está completa y guardada en un commit, construye los índices derivados en tu propia copia de trabajo y abre Hub:
 
 ```bash
-npx mex-agent@0.8.4 graph rebuild
-npx mex-agent@0.8.4 wiki rebuild-index
-npx mex-agent@0.8.4 hub
+npx mex-agent@0.8.5 graph rebuild
+npx mex-agent@0.8.5 wiki rebuild-index
+npx mex-agent@0.8.5 hub
 ```
 
 Reutiliza la memoria compartida del proyecto; no la regeneres solo para incorporarte. En Team/Members, comprueba la identidad efectiva y, si hace falta, selecciona tu registro de Member existente para establecerla localmente. Si aún no tienes un registro, créalo explícitamente mediante el flujo con revisión y comparte sus archivos canónicos. Members sirve para atribuir contribuciones, no es un sistema de inicio de sesión ni de permisos.
@@ -144,7 +144,7 @@ Para configuraciones antiguas o incompletas, sigue primero las instrucciones de 
 <summary><strong>¿Prefieres una instalación global?</strong></summary>
 
 ```bash
-npm install -g mex-agent@0.8.4
+npm install -g mex-agent@0.8.5
 mex setup
 ```
 
@@ -159,14 +159,14 @@ La instalación global opcional, tanto en Hub como en la terminal, fija la versi
 <summary><strong>¿Usas MEX para un agente operativo persistente?</strong></summary>
 
 ```bash
-npx mex-agent@0.8.4 setup --mode agent-memory
+npx mex-agent@0.8.5 setup --mode agent-memory
 ```
 
 Esta plantilla independiente aplica el modelo de enrutamiento y mantenimiento de MEX a laboratorios domésticos, infraestructura y espacios de trabajo de agentes de larga duración. Añade un contrato `HEARTBEAT.md` y convenciones de limpieza; el flujo de Code Graph, Wiki y Hub de equipo descrito en este README corresponde al modo predeterminado `code-repo`.
 
 </details>
 
-Los ejemplos usan `mex` para facilitar la lectura. Instálalo globalmente como se indica arriba o sustitúyelo por `npx mex-agent@0.8.4`.
+Los ejemplos usan `mex` para facilitar la lectura. Instálalo globalmente como se indica arriba o sustitúyelo por `npx mex-agent@0.8.5`.
 
 <a id="how-mex-works"></a>
 
@@ -247,8 +247,8 @@ La configuración instala instrucciones breves para el agente anfitrión que apu
 
 | Integración | Comportamiento de la configuración | Comandos explícitos de skills |
 | --- | --- | --- |
-| **Claude Code** | Instala o actualiza las instrucciones de entrada del proyecto y las skills en `.claude/skills/` | `/mex-inbox`, `/mex-relay` |
-| **Codex** | Instala o actualiza las instrucciones de entrada del proyecto y las skills en `.agents/skills/` | `$mex-inbox`, `$mex-relay` |
+| **Claude Code** | Instala o actualiza las instrucciones de entrada del proyecto y las skills en `.claude/skills/` | `/mex-inbox`, `/mex-relay`, `/mex-statechart` |
+| **Codex** | Instala o actualiza las instrucciones de entrada del proyecto y las skills en `.agents/skills/` | `$mex-inbox`, `$mex-relay`, `$mex-statechart` |
 | **Cursor, Windsurf, GitHub Copilot, OpenCode** | Instala las instrucciones de entrada o la plantilla correspondiente | Sin comando oficial de skills de MEX en 0.8 |
 
 Si a una configuración existente le faltan los archivos de integración de Claude Code o Codex, previsualiza y sincroniza esa integración explícitamente:
@@ -268,7 +268,7 @@ El flujo de Inbox sujeto a aprobación se aplica a propuestas de la familia Spec
 <details>
 <summary><strong>Servidor MCP — solo código fuente</strong></summary>
 
-El repositorio incluye un [workspace MCP](https://github.com/mex-memory/mex/tree/v0.8.4/packages/mex-mcp) para desarrollo local. No se publica con MEX 0.8; la interfaz publicada para agentes es la CLI `mex-agent`, junto con sus instrucciones de proyecto y skills.
+El repositorio incluye un [workspace MCP](https://github.com/mex-memory/mex/tree/v0.8.5/packages/mex-mcp) para desarrollo local. No se publica con MEX 0.8; la interfaz publicada para agentes es la CLI `mex-agent`, junto con sus instrucciones de proyecto y skills.
 
 </details>
 
@@ -354,17 +354,17 @@ Usa `mex capabilities --json` para descubrir las capacidades en un formato legib
 Para una instalación global, actualiza la CLI y las copias de las skills seleccionadas de Claude Code/Codex:
 
 ```bash
-npm install -g mex-agent@0.8.4
+npm install -g mex-agent@0.8.5
 mex skills sync --dry-run
 mex skills sync
 ```
 
-Si ya completaste la configuración con 0.8.0–0.8.3, estos comandos actualizan las skills y las instrucciones administradas del agente; no hace falta volver a ejecutar setup solo por actualizar el paquete. Revisa los conflictos que se indiquen con instrucciones editadas localmente y después inicia una nueva sesión del agente.
+Si ya completaste la configuración de MEX, estos comandos instalan `mex-statechart` y actualizan las skills y las instrucciones administradas del agente; no hace falta volver a ejecutar setup solo por actualizar el paquete. Ejecuta la sincronización en cada proyecto MEX, revisa los conflictos con archivos editados localmente e inicia una nueva sesión del agente. Consulta [cómo actualizar a 0.8.5](COMPATIBILITY.md#upgrading-to-085).
 
 > [!WARNING]
-> **Actualiza a todos los que comparten el scaffold a 0.8.4 antes de hacer commit de groundings nuevos o modificados.** Las huellas compactas `mh2:` no pueden leerse en versiones anteriores, incluida 0.8.3. Las huellas `mh:` existentes siguen siendo válidas; actualizar el paquete no reescribe archivos ni cambia su significado.
+> **Actualiza a todos los que comparten el scaffold a 0.8.4 o posterior antes de hacer commit de groundings nuevos o modificados.** Las huellas compactas `mh2:` no pueden leerse en versiones anteriores, incluida 0.8.3. Las huellas `mh:` existentes siguen siendo válidas; actualizar el paquete no reescribe archivos ni cambia su significado.
 
-El esquema de Graph sigue en v4; el índice desechable de Wiki pasa a v5, por lo que debes ejecutar `mex wiki rebuild-index` después de actualizar. La primera ejecución de `mex graph refresh` vuelve a extraer el código una vez para la nueva caché y las nuevas versiones del extractor y del resolver. Para convertir las huellas existentes de una vez, revisa `mex graph compact-fingerprints --dry-run`, ejecuta `mex graph compact-fingerprints` y revisa el diff antes de hacer commit. Consulta [cómo actualizar a 0.8.4](COMPATIBILITY.md#upgrading-to-084).
+Graph conserva el esquema v4 y Wiki el índice v5 de 0.8.4. Ejecuta `mex graph refresh`: el extractor de TypeScript actualizado reconstruye el Graph una vez y puede cambiar algunos identificadores. Conserva el Graph existente y usa `mex check` y `mex sync` para revisar los groundings afectados. Desde 0.8.4 no hace falta migrar el esquema de Wiki. Si vienes de 0.8.3 o una versión anterior, sigue también los [pasos de mantenimiento introducidos en 0.8.4](COMPATIBILITY.md#upgrading-to-084), incluido `mex wiki rebuild-index`. La conversión de huellas sigue siendo opcional y explícita.
 
 **Si vienes de 0.8.2 o una versión anterior, conserva el Graph existente.** Los cambios de identidad de TypeScript introducidos en 0.8.3 pueden cambiar los identificadores. Ejecuta `mex graph refresh` y después `mex sync` para conservar la correspondencia con los antiguos. Revisa los casos ambiguos o ausentes y confirma los cambios del scaffold mediante Git. Si cambia el scaffold, actualiza el índice Wiki con `mex wiki rebuild-index`. Un clon nuevo o una reconstrucción sin el Graph anterior depende de las huellas guardadas y puede requerir volver a vincular código manualmente. Consulta los [pasos de migración de 0.8.3](COMPATIBILITY.md#upgrading-to-083).
 
@@ -426,10 +426,10 @@ MEX mantiene la memoria del equipo en archivos del repositorio y proporciona flu
 
 ## Más información
 
-- Lee las [notas de la versión MEX 0.8.4](RELEASE_NOTES.md).
-- Consulta la [guía de entorno de ejecución y compatibilidad](https://github.com/mex-memory/mex/blob/v0.8.4/COMPATIBILITY.md) y la [política de seguridad](https://github.com/mex-memory/mex/blob/v0.8.4/SECURITY.md).
-- Revisa la [matriz de compatibilidad del Code Graph](https://github.com/mex-memory/mex/blob/v0.8.4/docs/code-graph-support.md).
-- Consulta el [modelo de extractores y las relaciones compatibles](https://github.com/mex-memory/mex/blob/v0.8.4/docs/extractors.md).
-- Lee los [resultados del benchmark de recuperación del Code Graph](https://github.com/mex-memory/mex/blob/v0.8.4/evaluate/RESULTS.md), incluida la comparación evaluada a ciegas frente a una búsqueda de archivos convencional.
+- Lee las [notas de la versión MEX 0.8.5](RELEASE_NOTES.md).
+- Consulta la [guía de entorno de ejecución y compatibilidad](https://github.com/mex-memory/mex/blob/v0.8.5/COMPATIBILITY.md) y la [política de seguridad](https://github.com/mex-memory/mex/blob/v0.8.5/SECURITY.md).
+- Revisa la [matriz de compatibilidad del Code Graph](https://github.com/mex-memory/mex/blob/v0.8.5/docs/code-graph-support.md).
+- Consulta el [modelo de extractores y las relaciones compatibles](https://github.com/mex-memory/mex/blob/v0.8.5/docs/extractors.md).
+- Lee los [resultados del benchmark de recuperación del Code Graph](https://github.com/mex-memory/mex/blob/v0.8.5/evaluate/RESULTS.md), incluida la comparación evaluada a ciegas frente a una búsqueda de archivos convencional.
 - Inspecciona la CLI localmente con `mex capabilities --json` y `mex commands`.
 - Únete a la [comunidad de MEX en Discord](https://discord.gg/FEdNsQ4Qt4) o visita [mexmemory.com](https://mexmemory.com).

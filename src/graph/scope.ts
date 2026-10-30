@@ -2507,7 +2507,7 @@ export function compactFact(graph: GraphEngine, id: string, detail: DetailLevel)
 
 export function readNodeSource(node: GraphNode, rootDir: string, maxLines: number): SourceRange | null {
   let lines: string[];
-  try { lines = readFileSync(resolve(rootDir, node.filePath), "utf-8").split("\n"); }
+  try { lines = splitSourceLines(readFileSync(resolve(rootDir, node.filePath), "utf-8")); }
   catch { return null; }
   const body = lines.slice(node.startLine - 1, node.endLine);
   const truncated = maxLines > 0 && body.length > maxLines;
@@ -2529,7 +2529,7 @@ export function planFileSource(
   callsiteLines: number[] = [],
 ): SourceRange[] {
   let lines: string[];
-  try { lines = readFileSync(resolve(rootDir, filePath), "utf-8").split("\n"); }
+  try { lines = splitSourceLines(readFileSync(resolve(rootDir, filePath), "utf-8")); }
   catch { return []; }
   // `split` creates a synthetic 201st entry for a 200-line file ending in a
   // newline. Do not let that formatting detail disable the whole-file policy.
@@ -2720,6 +2720,14 @@ function normalizeSourceRanges<T extends {
 
   return [...base, ...keptWindows].sort((left, right) =>
     left.priority - right.priority || left.start - right.start || left.end - right.end);
+}
+
+/**
+ * Split source text into display lines. A CRLF checkout would otherwise keep
+ * a `\r` on every line, which JSON escapes in every emitted source record.
+ */
+export function splitSourceLines(text: string): string[] {
+  return text.split(/\r?\n/);
 }
 
 function numbered(lines: string[], startLine: number): string {

@@ -8,7 +8,8 @@ import { SetupError } from "../../../setup/errors.js";
 
 const mocks = vi.hoisted(() => ({ inspect: vi.fn(), execute: vi.fn(), status: vi.fn(), initial: vi.fn() }));
 vi.mock("../../../setup/headless.js", () => ({ inspectSetupStatus: mocks.inspect, runHeadlessSetup: mocks.execute }));
-vi.mock("../readiness.js", () => ({ initialSetupStatus: mocks.initial, projectSetupStatus: mocks.status }));
+vi.mock("../readiness.js", () => ({ initialSetupStatus: mocks.initial, projectSetupStatus: mocks.status, hasPendingSetupChanges: async () => true }));
+vi.mock("../../../setup/setup-lock.js", () => ({ assertSetupAvailable: () => {}, withSetupLock: async (_root: string, run: () => Promise<unknown>) => run() }));
 
 import { HubSetupRunner } from "../runner.js";
 
@@ -32,6 +33,25 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("setup run lifecycle", () => {
+  it("checks population without an agent and retains the migrated commit checkpoint", async () => {
+    mocks.execute.mockResolvedValue({ ...result, populationTool: null });
+    mocks.status.mockResolvedValue({ ...status, populated: true, graphReady: true, wikiReady: true, ready: true, stage: "ready" });
+    const runner = new HubSetupRunner({ projectRoot: "/test", finalizeOnly: true });
+    runner.start({ mode: "code-repo", tools: [], confirmPopulation: false });
+    await vi.waitFor(() => expect(runner.snapshot().status).toBe("paused"));
+    expect(mocks.execute).toHaveBeenCalledWith(expect.objectContaining({ confirmPopulation: true }));
+    expect(runner.snapshot()).toMatchObject({ stage: "needs_commit", populationTool: null, ready: false });
+  });
+  it("keeps the finalization notice in the commit-checkpoint message", async () => {
+    const notice = "1 grounded entity has changed since they were recorded (.mex/a.md). They were left as written; run `mex sync` to review them.";
+    mocks.execute.mockResolvedValue({ ...result, populationTool: null, groundingNotice: notice, message: `Graph and Wiki are ready. ${notice}` });
+    mocks.status.mockResolvedValue({ ...status, populated: true, graphReady: true, wikiReady: true, ready: false, stage: "needs_commit" });
+    const runner = new HubSetupRunner({ projectRoot: "/test", finalizeOnly: true });
+    runner.start({ mode: "code-repo", tools: [], confirmPopulation: false });
+    await vi.waitFor(() => expect(runner.snapshot().status).toBe("paused"));
+    expect(runner.snapshot().message).toContain("Review and commit");
+    expect(runner.snapshot().message).toContain("run `mex sync`");
+  });
   it("honors an explicit mode on both idle reads without reusing another mode's commit checkpoint", async () => {
     const completedCode = { ...status, populated: true, stage: "needs_commit" };
     mocks.initial.mockReturnValue(completedCode);
@@ -494,4 +514,55 @@ describe("setup run lifecycle", () => {
     expect(runner.snapshot()).toMatchObject({ status: "cancelled", ready: false, error: null });
     expect(onReady).not.toHaveBeenCalled();
   });
+
+  it("publishes per-subsystem progress with each progress event and keeps it after the run", async () => {
+    let coverage!: NonNullable<HeadlessSetupOptions["onPopulationCoverage"]>;
+    let progress!: NonNullable<HeadlessSetupOptions["onProgress"]>;
+    let finish!: () => void;
+    mocks.execute.mockImplementation((options: HeadlessSetupOptions) => {
+      coverage = options.onPopulationCoverage!;
+      progress = options.onProgress!;
+      return new Promise((resolve) => { finish = () => resolve({ ...result, coverageNotice: "Subsystems covered: 1 of 2, 4 facts written." }); });
+    });
+    mocks.status.mockResolvedValue({ ...status, populated: true, graphReady: true, wikiReady: true, ready: false, stage: "needs_commit" });
+    const runner = new HubSetupRunner({ projectRoot: "/test" });
+    const seen: unknown[] = [];
+    runner.subscribe((run) => { seen.push(run.populationCoverage); });
+    runner.start({ mode: "code-repo", tools: ["claude"] });
+    await vi.waitFor(() => expect(mocks.execute).toHaveBeenCalledOnce());
+    const entry = {
+      phase: "subsystems" as const, total: 2, done: 1, skipped: 1,
+      subsystems: [{ path: "src/router", state: "done" as const }, { path: "src/jsx", state: "skipped" as const }],
+    };
+    coverage(entry);
+    progress({ step: "population", label: "Populate the scaffold", detail: "1/2 subsystems done, 1 skipped" });
+    expect(SetupRunSchema.parse(runner.snapshot())).toMatchObject({
+      populationCoverage: entry,
+      progress: { step: "population", detail: "1/2 subsystems done, 1 skipped" },
+      message: "1/2 subsystems done, 1 skipped",
+    });
+    expect(seen.at(-1)).toEqual(entry);
+    finish();
+    await vi.waitFor(() => expect(runner.snapshot().status).toBe("paused"));
+    expect(SetupRunSchema.parse(runner.snapshot()).populationCoverage).toEqual(entry);
+    await runner.shutdown();
+  });
+});
+
+it("shows usage-limit results as paused with reset and recovery intact", async () => {
+  const message = "Claude Code reached its usage limit. Resets 5:30pm (Asia/Kolkata). Rerun `mex setup` after the limit resets; finished work is kept. Population stopped with 8 of 12 subsystems done.";
+  mocks.execute.mockResolvedValue({ ...result, ready: false, populated: false, stage: "needs_population", message });
+  const runner = new HubSetupRunner({ projectRoot: "/test" });
+  runner.start({ mode: "code-repo", tools: ["claude"] });
+  await vi.waitFor(() => expect(runner.snapshot().status).toBe("paused"));
+  expect(runner.snapshot()).toMatchObject({ ready: false, message, error: null });
+});
+it("keeps the incomplete final-pass warning at commit review", async () => {
+  const coverageNotice = "Patterns and links were not written. Rerunning `mex setup` writes them.";
+  mocks.execute.mockResolvedValue({ ...result, coverageNotice });
+  mocks.status.mockResolvedValue({ ...status, stage: "needs_commit", populated: true });
+  const runner = new HubSetupRunner({ projectRoot: "/test" });
+  runner.start({ mode: "code-repo", tools: ["claude"] });
+  await vi.waitFor(() => expect(runner.snapshot().status).toBe("paused"));
+  expect(runner.snapshot().message).toContain(coverageNotice);
 });

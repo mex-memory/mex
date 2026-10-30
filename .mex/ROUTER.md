@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-10-26
+last_updated: 2026-10-29
 ---
 
 # Session Bootstrap
@@ -30,6 +30,34 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
+- 0.8.5 is tagged and published as the stable/latest GitHub release at
+  `v0.8.5`, commit `8c43930`, dated October 29. Preparation went directly to
+  main without a PR, as authorized. Exact-release CI `40826775278` passes all
+  Node 22/24, portability, browser, packaging, evaluator and performance gates;
+  real checker CI `40826775234` passes on Linux/macOS/Windows after one
+  unchanged Windows retry. Contributors are the last release-note section.
+  The verified tarball and checksum are attached to the GitHub release and
+  retained under ignored `test-results/releases/0.8.5/` in the development
+  checkout. The public/latest npm publish dry run passed; npm remains 0.8.4.
+  Actual npm publication is the maintainer's remaining action. See
+  `docs/design/0.8.5-release-plan.md` for the exact package hash and command.
+- Merged PR #317 adds state diagrams through the managed `mex-statechart` skill,
+  bounded TLA+/TLC generation helpers, a private artifact contract, and a lazy
+  Hub Diagrams viewer. Previews are ignored checkout-local output; reviewed
+  Save creates an immutable `.mex/diagrams/<id>` Markdown-owned bundle without
+  staging or sharing. Saved diagrams are excluded from Wiki adoption/writes.
+  Real checker, browser, installer and packed Hub paths have local coverage;
+  pinned Linux route calibration is recorded, and PR CI handles final platform
+  verification. The user reported Claude app functionality working; client
+  acceptance testing continues after the terminal-delivery fixes. Codex CLI
+  simple rendering and complex-chart text fallback are verified. See
+  `docs/design/state-diagrams-qualification.md` for the current CI evidence.
+  The Hub canvas now follows the Context graph's native nodes,
+  thin directed edges, selection and pan/zoom controls. It avoids embedded
+  Mermaid styles blocked by production CSP; Mermaid export remains available.
+  The benchmark readiness helper selects the named state graph; toolbar SVGs
+  no longer collide with it. Release CI `40826775278` and real-checker CI
+  `40826775234` pass on `8c43930`. Budgets and calibration policy are unchanged.
 - PR #280's follow-up preserves identified npm missing-dependency checks beside
   unread `requirements.txt` or `setup.py` manifests. Optional `Claim.ecosystem`
   carries explicit enclosing-heading evidence or scoped npm syntax into name

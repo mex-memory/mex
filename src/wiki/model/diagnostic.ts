@@ -207,6 +207,23 @@ export const WIKI_DIAGNOSTICS = {
     remediation: "Node id and fingerprint must come from live graph output. MEX will not accept caller-supplied values.",
   },
   /**
+   * Code named by `file` with `symbol` or `line` that the graph does not hold:
+   * no such file, no such declaration, or a line outside every declaration.
+   * The message lists the nearest declarations in that file.
+   */
+  GROUNDING_NOT_FOUND: {
+    severity: "error",
+    remediation: "Check the repository-relative path and the declaration name or line against the source, or pick one of the nearest declarations listed.",
+  },
+  /**
+   * Code named by `file` with `symbol` or `line` that matches more than one
+   * declaration. The write never picks one; the message lists every candidate.
+   */
+  GROUNDING_AMBIGUOUS: {
+    severity: "error",
+    remediation: "Qualify the symbol (for example `Class.method`), or name the code by `line` or by one candidate's node id.",
+  },
+  /**
    * A command that resolves groundings ran without a code graph it could
    * trust (#232): the checkout's graph is stale, needs a rebuild, is corrupt,
    * or changed during the pass. Info, because the command still did its work;

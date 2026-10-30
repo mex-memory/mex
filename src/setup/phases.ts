@@ -103,6 +103,17 @@ export function resolveSetupMode(mexDir: string, requested?: string): SetupMode 
   return normalizeSetupMode(requested ?? loadConfiguredSetupMode(mexDir));
 }
 
+/**
+ * Code-repository setup needs Git; agent-memory setup does not. One check for
+ * the engine, the dry-run preview and the terminal's pre-picker gate, so a
+ * presentation can stop before asking anything the engine would then refuse.
+ */
+export function requireSetupGitRepository(projectRoot: string, mode: SetupMode): void {
+  if (mode === "code-repo" && !existsSync(resolve(projectRoot, ".git"))) {
+    throw new SetupError("No Git repository found. Run `git init` first, then rerun setup.");
+  }
+}
+
 /** Shared scaffold phase; CLI and browser use identical preservation rules. */
 export function createSetupScaffold(options: {
   projectRoot: string;
@@ -161,8 +172,8 @@ export async function buildSetupGraph(projectRoot: string, options: {
 } = {}): Promise<void> {
   throwIfSetupAborted(options.signal);
   try {
-    const { rebuildGraph } = await import("../graph/maintenance.js");
-    await rebuildGraph(projectRoot, {
+    const { ensureGraphCurrent } = await import("../graph/maintenance.js");
+    await ensureGraphCurrent(projectRoot, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.background ? { candidateExecution: "process" as const } : {}),
       ...(options.onProgress ? { onProgress: options.onProgress } : {}),
@@ -180,12 +191,18 @@ export async function buildSetupPopulationPrompt(
   mode: SetupMode,
   state: ProjectState,
   scannerBrief: string | null,
+  projectRoot?: string,
+  /** A plan already computed or stored; computed here from `projectRoot` when absent. */
+  knownPlan?: import("./subsystems.js").SubsystemPlan | null,
 ): Promise<string> {
   const { buildAgentMemoryPrompt, buildFreshPrompt, buildExistingWithBriefPrompt, buildExistingNoBriefPrompt }
     = await import("./prompts.js");
   if (mode === "agent-memory") return buildAgentMemoryPrompt();
   if (state === "fresh") return buildFreshPrompt();
-  return scannerBrief ? buildExistingWithBriefPrompt(scannerBrief) : buildExistingNoBriefPrompt();
+  // The coverage target comes from the graph just built (or the source tree), never from source parsing.
+  const plan = knownPlan !== undefined ? knownPlan
+    : projectRoot === undefined ? null : (await import("./subsystems.js")).computeSubsystemPlan(projectRoot);
+  return scannerBrief ? buildExistingWithBriefPrompt(scannerBrief, plan) : buildExistingNoBriefPrompt(plan);
 }
 
 export function throwIfSetupAborted(signal: AbortSignal | undefined): void {

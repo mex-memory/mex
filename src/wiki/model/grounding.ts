@@ -8,6 +8,7 @@ import {
   validateShape,
   validateString,
   type ValidationContext,
+  type ValidationResult,
   type Validator,
 } from "./validate.js";
 import { isCanonicalRepoPath } from "./path.js";
@@ -278,17 +279,37 @@ const shapeValidator = validateShape<WikiGrounding>({
 });
 
 /**
- * Validate a canonical grounding reference.
+ * A grounding as a caller may *ask* for it in an operation: the node alone, or
+ * the node with a fingerprint the caller copied.
  *
- * Both `node` and `fingerprint` are required: a node id alone cannot detect
- * drift, and an entity whose Markdown merely contains an arbitrary node id is
- * not verifiably grounded.
+ * A node id is all an agent has to supply. MEX derives the fingerprint and the
+ * body hash from the live graph when it writes, so an agent never has to carry
+ * a serialized fingerprint through its prompt. A fingerprint that *is* supplied
+ * is still checked against the graph (see `provenance.ts`), so this loosens
+ * what a caller must type, not what the graph must agree with.
  */
-export const validateGrounding: Validator<WikiGrounding> = (value, context) => {
+export type GroundingRequest = Omit<WikiGrounding, "fingerprint"> & { fingerprint?: string };
+
+const requestShapeValidator = validateShape<GroundingRequest>({
+  node: validateString(),
+  fingerprint: optional(validateString()),
+  bodyHash: optional(validateString()),
+  codeHash: optional(validateString()),
+  file: optional(validateString()),
+  commit: optional(validateString()),
+  verifiedAt: optional(validateString()),
+  reason: optional(validateString()),
+});
+
+function validateGroundingFields<T extends GroundingRequest>(
+  shape: Validator<T>,
+  value: unknown,
+  context: ValidationContext,
+): ValidationResult<T> {
   if (!isPlainObject(value)) {
     return reject(context, "MALFORMED_GROUNDING", "Expected a grounding object with `node` and `fingerprint`.");
   }
-  const base = shapeValidator(value, context);
+  const base = shape(value, context);
   if (!base.ok) {
     // Re-code the generic field diagnostics so consumers see a grounding
     // problem rather than an anonymous type error.
@@ -310,7 +331,7 @@ export const validateGrounding: Validator<WikiGrounding> = (value, context) => {
       contextDiagnostic(context, "MALFORMED_GROUNDING", `"${grounding.node}" is not a code-graph node id.`),
     );
   }
-  if (!isFingerprintShaped(grounding.fingerprint)) {
+  if (grounding.fingerprint !== undefined && !isFingerprintShaped(grounding.fingerprint)) {
     diagnostics.push(
       contextDiagnostic(context, "MALFORMED_GROUNDING", `"${grounding.fingerprint}" is not a serialized fingerprint (mh2:<K>:<base64url> or mh:<K>:<hex>).`),
     );
@@ -329,6 +350,103 @@ export const validateGrounding: Validator<WikiGrounding> = (value, context) => {
   return diagnostics.some((entry) => entry.severity === "error")
     ? { ok: false, diagnostics }
     : succeed(grounding, diagnostics);
+}
+
+/**
+ * Validate a canonical grounding reference.
+ *
+ * Both `node` and `fingerprint` are required: a node id alone cannot detect
+ * drift, and an entity whose Markdown merely contains an arbitrary node id is
+ * not verifiably grounded.
+ */
+export const validateGrounding: Validator<WikiGrounding> = (value, context) =>
+  validateGroundingFields(shapeValidator, value, context);
+
+/**
+ * Validate a grounding an operation asks for. The fingerprint may be absent;
+ * the operation derives it from the graph before anything is written.
+ */
+export const validateGroundingRequest: Validator<GroundingRequest> = (value, context) =>
+  validateGroundingFields(requestShapeValidator, value, context);
+
+/**
+ * Code named by where it is rather than by its graph id: a file and a symbol
+ * in it (`parseBody`, `Router.add`), or a file and a line inside the code.
+ *
+ * An operation that writes a grounding resolves this against the same graph
+ * snapshot it derives the fingerprint from, so the Markdown it writes holds the
+ * node id, fingerprint and body hash exactly as for a grounding named by id.
+ * Nothing about the reference itself is ever written. A reference that names
+ * nothing, or more than one thing, is refused with the candidates; the write
+ * never guesses.
+ */
+export interface CodeNameReference {
+  /** Repository-relative path; `./` and `\` are tolerated and normalized at resolution. */
+  file: string;
+  /** A declaration's name, optionally qualified (`Router.add`, `Router::add`, `module.func`). */
+  symbol?: string;
+  /** A 1-based line inside the code; resolves to the innermost named declaration around it. */
+  line?: number;
+  /** Why this entity is grounded here. */
+  reason?: string;
+}
+
+/** What an operation may name a grounding as: a node id, or a file and a symbol or line. */
+export type GroundingTarget = GroundingRequest | CodeNameReference;
+
+/** Upper bounds that keep a reference from carrying an unbounded string into resolution. */
+export const CODE_REFERENCE_MAX_PATH = 1024;
+export const CODE_REFERENCE_MAX_SYMBOL = 512;
+
+/** True for a target named by file and symbol or line, rather than by node id. */
+export function isCodeNameReference(target: GroundingTarget): target is CodeNameReference {
+  return !("node" in target) || (target as { node?: unknown }).node === undefined;
+}
+
+const CODE_REFERENCE_KEYS = new Set(["file", "symbol", "line", "reason"]);
+
+/**
+ * Validate a grounding target: a node grounding as before, or a code-name
+ * reference. Which one is decided by `node` alone, so a payload that mixes the
+ * two forms is refused rather than silently read as one of them.
+ */
+export const validateGroundingTarget: Validator<GroundingTarget> = (value, context) => {
+  if (!isPlainObject(value) || "node" in value) {
+    const request = validateGroundingRequest(value, context);
+    if (!request.ok || !isPlainObject(value) || (value["symbol"] === undefined && value["line"] === undefined)) return request;
+    return reject(context, "MALFORMED_GROUNDING", "Name the code either by `node`, or by `file` with `symbol` or `line`, never both.");
+  }
+  const diagnostics: WikiDiagnostic[] = [];
+  const fail = (message: string): void => {
+    diagnostics.push(contextDiagnostic(context, "MALFORMED_GROUNDING", message));
+  };
+  const unknown = Object.keys(value).filter((key) => !CODE_REFERENCE_KEYS.has(key));
+  if (unknown.length > 0) {
+    fail(`A code reference takes \`file\` with \`symbol\` or \`line\` (and an optional \`reason\`), not ${unknown.map((key) => `\`${key}\``).join(", ")}.`);
+  }
+  const { file, symbol, line, reason } = value;
+  if (typeof file !== "string" || file.trim() === "") {
+    fail("A code reference needs `file`, the repository-relative path of the source file.");
+  } else if (file.length > CODE_REFERENCE_MAX_PATH) {
+    fail(`A code reference's \`file\` is at most ${CODE_REFERENCE_MAX_PATH} characters.`);
+  }
+  if ((symbol === undefined) === (line === undefined)) {
+    fail("A code reference needs exactly one of `symbol` (a declaration name) or `line` (a 1-based line number).");
+  }
+  if (symbol !== undefined && (typeof symbol !== "string" || symbol.trim() === "" || symbol.length > CODE_REFERENCE_MAX_SYMBOL)) {
+    fail(`\`symbol\` must be a declaration name of 1 to ${CODE_REFERENCE_MAX_SYMBOL} characters.`);
+  }
+  if (line !== undefined && (typeof line !== "number" || !Number.isSafeInteger(line) || line < 1)) {
+    fail("`line` must be a positive whole line number.");
+  }
+  if (reason !== undefined && typeof reason !== "string") fail("`reason` must be a string.");
+  if (diagnostics.length > 0) return { ok: false, diagnostics };
+  return succeed({
+    file: file as string,
+    ...(symbol === undefined ? {} : { symbol: symbol as string }),
+    ...(line === undefined ? {} : { line: line as number }),
+    ...(reason === undefined ? {} : { reason: reason as string }),
+  });
 };
 
 /**
@@ -372,8 +490,8 @@ export function asGraphDerived(
  * assertion is never sufficient on its own.
  */
 export function verifyGroundingProvenance(
-  groundings: readonly WikiGrounding[],
-  verify: (grounding: WikiGrounding) => boolean,
+  groundings: readonly GroundingRequest[],
+  verify: (grounding: GroundingRequest) => boolean,
   context: ValidationContext = { path: "groundsTo" },
 ): WikiDiagnostic[] {
   const diagnostics: WikiDiagnostic[] = [];

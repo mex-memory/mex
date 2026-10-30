@@ -57,7 +57,7 @@ function buildGroundingRepairInstructions(targets: SyncTarget[]): string {
   return `GROUNDING REPAIR — repair the prose and both pointer mechanisms together:
 
 Use the code graph for implementation context; do not sample source files. Start
-with \`mex graph scope "<behavior being repaired>" --fingerprint\`, then use \`mex graph query
+with \`mex graph scope "<behavior being repaired>"\`, then use \`mex graph query
 where-defined <symbol>\`, who-calls/what-calls, or \`mex impact <symbol|file>\`
 to resolve exact behavior and candidates. READ BROAD, GROUND TIGHT: read the
 whole useful neighborhood, but ground only functions/methods that embody claims
@@ -80,11 +80,15 @@ the repaired prose actually makes. Keep broad files sparse.
   grounds_to entries and inline anchors; if replacement behavior exists, ground
   and anchor the replacement using exact graph facts.
 
-Frontmatter entries are \`{ node, fingerprint, bodyHash? }\`. Never erase a prior
-bodyHash to make drift disappear. Inline navigation is exactly
-\`mex://<nodeId>\`: fingerprints belong ONLY in grounds_to and never in an URI.
+Frontmatter entries are \`{ node, fingerprint, bodyHash? }\`. Leave an existing
+entry's fingerprint and bodyHash as they are. When you add an entry or change an
+entry's node id, write the node id only (drop the old node's fingerprint, keep
+its bodyHash): MEX records the fingerprint from the graph when the session ends
+and rejects an id the graph does not hold. Never copy or invent a fingerprint.
+Never erase a prior bodyHash to make drift disappear. Inline navigation is
+exactly \`mex://<nodeId>\`, never with a fingerprint in the URI.
 Anchor only load-bearing symbol mentions, without changing their visible text.
-Before finishing, re-read each changed file and verify ids/fingerprints resolve,
+Before finishing, re-read each changed file and verify the ids resolve,
 no grounding or anchor is duplicated, and unrelated prose remains untouched.`;
 }
 

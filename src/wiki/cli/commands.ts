@@ -62,6 +62,7 @@ import {
 import {
   malformedOperationDiagnostic,
   wikiApplyOperation,
+  wikiApplyOperationBatch,
   wikiBacklinks,
   wikiGet,
   wikiGraph,
@@ -414,6 +415,11 @@ export async function runApply(io: CommandIo, file: string, flags: CommandFlags)
     return;
   }
 
+  if (Array.isArray(envelope)) {
+    await runApplyBatch(io, envelope, flags);
+    return;
+  }
+
   const guarded = directSpecBoundaryDiagnostics(io, envelope);
   if (guarded.length > 0) {
     emit(io, {
@@ -441,15 +447,62 @@ export async function runApply(io: CommandIo, file: string, flags: CommandFlags)
     ...(write ? { apply: true } : {}),
     graph,
   });
+  const sourceScope = new Set<string>();
   const { value: applied, unavailable } = write
-    ? await writeWithGraph(io.groundingBridge, applyWith)
-    : await readWithGraph(io.groundingBridge, applyWith);
+    ? await writeWithGraph(io.groundingBridge, applyWith, { sourceScope })
+    : await readWithGraph(io.groundingBridge, applyWith, { sourceScope });
   const result = { ...applied, diagnostics: [...applied.diagnostics, ...graphDiagnostics(unavailable)] };
   emit(io, result, flags, (data) => {
     if (data.diff !== null) io.write(data.diff);
     if (data.applied) io.write(chalk.green(`applied ${data.opId} — ${data.changedFiles.join(", ")}`));
     else if (data.replayed) io.write(chalk.dim(`${data.opId} was already applied; nothing to do`));
     else if (data.planned) io.write(chalk.dim("planned only — re-run with --apply to write"));
+  });
+}
+
+/**
+ * `wiki apply` with a JSON array: every operation or none (see
+ * `wikiApplyOperationBatch`). The Inbox Spec boundary is checked for every
+ * envelope first, so one governed escape refuses the whole batch.
+ */
+async function runApplyBatch(io: CommandIo, envelopes: readonly unknown[], flags: CommandFlags): Promise<void> {
+  const guarded = envelopes.flatMap((envelope, index) => directSpecBoundaryDiagnostics(io, envelope).map((entry) => ({
+    ...entry,
+    message: `Operation ${index}: ${entry.message}`,
+    path: entry.path === undefined ? `[${index}]` : `[${index}].${entry.path}`,
+  })));
+  const write = flags.apply === true && flags.dryRun !== true;
+  const applyWith = (graph: import("../grounding/adapter.js").GroundingGraph | null) => wikiApplyOperationBatch(envelopes, {
+    ...serviceOptions(io),
+    ...(write ? { apply: true } : {}),
+    graph,
+  });
+  if (guarded.some((entry) => entry.severity === "error")) {
+    emit(io, {
+      data: {
+        batch: true as const, planned: false, applied: false, replayed: false, operations: [],
+        diff: null, files: [], changedFiles: [], createdIds: [],
+      },
+      diagnostics: guarded,
+    }, flags, () => undefined);
+    return;
+  }
+  const sourceScope = new Set<string>();
+  const { value: applied, unavailable } = write
+    ? await writeWithGraph(io.groundingBridge, applyWith, { sourceScope })
+    : await readWithGraph(io.groundingBridge, applyWith, { sourceScope });
+  const result = { ...applied, diagnostics: [...guarded, ...applied.diagnostics, ...graphDiagnostics(unavailable)] };
+  emit(io, result, flags, (data) => {
+    if (data.diff) io.write(data.diff);
+    const count = (status: string) => data.operations.filter((operation) => operation.status === status).length;
+    const summary = [
+      ["applied", count("applied")], ["resumed", count("resumed")], ["already applied", count("replayed")],
+      ["refused", count("refused")], ["not written", count("blocked")],
+    ].filter(([, n]) => (n as number) > 0).map(([label, n]) => `${n} ${label}`).join(", ");
+    if (data.applied) io.write(chalk.green(`batch of ${data.operations.length}: ${summary} — ${data.changedFiles.join(", ")}`));
+    else if (data.replayed) io.write(chalk.dim(`all ${data.operations.length} operations were already applied; nothing to do`));
+    else if (data.planned) io.write(chalk.dim(`batch of ${data.operations.length} planned only — re-run with --apply to write`));
+    else io.write(chalk.red(`batch of ${data.operations.length} not written: ${summary}. Fix every problem above, then re-run the whole file.`));
   });
 }
 

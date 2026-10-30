@@ -103,6 +103,7 @@ export interface ApplyOptions extends PlanOptions {
   previewHash?: string;
   /** Grounding health for the post-write refresh, when a graph is available. */
   resolveGrounding?: GroundingResolver;
+  targetedGroundings?: boolean;
   now?: () => string;
   /**
    * Called after each file is renamed into place.
@@ -1496,6 +1497,7 @@ function refreshIndex(scaffoldRoot: string, changedFiles: readonly string[], opt
       ...(options.registry === undefined ? {} : { registry: options.registry }),
       ...(options.now === undefined ? {} : { now: options.now }),
       ...(options.resolveGrounding === undefined ? {} : { resolveGrounding: options.resolveGrounding }),
+      ...(options.targetedGroundings ? { targetedGroundings: true } : {}),
       ...(options.maintenanceLease === undefined ? {} : { maintenanceLease: options.maintenanceLease }),
     });
     if (refreshed.ok) return refreshed.diagnostics;

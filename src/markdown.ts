@@ -196,6 +196,80 @@ export function writeGroundings(content: string, groundings: Grounding[]): strin
   return applyEdits(content, edits).text;
 }
 
+/** What {@link fillMissingFingerprints} did to one file's frontmatter. */
+export interface FingerprintFill {
+  /** The content with every missing fingerprint filled; the input, unchanged, when `unresolved` is not empty. */
+  content: string;
+  filled: number;
+  /** Nodes the lookup could not answer. Nothing is written for a file that has any. */
+  unresolved: string[];
+}
+
+/**
+ * Fill the `fingerprint` of grounding entries an author wrote as a node id only.
+ *
+ * An agent names the node; MEX records what the graph says it looks like. This
+ * is the one place that happens for frontmatter `grounds_to`, in either store,
+ * and it touches only the key's own range, like {@link writeGroundings}.
+ *
+ * Only an entry with a node and no fingerprint is changed. An entry that has a
+ * fingerprint is never replaced here, so a wrong one still fails the later
+ * comparison against the graph. A store holding anything that is not an object
+ * with a node is left alone, as the readers leave it.
+ */
+export function fillMissingFingerprints(
+  content: string,
+  lookup: (nodeId: string) => string | null,
+): FingerprintFill {
+  const unchanged: FingerprintFill = { content, filled: 0, unresolved: [] };
+  const frontmatter = extractFrontmatter(content) as (ScaffoldFrontmatter & { mex?: { grounds_to?: unknown } }) | null;
+  if (frontmatter === null || typeof frontmatter !== "object") return unchanged;
+  const stores: Array<{ path: string[]; value: unknown }> = [{ path: ["grounds_to"], value: frontmatter.grounds_to }];
+  if (hasMexMap(frontmatter)) stores.push({ path: ["mex", "grounds_to"], value: frontmatter.mex?.grounds_to });
+
+  const rewritten: Array<{ path: string[]; entries: Array<Record<string, unknown>> }> = [];
+  const unresolved: string[] = [];
+  let filled = 0;
+  for (const { path, value } of stores) {
+    if (!Array.isArray(value) || value.length === 0) continue;
+    const readable = value.every((entry) => entry !== null && typeof entry === "object"
+      && typeof (entry as Partial<Grounding>).node === "string" && (entry as Partial<Grounding>).node!.length > 0);
+    if (!readable) continue;
+    const missing = (entry: Record<string, unknown>): boolean =>
+      typeof entry.fingerprint !== "string" || entry.fingerprint.length === 0;
+    const entries = value as Array<Record<string, unknown>>;
+    if (!entries.some(missing)) continue;
+    rewritten.push({
+      path,
+      entries: entries.map((entry) => {
+        if (!missing(entry)) return entry;
+        const node = entry.node as string;
+        const fingerprint = lookup(node);
+        if (fingerprint === null) {
+          unresolved.push(node);
+          return entry;
+        }
+        filled += 1;
+        const { node: _node, fingerprint: _fingerprint, ...rest } = entry;
+        return { node, fingerprint, ...rest };
+      }),
+    });
+  }
+  if (rewritten.length === 0) return unchanged;
+  if (unresolved.length > 0) return { ...unchanged, unresolved };
+
+  const region = parseDocument(content).frontmatter;
+  if (region === null) return unchanged;
+  const edits: PatchEdit[] = [];
+  for (const { path, entries } of rewritten) {
+    const edit = keyPathEdit(content, region, path, entries);
+    // A key that cannot be rewritten in place is reported, never half-written.
+    if (edit === null) return { ...unchanged, unresolved: entries.map((entry) => String(entry.node)) };
+    edits.push(edit);
+  }
+  return { content: applyEdits(content, edits).text, filled, unresolved: [] };
+}
+
 export interface MexAnchor {
   nodeId: string;
   /** Offsets of the complete markdown link, used for precise durable rewrites. */

@@ -392,6 +392,17 @@ describe("isolated graph candidate construction", () => {
     expect((error as Error).message).toContain("missing private runtime dependency");
   });
 
+  it("retains the cause when a progress observer throws", async () => {
+    const path = root();
+    const error = await runGraphCandidateProcess({
+      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      onProgress: () => { throw new Error("Progress storage is busy"); },
+      __internal: { entrypoint: busyEntry },
+    }).catch((error: unknown) => error);
+    expect(error).toMatchObject({ category: "failed", diagnostic: { reason: "observer" } });
+    expect((error as Error).message).toContain("Graph progress observer failed: Progress storage is busy");
+  });
+
   it.each([
     ["startup deadline", () => noReadyEntry, "startup-timeout"],
     ["invalid protocol", () => malformedEntry, "protocol"],

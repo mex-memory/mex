@@ -48,6 +48,20 @@ import {
 } from "../model/topic.js";
 import { findDuplicateSources, reportUnresolvedSources, validateSource } from "../model/source.js";
 import { validateGrounding, verifyGroundingProvenance } from "../model/grounding.js";
+import { resolveCodeReference } from "../grounding/code-reference.js";
+import type { CodeDeclaration, GroundingGraph } from "../grounding/adapter.js";
+
+/** A graph that knows one file, `src/token.ts`, with these declarations. */
+function codeGraphWith(declarations: CodeDeclaration[]): GroundingGraph {
+  const file: CodeDeclaration = { id: "file:00000000000000000000000000000000", kind: "file", name: "token.ts", qualifiedName: "src/token.ts", startLine: 1, endLine: 9, hasBody: false };
+  return {
+    getNode: () => null,
+    getFingerprint: () => null,
+    reconcile: () => null,
+    getBaselineSource: () => null,
+    declarationsInFile: (path) => (path === "src/token.ts" ? [file, ...declarations] : null),
+  };
+}
 import { checkOperationPreconditions, validateOperation, type WikiOperationType } from "../model/operation.js";
 import { entityContentHash } from "../model/hash.js";
 import { rootContext } from "../model/validate.js";
@@ -282,6 +296,17 @@ const EMITTERS: Record<string, () => readonly WikiDiagnostic[]> = {
 
   MALFORMED_GROUNDING: () => validateGrounding({ node: "rotateToken", fingerprint: "x" }, rootContext()).diagnostics,
   GROUNDING_UNVERIFIED: () => verifyGroundingProvenance([grounding()], () => false),
+  GROUNDING_NOT_FOUND: () => {
+    const resolved = resolveCodeReference({ file: "src/token.ts", symbol: "missing" }, codeGraphWith([]));
+    return resolved.ok ? [] : [resolved.diagnostic];
+  },
+  GROUNDING_AMBIGUOUS: () => {
+    const resolved = resolveCodeReference({ file: "src/token.ts", symbol: "rotate" }, codeGraphWith([
+      { id: "method:00000000000000000000000000000001", kind: "method", name: "rotate", qualifiedName: "Keys::rotate", startLine: 1, endLine: 3, hasBody: true },
+      { id: "method:00000000000000000000000000000002", kind: "method", name: "rotate", qualifiedName: "Tokens::rotate", startLine: 5, endLine: 7, hasBody: true },
+    ]));
+    return resolved.ok ? [] : [resolved.diagnostic];
+  },
   GROUNDING_MIXED_SHAPE: () =>
     // #226: a root `grounds_to` beside the file-level `mex` map.
     parseWikiMarkdown({

@@ -90,3 +90,38 @@ describe("setup population activity", () => {
     expect(screen.queryByText(/No new activity reported for/)).toBeNull();
   });
 });
+
+describe("setup per-subsystem coverage", () => {
+  it("shows how many subsystems are done, which are running, and which were skipped", () => {
+    render(<SetupPopulationActivity run={{
+      ...activityRun(),
+      populationCoverage: {
+        phase: "subsystems", total: 3, done: 1, skipped: 1,
+        subsystems: [
+          { path: "src/router", state: "done" },
+          { path: "src/jsx", state: "skipped" },
+          { path: "src/middleware", state: "running" },
+        ],
+      },
+    }} />);
+    expect(screen.getByText("1/3 subsystems done")).toBeVisible();
+    expect(screen.getByText(/· 1 skipped/)).toBeVisible();
+    const list = screen.getByRole("list", { name: "Subsystem progress" });
+    expect(within(list).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "src/router/ done",
+      "src/jsx/ skipped — rerun setup to retry",
+      "src/middleware/ in progress",
+    ]);
+  });
+
+  it("names the shared and final phases, and shows nothing for a single-session run", () => {
+    const view = render(<SetupPopulationActivity run={{
+      ...activityRun(),
+      populationCoverage: { phase: "shared", total: 2, done: 0, skipped: 0, subsystems: [{ path: "src/a", state: "pending" }, { path: "src/b", state: "pending" }] },
+    }} />);
+    expect(screen.getByText(/Filling the shared files first/)).toBeVisible();
+    view.unmount();
+    render(<SetupPopulationActivity run={activityRun()} />);
+    expect(screen.queryByRole("list", { name: "Subsystem progress" })).toBeNull();
+  });
+});

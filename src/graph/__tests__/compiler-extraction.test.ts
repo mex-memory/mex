@@ -12,6 +12,22 @@ import {
 
 const temporaryRoots: string[] = [];
 
+it("does not construct another project after every source has an owner", async () => {
+  const ts = await import("typescript");
+  const root = project({
+    "tsconfig.json": JSON.stringify({ include: ["src/**/*.ts"] }),
+    "src/tsconfig.json": JSON.stringify({ include: ["**/*.ts"] }),
+    "src/value.ts": "export function value() { return 1; }\n",
+  });
+  let programs = 0;
+  const result = buildTypeScriptExtraction(root, ["src/value.ts"], {
+    programFactory(options) { programs++; return ts.createProgram(options); },
+  });
+  expect(programs).toBe(1);
+  expect(result.files.map((file) => file.filePath)).toEqual(["src/value.ts"]);
+  expect(result.projects).toHaveLength(2);
+});
+
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -209,6 +225,22 @@ describe("TypeScript compiler extraction", () => {
       expect.objectContaining({ sourceId: factory.id, targetId: initialize.id, kind: "calls", line: 6 }),
       expect.objectContaining({ sourceId: app.id, targetId: initialize.id, kind: "calls", line: 4 }),
     ]));
+  });
+
+  it("renders accessors nested in type literals without failing the extraction", () => {
+    // A getter in a getter's type made the canonical rewrite throw
+    // "Lexical environment is suspended", which failed a whole repository build.
+    const root = project({
+      "settings.ts": [
+        "export type Nested = { get inner(): { get value(): string | number } };",
+        "export function read(source: { get inner(): { get value(): string | number } }): Nested {",
+        "  return source;",
+        "}",
+        "",
+      ].join("\n"),
+    });
+    const file = buildTypeScriptExtraction(root, ["settings.ts"]).files[0]!;
+    expect(file.nodes.find((node) => node.name === "read")).toBeDefined();
   });
 
   it("preserves symbol and reference identity across LF and CRLF checkouts", () => {
@@ -468,8 +500,10 @@ describe("TypeScript compiler extraction", () => {
 
     const page = first.files.find((entry) => entry.filePath === "src/page.ts")!;
     const buildPage = page.nodes.find((node) => node.name === "buildPage")!;
-    // Precondition: the checker really prints a cross-module import type here.
-    expect(buildPage.signature).toBe('(): () => import("./src/jsx/base").JSX.Element');
+    // A cross-module type prints by name, as `typeToString` prints it, rather
+    // than as an import type; any import type the checker still emits is
+    // rewritten portably (see the next test).
+    expect(buildPage.signature).toBe("(): () => JSX.Element");
     const openHandle = first.files.find((entry) => entry.filePath === "src/ext.ts")!
       .nodes.find((node) => node.name === "openHandle")!;
     expect(openHandle.signature).toContain("Handle");

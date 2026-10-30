@@ -10,6 +10,7 @@ import {
   Send,
   Settings2,
   UsersRound,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import type { CapabilityName } from "../api/types";
@@ -82,6 +83,7 @@ export const navigationItems: readonly NavigationItem[] = [
     placement: "primary",
     availability: { kind: "runtime", capability: "graph" },
   },
+  { id: "diagrams", label: "Diagrams", path: "/diagrams", icon: Workflow, group: "project-memory", placement: "primary", availability: { kind: "always" } },
   {
     id: "inbox",
     label: "Inbox",

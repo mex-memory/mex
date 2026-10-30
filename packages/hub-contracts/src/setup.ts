@@ -61,6 +61,17 @@ export const SetupStatusSchema = z.object({
   tools: z.array(SetupToolStatusSchema).max(8),
   ready: z.boolean(),
   commitCommands: z.array(z.string().min(1).max(512)).max(16),
+  /** Setup stopped part-way: units settled, units in all, and the one line that continues it. */
+  unfinished: z.object({
+    done: z.number().int().nonnegative().max(1_024),
+    total: z.number().int().positive().max(1_024),
+    message: z.string().min(1).max(512),
+  }).strict().optional(),
+  /** Present when the checkout is already set up: the status-first rerun summary and drift notes. */
+  setupHealth: z.object({
+    summary: z.string().min(1).max(512),
+    notes: z.array(z.string().min(1).max(512)).max(4),
+  }).strict().optional(),
 }).strict();
 
 export const SetupStartRequestSchema = z.object({
@@ -150,6 +161,9 @@ export const SetupProgressSchema = z.object({
 
 export const SETUP_ACTIVITY_LIMIT = 40;
 
+/** The agents MEX can run as background setup sessions (Windsurf has no such CLI). */
+export const SETUP_BACKGROUND_AGENTS = ["claude", "codex", "cursor", "copilot", "opencode"] as const;
+
 export const SetupPopulationEventSchema = z.object({
   id: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   at: isoTimestamp,
@@ -160,11 +174,29 @@ export const SetupPopulationEventSchema = z.object({
 
 /** Process-local action summaries only; no CLI text, paths, inputs, or output. */
 export const SetupPopulationActivitySchema = z.object({
-  tool: z.enum(["claude", "codex"]),
+  tool: z.enum(SETUP_BACKGROUND_AGENTS),
   startedAt: isoTimestamp,
   lastActivityAt: isoTimestamp.nullable(),
   events: z.array(SetupPopulationEventSchema).max(SETUP_ACTIVITY_LIMIT),
   totalEvents: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+}).strict();
+
+export const SETUP_COVERAGE_SUBSYSTEM_LIMIT = 64;
+
+/**
+ * Per-subsystem population progress on larger repositories: how many planned
+ * subsystems are done, skipped or running. Paths are repository-relative
+ * folders from MEX's own plan, the same ones the population prompt names.
+ */
+export const SetupPopulationCoverageSchema = z.object({
+  phase: z.enum(["shared", "subsystems", "final", "complete"]),
+  total: z.number().int().nonnegative().max(SETUP_COVERAGE_SUBSYSTEM_LIMIT),
+  done: z.number().int().nonnegative().max(SETUP_COVERAGE_SUBSYSTEM_LIMIT),
+  skipped: z.number().int().nonnegative().max(SETUP_COVERAGE_SUBSYSTEM_LIMIT),
+  subsystems: z.array(z.object({
+    path: z.string().min(1).max(512),
+    state: z.enum(["pending", "running", "done", "skipped"]),
+  }).strict()).max(SETUP_COVERAGE_SUBSYSTEM_LIMIT),
 }).strict();
 
 export const SETUP_TRANSCRIPT_ENTRY_CHARACTERS = 4_096;
@@ -198,9 +230,10 @@ export const SetupRunSchema = z.object({
   ready: z.boolean(),
   selectedTools: z.array(aiTool).max(8),
   prompt: z.string().max(HUB_LIMITS.maxJsonResponseBytes / 2).nullable(),
-  populationTool: z.enum(["claude", "codex"]).nullable(),
+  populationTool: z.enum(SETUP_BACKGROUND_AGENTS).nullable(),
   populationCompleted: z.boolean(),
   populationActivity: SetupPopulationActivitySchema.optional(),
+  populationCoverage: SetupPopulationCoverageSchema.optional(),
   transcriptId: z.string().uuid().optional(),
   commitCommands: z.array(z.string().min(1).max(512)).max(16),
   anchorNotes: z.array(z.string().min(1).max(1_024)).max(16),
@@ -222,6 +255,7 @@ export type SetupStartRequest = z.infer<typeof SetupStartRequestSchema>;
 export type SetupProgress = z.infer<typeof SetupProgressSchema>;
 export type SetupPopulationEvent = z.infer<typeof SetupPopulationEventSchema>;
 export type SetupPopulationActivity = z.infer<typeof SetupPopulationActivitySchema>;
+export type SetupPopulationCoverage = z.infer<typeof SetupPopulationCoverageSchema>;
 export type SetupTranscriptEntry = z.infer<typeof SetupTranscriptEntrySchema>;
 export type SetupTranscriptBatch = z.infer<typeof SetupTranscriptBatchSchema>;
 export type SetupRun = z.infer<typeof SetupRunSchema>;

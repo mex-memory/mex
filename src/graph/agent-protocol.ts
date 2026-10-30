@@ -26,6 +26,8 @@ export interface AgentOptions {
   depth: number;
   /** Attach the full serialized fingerprint to each fact (grounding workflow only). */
   fingerprint: boolean;
+  /** Return call results from test files even when other results exist. */
+  includeTests: boolean;
 }
 
 export const DEFAULT_OPTIONS: AgentOptions = {
@@ -37,6 +39,7 @@ export const DEFAULT_OPTIONS: AgentOptions = {
   maxSourceLines: 120,
   depth: 2,
   fingerprint: false,
+  includeTests: false,
 };
 
 /** Coerce raw CLI option strings into a validated {@link AgentOptions}. */
@@ -53,6 +56,7 @@ export function resolveOptions(raw: Partial<Record<keyof AgentOptions, unknown>>
     maxFlowSteps: num(raw.maxFlowSteps, DEFAULT_OPTIONS.maxFlowSteps),
     maxOutputTokens: num(raw.maxOutputTokens, DEFAULT_OPTIONS.maxOutputTokens),
     maxSourceLines: num(raw.maxSourceLines, DEFAULT_OPTIONS.maxSourceLines),
+    includeTests: raw.includeTests === true || raw.includeTests === "true",
     depth: num(raw.depth, DEFAULT_OPTIONS.depth),
     fingerprint: raw.fingerprint === true || raw.fingerprint === "true",
   };
@@ -162,11 +166,10 @@ export interface SummaryRecord {
   evidenceStrength: "strong" | "moderate" | "weak" | "none";
   coveredTerms: string[];
   returnedFiles: string[];
-  sourceBackedNodes: string[];
   textFallbackFiles: string[];
   warnings: string[];
   omittedCounts: Partial<Record<
-    "sourceBackedNodes" | "coveredTerms" | "returnedFiles" | "textFallbackFiles" | "suggestedNextCommands" | "warnings",
+    "coveredTerms" | "returnedFiles" | "textFallbackFiles" | "suggestedNextCommands" | "warnings",
     number
   >>;
 }

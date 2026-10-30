@@ -108,7 +108,7 @@ describe("setup agent integration error classification", () => {
   it("classifies a real change between installation preview and apply", () => {
     const root = fixture();
     const source = join(root, "packaged-skills");
-    for (const skill of ["mex-inbox", "mex-relay"]) {
+    for (const skill of ["mex-inbox", "mex-relay", "mex-statechart"]) {
       mkdirSync(join(source, skill), { recursive: true });
       writeFileSync(join(source, skill, "SKILL.md"), "Packaged skill\n");
     }

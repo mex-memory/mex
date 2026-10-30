@@ -1,5 +1,5 @@
 import { createHash, hash } from "node:crypto";
-import { BANDS, K, ROWS } from "./config.js";
+import { BANDS, K, MIN_TOKENS, ROWS } from "./config.js";
 import { COMPACT_FINGERPRINT_PREFIX, FINGERPRINT_PREFIX, type Fingerprint } from "./reconcile.js";
 
 const UINT32_MAX = 0xffffffff;
@@ -318,6 +318,19 @@ export function bandHashInts(fingerprint: Fingerprint): bigint[] {
   });
 }
 
+/**
+ * Whether a stored fingerprint owns LSH buckets. Below MIN_TOKENS a body sketch
+ * never decides a match: small nodes reconcile through their callers and
+ * callees, and the other bucket lookups start only from a sketch at or above
+ * the threshold. Small nodes keep their fingerprint row, so groundings on them
+ * still verify, but no buckets; on a TypeScript monorepo they are over a third
+ * of all fingerprints. A store written before this rule may still hold buckets
+ * for small fingerprints, and readers accept either.
+ */
+export function indexedInLsh(fingerprint: Pick<Fingerprint, "tokenCount">): boolean {
+  return fingerprint.tokenCount >= MIN_TOKENS;
+}
+
 /** Encode a K=64 uint32 minhash as a 256-byte big-endian BLOB (schema v4). */
 export function encodeMinhash(minhash: readonly number[]): Buffer {
   const buffer = Buffer.allocUnsafe(minhash.length * 4);
@@ -335,7 +348,7 @@ export function decodeMinhash(blob: Uint8Array): number[] {
   return values;
 }
 
-function assertFingerprint(value: unknown): asserts value is Fingerprint {
+export function assertFingerprint(value: unknown): asserts value is Fingerprint {
   if (!value || typeof value !== "object") throw new Error("Invalid fingerprint");
   const candidate = value as Partial<Fingerprint>;
   if (

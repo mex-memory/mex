@@ -2,7 +2,7 @@ export const SUPPORTED_AGENT_SKILL_CLIENTS = ["claude", "codex"] as const;
 
 export type AgentSkillClient = (typeof SUPPORTED_AGENT_SKILL_CLIENTS)[number];
 
-export const OFFICIAL_MEX_SKILLS = ["mex-inbox", "mex-relay"] as const;
+export const OFFICIAL_MEX_SKILLS = ["mex-inbox", "mex-relay", "mex-statechart"] as const;
 
 export type OfficialMexSkill = (typeof OFFICIAL_MEX_SKILLS)[number];
 

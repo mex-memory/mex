@@ -53,3 +53,18 @@ These are experiment guardrails, not product budgets or exact OS memory caps.
 Temporary corpora and source bundles are parent-owned and removed after success
 or failure. Run representative characterization serially with other resource
 measurements, and never calibrate release limits from laptop results.
+
+## State diagrams
+
+The `diagrams` and `diagramDetail` routes are measured separately. Detail includes
+the lazy statechart canvas, contract, strict Mermaid state renderer and its
+static dependency closure; none may enter Home or the initial shell closure.
+The fixture adds one saved, explicitly incomplete snapshot through the real
+repository service. It does not change the frozen Graph/Wiki input corpus.
+
+The two owned asset leaves and six heap leaves are calibrated from pinned Linux
+CI run 40311997168; `docs/design/state-diagrams-calibration.json` retains samples,
+formulas, limits, source commit and report hash. Every unrelated budget and the
+runner identity remain unchanged. Missing budgets still fail closed with
+`budget_missing`; an unknown budget is never confirmable noise or an implicit
+pass. Do not copy local timing/heap numbers into the frozen file.

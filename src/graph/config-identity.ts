@@ -1,4 +1,5 @@
-import ts from "typescript";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 
 /**
  * What a config file contributes to graph extraction, and nothing else.
@@ -86,6 +87,28 @@ export function graphConfigIdentity(path: string, source: string): string {
 
 /** tsconfig is JSON with comments and trailing commas; byte comparison is not parsing. */
 function parseJsonWithComments(path: string, source: string): unknown {
+  // JSONC's strings must be preserved before removing comments or commas.
+  // Unusual or malformed syntax goes through the original compiler parser.
+  try {
+    const commentsRemoved = source.replace(/^\uFEFF/u, "").replace(
+      /"(?:\\[\s\S]|[^"\\])*"|\/\/[^\r\n\u2028\u2029]*|\/\*[\s\S]*?\*\//gu,
+      token => token.startsWith("/") ? " " : token,
+    );
+    const json = commentsRemoved.replace(/"(?:\\[\s\S]|[^"\\])*"|,\s*(?=[}\]])/gu,
+      (token, offset: number) => {
+        if (!token.startsWith(",")) return token;
+        const previous = commentsRemoved.slice(0, offset).trimEnd().at(-1);
+        return previous && !"[{,:".includes(previous) ? "" : token;
+      });
+    return JSON.parse(json, (key, value: unknown) => {
+      // The original object converter has special prototype-key semantics.
+      if (key === "__proto__") throw new Error("Use the original config parser.");
+      return value;
+    });
+  } catch {
+    // Keep the compiler's exact accepted syntax and error behavior.
+  }
+  const ts: typeof import("typescript") = require("typescript");
   const result = ts.parseConfigFileTextToJson(path, source);
   if (result.error || result.config === undefined) return undefined;
   return result.config;

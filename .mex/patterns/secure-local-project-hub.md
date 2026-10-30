@@ -11,12 +11,12 @@ edges:
     condition: "when persisting a Hub job or migrating team.db"
   - target: "context/architecture.md"
     condition: "when wiring a real Graph or Wiki adapter"
-last_updated: 2026-10-19
+last_updated: 2026-10-28
 mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
   status: promoted
-  revision: 12
+  revision: 13
   title: secure-local-project-hub
   grounds_to:
     - node: function:188820af31f0d74c6518f6926f559877
@@ -75,6 +75,29 @@ preview/apply services.
    then verify a clean packed installation can bootstrap and load it.
 
 ## Gotchas
+
+- State diagrams use the private `@mex/hub-contracts/statechart` leaf. Keep its
+  schemas and graph layout runtime out of shell/Home closures; scoped-only component
+  data words must not emit global Tailwind utilities. The managed helper is
+  minified to fit the existing setup diff limits, and setup review derives its
+  selected skill roots from the shared official-skill list.
+- The diagram canvas uses React/SVG nodes with button semantics and explicit
+  SVG presentation attributes,
+  matching the Context graph. Hub's `style-src 'self'` blocks Mermaid's generated
+  embedded stylesheet, leaving curved paths filled black. Keep Mermaid in the
+  export/generation workflow; never relax CSP to display it. Verify the built
+  viewer through the real Hub headers (`diagrams-production.spec.ts`), as the
+  Vite fixture server alone cannot catch this failure. Keep transition identities,
+  independent-region containers and ordered trace overlays intact. Dense charts
+  reveal events on selection; all events remain available through the toggle,
+  keyboard focus and accessible lists. Fade lines/orbs rather than label opacity
+  so selection does not remove readable text contrast.
+- Diagram `record.md` owns saved claims and hashes; exclude its entire bundle
+  from Wiki discovery and protect Wiki writes independently of configurable
+  defaults. Preview reads never create or clean the store. Expiry/eviction is
+  an explicit registration write; Save uses a bounded process-local exact
+  revision review and publishes a new immutable bundle. Keep model checking,
+  source mapping, reproduction and freshness separate in every projection.
 
 - Setup failures need a browser-safe explanation at the producer. Use the
   internal `SetupError.userMessage` contract for expected failures; retain raw
@@ -231,3 +254,8 @@ preview/apply services.
 
 - [ ] Update `.mex/ROUTER.md` when a real Hub capability lands
 - [ ] Record any new security, packaging, or job-lifecycle trap here
+
+Installed official skill runtimes under `.claude/skills/` and `.agents/skills/`
+are tooling, not project setup subsystems. The setup planner uses the shared
+managed-skill registry to exclude those roots from ranking and size targets; a
+Git file listing can otherwise include hidden helpers that Graph/tree walks omit.

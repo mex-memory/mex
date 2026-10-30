@@ -71,6 +71,49 @@ shipping new versions.
 If you only use the `mex` CLI, most of this still applies, but CLI flags
 themselves are best-effort (see [CLI surface](#cli-surface) below).
 
+## Upgrading to 0.8.5
+
+Once 0.8.5 is available on npm, upgrade the CLI and run the skill-sync commands
+from the root of **each existing MEX project**:
+
+```bash
+npm install -g mex-agent@0.8.5
+mex skills sync --dry-run
+mex skills sync
+```
+
+Review the dry run and resolve any reported conflicts before applying the sync.
+Then start a fresh Claude Code or Codex session. Upgrading the npm package alone
+does not refresh the skill copies installed in a project.
+
+The same managed updater used for Inbox and Relay installs the new
+`mex-statechart` skill and updates the managed agent instructions for the
+Claude Code/Codex integrations selected during setup. Use `--tool claude` or
+`--tool codex` on both sync commands to target one integration explicitly.
+Locally edited managed files are preserved and reported as conflicts.
+
+A completed setup does not need to run again just to receive the new skill.
+Review the resulting project files and commit/push them if teammates should
+receive the updated integration through Git. If upgrading from 0.8.3 or earlier,
+also follow the [Graph and Wiki maintenance steps introduced in 0.8.4](#upgrading-to-084),
+using the 0.8.5 CLI.
+
+### Graph and Wiki maintenance in 0.8.5
+
+Graph schema v4, Wiki index v5 and the `mh2:` fingerprint encoding are unchanged
+from 0.8.4. The TypeScript extractor advances from `typescript-5.9-v6` to
+`typescript-5.9-v7`; the first `mex graph refresh` rebuilds the graph. Some
+declarations whose types name an alias they do not import receive a new
+signature and node id. Keep the existing graph, refresh it, then run `mex check`
+and `mex sync` to review affected links. No Wiki schema migration is required
+when upgrading from 0.8.4; rebuild the Wiki index after reviewed knowledge edits
+as usual. Ordinary reads never perform these maintenance operations.
+
+Graph JSONL remains protocol v3. The read-output changes include omitted test
+counts, optional call locations and `lineCount` for long declarations; the
+redundant `sourceBackedNodes` summary field is removed. Consumers parsing these
+records should review the [0.8.5 changelog](CHANGELOG.md#085---2026-10-29).
+
 ## Graph and Wiki changes in 0.8.4
 
 The package-root exports and canonical Markdown grounding format are unchanged.
@@ -450,3 +493,41 @@ may be removed in 0.8.0 or 1.0.0.
 If you find behaviour that diverges from this document — an undocumented
 breaking change, an unclear case, or a contract you need that isn't covered —
 open an issue at <https://github.com/mex-memory/mex/issues>.
+
+## State diagrams in 0.8.5
+
+`mex-statechart` is a managed Claude Code/Codex skill. Native fenced Mermaid is
+preferred when the client actually renders the required syntax. Codex CLI
+0.160.1 renders the tested simple statecharts natively; nested/parallel syntax
+requires the text fallback. Real broken-invariant path order and raw temporal
+trace text were verified at 120/80 columns in the interactive CLI through a local
+fixed replay, independently of Hub tests. Claude Code 2.1.311 renders fenced
+Mermaid in neither its terminal nor its desktop app (observed on Windows), so the
+skill delivers there through the helper's `show` command: the deterministic text
+view in chat plus a rendered PNG that the agent opens, which the desktop app
+displays inline. The deterministic terminal
+projection preserves states, transitions, conditions, rules and numbered paths.
+Images are optional exports; Hub viewing is optional and never starts merely
+because an artifact was generated.
+
+Explicit checking requires Java 11+ and checksum-verified TLC 1.7.4. The skill
+helper can explicitly install the pinned jar into a selected scratch/tool cache;
+MEX installation, upgrades and Hub reads never install Java/TLC or execute a
+model. The pinned upstream workflow also provides PNG QA with Pele 1.8.0 and
+resvg 2.6.2. Hub renders a native React/SVG state graph under its normal content
+security policy; Mermaid remains available for client delivery and export.
+
+Temporary registration is ignored checkout-local state (24-hour maximum, up to
+20 previews). Reviewed Save creates a new `.mex/diagrams/<id>/record.md` plus
+bounded companion files. The Markdown owns the recorded metadata and dependency
+hashes; Graph/Wiki rebuilds do not renew them. Save never stages, commits or
+pushes. Java and disposable indexes are unnecessary for reading saved results.
+
+Model checking, graph projection validity, source mapping, implementation
+reproduction and current evidence freshness are independent observations.
+Missing/partial pure-data projection leaves diagram validity unverified;
+unmapped implementation evidence leaves alignment unverified even when TLC
+passes. Concurrent/nested visual structure is supported; a complex projection
+must be reviewed, with omissions disclosed and unprojectable temporal traces
+retained as text. See `skills/mex-statechart/references/toolchain.md` and
+`references/artifact.md` for limits, setup and regeneration.

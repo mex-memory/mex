@@ -1,3 +1,4 @@
+import { RepositoryInventory } from "./repository.js";
 import { readFileSync, realpathSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { globSync } from "glob";
@@ -303,15 +304,16 @@ export async function runDriftCheckWithGraphStatus(
     const pathClaims = allClaims.filter(
       (c) => c.kind !== "path" || !declaredPackages.has(c.value)
     );
-    const pathIssues = checkPaths(pathClaims, projectRoot, scaffoldRoot);
+    const repository = new RepositoryInventory(projectRoot);
+    const pathIssues = checkPaths(pathClaims, projectRoot, scaffoldRoot, repository);
     allIssues.push(...pathIssues);
     checkerIssueCounts.push(["paths", pathIssues.length]);
 
-    const commandIssues = checkCommands(allClaims, projectRoot);
+    const commandIssues = checkCommands(allClaims, projectRoot, repository);
     allIssues.push(...commandIssues);
     checkerIssueCounts.push(["commands", commandIssues.length]);
 
-    const dependencyIssues = checkDependencies(allClaims, projectRoot);
+    const dependencyIssues = checkDependencies(allClaims, projectRoot, repository);
     allIssues.push(...dependencyIssues);
     checkerIssueCounts.push(["dependencies", dependencyIssues.length]);
 

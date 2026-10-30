@@ -35,7 +35,7 @@ export interface WikiCliPreparedPublication<T> {
  * composes the real port in.
  */
 export interface WikiCliGroundingBridge {
-  withFreshGroundingSnapshot<T>(callback: (snapshot: GroundingGraph) => T | Promise<T>): Promise<T>;
+  withFreshGroundingSnapshot<T>(callback: (snapshot: GroundingGraph) => T | Promise<T>, options?: { sourceScope?: Set<string> }): Promise<T>;
   withFreshGroundingPublication<T>(
     prepare: (snapshot: GroundingGraph) => WikiCliPreparedPublication<T> | Promise<WikiCliPreparedPublication<T>>,
   ): Promise<T>;
@@ -85,6 +85,7 @@ class WorkFailure {
 export async function readWithGraph<T>(
   bridge: WikiCliGroundingBridge | null | undefined,
   work: (graph: GroundingGraph | null) => T,
+  options?: { sourceScope?: Set<string> },
 ): Promise<WithGraphResult<T>> {
   if (bridge === null || bridge === undefined) return { value: work(null), unavailable: "not_supplied" };
   try {
@@ -94,10 +95,15 @@ export async function readWithGraph<T>(
       } catch (error) {
         throw new WorkFailure(error);
       }
-    });
+    }, options);
     return { value, unavailable: null };
   } catch (error) {
-    if (error instanceof WorkFailure) throw error.cause;
+    if (error instanceof WorkFailure) {
+      if (options?.sourceScope && error.cause instanceof MexPortError && error.cause.problem.code === "INDEX_STALE") {
+        return { value: work(null), unavailable: "stale" };
+      }
+      throw error.cause;
+    }
     const reason = graphUnavailableReason(error);
     if (reason === null) throw error;
     return { value: work(null), unavailable: reason };
@@ -116,6 +122,7 @@ export async function readWithGraph<T>(
 export async function writeWithGraph<T>(
   bridge: WikiCliGroundingBridge | null | undefined,
   work: (graph: GroundingGraph | null) => T,
+  options?: { sourceScope?: Set<string> },
 ): Promise<WithGraphResult<T>> {
   if (bridge === null || bridge === undefined) return { value: work(null), unavailable: "not_supplied" };
   let completed: { value: T } | null = null;
@@ -127,10 +134,15 @@ export async function writeWithGraph<T>(
       } catch (error) {
         throw new WorkFailure(error);
       }
-    });
+    }, options);
     return { value, unavailable: null };
   } catch (error) {
-    if (error instanceof WorkFailure) throw error.cause;
+    if (error instanceof WorkFailure) {
+      if (options?.sourceScope && completed === null && error.cause instanceof MexPortError && error.cause.problem.code === "INDEX_STALE") {
+        return { value: work(null), unavailable: "stale" };
+      }
+      throw error.cause;
+    }
     const reason = graphUnavailableReason(error);
     if (reason === null) throw error;
     const done = completed as { value: T } | null;

@@ -1,3 +1,5 @@
+import { DiagramCollectionSchema, DiagramDetailSchema, DiagramIdSchema, DiagramSaveRequestSchema, DiagramSavePlanSchema, DiagramSaveApplySchema } from "@mex/hub-contracts/statechart";
+import type { DiagramRepository } from "../statechart/repository.js";
 import {
   AgentLoggingPolicySchema,
   AgentLoggingUpdateRequestSchema,
@@ -52,6 +54,8 @@ import {
   JobPageRequestSchema,
   JobPageResponseSchema,
   JobStartRequestSchema,
+  WikiMigrationJobPreviewSchema,
+  type WikiMigrationJobPreview,
   SearchRequestSchema,
   SearchResponseSchema,
   SessionResponseSchema,
@@ -241,6 +245,7 @@ export interface HubSetupService {
 }
 
 export interface HubReadServices {
+  diagrams?: Pick<DiagramRepository, "list" | "get" | "previewSave" | "applySave">;
   loggingPolicy?(): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
   setLoggingPolicy?(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
   onboardingState?(): Promise<HubOnboardingState> | HubOnboardingState;
@@ -321,7 +326,8 @@ export interface HubReadServices {
     request: CodeKnowledgeRequest,
   ): Promise<CodeKnowledgeResponse> | CodeKnowledgeResponse;
   health(): Promise<HealthResponse> | HealthResponse;
-  assertJobStartAllowed?(kind: HubJobKind): Promise<void> | void;
+  previewWikiMigration?(): Promise<WikiMigrationJobPreview>;
+  assertJobStartAllowed?(kind: HubJobKind, migrationPreview?: string): Promise<void> | void;
 }
 
 interface HubEnvironment {
@@ -846,6 +852,33 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     return resourceResponse(HubRepositoryContributorsSchema, await options.services.repositoryContributors());
   });
 
+  app.get("/api/v1/diagrams", (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.diagrams) throw unavailable("Diagram storage is unavailable.");
+    return resourceResponse(DiagramCollectionSchema, options.services.diagrams.list());
+  });
+  app.get("/api/v1/diagrams/:kind/:id", (context) => {
+    readStrictQuery(context.req.raw, []);
+    const kind = context.req.param("kind");
+    if (kind !== "preview" && kind !== "saved") throw notFound("Unknown diagram collection.");
+    const id = parseInput(DiagramIdSchema, context.req.param("id"));
+    if (!options.services.diagrams) throw unavailable("Diagram storage is unavailable.");
+    return resourceResponse(DiagramDetailSchema, options.services.diagrams.get(kind, id));
+  });
+  app.post("/api/v1/diagrams/preview/:id/save-preview", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const id = parseInput(DiagramIdSchema, context.req.param("id"));
+    const request = parseInput(DiagramSaveRequestSchema, await readBoundedJson(context.req.raw));
+    if (!options.services.diagrams) throw unavailable("Diagram storage is unavailable.");
+    return resourceResponse(DiagramSavePlanSchema, options.services.diagrams.previewSave(id, request.revision));
+  });
+  app.post("/api/v1/diagrams/save", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const request = parseInput(DiagramSaveApplySchema, await readBoundedJson(context.req.raw));
+    if (!options.services.diagrams) throw unavailable("Diagram storage is unavailable.");
+    return resourceResponse(DiagramDetailSchema, await options.services.diagrams.applySave(request.token));
+  });
+
   app.get("/api/v1/health", async () => resourceResponse(
     HealthResponseSchema,
     await options.services.health(),
@@ -997,6 +1030,13 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     });
   });
 
+  app.post("/api/v1/jobs/wiki-migration/preview", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    parseInput(JobCancelRequestSchema, await readBoundedJson(context.req.raw));
+    if (!options.services.previewWikiMigration) throw unavailable("Wiki migration is not connected in this build.");
+    return resourceResponse(WikiMigrationJobPreviewSchema, await options.services.previewWikiMigration());
+  });
+
   app.post("/api/v1/jobs", async (context) => {
     const jobs = requireJobs(options.jobs);
     const request = parseInput(
@@ -1004,7 +1044,7 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       await readBoundedJson(context.req.raw),
     );
     return telemetry.action("job.start", "direct", async () => {
-      await options.services.assertJobStartAllowed?.(request.kind);
+      await options.services.assertJobStartAllowed?.(request.kind, request.migrationPreview);
       return resourceResponse(HubJobSnapshotSchema, await jobs.start(request), 202);
     });
   });

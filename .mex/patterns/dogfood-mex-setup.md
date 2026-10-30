@@ -13,12 +13,12 @@ edges:
     condition: "when distinguishing canonical artifacts from local projections"
   - target: "patterns/release-performance-gate.md"
     condition: "when the change also affects packed-install or release gates"
-last_updated: 2026-10-10
+last_updated: 2026-10-26
 mex:
   id: mx_01M1M0CJJD2AQZ6XKHV4VKYTGJ
   type: pattern
   status: promoted
-  revision: 7
+  revision: 8
   title: dogfood-mex-setup
   grounds_to:
     - node: function:9055347f917caf8721a2f6d4e18bcc9a
@@ -64,6 +64,13 @@ global `mex`.
 
 ## Gotchas
 
+- Source-based setup state detection must recognize deeply nested layouts such
+  as `src/main/java/com/acme/App.java`. Walk until the first source match
+  without a depth cap, retaining graph default/configured ignores and dependency
+  exclusions. The synchronous glob iterator completes its filesystem walk before
+  yielding, so taking one result alone does not stop directory I/O. A populated
+  scaffold plus source still distinguishes partial setup. Coverage ranking has
+  stricter exclusions: authored tests and examples still count for setup state.
 - Unflagged `setup` now opens terminal setup; `--cli` remains a compatibility
   alias. Browser drivers must pass `setup --browser` or use `hub` explicitly.
   Bare `mex` uses terminal setup for incomplete/agent-memory projects and the
@@ -76,6 +83,9 @@ global `mex`.
   automatic Git maintenance in fixture-writing commands before taking those
   snapshots; a background maintenance lock disappearing after a fixture commit
   is unrelated to entry discovery. Keep the full snapshot assertion intact.
+- Healthy setup reruns report status without doing work. An unfinished stored
+  plan must resume even when shared placeholders are filled. Treat source drift
+  as a reason to run sync, and preserve the explicit force path.
 - Interactive terminal setup uses the shared ordered engine through a HUD.
   Enter on a tool selects it and starts setup atomically; that focused tool
   precedes other checked tools when selecting a native agent. Space optionally
@@ -144,12 +154,26 @@ global `mex`.
 
 - A global CLI can report the same version while containing different bytes;
   use the built checkout when validating uncommitted setup changes.
+- Knowledge templates receive Wiki file identities before population. Keep the
+  decision-log container unstamped until its prose entries are adopted; creating
+  a fact in that log must not stamp it early. Finalization stamps remaining
+  files and links sections. Verify the provisional one-paste index as well.
 - Setup copies missing scaffold files but does not overwrite substantive files.
   Population prompts must merge at section granularity and preserve managed blocks.
 - A non-interactive run pauses after printing the population prompt when
   placeholders remain, even if an agent CLI is installed. It never waits on an
   interactive session. Test the shipped interactive CLI with the POSIX PTY
   harness and fake agents; the Python harness is skipped on Windows.
+- Population completion also audits patterns, grounded facts and structural
+  links. Demand code facts only when graph coverage includes parsed sources.
+  Require authored body content rather than byte differences from today's
+  templates: older release instructions, metadata, headings, comments and spacing
+  are not population. Finalization fills the date metadata, the initial
+  project-title slot and tokens in ordinary sentences, preserving code, comments
+  and placeholder documentation. It names
+  each changed file and must not create a plan or launch an agent for leftovers.
+  A never-dispatched legacy queue can be finalized over authored knowledge;
+  graph/run/batch/dispatch evidence means the stored work must still continue.
 - Drift staleness uses committed Git history. Correct uncommitted content can
   remain stale until the canonical scaffold is committed.
 - An unrelated incomplete parse does not invalidate exact Wiki grounding from
@@ -157,6 +181,9 @@ global `mex`.
   source/configuration drift still refuses, partial-file facts remain unverified,
   and missing targets are not reconciled across an incomplete corpus. Name the
   incomplete files and remedy rather than claiming a concurrent graph change.
+- Terminal, Hub and one-paste setup share one checkout lease before writes.
+  One-paste preparation can enter its own engine within that lease; unrelated
+  callers must still refuse. Verify dead-owner recovery after a killed process.
 - Terminal setup does not stage or commit. The setup Hub may create a local
   commit only after exact diff review and explicit user action, preserving
   unrelated staged work. MEX never pulls or pushes.

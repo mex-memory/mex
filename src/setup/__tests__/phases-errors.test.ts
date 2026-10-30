@@ -85,14 +85,14 @@ describe("expected setup preparation errors", () => {
 
 describe("setup Graph error boundary", () => {
   it("preserves a known maintenance failure's safe recovery instructions", async () => {
-    vi.spyOn(maintenance, "rebuildGraph").mockRejectedValue(new GraphMaintenanceError("GRAPH_MAINTENANCE_LOCKED", "private lock details"));
+    vi.spyOn(maintenance, "ensureGraphCurrent").mockRejectedValue(new GraphMaintenanceError("GRAPH_MAINTENANCE_LOCKED", "private lock details"));
     await expect(buildSetupGraph("/unused")).rejects.toMatchObject({
       userMessage: expect.stringMatching(/another|running|progress/i),
     });
   });
 
   it("keeps unknown graph failures outside the browser-safe contract", async () => {
-    vi.spyOn(maintenance, "rebuildGraph").mockRejectedValue(new Error("private compiler crash"));
+    vi.spyOn(maintenance, "ensureGraphCurrent").mockRejectedValue(new Error("private compiler crash"));
     const error = await buildSetupGraph("/unused").catch((error: unknown) => error);
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(SetupError);
@@ -100,7 +100,7 @@ describe("setup Graph error boundary", () => {
 
   it("checks cancellation before classifying a concurrent graph failure", async () => {
     const controller = new AbortController();
-    vi.spyOn(maintenance, "rebuildGraph").mockImplementation(async () => {
+    vi.spyOn(maintenance, "ensureGraphCurrent").mockImplementation(async () => {
       controller.abort();
       throw new GraphMaintenanceError("GRAPH_MAINTENANCE_LOCKED", "private lock details");
     });

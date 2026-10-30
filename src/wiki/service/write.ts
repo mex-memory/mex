@@ -15,15 +15,21 @@
 
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
+import { parseWikiMarkdown } from "../markdown/codec.js";
 import { diagnostic, hasBlockingDiagnostic, type WikiDiagnostic } from "../model/diagnostic.js";
 import type { EntityTypeRegistry } from "../model/entity.js";
 import type { GroundingGraph } from "../grounding/adapter.js";
 import { resolveGrounding } from "../grounding/resolve.js";
+import { normalizeReferencePath } from "../grounding/code-reference.js";
 import type { GroundingResolver } from "../index/write.js";
 import { createHash } from "node:crypto";
 import { prepareWikiRebuild, rebuildWikiIndex, type RebuildOptions, type RebuildResult } from "../index/rebuild.js";
 import { refreshWikiIndex } from "../index/refresh.js";
+import { readContainedSource } from "../index/source-read.js";
 import { payloadHashOf, planOperation, type PlanOptions, type WikiPatchPlan } from "../operations/plan.js";
+import { applyPlannedOperationBatch, planOperationBatchReport } from "../operations/batch.js";
+import { acquireWikiMaintenanceLease } from "../index/dbfile.js";
+import type { EntityId } from "../model/ids.js";
 import { readAuditLog, recordFor } from "../operations/audit.js";
 import { validateOperation } from "../model/operation.js";
 import { rootContext } from "../model/validate.js";
@@ -43,6 +49,15 @@ import {
 } from "../migration/migrate.js";
 import { indexPathFor, type ServiceResult, type WikiServiceOptions } from "./read.js";
 import type { WikiMaintenanceContext } from "../index/maintenance.js";
+
+/**
+ * Prove a link's source in the graph's own path form (`./src/a.ts` and `src\a.ts` name
+ * `src/a.ts`). A path that cannot name a repository file is left to the planner's diagnostic.
+ */
+function verifyLinkedSource(graph: { verifySource?: (path: string) => void }, file: string): void {
+  const path = normalizeReferencePath(file);
+  if (path !== null) graph.verifySource?.(path);
+}
 
 /** Everything a write needs beyond where the scaffold is. */
 export interface WikiWriteOptions extends WikiServiceOptions {
@@ -67,7 +82,12 @@ export interface WikiWriteOptions extends WikiServiceOptions {
  */
 function groundingResolverFor(options: WikiWriteOptions): { resolveGrounding?: GroundingResolver } {
   const graph = options.graph ?? null;
-  return graph === null ? {} : { resolveGrounding: (grounding, context) => resolveGrounding(grounding, graph, context) };
+  return graph === null ? {} : {
+    resolveGrounding: Object.assign(
+      (grounding: Parameters<GroundingResolver>[0], context?: Parameters<GroundingResolver>[1]) => resolveGrounding(grounding, graph, context),
+      graph.revision === undefined ? {} : { graphRevision: graph.revision },
+    ),
+  };
 }
 
 function applyOptionsFrom(options: WikiWriteOptions): ApplyOptions {
@@ -78,6 +98,10 @@ function planOptionsFrom(options: WikiWriteOptions): PlanOptions {
   return {
     scaffoldRoot: resolve(options.scaffoldRoot),
     captureCreationProvenance: true,
+    // Authored entries take their place in the structure as they are written:
+    // a `refines` to what encloses them, and a file-level entity when the file
+    // has none. See `createWithStructure` in `operations.ts`.
+    deriveStructure: true,
     ...(options.indexPath === undefined ? {} : { indexPath: options.indexPath }),
     ...(options.exclude === undefined ? {} : { exclude: options.exclude }),
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
@@ -161,6 +185,8 @@ export function wikiApplyOperation(
     apply?: boolean;
     plan?: WikiPatchPlan;
     expectedPreviewRevision?: string;
+    /** Explicit maintenance such as reground keeps a full refresh. */
+    targetedGroundings?: boolean;
   },
 ): ServiceResult<ApplyData> {
   // A file-level create cannot be freshly planned after its one metadata map
@@ -170,7 +196,34 @@ export function wikiApplyOperation(
     const replay = completedCreateReplay(envelope, options.scaffoldRoot);
     if (replay !== null) return replay;
   }
+  if (options.graph?.verifySource) {
+    // Prove new links before the planner translates expected edit failures
+    // into diagnostics. A stale source must retain the graph refusal path.
+    const validated = validateOperation(envelope, rootContext());
+    if (validated.ok && (validated.value.type === "create-entry" || validated.value.type === "set-grounding")) {
+      for (const grounding of validated.value.payload.groundsTo ?? []) {
+        if (grounding.file) verifyLinkedSource(options.graph, grounding.file);
+        if ("node" in grounding) options.graph.getNode(grounding.node);
+      }
+    }
+  }
   const planned = wikiPlanOperation(envelope, options);
+  if (planned.data.plan && options.graph?.verifySource) {
+    // Include removed links and other entities sharing a changed file.
+    // The plan owns these contained, revision-bound source bytes.
+    for (const file of planned.data.plan.files) {
+      for (const text of [file.baseText, file.proposedText]) {
+        for (const { entity } of parseWikiMarkdown({ path: file.path, text,
+          ...(options.registry === undefined ? {} : { registry: options.registry }),
+        }).entities) {
+          for (const grounding of entity.groundsTo) {
+            if (grounding.file) verifyLinkedSource(options.graph, grounding.file);
+            options.graph.getNode(grounding.node);
+          }
+        }
+      }
+    }
+  }
   if (options.apply !== true || !planned.data.planned) {
     return {
       data: { ...planned.data, applied: false, replayed: false, changedFiles: [], createdIds: [] },
@@ -178,7 +231,7 @@ export function wikiApplyOperation(
     };
   }
 
-  const applyOptions: ApplyOptions = applyOptionsFrom(options);
+  const applyOptions: ApplyOptions = { ...applyOptionsFrom(options), targetedGroundings: options.targetedGroundings !== false };
   const result = options.plan !== undefined && options.expectedPreviewRevision !== undefined
     ? applyPlannedOperation(options.plan, {
         ...applyOptions,
@@ -213,7 +266,8 @@ function completedCreateReplay(envelope: unknown, scaffoldRoot: string): Service
     && complete.timestamp === operation.timestamp
     && complete.reason === operation.reason
     && Array.isArray(complete.files) && complete.files.length === 1 && complete.files[0] === operation.payload.file
-    && complete.createdIds.length === 1 && complete.createdIds.every(isEntityId)
+    // Two ids when the create also stamped its file's file-level entity.
+    && complete.createdIds.length >= 1 && complete.createdIds.length <= 2 && complete.createdIds.every(isEntityId)
     && complete.entityIds.length === 0;
   return {
     data: {
@@ -243,6 +297,300 @@ function suppressIndexRefresh(
 ): WikiDiagnostic[] {
   if (existsSync(indexPathFor(options))) return [...diagnostics];
   return diagnostics.filter((entry) => entry.code !== "INDEX_REFRESH_REQUIRED");
+}
+
+// -- batches -------------------------------------------------------------------
+
+/** The most operations one `wiki apply` batch may hold. */
+export const WIKI_APPLY_BATCH_MAX = 200;
+
+/** What happened to one operation of a batch. */
+export interface BatchOperationOutcome {
+  /** Position in the array the caller supplied. */
+  index: number;
+  opId: string | null;
+  type: string | null;
+  /**
+   * `planned`: would be written (plan only). `applied`: written by this call.
+   * `replayed`: already recorded with this exact payload; nothing to do.
+   * `resumed`: an earlier interrupted write of this operation, finished now.
+   * `refused`: has a problem; see the diagnostics under this index.
+   * `blocked`: fine itself, but not written because another operation was refused.
+   */
+  status: "planned" | "applied" | "replayed" | "resumed" | "refused" | "blocked";
+  createdIds: string[];
+  files: string[];
+}
+
+export interface ApplyBatchData {
+  batch: true;
+  /** True when every pending operation planned; nothing is written otherwise. */
+  planned: boolean;
+  /** True only when this call wrote bytes. */
+  applied: boolean;
+  /** True when every operation was already recorded, so there was nothing to do. */
+  replayed: boolean;
+  operations: BatchOperationOutcome[];
+  /** The unified diff of every pending operation, in order. */
+  diff: string | null;
+  /** Files the pending operations touch. */
+  files: string[];
+  changedFiles: string[];
+  createdIds: string[];
+}
+
+/** Mark a diagnostic as belonging to one operation of a batch. */
+function forOperation(index: number, opId: string | null, entry: WikiDiagnostic): WikiDiagnostic {
+  return {
+    ...entry,
+    message: `Operation ${index}${opId === null ? "" : ` (${opId})`}: ${entry.message}`,
+    path: entry.path === undefined ? `[${index}]` : `[${index}].${entry.path}`,
+  };
+}
+
+/** Hand back recorded ids in order: the ids an interrupted create already minted. */
+function recordedIds(ids: readonly string[]): () => EntityId {
+  let next = 0;
+  return () => {
+    const id = ids[next];
+    next += 1;
+    if (id === undefined) throw new Error("an interrupted operation minted more ids than its intent recorded");
+    return id as EntityId;
+  };
+}
+
+/**
+ * `wiki apply` with an array of envelopes: every operation or none of them.
+ *
+ * The whole batch is checked before anything is planned, and planned before
+ * anything is written, and every problem found on the way is reported under
+ * its index — an agent fixes the file once, not once per mistake. Then the
+ * pending operations are written in order as one transaction, under one Wiki
+ * lease and against one graph snapshot (the caller's): one audit record per
+ * operation, one index refresh, and an ordinary failure rolls every byte back.
+ *
+ * Replay is per operation, by `opId`, exactly as for a single envelope: an
+ * operation already recorded with the same payload is skipped, one recorded
+ * with a different payload is refused. So a batch can be re-run after a crash,
+ * or grown and re-run, and only what is new is written. An operation whose
+ * write was interrupted (an intent with no completion) is finished first,
+ * reusing the ids it recorded, before the rest are planned.
+ */
+export function wikiApplyOperationBatch(
+  envelopes: unknown,
+  options: WikiWriteOptions & { apply?: boolean; targetedGroundings?: boolean },
+): ServiceResult<ApplyBatchData> {
+  const data: ApplyBatchData = {
+    batch: true, planned: false, applied: false, replayed: false, operations: [],
+    diff: null, files: [], changedFiles: [], createdIds: [],
+  };
+  if (!Array.isArray(envelopes) || envelopes.length === 0) {
+    return { data, diagnostics: [diagnostic("INVALID_OPERATION_ENVELOPE", "An operation batch is a JSON array of one or more operation envelopes.")] };
+  }
+  if (envelopes.length > WIKI_APPLY_BATCH_MAX) {
+    return { data, diagnostics: [diagnostic(
+      "INVALID_OPERATION_ENVELOPE",
+      `An operation batch holds at most ${WIKI_APPLY_BATCH_MAX} operations; this one has ${envelopes.length}. Split it into several files and apply each.`,
+    )] };
+  }
+
+  const scaffoldRoot = resolve(options.scaffoldRoot);
+  const outcomes: BatchOperationOutcome[] = envelopes.map((envelope, index) => {
+    const raw = envelope !== null && typeof envelope === "object" ? envelope as Record<string, unknown> : {};
+    return {
+      index,
+      opId: typeof raw["opId"] === "string" ? raw["opId"] : null,
+      type: typeof raw["type"] === "string" ? raw["type"] : null,
+      status: "planned",
+      createdIds: [],
+      files: [],
+    };
+  });
+  data.operations = outcomes;
+  const diagnostics: WikiDiagnostic[] = [];
+  const refuse = (index: number, entries: readonly WikiDiagnostic[]): void => {
+    outcomes[index]!.status = "refused";
+    diagnostics.push(...entries.map((entry) => forOperation(index, outcomes[index]!.opId, entry)));
+  };
+  const finish = (): ServiceResult<ApplyBatchData> => {
+    if (diagnostics.some((entry) => entry.severity === "error")) {
+      for (const outcome of outcomes) if (outcome.status === "planned") outcome.status = "blocked";
+    }
+    // A resumed operation is written even when the rest of the batch is refused.
+    data.applied = outcomes.some((outcome) => outcome.status === "applied" || outcome.status === "resumed");
+    data.changedFiles = [...new Set(data.changedFiles)].sort();
+    data.createdIds = outcomes.flatMap((outcome) => outcome.createdIds);
+    return { data, diagnostics: suppressIndexRefresh(diagnostics, options) };
+  };
+
+  // -- 1. every envelope, on its own --------------------------------------
+  const operations = envelopes.map((envelope, index) => {
+    const validated = validateOperation(envelope, rootContext());
+    if (!validated.ok) {
+      refuse(index, validated.diagnostics);
+      return null;
+    }
+    return validated.value;
+  });
+  const firstIndex = new Map<string, number>();
+  operations.forEach((operation, index) => {
+    if (operation === null) return;
+    const earlier = firstIndex.get(operation.opId);
+    if (earlier === undefined) firstIndex.set(operation.opId, index);
+    else refuse(index, [diagnostic("INVALID_OPERATION_ENVELOPE", `opId ${operation.opId} is already used by operation ${earlier}; every operation in a batch needs its own opId.`)]);
+  });
+
+  // -- 2. against the operation log ---------------------------------------
+  const log = readAuditLog(scaffoldRoot);
+  if (hasBlockingDiagnostic(log.diagnostics)) {
+    diagnostics.push(...log.diagnostics);
+    return finish();
+  }
+  const pending: number[] = [];
+  let interrupted: { index: number; createdIds: readonly string[] } | null = null;
+  operations.forEach((operation, index) => {
+    if (operation === null || outcomes[index]!.status === "refused") return;
+    const record = recordFor(log, operation.opId);
+    const recorded = record.complete ?? record.intent;
+    const payloadHash = payloadHashOf(operation.type, operation.payload);
+    if (recorded !== null && (recorded.type !== operation.type || recorded.payloadHash !== payloadHash)) {
+      refuse(index, [diagnostic(
+        "INVALID_OPERATION_ENVELOPE",
+        `opId ${operation.opId} is already recorded for a different change. Reusing an opId for different content is refused; give a new change a new opId.`,
+      )]);
+      return;
+    }
+    if (record.complete !== null) {
+      Object.assign(outcomes[index]!, { status: "replayed", createdIds: [...record.complete.createdIds], files: [...record.complete.files] });
+      return;
+    }
+    if (record.intent !== null) {
+      if (interrupted !== null) {
+        refuse(index, [diagnostic(
+          "CONTENT_HASH_CONFLICT",
+          `More than one operation of this batch has an interrupted write (operations ${interrupted.index} and ${index}); the operation log is not one this batch produced.`,
+        )]);
+        return;
+      }
+      interrupted = { index, createdIds: record.intent.createdIds };
+    }
+    pending.push(index);
+  });
+  // An envelope already refused does not stop the rest from being planned:
+  // their problems are reported in the same pass, and nothing is written.
+  const refusedEarly = diagnostics.some((entry) => entry.severity === "error");
+  if (pending.length === 0) {
+    if (!refusedEarly) data.replayed = true;
+    diagnostics.push(...log.diagnostics);
+    return finish();
+  }
+
+  // -- 3. plan, and apply under one lease ---------------------------------
+  const write = options.apply === true && !refusedEarly;
+  const applyOptions: ApplyOptions = { ...applyOptionsFrom(options), targetedGroundings: options.targetedGroundings !== false };
+  // New links must keep the same stale-graph refusal as single apply, before
+  // planning translates an expected edit failure into a diagnostic.
+  if (options.graph?.verifySource) {
+    for (const index of pending) {
+      const operation = operations[index];
+      if (operation?.type === "create-entry" || operation?.type === "set-grounding") {
+        for (const grounding of operation.payload.groundsTo ?? []) {
+          if (grounding.file) verifyLinkedSource(options.graph, grounding.file);
+          if ("node" in grounding) options.graph.getNode(grounding.node);
+        }
+      }
+    }
+  }
+  const verifyText = (path: string, text: string | null): void => {
+    if (!options.graph?.verifySource || text === null) return;
+    for (const { entity } of parseWikiMarkdown({ path, text,
+      ...(options.registry === undefined ? {} : { registry: options.registry }),
+    }).entities) {
+      for (const grounding of entity.groundsTo) {
+        if (grounding.file) verifyLinkedSource(options.graph, grounding.file);
+        options.graph.getNode(grounding.node);
+      }
+    }
+  };
+  const lease = write ? acquireWikiMaintenanceLease(indexPathFor(options), "operation", scaffoldRoot) : null;
+  try {
+    const resume = interrupted as { index: number; createdIds: readonly string[] } | null;
+    let toPlan = pending;
+    if (resume !== null && write) {
+      // Recovery may publish an already-written file without a new plan.
+      // Prove its siblings before resuming and refreshing that file's rows.
+      if (options.graph?.verifySource) {
+        for (const file of recordFor(log, operations[resume.index]!.opId).intent!.files) {
+          const path = resolve(scaffoldRoot, file);
+          if (existsSync(path)) verifyText(file, readContainedSource(scaffoldRoot, path));
+        }
+      }
+      // Finished through the single-operation path, which reuses the recorded
+      // ids and recognises a write that landed before the process died.
+      const resumed = applyOperation(envelopes[resume.index], { ...applyOptions, maintenanceLease: lease! });
+      if (!resumed.ok) {
+        refuse(resume.index, resumed.diagnostics);
+        return finish();
+      }
+      Object.assign(outcomes[resume.index]!, { status: "resumed", createdIds: [...resumed.createdIds], files: [...resumed.changedFiles] });
+      data.changedFiles.push(...resumed.changedFiles);
+      diagnostics.push(...resumed.diagnostics.map((entry) => forOperation(resume.index, outcomes[resume.index]!.opId, entry)));
+      toPlan = pending.filter((index) => index !== resume.index);
+    }
+    if (toPlan.length > 0) {
+      const planned = planOperationBatchReport(
+        toPlan.map((index) => operations[index]),
+        { ...planOptionsFrom(options), parseCache: createParseCache() },
+        {
+          reportAll: true,
+          optionsFor: (position) => resume !== null && toPlan[position] === resume.index
+            ? { generateId: recordedIds(resume.createdIds) }
+            : undefined,
+        },
+      );
+      if (!planned.ok) {
+        for (const refusal of planned.refusals) refuse(toPlan[refusal.index]!, refusal.diagnostics);
+        return finish();
+      }
+      if (refusedEarly) return finish();
+      const plans = planned.plan.operations;
+      for (const plan of plans) {
+        for (const file of plan.files) {
+          verifyText(file.path, file.baseText);
+          verifyText(file.path, file.proposedText);
+        }
+      }
+      plans.forEach((plan, position) => {
+        const index = toPlan[position]!;
+        outcomes[index]!.files = plan.files.map((file) => file.path);
+        diagnostics.push(...plan.diagnostics.map((entry) => forOperation(index, plan.opId, entry)));
+      });
+      data.files = [...new Set(plans.flatMap((plan) => plan.files.map((file) => file.path)))].sort();
+      data.diff = plans.map((plan) => renderPreview(previewPlan(plan))).join("\n");
+      data.planned = true;
+      if (!write) return finish();
+
+      const applied = applyPlannedOperationBatch(planned.plan, {
+        ...applyOptions,
+        expectedPreviewRevision: planned.plan.previewRevision,
+        maintenanceLease: lease!,
+      });
+      const fromPlans = new Set(plans.flatMap((plan) => plan.diagnostics));
+      diagnostics.push(...applied.diagnostics.filter((entry) => !fromPlans.has(entry)));
+      if (!applied.ok) {
+        for (const index of toPlan) outcomes[index]!.status = "blocked";
+        return finish();
+      }
+      plans.forEach((plan, position) => {
+        Object.assign(outcomes[toPlan[position]!]!, { status: "applied", createdIds: [...plan.createdIds] });
+      });
+      data.changedFiles.push(...applied.changedFiles);
+    }
+    data.planned = true;
+    return finish();
+  } finally {
+    lease?.release();
+  }
 }
 
 export interface RebuildData {

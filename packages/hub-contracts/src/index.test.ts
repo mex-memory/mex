@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import * as IdRuntime from "./ids.js";
 import { OverviewActivityPanelSchema } from "./overview.js";
 import * as RelayRuntime from "./relay.js";
+
 import {
   ActivityRequestSchema,
+  JobStartRequestSchema,
+  WikiMigrationJobPreviewSchema,
   ActivityResponseSchema,
   BootstrapRequestSchema,
   CodeWorkspaceRequestSchema,
@@ -61,6 +64,12 @@ import {
 } from "./index.js";
 
 describe("Hub API contracts", () => {
+  it("bounds migration previews and limits their use to Wiki rebuild jobs", () => {
+    expect(JobStartRequestSchema.safeParse({ kind: "wiki_rebuild", migrationPreview: "a".repeat(64) }).success).toBe(true);
+    expect(JobStartRequestSchema.safeParse({ kind: "graph_rebuild", migrationPreview: "a".repeat(64) }).success).toBe(false);
+    expect(WikiMigrationJobPreviewSchema.safeParse({ revision: "a".repeat(64), report: "x".repeat(16 * 1024 + 1), canApply: true }).success).toBe(false);
+  });
+
   it("keeps the private ID and Relay runtime entries on the canonical schema instances", () => {
     expect(IdRuntime.TeamMemberIdSchema).toBe(TeamMemberIdSchema);
     expect(IdRuntime.RelayIdSchema).toBe(RelayIdSchema);
@@ -1751,6 +1760,48 @@ describe("Hub API contracts", () => {
       ...response,
       components: [{ ...response.components[0], graph: { ...graph, parseHealth: { ...graph.parseHealth, failed: 1 } } }],
     }).success).toBe(false);
+  });
+
+  it("keeps the Wiki recovery command optional, nullable, and bounded", () => {
+    const details = {
+      indexStatus: "migration_required",
+      observedAt: "2026-08-23T00:00:00.000Z",
+      indexedAt: null,
+      schemaVersion: null,
+      indexedRevision: null,
+      allowedJobKinds: [],
+      recommendedJobKind: null,
+      activeJobId: null,
+    } as const;
+    const response = (recoveryCommand: unknown) => ({
+      status: "degraded",
+      observedAt: "2026-08-23T00:00:00.000Z",
+      components: [{
+        id: "wiki",
+        label: "Wiki index",
+        status: "degraded",
+        summary: "Migration required.",
+        diagnostics: [],
+        wiki: { ...details, recoveryCommand },
+      }],
+    });
+    const recovery = { label: "Preview the required Wiki migration", command: "mex wiki migrate --dry-run" };
+
+    expect(HealthResponseSchema.safeParse(response(undefined)).success).toBe(true);
+    expect(HealthResponseSchema.safeParse(response(null)).success).toBe(true);
+    expect(HealthResponseSchema.safeParse(response(recovery)).success).toBe(true);
+    expect(HealthResponseSchema.safeParse(response({
+      ...recovery,
+      command: "m".repeat(201),
+    })).success).toBe(false);
+    expect(HealthResponseSchema.safeParse(response({
+      ...recovery,
+      label: "",
+    })).success).toBe(false);
+    expect(HealthResponseSchema.safeParse(response({
+      ...recovery,
+      reason: "Hub runs it for you",
+    })).success).toBe(false);
   });
 });
 

@@ -371,7 +371,9 @@ describe("code-graph grounding integration", () => {
     expect(bodyRepairBrief).toContain("GROUNDING REPAIR");
     expect(bodyRepairBrief).toContain("user explicitly accepts that entry");
     expect(bodyRepairBrief).toContain('mex graph scope "<behavior being repaired>"');
-    expect(bodyRepairBrief).toContain("fingerprints belong ONLY in grounds_to");
+    expect(bodyRepairBrief).toContain("write the node id only");
+    expect(bodyRepairBrief).toContain("MEX records the fingerprint from the graph");
+    expect(bodyRepairBrief).toContain("never with a fingerprint in the URI");
     const acceptance = previewGroundingBaseline(config, ".mex/context/architecture.md", node.id, runtime!)!.acceptance;
     refreshGroundingBaselines(config, [scaffold], runtime!, { acceptedGroundings: [acceptance] });
     runtime!.close();

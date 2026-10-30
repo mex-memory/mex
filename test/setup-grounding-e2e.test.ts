@@ -15,7 +15,7 @@ import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
 import { captureGroundingBaselines, loadGroundingRuntime, previewGroundingBaseline } from "../src/graph/runtime.js";
 import { finalizeSetupWiki } from "../src/setup/wiki-finalize.js";
-import { finalizeCodeRepoSetup, SetupFinalizationError } from "../src/setup/index.js";
+import { finalizeCodeRepoSetup } from "../src/setup/index.js";
 
 const roots: string[] = [];
 
@@ -24,15 +24,16 @@ afterEach(() => {
 });
 
 describe("setup graph-grounding population", () => {
-  it("directs both existing-project paths through broad graph reads and tight grounding", () => {
+  it("directs both existing-project paths through broad file reads and tight grounding", () => {
     for (const prompt of [buildExistingWithBriefPrompt('{"folders":["src"]}'), buildExistingNoBriefPrompt()]) {
-      expect(prompt).toContain('mex graph scope "<task or domain>"');
+      // Code is read with the agent's own file tools; facts name code by file
+      // and symbol, and MEX resolves and records it.
+      expect(prompt).toContain("read code with your normal file tools");
       expect(prompt).toContain("READ BROAD, GROUND TIGHT");
-      expect(prompt).toContain('fingerprint: "<exact fingerprint from the same graph fact>"');
-      expect(prompt).toContain("mex://<exact-node-id>");
-      expect(prompt).toContain("Never ground every node returned by scope");
-      expect(prompt).toContain("architecture/stack/conventions files should ground sparsely");
-      expect(prompt).toContain("Pattern files and deep domain files should ground tightly");
+      expect(prompt).toContain('{"file": "src/x.ts", "symbol": "parseBody"}');
+      expect(prompt).not.toContain("<exact fingerprint");
+      expect(prompt).not.toContain("--fingerprint");
+      expect(prompt).toContain("Ground a claim to every symbol whose change could make it false");
       expect(prompt).toContain("use that exact launcher consistently");
       expect(prompt).toContain("node dist/cli.js");
       expect(prompt).toContain("Treat substantive existing content as durable project knowledge");
@@ -47,23 +48,25 @@ describe("setup graph-grounding population", () => {
     }
   });
 
-  it("names an unverifiable placeholder anchor in a safe finalization failure", async () => {
+  it("drops an unverifiable placeholder anchor and names it, keeping its text", async () => {
     const root = mkdtempSync(join(tmpdir(), "mex-setup-placeholder-"));
     roots.push(root);
     const scaffoldRoot = join(root, ".mex");
     mkdirSync(join(root, "src"), { recursive: true });
     mkdirSync(scaffoldRoot, { recursive: true });
     writeFileSync(join(root, "src", "service.ts"), "export function liveService(): number { return 1; }\n");
+    writeFileSync(join(scaffoldRoot, "ROUTER.md"), "# Router\n");
     writeFileSync(join(scaffoldRoot, "AGENTS.md"),
       "# Agents\n\nAnchor symbols inline as [`symbolName()`](mex://<exact-node-id>) with the node id only.\n");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     engine.close();
 
-    const failure = await finalizeCodeRepoSetup(root, scaffoldRoot).catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(SetupFinalizationError);
-    expect((failure as Error).message).toContain("<exact-node-id> in .mex/AGENTS.md");
-    expect((failure as Error).message.length).toBeLessThanOrEqual(512);
+    const messages: string[] = [];
+    const outcome = await finalizeCodeRepoSetup(root, scaffoldRoot, { onMessage: (message) => messages.push(message) });
+    expect(outcome.dropped.map((entry) => `${entry.file} ${entry.node}`)).toEqual([".mex/AGENTS.md <exact-node-id>"]);
+    expect(messages.join("\n")).toContain("<exact-node-id>");
+    expect(readFileSync(join(scaffoldRoot, "AGENTS.md"), "utf8")).toContain("inline as `symbolName()` with the node id only.");
   }, 30_000);
 
   it("preserves authored scaffold content when a fresh project resumes setup", () => {
@@ -202,7 +205,7 @@ export function calculateCheckoutTotal(items: number[], member: boolean): number
       { projectRoot: root, scaffoldRoot, aiTools: [] },
       { warn: (message) => warnings.push(message) },
     );
-    expect(result).toEqual({ captured: 0, skipped: 1 });
+    expect(result).toMatchObject({ captured: 0, skipped: 1, failures: [{ node: "function:missing", kind: "new" }] });
     expect(warnings).toContainEqual(expect.stringContaining("function:missing"));
   }, 30_000);
 });

@@ -116,9 +116,12 @@ describe("reviewed setup commits using real Git", () => {
     write(root, "AGENTS.md", "Codex instructions\n");
     write(root, ".agents/skills/mex-inbox/SKILL.md", "Inbox skill\n");
     write(root, ".agents/skills/mex-inbox/.mex-managed.json", "{}\n");
+    write(root, ".agents/skills/mex-statechart/SKILL.md", "Statechart skill\n");
+    write(root, ".agents/skills/mex-statechart/scripts/runtime.mjs", "export const helper = true;\n");
     const { service, preview } = await review(root, ["codex"]);
     expect(preview.files.map((file) => file.path)).toEqual([
       ".agents/skills/mex-inbox/.mex-managed.json", ".agents/skills/mex-inbox/SKILL.md",
+      ".agents/skills/mex-statechart/SKILL.md", ".agents/skills/mex-statechart/scripts/runtime.mjs",
       ".mex/.gitignore", ".mex/ROUTER.md", ".mex/config.json", ".mex/context/architecture.md", ".mex/patterns/example.md", "AGENTS.md",
     ]);
     const result = await service.commit({ revision: preview.revision, message: "Setup" });

@@ -145,6 +145,12 @@ export interface LocateOptions {
    * pins the locator to it and the move finishes the way it began.
    */
   preferFile?: string;
+  /**
+   * Files an earlier operation of the same batch creates, by absolute path,
+   * as that operation leaves them. Planning only: a later operation of the
+   * batch writes into the created file rather than into an empty one.
+   */
+  virtualFiles?: ReadonlyMap<string, string>;
 }
 
 /** Read and parse one scaffold file, or null when it cannot be read. */
@@ -489,6 +495,11 @@ export interface LocatedFile {
  */
 export function locateFile(options: LocateOptions, path: string): LocatedFile | null {
   const absolutePath = resolve(resolve(options.scaffoldRoot), path);
+  const created = existsSync(absolutePath) ? undefined : options.virtualFiles?.get(absolutePath);
+  if (created !== undefined) {
+    // Created earlier in this batch: it exists in the overlay the plan chains on.
+    return { path, absolutePath, text: created, parsed: parseCached(options, path, absolutePath, created), existed: true };
+  }
   if (!existsSync(absolutePath)) {
     return { path, absolutePath, text: "", parsed: parseWikiMarkdown({ path, text: "" }), existed: false };
   }

@@ -1,6 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { scaffoldIsAuthored } from "./population-audit.js";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { globSync } from "glob";
+import { Glob, Ignore } from "glob";
+import { GRAPH_CORPUS_IGNORE_GLOBS, readConfiguredGraphIgnoreGlobs } from "../graph/corpus-policy.js";
 import chalk from "chalk";
 import {
   findConfig,
@@ -32,6 +34,9 @@ export {
   type SetupMode,
 } from "./phases.js";
 import { finalizeSetupWiki } from "./wiki-finalize.js";
+import { finalizeWithRepair, type SetupFinalizeOptions } from "./finalize-repair.js";
+import { describeGroundingDrift, summarizeGroundingDrift, type GroundingDriftSummary } from "../graph/grounding-failures.js";
+import { wikiGroundingDocumentReader } from "../wiki/grounding/document-reader.js";
 import { SetupError } from "./errors.js";
 import { classifySetupMaintenanceError, setupWikiFailureMessage } from "./maintenance-errors.js";
 export { findSetupProjectRoot } from "./entry.js";
@@ -49,7 +54,8 @@ const SOURCE_EXTENSIONS = [
   "*.py", "*.js", "*.ts", "*.tsx", "*.jsx", "*.go", "*.rs", "*.java",
   "*.kt", "*.swift", "*.rb", "*.php", "*.c", "*.cpp", "*.cs", "*.ex",
   "*.exs", "*.zig", "*.lua", "*.dart", "*.scala", "*.clj", "*.erl",
-  "*.hs", "*.ml", "*.vue", "*.svelte",
+  "*.hs", "*.ml", "*.vue", "*.svelte", "*.mjs", "*.cjs", "*.mts", "*.cts",
+  "*.kts", "*.h", "*.cc", "*.hpp",
 ];
 
 const TOOL_CONFIGS: Record<string, { src: string; dest: string }> = {
@@ -164,10 +170,10 @@ const warn = (msg: string) => console.log(`${chalk.yellow("!")} ${msg}`);
 export function setupCommitCheckpointCommands(selectedTools: readonly AiTool[]): string[] {
   const commands = ["git status --short", "git add .mex"];
   if (selectedTools.includes("claude")) {
-    commands.push("git add CLAUDE.md .claude/skills/mex-inbox .claude/skills/mex-relay");
+    commands.push("git add CLAUDE.md .claude/skills/mex-inbox .claude/skills/mex-relay .claude/skills/mex-statechart");
   }
   if (selectedTools.includes("codex")) {
-    commands.push("git add AGENTS.md .agents/skills/mex-inbox .agents/skills/mex-relay");
+    commands.push("git add AGENTS.md .agents/skills/mex-inbox .agents/skills/mex-relay .agents/skills/mex-statechart");
   }
   if (selectedTools.includes("cursor")) commands.push("git add .cursorrules");
   if (selectedTools.includes("windsurf")) commands.push("git add .windsurfrules");
@@ -183,6 +189,8 @@ export interface SetupRunOptions {
   tools?: AiTool[];
   /** Plain, noninteractive setup. Never starts an agent or a browser. */
   yes?: boolean;
+  /** Run the full flow even on a set-up checkout instead of reporting its status (#284). */
+  force?: boolean;
   port?: number;
   openBrowser?: boolean;
 }
@@ -213,40 +221,60 @@ export function parseSetupTools(values: readonly string[]): AiTool[] {
 // ── Step functions ──
 
 export function isScaffoldPopulated(mexDir: string): boolean {
-  const required = [
-    "AGENTS.md",
-    "ROUTER.md",
-    "context/architecture.md",
-    "context/stack.md",
-    "context/conventions.md",
-    "context/decisions.md",
-    "context/setup.md",
-  ];
-  return required.every((file) => {
-    const path = resolve(mexDir, file);
-    if (!existsSync(path)) return false;
-    const content = readFileSync(path, "utf-8");
-    return !content.includes("[Project Name]") && !content.includes("[YYYY-MM-DD]");
-  });
+  return scaffoldIsAuthored(mexDir);
 }
 
 export function detectProjectState(projectRoot: string, mexDir: string): ProjectState {
   const scaffoldPopulated = isScaffoldPopulated(mexDir);
 
-  // Count source files
-  const patterns = SOURCE_EXTENSIONS.map(
-    (ext) => `**/${ext}`
-  );
-  const sourceFiles = globSync(patterns, {
-    cwd: projectRoot,
-    ignore: ["**/node_modules/**", "**/.mex/**", "**/vendor/**", "**/.git/**"],
-    maxDepth: 4,
-    nodir: true,
-  });
+  // Glob's synchronous iterator completes its filesystem walk before yielding.
+  // Walk directories ourselves so the first source match really stops I/O.
+  const options = new Glob(SOURCE_EXTENSIONS.map(ext => `**/${ext}`), { cwd: projectRoot });
+  const sources = new Ignore(options.pattern, options);
+  // Reuse graph policy, including repository configuration. Setup recognizes
+  // additional languages and excludes installed dependencies/build artifacts;
+  // unlike subsystem ranking, authored tests and examples still count as code.
+  // Default graph ignores are directory names; use the same cheap name check
+  // as graph read discovery, reserving glob matching for configured patterns.
+  const excludedFolders = new Set([
+    ...GRAPH_CORPUS_IGNORE_GLOBS.map(pattern => pattern.slice(3, -3)),
+    "vendor", "vendored", "third_party", "third-party", "thirdparty", "external", "bower_components",
+    "target", "__pycache__", "venv", "generated", "__generated__", "gen", "codegen",
+    "site-packages", "dist-packages",
+  ]);
+  const configuredIgnores = readConfiguredGraphIgnoreGlobs(projectRoot);
+  const ignored = configuredIgnores.length ? new Ignore(configuredIgnores, options) : null;
+  const pending = [projectRoot];
+  let hasSourceFiles = false;
+  search: while (pending.length > 0) {
+    const directory = pending.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      // Like glob, skip directories removed or unreadable during discovery.
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      if (entry.isDirectory() && excludedFolders.has(options.nocase ? entry.name.toLowerCase() : entry.name)) continue;
+      const path = resolve(directory, entry.name);
+      if (ignored) {
+        const candidate = options.scurry.cwd.resolve(path);
+        if (ignored.ignored(candidate) || (entry.isDirectory() && ignored.childrenIgnored(candidate))) continue;
+      }
+      if (entry.isDirectory()) {
+        pending.push(path);
+      } else if (entry.isFile() && sources.ignored(options.scurry.cwd.resolve(path))) {
+        hasSourceFiles = true;
+        break search;
+      }
+    }
+  }
 
-  if (scaffoldPopulated && sourceFiles.length > 0) {
+  if (scaffoldPopulated && hasSourceFiles) {
     return "partial";
-  } else if (sourceFiles.length > 0) {
+  } else if (hasSourceFiles) {
     return "existing";
   } else {
     return "fresh";
@@ -299,6 +327,9 @@ export function installSetupAgentAssets(
  * message may retain fuller terminal diagnostics without exposing them there.
  */
 export class SetupFinalizationError extends SetupError {
+  groundingFailureCount?: number;
+  groundingFailures?: import("../graph/runtime.js").GroundingBaselineFailure[];
+  wikiDiagnostics?: import("../wiki/service.js").WikiDiagnostic[];
   constructor(message: string, options?: ErrorOptions & { userMessage?: string }) {
     super(message, options);
     this.name = "SetupFinalizationError";
@@ -309,10 +340,16 @@ export class SetupFinalizationError extends SetupError {
 const FINALIZATION_DETAIL_LIMIT = 2;
 const FINALIZATION_DETAIL_CHARS = 140;
 
-export async function finalizeCodeRepoSetup(projectRoot: string, mexDir: string, options: {
+export async function finalizeCodeRepoSetup(projectRoot: string, mexDir: string, options: SetupFinalizeOptions = {}) {
+  // Resolves with the references dropped as unverifiable and the recorded
+  // knowledge whose code changed (left untouched, for `mex sync`).
+  return finalizeWithRepair(projectRoot, mexDir, options, () => finalizeCodeRepoSetupOnce(projectRoot, mexDir, options));
+}
+
+async function finalizeCodeRepoSetupOnce(projectRoot: string, mexDir: string, options: {
   signal?: AbortSignal;
   onMessage?: (message: string) => void;
-} = {}): Promise<void> {
+} = {}): Promise<GroundingDriftSummary | null> {
   const info = options.onMessage ?? ((message: string) => console.log(message));
   const warn = info;
   const ok = info;
@@ -324,6 +361,7 @@ export async function finalizeCodeRepoSetup(projectRoot: string, mexDir: string,
     result = await captureGroundingBaselines(
       { projectRoot, scaffoldRoot: mexDir, aiTools: [] },
       {
+        documentReader: wikiGroundingDocumentReader,
         warn: (message) => {
           warn(message);
           if (captureWarnings.length < FINALIZATION_DETAIL_LIMIT) {
@@ -339,15 +377,23 @@ export async function finalizeCodeRepoSetup(projectRoot: string, mexDir: string,
     throw new Error(`Grounding finalization failed: ${message}. Rerun mex setup after fixing it.`);
   }
   throwIfSetupAborted(options.signal);
+  // Recorded knowledge whose code changed is not a setup failure; only new
+  // references that the graph cannot verify are.
+  const newFailures = (result.failures ?? []).filter((failure) => failure.kind === "new");
+  const unresolved = result.skipped - (result.driftCount ?? 0);
   try {
     assertGroundingCaptureReady(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const detail = captureWarnings.length === 0 ? "" : ` ${captureWarnings.join(" ")}`;
-    throw new SetupFinalizationError(
-      `Grounding finalization failed: ${message}${detail} Correct or remove those grounds_to entries or mex:// links, then rerun setup.`,
-    );
+    const next = newFailures.length === 0
+      ? "A grounding document changed while setup was reading it. Nothing was removed; rerun `mex setup`."
+      : "Correct or remove those grounds_to entries or mex:// links, then rerun setup.";
+    throw Object.assign(new SetupFinalizationError(
+      `Grounding finalization failed: ${message}${detail} ${next}`,
+    ), { groundingFailures: newFailures, groundingFailureCount: unresolved });
   }
+  const drift = summarizeGroundingDrift(result.failures ?? [], result.driftCount ?? 0);
   if (result.captured > 0) ok(`Captured ${result.captured} grounding baseline(s)`);
   else info("No authored grounding baselines needed capture");
 
@@ -372,15 +418,19 @@ export async function finalizeCodeRepoSetup(projectRoot: string, mexDir: string,
     const codes = [...new Set(wiki.diagnostics.map((entry) => entry.code))].join(", ");
     const suffix = codes.length === 0 ? "" : ` (${codes})`;
     const userMessage = setupWikiFailureMessage(wiki.stage, wiki.diagnostics);
-    throw new SetupFinalizationError(`${wiki.reason ?? "Wiki setup did not finish."}${suffix} ${userMessage}`, { userMessage });
+    throw Object.assign(new SetupFinalizationError(`${wiki.reason ?? "Wiki setup did not finish."}${suffix} ${userMessage}`, { userMessage }), { wikiDiagnostics: wiki.diagnostics });
   }
   ok(`Wiki ready with ${wiki.indexedEntities} indexed entit${wiki.indexedEntities === 1 ? "y" : "ies"}`);
+  // The final setup message carries the drift sentence; repeating it here would print it twice.
+  return drift;
 }
 
 export function assertGroundingCaptureReady(result: GroundingBaselineCaptureResult): void {
-  if (result.skipped > 0) {
+  // Drift is recorded knowledge whose code changed; `mex sync` owns it.
+  const unresolved = result.skipped - (result.driftCount ?? 0);
+  if (unresolved > 0) {
     throw new Error(
-      `${result.skipped} authored grounding reference${result.skipped === 1 ? "" : "s"} could not be verified against the code graph.`,
+      `${unresolved} authored grounding reference${unresolved === 1 ? "" : "s"} could not be verified against the code graph.`,
     );
   }
 }

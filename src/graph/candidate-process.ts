@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, totalmem, freemem } from "node:os";
+import { getHeapStatistics } from "node:v8";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BuildResult } from "./engine.js";
@@ -9,6 +10,7 @@ import {
   type GraphCandidateProgress,
   type GraphCandidateRequest,
 } from "./candidate-protocol.js";
+import { phaseTimingsWorkerEnv } from "./phase-timing.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STARTUP_TIMEOUT_MS = 15_000;
@@ -18,9 +20,48 @@ const BUILD_TIMEOUT_MS = 30 * 60 * 1000;
 export const GRAPH_CANDIDATE_DIAGNOSTIC_BYTES = 8 * 1024;
 const NODE_HEAP_FAILURE = /^FATAL ERROR: (?:Reached heap limit|Ineffective mark-compacts near heap limit) Allocation failed - JavaScript heap out of memory\s*$/mu;
 
+/**
+ * Keep explicit user heap flags; otherwise allow a share of machine memory, leaving room for
+ * native/compiler work. The heap is a ceiling: free memory at spawn does not cap it, because a
+ * large repository that needs more than is free would otherwise fail outright instead of paging.
+ */
+export function graphWorkerHeap(input: {
+  totalBytes: number; freeBytes: number; defaultHeapMb: number;
+  nodeOptions?: string; execArgv: readonly string[];
+}): { args: string[]; heapMb: number; totalMemoryMb: number; freeMemoryMb: number } {
+  const mb = 1024 ** 2;
+  const flag = /--max[-_]old[-_]space[-_]size(?:=|\s+)["']?(\d+)/u;
+  const args: string[] = [];
+  for (let i = 0; i < input.execArgv.length; i++) {
+    const arg = input.execArgv[i]!;
+    if (!/^--max[-_]old[-_]space[-_]size(?:=|$)/u.test(arg)) continue;
+    args.push(arg);
+    if (!arg.includes("=") && input.execArgv[i + 1] !== undefined) args.push(input.execArgv[++i]!);
+  }
+  const lastFlag = (text: string) => [...text.matchAll(new RegExp(flag.source, "gu"))].at(-1);
+  const inherited = lastFlag(args.join(" "));
+  const environment = lastFlag(input.nodeOptions ?? "");
+  const explicit = inherited ?? environment;
+  const heapMb = explicit ? Number(explicit[1]) : Math.max(input.defaultHeapMb,
+    Math.floor(Math.min(input.totalBytes * 0.6 / mb, 16 * 1024)));
+  return {
+    args: inherited ? args : environment ? [] : [`--max-old-space-size=${heapMb}`],
+    heapMb, totalMemoryMb: Math.floor(input.totalBytes / mb), freeMemoryMb: Math.floor(input.freeBytes / mb),
+  };
+}
+
+export function graphHeapRecovery(diagnostic: Pick<GraphCandidateProcessDiagnostic, "heapMb" | "totalMemoryMb" | "freeMemoryMb">): string {
+  const used = diagnostic.heapMb ?? 4096;
+  const next = Math.ceil(used * 1.5 / 1024) * 1024;
+  return `The graph worker reached Node's JavaScript heap limit (${used} MB heap; ${diagnostic.totalMemoryMb ?? "unknown"} MB machine memory, ${diagnostic.freeMemoryMb ?? "unknown"} MB free at spawn). Close other programs and retry, or set NODE_OPTIONS=--max-old-space-size=${next} with enough available memory, then rerun the command.`;
+}
+
 export interface GraphCandidateProcessDiagnostic {
   readonly reason: "entrypoint-missing" | "spawn" | "startup-timeout" | "build-timeout"
     | "protocol" | "ipc-disconnected" | "worker-error" | "exit" | "observer" | "cancelled";
+  readonly heapMb?: number;
+  readonly totalMemoryMb?: number;
+  readonly freeMemoryMb?: number;
   readonly exitCode?: number | null;
   readonly signal?: NodeJS.Signals | null;
   /** Signal requested by MEX after an already diagnosed worker failure. */
@@ -39,9 +80,9 @@ export class GraphCandidateProcessError extends Error {
     readonly category: "cancelled" | "compatibility" | "staging" | "failed" | "unsafe",
     readonly diagnostic?: GraphCandidateProcessDiagnostic,
   ) {
-    super(diagnostic ? diagnosticMessage(diagnostic) : category === "cancelled"
-      ? "Graph candidate construction was cancelled."
-      : "The isolated graph candidate could not be completed safely.");
+    super(`Graph worker category: ${category}. ${diagnostic ? diagnosticMessage(diagnostic) : category === "cancelled"
+      ? "Setup itself cancelled graph candidate construction; the worker did not fail."
+      : "The isolated graph candidate could not be completed safely (no worker diagnostic was returned)."}`);
   }
 }
 
@@ -113,11 +154,15 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
   return new Promise((resolve, reject) => {
     const startedAt = performance.now();
     const stderr = boundedWorkerDiagnostic();
+    const heap = graphWorkerHeap({ totalBytes: totalmem(), freeBytes: freemem(),
+      defaultHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
+      nodeOptions: process.env.NODE_OPTIONS, execArgv: process.execArgv });
     let child: ChildProcess;
     try {
-      child = spawn(process.execPath, [options.__internal?.entrypoint ?? candidateEntrypoint()], {
+      // --expose-gc lets extraction collect each released compiler program.
+      child = spawn(process.execPath, [...heap.args, "--expose-gc", options.__internal?.entrypoint ?? candidateEntrypoint()], {
         cwd: options.projectRoot,
-        env: { ...process.env, MEX_TELEMETRY: "0", DO_NOT_TRACK: "1" },
+        env: { ...process.env, ...phaseTimingsWorkerEnv(), MEX_TELEMETRY: "0", DO_NOT_TRACK: "1" },
         // FD 4 is a lifeline. A watchdog in the child observes EOF even while
         // its main thread is inside synchronous TypeScript or SQLite work.
         // Overlapped enables asynchronous reads on the inherited Windows
@@ -187,7 +232,8 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
         lastProgress = message.progress;
         try {
           options.onProgress?.(message.progress);
-        } catch {
+        } catch (error) {
+          stderr.append(Buffer.from(`Graph progress observer failed: ${boundedDiagnosticText(error instanceof Error ? error.message : String(error))}\n`));
           stop(fail("observer"));
         }
       } else if (message.type === "complete") {
@@ -211,7 +257,7 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
         // exit status instead of blaming a channel that closed as a consequence.
         if (reason === "ipc-disconnected" && (code !== null || (signal && !sentSignals.has(signal)))) reason = "exit";
         reject(new GraphCandidateProcessError(failure?.category ?? "failed", {
-          reason, exitCode: code, signal,
+          reason, exitCode: code, signal, heapMb: heap.heapMb, totalMemoryMb: heap.totalMemoryMb, freeMemoryMb: heap.freeMemoryMb,
           ...(reason !== "exit" && signal && sentSignals.has(signal) ? { supervisorSignal: signal } : {}),
           elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
           ...(lastProgress ? { progress: lastProgress } : {}),
@@ -289,6 +335,6 @@ function diagnosticMessage(diagnostic: GraphCandidateProcessDiagnostic): string 
     details.push(`last progress: ${phase}${completed === undefined ? "" : ` ${completed}${total === undefined ? "" : `/${total}`} files`}`);
   }
   const description = diagnostic.resourceFailure === "heap-limit"
-    ? "The graph worker reached Node's JavaScript heap limit" : descriptions[diagnostic.reason];
+    ? graphHeapRecovery(diagnostic).replace(/\.$/u, "") : descriptions[diagnostic.reason];
   return `${description}${details.length ? ` (${details.join("; ")})` : ""}.${diagnostic.stderr ? `\nWorker diagnostics:\n${boundedDiagnosticText(diagnostic.stderr)}` : ""}`;
 }

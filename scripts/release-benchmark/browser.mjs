@@ -105,6 +105,12 @@ export async function assertReleaseRouteReady(page, route, teamFixture) {
     await page.locator('[data-overview-workbench="ready"]')
       .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
   }
+  if (route === "diagrams") await page.getByRole("heading", { name: "Diagrams", exact: true }).waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+  if (route === "diagramDetail") {
+    await page.getByRole("region", { name: "State diagram", exact: true })
+      .getByRole("group", { name: "States and transitions", exact: true })
+      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+  }
   if (route === "knowledge") {
     const graph = page.getByLabel("Context graph", { exact: true });
     await graph.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });

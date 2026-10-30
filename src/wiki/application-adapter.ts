@@ -2483,12 +2483,13 @@ export class RepositoryWikiPort implements WikiPort<
         throw new Error("injected-operation-index-refresh-failure");
       };
     }
-    return (grounding, context) => {
+    const resolver: GroundingResolver = (grounding, context) => {
           if (this.#options.__internal?.failOperationIndexRefresh?.() === true) {
             throw new Error("injected-operation-index-refresh-failure");
           }
           return resolveGrounding(grounding, graph, context);
         };
+    return Object.assign(resolver, graph.revision === undefined ? {} : { graphRevision: graph.revision });
   }
 
   async #withStableGrounding<T>(

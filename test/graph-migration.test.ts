@@ -54,7 +54,8 @@ describe("pre-0.7 graph grounding migration", () => {
     const prompt = buildGroundMigrationPrompt();
     expect(prompt).toContain("pointer migration, not a scaffold rewrite");
     expect(prompt).toContain("READ BROAD, GROUND TIGHT");
-    expect(prompt).toContain("fingerprints belong ONLY in grounds_to frontmatter");
+    expect(prompt).toContain("Write the node id only; MEX records the fingerprint and body hash");
+    expect(prompt).toContain("a mex:// URI is exactly mex://<nodeId> and never\ncontains a fingerprint");
     expect(prompt).toContain("A second\nrun must leave the file byte-identical");
     expect(prompt).toContain("Do not create or delete scaffold files");
   });

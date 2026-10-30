@@ -31,6 +31,8 @@
       "code": { "jsBytes": 31589, "cssBytes": 6875, "fontBytes": 0 },
       "codeSymbol": { "jsBytes": 58539, "cssBytes": 21217, "fontBytes": 0 },
       "workstreams": { "jsBytes": 94685, "cssBytes": 12290, "fontBytes": 0 },
+      "diagrams": {"jsBytes":82271,"cssBytes":4199,"fontBytes":0},
+      "diagramDetail": {"jsBytes":649650,"cssBytes":4199,"fontBytes":0},
       "specs": { "jsBytes": 23795, "cssBytes": 9571, "fontBytes": 0 },
       "specsDetail": { "jsBytes": 23795, "cssBytes": 9571, "fontBytes": 0 },
       "playbooks": { "jsBytes": 7095, "cssBytes": 3510, "fontBytes": 0 },
@@ -67,19 +69,19 @@
     "browserHeapBytes": {
       "small": {
         "home": 4932332, "search": 5426602, "knowledge": 4769934, "knowledgeDetail": 4855696,
-        "code": 5388496, "codeSymbol": 4845185, "workstreams": 6091035, "specs": 6180560, "specsDetail": 6166273,
+        "code": 5388496, "codeSymbol": 4845185, "workstreams": 6091035, "diagrams": 6539912, "diagramDetail": 9882479, "specs": 6180560, "specsDetail": 6166273,
         "playbooks": 4203807, "catchUp": 4203807, "inbox": 6492790, "relays": 7753875, "members": 4902625, "activity": 4874206,
         "jobs": 4567014, "health": 4510981, "settings": 6302493, "notFound": 4185582
       },
       "medium": {
         "home": 4931467, "search": 5762301, "knowledge": 5013554, "knowledgeDetail": 4856552,
-        "code": 5720349, "codeSymbol": 4849523, "workstreams": 6070059, "specs": 6182460, "specsDetail": 6166337,
+        "code": 5720349, "codeSymbol": 4849523, "workstreams": 6070059, "diagrams": 6534291, "diagramDetail": 9877318, "specs": 6182460, "specsDetail": 6166337,
         "playbooks": 4199281, "catchUp": 4199281, "inbox": 6497358, "relays": 7754561, "members": 4886295, "activity": 5130992,
         "jobs": 4564691, "health": 4511036, "settings": 6304420, "notFound": 4185554
       },
       "large": {
         "home": 4933528, "search": 6027330, "knowledge": 5135808, "knowledgeDetail": 4858258,
-        "code": 5989987, "codeSymbol": 4847729, "workstreams": 6091086, "specs": 6175215, "specsDetail": 6170891,
+        "code": 5989987, "codeSymbol": 4847729, "workstreams": 6091086, "diagrams": 6534259, "diagramDetail": 9885874, "specs": 6175215, "specsDetail": 6170891,
         "playbooks": 4203858, "catchUp": 4203858, "inbox": 6504906, "relays": 7748627, "members": 4895624, "activity": 5275901,
         "jobs": 4563113, "health": 4509017, "settings": 6308933, "notFound": 4181773
       }

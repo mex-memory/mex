@@ -28,6 +28,7 @@ import { cn } from "../lib/utils";
 import { invalidateIndexOperationState } from "../app/JobLifecycleObserver";
 import { graphParseComposition, shortRepositoryHead } from "../lib/health-presentation";
 import healthStyles from "../styles/health.module.css";
+import type { WikiMigrationJobPreview } from "@mex/hub-contracts";
 
 type HealthComponent = HealthResponse["components"][number];
 
@@ -125,7 +126,7 @@ function ActionControls({
                 variant={recommended && available ? "default" : "outline"}
               >
                 <RefreshCw aria-hidden="true" className={pending ? healthStyles.spin : ""} data-icon="inline-start" />
-                {pending ? "Starting…" : kind === "graph_refresh" ? "Refresh graph" : kind === "graph_rebuild" ? "Rebuild graph" : sentenceCase(kind)}
+                {pending ? "Starting…" : component.wiki?.indexStatus === "migration_required" ? "Preview migration" : kind === "graph_refresh" ? "Refresh graph" : kind === "graph_rebuild" ? "Rebuild graph" : sentenceCase(kind)}
                 {recommended && available ? <small>Recommended</small> : null}
               </Button>
             );
@@ -142,11 +143,18 @@ function ActionControls({
 }
 
 function WikiHealthReadout({ wiki }: { wiki: WikiHealthDetails }) {
+  const recoveryCommand = wiki.recoveryCommand ?? null;
   return (
     <div className={healthStyles.wikiReadout}>
       <div className={healthStyles.indexBanner}>
         <span><small>Wiki index status</small><strong>{sentenceCase(wiki.indexStatus)}</strong></span>
-        <StatusPill tone={stateTone(wiki.indexStatus)}>{wiki.recommendedJobKind ? `${sentenceCase(wiki.recommendedJobKind)} recommended` : "No repair recommended"}</StatusPill>
+        <StatusPill tone={stateTone(wiki.indexStatus)}>
+          {wiki.recommendedJobKind
+            ? `${sentenceCase(wiki.recommendedJobKind)} recommended`
+            : recoveryCommand
+              ? "CLI action required"
+              : "No repair recommended"}
+        </StatusPill>
       </div>
       <dl className={healthStyles.wikiFacts}>
         <div><dt>Indexed</dt><dd>{formatDate(wiki.indexedAt)}</dd></div>
@@ -154,6 +162,12 @@ function WikiHealthReadout({ wiki }: { wiki: WikiHealthDetails }) {
         <div><dt>Revision</dt><dd className={healthStyles.mono}>{wiki.indexedRevision?.slice(0, 12) ?? "Not indexed"}</dd></div>
         <div><dt>Observed</dt><dd>{formatDate(wiki.observedAt)}</dd></div>
       </dl>
+      {recoveryCommand ? (
+        <div className={healthStyles.recoveryCommand}>
+          <small>{recoveryCommand.label}</small>
+          <code className={healthStyles.mono}>{recoveryCommand.command}</code>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -366,12 +380,14 @@ export function HealthPage() {
   const queryClient = useQueryClient();
   const { capabilities } = useOutletContext<{ capabilities?: CapabilitiesResponse }>();
   const [confirmRebuild, setConfirmRebuild] = useState<"graph_rebuild" | "wiki_rebuild" | null>(null);
+  const [migration, setMigration] = useState<WikiMigrationJobPreview | null>(null);
   const rebuildReturnFocus = useRef<HTMLElement | null>(null);
   const health = useQuery({ queryKey: ["health"], queryFn: () => api.getHealth(), retry: false });
   const start = useMutation({
-    mutationFn: (kind: JobKind) => api.startJob({ kind }),
+    mutationFn: (kind: JobKind) => api.startJob({ kind, ...(kind === "wiki_rebuild" && migration ? { migrationPreview: migration.revision } : {}) }),
     onSuccess: (job) => {
       setConfirmRebuild(null);
+      setMigration(null);
       navigate(`/jobs?job=${encodeURIComponent(job.id)}`);
       void Promise.all([
         invalidateIndexOperationState(queryClient),
@@ -380,11 +396,23 @@ export function HealthPage() {
     },
     onError: () => {
       setConfirmRebuild(null);
+      setMigration(null);
       rebuildReturnFocus.current?.focus({ preventScroll: true });
     },
   });
+  const previewMigration = useMutation({
+    mutationFn: () => {
+      if (!api.previewWikiMigration) throw new Error("Wiki migration preview is unavailable.");
+      return api.previewWikiMigration();
+    },
+    onSuccess: setMigration,
+  });
 
   function requestAction(kind: JobKind) {
+    if (kind === "wiki_rebuild" && health.data?.components.some(c => c.wiki?.indexStatus === "migration_required")) {
+      previewMigration.mutate();
+      return;
+    }
     if (kind === "graph_rebuild" || kind === "wiki_rebuild") {
       rebuildReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setConfirmRebuild(kind);
@@ -394,7 +422,7 @@ export function HealthPage() {
   }
 
   function isActionAvailable(component: HealthComponent, kind: JobKind): boolean {
-    if (hasActiveIndexJob || start.isPending) return false;
+    if (hasActiveIndexJob || start.isPending || previewMigration.isPending) return false;
     return operationAvailable(capabilities, kind) && (
       (!component.graph && !component.wiki)
       || (component.graph !== undefined && component.graph.activeJobId === null && component.graph.allowedJobKinds.some((allowed) => allowed === kind))
@@ -414,6 +442,16 @@ export function HealthPage() {
     <div className={healthStyles.page}>
       <PageIntro action={health.data ? <StatusPill tone={stateTone(health.data.status)}>{sentenceCase(health.data.status)}</StatusPill> : undefined} />
       {start.isError ? <ErrorState error={start.error} /> : null}
+      {previewMigration.isError ? <ErrorState error={previewMigration.error} /> : null}
+      {migration ? (
+        <section aria-label="Wiki migration preview">
+          <h2>Wiki migration preview</h2>
+          <pre>{migration.report}</pre>
+          <p>Applying changes canonical Knowledge files, then rebuilds the Wiki index. Review and commit these files afterward.</p>
+          <Button disabled={start.isPending} onClick={() => setMigration(null)}>Cancel migration</Button>
+          <Button disabled={!migration.canApply || start.isPending || hasActiveIndexJob} onClick={() => start.mutate("wiki_rebuild")}>Apply migration</Button>
+        </section>
+      ) : null}
       {health.isPending ? (
         <StatePanel state="loading" title="Inspecting system health" detail="This is a read-only inspection of local repository services." />
       ) : health.isError ? (

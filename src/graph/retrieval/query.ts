@@ -168,14 +168,23 @@ export function planGraphQuery(raw: string): GraphQueryPlan {
   };
 }
 
+/** Test files: test directories and `*.test.*`, `*.spec.*`, `test_*` or `*_test.*` names. */
+export function isTestGraphPath(filePath: string): boolean {
+  const path = filePath.toLowerCase();
+  return (
+    /(^|\/)(__tests?__|tests?|specs?)(\/|$)/.test(path)
+    || /\.(test|spec)\.[^/]+$/.test(path)
+    || /(^|\/)test_[^/]+\.[^/]+$/.test(path)
+    || /_test\.[^/]+$/.test(path)
+  );
+}
+
 /** Test, fixture, example, benchmark, generated, and other non-production paths. */
 export function isLowValueGraphPath(filePath: string): boolean {
   const path = filePath.toLowerCase();
   return (
-    /(^|\/)(__tests?__|tests?|specs?|fixtures?|examples?|samples?|benchmarks?|demos?|mocks?|testdata|integration)(\/|$)/.test(path)
-    || /\.(test|spec)\.[^/]+$/.test(path)
-    || /(^|\/)test_[^/]+\.[^/]+$/.test(path)
-    || /_test\.[^/]+$/.test(path)
+    isTestGraphPath(path)
+    || /(^|\/)(fixtures?|examples?|samples?|benchmarks?|demos?|mocks?|testdata|integration)(\/|$)/.test(path)
     || /(^|\/)evaluate\//.test(path)
     || /(^|\/)(generated|vendor)\//.test(path)
     || /(?:^|\/).*(?:\.generated|\.gen|\.pb)\.[^/]+$/.test(path)

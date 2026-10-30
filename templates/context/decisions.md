@@ -13,7 +13,7 @@ edges:
   - target: context/stack.md
     condition: when a decision relates to technology choice
 # Decisions usually ground sparsely; add only symbols that implement the decision.
-# Entry shape: { node: "function:<tier-1-id>", fingerprint: "mh2:64:<base64url>" }
+# Entry shape: { node: "function:<tier-1-id>" } (MEX records the fingerprint)
 grounds_to: []
 last_updated: [YYYY-MM-DD]
 ---

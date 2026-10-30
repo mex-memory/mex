@@ -166,6 +166,15 @@ export interface PlanOptions extends LocateOptions {
   /** Id source for created entities. Injectable so a test can pin ids. */
   generateId?: () => EntityId;
   /**
+   * Give an authored section entry its place in the Wiki's structure: a
+   * `create-entry` inserted under a heading, with no `refines` of its own,
+   * refines the nearest enclosing entity, and a file with no file-level entity
+   * gets one in the same operation (see `operations.ts`). On for the authoring
+   * surfaces (`wiki apply` and the service facade); off for migration,
+   * synthesis and every low-level caller, whose bytes stay exactly theirs.
+   */
+  deriveStructure?: boolean;
+  /**
    * Accept a mutating operation carrying no `baseContentHash`.
    *
    * For a caller that plans and applies in one pass over a tree nobody else is
@@ -312,6 +321,7 @@ export function planOperation(envelope: unknown, options: PlanOptions): PlanResu
           : {}),
       },
     } : {}),
+    timestamp: operation.timestamp,
     mintId: options.generateId ?? generateEntityId,
     locate: (path) => locateFile(options, path),
     locateEntity: (id) => locateEntity(id, options),

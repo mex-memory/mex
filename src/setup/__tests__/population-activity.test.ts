@@ -285,3 +285,80 @@ describe("bounded incremental JSONL decoding", () => {
     expect(signals).toEqual([{ kind: "writing", state: "completed", ...(target ? { target } : {}) }]);
   });
 });
+
+
+describe("provider usage-limit fixtures", () => {
+  const text = "You've hit your limit ? resets 5:30pm (Asia/Kolkata)";
+  it.each([
+    { type: "assistant", error: "rate_limit", message: { content: [{ type: "text", text }] } },
+    { type: "assistant", error: "rate_limit", message: { content: [] } },
+    { type: "result", is_error: true, result: text },
+    { type: "result", is_error: true, api_error_status: 429 },
+    { type: "result", subtype: "error_during_execution", is_error: true, errors: [text] },
+    { type: "result", is_error: true, error: { type: "rate_limit_error", message: text } },
+  ])("recognizes %j even after partial work", (event) => {
+    const decoder = createPopulationActivityDecoder("claude", () => {});
+    decoder.write(Buffer.from(JSON.stringify({ type: "result", subtype: "success" }) + "\n"));
+    const bytes = Buffer.from(JSON.stringify(event));
+    for (let i = 0; i < bytes.length; i += 7) decoder.write(bytes.subarray(i, i + 7));
+    decoder.end();
+    expect(decoder.usageLimited).toBe(true);
+    expect(decoder.completed).toBe(false);
+    if (JSON.stringify(event).includes("5:30pm")) expect(decoder.resetTime).toBe("5:30pm (Asia/Kolkata)");
+  });
+  it.each(["file size limit exceeded", "context limit reached", "turn limit exceeded", "limit is undefined", "maximum output tokens exceeded"])("does not mistake %s for account quota", (text) => {
+    const decoder = createPopulationActivityDecoder("claude", () => {});
+    decoder.write(Buffer.from(JSON.stringify({ type: "result", is_error: true, result: text })));
+    decoder.end();
+    expect(decoder.failed).toBe(true);
+    expect(decoder.usageLimited).toBe(false);
+  });
+  it("does not classify ordinary assistant prose as a provider failure", () => {
+    const decoder = createPopulationActivityDecoder("claude", () => {});
+    decoder.write(Buffer.from(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text }] } })));
+    decoder.end();
+    expect(decoder.usageLimited).toBe(false);
+  });
+});
+
+it.each(["allowed", "allowed_warning", "rejected"])("handles documented rate_limit_event status %s", (status) => {
+  const decoder = createPopulationActivityDecoder("claude", () => {});
+  decoder.write(Buffer.from(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status, resetsAt: 1792859400 } })));
+  decoder.end();
+  expect(decoder.usageLimited).toBe(status === "rejected");
+  if (status === "rejected") expect(decoder.resetTime).toBe(new Date(1792859400000).toISOString());
+});
+it("keeps rate-limit warnings advisory when overage or a completed result permits work", () => {
+  for (const overageStatus of ["allowed", undefined]) {
+    const decoder = createPopulationActivityDecoder("claude", () => {});
+    decoder.write(Buffer.from(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "rejected", overageStatus } }) + "\n"));
+    decoder.write(Buffer.from(JSON.stringify({ type: "result", subtype: "success", is_error: false })));
+    decoder.end();
+    expect(decoder.completed).toBe(true);
+    expect(decoder.usageLimited).toBe(false);
+  }
+});
+
+it("retains the reset epoch from older provider limit results", () => {
+  const decoder = createPopulationActivityDecoder("claude", () => {});
+  decoder.write(Buffer.from(JSON.stringify({ type: "result", is_error: true, result: "Claude AI usage limit reached|1760000000" })));
+  decoder.end();
+  expect(decoder.resetTime).toBe("2025-10-09T08:53:20.000Z");
+});
+
+it("leaves a non-limit assistant error to the result record", () => {
+  const decoder = createPopulationActivityDecoder("claude", () => {});
+  decoder.write(Buffer.from(JSON.stringify({ type: "assistant", error: "server_error", message: { content: [] } }) + "\n"));
+  decoder.write(Buffer.from(JSON.stringify({ type: "result", subtype: "success", is_error: false })));
+  decoder.end();
+  expect(decoder.usageLimited).toBe(false);
+  expect(decoder.completed).toBe(true);
+});
+
+it("does not treat an absent assistant error encoded as null as failure", () => {
+  const decoder = createPopulationActivityDecoder("claude", () => {});
+  decoder.write(Buffer.from(JSON.stringify({ type: "assistant", error: null, message: { content: [] } }) + "\n"));
+  decoder.write(Buffer.from(JSON.stringify({ type: "result", subtype: "success", is_error: false })));
+  decoder.end();
+  expect(decoder.completed).toBe(true);
+});

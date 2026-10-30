@@ -113,7 +113,7 @@ export function wikiRegroundEntity(
     reason: options.reason ?? "Explicitly re-recorded the entity's current code links",
     payload: { groundsTo },
   };
-  const applied = wikiApplyOperation(operation, { ...options, graph, ...(options.apply === true ? { apply: true } : {}) });
+  const applied = wikiApplyOperation(operation, { ...options, graph, targetedGroundings: false, ...(options.apply === true ? { apply: true } : {}) });
   // Cache current bodies only after this explicitly requested write succeeds.
   // Ordinary resolution and dry-run planning never populate local state.
   if (applied.data.applied) {

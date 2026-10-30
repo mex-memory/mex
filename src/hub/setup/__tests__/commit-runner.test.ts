@@ -1,7 +1,12 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SetupCommitRequest, SetupStatus } from "@mex/hub-contracts/setup";
 import { HubHttpError } from "../../http/errors.js";
 
+// The runner takes a real checkout-local setup lock, so the root must be writable.
+const ROOT = mkdtempSync(join(tmpdir(), "mex-commit-runner-"));
 const mocks = vi.hoisted(() => ({ status: vi.fn(), initial: vi.fn(), inspect: vi.fn(), execute: vi.fn(), preview: vi.fn(), commit: vi.fn(), clear: vi.fn(), verifyRecovery: vi.fn() }));
 vi.mock("../../../setup/headless.js", () => ({ inspectSetupStatus: mocks.inspect, runHeadlessSetup: mocks.execute }));
 vi.mock("../readiness.js", () => ({ initialSetupStatus: mocks.initial, projectSetupStatus: mocks.status }));
@@ -36,7 +41,7 @@ beforeEach(() => {
 describe("setup commit orchestration", () => {
   it("reviews and commits setup, then waits for explicit Hub opening without repeating population", async () => {
     const onReady = vi.fn();
-    const runner = new HubSetupRunner({ projectRoot: "/test", onReady });
+    const runner = new HubSetupRunner({ projectRoot: ROOT, onReady });
     expect(await runner.previewCommit()).toEqual({ revision });
     expect(mocks.preview).toHaveBeenCalledExactlyOnceWith(["codex"]);
     const response = await runner.commitSetup(request);
@@ -51,7 +56,7 @@ describe("setup commit orchestration", () => {
   });
 
   it("replays the saved commit receipt after promotion failure without creating another commit", async () => {
-    const runner = new HubSetupRunner({ projectRoot: "/test", onReady: async () => { throw new Error("private root and stack"); } });
+    const runner = new HubSetupRunner({ projectRoot: ROOT, onReady: async () => { throw new Error("private root and stack"); } });
     const response = await runner.commitSetup(request);
     expect(response.commit).toBe(receipt.commit);
     expect(response.run).toMatchObject({ status: "succeeded", ready: true });
@@ -68,7 +73,7 @@ describe("setup commit orchestration", () => {
 
   it("keeps stale-review errors retryable without promoting or invoking population", async () => {
     const onReady = vi.fn();
-    const runner = new HubSetupRunner({ projectRoot: "/test", onReady });
+    const runner = new HubSetupRunner({ projectRoot: ROOT, onReady });
     mocks.commit.mockRejectedValueOnce(new HubHttpError(409, "REVISION_CONFLICT", "Review changed", "Refresh the review."));
     await expect(runner.commitSetup(request)).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
     await expect(runner.previewCommit()).resolves.toEqual({ revision });
@@ -79,7 +84,7 @@ describe("setup commit orchestration", () => {
 
   it("preserves a durable commit and manual-recovery warning without opening the Hub", async () => {
     const onReady = vi.fn();
-    const runner = new HubSetupRunner({ projectRoot: "/test", onReady });
+    const runner = new HubSetupRunner({ projectRoot: ROOT, onReady });
     mocks.commit.mockImplementation(async () => {
       mocks.status.mockRejectedValue(new Error("Readiness inspection failed"));
       return { ...receipt, recoveryRequired: true, message: "The commit is saved. Resolve the Git index recovery file before continuing." };
@@ -93,7 +98,7 @@ describe("setup commit orchestration", () => {
 
   it("checks unresolved Git recovery before retrying Hub promotion", async () => {
     const onReady = vi.fn();
-    const runner = new HubSetupRunner({ projectRoot: "/test", onReady });
+    const runner = new HubSetupRunner({ projectRoot: ROOT, onReady });
     mocks.commit.mockImplementation(async () => {
       mocks.status.mockResolvedValue(ready);
       mocks.inspect.mockReturnValue(ready);
@@ -112,7 +117,7 @@ describe("setup commit orchestration", () => {
 
   it.each(["needs_population", "needs_finalize", "ready"] as const)("rejects commit operations at %s before invoking Git", async (stage) => {
     mocks.status.mockResolvedValue({ ...status, stage });
-    const runner = new HubSetupRunner({ projectRoot: "/test" });
+    const runner = new HubSetupRunner({ projectRoot: ROOT });
     await expect(runner.previewCommit()).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
     await expect(runner.commitSetup(request)).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
     expect(mocks.preview).not.toHaveBeenCalled();
@@ -125,7 +130,7 @@ describe("setup commit orchestration", () => {
       finish = () => { mocks.status.mockResolvedValue(ready); resolve(receipt); };
     }));
     const onReady = vi.fn();
-    const runner = new HubSetupRunner({ projectRoot: "/test", onReady });
+    const runner = new HubSetupRunner({ projectRoot: ROOT, onReady });
     const committing = runner.commitSetup(request);
     await vi.waitFor(() => expect(mocks.commit).toHaveBeenCalledOnce());
     await expect(runner.previewCommit()).rejects.toMatchObject({ code: "JOB_ALREADY_RUNNING" });
@@ -143,7 +148,7 @@ describe("setup commit orchestration", () => {
   });
 
   it("does not turn notification failures into a failed Git commit", async () => {
-    const runner = new HubSetupRunner({ projectRoot: "/test" });
+    const runner = new HubSetupRunner({ projectRoot: ROOT });
     runner.subscribe((run) => { if (run.status === "succeeded") throw new Error("listener closed"); });
     await expect(runner.commitSetup(request)).resolves.toMatchObject(receipt);
     expect(mocks.commit).toHaveBeenCalledOnce();

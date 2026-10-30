@@ -1,33 +1,73 @@
 import crossSpawn from "cross-spawn";
 import type { ChildProcess } from "node:child_process";
-import { buildAgentCommand } from "../agent-command.js";
-import { AI_TOOLS, type AiTool } from "../types.js";
-import { createPopulationActivityDecoder, type PopulationActivitySignal } from "./population-activity.js";
-import { createPopulationTranscriptDecoder, type PopulationTranscriptSignal } from "./population-transcript.js";
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import {
-  launchSetupPopulationAsync,
-  SetupPopulationError,
-  type SetupAgentTool,
-  type SetupPopulationLaunchResult,
-} from "./population.js";
+  BACKGROUND_AGENT_CLIS,
+  COMMAND_CAPABLE_AGENTS,
+  CURSOR_PERMISSIONS_FILE,
+  buildAgentCommand,
+  cursorSessionPermissionsText,
+  isBackgroundAgentTool,
+  opencodeSessionConfig,
+  type BackgroundAgentTool,
+} from "../agent-command.js";
+import { AI_TOOLS, type AiTool } from "../types.js";
+import {
+  createPopulationActivityDecoder,
+  USAGE_LIMIT_PATTERN,
+  usageLimitResetTime,
+  type PopulationActivitySignal,
+  type PopulationAgentUsage,
+} from "./population-activity.js";
+import { createPopulationTranscriptDecoder, type PopulationTranscriptSignal } from "./population-transcript.js";
+import { createPopulationSession, SetupPopulationError } from "./population.js";
 
-const POPULATION_TIMEOUT_MS = 30 * 60_000;
+import { parsePlanState, SETUP_PLAN_STATE_FILE, type SetupPlanState } from "./subsystem-state.js";
+
+/** Probe the single-session pause without repairing an unrelated/corrupt plan. */
+export function readSingleUsagePause(projectRoot: string): SetupPlanState | null {
+  try {
+    const state = parsePlanState(readFileSync(resolve(projectRoot, SETUP_PLAN_STATE_FILE), "utf8")).state;
+    return state?.queue?.mode === "single" && state.queue.finalized !== true && state.finalizedAt === undefined
+      && state.shared.reason === "usage_limit" ? state : null;
+  } catch { return null; }
+}
+
+export type { BackgroundAgentTool } from "../agent-command.js";
+
+/** What a background launch reports: the agent that ran (null when none could) and whether it finished. */
+export interface HeadlessPopulationLaunchResult {
+  readonly tool: BackgroundAgentTool | null;
+  readonly completed: boolean;
+}
+
+const POPULATION_TIMEOUT_MS = 15 * 60_000;
 const TERMINATE_GRACE_MS = 500;
 const DIAGNOSTIC_BYTES = 8 * 1024;
 const DISCOVERY_TIMEOUT_MS = 5_000;
 
 export interface HeadlessPopulationOptions {
   readonly selectedTools: readonly AiTool[];
+  /** Run exactly this agent (still checked for availability); otherwise MEX picks one (see findAvailableSetupAgent). */
+  readonly tool?: BackgroundAgentTool;
+  /**
+   * The prompt tells the agent to run `mex` commands, so only an agent whose
+   * session may run the pre-approved ones is eligible (Claude Code, Codex).
+   */
+  readonly requireCommands?: boolean;
   readonly prompt: string;
   readonly projectRoot: string;
   readonly signal?: AbortSignal;
   /** Agent-memory setup supports directories without a Git repository. */
   readonly allowNonGit?: boolean;
-  /** A shorter bounded deadline; the browser request cannot supply this. */
+  /** The stdout inactivity window; the browser request cannot supply this. */
   readonly timeoutMs?: number;
   /** Fixed activity categories only; never raw agent output or tool arguments. */
   readonly onActivity?: (activity: HeadlessPopulationActivity) => void;
   readonly onTranscript?: (entry: HeadlessPopulationTranscript) => void;
+  /** Token counts the agent reported for the session, once, when it closes. */
+  readonly onUsage?: (usage: PopulationAgentUsage) => void;
   /** Subprocess test seams, never part of the Hub request contract. */
   readonly __internal?: {
     readonly isAvailable?: (command: string) => Promise<boolean>;
@@ -36,23 +76,24 @@ export interface HeadlessPopulationOptions {
   };
 }
 
-export type HeadlessPopulationActivity = PopulationActivitySignal & { readonly tool: SetupAgentTool };
-export type HeadlessPopulationTranscript = PopulationTranscriptSignal & { readonly tool: SetupAgentTool };
+export type HeadlessPopulationActivity = PopulationActivitySignal & { readonly tool: BackgroundAgentTool };
+export type HeadlessPopulationTranscript = PopulationTranscriptSignal & { readonly tool: BackgroundAgentTool };
 
-type PopulationFailure = "launch" | "arguments" | "authentication" | "failed" | "protocol" | "cancelled" | "timeout" | "prompt";
+export type PopulationFailure = "launch" | "arguments" | "authentication" | "usage_limit" | "failed" | "protocol" | "cancelled" | "timeout" | "prompt";
 
 /** Fixed messages only: child output can contain prompts, paths, and secrets. */
 export class HeadlessPopulationError extends SetupPopulationError {
-  constructor(readonly category: PopulationFailure, tool?: SetupAgentTool) {
+  constructor(readonly category: PopulationFailure, readonly tool?: BackgroundAgentTool, readonly resetTime?: string) {
     const name = tool ? AI_TOOLS[tool].name : "The selected AI tool";
     const messages: Record<PopulationFailure, string> = {
       launch: `${name} could not start. Check its installation and try again.`,
       arguments: `${name} rejected the background command. Update the AI CLI and MEX, then try again.`,
       authentication: `${name} could not authenticate. Sign in to its CLI and try again.`,
+      usage_limit: `${name} reached its usage limit.${resetTime ? ` Resets ${resetTime}.` : ""} Rerun \`mex setup\` after the limit resets; finished work is kept.`,
       failed: `${name} exited before population completed. Check its CLI configuration and try again.`,
       protocol: `${name} stopped without confirming completion. Review the files and resume setup.`,
       cancelled: "AI population was cancelled. You can resume setup when ready.",
-      timeout: "AI population exceeded its time limit and was stopped. Review the files and resume setup.",
+      timeout: "The agent showed no activity for 15 minutes and was stopped. Review the files and resume setup.",
       prompt: "The private setup population prompt could not be prepared or removed safely.",
     };
     super(messages[category]);
@@ -63,25 +104,28 @@ export class HeadlessPopulationError extends SetupPopulationError {
 /** The Hub owns a non-interactive background child and its entire prompt lifetime. */
 export async function launchHeadlessSetupPopulation(
   options: HeadlessPopulationOptions,
-): Promise<SetupPopulationLaunchResult> {
+): Promise<HeadlessPopulationLaunchResult> {
   if (options.signal?.aborted) throw new HeadlessPopulationError("cancelled");
   try {
-    const result = await launchSetupPopulationAsync(
-      options.selectedTools,
-      options.prompt,
-      options.projectRoot,
-      {
-        isAvailable: async (command) => {
-          const available = await (options.__internal?.isAvailable
-            ?? ((name) => isAvailableAsync(name, options.signal)))(command);
-          if (options.signal?.aborted) throw new HeadlessPopulationError("cancelled");
-          return available;
-        },
-        run: (tool, instruction, cwd) => runHeadlessAgent(tool, instruction, cwd, options),
-      },
-    );
-    if (options.signal?.aborted) throw new HeadlessPopulationError("cancelled");
-    return result;
+    const isAvailable = async (command: string) => {
+      const available = await (options.__internal?.isAvailable
+        ?? ((name) => isAvailableAsync(name, options.signal)))(command);
+      if (options.signal?.aborted) throw new HeadlessPopulationError("cancelled");
+      return available;
+    };
+    const choice = options.tool !== undefined
+      ? await isAgentUsable(options.tool, options.projectRoot, isAvailable, options.requireCommands === true)
+        ? { tool: options.tool, selected: options.selectedTools.includes(options.tool) } : null
+      : await findAvailableSetupAgent(options.selectedTools, {
+        projectRoot: options.projectRoot, requireCommands: options.requireCommands === true, isAvailable,
+      });
+    if (choice === null) return { tool: null, completed: false };
+    const session = createPopulationSession(options.prompt, options.projectRoot);
+    try {
+      return { tool: choice.tool, completed: await runHeadlessAgent(choice.tool, session.instruction, session.root, options) };
+    } finally {
+      session.cleanup();
+    }
   } catch (error) {
     if (error instanceof HeadlessPopulationError) throw error;
     // The shared terminal helper retains detailed local errors; browser callers
@@ -90,7 +134,89 @@ export async function launchHeadlessSetupPopulation(
   }
 }
 
+/** An agent MEX picked for background setup sessions, and whether the user selected it. */
+export interface SetupAgentChoice {
+  readonly tool: BackgroundAgentTool;
+  readonly selected: boolean;
+}
+
+/**
+ * Agents tried, in this order, when none of the user's selected agents can run
+ * in the background. Cursor is left out: its documented command is the generic
+ * name `agent`, which another program on PATH may also use, so MEX runs it only
+ * when the user selected Cursor.
+ */
+const UNSELECTED_FALLBACK_ORDER: readonly BackgroundAgentTool[] = ["claude", "codex", "copilot", "opencode"];
+
+export interface FindSetupAgentOptions {
+  readonly projectRoot?: string;
+  readonly signal?: AbortSignal;
+  /** Only agents whose session may run the pre-approved `mex` commands. */
+  readonly requireCommands?: boolean;
+  /** Test seam for the PATH lookup. */
+  readonly isAvailable?: (command: string) => Promise<boolean>;
+}
+
+/**
+ * The agent background setup sessions use: the first agent the user selected
+ * whose CLI is installed, in the user's order; otherwise any installed
+ * supported CLI (`selected: false`, which callers announce in one line);
+ * `null` when none is. Selecting no agent at all ("continue without an agent",
+ * `--tool none`) is a choice too: then MEX launches nothing.
+ */
+export async function findAvailableSetupAgent(
+  selectedTools: readonly AiTool[],
+  options: FindSetupAgentOptions = {},
+): Promise<SetupAgentChoice | null> {
+  const isAvailable = options.isAvailable ?? ((command: string) => isAvailableAsync(command, options.signal));
+  const requireCommands = options.requireCommands === true;
+  for (const tool of selectedTools) {
+    if (!isBackgroundAgentTool(tool)) continue;
+    if (await isAgentUsable(tool, options.projectRoot, isAvailable, requireCommands)) return { tool, selected: true };
+  }
+  if (selectedTools.length === 0) return null;
+  for (const tool of UNSELECTED_FALLBACK_ORDER) {
+    if (selectedTools.includes(tool)) continue;
+    if (await isAgentUsable(tool, options.projectRoot, isAvailable, requireCommands)) return { tool, selected: false };
+  }
+  return null;
+}
+
+/** One line saying which agent runs the background sessions, when it is not simply the user's first choice. */
+export function describeSetupAgentChoice(choice: SetupAgentChoice, selectedTools: readonly AiTool[]): string | null {
+  const name = AI_TOOLS[choice.tool].name;
+  const first = selectedTools.find((tool) => isBackgroundAgentTool(tool));
+  if (choice.selected && (first === undefined || first === choice.tool)) return null;
+  const others = selectedTools.filter((tool) => tool !== choice.tool).map((tool) => AI_TOOLS[tool].name);
+  const why = others.length === 0
+    ? "No agent was selected"
+    : `${others.join(", ")} ${others.length === 1 ? "has" : "have"} no CLI MEX can run in the background here`;
+  return `${why}, so MEX runs ${name} (\`${BACKGROUND_AGENT_CLIS[choice.tool]}\`) for the setup sessions. To choose another agent, rerun \`mex setup\` and select it.`;
+}
+
+async function isAgentUsable(
+  tool: BackgroundAgentTool,
+  projectRoot: string | undefined,
+  isAvailable: (command: string) => Promise<boolean>,
+  requireCommands: boolean,
+): Promise<boolean> {
+  if (requireCommands && !COMMAND_CAPABLE_AGENTS.has(tool)) return false;
+  // A user's own Cursor permission file is never edited, so MEX could not restrict the session.
+  if (tool === "cursor" && projectRoot !== undefined && !cursorPermissionsUsable(projectRoot)) return false;
+  // A user's own inline OpenCode config that is not a JSON object cannot be extended safely.
+  if (tool === "opencode" && opencodeSessionConfig() === null) return false;
+  return isAvailable(BACKGROUND_AGENT_CLIS[tool]);
+}
+
+/**
+ * `MEX_SETUP_BACKGROUND_AGENTS=0` makes MEX find no agent CLI on PATH, so it
+ * never starts a real agent session (the test suite sets it; injected test
+ * seams still work).
+ */
+export const BACKGROUND_AGENTS_ENV = "MEX_SETUP_BACKGROUND_AGENTS";
+
 function isAvailableAsync(command: string, signal?: AbortSignal): Promise<boolean> {
+  if (process.env[BACKGROUND_AGENTS_ENV] === "0") return Promise.resolve(false);
   return new Promise((resolve) => {
     const child = crossSpawn(process.platform === "win32" ? "where" : "which", [command], {
       stdio: "ignore", windowsHide: true, timeout: DISCOVERY_TIMEOUT_MS, signal,
@@ -100,14 +226,71 @@ function isAvailableAsync(command: string, signal?: AbortSignal): Promise<boolea
   });
 }
 
+/** Whether the project's Cursor permission file is absent or exactly the one MEX writes. */
+export function cursorPermissionsUsable(projectRoot: string): boolean {
+  const path = resolve(projectRoot, CURSOR_PERMISSIONS_FILE);
+  if (!existsSync(path)) return true;
+  try { return readFileSync(path, "utf8") === cursorSessionPermissionsText(); }
+  catch { return false; }
+}
+
+/** Sessions holding the MEX-written Cursor permission file, per project. */
+const cursorHolds = new Map<string, { count: number; createdDirectory: boolean }>();
+
+/**
+ * Put MEX's Cursor permission file in place for one session; the last session
+ * of the project removes it (and the `.cursor` folder if MEX created it and it
+ * is empty). A file MEX left behind after a crash is recognized by its exact
+ * bytes and reused. Returns `null` when the user has their own file.
+ */
+export function acquireCursorPermissions(projectRoot: string): (() => void) | null {
+  const root = resolve(projectRoot);
+  const path = resolve(root, CURSOR_PERMISSIONS_FILE);
+  let hold = cursorHolds.get(root);
+  if (hold === undefined) {
+    if (!cursorPermissionsUsable(root)) return null;
+    const directory = dirname(path);
+    const createdDirectory = !existsSync(directory);
+    mkdirSync(directory, { recursive: true });
+    if (!existsSync(path)) {
+      try { writeFileSync(path, cursorSessionPermissionsText(), { encoding: "utf8", flag: "wx" }); }
+      catch { if (!cursorPermissionsUsable(root)) return null; }
+    }
+    hold = { count: 0, createdDirectory };
+    cursorHolds.set(root, hold);
+  }
+  const held = hold;
+  held.count += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    held.count -= 1;
+    if (held.count > 0) return;
+    cursorHolds.delete(root);
+    try {
+      if (readFileSync(path, "utf8") === cursorSessionPermissionsText()) rmSync(path, { force: true });
+    } catch { /* already gone */ }
+    if (held.createdDirectory) {
+      try { rmdirSync(dirname(path)); } catch { /* not empty or gone: keep it */ }
+    }
+  };
+}
+
 function runHeadlessAgent(
-  tool: SetupAgentTool,
+  tool: BackgroundAgentTool,
   instruction: string,
   cwd: string,
   options: HeadlessPopulationOptions,
 ): Promise<boolean> {
   if (options.signal?.aborted) return Promise.reject(new HeadlessPopulationError("cancelled"));
-  const invocation = buildAgentCommand(tool, instruction, "headless", { allowNonGit: options.allowNonGit })!;
+  const invocation = buildAgentCommand(tool, instruction, "headless", { allowNonGit: options.allowNonGit });
+  if (invocation === null) return Promise.reject(new HeadlessPopulationError("launch", tool));
+  let releasePermissions: (() => void) | null = null;
+  if (tool === "cursor") {
+    releasePermissions = acquireCursorPermissions(cwd);
+    if (releasePermissions === null) return Promise.reject(new HeadlessPopulationError("launch", tool));
+  }
   const requestedTimeout = options.timeoutMs ?? POPULATION_TIMEOUT_MS;
   const timeoutMs = Number.isFinite(requestedTimeout)
     ? Math.max(1, Math.min(POPULATION_TIMEOUT_MS, requestedTimeout))
@@ -117,12 +300,14 @@ function runHeadlessAgent(
     try {
       child = (options.__internal?.spawn ?? crossSpawn)(invocation.command, invocation.args, {
         cwd,
+        ...(invocation.env === undefined ? {} : { env: { ...process.env, ...invocation.env } }),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         // POSIX process groups include agent-created shell/worker descendants.
         detached: process.platform !== "win32",
       });
     } catch {
+      releasePermissions?.();
       reject(new HeadlessPopulationError("launch", tool));
       return;
     }
@@ -143,12 +328,23 @@ function runHeadlessAgent(
     }) : undefined;
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout.append(chunk);
+      // Count stdout records even when their type has no visible activity signal.
+      if (!closing && !failure && chunk.includes(10)) timer.refresh();
       if (!closing && !failure && !options.signal?.aborted) {
         decoder.write(chunk);
         transcript?.write(chunk);
       }
     });
-    child.stderr?.on("data", stderr.append);
+    let stderrLimit = false;
+    let stderrReset: string | undefined;
+    let stderrTail = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr.append(chunk);
+      const text = stderrTail + chunk.toString("utf8");
+      stderrLimit ||= USAGE_LIMIT_PATTERN.test(text);
+      if (stderrLimit) stderrReset = usageLimitResetTime(text) ?? stderrReset;
+      stderrTail = text.slice(-512);
+    });
     child.once("spawn", () => emitActivity({ kind: "starting", state: "running" }));
     const stop = (reason: HeadlessPopulationError) => {
       if (closing || failure) return;
@@ -179,10 +375,20 @@ function runHeadlessAgent(
       options.signal?.removeEventListener("abort", cancelled);
       await treeCleanup;
       process.removeListener("exit", parentExit);
+      releasePermissions?.();
+      if (decoder.usage) {
+        try { options.onUsage?.(decoder.usage); } catch { /* observation only */ }
+      }
       if (options.signal?.aborted) reject(new HeadlessPopulationError("cancelled", tool));
       else if (failure) reject(failure);
-      else if (code !== 0 || signal || decoder.failed) {
-        reject(new HeadlessPopulationError(classifyFailure(stderr.text(), stdout.text()), tool));
+      // A limit notice in a session that still finished cleanly is advisory.
+      else if ((decoder.usageLimited || stderrLimit) && (code !== 0 || signal || decoder.failed || !decoder.completed)) {
+        reject(new HeadlessPopulationError("usage_limit", tool, decoder.resetTime ?? stderrReset));
+      } else if (code !== 0 || signal || decoder.failed) {
+        reject(new HeadlessPopulationError(
+          decoder.usageLimited || USAGE_LIMIT_PATTERN.test(stderr.text()) ? "usage_limit" : classifyFailure(stderr.text(), stdout.text()),
+          tool,
+        ));
       } else if (!decoder.completed) reject(new HeadlessPopulationError("protocol", tool));
       else resolve(true);
     });
@@ -207,7 +413,7 @@ function boundedDiagnostic(): { append: (chunk: Buffer) => void; text: () => str
 function classifyFailure(stderr: string, stdout: string): PopulationFailure {
   const text = `${stderr}\n${stdout}`;
   if (/unexpected argument|unknown (?:option|argument)|unrecognized (?:option|argument)/iu.test(text)) return "arguments";
-  if (/not (?:logged|signed) in|authentication (?:failed|required)|invalid api key|unauthorized|please (?:log|sign) in/iu.test(text)) return "authentication";
+  if (/not (?:logged|signed) in|not authenticated|authentication (?:failed|required)|invalid api key|unauthorized|please (?:log|sign) in/iu.test(text)) return "authentication";
   return "failed";
 }
 

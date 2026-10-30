@@ -58,7 +58,7 @@ import { rootGroundingsNotInEffect } from "../markdown/grounding-stores.js";
 import { join, relative, resolve } from "node:path";
 import { sameFingerprint, type GroundingGraph } from "../grounding/adapter.js";
 import type { InventoryFile, ScaffoldInventory } from "./inventory.js";
-import { ALREADY_ADOPTED_REASON, type Candidate, type FileClassification } from "./classify.js";
+import { ALREADY_ADOPTED_REASON, NON_KNOWLEDGE_FILES, type Candidate, type FileClassification } from "./classify.js";
 
 /** Frontmatter keys migration preserves untouched. Section 13.4's first bullet. */
 export const PRESERVED_LEGACY_KEYS = ["name", "description", "triggers", "last_updated", "edges"] as const;
@@ -121,6 +121,10 @@ export function planLegacyEdges(
   for (const file of inventory.files) {
     const edges = file.parsed.legacy.edges;
     if (edges.length === 0) continue;
+    // A navigation file (ROUTER.md above all) never gets an entity, so its
+    // edges are its routing table rather than relations awaiting an owner.
+    // Reporting them as ambiguous on every run was noise nobody could act on (#286).
+    if (Object.hasOwn(NON_KNOWLEDGE_FILES, file.path)) continue;
 
     const outcome = outcomes.get(file.path);
     const source = outcome?.fileEntity ?? null;

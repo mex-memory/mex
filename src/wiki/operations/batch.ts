@@ -40,12 +40,49 @@ export interface ApplyPlannedOperationBatchResult extends ApplyPlannedSequenceRe
   readonly previewRevision: string;
 }
 
+/** One refused operation of a batch, by its position in the envelopes given. */
+export interface BatchRefusal {
+  readonly index: number;
+  readonly diagnostics: readonly WikiDiagnostic[];
+}
+
+export interface PlanOperationBatchOptions {
+  /**
+   * Keep planning after a refused operation so every refusal is reported at
+   * once, each under its index. A refused operation contributes nothing to the
+   * overlay the rest are planned against, and no plan is returned for a batch
+   * with any refusal.
+   */
+  readonly reportAll?: boolean;
+  /** Options for one operation only, such as the recorded ids of an interrupted create. */
+  readonly optionsFor?: (index: number) => Partial<PlanOptions> | undefined;
+}
+
+export type PlanOperationBatchReport =
+  | { readonly ok: true; readonly plan: WikiOperationBatchPlan; readonly diagnostics: readonly WikiDiagnostic[] }
+  | { readonly ok: false; readonly refusals: readonly BatchRefusal[]; readonly diagnostics: readonly WikiDiagnostic[] };
+
 /** Plan every envelope or none of them, against one exact virtual overlay. */
 export function planOperationBatch(
   envelopes: readonly unknown[],
   options: PlanOptions,
 ): PlanOperationBatchResult {
-  if (envelopes.length === 0) return { ok: false, diagnostics: [] };
+  const planned = planOperationBatchReport(envelopes, options);
+  return planned.ok ? planned : { ok: false, diagnostics: planned.diagnostics };
+}
+
+/**
+ * {@link planOperationBatch}, saying which operation each refusal belongs to,
+ * and optionally planning past the first refusal so a caller can report every
+ * problem in one pass. The plan, when there is one, is exactly what
+ * `planOperationBatch` would return.
+ */
+export function planOperationBatchReport(
+  envelopes: readonly unknown[],
+  options: PlanOptions,
+  batch: PlanOperationBatchOptions = {},
+): PlanOperationBatchReport {
+  if (envelopes.length === 0) return { ok: false, refusals: [], diagnostics: [] };
   const scaffoldRoot = resolve(options.scaffoldRoot);
   const virtualFiles = new Map<string, string>();
   const exactAudit = readOperationLogExact(scaffoldRoot);
@@ -57,12 +94,15 @@ export function planOperationBatch(
   const virtuallyChangedEntities = new Set<string>();
   const read = options.readFile ?? ((path: string) => readContainedSource(scaffoldRoot, path));
 
-  for (const envelope of envelopes) {
+  const refusals: BatchRefusal[] = [];
+  for (const [index, envelope] of envelopes.entries()) {
     const virtualOptions: PlanOptions = {
       ...options,
+      ...batch.optionsFor?.(index),
       scaffoldRoot,
       parseCache,
       readFile: (path) => virtualFiles.get(resolve(path)) ?? read(path),
+      virtualFiles,
       auditText: virtualAudit,
       auditExists: virtualAuditExists,
     };
@@ -82,7 +122,11 @@ export function planOperationBatch(
       }
     }
     const planned = planOperation(prepared, virtualOptions);
-    if (!planned.ok) return { ok: false, diagnostics: [...diagnostics, ...planned.diagnostics] };
+    if (!planned.ok) {
+      refusals.push({ index, diagnostics: planned.diagnostics });
+      if (batch.reportAll === true) continue;
+      return { ok: false, refusals, diagnostics: [...diagnostics, ...planned.diagnostics] };
+    }
     operations.push(planned.plan);
     diagnostics.push(...planned.diagnostics);
     for (const file of planned.plan.files) virtualFiles.set(resolve(file.absolutePath), file.proposedText);
@@ -91,6 +135,9 @@ export function planOperationBatch(
     virtualAuditExists = true;
   }
 
+  if (refusals.length > 0) {
+    return { ok: false, refusals, diagnostics: [...diagnostics, ...refusals.flatMap((refusal) => refusal.diagnostics)] };
+  }
   const unsigned = { v: 1 as const, operations };
   const previewRevision = batchPreviewRevisionOf(unsigned);
   return { ok: true, plan: { ...unsigned, previewRevision }, diagnostics };

@@ -1,9 +1,10 @@
 import type { IndexProgress } from "../../team/contracts/shared.js";
 import type { RepositoryWikiPort } from "../../wiki/application-adapter.js";
 import type { HubJobExecutors, HubJobProgressUpdate } from "./types.js";
+import type { createHubWikiMigration } from "../services.js";
 
 /** Production Wiki executors. Every write is an explicit durable Hub job. */
-export function createWikiJobExecutors(wiki: RepositoryWikiPort): HubJobExecutors {
+export function createWikiJobExecutors(wiki: RepositoryWikiPort, migration?: ReturnType<typeof createHubWikiMigration>): HubJobExecutors {
   return {
     wiki_refresh: async ({ signal, reportProgress }) => {
       reportProgress({ phase: "discover" });
@@ -17,7 +18,12 @@ export function createWikiJobExecutors(wiki: RepositoryWikiPort): HubJobExecutor
         reportProgress: (progress) => reportProgress(projectProgress(progress)),
       });
     },
-    wiki_rebuild: async ({ signal, reportProgress }) => {
+    wiki_rebuild: async ({ signal, reportProgress, migrationPreview }) => {
+      if (migrationPreview !== undefined) {
+        if (!migration) throw new Error("Wiki migration is unavailable.");
+        reportProgress({ phase: "stage" });
+        await migration.apply(migrationPreview, signal);
+      }
       await wiki.rebuildIndex({
         signal,
         reportProgress: (progress) => reportProgress(projectProgress(progress)),

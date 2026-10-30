@@ -19,6 +19,7 @@ let active: Map<string, string> | null = null;
 /** Bytes held, bounded so a large corpus falls back to reading from disk. */
 let heldBytes = 0;
 let spooledBytes = 0;
+let spoolBudgetActive = false;
 const MAX_HELD_BYTES = 64 * 1024 * 1024;
 
 type Identity = Pick<Stats, "dev" | "ino" | "size" | "mtimeMs" | "ctimeMs">;
@@ -43,13 +44,26 @@ export async function withSourceMemo<T>(run: () => Promise<T>): Promise<T> {
   if (active) return run();
   active = new Map();
   heldBytes = 0;
-  spooledBytes = 0;
+  if (!spoolBudgetActive) spooledBytes = 0;
   try {
     return await run();
   } finally {
     active = null;
     digests = null;
     walks = null;
+  }
+}
+
+/** Give an isolated worker the bounded source spool without memoizing live reads. */
+export async function withSourceSpoolBudget<T>(run: () => Promise<T>): Promise<T> {
+  if (active || spoolBudgetActive) return run();
+  spoolBudgetActive = true;
+  spooledBytes = 0;
+  try {
+    return await run();
+  } finally {
+    spoolBudgetActive = false;
+    spooledBytes = 0;
   }
 }
 
@@ -62,10 +76,10 @@ export function recallSource(path: string, stat: Identity): string | undefined {
  * Reserve room for staged bytes the source spool keeps in memory during a
  * maintenance operation, on a budget of its own. They are mostly the very
  * strings the memo holds, so the two budgets bound one working set. False
- * outside an operation or past the budget; the spool then writes to disk.
+ * outside a maintenance/worker scope or past the budget; the spool then writes to disk.
  */
 export function reserveHeldBytes(bytes: number): boolean {
-  if (!active || spooledBytes + bytes > MAX_HELD_BYTES) return false;
+  if ((!active && !spoolBudgetActive) || spooledBytes + bytes > MAX_HELD_BYTES) return false;
   spooledBytes += bytes;
   return true;
 }

@@ -376,6 +376,8 @@ function addNestedPolicies(policies, budgetsForMetric, definition) {
 }
 
 function addPolicy(policies, metric, budget, definition, summaryPath) {
+  // Uncalibrated owned leaves fail as budget_missing, never as confirmable noise.
+  if (!Number.isFinite(budget)) return;
   const minimumExcess = definition.minimumExcess;
   policies.set(metric, Object.freeze({
     budget,

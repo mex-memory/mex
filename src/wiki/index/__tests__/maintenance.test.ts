@@ -10,6 +10,7 @@ import {
   rmSync,
   symlinkSync,
   truncateSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -484,6 +485,10 @@ describe("Wiki maintenance lease and boundaries", () => {
         beforeCandidateRename: () => {
           writeFileSync(candidatePending.tempPath, "substitute", "utf8");
           writeFileSync(candidatePending.tempPath, candidateBytes);
+          // Fast Windows writes can share both mtime and ctime. Make the
+          // generation change observable without depending on clock resolution.
+          const changedAt = new Date(lstatSync(candidatePending.tempPath).mtimeMs + 2_000);
+          utimesSync(candidatePending.tempPath, changedAt, changedAt);
         },
       },
     )).toThrow(IndexInUseError);
@@ -505,6 +510,8 @@ describe("Wiki maintenance lease and boundaries", () => {
         beforeCandidateRename: () => {
           writeFileSync(target.indexPath, "substitute", "utf8");
           writeFileSync(target.indexPath, before);
+          const changedAt = new Date(lstatSync(target.indexPath).mtimeMs + 2_000);
+          utimesSync(target.indexPath, changedAt, changedAt);
         },
       },
     )).toThrow(IndexInUseError);

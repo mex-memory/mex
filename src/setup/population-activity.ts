@@ -1,4 +1,4 @@
-import type { SetupAgentTool } from "./population.js";
+import type { BackgroundAgentTool } from "../agent-command.js";
 
 export type PopulationActivityKind =
   | "starting" | "started" | "reading" | "searching" | "writing"
@@ -18,11 +18,69 @@ const MAX_TRACKED_TOOLS = 128;
 const MAX_ID_LENGTH = 256;
 const MAX_PATH_LENGTH = 2048;
 
+/** Token counts an agent reported for its session; only the numeric fields, never text. */
+export interface PopulationAgentUsage {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly cacheCreationInputTokens?: number;
+  readonly costUsd?: number;
+  readonly turns?: number;
+}
+
 interface PopulationActivityDecoder {
   write(chunk: Buffer): void;
   end(): void;
   readonly failed: boolean;
   readonly completed: boolean;
+  /** The last usage record the agent reported, if any. */
+  readonly usage: PopulationAgentUsage | null;
+  /** The agent's own final error said its usage limit was reached. */
+  readonly usageLimited: boolean;
+  readonly resetTime: string | undefined;
+}
+
+/** Agents whose JSON event format is not documented: only record counts are used. */
+const GENERIC_EVENT_TOOLS: ReadonlySet<BackgroundAgentTool> = new Set(["copilot", "opencode"]);
+
+/** Final provider error text that means the account's usage limit, not a fault of the work. */
+export const USAGE_LIMIT_PATTERN = /\busage limit\b|\bhit your (?:usage )?limit\b|\bcredit balance is too low\b|\brate_limit(?:_error)?\b|\brate limit(?:ed| reached| exceeded)\b|\bquota (?:exceeded|reached)\b|\bexceeded your (?:current )?quota\b/iu;
+
+/** Only a time and optional timezone can leave the private provider output. */
+export function usageLimitResetTime(text: string): string | undefined {
+  const time = /\bresets?\s+(?:(?:at|on)\s+)?((?:\d{1,2}:\d{2}|\d{1,2})(?:\s?[ap]m)?(?:\s*\([A-Za-z_+/-]{1,64}\))?)(?=\s|$|[.,])/iu.exec(text)?.[1];
+  if (time) return time;
+  const epoch = /\busage limit reached\|(\d{10})\b/iu.exec(text)?.[1];
+  return epoch ? new Date(Number(epoch) * 1000).toISOString() : undefined;
+}
+
+function count(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.min(value, Number.MAX_SAFE_INTEGER) : undefined;
+}
+
+function usageOf(event: Record<string, unknown>): PopulationAgentUsage | null {
+  const usage = record(event.usage);
+  if (!usage) return null;
+  const entries: Array<[keyof PopulationAgentUsage, number | undefined]> = [
+    ["inputTokens", count(usage.input_tokens)],
+    ["outputTokens", count(usage.output_tokens)],
+    ["cachedInputTokens", count(usage.cached_input_tokens) ?? count(usage.cache_read_input_tokens)],
+    ["cacheCreationInputTokens", count(usage.cache_creation_input_tokens)],
+    ["costUsd", count(event.total_cost_usd)],
+    ["turns", count(event.num_turns)],
+  ];
+  const kept = entries.filter(([, value]) => value !== undefined);
+  return kept.length === 0 ? null : Object.fromEntries(kept) as PopulationAgentUsage;
+}
+
+/** The provider's own error text of a final failure record, bounded; never forwarded, only matched. */
+function errorTextOf(event: Record<string, unknown>): string {
+  const content = record(event.message)?.content;
+  const blocks = Array.isArray(content) ? content.slice(0, MAX_CONTENT_BLOCKS).map((block) => record(block)?.text) : [];
+  const errors = Array.isArray(event.errors) ? event.errors.slice(0, MAX_CONTENT_BLOCKS) : [];
+  const parts = [event.result, event.message, record(event.error)?.message, record(event.error)?.type, event.error, ...errors, ...blocks]
+    .filter((value): value is string => typeof value === "string");
+  return parts.join(" ").slice(0, 4096);
 }
 
 /**
@@ -31,14 +89,22 @@ interface PopulationActivityDecoder {
  * records are discarded through their next newline, not truncated into JSON.
  *
  * Protocol references:
+ * https://app.unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.301/files/sdk.d.ts
  * https://code.claude.com/docs/en/headless
  * https://code.claude.com/docs/en/agent-sdk/streaming-output
  * https://github.com/openai/codex/blob/main/sdk/typescript/src/items.ts
  * https://github.com/openai/codex/blob/main/sdk/typescript/src/events.ts
  * https://github.com/openai/codex/blob/main/codex-rs/exec/src/exec_events.rs
+ * https://cursor.com/docs/cli/reference/output-format
+ *
+ * GitHub Copilot CLI (`--output-format=json`) and OpenCode (`run --format json`)
+ * document only that they print one JSON event per line, not the events
+ * themselves. For them every well-formed record counts as activity, and the
+ * session completed when the CLI exits with status 0 after printing at least
+ * one record; nothing else is read from their records.
  */
 export function createPopulationActivityDecoder(
-  tool: SetupAgentTool,
+  tool: BackgroundAgentTool,
   onSignal: (signal: PopulationActivitySignal) => void,
 ): PopulationActivityDecoder {
   const line = Buffer.alloc(MAX_LINE_BYTES);
@@ -49,6 +115,17 @@ export function createPopulationActivityDecoder(
   let ended = false;
   let failed = false;
   let completed = false;
+  let usage: PopulationAgentUsage | null = null;
+  let usageLimited = false;
+  let rateLimitRejected = false;
+  let resetTime: string | undefined;
+  const checkLimit = (event: Record<string, unknown>) => {
+    const text = errorTextOf(event);
+    if (event.api_error_status === 429 || USAGE_LIMIT_PATTERN.test(text)) {
+      usageLimited = true;
+      resetTime = usageLimitResetTime(text) ?? resetTime;
+    }
+  };
 
   const fail = () => {
     if (failed) return;
@@ -81,10 +158,20 @@ export function createPopulationActivityDecoder(
   };
 
   const claudeRecord = (event: Record<string, unknown>) => {
-    if (event.type === "system" && event.subtype === "init") {
+    if (event.type === "rate_limit_event") {
+      const info = record(event.rate_limit_info);
+      rateLimitRejected = info?.status === "rejected" && info.overageStatus !== "allowed" && info.overageStatus !== "allowed_warning";
+      if (rateLimitRejected) completed = false;
+      if (rateLimitRejected && typeof info?.resetsAt === "number" && Number.isFinite(info.resetsAt)
+        && info.resetsAt >= 0 && info.resetsAt <= 4_102_444_800) {
+        resetTime = new Date(info.resetsAt * 1000).toISOString();
+      }
+    } else if (event.type === "system" && event.subtype === "init") {
       completed = false;
       onSignal({ kind: "started", state: "running" });
     } else if (event.type === "result") {
+      usage = usageOf(event) ?? usage;
+      if (event.is_error === true || String(event.subtype).startsWith("error_")) checkLimit(event);
       if (event.is_error === true || (typeof event.subtype === "string" && event.subtype.startsWith("error_"))) fail();
       else if (event.subtype === "success" && !failed) {
         completed = true;
@@ -106,6 +193,11 @@ export function createPopulationActivityDecoder(
       }
       // content_block_stop finishes the generated input, not the executed tool.
     } else if (event.type === "assistant" || event.type === "user") {
+      if (event.type === "assistant" && event.error !== undefined && event.error !== null) {
+        // Other assistant errors are settled by the result record and the exit status.
+        checkLimit(event);
+        if (usageLimited) fail();
+      }
       const content = record(event.message)?.content;
       if (!Array.isArray(content)) return;
       for (const value of content.slice(0, MAX_CONTENT_BLOCKS)) {
@@ -134,8 +226,11 @@ export function createPopulationActivityDecoder(
     } else if (event.type === "turn.started") {
       completed = false;
       onSignal({ kind: "working", state: "running" });
-    } else if (event.type === "turn.failed" || event.type === "error") fail();
-    else if (event.type === "turn.completed") {
+    } else if (event.type === "turn.failed" || event.type === "error") {
+      checkLimit(event);
+      fail();
+    } else if (event.type === "turn.completed") {
+      usage = usageOf(event) ?? usage;
       if (!failed) {
         completed = true;
         onSignal({ kind: "completed", state: "completed" });
@@ -170,6 +265,50 @@ export function createPopulationActivityDecoder(
     }
   };
 
+  const cursorTool = (event: Record<string, unknown>) => {
+    const call = record(event.tool_call);
+    if (!call) return;
+    const id = boundedId(event.call_id);
+    if (event.subtype === "started") {
+      const read = record(call.readToolCall);
+      const write = record(call.writeToolCall);
+      const kind: PopulationActivityKind = read ? "reading" : write ? "writing" : "working";
+      const target = targetForPath(record((read ?? write)?.args)?.path);
+      const signal: PopulationActivitySignal = { kind, state: "running", ...(target ? { target } : {}) };
+      if (id) remember(id, signal);
+      onSignal(signal);
+    } else if (event.subtype === "completed") {
+      const started = id ? tools.get(id) : undefined;
+      if (!id || !started) return;
+      tools.delete(id);
+      const result = record(record(call.readToolCall ?? call.writeToolCall ?? call.function)?.result);
+      onSignal({ ...started, state: result && !("success" in result) ? "failed" : "completed" });
+    }
+  };
+
+  const cursorRecord = (event: Record<string, unknown>) => {
+    if (event.type === "system" && event.subtype === "init") {
+      completed = false;
+      onSignal({ kind: "started", state: "running" });
+    } else if (event.type === "assistant") {
+      onSignal({ kind: "working", state: "running" });
+    } else if (event.type === "tool_call") {
+      cursorTool(event);
+    } else if (event.type === "result") {
+      // The documented terminal record is success only; a failure exits non-zero without one.
+      if (event.subtype === "success" && event.is_error !== true && !failed) {
+        completed = true;
+        onSignal({ kind: "completed", state: "completed" });
+      } else fail();
+    }
+  };
+
+  let records = 0;
+  const genericRecord = () => {
+    records += 1;
+    onSignal(records === 1 ? { kind: "started", state: "running" } : { kind: "working", state: "running" });
+  };
+
   const consumeLine = () => {
     let event: Record<string, unknown> | undefined;
     if (!oversized && length > 0) {
@@ -181,13 +320,19 @@ export function createPopulationActivityDecoder(
     oversized = false;
     if (event) {
       if (tool === "claude") claudeRecord(event);
-      else codexRecord(event);
+      else if (tool === "codex") codexRecord(event);
+      else if (tool === "cursor") cursorRecord(event);
+      else genericRecord();
     }
   };
 
   return {
     get failed() { return failed; },
-    get completed() { return completed && !failed; },
+    // Undocumented event formats: the exit status decides, after at least one record.
+    get completed() { return GENERIC_EVENT_TOOLS.has(tool) ? records > 0 && !failed : completed && !failed; },
+    get usage() { return usage; },
+    get usageLimited() { return usageLimited; },
+    get resetTime() { return resetTime; },
     write(chunk) {
       if (ended) return;
       let start = 0;
@@ -210,6 +355,13 @@ export function createPopulationActivityDecoder(
       if (ended) return;
       ended = true;
       consumeLine();
+      // Status notifications are advisory when the session ultimately succeeds
+      // (for example it switched to overage). A rejected session without a
+      // successful result is resumable, including when no result was emitted.
+      if (rateLimitRejected && (!completed || failed)) {
+        usageLimited = true;
+        fail();
+      }
       tools.clear();
     },
   };

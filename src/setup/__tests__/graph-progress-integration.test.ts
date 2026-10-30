@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { GraphMaintenanceProgress } from "../../team/contracts/graph.js";
 import { runHeadlessSetup, type SetupProgressStep } from "../headless.js";
+import { buildSetupGraph } from "../phases.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -12,6 +13,41 @@ afterEach(() => {
 });
 
 describe("real setup graph progress", () => {
+  it.each([false, true])("reuses an unchanged graph and refreshes edits with background=%s", async (background) => {
+    const root = fixture();
+    const updates: GraphMaintenanceProgress[] = [];
+    const options = { background, onProgress: (update: GraphMaintenanceProgress) => updates.push(update) };
+    await buildSetupGraph(root, options);
+    expect(updates.some(update => update.phase === "stage")).toBe(true);
+    if (background) expect(updates.some(update => update.phase === "parse")).toBe(true);
+    const database = join(root, ".mex/graph.db");
+    const bytes = readFileSync(database);
+    const stats = statSync(database);
+    updates.length = 0;
+    await buildSetupGraph(root, options);
+    expect(updates.map(update => update.phase)).toEqual(["discover"]);
+    expect(readFileSync(database)).toEqual(bytes);
+    expect(statSync(database)).toMatchObject({ mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs, ino: stats.ino });
+    writeFileSync(join(root, "src/message.ts"), "export const prefix = 'Updated';\n");
+    updates.length = 0;
+    await buildSetupGraph(root, options);
+    expect(updates.some(update => update.phase === "stage")).toBe(true);
+    if (background) expect(updates.some(update => update.phase === "parse")).toBe(true);
+    expect(updates.some(update => update.phase === "publish")).toBe(true);
+  });
+
+  it("cancels reuse when the freshness progress observer aborts", async () => {
+    const root = fixture();
+    await buildSetupGraph(root);
+    const database = join(root, ".mex/graph.db");
+    const bytes = readFileSync(database);
+    const controller = new AbortController();
+    await expect(buildSetupGraph(root, {
+      background: true, signal: controller.signal, onProgress: () => controller.abort(),
+    })).rejects.toThrow("Setup was cancelled");
+    expect(readFileSync(database)).toEqual(bytes);
+  });
+
   it("forwards isolated worker phases and file counts while the parent remains responsive", async () => {
     const root = fixture();
     const setupSteps: SetupProgressStep[] = [];
@@ -45,7 +81,9 @@ describe("real setup graph progress", () => {
     expect(JSON.stringify(updates)).not.toContain(root);
     expect(JSON.stringify(updates)).not.toContain("private-calculation.ts");
     expect(existsSync(join(root, ".mex/graph.db"))).toBe(true);
-    expect(existsSync(join(root, ".mex/wiki.db"))).toBe(false);
+    // A paused setup keeps a provisional Wiki index over the unmigrated scaffold, so the Wiki
+    // reads as valid rather than `migration_required` (#268); finalize migrates and rebuilds it.
+    expect(existsSync(join(root, ".mex/wiki.db"))).toBe(true);
     expect(readdirSync(join(root, ".mex")).filter(name => name.includes("candidate") || name.endsWith(".lock"))).toEqual([]);
     expect(() => execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: "ignore" })).toThrow();
   });

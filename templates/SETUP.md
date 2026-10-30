@@ -133,11 +133,9 @@ section using anchor links (see INDEX.md annotation for format).
 
 PASS 3 — Wire the web:
 
-File-level edges do not connect separate section entities. Preview missing
-section-to-parent `refines` relationships with `mex wiki link-sections`, then
-write explicitly with `mex wiki link-sections --apply`. Use existing ids and
-review cross-entity semantic relationships from evidence; never invent links
-to meet a count or duplicate inverse backlinks.
+Setup links each fact to its file for you, so do not wire section links by
+hand. Add cross-entity relationships only when the content gives evidence for
+them; never invent links to meet a count or duplicate inverse backlinks.
 
 Re-read every file you just wrote (context/ files, pattern files, ROUTER.md).
 For each file, add or update the `edges` array in the YAML frontmatter.
@@ -227,9 +225,8 @@ pattern file you created.
 
 PASS 3 — Wire the web:
 
-Connect section entities to their enclosing knowledge with canonical `refines`
-relations and existing ids. Preview with `mex wiki link-sections`, then apply
-explicitly with `--apply`. Semantic dependencies need evidence, not link quotas.
+Setup links each fact to its file for you, so do not wire section links by
+hand. Semantic dependencies need evidence, not link quotas.
 
 Re-read every file you just wrote (context/ files, pattern files, ROUTER.md).
 For each file, add or update the `edges` array in the YAML frontmatter.

@@ -11,7 +11,7 @@ const cli = join(repo, "dist/cli.js");
 const harness = join(repo, "test/helpers/setup-pty.py");
 const python = process.platform === "win32" ? undefined : spawnSync("python3", ["-c", "import pty, termios, sys; print(sys.executable)"], { encoding: "utf8", timeout: 3000 });
 const pythonPath = python?.status === 0 ? python.stdout.trim() : undefined;
-const skipReason = process.platform === "win32" ? "requires a POSIX PTY" : !pythonPath ? "requires Python 3 with pty/termios" : undefined;
+const skipReason = process.platform === "win32" ? "requires a POSIX PTY; Windows runs setup-terminal-conpty" : !pythonPath ? "requires Python 3 with pty/termios" : undefined;
 const fixtures: Fixture[] = [];
 
 interface Fixture { root: string; project: string; record: string; env: NodeJS.ProcessEnv; cli?: string; workerRecord?: string }
@@ -43,12 +43,27 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     { entry: "bare mex", command: [] },
   ])("$entry shows the ASCII banner and choices at 80x24 before any setup writes, then cancels cleanly", async ({ command }) => {
     const f = fixture("incomplete");
+    // Without --mode both entries set up a code repository, which needs Git.
+    execFileSync("git", ["-c", "init.templateDir=", "init", "--quiet"], { cwd: f.project, stdio: "pipe", env: f.env });
     const result = await terminal(f, [], [{ expect: "Choose your AI tools", missing: [".mex", ".agents", "AGENTS.md", ".gitignore"], input: "\u0003" }], { columns: 80, rows: 24, command });
     expect(result.exitCode, result.output).toBe(130);
     expect(result.output).toContain("88888b.d88b.   .d88b.  888  888");
     expect(result.output).toContain("Codex");
     expect(result.output).toContain("Space multi-select");
     expect(result.output).toContain("Setup cancelled.");
+    expect(readdirSync(f.project)).toEqual([".git"]);
+    expect(existsSync(f.record)).toBe(false);
+  });
+
+  it.each([
+    { entry: "mex setup", command: ["setup"] },
+    { entry: "bare mex", command: [] },
+  ])("$entry in a folder without Git stops before the tool picker and writes nothing (#287)", async ({ command }) => {
+    const f = fixture("incomplete");
+    const result = await terminal(f, [], [], { columns: 80, rows: 24, command });
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain("No Git repository found. Run `git init` first, then rerun setup.");
+    expect(result.output).not.toContain("Choose your AI tools");
     expect(readdirSync(f.project)).toEqual([]);
     expect(existsSync(f.record)).toBe(false);
   });
@@ -85,7 +100,8 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
       { expect: "> Finish later", input: "\r" },
     ]);
     expect(result.exitCode, result.output).toBe(2);
-    expect(result.output).toContain("Setup paused at population");
+    expect(result.output).toContain("MEX setup 0/1, not finished.");
+    expect(result.output).toContain("mex setup next --start");
     expect(existsSync(f.record)).toBe(false);
   });
 
@@ -214,7 +230,8 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     const result = await terminal(f, ["--yes"]);
     expect(result.exitCode, result.output).toBe(2);
     expect(result.output).toContain("Setup paused");
-    expect(result.output).toContain("Population prompt:");
+    expect(result.output).toContain("Population prompt (paste it into your agent):");
+    expect(result.output).toContain("run `mex setup next --start` first, then do exactly what it prints.");
     expect(result.output).not.toContain("Choose your AI tools");
     expect(result.raw).not.toContain("\u001b[?1049h");
     expect(existsSync(join(f.project, ".mex/config.json"))).toBe(true);
@@ -236,7 +253,10 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(result.output).toMatch(/\d+\s*\/\s*20\s+files parsed/);
     expect(result.output).not.toContain("Setup needs attention");
     expect(existsSync(join(f.project, ".mex/graph.db"))).toBe(true);
-    expect(existsSync(join(f.project, ".mex/wiki.db"))).toBe(false);
+    // The manual queue prepares a readable Wiki before any population tasks.
+    expect(existsSync(join(f.project, ".mex/wiki.db"))).toBe(true);
+    expect(result.output).toContain("not finished.");
+    expect(result.output).toContain("mex setup next --start");
     expect(existsSync(f.record)).toBe(false);
     expect(() => execFileSync("git", ["rev-parse", "HEAD"], { cwd: f.project, stdio: "ignore" })).toThrow();
   });
@@ -251,7 +271,8 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(result.output).toContain("Resolving code references");
     expect(result.output).toContain("Validating the rebuilt graph");
     expect(result.output).toContain("Saving the verified graph");
-    expect(result.output).toContain("Population prompt:");
+    expect(result.output).toContain("Population prompt (paste it into your agent):");
+    expect(result.output).toContain("run `mex setup next --start` first, then do exactly what it prints.");
     expect(result.output).not.toContain("Choose your AI tools");
     expect(existsSync(join(f.project, ".mex/graph.db"))).toBe(true);
     expect(existsSync(f.record)).toBe(false);
@@ -434,7 +455,9 @@ else:
     if mode == "complete":
         for path in pathlib.Path(".mex").rglob("*.md"):
             content = path.read_text().replace("[Project Name]", "PTY fixture").replace("[Agent / Workspace Name]", "PTY fixture").replace("[YYYY-MM-DD]", "2026-01-01")
-            path.write_text(content)
+            slot = __import__("re").search(r"^## (?:What This Is|Current (?:Project|Operational) State)[^\n]*\n", content, __import__("re").M)
+            at = slot.end() if slot else len(content)
+            path.write_text(content[:at] + "\nAuthored project guidance from source inspection.\n" + content[at:])
     print("MEX_PTY_CHILD_DONE", flush=True)
     sys.exit(7 if mode == "failed" else 0)
 `;

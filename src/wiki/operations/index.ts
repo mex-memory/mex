@@ -28,8 +28,12 @@ export {
   applyPlannedOperationBatch,
   batchPreviewRevisionOf,
   planOperationBatch,
+  planOperationBatchReport,
 } from "./batch.js";
 export type {
+  BatchRefusal,
+  PlanOperationBatchOptions,
+  PlanOperationBatchReport,
   ApplyPlannedOperationBatchOptions,
   ApplyPlannedOperationBatchResult,
   PlanOperationBatchResult,

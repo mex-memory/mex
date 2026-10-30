@@ -737,6 +737,40 @@
   line-height: 1.6;
 }
 
+.activityCoverage {
+  margin: 14px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.activityCoverage > p {
+  margin: 0;
+}
+
+.activityCoverage > ul {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.activityCoverage li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted-foreground);
+}
+
+.activityCoverage li[data-state="running"],
+.activityCoverage li[data-state="done"] {
+  color: var(--foreground);
+}
+
+.activityCoverage li[data-state="skipped"] {
+  color: var(--warning);
+}
+
 .activityWaiting {
   margin: 16px 0 0;
   color: var(--muted-foreground);

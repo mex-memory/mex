@@ -70,6 +70,7 @@ describe("Project Hub routes", () => {
       "Overview",
       "Context",
       "Code",
+      "Diagrams",
       "Inbox",
       "Relays",
       "Activity",

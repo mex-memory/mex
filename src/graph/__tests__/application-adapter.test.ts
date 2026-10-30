@@ -48,7 +48,7 @@ function git(root: string, ...args: string[]): void {
   });
 }
 
-async function fixture(): Promise<{
+async function fixture(configure?: (root: string) => void): Promise<{
   root: string;
   port: ReturnType<typeof createRepositoryGraphPort>;
 }> {
@@ -77,6 +77,7 @@ async function fixture(): Promise<{
     "}",
     "",
   ].join("\n"));
+  configure?.(root);
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.name", "Adapter Test");
   git(root, "config", "user.email", "adapter@example.invalid");
@@ -93,6 +94,40 @@ function expectPortCode(error: unknown, code: string): void {
 }
 
 describe("RepositoryGraphPort grounding evidence", () => {
+  it("keeps scoped excluded and unsupported groundings missing while resolving indexed sources", async () => {
+    const { port } = await fixture(root => {
+      source(root, ".mex/config.json", JSON.stringify({ graph: { ignore: ["scripts/**"] } }));
+      for (const path of ["build/build.ts", "scripts/task.ts", "notes.txt", ".hidden/source.ts"]) {
+        source(root, path, "export function excluded() { return 1; }\n");
+      }
+    });
+    const excluded = ["build/build.ts", "scripts/task.ts", "notes.txt", ".hidden/source.ts"];
+    for (const sourceScope of [new Set([...excluded, "src/service.ts"]), new Set<string>()]) {
+      await port.withFreshGroundingSnapshot(snapshot => {
+        for (const path of excluded) {
+          snapshot.verifySource!(path);
+          expect(snapshot.declarationsInFile(path)).toBeNull();
+        }
+        snapshot.verifySource!("src/service.ts");
+        expect(snapshot.declarationsInFile("src/service.ts")?.some(node => node.name === "serviceTarget")).toBe(true);
+      }, { sourceScope });
+    }
+  });
+
+  it.each(["new", "changed"])("refuses a %s eligible source in the scoped proof", async kind => {
+    const { root, port } = await fixture();
+    const path = kind === "new" ? "src/new-file.ts" : "src/service.ts";
+    source(root, path, "export function changed() { return 42; }\n");
+    for (const sourceScope of [new Set([path]), new Set<string>()]) {
+      await expect(port.withFreshGroundingSnapshot(snapshot => {
+        snapshot.verifySource!(path);
+      }, { sourceScope })).rejects.toSatisfy(error => {
+        expectPortCode(error, "INDEX_STALE");
+        return true;
+      });
+    }
+  });
+
   it("explains a layout-only edit through a fresh snapshot, grammars loaded", async () => {
     const { root, port } = await fixture();
     const { createGraphEngine } = await import("../engine-impl.js");

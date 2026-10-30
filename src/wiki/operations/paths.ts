@@ -164,13 +164,15 @@ export function checkContainment(scaffoldRoot: string, relativePath: string): Co
  */
 export function isReadOnlyPath(relativePath: string, readOnly: readonly string[]): boolean {
   const path = toPosix(relativePath);
-  return isTeamOwnedReadOnlyPath(path) || matchesAnyGlob(path, readOnly);
+  return path.toLowerCase().startsWith("diagrams/") || isTeamOwnedReadOnlyPath(path) || matchesAnyGlob(path, readOnly);
 }
 
 /** The diagnostic a plan returns when its target is reserved. */
 export function readOnlyDiagnostic(relativePath: string): WikiDiagnostic {
   const path = toPosix(relativePath);
-  const reason = isTeamOwnedReadOnlyPath(path)
+  const reason = path.toLowerCase().startsWith("diagrams/")
+    ? "is owned by state diagrams and is always read-only to Wiki"
+    : isTeamOwnedReadOnlyPath(path)
     ? "is owned by TeamWorkflowPort and is always read-only to Wiki"
     : "is reserved read-only by wiki.readOnly";
   return diagnostic(

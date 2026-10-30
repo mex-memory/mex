@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "kind": "setup-progress-asset-calibration",
+  "source": {
+    "repositoryHead": "b350f6e094acc92fc6a053e59509cbc6716b644f",
+    "platform": "win32",
+    "node": "v24.22.0",
+    "command": "npm run build; npm run build:hub",
+    "confirmation": "Two production builds emitted identical setup file lists and byte sizes."
+  },
+  "formula": "ceil(built bytes * 1.05)",
+  "previousLimits": {
+    "jsBytes": 80646,
+    "cssBytes": 25146,
+    "fontBytes": 0
+  },
+  "measured": {
+    "jsBytes": 77967,
+    "cssBytes": 23948,
+    "fontBytes": 0
+  },
+  "limits": {
+    "jsBytes": 81866,
+    "cssBytes": 25146,
+    "fontBytes": 0
+  },
+  "unchangedOperationalBudgetsSha256": "b64f25feaaa1f2994d1a009ef5e7b066c3e16214da4dd8a28a4b2631770943f6",
+  "files": [
+    {
+      "file": "assets/SetupPage-BcGlCsal.css",
+      "bytes": 23179,
+      "sha256": "d382b7367ac75941eadd719c6db434d80250b8e8cffdddbb693902a5600d9dad"
+    },
+    {
+      "file": "assets/SetupPage-jGIux-7S.js",
+      "bytes": 52192,
+      "sha256": "83a6d0726c1c4c2582ec673df2d110b831e157aece2e7b52ff432448409cb519"
+    },
+    {
+      "file": "assets/TeamAccessCard-CAr-8BTR.css",
+      "bytes": 769,
+      "sha256": "a92e43615bb0ddc0a1ac61b0455d392f4550dc0e921917ba465e7ae4f57f5629"
+    },
+    {
+      "file": "assets/TeamAccessCard-CbXBgdRo.js",
+      "bytes": 3406,
+      "sha256": "472b357dd86ea030bef881763726bba44b123112869015c892a187ae1f97e11d"
+    },
+    {
+      "file": "assets/arrow-right-BxKOS8YV.js",
+      "bytes": 335,
+      "sha256": "928ee25e3495277b3c55df1c670539b1382618c21591fa96faa28b47e3a5480c"
+    },
+    {
+      "file": "assets/book-open-text-COU8Ggyf.js",
+      "bytes": 597,
+      "sha256": "1503abc12f2a72678a72733afc77e57c81a712a97f06a577c176e20b363f08fa"
+    },
+    {
+      "file": "assets/braces-Jh5RKAEp.js",
+      "bytes": 450,
+      "sha256": "6e9784ff801fdcb8af5e2ec1a9fe4e7264290faa2bf18309c3f53c476bb54f49"
+    },
+    {
+      "file": "assets/check-n6pelsFA.js",
+      "bytes": 290,
+      "sha256": "893008c00c8871335e13ca57939c6f9d697e3f5eb0c1c6b3861eb091ab2df53e"
+    },
+    {
+      "file": "assets/clamp-DyuOe9kr.js",
+      "bytes": 115,
+      "sha256": "8b61017abae6ee9cdcbcdab890dd8a7e20212f112557a3a012261d06dc795497"
+    },
+    {
+      "file": "assets/contact-CdLk4rEX.js",
+      "bytes": 1730,
+      "sha256": "329fcf966e256c753361a061a25e827c745b1462971615e374b1919eb22d1da6"
+    },
+    {
+      "file": "assets/createBaseUIEventDetails-CCrBdrnX.js",
+      "bytes": 1077,
+      "sha256": "d35364a62f5c5aea477403b08baa07bc5ad6cdddae9377aa99422ad282aab945"
+    },
+    {
+      "file": "assets/input-Dgn3_C3k.js",
+      "bytes": 4519,
+      "sha256": "e2a122ee3c21abbe8e6f0c3e7252f842d457dde315db3132f2c4247c2de01bdb"
+    },
+    {
+      "file": "assets/mail-By7C_-yE.js",
+      "bytes": 386,
+      "sha256": "67446454fbb58d66aede89666ec503e5133b5f9163f20e8880b2f4387a9b2de8"
+    },
+    {
+      "file": "assets/progress-Aa2CCC_Z.js",
+      "bytes": 3386,
+      "sha256": "ddc806ea168ad49b5383337e6e166025916f960c86b0383325c29a654a1f8ab0"
+    },
+    {
+      "file": "assets/setup-Dt05yAvr.js",
+      "bytes": 7669,
+      "sha256": "e7442a51bcf2c305999fb8a710f6ea8eccad187a6e8f6cd4e1d94a4e64983032"
+    },
+    {
+      "file": "assets/shadowDom-Drfy7-dj.js",
+      "bytes": 476,
+      "sha256": "faf332e1a482c49ec52c2befb9775342b0f766d7e0baafc5850ac8a1a2161273"
+    },
+    {
+      "file": "assets/stringifyLocale-BMPUsiav.js",
+      "bytes": 100,
+      "sha256": "ef5b0c28cc5ad48acb20c9cb748feb85b01b5736cfe5fe5504904287147d58e0"
+    },
+    {
+      "file": "assets/textarea-Btz_dMG7.js",
+      "bytes": 697,
+      "sha256": "a7d7c12608105263ef852d414fbe4dd5ce536dc63047bc9483aeb2c20816ea33"
+    },
+    {
+      "file": "assets/useBaseUiId-K6FzHGYC.js",
+      "bytes": 335,
+      "sha256": "4d46e8577caef48de9838dfe660c618c588fc0efc22b446fffc65b90c3e07a9e"
+    },
+    {
+      "file": "assets/visuallyHidden-BwafneL2.js",
+      "bytes": 207,
+      "sha256": "d9fe97341bae2f19661ff150316d2865f7f3b0169b13e8b81c34b43b6c116972"
+    }
+  ]
+}

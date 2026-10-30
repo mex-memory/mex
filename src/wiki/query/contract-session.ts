@@ -39,6 +39,9 @@ import { readContainedSource } from "../index/source-read.js";
 import { WIKI_META_KEYS, WIKI_SCHEMA_VERSION, WIKI_TABLES } from "../index/schema.js";
 import { fts5UnavailableDiagnostic } from "../index/fts5.js";
 import { isTeamOwnedReadOnlyPath } from "../model/team-owned-paths.js";
+import { parseWikiMarkdown } from "../markdown/codec.js";
+import { parseDocument } from "../markdown/parse.js";
+import { classifyFile } from "../migration/classify.js";
 import { estimateTokens } from "./budget.js";
 import { healthRank, LIFECYCLE_RANK, MATCH_FIELD_RANK, type MatchField } from "./rank.js";
 import { findSomeTermsMatches, planWikiSearch } from "./search-plan.js";
@@ -1750,6 +1753,14 @@ function sameFileInventory(
     ));
 }
 
+/** Knowledge files every code-repository setup writes and its finalization adopts. */
+const SETUP_KNOWLEDGE_FILES = new Set([
+  "context/architecture.md",
+  "context/stack.md",
+  "context/conventions.md",
+  "context/setup.md",
+]);
+
 function hasLegacyInventory(scaffoldRoot: string, exclude: readonly string[] | undefined): boolean {
   try {
     const files = discoverMarkdownFiles({ root: scaffoldRoot, exclude }).files;
@@ -1757,6 +1768,7 @@ function hasLegacyInventory(scaffoldRoot: string, exclude: readonly string[] | u
     let sawLegacyShape = false;
     let sawCanonicalShape = false;
     let corpusBytes = 0;
+    const plainSetupFiles: Array<{ path: string; absolutePath: string; text: string }> = [];
     for (const file of files) {
       const bytes = readContainedFile(scaffoldRoot, file.absolutePath);
       corpusBytes = addWikiCorpusBytes(corpusBytes, bytes.byteLength);
@@ -1767,9 +1779,19 @@ function hasLegacyInventory(scaffoldRoot: string, exclude: readonly string[] | u
         || /^(?:context|patterns)\//i.test(file.path)
         || /(?:^|\n)(?:name|description|last_updated|edges|grounds_to):/u.test(text)) {
         sawLegacyShape = true;
+        if (SETUP_KNOWLEDGE_FILES.has(file.path)) plainSetupFiles.push({ path: file.path, absolutePath: file.absolutePath, text });
       }
     }
-    return !sawCanonicalShape && sawLegacyShape;
+    if (!sawCanonicalShape) return sawLegacyShape;
+    // Entries an agent writes with `wiki apply` during setup make some files
+    // canonical before setup has finalized. The scaffold still needs its
+    // migration while a file every setup writes is one migration would adopt;
+    // after finalization migration has adopted it, or deliberately abstains.
+    return plainSetupFiles.some((file) => {
+      const parsed = parseWikiMarkdown({ path: file.path, text: file.text });
+      const headings = parseDocument(file.text).headings;
+      return classifyFile({ ...file, parsed, headings }).candidates.length > 0;
+    });
   } catch (error) {
     if (error instanceof WikiCorpusLimitError) throw error;
     return false;

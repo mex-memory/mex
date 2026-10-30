@@ -1,0 +1,33 @@
+# Runtime and client delivery
+
+Run `node <skill-dir>/scripts/runtime.mjs` for commands. No Java or checker is installed during MEX installation or Hub launch. Requirements for explicit generation: Node >=22.5, Java >=11, TLC **1.7.4**. Set `JAVA` to your existing Java binary (a JDK or `bin` directory also works) and `TLA2TOOLS` to your existing jar. Run `node <skill-dir>/scripts/runtime.mjs status` first: it prints the resolved jar, Java path, whether Java starts and `ready`, so you never need to expand environment variables in a shell command. The helper verifies SHA-256 `936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88` before use. A different jar produces an unavailable status, never a passed check.
+
+If absent, run `node <skill-dir>/scripts/runtime.mjs setup-tlc /chosen/tool-cache/mex-statechart` (outside the repository). It announces the download, bounds bytes/time, and verifies the pinned hash before installation; set TLA2TOOLS to the printed file. The helper also reads an existing jar from `$XDG_CACHE_HOME/mex-statechart/tla2tools-1.7.4.jar` (or the normal user cache). Alternatively, explicitly download https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar into a user-selected tool cache and verify that hash. Install Java using the user's normal runtime manager if needed. Explain first-use network/setup requirements before running setup. No unverified automatic Java installation is provided. Baseline PNG export installs pinned `pele@1.8.0` and `@resvg/resvg-js@2.6.2` on explicit generation into its cache; it announces first use. The bounded parent kills the whole checker/renderer process group on cancellation or timeout.
+
+Limits: 60 seconds, one checker per helper, one TLC worker, 512 MiB Java heap, 100,000 accepted model states, 2 MiB logs/DOT, 16 million export pixels, 512 KiB artifact, 80 states/200 transitions, 16 traces/256 steps. Use small finite constants and explicit model state constraints for tractable exploration. Exceeding limits retains an incomplete result. Do not run raw upstream entry points to evade caps.
+
+Scratch paths must be outside every Git work tree; the helper refuses them otherwise, whatever directory it runs from. Claude Code limits file tools to the project, so ask the user to allow the scratch directory (for example `/add-dir`) before writing there. Run each helper command on its own, with literal absolute paths: hosts such as Claude Code ask for approval before compound commands (`;`, `&&`, pipes) and shell variable expansion.
+
+Examples (all model/output files in scratch outside the repository):
+
+```sh
+node <skill-dir>/scripts/runtime.mjs workflow from-spec /tmp/chart/Model.tla --map /tmp/chart/Model.map.mjs --png
+node <skill-dir>/scripts/runtime.mjs check /tmp/chart/candidate.json /tmp/chart/checked.json
+node <skill-dir>/scripts/runtime.mjs terminal /tmp/chart/checked.json
+node <skill-dir>/scripts/runtime.mjs show /tmp/chart/checked.json /tmp/chart/view
+node <skill-dir>/scripts/runtime.mjs register /tmp/chart/checked.json /path/to/repository
+```
+
+Native Mermaid support depends on the actual client/version and syntax. Codex CLI 0.160.1 was verified with simple statecharts and ordered/temporal trace text at 80/120 columns. Its native renderer rejects the tested nested/parallel syntax; provide the readable text projection for those charts. Claude Code 2.1.311 renders neither in the terminal nor in the desktop app: fenced Mermaid shows as source. The desktop app does display a PNG inline when the agent opens it with its file-reading tool, so `show` delivers the text view plus `diagram.png` there. A terminal cannot display images, so in interactive Claude Code (`CLAUDE_CODE_ENTRYPOINT=cli`) `show` opens the PNG in the system image viewer; `--open` forces this elsewhere and `--no-open` suppresses it. Headless, SDK and CI runs never open a viewer. `show` gives the first image render (which installs the pinned PNG packages once) up to 180 seconds. No Claude mod is required. The normalized text view preserves conditions, independent-region identities, rules, check statuses and path order. For long/nested charts, keep a compact overview and disclose omissions; the Hub's native state graph and accessible lists provide exploration. Hub projects the same artifact identities without executing Mermaid or embedding generated styles; Mermaid remains available for client delivery and export. Review labels and image export after each regeneration.
+
+## Opening the preview in Hub
+
+After `register`, retain its exact `route` (such as `/diagrams/preview/<id>`) and expiry. Offer to open it for the reader instead of ending with instructions to run `mex hub` and browse to Diagrams. Opening is optional; the diagram remains useful in the current client.
+
+- **Hub URL already known:** use only a live URL obtained for this repository from actual Hub startup output in this session. Link its origin directly to the returned preview route. Preserve the real bootstrap fragment when one was supplied; an already authenticated browser session can use the route without it. Do not guess a port or borrow a different repository's Hub URL.
+- **User accepts and Hub needs starting:** run `mex hub --no-open` from the target repository with the client's background/long-running process support. Wait for its actual one-time bootstrap URL. Keep the Hub process running; do not block the conversation waiting for the server to exit.
+- **Go straight to the diagram:** replace the launch URL's pathname with the exact registered route, preserving its origin and `#token=...` fragment. Open that full URL with the client's browser-opening capability or platform URL opener, then provide the same clickable link in the reply. Hub's browser bootstrap removes the token while preserving the diagram route. Do not open Home first and ask the reader to navigate manually.
+- **Hub already running but its URL is unknown:** reuse a verified URL if available. If startup reports an existing owner and provides no URL, ask for the existing Hub link rather than guessing, starting a competing server, or stopping someone else's Hub. This workflow does not add automatic cross-session server discovery.
+- **No browser can be opened:** give the real authenticated preview link and explain that browser opening was unavailable. Keep tokens out of artifacts and saved records. Report an opened browser only when the opening action reports success.
+
+Accepting the offer is enough authorization to start Hub and open the preview; do not ask again. It is not permission to Save the diagram. Viewing keeps it temporary and checkout-local; Hub Save reviews the exact retained content separately.

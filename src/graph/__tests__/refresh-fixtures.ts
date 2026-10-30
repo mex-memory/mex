@@ -378,7 +378,40 @@ export const ORDER_FIXTURE: Fixture = {
   ],
 };
 
+const PACKAGE_TSCONFIG = JSON.stringify({
+  compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true },
+  include: ["src"],
+}, null, 2);
+
+/**
+ * Three tsconfig projects (#281): `app` imports `core`, `tools` stands alone.
+ * A refresh reuses a project whose program read no changed file without
+ * building that program, and must still match the oracle.
+ */
+export const MONOREPO_FIXTURE: Fixture = {
+  name: "monorepo",
+  files: {
+    "packages/core/tsconfig.json": PACKAGE_TSCONFIG,
+    "packages/core/src/math.ts": "export function add(a: number, b: number): number {\n  return a + b;\n}\n\nexport function scale(value: number, factor: number): number {\n  return value * factor;\n}\n",
+    "packages/core/src/index.ts": "export * from \"./math\";\n",
+    "packages/app/tsconfig.json": PACKAGE_TSCONFIG,
+    "packages/app/src/main.ts": "import { add, scale } from \"../../core/src/index\";\n\nexport function run(): number {\n  return scale(add(1, 2), 3);\n}\n",
+    "packages/tools/tsconfig.json": PACKAGE_TSCONFIG,
+    "packages/tools/src/lint.ts": "export function lint(source: string): string[] {\n  return source.split(\"\\n\").filter((line) => line.length > 80);\n}\n",
+    "packages/tools/src/report.ts": "import { lint } from \"./lint\";\n\nexport function report(source: string): string {\n  return lint(source).join(\"\\n\");\n}\n",
+  },
+  edits: [
+    { name: "edit a standalone project", apply: replace("packages/tools/src/report.ts", ".join(\"\\n\")", ".join(\", \")"), expectMode: "incremental" },
+    { name: "edit a shared library", apply: replace("packages/core/src/math.ts", "return a + b;", "return b + a;"), expectMode: "incremental" },
+    { name: "change a shared signature", apply: replace("packages/core/src/math.ts", "factor: number): number", "factor = 2): number"), expectMode: "incremental" },
+    { name: "rename in a leaf project", apply: replace("packages/app/src/main.ts", "function run", "function start"), expectMode: "incremental" },
+    { name: "comment a shared library", apply: append("packages/core/src/math.ts", "\n// shared helpers\n"), expectMode: "incremental" },
+    { name: "add a file to a project", apply: write("packages/tools/src/extra.ts", "import { report } from \"./report\";\n\nexport const extra = report(\"x\");\n") },
+    { name: "delete a file from a project", apply: remove("packages/tools/src/extra.ts") },
+  ],
+};
+
 export const FIXTURES = [
-  TS_FIXTURE, ORDER_FIXTURE, JS_FIXTURE, PYTHON_FIXTURE, RUST_FIXTURE, CSHARP_FIXTURE,
+  TS_FIXTURE, ORDER_FIXTURE, MONOREPO_FIXTURE, JS_FIXTURE, PYTHON_FIXTURE, RUST_FIXTURE, CSHARP_FIXTURE,
   EXPRESS_FIXTURE, FASTAPI_FIXTURE, FLASK_FIXTURE, NESTJS_FIXTURE, NEXT_FIXTURE,
 ];

@@ -1,5 +1,6 @@
-import { opendirSync, openSync, readSync, closeSync, fstatSync, constants } from "node:fs";
-import { resolve, relative, sep } from "node:path";
+import { RepositoryInventory } from "../repository.js";
+import { openSync, readSync, closeSync, fstatSync, constants } from "node:fs";
+import { resolve } from "node:path";
 import type { Claim, DriftIssue } from "../../types.js";
 import { dependencyEcosystem } from "../dependency-ecosystem.js";
 
@@ -81,10 +82,11 @@ function isConceptAcronym(value: string): boolean {
 /** Check that claimed dependencies exist in manifests */
 export function checkDependencies(
   claims: Claim[],
-  projectRoot: string
+  projectRoot: string,
+  repository = new RepositoryInventory(projectRoot),
 ): DriftIssue[] {
   const issues: DriftIssue[] = [];
-  const loaded = loadAllDependencies(projectRoot);
+  const loaded = loadAllDependencies(projectRoot, repository);
   if (!loaded) return issues;
   const { entries: deps, unreadPython } = loaded;
 
@@ -166,62 +168,18 @@ function findDependency(deps: DepEntry[], claimed: string, ecosystem?: Claim["ec
   const belongs = (entry: DepEntry) => !ecosystem || (entry.normalizes ? "python" : "npm") === ecosystem;
   const exact = deps.find((d) => belongs(d) && d.name.toLowerCase() === claimed);
   if (exact) return exact;
+  const displayNames: Record<string, string[]> = {
+    nestjs: ["@nestjs/core", "@nestjs/common"], clickhouse: ["@clickhouse/client"], biome: ["@biomejs/biome"],
+  };
+  const display = deps.find((d) => displayNames[claimed]?.includes(d.name.toLowerCase()));
+  if (display) return display;
   const normalized = normalizeName(claimed);
   return deps.find((d) => belongs(d) && d.normalizes && normalizeName(d.name) === normalized);
 }
 
-// Discovery may recurse arbitrarily deep, but must not retain or read an
-// unlimited corpus. Exceeding a budget abstains instead of checking a partial list.
-const MAX_DISCOVERY_ENTRIES = 100_000;
-const MAX_MANIFESTS = 1_024;
+// Manifest reads preserve the existing per-file and aggregate byte budgets.
 const MAX_MANIFEST_BYTES = 1_048_576;
 const MAX_TOTAL_MANIFEST_BYTES = 8_388_608;
-
-interface ManifestWalk {
-  manifests: string[];
-  /** A real requirements.txt or setup.py was seen and left unread (#207). */
-  unreadPython: boolean;
-}
-
-function discoverManifests(projectRoot: string): ManifestWalk | null {
-  const pending = [resolve(projectRoot)];
-  const manifests: string[] = [];
-  let unreadPython = false;
-  let inspected = 0;
-  try {
-    while (pending.length) {
-      const directory = opendirSync(pending.pop()!);
-      try {
-        for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
-          if (++inspected > MAX_DISCOVERY_ENTRIES) return null;
-          // Preserve glob's hidden-directory exclusion and avoid installed
-          // dependencies, Git metadata, directory junctions and file symlinks.
-          if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.isSymbolicLink()) continue;
-          const path = resolve(directory.path, entry.name);
-          if (entry.isDirectory()) pending.push(path);
-          else if (entry.isFile() && (entry.name === "package.json" || entry.name === "pyproject.toml")) {
-            manifests.push(path);
-            if (manifests.length > MAX_MANIFESTS) return null;
-          } else if (entry.isFile() && (entry.name === "requirements.txt" || entry.name === "setup.py")) {
-            // Presence only (#207). Not opened, and not counted toward
-            // MAX_MANIFESTS or either byte budget. Parsing `-r` includes, VCS
-            // lines, or a dynamic setup.py install_requires would name some
-            // packages and miss others, and a requirements file that tripped
-            // the size cap or JSON.parse would discard a good package.json.
-            unreadPython = true;
-          }
-        }
-      } finally { directory.closeSync(); }
-    }
-  } catch {
-    return null;
-  }
-  const rank = (path: string) => path === resolve(projectRoot, "package.json") ? 0
-    : path === resolve(projectRoot, "pyproject.toml") ? 1 : 2;
-  const key = (path: string) => relative(projectRoot, path).split(sep).join("/");
-  manifests.sort((a, b) => rank(a) - rank(b) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
-  return { manifests, unreadPython };
-}
 
 function readManifest(path: string, remaining: number): string | null {
   const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -244,18 +202,28 @@ interface LoadedDependencies {
   unreadPython: boolean;
 }
 
-function loadAllDependencies(projectRoot: string): LoadedDependencies | null {
+function loadAllDependencies(projectRoot: string, repository: RepositoryInventory): LoadedDependencies | null {
   const entries: DepEntry[] = [];
 
   // Repositories can contain independent applications in nested directories.
   // Discover dependency manifests recursively, while ignoring dependency
   // directories and Git metadata so we only inspect manifests belonging to
   // the repository itself.
-  const discovered = discoverManifests(projectRoot);
-  if (!discovered) return null;
+  const manifests = repository.files && repository.manifests && [
+      ...repository.manifests.map((pkg) => resolve(projectRoot, pkg.path)),
+      ...repository.files.filter((file) => /(^|\/)pyproject\.toml$/.test(file) && repository.safeFile(file)).map((file) => resolve(projectRoot, file)),
+    ].sort((a, b) => {
+      const rank = (file: string) => file === resolve(projectRoot, "package.json") ? 0 : file === resolve(projectRoot, "pyproject.toml") ? 1 : 2;
+      return rank(a) - rank(b) || a.localeCompare(b);
+    });
+  if (!manifests || manifests.length > 1024) return null;
+  // Presence only (#207): never opened and outside both byte budgets. Hidden
+  // directories such as `.venv` hold installed packages, not project manifests.
+  const unreadPython = repository.files.some((file) => /(^|\/)(requirements\.txt|setup\.py)$/.test(file)
+    && !file.split("/").some((part) => part.startsWith(".")) && repository.safeFile(file));
   let remaining = MAX_TOTAL_MANIFEST_BYTES;
 
-  for (const manifest of discovered.manifests) {
+  for (const manifest of manifests) {
     try {
       const content = readManifest(manifest, remaining);
       if (content === null) return null;
@@ -267,7 +235,7 @@ function loadAllDependencies(projectRoot: string): LoadedDependencies | null {
           entries.push({ name, version: String(version) });
         }
 
-        for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
+        for (const [name, version] of Object.entries({ ...pkg.peerDependencies, ...pkg.optionalDependencies, ...pkg.devDependencies })) {
           entries.push({ name, version: String(version) });
         }
       } else {
@@ -286,9 +254,9 @@ function loadAllDependencies(projectRoot: string): LoadedDependencies | null {
   // that returns a few entries out of many is therefore worse than one that
   // returns none: it switches the checker on and measures claims against a
   // list it knows is incomplete. Parse a shape fully or leave it out.
-  // requirements.txt and setup.py stay out of this list on purpose (#207):
-  // seeing one does not make an empty understood corpus non-empty.
-  return entries.length ? { entries, unreadPython: discovered.unreadPython } : null;
+  // requirements.txt and setup.py stay out of the parsed list on purpose (#207):
+  // presence only, never opened, and not counted toward the manifest budgets.
+  return entries.length || repository?.manifests?.length ? { entries, unreadPython } : null;
 }
 
 /** A dependency table whose keys are package names, not extra/group names. */

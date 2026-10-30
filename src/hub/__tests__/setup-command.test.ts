@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   createSetup: vi.fn(),
   inspect: vi.fn(),
   committedIdentity: vi.fn(),
+  wikiStatus: vi.fn(),
   stopSetup: vi.fn(async () => undefined),
   findRoot: vi.fn(),
   findConfig: vi.fn(),
@@ -46,10 +47,10 @@ vi.mock("../jobs/index.js", () => ({ HubJobManager: class {
 } }));
 vi.mock("../jobs/graph.js", () => ({ createGraphJobExecutors: () => ({}) }));
 vi.mock("../jobs/wiki.js", () => ({ createWikiJobExecutors: () => ({}) }));
-vi.mock("../services.js", () => ({ createLocalHubReadServices: () => ({}) }));
+vi.mock("../services.js", () => ({ createLocalHubReadServices: () => ({}), createHubWikiMigration: () => ({}) }));
 vi.mock("../../team/local-state/index.js", () => ({ TeamLocalState: class {} }));
 vi.mock("../../graph/application-adapter.js", () => ({ createRepositoryGraphPort: () => ({}) }));
-vi.mock("../../wiki/application-adapter.js", () => ({ createRepositoryWikiPort: () => ({}) }));
+vi.mock("../../wiki/application-adapter.js", () => ({ createRepositoryWikiPort: () => ({ inspectIndex: mocks.wikiStatus }) }));
 vi.mock("../../team/workflow/repository-team-workflow-port.js", () => ({
   createRepositoryTeamWorkflowPort: mocks.createTeam,
 }));
@@ -61,6 +62,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.order.length = 0;
   mocks.committedIdentity.mockResolvedValue(false);
+  mocks.wikiStatus.mockResolvedValue({ state: "missing" });
   mocks.createTeam.mockResolvedValue({ initializeIdentityActivitySigner() {} });
   mocks.findConfig.mockReturnValue({ projectRoot: "/Users/private/project", scaffoldRoot: "/Users/private/project/.mex" });
   mocks.identity.mockReturnValue({ scaffold_id: "private-scaffold" });
@@ -231,9 +233,9 @@ describe("Hub setup process", () => {
     await running;
   });
 
-  it("retains the full Hub recovery surfaces when only disposable indexes are missing", async () => {
+  it("opens the normal Hub for a finalized fresh clone with both disposable indexes missing", async () => {
     mocks.inspect.mockReturnValue({ mode: "code-repo", hasScaffold: true, ready: false,
-      populated: false, graphReady: false, wikiReady: false, stage: "needs_finalize" });
+      populated: true, graphReady: false, wikiReady: false, stage: "needs_finalize" });
     mocks.committedIdentity.mockResolvedValue(true);
     mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
     const priorListeners = new Set(process.listeners("SIGTERM"));
@@ -244,6 +246,21 @@ describe("Hub setup process", () => {
     stopHub(priorListeners);
     await running;
     expect(mocks.order).toEqual(["http", "jobs", "telemetry"]);
+  });
+
+  it("routes a committed legacy scaffold to finalization without population", async () => {
+    mocks.inspect.mockReturnValue({ mode: "code-repo", hasScaffold: true, ready: false,
+      populated: true, graphReady: false, wikiReady: false, stage: "needs_finalize" });
+    mocks.wikiStatus.mockResolvedValue({ state: "migration_required" });
+    mocks.committedIdentity.mockResolvedValue(true);
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    const priorListeners = new Set(process.listeners("SIGTERM"));
+    const running = launchHub({ openBrowser: false });
+    await vi.waitFor(() => expect(mocks.events).toHaveBeenCalledOnce());
+    expect(mocks.createSetup).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ finalizeOnly: true }));
+    expect(mocks.createApp.mock.calls[0][0].jobs).toBeUndefined();
+    stopHub(priorListeners);
+    await running;
   });
 
   it.each([{ setup: true }, { mode: "code-repo" }])("retains the setup finishing screen for explicit launch options %j", async (options) => {

@@ -27,15 +27,17 @@ import type {
 import { sourceIdentity, type WikiSource } from "../model/source.js";
 import { authoringSourceCollectionFits, validateAuthoringProvenance } from "../model/authoring-evidence.js";
 import type { WikiRelationRef } from "../model/relation.js";
-import type { WikiEntity, WikiLifecycleState, WikiProvenance } from "../model/entity.js";
-import type { WikiGrounding } from "../model/grounding.js";
+import { WIKI_ENTITY_TYPES, type WikiEntity, type WikiEntityType, type WikiLifecycleState, type WikiProvenance } from "../model/entity.js";
+import { isCodeNameReference, type GroundingRequest, type WikiGrounding } from "../model/grounding.js";
 import { deriveVerifiedGroundings } from "../grounding/provenance.js";
+import { resolveGroundingTargets } from "../grounding/code-reference.js";
 import type { PatchEdit } from "../markdown/patch.js";
 import YAML from "yaml";
 import { keyPathEdit, keyPathRemoveEdit, renderKeyValues } from "../markdown/frontmatter.js";
 import { rootGroundingsNotInEffect } from "../markdown/grounding-stores.js";
 import { entityTextOf } from "../markdown/codec.js";
 import { parseDocument } from "../markdown/parse.js";
+import { fileEntityTypeFor, fileTitleOf } from "../migration/classify.js";
 import { entityContentHash } from "../model/hash.js";
 import {
   METADATA_KEYS,
@@ -74,6 +76,8 @@ export interface OperationContext {
   located: LocatedEntity | null;
   /** Explicit operation authority, used only when this writer opted in. */
   creationProvenance?: WikiProvenance;
+  /** The operation's own timestamp; dates the frontmatter of a file this operation creates. */
+  timestamp?: string;
   mintId: () => EntityId;
   locate: (path: string) => LocatedFile | null;
   locateEntity: (id: string) => LocatedEntity | null;
@@ -248,6 +252,9 @@ function paddedInsertion(text: string, offset: number, block: string): string {
 /** The metadata fields a new entity carries, in a fixed, readable order. */
 function newEntityFields(id: EntityId, payload: CreateEntryPayload): (readonly [string, unknown])[] {
   const headingDepth = payload.headingDepth;
+  const metadata = payload.aliases === undefined || payload.aliases.length === 0
+    ? payload.metadata
+    : { ...payload.metadata, aliases: payload.aliases };
   return [
     ["id", id],
     ["type", payload.type],
@@ -263,7 +270,7 @@ function newEntityFields(id: EntityId, payload: CreateEntryPayload): (readonly [
     ["summary", payload.summary],
     [
       METADATA_KEYS.metadata,
-      payload.metadata === undefined || Object.keys(payload.metadata).length === 0 ? undefined : payload.metadata,
+      metadata === undefined || Object.keys(metadata).length === 0 ? undefined : metadata,
     ],
     ["topics", payload.topics === undefined || payload.topics.length === 0 ? undefined : payload.topics],
     ["relations", payload.relations === undefined || payload.relations.length === 0 ? undefined : payload.relations],
@@ -280,7 +287,203 @@ function headingAndBody(depth: number, title: string, body: string, eol: string)
 }
 
 function createEntry(context: OperationContext, operation: Extract<WikiOperation, { type: "create-entry" }>): OperationEdits {
-  return createInto(context, operation.payload, context.mintId());
+  const id = context.mintId();
+  if (context.options.deriveStructure === true) {
+    const structured = createWithStructure(context, operation.payload, id);
+    if (structured !== null) return structured;
+  }
+  return createInto(context, operation.payload, id);
+}
+
+// -- authored structure --------------------------------------------------------
+
+/** Spec-family entities are authored only through governed Inbox flows and are never linked here. */
+const SPEC_FAMILY = new Set(["spec", "requirement", "constraint", "acceptance_criterion"]);
+
+/**
+ * Place an authored section entry in the Wiki's structure, or return null to
+ * create it exactly as asked.
+ *
+ * An entry inserted under a heading that names no `refines` of its own
+ * refines the nearest entity that encloses it: the section entity it sits
+ * under, else the file-level entity. That is the rule `wiki link-sections`
+ * applies after the fact, so the two never disagree, and an agent that is
+ * interrupted, or never runs a separate linking step, leaves no orphan behind.
+ *
+ * A file with no file-level entity gets one in the same operation, typed and
+ * titled by migration's own rules (`fileEntityTypeFor`, `fileTitleOf`), so a
+ * later migration sees an adopted file rather than a half-adopted one. Files
+ * that are never entities (navigation, Team-owned, specs, a log whose entities
+ * are its sections) are written without a parent, and the result says so.
+ */
+function createWithStructure(context: OperationContext, payload: CreateEntryPayload, id: EntityId): OperationEdits | null {
+  const insertAt = payload.insertAt;
+  const depth = payload.headingDepth;
+  if (payload.adopt !== undefined || insertAt === undefined || depth === undefined) return null;
+  if (SPEC_FAMILY.has(payload.type) || payload.relations?.some((relation) => relation.type === "refines")) return null;
+  const file = context.locate(payload.file);
+  // Unreadable files, resumed creates and bad anchors are createInto's to report.
+  if (file === null || file.parsed.entities.some((entry) => entry.entity.id === id)) return null;
+  if (file.parsed.diagnostics.some((entry) => entry.severity === "error")) return null;
+  const offset = insertionOffset(file, insertAt);
+  if (typeof offset !== "number") return null;
+
+  const headings = parseDocument(file.text).headings;
+  const eligible = file.parsed.entities.filter(({ entity }) =>
+    (WIKI_ENTITY_TYPES as readonly string[]).includes(entity.type)
+    && !SPEC_FAMILY.has(entity.type)
+    && entity.status !== "archived");
+  const section = [...eligible].reverse().find((candidate) => {
+    const location = candidate.entity.location;
+    if (candidate.metadataKind !== "comment" || location === undefined) return false;
+    return location.headingStart < offset
+      && location.headingDepth < depth
+      && !headings.some((heading) => heading.start > location.headingStart
+        && heading.start < offset
+        && heading.depth <= location.headingDepth);
+  });
+  const fileLevel = file.parsed.entities.find((entry) => entry.metadataKind === "frontmatter");
+  const parent = section ?? (fileLevel !== undefined && eligible.includes(fileLevel) ? fileLevel : undefined);
+  if (parent !== undefined) {
+    return createInto(context, withParent(payload, parent.entity.id, parent.entity.title, file.path), id);
+  }
+  if (fileLevel !== undefined) {
+    return withNotice(createInto(context, payload, id), file.path,
+      `${payload.title} was written without a parent link: the file-level entity of ${file.path} is ${fileLevel.entity.status === "archived" ? "archived" : "not one an entry can refine"}.`);
+  }
+
+  // Decision entries written as prose must be adopted before their container.
+  // Setup stamps the log at finish; creating a fact must not adopt it early.
+  if (file.path === "context/decisions.md") {
+    return withNotice(createInto(context, payload, id), file.path,
+      `${payload.title} was written without a parent link: ${file.path} gets its container after decision adoption.`);
+  }
+  const typed = fileEntityTypeFor(file.path, file.parsed.legacy.type);
+  if ("refusal" in typed) {
+    return withNotice(createInto(context, payload, id), file.path,
+      `${payload.title} was written without a parent link because ${file.path} gets no file-level entity. ${typed.refusal}`);
+  }
+  return createWithStampedParent(context, payload, id, file, typed.type, headings);
+}
+
+function withParent(payload: CreateEntryPayload, parentId: string, parentTitle: string, path: string): CreateEntryPayload {
+  return {
+    ...payload,
+    relations: [
+      ...(payload.relations ?? []),
+      { type: "refines", target: parentId as EntityId, note: `Part of ${parentTitle} in ${path}` },
+    ],
+  };
+}
+
+/** An info notice on a successful create; a refusal passes through untouched. */
+function withNotice(edits: OperationEdits, path: string, message: string): OperationEdits {
+  if (edits.diagnostics.some((entry) => entry.severity === "error") || edits.files.length === 0) return edits;
+  return { ...edits, diagnostics: [...edits.diagnostics, diagnostic("ORPHANED_ENTITY", message, { file: path })] };
+}
+
+/**
+ * Stamp the file's file-level entity and insert the entry under it, as one
+ * set of edits to one file.
+ *
+ * The stamp writes only metadata: a `mex:` key in the frontmatter (absorbing a
+ * root `type` declaration, as migration's adoption does), or a new frontmatter
+ * block when the file has none. A file this operation creates also gets a
+ * level-one heading carrying the title, so the new document reads as one.
+ */
+function createWithStampedParent(
+  context: OperationContext,
+  payload: CreateEntryPayload,
+  id: EntityId,
+  file: LocatedFile,
+  type: WikiEntityType,
+  headings: ReturnType<typeof parseDocument>["headings"],
+): OperationEdits {
+  const declaredTitle = fileTitleOf({ path: file.path, absolutePath: file.absolutePath, text: file.text, parsed: file.parsed, headings });
+  const title = declaredTitle ?? titleFromPath(file.path);
+  const parentId = context.mintId();
+  // The stamp below gives a new file its frontmatter, so the entry itself adds none.
+  const entry = createInto(context, withParent(payload, parentId, title, file.path), id, false);
+  if (entry.diagnostics.some((item) => item.severity === "error") || entry.files.length !== 1) return entry;
+  const entryFile = entry.files[0]!;
+  const eol = dominantEol(file.text.length === 0 ? "\n" : file.text);
+
+  const stampPayload: CreateEntryPayload = { file: file.path, type, title, status: "promoted" };
+  let stampEdits: PatchEdit[];
+  if (file.parsed.frontmatter !== null) {
+    const adopted = adoptInto(
+      file,
+      stampPayload,
+      { at: "file", ...(file.parsed.legacy.type === undefined ? {} : { absorbRootKeys: ["type"] }) },
+      parentId,
+    );
+    if (adopted.diagnostics.some((item) => item.severity === "error") || adopted.files.length !== 1) return adopted;
+    stampEdits = adopted.files[0]!.edits;
+  } else {
+    const fields = newEntityFields(parentId, { ...stampPayload, headingDepth: undefined });
+    const map = Object.fromEntries(fields.filter(([, value]) => value !== undefined));
+    const bom = file.text.charCodeAt(0) === 0xfeff ? 1 : 0;
+    const rest = file.text.slice(bom);
+    const heading = rest.trim() === "" ? `# ${title}${eol}` : "";
+    const separator = rest.length === 0 && heading === "" ? "" : eol;
+    stampEdits = [{
+      start: bom,
+      end: bom,
+      text: `---${eol}${renderKeyValues([...newFileFrontmatter(context, file, payload), ["mex", map]], eol)}${eol}---${eol}${separator}${heading}`,
+      label: `file-level entity ${parentId}`,
+    }];
+  }
+
+  // Two insertions at one offset (an entry at the very start of a new or
+  // frontmatter-less file) become one edit, stamp first, so the scope check is
+  // never asked to order two zero-width ranges at the same point.
+  const entryEdits = [...entryFile.edits];
+  const edits: PatchEdit[] = [];
+  for (const stamp of stampEdits) {
+    const same = stamp.end === stamp.start
+      ? entryEdits.findIndex((edit) => edit.start === stamp.start && edit.end === stamp.start)
+      : -1;
+    if (same < 0) {
+      edits.push(stamp);
+      continue;
+    }
+    const edit = entryEdits.splice(same, 1)[0]!;
+    const body = edit.text.replace(/^(?:\r?\n)+/, "");
+    const joiner = stamp.text.endsWith(`${eol}${eol}`) ? "" : eol;
+    edits.push({ start: stamp.start, end: stamp.end, text: `${stamp.text}${joiner}${body}`, label: `${stamp.label} and ${edit.label}` });
+  }
+  return {
+    ...entry,
+    files: [{ ...entryFile, edits: [...edits, ...entryEdits] }],
+    createdIds: [id, parentId],
+    revisions: [...entry.revisions, { entityId: parentId, before: 0, after: 1 }],
+  };
+}
+
+/**
+ * The ordinary frontmatter of a file this operation creates: `name` from the
+ * file's slug, `description` from the payload or, failing that, a neutral line
+ * naming the first entry, and `last_updated` from the operation's date. A file
+ * that already exists keeps whatever it has, so this is empty for it.
+ */
+function newFileFrontmatter(
+  context: OperationContext,
+  file: LocatedFile,
+  payload: CreateEntryPayload,
+): (readonly [string, unknown])[] {
+  if (file.existed) return [];
+  const name = file.path.split("/").pop()?.replace(/\.[^.]+$/, "") ?? file.path;
+  const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+  const description = oneLine(payload.description ?? "") || oneLine(`Knowledge entries, starting with: ${payload.title}`);
+  const day = context.timestamp === undefined ? null : /^\d{4}-\d{2}-\d{2}/.exec(context.timestamp)?.[0] ?? null;
+  return [["name", name], ["description", description.slice(0, 200)], ...(day === null ? [] : [["last_updated", day] as const])];
+}
+
+/** `context/api-gateway.md` → "Api Gateway": the title of a file that names none itself. */
+function titleFromPath(path: string): string {
+  const base = path.split("/").pop()?.replace(/\.[^.]+$/, "") ?? path;
+  const words = base.split(/[-_\s]+/).filter((word) => word !== "");
+  return words.length === 0 ? base : words.map((word) => `${word[0]!.toUpperCase()}${word.slice(1)}`).join(" ");
 }
 
 /**
@@ -289,7 +492,7 @@ function createEntry(context: OperationContext, operation: Extract<WikiOperation
  * Shared by `create-entry` and `supersede-entry`'s inline replacement, so the
  * two cannot come to disagree about what a well-formed new entity looks like.
  */
-function createInto(context: OperationContext, payload: CreateEntryPayload, id: EntityId): OperationEdits {
+function createInto(context: OperationContext, payload: CreateEntryPayload, id: EntityId, frontmatterForNewFile = true): OperationEdits {
   if (payload.adopt === undefined && payload.provenance === undefined && context.creationProvenance !== undefined) {
     const validated = validateAuthoringProvenance(context.creationProvenance, { path: "provenance" });
     if (!validated.ok) {
@@ -313,7 +516,14 @@ function createInto(context: OperationContext, payload: CreateEntryPayload, id: 
     return { files: [], entityIds: [], createdIds: [id], preconditions: [], revisions: [], diagnostics: [] };
   }
 
-  if (payload.adopt !== undefined) return adoptInto(file, payload, payload.adopt, id);
+  if (payload.adopt !== undefined) {
+    // Adoption moves values already in the user's Markdown and never consults
+    // the graph, so it has nothing to derive a missing fingerprint from.
+    if (payload.groundsTo?.some((entry) => isCodeNameReference(entry) || entry.fingerprint === undefined)) {
+      return reject("INVALID_OPERATION_PAYLOAD", "create-entry with `adopt` needs a fingerprint on every grounding; it does not derive one from the graph.");
+    }
+    return adoptInto(file, payload, payload.adopt, id);
+  }
 
   // **§12.4, on the operation that mints rather than moves.** `set-grounding`
   // has always re-derived what it is asked to write; `create-entry` wrote its
@@ -328,7 +538,13 @@ function createInto(context: OperationContext, payload: CreateEntryPayload, id: 
   // preserve it. The residue is recorded as a finding rather than closed here,
   // because narrowing adoption is a change to migration's contract.
   if (payload.groundsTo !== undefined && payload.groundsTo.length > 0) {
-    const derived = deriveVerifiedGroundings(payload.groundsTo, context.options.graph ?? null);
+    // Code named by file and symbol or line becomes a node id first, against
+    // the same graph the fingerprint is then derived from.
+    const named = resolveGroundingTargets(payload.groundsTo, context.options.graph ?? null, "payload.groundsTo");
+    if (!named.ok) {
+      return { files: [], entityIds: [], createdIds: [], preconditions: [], revisions: [], diagnostics: named.diagnostics };
+    }
+    const derived = deriveVerifiedGroundings(named.groundings, context.options.graph ?? null);
     if (!derived.ok) {
       return { files: [], entityIds: [], createdIds: [], preconditions: [], revisions: [], diagnostics: derived.diagnostics };
     }
@@ -361,7 +577,7 @@ function createInto(context: OperationContext, payload: CreateEntryPayload, id: 
       );
     }
     const map = Object.fromEntries(fields.filter(([, value]) => value !== undefined));
-    const rendered = renderKeyValues([["mex", map]], eol);
+    const rendered = renderKeyValues([...(frontmatterForNewFile ? newFileFrontmatter(context, file, payload) : []), ["mex", map]], eol);
     const frontmatter = file.parsed.frontmatter;
     if (frontmatter === null) {
       edits.push({ start: 0, end: 0, text: `---${eol}${rendered}${eol}---${eol}${file.text.length > 0 ? eol : ""}`, label: `frontmatter for ${id}` });
@@ -381,10 +597,15 @@ function createInto(context: OperationContext, payload: CreateEntryPayload, id: 
   } else {
     const metadata = `<!-- mex:entity${eol}${renderKeyValues(fields, eol)}${eol}-->`;
     const block = `${metadata}${eol}${headingAndBody(payload.headingDepth, payload.title, body, eol)}`;
+    // A document this operation creates opens with ordinary frontmatter, in the
+    // same edit as the entry (two insertions at offset 0 would clash).
+    const opening = frontmatterForNewFile && offset === 0 && file.text === "" && file.parsed.frontmatter === null
+      ? newFileFrontmatter(context, file, payload) : [];
     edits.push({
       start: offset,
       end: offset,
-      text: paddedInsertion(file.text, offset, block),
+      text: (opening.length === 0 ? "" : `---${eol}${renderKeyValues(opening, eol)}${eol}---${eol}${eol}`)
+        + paddedInsertion(file.text, offset, block),
       label: `entity ${id}`,
     });
   }
@@ -538,7 +759,7 @@ export function buildOperationEdits(operation: WikiOperation, context: Operation
 
 function updateEntry(context: OperationContext, operation: Extract<WikiOperation, { type: "update-entry" }>): OperationEdits {
   const located = context.located!;
-  const { title, summary, body, appendSources } = operation.payload;
+  const { title, summary, body, appendSources, aliases } = operation.payload;
   const fields: (readonly [string, unknown])[] = [];
   const extra: PatchEdit[] = [];
 
@@ -558,6 +779,12 @@ function updateEntry(context: OperationContext, operation: Extract<WikiOperation
   }
 
   if (summary !== undefined) fields.push([METADATA_KEYS.summary, summary]);
+
+  if (aliases !== undefined) {
+    // The list replaces the old one; every other metadata key is carried as it was.
+    const { aliases: _previous, ...rest } = located.entity.metadata ?? {};
+    fields.push([METADATA_KEYS.metadata, aliases.length === 0 ? rest : { ...rest, aliases }]);
+  }
 
   if (title !== undefined) {
     const heading = headingEdits(located.text, located.entity, title);
@@ -695,8 +922,17 @@ function removeSource(context: OperationContext, operation: Extract<WikiOperatio
 
 function setGrounding(context: OperationContext, operation: Extract<WikiOperation, { type: "set-grounding" }>): OperationEdits {
   const located = context.located!;
-  if (operation.payload.absorbRootGroundings === true) return absorbRootGroundings(context, operation.payload.groundsTo);
-  const derived = deriveVerifiedGroundings(operation.payload.groundsTo, context.options.graph ?? null);
+  if (operation.payload.absorbRootGroundings === true) {
+    if (operation.payload.groundsTo.some(isCodeNameReference)) {
+      return reject("INVALID_OPERATION_PAYLOAD", "absorbRootGroundings moves recorded groundings and takes them by node id, not by file and symbol.", located.entity.id);
+    }
+    return absorbRootGroundings(context, operation.payload.groundsTo as GroundingRequest[]);
+  }
+  const named = resolveGroundingTargets(operation.payload.groundsTo, context.options.graph ?? null, "payload.groundsTo");
+  if (!named.ok) {
+    return { files: [], entityIds: [], createdIds: [], preconditions: [], revisions: [], diagnostics: named.diagnostics };
+  }
+  const derived = deriveVerifiedGroundings(named.groundings, context.options.graph ?? null);
   if (!derived.ok) {
     return { files: [], entityIds: [], createdIds: [], preconditions: [], revisions: [], diagnostics: derived.diagnostics };
   }
@@ -729,7 +965,7 @@ function setGrounding(context: OperationContext, operation: Extract<WikiOperatio
  * could not accept — stays at the root for the same reason `writeGroundings`
  * keeps it: moving it would be a decision rather than a relocation.
  */
-function absorbRootGroundings(context: OperationContext, requested: readonly WikiGrounding[]): OperationEdits {
+function absorbRootGroundings(context: OperationContext, requested: readonly GroundingRequest[]): OperationEdits {
   const located = context.located!;
   if (located.metadataKind !== "frontmatter") {
     return reject(

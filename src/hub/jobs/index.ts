@@ -175,7 +175,7 @@ export class HubJobManager implements HubJobService {
     };
     this.executions.set(queued.id, execution);
     execution.promise = Promise.resolve()
-      .then(() => this.execute(queued, executor, execution))
+      .then(() => this.execute(queued, executor, execution, request.migrationPreview))
       .catch((error: unknown) => {
         this.handleUnexpectedExecutionFailure(queued.id, execution, error);
       })
@@ -277,6 +277,7 @@ export class HubJobManager implements HubJobService {
     queued: HubJobSnapshot,
     executor: HubJobExecutor,
     execution: ActiveExecution,
+    migrationPreview?: string,
   ): Promise<void> {
     if (execution.controller.signal.aborted) return;
     let running: HubJobSnapshot;
@@ -301,6 +302,7 @@ export class HubJobManager implements HubJobService {
     let executorFailed = false;
     try {
       await executor({
+        migrationPreview,
         job: running,
         signal: execution.controller.signal,
         reportProgress: (update) => this.reportProgress(running.id, running.generation, update),

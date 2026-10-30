@@ -1,3 +1,4 @@
+import type { DiagramCollection, DiagramDetail, DiagramSavePlan } from "@mex/hub-contracts/statechart";
 import {
   AgentLoggingPolicySchema,
   HubOnboardingStateSchema,
@@ -22,6 +23,8 @@ import {
   InboxProposalIdSchema,
   InboxProposalListResponseSchema,
   JobPageResponseSchema,
+  WikiMigrationJobPreviewSchema,
+  type WikiMigrationJobPreview,
   SearchResponseSchema,
   SessionResponseSchema,
   SpecDetailResponseSchema,
@@ -194,6 +197,10 @@ export interface FixtureApiOptions {
 }
 
 export interface HubApi {
+  listDiagrams?(): Promise<DiagramCollection>;
+  getDiagram?(kind: "preview" | "saved", id: string): Promise<DiagramDetail>;
+  previewDiagramSave?(id: string, revision: string): Promise<DiagramSavePlan>;
+  saveDiagram?(token: string): Promise<DiagramDetail>;
   getContactPreference?(): Promise<ContactPreference>;
   rememberContactPreference?(request: ContactPreferenceRequest): Promise<ContactPreference>;
   submitSetupContact?(request: SetupContactRequest): Promise<SetupContactResponse>;
@@ -246,6 +253,7 @@ export interface HubApi {
   getJobs(cursor?: string): Promise<JobsResponse>;
   getJob(id: string): Promise<JobSummary>;
   startJob(request: StartJobRequest): Promise<JobSummary>;
+  previewWikiMigration?(): Promise<WikiMigrationJobPreview>;
   cancelJob(id: string): Promise<JobSummary>;
   subscribeToJob(id: string, onSnapshot: (job: JobSummary) => void): JobSubscription;
   getSetupStatus?(): Promise<SetupStatus>;
@@ -614,6 +622,25 @@ export class HttpHubApi implements HubApi {
     return await (await loadRelayClient()).applyRelayOperation(this.#relayTransport, request);
   }
 
+  async listDiagrams(): Promise<DiagramCollection> {
+    const { DiagramCollectionSchema } = await import("@mex/hub-contracts/statechart");
+    return this.#request("/diagrams", DiagramCollectionSchema);
+  }
+  async getDiagram(kind: "preview" | "saved", id: string): Promise<DiagramDetail> {
+    const { DiagramDetailSchema, DiagramIdSchema } = await import("@mex/hub-contracts/statechart");
+    DiagramIdSchema.parse(id);
+    return this.#request(`/diagrams/${kind}/${id}`, DiagramDetailSchema);
+  }
+  async previewDiagramSave(id: string, revision: string): Promise<DiagramSavePlan> {
+    const { DiagramSavePlanSchema, DiagramIdSchema } = await import("@mex/hub-contracts/statechart");
+    DiagramIdSchema.parse(id);
+    return this.#request(`/diagrams/preview/${id}/save-preview`, DiagramSavePlanSchema, { method: "POST", body: JSON.stringify({ revision }) }, true);
+  }
+  async saveDiagram(token: string): Promise<DiagramDetail> {
+    const { DiagramDetailSchema } = await import("@mex/hub-contracts/statechart");
+    return this.#request("/diagrams/save", DiagramDetailSchema, { method: "POST", body: JSON.stringify({ token }) }, true);
+  }
+
   listSpecs(request: SpecListRequest): Promise<SpecListResponse> {
     const params = new URLSearchParams({ limit: String(request.limit) });
     if (request.includeArchived !== undefined) {
@@ -788,6 +815,11 @@ export class HttpHubApi implements HubApi {
       { method: "POST", body: JSON.stringify(request) },
       true,
     );
+  }
+
+  previewWikiMigration(): Promise<WikiMigrationJobPreview> {
+    return this.#request("/jobs/wiki-migration/preview", WikiMigrationJobPreviewSchema,
+      { method: "POST", body: "{}" }, true);
   }
 
   async cancelJob(id: string): Promise<JobSummary> {

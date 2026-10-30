@@ -17,17 +17,17 @@ describe("population guidance for code-linked claims", () => {
     it(`asks for one entity per code-linked claim (${name})`, () => {
       expect(prompt).toContain("One code-linked claim per entity");
       expect(prompt).toContain('"type": "create-entry"');
-      expect(prompt).toContain("mex wiki apply <op.json> --apply");
+      expect(prompt).toContain("mex wiki apply .mex/local/setup-ops/<subsystem>.json --apply");
     });
 
     it(`asks to ground every symbol a claim depends on (${name})`, () => {
-      expect(prompt).toContain("grounded to **every** symbol whose change could make it false");
+      expect(prompt).toContain("Ground a claim to every symbol whose change could make it false");
     });
 
-    it(`connects split claims with supported canonical relationships (${name})`, () => {
-      expect(prompt).toContain("mex wiki link-sections --apply");
-      expect(prompt).toContain("File-level edges alone do not connect");
-      expect(prompt).toContain("never invent connections");
+    it(`leaves structural links to MEX instead of asking the agent to wire them (${name})`, () => {
+      expect(prompt).not.toContain("link-sections");
+      expect(prompt).toContain("MEX links each fact to its file");
+      expect(prompt).toContain("Never invent connections");
     });
   }
 

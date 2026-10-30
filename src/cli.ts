@@ -16,6 +16,7 @@ import { runFeedback, maybeShowInvite, dismissInvite, enableInvite } from "./fee
 import type { MexConfig } from "./types.js";
 import type { RunHubCommandOptions } from "./hub/command.js";
 import { capabilitiesInvalidRequestEnvelope, readWikiExclude } from "./capabilities.js";
+import { WIKI_APPLY_HELP } from "./wiki/cli/apply-help.js";
 import {
   buildTeamIdentityActivityCommands,
   buildWorkstreamCommand,
@@ -185,6 +186,7 @@ async function reportSetupCommandError(error: unknown): Promise<void> {
 
 async function runSetupCommand(options: {
   browser?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean; tool?: string[]; yes?: boolean;
+  force?: boolean;
 }): Promise<void> {
   try {
     if (options.browser) {
@@ -199,6 +201,7 @@ async function runSetupCommand(options: {
       openBrowser: options.open,
       ...(options.tool === undefined ? {} : { tools: setup.parseSetupTools(options.tool) }),
       ...(options.yes ? { yes: true } : {}),
+      ...(options.force ? { force: true } : {}),
     });
     process.exitCode = result.exitCode;
   } catch (error) {
@@ -297,7 +300,7 @@ const specReadService: SpecCliServiceFactory = async () => {
     import("./wiki/application-adapter.js"),
     import("./team/specs/index.js"),
   ]);
-  const graph = createRepositoryGraphPort(projectRoot);
+  const graph = createRepositoryGraphPort(projectRoot, { candidateExecution: "process" });
   const wiki = createRepositoryWikiPort(projectRoot, {
     groundingBridge: graph,
     exclude: readWikiExclude(resolve(projectRoot, ".mex")),
@@ -339,29 +342,65 @@ program.addCommand(buildSpecCommand({
 }));
 
 // ── Setup (terminal by default; explicit browser and read-only paths) ──
-program
+const setupCommand = program
   .command("setup")
   .description("Set up MEX in the terminal; use --browser for browser setup")
   .option("--cli", "Run setup in the terminal (the default)")
-  .addOption(new Option("--browser", "Run setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes"]))
+  .addOption(new Option("--browser", "Run setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force"]))
   .option("--mode <mode>", "Template mode: code-repo or agent-memory (preserves saved mode)")
   .option("--dry-run", "Show what would happen without making changes")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
   .option("--no-open", "Show the Hub link without opening a browser")
   .option("--tool <tool>", "Terminal setup: preselect an AI tool (repeatable; none for no tool; --yes skips review)", (value: string, previous: string[] = []) => [...previous, value])
   .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
+  .option("--force", "Terminal setup: run the full flow even when MEX is already set up here")
   .addHelpText(
     "after",
     "\nSetup modes:\n"
-      + "  Terminal (default, or --cli)  Runs setup in this terminal. --tool, --yes and --dry-run\n"
-      + "                                apply only here.\n"
+      + "  Terminal (default, or --cli)  Runs setup in this terminal. --tool, --yes, --force and\n"
+      + "                                --dry-run apply only here.\n"
       + "  Browser (--browser)           Runs setup in the local browser Hub. It cannot be combined\n"
-      + "                                with --cli, --tool, --yes or --dry-run.\n"
+      + "                                with --cli, --tool, --yes, --force or --dry-run.\n"
+      + "\nOn a checkout that is already set up, setup reports its status and does no work;\n"
+      + "it finishes only what is missing otherwise. --force runs the full flow; authored\n"
+      + "files are always preserved.\n"
       + "\n--no-open prints the Hub link instead of opening it in a browser. In the terminal\n"
-      + "mode this is the link to the finishing Hub page; in the browser mode it is the setup link.\n",
+      + "mode this is the link to the finishing Hub page; in the browser mode it is the setup link.\n"
+      + "\nNo agent CLI MEX can launch? Paste one prompt into your agent instead: it runs\n"
+      + "`mex setup next --start` first, then does what it prints, until setup is complete.\n",
   )
   .action(async (_opts, command: Command) => {
     await runSetupCommand(command.optsWithGlobals());
+  });
+
+setupCommand
+  .command("next")
+  .option("--start", "Start a new chat: settle earlier tasks, including batches without receipts")
+  .option("--retry <task>", "Hand an abandoned running task out again (use its printed task id)")
+  .description("Continue setup one step at a time from your agent's chat: apply the last step, print the next")
+  .addHelpText(
+    "after",
+    "\nFor agents MEX cannot launch itself. Each call applies what the previous step wrote\n"
+      + "(or gives that step's fix task), records progress, and prints the next task as a file\n"
+      + "under .mex/local/setup-next/ with the exact next command. The last call finalizes Graph\n"
+      + "and Wiki. Start each new chat with `mex setup next --start`; earlier tasks must be stopped.\n"
+      + "Then follow the printed commands (`mex setup next` without --start).\n",
+  )
+  .action(async (options: { retry?: string; start?: boolean }) => {
+    try {
+      const { findSetupProjectRoot } = await import("./setup/entry.js");
+      const { runSetupNext } = await import("./setup/next.js");
+      const result = await runSetupNext({
+        ...(options.retry === undefined ? {} : { retry: options.retry }),
+        ...(options.start === undefined ? {} : { start: options.start }),
+        projectRoot: findSetupProjectRoot(),
+        onProgress: (line) => console.error(line),
+      });
+      console.log(result.output);
+      process.exitCode = result.exitCode;
+    } catch (error) {
+      await reportSetupCommandError(error);
+    }
   });
 
 // ── Official agent skills ──
@@ -447,11 +486,17 @@ program
         { verbose: opts.verbose },
       );
 
+      // An unfinished setup is said first, with the one line that continues it.
+      const { describeUnfinishedSetup } = await import("./setup/unfinished.js");
+      const unfinished = describeUnfinishedSetup(config.projectRoot);
       if (opts.json) {
-        reportJSON(report, { verbose: opts.verbose });
+        const setup = unfinished === null ? {} : { setup: { done: unfinished.done, total: unfinished.total, finished: false, message: unfinished.line } };
+        reportJSON({ ...report, ...setup } as typeof report, { verbose: opts.verbose });
       } else if (opts.quiet) {
+        if (unfinished) console.log(unfinished.line);
         reportQuiet(report);
       } else {
+        if (unfinished) console.log(`${unfinished.line}\n`);
         if (opts.verbose) reportVerbose(report);
         reportConsole(report);
       }
@@ -505,13 +550,14 @@ program
 // ── Code Graph ──
 const graphCommand = program
   .command("graph")
-  .description("Inspect or explicitly maintain the code knowledge graph")
+  .description("Ensure a current code graph: reuse fresh, refresh changed, rebuild missing or unusable")
+  .option("--force", "Force a full build (also available as mex graph rebuild)")
   .option("--json", "Output the build summary as JSON")
   .option("--root <dir>", "Project root to index (defaults to current directory)")
   .action(async (opts) => {
     try {
       const { runGraph } = await import("./graph/cli-graph.js");
-      await runGraph({ root: opts.root, json: opts.json });
+      await runGraph({ root: opts.root, json: opts.json, force: opts.force });
     } catch (err) {
       const { describeGraphMaintenanceFailure } = await import("./graph/cli-graph.js");
       console.error(describeGraphMaintenanceFailure(err));
@@ -527,7 +573,7 @@ graphCommand
   .option("--root <dir>", "Project root to inspect (defaults to current directory)")
   .action(async (opts) => {
     try {
-      const { runGraphStatus } = await import("./graph/cli-graph.js");
+      const { runGraphStatus } = await import("./graph/cli-status.js");
       await runGraphStatus({
         root: opts.root ?? graphCommand.opts().root,
         json: opts.json ?? graphCommand.opts().json,
@@ -586,6 +632,7 @@ graphCommand
   .option("--max-nodes <n>", "maximum results to return")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
+  .option("--include-tests", "also return callers/callees in test files when other results exist")
   .action(async (relation, target, options) => {
     const { createGraphCliWriter } = await import("./graph-cli-output.js");
     return import("./graph/cli-agent.js").then(({ runGraphQuery }) => runGraphQuery(relation, target, process.cwd(), { write: createGraphCliWriter() }, options));
@@ -664,7 +711,7 @@ function wikiIo(): import("./wiki/cli/commands.js").CommandIo {
 async function groundedWikiIo(): Promise<import("./wiki/cli/commands.js").CommandIo> {
   const base = wikiIo();
   const { createRepositoryGraphPort } = await import("./graph/application-adapter.js");
-  return { ...base, groundingBridge: createRepositoryGraphPort(base.projectRoot ?? resolve(base.scaffoldRoot, "..")) };
+  return { ...base, groundingBridge: createRepositoryGraphPort(base.projectRoot ?? resolve(base.scaffoldRoot, ".."), { candidateExecution: "process" }) };
 }
 
 /** The §15.1 filters, added to whichever commands they apply to. */
@@ -766,10 +813,11 @@ wikiCommand
 
 wikiCommand
   .command("apply <operation-file>")
-  .description("Plan an operation from a JSON file; writes only with --apply")
+  .description("Plan one operation or an all-or-nothing batch from a JSON file; writes only with --apply")
   .option("--apply", "write the change, rather than only planning it")
   .option("--dry-run", "plan only, even if --apply was given")
   .option("--json", "emit one enveloped JSON object")
+  .addHelpText("after", WIKI_APPLY_HELP)
   .action(async (file: string, options) => {
     const { runApply } = await import("./wiki/cli/commands.js");
     await runApply(await groundedWikiIo(), file, options);
@@ -837,7 +885,7 @@ async function synthesisIo(): Promise<import("./wiki/cli/commands.js").CommandIo
   return {
     ...base,
     repoRoot: config.projectRoot,
-    synthesisBridge: createRepositoryGraphPort(config.projectRoot),
+    synthesisBridge: createRepositoryGraphPort(config.projectRoot, { candidateExecution: "process" }),
     ...(config.wiki?.synthesis === undefined ? {} : { synthesisScope: config.wiki.synthesis }),
     launchAgent: (playbook: string) => {
       // mex's own launcher, not a second one: six tools, cross-platform
@@ -944,7 +992,8 @@ graphCommand
     try {
       const config = loadConfig();
       const { runGraphGround } = await import("./graph/cli-ground.js");
-      await runGraphGround(config, opts);
+      const { wikiGroundingDocumentReader } = await import("./wiki/grounding/document-reader.js");
+      await runGraphGround(config, opts, { documentReader: wikiGroundingDocumentReader });
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
@@ -981,6 +1030,7 @@ program
   .option("--max-nodes <n>", "maximum impacted nodes to return")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
+  .option("--include-tests", "also return impacted nodes in test files when other results exist")
   .action(async (target, options) => {
     const { createGraphCliWriter } = await import("./graph-cli-output.js");
     return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), { write: createGraphCliWriter() }, options));
@@ -1404,38 +1454,42 @@ if (process.argv[1]) {
   }
 }
 // Refuse unsupported Node before any command runs, so it cannot fail halfway.
-const unsupportedNode = isMainModule ? unsupportedNodeMessage(process.versions.node) : null;
-if (unsupportedNode !== null) {
-  console.error(unsupportedNode);
-  process.exitCode = 1;
-} else if (isMainModule) {
-  if (!isFirstRunNoticeExemptCommand(process.argv[2])) showFirstRunNotice();
-  const commandArgv = process.argv.slice(2);
-  const teamJsonContext = inspectTeamJsonInvocation(commandArgv);
-  const skillsSyncJsonInvocation = isSkillsSyncJsonInvocation(commandArgv);
-  if (teamJsonContext !== null && hasMissingTeamApplyValue(commandArgv)) {
-    emitTeamJsonParseProblem(teamJsonContext);
-  } else if (isInvalidCapabilitiesJsonInvocation(commandArgv)) {
-    console.log(JSON.stringify(capabilitiesInvalidRequestEnvelope()));
-    process.exitCode = 2;
+export function runCli(): void {
+  const unsupportedNode = unsupportedNodeMessage(process.versions.node);
+  if (unsupportedNode !== null) {
+    console.error(unsupportedNode);
+    process.exitCode = 1;
   } else {
-    if (teamJsonContext !== null || skillsSyncJsonInvocation) {
-      configureTeamJsonParseErrors(program);
+    if (!isFirstRunNoticeExemptCommand(process.argv[2])) showFirstRunNotice();
+    const commandArgv = process.argv.slice(2);
+    const teamJsonContext = inspectTeamJsonInvocation(commandArgv);
+    const skillsSyncJsonInvocation = isSkillsSyncJsonInvocation(commandArgv);
+    if (teamJsonContext !== null && hasMissingTeamApplyValue(commandArgv)) {
+      emitTeamJsonParseProblem(teamJsonContext);
+    } else if (isInvalidCapabilitiesJsonInvocation(commandArgv)) {
+      console.log(JSON.stringify(capabilitiesInvalidRequestEnvelope()));
+      process.exitCode = 2;
+    } else {
+      if (teamJsonContext !== null || skillsSyncJsonInvocation) {
+        configureTeamJsonParseErrors(program);
+      }
+      program.parseAsync().catch((err: Error) => {
+        if (teamJsonContext !== null) {
+          emitTeamJsonParseProblem(teamJsonContext);
+          return;
+        }
+        if (skillsSyncJsonInvocation) {
+          emitSkillsSyncJsonParseProblem();
+          return;
+        }
+        console.error(err.message);
+        process.exitCode = 1;
+      }).finally(() => cliTelemetry.finish(process.exitCode));
     }
-    program.parseAsync().catch((err: Error) => {
-      if (teamJsonContext !== null) {
-        emitTeamJsonParseProblem(teamJsonContext);
-        return;
-      }
-      if (skillsSyncJsonInvocation) {
-        emitSkillsSyncJsonParseProblem();
-        return;
-      }
-      console.error(err.message);
-      process.exitCode = 1;
-    }).finally(() => cliTelemetry.finish(process.exitCode));
   }
 }
+
+if (isMainModule) runCli();
 
 interface TeamJsonInvocationContext {
   command: TeamCliCommandName;

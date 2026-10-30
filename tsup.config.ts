@@ -6,8 +6,9 @@ import { defineConfig } from "tsup";
  *  - index → dist/index.js + dist/index.d.ts (library entry consumed via `exports`)
  */
 export default defineConfig([
+  { entry: { runtime: "src/statechart/helper.ts" }, format: ["esm"], target: "node22", outDir: "skills/mex-statechart/scripts", minify: true, outExtension: () => ({ js: ".mjs" }), clean: false, splitting: false, dts: false, noExternal: ["@mex/hub-contracts", "zod"] },
   {
-    entry: { cli: "src/cli.ts", "graph-candidate": "src/graph/candidate-entry.ts" },
+    entry: { cli: "src/cli-bootstrap.ts", "graph-candidate": "src/graph/candidate-entry.ts", "setup-graph": "src/setup/next-graph-entry.ts" },
     format: ["esm"],
     target: "node20",
     outDir: "dist",
@@ -19,11 +20,16 @@ export default defineConfig([
     splitting: true,
     sourcemap: true,
     dts: false,
-    // Hub contracts are a private workspace package and are intentionally
-    // bundled into the published CLI instead of becoming a runtime dependency.
-    noExternal: ["@mex/hub-contracts"],
+    // Bundle the private contracts and read dependencies to reduce per-process
+    // module resolution. Preserve the dependency overlay during bundling.
+    noExternal: [
+      "@mex/hub-contracts", "glob", "yaml", "zod", "chalk", "commander",
+      "unified", "remark-parse", "remark-frontmatter", "unist-util-visit",
+      "simple-git", "cross-spawn",
+    ],
+    esbuildOptions(options) { options.preserveSymlinks = true; },
     banner: {
-      js: "#!/usr/bin/env node",
+      js: "#!/usr/bin/env node\nimport { createRequire as __mexCreateRequire } from 'node:module';\nvar require = __mexCreateRequire(import.meta.url);",
     },
   },
   {

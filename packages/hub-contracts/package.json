@@ -3,7 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -28,6 +30,10 @@
     "./setup": {
       "types": "./dist/setup.d.ts",
       "import": "./dist/setup.js"
+    },
+    "./statechart": {
+      "types": "./dist/statechart.d.ts",
+      "import": "./dist/statechart.js"
     }
   },
   "scripts": {

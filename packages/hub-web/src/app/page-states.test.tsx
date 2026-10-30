@@ -947,6 +947,52 @@ describe("Health states", () => {
     expect(await screen.findByRole("heading", { name: "Inspecting system health" })).toBeVisible();
   });
 
+  it("previews migration without a job, allows cancellation, and applies only the reviewed revision", async () => {
+    const user = userEvent.setup();
+    const fixture = createFixtureApi();
+    const health = await fixture.getHealth();
+    const previewWikiMigration = vi.fn(async () => ({ revision: "a".repeat(64), report: "Files scanned: 12", canApply: true }));
+    const startJob = vi.fn((request: Parameters<HubApi["startJob"]>[0]) => fixture.startJob(request));
+    renderRoute("/health", apiWith({ previewWikiMigration, startJob, getHealth: () => Promise.resolve({
+      ...health,
+      components: health.components.map((component) => component.wiki ? {
+        ...component,
+        status: "degraded",
+        summary: "Legacy Knowledge requires an explicit migration before Hub reads can continue.",
+        wiki: {
+          ...component.wiki,
+          indexStatus: "migration_required",
+          indexedAt: null,
+          schemaVersion: null,
+          indexedRevision: null,
+          allowedJobKinds: ["wiki_rebuild"],
+          recommendedJobKind: "wiki_rebuild",
+          activeJobId: null,
+          recoveryCommand: { label: "Preview the required Wiki migration", command: "mex wiki migrate --dry-run" },
+        },
+      } : component.graph ? { ...component, graph: { ...component.graph, activeJobId: null } } : component),
+    }) }));
+
+    const wikiHeading = await screen.findByRole("heading", { name: "Project Wiki" });
+    const wikiRow = wikiHeading.closest<HTMLElement>("[role='listitem']");
+    expect(wikiRow).not.toBeNull();
+    expect(within(wikiRow!).getByText("Migration required")).toBeVisible();
+    expect(within(wikiRow!).getByText("Wiki rebuild recommended")).toBeVisible();
+    expect(within(wikiRow!).queryByText("No repair recommended")).toBeNull();
+    expect(within(wikiRow!).getByText("Preview the required Wiki migration")).toBeVisible();
+    expect(within(wikiRow!).getByText("mex wiki migrate --dry-run")).toBeVisible();
+    expect(previewWikiMigration).not.toHaveBeenCalled();
+    await user.click(within(wikiRow!).getByRole("button", { name: /Preview migration/ }));
+    expect(await screen.findByText("Files scanned: 12")).toBeVisible();
+    expect(startJob).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Cancel migration" }));
+    expect(screen.queryByText("Files scanned: 12")).toBeNull();
+    expect(startJob).not.toHaveBeenCalled();
+    await user.click(within(wikiRow!).getByRole("button", { name: /Preview migration/ }));
+    await user.click(await screen.findByRole("button", { name: "Apply migration" }));
+    expect(startJob).toHaveBeenCalledWith({ kind: "wiki_rebuild", migrationPreview: "a".repeat(64) });
+  });
+
   it("renders a bounded health error with retry", async () => {
     renderRoute("/health", apiWith({ getHealth: () => Promise.reject(new Error("database detail")) }));
 

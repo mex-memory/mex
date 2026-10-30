@@ -132,9 +132,9 @@ describe("terminal setup HUD", () => {
     const app = await show({ tools: initial.tools.map(tool => ({ ...tool, cliAvailable: tool.id === "opencode" })) });
     expect(app.lastFrame()).toContain("Claude Code  CLI not found");
     expect(app.lastFrame()).toContain("Codex  CLI not found");
-    expect(app.lastFrame()).toContain("Cursor  integration only");
-    expect(app.lastFrame()).toContain("OpenCode  integration only");
-    expect(app.lastFrame()).not.toContain("CLI ready");
+    expect(app.lastFrame()).toContain("Cursor  CLI not found");
+    expect(app.lastFrame()).toContain("OpenCode  CLI ready");
+    expect(app.lastFrame()).toContain("Windsurf  integration only");
     expectFits(app.lastFrame(), 80, 24);
   });
 
@@ -284,6 +284,13 @@ describe("terminal setup HUD", () => {
     vi.advanceTimersByTime(2_000);
     await settle();
     expect(app.frames).toHaveLength(frames);
+  });
+
+  it("shows graph and knowledge active together while sessions populate during the build", async () => {
+    const app = await show({ screen: "progress", activeStep: "graph", concurrentPopulation: "1/5 subsystems done", detail: "Graph: parsing 30/100 · shared files running · working on src/a/" });
+    expect(app.lastFrame()).toContain("[now ] Code graph");
+    expect(app.lastFrame()).toContain("[now ] Project knowledge");
+    expect(app.lastFrame()).not.toContain("[done] Code graph");
   });
 
   it("does not animate configuration, manual choices, errors, Hub, or stopping work", async () => {

@@ -9,6 +9,7 @@ import { buildSyncBrief, buildCombinedBrief, flaggedWikiEntities, type FlaggedEn
 import { rebuildWikiIndexAfterSync } from "./wiki-index.js";
 import { findScaffoldFiles } from "../drift/index.js";
 import { captureGroundingBaselines, groundingReviewNodeIds, loadGroundingRuntime, persistMovedGroundings, previewGroundingBaseline, type MovedByNeighborsNotice } from "../graph/runtime.js";
+import { wikiGroundingDocumentReader } from "../wiki/grounding/document-reader.js";
 import { movedByNeighborsMessage } from "../drift/checkers/grounding.js";
 import { writeGroundings } from "../markdown.js";
 import { buildAgentCommand } from "../agent-command.js";
@@ -306,7 +307,7 @@ export async function runSync(
       try {
         // Completion authorizes verification and initial capture, never renewal
         // of accepted knowledge. Literal-only edits can keep the same fingerprint.
-        await captureGroundingBaselines(config);
+        await captureGroundingBaselines(config, { documentReader: wikiGroundingDocumentReader });
         if (dependencies.reviewGrounding ?? (process.stdin.isTTY && process.stdout.isTTY)) {
           await reviewGroundingBaselines(config, targets, ask);
         }
@@ -478,6 +479,7 @@ export async function reviewGroundingBaselines(
       if (answer !== "y" && answer !== "yes") continue;
       const result = await captureGroundingBaselines(config, {
         acceptedGroundings: [review.acceptance],
+        documentReader: wikiGroundingDocumentReader,
         warn: write,
       });
       write(result.captured === 1

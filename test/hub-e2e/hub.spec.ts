@@ -2032,6 +2032,7 @@ test.describe("populated development fixture", () => {
       { href: "/", label: "Overview" },
       { href: "/knowledge", label: "Context" },
       { href: "/code", label: "Code" },
+      { href: "/diagrams", label: "Diagrams" },
       { href: "/inbox", label: "Inbox" },
       { href: "/relays", label: "Relays" },
       { href: "/activity", label: "Activity" },
@@ -2374,8 +2375,15 @@ test.describe("built production Hub", () => {
 
   test.beforeAll(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "mex-hub-browser-"));
-    mkdirSync(join(projectRoot, ".mex"), { recursive: true });
+    mkdirSync(join(projectRoot, ".mex", "context"), { recursive: true });
     writeFileSync(join(projectRoot, ".mex", "ROUTER.md"), "# Browser fixture\n");
+    // A finalized scaffold carries canonical Wiki entities; without one the
+    // committed scaffold reads as never finalized and opens finalize-only setup.
+    writeFileSync(
+      join(projectRoot, ".mex", "context", "architecture.md"),
+      "---\nname: architecture\nmex:\n  id: mx_01HZ0000000000000000000001\n  type: architecture\n"
+        + "  status: promoted\n  revision: 1\n  title: Architecture\n---\n\n# Architecture\n\nBrowser fixture.\n",
+    );
     writeFileSync(
       join(projectRoot, ".mex", "config.json"),
       JSON.stringify({
@@ -2592,7 +2600,7 @@ test.describe("built production Hub", () => {
     expect(response?.headers()["content-security-policy"]).toContain("default-src 'self'");
     await expectAccessible(page);
     // Each of the eight full-page navigations discovers that this operational
-    // process has no setup wizard. Its legacy Wiki scaffold needs migration. Accept
+    // process has no setup wizard. Its finalized Wiki has no local index yet. Accept
     // only those exact failures, with their real endpoint and Problem Details.
     const expectedFailures = [
       ...Array.from({ length: 8 }, () => `${productionOrigin}/api/v1/setup`),
@@ -2606,10 +2614,10 @@ test.describe("built production Hub", () => {
       expect(candidate.contentType).toBe("application/problem+json; charset=UTF-8");
       expect(await candidate.body).toEqual({
         type: "about:blank",
-        title: setup ? "Capability unavailable" : "Migration required",
+        title: setup ? "Capability unavailable" : "Index missing",
         status: 503,
-        code: setup ? "CAPABILITY_UNAVAILABLE" : "MIGRATION_REQUIRED",
-        detail: setup ? "Setup is not available in this Hub process." : "The local state requires an explicit supported migration.",
+        code: setup ? "CAPABILITY_UNAVAILABLE" : "INDEX_MISSING",
+        detail: setup ? "Setup is not available in this Hub process." : "The required local index is missing.",
         instance: new URL(candidate.url).pathname,
         requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
       });

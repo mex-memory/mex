@@ -18,7 +18,7 @@ import { dirname } from "node:path";
 import { schemaPath } from "../assets.js";
 import { GRAPH_CORPUS_LIMITS } from "../corpus-policy.js";
 import { GraphRebuildRequiredError } from "../errors.js";
-import { bandHashInts, bandHashes, decodeMinhash, encodeMinhash } from "../fingerprint.js";
+import { bandHashInts, bandHashes, decodeMinhash, encodeMinhash, indexedInLsh } from "../fingerprint.js";
 import type { Fingerprint } from "../reconcile.js";
 import {
   GRAPH_SNAPSHOT_METADATA_KEY,
@@ -55,6 +55,10 @@ function configureConnection(db: SqliteDatabase): void {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL"); // safe under WAL
   db.pragma("temp_store = MEMORY");
+  // A rebuild inserts millions of index entries (LSH buckets, edges); the
+  // 2 MiB default page cache turns those into repeated page reads. Pages are
+  // only allocated as they are used, so small graphs keep a small cache.
+  db.pragma("cache_size = -131072");
 }
 
 function configureReadOnlyConnection(db: SqliteDatabase): void {
@@ -916,6 +920,8 @@ function validateCombinedSchema(db: SqliteDatabase): void {
     if (!bucketStep.done && BigInt(bucketStep.value.ref) < BigInt(row.ref)) {
       throw incompatibleSchema("LSH contains rows without a fingerprint owner.");
     }
+    // A small fingerprint may own no buckets (see `indexedInLsh`).
+    if (!indexedInLsh(fingerprint) && (bucketStep.done || bucketStep.value.ref !== row.ref)) continue;
     for (const entry of expected) {
       if (
         bucketStep.done
