@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `mex check` recognizes unread `requirements.txt` and `setup.py` manifests without parsing or executing them. Their presence suppresses uncertain Python and unlabelled missing-name claims while preserving npm checks identified by explicit ecosystem headings (including parent headings) or scoped npm names. Version lookup and cross-file version comparisons distinguish explicitly identified npm and Python packages with the same name. Existing discovery, symlink, and resource limits remain in force; presence-only files do not consume manifest byte budgets (#207).
+- Ecosystem headings require unambiguous labels: generic `Node` and mixed headings such as `JavaScript and Rust Dependencies` do not assign npm. Adding another ecosystem no longer hides an incompatible unlabelled version claim; unlabelled versions that match a known candidate remain compatible.
+
+### Added
+
+- Dependency and version claims can carry optional `ecosystem: "npm" | "python"` evidence. Existing unlabelled claims remain valid; generic headings and familiar package names do not establish an ecosystem. This is an additive public `Claim` type change subject to the minor-release policy in `COMPATIBILITY.md`.
+
 ## [0.8.5] - 2026-10-29
 
 ### Added

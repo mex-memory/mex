@@ -2,6 +2,7 @@ import { RepositoryInventory } from "../repository.js";
 import { openSync, readSync, closeSync, fstatSync, constants } from "node:fs";
 import { resolve } from "node:path";
 import type { Claim, DriftIssue } from "../../types.js";
+import { dependencyEcosystem } from "../dependency-ecosystem.js";
 
 /** Runtimes, platforms, databases, protocols, and architectural terms that appear in stack docs but aren't installable packages */
 const KNOWN_RUNTIMES = new Set([
@@ -85,8 +86,9 @@ export function checkDependencies(
   repository = new RepositoryInventory(projectRoot),
 ): DriftIssue[] {
   const issues: DriftIssue[] = [];
-  const deps = loadAllDependencies(projectRoot, repository);
-  if (!deps) return issues;
+  const loaded = loadAllDependencies(projectRoot, repository);
+  if (!loaded) return issues;
+  const { entries: deps, unreadPython } = loaded;
 
   const depClaims = claims.filter(
     (c) => c.kind === "dependency" && !c.negated
@@ -106,8 +108,12 @@ export function checkDependencies(
     if (NON_PACKAGE_LABELS.has(name) || isConceptAcronym(claim.value)) continue;
 
     // Fuzzy match: "React" → "react", "Express" → "express"
-    const found = findDependency(deps, name);
+    const ecosystem = dependencyEcosystem(claim);
+    const found = findDependency(deps, name, ecosystem);
     if (!found) {
+      // Unread Python manifests make Python and unlabelled names uncertain,
+      // but do not invalidate the understood npm corpus (#207).
+      if (unreadPython && ecosystem !== "npm") continue;
       issues.push({
         code: "DEPENDENCY_MISSING",
         severity: "warning",
@@ -126,7 +132,7 @@ export function checkDependencies(
 
     const name = match[1].trim().toLowerCase();
     const claimedVersion = match[2];
-    const found = findDependency(deps, name);
+    const found = findDependency(deps, name, dependencyEcosystem(claim));
 
     if (found && !found.version.includes(claimedVersion)) {
       issues.push({
@@ -156,8 +162,11 @@ interface DepEntry {
 /** A claimed name against the manifest list. Prose uses the import spelling
  *  (`sentence_transformers`, `Tree.Sitter`) where the manifest carries the
  *  distribution name, so a normalizing ecosystem matches either. */
-function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined {
-  const exact = deps.find((d) => d.name.toLowerCase() === claimed);
+function findDependency(deps: DepEntry[], claimed: string, ecosystem?: Claim["ecosystem"]): DepEntry | undefined {
+  // Only Python entries normalize. Keep that registry distinction for exact
+  // names too: unrelated npm/PyPI packages can have the same spelling.
+  const belongs = (entry: DepEntry) => !ecosystem || (entry.normalizes ? "python" : "npm") === ecosystem;
+  const exact = deps.find((d) => belongs(d) && d.name.toLowerCase() === claimed);
   if (exact) return exact;
   const displayNames: Record<string, string[]> = {
     nestjs: ["@nestjs/core", "@nestjs/common"], clickhouse: ["@clickhouse/client"], biome: ["@biomejs/biome"],
@@ -165,7 +174,7 @@ function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined
   const display = deps.find((d) => displayNames[claimed]?.includes(d.name.toLowerCase()));
   if (display) return display;
   const normalized = normalizeName(claimed);
-  return deps.find((d) => d.normalizes && normalizeName(d.name) === normalized);
+  return deps.find((d) => belongs(d) && d.normalizes && normalizeName(d.name) === normalized);
 }
 
 // Manifest reads preserve the existing per-file and aggregate byte budgets.
@@ -188,7 +197,12 @@ function readManifest(path: string, remaining: number): string | null {
   } finally { closeSync(descriptor); }
 }
 
-function loadAllDependencies(projectRoot: string, repository: RepositoryInventory): DepEntry[] | null {
+interface LoadedDependencies {
+  entries: DepEntry[];
+  unreadPython: boolean;
+}
+
+function loadAllDependencies(projectRoot: string, repository: RepositoryInventory): LoadedDependencies | null {
   const entries: DepEntry[] = [];
 
   // Repositories can contain independent applications in nested directories.
@@ -203,6 +217,10 @@ function loadAllDependencies(projectRoot: string, repository: RepositoryInventor
       return rank(a) - rank(b) || a.localeCompare(b);
     });
   if (!manifests || manifests.length > 1024) return null;
+  // Presence only (#207): never opened and outside both byte budgets. Hidden
+  // directories such as `.venv` hold installed packages, not project manifests.
+  const unreadPython = repository.files.some((file) => /(^|\/)(requirements\.txt|setup\.py)$/.test(file)
+    && !file.split("/").some((part) => part.startsWith(".")) && repository.safeFile(file));
   let remaining = MAX_TOTAL_MANIFEST_BYTES;
 
   for (const manifest of manifests) {
@@ -236,7 +254,9 @@ function loadAllDependencies(projectRoot: string, repository: RepositoryInventor
   // that returns a few entries out of many is therefore worse than one that
   // returns none: it switches the checker on and measures claims against a
   // list it knows is incomplete. Parse a shape fully or leave it out.
-  return entries.length || repository?.manifests?.length ? entries : null;
+  // requirements.txt and setup.py stay out of the parsed list on purpose (#207):
+  // presence only, never opened, and not counted toward the manifest budgets.
+  return entries.length || repository?.manifests?.length ? { entries, unreadPython } : null;
 }
 
 /** A dependency table whose keys are package names, not extra/group names. */

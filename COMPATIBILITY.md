@@ -1,5 +1,24 @@
 # Compatibility & versioning
 
+## Unreleased dependency claim metadata
+
+`Claim` gains optional `ecosystem: "npm" | "python"` evidence for dependency
+and version claims. Existing callers can omit it. Extraction records explicit
+ecosystem headings (including enclosing headings) and scoped npm package names;
+mixed or unlabelled prose stays ambiguous. Checking distinguishes the named
+ecosystems, so unread Python manifests do not suppress identified npm claims.
+An unlabelled missing name still abstains when Python manifests are unread.
+
+Heading evidence uses whole ecosystem labels plus neutral dependency terms,
+for example `JavaScript Dependencies` or `Python` above `Key Libraries`.
+Bare `Node`, mixed-language headings, and unknown qualifiers clear inherited
+evidence; `Node.js` and `NodeJS` identify npm. When both npm and Python version
+claims exist for a name, an unlabelled version can match either candidate. A
+version matching neither remains a cross-file conflict.
+
+This is an additive public-interface change and requires a minor release under
+the policy below. No patch-release exception or version bump is made here.
+
 ## Runtime requirement
 
 mex 0.8.x requires Node.js 22.5 or newer. The code graph and the wiki index use
