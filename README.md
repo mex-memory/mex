@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/mex-memory-mex-badge.png)](https://mseep.ai/app/mex-memory-mex)
+
 <div align="center">
 
 <h1 id="mex">
