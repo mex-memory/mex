@@ -99,7 +99,7 @@ function DriftAlertPreference() {
     <section className={styles.surface} aria-labelledby="drift-alerts-title">
       <div className={styles.intro}>
         <span className={styles.icon}><BellRing aria-hidden="true" /></span>
-        <div><h2 id="drift-alerts-title">Drift alerts</h2><p>Get a desktop notification when knowledge may be out of date and <code>mex sync</code> has work to do.</p></div>
+        <div><h2 id="drift-alerts-title">Drift alerts</h2><p>Enabled by default. Get a desktop notification when knowledge may be out of date and <code>mex sync</code> has work to do.</p></div>
         <span className={styles.scope}>This checkout</span>
       </div>
       <fieldset className={styles.choices} disabled={save.isPending}>
@@ -118,7 +118,7 @@ function DriftAlertPreference() {
         <p>
           {enabled && commitHook ? "Checks run while Hub or mex watch --interval is open, and after each commit."
             : enabled ? "Checks run while Hub or mex watch --interval is open."
-              : "In a Git repository, turning this on adds a small block to this checkout’s post-commit hook so a commit also starts a check. Turning it off removes that block."}
+              : "Turning this on adds a post-commit check in supported Git repositories. Turning it off removes that check."}
         </p>
       </div>
     </section>

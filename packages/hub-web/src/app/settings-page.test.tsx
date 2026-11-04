@@ -16,24 +16,24 @@ function renderSettings(api: HubApi) {
 }
 
 describe("Drift alert setting", () => {
-  it("is off by default, explains the hook, and only saves when changed", async () => {
+  it("is on by default and saves an opt-out only when changed", async () => {
     const user = userEvent.setup();
     const api = createFixtureApi();
     const save = vi.spyOn(api, "setDriftAlerts");
     renderSettings(api);
     const toggle = await screen.findByRole("checkbox", { name: /Notify me about drift/ }, { timeout: 5_000 });
-    expect(toggle).not.toBeChecked();
-    expect(screen.getByText(/adds a small block to this checkout’s post-commit hook/)).toBeVisible();
+    expect(toggle).toBeChecked();
+    expect(screen.getByText(/Enabled by default/)).toBeVisible();
     expect(save).not.toHaveBeenCalled();
 
     await user.click(toggle);
-    expect(save).toHaveBeenCalledWith({ enabled: true });
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Notify me about drift/ })).toBeChecked());
-    expect(screen.getByText(/and after each commit/)).toBeVisible();
+    expect(save).toHaveBeenCalledWith({ enabled: false });
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Notify me about drift/ })).not.toBeChecked());
+    expect(screen.getByText(/adds a post-commit check/)).toBeVisible();
 
     await user.click(screen.getByRole("checkbox", { name: /Notify me about drift/ }));
-    expect(save).toHaveBeenLastCalledWith({ enabled: false });
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Notify me about drift/ })).not.toBeChecked());
+    expect(save).toHaveBeenLastCalledWith({ enabled: true });
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Notify me about drift/ })).toBeChecked());
   });
 
   it("says when a notification could not be shown and when no hook was added", async () => {

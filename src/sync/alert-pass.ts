@@ -1,11 +1,13 @@
 import type { DriftStatus } from "@mex/hub-contracts";
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
+import { lstatSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import { findConfig } from "../config.js";
 import { RepositoryInventory } from "../drift/repository.js";
 import { readDriftAlertState, updateDriftAlertState } from "./alert-state.js";
-import { detectDrift } from "./detect.js";
+import { detectDriftForAlerts } from "./detect.js";
+import { driftAlertKey, MAX_ALERT_FILES } from "./alert-summary.js";
 import { sendDesktopNotification } from "./notify.js";
 
 /** Half-finished edits look like drift, so wait until the source has settled. */
@@ -22,7 +24,7 @@ export interface DriftAlertPassOptions {
 }
 
 /** Null when the bounded inventory could not list the repository. */
-export function sourceSnapshot(projectRoot: string): { fingerprint: string; newestMs: number } | null {
+export function sourceSnapshot(projectRoot: string, now = Date.now()): { fingerprint: string; newestMs: number } | null {
   const files = new RepositoryInventory(projectRoot).files;
   if (files === null) return null;
   const hash = createHash("sha256");
@@ -30,18 +32,34 @@ export function sourceSnapshot(projectRoot: string): { fingerprint: string; newe
   for (const file of files) {
     // Without Git the walk also finds the disposable indexes, which change on their own.
     if (/^\.mex\/(graph|wiki)\.db/.test(file)) continue;
-    let mtimeMs = -1;
-    try { mtimeMs = statSync(resolve(projectRoot, file)).mtimeMs; } catch { /* Deleted: still a change. */ }
-    newestMs = Math.max(newestMs, mtimeMs);
-    hash.update(`${file}\0${mtimeMs}\n`);
+    try {
+      const stat = lstatSync(resolve(projectRoot, file));
+      newestMs = Math.max(newestMs, stat.mtimeMs);
+      hash.update(`${file}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.size}\n`);
+    } catch { hash.update(`${file}\0missing\n`); }
   }
+  // Graph maintenance changes which links can be checked, without editing source.
+  // Its timestamps invalidate the check but must not restart the source quiet period.
+  for (const file of [".mex/graph.db", ".mex/graph.db-wal"]) {
+    try {
+      const stat = lstatSync(resolve(projectRoot, file));
+      hash.update(`${file}\0${stat.dev}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\n`);
+    } catch { hash.update(`${file}\0missing\n`); }
+  }
+  try {
+    hash.update(execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000, maxBuffer: 4_096,
+    }));
+  } catch { hash.update("no-head"); }
+  // Age-based drift and commit history can change while worktree bytes stay put.
+  hash.update(new Date(now).toISOString().slice(0, 10));
   return { fingerprint: hash.digest("hex"), newestMs };
 }
 
 function hasNewDrift(alerted: Record<string, number>, status: DriftStatus): boolean {
   const previous = new Map(Object.entries(alerted));
   return status.fileCount > previous.size
-    || status.files.some((file) => (previous.get(file.path) ?? -1) < file.errors + file.warnings);
+    || status.files.some((file) => (previous.get(driftAlertKey(file.path)) ?? -1) < file.errors + file.warnings);
 }
 
 function driftMessage(fileCount: number): string {
@@ -55,14 +73,16 @@ export async function runDriftAlertPass(
 ): Promise<DriftAlertOutcome> {
   const before = readDriftAlertState(projectRoot);
   if (!before.enabled) return "off";
-  const snapshot = sourceSnapshot(projectRoot);
+  const now = options.now?.() ?? Date.now();
+  const snapshot = sourceSnapshot(projectRoot, now);
   if (snapshot === null) return "incomplete";
   if (snapshot.fingerprint === before.checkedFingerprint) return "unchanged";
-  const now = options.now?.() ?? Date.now();
   if (!options.afterCommit && now - snapshot.newestMs < QUIET_MS) return "waiting";
 
-  const status = await (options.detect ?? ((root) => detectDrift(findConfig(root))))(projectRoot);
-  const files = Object.fromEntries(status.files.map((file) => [file.path, file.errors + file.warnings]));
+  const status = await (options.detect ?? ((root) => detectDriftForAlerts(findConfig(root))))(projectRoot);
+  // Never deduplicate a full report against the Hub's truncated first page.
+  if (status.fileCount > MAX_ALERT_FILES || status.files.length !== status.fileCount) return "incomplete";
+  const files = Object.fromEntries(status.files.map((file) => [driftAlertKey(file.path), file.errors + file.warnings]));
   // Claim the alert before sending, so a pass running beside this one stays quiet.
   let shouldNotify = false;
   let previousAlerted: Record<string, number> = {};
@@ -82,7 +102,7 @@ export async function runDriftAlertPass(
   const notify = options.notify ?? sendDesktopNotification;
   const sent = await notify(`MEX: ${basename(projectRoot)}`, driftMessage(status.fileCount));
   await updateDriftAlertState(projectRoot, (current) => (current.enabled
-    ? { ...current, lastDelivery: sent ? "sent" : "failed", alerted: sent ? current.alerted : previousAlerted }
+    ? { ...current, lastDelivery: sent ? "sent" : "failed", checkedFingerprint: sent ? current.checkedFingerprint : null, alerted: sent ? current.alerted : previousAlerted }
     : current));
   return sent ? "sent" : "failed";
 }

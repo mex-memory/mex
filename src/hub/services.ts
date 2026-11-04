@@ -189,8 +189,8 @@ import { normalizeTeamInboxSpecCommand } from "../team/inbox/spec-authoring.js";
 import type { HubReadServices } from "./app.js";
 import { HubHttpError } from "./http/errors.js";
 import { runDriftDetectionProcess } from "../sync/detect-process.js";
-import { installDriftAlertHook, removeDriftAlertHook } from "../sync/alert-hook.js";
-import { readDriftAlertState, updateDriftAlertState, type DriftAlertState } from "../sync/alert-state.js";
+import { readDriftAlertState, type DriftAlertState } from "../sync/alert-state.js";
+import { setDriftAlertsEnabled } from "../sync/alert-settings.js";
 import type {
   GraphSearchBundleRequest,
   GraphSearchBundleResult,
@@ -359,17 +359,8 @@ export function createLocalHubReadServices(
       return projectDriftAlerts(readDriftAlertState(options.projectRoot));
     },
     async setDriftAlerts({ enabled }: DriftAlertUpdateRequest) {
-      if (enabled) {
-        const commitHook = installDriftAlertHookSafely(options.projectRoot);
-        const state = await updateDriftAlertState(options.projectRoot, (current) => ({ ...current, enabled, commitHook }));
-        options.runDriftAlerts?.();
-        return projectDriftAlerts(state);
-      }
-      // Off first: a hook that outlives this write does nothing once alerts are off.
-      const state = await updateDriftAlertState(options.projectRoot, () => ({
-        enabled, commitHook: false, lastDelivery: "none", checkedFingerprint: null, alerted: {},
-      }));
-      removeDriftAlertHook(options.projectRoot);
+      const state = await setDriftAlertsEnabled(options.projectRoot, enabled);
+      if (enabled) options.runDriftAlerts?.();
       return projectDriftAlerts(state);
     },
     driftStatus() {
@@ -1331,13 +1322,6 @@ function projectGraphImpact(impact: GraphImpactResult): CodeWorkspaceResponse["t
 
 function projectDriftAlerts({ enabled, commitHook, lastDelivery }: DriftAlertState) {
   return DriftAlertSettingsSchema.parse({ enabled, commitHook, lastDelivery });
-}
-
-/** Alerts still work from Hub and `mex watch` when the worker can't be found for a hook. */
-function installDriftAlertHookSafely(projectRoot: string): boolean {
-  try {
-    return installDriftAlertHook(projectRoot);
-  } catch { return false; }
 }
 
 function unavailableWikiGraph(): HubHttpError {

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DriftStatus } from "@mex/hub-contracts";
@@ -9,6 +9,10 @@ import { runDriftAlertPass, sourceSnapshot } from "../alert-pass.js";
 import { startDriftAlertSchedule } from "../alert-process.js";
 import { readDriftAlertState, updateDriftAlertState } from "../alert-state.js";
 import { notificationCommand } from "../notify.js";
+import { initializeDriftAlerts, setDriftAlertsEnabled } from "../alert-settings.js";
+import { driftAlertKey, MAX_ALERT_FILES } from "../alert-summary.js";
+import { detectDrift, detectDriftForAlerts } from "../detect.js";
+import { findConfig } from "../../config.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -52,10 +56,12 @@ const later = () => Date.now() + 60 * 60_000;
 describe("runDriftAlertPass", () => {
   it("does nothing and writes nothing while alerts are off", async () => {
     const root = project();
+    await setDriftAlertsEnabled(root, false);
+    const before = readFileSync(join(root, ".mex/local/drift-alerts.json"), "utf8");
     const detect = vi.fn();
     await expect(runDriftAlertPass(root, { detect, now: later })).resolves.toBe("off");
     expect(detect).not.toHaveBeenCalled();
-    expect(existsSync(join(root, ".mex", "local", "drift-alerts.json"))).toBe(false);
+    expect(readFileSync(join(root, ".mex/local/drift-alerts.json"), "utf8")).toBe(before);
   });
 
   it("alerts once with fixed text, then stays quiet until drift is new", async () => {
@@ -131,7 +137,6 @@ describe("runDriftAlertPass", () => {
     const detect = vi.fn(async () => needsSync([["a.md", 1]]));
     await expect(runDriftAlertPass(root, { detect, notify, now: later })).resolves.toBe("failed");
     expect(readDriftAlertState(root)).toMatchObject({ lastDelivery: "failed", alerted: {} });
-    writeFileSync(join(root, "a.ts"), "export const a = 2;\n");
     notify.mockResolvedValue(true);
     await expect(runDriftAlertPass(root, { detect, notify, now: later })).resolves.toBe("sent");
   });
@@ -160,16 +165,68 @@ describe("runDriftAlertPass", () => {
     expect(outcomes.sort()).toEqual(["checked", "sent"]);
     expect(notify).toHaveBeenCalledTimes(1);
   });
+
+  it("deduplicates the full drift corpus beyond the Hub's 100-file preview", async () => {
+    const root = project();
+    mkdirSync(join(root, ".mex/context"));
+    for (let index = 0; index < 101; index++) {
+      writeFileSync(join(root, `.mex/context/file-${index}.md`), `# Test\n\nSee \`src/missing-${index}.ts\`.\n`);
+    }
+    const config = findConfig(root);
+    const preview = await detectDrift(config);
+    const full = await detectDriftForAlerts(config);
+    expect(preview.fileCount).toBeGreaterThan(100);
+    expect(preview.files).toHaveLength(100);
+    expect(full.files).toHaveLength(full.fileCount);
+    const notify = vi.fn(async () => true);
+    await expect(runDriftAlertPass(root, { notify, afterCommit: true })).resolves.toBe("sent");
+    expect(Object.keys(readDriftAlertState(root).alerted)).toHaveLength(full.fileCount);
+    writeFileSync(join(root, "a.ts"), "export const a = 42;\n");
+    await expect(runDriftAlertPass(root, { notify, afterCommit: true })).resolves.toBe("checked");
+    expect(notify).toHaveBeenCalledTimes(1);
+  }, 30_000);
+
+  it("refuses an incomplete alert baseline rather than repeatedly notifying from a preview", async () => {
+    const root = project();
+    const status = { ...needsSync([["a.md", 1]]), fileCount: 101 };
+    const notify = vi.fn(async () => true);
+    await expect(runDriftAlertPass(root, { detect: async () => status, notify, afterCommit: true })).resolves.toBe("incomplete");
+    expect(notify).not.toHaveBeenCalled();
+    expect(existsSync(join(root, ".mex/local/drift-alerts.json"))).toBe(false);
+  });
+
+  it("rechecks after graph maintenance without restarting the source quiet period", async () => {
+    const root = project();
+    const detect = vi.fn(async () => ({ ...inSync, codeLinks: "partial" as const }));
+    await runDriftAlertPass(root, { detect, now: later });
+    writeFileSync(join(root, ".mex/graph.db"), "new graph identity");
+    detect.mockResolvedValue({ ...needsSync([["a.md", 1]]), codeLinks: "checked" as never });
+    const notify = vi.fn(async () => true);
+    await expect(runDriftAlertPass(root, { detect, notify, now: later })).resolves.toBe("sent");
+    expect(detect).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks age-based findings on the next day without a source edit", async () => {
+    const root = project();
+    const now = Date.now() + 3_600_000;
+    const detect = vi.fn(async () => inSync);
+    await runDriftAlertPass(root, { detect, now: () => now });
+    await runDriftAlertPass(root, { detect, now: () => now + 86_400_000 });
+    expect(detect).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("sourceSnapshot", () => {
-  it("ignores disposable indexes and local state without Git, and sees source changes", () => {
+  it("tracks graph identity, ignores Wiki/local state, and sees source changes without Git", () => {
     const root = project();
     const before = sourceSnapshot(root);
-    writeFileSync(join(root, ".mex", "graph.db"), "index");
+    writeFileSync(join(root, ".mex", "wiki.db"), "index");
     mkdirSync(join(root, ".mex", "local"));
     writeFileSync(join(root, ".mex", "local", "drift-alerts.json"), "{}");
     expect(sourceSnapshot(root)?.fingerprint).toBe(before?.fingerprint);
+    writeFileSync(join(root, ".mex", "graph.db"), "graph");
+    expect(sourceSnapshot(root)?.fingerprint).not.toBe(before?.fingerprint);
+    expect(sourceSnapshot(root)?.newestMs).toBe(before?.newestMs);
     const past = new Date(Date.now() - 3_600_000);
     utimesSync(join(root, "a.ts"), past, past);
     expect(sourceSnapshot(root)?.fingerprint).not.toBe(before?.fingerprint);
@@ -179,13 +236,46 @@ describe("sourceSnapshot", () => {
 });
 
 describe("drift alert state", () => {
-  it("defaults to off without creating a file, and fails closed on malformed state", () => {
+  it("defaults to on without creating a file, and fails closed on malformed state", () => {
     const root = project();
-    expect(readDriftAlertState(root).enabled).toBe(false);
+    expect(readDriftAlertState(root).enabled).toBe(true);
     expect(existsSync(join(root, ".mex", "local"))).toBe(false);
     mkdirSync(join(root, ".mex", "local"));
     writeFileSync(join(root, ".mex", "local", "drift-alerts.json"), '{"schemaVersion":1,"enabled":"yes"}');
     expect(() => readDriftAlertState(root)).toThrow();
+  });
+
+  it("keeps an explicit opt-out across initialization and supports legacy preferences without read-side writes", async () => {
+    const root = gitProject();
+    mkdirSync(join(root, ".mex/local"));
+    const legacy = JSON.stringify({ schemaVersion: 1, enabled: false, commitHook: false, lastDelivery: "none", checkedFingerprint: "a".repeat(64), alerted: { "old.md": 1 } });
+    writeFileSync(join(root, ".mex/local/drift-alerts.json"), legacy);
+    expect(readDriftAlertState(root)).toMatchObject({ enabled: false, checkedFingerprint: null, alerted: { [driftAlertKey("old.md")]: 1 } });
+    await initializeDriftAlerts(root);
+    expect(readFileSync(join(root, ".mex/local/drift-alerts.json"), "utf8")).toBe(legacy);
+    expect(existsSync(join(root, ".git/hooks/post-commit"))).toBe(false);
+  });
+
+  it("installs the default hook only at startup and removes it on opt-out", async () => {
+    const root = gitProject();
+    expect(readDriftAlertState(root).enabled).toBe(true);
+    expect(existsSync(join(root, ".git/hooks/post-commit"))).toBe(false);
+    await initializeDriftAlerts(root);
+    expect(readDriftAlertState(root)).toMatchObject({ enabled: true, commitHook: true });
+    expect(existsSync(join(root, ".git/hooks/post-commit"))).toBe(true);
+    await setDriftAlertsEnabled(root, false);
+    await initializeDriftAlerts(root);
+    expect(readDriftAlertState(root)).toMatchObject({ enabled: false, commitHook: false });
+    expect(existsSync(join(root, ".git/hooks/post-commit"))).toBe(false);
+  });
+
+  it("bounds complete hashed baselines within the stored byte ceiling", async () => {
+    const root = project();
+    const alerted = Object.fromEntries(Array.from({ length: MAX_ALERT_FILES }, (_, i) => [driftAlertKey(`file-${i}.md`), Number.MAX_SAFE_INTEGER]));
+    await updateDriftAlertState(root, (current) => ({ ...current, alerted }));
+    expect(statSync(join(root, ".mex/local/drift-alerts.json")).size).toBeLessThan(512 * 1024);
+    await expect(updateDriftAlertState(root, (current) => ({ ...current, alerted: { ...alerted, [driftAlertKey("extra.md")]: 1 } }))).rejects.toThrow();
+    expect(Object.keys(readDriftAlertState(root).alerted)).toHaveLength(MAX_ALERT_FILES);
   });
 });
 
@@ -209,6 +299,7 @@ describe("drift alert hook", () => {
     const root = gitProject();
     const original = "#!/bin/sh\necho mine\n";
     writeFileSync(hookPath(root), original);
+    chmodSync(hookPath(root), 0o755);
     installDriftAlertHook(root, entry);
     installDriftAlertHook(root, "/moved/drift-alert.js");
     const hook = readFileSync(hookPath(root), "utf8");
@@ -236,6 +327,26 @@ describe("drift alert hook", () => {
     expect(installDriftAlertHook(managed, entry)).toBe(false);
     expect(existsSync(hookPath(managed))).toBe(false);
   });
+
+  it.each(["#!/usr/bin/env python3\nprint('original')\n", "#!/usr/bin/env node\nconsole.log('original');\n"])("preserves an existing non-shell hook: %s", (original) => {
+    const root = gitProject();
+    writeFileSync(hookPath(root), original);
+    chmodSync(hookPath(root), 0o750);
+    const mode = statSync(hookPath(root)).mode;
+    expect(installDriftAlertHook(root, entry)).toBe(false);
+    expect(readFileSync(hookPath(root), "utf8")).toBe(original);
+    expect(statSync(hookPath(root)).mode).toBe(mode);
+  });
+
+  it("does not activate an existing inactive hook", () => {
+    if (process.platform === "win32") return;
+    const root = gitProject();
+    const original = "#!/bin/sh\necho inactive\n";
+    writeFileSync(hookPath(root), original, { mode: 0o644 });
+    expect(installDriftAlertHook(root, entry)).toBe(false);
+    expect(readFileSync(hookPath(root), "utf8")).toBe(original);
+    expect(statSync(hookPath(root)).mode & 0o111).toBe(0);
+  });
 });
 
 describe("startDriftAlertSchedule", () => {
@@ -243,6 +354,9 @@ describe("startDriftAlertSchedule", () => {
     vi.useFakeTimers();
     try {
       const root = project();
+      vi.useRealTimers();
+      await setDriftAlertsEnabled(root, false);
+      vi.useFakeTimers();
       const run = vi.fn();
       const stop = startDriftAlertSchedule(root, { run }, 1_000);
       expect(run).not.toHaveBeenCalled();

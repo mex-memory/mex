@@ -3566,7 +3566,7 @@ class FixtureHubApi implements HubApi {
     });
   }
   getHealth() { return Promise.resolve(health); }
-  #driftAlerts: Awaited<ReturnType<HubApi["getDriftAlerts"]>> = { enabled: false, commitHook: false, lastDelivery: "none" };
+  #driftAlerts: Awaited<ReturnType<HubApi["getDriftAlerts"]>> = { enabled: true, commitHook: true, lastDelivery: "none" };
 
   getDriftAlerts(): ReturnType<HubApi["getDriftAlerts"]> {
     return Promise.resolve({ ...this.#driftAlerts });

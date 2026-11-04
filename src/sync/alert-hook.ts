@@ -1,15 +1,17 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { privateEntrypoint } from "./detect-process.js";
 
 const HOOK_MARKER = "# mex-drift-alert";
 const HOOK_END_MARKER = "# mex-drift-alert-end";
+const MAX_HOOK_BYTES = 256 * 1024;
+const SHELL_SHEBANG = /^#!\s*(?:\/(?:usr\/)?bin\/(?:sh|bash|dash|ksh)|\/usr\/bin\/env(?:[ \t]+-S)?[ \t]+(?:sh|bash|dash|ksh))(?:[ \t]|$)/;
 const HOOK_BLOCK = new RegExp(`^${HOOK_MARKER}\\r?$[\\s\\S]*?^${HOOK_END_MARKER}\\r?$\\r?\\n?`, "m");
 
 function git(projectRoot: string, args: string[]): string | null {
   try {
-    return execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
+    return execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true, timeout: 5_000, maxBuffer: 4_096 }).trim();
   } catch { return null; }
 }
 
@@ -17,7 +19,12 @@ function git(projectRoot: string, args: string[]): string | null {
 function postCommitPath(projectRoot: string): string | null {
   if (git(projectRoot, ["config", "core.hooksPath"])) return null;
   const hooks = git(projectRoot, ["rev-parse", "--git-path", "hooks"]);
-  return hooks === null ? null : resolve(projectRoot, hooks, "post-commit");
+  if (hooks === null) return null;
+  const path = resolve(projectRoot, hooks, "post-commit");
+  try {
+    const directory = lstatSync(dirname(path));
+    return directory.isDirectory() && !directory.isSymbolicLink() ? path : null;
+  } catch { return null; }
 }
 
 function shellQuote(value: string): string {
@@ -38,17 +45,24 @@ ${HOOK_END_MARKER}
 export function installDriftAlertHook(projectRoot: string, entry = privateEntrypoint("drift-alert")): boolean {
   const path = postCommitPath(projectRoot);
   if (path === null) return false;
+  const block = hookBlock(entry);
+  if (Buffer.byteLength(block) > MAX_HOOK_BYTES) return false;
   try {
     if (!existsSync(path)) {
-      writeFileSync(path, `#!/bin/sh\n${hookBlock(entry)}`);
+      writeFileSync(path, `#!/bin/sh\n${block}`, { flag: "wx", mode: 0o755 });
+      chmodSync(path, 0o755);
     } else {
-      if (lstatSync(path).isSymbolicLink()) return false;
+      const stat = lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_HOOK_BYTES) return false;
+      if (process.platform !== "win32" && (stat.mode & 0o111) === 0) return false;
       const existing = readFileSync(path, "utf8");
-      writeFileSync(path, HOOK_BLOCK.test(existing)
-        ? existing.replace(HOOK_BLOCK, () => hookBlock(entry))
-        : `${existing.trimEnd()}\n\n${hookBlock(entry)}`);
+      if (Buffer.byteLength(existing) > MAX_HOOK_BYTES || !SHELL_SHEBANG.test(existing.split(/\r?\n/, 1)[0])) return false;
+      const next = HOOK_BLOCK.test(existing)
+        ? existing.replace(HOOK_BLOCK, () => block)
+        : `${existing.trimEnd()}\n\n${block}`;
+      if (Buffer.byteLength(next) > MAX_HOOK_BYTES) return false;
+      writeFileSync(path, next);
     }
-    chmodSync(path, 0o755);
     return true;
   } catch { return false; }
 }
@@ -58,7 +72,9 @@ export function removeDriftAlertHook(projectRoot: string): void {
   const path = postCommitPath(projectRoot);
   if (path === null) return;
   try {
-    if (!existsSync(path) || lstatSync(path).isSymbolicLink()) return;
+    if (!existsSync(path)) return;
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_HOOK_BYTES) return;
     const existing = readFileSync(path, "utf8");
     if (!HOOK_BLOCK.test(existing)) return;
     const remaining = existing.replace(HOOK_BLOCK, "");

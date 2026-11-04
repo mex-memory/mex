@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -328,7 +328,8 @@ describe("createLocalHubReadServices", () => {
     mkdirSync(join(projectRoot, ".mex"), { recursive: true });
     const runDriftAlerts = vi.fn();
     const services = createLocalHubReadServices({ projectRoot, scaffoldId: "scaffold-local", git, runDriftAlerts, jobs: { list: () => ({ items: [] }) } } as never);
-    expect(await services.driftAlerts!()).toEqual({ enabled: false, commitHook: false, lastDelivery: "none" });
+    expect(await services.driftAlerts!()).toEqual({ enabled: true, commitHook: false, lastDelivery: "none" });
+    expect(existsSync(join(projectRoot, ".mex/local/drift-alerts.json"))).toBe(false);
     expect(runDriftAlerts).not.toHaveBeenCalled();
     await expect(services.setDriftAlerts!({ enabled: true })).resolves.toMatchObject({ enabled: true });
     expect(runDriftAlerts).toHaveBeenCalledTimes(1);

@@ -16,7 +16,7 @@ mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
   status: promoted
-  revision: 13
+  revision: 14
   title: secure-local-project-hub
   grounds_to:
     - node: function:188820af31f0d74c6518f6926f559877
@@ -76,6 +76,14 @@ preview/apply services.
 
 ## Gotchas
 
+- Drift alerts default to enabled without read-side initialization. Only explicit
+  Hub/watch startup or a Settings mutation installs the checkout-local preference
+  and bounded hook check; preserve stored opt-outs and refuse unsupported hook
+  interpreters, inactive hooks, redirected directories and hook managers. Compare
+  complete bounded alert baselines, never the Hub's truncated first page. Include
+  graph identity, Git HEAD and the day in skip fingerprints, while only source
+  mtimes determine the quiet period. Legacy local state remains readable and is
+  upgraded only on a write. Notification delivery failures remain retryable.
 - State diagrams use the private `@mex/hub-contracts/statechart` leaf. Keep its
   schemas and graph layout runtime out of shell/Home closures; scoped-only component
   data words must not emit global Tailwind utilities. The managed helper is

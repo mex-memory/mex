@@ -8,6 +8,7 @@ import { createWikiJobExecutors } from "./jobs/wiki.js";
 import { startHubNodeServer } from "./node-server.js";
 import { createLocalHubReadServices, createHubWikiMigration } from "./services.js";
 import { createDriftAlertRunner, startDriftAlertSchedule } from "../sync/alert-process.js";
+import { initializeDriftAlerts } from "../sync/alert-settings.js";
 import { createSetupHubServices } from "./setup/services.js";
 import { TeamLocalState } from "../team/local-state/index.js";
 import { createRepositoryGraphPort } from "../graph/application-adapter.js";
@@ -304,6 +305,8 @@ async function composeProductionHub(
   const driftAlerts = createDriftAlertRunner(options.projectRoot);
   try {
     team.initializeIdentityActivitySigner();
+    // Alert failures remain visible in Settings without preventing Hub startup.
+    await initializeDriftAlerts(options.projectRoot).catch(() => {});
     const services = createLocalHubReadServices({
       projectRoot: options.projectRoot,
       scaffoldId: options.scaffoldId,
