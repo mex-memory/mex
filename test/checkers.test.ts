@@ -463,6 +463,12 @@ describe("checkCommands", () => {
     expect(issues[0].code).toBe("DEAD_COMMAND");
   });
 
+  it("reads every target of a multi-target make rule", () => {
+    writeFileSync(join(tmpDir, "Makefile"), "build test lint: deps\n\t./run $@\n");
+    const claims = ["make build", "make test", "make lint"].map((value) => claim({ kind: "command", value }));
+    expect(checkCommands(claims, tmpDir)).toHaveLength(0);
+  });
+
   it("skips when no manifest exists", () => {
     const claims = [claim({ kind: "command", value: "npm run build" })];
     const issues = checkCommands(claims, tmpDir);

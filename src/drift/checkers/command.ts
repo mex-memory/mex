@@ -273,9 +273,10 @@ function loadMakeTargets(projectRoot: string): Set<string> | null {
     const targets = new Set<string>();
 
     for (const line of content.split("\n")) {
-      const match = line.match(/^(\w[\w-]*):/);
+      // A rule may name several targets before its colon: `build test: deps`.
+      const match = line.match(/^(\w[\w-]*(?:[ \t]+\w[\w-]*)*)[ \t]*:/);
 
-      if (match) targets.add(match[1]);
+      if (match) for (const target of match[1].split(/[ \t]+/)) targets.add(target);
     }
 
     return targets;
