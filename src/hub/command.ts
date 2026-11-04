@@ -7,6 +7,8 @@ import { createGraphJobExecutors } from "./jobs/graph.js";
 import { createWikiJobExecutors } from "./jobs/wiki.js";
 import { startHubNodeServer } from "./node-server.js";
 import { createLocalHubReadServices, createHubWikiMigration } from "./services.js";
+import { createDriftAlertRunner, startDriftAlertSchedule } from "../sync/alert-process.js";
+import { initializeDriftAlerts } from "../sync/alert-settings.js";
 import { createSetupHubServices } from "./setup/services.js";
 import { TeamLocalState } from "../team/local-state/index.js";
 import { createRepositoryGraphPort } from "../graph/application-adapter.js";
@@ -102,6 +104,7 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
   let jobs: HubJobManager | undefined;
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
   let stopTelemetry: (() => Promise<void>) | undefined;
+  let stopDriftAlerts: (() => void) | undefined;
   try {
     const bootstrapToken = createBootstrapToken();
     let expectedOrigin: string | null = null;
@@ -123,6 +126,7 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
     });
     jobs = composed.jobs;
     server = await startHubNodeServer({ app: composed.app, port: options.port });
+    stopDriftAlerts = composed.startDriftAlerts();
     expectedOrigin = server.origin;
     stopTelemetry = startHubTelemetry();
     emitHubTelemetry(captureEvent, "hub.session_started", {});
@@ -134,6 +138,7 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
     if (options.openBrowser) openHubBrowser(bootstrapUrl);
     await waitForShutdownSignal();
   } finally {
+    stopDriftAlerts?.();
     // Stop accepting requests before aborting or reconciling any executors.
     try {
       await server?.close();
@@ -154,6 +159,7 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
   const captureEvent = createProjectTelemetryCapture(options.projectRoot);
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
   let stopTelemetry: (() => Promise<void>) | undefined;
+  let stopDriftAlerts: (() => void) | undefined;
   let jobs: HubJobManager | undefined;
   let security: HubSessionManager | undefined;
   let assets: HubAssetManifest | undefined;
@@ -192,6 +198,7 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
         throw new Error(signal.aborted || options.signal?.aborted ? "Setup was cancelled." : "The Hub listener is stopping.");
       }
       jobs = composed.jobs;
+      stopDriftAlerts = composed.startDriftAlerts();
       listener.replaceApp(composed.app);
       reportMessage(`Project Hub is ready at ${listener.origin}`);
     } catch (error) {
@@ -239,6 +246,7 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
     await waitForShutdownSignal(options.signal);
   } finally {
     closing = true;
+    stopDriftAlerts?.();
     try {
       await server?.close();
     } finally {
@@ -271,7 +279,7 @@ interface ComposeProductionHubOptions {
 
 async function composeProductionHub(
   options: ComposeProductionHubOptions,
-): Promise<{ app: ReturnType<typeof createHubApp>; jobs: HubJobManager }> {
+): Promise<{ app: ReturnType<typeof createHubApp>; jobs: HubJobManager; startDriftAlerts: () => () => void }> {
   const team = await createRepositoryTeamWorkflowPort(options.projectRoot);
   const localState = new TeamLocalState({
     projectRoot: options.projectRoot,
@@ -294,8 +302,11 @@ async function composeProductionHub(
     telemetry: options.telemetry,
   });
   jobs.initialize();
+  const driftAlerts = createDriftAlertRunner(options.projectRoot);
   try {
     team.initializeIdentityActivitySigner();
+    // Alert failures remain visible in Settings without preventing Hub startup.
+    await initializeDriftAlerts(options.projectRoot).catch(() => {});
     const services = createLocalHubReadServices({
       projectRoot: options.projectRoot,
       scaffoldId: options.scaffoldId,
@@ -308,6 +319,7 @@ async function composeProductionHub(
       graph,
       wiki,
       migration,
+      runDriftAlerts: () => driftAlerts.run(),
     });
     return {
       app: createHubApp({
@@ -318,6 +330,7 @@ async function composeProductionHub(
         telemetry: options.telemetry,
       }),
       jobs,
+      startDriftAlerts: () => startDriftAlertSchedule(options.projectRoot, driftAlerts),
     };
   } catch (error) {
     await jobs.shutdown();

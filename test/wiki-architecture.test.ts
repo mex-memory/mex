@@ -795,6 +795,7 @@ describe("no unscoped scaffold writes", () => {
       "src/statechart/checker.ts": "writes only bounded model/config inputs into an owned scratch directory during explicit checking",
       "src/statechart/helper.ts": "writes explicit scratch generation outputs and a checksum-verified opt-in checker cache, never implicit Hub state",
       "src/statechart/repository.ts": "publishes contained bounded feature-owned preview/snapshot bundles after explicit registration or exact reviewed save",
+      "src/sync/alert-hook.ts": "installs or removes only its bounded marker-owned post-commit check; preserves existing supported executable shell hooks and refuses other interpreters or hook managers",
       "src/team/artifacts/filesystem.ts": "atomically publishes bounded team-owned canonical artifacts",
       "src/team/local-state/receipt-signer.ts": "atomically provisions the bounded local-only C preview signing credential",
       "src/team/relay/cli/local-preview.ts": "removes only the exact contained checkout-local Relay receipt after successful apply",

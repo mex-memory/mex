@@ -20,9 +20,11 @@ export { MEX_ANCHOR_END, MEX_ANCHOR_START };
  * hand-written `.cursorrules`. The scaffold got populated, at the cost of a
  * full AI pass over the codebase, and then nothing ever loaded it.
  *
- * Claude Code and Codex were rescued in 0.8 by the agent-skills installer.
- * This is the same treatment for the four anchors that have no skills, and so
- * never went through it. See https://github.com/mex-memory/mex/issues/106
+ * Claude Code and Codex were rescued in 0.8 by the agent-skills installer,
+ * which owns `CLAUDE.md` and `AGENTS.md`. This is the same treatment for the
+ * four anchors that installer does not seed from a template, and which must
+ * stay linked whether or not a project's skills have been synced.
+ * See https://github.com/mex-memory/mex/issues/106
  */
 
 /** Matches the agent-skills cap: refuse to preview an unreasonable block. */

@@ -1,13 +1,23 @@
 # State diagrams: local implementation and qualification
 
-Initial qualification: 26 October 2026. Updated 29 October 2026.
+Initial qualification: 26 October 2026. Updated 5 November 2026.
 Implementation of `state-diagrams-spec.md`, initially prepared
 locally. The user subsequently authorized a feature branch, push and PR; no
 release, issue or triage label is part of this work. The supplied spec and
 research were read in this checkout before implementation and remain unchanged.
 The separate uncommitted marketing research was left untouched.
 
-## Current qualification: 29 October 2026
+## CI runtime preparation: 5 November 2026
+
+On PR #329, Windows checker run `41895881877` hit a resource limit on its first
+model check in both attempts (5.16 and 5.24 seconds); the other nine tests passed
+in each attempt. This is consistent with cold Java startup exceeding the
+five-second runtime-inspection limit. The qualification workflow now verifies
+`java -version` during runner preparation, with a one-minute step deadline,
+before the bounded checker tests. Product checker limits and assertions remain
+unchanged. The workflow must still pass on the exact final commit.
+
+## Viewer qualification: 29 October 2026
 
 The viewer update in `cbda1b74e26f833f65cd144ef7825836aa73034d`
 replaces Hub's Mermaid browser renderer with a native React/SVG state graph.

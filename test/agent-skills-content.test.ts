@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 
 const SKILLS = ["mex-inbox", "mex-relay"] as const;
 
-function readSkill(name: (typeof SKILLS)[number]): {
+function readSkill(name: string): {
   frontmatter: Record<string, unknown>;
   body: string;
 } {
@@ -25,6 +25,14 @@ describe("packaged official agent skills", () => {
       aiTools?: string[];
     };
     expect(config.aiTools).toEqual(["claude", "codex"]);
+  });
+
+  // Several clients drop a skill without any warning when these rules are broken.
+  it.each([...SKILLS, "mex-statechart"])("keeps %s loadable by every skill client", (name) => {
+    const { frontmatter } = readSkill(name);
+    expect(frontmatter.name).toBe(name);
+    expect(String(frontmatter.name)).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u);
+    expect(String(frontmatter.description).length).toBeLessThanOrEqual(1024);
   });
 
   it.each(SKILLS)("keeps %s portable, named correctly, and progressively loaded", (name) => {

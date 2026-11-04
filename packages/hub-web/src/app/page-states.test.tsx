@@ -64,6 +64,55 @@ describe("Home states", () => {
     else expect(await within(card).findByText("Keep using this Hub with your team.")).toBeVisible();
   });
 
+  it("tells the person to run sync when knowledge has drifted, without blocking Overview", async () => {
+    let finish: (status: Awaited<ReturnType<HubApi["getDriftStatus"]>>) => void = () => {};
+    const pendingDrift = new Promise<Awaited<ReturnType<HubApi["getDriftStatus"]>>>((resolve) => { finish = resolve; });
+    renderRoute("/", apiWith({ getDriftStatus: () => pendingDrift }));
+
+    expect(await screen.findByLabelText("Loading Knowledge drift", undefined, { timeout: 10_000 })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Latest team memory" })).toBeVisible();
+
+    await act(async () => {
+      finish({
+        state: "needs_sync",
+        checkedAt: "2026-11-04T12:00:00.000Z",
+        issueCount: 8,
+        fileCount: 7,
+        files: Array.from({ length: 7 }, (_, index) => ({ path: `.mex/context/f${index}.md`, errors: 1, warnings: 2 })),
+        commentOnlyCount: 0,
+        warningOnlyCount: 2,
+        codeLinks: "partial",
+      });
+    });
+    const card = await screen.findByRole("region", { name: "Knowledge drift" });
+    expect(within(card).getByText("Needs sync")).toBeVisible();
+    expect(card).toHaveTextContent("7 knowledge files may be out of date. Run mex sync in a terminal");
+    expect(within(card).getByText(".mex/context/f4.md")).toBeVisible();
+    expect(within(card).queryByText(".mex/context/f5.md")).toBeNull();
+    expect(card).toHaveTextContent("And 2 more.");
+    expect(card).toHaveTextContent("2 warnings left out by default.");
+    expect(within(card).getByRole("link", { name: "Open Health" })).toHaveAttribute("href", "/health");
+  }, 15_000);
+
+  it("shows an in-sync drift result and a retry when the check fails", async () => {
+    const getDriftStatus = vi.fn<HubApi["getDriftStatus"]>()
+      .mockRejectedValueOnce(new HubApiError({
+        type: "about:blank",
+        title: "Capability unavailable",
+        status: 503,
+        code: "CAPABILITY_UNAVAILABLE",
+        detail: "Drift could not be checked.",
+      } as never))
+      .mockImplementation(() => createFixtureApi().getDriftStatus());
+    renderRoute("/", apiWith({ getDriftStatus }));
+
+    const retry = await screen.findByRole("button", { name: "Try loading Knowledge drift again" }, { timeout: 10_000 });
+    await userEvent.click(retry);
+    const card = await screen.findByRole("region", { name: "Knowledge drift" });
+    expect(await within(card).findByText("In sync")).toBeVisible();
+    expect(card).toHaveTextContent("Nothing for mex sync to do.");
+  }, 15_000);
+
   it("renders independently loading atlas panels from the Overview aggregate", async () => {
     renderRoute("/", apiWith({ getOverview: () => pending<OverviewResponse>() }));
 

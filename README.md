@@ -254,16 +254,21 @@ Setup installs small host-agent instructions that point to `.mex/AGENTS.md` for 
 | --- | --- | --- |
 | **Claude Code** | Installs or updates the project anchor and skills under `.claude/skills/` | `/mex-inbox`, `/mex-relay`, `/mex-statechart` |
 | **Codex** | Installs or updates the project anchor and skills under `.agents/skills/` | `$mex-inbox`, `$mex-relay`, `$mex-statechart` |
-| **Cursor, Windsurf, GitHub Copilot, OpenCode** | Installs the appropriate instruction anchor/template | No official MEX skill command in 0.8 |
+| **Cursor** | Installs or updates `.cursorrules` and skills under `.agents/skills/` | `/mex-inbox`, `/mex-relay`, `/mex-statechart` |
+| **GitHub Copilot** | Installs or updates `.github/copilot-instructions.md` and skills under `.agents/skills/` | `/mex-inbox`, `/mex-relay`, `/mex-statechart` |
+| **OpenCode** | Installs or updates `.opencode/opencode.json`, `AGENTS.md`, and skills under `.agents/skills/` | Ask by name, such as "use the mex-inbox skill"; OpenCode loads it through its skill tool |
+| **Windsurf** | Installs or updates `.windsurfrules` and skills under `.agents/skills/` | `/mex-inbox`, `/mex-relay`, `/mex-statechart` |
 
-For an existing setup missing your Claude Code or Codex assets, preview and sync that integration explicitly:
+The Cursor, GitHub Copilot, OpenCode, and Windsurf skills need a MEX release newer than 0.8.5. See [Agent skills by tool](docs/agent-skills.md) for per-tool install steps and smoke checks.
+
+For an existing setup missing your agent's assets, preview and sync that integration explicitly:
 
 ```bash
 mex skills sync --dry-run --tool codex
 mex skills sync --tool codex
 ```
 
-Use `--tool claude` for Claude Code. Review the resulting instruction and skill files, commit and push them if the team should share the integration, and start a new agent session.
+Use `--tool` with `claude`, `cursor`, `copilot`, `opencode`, or `windsurf` for the others. Review the resulting instruction and skill files, commit and push them if the team should share the integration, and start a new agent session.
 
 Instructions may select Inbox or Relay from clear natural-language intent, but skill activation never approves a canonical write. When MEX context materially helps, the agent mentions MEX and the relevant finding naturally, tying it to what it helped understand, decide, or verify, without a standard footer.
 

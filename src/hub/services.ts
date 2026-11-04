@@ -5,6 +5,10 @@ import {
   AgentLoggingPolicySchema,
   HubOnboardingStateSchema,
   HubRepositoryContributorsSchema,
+  DriftAlertSettingsSchema,
+  DriftStatusSchema,
+  type DriftAlertUpdateRequest,
+  type DriftStatus,
   HUB_LIMITS,
   type ActivityActor,
   type ActivityDiagnostic,
@@ -184,6 +188,9 @@ import { MemberRepository } from "../team/identity/member-repository.js";
 import { normalizeTeamInboxSpecCommand } from "../team/inbox/spec-authoring.js";
 import type { HubReadServices } from "./app.js";
 import { HubHttpError } from "./http/errors.js";
+import { runDriftDetectionProcess } from "../sync/detect-process.js";
+import { readDriftAlertState, type DriftAlertState } from "../sync/alert-state.js";
+import { setDriftAlertsEnabled } from "../sync/alert-settings.js";
 import type {
   GraphSearchBundleRequest,
   GraphSearchBundleResult,
@@ -295,6 +302,8 @@ export interface LocalHubReadServicesOptions {
   readonly git?: GitPort;
   readonly graph?: HubGraphReadService;
   readonly wiki?: HubWikiReadService;
+  readonly detectDrift?: () => Promise<unknown>;
+  readonly runDriftAlerts?: () => void;
   readonly now?: () => Date;
 }
 
@@ -328,6 +337,9 @@ export function createLocalHubReadServices(
     now,
   });
   const timeline = new TimelineReader(options.projectRoot, canonicalActivity, actors);
+  const detectDrift = options.detectDrift ?? (() => runDriftDetectionProcess(options.projectRoot));
+  // Tabs and refreshes share one run instead of stacking repository scans.
+  let driftRun: Promise<DriftStatus> | null = null;
 
   return {
     diagrams: new DiagramRepository(options.projectRoot, now),
@@ -342,6 +354,28 @@ export function createLocalHubReadServices(
     },
     async completeOnboarding() {
       return HubOnboardingStateSchema.parse(await completeHubOnboarding(options.projectRoot));
+    },
+    driftAlerts() {
+      return projectDriftAlerts(readDriftAlertState(options.projectRoot));
+    },
+    async setDriftAlerts({ enabled }: DriftAlertUpdateRequest) {
+      const state = await setDriftAlertsEnabled(options.projectRoot, enabled);
+      if (enabled) options.runDriftAlerts?.();
+      return projectDriftAlerts(state);
+    },
+    driftStatus() {
+      driftRun ??= detectDrift()
+        .then((status) => DriftStatusSchema.parse(status))
+        .catch(() => {
+          throw new HubHttpError(
+            503,
+            "CAPABILITY_UNAVAILABLE",
+            "Capability unavailable",
+            "Drift could not be checked. Run `mex check` in a terminal to see why.",
+          );
+        })
+        .finally(() => { driftRun = null; });
+      return driftRun;
     },
     async repositoryContributors() {
       return HubRepositoryContributorsSchema.parse({ moreThanOne: await hasMoreThanOneCommitAuthor(git) });
@@ -1284,6 +1318,10 @@ function projectGraphImpact(impact: GraphImpactResult): CodeWorkspaceResponse["t
       || impact.impacted.length > 100
       || impact.relations.length > 500,
   };
+}
+
+function projectDriftAlerts({ enabled, commitHook, lastDelivery }: DriftAlertState) {
+  return DriftAlertSettingsSchema.parse({ enabled, commitHook, lastDelivery });
 }
 
 function unavailableWikiGraph(): HubHttpError {

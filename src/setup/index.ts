@@ -13,6 +13,8 @@ import {
 } from "../graph/runtime.js";
 import { VERSION } from "../version.js";
 import {
+  AGENT_SKILL_TARGETS,
+  OFFICIAL_MEX_SKILLS,
   syncAgentAssets,
   type AgentAssetsReport,
   type AgentSkillClient,
@@ -169,16 +171,20 @@ const warn = (msg: string) => console.log(`${chalk.yellow("!")} ${msg}`);
 /** Exact git commands CLI setup prints after a successful code-repo run. */
 export function setupCommitCheckpointCommands(selectedTools: readonly AiTool[]): string[] {
   const commands = ["git status --short", "git add .mex"];
-  if (selectedTools.includes("claude")) {
-    commands.push("git add CLAUDE.md .claude/skills/mex-inbox .claude/skills/mex-relay .claude/skills/mex-statechart");
+  // Clients share skill copies and instruction files; stage each path once.
+  const staged = new Set<string>();
+  for (const tool of ["claude", "codex", "cursor", "windsurf", "copilot", "opencode"] as const) {
+    if (!selectedTools.includes(tool)) continue;
+    const target = AGENT_SKILL_TARGETS[tool];
+    const anchor = TOOL_ANCHORS[tool]?.dest;
+    const paths = [
+      target.instructionsPath,
+      ...(anchor ? [anchor] : []),
+      ...OFFICIAL_MEX_SKILLS.map((skill) => `${target.skillsDirectory}/${skill}`),
+    ].filter((path) => !staged.has(path));
+    for (const path of paths) staged.add(path);
+    if (paths.length > 0) commands.push(`git add ${[...new Set(paths)].join(" ")}`);
   }
-  if (selectedTools.includes("codex")) {
-    commands.push("git add AGENTS.md .agents/skills/mex-inbox .agents/skills/mex-relay .agents/skills/mex-statechart");
-  }
-  if (selectedTools.includes("cursor")) commands.push("git add .cursorrules");
-  if (selectedTools.includes("windsurf")) commands.push("git add .windsurfrules");
-  if (selectedTools.includes("copilot")) commands.push("git add .github/copilot-instructions.md");
-  if (selectedTools.includes("opencode")) commands.push("git add .opencode/opencode.json");
   commands.push('git commit -m "chore: initialize MEX"');
   return commands;
 }
@@ -306,9 +312,7 @@ export interface InstallSetupAgentAssetsOptions {
 export function installSetupAgentAssets(
   options: InstallSetupAgentAssetsOptions,
 ): AgentAssetsReport | null {
-  const clients = options.selectedTools.filter(
-    (tool): tool is AgentSkillClient => tool === "claude" || tool === "codex",
-  );
+  const clients: readonly AgentSkillClient[] = options.selectedTools;
   if (clients.length === 0) return null;
   return syncAgentAssets({
     projectRoot: options.projectRoot,

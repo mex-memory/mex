@@ -174,7 +174,7 @@ function visibleChoices(groups: Line[][], focus: number, height: number): Line[]
 function phaseLines(view: TerminalSetupView): Line[] {
   return PHASES.filter(([step]) => {
     if (view.mode === "agent-memory" && ["scan", "graph", "finalize"].includes(step)) return false;
-    return step !== "skills" || view.tools.some(tool => tool.selected && (tool.id === "claude" || tool.id === "codex"));
+    return step !== "skills" || view.tools.some(tool => tool.selected);
   }).map(([step, label], index) => {
     const line = phaseLine(view, step, label);
     return { ...line, text: `${String(index + 1).padStart(2, "0")} ${line.text}` };

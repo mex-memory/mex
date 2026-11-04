@@ -1,4 +1,11 @@
-export const SUPPORTED_AGENT_SKILL_CLIENTS = ["claude", "codex"] as const;
+export const SUPPORTED_AGENT_SKILL_CLIENTS = [
+  "claude",
+  "codex",
+  "cursor",
+  "copilot",
+  "opencode",
+  "windsurf",
+] as const;
 
 export type AgentSkillClient = (typeof SUPPORTED_AGENT_SKILL_CLIENTS)[number];
 
@@ -13,7 +20,15 @@ export interface AgentSkillTarget {
   readonly invocationPrefix: "/" | "$";
 }
 
-/** Fixed destinations: callers cannot redirect a managed install through user input. */
+/**
+ * Fixed destinations: callers cannot redirect a managed install through user input.
+ *
+ * Every client except Claude Code discovers project skills in `.agents/skills`,
+ * so they share one managed copy. Clients sharing an `instructionsPath` must
+ * also share an `invocationPrefix`, or their block would differ per selection:
+ * OpenCode has no skill prefix of its own and loads skills by name through its
+ * skill tool, so it reads the block Codex already keeps in `AGENTS.md`.
+ */
 export const AGENT_SKILL_TARGETS: Readonly<Record<AgentSkillClient, AgentSkillTarget>> = {
   claude: {
     displayName: "Claude Code",
@@ -26,6 +41,30 @@ export const AGENT_SKILL_TARGETS: Readonly<Record<AgentSkillClient, AgentSkillTa
     skillsDirectory: ".agents/skills",
     instructionsPath: "AGENTS.md",
     invocationPrefix: "$",
+  },
+  cursor: {
+    displayName: "Cursor",
+    skillsDirectory: ".agents/skills",
+    instructionsPath: ".cursorrules",
+    invocationPrefix: "/",
+  },
+  copilot: {
+    displayName: "GitHub Copilot",
+    skillsDirectory: ".agents/skills",
+    instructionsPath: ".github/copilot-instructions.md",
+    invocationPrefix: "/",
+  },
+  opencode: {
+    displayName: "OpenCode",
+    skillsDirectory: ".agents/skills",
+    instructionsPath: "AGENTS.md",
+    invocationPrefix: "$",
+  },
+  windsurf: {
+    displayName: "Windsurf",
+    skillsDirectory: ".agents/skills",
+    instructionsPath: ".windsurfrules",
+    invocationPrefix: "/",
   },
 };
 

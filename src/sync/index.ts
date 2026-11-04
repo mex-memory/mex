@@ -7,6 +7,7 @@ import { runDriftCheck } from "../drift/index.js";
 import { isCliAvailable } from "../cli-tools.js";
 import { buildSyncBrief, buildCombinedBrief, flaggedWikiEntities, type FlaggedEntity } from "./brief-builder.js";
 import { rebuildWikiIndexAfterSync } from "./wiki-index.js";
+import { groupIntoTargets, selectSyncWork, SYNC_NOTICE_CODES } from "./work.js";
 import { findScaffoldFiles } from "../drift/index.js";
 import { captureGroundingBaselines, groundingReviewNodeIds, loadGroundingRuntime, persistMovedGroundings, previewGroundingBaseline, type MovedByNeighborsNotice } from "../graph/runtime.js";
 import { wikiGroundingDocumentReader } from "../wiki/grounding/document-reader.js";
@@ -117,14 +118,6 @@ interface SyncDependencies {
   rebuildWikiIndex?: (config: MexConfig) => Promise<{ entityCount: number }>;
 }
 
-/** Findings `sync` reports but never hands to an AI session. */
-const SYNC_NOTICE_CODES: ReadonlySet<DriftIssue["code"]> = new Set([
-  "GROUNDING_MOVED_BY_NEIGHBORS",
-  "GROUNDING_COMMENT_DRIFT",
-  "GROUNDING_MOVED",
-  "GROUNDING_NEARBY_DRIFT",
-]);
-
 /** Run targeted sync: detect → brief → AI → verify → ask → loop */
 export async function runSync(
   config: MexConfig,
@@ -167,13 +160,7 @@ export async function runSync(
       }
     }
     const report = await runDriftCheck(config);
-    // Notices, not repairs. A completed rebind (#229) has nothing left to do.
-    // A body that changed only in comments (#236) needs a review of the new
-    // body, not an AI session over prose that still describes the code.
-    const commentOnly = report.issues.filter((i) => i.code === "GROUNDING_COMMENT_DRIFT");
-    // A move and a change away from the fact are notices too: the link's
-    // verdict is not `changed`, so nothing in the prose is in question.
-    const issues = report.issues.filter((i) => !SYNC_NOTICE_CODES.has(i.code));
+    const { issues, commentOnly, relevantIssues } = selectSyncWork(report.issues, opts.includeWarnings === true);
 
     if (issues.length === 0) {
       if (commentOnly.length === 0) {
@@ -191,18 +178,6 @@ export async function runSync(
     );
 
     // Step 2: Group issues by file
-    const relevantIssues = opts.includeWarnings
-      ? issues
-      : issues.filter((i) => {
-          // Every grounding outcome is a repair path, including warning-only
-          // inline GONE anchors; do not require --warnings to maintain pointers.
-          if (i.code.startsWith("GROUNDING_")) return true;
-          const fileHasError = issues.some(
-            (other) => other.file === i.file && other.severity === "error"
-          );
-          return fileHasError;
-        });
-
     if (relevantIssues.length === 0) {
       console.log(
         chalk.green(
@@ -501,18 +476,4 @@ async function buildGroundingAwareBrief(targets: SyncTarget[], config: MexConfig
   } catch {
     return buildCombinedBrief(targets, config.projectRoot);
   }
-}
-
-function groupIntoTargets(issues: DriftIssue[]): SyncTarget[] {
-  const byFile = new Map<string, DriftIssue[]>();
-  for (const issue of issues) {
-    if (!byFile.has(issue.file)) byFile.set(issue.file, []);
-    byFile.get(issue.file)!.push(issue);
-  }
-
-  return Array.from(byFile.entries()).map(([file, issues]) => ({
-    file,
-    issues,
-    gitDiff: null,
-  }));
 }

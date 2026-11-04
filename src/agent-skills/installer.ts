@@ -188,11 +188,16 @@ export function planAgentAssets(options: AgentAssetsSyncOptions): AgentAssetsPla
   const warnings: AgentAssetWarning[] = [];
   const operations: WriteOperation[] = [];
   const ignoreChecker = options.ignoreChecker ?? gitCheckIgnored;
+  // Clients can share a destination. Plan each path once: a second operation
+  // would treat the first one's write as a concurrent change and fail apply.
+  const plannedPaths = new Set<string>();
 
   for (const client of clients) {
     const target = AGENT_SKILL_TARGETS[client];
     for (const skill of OFFICIAL_MEX_SKILLS) {
       const relativePath = `${target.skillsDirectory}/${skill}`;
+      if (plannedPaths.has(relativePath)) continue;
+      plannedPaths.add(relativePath);
       const desired = desiredSkills.get(skill)!;
       const skillPlan = planSkill(canonicalProjectRoot, client, skill, relativePath, desired);
       actions.push(skillPlan.action);
@@ -226,6 +231,8 @@ export function planAgentAssets(options: AgentAssetsSyncOptions): AgentAssetsPla
       }
     }
 
+    if (plannedPaths.has(target.instructionsPath)) continue;
+    plannedPaths.add(target.instructionsPath);
     const instructionPlan = planInstructions(
       canonicalProjectRoot,
       client,

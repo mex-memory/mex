@@ -10,10 +10,10 @@ The markdown files carry a `<!-- mex-tool-config -->` marker on the line after t
 | Tool | File to use |
 |------|-------------|
 | Claude Code | `CLAUDE.md` plus copied `.claude/skills/mex-*` project skills |
-| Cursor | `.cursorrules` → copy or symlink to project root |
-| Windsurf | `.windsurfrules` → copy or symlink to project root |
-| GitHub Copilot | `copilot-instructions.md` → copy to `.github/` in project root |
-| OpenCode | `opencode.json` → copy to `.opencode/` in project root |
+| Cursor | `.cursorrules` → copy or symlink to project root, plus copied `.agents/skills/mex-*` project skills |
+| Windsurf | `.windsurfrules` → copy or symlink to project root, plus copied `.agents/skills/mex-*` project skills |
+| GitHub Copilot | `copilot-instructions.md` → copy to `.github/` in project root, plus copied `.agents/skills/mex-*` project skills |
+| OpenCode | `opencode.json` → copy to `.opencode/` in project root, plus `AGENTS.md` and copied `.agents/skills/mex-*` project skills |
 | Codex (OpenAI) | `AGENTS.md` plus copied `.agents/skills/mex-*` project skills |
 | Any other tool | Point agent to `.mex/AGENTS.md` |
 

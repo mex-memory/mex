@@ -413,15 +413,16 @@ function fileSummary(file: ReviewedFile): SetupCommitFile {
   return { path: file.path, status: file.status, additions, deletions, diffCharacters: file.diff.length, truncated: file.truncated };
 }
 function skillRoots(tool: AiTool): string[] {
-  return tool === "claude" || tool === "codex" ? OFFICIAL_MEX_SKILLS.map(skill => `${AGENT_SKILL_TARGETS[tool].skillsDirectory}/${skill}`) : [];
+  return OFFICIAL_MEX_SKILLS.map(skill => `${AGENT_SKILL_TARGETS[tool].skillsDirectory}/${skill}`);
 }
 function scopePrefixes(tools: readonly AiTool[]): string[] {
-  return [".mex", ...tools.flatMap(tool => [ANCHORS[tool], ...skillRoots(tool)])];
+  return [".mex", ...tools.flatMap(tool => [ANCHORS[tool], AGENT_SKILL_TARGETS[tool].instructionsPath, ...skillRoots(tool)])];
 }
 function inScope(path: string, tools: readonly AiTool[]): boolean {
   if (path === ".mex/config.json" || path === ".mex/.gitignore" || /^\.mex\/[^/]+\.md$/u.test(path)
     || /^\.mex\/(?:context|patterns)\/.+\.md$/u.test(path)) return true;
-  return tools.some(tool => path === ANCHORS[tool] || skillRoots(tool).some(root => path.startsWith(`${root}/`)));
+  return tools.some(tool => path === ANCHORS[tool] || path === AGENT_SKILL_TARGETS[tool].instructionsPath
+    || skillRoots(tool).some(root => path.startsWith(`${root}/`)));
 }
 function safePath(path: string): boolean {
   return path.length <= 1_024 && !/[\\\x00-\x1f\x7f]/u.test(path)
