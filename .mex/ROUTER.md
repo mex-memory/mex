@@ -58,6 +58,18 @@ Then read this file fully before doing anything else in this session.
   The benchmark readiness helper selects the named state graph; toolbar SVGs
   no longer collide with it. Release CI `40826775278` and real-checker CI
   `40826775234` pass on `8c43930`. Budgets and calibration policy are unchanged.
+- PR #280's follow-up preserves identified npm missing-dependency checks beside
+  unread `requirements.txt` or `setup.py` manifests. Optional `Claim.ecosystem`
+  carries explicit enclosing-heading evidence or scoped npm syntax into name
+  and version matching. Whole heading labels avoid inventing npm evidence from
+  generic `Node` or mixed-language headings; unlabelled missing names remain
+  conservative. Cross-file versions distinguish identified ecosystems while
+  keeping an unlabelled version that matches neither candidate visible.
+  Reconstruction verification passed 258 focused tests (one existing skip),
+  build, typecheck, and built public-entry reproductions of both review findings.
+  The optional public field requires a minor release under `COMPATIBILITY.md`;
+  no release version is selected here. Exact-head CI remains the merge gate.
+  See the dependency manifest discovery pattern for regression guidance.
 - 0.8.4 is tagged and published on GitHub at `v0.8.4`, commit `56db5cf`, dated
   October 14. Exact-release CI run `38571566062` passed Node 22/24, portability,
   browser, packed-install, evaluators, and pinned performance. Finalization

@@ -111,3 +111,38 @@ it("abstains when too many manifests are discovered", () => {
   for (let i = 0; i < 1_025; i++) manifest(`service-${i}`);
   expect(checkDependencies([claim("missing-package")], root)).toEqual([]);
 });
+
+it("does not abstain when requirements.txt exceeds the manifest byte limit", () => {
+  manifest("", "express", "4.18.0");
+  writeFileSync(join(root, "requirements.txt"), "#".repeat(1_048_577));
+  const issues = checkDependencies([claim("express 9.9.9", "version")], root);
+  expect(issues).toHaveLength(1);
+  expect(issues[0].code).toBe("VERSION_MISMATCH");
+});
+
+it.each(["requirements.txt", "setup.py"])("ignores a skipped %s and honors one nested in the project", (filename) => {
+  manifest("");
+  for (const path of ["node_modules/pkg", ".venv"]) {
+    mkdirSync(join(root, path), { recursive: true });
+    writeFileSync(join(root, path, filename), "flask\n");
+  }
+  mkdirSync(join(root, "apps"), { recursive: true });
+  writeFileSync(join(outside, filename), "flask\n");
+  symlinkSync(join(outside, filename), join(root, "apps", filename), "file");
+  mkdirSync(join(root, "nested", filename), { recursive: true });
+  const skipped = checkDependencies([claim("undeclared-package")], root);
+  expect(skipped).toHaveLength(1);
+  expect(skipped[0].code).toBe("DEPENDENCY_MISSING");
+
+  mkdirSync(join(root, "services/api"), { recursive: true });
+  writeFileSync(join(root, "services/api", filename), "flask\n");
+  expect(checkDependencies([claim("undeclared-package")], root)).toEqual([]);
+});
+
+it("still abstains when a nested package.json is malformed beside requirements.txt", () => {
+  manifest("");
+  mkdirSync(join(root, "apps/backend"), { recursive: true });
+  writeFileSync(join(root, "apps/backend/package.json"), "{");
+  writeFileSync(join(root, "requirements.txt"), "flask>=2\n");
+  expect(checkDependencies([claim("missing-package")], root)).toEqual([]);
+});

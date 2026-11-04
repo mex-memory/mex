@@ -158,6 +158,10 @@ export interface Claim {
   line: number;
   /** Section heading the claim was found under */
   section: string | null;
+  /** Explicit ecosystem evidence for dependency/version claims. Omitted when
+   *  prose does not distinguish npm from Python; package names alone generally
+   *  cannot establish an ecosystem. */
+  ecosystem?: "npm" | "python";
   /** If true, this claim is negated (e.g. "does NOT use X") */
   negated: boolean;
 }
