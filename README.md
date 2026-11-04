@@ -6,13 +6,13 @@
 
 **Shared project memory for engineers and their coding agents.**
 
+Memory lives as Markdown in `.mex/`, travels with Git, and stays linked to the code. Local Hub for people. CLI + skills for agents.
+
 ```bash
 npx mex-agent@0.8.5 setup
 ```
 
-Setup includes the official Inbox, Relay, and Statechart skills for your selected Claude Code or Codex integration. [Standalone skill installation](#standalone-skill-installation) is an alternative for existing MEX projects.
-
-MEX keeps your team's architecture, decisions, requirements, and handoffs alongside the code. Engineers and their agents can build on shared context, review proposed changes, and carry work between sessions and teammates—with Git as the sharing layer.
+<p align="center"><img src="docs/diagrams/readme/agent-reads-mex.gif" alt="An agent reading .mex/ project memory and answering from grounded Wiki context" width="720" /></p>
 
 **English** | [简体中文](README.zh-CN.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md)
 
@@ -27,22 +27,26 @@ MEX keeps your team's architecture, decisions, requirements, and handoffs alongs
 [![Agent memory](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](#agent-memory-mode)
 [![MCP: source only](https://img.shields.io/badge/MCP-source%20only-6f8cff)](#mcp-server)
 
-[Team memory](#what-your-team-remembers) · [A teammate-handoff example](#from-one-engineer-to-the-next) · [Project Hub](#project-hub) · [Quick start](#quick-start) · [How it works](#how-mex-works) · [Command map](#command-map)
+[Works with](#works-with) · [Team memory](#what-your-team-remembers) · [A teammate-handoff example](#from-one-engineer-to-the-next) · [Project Hub](#project-hub) · [Quick start](#quick-start) · [How it works](#how-mex-works) · [Command map](#command-map)
 
 </div>
+
+### Works with
+
+| Tool | What setup installs in 0.8 |
+| --- | --- |
+| **Claude Code** | Project anchor + skills (`/mex-inbox`, `/mex-relay`, `/mex-statechart`) |
+| **Codex** | Project anchor + skills (`$mex-inbox`, `$mex-relay`, `$mex-statechart`) |
+| **Cursor, Windsurf, GitHub Copilot, OpenCode** | Instruction anchor / template only — no official mex skill commands yet |
+
+> [!IMPORTANT]
+> **[MEX 0.8.5](RELEASE_NOTES.md) turns complicated agent explanations into checked state diagrams.** Ask your agent to explain a flow, bug, or recovery path with a statechart; read it in chat or explore it in Hub. This release also adds parallel, resumable setup and faster graph builds. Existing users should [sync their project skills after upgrading](#upgrade-and-compatibility).
 
 ---
 
 One engineer knows why a constraint exists. Another has the debugging history. A coding agent found an important edge case in a session nobody else will read. The next teammate has to piece it together again.
 
 **What one engineer and their agent learn should become context the next teammate can use.** MEX gives that knowledge a durable home in the repository: readable Markdown, code-linked explanations, reviewed knowledge contributions, and structured handoffs. People explore and review it in a local Hub; agents retrieve and help maintain it through project instructions and the CLI.
-
-> [!IMPORTANT]
-> **[MEX 0.8.5](RELEASE_NOTES.md) turns complicated agent explanations into checked state diagrams.** Ask your agent to explain a flow, bug, or recovery path with a statechart; read it in chat or explore it in Hub. This release also adds parallel, resumable setup and faster graph builds. Existing users should [sync their project skills after upgrading](#upgrade-and-compatibility).
-
-💬 **Join the MEX community on Discord** — discuss ideas, get help, share feedback, and show what you're building.
-
-[Join the Discord →](https://discord.gg/FEdNsQ4Qt4)
 
 ## What your team remembers
 
