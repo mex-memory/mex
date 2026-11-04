@@ -99,6 +99,9 @@ interface ReadinessView {
   label: string;
 }
 
+const DRIFT_FILES_SHOWN = 5;
+const DRIFT_STALE_MS = 5 * 60_000;
+
 const REFRESH_QUERY_KEYS = [
   ["home"],
   ["overview"],
@@ -178,6 +181,10 @@ function TechnicalDisclosure({ children, label }: { children: ReactNode; label: 
       </CollapsibleContent>
     </Collapsible>
   );
+}
+
+function TechnicalFact({ label, children }: { label: string; children: ReactNode }) {
+  return <div><dt>{label}</dt><dd>{children}</dd></div>;
 }
 
 function actorAttentionDescription(data: OverviewResponse): string {
@@ -376,17 +383,17 @@ function FocusTechnicalDetails({ data }: { data: OverviewResponse }) {
   return (
     <TechnicalDisclosure label="Attention">
       <dl className={homeStyles.technicalFacts}>
-        <div><dt>Focus observed</dt><dd>{data.focus.observedAt}</dd></div>
+        <TechnicalFact label="Focus observed">{data.focus.observedAt}</TechnicalFact>
         {data.identity.availability === "available" ? (
           <>
-            <div><dt>Identity source</dt><dd>{data.identity.current.source}</dd></div>
+            <TechnicalFact label="Identity source">{data.identity.current.source}</TechnicalFact>
             <div>
               <dt>Effective actor</dt>
               <dd><code>{data.identity.current.actor.kind === "member"
                 ? data.identity.current.actor.memberId
                 : data.identity.current.actor.kind}</code></dd>
             </div>
-            <div><dt>Identity diagnostics truncated</dt><dd>{data.identity.current.diagnosticsTruncated ? "Yes" : "No"}</dd></div>
+            <TechnicalFact label="Identity diagnostics truncated">{data.identity.current.diagnosticsTruncated ? "Yes" : "No"}</TechnicalFact>
             {data.identity.current.diagnostics.map((diagnostic, index) => (
               <div key={`identity:${diagnostic.code}:${diagnostic.path ?? "none"}:${index}`}>
                 <dt>{diagnostic.code}</dt>
@@ -394,12 +401,12 @@ function FocusTechnicalDetails({ data }: { data: OverviewResponse }) {
               </div>
             ))}
           </>
-        ) : <div><dt>Identity source</dt><dd>{data.identity.reason}</dd></div>}
+        ) : <TechnicalFact label="Identity source">{data.identity.reason}</TechnicalFact>}
         {focus?.relays.availability === "available" ? (
           <>
-            <div><dt>Relay revision</dt><dd><code>{focus.relays.deterministicRevision}</code></dd></div>
-            <div><dt>Relay source truncated</dt><dd>{focus.relays.sourceTruncated ? "Yes" : "No"}</dd></div>
-            <div><dt>Relay diagnostics truncated</dt><dd>{focus.relays.diagnosticsTruncated ? "Yes" : "No"}</dd></div>
+            <TechnicalFact label="Relay revision"><code>{focus.relays.deterministicRevision}</code></TechnicalFact>
+            <TechnicalFact label="Relay source truncated">{focus.relays.sourceTruncated ? "Yes" : "No"}</TechnicalFact>
+            <TechnicalFact label="Relay diagnostics truncated">{focus.relays.diagnosticsTruncated ? "Yes" : "No"}</TechnicalFact>
             {focus.relays.diagnostics.map((diagnostic, index) => (
               <div key={`relay:${diagnostic.code}:${diagnostic.path ?? "none"}:${index}`}>
                 <dt>{diagnostic.code}</dt>
@@ -410,18 +417,18 @@ function FocusTechnicalDetails({ data }: { data: OverviewResponse }) {
         ) : null}
         {focus?.relays.availability === "unavailable" ? (
           <>
-            <div><dt>Relay source</dt><dd>{focus.relays.reason}</dd></div>
+            <TechnicalFact label="Relay source">{focus.relays.reason}</TechnicalFact>
             {focus.relays.deterministicRevision ? (
-              <div><dt>Relay revision</dt><dd><code>{focus.relays.deterministicRevision}</code></dd></div>
+              <TechnicalFact label="Relay revision"><code>{focus.relays.deterministicRevision}</code></TechnicalFact>
             ) : null}
             {focus.relays.truncated !== undefined ? (
-              <div><dt>Relay corpus truncated</dt><dd>{focus.relays.truncated ? "Yes" : "No"}</dd></div>
+              <TechnicalFact label="Relay corpus truncated">{focus.relays.truncated ? "Yes" : "No"}</TechnicalFact>
             ) : null}
             {focus.relays.sourceTruncated !== undefined ? (
-              <div><dt>Relay source truncated</dt><dd>{focus.relays.sourceTruncated ? "Yes" : "No"}</dd></div>
+              <TechnicalFact label="Relay source truncated">{focus.relays.sourceTruncated ? "Yes" : "No"}</TechnicalFact>
             ) : null}
             {focus.relays.diagnosticsTruncated !== undefined ? (
-              <div><dt>Relay diagnostics truncated</dt><dd>{focus.relays.diagnosticsTruncated ? "Yes" : "No"}</dd></div>
+              <TechnicalFact label="Relay diagnostics truncated">{focus.relays.diagnosticsTruncated ? "Yes" : "No"}</TechnicalFact>
             ) : null}
             {focus.relays.diagnostics?.map((diagnostic, index) => (
               <div key={`relay:${diagnostic.code}:${diagnostic.path ?? "none"}:${index}`}>
@@ -597,10 +604,10 @@ function LatestActivityCard({ activity, onRetry }: { activity: OverviewResponse[
             ) : null}
             <TechnicalDisclosure label="Latest team memory">
               <dl className={homeStyles.technicalFacts}>
-                <div><dt>Deterministic revision</dt><dd><code>{activity.deterministicRevision}</code></dd></div>
-                <div><dt>Older results available</dt><dd>{activity.hasMore ? "Yes" : "No"}</dd></div>
-                <div><dt>Source truncated</dt><dd>{activity.sourceTruncated ? "Yes" : "No"}</dd></div>
-                <div><dt>Diagnostics truncated</dt><dd>{activity.diagnosticsTruncated ? "Yes" : "No"}</dd></div>
+                <TechnicalFact label="Deterministic revision"><code>{activity.deterministicRevision}</code></TechnicalFact>
+                <TechnicalFact label="Older results available">{activity.hasMore ? "Yes" : "No"}</TechnicalFact>
+                <TechnicalFact label="Source truncated">{activity.sourceTruncated ? "Yes" : "No"}</TechnicalFact>
+                <TechnicalFact label="Diagnostics truncated">{activity.diagnosticsTruncated ? "Yes" : "No"}</TechnicalFact>
                 {activity.diagnostics.map((diagnostic, index) => (
                   <div key={`${diagnostic.code}:${diagnostic.path ?? "none"}:${index}`}>
                     <dt>{diagnostic.code}</dt>
@@ -759,10 +766,10 @@ function ContextReadinessCard({
                 <dt>Indexed snapshot</dt>
                 <dd>{graph ? repositoryPoint(indexedBranch, indexedHead, "No indexed snapshot") : "Unavailable"}</dd>
               </div>
-              <div><dt>Knowledge index</dt><dd>{wiki ? sentenceCase(wiki.details.indexStatus) : "Unavailable"}</dd></div>
-              <div><dt>Code graph</dt><dd>{graph ? sentenceCase(graph.details.indexStatus) : "Unavailable"}</dd></div>
-              <div><dt>Working tree</dt><dd>{repository.dirty ? "Local changes present" : "Clean"}</dd></div>
-              <div><dt>Graph observed</dt><dd>{graph ? formatDate(graph.details.observedAt) : "Unavailable"}</dd></div>
+              <TechnicalFact label="Knowledge index">{wiki ? sentenceCase(wiki.details.indexStatus) : "Unavailable"}</TechnicalFact>
+              <TechnicalFact label="Code graph">{graph ? sentenceCase(graph.details.indexStatus) : "Unavailable"}</TechnicalFact>
+              <TechnicalFact label="Working tree">{repository.dirty ? "Local changes present" : "Clean"}</TechnicalFact>
+              <TechnicalFact label="Graph observed">{graph ? formatDate(graph.details.observedAt) : "Unavailable"}</TechnicalFact>
               <div>
                 <dt>Changes since index</dt>
                 <dd>{graph ? graph.details.changes.total : "Unavailable"}</dd>
@@ -817,15 +824,15 @@ function ContextReadinessCard({
 
             <TechnicalDisclosure label="Context readiness">
               <dl className={homeStyles.technicalFacts}>
-                <div><dt>Overview observed</dt><dd>{context.observedAt}</dd></div>
+                <TechnicalFact label="Overview observed">{context.observedAt}</TechnicalFact>
                 {graph ? (
                   <>
-                    <div><dt>Graph indexed HEAD</dt><dd><code>{graph.details.indexedHead ?? "None"}</code></dd></div>
-                    <div><dt>Graph current HEAD</dt><dd><code>{graph.details.currentHead ?? "None"}</code></dd></div>
-                    <div><dt>Graph schema</dt><dd>{graph.details.schemaVersion ?? "Unknown"}</dd></div>
-                    <div><dt>Graph extractor</dt><dd>{graph.details.extractorVersion ?? "Unknown"}</dd></div>
-                    <div><dt>Graph grammar</dt><dd>{graph.details.grammarVersion ?? "Unknown"}</dd></div>
-                    <div><dt>Graph diagnostics truncated</dt><dd>{graph.diagnosticsTruncated ? "Yes" : "No"}</dd></div>
+                    <TechnicalFact label="Graph indexed HEAD"><code>{graph.details.indexedHead ?? "None"}</code></TechnicalFact>
+                    <TechnicalFact label="Graph current HEAD"><code>{graph.details.currentHead ?? "None"}</code></TechnicalFact>
+                    <TechnicalFact label="Graph schema">{graph.details.schemaVersion ?? "Unknown"}</TechnicalFact>
+                    <TechnicalFact label="Graph extractor">{graph.details.extractorVersion ?? "Unknown"}</TechnicalFact>
+                    <TechnicalFact label="Graph grammar">{graph.details.grammarVersion ?? "Unknown"}</TechnicalFact>
+                    <TechnicalFact label="Graph diagnostics truncated">{graph.diagnosticsTruncated ? "Yes" : "No"}</TechnicalFact>
                     {graph.diagnostics.map((diagnostic, index) => (
                       <div key={`graph:${diagnostic.code}:${diagnostic.path ?? "none"}:${index}`}>
                         <dt>{diagnostic.code}</dt>
@@ -836,9 +843,9 @@ function ContextReadinessCard({
                 ) : null}
                 {wiki ? (
                   <>
-                    <div><dt>Knowledge revision</dt><dd><code>{wiki.details.indexedRevision ?? "None"}</code></dd></div>
-                    <div><dt>Knowledge schema</dt><dd>{wiki.details.schemaVersion ?? "Unknown"}</dd></div>
-                    <div><dt>Knowledge diagnostics truncated</dt><dd>{wiki.diagnosticsTruncated ? "Yes" : "No"}</dd></div>
+                    <TechnicalFact label="Knowledge revision"><code>{wiki.details.indexedRevision ?? "None"}</code></TechnicalFact>
+                    <TechnicalFact label="Knowledge schema">{wiki.details.schemaVersion ?? "Unknown"}</TechnicalFact>
+                    <TechnicalFact label="Knowledge diagnostics truncated">{wiki.diagnosticsTruncated ? "Yes" : "No"}</TechnicalFact>
                     {wiki.diagnostics.map((diagnostic, index) => (
                       <div key={`wiki:${diagnostic.code}:${diagnostic.path ?? "none"}:${index}`}>
                         <dt>{diagnostic.code}</dt>
@@ -856,6 +863,47 @@ function ContextReadinessCard({
             </Button>
           </>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function DriftCard() {
+  const api = useHubApi();
+  const drift = useQuery({
+    queryKey: ["drift"], queryFn: () => api.getDriftStatus(),
+    retry: false, refetchOnWindowFocus: false, staleTime: DRIFT_STALE_MS,
+  });
+  const label = "Knowledge drift";
+  if (drift.isPending) return <PanelSkeleton compact label={label} />;
+  const status = drift.data;
+  const needsSync = status?.state === "needs_sync";
+  const clean = status?.state === "in_sync";
+  return (
+    <Card className={homeStyles.activityCard} role="region" aria-labelledby="overview-drift-heading">
+      <CardHeader className={homeStyles.panelHeader}>
+        <h2 id="overview-drift-heading">{label}</h2>
+        {status && <CardAction><StatusPill tone={clean ? "success" : "warning"}>
+          {clean ? "In sync" : needsSync ? "Needs sync" : "Quick review"}
+        </StatusPill></CardAction>}
+      </CardHeader>
+      <CardContent className={homeStyles.activityContent}>
+        {status ? <>
+          <p>{clean ? "Nothing for mex sync to do." : needsSync
+            ? `${plural(status.fileCount, "knowledge file")} may be out of date. Run mex sync in a terminal.`
+            : `Only comments changed behind ${plural(status.commentOnlyCount, "code link")}. Run mex sync for a quick review without an agent.`}</p>
+          {needsSync && <ul className={homeStyles.driftFiles}>{status.files.slice(0, DRIFT_FILES_SHOWN).map((file) =>
+            <li key={file.path}><code>{file.path}</code><span>{plural(file.errors, "error")}, {plural(file.warnings, "warning")}</span></li>
+          )}</ul>}
+          {status.fileCount > DRIFT_FILES_SHOWN && <p>And {status.fileCount - DRIFT_FILES_SHOWN} more.</p>}
+          {status.warningOnlyCount > 0 && <p>{plural(status.warningOnlyCount, "warning")} left out by default. Run mex sync --warnings to include them.</p>}
+          {status.codeLinks === "partial" && <p>Some code links could not be checked. <Link to="/health">Open Health</Link></p>}
+          <time dateTime={status.checkedAt}>Checked {formatDate(status.checkedAt)}</time>
+        </> : <PanelUnavailable label={label} onRetry={() => void drift.refetch()} reason={drift.error?.message ?? "Drift could not be checked."} />}
       </CardContent>
     </Card>
   );
@@ -966,6 +1014,8 @@ export function HomeOverview() {
     if (refreshing) return;
     setRefreshing(true);
     setRefreshStatus("");
+    // Not awaited: a drift check can outlast the rest of the refresh by far.
+    void queryClient.invalidateQueries({ queryKey: ["drift"] });
     try {
       await Promise.all([
         queryClient.resetQueries({ queryKey: ["overview"] }, { throwOnError: true }),
@@ -1004,6 +1054,7 @@ export function HomeOverview() {
           <ContextReadinessCard context={data.context} onRetry={() => void refresh()} repository={data.shell.repository} />
         </div>
         <div className={homeStyles.asideColumn}>
+          <DriftCard />
           <LatestActivityCard activity={data.activity} onRetry={() => void refresh()} />
           <TeamAccessCard api={api} reprompt={Boolean(data.sharing?.relayPublished || data.sharing?.moreThanOneContributor)} />
         </div>

@@ -3,6 +3,8 @@ import {
   AgentLoggingPolicySchema,
   HubOnboardingStateSchema,
   HubRepositoryContributorsSchema,
+  DriftAlertSettingsSchema,
+  DriftStatusSchema,
   type HubRepositoryContributors,
   ActivityResponseSchema,
   BootstrapResponseSchema,
@@ -102,6 +104,9 @@ import type {
   JobsResponse,
   JobSummary,
   OverviewResponse,
+  DriftAlertSettings,
+  DriftAlertUpdateRequest,
+  DriftStatus,
   ProblemDetails,
   SearchRequest,
   SearchResponse,
@@ -218,6 +223,9 @@ export interface HubApi {
   getCapabilities(): Promise<CapabilitiesResponse>;
   getHome(): Promise<HomeResponse>;
   getOverview(): Promise<OverviewResponse>;
+  getDriftStatus(): Promise<DriftStatus>;
+  getDriftAlerts(): Promise<DriftAlertSettings>;
+  setDriftAlerts(request: DriftAlertUpdateRequest): Promise<DriftAlertSettings>;
   getMembers(request: TeamMemberListRequest): Promise<TeamMemberListResponse>;
   getMember(id: string): Promise<TeamMember>;
   getCurrentActor(): Promise<TeamCurrentActorResponse>;
@@ -508,6 +516,19 @@ export class HttpHubApi implements HubApi {
   async getOverview(): Promise<OverviewResponse> {
     const { OverviewResponseSchema } = await loadOverviewContract();
     return this.#request("/overview", OverviewResponseSchema);
+  }
+
+  getDriftStatus(): Promise<DriftStatus> {
+    return this.#request("/drift", DriftStatusSchema);
+  }
+
+  getDriftAlerts(): Promise<DriftAlertSettings> {
+    return this.#request("/settings/drift-alerts", DriftAlertSettingsSchema);
+  }
+
+  setDriftAlerts(request: DriftAlertUpdateRequest): Promise<DriftAlertSettings> {
+    return this.#request("/settings/drift-alerts", DriftAlertSettingsSchema,
+      { method: "POST", body: JSON.stringify(request) }, true);
   }
 
   getMembers(request: TeamMemberListRequest): Promise<TeamMemberListResponse> {

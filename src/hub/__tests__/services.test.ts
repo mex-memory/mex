@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -324,6 +324,53 @@ function overviewJob(
 }
 
 describe("createLocalHubReadServices", () => {
+  it("turns drift alerts on and off for this checkout and starts a check when turned on", async () => {
+    mkdirSync(join(projectRoot, ".mex"), { recursive: true });
+    const runDriftAlerts = vi.fn();
+    const services = createLocalHubReadServices({ projectRoot, scaffoldId: "scaffold-local", git, runDriftAlerts, jobs: { list: () => ({ items: [] }) } } as never);
+    expect(await services.driftAlerts!()).toEqual({ enabled: true, commitHook: false, lastDelivery: "none" });
+    expect(existsSync(join(projectRoot, ".mex/local/drift-alerts.json"))).toBe(false);
+    expect(runDriftAlerts).not.toHaveBeenCalled();
+    await expect(services.setDriftAlerts!({ enabled: true })).resolves.toMatchObject({ enabled: true });
+    expect(runDriftAlerts).toHaveBeenCalledTimes(1);
+    await expect(services.setDriftAlerts!({ enabled: false })).resolves.toEqual({ enabled: false, commitHook: false, lastDelivery: "none" });
+    expect(runDriftAlerts).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one drift run across callers, then starts a new one", async () => {
+    const status = {
+      state: "in_sync",
+      checkedAt: "2026-11-04T12:00:00.000Z",
+      issueCount: 0,
+      fileCount: 0,
+      files: [],
+      commentOnlyCount: 0,
+      warningOnlyCount: 0,
+      codeLinks: "checked",
+    };
+    const detectDrift = vi.fn(async () => status);
+    const services = createLocalHubReadServices({ projectRoot, scaffoldId: "scaffold-local", git, detectDrift, jobs: { list: () => ({ items: [] }) } } as never);
+    const [first, second] = await Promise.all([services.driftStatus!(), services.driftStatus!()]);
+    expect(first).toEqual(status);
+    expect(second).toEqual(status);
+    expect(detectDrift).toHaveBeenCalledTimes(1);
+    await services.driftStatus!();
+    expect(detectDrift).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a failed or malformed drift run as unavailable and can retry", async () => {
+    const detectDrift = vi.fn<() => Promise<unknown>>()
+      .mockRejectedValueOnce(new Error("private detail"))
+      .mockResolvedValueOnce({ state: "unknown" });
+    const services = createLocalHubReadServices({ projectRoot, scaffoldId: "scaffold-local", git, detectDrift, jobs: { list: () => ({ items: [] }) } } as never);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const failure = await Promise.resolve(services.driftStatus!()).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: "CAPABILITY_UNAVAILABLE", status: 503 });
+      expect((failure as Error).message).not.toContain("private detail");
+    }
+    expect(detectDrift).toHaveBeenCalledTimes(2);
+  });
+
   it("previews migration without writes, requires the reviewed plan, then migrates and rebuilds", async () => {
     mkdirSync(join(projectRoot, ".mex", "context"), { recursive: true });
     writeFileSync(join(projectRoot, ".mex", "ROUTER.md"), "# Project\n");

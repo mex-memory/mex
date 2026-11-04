@@ -60,12 +60,17 @@ export async function manageHook(
 }
 
 export async function runWatchInterval(config: MexConfig, intervalMinutes: number): Promise<void> {
+  const { initializeDriftAlerts } = await import("./sync/alert-settings.js");
+  await initializeDriftAlerts(config.projectRoot).catch(() => {});
   console.log(chalk.green(`mex heartbeat running every ${intervalMinutes} minute${intervalMinutes === 1 ? "" : "s"}. Press Ctrl+C to stop.`));
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const run = async () => {
     try {
       await runHeartbeat(config);
+      // Does nothing unless drift alerts are on for this checkout.
+      const { runDriftAlertPass } = await import("./sync/alert-pass.js");
+      await runDriftAlertPass(config.projectRoot);
     } catch (err) {
       console.error((err as Error).message);
     }

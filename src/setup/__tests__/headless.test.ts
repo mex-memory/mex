@@ -11,6 +11,7 @@ import { loadConfiguredAiTools, loadConfiguredSetupMode, hasConfiguredAiTools } 
 import * as config from "../../config.js";
 import { SetupError } from "../errors.js";
 import * as phases from "../phases.js";
+import { renderManagedInstructionBlock } from "../../agent-skills/instructions.js";
 
 const roots: string[] = [];
 
@@ -144,7 +145,11 @@ describe("headless setup run", () => {
     await expect(runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: ["cursor"],
       onPopulationPrompt: prompt, onAnchorNotes: notes })).rejects.toThrow("Simulated agent failure");
     expect(notes.mock.calls[0][0].join(" ")).toContain(".cursorrules");
-    expect(readFileSync(join(root, ".cursorrules"), "utf8")).toBe(authoredRules);
+    // The conflicting scaffold pointer stays intact; Cursor's separate skills
+    // block is still installed before population starts.
+    expect(readFileSync(join(root, ".cursorrules"), "utf8")).toBe(
+      `${authoredRules}\n${renderManagedInstructionBlock("cursor")}\n`,
+    );
   });
 
   it("builds a code-repo graph through the isolated worker and pauses without committing", async () => {

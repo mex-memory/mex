@@ -3,6 +3,12 @@ import type { DiagramRepository } from "../statechart/repository.js";
 import {
   AgentLoggingPolicySchema,
   AgentLoggingUpdateRequestSchema,
+  DriftAlertSettingsSchema,
+  DriftAlertUpdateRequestSchema,
+  DriftStatusSchema,
+  type DriftAlertSettings,
+  type DriftAlertUpdateRequest,
+  type DriftStatus,
   type AgentLoggingPolicy,
   type AgentLoggingUpdateRequest,
   HubOnboardingCompleteRequestSchema,
@@ -250,10 +256,13 @@ export interface HubReadServices {
   setLoggingPolicy?(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy> | AgentLoggingPolicy;
   onboardingState?(): Promise<HubOnboardingState> | HubOnboardingState;
   completeOnboarding?(): Promise<HubOnboardingState> | HubOnboardingState;
+  driftAlerts?(): Promise<DriftAlertSettings> | DriftAlertSettings;
+  setDriftAlerts?(request: DriftAlertUpdateRequest): Promise<DriftAlertSettings> | DriftAlertSettings;
   repositoryContributors?(): Promise<HubRepositoryContributors> | HubRepositoryContributors;
   capabilities(): Promise<HubCapabilities> | HubCapabilities;
   home(): Promise<HomeResponse> | HomeResponse;
   overview?(): Promise<OverviewResponse> | OverviewResponse;
+  driftStatus?(): Promise<DriftStatus> | DriftStatus;
   activity(request: ActivityRequest): Promise<ActivityResponse> | ActivityResponse;
   members?(
     request: TeamMemberListRequest,
@@ -471,6 +480,15 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       throw unavailable("Overview reads are not connected in this build.");
     }
     return resourceResponse(OverviewResponseSchema, await overview());
+  });
+
+  app.get("/api/v1/drift", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const driftStatus = options.services.driftStatus;
+    if (driftStatus === undefined) {
+      throw unavailable("Drift detection is not connected in this build.");
+    }
+    return resourceResponse(DriftStatusSchema, await driftStatus());
   });
 
   app.get("/api/v1/members", async (context) => {
@@ -844,6 +862,19 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     if (!options.services.completeOnboarding) throw unavailable("The Hub tour state is unavailable in this build.");
     parseInput(HubOnboardingCompleteRequestSchema, await readBoundedJson(context.req.raw));
     return resourceResponse(HubOnboardingStateSchema, await options.services.completeOnboarding());
+  });
+
+  app.get("/api/v1/settings/drift-alerts", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.driftAlerts) throw unavailable("Drift alerts are unavailable in this build.");
+    return resourceResponse(DriftAlertSettingsSchema, await options.services.driftAlerts());
+  });
+
+  app.post("/api/v1/settings/drift-alerts", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    if (!options.services.setDriftAlerts) throw unavailable("Drift alerts are unavailable in this build.");
+    const request = parseInput(DriftAlertUpdateRequestSchema, await readBoundedJson(context.req.raw));
+    return resourceResponse(DriftAlertSettingsSchema, await options.services.setDriftAlerts(request));
   });
 
   app.get("/api/v1/repository/contributors", async (context) => {

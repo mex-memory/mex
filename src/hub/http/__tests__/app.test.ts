@@ -1682,6 +1682,58 @@ describe("Project Hub HTTP application", () => {
     }
   });
 
+  it("reads and updates drift alerts with mutation security", async () => {
+    const setDriftAlerts = vi.fn((request: { enabled: boolean }) => ({ enabled: request.enabled, commitHook: false, lastDelivery: "none" as const }));
+    const app = fixtureApp({ services: {
+      ...readServices(),
+      driftAlerts: () => ({ enabled: false, commitHook: false, lastDelivery: "none" as const }),
+      setDriftAlerts,
+    } });
+    const { cookie, csrfToken } = await authenticatedSession(app);
+    const read = await app.request(`${ORIGIN}/api/v1/settings/drift-alerts`, { headers: { host: HOST, cookie } });
+    expect(read.status).toBe(200);
+    await expect(read.json()).resolves.toEqual({ enabled: false, commitHook: false, lastDelivery: "none" });
+
+    const post = (headers: Record<string, string>, body = JSON.stringify({ enabled: true })) =>
+      app.request(`${ORIGIN}/api/v1/settings/drift-alerts`, {
+        method: "POST",
+        headers: { host: HOST, cookie, origin: ORIGIN, "content-type": "application/json", ...headers },
+        body,
+      });
+    expect((await post({})).status).toBe(403);
+    expect(setDriftAlerts).not.toHaveBeenCalled();
+    expect((await post({ "x-mex-csrf": csrfToken }, JSON.stringify({ enabled: "yes" }))).status).toBe(400);
+    const saved = await post({ "x-mex-csrf": csrfToken });
+    expect(saved.status).toBe(200);
+    await expect(saved.json()).resolves.toMatchObject({ enabled: true });
+    expect(setDriftAlerts).toHaveBeenCalledWith({ enabled: true });
+  });
+
+  it("serves drift status through its dedicated route and refuses without a detector", async () => {
+    const status = {
+      state: "needs_sync",
+      checkedAt: "2026-11-04T12:00:00.000Z",
+      issueCount: 1,
+      fileCount: 1,
+      files: [{ path: ".mex/context/stack.md", errors: 1, warnings: 0 }],
+      commentOnlyCount: 0,
+      warningOnlyCount: 0,
+      codeLinks: "checked",
+    } as const;
+    const app = fixtureApp({ services: { ...readServices(), driftStatus: () => ({ ...status, files: [...status.files] }) } });
+    const { cookie } = await bootstrapSession(app);
+    const response = await app.request(`${ORIGIN}/api/v1/drift`, { headers: { host: HOST, cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual(status);
+    expect((await app.request(`${ORIGIN}/api/v1/drift?extra=1`, { headers: { host: HOST, cookie } })).status).toBe(400);
+    expect((await app.request(`${ORIGIN}/api/v1/drift`, { headers: { host: HOST } })).status).toBe(401);
+
+    const missing = fixtureApp();
+    const session = await bootstrapSession(missing);
+    expect((await missing.request(`${ORIGIN}/api/v1/drift`, { headers: { host: HOST, cookie: session.cookie } })).status).toBe(503);
+  });
+
   it("serves the bounded Overview aggregate through its dedicated route", async () => {
     const app = fixtureApp();
     const { cookie } = await bootstrapSession(app);

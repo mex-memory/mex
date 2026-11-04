@@ -11,12 +11,12 @@ edges:
     condition: "when the regression involves Hub routes, browser sessions, or jobs"
   - target: "patterns/safe-graph-snapshot-evolution.md"
     condition: "when changing Graph maintenance or corpus inspection"
-last_updated: 2026-10-29
+last_updated: 2026-11-05
 mex:
   id: mx_01M1M0CJNG4SW0WCJF3NB547HE
   type: pattern
   status: promoted
-  revision: 8
+  revision: 9
   title: release-performance-gate
   grounds_to:
     - node: function:5f86a557c717597b411a71a82c000ded
@@ -77,6 +77,10 @@ calibration environment.
 
 ## Gotchas
 
+- A background worker launched at Hub readiness still counts as Hub idle work.
+  Default-on drift alerts must wait for the normal ten-minute timer before their
+  first automatic check. Preserve immediate checks for explicit Settings actions
+  and commits; do not exclude descendants or widen idle CPU budgets to hide them.
 - Workbench readiness must identify the graph itself. The statechart canvas is
   the named `States and transitions` group inside the `State diagram` region;
   its zoom/fit controls also contain SVGs. A generic SVG locator can therefore

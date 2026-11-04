@@ -3566,6 +3566,29 @@ class FixtureHubApi implements HubApi {
     });
   }
   getHealth() { return Promise.resolve(health); }
+  #driftAlerts: Awaited<ReturnType<HubApi["getDriftAlerts"]>> = { enabled: true, commitHook: true, lastDelivery: "none" };
+
+  getDriftAlerts(): ReturnType<HubApi["getDriftAlerts"]> {
+    return Promise.resolve({ ...this.#driftAlerts });
+  }
+
+  setDriftAlerts({ enabled }: Parameters<HubApi["setDriftAlerts"]>[0]): ReturnType<HubApi["setDriftAlerts"]> {
+    this.#driftAlerts = { enabled, commitHook: enabled, lastDelivery: "none" };
+    return Promise.resolve({ ...this.#driftAlerts });
+  }
+
+  getDriftStatus(): ReturnType<HubApi["getDriftStatus"]> {
+    return Promise.resolve({
+      state: "in_sync",
+      checkedAt: "2026-11-04T12:00:00.000Z",
+      issueCount: 0,
+      fileCount: 0,
+      files: [],
+      commentOnlyCount: 0,
+      warningOnlyCount: 0,
+      codeLinks: "checked",
+    });
+  }
   getJobs(): Promise<JobsResponse> { return Promise.resolve({ items: [...this.#jobs], nextCursor: null }); }
   getJob(id: string) { return Promise.resolve(this.#jobs.find((job) => job.id === id) ?? this.#jobs[0]); }
   startJob(request: StartJobRequest) {
