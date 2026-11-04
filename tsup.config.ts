@@ -8,7 +8,7 @@ import { defineConfig } from "tsup";
 export default defineConfig([
   { entry: { runtime: "src/statechart/helper.ts" }, format: ["esm"], target: "node22", outDir: "skills/mex-statechart/scripts", minify: true, outExtension: () => ({ js: ".mjs" }), clean: false, splitting: false, dts: false, noExternal: ["@mex/hub-contracts", "zod"] },
   {
-    entry: { cli: "src/cli-bootstrap.ts", "graph-candidate": "src/graph/candidate-entry.ts", "setup-graph": "src/setup/next-graph-entry.ts" },
+    entry: { cli: "src/cli-bootstrap.ts", "graph-candidate": "src/graph/candidate-entry.ts", "setup-graph": "src/setup/next-graph-entry.ts", "drift-detect": "src/sync/detect-entry.ts" },
     format: ["esm"],
     target: "node20",
     outDir: "dist",

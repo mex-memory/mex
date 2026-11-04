@@ -5,6 +5,8 @@ import {
   AgentLoggingPolicySchema,
   HubOnboardingStateSchema,
   HubRepositoryContributorsSchema,
+  DriftStatusSchema,
+  type DriftStatus,
   HUB_LIMITS,
   type ActivityActor,
   type ActivityDiagnostic,
@@ -184,6 +186,7 @@ import { MemberRepository } from "../team/identity/member-repository.js";
 import { normalizeTeamInboxSpecCommand } from "../team/inbox/spec-authoring.js";
 import type { HubReadServices } from "./app.js";
 import { HubHttpError } from "./http/errors.js";
+import { runDriftDetectionProcess } from "../sync/detect-process.js";
 import type {
   GraphSearchBundleRequest,
   GraphSearchBundleResult,
@@ -295,6 +298,7 @@ export interface LocalHubReadServicesOptions {
   readonly git?: GitPort;
   readonly graph?: HubGraphReadService;
   readonly wiki?: HubWikiReadService;
+  readonly detectDrift?: () => Promise<unknown>;
   readonly now?: () => Date;
 }
 
@@ -328,6 +332,9 @@ export function createLocalHubReadServices(
     now,
   });
   const timeline = new TimelineReader(options.projectRoot, canonicalActivity, actors);
+  const detectDrift = options.detectDrift ?? (() => runDriftDetectionProcess(options.projectRoot));
+  // Tabs and refreshes share one run instead of stacking repository scans.
+  let driftRun: Promise<DriftStatus> | null = null;
 
   return {
     diagrams: new DiagramRepository(options.projectRoot, now),
@@ -342,6 +349,20 @@ export function createLocalHubReadServices(
     },
     async completeOnboarding() {
       return HubOnboardingStateSchema.parse(await completeHubOnboarding(options.projectRoot));
+    },
+    driftStatus() {
+      driftRun ??= detectDrift()
+        .then((status) => DriftStatusSchema.parse(status))
+        .catch(() => {
+          throw new HubHttpError(
+            503,
+            "CAPABILITY_UNAVAILABLE",
+            "Capability unavailable",
+            "Drift could not be checked. Run `mex check` in a terminal to see why.",
+          );
+        })
+        .finally(() => { driftRun = null; });
+      return driftRun;
     },
     async repositoryContributors() {
       return HubRepositoryContributorsSchema.parse({ moreThanOne: await hasMoreThanOneCommitAuthor(git) });

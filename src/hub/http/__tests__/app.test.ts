@@ -1682,6 +1682,31 @@ describe("Project Hub HTTP application", () => {
     }
   });
 
+  it("serves drift status through its dedicated route and refuses without a detector", async () => {
+    const status = {
+      state: "needs_sync",
+      checkedAt: "2026-11-04T12:00:00.000Z",
+      issueCount: 1,
+      fileCount: 1,
+      files: [{ path: ".mex/context/stack.md", errors: 1, warnings: 0 }],
+      commentOnlyCount: 0,
+      warningOnlyCount: 0,
+      codeLinks: "checked",
+    } as const;
+    const app = fixtureApp({ services: { ...readServices(), driftStatus: () => ({ ...status, files: [...status.files] }) } });
+    const { cookie } = await bootstrapSession(app);
+    const response = await app.request(`${ORIGIN}/api/v1/drift`, { headers: { host: HOST, cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual(status);
+    expect((await app.request(`${ORIGIN}/api/v1/drift?extra=1`, { headers: { host: HOST, cookie } })).status).toBe(400);
+    expect((await app.request(`${ORIGIN}/api/v1/drift`, { headers: { host: HOST } })).status).toBe(401);
+
+    const missing = fixtureApp();
+    const session = await bootstrapSession(missing);
+    expect((await missing.request(`${ORIGIN}/api/v1/drift`, { headers: { host: HOST, cookie: session.cookie } })).status).toBe(503);
+  });
+
   it("serves the bounded Overview aggregate through its dedicated route", async () => {
     const app = fixtureApp();
     const { cookie } = await bootstrapSession(app);

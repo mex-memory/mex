@@ -22,7 +22,7 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { RelayIdSchema } from "@mex/hub-contracts/ids";
 import { useHubApi } from "../api/context";
-import type { ActivityItem, OverviewResponse } from "../api/types";
+import type { ActivityItem, DriftStatus, OverviewResponse } from "../api/types";
 import {
   Alert,
   AlertAction,
@@ -98,6 +98,9 @@ interface ReadinessView {
   state: ReadinessState;
   label: string;
 }
+
+const DRIFT_FILES_SHOWN = 5;
+const DRIFT_STALE_MS = 5 * 60_000;
 
 const REFRESH_QUERY_KEYS = [
   ["home"],
@@ -861,6 +864,88 @@ function ContextReadinessCard({
   );
 }
 
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function DriftSummary({ status }: { status: DriftStatus }) {
+  if (status.state === "needs_sync") {
+    return (
+      <>
+        <p>
+          {plural(status.fileCount, "knowledge file")} may be out of date. Run <code>mex sync</code> in a terminal to review {status.fileCount === 1 ? "it" : "them"} with your agent.
+        </p>
+        <ul className={homeStyles.driftFiles}>
+          {status.files.slice(0, DRIFT_FILES_SHOWN).map((file) => (
+            <li key={file.path}>
+              <code>{file.path}</code>
+              <span>{plural(file.errors, "error")}, {plural(file.warnings, "warning")}</span>
+            </li>
+          ))}
+        </ul>
+        {status.fileCount > DRIFT_FILES_SHOWN ? <p>And {status.fileCount - DRIFT_FILES_SHOWN} more.</p> : null}
+      </>
+    );
+  }
+  if (status.state === "comment_review") {
+    return (
+      <p>
+        Only comments changed in the code behind {plural(status.commentOnlyCount, "code link")}. Run <code>mex sync</code> in a terminal for a quick review, with no agent session.
+      </p>
+    );
+  }
+  return <p>Nothing for <code>mex sync</code> to do.</p>;
+}
+
+function DriftCard() {
+  const api = useHubApi();
+  const drift = useQuery({
+    queryKey: ["drift"],
+    queryFn: () => api.getDriftStatus(),
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: DRIFT_STALE_MS,
+  });
+  if (drift.isPending) return <PanelSkeleton compact label="Knowledge drift" />;
+  const status = drift.data;
+  return (
+    <Card className={homeStyles.activityCard} role="region" aria-labelledby="overview-drift-heading">
+      <CardHeader className={homeStyles.panelHeader}>
+        <div>
+          <CardTitle><h2 id="overview-drift-heading">Knowledge drift</h2></CardTitle>
+        </div>
+        {status ? (
+          <CardAction>
+            <StatusPill tone={status.state === "in_sync" ? "success" : "warning"}>
+              {status.state === "in_sync" ? "In sync" : status.state === "needs_sync" ? "Needs sync" : "Quick review"}
+            </StatusPill>
+          </CardAction>
+        ) : null}
+      </CardHeader>
+      <CardContent className={homeStyles.activityContent}>
+        {status ? (
+          <>
+            <DriftSummary status={status} />
+            {status.warningOnlyCount > 0 ? (
+              <p>{plural(status.warningOnlyCount, "warning")} left out by default. <code>mex sync --warnings</code> includes them.</p>
+            ) : null}
+            {status.codeLinks === "partial" ? (
+              <p>The code graph is not fresh, so some code links could not be checked. <Link to="/health">Open Health</Link></p>
+            ) : null}
+            <time dateTime={status.checkedAt}>Checked {formatDate(status.checkedAt)}</time>
+          </>
+        ) : (
+          <PanelUnavailable
+            label="Knowledge drift"
+            onRetry={() => void drift.refetch()}
+            reason={drift.error?.message ?? "Drift could not be checked."}
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function OperationCard({ operation }: { operation: OverviewResponse["operation"] }) {
   if (operation.availability === "unavailable") return null;
   const job = operation.active ?? operation.latestRelevantFailure;
@@ -966,6 +1051,8 @@ export function HomeOverview() {
     if (refreshing) return;
     setRefreshing(true);
     setRefreshStatus("");
+    // Not awaited: a drift check can outlast the rest of the refresh by far.
+    void queryClient.invalidateQueries({ queryKey: ["drift"] });
     try {
       await Promise.all([
         queryClient.resetQueries({ queryKey: ["overview"] }, { throwOnError: true }),
@@ -1004,6 +1091,7 @@ export function HomeOverview() {
           <ContextReadinessCard context={data.context} onRetry={() => void refresh()} repository={data.shell.repository} />
         </div>
         <div className={homeStyles.asideColumn}>
+          <DriftCard />
           <LatestActivityCard activity={data.activity} onRetry={() => void refresh()} />
           <TeamAccessCard api={api} reprompt={Boolean(data.sharing?.relayPublished || data.sharing?.moreThanOneContributor)} />
         </div>

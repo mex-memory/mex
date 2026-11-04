@@ -3,6 +3,8 @@ import type { DiagramRepository } from "../statechart/repository.js";
 import {
   AgentLoggingPolicySchema,
   AgentLoggingUpdateRequestSchema,
+  DriftStatusSchema,
+  type DriftStatus,
   type AgentLoggingPolicy,
   type AgentLoggingUpdateRequest,
   HubOnboardingCompleteRequestSchema,
@@ -254,6 +256,7 @@ export interface HubReadServices {
   capabilities(): Promise<HubCapabilities> | HubCapabilities;
   home(): Promise<HomeResponse> | HomeResponse;
   overview?(): Promise<OverviewResponse> | OverviewResponse;
+  driftStatus?(): Promise<DriftStatus> | DriftStatus;
   activity(request: ActivityRequest): Promise<ActivityResponse> | ActivityResponse;
   members?(
     request: TeamMemberListRequest,
@@ -471,6 +474,15 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       throw unavailable("Overview reads are not connected in this build.");
     }
     return resourceResponse(OverviewResponseSchema, await overview());
+  });
+
+  app.get("/api/v1/drift", async (context) => {
+    readStrictQuery(context.req.raw, []);
+    const driftStatus = options.services.driftStatus;
+    if (driftStatus === undefined) {
+      throw unavailable("Drift detection is not connected in this build.");
+    }
+    return resourceResponse(DriftStatusSchema, await driftStatus());
   });
 
   app.get("/api/v1/members", async (context) => {

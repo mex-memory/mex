@@ -324,6 +324,40 @@ function overviewJob(
 }
 
 describe("createLocalHubReadServices", () => {
+  it("shares one drift run across callers, then starts a new one", async () => {
+    const status = {
+      state: "in_sync",
+      checkedAt: "2026-11-04T12:00:00.000Z",
+      issueCount: 0,
+      fileCount: 0,
+      files: [],
+      commentOnlyCount: 0,
+      warningOnlyCount: 0,
+      codeLinks: "checked",
+    };
+    const detectDrift = vi.fn(async () => status);
+    const services = createLocalHubReadServices({ projectRoot, scaffoldId: "scaffold-local", git, detectDrift, jobs: { list: () => ({ items: [] }) } } as never);
+    const [first, second] = await Promise.all([services.driftStatus!(), services.driftStatus!()]);
+    expect(first).toEqual(status);
+    expect(second).toEqual(status);
+    expect(detectDrift).toHaveBeenCalledTimes(1);
+    await services.driftStatus!();
+    expect(detectDrift).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a failed or malformed drift run as unavailable and can retry", async () => {
+    const detectDrift = vi.fn<() => Promise<unknown>>()
+      .mockRejectedValueOnce(new Error("private detail"))
+      .mockResolvedValueOnce({ state: "unknown" });
+    const services = createLocalHubReadServices({ projectRoot, scaffoldId: "scaffold-local", git, detectDrift, jobs: { list: () => ({ items: [] }) } } as never);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const failure = await Promise.resolve(services.driftStatus!()).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: "CAPABILITY_UNAVAILABLE", status: 503 });
+      expect((failure as Error).message).not.toContain("private detail");
+    }
+    expect(detectDrift).toHaveBeenCalledTimes(2);
+  });
+
   it("previews migration without writes, requires the reviewed plan, then migrates and rebuilds", async () => {
     mkdirSync(join(projectRoot, ".mex", "context"), { recursive: true });
     writeFileSync(join(projectRoot, ".mex", "ROUTER.md"), "# Project\n");

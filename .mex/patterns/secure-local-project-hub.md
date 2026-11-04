@@ -11,7 +11,7 @@ edges:
     condition: "when persisting a Hub job or migrating team.db"
   - target: "context/architecture.md"
     condition: "when wiring a real Graph or Wiki adapter"
-last_updated: 2026-10-28
+last_updated: 2026-11-04
 mex:
   id: mx_01M1M0CJQ2BSV71G1C7TXZD9RH
   type: pattern
@@ -236,6 +236,11 @@ preview/apply services.
   while code health or signatures change. Each code projection carries its own
   Graph observation, so do not claim aggregate health across separately observed
   panels is one shared Graph snapshot.
+
+- `runDriftCheck` reads files and runs Git synchronously, so a Hub request must
+  not call it in process: a 30-second check would stall every other route. Run
+  slow synchronous reads in a private bundled entry, share one in-flight run, and
+  invalidate their query without awaiting it so a refresh does not wait on them.
 
 ## Verify
 

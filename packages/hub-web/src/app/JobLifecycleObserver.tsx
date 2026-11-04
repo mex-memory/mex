@@ -26,6 +26,8 @@ export function isWikiJob(kind: JobKind): kind is "wiki_refresh" | "wiki_rebuild
 }
 
 export async function invalidateGraphReads(queryClient: QueryClient): Promise<void> {
+  // Not awaited: a drift check can far outlast the other reads.
+  void queryClient.invalidateQueries({ queryKey: ["drift"] });
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ["search"] }),
     queryClient.invalidateQueries({ queryKey: ["code-symbol"] }),
@@ -41,6 +43,8 @@ export async function invalidateGraphReads(queryClient: QueryClient): Promise<vo
 }
 
 export async function invalidateWikiReads(queryClient: QueryClient): Promise<void> {
+  // Not awaited: a drift check can far outlast the other reads.
+  void queryClient.invalidateQueries({ queryKey: ["drift"] });
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ["search"] }),
     queryClient.invalidateQueries({ queryKey: ["wiki-entities"] }),
