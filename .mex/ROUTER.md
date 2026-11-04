@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-11-04
+last_updated: 2026-11-05
 ---
 
 # Session Bootstrap
@@ -43,7 +43,9 @@ Then read this file fully before doing anything else in this session.
   Non-shell, inactive and managed hooks remain untouched. The alert baseline holds
   a complete bounded set of hashed file identities, separately from the Hub's
   100-file preview; graph maintenance, commits and date changes invalidate checks.
-  Checks wait for source to settle and never refresh the graph. macOS user
+  Automatic Hub checks begin on the ten-minute cadence to keep startup quiet;
+  Settings actions and commits can check immediately. Checks wait for source
+  to settle and never refresh the graph. macOS user
   acceptance confirmed the visible notification and the card's matching one-error
   result; the test commit returned in 1.064 seconds. Linux on a real machine and
   Discord delivery remain open.

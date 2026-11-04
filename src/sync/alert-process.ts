@@ -30,7 +30,7 @@ export function createDriftAlertRunner(projectRoot: string): DriftAlertRunner {
   };
 }
 
-/** Check now and then on an interval. With alerts off, this only reads the setting. */
+/** Check on the interval, leaving Hub startup quiet. Settings and commits can check immediately. */
 export function startDriftAlertSchedule(
   projectRoot: string,
   runner: DriftAlertRunner,
@@ -41,7 +41,6 @@ export function startDriftAlertSchedule(
       if (readDriftAlertState(projectRoot).enabled) runner.run();
     } catch { /* Settings shows a malformed state; the schedule stays quiet. */ }
   };
-  tick();
   const timer = setInterval(tick, intervalMs);
   timer.unref();
   return () => clearInterval(timer);

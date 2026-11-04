@@ -350,7 +350,7 @@ describe("drift alert hook", () => {
 });
 
 describe("startDriftAlertSchedule", () => {
-  it("runs only while alerts are on, and stops", async () => {
+  it("waits for the ten-minute cadence, runs only while alerts are on, and stops", async () => {
     vi.useFakeTimers();
     try {
       const root = project();
@@ -358,19 +358,24 @@ describe("startDriftAlertSchedule", () => {
       await setDriftAlertsEnabled(root, false);
       vi.useFakeTimers();
       const run = vi.fn();
-      const stop = startDriftAlertSchedule(root, { run }, 1_000);
+      const stop = startDriftAlertSchedule(root, { run });
+      vi.advanceTimersByTime(10 * 60_000);
       expect(run).not.toHaveBeenCalled();
+      stop();
       vi.useRealTimers();
       await enable(root);
       vi.useFakeTimers();
-      const running = startDriftAlertSchedule(root, { run }, 1_000);
+      const running = startDriftAlertSchedule(root, { run });
+      expect(run).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(10 * 60_000 - 1);
+      expect(run).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
       expect(run).toHaveBeenCalledTimes(1);
-      vi.advanceTimersByTime(2_000);
-      expect(run).toHaveBeenCalledTimes(3);
+      vi.advanceTimersByTime(10 * 60_000);
+      expect(run).toHaveBeenCalledTimes(2);
       running();
-      stop();
-      vi.advanceTimersByTime(5_000);
-      expect(run).toHaveBeenCalledTimes(3);
+      vi.advanceTimersByTime(5 * 10 * 60_000);
+      expect(run).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
