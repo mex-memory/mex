@@ -5,7 +5,9 @@ import {
   AgentLoggingPolicySchema,
   HubOnboardingStateSchema,
   HubRepositoryContributorsSchema,
+  DriftAlertSettingsSchema,
   DriftStatusSchema,
+  type DriftAlertUpdateRequest,
   type DriftStatus,
   HUB_LIMITS,
   type ActivityActor,
@@ -187,6 +189,8 @@ import { normalizeTeamInboxSpecCommand } from "../team/inbox/spec-authoring.js";
 import type { HubReadServices } from "./app.js";
 import { HubHttpError } from "./http/errors.js";
 import { runDriftDetectionProcess } from "../sync/detect-process.js";
+import { installDriftAlertHook, removeDriftAlertHook } from "../sync/alert-hook.js";
+import { readDriftAlertState, updateDriftAlertState, type DriftAlertState } from "../sync/alert-state.js";
 import type {
   GraphSearchBundleRequest,
   GraphSearchBundleResult,
@@ -299,6 +303,7 @@ export interface LocalHubReadServicesOptions {
   readonly graph?: HubGraphReadService;
   readonly wiki?: HubWikiReadService;
   readonly detectDrift?: () => Promise<unknown>;
+  readonly runDriftAlerts?: () => void;
   readonly now?: () => Date;
 }
 
@@ -349,6 +354,23 @@ export function createLocalHubReadServices(
     },
     async completeOnboarding() {
       return HubOnboardingStateSchema.parse(await completeHubOnboarding(options.projectRoot));
+    },
+    driftAlerts() {
+      return projectDriftAlerts(readDriftAlertState(options.projectRoot));
+    },
+    async setDriftAlerts({ enabled }: DriftAlertUpdateRequest) {
+      if (enabled) {
+        const commitHook = installDriftAlertHookSafely(options.projectRoot);
+        const state = await updateDriftAlertState(options.projectRoot, (current) => ({ ...current, enabled, commitHook }));
+        options.runDriftAlerts?.();
+        return projectDriftAlerts(state);
+      }
+      // Off first: a hook that outlives this write does nothing once alerts are off.
+      const state = await updateDriftAlertState(options.projectRoot, () => ({
+        enabled, commitHook: false, lastDelivery: "none", checkedFingerprint: null, alerted: {},
+      }));
+      removeDriftAlertHook(options.projectRoot);
+      return projectDriftAlerts(state);
     },
     driftStatus() {
       driftRun ??= detectDrift()
@@ -1305,6 +1327,17 @@ function projectGraphImpact(impact: GraphImpactResult): CodeWorkspaceResponse["t
       || impact.impacted.length > 100
       || impact.relations.length > 500,
   };
+}
+
+function projectDriftAlerts({ enabled, commitHook, lastDelivery }: DriftAlertState) {
+  return DriftAlertSettingsSchema.parse({ enabled, commitHook, lastDelivery });
+}
+
+/** Alerts still work from Hub and `mex watch` when the worker can't be found for a hook. */
+function installDriftAlertHookSafely(projectRoot: string): boolean {
+  try {
+    return installDriftAlertHook(projectRoot);
+  } catch { return false; }
 }
 
 function unavailableWikiGraph(): HubHttpError {

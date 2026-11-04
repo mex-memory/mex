@@ -66,6 +66,9 @@ export async function runWatchInterval(config: MexConfig, intervalMinutes: numbe
   const run = async () => {
     try {
       await runHeartbeat(config);
+      // Does nothing unless drift alerts are on for this checkout.
+      const { runDriftAlertPass } = await import("./sync/alert-pass.js");
+      await runDriftAlertPass(config.projectRoot);
     } catch (err) {
       console.error((err as Error).message);
     }

@@ -12,10 +12,11 @@ export interface DriftDetectionProcessOptions {
   timeoutMs?: number;
 }
 
-function detectEntrypoint(): string {
+/** Bundled code uses the sibling file; source-based tests and dev use the build. */
+export function privateEntrypoint(name: "drift-detect" | "drift-alert"): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  const entry = [resolve(here, "drift-detect.js"), resolve(here, "../../dist/drift-detect.js")].find(existsSync);
-  if (!entry) throw new Error("The drift detector is missing. Run npm run build from source or reinstall MEX.");
+  const entry = [resolve(here, `${name}.js`), resolve(here, `../../dist/${name}.js`)].find(existsSync);
+  if (!entry) throw new Error(`The ${name} worker is missing. Run npm run build from source or reinstall MEX.`);
   return entry;
 }
 
@@ -30,7 +31,7 @@ export function runDriftDetectionProcess(
   options: DriftDetectionProcessOptions = {},
 ): Promise<unknown> {
   return new Promise((accept, reject) => {
-    const child = spawn(process.execPath, [options.entrypoint ?? detectEntrypoint(), projectRoot], {
+    const child = spawn(process.execPath, [options.entrypoint ?? privateEntrypoint("drift-detect"), projectRoot], {
       cwd: projectRoot,
       windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],

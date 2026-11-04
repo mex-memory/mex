@@ -34,8 +34,13 @@ Then read this file fully before doing anything else in this session.
   `src/sync/work.ts` holds sync's own filter, so the card reports only what
   `mex sync` would act on. The check runs in a private `drift-detect` process
   because it is synchronous and takes tens of seconds on a large repository. It
-  never refreshes the graph or starts an agent. The opt-in toggle, scheduling and
-  notifications are not built yet.
+  never refreshes the graph or starts an agent.
+- Opt-in drift alerts in Hub Settings send a desktop notification through the
+  OS's own notifier when `mex sync` has new work (`src/sync/alert-pass.ts`). State
+  is checkout-local in `.mex/local/drift-alerts.json`. Checks run from a Hub timer,
+  `mex watch --interval`, and a post-commit hook block the setting adds and removes.
+  They skip an unchanged checkout, wait for source to settle, and never refresh the
+  graph. Discord delivery and macOS/Linux checks on real machines remain open.
 - Official skills install for Cursor, GitHub Copilot, OpenCode and Windsurf
   through the `.agents/skills` copy they share with Codex. The installer plans a
   shared path once. Discovery paths come from each vendor's docs; the live-client

@@ -324,6 +324,18 @@ function overviewJob(
 }
 
 describe("createLocalHubReadServices", () => {
+  it("turns drift alerts on and off for this checkout and starts a check when turned on", async () => {
+    mkdirSync(join(projectRoot, ".mex"), { recursive: true });
+    const runDriftAlerts = vi.fn();
+    const services = createLocalHubReadServices({ projectRoot, scaffoldId: "scaffold-local", git, runDriftAlerts, jobs: { list: () => ({ items: [] }) } } as never);
+    expect(await services.driftAlerts!()).toEqual({ enabled: false, commitHook: false, lastDelivery: "none" });
+    expect(runDriftAlerts).not.toHaveBeenCalled();
+    await expect(services.setDriftAlerts!({ enabled: true })).resolves.toMatchObject({ enabled: true });
+    expect(runDriftAlerts).toHaveBeenCalledTimes(1);
+    await expect(services.setDriftAlerts!({ enabled: false })).resolves.toEqual({ enabled: false, commitHook: false, lastDelivery: "none" });
+    expect(runDriftAlerts).toHaveBeenCalledTimes(1);
+  });
+
   it("shares one drift run across callers, then starts a new one", async () => {
     const status = {
       state: "in_sync",

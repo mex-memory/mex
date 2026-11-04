@@ -245,6 +245,17 @@ describe("HttpHubApi shared-contract boundary", () => {
     expect(init.method).toBeUndefined();
   });
 
+  it("reads the drift alert setting from its dedicated endpoint", async () => {
+    const response = await createFixtureApi().getDriftAlerts();
+    const fetchMock = vi.fn().mockResolvedValue(json(response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new HttpHubApi().getDriftAlerts()).resolves.toEqual(response);
+
+    const [rawUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new URL(rawUrl, "http://127.0.0.1").pathname).toBe("/api/v1/settings/drift-alerts");
+  });
+
   it("reads drift status from its dedicated endpoint", async () => {
     const response = await createFixtureApi().getDriftStatus();
     const fetchMock = vi.fn().mockResolvedValue(json(response));

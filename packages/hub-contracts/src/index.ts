@@ -121,6 +121,14 @@ export const DriftStatusSchema = z.object({
   codeLinks: z.enum(["checked", "partial"]),
 }).strict();
 export type DriftStatus = z.infer<typeof DriftStatusSchema>;
+export const DriftAlertSettingsSchema = z.object({
+  enabled: z.boolean(),
+  commitHook: z.boolean(),
+  lastDelivery: z.enum(["none", "sent", "failed"]),
+}).strict();
+export const DriftAlertUpdateRequestSchema = z.object({ enabled: z.boolean() }).strict();
+export type DriftAlertSettings = z.infer<typeof DriftAlertSettingsSchema>;
+export type DriftAlertUpdateRequest = z.infer<typeof DriftAlertUpdateRequestSchema>;
 
 /** Shared primitives for route-private contract entry points. */
 export const HubIsoTimestampSchema = isoTimestamp;
