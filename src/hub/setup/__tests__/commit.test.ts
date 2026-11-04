@@ -128,6 +128,21 @@ describe("reviewed setup commits using real Git", () => {
     expect(git(root, "ls-tree", "-r", "--name-only", result.commit)).not.toMatch(/Private|team|local|\.db|CLAUDE|private|other/);
   });
 
+  it("reviews the anchor, instruction file and shared skill copy of a client that keeps them apart", async () => {
+    const root = fixture();
+    setup(root);
+    write(root, ".opencode/opencode.json", "{}\n");
+    write(root, "AGENTS.md", "OpenCode instructions\n");
+    write(root, ".agents/skills/mex-inbox/SKILL.md", "Inbox skill\n");
+    write(root, ".agents/skills/other/SKILL.md", "Private bytes\n");
+    write(root, ".cursorrules", "Private bytes\n");
+    const { preview } = await review(root, ["opencode"]);
+    const paths = preview.files.map((file) => file.path);
+    expect(paths).toEqual(expect.arrayContaining([".opencode/opencode.json", "AGENTS.md", ".agents/skills/mex-inbox/SKILL.md"]));
+    expect(paths).not.toContain(".agents/skills/other/SKILL.md");
+    expect(paths).not.toContain(".cursorrules");
+  });
+
   it.each(["file", "index", "head", "branch", "config", "attributes", "hooks"])("rejects a stale %s before committing or changing staging", async (change) => {
     const root = fixture();
     setup(root);

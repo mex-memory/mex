@@ -1,7 +1,7 @@
 import { AgentAssetsError } from "../agent-skills/installer.js";
 import { classifySetupFileSystemError, SetupError } from "./errors.js";
 
-const BACKUP_REVIEW = "Look for hidden entries containing .mex-backup- beside CLAUDE.md or AGENTS.md and in .claude/skills or .agents/skills. Review and reconcile those backups before rerunning setup.";
+const BACKUP_REVIEW = "Look for hidden entries containing .mex-backup- beside your agent instruction files and in .claude/skills or .agents/skills. Review and reconcile those backups before rerunning setup.";
 
 /** Translate known installer failures without exposing paths or child output. */
 export function classifySetupAgentAssetsError(error: unknown): SetupError | null {

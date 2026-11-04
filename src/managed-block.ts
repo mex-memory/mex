@@ -4,8 +4,8 @@ import { createHash } from "node:crypto";
  * Merging a mex-owned block into a file the user already wrote.
  *
  * Two callers need this and they must not diverge: the agent-skills installer
- * maintains the skills policy block in `CLAUDE.md` / `AGENTS.md`, and setup
- * maintains a scaffold pointer block in the anchors that have no skills
+ * maintains the skills policy block in each client's instruction file, and setup
+ * maintains a scaffold pointer block in the anchors it seeds from a template
  * (`.cursorrules`, `.windsurfrules`, `.github/copilot-instructions.md`). Both
  * face the same hazard -- a hand-written file whose bytes outside the block
  * must survive byte-for-byte -- so the marker parsing, EOL detection and

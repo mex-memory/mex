@@ -23,11 +23,11 @@ const TOOL_CONFIG_FILES: ReadonlyArray<string> = [
  * Blocks mex maintains inside an anchor, which are expected to differ between
  * copies and must not count as drift.
  *
- * `CLAUDE.md` carries the agent-skills policy block and `.cursorrules` cannot
- * -- Cursor has no mex skills to invoke. Comparing the raw bytes therefore
- * reported an install of both tools as permanently drifted, with no edit the
- * user could make to clear it: matching the files would mean deleting a block
- * the installer rewrites on every sync. Compare what the user owns instead.
+ * The agent-skills policy block names skills with each client's own prefix, and
+ * only some selected tools carry it. Comparing the raw bytes therefore reported
+ * an install of several tools as permanently drifted, with no edit the user
+ * could make to clear it: matching the files would mean deleting a block the
+ * installer rewrites on every sync. Compare what the user owns instead.
  */
 const MANAGED_BLOCKS: ReadonlyArray<readonly [string, string]> = [
 	[MEX_INSTRUCTIONS_START, MEX_INSTRUCTIONS_END],
