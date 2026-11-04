@@ -30,6 +30,10 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
+- Official skills install for Cursor, GitHub Copilot, OpenCode and Windsurf
+  through the `.agents/skills` copy they share with Codex. The installer plans a
+  shared path once. Discovery paths come from each vendor's docs; the live-client
+  checks in `docs/agent-skills.md` have not all been run.
 - 0.8.5 is tagged and published as the stable/latest GitHub release at
   `v0.8.5`, commit `8c43930`, dated October 29. Preparation went directly to
   main without a PR, as authorized. Exact-release CI `40826775278` passes all

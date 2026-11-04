@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `mex setup` and `mex skills sync` install the official Inbox, Relay, and Statechart skills for Cursor, GitHub Copilot, OpenCode, and Windsurf. All four share one copy in `.agents/skills/` with Codex. See [Agent skills by tool](docs/agent-skills.md) for install steps and smoke checks.
+
 ## [0.8.5] - 2026-10-29
 
 ### Added

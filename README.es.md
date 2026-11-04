@@ -249,7 +249,10 @@ La configuración instala instrucciones breves para el agente anfitrión que apu
 | --- | --- | --- |
 | **Claude Code** | Instala o actualiza las instrucciones de entrada del proyecto y las skills en `.claude/skills/` | `/mex-inbox`, `/mex-relay`, `/mex-statechart` |
 | **Codex** | Instala o actualiza las instrucciones de entrada del proyecto y las skills en `.agents/skills/` | `$mex-inbox`, `$mex-relay`, `$mex-statechart` |
-| **Cursor, Windsurf, GitHub Copilot, OpenCode** | Instala las instrucciones de entrada o la plantilla correspondiente | Sin comando oficial de skills de MEX en 0.8 |
+| **Cursor, GitHub Copilot, Windsurf** | Instala o actualiza su archivo de instrucciones y las skills en `.agents/skills/` | `/mex-inbox`, `/mex-relay`, `/mex-statechart` |
+| **OpenCode** | Instala o actualiza `.opencode/opencode.json`, `AGENTS.md` y las skills en `.agents/skills/` | Pídela por su nombre, por ejemplo "use the mex-inbox skill" |
+
+Estas cuatro integraciones requieren una versión de MEX posterior a 0.8.5. Consulta [los pasos de instalación por herramienta](docs/agent-skills.md).
 
 Si a una configuración existente le faltan los archivos de integración de Claude Code o Codex, previsualiza y sincroniza esa integración explícitamente:
 

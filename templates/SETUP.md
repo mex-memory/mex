@@ -36,8 +36,8 @@ long-lived Hub. Exit 2 means population is pending; populate the scaffold and
 rerun setup to continue. Exit 0 means preparation is complete. Use
 `mex setup --browser` to open the commit and completion page afterward.
 
-For Claude Code and Codex, setup also copies the packaged `mex-inbox` and
-`mex-relay` skills into the project. No plugin or separate skill installer is
+For every selected tool, setup also copies the packaged `mex-inbox`, `mex-relay`,
+and `mex-statechart` skills into the project. No plugin or separate skill installer is
 needed. A plain `npm install` delivers the payload without changing the
 repository; after upgrading the package, run `mex skills sync` to install the
 new packaged copies for the tools recorded in `.mex/config.json`.
@@ -248,9 +248,10 @@ in any scaffold file.
 
 ## After Setup
 
-Start a new Claude Code or Codex session so the new project skills and
-instructions are guaranteed to load. Claude uses `/mex-inbox` and `/mex-relay`;
-Codex uses `$mex-inbox` and `$mex-relay`. Clear natural-language requests work
+Start a new agent session so the new project skills and instructions are
+guaranteed to load. Claude Code, Cursor, GitHub Copilot, and Windsurf use
+`/mex-inbox` and `/mex-relay`; Codex uses `$mex-inbox` and `$mex-relay`; OpenCode
+loads them by name through its skill tool. Clear natural-language requests work
 too. Commit the project skill copies so teammates receive them; MEX never
 stages, commits, or pushes them automatically.
 

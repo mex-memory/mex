@@ -249,7 +249,10 @@ Wiki 中的一项说明可以指向确定性的图节点。MEX 会保存节点 I
 | --- | --- | --- |
 | **Claude Code** | 安装或更新项目入口指令，以及 `.claude/skills/` 下的技能 | `/mex-inbox`、`/mex-relay` |
 | **Codex** | 安装或更新项目入口指令，以及 `.agents/skills/` 下的技能 | `$mex-inbox`、`$mex-relay` |
-| **Cursor、Windsurf、GitHub Copilot、OpenCode** | 安装相应的指令入口/模板 | 0.8 中没有官方 MEX 技能命令 |
+| **Cursor、GitHub Copilot、Windsurf** | 安装或更新各自的指令文件，以及 `.agents/skills/` 下的技能 | `/mex-inbox`、`/mex-relay`、`/mex-statechart` |
+| **OpenCode** | 安装或更新 `.opencode/opencode.json`、`AGENTS.md`，以及 `.agents/skills/` 下的技能 | 按名称请求，例如 "use the mex-inbox skill" |
+
+这四项集成需要高于 0.8.5 的 MEX 版本。请参阅[各工具的安装步骤](docs/agent-skills.md)。
 
 如果现有设置缺少你所需的 Claude Code 或 Codex 文件，请显式预览并同步该集成：
 
