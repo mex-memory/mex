@@ -146,11 +146,17 @@ export function checkDependencies(
 interface DepEntry {
   name: string;
   version: string;
-  /** Set for manifests whose names normalize (PEP 503). npm names are compared
+  /** Set for manifests whose names normalize. npm names are compared
    *  verbatim: `lodash.debounce` and `lodash-debounce` are different packages
    *  there, while `sentence_transformers` and `sentence-transformers` are one
-   *  package on PyPI. */
-  normalizes?: boolean;
+   *  package on PyPI. Cargo folds `-` and `_` together but keeps `.` as part
+   *  of the name, so the two ecosystems normalize differently. */
+  normalizes?: "pep503" | "cargo";
+  /** Other spellings that name the same package. A Go module is declared by
+   *  its full path (`github.com/spf13/cobra`) but prose names the package
+   *  (`cobra`); a Cargo dependency renamed with `package = "..."` declares
+   *  the crate under that name and is reached by its own key. */
+  aliases?: string[];
 }
 
 /** A claimed name against the manifest list. Prose uses the import spelling
@@ -164,13 +170,23 @@ function findDependency(deps: DepEntry[], claimed: string): DepEntry | undefined
   };
   const display = deps.find((d) => displayNames[claimed]?.includes(d.name.toLowerCase()));
   if (display) return display;
-  const normalized = normalizeName(claimed);
-  return deps.find((d) => d.normalizes && normalizeName(d.name) === normalized);
+  const alias = deps.find((d) => d.aliases?.some((a) => a.toLowerCase() === claimed));
+  if (alias) return alias;
+  const pep503 = deps.find((d) => d.normalizes === "pep503" && normalizeName(d.name) === normalizeName(claimed));
+  if (pep503) return pep503;
+  return deps.find((d) => d.normalizes === "cargo" && normalizeCrateName(d.name) === normalizeCrateName(claimed));
 }
 
 // Manifest reads preserve the existing per-file and aggregate byte budgets.
 const MAX_MANIFEST_BYTES = 1_048_576;
 const MAX_TOTAL_MANIFEST_BYTES = 8_388_608;
+
+/** The manifest shapes the checker reads, each recognized by its file name.
+ *  The separator class covers both the repository-relative POSIX paths and the
+ *  resolved absolute paths the manifests are read from. */
+const PYTHON_MANIFEST = /(^|[\\/])pyproject\.toml$/;
+const RUST_MANIFEST = /(^|[\\/])Cargo\.toml$/;
+const GO_MANIFEST = /(^|[\\/])go\.mod$/;
 
 function readManifest(path: string, remaining: number): string | null {
   const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -197,7 +213,9 @@ function loadAllDependencies(projectRoot: string, repository: RepositoryInventor
   // the repository itself.
   const manifests = repository.files && repository.manifests && [
       ...repository.manifests.map((pkg) => resolve(projectRoot, pkg.path)),
-      ...repository.files.filter((file) => /(^|\/)pyproject\.toml$/.test(file) && repository.safeFile(file)).map((file) => resolve(projectRoot, file)),
+      ...repository.files.filter((file) => PYTHON_MANIFEST.test(file) && repository.safeFile(file)).map((file) => resolve(projectRoot, file)),
+      ...repository.files.filter((file) => RUST_MANIFEST.test(file) && repository.safeFile(file)).map((file) => resolve(projectRoot, file)),
+      ...repository.files.filter((file) => GO_MANIFEST.test(file) && repository.safeFile(file)).map((file) => resolve(projectRoot, file)),
     ].sort((a, b) => {
       const rank = (file: string) => file === resolve(projectRoot, "package.json") ? 0 : file === resolve(projectRoot, "pyproject.toml") ? 1 : 2;
       return rank(a) - rank(b) || a.localeCompare(b);
@@ -220,6 +238,14 @@ function loadAllDependencies(projectRoot: string, repository: RepositoryInventor
         for (const [name, version] of Object.entries({ ...pkg.peerDependencies, ...pkg.optionalDependencies, ...pkg.devDependencies })) {
           entries.push({ name, version: String(version) });
         }
+      } else if (RUST_MANIFEST.test(manifest)) {
+        entries.push(
+          ...parseCargoDependencies(content)
+        );
+      } else if (GO_MANIFEST.test(manifest)) {
+        entries.push(
+          ...parseGoModDependencies(content)
+        );
       } else {
         entries.push(
           ...parsePyprojectDependencies(content)
@@ -285,7 +311,7 @@ function specEntry(item: string): DepEntry | null {
   const spec = quoted[2]!;
   const name = /^([A-Za-z0-9][\w.-]*)/.exec(spec)?.[1];
   if (!name) return null;
-  return { name, version: spec.slice(name.length).trim() || "*", normalizes: true };
+  return { name, version: spec.slice(name.length).trim() || "*", normalizes: "pep503" };
 }
 
 /** PEP 503 names: `Tree_Sitter` and `tree-sitter` are the same package. */
@@ -357,7 +383,7 @@ export function parsePyprojectDependencies(content: string): DepEntry[] {
       entries.push({
         name: key,
         version: inline?.[2] ?? (value.replace(/^["']|["'],?\s*$/g, "") || "*"),
-        normalizes: true,
+        normalizes: "pep503",
       });
       if (!/[\]}]/.test(maskStrings(value)) && /^[[{]/.test(value)) open = "skip";
       continue;
@@ -383,4 +409,184 @@ export function parsePyprojectDependencies(content: string): DepEntry[] {
   // its own dependency; that is not a package a scaffold can claim.
   const self = projectName ? normalizeName(projectName) : "";
   return self ? entries.filter((entry) => normalizeName(entry.name) !== self) : entries;
+}
+
+/**
+ * Extract dependency names from a Cargo.toml without a TOML dependency.
+ *
+ * Cargo declares a crate in one of the `[dependencies]`, `[dev-dependencies]`
+ * or `[build-dependencies]` tables, and in a target-specific table such as
+ * `[target.'cfg(unix)'.dependencies]` for a platform-gated crate. The version
+ * is either a bare string (`serde = "1.0"`) or the `version` key of an inline
+ * table (`serde = { version = "1.0", features = ["derive"] }`), which Cargo
+ * also writes across several lines.
+ *
+ * Crate names are matched the way Cargo matches them: `my-crate` and
+ * `my_crate` are the same crate, because Cargo itself accepts either spelling
+ * and normalizes it. A dot is part of a crate name, not a separator.
+ */
+export function parseCargoDependencies(content: string): DepEntry[] {
+  const entries: DepEntry[] = [];
+  let inDependencyTable = false;
+  // The crate whose inline table is still open, and the version found in it
+  // so far. A crate whose table closes without a version is still declared.
+  let openCrate: { name: string; version?: string } | null = null;
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = stripComment(rawLine);
+    if (!line) continue;
+
+    if (openCrate) {
+      const version = /\bversion\s*=\s*(["'])((?:(?!\1).)*)\1/.exec(line);
+      if (version && openCrate.version === undefined) openCrate.version = version[2]!;
+      if (closesInlineTable(line)) {
+        entries.push({ name: openCrate.name, version: openCrate.version ?? "*", normalizes: "cargo" });
+        openCrate = null;
+      }
+      continue;
+    }
+
+    const header = /^\[{1,2}([^\]]+)\]{1,2}$/.exec(line);
+    if (header) {
+      inDependencyTable = isCargoDependencyTable(header[1]!.trim());
+      continue;
+    }
+
+    if (!inDependencyTable) continue;
+
+    const keyValue = /^["']?([A-Za-z0-9][\w.-]*)["']?\s*=\s*(.*)$/.exec(line);
+    if (!keyValue) continue;
+    const key = keyValue[1]!;
+    const value = keyValue[2]!.trim();
+
+    // `serde = "1.0"` — the version is the string itself.
+    const bare = /^(["'])((?:(?!\1).)*)\1$/.exec(value);
+    if (bare) {
+      entries.push({ name: key, version: bare[2]!, normalizes: "cargo" });
+      continue;
+    }
+
+    // `serde = { version = "1.0", features = ["derive"] }` — one line.
+    const inline = /\bversion\s*=\s*(["'])((?:(?!\1).)*)\1/.exec(value);
+    if (inline) {
+      entries.push({ name: key, version: inline[2]!, normalizes: "cargo" });
+      continue;
+    }
+
+    if (!/^\{/.test(value)) continue;
+
+    // `serde = { features = ["derive"] }` — a crate with no version of its
+    // own, but still a declared dependency.
+    if (closesInlineTable(value)) {
+      entries.push({ name: key, version: "*", normalizes: "cargo" });
+      continue;
+    }
+
+    // `serde = {` followed by the keys on later lines.
+    openCrate = { name: key };
+  }
+
+  // An inline table left open at the end of the file still declares its crate.
+  if (openCrate) {
+    entries.push({ name: openCrate.name, version: openCrate.version ?? "*", normalizes: "cargo" });
+  }
+
+  return entries;
+}
+
+/** The Cargo tables that declare a crate, including the target-gated ones. */
+function isCargoDependencyTable(table: string): boolean {
+  if (table === "dependencies" || table === "dev-dependencies" || table === "build-dependencies") {
+    return true;
+  }
+  // `[target.'cfg(unix)'.dependencies]` and `[target.x86_64-pc-windows-msvc.dev-dependencies]`.
+  return /^target\..*\.(dependencies|dev-dependencies|build-dependencies)$/.test(table);
+}
+
+/** True when the line closes the inline table it was opened in. */
+function closesInlineTable(line: string): boolean {
+  const mask = maskStrings(line);
+  let depth = 0;
+  for (const ch of mask) {
+    if (ch === "{") depth++;
+    else if (ch === "}") depth--;
+  }
+  return depth <= 0;
+}
+
+/**
+ * Cargo crate names: `my-crate` and `my_crate` are the same crate.
+ *
+ * A dot is part of the name rather than a separator, so it is kept — unlike
+ * PEP 503, which folds `.`, `-` and `_` into one.
+ */
+function normalizeCrateName(name: string): string {
+  return name.toLowerCase().replace(/[-_]+/g, "-");
+}
+
+/**
+ * Extract dependency names from a go.mod.
+ *
+ * A module is required either in a `require (...)` block or on a single
+ * `require <path> <version>` line. The path is the module's identity, so it
+ * is what the manifest carries; prose usually names the last path segment
+ * instead (`cobra` for `github.com/spf13/cobra`), which is kept as an alias so
+ * a claim in either spelling resolves to the same module.
+ *
+ * A `// indirect` comment marks a module required by a dependency rather than
+ * by this module; it is still a declared dependency, so the comment is read
+ * and then dropped.
+ */
+export function parseGoModDependencies(content: string): DepEntry[] {
+  const entries: DepEntry[] = [];
+  let inRequireBlock = false;
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = stripGoComment(rawLine);
+    if (!line) continue;
+
+    if (inRequireBlock) {
+      const closed = line.includes(")");
+      const entry = goModuleEntry(line);
+      if (entry) entries.push(entry);
+      if (closed) inRequireBlock = false;
+      continue;
+    }
+
+    if (/^require\s*\($/.test(line)) {
+      inRequireBlock = true;
+      continue;
+    }
+
+    if (/^require\s+\S/.test(line)) {
+      const entry = goModuleEntry(line.replace(/^require\s+/, ""));
+      if (entry) entries.push(entry);
+    }
+  }
+
+  return entries;
+}
+
+/** Drop a `//` comment, which is what go.mod uses. */
+function stripGoComment(line: string): string {
+  const comment = line.indexOf("//");
+  return (comment === -1 ? line : line.slice(0, comment)).trim();
+}
+
+/** One `require` line: a module path and its version. */
+function goModuleEntry(line: string): DepEntry | null {
+  const parts = line.trim().split(/\s+/);
+  if (parts.length < 2) return null;
+  const [path, version] = parts;
+  if (!path || !version) return null;
+  // A module path is a domain or a host-prefixed path; anything else is a
+  // directive the parser misread.
+  if (!/^[A-Za-z0-9][\w.-]*(\.[A-Za-z0-9][\w.-]*)*(\/[\w.-]+)*$/.test(path)) return null;
+  const segments = path.split("/");
+  const alias = segments.length > 1 ? segments[segments.length - 1] : undefined;
+  return {
+    name: path,
+    version,
+    aliases: alias ? [alias] : undefined,
+  };
 }
