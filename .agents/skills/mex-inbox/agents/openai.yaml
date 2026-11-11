@@ -1,4 +1,0 @@
-interface:
-  display_name: "MEX Inbox"
-  short_description: "Propose additions to project knowledge"
-  default_prompt: "Use $mex-inbox to capture what we decided as a contribution to this project's knowledge."

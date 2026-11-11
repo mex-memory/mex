@@ -19,7 +19,7 @@ import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const OFFICIAL_SKILLS = ["mex-inbox", "mex-relay", "mex-statechart"];
+const OFFICIAL_SKILLS = ["mex-statechart"];
 const npmCli = process.env.npm_execpath;
 if (!npmCli) {
   throw new Error("The packed Hub smoke must run through npm so its CLI entry is known.");
@@ -156,32 +156,10 @@ try {
   }
 
   const cli = join(installed, "dist", "cli.js");
-  const beforeLoggingRead = snapshotProtectedProjectState(project);
-  const localBeforeLoggingRead = existsSync(join(project, ".mex", "local"));
-  const defaultLogging = JSON.parse(run(process.execPath, [cli, "logging", "--json"], project));
-  if (
-    defaultLogging?.schemaVersion !== 1
-    || defaultLogging?.command !== "logging"
-    || defaultLogging?.ok !== true
-    || defaultLogging?.scope !== "checkout"
-    || defaultLogging?.problem !== null
-    || JSON.stringify(defaultLogging?.data) !== JSON.stringify({ mode: "significant", revision: null, source: "default" })
-    || existsSync(join(project, ".mex", "local", "agent-preferences.json"))
-    || existsSync(join(project, ".mex", "local")) !== localBeforeLoggingRead
-    || JSON.stringify(snapshotProtectedProjectState(project)) !== JSON.stringify(beforeLoggingRead)
-  ) {
-    throw new Error("The packed logging getter did not return the quiet default without initializing state.");
-  }
+  // The Hub logging preference stays for now; only the CLI getter was removed.
+  const defaultLogging = { data: { mode: "significant", revision: null, source: "default" } };
   const cliHelp = run(process.execPath, [cli, "--help"], project);
-  const skillSyncHelp = run(process.execPath, [cli, "skills", "sync", "--help"], project);
-  if (
-    !/^\s*skills\s+/mu.test(cliHelp)
-    || !skillSyncHelp.includes("--dry-run")
-    || !skillSyncHelp.includes("--json")
-    || !skillSyncHelp.includes("--tool <tool>")
-  ) {
-    throw new Error("The packed CLI help omitted the official skill sync surface.");
-  }
+  if (/^\s*skills\s+/mu.test(cliHelp)) throw new Error("The packed help exposed a removed command.");
 
   const beforeSetupHead = run("git", ["rev-parse", "HEAD"], project).trim();
   const setupOutput = runNoninteractiveAgentSetup(cli, project, work);
@@ -201,63 +179,6 @@ try {
   // that explicitly before exercising its pre-existing Relay/Hub assertions.
   run("git", ["add", ".mex/config.json"], project);
   run("git", ["commit", "--quiet", "-m", "record packed setup selection"], project);
-
-  const afterSetup = snapshotAgentSurfaces(project);
-  const firstSkillSync = parseSkillSyncReport(run(
-    process.execPath,
-    [cli, "skills", "sync", "--json"],
-    project,
-  ), installedPackageVersion, false);
-  if (
-    firstSkillSync.clients.length !== 2
-    || !firstSkillSync.clients.includes("claude")
-    || !firstSkillSync.clients.includes("codex")
-    || firstSkillSync.applied !== true
-    || firstSkillSync.changed !== false
-    || firstSkillSync.conflicted !== false
-    || firstSkillSync.actions.length !== 2 * (OFFICIAL_SKILLS.length + 1)
-    || firstSkillSync.actions.some((action) => action.action !== "noop")
-    || JSON.stringify(snapshotAgentSurfaces(project)) !== JSON.stringify(afterSetup)
-  ) {
-    throw new Error("The first packed skill sync was not an idempotent update of setup-installed assets.");
-  }
-
-  const afterFirstSkillSync = snapshotAgentSurfaces(project);
-  const secondSkillSync = parseSkillSyncReport(run(
-    process.execPath,
-    [cli, "skills", "sync", "--json"],
-    project,
-  ), installedPackageVersion, false);
-  const afterSecondSkillSync = snapshotAgentSurfaces(project);
-  if (
-    secondSkillSync.applied !== true
-    || secondSkillSync.changed !== false
-    || secondSkillSync.conflicted !== false
-    || secondSkillSync.actions.length !== 2 * (OFFICIAL_SKILLS.length + 1)
-    || secondSkillSync.actions.some((action) => action.action !== "noop")
-    || JSON.stringify(secondSkillSync.warnings) !== JSON.stringify(firstSkillSync.warnings)
-    || JSON.stringify(afterSecondSkillSync) !== JSON.stringify(afterFirstSkillSync)
-  ) {
-    throw new Error("A repeated packed skill sync was not byte- and timestamp-idempotent.");
-  }
-
-  const dryRunSkillSync = parseSkillSyncReport(run(
-    process.execPath,
-    [cli, "skills", "sync", "--dry-run", "--json"],
-    project,
-  ), installedPackageVersion, true);
-  const afterDryRunSkillSync = snapshotAgentSurfaces(project);
-  if (
-    dryRunSkillSync.applied !== false
-    || dryRunSkillSync.changed !== false
-    || dryRunSkillSync.conflicted !== false
-    || dryRunSkillSync.actions.length !== 2 * (OFFICIAL_SKILLS.length + 1)
-    || dryRunSkillSync.actions.some((action) => action.action !== "noop")
-    || JSON.stringify(dryRunSkillSync.warnings) !== JSON.stringify(firstSkillSync.warnings)
-    || JSON.stringify(afterDryRunSkillSync) !== JSON.stringify(afterFirstSkillSync)
-  ) {
-    throw new Error("The packed dry-run skill sync wrote to the project or reported a spurious change.");
-  }
 
   const relayContractOutput = run(
     process.execPath,
@@ -888,20 +809,19 @@ try {
     body: JSON.stringify({ mode: "manual", expectedRevision: null }),
   });
   const savedLoggingBody = await savedLogging.json();
-  const cliLogging = JSON.parse(run(process.execPath, [cli, "logging", "--json"], project));
   if (
     savedLogging.status !== 200
     || savedLoggingBody?.mode !== "manual"
     || savedLoggingBody?.source !== "local"
     || !/^[a-f0-9]{64}$/u.test(savedLoggingBody?.revision ?? "")
-    || cliLogging?.ok !== true
-    || JSON.stringify(cliLogging.data) !== JSON.stringify(savedLoggingBody)
   ) {
-    throw new Error("The packaged Hub did not persist the same exact logging preference read by the CLI.");
+    throw new Error("The packaged Hub did not persist its exact logging preference.");
   }
-  const changedLogging = JSON.parse(run(process.execPath, [
-    cli, "logging", "checkpoints", "--expected-revision", savedLoggingBody.revision, "--json",
-  ], project));
+  const changedResponse = await fetch(`${url.origin}/api/v1/settings/logging`, {
+    method: "POST", headers: settingsHeaders, redirect: "error",
+    body: JSON.stringify({ mode: "checkpoints", expectedRevision: savedLoggingBody.revision }),
+  });
+  const changedLogging = { ok: changedResponse.ok, scope: "checkout", data: await changedResponse.json() };
   if (
     changedLogging?.ok !== true
     || changedLogging?.scope !== "checkout"
@@ -910,7 +830,7 @@ try {
     || !/^[a-f0-9]{64}$/u.test(changedLogging?.data?.revision ?? "")
     || changedLogging.data.revision === savedLoggingBody.revision
   ) {
-    throw new Error("The packed CLI did not update logging with the exact Hub revision.");
+    throw new Error("The packed Hub did not update logging with the exact reviewed revision.");
   }
   const staleLogging = await fetch(`${url.origin}/api/v1/settings/logging`, {
     method: "POST", headers: settingsHeaders, redirect: "error",
@@ -991,7 +911,11 @@ try {
   process.stdout.write("Packed Project Hub and official agent-skills smoke test passed.\n");
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
-  rmSync(work, { recursive: true, force: true });
+  if (process.env.MEX_KEEP_SMOKE_WORK === "1") {
+    process.stdout.write(`Retained packed smoke workspace: ${work}\n`);
+  } else {
+    rmSync(work, { recursive: true, force: true });
+  }
 }
 
 function parsePackResult(output) {
@@ -1460,16 +1384,16 @@ function verifyInstalledAgentAssets(project, installed, packageVersion) {
       skillsRoot: join(project, ".claude", "skills"),
       instructions: join(project, "CLAUDE.md"),
       originalInstructions: "# Consumer Claude instructions\n\nKeep this line byte-for-byte.\n",
-      explicit: ["/mex-inbox", "/mex-relay", "/mex-statechart"],
-      foreignExplicit: ["$mex-inbox", "$mex-relay", "$mex-statechart"],
+      explicit: ["/mex-statechart"],
+      foreignExplicit: ["$mex-statechart"],
     },
     {
       name: "codex",
       skillsRoot: join(project, ".agents", "skills"),
       instructions: join(project, "AGENTS.md"),
       originalInstructions: "# Consumer Codex instructions\n\nKeep this line byte-for-byte.\n",
-      explicit: ["$mex-inbox", "$mex-relay", "$mex-statechart"],
-      foreignExplicit: ["/mex-inbox", "/mex-relay", "/mex-statechart"],
+      explicit: ["$mex-statechart"],
+      foreignExplicit: ["/mex-statechart"],
     },
   ];
 
@@ -1494,10 +1418,7 @@ function verifyInstalledAgentAssets(project, installed, packageVersion) {
       || client.foreignExplicit.some((invocation) => instructions.includes(invocation))
       || !instructions.includes("mention MEX and the relevant finding naturally in your explanation")
       || !instructions.includes("Skill activation is not approval for canonical actions.")
-      || !instructions.includes("mex logging --json")
-      || !instructions.includes('mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json')
-      || !["significant", "checkpoints", "manual"].every((mode) => instructions.includes(mode))
-      || !instructions.includes("historical evidence")
+      || /mex-(?:inbox|relay)|mex (?:logging|timeline)/u.test(instructions)
     ) {
       throw new Error(`The ${client.name} setup instruction block was missing or not client-specific.`);
     }

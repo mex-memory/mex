@@ -207,12 +207,9 @@ export interface HubApi {
   getSetupInstallation?(): Promise<SetupInstallation>;
   installSetupGlobally?(): Promise<SetupInstallation>;
   recordPageView?(page: HubTelemetryPage): Promise<void>;
-  recordTeamAccess?(step: HubTeamAccessStep): Promise<void>;
   getRepositoryContributors?(): Promise<HubRepositoryContributors>;
   getLoggingPolicy(): Promise<AgentLoggingPolicy>;
   setLoggingPolicy(request: AgentLoggingUpdateRequest): Promise<AgentLoggingPolicy>;
-  getOnboardingState(): Promise<HubOnboardingState>;
-  completeOnboarding(): Promise<HubOnboardingState>;
   bootstrap(token: string): Promise<BootstrapResponse>;
   getSession(): Promise<SessionResponse>;
   getCapabilities(): Promise<CapabilitiesResponse>;
@@ -221,22 +218,12 @@ export interface HubApi {
   getMembers(request: TeamMemberListRequest): Promise<TeamMemberListResponse>;
   getMember(id: string): Promise<TeamMember>;
   getCurrentActor(): Promise<TeamCurrentActorResponse>;
-  getWorkstreams(request: TeamWorkstreamListRequest): Promise<TeamWorkstreamListResponse>;
-  getWorkstream(id: string): Promise<TeamWorkstream>;
-  getInboxDrafts(request: InboxDraftListRequest): Promise<InboxDraftListResponse>;
-  getInboxDraft(id: string): Promise<InboxDraftDetail>;
-  getInboxProposals(request: InboxProposalListRequest): Promise<InboxProposalListResponse>;
-  getInboxProposal(id: string): Promise<InboxProposalDetail>;
-  previewInboxOperation(request: InboxOperationPreviewRequest): Promise<InboxOperationPreviewResponse>;
-  applyInboxOperation(request: InboxOperationApplyRequest): Promise<InboxOperationApplyResponse>;
   getRelayDrafts(request: RelayDraftListRequest): Promise<RelayDraftListResponse>;
   getRelayDraft(id: string): Promise<RelayDraftDetail>;
   getRelays(request: RelayListRequest): Promise<RelayListResponse>;
   getRelay(id: string): Promise<RelayDetail>;
   previewRelayOperation(request: RelayOperationPreviewRequest): Promise<RelayOperationPreviewResponse>;
   applyRelayOperation(request: RelayOperationApplyRequest): Promise<RelayOperationApplyResponse>;
-  listSpecs(request: SpecListRequest): Promise<SpecListResponse>;
-  getSpec(id: string): Promise<SpecDetailResponse>;
   previewTeamOperation(request: TeamOperationPreviewRequest): Promise<TeamOperationPreviewResponse>;
   applyTeamOperation(request: TeamOperationApplyRequest): Promise<TeamOperationApplyResponse>;
   getActivity(request: ActivityRequest): Promise<ActivityResponse>;
@@ -422,21 +409,6 @@ export class HttpHubApi implements HubApi {
     } catch { /* A dropped local usage event must never disturb navigation. */ }
     finally { this.#pageViewPending = false; }
   }
-
-  async recordTeamAccess(step: HubTeamAccessStep): Promise<void> {
-    if (!this.#csrfToken || !isHubTeamAccessStep(step)) return;
-    try {
-      await fetch(`${API_ROOT}/telemetry/team-access`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-MEX-CSRF": this.#csrfToken },
-        body: JSON.stringify({ step }),
-        credentials: "same-origin",
-        redirect: "error",
-        referrerPolicy: "no-referrer",
-        signal: AbortSignal.timeout(2_000),
-      });
-    } catch { /* A dropped local usage event must never disturb the card. */ }
-  }
   #relayTransport: RelayTransport = {
     request: (path, schema, init, mutation) => this.#request(path, schema, init, mutation),
     invalidIdentifier: (detail) => {
@@ -528,72 +500,6 @@ export class HttpHubApi implements HubApi {
     return this.#request("/actor/current", TeamCurrentActorResponseSchema);
   }
 
-  getWorkstreams(request: TeamWorkstreamListRequest): Promise<TeamWorkstreamListResponse> {
-    const params = new URLSearchParams({ limit: String(request.limit) });
-    if (request.state) params.set("state", request.state);
-    if (request.includeArchived !== undefined) {
-      params.set("includeArchived", String(request.includeArchived));
-    }
-    if (request.cursor) params.set("cursor", request.cursor.slice(0, 4_096));
-    return this.#request(`/workstreams?${params}`, TeamWorkstreamListResponseSchema);
-  }
-
-  async getWorkstream(id: string): Promise<TeamWorkstream> {
-    return await this.#request(
-      `/workstreams/${encodeURIComponent(assertSafeTeamWorkstreamId(id))}`,
-      TeamWorkstreamSchema,
-    );
-  }
-
-  getInboxDrafts(request: InboxDraftListRequest): Promise<InboxDraftListResponse> {
-    const params = new URLSearchParams({ limit: String(request.limit) });
-    if (request.cursor) params.set("cursor", request.cursor.slice(0, 4_096));
-    return this.#request(`/inbox/drafts?${params}`, InboxDraftListResponseSchema);
-  }
-
-  async getInboxDraft(id: string): Promise<InboxDraftDetail> {
-    return await this.#request(
-      `/inbox/drafts/${encodeURIComponent(assertSafeInboxDraftId(id))}`,
-      InboxDraftDetailSchema,
-    );
-  }
-
-  getInboxProposals(request: InboxProposalListRequest): Promise<InboxProposalListResponse> {
-    const params = new URLSearchParams({ limit: String(request.limit) });
-    if (request.states?.length) params.set("state", request.states.join(","));
-    if (request.cursor) params.set("cursor", request.cursor.slice(0, 4_096));
-    return this.#request(`/inbox/proposals?${params}`, InboxProposalListResponseSchema);
-  }
-
-  async getInboxProposal(id: string): Promise<InboxProposalDetail> {
-    return await this.#request(
-      `/inbox/proposals/${encodeURIComponent(assertSafeInboxProposalId(id))}`,
-      InboxProposalDetailSchema,
-    );
-  }
-
-  previewInboxOperation(
-    request: InboxOperationPreviewRequest,
-  ): Promise<InboxOperationPreviewResponse> {
-    return this.#request(
-      "/inbox/operations/preview",
-      InboxOperationPreviewResponseSchema,
-      { method: "POST", body: JSON.stringify(request) },
-      true,
-    );
-  }
-
-  applyInboxOperation(
-    request: InboxOperationApplyRequest,
-  ): Promise<InboxOperationApplyResponse> {
-    return this.#request(
-      "/inbox/operations/apply",
-      InboxOperationApplyResponseSchema,
-      { method: "POST", body: JSON.stringify(request) },
-      true,
-    );
-  }
-
   async getRelayDrafts(request: RelayDraftListRequest): Promise<RelayDraftListResponse> {
     return await (await loadRelayClient()).getRelayDrafts(this.#relayTransport, request);
   }
@@ -639,29 +545,6 @@ export class HttpHubApi implements HubApi {
   async saveDiagram(token: string): Promise<DiagramDetail> {
     const { DiagramDetailSchema } = await import("@mex/hub-contracts/statechart");
     return this.#request("/diagrams/save", DiagramDetailSchema, { method: "POST", body: JSON.stringify({ token }) }, true);
-  }
-
-  listSpecs(request: SpecListRequest): Promise<SpecListResponse> {
-    const params = new URLSearchParams({ limit: String(request.limit) });
-    if (request.includeArchived !== undefined) {
-      params.set("includeArchived", String(request.includeArchived));
-    }
-    if (request.cursor) params.set("cursor", request.cursor.slice(0, 4_096));
-    if (request.lifecycleStates?.length) {
-      params.set("lifecycleStates", request.lifecycleStates.join(","));
-    }
-    if (request.groundingHealth?.length) {
-      params.set("groundingHealth", request.groundingHealth.join(","));
-    }
-    if (request.topics?.length) params.set("topics", request.topics.join(","));
-    return this.#request(`/specs?${params}`, SpecListResponseSchema);
-  }
-
-  async getSpec(id: string): Promise<SpecDetailResponse> {
-    return await this.#request(
-      `/specs/${encodeURIComponent(assertSafeWikiEntityId(id))}`,
-      SpecDetailResponseSchema,
-    );
   }
 
   previewTeamOperation(
@@ -782,17 +665,8 @@ export class HttpHubApi implements HubApi {
       { method: "POST", body: JSON.stringify(request) }, true);
   }
 
-  getOnboardingState(): Promise<HubOnboardingState> {
-    return this.#request("/settings/onboarding", HubOnboardingStateSchema);
-  }
-
   getRepositoryContributors(): Promise<HubRepositoryContributors> {
     return this.#request("/repository/contributors", HubRepositoryContributorsSchema);
-  }
-
-  completeOnboarding(): Promise<HubOnboardingState> {
-    return this.#request("/settings/onboarding", HubOnboardingStateSchema,
-      { method: "POST", body: JSON.stringify({ completed: true }) }, true);
   }
 
   getJobs(cursor?: string): Promise<JobsResponse> {

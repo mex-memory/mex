@@ -25,7 +25,6 @@ vi.mock("../../wiki/application-adapter.js", () => ({ createRepositoryWikiPort: 
 vi.mock("../../team/workflow/repository-team-workflow-port.js", () => ({
   createRepositoryTeamWorkflowPort: async () => ({ initializeIdentityActivitySigner() {} }),
 }));
-vi.mock("../../team/specs/index.js", () => ({ createSpecReadService: () => ({}) }));
 
 import { runHubCommand } from "../command.js";
 

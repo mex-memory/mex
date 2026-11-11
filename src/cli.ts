@@ -5,13 +5,13 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
+import { registerRemovedCommands, removedCommandMessage } from "./removed-commands.js";
 import { VERSION } from "./version.js";
 import { unsupportedNodeMessage } from "./node-version.js";
 import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
 import { setGlobalConfigKey } from "./global-config.js";
 import { createCliTelemetry, telemetryProjectLocation } from "./cli-telemetry.js";
 export { isTelemetryExemptCommand } from "./cli-telemetry.js";
-import { buildLoggingCommand } from "./logging/cli.js";
 import { runFeedback, maybeShowInvite, dismissInvite, enableInvite } from "./feedback/index.js";
 import type { MexConfig } from "./types.js";
 import type { RunHubCommandOptions } from "./hub/command.js";
@@ -19,7 +19,6 @@ import { capabilitiesInvalidRequestEnvelope, readWikiExclude } from "./capabilit
 import { WIKI_APPLY_HELP } from "./wiki/cli/apply-help.js";
 import {
   buildTeamIdentityActivityCommands,
-  buildWorkstreamCommand,
   exitCodeForTeamEnvelope,
   locateTeamRepositoryRoot,
   processTeamCommandIo,
@@ -29,25 +28,11 @@ import {
   type TeamCliCommandName,
   type TeamCliMode,
   type TeamIdentityActivityCliServiceFactory,
-  type TeamWorkstreamCliServiceFactory,
 } from "./team/cli/index.js";
-import {
-  buildSpecCommand,
-  type SpecCliServiceFactory,
-} from "./team/specs/cli/index.js";
-import {
-  buildInboxCommand,
-  type TeamInboxSpecCliServiceFactory,
-} from "./team/inbox/cli/index.js";
 import {
   buildRelayCommand,
   type TeamRelayCliServiceFactory,
 } from "./team/relay/cli/index.js";
-import {
-  renderInstructionChangePreview,
-  type AgentAssetsReport,
-  type AgentSkillClient,
-} from "./agent-skills/index.js";
 
 /**
  * Load config for a CLI command and backfill scaffold identity on the way.
@@ -91,47 +76,6 @@ export function parsePortArg(raw: string): number {
   return port;
 }
 
-function isAgentSkillClient(value: string): value is AgentSkillClient {
-  return value === "claude" || value === "codex";
-}
-
-function collectAgentSkillClient(
-  raw: string,
-  previous: AgentSkillClient[],
-): AgentSkillClient[] {
-  const normalized = raw.trim().toLowerCase();
-  if (!isAgentSkillClient(normalized)) {
-    throw new InvalidArgumentError(
-      `Unknown agent tool "${raw}". Use claude or codex.`,
-    );
-  }
-  return [...previous, normalized];
-}
-
-function renderAgentSkillSyncReport(report: AgentAssetsReport): void {
-  for (const action of report.actions) {
-    if (action.action === "conflict") continue;
-    const prefix = action.action === "noop" ? "→" : "✓";
-    console.log(`${prefix} ${action.message}`);
-    if (report.dryRun) {
-      const preview = renderInstructionChangePreview(action);
-      if (preview !== null) console.log(preview);
-    }
-  }
-  for (const warning of report.warnings) {
-    console.warn(`! ${warning.message}`);
-    if (warning.resolution) console.warn(`  ${warning.resolution}`);
-  }
-  const clients = report.clients.map((client) => client === "claude" ? "Claude Code" : "Codex");
-  const clientList = clients.length === 2 ? `${clients[0]} and ${clients[1]}` : clients[0]!;
-  const newSession = `a new ${clientList} session to guarantee the synced skills and project instructions are loaded.`;
-  if (report.conflicted) {
-    console.warn(`Resolve the reported conflicts and rerun mex skills sync. Then start ${newSession}`);
-  } else {
-    console.log(`Start ${newSession}`);
-  }
-}
-
 /** Pure Hub bootstrap projection so CLI and production wiring share Wiki scope. */
 export function createHubRunOptions(
   config: Pick<MexConfig, "projectRoot" | "wiki">,
@@ -149,6 +93,7 @@ export function createHubRunOptions(
 }
 
 export const program = new Command();
+registerRemovedCommands(program);
 
 /** Commands whose machine/read-only contract must precede any global notice. */
 export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
@@ -165,11 +110,6 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "relay"
     || commandName === "spec"
     || commandName === "skills";
-}
-
-async function runTuiCommand(): Promise<void> {
-  const { launchTui } = await import("./tui.js");
-  launchTui();
 }
 
 async function runBrowserCommand(options: { port?: number; open: boolean; mode?: string; setup?: boolean }): Promise<void> {
@@ -236,13 +176,6 @@ program
   });
 
 program
-  .command("tui")
-  .description("Open the interactive mex dashboard")
-  .action(async () => {
-    await runTuiCommand();
-  });
-
-program
   .command("hub")
   .description("Launch the local Project Hub")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
@@ -283,32 +216,7 @@ const teamWorkflowCliService = async () => {
   return createRepositoryTeamWorkflowPort(projectRoot);
 };
 const teamIdentityActivityService: TeamIdentityActivityCliServiceFactory = teamWorkflowCliService;
-const teamWorkstreamService: TeamWorkstreamCliServiceFactory = teamWorkflowCliService;
-const teamInboxSpecService: TeamInboxSpecCliServiceFactory = teamWorkflowCliService;
 const teamRelayService: TeamRelayCliServiceFactory = teamWorkflowCliService;
-const specReadService: SpecCliServiceFactory = async () => {
-  const projectRoot = locateTeamRepositoryRoot();
-  // Specs are a read-only Wiki projection and do not depend on Team's tracked
-  // scaffold identity or receipt signer. Capability discovery gates this
-  // command on the same immutable Wiki index state used here.
-  const [
-    { createRepositoryGraphPort },
-    { createRepositoryWikiPort },
-    { createSpecReadService },
-  ] = await Promise.all([
-    import("./graph/application-adapter.js"),
-    import("./wiki/application-adapter.js"),
-    import("./team/specs/index.js"),
-  ]);
-  const graph = createRepositoryGraphPort(projectRoot, { candidateExecution: "process" });
-  const wiki = createRepositoryWikiPort(projectRoot, {
-    groundingBridge: graph,
-    exclude: readWikiExclude(resolve(projectRoot, ".mex")),
-  });
-  return createSpecReadService(wiki);
-};
-
-program.addCommand(buildLoggingCommand());
 
 for (const command of buildTeamIdentityActivityCommands({
   service: teamIdentityActivityService,
@@ -316,28 +224,8 @@ for (const command of buildTeamIdentityActivityCommands({
 })) {
   program.addCommand(command);
 }
-program.addCommand(buildWorkstreamCommand({
-  service: teamWorkstreamService,
-  io: processTeamCommandIo(),
-}));
-program.addCommand(buildInboxCommand({
-  service: teamInboxSpecService,
-  targetService: async () => {
-    const projectRoot = locateTeamRepositoryRoot();
-    const { createRepositoryWikiPort } = await import("./wiki/application-adapter.js");
-    // Target text and revision need no code-health resolution or Team signer.
-    return createRepositoryWikiPort(projectRoot, {
-      exclude: readWikiExclude(resolve(projectRoot, ".mex")),
-    });
-  },
-  io: processTeamCommandIo(),
-}));
 program.addCommand(buildRelayCommand({
   service: teamRelayService,
-  io: processTeamCommandIo(),
-}));
-program.addCommand(buildSpecCommand({
-  service: specReadService,
   io: processTeamCommandIo(),
 }));
 
@@ -403,59 +291,6 @@ setupCommand
     }
   });
 
-// ── Official agent skills ──
-const skillsCommand = program
-  .command("skills")
-  .description("Install or safely update official MEX project skills");
-
-skillsCommand
-  .command("sync")
-  .description("Sync packaged MEX skills for the agents selected during setup")
-  .option("--dry-run", "Show the exact actions and warnings without writing")
-  .option("--json", "Emit one machine-readable sync report")
-  .option(
-    "--tool <tool>",
-    "Sync one supported client (claude or codex); repeat to select both",
-    collectAgentSkillClient,
-    [],
-  )
-  .action(async (opts: { dryRun?: boolean; json?: boolean; tool: AgentSkillClient[] }) => {
-    try {
-      // Deliberately use the read-only resolver. In particular, --dry-run must
-      // not backfill scaffold identity or mutate config.json.
-      const config = findConfig();
-      const configured = config.aiTools.filter(isAgentSkillClient);
-      const clients = [...new Set(opts.tool.length > 0 ? opts.tool : configured)];
-      if (clients.length === 0) {
-        throw new Error(
-          "No supported agent is selected. Run mex setup or pass --tool claude and/or --tool codex.",
-        );
-      }
-      const { syncAgentAssets } = await import("./agent-skills/index.js");
-      const report = syncAgentAssets({
-        projectRoot: config.projectRoot,
-        packageVersion: VERSION,
-        clients,
-        dryRun: opts.dryRun,
-      });
-      if (opts.json) console.log(JSON.stringify(report));
-      else renderAgentSkillSyncReport(report);
-      if (report.conflicted) process.exitCode = 1;
-    } catch (err) {
-      const message = (err as Error).message;
-      if (opts.json) {
-        console.log(JSON.stringify({
-          schemaVersion: 1,
-          ok: false,
-          error: { code: "SKILL_SYNC_FAILED", message },
-        }));
-      } else {
-        console.error(message);
-      }
-      process.exitCode = 1;
-    }
-  });
-
 // ── Layer 2: Drift Detection ──
 program
   .command("check")
@@ -517,29 +352,6 @@ program
       // Warm moment — a clean check just gave the user value. Quietly invite
       // feedback (only on success, never right before an error exit).
       maybeShowInvite();
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
-  });
-
-// ── Layer 1: Pre-analysis Scanner ──
-program
-  .command("init")
-  .description("Scan codebase and generate pre-analysis brief for AI")
-  .option("--json", "Output scanner brief as JSON")
-  .action(async (opts) => {
-    try {
-      const config = loadConfig();
-      const { runScan } = await import("./scanner/index.js");
-      const result = await runScan(config, { jsonOnly: opts.json });
-
-      if (opts.json) {
-        console.log(JSON.stringify(result, null, 2));
-      } else {
-        console.log(result);
-      }
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
@@ -1057,72 +869,6 @@ program
   });
 
 program
-  .command("export")
-  .description("Bundle the whole scaffold into a single Markdown document")
-  .option("--out <path>", "Write to a file instead of stdout")
-  .action(async (opts) => {
-    try {
-      const config = loadConfig();
-      const { runExport } = await import("./export.js");
-      await runExport(config, opts);
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exit(1);
-    }
-  });
-
-program
-  .command("timeline")
-  .description("Read bounded recent project notes (latest 8 MiB / 10,000 log lines)")
-  .option("--json", "Output events as JSON")
-  .option("--format <format>", "Output format: md for a Markdown table (piped into reports)")
-  .option("--since <date>", "Filter from YYYY-MM-DD or relative Nd, e.g. 30d")
-  .option("--type <type>", "Filter by event type: decision, note, risk, todo")
-  .option("--query <text>", "Case-insensitive literal text in the message (max 256 UTF-8 bytes)")
-  .option("--file <path>", "Exact recorded file path; any may match (repeatable, max 16)", (value, prev: string[]) => [...prev, value], [])
-  .option("--limit <n>", "Maximum entries, 1–200 (default 20; output capped at 64 KiB)", (raw: string) => {
-    if (!/^[0-9]+$/.test(raw) || Number(raw) < 1 || Number(raw) > 200) {
-      throw new InvalidArgumentError("Expected an integer from 1 to 200.");
-    }
-    return Number(raw);
-  })
-  .action(async (opts) => {
-    try {
-      const config = findConfig();
-      const { runTimeline } = await import("./events.js");
-      await runTimeline(config, {
-        json: opts.json,
-        format: opts.format,
-        since: opts.since,
-        kind: opts.type,
-        query: opts.query,
-        files: opts.file,
-        limit: opts.limit,
-      });
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
-  });
-
-program
-  .command("heartbeat")
-  .description("Run lightweight agent-memory health checks once")
-  .option("--json", "Output heartbeat report as JSON")
-  .action(async (opts) => {
-    try {
-      const config = loadConfig();
-      const { runHeartbeat } = await import("./heartbeat.js");
-      await runHeartbeat(config, { json: opts.json });
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
-  });
-
-program
   .command("doctor")
   .description("Run a friendly scaffold health diagnostic")
   .action(async () => {
@@ -1149,49 +895,6 @@ program
       const { runSync } = await import("./sync/index.js");
       await runSync(config, { dryRun: opts.dryRun, includeWarnings: opts.warnings });
       maybeShowInvite();
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
-  });
-
-// ── Layer 4: Patterns ──
-const patternCmd = program
-  .command("pattern")
-  .description("Manage pattern files");
-
-patternCmd
-  .command("add <name>")
-  .description("Create a new pattern file and add it to the index")
-  .action(async (name) => {
-    try {
-      const config = loadConfig();
-      const { runPatternAdd } = await import("./pattern/index.js");
-      await runPatternAdd(config, name);
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
-  });
-
-// ── Git Hook ──
-program
-  .command("watch")
-  .description("Install/uninstall post-commit hook, or run heartbeat on an interval")
-  .option("--uninstall", "Remove the post-commit hook")
-  .option("--interval [minutes]", "Run mex heartbeat repeatedly instead of installing a hook", (v) => v === undefined ? true : parsePositiveIntArg(v))
-  .action(async (opts) => {
-    try {
-      const config = loadConfig();
-      const { manageHook } = await import("./watch.js");
-      const intervalMinutes = opts.interval === true
-        ? config.watch?.intervalMinutes ?? 30
-        : typeof opts.interval === "number"
-          ? opts.interval
-          : undefined;
-      await manageHook(config, { uninstall: opts.uninstall, intervalMinutes });
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
@@ -1370,72 +1073,6 @@ program
     runFeedback();
   });
 
-// ── Quick Reference ──
-program
-  .command("commands")
-  .description("List all available commands and scripts")
-  .action(() => {
-    console.log(chalk.bold("\nCLI Commands") + chalk.dim("  (run from project root)\n"));
-    console.log("  mex                    Open the Hub, or terminal setup for a new project");
-    console.log("  mex setup              Set up MEX in the terminal HUD");
-    console.log("  mex setup --browser    Use the browser setup flow");
-    console.log("  mex setup --dry-run    Preview setup without making changes");
-    console.log("  mex skills sync        Install/update official skills for configured agents");
-    console.log("  mex skills sync --dry-run --json  Preview skill and instruction changes as JSON");
-    console.log("  mex capabilities --json  Discover structured agent capabilities");
-    console.log("  mex member list --json  List canonical team members");
-    console.log("  mex member current --json  Show the effective local/Git actor");
-    console.log("  mex member <add|update|deactivate|select> <request.json> --json  Preview an identity change");
-    console.log("  mex activity list --json  Read canonical Activity events");
-    console.log("  mex activity record <request.json> --json  Preview canonical Activity recording");
-    console.log("  mex workstream list --json  List canonical team Workstreams");
-    console.log("  mex workstream <create|update|archive> <request.json> --json  Preview a Workstream change");
-    console.log("  mex inbox contract --action <command-id> --json  Resolve one bounded Inbox action contract");
-    console.log("  mex relay contract --action <command-id> --json  Resolve one bounded Relay action contract");
-    console.log("  mex relay contract --json  Resolve the complete static Relay agent contract");
-    console.log("  mex relay draft <list|show|save|delete> ... --json  Read or preview local Relay drafts");
-    console.log("  mex relay list --json  List canonical team handoffs");
-    console.log("  mex relay <publish|acknowledge|close> <request.json> --json  Preview a Relay transition");
-    console.log("  mex spec list --json  List read-only Wiki-owned Specs");
-    console.log("  mex check              Drift score — are scaffold files still accurate?");
-    console.log("  mex check --quiet      One-liner drift score");
-    console.log("  mex check --json       Full drift report as JSON");
-    console.log("  mex check --fix        Check and fix any errors found");
-    console.log("  mex sync               Fix drift — AI updates only what's broken");
-    console.log("  mex sync --dry-run     Preview fix prompts without running them");
-    console.log("  mex sync --warnings    Include warning-only files in sync");
-    console.log("  mex init               Pre-scan codebase, build brief for AI");
-    console.log("  mex init --json        Scanner brief as JSON");
-    console.log("  mex graph              Build the code knowledge graph into .mex/graph.db");
-    console.log("  mex graph --json       Graph build summary as JSON");
-    console.log("  mex graph scope <task>               Compact task neighborhood as JSONL");
-    console.log("  mex graph get <id...>                Expand source for node ids as JSONL");
-    console.log("  mex graph ground                     Ground an existing pre-0.7 scaffold");
-    console.log("  mex graph compact-fingerprints       Re-encode committed fingerprints as mh2:");
-    console.log("  mex graph query <relation> <target>  Structural lookup as JSONL");
-    console.log("  mex graph repair                     Checkpoint a stranded WAL, verify integrity");
-    console.log("  mex impact <symbol|file>              Blast radius as JSONL");
-    console.log("  mex log <message>      Append a note/decision/risk/todo to the event log");
-    console.log("  mex timeline           Show recent event log entries");
-    console.log("  mex heartbeat          Run lightweight agent-memory health checks");
-    console.log("  mex doctor             Friendly scaffold health summary");
-    console.log("  mex tui                Open the interactive mex dashboard");
-    console.log("  mex hub                Launch the local Project Hub");
-    console.log("  mex hub --no-open      Launch without opening a browser");
-    console.log("  mex pattern add <name> Create a new pattern file");
-    console.log("  mex watch              Install post-commit hook for auto drift score");
-    console.log("  mex watch --interval   Run heartbeat every 30 minutes (or config value)");
-    console.log("  mex watch --uninstall  Remove the post-commit hook");
-    console.log("  mex telemetry disable  Turn telemetry off (or DO_NOT_TRACK=1 / MEX_TELEMETRY=0)");
-    console.log("  mex telemetry inspect  Inspect telemetry events and queue (without sending)");
-    console.log("  mex telemetry status   Show telemetry enabled/disabled and reason");
-    console.log("  mex config set <k> <v> Set a global config value (e.g. telemetry off)");
-    console.log("  mex feedback           Open the feedback form (the maintainer does user calls)");
-    console.log();
-    console.log(chalk.dim("Not installed globally? Replace 'mex' with 'npx mex-agent'."));
-    console.log();
-  });
-
 // Skip auto-parse when imported (e.g. by tests). The bin entry is built by
 // tsup as ./dist/cli.js with a shebang banner; only run program.parseAsync()
 // when this module is the script being invoked. Resolve argv[1] so symlinked
@@ -1460,26 +1097,27 @@ export function runCli(): void {
     console.error(unsupportedNode);
     process.exitCode = 1;
   } else {
+    const removed = removedCommandMessage(process.argv.slice(2));
+    if (removed !== null) {
+      console.error(removed);
+      process.exitCode = 1;
+      return;
+    }
     if (!isFirstRunNoticeExemptCommand(process.argv[2])) showFirstRunNotice();
     const commandArgv = process.argv.slice(2);
     const teamJsonContext = inspectTeamJsonInvocation(commandArgv);
-    const skillsSyncJsonInvocation = isSkillsSyncJsonInvocation(commandArgv);
     if (teamJsonContext !== null && hasMissingTeamApplyValue(commandArgv)) {
       emitTeamJsonParseProblem(teamJsonContext);
     } else if (isInvalidCapabilitiesJsonInvocation(commandArgv)) {
       console.log(JSON.stringify(capabilitiesInvalidRequestEnvelope()));
       process.exitCode = 2;
     } else {
-      if (teamJsonContext !== null || skillsSyncJsonInvocation) {
+      if (teamJsonContext !== null) {
         configureTeamJsonParseErrors(program);
       }
       program.parseAsync().catch((err: Error) => {
         if (teamJsonContext !== null) {
           emitTeamJsonParseProblem(teamJsonContext);
-          return;
-        }
-        if (skillsSyncJsonInvocation) {
-          emitSkillsSyncJsonParseProblem();
           return;
         }
         console.error(err.message);
@@ -1608,26 +1246,6 @@ function configureTeamJsonParseErrors(root: Command): void {
   visit(root);
 }
 
-function isSkillsSyncJsonInvocation(argv: readonly string[]): boolean {
-  return argv[0] === "skills"
-    && argv[1] === "sync"
-    && argv.includes("--json")
-    && !argv.includes("--help")
-    && !argv.includes("-h");
-}
-
-function emitSkillsSyncJsonParseProblem(): void {
-  console.log(JSON.stringify({
-    schemaVersion: 1,
-    ok: false,
-    error: {
-      code: "SKILL_SYNC_FAILED",
-      message: "The skills sync arguments are invalid. Review mex skills sync --help and retry.",
-    },
-  }));
-  process.exitCode = 2;
-}
-
 function hasMissingTeamApplyValue(argv: readonly string[]): boolean {
   return argv.some((value, index) => (
     value === "--apply"
@@ -1655,8 +1273,8 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "skills", "capabilities", "member", "activity", "workstream", "inbox", "relay", "spec", "check", "init", "graph", "wiki", "impact", "sync", "pattern", "log", "timeline",
-    "heartbeat", "doctor", "watch", "tui", "commands", "completion",
+    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "log",
+    "doctor", "completion",
     "telemetry", "config", "feedback", "hub",
   ];
   if (shell === "bash") {

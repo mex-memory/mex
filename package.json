@@ -6,7 +6,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "workspaces": [
-    "packages/*"
+    "packages/hub-contracts",
+    "packages/hub-web"
   ],
   "exports": {
     ".": {

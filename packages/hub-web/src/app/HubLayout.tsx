@@ -7,7 +7,6 @@ import { useHubApi } from "../api/context";
 import { Button } from "../components/primitives/button";
 import { formatTime, StatePanel, StatusPill } from "../components/ui";
 import styles from "../styles/shell.module.css";
-import { HubOnboarding } from "./HubOnboarding";
 import { JobLifecycleObserver } from "./JobLifecycleObserver";
 import { PageViewObserver } from "./PageViewObserver";
 import { HubSidebar } from "./HubSidebar";
@@ -182,10 +181,7 @@ export function HubLayout({
   }, [location.pathname, navigate]);
 
   return (
-    <HubOnboarding
-      projectName={trustedHome?.repository.name}
-      ready={shell.isSuccess || shell.isError}
-    >
+    <>
       <div className={styles.viewportFrame}>
         <PageViewObserver />
         {isOverview ? null : <JobLifecycleObserver channelScope={session.expiresAt} />}
@@ -200,7 +196,7 @@ export function HubLayout({
           </main>
         </div>
       </div>
-    </HubOnboarding>
+    </>
   );
 }
 

@@ -755,13 +755,8 @@ describe("no unscoped scaffold writes", () => {
     // Every other rule in this file is scoped to `src/wiki/`, so before this
     // one nothing in `src/` was watching at all.
     //
-    // The inventory detector is deliberately broader than the call-shape ban
-    // above: `src/export.ts` writes through file descriptors (`wx`-exclusive
-    // create, marker-verified overwrite) precisely so no `writeFileSync` call
-    // shape exists to match. A writer the inventory cannot see is worse than
-    // a longer pattern, so fd-based mutations are pinned here. The guarded
-    // rules keep the narrow shape on purpose: broadening them would demand
-    // textual guard counts the wiki modules do not have.
+    // Include fd-based mutations as well as path-based writes, so changing
+    // the I/O API cannot make a writer disappear from this inventory.
     const FD_WRITE_CALLS = /\b(writeSync|ftruncateSync)\s*\(/g;
     const KNOWN: Readonly<Record<string, string>> = {
       "src/agent-prompt.ts": "writes and removes one private prompt file for an oversized agent brief (interactive setup, sync)",
@@ -778,8 +773,6 @@ describe("no unscoped scaffold writes", () => {
       "src/config.ts": "writes config.json",
       "src/global-config.ts": "writes the global config and telemetry id",
       "src/events.ts": "appends to events/decisions.jsonl",
-      "src/export.ts": "writes one export bundle to a user-specified path — a brand-new file (wx-exclusive) or a marker-verified previous bundle, never scaffold bytes",
-      "src/pattern/index.ts": "creates a new pattern file from a template",
       "src/setup/anchor.ts": "edits root tool configs only, never .mex/, and only inside its own markers",
       "src/setup/global-install.ts": "removes only the private temporary npm working directory after the owned global installation finishes",
       "src/setup/headless-population.ts": "creates and removes only its own byte-exact Cursor permission file while background sessions run; never a user's file",
@@ -798,7 +791,6 @@ describe("no unscoped scaffold writes", () => {
       "src/team/artifacts/filesystem.ts": "atomically publishes bounded team-owned canonical artifacts",
       "src/team/local-state/receipt-signer.ts": "atomically provisions the bounded local-only C preview signing credential",
       "src/team/relay/cli/local-preview.ts": "removes only the exact contained checkout-local Relay receipt after successful apply",
-      "src/watch.ts": "installs and removes git hooks",
     };
 
     const outside = FILES.filter((path) => !path.startsWith("src/wiki/"));

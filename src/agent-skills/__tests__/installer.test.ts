@@ -40,6 +40,19 @@ afterEach(() => {
 });
 
 describe("managed agent asset installation", () => {
+  it("installs diagrams while preserving existing retired skill copies", () => {
+    const fixture = createFixture();
+    for (const skill of ["mex-inbox", "mex-relay"]) {
+      write(fixture.project, `.claude/skills/${skill}/SKILL.md`, "Existing user bytes\n");
+    }
+    const report = sync(fixture, ["claude"]);
+    expect(report.actions.filter((action) => action.kind === "skill").map((action) => action.skill))
+      .toEqual(["mex-statechart"]);
+    for (const skill of ["mex-inbox", "mex-relay"]) {
+      expect(read(fixture.project, `.claude/skills/${skill}/SKILL.md`)).toBe("Existing user bytes\n");
+    }
+  });
+
   it.each([
     ["claude", ".claude/skills", "CLAUDE.md", ".agents/skills", "AGENTS.md"],
     ["codex", ".agents/skills", "AGENTS.md", ".claude/skills", "CLAUDE.md"],
@@ -48,7 +61,7 @@ describe("managed agent asset installation", () => {
     const report = sync(fixture, [client]);
 
     expect(report).toMatchObject({ applied: true, changed: true, conflicted: false });
-    for (const skill of ["mex-inbox", "mex-relay", "mex-statechart"] as const) {
+    for (const skill of ["mex-statechart"] as const) {
       expect(exists(fixture.project, `${skillRoot}/${skill}/SKILL.md`)).toBe(true);
       expectInstalledBytes(fixture, skill, `${skillRoot}/${skill}`);
     }
@@ -62,12 +75,12 @@ describe("managed agent asset installation", () => {
     const report = sync(fixture, ["codex", "claude", "codex"]);
 
     expect(report.clients).toEqual(["claude", "codex"]);
-    expect(report.actions).toHaveLength(8);
+    expect(report.actions).toHaveLength(4);
     for (const [clientRoot, instructions] of [
       [".claude/skills", "CLAUDE.md"],
       [".agents/skills", "AGENTS.md"],
     ] as const) {
-      for (const skill of ["mex-inbox", "mex-relay", "mex-statechart"] as const) {
+      for (const skill of ["mex-statechart"] as const) {
         expectInstalledBytes(fixture, skill, `${clientRoot}/${skill}`);
         const metadata = readMetadata(fixture.project, `${clientRoot}/${skill}`);
         expect(metadata).toMatchObject({
@@ -85,7 +98,7 @@ describe("managed agent asset installation", () => {
   it("is an exact no-op on rerun and does not replace installed files", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    const skillPath = join(fixture.project, ".claude/skills/mex-inbox/SKILL.md");
+    const skillPath = join(fixture.project, ".claude/skills/mex-statechart/SKILL.md");
     const instructionPath = join(fixture.project, "CLAUDE.md");
     const before = {
       skillInode: statSync(skillPath).ino,
@@ -96,7 +109,7 @@ describe("managed agent asset installation", () => {
     const report = sync(fixture, ["claude"]);
 
     expect(report).toMatchObject({ applied: true, changed: false, conflicted: false });
-    expect(report.actions.map((action) => action.action)).toEqual(["noop", "noop", "noop", "noop"]);
+    expect(report.actions.map((action) => action.action)).toEqual(["noop", "noop"]);
     expect(statSync(skillPath).ino).toBe(before.skillInode);
     expect(statSync(instructionPath).ino).toBe(before.instructionInode);
     expect(snapshotTree(fixture.project)).toEqual(before.tree);
@@ -105,7 +118,7 @@ describe("managed agent asset installation", () => {
   it("dry-run writes nothing and reports the same actions and warnings as a real run", () => {
     const dryFixture = createFixture();
     const realFixture = createFixture();
-    const ignored = (_root: string, path: string) => path.includes("/mex-inbox/");
+    const ignored = (_root: string, path: string) => path.includes("/mex-statechart/");
     const before = snapshotTree(dryFixture.project);
 
     const dry = syncAgentAssets({
@@ -163,7 +176,7 @@ describe("managed agent asset installation", () => {
   it("atomically upgrades an older unmodified managed copy", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    write(fixture.source, "mex-inbox/SKILL.md", "inbox v2\n");
+    write(fixture.source, "mex-statechart/SKILL.md", "statechart v2\n");
 
     const report = syncAgentAssets({
       projectRoot: fixture.project,
@@ -173,17 +186,17 @@ describe("managed agent asset installation", () => {
       checkIgnored: false,
     });
 
-    expect(actionFor(report, "mex-inbox")).toMatchObject({ action: "update" });
-    expect(read(fixture.project, ".claude/skills/mex-inbox/SKILL.md")).toBe("inbox v2\n");
-    expect(readMetadata(fixture.project, ".claude/skills/mex-inbox").packageVersion).toBe("2.0.0");
-    expect(readdirSync(join(fixture.project, ".claude/skills"))).toEqual(["mex-inbox", "mex-relay", "mex-statechart"]);
+    expect(actionFor(report, "mex-statechart")).toMatchObject({ action: "update" });
+    expect(read(fixture.project, ".claude/skills/mex-statechart/SKILL.md")).toBe("statechart v2\n");
+    expect(readMetadata(fixture.project, ".claude/skills/mex-statechart").packageVersion).toBe("2.0.0");
+    expect(readdirSync(join(fixture.project, ".claude/skills"))).toEqual(["mex-statechart"]);
   });
 
   it("preserves a modified managed copy and reports its exact conflict path", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    write(fixture.project, ".claude/skills/mex-inbox/SKILL.md", "user customization\n");
-    write(fixture.source, "mex-inbox/SKILL.md", "upstream v2\n");
+    write(fixture.project, ".claude/skills/mex-statechart/SKILL.md", "user customization\n");
+    write(fixture.source, "mex-statechart/SKILL.md", "upstream v2\n");
 
     const report = syncAgentAssets({
       projectRoot: fixture.project,
@@ -193,15 +206,15 @@ describe("managed agent asset installation", () => {
       checkIgnored: false,
     });
 
-    expect(actionFor(report, "mex-inbox")).toMatchObject({
+    expect(actionFor(report, "mex-statechart")).toMatchObject({
       action: "conflict",
-      path: ".claude/skills/mex-inbox",
+      path: ".claude/skills/mex-statechart",
     });
     expect(report.warnings).toContainEqual(expect.objectContaining({
       code: "managed-skill-modified",
-      path: ".claude/skills/mex-inbox",
+      path: ".claude/skills/mex-statechart",
     }));
-    expect(read(fixture.project, ".claude/skills/mex-inbox/SKILL.md")).toBe("user customization\n");
+    expect(read(fixture.project, ".claude/skills/mex-statechart/SKILL.md")).toBe("user customization\n");
   });
 
   // Git checks text files out with CRLF under core.autocrlf=true, the Windows
@@ -210,23 +223,23 @@ describe("managed agent asset installation", () => {
   it("treats a CRLF checkout of an unmodified managed copy as unchanged", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    toCrlf(join(fixture.project, ".claude/skills/mex-inbox"));
-    const before = snapshotTree(join(fixture.project, ".claude/skills/mex-inbox"));
+    toCrlf(join(fixture.project, ".claude/skills/mex-statechart"));
+    const before = snapshotTree(join(fixture.project, ".claude/skills/mex-statechart"));
 
     const report = sync(fixture, ["claude"]);
 
     expect(report.conflicted).toBe(false);
-    expect(actionFor(report, "mex-inbox").action).toBe("noop");
+    expect(actionFor(report, "mex-statechart").action).toBe("noop");
     expect(report.warnings.filter((warning) => warning.code === "managed-skill-modified")).toEqual([]);
     // Nothing is rewritten just to change line endings back.
-    expect(snapshotTree(join(fixture.project, ".claude/skills/mex-inbox"))).toEqual(before);
+    expect(snapshotTree(join(fixture.project, ".claude/skills/mex-statechart"))).toEqual(before);
   });
 
   it("updates a CRLF checkout of an unmodified managed copy when the package changes", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    toCrlf(join(fixture.project, ".claude/skills/mex-inbox"));
-    write(fixture.source, "mex-inbox/SKILL.md", "upstream v2\n");
+    toCrlf(join(fixture.project, ".claude/skills/mex-statechart"));
+    write(fixture.source, "mex-statechart/SKILL.md", "upstream v2\n");
 
     const report = syncAgentAssets({
       projectRoot: fixture.project,
@@ -237,23 +250,23 @@ describe("managed agent asset installation", () => {
     });
 
     expect(report.conflicted).toBe(false);
-    expect(actionFor(report, "mex-inbox").action).toBe("update");
-    expect(read(fixture.project, ".claude/skills/mex-inbox/SKILL.md")).toBe("upstream v2\n");
+    expect(actionFor(report, "mex-statechart").action).toBe("update");
+    expect(read(fixture.project, ".claude/skills/mex-statechart/SKILL.md")).toBe("upstream v2\n");
   });
 
   it("still preserves a real edit in a CRLF checkout", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    toCrlf(join(fixture.project, ".claude/skills/mex-inbox"));
-    const skill = join(fixture.project, ".claude/skills/mex-inbox/SKILL.md");
+    toCrlf(join(fixture.project, ".claude/skills/mex-statechart"));
+    const skill = join(fixture.project, ".claude/skills/mex-statechart/SKILL.md");
     writeFileSync(skill, readFileSync(skill, "utf8") + "user note\r\n");
 
     const report = sync(fixture, ["claude"]);
 
-    expect(actionFor(report, "mex-inbox").action).toBe("conflict");
+    expect(actionFor(report, "mex-statechart").action).toBe("conflict");
     expect(report.warnings).toContainEqual(expect.objectContaining({
       code: "managed-skill-modified",
-      path: ".claude/skills/mex-inbox",
+      path: ".claude/skills/mex-statechart",
     }));
     expect(readFileSync(skill, "utf8").endsWith("user note\r\n")).toBe(true);
   });
@@ -262,13 +275,13 @@ describe("managed agent asset installation", () => {
     const fixture = createFixture();
     toCrlf(fixture.source);
     sync(fixture, ["claude"]);
-    const directory = join(fixture.project, ".claude/skills/mex-inbox");
-    expect(read(fixture.project, ".claude/skills/mex-inbox/SKILL.md")).toBe("inbox v1\r\n");
+    const directory = join(fixture.project, ".claude/skills/mex-statechart");
+    expect(read(fixture.project, ".claude/skills/mex-statechart/SKILL.md")).toBe("statechart v1\r\n");
     for (const path of ["SKILL.md", "references/workflow.md"].map((name) => join(directory, name))) {
       writeFileSync(path, readFileSync(path, "utf8").replace(/\r\n/gu, "\n"));
     }
     const before = snapshotTree(directory);
-    expect(actionFor(sync(fixture, ["claude"]), "mex-inbox").action).toBe("noop");
+    expect(actionFor(sync(fixture, ["claude"]), "mex-statechart").action).toBe("noop");
     expect(snapshotTree(directory)).toEqual(before);
   });
 
@@ -277,8 +290,8 @@ describe("managed agent asset installation", () => {
     (endings) => {
       const fixture = createFixture();
       sync(fixture, ["claude"]);
-      const directory = join(fixture.project, ".claude/skills/mex-inbox");
-      const metadata = readMetadata(fixture.project, ".claude/skills/mex-inbox");
+      const directory = join(fixture.project, ".claude/skills/mex-statechart");
+      const metadata = readMetadata(fixture.project, ".claude/skills/mex-statechart");
       const files = Object.fromEntries(Object.keys(metadata.files).map((path) => [path,
         createHash("sha256").update(readFileSync(join(directory, path), "utf8")
           .replace(/\r?\n/gu, "\r\n")).digest("hex"),
@@ -288,38 +301,38 @@ describe("managed agent asset installation", () => {
       if (endings === "crlf") toCrlf(directory);
       if (endings === "mixed") {
         toCrlf(directory);
-        writeFileSync(join(directory, "SKILL.md"), "inbox v1\n");
+        writeFileSync(join(directory, "SKILL.md"), "statechart v1\n");
       }
       const before = snapshotTree(directory);
       const report = sync(fixture, ["claude"]);
-      expect(actionFor(report, "mex-inbox").action).toBe("noop");
+      expect(actionFor(report, "mex-statechart").action).toBe("noop");
       expect(snapshotTree(directory)).toEqual(before);
       const skill = join(directory, "SKILL.md");
       const original = readFileSync(skill);
       const edited = Buffer.concat([original, Buffer.from("user note\n")]);
       writeFileSync(skill, edited);
-      expect(actionFor(sync(fixture, ["claude"]), "mex-inbox").action).toBe("conflict");
+      expect(actionFor(sync(fixture, ["claude"]), "mex-statechart").action).toBe("conflict");
       expect(readFileSync(skill)).toEqual(edited);
       writeFileSync(skill, original);
-      write(fixture.source, "mex-inbox/SKILL.md", "upstream v2\n");
-      expect(actionFor(sync(fixture, ["claude"]), "mex-inbox").action).toBe("update");
-      expect(read(fixture.project, ".claude/skills/mex-inbox/SKILL.md")).toBe("upstream v2\n");
-      expect(actionFor(sync(fixture, ["claude"]), "mex-inbox").action).toBe("noop");
+      write(fixture.source, "mex-statechart/SKILL.md", "upstream v2\n");
+      expect(actionFor(sync(fixture, ["claude"]), "mex-statechart").action).toBe("update");
+      expect(read(fixture.project, ".claude/skills/mex-statechart/SKILL.md")).toBe("upstream v2\n");
+      expect(actionFor(sync(fixture, ["claude"]), "mex-statechart").action).toBe("noop");
     },
   );
 
   it("leaves mixed LF/CRLF endings unchanged, including ownership metadata", () => {
     const fixture = createFixture();
-    write(fixture.source, "mex-inbox/SKILL.md", "first\nsecond\nthird\n");
+    write(fixture.source, "mex-statechart/SKILL.md", "first\nsecond\nthird\n");
     sync(fixture, ["claude"]);
-    const directory = join(fixture.project, ".claude/skills/mex-inbox");
+    const directory = join(fixture.project, ".claude/skills/mex-statechart");
     toCrlf(directory);
     for (const path of ["SKILL.md", MEX_MANAGED_SKILL_METADATA]) {
       const absolute = join(directory, path);
       writeFileSync(absolute, readFileSync(absolute, "utf8").replace("\r\n", "\n"));
     }
     const before = snapshotTree(directory);
-    expect(actionFor(sync(fixture, ["claude"]), "mex-inbox").action).toBe("noop");
+    expect(actionFor(sync(fixture, ["claude"]), "mex-statechart").action).toBe("noop");
     expect(snapshotTree(directory)).toEqual(before);
   });
 
@@ -331,16 +344,16 @@ describe("managed agent asset installation", () => {
           (text: string) => "\ufeff" + text,
           (text: string) => text.slice(0, -eol.length),
           (text: string) => text + eol,
-          (text: string) => text.replace("inbox", "custom"),
+          (text: string) => text.replace("statechart", "custom"),
         ]) {
           const fixture = createFixture();
           sync(fixture, ["claude"]);
-          const directory = join(fixture.project, ".claude/skills/mex-inbox");
+          const directory = join(fixture.project, ".claude/skills/mex-statechart");
           if (eol === "\r\n") toCrlf(directory);
           const absolute = join(directory, path);
           writeFileSync(absolute, edit(readFileSync(absolute, "utf8")));
           const before = snapshotTree(directory);
-          expect(actionFor(sync(fixture, ["claude"]), "mex-inbox").action).toBe("conflict");
+          expect(actionFor(sync(fixture, ["claude"]), "mex-statechart").action).toBe("conflict");
           expect(snapshotTree(directory)).toEqual(before);
         }
       }
@@ -354,7 +367,7 @@ describe("managed agent asset installation", () => {
     Buffer.from([255, 10]),
   ])("keeps binary payloads byte-exact", (bytes) => {
     const fixture = createFixture();
-    const path = "mex-inbox/asset.bin";
+    const path = "mex-statechart/asset.bin";
     writeFileSync(join(fixture.source, path), bytes);
     sync(fixture, ["claude"]);
     const installed = join(fixture.project, ".claude/skills", path);
@@ -362,17 +375,17 @@ describe("managed agent asset installation", () => {
     writeFileSync(installed, bytes.includes(13)
       ? Buffer.from(bytes.filter((byte) => byte !== 13))
       : Buffer.from([...bytes].flatMap((byte) => byte === 10 ? [13, 10] : [byte])));
-    const before = snapshotTree(join(fixture.project, ".claude/skills/mex-inbox"));
-    expect(actionFor(sync(fixture, ["claude"]), "mex-inbox").action).toBe("conflict");
-    expect(snapshotTree(join(fixture.project, ".claude/skills/mex-inbox"))).toEqual(before);
+    const before = snapshotTree(join(fixture.project, ".claude/skills/mex-statechart"));
+    expect(actionFor(sync(fixture, ["claude"]), "mex-statechart").action).toBe("conflict");
+    expect(snapshotTree(join(fixture.project, ".claude/skills/mex-statechart"))).toEqual(before);
   });
 
   it("detects an ending-only change after preview before updating a managed skill", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    const directory = join(fixture.project, ".claude/skills/mex-inbox");
+    const directory = join(fixture.project, ".claude/skills/mex-statechart");
     toCrlf(directory);
-    write(fixture.source, "mex-inbox/SKILL.md", "upstream v2\n");
+    write(fixture.source, "mex-statechart/SKILL.md", "upstream v2\n");
     const plan = planAgentAssets({ projectRoot: fixture.project, packagedSkillsRoot: fixture.source,
       packageVersion: "2.0.0", clients: ["claude"], checkIgnored: false });
     const skill = join(directory, "SKILL.md");
@@ -387,35 +400,35 @@ describe("managed agent asset installation", () => {
   it("treats an added empty directory as a managed-copy modification", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    mkdirSync(join(fixture.project, ".claude/skills/mex-inbox/user-empty"));
+    mkdirSync(join(fixture.project, ".claude/skills/mex-statechart/user-empty"));
 
     const report = sync(fixture, ["claude"]);
 
-    expect(actionFor(report, "mex-inbox").action).toBe("conflict");
+    expect(actionFor(report, "mex-statechart").action).toBe("conflict");
     expect(report.warnings).toContainEqual(expect.objectContaining({
       code: "managed-skill-modified",
-      path: ".claude/skills/mex-inbox",
+      path: ".claude/skills/mex-statechart",
     }));
-    expect(exists(fixture.project, ".claude/skills/mex-inbox/user-empty")).toBe(true);
+    expect(exists(fixture.project, ".claude/skills/mex-statechart/user-empty")).toBe(true);
   });
 
   it("never overwrites an unmanaged same-name path or touches unrelated skills", () => {
     const fixture = createFixture();
-    write(fixture.project, ".claude/skills/mex-inbox/custom.txt", "mine\n");
+    write(fixture.project, ".claude/skills/mex-statechart/custom.txt", "mine\n");
     write(fixture.project, ".claude/skills/my-private-skill/secret.txt", "untouched\n");
     const privateBefore = snapshotTree(join(fixture.project, ".claude/skills/my-private-skill"));
 
     const report = sync(fixture, ["claude"]);
 
-    expect(actionFor(report, "mex-inbox")).toMatchObject({
+    expect(actionFor(report, "mex-statechart")).toMatchObject({
       action: "conflict",
-      path: ".claude/skills/mex-inbox",
+      path: ".claude/skills/mex-statechart",
     });
     expect(report.warnings).toContainEqual(expect.objectContaining({
       code: "unmanaged-skill-conflict",
-      path: ".claude/skills/mex-inbox",
+      path: ".claude/skills/mex-statechart",
     }));
-    expect(read(fixture.project, ".claude/skills/mex-inbox/custom.txt")).toBe("mine\n");
+    expect(read(fixture.project, ".claude/skills/mex-statechart/custom.txt")).toBe("mine\n");
     expect(snapshotTree(join(fixture.project, ".claude/skills/my-private-skill"))).toEqual(privateBefore);
   });
 
@@ -424,21 +437,21 @@ describe("managed agent asset installation", () => {
     ["path traversal", JSON.stringify({
       schemaVersion: 1,
       owner: "mex-agent",
-      skill: "mex-inbox",
+      skill: "mex-statechart",
       packageVersion: "0.1.0",
       files: { "SKILL.md": "a".repeat(64), "../outside": "b".repeat(64) },
     }), "malformed-ownership"],
   ])("preserves a managed directory with %s metadata", (_label, metadata, warningCode) => {
     const fixture = createFixture();
-    write(fixture.project, ".claude/skills/mex-inbox/SKILL.md", "old\n");
-    write(fixture.project, `.claude/skills/mex-inbox/${MEX_MANAGED_SKILL_METADATA}`, metadata);
-    const before = snapshotTree(join(fixture.project, ".claude/skills/mex-inbox"));
+    write(fixture.project, ".claude/skills/mex-statechart/SKILL.md", "old\n");
+    write(fixture.project, `.claude/skills/mex-statechart/${MEX_MANAGED_SKILL_METADATA}`, metadata);
+    const before = snapshotTree(join(fixture.project, ".claude/skills/mex-statechart"));
 
     const report = sync(fixture, ["claude"]);
 
-    expect(actionFor(report, "mex-inbox").action).toBe("conflict");
+    expect(actionFor(report, "mex-statechart").action).toBe("conflict");
     expect(report.warnings).toContainEqual(expect.objectContaining({ code: warningCode }));
-    expect(snapshotTree(join(fixture.project, ".claude/skills/mex-inbox"))).toEqual(before);
+    expect(snapshotTree(join(fixture.project, ".claude/skills/mex-statechart"))).toEqual(before);
   });
 
   it("rejects destination symlinks without reading or changing their targets", () => {
@@ -446,14 +459,14 @@ describe("managed agent asset installation", () => {
     const outside = temporaryRoot("mex-agent-assets-outside-");
     write(outside, "secret.txt", "outside\n");
     mkdirSync(join(fixture.project, ".claude/skills"), { recursive: true });
-    symlinkSync(outside, join(fixture.project, ".claude/skills/mex-inbox"));
+    symlinkSync(outside, join(fixture.project, ".claude/skills/mex-statechart"));
 
     const report = sync(fixture, ["claude"]);
 
-    expect(actionFor(report, "mex-inbox").action).toBe("conflict");
+    expect(actionFor(report, "mex-statechart").action).toBe("conflict");
     expect(report.warnings).toContainEqual(expect.objectContaining({
       code: "unsafe-path",
-      path: ".claude/skills/mex-inbox",
+      path: ".claude/skills/mex-statechart",
     }));
     expect(read(outside, "secret.txt")).toBe("outside\n");
     expect(readdirSync(outside)).toEqual(["secret.txt"]);
@@ -464,7 +477,7 @@ describe("managed agent asset installation", () => {
     write(fixture.source, "shared.txt", "shared\n");
     symlinkSync(
       join(fixture.source, "shared.txt"),
-      join(fixture.source, "mex-inbox/references/linked.md"),
+      join(fixture.source, "mex-statechart/references/linked.md"),
     );
     const before = snapshotTree(fixture.project);
 
@@ -477,8 +490,8 @@ describe("managed agent asset installation", () => {
   it("rolls an unmodified skill back if activation fails after backup", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    const oldTree = snapshotTree(join(fixture.project, ".claude/skills/mex-inbox"));
-    write(fixture.source, "mex-inbox/SKILL.md", "inbox replacement\n");
+    const oldTree = snapshotTree(join(fixture.project, ".claude/skills/mex-statechart"));
+    write(fixture.source, "mex-statechart/SKILL.md", "inbox replacement\n");
     const plan = planAgentAssets({
       projectRoot: fixture.project,
       packagedSkillsRoot: fixture.source,
@@ -490,19 +503,19 @@ describe("managed agent asset installation", () => {
     expect(() => applyAgentAssetsPlan(plan, {
       hooks: {
         beforeSkillActivation(path) {
-          if (path.endsWith("mex-inbox")) throw new Error("injected activation failure");
+          if (path.endsWith("mex-statechart")) throw new Error("injected activation failure");
         },
       },
     })).toThrowError(expect.objectContaining<Partial<AgentAssetsError>>({ code: "APPLY_FAILED" }));
 
-    expect(snapshotTree(join(fixture.project, ".claude/skills/mex-inbox"))).toEqual(oldTree);
+    expect(snapshotTree(join(fixture.project, ".claude/skills/mex-statechart"))).toEqual(oldTree);
     expect(readdirSync(join(fixture.project, ".claude/skills")).filter((name) => name.startsWith("."))).toEqual([]);
   });
 
   it("revalidates a skill backup and restores concurrent bytes instead of deleting them", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    write(fixture.source, "mex-inbox/SKILL.md", "inbox replacement\n");
+    write(fixture.source, "mex-statechart/SKILL.md", "inbox replacement\n");
     const plan = planAgentAssets({
       projectRoot: fixture.project,
       packagedSkillsRoot: fixture.source,
@@ -514,10 +527,10 @@ describe("managed agent asset installation", () => {
     expect(() => applyAgentAssetsPlan(plan, {
       hooks: {
         beforeSkillActivation(path) {
-          if (!path.endsWith("mex-inbox")) return;
+          if (!path.endsWith("mex-statechart")) return;
           const parent = join(fixture.project, ".claude/skills");
           const backup = readdirSync(parent)
-            .find((name) => name.startsWith(".mex-inbox.mex-backup-"));
+            .find((name) => name.startsWith(".mex-statechart.mex-backup-"));
           expect(backup).toBeDefined();
           writeFileSync(join(parent, backup!, "SKILL.md"), "concurrent backup edit\n");
         },
@@ -526,16 +539,16 @@ describe("managed agent asset installation", () => {
       code: "CONCURRENT_MODIFICATION",
     }));
 
-    expect(read(fixture.project, ".claude/skills/mex-inbox/SKILL.md"))
+    expect(read(fixture.project, ".claude/skills/mex-statechart/SKILL.md"))
       .toBe("concurrent backup edit\n");
     expect(readdirSync(join(fixture.project, ".claude/skills"))
-      .filter((name) => name.startsWith(".mex-inbox.mex-"))).toEqual([]);
+      .filter((name) => name.startsWith(".mex-statechart.mex-"))).toEqual([]);
   });
 
   it("reports an active skill replacement and retains an original changed after activation", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    write(fixture.source, "mex-inbox/SKILL.md", "inbox replacement\n");
+    write(fixture.source, "mex-statechart/SKILL.md", "inbox replacement\n");
     const plan = planAgentAssets({
       projectRoot: fixture.project,
       packagedSkillsRoot: fixture.source,
@@ -550,7 +563,7 @@ describe("managed agent asset installation", () => {
       applyAgentAssetsPlan(plan, {
         hooks: {
           afterSkillActivation(path, backupPath) {
-            if (!path.endsWith("mex-inbox")) return;
+            if (!path.endsWith("mex-statechart")) return;
             expect(backupPath).not.toBeNull();
             retainedBackup = backupPath!;
             writeFileSync(join(backupPath!, "SKILL.md"), "late original edit\n");
@@ -566,7 +579,7 @@ describe("managed agent asset installation", () => {
     });
     expect((caught as Error).message).toContain("replacement is active");
     expect((caught as Error).message).toContain(retainedBackup);
-    expect(read(fixture.project, ".claude/skills/mex-inbox/SKILL.md"))
+    expect(read(fixture.project, ".claude/skills/mex-statechart/SKILL.md"))
       .toBe("inbox replacement\n");
     expect(readFileSync(join(retainedBackup, "SKILL.md"), "utf8")).toBe("late original edit\n");
   });
@@ -588,13 +601,13 @@ describe("managed agent asset installation", () => {
     expect(() => applyAgentAssetsPlan(plan, {
       hooks: {
         beforeSkillActivation(path) {
-          if (!path.endsWith("mex-inbox")) return;
+          if (!path.endsWith("mex-statechart")) return;
           const parent = join(fixture.project, ".claude/skills");
           const stageName = readdirSync(parent)
-            .find((name) => name.startsWith(".mex-inbox.mex-stage-"));
+            .find((name) => name.startsWith(".mex-statechart.mex-stage-"));
           expect(stageName).toBeDefined();
           swappedStage = join(parent, stageName!);
-          retainedStage = join(parent, ".mex-inbox.retained-stage");
+          retainedStage = join(parent, ".mex-statechart.retained-stage");
           renameSync(swappedStage, retainedStage);
           symlinkSync(outside, swappedStage);
         },
@@ -627,7 +640,7 @@ describe("managed agent asset installation", () => {
     expect(() => applyAgentAssetsPlan(plan, {
       hooks: {
         beforeSkillActivation(path) {
-          if (!path.endsWith("mex-inbox")) return;
+          if (!path.endsWith("mex-statechart")) return;
           renameSync(parent, retainedParent);
           symlinkSync(outside, parent);
         },
@@ -656,7 +669,7 @@ describe("managed agent asset installation", () => {
     expect(() => applyAgentAssetsPlan(plan, {
       hooks: {
         beforeSkillActivation(path) {
-          if (!path.endsWith("mex-inbox")) return;
+          if (!path.endsWith("mex-statechart")) return;
           renameSync(fixture.project, retainedRoot);
           mkdirSync(fixture.project);
           write(fixture.project, "replacement-root.txt", "do not touch\n");
@@ -685,8 +698,8 @@ describe("managed agent asset installation", () => {
     expect(() => applyAgentAssetsPlan(plan, {
       hooks: {
         beforeSkillActivation(path) {
-          if (path.endsWith("mex-inbox")) {
-            mkdirSync(join(fixture.project, ".claude/skills/mex-inbox"));
+          if (path.endsWith("mex-statechart")) {
+            mkdirSync(join(fixture.project, ".claude/skills/mex-statechart"));
           }
         },
       },
@@ -694,17 +707,17 @@ describe("managed agent asset installation", () => {
       code: "CONCURRENT_MODIFICATION",
     }));
 
-    expect(exists(fixture.project, ".claude/skills/mex-inbox")).toBe(true);
-    expect(readdirSync(join(fixture.project, ".claude/skills/mex-inbox"))).toEqual([]);
+    expect(exists(fixture.project, ".claude/skills/mex-statechart")).toBe(true);
+    expect(readdirSync(join(fixture.project, ".claude/skills/mex-statechart"))).toEqual([]);
     expect(readdirSync(join(fixture.project, ".claude/skills"))
-      .filter((name) => name.startsWith(".mex-inbox.mex-"))).toEqual([]);
+      .filter((name) => name.startsWith(".mex-statechart.mex-"))).toEqual([]);
   });
 
   it("retains the original backup if a concurrent target prevents skill rollback", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
-    const oldTree = snapshotTree(join(fixture.project, ".claude/skills/mex-inbox"));
-    write(fixture.source, "mex-inbox/SKILL.md", "inbox replacement\n");
+    const oldTree = snapshotTree(join(fixture.project, ".claude/skills/mex-statechart"));
+    write(fixture.source, "mex-statechart/SKILL.md", "inbox replacement\n");
     const plan = planAgentAssets({
       projectRoot: fixture.project,
       packagedSkillsRoot: fixture.source,
@@ -716,16 +729,16 @@ describe("managed agent asset installation", () => {
     expect(() => applyAgentAssetsPlan(plan, {
       hooks: {
         beforeSkillActivation(path) {
-          if (!path.endsWith("mex-inbox")) return;
-          write(fixture.project, ".claude/skills/mex-inbox/concurrent.txt", "do not replace\n");
+          if (!path.endsWith("mex-statechart")) return;
+          write(fixture.project, ".claude/skills/mex-statechart/concurrent.txt", "do not replace\n");
           throw new Error("injected activation failure");
         },
       },
     })).toThrowError(/failed to restore its backup/u);
 
-    expect(read(fixture.project, ".claude/skills/mex-inbox/concurrent.txt")).toBe("do not replace\n");
+    expect(read(fixture.project, ".claude/skills/mex-statechart/concurrent.txt")).toBe("do not replace\n");
     const backup = readdirSync(join(fixture.project, ".claude/skills"))
-      .find((name) => name.startsWith(".mex-inbox.mex-backup-"));
+      .find((name) => name.startsWith(".mex-statechart.mex-backup-"));
     expect(backup).toBeDefined();
     expect(snapshotTree(join(fixture.project, ".claude/skills", backup!))).toEqual(oldTree);
   });
@@ -755,11 +768,11 @@ describe("managed agent asset installation", () => {
       clients: ["claude"],
       checkIgnored: false,
     });
-    write(fixture.project, ".claude/skills/mex-inbox/user-race.txt", "appeared\n");
+    write(fixture.project, ".claude/skills/mex-statechart/user-race.txt", "appeared\n");
     expect(() => applyAgentAssetsPlan(plan)).toThrowError(
       expect.objectContaining<Partial<AgentAssetsError>>({ code: "CONCURRENT_MODIFICATION" }),
     );
-    expect(read(fixture.project, ".claude/skills/mex-inbox/user-race.txt")).toBe("appeared\n");
+    expect(read(fixture.project, ".claude/skills/mex-statechart/user-race.txt")).toBe("appeared\n");
   });
 
   it("detects ignored skill destinations through read-only git check-ignore", () => {
@@ -780,20 +793,18 @@ describe("managed agent asset installation", () => {
 
     expect(plan.warnings.filter((warning) => warning.code === "ignored-skill-path"))
       .toEqual([
-        expect.objectContaining({ path: ".claude/skills/mex-inbox/SKILL.md" }),
-        expect.objectContaining({ path: ".claude/skills/mex-relay/SKILL.md" }),
         expect.objectContaining({ path: ".claude/skills/mex-statechart/SKILL.md" }),
       ]);
     expect(read(fixture.project, ".gitignore")).toBe(beforeIgnore);
-    const resolution = plan.warnings.find((warning) => warning.skill === "mex-inbox")!.resolution!;
+    const resolution = plan.warnings.find((warning) => warning.skill === "mex-statechart")!.resolution!;
     expect(resolution).toContain("!/.claude/");
     expect(resolution).toContain("/.claude/*");
     expect(resolution).toContain("!/.claude/skills/");
     expect(resolution).toContain("/.claude/skills/*");
-    expect(resolution).toContain("!/.claude/skills/mex-inbox/**");
-    expect(resolution).toContain("!/.claude/skills/mex-relay/**");
+    expect(resolution).toContain("!/.claude/skills/mex-statechart/**");
+    expect(resolution).toContain("!/.claude/skills/mex-statechart/**");
     expect(resolution).toContain("do not unignore unrelated .claude files");
-    expect(plan.warnings.find((warning) => warning.skill === "mex-relay")!.resolution)
+    expect(plan.warnings.find((warning) => warning.skill === "mex-statechart")!.resolution)
       .toBe(resolution);
 
     const emittedRules = resolution.split("\n")
@@ -813,8 +824,8 @@ describe("managed agent asset installation", () => {
     expect(afterNarrowRules.warnings).not.toContainEqual(expect.objectContaining({
       code: "ignored-skill-path",
     }));
-    expect(gitIgnored(fixture.project, ".claude/skills/mex-inbox/SKILL.md")).toBe(false);
-    expect(gitIgnored(fixture.project, ".claude/skills/mex-relay/SKILL.md")).toBe(false);
+    expect(gitIgnored(fixture.project, ".claude/skills/mex-statechart/SKILL.md")).toBe(false);
+    expect(gitIgnored(fixture.project, ".claude/skills/mex-statechart/SKILL.md")).toBe(false);
     expect(gitIgnored(fixture.project, ".claude/settings.local.json")).toBe(true);
     expect(gitIgnored(fixture.project, ".claude/skills/private-skill/SKILL.md")).toBe(true);
   });
@@ -822,7 +833,7 @@ describe("managed agent asset installation", () => {
   it("checks desired files so content-only ignore rules report the exact ignored path", () => {
     const fixture = createFixture();
     execFileSync("git", ["init", "-q"], { cwd: fixture.project });
-    write(fixture.project, ".gitignore", ".claude/skills/mex-inbox/**\n");
+    write(fixture.project, ".gitignore", ".claude/skills/mex-statechart/**\n");
 
     const plan = planAgentAssets({
       projectRoot: fixture.project,
@@ -834,12 +845,12 @@ describe("managed agent asset installation", () => {
 
     expect(plan.warnings).toContainEqual(expect.objectContaining({
       code: "ignored-skill-path",
-      skill: "mex-inbox",
-      path: ".claude/skills/mex-inbox/SKILL.md",
+      skill: "mex-statechart",
+      path: ".claude/skills/mex-statechart/SKILL.md",
     }));
     expect(plan.warnings).not.toContainEqual(expect.objectContaining({
       code: "ignored-skill-path",
-      skill: "mex-relay",
+      skill: "consumer-owned",
     }));
   });
 
@@ -860,16 +871,11 @@ describe("managed agent asset installation", () => {
     expect(plan.warnings.filter((warning) => warning.code === "ignore-check-failed"))
       .toEqual([
         expect.objectContaining({
-          skill: "mex-inbox",
-          path: ".claude/skills/mex-inbox",
+          skill: "mex-statechart",
+          path: ".claude/skills/mex-statechart",
           message: expect.stringContaining("git probe unavailable with extra output"),
           resolution: expect.stringContaining("git check-ignore --no-index"),
         }),
-        expect.objectContaining({
-          skill: "mex-relay",
-          path: ".claude/skills/mex-relay",
-        }),
-        expect.objectContaining({ skill: "mex-statechart", path: ".claude/skills/mex-statechart" }),
       ]);
     expect(snapshotTree(fixture.project)).toEqual(before);
   });
@@ -880,7 +886,7 @@ describe("managed agent asset installation", () => {
 
     expect(() => defaultAgentSkillIgnoreChecker(
       fixture.project,
-      ".claude/skills/mex-inbox/SKILL.md",
+      ".claude/skills/mex-statechart/SKILL.md",
     )).toThrowError(expect.objectContaining<Partial<AgentAssetsError>>({
       code: "IGNORE_CHECK_FAILED",
     }));
@@ -893,7 +899,7 @@ describe("managed agent asset installation", () => {
       dryRun: true,
     });
     expect(plan.warnings.filter((warning) => warning.code === "ignore-check-failed"))
-      .toHaveLength(3);
+      .toHaveLength(1);
   });
 
   it("creates and updates instruction files without changing user-owned bytes", () => {
@@ -909,9 +915,9 @@ describe("managed agent asset installation", () => {
     const codex = readFileSync(join(fixture.project, "AGENTS.md"));
     expect(claude.subarray(0, claudePrefix.length)).toEqual(claudePrefix);
     expect(codex.subarray(0, codexPrefix.length)).toEqual(codexPrefix);
-    expect(claude.toString("utf8")).toContain("`/mex-inbox`");
+    expect(claude.toString("utf8")).toContain("`/mex-statechart`");
     expect(claude.toString("utf8")).not.toContain("$mex-");
-    expect(codex.toString("utf8")).toContain("`$mex-inbox`");
+    expect(codex.toString("utf8")).toContain("`$mex-statechart`");
     expect(codex.toString("utf8")).not.toContain("/mex-");
   });
 
@@ -1130,12 +1136,12 @@ function createFixture(): Fixture {
   const source = temporaryRoot("mex-agent-assets-source-");
   write(source, "mex-statechart/SKILL.md", "statechart v1\n");
   write(source, "mex-statechart/scripts/runtime.mjs", "export const runtime = true;\n");
-  write(source, "mex-inbox/SKILL.md", "inbox v1\n");
-  write(source, "mex-inbox/references/workflow.md", "inbox reference\n");
-  write(source, "mex-relay/SKILL.md", "relay v1\n");
-  write(source, "mex-relay/references/workflow.md", "relay reference\n");
-  write(source, "mex-relay/scripts/resolve.mjs", "export const resolve = true;\n");
-  chmodSync(join(source, "mex-relay/scripts/resolve.mjs"), 0o755);
+  write(source, "mex-statechart/SKILL.md", "statechart v1\n");
+  write(source, "mex-statechart/references/workflow.md", "statechart reference\n");
+  write(source, "mex-statechart/SKILL.md", "statechart v1\n");
+  write(source, "mex-statechart/references/workflow.md", "statechart reference\n");
+  write(source, "mex-statechart/scripts/resolve.mjs", "export const resolve = true;\n");
+  chmodSync(join(source, "mex-statechart/scripts/resolve.mjs"), 0o755);
   return { project, source };
 }
 

@@ -25,7 +25,7 @@ describe("Checkout logging settings", () => {
     expect(screen.getAllByRole("radio")).toHaveLength(3);
     expect(screen.getByRole("button", { name: "Save preference" })).toBeDisabled();
     expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("button", { name: "Replay Hub tour" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Replay Hub tour" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Read project notes/ })).toHaveAttribute("href", "/activity?source=legacy");
     expect(save).not.toHaveBeenCalled();
   });

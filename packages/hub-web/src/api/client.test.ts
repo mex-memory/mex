@@ -387,60 +387,6 @@ describe("HttpHubApi shared-contract boundary", () => {
     expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
-  it("uses dedicated bounded Workstream and Spec routes", async () => {
-    const fixture = createFixtureApi();
-    const workstreams = await fixture.getWorkstreams({ state: "active", limit: 25 });
-    const workstream = workstreams.items[0]!;
-    const specs = await fixture.listSpecs({
-      lifecycleStates: ["in_flight", "promoted"],
-      groundingHealth: ["fresh", "unverified"],
-      includeArchived: false,
-      limit: 25,
-    });
-    if (specs.availability !== "ready") throw new Error("Fixture Spec list must be ready.");
-    const spec = await fixture.getSpec(specs.page.items[0]!.id);
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(json(workstreams))
-      .mockResolvedValueOnce(json(workstream))
-      .mockResolvedValueOnce(json(specs))
-      .mockResolvedValueOnce(json(spec));
-    vi.stubGlobal("fetch", fetchMock);
-    const api = new HttpHubApi();
-
-    await api.getWorkstreams({ state: "active", includeArchived: false, cursor: "workstream-page-2", limit: 25 });
-    await api.getWorkstream(workstream.id);
-    await api.listSpecs({
-      lifecycleStates: ["in_flight", "promoted"],
-      groundingHealth: ["fresh", "unverified"],
-      includeArchived: false,
-      topics: [specs.page.items[0]!.id],
-      cursor: "spec-page-2",
-      limit: 25,
-    });
-    await api.getSpec(specs.page.items[0]!.id);
-
-    const calls = fetchMock.mock.calls as [string, RequestInit][];
-    const workstreamListUrl = new URL(calls[0]![0], "http://127.0.0.1");
-    expect(workstreamListUrl.pathname).toBe("/api/v1/workstreams");
-    expect(Object.fromEntries(workstreamListUrl.searchParams)).toEqual({
-      limit: "25",
-      state: "active",
-      includeArchived: "false",
-      cursor: "workstream-page-2",
-    });
-    expect(new URL(calls[1]![0], "http://127.0.0.1").pathname).toBe(`/api/v1/workstreams/${workstream.id}`);
-    const specListUrl = new URL(calls[2]![0], "http://127.0.0.1");
-    expect(specListUrl.pathname).toBe("/api/v1/specs");
-    expect(specListUrl.searchParams.get("lifecycleStates")).toBe("in_flight,promoted");
-    expect(specListUrl.searchParams.get("groundingHealth")).toBe("fresh,unverified");
-    expect(specListUrl.searchParams.get("topics")).toBe(specs.page.items[0]!.id);
-    expect(new URL(calls[3]![0], "http://127.0.0.1").pathname).toBe(`/api/v1/specs/${specs.page.items[0]!.id}`);
-
-    await expect(api.getWorkstream("../../private/workstream")).rejects.toBeInstanceOf(HubApiError);
-    await expect(api.getSpec("../../private/spec")).rejects.toBeInstanceOf(HubApiError);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-  });
-
   it("uses strict Relay reads and applies the byte-identical signed envelope", async () => {
     const fixture = createFixtureApi();
     const drafts = await fixture.getRelayDrafts({ limit: 25 });

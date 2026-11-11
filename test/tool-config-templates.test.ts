@@ -91,8 +91,8 @@ describe("shipped code-graph agent guidance", () => {
 
     const claude = readText("templates/.tool-configs/CLAUDE.md");
     expect(claude).toContain(renderManagedInstructionBlock("claude"));
-    expect(claude).toContain("/mex-inbox");
-    expect(claude).not.toContain("$mex-inbox");
+    expect(claude).toContain("/mex-statechart");
+    expect(claude).not.toContain("$mex-statechart");
     expect(claude).not.toContain(supersededBlanketApprovalGuidance);
   });
 

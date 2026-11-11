@@ -1080,8 +1080,6 @@ describe("Relay handoff workbench", () => {
 
   it("never fetches or selects a Workstream while reading and editing a standalone draft", async () => {
     const api = createFixtureApi();
-    const workstreams = vi.spyOn(api, "getWorkstreams");
-    const workstream = vi.spyOn(api, "getWorkstream");
     const preview = vi.spyOn(api, "previewRelayOperation");
     const user = userEvent.setup();
     renderRoute(api, `/relays?view=drafts&draft=${DRAFT_ID}`);
@@ -1092,8 +1090,6 @@ describe("Relay handoff workbench", () => {
     expect(within(composer).getByRole("textbox", { name: "Summary" })).toBeVisible();
     expect(within(composer).queryByRole("combobox", { name: "Workstream" })).not.toBeInTheDocument();
     expect(within(composer).queryByText(/Workstream.*(?:required|eligible|offline)/i)).not.toBeInTheDocument();
-    expect(workstreams).not.toHaveBeenCalled();
-    expect(workstream).not.toHaveBeenCalled();
     expect(preview).not.toHaveBeenCalled();
   });
 
@@ -1469,8 +1465,6 @@ describe("Relay handoff workbench", () => {
   it("saves a standalone sparse draft without any Workstream query or payload field", async () => {
     const user = userEvent.setup();
     const api = createFixtureApi();
-    const workstreams = vi.spyOn(api, "getWorkstreams");
-    const workstream = vi.spyOn(api, "getWorkstream");
     const preview = vi.spyOn(api, "previewRelayOperation");
     const apply = vi.spyOn(api, "applyRelayOperation");
     renderRoute(api, "/relays?view=drafts");
@@ -1486,8 +1480,6 @@ describe("Relay handoff workbench", () => {
     fireEvent.change(within(composer).getByRole("textbox", { name: "Summary" }), { target: { value: "Standalone local handoff for a teammate." } });
     await user.click(within(composer).getByRole("button", { name: "Save draft" }));
     await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
-    expect(workstreams).not.toHaveBeenCalled();
-    expect(workstream).not.toHaveBeenCalled();
     const request = preview.mock.calls[0]![0];
     expect(request.expectedRevisions).toEqual([]);
     expect(request.action).toEqual({
@@ -1555,8 +1547,6 @@ describe("Relay handoff workbench", () => {
     const api = createFixtureApi();
     const exactMember = api.getMember.bind(api);
     const member = vi.spyOn(api, "getMember").mockImplementation(exactMember);
-    const workstreams = vi.spyOn(api, "getWorkstreams");
-    const workstream = vi.spyOn(api, "getWorkstream");
     const preview = vi.spyOn(api, "previewRelayOperation");
     const apply = vi.spyOn(api, "applyRelayOperation");
     const relayList = vi.spyOn(api, "getRelays");
@@ -1565,14 +1555,10 @@ describe("Relay handoff workbench", () => {
     const publish = await screen.findByRole("button", { name: "Publish handoff" });
     await waitFor(() => expect(publish).toBeEnabled());
     expect(member).not.toHaveBeenCalled();
-    expect(workstreams).not.toHaveBeenCalled();
-    expect(workstream).not.toHaveBeenCalled();
     expect(preview).not.toHaveBeenCalled();
     await user.click(publish);
     const dialog = await screen.findByRole("alertdialog", { name: "Publish this handoff?" });
     expect(member).toHaveBeenCalledWith(GRACE_ID);
-    expect(workstreams).not.toHaveBeenCalled();
-    expect(workstream).not.toHaveBeenCalled();
     expect(within(dialog).getByText(/writes a Relay Markdown artifact.*working tree/i)).toBeVisible();
     expect(within(dialog).getByText(/records branch, HEAD, clean or dirty state, and observation time/i)).toBeVisible();
     expect(within(dialog).getByText(/commit and push.*share it/i)).toBeVisible();
@@ -1614,8 +1600,6 @@ describe("Relay handoff workbench", () => {
 
   it("does not let an unavailable Workstream service block standalone publication", async () => {
     const api = createFixtureApi();
-    const workstreams = vi.spyOn(api, "getWorkstreams").mockRejectedValue(new Error("Workstream list unavailable."));
-    const workstream = vi.spyOn(api, "getWorkstream").mockRejectedValue(new Error("Workstream unavailable."));
     const preview = vi.spyOn(api, "previewRelayOperation");
     renderRoute(api, `/relays?view=drafts&draft=${DRAFT_ID}`);
 
@@ -1623,8 +1607,6 @@ describe("Relay handoff workbench", () => {
     await userEvent.setup().click(publish);
     expect(await screen.findByRole("alertdialog", { name: "Publish this handoff?" })).toBeVisible();
     await waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
-    expect(workstreams).not.toHaveBeenCalled();
-    expect(workstream).not.toHaveBeenCalled();
     expect(preview.mock.calls[0]![0].expectedRevisions).toHaveLength(2);
   });
 

@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ hub: vi.fn(), setup: vi.fn(), entry: vi.fn(), parseTools: vi.fn(), tui: vi.fn(), capture: vi.fn(), next: vi.fn() }));
+const mocks = vi.hoisted(() => ({ hub: vi.fn(), setup: vi.fn(), entry: vi.fn(), parseTools: vi.fn(), capture: vi.fn(), next: vi.fn() }));
 vi.mock("../src/hub/command.js", () => ({ launchHub: mocks.hub }));
 vi.mock("../src/setup/index.js", () => ({ runSetup: mocks.setup, parseSetupTools: mocks.parseTools }));
 vi.mock("../src/setup/entry.js", () => ({ resolveDefaultEntry: mocks.entry, findSetupProjectRoot: () => "/project" }));
 vi.mock("../src/setup/next.js", () => ({ runSetupNext: mocks.next }));
-vi.mock("../src/tui.js", () => ({ launchTui: mocks.tui }));
 vi.mock("../src/telemetry/index.js", async (original) => ({
   ...await original<typeof import("../src/telemetry/index.js")>(), captureEvent: mocks.capture, flush: async () => {},
 }));
@@ -50,7 +49,6 @@ describe("setup entry points", () => {
     await program.parseAsync([...args], { from: "user" });
     expect(mocks.hub).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(options));
     expect(mocks.setup).not.toHaveBeenCalled();
-    expect(mocks.tui).not.toHaveBeenCalled();
     expect(mocks.capture).not.toHaveBeenCalled();
     expect(mocks.entry).not.toHaveBeenCalled();
   });
@@ -109,13 +107,6 @@ describe("setup entry points", () => {
     const { program } = await import("../src/cli.js");
     await program.parseAsync(["setup", "--force", "--no-open"], { from: "user" });
     expect(mocks.setup).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ force: true, openBrowser: false }));
-    expect(mocks.hub).not.toHaveBeenCalled();
-  });
-
-  it("keeps the TUI explicitly available", async () => {
-    const { program } = await import("../src/cli.js");
-    await program.parseAsync(["tui"], { from: "user" });
-    expect(mocks.tui).toHaveBeenCalledOnce();
     expect(mocks.hub).not.toHaveBeenCalled();
   });
 

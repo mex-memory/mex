@@ -112,15 +112,14 @@ describe("reviewed setup commits using real Git", () => {
   it("excludes local data, team records, arbitrary files, root ignore and unselected tool assets", async () => {
     const root = fixture();
     setup(root);
-    for (const path of [".mex/local/secrets.md", ".mex/graph.db", ".mex/wiki.db-wal", ".mex/team/proposal.md", ".mex/activity.jsonl", ".gitignore", "private.txt", "CLAUDE.md", ".claude/skills/mex-inbox/SKILL.md", ".agents/skills/other/SKILL.md"]) write(root, path, "Private bytes\n");
+    for (const path of [".mex/local/secrets.md", ".mex/graph.db", ".mex/wiki.db-wal", ".mex/team/proposal.md", ".mex/activity.jsonl", ".gitignore", "private.txt", "CLAUDE.md", ".claude/skills/unselected/SKILL.md", ".agents/skills/other/SKILL.md"]) write(root, path, "Private bytes\n");
     write(root, "AGENTS.md", "Codex instructions\n");
-    write(root, ".agents/skills/mex-inbox/SKILL.md", "Inbox skill\n");
-    write(root, ".agents/skills/mex-inbox/.mex-managed.json", "{}\n");
+    write(root, ".agents/skills/unselected/SKILL.md", "Unselected skill\n");
+    write(root, ".agents/skills/unselected/.mex-managed.json", "{}\n");
     write(root, ".agents/skills/mex-statechart/SKILL.md", "Statechart skill\n");
     write(root, ".agents/skills/mex-statechart/scripts/runtime.mjs", "export const helper = true;\n");
     const { service, preview } = await review(root, ["codex"]);
     expect(preview.files.map((file) => file.path)).toEqual([
-      ".agents/skills/mex-inbox/.mex-managed.json", ".agents/skills/mex-inbox/SKILL.md",
       ".agents/skills/mex-statechart/SKILL.md", ".agents/skills/mex-statechart/scripts/runtime.mjs",
       ".mex/.gitignore", ".mex/ROUTER.md", ".mex/config.json", ".mex/context/architecture.md", ".mex/patterns/example.md", "AGENTS.md",
     ]);

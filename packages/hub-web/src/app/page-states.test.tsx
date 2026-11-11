@@ -49,20 +49,6 @@ function pending<T>(): Promise<T> {
 const unavailable = (reason: string) => ({ availability: "unavailable" as const, reason });
 
 describe("Home states", () => {
-  it.each([
-    [{ relayPublished: true, moreThanOneContributor: false }, true],
-    [{ relayPublished: false, moreThanOneContributor: true }, true],
-    [{ relayPublished: false, moreThanOneContributor: false }, false],
-  ] as const)("re-asks a skipped person about the hosted beta when Overview sharing is %j", async (sharing, asked) => {
-    const api = createFixtureApi({ overviewFixture: "caught-up" });
-    const overview = await api.getOverview();
-    vi.spyOn(api, "getOverview").mockResolvedValue({ ...overview, sharing });
-    Object.assign(api, { getContactPreference: vi.fn().mockResolvedValue({ status: "skipped" }) });
-    renderRoute("/", api);
-    const card = await screen.findByRole("region", { name: "Share this memory with your team" }, { timeout: 10_000 });
-    if (asked) expect(await within(card).findByRole("button", { name: "Join the hosted beta" })).toBeVisible();
-    else expect(await within(card).findByText("Keep using this Hub with your team.")).toBeVisible();
-  });
 
   it("renders independently loading atlas panels from the Overview aggregate", async () => {
     renderRoute("/", apiWith({ getOverview: () => pending<OverviewResponse>() }));
@@ -367,13 +353,11 @@ describe("Home states", () => {
     const getOverview = vi.spyOn(api, "getOverview");
     const getHome = vi.spyOn(api, "getHome");
     const getCurrentActor = vi.spyOn(api, "getCurrentActor");
-    const getInboxProposals = vi.spyOn(api, "getInboxProposals");
     const getRelays = vi.spyOn(api, "getRelays");
     const getActivity = vi.spyOn(api, "getActivity");
     const getHealth = vi.spyOn(api, "getHealth");
     const getJobs = vi.spyOn(api, "getJobs");
     const previewTeam = vi.spyOn(api, "previewTeamOperation");
-    const previewInbox = vi.spyOn(api, "previewInboxOperation");
     const previewRelay = vi.spyOn(api, "previewRelayOperation");
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -387,7 +371,6 @@ describe("Home states", () => {
     expect(getOverview).toHaveBeenCalledTimes(1);
     expect(getHome).not.toHaveBeenCalled();
     expect(getCurrentActor).not.toHaveBeenCalled();
-    expect(getInboxProposals).not.toHaveBeenCalled();
     expect(getRelays).not.toHaveBeenCalled();
     expect(getActivity).not.toHaveBeenCalled();
     expect(getHealth).not.toHaveBeenCalled();
@@ -395,7 +378,6 @@ describe("Home states", () => {
     // stays unmounted so this page remains explicit-refresh only.
     expect(getJobs).not.toHaveBeenCalled();
     expect(previewTeam).not.toHaveBeenCalled();
-    expect(previewInbox).not.toHaveBeenCalled();
     expect(previewRelay).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
