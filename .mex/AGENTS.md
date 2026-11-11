@@ -4,6 +4,14 @@ description: Always-loaded project anchor. Read this first. Contains project ide
 last_updated: "2026-10-08"
 ---
 
+> **0.9 build (`next`)**
+> This branch is the 0.9 rebuild; `main` stays on 0.8 for fixes.
+> Tickets, plan and procedure are in the private mex-design repo:
+> oss/0.9/, starting from AGENT.md.
+> During this build, skip 0.8 ROUTER/GROW knowledge upkeep, `mex wiki query`,
+> `mex logging`, `mex timeline`, and the Inbox and Relay skills.
+> Use the existing instruction files for build and test commands only.
+
 # mex
 
 ## What This Is

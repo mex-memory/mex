@@ -1,7 +1,7 @@
 name: Statechart checker qualification
 on:
   push:
-    branches: [main]
+    branches: [main, next]
   pull_request:
 permissions:
   contents: read

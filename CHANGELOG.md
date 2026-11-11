@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Started the 0.9 rebuild on `next` at `0.9.0-beta.0`; `main` remains on 0.8 for fixes.
+
 ## [0.8.5] - 2026-10-29
 
 ### Added
