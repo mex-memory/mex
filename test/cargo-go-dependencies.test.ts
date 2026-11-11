@@ -95,6 +95,40 @@ describe("Cargo.toml dependencies (#326)", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].code).toBe("VERSION_MISMATCH");
   });
+
+  it("reads a crate renamed with a package key under its crate name", () => {
+    cargo([
+      "[dependencies]",
+      'serde = { version = "1.0", package = "serde_really" }',
+    ].join("\n"));
+    // The manifest resolves the dependency to the `serde_really` crate.
+    expect(checkDependencies([claim("serde_really")], root)).toEqual([]);
+    // The name the code uses it under resolves to the same crate.
+    expect(checkDependencies([claim("serde")], root)).toEqual([]);
+  });
+
+  it("reads a crate renamed with a package key across several lines", () => {
+    cargo([
+      "[dependencies]",
+      "serde = {",
+      '  version = "1.0",',
+      '  package = "serde_really",',
+      "}",
+    ].join("\n"));
+    expect(checkDependencies([claim("serde_really")], root)).toEqual([]);
+    expect(checkDependencies([claim("serde")], root)).toEqual([]);
+  });
+
+  it("reads a crate from the workspace dependencies table", () => {
+    cargo([
+      "[workspace]",
+      'members = ["crates/core"]',
+      "",
+      "[workspace.dependencies]",
+      'serde = "1.0"',
+    ].join("\n"));
+    expect(checkDependencies([claim("serde")], root)).toEqual([]);
+  });
 });
 
 describe("go.mod dependencies (#326)", () => {
@@ -164,6 +198,17 @@ describe("go.mod dependencies (#326)", () => {
     const issues = checkDependencies([claim("github.com/spf13/cobra v2.0.0", "version")], root);
     expect(issues).toHaveLength(1);
     expect(issues[0].code).toBe("VERSION_MISMATCH");
+  });
+
+  it("names a module that carries a major version suffix by its package", () => {
+    gomod([
+      "module example.com/svc",
+      "",
+      "require github.com/go-chi/chi/v5 v5.0.0",
+    ].join("\n"));
+    // `v5` is the module path's major version, not a package of its own.
+    expect(checkDependencies([claim("chi")], root)).toEqual([]);
+    expect(checkDependencies([claim("github.com/go-chi/chi/v5")], root)).toEqual([]);
   });
 });
 

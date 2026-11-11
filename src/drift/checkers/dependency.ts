@@ -428,9 +428,10 @@ export function parsePyprojectDependencies(content: string): DepEntry[] {
 export function parseCargoDependencies(content: string): DepEntry[] {
   const entries: DepEntry[] = [];
   let inDependencyTable = false;
-  // The crate whose inline table is still open, and the version found in it
-  // so far. A crate whose table closes without a version is still declared.
-  let openCrate: { name: string; version?: string } | null = null;
+  // The crate whose inline table is still open, with what has been read from
+  // it so far. A crate whose table closes without a version is still declared.
+  // `depth` counts the braces the table still has open.
+  let openCrate: { key: string; version?: string; package?: string; depth: number } | null = null;
 
   for (const rawLine of content.split(/\r?\n/)) {
     const line = stripComment(rawLine);
@@ -439,8 +440,11 @@ export function parseCargoDependencies(content: string): DepEntry[] {
     if (openCrate) {
       const version = /\bversion\s*=\s*(["'])((?:(?!\1).)*)\1/.exec(line);
       if (version && openCrate.version === undefined) openCrate.version = version[2]!;
-      if (closesInlineTable(line)) {
-        entries.push({ name: openCrate.name, version: openCrate.version ?? "*", normalizes: "cargo" });
+      const renamed = /\bpackage\s*=\s*(["'])((?:(?!\1).)*)\1/.exec(line);
+      if (renamed && openCrate.package === undefined) openCrate.package = renamed[2]!;
+      openCrate.depth += braceDepth(line);
+      if (openCrate.depth <= 0) {
+        entries.push(cargoEntry(openCrate.key, openCrate.version, openCrate.package));
         openCrate = null;
       }
       continue;
@@ -462,14 +466,15 @@ export function parseCargoDependencies(content: string): DepEntry[] {
     // `serde = "1.0"` — the version is the string itself.
     const bare = /^(["'])((?:(?!\1).)*)\1$/.exec(value);
     if (bare) {
-      entries.push({ name: key, version: bare[2]!, normalizes: "cargo" });
+      entries.push(cargoEntry(key, bare[2]!));
       continue;
     }
 
     // `serde = { version = "1.0", features = ["derive"] }` — one line.
     const inline = /\bversion\s*=\s*(["'])((?:(?!\1).)*)\1/.exec(value);
-    if (inline) {
-      entries.push({ name: key, version: inline[2]!, normalizes: "cargo" });
+    const renamed = /\bpackage\s*=\s*(["'])((?:(?!\1).)*)\1/.exec(value);
+    if (inline || renamed) {
+      entries.push(cargoEntry(key, inline?.[2], renamed?.[2]));
       continue;
     }
 
@@ -477,21 +482,37 @@ export function parseCargoDependencies(content: string): DepEntry[] {
 
     // `serde = { features = ["derive"] }` — a crate with no version of its
     // own, but still a declared dependency.
-    if (closesInlineTable(value)) {
-      entries.push({ name: key, version: "*", normalizes: "cargo" });
+    if (braceDepth(value) <= 0) {
+      entries.push(cargoEntry(key));
       continue;
     }
 
     // `serde = {` followed by the keys on later lines.
-    openCrate = { name: key };
+    openCrate = { key, depth: braceDepth(value) };
   }
 
   // An inline table left open at the end of the file still declares its crate.
   if (openCrate) {
-    entries.push({ name: openCrate.name, version: openCrate.version ?? "*", normalizes: "cargo" });
+    entries.push(cargoEntry(openCrate.key, openCrate.version, openCrate.package));
   }
 
   return entries;
+}
+
+/** One crate, as the manifest declares it.
+ *
+ *  `package = "..."` renames a dependency: the key is the name the crate is
+ *  used under in the code, and the value is the crate it resolves to. The
+ *  crate name is the one the registry knows, so it is the name the entry
+ *  carries, and the key is kept as an alias. */
+function cargoEntry(key: string, version?: string, packageName?: string): DepEntry {
+  const name = packageName ?? key;
+  return {
+    name,
+    version: version ?? "*",
+    normalizes: "cargo",
+    aliases: packageName && packageName !== key ? [key] : undefined,
+  };
 }
 
 /** The Cargo tables that declare a crate, including the target-gated ones. */
@@ -499,19 +520,26 @@ function isCargoDependencyTable(table: string): boolean {
   if (table === "dependencies" || table === "dev-dependencies" || table === "build-dependencies") {
     return true;
   }
+  // `[workspace.dependencies]` holds the dependencies the member crates inherit.
+  if (table === "workspace.dependencies") {
+    return true;
+  }
   // `[target.'cfg(unix)'.dependencies]` and `[target.x86_64-pc-windows-msvc.dev-dependencies]`.
   return /^target\..*\.(dependencies|dev-dependencies|build-dependencies)$/.test(table);
 }
 
-/** True when the line closes the inline table it was opened in. */
-function closesInlineTable(line: string): boolean {
+/** The net number of braces a line opens and leaves open.
+ *
+ *  Braces inside a quoted string are not part of the table, so they are
+ *  masked out before the count. */
+function braceDepth(line: string): number {
   const mask = maskStrings(line);
   let depth = 0;
   for (const ch of mask) {
     if (ch === "{") depth++;
     else if (ch === "}") depth--;
   }
-  return depth <= 0;
+  return depth;
 }
 
 /**
@@ -583,10 +611,22 @@ function goModuleEntry(line: string): DepEntry | null {
   // directive the parser misread.
   if (!/^[A-Za-z0-9][\w.-]*(\.[A-Za-z0-9][\w.-]*)*(\/[\w.-]+)*$/.test(path)) return null;
   const segments = path.split("/");
-  const alias = segments.length > 1 ? segments[segments.length - 1] : undefined;
+  const alias = goModuleAlias(segments);
   return {
     name: path,
     version,
     aliases: alias ? [alias] : undefined,
   };
+}
+
+/** The package name a Go module path ends with.
+ *
+ *  A major-version suffix belongs to the module path, not to the package:
+ *  `github.com/go-chi/chi/v5` is the package `chi`, so the suffix is skipped
+ *  and the segment before it is the name. */
+function goModuleAlias(segments: string[]): string | undefined {
+  if (segments.length < 2) return undefined;
+  const last = segments[segments.length - 1]!;
+  if (/^v\d+$/.test(last)) return segments[segments.length - 2];
+  return last;
 }
