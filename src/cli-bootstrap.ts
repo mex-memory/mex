@@ -26,6 +26,10 @@ if (isMainModule) {
     const { runBackground } = await import("./record/background.js");
     const reason = await runBackground();
     process.exitCode = reason === "error" ? 1 : 0;
+  } else if (process.argv[2] === "__typescript-check" && process.argv.length === 4) {
+    // The background job comparing tsrs with tsgo on one repository; prints the verdict.
+    const { checkTsrsOnRepository } = await import("./graph/extraction/compiler-policy.js");
+    process.stdout.write(`${JSON.stringify(await checkTsrsOnRepository(process.argv[3]!))}\n`);
   } else if (removedCommandMessage(process.argv.slice(2)) !== null) {
     console.error(removedCommandMessage(process.argv.slice(2)));
     process.exitCode = 1;

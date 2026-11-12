@@ -176,12 +176,18 @@ describe("impact reads committed groundings (#224)", () => {
 
     const records = await impact("leaf", fixture.root);
 
-    expect(groundings(records)).toEqual([
+    // Groundings come by file; within one file they follow node ids, which are hashes.
+    const byFileThenNode = (left: { node: unknown; file: unknown }, right: { node: unknown; file: unknown }) =>
+      String(left.file).localeCompare(String(right.file)) || String(left.node).localeCompare(String(right.node));
+    expect(groundings(records).map((entry) => entry.file)).toEqual([
+      ".mex/context/root.md", ".mex/patterns/migrated.md", ".mex/patterns/mixed.md", ".mex/patterns/mixed.md",
+    ]);
+    expect(groundings(records).sort(byFileThenNode)).toEqual([
       { node: fixture.leaf, file: ".mex/context/root.md" },
       { node: fixture.leaf, file: ".mex/patterns/migrated.md" },
       { node: fixture.leaf, file: ".mex/patterns/mixed.md" },
       { node: fixture.parent, file: ".mex/patterns/mixed.md" },
-    ]);
+    ].sort(byFileThenNode));
   });
 
   it("names a scaffold file over the read bound instead of dropping its links silently", async () => {

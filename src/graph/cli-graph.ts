@@ -11,6 +11,7 @@ import {
   refreshGraph,
   type GraphMaintenanceResult,
 } from "./maintenance.js";
+import { resolve } from "node:path";
 import { inspectGraphStatus } from "./status.js";
 import { coverageFields, readStoredGraphCoverage, type GraphCoverageObservation } from "./coverage.js";
 
@@ -35,6 +36,7 @@ export interface GraphCommandOptions {
 export async function runGraphRefresh(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
   const result = await refreshGraph(rootDir, CLI_GRAPH_EXECUTION);
+  await queueFullTsrsCheck(rootDir, result.typescript);
   const coverage = await readStoredGraphCoverage(rootDir, result.status.status === "fresh");
   if (options.json) console.log(JSON.stringify({ ...result, ...coverageFields(coverage) }, null, 2));
   else {
@@ -47,6 +49,7 @@ export async function runGraphRefresh(options: GraphCommandOptions = {}): Promis
 export async function runGraphRebuild(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
   const result = await rebuildGraph(rootDir, CLI_GRAPH_EXECUTION);
+  await queueFullTsrsCheck(rootDir, result.typescript);
   const coverage = await readStoredGraphCoverage(rootDir, result.status.status === "fresh");
   if (options.json) console.log(JSON.stringify({ ...result, ...coverageFields(coverage) }, null, 2));
   else {
@@ -59,6 +62,7 @@ export async function runGraphRebuild(options: GraphCommandOptions = {}): Promis
 export async function runGraph(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
   const result = await ensureGraphCurrent(rootDir, { ...CLI_GRAPH_EXECUTION, force: options.force });
+  await queueFullTsrsCheck(rootDir, result.typescript);
   const coverage = await readStoredGraphCoverage(rootDir, result.status.status === "fresh");
   if (options.json) {
     console.log(JSON.stringify({
@@ -78,6 +82,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
       ...(result.declinedInputs && result.declinedInputs.length > 0
         ? { declinedInputs: result.declinedInputs }
         : {}),
+      ...(result.typescript ? { typescript: result.typescript } : {}),
     }, null, 2));
     return;
   }
@@ -93,6 +98,21 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
   printUnindexedSources(coverage);
   printSkippedSources(result.skipped);
   printDeclinedInputs(result.declinedInputs);
+  printTypeScriptReport(result.typescript);
+}
+
+/**
+ * Say which compiler built the TypeScript graph, and every project that was
+ * built by another compiler or had its tsconfig translated, with why.
+ */
+function printTypeScriptReport(report: GraphRefreshResult["typescript"]): void {
+  if (!report || report.notes.length === 0) return;
+  console.log(`TypeScript graph built with ${report.compiler}; notes for ${new Set(report.notes.map((entry) => entry.project)).size} project(s):`);
+  for (const entry of report.notes.slice(0, MAX_SKIPPED_PATHS_SHOWN)) {
+    console.log(`  ${entry.project.replace(/^config:/u, "")}: ${entry.note}`);
+  }
+  const omitted = report.notes.length - Math.min(report.notes.length, MAX_SKIPPED_PATHS_SHOWN);
+  if (omitted > 0) console.log(`  …and ${omitted} more (use --json for the full list)`);
 }
 
 /**
@@ -197,6 +217,7 @@ function printMaintenance(verb: "refreshed" | "rebuilt", result: GraphMaintenanc
   );
   printSkippedSources(result.skipped);
   printDeclinedInputs(result.declinedInputs);
+  printTypeScriptReport(result.typescript);
   if (result.recoveryPath) {
     console.log(`Previous index retained for local recovery: ${result.recoveryPath}`);
   }
@@ -233,5 +254,33 @@ export async function runGraphRepair(
     const message = error instanceof Error ? error.message : String(error);
     console.error(`${message}${message.includes("mex graph rebuild") ? "" : guidance}`);
     return 1;
+  }
+}
+
+/**
+ * After a build whose tsrs check covered only a sample of files, queue the
+ * comparison of the whole repository for the background process. Its verdict
+ * is kept in the graph; a disagreement moves the next build to tsgo.
+ */
+async function queueFullTsrsCheck(rootDir: string, report: GraphRefreshResult["typescript"]): Promise<void> {
+  if (report?.check !== "pending") return;
+  try {
+    const { openRecord } = await import("../record/index.js");
+    const { ensureBackground, queueJob } = await import("../record/background.js");
+    const { TSRS_FULL_CHECK_JOB } = await import("./extraction/compiler-policy.js");
+    const root = resolve(rootDir);
+    const writer = openRecord({ projectPath: root });
+    try {
+      queueJob(writer, {
+        kind: TSRS_FULL_CHECK_JOB,
+        projectId: writer.checkout(root)?.project_id ?? null,
+        params: { root },
+      });
+    } finally {
+      writer.close();
+    }
+    ensureBackground();
+  } catch {
+    // The next build queues it again.
   }
 }

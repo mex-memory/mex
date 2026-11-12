@@ -181,7 +181,7 @@ describe("path-independent TypeScript node ids (#240)", () => {
     expect(nodes(second.root)).toEqual(nodes(first.root));
     expect(edges(second.root)).toEqual(edges(first.root));
     expect(nodeNamed(first.root, "renderPage").signature)
-      .toBe("(title: string, items: string[]): JSX.Element");
+      .toBe("(title: string, items: string[]) => JSX.Element");
 
     for (const { root } of [first, second]) {
       const posixRoot = root.replaceAll("\\", "/");
