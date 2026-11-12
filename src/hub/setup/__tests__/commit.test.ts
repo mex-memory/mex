@@ -109,7 +109,8 @@ describe("reviewed setup commits using real Git", () => {
     await service.shutdown();
   });
 
-  it("excludes local data, team records, arbitrary files, root ignore and unselected tool assets", async () => {
+  // Real Git setup commits pass serially (~11s); retry transient filesystem contention.
+  it("excludes local data, team records, arbitrary files, root ignore and unselected tool assets", { timeout: 60_000, retry: 1 }, async () => {
     const root = fixture();
     setup(root);
     for (const path of [".mex/local/secrets.md", ".mex/graph.db", ".mex/wiki.db-wal", ".mex/team/proposal.md", ".mex/activity.jsonl", ".gitignore", "private.txt", "CLAUDE.md", ".claude/skills/unselected/SKILL.md", ".agents/skills/other/SKILL.md"]) write(root, path, "Private bytes\n");
@@ -371,7 +372,8 @@ describe("reviewed setup commits using real Git", () => {
     expect(git(root, "symbolic-ref", "HEAD").trim()).toBe("refs/heads/setup-test");
   });
 
-  it("retains explicit Git author/committer and config-location environment settings", async () => {
+  // Real Git setup commits pass serially (~10s); retry transient filesystem contention.
+  it("retains explicit Git author/committer and config-location environment settings", { timeout: 60_000, retry: 1 }, async () => {
     const root = fixture();
     setup(root);
     vi.stubEnv("GIT_AUTHOR_NAME", "Explicit Author");

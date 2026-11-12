@@ -978,13 +978,14 @@ describe("managed agent asset installation", () => {
       checkIgnored: false,
     });
     const before = readFileSync(path);
+    const beforeMode = statSync(path).mode & 0o777;
 
     expect(() => applyAgentAssetsPlan(plan, {
       hooks: { beforeInstructionActivation: () => { throw new Error("injected"); } },
     })).toThrowError(expect.objectContaining<Partial<AgentAssetsError>>({ code: "APPLY_FAILED" }));
 
     expect(readFileSync(path)).toEqual(before);
-    expect(statSync(path).mode & 0o777).toBe(0o640);
+    expect(statSync(path).mode & 0o777).toBe(beforeMode);
     expect(readdirSync(fixture.project).filter((name) => name.includes("CLAUDE.md.mex-"))).toEqual([]);
   });
 
@@ -1093,7 +1094,8 @@ describe("managed agent asset installation", () => {
       .toContain("## old managed policy");
   });
 
-  it("detects an instruction mode change after preview", () => {
+  // Windows chmod cannot represent a POSIX group-read permission change.
+  it.skipIf(process.platform === "win32")("detects an instruction mode change after preview", () => {
     const fixture = createFixture();
     sync(fixture, ["claude"]);
     const path = join(fixture.project, "CLAUDE.md");

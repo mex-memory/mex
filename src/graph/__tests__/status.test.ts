@@ -591,12 +591,15 @@ describe("inspectGraphStatus", () => {
       code: "GRAPH_INDEX_CORRUPT",
     }));
 
-    chmodSync(`${dbPath}-journal`, 0o000);
-    expect(inspectGraphSidecars(dbPath)).toEqual({
-      state: "unavailable",
-      paths: ["graph.db-journal"],
-    });
-    chmodSync(`${dbPath}-journal`, 0o600);
+    // POSIX unreadable modes cannot be represented by Windows chmod.
+    if (process.platform !== "win32") {
+      chmodSync(`${dbPath}-journal`, 0o000);
+      expect(inspectGraphSidecars(dbPath)).toEqual({
+        state: "unavailable",
+        paths: ["graph.db-journal"],
+      });
+      chmodSync(`${dbPath}-journal`, 0o600);
+    }
     unlinkSync(`${dbPath}-journal`);
     mkdirSync(`${dbPath}-wal`);
     expect(inspectGraphSidecars(dbPath)).toEqual({
@@ -734,7 +737,8 @@ describe("inspectGraphStatus", () => {
     }));
   });
 
-  it("never emits fresh when an atomic save replaces a source path after it is read", async () => {
+  // Windows denies rename of an open file; the bound-file Windows test covers that protection.
+  it.skipIf(process.platform === "win32")("never emits fresh when an atomic save replaces a source path after it is read", async () => {
     const root = temporaryRoot("mex-graph-source-race-");
     source(root, "src/a.ts", "export const a = 1;\n");
     await build(root);
@@ -1582,7 +1586,8 @@ describe("inspectGraphStatus", () => {
     expect(executableRemediations(status)).toEqual([]);
   });
 
-  it("never emits fresh when a semantic-input path is atomically replaced after it is read", async () => {
+  // Windows denies rename of an open file; the bound-file Windows test covers that protection.
+  it.skipIf(process.platform === "win32")("never emits fresh when a semantic-input path is atomically replaced after it is read", async () => {
     const root = temporaryRoot("mex-graph-semantic-race-");
     const basePath = join(root, "config", "base.json");
     source(root, "src/a.ts", "export const a: number = 1;\n");

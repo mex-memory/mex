@@ -79,10 +79,12 @@ describe("process tree measurements", () => {
       let final;
       for (let attempt = 0; attempt < 10; attempt += 1) {
         final = await sampler.sample();
-        if (final.maxProcesses >= 2) break;
+        if (final.maxProcesses > initial.maxProcesses) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      expect(final.maxProcesses).toBe(2);
+      // Windows also attaches a conhost.exe descendant to the console child, so
+      // compare with the initial tree instead of assuming one process per node.
+      expect(final.maxProcesses).toBe(initial.maxProcesses + 1);
       expect(final.peakRssBytes).toBeGreaterThan(initial.peakRssBytes + 4 * 1024 * 1024);
     } finally {
       try { await sampler?.stop(); }

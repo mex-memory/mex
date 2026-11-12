@@ -1885,9 +1885,11 @@ describe("release benchmark contract", () => {
     const root = mkdtempSync(join(tmpdir(), "mex-release-startup-timeout-"));
     const script = join(root, "hanging-hub.mjs");
     const terminated = join(root, "terminated");
+    const started = join(root, "started-pid");
     try {
       writeFileSync(script, [
         'import { writeFileSync } from "node:fs";',
+        'writeFileSync(process.env.MEX_PID_FILE, String(process.pid));',
         'process.on("SIGTERM", () => { writeFileSync(process.env.MEX_TERMINATION_FILE, "yes"); process.exit(0); });',
         "setInterval(() => undefined, 1_000);",
         "",
@@ -1895,10 +1897,13 @@ describe("release benchmark contract", () => {
       await expect(startHub({
         projectRoot: root,
         cliPath: script,
-        environment: { ...process.env, MEX_TERMINATION_FILE: terminated },
+        environment: { ...process.env, MEX_TERMINATION_FILE: terminated, MEX_PID_FILE: started },
         startupTimeoutMs: 1_000,
       })).rejects.toThrow(/Timed out waiting for Hub readiness/u);
-      expect(existsSync(terminated)).toBe(true);
+      const pid = Number(readFileSync(started, "utf8"));
+      expect(() => process.kill(pid, 0)).toThrowError(expect.objectContaining({ code: "ESRCH" }));
+      // Windows terminates the process without dispatching POSIX signal handlers.
+      if (process.platform !== "win32") expect(existsSync(terminated)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

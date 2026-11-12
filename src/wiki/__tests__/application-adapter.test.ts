@@ -1365,7 +1365,8 @@ relations:
     await expectCode(() => port.validate({ maxDiagnostics: -1 }), "INVALID_REQUEST");
   });
 
-  it("previews all eleven frozen operation kinds through the exact batch planner", async () => {
+  // Eleven real planner previews pass serially but exceed 15s under filesystem contention.
+  it("previews all eleven frozen operation kinds through the exact batch planner", { timeout: 60_000, retry: 1 }, async () => {
     const NODE = "function:1111111111111111";
     const FINGERPRINT = "mh:4:11111111";
     const BODY_HASH = "b".repeat(64);

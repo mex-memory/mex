@@ -702,7 +702,8 @@ describe("code-graph grounding integration", () => {
     }));
   });
 
-  it("rejects an atomically replaced database whose public status fields still match", async () => {
+  // Windows denies rename of an open file; the bound-file Windows test covers that protection.
+  it.skipIf(process.platform === "win32")("rejects an atomically replaced database whose public status fields still match", async () => {
     const { root, config, source } = fixture();
     writeFileSync(source, "export const service = 1;\n");
     const graphPath = join(root, ".mex", "graph.db");

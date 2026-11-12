@@ -1,3 +1,4 @@
+import { gitDiscoveryCeilingReached } from "./repository-discovery.js";
 import {
   closeSync,
   constants,
@@ -1511,7 +1512,7 @@ function findRepositoryRoot(cwd: string):
     if (marker === "directory" || marker === "file") return { state: "found", path: current };
     if (marker === "unavailable" || marker === "other") return { state: "unavailable" };
     const parent = dirname(current);
-    if (parent === current) return { state: "not_git_repository" };
+    if (parent === current || gitDiscoveryCeilingReached(parent)) return { state: "not_git_repository" };
     current = parent;
   }
   return { state: "unavailable" };

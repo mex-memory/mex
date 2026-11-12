@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, expectTypeOf, it } from "vitest";
@@ -123,7 +124,7 @@ describe("human-team application contract lock", () => {
   });
 
   it("does not leak database drivers, SQL handles, or mutable Git clients into ports", () => {
-    const contractsDir = new URL("../src/team/contracts/", import.meta.url).pathname;
+    const contractsDir = fileURLToPath(new URL("../src/team/contracts/", import.meta.url));
     const sources = readdirSync(contractsDir)
       .filter((file) => file.endsWith(".ts"))
       .map((file) => ({ file, source: readFileSync(join(contractsDir, file), "utf8") }));

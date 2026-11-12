@@ -197,7 +197,9 @@ describe("targeted apply index refresh", () => {
     }
   });
 
-  it("matches full touched verdicts through 48 seeded operations, source edits, and graph publications", async () => {
+  // The 48 real operations take ~46s serially; allow Windows disk contention,
+  // with one retry for the load-dependent timeout observed in the full suite.
+  it("matches full touched verdicts through 48 seeded operations, source edits, and graph publications", { timeout: 120_000, retry: 1 }, async () => {
     const { root, scaffoldRoot, port, refresh } = await fixture();
     let seed = 0x12345678;
     const random = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0; };
@@ -246,5 +248,5 @@ describe("targeted apply index refresh", () => {
     expect(sourceEdits).toBeGreaterThan(0);
     expect(staleTouched).toBeGreaterThan(0);
     expect(cleanTouchedDuringDrift).toBeGreaterThan(0);
-  }, 60_000);
+  });
 });

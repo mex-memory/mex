@@ -1866,7 +1866,8 @@ describe("Knowledge Inbox real approval pipeline", () => {
     } finally { await harness.close(); }
   });
 
-  it.each(["approve.after-wiki", "approve.after-proposal"] as const)("recovers a knowledge correction after %s and retains each subsequent proposal source", async (phase) => {
+  // Recovery plus two real Wiki corrections exceeds the ordinary 30s Windows guard.
+  it.each(["approve.after-wiki", "approve.after-proposal"] as const)("recovers a knowledge correction after %s and retains each subsequent proposal source", { timeout: 120_000 }, async (phase) => {
     const harness = await RepositoryInboxSpecHarness.open("empty");
     try {
       let port = harness.port as unknown as KnowledgeInboxPort;

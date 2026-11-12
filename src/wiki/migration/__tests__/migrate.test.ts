@@ -31,7 +31,15 @@ import { isEntityId } from "../../model/ids.js";
  * a green run. A number written beside the test that needs it is visible; a
  * flag on an invocation is not, and it silently loosens every other test too.
  */
-const TWO_MIGRATIONS = { timeout: 30_000 };
+// Two real corpus migrations measured 42-59s serially on Windows. This is
+// an integration hang guard; release performance budgets remain separate.
+const TWO_MIGRATIONS = { timeout: 120_000, retry: 1 };
+
+// Let the worker acknowledge runner messages before the initial synchronous corpus scan.
+async function yieldToRunner(): Promise<void> {
+  await new Promise<void>((done) => setImmediate(done));
+  await new Promise<void>((done) => setImmediate(done));
+}
 
 const TIER1 = resolve(__dirname, "..", "..", "..", "..", "test", "fixtures", "wiki-migration", "tier1");
 
@@ -65,7 +73,8 @@ describe("migrating the tier-1 corpus", () => {
   let before: Map<string, string>;
   let report: MigrationReport;
 
-  beforeAll(() => {
+  beforeAll(async () => {
+    await yieldToRunner();
     root = scaffold();
     before = allProse(root);
     report = migrateScaffold({ scaffoldRoot: root });
@@ -324,7 +333,7 @@ describe("wiki.readOnly", () => {
 });
 
 describe("the report", () => {
-  it("carries every section 13.6 field", { timeout: 30_000 }, () => {
+  it("carries every section 13.6 field", { timeout: 120_000 }, () => {
     const root = scaffold();
     const report = migrateScaffold({ scaffoldRoot: root });
     expect(report.filesScanned).toBe(25);
