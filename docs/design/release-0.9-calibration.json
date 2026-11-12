@@ -1707,5 +1707,5 @@
       }
     }
   },
-  "note": "Every asset and runtime leaf is recalibrated from this one retained pinned report for the 0.9 package, replacing the per-checkpoint 0.8 calibrations. The removed Inbox, Specs and Workstreams routes no longer exist. Browser heap rises on every route because the runner's browser changed since the 0.8 heap calibrations: the 0.8.5 code measured higher still on the same day (PR #332, run 43091025475). A clean enforcing run on the calibrated head is still required, twice."
+  "note": "Every asset and runtime leaf is recalibrated from this one retained pinned report for the 0.9 package, replacing the per-checkpoint 0.8 calibrations. The removed Inbox, Specs and Workstreams routes no longer exist. Most changes against the 0.8 budgets come from newer runner images, not the smaller package: on the same day the 0.8.5 code (PR #332, run 43091025475) measured browser heap 320-490 KB higher on every route and idle RSS 3-6% higher, with maintenance timings within single-run noise. A clean enforcing run on the calibrated head is still required, twice."
 }

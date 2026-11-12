@@ -19,12 +19,15 @@ formulas: `ceil(measured p95 * 1.15)` for runtime and `ceil(built bytes * 1.05)`
 for assets. [`release-0.9-calibration.json`](release-0.9-calibration.json)
 retains the samples, and a contract test recomputes each leaf from them.
 
-The smaller package shows in the numbers: cold Hub readiness falls about 55%,
-idle RSS 37%, Wiki maintenance memory 40-58%, and the Context and diagram
-detail route JavaScript 63% and 78%. Browser heap rises on every route. That
-comes from the runner's browser, not the removals: on the same day the 0.8.5
-code measured about 400 KB higher still on every route (PR #332, run
-[`43091025475`](https://github.com/mex-memory/mex/actions/runs/43091025475)).
+Most runtime limits fall against the 0.8 budgets (for example cold Hub
+readiness 941 to 441 ms, idle RSS 37% lower), and browser heap limits rise on
+every route. Both moves come mostly from the runner, not from the smaller
+package: the 0.8 values were calibrated on older runner images. A same-day
+comparison with the 0.8.5 code (PR #332, run
+[`43091025475`](https://github.com/mex-memory/mex/actions/runs/43091025475), one
+run each) shows idle RSS 3-6% lower, browser heap 320-490 KB lower on every
+route, initial JavaScript 11.9 KB smaller, and maintenance timings that move both
+ways by up to about 20%, within single-run noise.
 A clean enforcing run on the calibrated head is required twice in a row.
 
 ## 0.8 checkpoints
