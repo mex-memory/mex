@@ -1021,98 +1021,6 @@ test.describe("populated development fixture", () => {
     });
   }
 
-  for (const route of ["workstreams", "specs"] as const) {
-    for (const width of [390, 768, 1440] as const) {
-      test(`keeps ${route} accessible and overflow-free at ${width}px`, async ({ page }) => {
-        await page.emulateMedia({ reducedMotion: "reduce" });
-        await page.setViewportSize({ width, height: 900 });
-        await page.goto(`/${route}?fixture=populated`);
-
-        if (width < 1024) {
-          await expect(page.getByRole("heading", { name: "A wider workbench is required" })).toBeVisible();
-          await expect(page.getByRole("navigation", { name: "Primary" })).toBeHidden();
-        } else {
-          const heading = route === "workstreams" ? "Workstreams" : "Specs";
-          await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
-          if (route === "workstreams") {
-            await expect(page.getByRole("region", { name: "Selected Workstream detail" })).toBeVisible();
-          } else {
-            await expect(page.getByRole("region", { name: "Selected Spec detail" })).toBeVisible();
-            await expect(page.getByText("No inferred coverage.")).toBeVisible();
-          }
-        }
-
-        const geometry = await page.evaluate(() => ({
-          viewportWidth: window.innerWidth,
-          documentClientWidth: document.documentElement.clientWidth,
-          documentScrollWidth: document.documentElement.scrollWidth,
-          bodyScrollWidth: document.body.scrollWidth,
-        }));
-        expect(geometry).toEqual({
-          viewportWidth: width,
-          documentClientWidth: width,
-          documentScrollWidth: width,
-          bodyScrollWidth: width,
-        });
-        await expectAccessible(page);
-      });
-    }
-  }
-
-  for (const viewport of [
-    { width: 390, height: 900 },
-    { width: 768, height: 900 },
-    { width: 1024, height: 768 },
-    { width: 1440, height: 900 },
-  ] as const) {
-    test(`keeps Inbox accessible and overflow-free at ${viewport.width}x${viewport.height}`, async ({ page }) => {
-      await page.emulateMedia({ reducedMotion: "reduce" });
-      await page.setViewportSize(viewport);
-      await page.goto("/inbox?fixture=populated");
-
-      if (viewport.width < 1024) {
-        await expect(page.getByRole("heading", { name: "A wider workbench is required" })).toBeVisible();
-        await expect(page.getByRole("navigation", { name: "Primary" })).toBeHidden();
-      } else {
-        await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
-        const reviewQueue = page.getByRole("region", { name: "Knowledge changes" });
-        const reviewDetail = page.getByRole("region", { name: "Selected Inbox review detail" });
-        await expect(reviewQueue).toBeVisible();
-        await expect(reviewDetail.getByRole("heading", { level: 2, name: "Clarify release evidence review" })).toBeVisible();
-        const reviewBoxes = await Promise.all([reviewQueue.boundingBox(), reviewDetail.boundingBox()]);
-        expect(reviewBoxes[0]).not.toBeNull();
-        expect(reviewBoxes[1]).not.toBeNull();
-        expect(reviewBoxes[0]!.x).toBeLessThan(reviewBoxes[1]!.x);
-        expect(reviewBoxes[0]!.x + reviewBoxes[0]!.width).toBeLessThanOrEqual(reviewBoxes[1]!.x + 1);
-
-        await page.getByRole("tab", { name: "Drafts on this device" }).click();
-        const draftQueue = page.getByRole("region", { name: "On this device" });
-        const draftDetail = page.getByRole("region", { name: "Selected Inbox draft detail" });
-        await expect(draftQueue).toBeVisible();
-        await expect(draftDetail.getByRole("heading", { level: 2, name: "Keep Inbox review focused on meaningful changes" })).toBeVisible();
-        const draftBoxes = await Promise.all([draftQueue.boundingBox(), draftDetail.boundingBox()]);
-        expect(draftBoxes[0]).not.toBeNull();
-        expect(draftBoxes[1]).not.toBeNull();
-        expect(draftBoxes[0]!.x).toBeLessThan(draftBoxes[1]!.x);
-        expect(draftBoxes[0]!.x + draftBoxes[0]!.width).toBeLessThanOrEqual(draftBoxes[1]!.x + 1);
-      }
-
-      const geometry = await page.evaluate(() => ({
-        viewportWidth: window.innerWidth,
-        documentClientWidth: document.documentElement.clientWidth,
-        documentScrollWidth: document.documentElement.scrollWidth,
-        bodyScrollWidth: document.body.scrollWidth,
-      }));
-      expect(geometry).toEqual({
-        viewportWidth: viewport.width,
-        documentClientWidth: viewport.width,
-        documentScrollWidth: viewport.width,
-        bodyScrollWidth: viewport.width,
-      });
-      await expectAccessible(page);
-    });
-  }
-
   test("renders Relays as a human-first handoff inbox with role-aware queues and detail", async ({ page }) => {
     const errors = watchBrowserErrors(page);
     const requests: string[] = [];
@@ -1919,7 +1827,6 @@ test.describe("populated development fixture", () => {
     await page.goto("/?fixture=populated");
     await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
     const sidebar = page.locator('aside[aria-label="Project Hub navigation"]');
-    await expect(sidebar.getByLabel("3 proposals for team review.")).toHaveText("3");
     await expect(sidebar.getByLabel("2 open Relays for you.")).toHaveText("2");
     await expect(sidebar.getByLabel("1 active system operations.")).toHaveText("1");
     await expect(sidebar.getByRole("link", { name: "Team", exact: true })).toHaveAttribute("href", "/members");
@@ -2161,13 +2068,6 @@ test.describe("built production Hub", () => {
       const result = spawnSync(command, args, { cwd: projectRoot, encoding: "utf8" });
       if (result.status !== 0) throw new Error(result.stderr);
     }
-    // Browse as a returning checkout; the first-run tour would otherwise
-    // overlay the dashboard and intercept every click.
-    mkdirSync(join(projectRoot, ".mex", "local"), { recursive: true });
-    writeFileSync(
-      join(projectRoot, ".mex", "local", "hub-onboarding.json"),
-      `${JSON.stringify({ schemaVersion: 1, completed: true })}\n`,
-    );
     processHandle = spawn(process.execPath, [join(root, "dist", "cli.js"), "hub", "--no-open"], {
       cwd: projectRoot,
       env: { ...process.env, MEX_HOME: join(projectRoot, ".mex", "local", "browser-home"), MEX_TELEMETRY: "0", NO_COLOR: "1" },

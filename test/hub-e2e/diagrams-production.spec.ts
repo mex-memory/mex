@@ -36,7 +36,6 @@ test("built diagram canvas preserves thin edges under the real Hub content secur
     page.on("console", message => { if (message.text().includes("BLOCKED_STYLE:")) styleViolations.push(message.text()); });
     const response = await page.goto(`${origin}${recovery.route}#token=${token}`);
     expect(response!.headers()["content-security-policy"]).toContain("style-src 'self'");
-    await page.getByRole("button", { name: "Skip tour", exact: true }).click();
     await assertReleaseRouteReady(page, "diagramDetail", {});
     const diagram = page.getByRole("region", { name: "State diagram", exact: true });
     await expect(diagram.getByRole("button", { name: "Active setup and population · initial state" })).toBeVisible();
