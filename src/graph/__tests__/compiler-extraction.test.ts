@@ -271,7 +271,7 @@ describe("TypeScript compiler extraction", () => {
       .toEqual(["packages/child/tsconfig.json"]);
 
     const result = buildTypeScriptExtraction(root, candidates);
-    expect(result.compilerVersion).toBe("5.9.3");
+    expect(result.compilerVersion).toBe("typescript-5.9.3");
     expect(result.projects.filter((entry) => entry.id === "inferred")).toHaveLength(1);
     expect(result.files.find((entry) => entry.filePath === "loose.js")?.projectId).toBe("inferred");
   });
@@ -456,16 +456,18 @@ describe("TypeScript compiler extraction", () => {
     ]));
   });
 
-  it("makes the canonical identity independent of source positions", () => {
+  it("makes the canonical identity independent of source positions and printed types", () => {
     const input = {
       filePath: "src/service.ts",
       kind: "method" as const,
       qualifiedName: "Alpha::same",
       declarationRole: "method",
-      signature: "(value: string): string",
     };
     expect(canonicalCompilerIdentity(input)).toBe(canonicalCompilerIdentity(input));
     expect(canonicalCompilerIdentity(input)).not.toContain("line");
+    // A signature is display text: a compiler that prints it differently keeps the id.
+    const printed = { ...input, signature: "(value: string): string" } as Parameters<typeof canonicalCompilerIdentity>[0];
+    expect(canonicalCompilerIdentity(printed)).toBe(canonicalCompilerIdentity(input));
   });
 
   it("normalizes compiler fingerprint tokens without identifier or literal spellings", () => {
