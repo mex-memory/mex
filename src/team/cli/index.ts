@@ -2,10 +2,8 @@ export {
   buildActivityCommand,
   buildMemberCommand,
   buildTeamIdentityActivityCommands,
-  buildWorkstreamCommand,
   processTeamCommandIo,
   type TeamIdentityActivityCommandBuilderOptions,
-  type TeamWorkstreamCommandBuilderOptions,
 } from "./builder.js";
 export {
   runActivityList,
@@ -14,9 +12,6 @@ export {
   runMemberList,
   runMemberShow,
   runTeamMutation,
-  runWorkstreamList,
-  runWorkstreamMutation,
-  runWorkstreamShow,
   type ActivityListFlags,
   type MemberListFlags,
   type TeamCliServiceSource,

@@ -1,5 +1,37 @@
 # Release performance baseline
 
+## 0.9 recalibration
+
+Status: every asset and runtime budget is recalibrated for the 0.9 package from
+one retained pinned report, replacing the per-checkpoint 0.8 calibrations below,
+which remain as history.
+
+The Inbox, Specs and Workstreams routes and the Inbox draft and proposal reads
+were removed with their features, and the benchmark no longer measures them.
+The fixture corpus is unchanged. The source is the first attempt of CI run
+[`43151888852`](https://github.com/mex-memory/mex/actions/runs/43151888852)
+(job `130962768690`, artifact `release-performance-attempt-1-1`, report SHA-256
+`c8296dc72e6c2f9e0de469655bbd18d2224b46430f0375d59502db12b3b29461`), which
+measured PR #335 head `5dbf5badb73c8ec1fbe7662f4aca9c9b7298a7b3` through merge
+commit `a455a6459f9252b2b2f420e04fc52efb2cf98dde` on Ubuntu 24.04, Linux x64,
+Node 22.22.0, with zero outbound browser requests. Every leaf uses the frozen
+formulas: `ceil(measured p95 * 1.15)` for runtime and `ceil(built bytes * 1.05)`
+for assets. [`release-0.9-calibration.json`](release-0.9-calibration.json)
+retains the samples, and a contract test recomputes each leaf from them.
+
+Most runtime limits fall against the 0.8 budgets (for example cold Hub
+readiness 941 to 441 ms, idle RSS 37% lower), and browser heap limits rise on
+every route. Both moves come mostly from the runner, not from the smaller
+package: the 0.8 values were calibrated on older runner images. A same-day
+comparison with the 0.8.5 code (PR #332, run
+[`43091025475`](https://github.com/mex-memory/mex/actions/runs/43091025475), one
+run each) shows idle RSS 3-6% lower, browser heap 320-490 KB lower on every
+route, initial JavaScript 11.9 KB smaller, and maintenance timings that move both
+ways by up to about 20%, within single-run noise.
+A clean enforcing run on the calibrated head is required twice in a row.
+
+## 0.8 checkpoints
+
 Status: Checkpoint A benchmark contract. Built-asset and runtime budgets are
 frozen. Runtime budgets were characterized by pinned CI run
 [`33005876613`](https://github.com/mex-memory/mex/actions/runs/33005876613).

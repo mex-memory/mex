@@ -1,11 +1,11 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { afterEach } from "vitest";
 
-afterEach(() => {
-  cleanup();
-  window.localStorage.removeItem("mex.hub.team-access.v1");
-});
+// Lazy routes and dialogs can take more than the default 1s to render on a cold
+// Windows worker under a parallel run. Allow longer for elements to appear; the
+// assertions themselves are unchanged.
+configure({ asyncUtilTimeout: 5_000 });
 
 afterEach(() => {
   cleanup();

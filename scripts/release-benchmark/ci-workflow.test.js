@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 const workflow = readFileSync(
   new URL("../../.github/workflows/ci.yml", import.meta.url),
   "utf8",
-);
+).replace(/\r\n/g, "\n");
 
 function jobBlock(name, nextName) {
   const startMarker = `  ${name}:\n`;

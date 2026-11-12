@@ -18,21 +18,7 @@ describe("managed MEX instruction blocks", () => {
       expect(block).toContain(
         "At the start of every session, read `.mex/AGENTS.md` and `.mex/ROUTER.md`",
       );
-      expect(block).toContain("explicit contributions to project knowledge");
-      expect(block).toContain('mex wiki query "<question>" --limit 5 --json');
-      expect(block).toContain("per-grounding health");
-      expect(block).toContain("ordinary reads never rebuild or refresh indexes");
-      expect(block).toContain("durable team handoffs");
-      expect(block).toContain("Invoke them automatically when intent clearly matches");
-      expect(block).toContain("ordinary GROW upkeep remains available without Inbox");
-      expect(block).toContain("mex logging --json");
-      expect(block).toContain("`significant`");
-      expect(block).toContain("`checkpoints`");
-      expect(block).toContain("`manual`");
-      expect(block).toContain("Honor explicit user log requests in every mode");
-      expect(block).toContain("never suppress mandatory workflow Activity or recovery audit records");
-      expect(block).toContain('mex timeline --query "subject phrase" --file src/example.ts --limit 10 --json');
-      expect(block).toContain("historical evidence, not accepted current knowledge");
+      expect(block).not.toMatch(/mex-(?:inbox|relay)|mex (?:logging|timeline)/u);
       expect(block).toContain(
         "mention MEX and the relevant finding naturally in your explanation",
       );
@@ -42,11 +28,9 @@ describe("managed MEX instruction blocks", () => {
       expect(block).toContain("requires commit/push to share");
       expect(block).toContain("Skill activation is not approval for canonical actions");
     }
-    expect(claude).toContain("`/mex-inbox`");
-    expect(claude).toContain("`/mex-relay`");
+    expect(claude).toContain("`/mex-statechart`");
     expect(claude).not.toContain("$mex-");
-    expect(codex).toContain("`$mex-inbox`");
-    expect(codex).toContain("`$mex-relay`");
+    expect(codex).toContain("`$mex-statechart`");
     expect(codex).not.toContain("/mex-");
   });
 
@@ -79,7 +63,7 @@ describe("managed MEX instruction blocks", () => {
     const desired = Buffer.from(edit.desiredBytes!);
     expect(desired.subarray(0, original.length)).toEqual(original);
     expect(asText(desired)).toContain("\r\n<!-- mex-agent:skills:start -->\r\n");
-    expect(asText(desired)).toContain("`$mex-inbox`");
+    expect(asText(desired)).toContain("`$mex-statechart`");
   });
 
   it("replaces only a valid managed block and preserves BOM/CRLF bytes around it", () => {
@@ -102,7 +86,7 @@ describe("managed MEX instruction blocks", () => {
     const desired = Buffer.from(edit.desiredBytes!);
     expect(desired.subarray(0, prefix.length)).toEqual(prefix);
     expect(desired.subarray(desired.length - suffix.length)).toEqual(suffix);
-    expect(asText(desired)).toContain("`/mex-relay`");
+    expect(asText(desired)).toContain("`/mex-statechart`");
     expect(asText(desired)).not.toContain("old managed content");
   });
 

@@ -79,7 +79,6 @@ import {
   activitySubjectRoute,
 } from "../lib/activity-presentation";
 import { graphParseComposition, shortRepositoryHead } from "../lib/health-presentation";
-import { TeamAccessCard } from "./TeamAccessCard";
 import homeStyles from "../styles/home.module.css";
 
 type FocusPanel = Extract<OverviewResponse["focus"], { availability: "available" }>;
@@ -1005,7 +1004,6 @@ export function HomeOverview() {
         </div>
         <div className={homeStyles.asideColumn}>
           <LatestActivityCard activity={data.activity} onRetry={() => void refresh()} />
-          <TeamAccessCard api={api} reprompt={Boolean(data.sharing?.relayPublished || data.sharing?.moreThanOneContributor)} />
         </div>
         <OperationCard operation={data.operation} />
       </div>

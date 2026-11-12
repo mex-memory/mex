@@ -100,11 +100,11 @@ describe("headless setup run", () => {
 
   it("identifies official skill conflicts without replacing user-owned files", async () => {
     const root = fixture();
-    const skill = join(root, ".agents/skills/mex-inbox");
+    const skill = join(root, ".agents/skills/mex-statechart");
     mkdirSync(skill, { recursive: true });
     writeFileSync(join(skill, "SKILL.md"), "User-owned skill");
     await expect(runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: ["codex"] })).rejects.toMatchObject({
-      userMessage: expect.stringContaining("Check .agents/skills/mex-inbox"),
+      userMessage: expect.stringContaining("Check .agents/skills/mex-statechart"),
     });
     expect(readFileSync(join(skill, "SKILL.md"), "utf8")).toBe("User-owned skill");
   });

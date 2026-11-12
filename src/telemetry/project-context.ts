@@ -1,3 +1,4 @@
+import { gitDiscoveryCeilingReached } from "../repository-discovery.js";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -33,7 +34,7 @@ function projectRoot(startDir: string, discovery: "git-root" | "exact"): string 
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
     }
     const parent = dirname(current);
-    if (parent === current) return start;
+    if (parent === current || gitDiscoveryCeilingReached(parent)) return start;
     current = parent;
   }
   return undefined;

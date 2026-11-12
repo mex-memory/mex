@@ -23,3 +23,7 @@ test/fixtures/capabilities/*.json text eol=lf
 
 # The vendored statechart workflow is pinned byte-for-byte, including its EOF.
 skills/mex-statechart/upstream/** -text whitespace=-blank-at-eof
+
+# Vite strips hashbangs before loading scripts; CRLF leaves a stray CR in that transform.
+scripts/*.mjs text eol=lf
+scripts/release-benchmark/*.mjs text eol=lf

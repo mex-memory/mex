@@ -59,6 +59,35 @@ const TEAM_NOW = "2026-08-27T04:05:06.000Z";
 const RELAY_DIRTY_PUBLICATION_WARNING = "MEX recorded that local changes existed when this Relay was published; it did not record their paths, diff, or contents.";
 
 describe("Project Hub HTTP application", () => {
+  it("does not expose removed workbench routes or dispatch their mutations", async () => {
+    const previewTeamOperation = vi.fn();
+    const app = fixtureApp({ services: { ...teamReadServices(), previewTeamOperation } });
+    const { cookie, csrfToken } = await authenticatedSession(app);
+    for (const path of ["/workstreams", "/specs", "/inbox/drafts", "/inbox/proposals", "/settings/onboarding"]) {
+      const response = await app.request(ORIGIN + "/api/v1" + path, { headers: { host: HOST, cookie } });
+      expect(response.status, path).toBe(404);
+    }
+    for (const path of ["/inbox/operations/preview", "/inbox/operations/apply"]) {
+      const response = await app.request(ORIGIN + "/api/v1" + path, {
+        method: "POST", headers: { ...mutationHeaders(), cookie, "x-mex-csrf": csrfToken }, body: "{}",
+      });
+      expect(response.status, path).toBe(404);
+    }
+    const response = await app.request(ORIGIN + "/api/v1/team/operations/preview", {
+      method: "POST", headers: { ...mutationHeaders(), cookie, "x-mex-csrf": csrfToken },
+      body: JSON.stringify({
+        operationId: "removed-workstream",
+        action: { kind: "workstream.archive", workstreamId: TEAM_WORKSTREAM_ID },
+        expectedRevisions: [{
+          target: { kind: "artifact", path: `.mex/workstreams/${TEAM_WORKSTREAM_ID}.md` },
+          revision: "a".repeat(64),
+        }],
+      }),
+    });
+    expect(response.status).toBe(404);
+    expect(previewTeamOperation).not.toHaveBeenCalled();
+  });
+
   it("authenticates migration previews and forwards only the reviewed job revision", async () => {
     const previewWikiMigration = vi.fn(async () => ({ revision: "a".repeat(64), report: "Files scanned: 1", canApply: true }));
     const assertJobStartAllowed = vi.fn();
@@ -108,20 +137,20 @@ describe("Project Hub HTTP application", () => {
     expect(telemetry.mock.calls).toEqual([["hub.page_viewed", { page: "knowledge_detail" }]]);
   });
 
-  it.each(["team", "inbox", "relays"] as const)(
+  it.each(["team", "relays"] as const)(
     "projects validated %s actions, trusted replay outcomes, and failures without payload data",
     async (family) => {
       const telemetry = vi.fn();
-      const services = family === "team" ? teamReadServices() : family === "inbox" ? inboxReadServices() : relayReadServices();
-      const request = family === "team" ? teamPreviewRequest() : family === "inbox" ? inboxPreviewRequest() : relayPreviewRequest();
+      const services = family === "team" ? teamReadServices() : relayReadServices();
+      const request = family === "team" ? teamPreviewRequest() : relayPreviewRequest();
       let replayed = false;
       let fail = false;
       const apply = async () => {
         if (fail) throw new Error("private@example.test /Users/private/project");
-        const result = family === "team" ? teamApplyResult() : family === "inbox" ? inboxApplyResult() : relayApplyResult();
+        const result = family === "team" ? teamApplyResult() : relayApplyResult();
         return { ...result, idempotentReplay: replayed };
       };
-      const applyKey = family === "team" ? "applyTeamOperation" : family === "inbox" ? "applyInboxOperation" : "applyRelayOperation";
+      const applyKey = family === "team" ? "applyTeamOperation" : "applyRelayOperation";
       // The existing independently validated family fixtures supply each exact
       // response shape; the wrapper changes only the trusted replay outcome.
       const app = fixtureApp({ telemetry, services: { ...services, [applyKey]: apply } });
@@ -581,88 +610,6 @@ describe("Project Hub HTTP application", () => {
     expect(currentActor).not.toHaveBeenCalled();
   });
 
-  it("authenticates and strictly validates Workstream and read-only Spec routes", async () => {
-    const services = teamReadServices();
-    const workstreamValue = teamWorkstream();
-    const workstreams = vi.fn(() => ({
-      items: [workstreamValue],
-      nextCursor: null,
-      truncated: false,
-      sourceTruncated: false,
-      deterministicRevision: "4".repeat(64),
-      diagnostics: [],
-      diagnosticsTruncated: false,
-    }));
-    const workstream = vi.fn((id: string) => id === TEAM_WORKSTREAM_ID ? workstreamValue : null);
-    const specs = vi.fn(() => specListResponse());
-    const spec = vi.fn(() => specDetailResponse());
-    const app = fixtureApp({
-      services: { ...services, workstreams, workstream, specs, spec },
-    });
-
-    for (const path of [
-      "/api/v1/workstreams",
-      `/api/v1/workstreams/${TEAM_WORKSTREAM_ID}`,
-      "/api/v1/specs",
-      `/api/v1/specs/${SPEC_ID}`,
-    ]) {
-      expect((await app.request(`${ORIGIN}${path}`, { headers: { host: HOST } })).status, path)
-        .toBe(401);
-    }
-
-    const { cookie } = await bootstrapSession(app);
-    const headers = { host: HOST, cookie };
-    const workstreamList = await app.request(
-      `${ORIGIN}/api/v1/workstreams?state=archived&includeArchived=true&limit=5`,
-      { headers },
-    );
-    expect(workstreamList.status).toBe(200);
-    expect(workstreams).toHaveBeenCalledWith({
-      state: "archived",
-      includeArchived: true,
-      limit: 5,
-    });
-    expect(await workstreamList.json()).toMatchObject({
-      items: [{ id: TEAM_WORKSTREAM_ID }],
-    });
-    expect((await app.request(`${ORIGIN}/api/v1/workstreams/${TEAM_WORKSTREAM_ID}`, { headers })).status)
-      .toBe(200);
-
-    const specList = await app.request(
-      `${ORIGIN}/api/v1/specs?lifecycleStates=in_flight,promoted&groundingHealth=fresh,missing&topics=${SPEC_ID},${REQUIREMENT_ID}&limit=5`,
-      { headers },
-    );
-    expect(specList.status).toBe(200);
-    expect(specs).toHaveBeenCalledWith({
-      lifecycleStates: ["in_flight", "promoted"],
-      groundingHealth: ["fresh", "missing"],
-      topics: [SPEC_ID, REQUIREMENT_ID],
-      limit: 5,
-    });
-    expect(await specList.json()).toMatchObject({
-      availability: "ready",
-      page: { items: [{ id: SPEC_ID, kind: "spec" }] },
-    });
-    expect((await app.request(`${ORIGIN}/api/v1/specs/${SPEC_ID}`, { headers })).status)
-      .toBe(200);
-
-    workstreams.mockClear();
-    specs.mockClear();
-    for (const path of [
-      "/api/v1/workstreams?state=paused",
-      "/api/v1/workstreams?state=active&state=blocked",
-      "/api/v1/workstreams?limit=101",
-      "/api/v1/specs?lifecycleStates=in_flight,unknown",
-      "/api/v1/specs?lifecycleStates=in_flight&lifecycleStates=promoted",
-      "/api/v1/specs?groundingHealth=fresh,fresh",
-      "/api/v1/specs?unexpected=true",
-    ]) {
-      expect((await app.request(`${ORIGIN}${path}`, { headers })).status, path).toBe(400);
-    }
-    expect(workstreams).not.toHaveBeenCalled();
-    expect(specs).not.toHaveBeenCalled();
-  });
-
   it("protects team preview/apply and never invokes services for invalid authority", async () => {
     const services = teamReadServices();
     const previewTeamOperation = vi.fn(services.previewTeamOperation!);
@@ -764,120 +711,6 @@ describe("Project Hub HTTP application", () => {
       applied: true,
       members: [{ id: TEAM_MEMBER_ID }],
       events: [{ action: "member.added" }],
-    });
-  });
-
-  it("serves strict Inbox summaries/details and applies only the complete reviewed envelope", async () => {
-    const services = inboxReadServices();
-    const inboxDrafts = vi.fn(services.inboxDrafts!);
-    const inboxDraft = vi.fn(services.inboxDraft!);
-    const inboxProposals = vi.fn(services.inboxProposals!);
-    const inboxProposal = vi.fn(services.inboxProposal!);
-    const previewInboxOperation = vi.fn(services.previewInboxOperation!);
-    const applyInboxOperation = vi.fn(services.applyInboxOperation!);
-    const app = fixtureApp({
-      services: {
-        ...services,
-        inboxDrafts,
-        inboxDraft,
-        inboxProposals,
-        inboxProposal,
-        previewInboxOperation,
-        applyInboxOperation,
-      },
-    });
-    const { cookie, csrfToken } = await authenticatedSession(app);
-    const readHeaders = { host: HOST, cookie };
-    const mutationRequestHeaders = {
-      ...mutationHeaders(),
-      cookie,
-      "x-mex-csrf": csrfToken,
-    };
-
-    const drafts = await app.request(`${ORIGIN}/api/v1/inbox/drafts?limit=25`, {
-      headers: readHeaders,
-    });
-    expect(drafts.status).toBe(200);
-    expect(drafts.headers.get("cache-control")).toBe("no-store");
-    expect(inboxDrafts).toHaveBeenCalledWith({ limit: 25 });
-    expect(await drafts.json()).toMatchObject({
-      items: [{ id: INBOX_DRAFT_ID, title: "Release benchmark local draft Requirement" }],
-    });
-    expect((await app.request(`${ORIGIN}/api/v1/inbox/drafts/${INBOX_DRAFT_ID}`, {
-      headers: readHeaders,
-    })).status).toBe(200);
-    expect(inboxDraft).toHaveBeenCalledWith(INBOX_DRAFT_ID);
-
-    const proposals = await app.request(
-      `${ORIGIN}/api/v1/inbox/proposals?state=pending,stale&limit=25`,
-      { headers: readHeaders },
-    );
-    expect(proposals.status).toBe(200);
-    expect(inboxProposals).toHaveBeenCalledWith({ states: ["pending", "stale"], limit: 25 });
-    expect(await proposals.json()).toMatchObject({
-      items: [{
-        ref: { id: INBOX_PROPOSAL_ID },
-        state: "pending",
-        title: "Release benchmark pending Spec update",
-      }],
-    });
-    expect((await app.request(`${ORIGIN}/api/v1/inbox/proposals/${INBOX_PROPOSAL_ID}`, {
-      headers: readHeaders,
-    })).status).toBe(200);
-    expect(inboxProposal).toHaveBeenCalledWith(INBOX_PROPOSAL_ID);
-
-    inboxProposals.mockClear();
-    for (const path of [
-      "/api/v1/inbox/proposals?state=pending,pending",
-      "/api/v1/inbox/proposals?state=unknown",
-      "/api/v1/inbox/proposals?state=pending&state=stale",
-      "/api/v1/inbox/drafts?limit=101",
-      "/api/v1/inbox/drafts?unexpected=true",
-    ]) {
-      expect((await app.request(`${ORIGIN}${path}`, { headers: readHeaders })).status, path)
-        .toBe(400);
-    }
-    expect(inboxProposals).not.toHaveBeenCalled();
-
-    const request = inboxPreviewRequest();
-    const invalidAuthority = await app.request(`${ORIGIN}/api/v1/inbox/operations/preview`, {
-      method: "POST",
-      headers: mutationRequestHeaders,
-      body: JSON.stringify({ ...request, actor: { kind: "unknown" } }),
-    });
-    expect(invalidAuthority.status).toBe(400);
-    expect(previewInboxOperation).not.toHaveBeenCalled();
-
-    const preview = await app.request(`${ORIGIN}/api/v1/inbox/operations/preview`, {
-      method: "POST",
-      headers: mutationRequestHeaders,
-      body: JSON.stringify(request),
-    });
-    expect(preview.status).toBe(200);
-    expect(preview.headers.get("cache-control")).toBe("no-store");
-    expect(previewInboxOperation).toHaveBeenCalledWith(request);
-    const envelope = await preview.json();
-
-    const invalidApply = await app.request(`${ORIGIN}/api/v1/inbox/operations/apply`, {
-      method: "POST",
-      headers: mutationRequestHeaders,
-      body: JSON.stringify({ ...(envelope as object), unexpected: true }),
-    });
-    expect(invalidApply.status).toBe(400);
-    expect(applyInboxOperation).not.toHaveBeenCalled();
-
-    const applied = await app.request(`${ORIGIN}/api/v1/inbox/operations/apply`, {
-      method: "POST",
-      headers: mutationRequestHeaders,
-      body: JSON.stringify(envelope),
-    });
-    expect(applied.status).toBe(200);
-    expect(applied.headers.get("cache-control")).toBe("no-store");
-    expect(applyInboxOperation).toHaveBeenCalledWith(envelope);
-    expect(await applied.json()).toMatchObject({
-      operationId: request.operationId,
-      applied: true,
-      localChanges: [{ id: INBOX_DRAFT_ID }],
     });
   });
 

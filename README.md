@@ -362,18 +362,16 @@ Run `mex <command> --help` for the complete interface.
 
 | Goal | Commands |
 | --- | --- |
-| Set up or inspect compatibility | `mex setup`, `mex setup --browser`, `mex capabilities`, `mex skills sync` |
-| Use persistent-agent mode | `mex setup --mode agent-memory`, `mex heartbeat` |
-| Open a local interface | `mex hub`, `mex tui` |
+| Set up or inspect compatibility | `mex setup`, `mex setup --browser`, `mex capabilities` |
+| Use persistent-agent mode | `mex setup --mode agent-memory` |
+| Open a local interface | `mex hub` |
 | Build and retrieve code context | `mex graph status`, `mex graph refresh`, `mex graph rebuild`, `mex graph scope <task>`, `mex graph query <relation> <target>`, `mex graph get <node-id>`, `mex impact <target>` |
 | Index and retrieve knowledge | `mex wiki rebuild-index`, `mex wiki query <text>`, `mex wiki show <id>`, `mex wiki related <id>`, `mex wiki backlinks <id>`, `mex wiki for-code <node-id>` |
 | Synthesize or maintain the Wiki | `mex wiki build`, `mex wiki prepare --stage <stage> [--cluster <name>]`, `mex wiki validate` (structure only); `mex wiki propose <response-file>`, `mex wiki apply <operation-file>` and `mex wiki reground <id>` preview by default and write only with `--apply` |
-| Review team memory | `mex member --help`, `mex activity --help`, `mex workstream --help`, `mex spec --help` |
-| Propose knowledge additions or corrections | `mex inbox draft --help`, `mex inbox publish --help`, `mex inbox proposal --help` |
+| Review team memory | `mex member --help`, `mex activity --help` |
 | Prepare and receive handoffs | `mex relay draft --help`, `mex relay publish --help`, `mex relay acknowledge --help`, `mex relay close --help` |
-| Record and retrieve project notes | `mex log <message>`, `mex logging --help`, `mex timeline --format md`, `mex pattern --help` |
-| Export scaffold Markdown | `mex export`, `mex export --out <path>` |
-| Check and maintain the project | `mex check`, `mex sync`, `mex doctor`, `mex watch` |
+| Record and retrieve project notes | `mex log <message>` |
+| Check and maintain the project | `mex check`, `mex sync`, `mex doctor` |
 
 ### Keeping knowledge true to the code
 
@@ -386,7 +384,7 @@ Two commands cover it:
 
 `mex wiki query` and `mex wiki for-code` are how agents find that knowledge; `--health changed` lists what check flags.
 
-Use `mex capabilities --json` for machine-readable capability discovery and `mex commands` for the concise CLI map.
+Use `mex capabilities --json` for machine-readable capability discovery and `mex --help` for the concise CLI map.
 
 ## Upgrade and compatibility
 
@@ -473,7 +471,7 @@ MEX keeps team memory in repository files and provides local retrieval and revie
 - Review the [Code Graph support matrix](https://github.com/mex-memory/mex/blob/v0.8.5/docs/code-graph-support.md).
 - See the [extractor model and supported relationships](https://github.com/mex-memory/mex/blob/v0.8.5/docs/extractors.md).
 - Read the [graph retrieval benchmark results](https://github.com/mex-memory/mex/blob/v0.8.5/evaluate/RESULTS.md), including the blind-graded comparison against an ordinary file-search baseline.
-- Inspect the CLI locally with `mex capabilities --json` and `mex commands`.
+- Inspect the CLI locally with `mex capabilities --json` and `mex --help`.
 - Join the [MEX community on Discord](https://discord.gg/FEdNsQ4Qt4) or visit [mexmemory.com](https://mexmemory.com).
 
 ### Explain behavior with a state diagram

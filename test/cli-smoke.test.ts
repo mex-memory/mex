@@ -92,28 +92,6 @@ describe("CLI smoke test against a fixture scaffold", { timeout: testTimeoutMs }
     expect(result.stdout.trim()).toBe(pkg.version);
   });
 
-  it("timeline renders a logged event end to end", () => {
-    const root = project();
-    scaffold(root);
-
-    const logged = mex(root, ["log", "smoke: chose the bounded resolver", "--type", "decision"]);
-    expect(logged.status).toBe(0);
-    expect(logged.stdout).toContain("Logged decision: smoke: chose the bounded resolver");
-
-    const timeline = mex(root, ["timeline"]);
-    expect(timeline.status).toBe(0);
-    expect(timeline.stdout).toContain("smoke: chose the bounded resolver");
-
-    const jsonTimeline = mex(root, ["timeline", "--json"]);
-    expect(jsonTimeline.status).toBe(0);
-    const asJson = JSON.parse(jsonTimeline.stdout) as {
-      events: Array<{ kind: string; message: string }>;
-    };
-    expect(asJson.events).toEqual([
-      expect.objectContaining({ kind: "decision", message: "smoke: chose the bounded resolver" }),
-    ]);
-  });
-
   it("check reports a healthy scaffold with exit code 0", () => {
     const root = project();
     scaffold(root);
@@ -135,14 +113,6 @@ describe("CLI smoke test against a fixture scaffold", { timeout: testTimeoutMs }
     expect(Array.isArray(report.issues)).toBe(true);
   });
 
-  it("heartbeat runs clean on the fixture", () => {
-    const root = project();
-    scaffold(root);
-
-    const result = mex(root, ["heartbeat"]);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("HEARTBEAT_OK");
-  });
 
   it("doctor summarizes scaffold health without crashing", () => {
     const root = project();
@@ -158,7 +128,7 @@ describe("CLI smoke test against a fixture scaffold", { timeout: testTimeoutMs }
     const root = project();
     const result = mex(root, ["--help"]);
     expect(result.status).toBe(0);
-    for (const command of ["check", "doctor", "timeline", "log", "heartbeat", "graph"]) {
+    for (const command of ["check", "doctor", "log", "graph"]) {
       expect(result.stdout).toContain(command);
     }
   });

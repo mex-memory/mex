@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "ok": true,
   "data": {
-    "mexVersion": "0.8.5",
+    "mexVersion": "0.9.0-beta.0",
     "repository": {
       "initializationState": "ready",
       "graphIndexState": "fresh",
@@ -22,25 +22,7 @@
         "unavailableReason": null
       },
       {
-        "id": "team_workstreams",
-        "installed": true,
-        "availability": "available",
-        "unavailableReason": null
-      },
-      {
-        "id": "team_inbox",
-        "installed": true,
-        "availability": "available",
-        "unavailableReason": null
-      },
-      {
         "id": "team_relay",
-        "installed": true,
-        "availability": "available",
-        "unavailableReason": null
-      },
-      {
-        "id": "spec_authoring",
         "installed": true,
         "availability": "available",
         "unavailableReason": null
@@ -53,12 +35,6 @@
       },
       {
         "id": "activity_record",
-        "installed": true,
-        "availability": "available",
-        "unavailableReason": null
-      },
-      {
-        "id": "spec_read",
         "installed": true,
         "availability": "available",
         "unavailableReason": null
@@ -83,13 +59,6 @@
           "path": "mex capabilities",
           "usage": "mex capabilities --json",
           "output": "json"
-        },
-        {
-          "id": "inbox.contract",
-          "path": "mex inbox contract",
-          "usage": "mex inbox contract --json",
-          "output": "json",
-          "contractResolver": "inbox.contract"
         },
         {
           "id": "relay.contract",
@@ -129,46 +98,6 @@
           "output": "json"
         },
         {
-          "id": "workstream.list",
-          "path": "mex workstream list",
-          "usage": "mex workstream list --json",
-          "output": "json"
-        },
-        {
-          "id": "workstream.show",
-          "path": "mex workstream show",
-          "usage": "mex workstream show <workstream-id> --json",
-          "output": "json"
-        },
-        {
-          "id": "inbox.draft.list",
-          "path": "mex inbox draft list",
-          "usage": "mex inbox draft list --json",
-          "output": "json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.draft.show",
-          "path": "mex inbox draft show",
-          "usage": "mex inbox draft show <draft-id> --json",
-          "output": "json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.list",
-          "path": "mex inbox proposal list",
-          "usage": "mex inbox proposal list --json",
-          "output": "json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.show",
-          "path": "mex inbox proposal show",
-          "usage": "mex inbox proposal show <proposal-id> --json",
-          "output": "json",
-          "contractResolver": "inbox.contract"
-        },
-        {
           "id": "graph.status",
           "path": "mex graph status",
           "usage": "mex graph status --json",
@@ -203,25 +132,6 @@
           "path": "mex impact",
           "usage": "mex impact <target>",
           "output": "jsonl-v3"
-        },
-        {
-          "id": "inbox.target",
-          "path": "mex inbox target",
-          "usage": "mex inbox target <entity-id> --json",
-          "output": "json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "spec.list",
-          "path": "mex spec list",
-          "usage": "mex spec list --json",
-          "output": "json"
-        },
-        {
-          "id": "spec.show",
-          "path": "mex spec show",
-          "usage": "mex spec show <spec-id> --json",
-          "output": "json"
         },
         {
           "id": "wiki.list",
@@ -310,91 +220,6 @@
           "inputContract": "team.identity_activity.request.v1#/$defs/activityRecordRequest"
         },
         {
-          "id": "workstream.create.preview",
-          "path": "mex workstream create",
-          "usage": "mex workstream create <request-file> --json",
-          "output": "json",
-          "inputContract": "team.identity_activity.request.v1#/$defs/workstreamCreateRequest"
-        },
-        {
-          "id": "workstream.update.preview",
-          "path": "mex workstream update",
-          "usage": "mex workstream update <request-file> --json",
-          "output": "json",
-          "inputContract": "team.identity_activity.request.v1#/$defs/workstreamUpdateRequest"
-        },
-        {
-          "id": "workstream.archive.preview",
-          "path": "mex workstream archive",
-          "usage": "mex workstream archive <request-file> --json",
-          "output": "json",
-          "inputContract": "team.identity_activity.request.v1#/$defs/workstreamArchiveRequest"
-        },
-        {
-          "id": "inbox.draft.save.preview",
-          "path": "mex inbox draft save",
-          "usage": "mex inbox draft save <request-file> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-request-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.draft.delete.preview",
-          "path": "mex inbox draft delete",
-          "usage": "mex inbox draft delete <request-file> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-request-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.reject.preview",
-          "path": "mex inbox proposal reject",
-          "usage": "mex inbox proposal reject <request-file> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-request-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.withdraw.preview",
-          "path": "mex inbox proposal withdraw",
-          "usage": "mex inbox proposal withdraw <request-file> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-request-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.mark_stale.preview",
-          "path": "mex inbox proposal mark-stale",
-          "usage": "mex inbox proposal mark-stale <request-file> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-request-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.publish.preview",
-          "path": "mex inbox publish",
-          "usage": "mex inbox publish <request-file> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-request-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.approve.preview",
-          "path": "mex inbox proposal approve",
-          "usage": "mex inbox proposal approve <request-file> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-request-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.repair.preview",
-          "path": "mex inbox proposal repair",
-          "usage": "mex inbox proposal repair <request-file> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-request-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
           "id": "wiki.apply.preview",
           "path": "mex wiki apply",
           "usage": "mex wiki apply <operation-file> --json",
@@ -451,59 +276,6 @@
           "inputContract": "team.identity_activity.preview-envelope.v1#activity.record"
         },
         {
-          "id": "workstream.create.apply",
-          "path": "mex workstream create",
-          "usage": "mex workstream create --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "team.identity_activity.preview-envelope.v1#workstream.create"
-        },
-        {
-          "id": "workstream.update.apply",
-          "path": "mex workstream update",
-          "usage": "mex workstream update --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "team.identity_activity.preview-envelope.v1#workstream.update"
-        },
-        {
-          "id": "workstream.archive.apply",
-          "path": "mex workstream archive",
-          "usage": "mex workstream archive --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "team.identity_activity.preview-envelope.v1#workstream.archive"
-        },
-        {
-          "id": "inbox.draft.save.apply",
-          "path": "mex inbox draft save",
-          "usage": "mex inbox draft save --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-preview-envelope-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.draft.delete.apply",
-          "path": "mex inbox draft delete",
-          "usage": "mex inbox draft delete --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-preview-envelope-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.reject.apply",
-          "path": "mex inbox proposal reject",
-          "usage": "mex inbox proposal reject --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-preview-envelope-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.withdraw.apply",
-          "path": "mex inbox proposal withdraw",
-          "usage": "mex inbox proposal withdraw --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-preview-envelope-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
           "id": "graph.refresh",
           "path": "mex graph refresh",
           "usage": "mex graph refresh --json",
@@ -526,38 +298,6 @@
           "path": "mex wiki rebuild-index",
           "usage": "mex wiki rebuild-index --json",
           "output": "json"
-        },
-        {
-          "id": "inbox.proposal.mark_stale.apply",
-          "path": "mex inbox proposal mark-stale",
-          "usage": "mex inbox proposal mark-stale --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-preview-envelope-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.publish.apply",
-          "path": "mex inbox publish",
-          "usage": "mex inbox publish --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-preview-envelope-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.approve.apply",
-          "path": "mex inbox proposal approve",
-          "usage": "mex inbox proposal approve --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-preview-envelope-v1.json",
-          "contractResolver": "inbox.contract"
-        },
-        {
-          "id": "inbox.proposal.repair.apply",
-          "path": "mex inbox proposal repair",
-          "usage": "mex inbox proposal repair --apply <preview-envelope> --json",
-          "output": "json",
-          "inputContract": "https://mex.dev/contracts/team-inbox-preview-envelope-v1.json",
-          "contractResolver": "inbox.contract"
         },
         {
           "id": "wiki.apply.apply",
@@ -2089,38 +1829,6 @@
           "meaning": "A containment, authorization, or origin safety policy refused the action."
         }
       ]
-    },
-    "inboxCliContract": {
-      "schemaVersion": 1,
-      "resolver": {
-        "descriptorId": "inbox.contract",
-        "command": "mex inbox contract --json",
-        "contractId": "team.inbox.contract-catalog.v1",
-        "maxBytes": 65536,
-        "requirement": "The $ref roots below are unusable until this exact resolver catalog is loaded."
-      },
-      "requestFile": {
-        "contractId": "team.inbox.request.v1",
-        "mediaType": "application/json",
-        "encoding": "utf-8",
-        "maxBytes": 65536,
-        "maxDepth": 32,
-        "maxNodes": 4096,
-        "maxPortableSpecRequestBytes": 32768,
-        "schema": {
-          "$ref": "https://mex.dev/contracts/team-inbox-request-v1.json"
-        }
-      },
-      "applyFile": {
-        "contractId": "team.inbox.preview-envelope.v1",
-        "mediaType": "application/json",
-        "encoding": "utf-8",
-        "maxBytes": 65536,
-        "maxAgeSeconds": 1800,
-        "schema": {
-          "$ref": "https://mex.dev/contracts/team-inbox-preview-envelope-v1.json"
-        }
-      }
     },
     "nextInitializationAction": null
   },

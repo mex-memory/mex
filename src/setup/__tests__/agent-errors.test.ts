@@ -89,8 +89,8 @@ describe("setup agent integration error classification", () => {
     const root = fixture();
     const source = join(root, "packaged-skills");
     if (kind === "invalid") {
-      mkdirSync(join(source, "mex-inbox"), { recursive: true });
-      writeFileSync(join(source, "mex-inbox", "README.md"), "No SKILL.md\n");
+      mkdirSync(join(source, "mex-statechart"), { recursive: true });
+      writeFileSync(join(source, "mex-statechart", "README.md"), "No SKILL.md\n");
     }
     const original = captureInstallerError(() => planAgentAssets({
       projectRoot: root, packagedSkillsRoot: source, packageVersion: "1.0.0",
@@ -108,7 +108,7 @@ describe("setup agent integration error classification", () => {
   it("classifies a real change between installation preview and apply", () => {
     const root = fixture();
     const source = join(root, "packaged-skills");
-    for (const skill of ["mex-inbox", "mex-relay", "mex-statechart"]) {
+    for (const skill of ["mex-statechart"]) {
       mkdirSync(join(source, skill), { recursive: true });
       writeFileSync(join(source, skill, "SKILL.md"), "Packaged skill\n");
     }
@@ -116,8 +116,8 @@ describe("setup agent integration error classification", () => {
       projectRoot: root, packagedSkillsRoot: source, packageVersion: "1.0.0",
       clients: ["claude"], checkIgnored: false,
     });
-    mkdirSync(join(root, ".claude/skills/mex-inbox"), { recursive: true });
-    writeFileSync(join(root, ".claude/skills/mex-inbox/SKILL.md"), "Concurrent authored skill\n");
+    mkdirSync(join(root, ".claude/skills/mex-statechart"), { recursive: true });
+    writeFileSync(join(root, ".claude/skills/mex-statechart/SKILL.md"), "Concurrent authored skill\n");
     const original = captureInstallerError(() => applyAgentAssetsPlan(plan));
 
     const classified = classifySetupAgentAssetsError(original);

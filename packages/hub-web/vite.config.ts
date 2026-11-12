@@ -88,6 +88,8 @@ export default defineConfig(({ command }) => ({
     },
   },
   test: {
+    globalSetup: [resolve(packageRoot, "../../test/harness/temp-root.ts")],
+    maxWorkers: 4,
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: true,

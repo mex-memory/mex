@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "ok": true,
   "data": {
-    "mexVersion": "0.8.5",
+    "mexVersion": "0.9.0-beta.0",
     "repository": {
       "initializationState": "not_git_repository",
       "graphIndexState": "unavailable",
@@ -28,34 +28,7 @@
         }
       },
       {
-        "id": "team_workstreams",
-        "installed": true,
-        "availability": "unavailable",
-        "unavailableReason": {
-          "code": "NOT_GIT_REPOSITORY",
-          "detail": "Repository initialization is required before this capability can be used."
-        }
-      },
-      {
-        "id": "team_inbox",
-        "installed": true,
-        "availability": "unavailable",
-        "unavailableReason": {
-          "code": "NOT_GIT_REPOSITORY",
-          "detail": "Repository initialization is required before this capability can be used."
-        }
-      },
-      {
         "id": "team_relay",
-        "installed": true,
-        "availability": "unavailable",
-        "unavailableReason": {
-          "code": "NOT_GIT_REPOSITORY",
-          "detail": "Repository initialization is required before this capability can be used."
-        }
-      },
-      {
-        "id": "spec_authoring",
         "installed": true,
         "availability": "unavailable",
         "unavailableReason": {
@@ -74,15 +47,6 @@
       },
       {
         "id": "activity_record",
-        "installed": true,
-        "availability": "unavailable",
-        "unavailableReason": {
-          "code": "NOT_GIT_REPOSITORY",
-          "detail": "Repository initialization is required before this capability can be used."
-        }
-      },
-      {
-        "id": "spec_read",
         "installed": true,
         "availability": "unavailable",
         "unavailableReason": {
@@ -116,13 +80,6 @@
           "path": "mex capabilities",
           "usage": "mex capabilities --json",
           "output": "json"
-        },
-        {
-          "id": "inbox.contract",
-          "path": "mex inbox contract",
-          "usage": "mex inbox contract --json",
-          "output": "json",
-          "contractResolver": "inbox.contract"
         },
         {
           "id": "relay.contract",
@@ -1651,38 +1608,6 @@
           "meaning": "A containment, authorization, or origin safety policy refused the action."
         }
       ]
-    },
-    "inboxCliContract": {
-      "schemaVersion": 1,
-      "resolver": {
-        "descriptorId": "inbox.contract",
-        "command": "mex inbox contract --json",
-        "contractId": "team.inbox.contract-catalog.v1",
-        "maxBytes": 65536,
-        "requirement": "The $ref roots below are unusable until this exact resolver catalog is loaded."
-      },
-      "requestFile": {
-        "contractId": "team.inbox.request.v1",
-        "mediaType": "application/json",
-        "encoding": "utf-8",
-        "maxBytes": 65536,
-        "maxDepth": 32,
-        "maxNodes": 4096,
-        "maxPortableSpecRequestBytes": 32768,
-        "schema": {
-          "$ref": "https://mex.dev/contracts/team-inbox-request-v1.json"
-        }
-      },
-      "applyFile": {
-        "contractId": "team.inbox.preview-envelope.v1",
-        "mediaType": "application/json",
-        "encoding": "utf-8",
-        "maxBytes": 65536,
-        "maxAgeSeconds": 1800,
-        "schema": {
-          "$ref": "https://mex.dev/contracts/team-inbox-preview-envelope-v1.json"
-        }
-      }
     },
     "nextInitializationAction": {
       "command": "git init",

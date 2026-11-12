@@ -242,7 +242,16 @@ describe("concurrency", () => {
       writeFileSync(path, `${readFileSync(path, "utf-8")}\nAn appended sentence.\n`, "utf-8");
 
       const refreshed = refreshWikiIndex({ scaffoldRoot: root, changed: ["context/area-0000.md"] });
-      expect(refreshed.ok).toBe(true);
+      if (!refreshed.ok) {
+        // Windows cannot replace an index while this reader holds it open.
+        expect(process.platform).toBe("win32");
+        expect(refreshed.diagnostic).toMatchObject({
+          code: "WIKI_INDEX_REBUILD_REQUIRED",
+          message: expect.stringMatching(/open in another process/),
+        });
+      } else {
+        expect(refreshed.ok).toBe(true);
+      }
 
       // The reader was open across the write and still answers rather than
       // throwing SQLITE_BUSY — which is what the busy timeout buys.
@@ -250,6 +259,7 @@ describe("concurrency", () => {
     } finally {
       reader.value.close();
     }
+    expect(refreshWikiIndex({ scaffoldRoot: root, changed: ["context/area-0000.md"] }).ok).toBe(true);
   });
 
   it("keeps two independent scaffolds independent", () => {

@@ -414,7 +414,8 @@ describe("agent graph freshness-bound readers", () => {
     }
   });
 
-  it("rejects atomic database replacement between identity capture and immutable open", async () => {
+  // Windows denies rename of an open file; the bound-file Windows test covers that protection.
+  it.skipIf(process.platform === "win32")("rejects atomic database replacement between identity capture and immutable open", async () => {
     const built = await fixture("mex-cli-db-replace-");
     const replacementPath = join(built.root, ".mex", "replacement.db");
     copyFileSync(built.dbPath, replacementPath);
@@ -437,7 +438,8 @@ describe("agent graph freshness-bound readers", () => {
     expect(readFileSync(built.dbPath)).toEqual(replacementBytes);
   });
 
-  it("binds SQLite to the inspected database across a path A-to-B-to-A swap", async () => {
+  // Windows denies rename of an open file; the bound-file Windows test covers that protection.
+  it.skipIf(process.platform === "win32")("binds SQLite to the inspected database across a path A-to-B-to-A swap", async () => {
     const built = await fixture("mex-cli-db-aba-");
     const originalPath = join(built.root, ".mex", "original.db");
     const forgedPath = join(built.root, ".mex", "forged.db");
@@ -466,6 +468,27 @@ describe("agent graph freshness-bound readers", () => {
     });
     try {
       expect(session.graph.getNode(built.nodeId)?.name).toBe("stableFact");
+    } finally {
+      session.close();
+    }
+  });
+
+  it.runIf(process.platform === "win32")("prevents replacement of the bound database on Windows", async () => {
+    const built = await fixture("mex-cli-db-windows-lock-");
+    const replacement = join(built.root, ".mex", "replacement.db");
+    copyFileSync(built.dbPath, replacement);
+    let attempted = false;
+    const session = await openImmutableGraphReadSession(built.root, built.dbPath, {
+      afterDatabaseIdentityRead() {
+        attempted = true;
+        expect(() => renameSync(replacement, built.dbPath))
+          .toThrowError(expect.objectContaining({ code: "EPERM" }));
+      },
+    });
+    try {
+      expect(attempted).toBe(true);
+      expect(session.graph.getNode(built.nodeId)?.name).toBe("stableFact");
+      expect(session.validate()).toMatchObject({ valid: true });
     } finally {
       session.close();
     }

@@ -12,14 +12,10 @@ export const RELEASE_ROUTE_MANIFEST_HINTS = Object.freeze({
   knowledgeDetail: Object.freeze(["KnowledgePage"]),
   code: Object.freeze(["SearchPage"]),
   codeSymbol: Object.freeze(["SymbolPage"]),
-  workstreams: Object.freeze(["WorkstreamsPage"]),
   diagrams: Object.freeze(["DiagramsPage", "hub-contracts/dist/statechart"]),
   diagramDetail: Object.freeze(["DiagramsPage", "StatechartCanvas", "stateDiagram-v2-", "hub-contracts/dist/statechart"]),
-  specs: Object.freeze(["SpecsPage"]),
-  specsDetail: Object.freeze(["SpecsPage"]),
   playbooks: Object.freeze(["CapabilityPage"]),
   catchUp: Object.freeze(["CapabilityPage"]),
-  inbox: Object.freeze(["InboxPage"]),
   relays: Object.freeze(["RelayPage"]),
   members: Object.freeze(["MembersPage"]),
   activity: Object.freeze(["ActivityPage"]),
@@ -42,14 +38,10 @@ export const RELEASE_ROUTE_PATTERNS = Object.freeze({
   knowledgeDetail: "knowledge/:id",
   code: "code",
   codeSymbol: "code/symbols/:id",
-  workstreams: "workstreams",
   diagrams: "diagrams",
   diagramDetail: "diagrams/:kind/:id",
-  specs: "specs",
-  specsDetail: "specs/:id",
   playbooks: "playbooks",
   catchUp: "catch-up",
-  inbox: "inbox",
   relays: "relays",
   members: "members",
   activity: "activity",
@@ -59,9 +51,8 @@ export const RELEASE_ROUTE_PATTERNS = Object.freeze({
   notFound: "*",
 });
 
-export function releaseWorkbenchPaths({ knowledgeEntityId, specEntityId, codeSymbolId }) {
+export function releaseWorkbenchPaths({ knowledgeEntityId, codeSymbolId }) {
   const knowledgeId = boundedIdentifier(knowledgeEntityId, "Knowledge entity");
-  const specId = boundedIdentifier(specEntityId, "Spec entity");
   const symbolId = boundedIdentifier(codeSymbolId, "Code symbol");
   return {
     home: "/",
@@ -70,14 +61,10 @@ export function releaseWorkbenchPaths({ knowledgeEntityId, specEntityId, codeSym
     knowledgeDetail: `/knowledge/${encodeURIComponent(knowledgeId)}`,
     code: "/code?q=releaseBenchmarkNeedle",
     codeSymbol: `/code/symbols/${encodeURIComponent(symbolId)}`,
-    workstreams: "/workstreams",
     diagrams: "/diagrams",
     diagramDetail: `/diagrams/saved/${"d".repeat(32)}`,
-    specs: "/specs",
-    specsDetail: `/specs/${encodeURIComponent(specId)}`,
     playbooks: "/playbooks",
     catchUp: "/catch-up",
-    inbox: "/inbox",
     relays: "/relays",
     members: "/members",
     activity: "/activity",

@@ -49,11 +49,10 @@ describe("HubSidebar dynamic state", () => {
     const { capabilities, home } = await fixtureData();
     renderSidebar({ capabilities, home: homeWithCounts(home, count) });
 
-    expect(screen.getByRole("link", { name: /^Inbox/u })).toBeVisible();
+    expect(screen.queryByRole("link", { name: /^Inbox/u })).not.toBeInTheDocument();
     const relays = screen.getByRole("link", { name: /^Relays/u });
     const system = screen.getByRole("button", { name: /^System/u });
     const cases = [
-      [screen.getByRole("link", { name: /^Inbox/u }), `${count} proposals for team review.`],
       [relays, `${count} open Relays for you.`],
       [system, `${count} active system operations.`],
     ] as const;
@@ -72,7 +71,7 @@ describe("HubSidebar dynamic state", () => {
     const { capabilities, home } = await fixtureData();
     const first = renderSidebar({ capabilities });
 
-    expect(screen.getByRole("link", { name: /^Inbox/u })).toBeVisible();
+    expect(screen.queryByRole("link", { name: /^Inbox/u })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Relays" })).toBeVisible();
     expect(screen.getByRole("button", { name: "System" })).toBeVisible();
     expect(screen.getByText("Set team identity")).toBeVisible();
@@ -89,7 +88,7 @@ describe("HubSidebar dynamic state", () => {
       },
     });
 
-    expect(screen.getByRole("link", { name: /^Inbox/u })).toBeVisible();
+    expect(screen.queryByRole("link", { name: /^Inbox/u })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Relays" })).toBeVisible();
     expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
   });

@@ -230,7 +230,11 @@ describe("read-only repository GitPort", () => {
   it("separates staged and unstaged diffs, treats pathspec-looking names literally, and bounds output", async () => {
     const repository = createRepository();
     write(repository, "tracked.txt", "base\n");
-    write(repository, ":(glob).txt", "literal\n");
+    write(repository, "[glob].txt", "literal\n");
+    write(repository, "g.txt", "glob match\n");
+    // Windows filenames cannot contain ":", so the pathspec-magic name is POSIX-only.
+    const magicName = process.platform === "win32" ? null : ":(glob).txt";
+    if (magicName) write(repository, magicName, "magic literal\n");
     write(repository, "other.txt", "other\n");
     git(repository, ["add", "--", "."]);
     commit(repository, "initial");
@@ -239,7 +243,9 @@ describe("read-only repository GitPort", () => {
     write(repository, "tracked.txt", "base\nstaged\n");
     git(repository, ["add", "--", "tracked.txt"]);
     appendFileSync(join(repository, "tracked.txt"), "unstaged\n");
-    appendFileSync(join(repository, ":(glob).txt"), "literal change\n");
+    appendFileSync(join(repository, "[glob].txt"), "literal change\n");
+    appendFileSync(join(repository, "g.txt"), "must not match glob\n");
+    if (magicName) appendFileSync(join(repository, magicName), "magic literal change\n");
     appendFileSync(join(repository, "other.txt"), "must not match\n");
     const port = createRepositoryGitPort(repository);
 
@@ -252,12 +258,25 @@ describe("read-only repository GitPort", () => {
 
     const unstaged = await port.getDiff({
       target: { kind: "working-tree", includeStaged: false, includeUnstaged: true },
-      paths: [":(glob).txt"],
+      paths: ["[glob].txt"],
       maxBytes: 64 * 1024,
     });
-    expect(unstaged.diff).toContain(":(glob).txt");
+    expect(unstaged.diff).toContain("[glob].txt");
     expect(unstaged.diff).toContain("+literal change");
     expect(unstaged.diff).not.toContain("other.txt");
+    expect(unstaged.diff).not.toContain("diff --git a/g.txt");
+
+    if (magicName) {
+      const magic = await port.getDiff({
+        target: { kind: "working-tree", includeStaged: false, includeUnstaged: true },
+        paths: [magicName],
+        maxBytes: 64 * 1024,
+      });
+      expect(magic.diff).toContain(magicName);
+      expect(magic.diff).toContain("+magic literal change");
+      expect(magic.diff).not.toContain("+literal change\n");
+      expect(magic.diff).not.toContain("other.txt");
+    }
 
     const combined = await port.getDiff({
       target: { kind: "working-tree", includeStaged: true, includeUnstaged: true },
@@ -380,13 +399,15 @@ describe("read-only repository GitPort", () => {
     commit(repository, "base");
     const base = git(repository, ["rev-parse", "HEAD"]);
     const controlPath = "line\nbreak.txt";
-    write(repository, controlPath, "control\n");
+    // Git trees can contain control-bearing names even when the host filesystem cannot.
+    git(repository, ["config", "core.protectNTFS", "false"]);
+    const controlBlob = git(repository, ["hash-object", "-w", "--stdin"], "control\n");
+    git(repository, ["update-index", "--add", "--cacheinfo", `100644,${controlBlob},${controlPath}`]);
     const port = createRepositoryGitPort(repository);
 
     await expect(port.getWorkingTree()).rejects.toMatchObject({
       problem: { code: "INTERNAL_ERROR" },
     });
-    git(repository, ["add", "--", controlPath]);
     commit(repository, "control path");
     await expect(port.getChangedFiles({ base, head: "HEAD" })).rejects.toMatchObject({
       problem: { code: "INTERNAL_ERROR" },
@@ -531,7 +552,7 @@ describe("read-only repository GitPort", () => {
     );
     writeFileSync(
       globalConfig,
-      `[user]\n\tname = Global Person\n\temail = global@example.test\n[includeIf "onbranch:feature/**"]\n\tpath = ${conditionalConfig}\n`,
+      `[user]\n\tname = Global Person\n\temail = global@example.test\n[includeIf "onbranch:feature/**"]\n\tpath = ${conditionalConfig.replaceAll("\\", "/")}\n`,
       "utf8",
     );
     const previousGlobalConfig = process.env.GIT_CONFIG_GLOBAL;

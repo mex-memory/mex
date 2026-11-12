@@ -13,6 +13,8 @@ export default defineConfig({
     },
   },
   test: {
+    globalSetup: ["./test/harness/temp-root.ts"],
+    setupFiles: ["./test/harness/runner-yield.ts"],
     // `.demo/` is a reference clone of the grad-capital demo (code-graph port
     // source, spec §0). It is gitignored and its own tests depend on packages we
     // don't install (`mex-engine-cg`), so exclude it from our suite — we port

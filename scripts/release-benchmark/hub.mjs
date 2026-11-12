@@ -142,22 +142,6 @@ export async function measureCommonReads(server, auth, samples, teamFixture) {
   await hubJson(server, paths.code, auth);
   await hubJson(server, paths.knowledge, auth);
   await hubJson(server, paths.activity, auth);
-  const warmInboxDrafts = await hubJson(server, "/api/v1/inbox/drafts?limit=25", auth);
-  const warmInboxProposals = await hubJson(
-    server,
-    "/api/v1/inbox/proposals?state=pending,stale&limit=25",
-    auth,
-  );
-  assertInboxFixturePage(warmInboxDrafts, {
-    kind: "draft",
-    id: teamFixture.inboxDraftId,
-    title: teamFixture.inboxDraftTitle,
-  });
-  assertInboxFixturePage(warmInboxProposals, {
-    kind: "proposal",
-    id: teamFixture.inboxProposalId,
-    title: teamFixture.inboxProposalTitle,
-  });
   const warmRelayDrafts = await hubJson(server, "/api/v1/relays/drafts?limit=25", auth);
   const warmRelays = await hubJson(
     server,
@@ -192,38 +176,9 @@ export function releaseCommonReadPaths(codeSymbolId) {
     code: `/api/v1/code/symbols/${encodeURIComponent(codeSymbolId)}?view=overview`,
     knowledge: "/api/v1/wiki/graph",
     activity: "/api/v1/activity?limit=25",
-    inboxDrafts: "/api/v1/inbox/drafts?limit=25",
-    inboxProposals: "/api/v1/inbox/proposals?state=pending,stale&limit=25",
     relayDrafts: "/api/v1/relays/drafts?limit=25",
     relays: "/api/v1/relays?perspective=mine&state=published,acknowledged&limit=25",
   };
-}
-
-export function assertInboxFixturePage(page, expected) {
-  if (
-    !page
-    || !Array.isArray(page.items)
-    || page.items.length !== 1
-    || page.nextCursor !== null
-    || page.truncated !== false
-    || page.sourceTruncated !== false
-    || !REVISION_PATTERN.test(page.deterministicRevision)
-    || !Array.isArray(page.diagnostics)
-    || page.diagnostics.length !== 0
-    || page.diagnosticsTruncated !== false
-  ) {
-    throw new Error(
-      `The benchmark Inbox ${expected.kind} list did not return its exact complete diagnostic-free one-item page.`,
-    );
-  }
-  const item = page.items[0];
-  const id = expected.kind === "proposal" ? item?.ref?.id : item?.id;
-  if (id !== expected.id || item?.title !== expected.title) {
-    throw new Error(`The benchmark Inbox ${expected.kind} list returned unexpected fixture content.`);
-  }
-  if (expected.kind === "proposal" && item?.state !== "pending") {
-    throw new Error("The benchmark Inbox proposal is not pending.");
-  }
 }
 
 export function assertRelayFixturePage(page, expected) {

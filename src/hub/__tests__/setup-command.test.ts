@@ -54,7 +54,6 @@ vi.mock("../../wiki/application-adapter.js", () => ({ createRepositoryWikiPort: 
 vi.mock("../../team/workflow/repository-team-workflow-port.js", () => ({
   createRepositoryTeamWorkflowPort: mocks.createTeam,
 }));
-vi.mock("../../team/specs/index.js", () => ({ createSpecReadService: () => ({}) }));
 
 import { launchHub, runSetupHubCommand } from "../command.js";
 
