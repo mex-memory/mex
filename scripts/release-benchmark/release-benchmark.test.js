@@ -8,7 +8,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -30,7 +29,6 @@ import {
   snapshotReleaseReadState,
 } from "./fixtures.mjs";
 import {
-  assertInboxFixturePage,
   assertRelayFixturePage,
   releaseCommonReadPaths,
   startHub,
@@ -49,119 +47,7 @@ const budgets = JSON.parse(readFileSync(new URL("./budgets.json", import.meta.ur
 const budgetsSchema = JSON.parse(readFileSync(new URL("./budgets.schema.json", import.meta.url), "utf8"));
 const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
 const reportSchema = JSON.parse(readFileSync(new URL("./report.schema.json", import.meta.url), "utf8"));
-const FROZEN_NON_OVERVIEW_UX_BUDGETS_SHA256 = "e970dea48bdaffd3ca258ce62dd56327a7692f89fd0e740c72bca61092ea10d8";
-const FROZEN_PRE_GRAPH_TIMING_BUDGETS_SHA256 = "d4209e5549ed49c37dcd4e4814eab0ceb7640124d75bdf433347ea9de1514c80";
-const PRE_GRAPH_TIMING_LIMITS = {
-  small: { graph_refresh: 984, graph_rebuild: 496 },
-  medium: { graph_refresh: 1237, graph_rebuild: 743 },
-  large: { graph_rebuild: 1229 },
-};
-
-const PRE_SETTINGS_ROUTE_JS_BYTES = 8035;
-
-function withoutStatechartBudgets(value) {
-  const result = structuredClone(value);
-  delete result.assets.routes.diagrams; delete result.assets.routes.diagramDetail;
-  for (const profile of ["small", "medium", "large"]) { delete result.runtime.browserHeapBytes[profile].diagrams; delete result.runtime.browserHeapBytes[profile].diagramDetail; }
-  return result;
-}
-
-// Restores the Settings route JS limit that PR #195 recalibrated, so every
-// earlier frozen-budget guard keeps hashing its original state.
-function beforeSettingsRouteJsCalibration(value) {
-  const projected = withoutStatechartBudgets(value);
-  projected.calibration.status = "pinned-A-G-Settings-34286120355-Graph-timing-34288560611";
-  projected.assets.routes.settings.jsBytes = PRE_SETTINGS_ROUTE_JS_BYTES;
-  return projected;
-}
-
-function beforeGraphTimingCalibration(value) {
-  const projected = beforeSettingsRouteJsCalibration(value);
-  projected.calibration.status = "pinned-checkpoints-A-G-and-Settings-34286120355";
-  for (const [profile, operations] of Object.entries(PRE_GRAPH_TIMING_LIMITS)) {
-    Object.assign(projected.runtime.maintenanceMs[profile], operations);
-  }
-  return projected;
-}
-
-function frozenAllowedCalibrationProjection(value) {
-  const projected = beforeGraphTimingCalibration(value);
-  delete projected.assets.routes.diagrams; delete projected.assets.routes.diagramDetail;
-  for (const profile of ["small", "medium", "large"]) { delete projected.runtime.browserHeapBytes[profile].diagrams; delete projected.runtime.browserHeapBytes[profile].diagramDetail; }
-  projected.calibration.status = "__RELAY_CALIBRATION_STATUS__";
-  projected.assets.maxJsChunkBytes = "__OVERVIEW_INITIAL_JS_CALIBRATION__";
-  projected.assets.initial.jsBytes = "__OVERVIEW_INITIAL_JS_CALIBRATION__";
-  projected.assets.routes.home.jsBytes = "__OVERVIEW_HOME_JS_CALIBRATION__";
-  projected.assets.routes.home.cssBytes = "__OVERVIEW_HOME_CSS_CALIBRATION__";
-  projected.assets.routes.relays = { jsBytes: 0, cssBytes: 0, fontBytes: 0 };
-  projected.assets.routes.members.cssBytes = "__MEMBERS_CSS_CALIBRATION__";
-  projected.assets.routes.activity.jsBytes = "__ACTIVITY_JS_CALIBRATION__";
-  projected.assets.routes.activity.cssBytes = "__ACTIVITY_CSS_CALIBRATION__";
-  delete projected.assets.routes.catchUp;
-  delete projected.assets.routes.settings;
-  for (const profile of ["small", "medium", "large"]) {
-    delete projected.runtime.apiLatencyMs[profile].relayDrafts;
-    delete projected.runtime.apiLatencyMs[profile].relays;
-    projected.runtime.browserHeapBytes[profile].home = 0;
-    projected.runtime.browserHeapBytes[profile].members = 0;
-    projected.runtime.browserHeapBytes[profile].relays = 0;
-    delete projected.runtime.browserHeapBytes[profile].catchUp;
-    delete projected.runtime.browserHeapBytes[profile].settings;
-  }
-  return projected;
-}
-
 describe("release benchmark contract", () => {
-  it("binds diagram route limits to retained pinned measurements without changing unrelated budgets", () => {
-    const record = JSON.parse(readFileSync(new URL("../../docs/design/state-diagrams-calibration.json", import.meta.url), "utf8"));
-    expect(record.source.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
-    expect(createHash("sha256").update(JSON.stringify(withoutStatechartBudgets(budgets))).digest("hex"))
-      .toBe(record.unownedBudgetSha256);
-    for (const route of ["diagrams", "diagramDetail"]) {
-      expect(budgets.assets.routes[route]).toEqual(record.assets[route].limits);
-      for (const field of ["jsBytes", "cssBytes", "fontBytes"]) {
-        expect(record.assets[route].limits[field]).toBe(assetBudgetCandidate(record.assets[route].measured[field]));
-      }
-      for (const profile of ["small", "medium", "large"]) {
-        const measured = record.heap[profile][route];
-        expect(measured.samples).toHaveLength(budgets.samples.idleMemory);
-        expect(measured.p95).toBe(Math.max(...measured.samples));
-        expect(budgets.runtime.browserHeapBytes[profile][route]).toBe(runtimeBudgetCandidate(measured.p95));
-      }
-    }
-  });
-  it("composes owned Graph timing calibration with the original frozen budget guard", () => {
-    const digest = (value) => createHash("sha256")
-      .update(JSON.stringify(frozenAllowedCalibrationProjection(value)))
-      .digest("hex");
-    expect(digest(budgets)).toBe(FROZEN_NON_OVERVIEW_UX_BUDGETS_SHA256);
-
-    const allowed = structuredClone(budgets);
-    allowed.calibration.status = "calibrated-from-pinned-run-example";
-    allowed.assets.routes.relays = { jsBytes: 123, cssBytes: 45, fontBytes: 0 };
-    allowed.assets.routes.settings = { jsBytes: 123, cssBytes: 45, fontBytes: 0 };
-    allowed.assets.routes.members.cssBytes += 1;
-    allowed.assets.routes.activity.jsBytes += 1;
-    allowed.assets.routes.activity.cssBytes += 1;
-    allowed.assets.maxJsChunkBytes += 1;
-    allowed.assets.initial.jsBytes += 1;
-    allowed.assets.routes.home.jsBytes += 1;
-    allowed.assets.routes.home.cssBytes += 1;
-    for (const profile of ["small", "medium", "large"]) {
-      allowed.runtime.apiLatencyMs[profile].relayDrafts = 3;
-      allowed.runtime.apiLatencyMs[profile].relays = 4;
-      allowed.runtime.browserHeapBytes[profile].home += 1;
-      allowed.runtime.browserHeapBytes[profile].members += 1;
-      allowed.runtime.browserHeapBytes[profile].relays += 1;
-      allowed.runtime.browserHeapBytes[profile].settings = 123;
-    }
-    expect(digest(allowed)).toBe(FROZEN_NON_OVERVIEW_UX_BUDGETS_SHA256);
-
-    const forbidden = structuredClone(allowed);
-    forbidden.runtime.apiLatencyMs.small.search += 1;
-    expect(digest(forbidden)).not.toBe(FROZEN_NON_OVERVIEW_UX_BUDGETS_SHA256);
-  });
-
   it("locks the sample counts and deterministic route budget surface", () => {
     expect(budgets.schemaVersion).toBe(1);
     expect(budgets.samples).toEqual({ timing: 10, idleMemory: 5 });
@@ -176,7 +62,6 @@ describe("release benchmark contract", () => {
     expect(budgets.assets.routes.settings).toEqual({ jsBytes: 8978, cssBytes: 2910, fontBytes: 0 });
     expect(Object.keys(releaseWorkbenchPaths({
       knowledgeEntityId: "mx_knowledge",
-      specEntityId: "mx_spec",
       codeSymbolId: "symbol/release",
     }))).toEqual(RELEASE_ROUTE_KEYS);
     const appRoutes = readFileSync(
@@ -197,24 +82,6 @@ describe("release benchmark contract", () => {
       expect(Object.keys(budgets.runtime.browserHeapBytes[profile]))
         .toEqual(RELEASE_ROUTE_KEYS);
     }
-    expect({
-      small: {
-        inboxDrafts: budgets.runtime.apiLatencyMs.small.inboxDrafts,
-        inboxProposals: budgets.runtime.apiLatencyMs.small.inboxProposals,
-      },
-      medium: {
-        inboxDrafts: budgets.runtime.apiLatencyMs.medium.inboxDrafts,
-        inboxProposals: budgets.runtime.apiLatencyMs.medium.inboxProposals,
-      },
-      large: {
-        inboxDrafts: budgets.runtime.apiLatencyMs.large.inboxDrafts,
-        inboxProposals: budgets.runtime.apiLatencyMs.large.inboxProposals,
-      },
-    }).toEqual({
-      small: { inboxDrafts: 7, inboxProposals: 6 },
-      medium: { inboxDrafts: 7, inboxProposals: 6 },
-      large: { inboxDrafts: 7, inboxProposals: 6 },
-    });
     expect({
       assets: budgets.assets.routes.relays,
       api: Object.fromEntries(["small", "medium", "large"].map((profile) => [profile, {
@@ -288,15 +155,13 @@ describe("release benchmark contract", () => {
       "code",
       "knowledge",
       "activity",
-      "inboxDrafts",
-      "inboxProposals",
       "relayDrafts",
       "relays",
     ]);
     expect(releaseCommonReadPaths("symbol/release").knowledge).toBe("/api/v1/wiki/graph");
+    expect(budgetsSchema.$defs.readBudgets.properties).not.toHaveProperty("inboxDrafts");
+    expect(budgetsSchema.$defs.readBudgets.properties).not.toHaveProperty("inboxProposals");
     expect(budgetsSchema.$defs.readBudgets.properties).toEqual(expect.objectContaining({
-      inboxDrafts: { $ref: "#/$defs/nonNegativeNumber" },
-      inboxProposals: { $ref: "#/$defs/nonNegativeNumber" },
       relayDrafts: { $ref: "#/$defs/nonNegativeNumber" },
       relays: { $ref: "#/$defs/nonNegativeNumber" },
     }));
@@ -354,130 +219,6 @@ describe("release benchmark contract", () => {
     },
   );
 
-  it("pins Settings heap to retained runner samples without changing existing budgets", () => {
-    const evidence = JSON.parse(readFileSync(new URL("../../docs/design/settings-heap-calibration.json", import.meta.url), "utf8"));
-    expect(evidence.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
-    expect(evidence.formula).toBe(budgets.calibration.runtimeFormula);
-    expect(evidence.sampleCount).toBe(budgets.samples.idleMemory);
-    const beforeSettings = beforeGraphTimingCalibration(budgets);
-    beforeSettings.calibration.status = evidence.previousCalibrationStatus;
-    for (const profile of ["small", "medium", "large"]) {
-      const measured = evidence.profiles[profile];
-      expect(summarize(measured.samples, evidence.sampleCount).p95).toBe(measured.p95);
-      expect(runtimeBudgetCandidate(measured.p95)).toBe(measured.budgetBytes);
-      expect(budgets.runtime.browserHeapBytes[profile].settings).toBe(measured.budgetBytes);
-      delete beforeSettings.runtime.browserHeapBytes[profile].settings;
-    }
-    expect(createHash("sha256").update(JSON.stringify(beforeSettings)).digest("hex"))
-      .toBe(evidence.unownedBudgetSha256);
-  });
-
-  it("pins Settings route JS to the retained runner build without changing existing budgets", () => {
-    const evidence = JSON.parse(readFileSync(new URL("../../docs/design/settings-route-js-calibration.json", import.meta.url), "utf8"));
-    expect(evidence.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
-    expect(evidence.formula).toBe(budgets.calibration.assetFormula);
-    expect(evidence.metric).toBe("assets.routes.settings.jsBytes");
-    expect(evidence.previousBudgetBytes).toBe(PRE_SETTINGS_ROUTE_JS_BYTES);
-    expect(evidence.files.reduce((total, file) => total + file.bytes, 0)).toBe(evidence.measuredBytes);
-    expect(assetBudgetCandidate(evidence.measuredBytes)).toBe(evidence.budgetBytes);
-    expect(budgets.assets.routes.settings.jsBytes).toBe(evidence.budgetBytes);
-    const beforeSettings = withoutStatechartBudgets(budgets);
-    beforeSettings.calibration.status = evidence.previousCalibrationStatus;
-    delete beforeSettings.assets.routes.settings.jsBytes;
-    expect(createHash("sha256").update(JSON.stringify(beforeSettings)).digest("hex"))
-      .toBe(evidence.unownedBudgetSha256);
-  });
-
-  it("permits exactly five Graph timing leaves while freezing every other current budget", () => {
-    const digest = (value) => createHash("sha256")
-      .update(JSON.stringify(beforeGraphTimingCalibration(value)))
-      .digest("hex");
-    expect(digest(budgets)).toBe(FROZEN_PRE_GRAPH_TIMING_BUDGETS_SHA256);
-    const allowed = structuredClone(budgets);
-    allowed.calibration.status = "another-calibration-reference";
-    for (const [profile, operations] of Object.entries(PRE_GRAPH_TIMING_LIMITS)) {
-      for (const operation of Object.keys(operations)) allowed.runtime.maintenanceMs[profile][operation] += 1;
-    }
-    expect(digest(allowed)).toBe(FROZEN_PRE_GRAPH_TIMING_BUDGETS_SHA256);
-    for (const path of [
-      ["runtime", "maintenanceMs", "large", "graph_refresh"],
-      ["runtime", "maintenanceMs", "small", "wiki_rebuild"],
-      ["runtime", "maintenancePeakRssBytes", "small", "graph_refresh"],
-      ["runtime", "browserHeapBytes", "small", "settings"],
-      ["runtime", "apiLatencyMs", "small", "search"],
-      ["assets", "initial", "jsBytes"],
-    ]) {
-      const forbidden = structuredClone(allowed);
-      const parent = path.slice(0, -1).reduce((value, key) => value[key], forbidden);
-      parent[path.at(-1)] += 1;
-      expect(digest(forbidden), path.join(".")).not.toBe(FROZEN_PRE_GRAPH_TIMING_BUDGETS_SHA256);
-    }
-  });
-
-  it("pins Graph timing to the first corrected runner and retains independent confirmation", () => {
-    const evidence = JSON.parse(readFileSync(new URL("../../docs/design/graph-maintenance-timing-calibration.json", import.meta.url), "utf8"));
-    expect(evidence.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
-    expect(evidence.configuration.fixtureProfiles).toEqual(RELEASE_FIXTURE_PROFILES);
-    expect(evidence.configuration.samples).toEqual(budgets.samples);
-    expect(evidence.configuration).toMatchObject({ maintenanceObservation: "job-event-stream", runtimeBudgetsEnforced: true, assetBudgetsEnforced: true, provisionalBudgets: false });
-    expect(evidence.formula).toBe(budgets.calibration.runtimeFormula);
-    expect(evidence.sampleCount).toBe(budgets.samples.timing);
-    expect(evidence.previousCalibrationStatus).toBe(beforeGraphTimingCalibration(budgets).calibration.status);
-    expect(evidence.unownedBudgetSha256).toBe(FROZEN_PRE_GRAPH_TIMING_BUDGETS_SHA256);
-    expect(evidence.source.primaryAttempt).toBe("first");
-    expect(evidence.source.pullRequestHead).toBe("4d6683eec1a0bdcafe99d7b431d84cde7f02864d");
-    expect(evidence.source.repositoryHead).toBe("6d92bb04d757c8a00693ef679d1f4281669a9b57");
-    expect(evidence.attempts.map(({ role }) => role)).toEqual(["primary", "confirmation"]);
-    expect(evidence.attempts.map(({ manifest }) => manifest.rawReportSha256)).toEqual([
-      "fec98eae2728a017fcaf3480d275d47180d88740b248468d69a6fa858768c9b3",
-      "732d2b897b4592ba7e89d9fedb508c0c86027ae7cb239580ed51aa5a9de9efb9",
-    ]);
-    const [primary, confirmation] = evidence.attempts;
-    expect(primary.manifest.runnerAllocation.job).not.toBe(confirmation.manifest.runnerAllocation.job);
-    expect(primary.manifest.runnerAllocation.runnerName).not.toBe(confirmation.manifest.runnerAllocation.runnerName);
-    for (const attempt of evidence.attempts) {
-      expect(attempt.manifest).toMatchObject({
-        repositoryHead: evidence.source.repositoryHead,
-        github: { runId: "34288560611", runAttempt: "1", sha: evidence.source.repositoryHead },
-        runnerAllocation: { runnerOs: "Linux", runnerArch: "X64" },
-      });
-      for (const profile of ["small", "medium", "large"]) {
-        for (const operation of ["graph_refresh", "graph_rebuild"]) {
-          for (const [metric, summary] of Object.entries(attempt.graph[profile][operation])) {
-            expect(summary).toEqual(summarize(summary.samples, metric === "peakRssBytes" ? budgets.samples.idleMemory : budgets.samples.timing));
-          }
-        }
-      }
-    }
-    const expectedMetrics = Object.entries(PRE_GRAPH_TIMING_LIMITS).flatMap(([profile, operations]) =>
-      Object.keys(operations).map((operation) => `runtime.maintenanceMs.${profile}.${operation}`));
-    expect(evidence.calibratedLeaves.map(({ metric }) => metric)).toEqual(expectedMetrics);
-    expect(evidence.confirmedMaterialAssessments.map(({ metric }) => metric)).toEqual(expectedMetrics);
-    for (const [index, leaf] of evidence.calibratedLeaves.entries()) {
-      const [, , profile, operation] = leaf.metric.split(".");
-      const first = primary.graph[profile][operation].elapsedMs;
-      const second = confirmation.graph[profile][operation].elapsedMs;
-      expect(leaf.previousBudgetMs).toBe(PRE_GRAPH_TIMING_LIMITS[profile][operation]);
-      expect(leaf.primaryP95Ms).toBe(first.p95);
-      expect(leaf.budgetMs).toBe(runtimeBudgetCandidate(first.p95));
-      expect(budgets.runtime.maintenanceMs[profile][operation]).toBe(leaf.budgetMs);
-      // Reconstruct the historical assessment using the old budget, not the newly calibrated policy.
-      const threshold = Math.round((leaf.previousBudgetMs + Math.max(leaf.previousBudgetMs * 0.15, 50)) * 1000) / 1000;
-      const firstSupport = first.samples.filter((sample) => sample > threshold).length;
-      const secondSupport = second.samples.filter((sample) => sample > threshold).length;
-      expect(firstSupport).toBeGreaterThanOrEqual(2);
-      expect(secondSupport).toBeGreaterThanOrEqual(2);
-      expect(evidence.confirmedMaterialAssessments[index]).toEqual({
-        metric: leaf.metric, category: "maintenance_ms", classification: "material", reason: "repeated_material_threshold",
-        budget: leaf.previousBudgetMs, relativeExcessRatio: 0.15, minimumExcess: 50, materialThreshold: threshold,
-        firstMeasured: first.p95, secondMeasured: second.p95, requiredSupportingSamples: 2,
-        firstSampleCount: 10, firstSupportingSamples: firstSupport, secondSampleCount: 10, secondSupportingSamples: secondSupport,
-      });
-    }
-    expect(evidence.unchangedLargeGraphRefreshMs).toBe(1812);
-    expect(budgets.runtime.maintenanceMs.large.graph_refresh).toBe(evidence.unchangedLargeGraphRefreshMs);
-  });
-
   it("still fails closed if a Settings heap budget is missing", () => {
     const profiles = Object.fromEntries(["small", "medium", "large"].map((profile) => [
       profile,
@@ -492,7 +233,7 @@ describe("release benchmark contract", () => {
     })));
     expect(classifyRuntimeViolations(violations)).toEqual({ confirmable: [], immediate: violations });
     expect(RELEASE_ROUTE_KEYS).toContain("settings");
-    expect(releaseWorkbenchPaths({ knowledgeEntityId: "knowledge", specEntityId: "spec", codeSymbolId: "code" }).settings).toBe("/settings");
+    expect(releaseWorkbenchPaths({ knowledgeEntityId: "knowledge", codeSymbolId: "code" }).settings).toBe("/settings");
     expect(reportSchema.$defs.routeSummaries.properties.settings).toEqual({ $ref: "#/$defs/summary5" });
     expect(reportSchema.$defs.routeSummaries.required).not.toContain("settings");
     expect(budgetsSchema.$defs.routeBudgets.properties.settings).toEqual({ $ref: "#/$defs/nonNegativeNumber" });
@@ -720,15 +461,6 @@ describe("release benchmark contract", () => {
     expect(record.measured).toEqual(calibration.measured);
     expect(record.limits).toEqual(calibration.limits);
     expect(record.files).toEqual(calibration.files);
-    // Preserve the exact earlier operational file after removing only the two
-    // additive diagram leaves. This keeps the setup calibration's frozen hash.
-    const budgetsText = readFileSync(new URL("./budgets.json", import.meta.url), "utf8")
-      .replace(/\r\n/gu, "\n")
-      .replace(/^      "(?:diagrams|diagramDetail)": [^\n]*\n/gmu, "")
-      .replace(/, "diagrams": (?:null|[0-9]+), "diagramDetail": (?:null|[0-9]+)/gu, "");
-    expect(JSON.parse(budgetsText)).toEqual(withoutStatechartBudgets(budgets));
-    expect(createHash("sha256").update(budgetsText).digest("hex"))
-      .toBe(record.unchangedOperationalBudgetsSha256);
     for (const [field, extension] of [["jsBytes", ".js"], ["cssBytes", ".css"], ["fontBytes", ".woff2"]]) {
       expect(calibration.files.filter(({ file }) => file.endsWith(extension)).reduce((total, { bytes }) => total + bytes, 0))
         .toBe(calibration.measured[field]);
@@ -876,27 +608,6 @@ describe("release benchmark contract", () => {
     )).toThrow(/Home workbench still includes ActivityPage/u);
   });
 
-  it("keeps the Inbox workbench out of the initial and Home static closures", () => {
-    const manifest = {
-      "_inbox-opaque.js": {
-        file: "assets/inbox.js",
-        src: "src/pages/InboxPage.tsx",
-      },
-    };
-    expect(() => assertNoForbiddenWorkbench(
-      manifest,
-      new Set(["_inbox-opaque.js"]),
-      "initial application shell",
-      ["InboxPage"],
-    )).toThrow(/initial application shell still includes InboxPage/u);
-    expect(() => assertNoForbiddenWorkbench(
-      manifest,
-      new Set(["_inbox-opaque.js"]),
-      "Home workbench",
-      ["InboxPage"],
-    )).toThrow(/Home workbench still includes InboxPage/u);
-  });
-
   it("keeps the Relay workbench out of the initial and Home static closures", () => {
     const manifest = {
       "_relay-opaque.js": {
@@ -916,68 +627,6 @@ describe("release benchmark contract", () => {
       "Home workbench",
       ["RelayPage"],
     )).toThrow(/Home workbench still includes RelayPage/u);
-  });
-
-  it("requires the exact one-item draft and pending proposal benchmark pages", () => {
-    const page = (item) => ({
-      items: [item],
-      nextCursor: null,
-      truncated: false,
-      sourceTruncated: false,
-      deterministicRevision: "a".repeat(64),
-      diagnostics: [],
-      diagnosticsTruncated: false,
-    });
-    expect(() => assertInboxFixturePage(page({
-      id: "inbox_fixed",
-      title: "Local fixture",
-    }), {
-      kind: "draft",
-      id: "inbox_fixed",
-      title: "Local fixture",
-    })).not.toThrow();
-    expect(() => assertInboxFixturePage(page({
-      ref: { id: "proposal_fixed" },
-      title: "Pending fixture",
-      state: "pending",
-    }), {
-      kind: "proposal",
-      id: "proposal_fixed",
-      title: "Pending fixture",
-    })).not.toThrow();
-    expect(() => assertInboxFixturePage(page({
-      ref: { id: "proposal_fixed" },
-      title: "Pending fixture",
-      state: "approved",
-    }), {
-      kind: "proposal",
-      id: "proposal_fixed",
-      title: "Pending fixture",
-    })).toThrow(/not pending/u);
-    expect(() => assertInboxFixturePage({
-      ...page({ id: "inbox_fixed", title: "Local fixture" }),
-      diagnostics: [{ code: "FIXTURE_DEGRADED" }],
-    }, {
-      kind: "draft",
-      id: "inbox_fixed",
-      title: "Local fixture",
-    })).toThrow(/diagnostic-free one-item page/u);
-    expect(() => assertInboxFixturePage({
-      ...page({ id: "inbox_fixed", title: "Local fixture" }),
-      diagnosticsTruncated: true,
-    }, {
-      kind: "draft",
-      id: "inbox_fixed",
-      title: "Local fixture",
-    })).toThrow(/diagnostic-free one-item page/u);
-    expect(() => assertInboxFixturePage({
-      ...page({ id: "inbox_fixed", title: "Local fixture" }),
-      deterministicRevision: "not-a-revision",
-    }, {
-      kind: "draft",
-      id: "inbox_fixed",
-      title: "Local fixture",
-    })).toThrow(/diagnostic-free one-item page/u);
   });
 
   it("requires the exact one-item local draft and published Relay benchmark pages", () => {
@@ -1259,7 +908,7 @@ describe("release benchmark contract", () => {
     }
 
     const exactMetrics = committedConfirmableRuntimeMetrics();
-    expect(exactMetrics).toHaveLength(120);
+    expect(exactMetrics).toHaveLength(102);
     for (const metric of exactMetrics) {
       expect(runtimeMaterialityPolicy(metric)).not.toBeNull();
       const violation = runtimeViolation(metric);

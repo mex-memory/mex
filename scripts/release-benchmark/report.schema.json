@@ -105,7 +105,7 @@
         "routes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "workstreams", "specs", "specsDetail", "playbooks", "catchUp", "inbox", "relays", "members", "activity", "jobs", "health", "notFound"],
+          "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "playbooks", "catchUp", "relays", "members", "activity", "jobs", "health", "notFound"],
           "properties": {
             "home": { "$ref": "#/$defs/assetGroup" },
             "search": { "$ref": "#/$defs/assetGroup" },
@@ -251,7 +251,7 @@
     "routeSummaries": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "workstreams", "specs", "specsDetail", "playbooks", "catchUp", "inbox", "relays", "members", "activity", "jobs", "health", "notFound"],
+      "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "playbooks", "catchUp", "relays", "members", "activity", "jobs", "health", "notFound"],
       "properties": {
         "home": { "$ref": "#/$defs/summary5" },
         "search": { "$ref": "#/$defs/summary5" },
