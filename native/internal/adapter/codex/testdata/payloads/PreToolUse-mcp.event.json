@@ -1,0 +1,17 @@
+{
+  "agent": "codex",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "01a1823f-9a65-7501-8207-3535ae7f6654",
+  "agent_id": "agent-2",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "other",
+    "raw_name": "mcp__filesystem__read_file",
+    "input": {}
+  },
+  "transcript": "/home/dev/.codex/sessions/rollout.jsonl",
+  "background": false
+}

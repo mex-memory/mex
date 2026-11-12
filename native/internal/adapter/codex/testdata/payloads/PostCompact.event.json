@@ -1,0 +1,12 @@
+{
+  "agent": "codex",
+  "agent_version": "",
+  "kind": "post_compact",
+  "session_id": "01a1823f-9a65-7501-8207-3535ae7f6654",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "transcript": "/home/dev/.codex/sessions/rollout.jsonl",
+  "background": false
+}

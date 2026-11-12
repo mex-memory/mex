@@ -11,7 +11,7 @@
     "name": "write",
     "raw_name": "Write",
     "input": {
-      "path": "C:\\shop\\src\\index.ts",
+      "path": "C:/shop/src/index.ts",
       "content": "export {};\n"
     }
   },

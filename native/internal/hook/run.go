@@ -10,10 +10,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/mex-memory/mex/native/internal/adapter"
 	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/codex"  // registers the profile
 	"github.com/mex-memory/mex/native/internal/contract"
 )
 
@@ -50,6 +52,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 		case "--version":
 			_, _ = io.WriteString(stdout, Version+"\n")
 			return 0
+		case "--status":
+			return status(stdout, homeFrom(getenv), runtime.GOOS)
 		}
 	}
 
@@ -70,24 +74,42 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 	if dir := getenv("MEX_HOOK_RECORD"); dir != "" && ok {
 		record(dir, agent, nativeEvent, payload)
 	}
-	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok))
+	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok, homeFrom(getenv), time.Now()))
 	return 0
 }
 
+// silent is the reply when the hook ran in an agent MEX has no profile for.
+// Empty output with exit 0 means "do nothing" to every agent.
+var silent = []byte{}
+
 // handle turns one payload into the agent's reply. Nothing behind the shim
 // produces replies yet, so the reply is always empty.
-func handle(agent, nativeEvent string, payload []byte, ok bool) []byte {
+func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time.Time) []byte {
+	if !ok {
+		if p, found := adapter.Lookup(agent); found {
+			return p.EmptyReply(nativeEvent)
+		}
+		return emptyReply
+	}
+
+	// A hook registered for one agent may be running inside another.
+	if real := adapter.Detect(payload); real != "" && real != agent {
+		if _, known := adapter.Lookup(real); !known || h.hasOwnHooks(real) {
+			// Its own MEX hooks answer it, or MEX can't speak its format.
+			return silent
+		}
+		agent = real
+	}
+
 	profile, found := adapter.Lookup(agent)
 	if !found {
 		return emptyReply
-	}
-	if !ok {
-		return profile.EmptyReply(nativeEvent)
 	}
 	ev, err := profile.Parse(nativeEvent, payload)
 	if err != nil {
 		return profile.EmptyReply(nativeEvent)
 	}
+	h.beat(agent, ev.SessionID, ev.Cwd, ev.Kind == contract.SessionStart, now)
 	out, _ := profile.Render(ev, contract.Reply{})
 	return out
 }

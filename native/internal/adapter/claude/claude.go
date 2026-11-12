@@ -11,6 +11,7 @@ import (
 
 	"github.com/mex-memory/mex/native/internal/adapter"
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/internal/shellparse"
 )
 
 const Agent = "claude-code"
@@ -99,20 +100,20 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		// Claude Code doesn't say whether a prompt was typed or pasted.
 		ev.Prompt = &contract.PromptIn{Text: p.Prompt, Typed: true}
 	case contract.PreTool:
-		t := parseTool(p.ToolName, p.ToolInput)
+		t := parseTool(p.ToolName, p.ToolInput, p.Cwd)
 		ev.Tool = &t
 	case contract.PostTool:
-		t := parseTool(p.ToolName, p.ToolInput)
+		t := parseTool(p.ToolName, p.ToolInput, p.Cwd)
 		t.Output = &contract.ToolOutput{Text: responseText(p.ToolResponse), OK: true}
 		ev.Tool = &t
 	case contract.PostToolFailure:
-		t := parseTool(p.ToolName, p.ToolInput)
+		t := parseTool(p.ToolName, p.ToolInput, p.Cwd)
 		t.Output = &contract.ToolOutput{Text: p.Error, OK: false, ExitCode: exitCode(p.Error)}
 		ev.Tool = &t
 	case contract.PostToolBatch:
 		ev.Batch = make([]contract.Tool, 0, len(p.ToolCalls))
 		for _, c := range p.ToolCalls {
-			t := parseTool(c.ToolName, c.ToolInput)
+			t := parseTool(c.ToolName, c.ToolInput, p.Cwd)
 			t.Output = &contract.ToolOutput{Text: responseText(c.ToolResponse), OK: true}
 			ev.Batch = append(ev.Batch, t)
 		}
@@ -133,7 +134,7 @@ type claudeInput struct {
 	Path      string  `json:"path"`
 }
 
-func parseTool(name string, rawInput json.RawMessage) contract.Tool {
+func parseTool(name string, rawInput json.RawMessage, cwd string) contract.Tool {
 	t := contract.Tool{Name: contract.ToolOther, RawName: name, RawInput: rawInput}
 	var in claudeInput
 	if len(rawInput) > 0 {
@@ -142,22 +143,22 @@ func parseTool(name string, rawInput json.RawMessage) contract.Tool {
 	switch name {
 	case "Read":
 		t.Name = contract.ToolRead
-		t.Input = contract.ToolInput{Path: in.FilePath, Offset: in.Offset, Limit: in.Limit}
+		t.Input = contract.ToolInput{Path: absPath(cwd, in.FilePath), Offset: in.Offset, Limit: in.Limit}
 	case "Edit":
 		t.Name = contract.ToolEdit
-		t.Input = contract.ToolInput{Path: in.FilePath, Old: in.OldString, New: in.NewString}
+		t.Input = contract.ToolInput{Path: absPath(cwd, in.FilePath), Old: in.OldString, New: in.NewString}
 	case "Write":
 		t.Name = contract.ToolWrite
-		t.Input = contract.ToolInput{Path: in.FilePath, Content: in.Content}
+		t.Input = contract.ToolInput{Path: absPath(cwd, in.FilePath), Content: in.Content}
 	case "Bash", "PowerShell":
 		t.Name = contract.ToolShell
 		t.Input = contract.ToolInput{Command: in.Command}
 	case "Grep":
 		t.Name = contract.ToolSearch
-		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: in.Path}
+		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path)}
 	case "Glob":
 		t.Name = contract.ToolGlob
-		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: in.Path}
+		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path)}
 	}
 	return t
 }
@@ -228,7 +229,7 @@ func (pr Profile) Render(ev contract.Event, r contract.Reply) ([]byte, []string)
 		if support.Context == adapter.ChannelNone {
 			dropped = append(dropped, "context")
 		} else {
-			spec.AdditionalContext = r.Context
+			spec.AdditionalContext = contract.EnsureMarked(r.Context)
 		}
 	}
 
@@ -344,4 +345,12 @@ func replaceOutput(support adapter.KindSupport, tool *contract.Tool, out contrac
 		"stdout": out.Text, "stderr": "", "interrupted": false, "isImage": false,
 	})
 	return b, err == nil
+}
+
+// absPath gives tool paths one form across agents and OSes; "" stays "".
+func absPath(cwd, p string) string {
+	if p == "" {
+		return ""
+	}
+	return shellparse.Resolve(cwd, p)
 }
