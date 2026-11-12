@@ -1,4 +1,4 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { openRecord, type RecordReader, type RecordWriter } from "./index.js";
 import type { LocationOptions } from "./location.js";
 
@@ -208,8 +208,18 @@ export function createCallUsage(agent: string, sent: string) {
   };
 }
 
+const statements = new WeakMap<DatabaseSync, Map<string, StatementSync>>();
+/** Prepared statements are cached per connection: the usage reader runs a few per log line. */
+export function sql(db: DatabaseSync, text: string): StatementSync {
+  let cache = statements.get(db);
+  if (!cache) { cache = new Map(); statements.set(db, cache); }
+  let statement = cache.get(text);
+  if (!statement) { statement = db.prepare(text); cache.set(text, statement); }
+  return statement;
+}
+
 export function addOwnUsage(db: DatabaseSync, day: string, agent: string, tokens: Tokens): void {
-  db.prepare("INSERT OR IGNORE INTO own_usage VALUES(?,?,0,0,0,0,0)").run(day, agent);
-  db.prepare(`UPDATE own_usage SET input=input+?,cache_write=cache_write+?,cache_read=cache_read+?,output=output+? WHERE day=? AND agent=?`)
+  sql(db, "INSERT OR IGNORE INTO own_usage VALUES(?,?,0,0,0,0,0)").run(day, agent);
+  sql(db, `UPDATE own_usage SET input=input+?,cache_write=cache_write+?,cache_read=cache_read+?,output=output+? WHERE day=? AND agent=?`)
     .run(tokens.input, tokens.cache_write, tokens.cache_read, tokens.output, day, agent);
 }

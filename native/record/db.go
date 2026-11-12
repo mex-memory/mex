@@ -20,7 +20,7 @@ import (
 const SchemaVersion = 1
 
 // Node's additive usage-reader migration does not change the tables read here.
-const RecordSchemaVersion = 2
+const RecordSchemaVersion = 3
 const ReaderBusyTimeoutMS = 10
 const WriterBusyTimeoutMS = 200
 const WriterOperationTimeout = 250 * time.Millisecond

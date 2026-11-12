@@ -95,6 +95,11 @@ export function recordLocation(options: LocationOptions = {}): RecordLocation {
       }
     }
   } catch { /* Missing/invalid pointer: detect again. */ }
+  if (!directory && options.create === false) {
+    // No pointer means no writer has run yet, so there's nothing elsewhere to find:
+    // readers never pay for network detection.
+    directory = home;
+  }
   if (!directory) {
     let network = false;
     try { network = (options.isNetwork ?? isNetworkHome)(home); } catch { /* Fail open locally. */ }

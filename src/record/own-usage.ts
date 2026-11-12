@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { RecordWriter, RecordReader } from "./index.js";
-import { addOwnUsage, object, reportedTokens, TOKEN_CLASSES, utcDay, ZERO, type Tokens } from "./usage.js";
+import { addOwnUsage, sql, object, reportedTokens, TOKEN_CLASSES, utcDay, ZERO, type Tokens } from "./usage.js";
 
 type Agent = "claude" | "codex";
 interface FileRow { path: string; agent: Agent; root: string; identity: string; offset: number; size: number; anchor: string; state: string; mtime: string; usage_lines: number; skipped_lines: number; problem_lines: number; failed: number; }
@@ -33,11 +33,11 @@ const MAX_LINE = 1024 * 1024;
 const ANCHOR = 256;
 function hash(buffer: Buffer): string { return createHash("sha256").update(buffer).digest("hex"); }
 function getSetting<T>(db: DatabaseSync, key: string, fallback: T): T {
-  const row = db.prepare("SELECT value FROM settings WHERE scope='own-usage' AND key=?").get(key);
+  const row = sql(db, "SELECT value FROM settings WHERE scope='own-usage' AND key=?").get(key);
   try { return row ? JSON.parse(String(row.value)) as T : fallback; } catch { return fallback; }
 }
 function setSetting(db: DatabaseSync, key: string, value: unknown): void {
-  db.prepare("INSERT INTO settings VALUES('own-usage',?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(key, JSON.stringify(value));
+  sql(db, "INSERT INTO settings VALUES('own-usage',?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(key, JSON.stringify(value));
 }
 function safeChild(root: string, path: string): boolean {
   const rel = relative(root, path);
@@ -65,7 +65,7 @@ function discover(db: DatabaseSync, agent: Agent, root: string, budget: number, 
         const file = resolve(root, path);
         // Old history is outside every budget window: never crawl it.
         try { if (statSync(file).mtimeMs < since) continue; } catch { continue; }
-        db.prepare("INSERT INTO usage_files(path,agent,root) VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET root=excluded.root").run(file, agent, root);
+        sql(db, "INSERT INTO usage_files(path,agent,root) VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET root=excluded.root").run(file, agent, root);
       }
     }
     if (frame.index >= entries.length) frames.shift();
@@ -76,7 +76,7 @@ function discover(db: DatabaseSync, agent: Agent, root: string, budget: number, 
 }
 
 function response(db: DatabaseSync, agent: Agent, id: string, day: string, tokens: Tokens): void {
-  const previous = db.prepare("SELECT * FROM usage_events WHERE agent=? AND event_id=?").get(agent, id) as unknown as (Tokens & { day: string }) | undefined;
+  const previous = sql(db, "SELECT * FROM usage_events WHERE agent=? AND event_id=?").get(agent, id) as unknown as (Tokens & { day: string }) | undefined;
   const targetDay = previous && previous.day < day ? previous.day : day;
   if (previous && targetDay !== previous.day) {
     const remove = { ...ZERO };
@@ -89,7 +89,7 @@ function response(db: DatabaseSync, agent: Agent, id: string, day: string, token
     next[field] = Math.max(tokens[field], previous?.[field] ?? 0);
     delta[field] = next[field] - (previous?.[field] ?? 0);
   }
-  db.prepare(`INSERT INTO usage_events VALUES(?,?,?,?,?,?,?) ON CONFLICT(agent,event_id) DO UPDATE SET
+  sql(db, `INSERT INTO usage_events VALUES(?,?,?,?,?,?,?) ON CONFLICT(agent,event_id) DO UPDATE SET
     day=excluded.day,input=excluded.input,cache_write=excluded.cache_write,cache_read=excluded.cache_read,output=excluded.output`)
     .run(agent, id, targetDay, next.input, next.cache_write, next.cache_read, next.output);
   if (TOKEN_CLASSES.some((k) => delta[k] > 0)) addOwnUsage(db, targetDay, agent, delta);
@@ -97,21 +97,21 @@ function response(db: DatabaseSync, agent: Agent, id: string, day: string, token
 
 /** Daily cumulative endpoints make attribution independent of discovery order (including archives). */
 function codexSnapshot(db: DatabaseSync, session: string, day: string, tokens: Tokens, horizon: string): void {
-  db.prepare(`INSERT INTO usage_snapshots VALUES(?,?,?,?,?) ON CONFLICT(session_id,day) DO UPDATE SET
+  sql(db, `INSERT INTO usage_snapshots VALUES(?,?,?,?,?) ON CONFLICT(session_id,day) DO UPDATE SET
     input=max(input,excluded.input),cache_read=max(cache_read,excluded.cache_read),output=max(output,excluded.output)`)
     .run(session, day, tokens.input, tokens.cache_read, tokens.output);
-  const snapshots = db.prepare("SELECT day,input,0 cache_write,cache_read,output FROM usage_snapshots WHERE session_id=? ORDER BY day").all(session) as unknown as Array<Tokens & { day: string }>;
+  const snapshots = sql(db, "SELECT day,input,0 cache_write,cache_read,output FROM usage_snapshots WHERE session_id=? ORDER BY day").all(session) as unknown as Array<Tokens & { day: string }>;
   const high = { ...ZERO };
   for (const snapshot of snapshots) {
     const id = JSON.stringify([session, snapshot.day]);
-    const previous = db.prepare("SELECT * FROM usage_events WHERE agent='codex' AND event_id=?").get(id) as unknown as Tokens | undefined;
+    const previous = sql(db, "SELECT * FROM usage_events WHERE agent='codex' AND event_id=?").get(id) as unknown as Tokens | undefined;
     const contribution = { ...ZERO }, delta = { ...ZERO };
     for (const k of TOKEN_CLASSES) {
       contribution[k] = Math.max(0, snapshot[k] - high[k]);
       high[k] = Math.max(high[k], snapshot[k]);
       delta[k] = contribution[k] - (previous?.[k] ?? 0);
     }
-    db.prepare(`INSERT INTO usage_events VALUES('codex',?,?,?,?,?,?) ON CONFLICT(agent,event_id) DO UPDATE SET
+    sql(db, `INSERT INTO usage_events VALUES('codex',?,?,?,?,?,?) ON CONFLICT(agent,event_id) DO UPDATE SET
       input=excluded.input,cache_write=excluded.cache_write,cache_read=excluded.cache_read,output=excluded.output`)
       .run(id, snapshot.day, contribution.input, 0, contribution.cache_read, contribution.output);
     // Older days keep their snapshot as the session's baseline but no longer change totals.
@@ -138,7 +138,7 @@ function windows(db: DatabaseSync, agent: Agent, event: Record<string, unknown>,
     const resets = typeof reset === "number" && reset >= 0 && reset <= 4_102_444_800 ? new Date(reset * 1000).toISOString() : null;
     const status = ["allowed", "allowed_warning", "rejected"].includes(String(info.status)) ? String(info.status) : null;
     if (used === null && resets === null && status === null) continue;
-    db.prepare(`INSERT INTO usage_windows VALUES(?,?,?,?,?,?) ON CONFLICT(agent,window) DO UPDATE SET
+    sql(db, `INSERT INTO usage_windows VALUES(?,?,?,?,?,?) ON CONFLICT(agent,window) DO UPDATE SET
       observed_at=excluded.observed_at,used_percent=excluded.used_percent,resets_at=excluded.resets_at,status=excluded.status
       WHERE excluded.observed_at>=usage_windows.observed_at`).run(agent, key, timestamp, used, resets, status);
   }
@@ -191,7 +191,7 @@ function readFile(db: DatabaseSync, row: FileRow, budget: number, root: string, 
   db.exec("BEGIN IMMEDIATE");
   try {
     // Do not use a stale cursor selected before another process committed its batch.
-    row = db.prepare("SELECT * FROM usage_files WHERE path=?").get(row.path) as unknown as FileRow;
+    row = sql(db, "SELECT * FROM usage_files WHERE path=?").get(row.path) as unknown as FileRow;
     if (!row) { db.exec("COMMIT"); return { bytes: 0, pending: false }; }
     if (!safeChild(root, realpathSync.native(row.path))) throw new Error("Log left its source root");
     fd = openSync(row.path, "r");
@@ -229,7 +229,7 @@ function readFile(db: DatabaseSync, row: FileRow, budget: number, root: string, 
     bytes += readSync(fd, tail, 0, tail.length, offset - tail.length);
     const head = Buffer.alloc(Math.min(ANCHOR, offset));
     bytes += readSync(fd, head, 0, head.length, 0);
-    db.prepare(`UPDATE usage_files SET identity=?,offset=?,size=?,anchor=?,state=?,mtime=?,
+    sql(db, `UPDATE usage_files SET identity=?,offset=?,size=?,anchor=?,state=?,mtime=?,
       usage_lines=?,skipped_lines=?,problem_lines=?,failed=0 WHERE path=?`)
       .run(identity, offset, stat.size, `${hash(head)}:${hash(tail)}`, JSON.stringify(state), stat.mtime.toISOString(),
         lines.usage, lines.skipped, lines.problem, row.path);
@@ -239,8 +239,8 @@ function readFile(db: DatabaseSync, row: FileRow, budget: number, root: string, 
     db.exec("ROLLBACK");
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && row.identity && row.offset === row.size && !row.failed) {
       // Normal archive/pruning after a fully consumed file. Global dedup survives its cursor.
-      db.prepare("DELETE FROM usage_files WHERE path=?").run(row.path);
-    } else db.prepare("UPDATE usage_files SET failed=1,identity='' WHERE path=?").run(row.path);
+      sql(db, "DELETE FROM usage_files WHERE path=?").run(row.path);
+    } else sql(db, "UPDATE usage_files SET failed=1,identity='' WHERE path=?").run(row.path);
     return { bytes, pending: false };
   } finally { if (fd !== undefined) closeSync(fd); }
 }
@@ -254,11 +254,11 @@ function readFile(db: DatabaseSync, row: FileRow, budget: number, root: string, 
 function prune(db: DatabaseSync, horizon: string, sinceIso: string): void {
   db.exec("BEGIN IMMEDIATE");
   try {
-    db.prepare("DELETE FROM usage_events WHERE agent='claude' AND day<?").run(horizon);
+    sql(db, "DELETE FROM usage_events WHERE agent='claude' AND day<?").run(horizon);
     const old = "SELECT session_id FROM usage_snapshots GROUP BY session_id HAVING max(day)<?";
-    db.prepare(`DELETE FROM usage_events WHERE agent='codex' AND json_extract(event_id,'$[0]') IN (${old})`).run(horizon);
-    db.prepare(`DELETE FROM usage_snapshots WHERE session_id IN (${old})`).run(horizon);
-    db.prepare("DELETE FROM usage_files WHERE identity!='' AND failed=0 AND offset=size AND mtime!='' AND mtime<?").run(sinceIso);
+    sql(db, `DELETE FROM usage_events WHERE agent='codex' AND json_extract(event_id,'$[0]') IN (${old})`).run(horizon);
+    sql(db, `DELETE FROM usage_snapshots WHERE session_id IN (${old})`).run(horizon);
+    sql(db, "DELETE FROM usage_files WHERE identity!='' AND failed=0 AND offset=size AND mtime!='' AND mtime<?").run(sinceIso);
     db.exec("COMMIT");
   } catch (error) { db.exec("ROLLBACK"); throw error; }
 }
@@ -296,8 +296,8 @@ export function refreshOwnUsage(writer: RecordWriter, options: OwnUsageOptions =
   const last = getSetting(db, "last-file", "");
   const rootsFilter = valid.map(() => "(agent=? AND root=?)").join(" OR ") || "0";
   const args = valid.flatMap(([agent, root]) => [agent, root]);
-  const ahead = db.prepare(`SELECT * FROM usage_files WHERE (${rootsFilter}) AND path>? ORDER BY path LIMIT ?`).all(...args, last, maxFiles + 1) as unknown as FileRow[];
-  const behind = ahead.length > maxFiles ? [] : db.prepare(`SELECT * FROM usage_files WHERE (${rootsFilter}) AND path<=? ORDER BY path LIMIT ?`).all(...args, last, maxFiles + 1 - ahead.length) as unknown as FileRow[];
+  const ahead = sql(db, `SELECT * FROM usage_files WHERE (${rootsFilter}) AND path>? ORDER BY path LIMIT ?`).all(...args, last, maxFiles + 1) as unknown as FileRow[];
+  const behind = ahead.length > maxFiles ? [] : sql(db, `SELECT * FROM usage_files WHERE (${rootsFilter}) AND path<=? ORDER BY path LIMIT ?`).all(...args, last, maxFiles + 1 - ahead.length) as unknown as FileRow[];
   const ordered = [...ahead, ...behind];
   let bytes = 0, files = 0;
   for (const row of ordered) {
@@ -311,7 +311,7 @@ export function refreshOwnUsage(writer: RecordWriter, options: OwnUsageOptions =
   for (const status of statuses) {
     const root = valid.find(([a]) => a === status.agent)?.[1];
     if (root) {
-      const summary = db.prepare(`SELECT count(*) files,coalesce(sum(usage_lines),0) usage,
+      const summary = sql(db, `SELECT count(*) files,coalesce(sum(usage_lines),0) usage,
         coalesce(sum(skipped_lines),0) skipped,coalesce(sum(problem_lines),0) problems,coalesce(sum(failed),0) failed,
         coalesce(max(offset<size OR identity=''),0) pending FROM usage_files WHERE agent=? AND root=?`).get(status.agent, root)!;
       const files = Number(summary.files), usage = Number(summary.usage), problems = Number(summary.problems), failed = Number(summary.failed);

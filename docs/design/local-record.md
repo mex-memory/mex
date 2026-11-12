@@ -1,11 +1,11 @@
-# Contract: the local record (version 2)
+# Contract: the local record (version 3)
 
-Owner: foundation-02. Design sheets 16, 31, 35, 38, 45.
+Owner: the local record (`src/record/`, `native/record/`).
 
 Everything MEX records about its own work belongs under the MEX home, or the
 local database cache described below. CLI, Hub, session lines and reports read
-these records. Usage accounting is implemented by foundation-02 step 2; job
-and background-process behavior remains for step 3.
+these records. This page covers the two files, their schemas, the usage log,
+the own-usage reader, the job model and the background process.
 
 ## Two files, one writer each
 
@@ -27,7 +27,7 @@ background process. A missing, busy, unreadable or incompatible file produces
 an error the hook caller ignores, allowing the agent call. Never use SQLite's
 `immutable` option for these live databases: readers must see WAL commits.
 
-There is no `usage.db`. Sheet 16's machine-wide usage log is `model_calls` and
+There is no separate `usage.db`. The machine-wide usage log is `model_calls` and
 `own_usage` inside `record.db`. Existing checkout `.mex/graph.db`, `wiki.db`,
 `team.db` and Hub jobs are unchanged by this storage foundation.
 
@@ -66,7 +66,7 @@ read-only, never creates or migrates it.
 The Go module is **`github.com/mex-memory/mex/native`**, at `native/go.mod`.
 Import **`github.com/mex-memory/mex/native/record`**. Hooks schema files live
 beside their writer in `native/record/schema/hooks/0001_init.sql`, embedded in
-Go. This module contains no shim or CLI; foundation-03 adds its commands to
+Go. This module contains no shim or CLI; the hook shim adds its commands to
 the same module. The SQLite driver is `modernc.org/sqlite` **v1.62.0**,
 BSD-3-Clause, the latest stable version returned by the module proxy during
 this review. It requires Go 1.26 or later; `native/go.mod` declares **Go 1.27.0**
@@ -283,7 +283,7 @@ its logical writer. Go and Node may read every table.
 | --- | --- | --- |
 | `projects` | PK `id`; `root_path`, `kind` (git/folder), `shared` (default 0), `created_at` | Command project registration; sharing updates `shared` |
 | `checkouts` | PK (`project_id`,`path`), UNIQUE `path`; `state` (on/off/off until), nullable `off_until` required exactly for off until; nullable `provisional` (unborn/shallow) | Registration/promotion; checkout settings |
-| `jobs` | PK `id`; nullable `project_id` for machine jobs; `kind`, `state`, nullable `reason`, `progress`, `checkpoint`, `tokens_estimate`; `tokens_used` default 0, `created_at`, `updated_at` | Job runner |
+| `jobs` | PK `id`; nullable `project_id` for machine jobs; `kind`, `state`, nullable `reason`, `progress`, `checkpoint`, `tokens_estimate`; `tokens_used` default 0, `created_at`, `updated_at`; migration 3 adds JSON `params`, `batch` (next batch number), `results`, `failures` (same cause in a row), `request` (pause/cancel, applied after the current batch), `owner` (the runner holding it), `finished_at` | Job runner |
 | `job_results` | PK (`job_id`,`batch`); `summary` | Job runner, per batch |
 | `model_calls` | INTEGER PK `id`; `ts`, nullable `project_id`, `purpose`, `agent`, `model`, `input`, `cache_write`, `cache_read`, `output`, `estimated`; migration 2 adds `kind` (headless/interactive, default headless) and nullable `session_id` | Model-call accounting boundary |
 | `own_usage` | PK (`day`,`agent`); `input`, `cache_write`, `cache_read`, `output`, `estimated` | Own-usage log reader |
@@ -291,6 +291,7 @@ its logical writer. Go and Node may read every table.
 | `usage_events` (migration 2) | PK (`agent`,`event_id`); `day`, four nonnegative token classes | Own-usage deduplication/attribution |
 | `usage_snapshots` (migration 2) | PK (`session_id`,`day`); nonnegative cumulative `input`, `cache_read`, `output` | Codex daily cumulative endpoints |
 | `usage_windows` (migration 2) | PK (`agent`,`window`); `observed_at`, nullable `used_percent` (0..100), `resets_at`, `status` (allowed/allowed_warning/rejected) | Own-usage plan-window reader |
+| `background` (migration 3) | One row (`id`=1): the lease `owner`, `pid`, `version`, `started_at`, `heartbeat_at`, `request` (exit: hand over), `hub_until` (seam for open Hub tabs), `spawned_at` | Background process |
 | `installs` | INTEGER PK `id`; `agent`, `path`, `key`, nullable `old_value`, `new_value`, `ts` | Installer/settings change journal |
 | `notices` | PK `id`; `kind`, `text`, `created_at` | Node notice queue |
 | `review` | PK `id`; `project_id`, `entry_id`, `reason`, `state` (pending/accepted/dismissed), `created_at` | Review service |
@@ -399,7 +400,7 @@ Arbitrary externally supplied evaluation driver modules own their own calls.
   still saved by the agents as ordinary sessions, so the own-usage reader counts
   them as the person's usage too. Making MEX's own runs leave no saved session
   (`--no-session-persistence`, `codex exec --ephemeral`, `MEX_BACKGROUND=1`,
-  sheet 16) belongs to the install ticket. Until then, a consumer can subtract
+  is part of the install work. Until then, a consumer can subtract
   them: headless `model_calls` rows carry the agent's `session_id` when it was
   reported.
 
@@ -480,7 +481,7 @@ No source logs are changed. No transcript text is saved in the record.
   available; consumers must consult status. `partial` means bounded pending
   work; `readable` means everything tracked has been read, with any problem
   lines visible in the counts. Recorded counts are reported, `estimated=0`; this reader invents no
-  transcript-based estimates. The fixed weekly budget fallback is a later ticket.
+  transcript-based estimates. The fixed weekly budget fallback comes with the budget work.
 
 Plan room is observation only: `usage_windows` keeps the latest timestamped
 Codex primary/secondary used_percent and reset epoch, or Claude
@@ -490,7 +491,106 @@ a window update. No status strings outside the closed set, log text or account
 details are saved. Missing information returns no window, not inferred room.
 Claude transcripts need not contain these events; no real local transcripts
 were inspected to claim their availability. Cap policy, pausing, model choice,
-session invisibility and token levers remain in their owning tickets.
+session invisibility and token levers are separate work.
+
+## Jobs and the background process
+
+### One job model
+
+`src/record/jobs.ts` holds the one job model for the machine. The states are
+exactly: queued, running, paused, waiting (with one reason), done, done with
+gaps, failed (with a cause), cancelled. The allowed transitions live in one
+table (`JOB_TRANSITIONS`) and one function changes state; anything else is
+refused with a plain message.
+
+| From | To |
+| --- | --- |
+| queued | running, paused, cancelled |
+| running | queued (between batches, or its runner died), done, done with gaps, failed, waiting, paused, cancelled |
+| paused | queued, cancelled |
+| waiting | queued (its condition cleared), paused, cancelled |
+| failed | queued (resume: position kept, failure count reset), cancelled |
+| done, done with gaps, cancelled | none |
+
+**Batches and checkpoints.** A job kind runs one batch at a time and returns
+what the batch produced and its next checkpoint. The runner commits the
+`job_results` row, the checkpoint, the batch number, results, tokens and the
+next state in one transaction, so a process killed at any point redoes at most
+the batch in flight and never leaves half a batch recorded. A kind declares
+`sideEffects`: `none`, or `idempotent` when a batch also changes things outside
+the job rows; those must be safe to run twice from the same checkpoint. A
+waiting result isn't a batch: nothing is recorded and the position stays.
+
+**Failures.** A batch that throws keeps a one-line cause (never a stack) in
+`reason` and goes back to the queue. The same cause three times in a row stops
+the job as failed; a different cause restarts the count.
+
+**Requests.** Pause and cancel apply at once to a job that isn't running; a
+running job is asked (`request`) and stops after its current batch.
+
+**Concurrency, per kind.** Project jobs need a project and run at most one at a
+time per project; machine jobs have none. A `machineExclusive` kind (learning)
+runs at most once per machine. The runner enforces both when it claims a job,
+inside a write transaction, and `blockedReason` gives the plain wording
+("Waiting: Graph build is running in repo-a"). Queuing a job whose kind already
+has an unfinished job for that project returns the existing one.
+
+**Recovery.** A job left `running` by a runner whose process is gone goes back
+to the queue (or to paused/cancelled if that was requested), resuming from its
+last committed checkpoint. Owner strings carry the process id, so a live
+foreground runner's job is left alone. A kind this version doesn't know (from a
+newer MEX) is left queued and listed as "Unknown job (needs a newer MEX)".
+
+**Rule for new job kinds.** Register with `registerJobKind` (built-ins in
+`src/record/job-kinds.ts`); give a plain `label`, the scope, whether it's
+machine-exclusive and its side effects; return results through the batch result
+rather than writing job rows; make external effects idempotent per batch; use
+`wait` with one plain reason and `ready` for conditions that clear by
+themselves. The first real kind is the usage refresh (machine-exclusive, runs
+until the reader has caught up). A `demo` kind exists only when
+`MEX_JOBS_DEMO=1`.
+
+### The background process
+
+- **On demand, one per user.** `ensureBackground()` returns at once and never
+  waits. It starts the process only when work is pending (queued, waiting or
+  running jobs of known kinds) and none is running or starting. The process is
+  `process.execPath` with the CLI entry and `__background`, never a shell, with
+  `--max-old-space-size` at the memory cap, detached, no window, stdout and
+  stderr appended to `<home>/background.log` (rotated at 1 MiB). Its
+  environment has `MEX_BACKGROUND=1`, so nothing it runs triggers MEX.
+- **The lease.** The `background` row holds the owner, pid, version and a
+  heartbeat (every 3 s). A lease is live while its heartbeat is younger than
+  15 s and its process exists; a dead pid is taken over at once, and a reused
+  pid only delays takeover until the heartbeat goes stale. A process that finds
+  a live lease of the same version exits ("duplicate"). `spawned_at` stops two
+  commands in a row from starting two processes.
+- **Version handshake.** A CLI of a different version that finds a live process
+  sets `request = 'exit'` and starts its own. The old process finishes its
+  batch, releases the lease and exits; the new one waits up to 30 s for it.
+- **Limits.** Idle exit after 15 minutes with no pending work and no open Hub
+  (`background.idle_minutes`). Memory cap 1024 MB of resident memory
+  (`background.memory_mb`): over it, the process exits between batches and the
+  job resumes later. Off with `MEX_BACKGROUND=0` or `background.enabled =
+  false`. `MEX_BACKGROUND_*_MS` variables shorten the timings for tests.
+- **No network listener.** Everything goes through the record. The Hub seam is
+  `noteHubActivity(writer, untilMs)`: an open Hub tab keeps the process alive.
+- **Without it.** `mex jobs run` (and `runPendingInForeground`) runs pending
+  batches in the current terminal. Any `mex` command restarts the process when
+  `<home>/jobs-pending` exists; that marker check opens no database. The
+  session-start hook calls `ensureBackground()` (wired with the hooks).
+
+`mex jobs` lists every job on the machine, newest first: the project's name and
+path, the kind in plain words, the state with its reason or cause, what it's
+doing (only while it is active, so a stopped job never shows "387 / 387
+parsed"), results so far and tokens against the estimate. Jobs are addressed by
+their number in the list (`mex jobs pause 2`); there are no raw ids. `--json`
+prints the same rows. `pause`, `resume`, `cancel` and `run` are subcommands.
+
+The Hub's graph and wiki jobs keep their own storage and contract for now (the
+Hub pages that show them are being rebuilt); their
+states map onto this model as succeeded = done, interrupted by the user =
+cancelled, interrupted by a restart = queued.
 
 ## Tables in hooks.db
 
@@ -537,7 +637,14 @@ text because their owning delivery/adapter/job contracts evolve independently.
 
 ## Changes
 
-- Step 2 review: the research scripts under `evaluate/` no longer write to the
+- Version 3: record.db migration 3 adds the job columns and the
+  `background` lease row. The job model, its transitions and the rule for new
+  job kinds; the background process with its lease, handshake, limits and
+  marker; `mex jobs`. Readers without a location pointer no longer run network
+  detection (no writer has run, so the files can only be in the home). The
+  usage reader caches its prepared statements.
+
+- Version 2, later changes: the research scripts under `evaluate/` no longer write to the
   record. Unknown line types are skipped and counted instead of making an agent
   unreadable; `usage_files` keeps line counts in place of the `recognized` and
   `problem` flags. Discovery and dedup storage are bounded by a 35-day window
@@ -559,10 +666,10 @@ text because their owning delivery/adapter/job contracts evolve independently.
 
 - Version 1 specifies the first shipped schemas, transactional migrations,
   exact columns/keys/constraints, table ownership and typed opening APIs.
-- The ticket's one database and sheet 16's `usage.db` are superseded: exactly
+- One database and a separate `usage.db` were considered and dropped: exactly
   two files, with usage tables in Node's `record.db`, keeping writers separate.
 - Added the shared `native/` Go module/import path and writer-owned embedded
-  hooks SQL so foundation-03 can add its shim without moving storage code.
+  hooks SQL so the hook shim can be added without moving storage code.
 - Fixed the shared base-home/cache/pointer and deterministic project-ID rules,
   including shallow, unborn, multi-root, worktree, submodule and missing-Git cases.
 - Specified native Windows realpath plus ASCII folding so Node and Go agree
@@ -571,7 +678,7 @@ text because their owning delivery/adapter/job contracts evolve independently.
   ledger, an off-until deadline, explicit review states and once-only notices.
   These fill version-0 gaps without adding product behavior or a third file.
 
-- Review fixes: removed directOverride, use only HEAD-reachable roots and pin
+- Version 1, later changes: removed directOverride, use only HEAD-reachable roots and pin
   registered checkout IDs; added explicit unborn/shallow markers and recoverable
   Node-only promotion/data-folder moves with alias and conflict metadata.
 - Added the Git-free Go checkout lookup and separate bounded writer/read timeout

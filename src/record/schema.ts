@@ -1,5 +1,5 @@
 /** Node alone owns these numbered, forward-only record.db migrations. */
-export const RECORD_SCHEMA_VERSION = 2;
+export const RECORD_SCHEMA_VERSION = 3;
 export interface Migration { version: number; sql: string; }
 export const recordMigrations: readonly Migration[] = [{ version: 1, sql: `
 CREATE TABLE IF NOT EXISTS projects (
@@ -92,4 +92,18 @@ CREATE TABLE usage_snapshots (
  input INTEGER NOT NULL CHECK(input>=0), cache_read INTEGER NOT NULL CHECK(cache_read>=0),
  output INTEGER NOT NULL CHECK(output>=0), PRIMARY KEY(session_id,day)
 );
+` }, { version: 3, sql: `
+ALTER TABLE jobs ADD COLUMN params TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE jobs ADD COLUMN batch INTEGER NOT NULL DEFAULT 0 CHECK(batch>=0);
+ALTER TABLE jobs ADD COLUMN results INTEGER NOT NULL DEFAULT 0 CHECK(results>=0);
+ALTER TABLE jobs ADD COLUMN failures INTEGER NOT NULL DEFAULT 0 CHECK(failures>=0);
+ALTER TABLE jobs ADD COLUMN request TEXT CHECK(request IN ('pause','cancel'));
+ALTER TABLE jobs ADD COLUMN owner TEXT;
+ALTER TABLE jobs ADD COLUMN finished_at TEXT;
+CREATE INDEX jobs_running_owner ON jobs(state,owner);
+CREATE TABLE background (
+ id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT, pid INTEGER, version TEXT, started_at TEXT, heartbeat_at TEXT,
+ request TEXT CHECK(request IN ('exit')), hub_until TEXT, spawned_at TEXT
+);
+INSERT INTO background(id) VALUES(1);
 ` }];
