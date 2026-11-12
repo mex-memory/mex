@@ -103,6 +103,12 @@ jobs:
       - name: Record hook timing
         if: always()
         run: cat "$RUNNER_TEMP/hook-timing.txt" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - name: Cross-compile every platform package
+        if: runner.os == 'Linux'
+        working-directory: .
+        run: |
+          node scripts/build-hook-binaries.mjs
+          npm/hook-linux-x64/bin/mex-hook --self-test | grep '"ok":true'
 
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install
