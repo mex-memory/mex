@@ -773,6 +773,7 @@ describe("no unscoped scaffold writes", () => {
       "src/config.ts": "writes config.json",
       "src/global-config.ts": "writes the global config and telemetry id",
       "src/events.ts": "appends to events/decisions.jsonl",
+      "src/record/location.ts": "publishes only the machine record location pointer and creates machine/project data directories; never Wiki Markdown",
       "src/setup/anchor.ts": "edits root tool configs only, never .mex/, and only inside its own markers",
       "src/setup/global-install.ts": "removes only the private temporary npm working directory after the owned global installation finishes",
       "src/setup/headless-population.ts": "creates and removes only its own byte-exact Cursor permission file while background sessions run; never a user's file",
@@ -815,6 +816,21 @@ describe("no unscoped scaffold writes", () => {
     expect([...candidateEntry.matchAll(WRITE_CALLS)]).toHaveLength(0);
     expect([...candidateEntry.matchAll(FD_WRITE_CALLS)]).toHaveLength(1);
     expect(candidateEntry).toMatch(/\bwriteSync\s*\(\s*2\s*,/);
+
+    // This global metadata writer has one exclusive pointer publication and
+    // one contained project-directory rename, not
+    // an exemption to edit scaffold content or add other filesystem writers.
+    const recordLocation = withoutComments(read("src/record/location.ts"));
+    expect([...recordLocation.matchAll(WRITE_CALLS)]).toHaveLength(2);
+    expect(recordLocation).toMatch(/\bwriteFileSync\s*\(\s*pointer\s*,/);
+    expect(recordLocation).toContain('join(home, "location")');
+    expect(recordLocation).toContain('flag: "wx"');
+    expect([...recordLocation.matchAll(/\brenameSync\s*\(/g)]).toHaveLength(1);
+    expect(recordLocation).toContain("renameSync(source, target)");
+    expect(recordLocation).toContain("source = projectDataPath(location, oldId)");
+    expect(recordLocation).toContain("target = projectDataPath(location, newId)");
+    expect(recordLocation).toContain("realPath(parent) !== absolutePath(parent)");
+    expect(recordLocation).not.toMatch(/["'`][^"'`\r\n]*\.md(?:["'`/])/);
   });
 
   it("does not constrain code outside the wiki engine", () => {
