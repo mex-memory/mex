@@ -76,7 +76,7 @@ if (demoJobsEnabled()) {
  * in its own `mex __typescript-check` process, so the compilers and their
  * memory stay out of the long-lived background process.
  */
-registerJobKind<{ root: string }, Record<string, never>>({
+registerJobKind<{ root: string; entry?: string }, Record<string, never>>({
   name: "typescript-server-check",
   label: "TypeScript compiler check",
   scope: "project",
@@ -84,7 +84,7 @@ registerJobKind<{ root: string }, Record<string, never>>({
   sideEffects: "idempotent",
   async runBatch({ job, params, writer }) {
     const output = await new Promise<string>((resolvePromise, reject) => {
-      const child = spawn(process.execPath, [process.argv[1]!, "__typescript-check", params.root], {
+      const child = spawn(process.execPath, [params.entry ?? process.argv[1]!, "__typescript-check", params.root], {
         env: { ...process.env, MEX_BACKGROUND: "1" }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
       });
       let stdout = "";

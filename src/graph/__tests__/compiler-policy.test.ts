@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildTypeScriptExtraction } from "../extraction/compiler.js";
 import { ApiProjectCompiler, loadTsrsServer, type TypeScriptApiServer } from "../extraction/compiler-api.js";
@@ -128,7 +128,7 @@ describe("the tsrs check", () => {
     const kind = jobKind(TSRS_FULL_CHECK_JOB)!;
     expect(kind.label).toBe("TypeScript compiler check");
     const outcome = await kind.runBatch({
-      job: { project_id: projectId } as never, params: { root }, checkpoint: undefined, writer,
+      job: { project_id: projectId } as never, params: { root, entry: resolve("dist/cli.js") }, checkpoint: undefined, writer,
     });
     expect(outcome).toMatchObject({ done: true, summary: "tsrs matches tsgo on the whole repository" });
     expect(JSON.parse(writer.setting(projectId, TSRS_CHECK_SETTING)!)).toEqual(verdict("tsrs"));

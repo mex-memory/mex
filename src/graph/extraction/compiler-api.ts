@@ -128,6 +128,9 @@ export class ApiProjectCompiler implements ProjectCompiler {
   private ledger: CompilerInputLedger | undefined;
   private snapshot: { dispose(): void } | undefined;
   private readonly prepared = new Map<string, Program>();
+  private chunks: ProjectOpenRequest[][] = [];
+  private readonly chunkOf = new Map<string, number>();
+  private preparedChunk: number | undefined;
 
   /**
    * @param fallback Builds a project this server cannot: every failure of
@@ -140,12 +143,41 @@ export class ApiProjectCompiler implements ProjectCompiler {
   }
 
   /**
-   * One snapshot holds every project's program, so the server parses a file
-   * shared by several projects once and builds the programs in parallel.
-   * The staged sources travel with it as a filesystem layer: the server reads
-   * them without asking back for each file.
+   * Projects are built a chunk at a time, each chunk in one snapshot: the
+   * server parses a file shared by the chunk's projects once and builds their
+   * programs in parallel, and only one chunk's programs are alive at a time.
+   * The staged sources travel with each snapshot as a filesystem layer, so
+   * the server reads them without asking back for each file.
    */
   prepare(requests: readonly ProjectOpenRequest[]): void {
+    // Projects are opened in the order given; group neighbours into chunks
+    // so one snapshot never holds every program of a large monorepo.
+    this.chunks = [];
+    let chunk: ProjectOpenRequest[] = [];
+    let files = 0;
+    for (const request of requests) {
+      const size = request.rootNames.length;
+      if (chunk.length > 0 && (chunk.length >= MAX_CHUNK_PROJECTS || files + size > MAX_CHUNK_ROOT_FILES)) {
+        this.chunks.push(chunk);
+        chunk = [];
+        files = 0;
+      }
+      chunk.push(request);
+      files += size;
+    }
+    if (chunk.length > 0) this.chunks.push(chunk);
+    this.chunkOf.clear();
+    this.chunks.forEach((group, index) => {
+      for (const request of group) this.chunkOf.set(request.project.id, index);
+    });
+  }
+
+  /** Build one chunk's programs in one snapshot, releasing the previous chunk's. */
+  private prepareChunk(index: number): void {
+    if (this.preparedChunk === index) return;
+    this.releaseSnapshot();
+    this.preparedChunk = index;
+    const requests = this.chunks[index] ?? [];
     if (requests.length === 0) return;
     try {
       const api = this.apiFor(requests[0]!);
@@ -153,28 +185,37 @@ export class ApiProjectCompiler implements ProjectCompiler {
         dispose(): void;
         operation: { createdPrograms?: readonly Program[] };
       };
-      const snapshot = createSnapshot.call(api, {
+      const snapshot = timeGraphPhase("compiler.api.snapshot", () => createSnapshot.call(api, {
         fileSystem: stagedLayer(requests[0]!.inputs),
         createPrograms: requests.map((request) => ({
           rootFiles: request.rootNames.map(helpers.normalizedAbsolute),
           compilerOptions: translateCompilerOptions(request.options).options,
           options: programOptions(request),
         })),
-      });
+      }));
       this.snapshot = snapshot;
       const programs = snapshot.operation.createdPrograms ?? [];
-      requests.forEach((request, index) => {
-        const program = programs[index];
+      requests.forEach((request, position) => {
+        const program = programs[position];
         if (program) this.prepared.set(request.project.id, program);
       });
     } catch {
-      // Each project is built on its own when it is opened.
-      this.prepared.clear();
+      // Each project of this chunk is built on its own when it is opened.
+      this.releaseSnapshot();
     }
+  }
+
+  private releaseSnapshot(): void {
+    this.prepared.clear();
+    try { this.snapshot?.dispose(); } catch { /* released with the server */ }
+    this.snapshot = undefined;
+    this.preparedChunk = undefined;
   }
 
   open(request: ProjectOpenRequest): ProjectSession {
     const api = this.apiFor(request);
+    const chunk = this.chunkOf.get(request.project.id);
+    if (chunk !== undefined) this.prepareChunk(chunk);
     const prepared = this.prepared.get(request.project.id);
     if (prepared) {
       this.prepared.delete(request.project.id);
@@ -210,9 +251,9 @@ export class ApiProjectCompiler implements ProjectCompiler {
   }
 
   close(): void {
-    this.prepared.clear();
-    try { this.snapshot?.dispose(); } catch { /* released with the server */ }
-    this.snapshot = undefined;
+    this.releaseSnapshot();
+    this.chunks = [];
+    this.chunkOf.clear();
     try { this.api?.close(); } catch { /* the server may already be gone */ }
     this.api = undefined;
     this.ledger = undefined;
@@ -297,6 +338,14 @@ function programOptions(request: ProjectOpenRequest): { projectReferences: Array
     })),
   };
 }
+
+/**
+ * How many projects, and how many root files, one snapshot holds. Within a
+ * chunk the server parses a shared file once and builds programs in
+ * parallel; across chunks memory stays bounded. Starting values.
+ */
+const MAX_CHUNK_PROJECTS = 12;
+const MAX_CHUNK_ROOT_FILES = 4_000;
 
 /** The staged repository bytes as a filesystem layer over the host. */
 function stagedLayer(ledger: CompilerInputLedger): { kind: "layer"; files: Record<string, string> } {
@@ -1804,6 +1853,10 @@ class LocalScopes {
     // A member or property name is not a variable reference, whatever locals are in scope.
     if ((parent as { name?: Node }).name === identifier && parent.kind !== K.VariableDeclaration) return false;
     if (parent.kind === K.QualifiedName && (parent as ast.QualifiedName).right === identifier) return false;
+    // `{ channel: kind }` destructures the property `channel`, whatever locals share its name.
+    if (parent.kind === K.BindingElement && (parent as ast.BindingElement).propertyName === identifier) return false;
+    // A JSX tag name: a lowercase tag is an intrinsic element whatever locals share its name.
+    if (JSX_TAG_PARENTS.has(parent.kind) && (parent as ast.JsxOpeningElement).tagName === identifier) return false;
     const name = identifier.text;
     for (let current: Node | undefined = parent; current; current = current.parent) {
       const kind = current.kind;
@@ -1861,6 +1914,8 @@ class LocalScopes {
     return scope;
   }
 }
+
+const JSX_TAG_PARENTS = new Set<number>([K.JsxOpeningElement, K.JsxClosingElement, K.JsxSelfClosingElement]);
 
 const LOCAL_SCOPE_KINDS = new Set<number>([
   ...FUNCTION_LIKE_KINDS, K.Block, K.CaseBlock, K.CatchClause, K.ForStatement, K.ForInStatement, K.ForOfStatement,

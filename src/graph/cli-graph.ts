@@ -274,7 +274,8 @@ async function queueFullTsrsCheck(rootDir: string, report: GraphRefreshResult["t
       queueJob(writer, {
         kind: TSRS_FULL_CHECK_JOB,
         projectId: writer.checkout(root)?.project_id ?? null,
-        params: { root },
+        // The CLI that queued the check runs it, in its own process.
+        params: { root, entry: process.argv[1] },
       });
     } finally {
       writer.close();
