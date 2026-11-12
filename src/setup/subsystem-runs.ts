@@ -488,6 +488,7 @@ export async function runSubsystemPopulation(options: SubsystemPopulationOptions
     try {
       const tag = unit.transcriptTag;
       const result = await launch({
+        usagePurpose: `setup.${unit.kind}.${kind}`,
         selectedTools: options.selectedTools,
         ...(options.tool === undefined ? {} : { tool: options.tool }),
         prompt,

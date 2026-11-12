@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { Command, InvalidArgumentError, Option } from "commander";
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
@@ -9,7 +9,7 @@ import { registerRemovedCommands, removedCommandMessage } from "./removed-comman
 import { VERSION } from "./version.js";
 import { unsupportedNodeMessage } from "./node-version.js";
 import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
-import { setGlobalConfigKey } from "./global-config.js";
+import { mexHomeDir, setGlobalConfigKey } from "./global-config.js";
 import { createCliTelemetry, telemetryProjectLocation } from "./cli-telemetry.js";
 export { isTelemetryExemptCommand } from "./cli-telemetry.js";
 import { runFeedback, maybeShowInvite, dismissInvite, enableInvite } from "./feedback/index.js";
@@ -156,7 +156,16 @@ const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command
   return getProjectTelemetryContext(root, discovery);
 });
 program.hook("preAction", (_thisCommand, actionCommand) => cliTelemetry.start(actionCommand));
-program.hook("postAction", () => cliTelemetry.finish(process.exitCode));
+program.hook("postAction", async () => {
+  cliTelemetry.finish(process.exitCode);
+  // Restart the background process when jobs are waiting. The marker check opens no database.
+  try {
+    if (existsSync(join(mexHomeDir(), "jobs-pending"))) {
+      const { restartIfPending } = await import("./record/background.js");
+      restartIfPending();
+    }
+  } catch { /* never affects the command */ }
+});
 
 program
   .name("mex")
@@ -868,6 +877,63 @@ program
     }
   });
 
+// ── Background jobs ──
+const jobsCommand = program
+  .command("jobs")
+  .description("List MEX's background jobs on this machine; pause, resume or cancel one")
+  .option("--json", "Print the jobs as JSON")
+  .option("--all", "Include older jobs")
+  .action(async (options: { json?: boolean; all?: boolean }) => {
+    try {
+      const { runJobsList } = await import("./record/jobs-command.js");
+      runJobsList(options);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+for (const action of ["pause", "resume", "cancel"] as const) {
+  jobsCommand
+    .command(`${action} <number>`)
+    .description(`${action[0]!.toUpperCase()}${action.slice(1)} a job, by its number in \`mex jobs\``)
+    .action(async (position: string) => {
+      try {
+        const { runJobsAction } = await import("./record/jobs-command.js");
+        runJobsAction(action, position);
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exitCode = 1;
+      }
+    });
+}
+jobsCommand
+  .command("run")
+  .description("Run waiting jobs in this terminal (when the background process is off)")
+  .option("--minutes <n>", "Stop after this many minutes", (value) => Number(value))
+  .action(async (options: { minutes?: number }) => {
+    try {
+      const { runJobsHere } = await import("./record/jobs-command.js");
+      await runJobsHere(options);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+if (process.env.MEX_JOBS_DEMO === "1") {
+  jobsCommand
+    .command("demo")
+    .description("Queue a demo job for this folder (demos and tests only)")
+    .option("--batches <n>", "Number of batches", (value) => Number(value))
+    .option("--delay <ms>", "Delay per batch", (value) => Number(value))
+    .option("--fail-at <n>", "Fail at this batch (0-based)", (value) => Number(value))
+    .option("--wait-file <path>", "Wait while this file exists")
+    .option("--trace-file <path>", "Append each batch start here")
+    .action(async (options: { batches?: number; delay?: number; failAt?: number; waitFile?: string; traceFile?: string }) => {
+      const { runJobsDemo } = await import("./record/jobs-command.js");
+      runJobsDemo(options);
+    });
+}
+
 program
   .command("doctor")
   .description("Run a friendly scaffold health diagnostic")
@@ -1274,7 +1340,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 function buildCompletion(shell: string): string {
   const commands = [
     "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "log",
-    "doctor", "completion",
+    "doctor", "jobs", "completion",
     "telemetry", "config", "feedback", "hub",
   ];
   if (shell === "bash") {
