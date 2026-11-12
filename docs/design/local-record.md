@@ -1,11 +1,11 @@
-# Contract: the local record (version 1)
+# Contract: the local record (version 2)
 
 Owner: foundation-02. Design sheets 16, 31, 35, 38, 45.
 
 Everything MEX records about its own work belongs under the MEX home, or the
 local database cache described below. CLI, Hub, session lines and reports read
-these records. This contract reserves the usage and job shapes; their behavior
-is implemented in later foundation-02 steps.
+these records. Usage accounting is implemented by foundation-02 step 2; job
+and background-process behavior remains for step 3.
 
 ## Two files, one writer each
 
@@ -45,6 +45,11 @@ version-1 tables (identical definitions). Migration 1 creates missing tables
 and preserves compatible existing rows. Arbitrary historical layouts are not
 a supported migration input; no version-0 schema was shipped. Future structural
 changes need a numbered migration rather than editing migration 1.
+
+Current versions: **record.db = 2; hooks.db = 1**. Node migration 2 adds only
+own-usage reader bookkeeping and plan-window tables; all version-1 definitions
+and rows are preserved. Go's read-only record reader recognizes version 2;
+its hooks writer/migrations remain at version 1.
 
 A writer seeing a newer version refuses to write, with the file, found version,
 supported version and upgrade instruction in its error. Read-only Node handles
@@ -269,7 +274,7 @@ are never changed merely because another root/branch was fetched or selected.
 All timestamps/days are UTC ISO text, paths/IDs/text are TEXT, flags are INTEGER
 0/1 with CHECKs, token/count fields are nonnegative INTEGER. Nullable values
 are called out below. Structured progress/checkpoints/summaries/values are text
-(consumers may encode JSON); no model behavior is attached to them yet.
+(consumers may encode JSON). Accounting observes calls; it never initiates one.
 
 Every table below has **Node as its sole writing side**; the named component is
 its logical writer. Go and Node may read every table.
@@ -280,8 +285,12 @@ its logical writer. Go and Node may read every table.
 | `checkouts` | PK (`project_id`,`path`), UNIQUE `path`; `state` (on/off/off until), nullable `off_until` required exactly for off until; nullable `provisional` (unborn/shallow) | Registration/promotion; checkout settings |
 | `jobs` | PK `id`; nullable `project_id` for machine jobs; `kind`, `state`, nullable `reason`, `progress`, `checkpoint`, `tokens_estimate`; `tokens_used` default 0, `created_at`, `updated_at` | Job runner |
 | `job_results` | PK (`job_id`,`batch`); `summary` | Job runner, per batch |
-| `model_calls` | INTEGER PK `id`; `ts`, nullable `project_id`, `purpose`, `agent`, `model`, `input`, `cache_write`, `cache_read`, `output`, `estimated` | Model-call accounting boundary |
+| `model_calls` | INTEGER PK `id`; `ts`, nullable `project_id`, `purpose`, `agent`, `model`, `input`, `cache_write`, `cache_read`, `output`, `estimated`; migration 2 adds `kind` (headless/interactive, default headless) and nullable `session_id` | Model-call accounting boundary |
 | `own_usage` | PK (`day`,`agent`); `input`, `cache_write`, `cache_read`, `output`, `estimated` | Own-usage log reader |
+| `usage_files` (migration 2) | PK `path`; `agent` (claude/codex), `root`, `identity`, nonnegative `offset` and last observed `size`, `anchor`, JSON `state`, file `mtime`, line counts `usage_lines`, `skipped_lines`, `problem_lines`, and 0/1 `failed` (the file itself couldn't be read) | Own-usage log reader |
+| `usage_events` (migration 2) | PK (`agent`,`event_id`); `day`, four nonnegative token classes | Own-usage deduplication/attribution |
+| `usage_snapshots` (migration 2) | PK (`session_id`,`day`); nonnegative cumulative `input`, `cache_read`, `output` | Codex daily cumulative endpoints |
+| `usage_windows` (migration 2) | PK (`agent`,`window`); `observed_at`, nullable `used_percent` (0..100), `resets_at`, `status` (allowed/allowed_warning/rejected) | Own-usage plan-window reader |
 | `installs` | INTEGER PK `id`; `agent`, `path`, `key`, nullable `old_value`, `new_value`, `ts` | Installer/settings change journal |
 | `notices` | PK `id`; `kind`, `text`, `created_at` | Node notice queue |
 | `review` | PK `id`; `project_id`, `entry_id`, `reason`, `state` (pending/accepted/dismissed), `created_at` | Review service |
@@ -300,6 +309,188 @@ Foreign keys protect project references and job results. Indexes support job
 state/project/time scans, model-call time/project scans, install path/key/time,
 notices by creation, and review by project/state/time. The composite primary
 keys support settings and judgement lookups and day-based totals.
+
+## Usage APIs and token classes
+
+`src/record/usage.ts` exposes `recordModelCall(call, options?)`,
+`recordInteractiveLaunch(launch, options?)`, `modelCallTotals(reader, from, through)`
+and `mexSpendTotals(reader, from, through)`. A call records purpose, agent, model,
+optional project, the four classes and an estimated flag. The timestamp defaults
+to now. `projectPath` uses the existing pinned checkout registration. Invalid
+counts, busy/missing/broken/incompatible storage and even a throwing warning
+observer cannot fail the calling command: return false and emit only
+`MEX could not record model usage; the command continues.` By default that line
+is printed once per process, on exit, so it can never land inside a full-screen
+view such as setup's; a caller may pass its own `warn`. No private SQLite
+diagnostic or prompt is printed. The existing Node 5-second writer wait applies.
+
+Both own usage and MEX totals use **UTC calendar days**, never machine-local
+midnight. Ranges are inclusive UTC dates. Model totals group day, agent and
+purpose and kind, sum each class, count rows and expose whether any row was
+estimated. `mexSpendTotals` is what MEX itself spent: headless rows only, plus a
+count of interactive launches.
+The reader opens no files or models itself. No usage CLI is needed for this
+step; later budget and Hub consumers use these APIs.
+
+The four classes are disjoint:
+
+| Agent/source | input | cache_write | cache_read | output |
+| --- | --- | --- | --- | --- |
+| Claude Code | `input_tokens` | `cache_creation_input_tokens` | `cache_read_input_tokens` | `output_tokens` |
+| Codex | `input_tokens - cached_input_tokens` | 0 (not separately reported) | `cached_input_tokens` | `output_tokens`, already including reasoning; do not add `reasoning_output_tokens` again |
+
+Claude cache counts are additional classes; Codex cached input is inside its
+reported input. Absent optional cache counters are zero. Invalid/noninteger or
+negative required counts are rejected. A model not reported by an agent is
+`unknown`, never inferred from a product default. Multiple observed model names
+without per-model totals use `mixed`. Claude's terminal `modelUsage` breakdown,
+when complete and consistent with terminal totals, produces separate model rows.
+
+### Kept call sites
+
+All headless setup agents pass through `src/setup/headless-population.ts`, using
+the arguments constructed by `src/agent-command.ts`. A separate bounded observer
+does not change the existing activity/transcript/usage callbacks, flags, agent
+selection, permissions, success/failure handling or stdout. It records after
+pipe drains, including failed/cancelled attempts. One row represents an agent
+invocation's reported aggregate (or one row per reported model), including its
+turns, tools and retries; assistant block usage and terminal totals are never
+added together.
+
+| Site | Accounting purpose and source |
+| --- | --- |
+| `setup/headless.ts` single population / direct shared launcher | `setup.population`; Claude terminal JSON usage (deduplicated assistant usage fallback); Codex sum of `turn.completed` usage |
+| `setup/subsystem-runs.ts` shared/subsystem sessions and fixes | `setup.<shared or subsystem>.<write or fix>`; same shared observer for every launch/retry |
+| `setup/finalize-repair.ts` | `setup.finalize-repair`; same observer |
+| `setup/interactive-population.ts` | `setup.interactive`; an `interactive` launch row with no token numbers |
+| `sync/index.ts` (also legacy `setup/population.ts`) | `sync.interactive` / `setup.interactive`; an `interactive` launch row with no token numbers, inherited stdio preserved |
+
+The research scripts under `evaluate/` are not the product and don't write to the
+record: a developer's evaluation runs must not show up as MEX spend.
+
+Headless rows keep the agent's own session id when its output reports one
+(Claude Code stream events carry `session_id`; Codex reports `thread.started`
+with `thread_id`).
+
+Cursor/Copilot terminal `result.usage`, when it supplies the named numeric
+fields, is observed; otherwise counts are estimated. OpenCode `step_finish`
+uses `part.id` deduplication and `part.tokens` input, output plus separate
+reasoning, cache.read and cache.write. Unknown protocols fall back to a marked
+estimate: ceil(UTF-8 sent-prompt bytes / 4), ceil(received stdout bytes / 4),
+zero cache classes. Encoded stdout includes protocol overhead, so this is a
+heuristic, not a tokenizer or a cost claim. Partial reports without a complete
+terminal total are also marked estimated when malformed/missing usage is seen.
+An interactive session MEX opens is driven and watched by the person, and its
+real tokens are written to the agent's own transcripts, which the own-usage
+reader counts. So MEX records only the launch (`kind = interactive`, zero tokens,
+`estimated = 0`) and never counts it as its own spend; a prompt-size guess would
+understate the session and mix it into MEX's spend.
+
+Pure command
+builders/decoders make no calls. `hub/setup/commit.ts` invokes Git only, so it
+has no model row. Graph evaluation runs deterministic CLI commands. Installer
+checks, availability probes and manual prompt printing make no model calls.
+The subsystem final navigation pass is deterministic and launches no agent.
+Arbitrary externally supplied evaluation driver modules own their own calls.
+
+### Known gaps
+
+- **Headless runs are counted twice.** In 0.8 the headless runs MEX starts are
+  still saved by the agents as ordinary sessions, so the own-usage reader counts
+  them as the person's usage too. Making MEX's own runs leave no saved session
+  (`--no-session-persistence`, `codex exec --ephemeral`, `MEX_BACKGROUND=1`,
+  sheet 16) belongs to the install ticket. Until then, a consumer can subtract
+  them: headless `model_calls` rows carry the agent's `session_id` when it was
+  reported.
+
+### Own-usage reader
+
+`src/record/own-usage.ts` exposes explicit `refreshOwnUsage(writer, options?)`,
+read-only `ownUsageTotals(reader, from, through)`, `ownUsageStatus(reader)` and
+`usageWindows(reader)`. Refresh is maintenance, never a hook or totals read.
+Defaults: `CLAUDE_CONFIG_DIR` or `~/.claude`, `projects/**/*.jsonl` including
+subagents; `CODEX_HOME` or `~/.codex`, `sessions/**/rollout-*.jsonl` and
+`archived_sessions/**/rollout-*.jsonl`. Explicit directory options are test seams.
+No source logs are changed. No transcript text is saved in the record.
+
+- Claude: only real assistant records with usage, message ID and request ID
+  count. Deduplicate globally by `(message.id, requestId/request_id)`; repeated
+  content-block lines retain the component-wise largest reported counters and
+  add only their increase. Use the earliest reported UTC day of that response,
+  reallocating if an older duplicate is discovered later. Ignore
+  lines with no usage, synthetic records, `<synthetic>` models and API-error
+  assistant messages. Missing identity or invalid usage on an assistant message
+  is a problem line, never a guessed count. Distinct request IDs remain distinct.
+- Codex: identify sessions from `session_meta.payload.id`. Use only
+  `event_msg.payload.type=token_count`, `info.total_token_usage`; never add
+  `last_token_usage`. Keep a cumulative maximum per session and UTC day.
+  Contributions are that day's positive increase over all prior daily maxima.
+  Repeated snapshots, resumed/archived copies and older totals add nothing.
+  Discovering an older day later reallocates the affected contributions without
+  changing the session total, so traversal order cannot move tokens to a newer
+  day. The first observed cumulative total belongs to its observed UTC day;
+  activity predating all available snapshots cannot be reconstructed. A reused
+  session ID with reset counters is not treated as a new billable session.
+- `usage_files` remembers identity (device/inode/birth time), byte offset,
+  last size, prefix/tail hashes at the committed boundary and session/drop-line state.
+  Replacement, truncation or a changed anchor resets the file cursor. Persistent
+  global response keys/daily maxima prevent recounting old lines after rereads.
+  Arbitrary same-inode rewrites strictly between unchanged anchors cannot be
+  detected; normal append-only transcripts and rotation are the supported format.
+  A missing fully consumed healthy file retires its cursor, retaining global
+  deduplication and totals. A file that can't be opened or read is `failed`.
+- Every file batch obtains a Node write transaction, re-reads its current cursor,
+  and atomically commits totals, deduplication, windows and offset. A rollback
+  advances none of them. Complete newline-terminated JSONL records only: retain
+  the offset before a partial final line and pick it up next time.
+- **Only usage-bearing lines can be problems.** Claude Code and Codex add new
+  line types often, so every line that isn't a Claude Code assistant message with
+  usage or a Codex `token_count` event is skipped and counted, whatever its type
+  (including valid JSON that isn't an object). A problem line is a usage-bearing
+  line that can't be read (bad numbers, missing ids or timestamp, no Codex
+  session), a line that isn't JSON at all, or an oversized line. Counts of usage,
+  skipped and problem lines are kept per file and summed in the status, so a
+  format change shows up as rising problem counts instead of silent zeros.
+- **Bounded history.** Discovery only registers logs modified within the window
+  (35 days, the plan's 4-week base plus a week; `windowDays`). Usage lines older
+  than the horizon (window plus a 7-day margin) are skipped, because their dedup
+  rows may already be gone. Each refresh prunes, in one transaction: Claude
+  dedup rows older than the horizon; a Codex session's snapshots and dedup rows
+  once its newest snapshot is older than the horizon (a session that spans the
+  horizon keeps all of them, since each day's share is the difference from the
+  previous snapshot; days past the horizon serve only as its baseline); and the
+  cursors of fully read logs last modified before the window. Daily totals in
+  `own_usage` are never pruned.
+- Default work cap: **64 log files and 4 MiB total read bytes per refresh** across
+  both agents, including at most 1 KiB of anchor verification/update per file.
+  The byte option has a 64 KiB minimum to guarantee bounded-line progress.
+  Maximum line size is the smaller of 1 MiB and half the configured byte budget;
+  larger lines are discarded through their newline and flagged, never buffered
+  in persistent state. A file/byte cap leaves pending=true and continues next
+  refresh through a durable round-robin path cursor. Catalog reads use bounded
+  keyset pages. Discovery visits at most 4096 entries per source per refresh,
+  with a durable directory queue and entry index; one OS directory listing is
+  materialized at a time. Links are not traversed; opened files must resolve
+  inside the selected source root. Discovery cycles repeat to find new files.
+- Scope `own-usage` settings store `scan.<agent>.<root hash>` (queue), `last-file`
+  (round-robin cursor) and `status.<agent>` (latest API status). **Unreadable**
+  means no usage could be read for that agent: a missing folder, no logs in the
+  window, or logs where nothing usage-bearing could be read (only problem lines
+  or failed files). It never means "saw a new line type". Known counts stay
+  available; consumers must consult status. `partial` means bounded pending
+  work; `readable` means everything tracked has been read, with any problem
+  lines visible in the counts. Recorded counts are reported, `estimated=0`; this reader invents no
+  transcript-based estimates. The fixed weekly budget fallback is a later ticket.
+
+Plan room is observation only: `usage_windows` keeps the latest timestamped
+Codex primary/secondary used_percent and reset epoch, or Claude
+`rate_limit_event.rate_limit_info` utilization (fraction converted to percent),
+resetsAt and allowlisted status/window type. Missing/null usage can still carry
+a window update. No status strings outside the closed set, log text or account
+details are saved. Missing information returns no window, not inferred room.
+Claude transcripts need not contain these events; no real local transcripts
+were inspected to claim their availability. Cap policy, pausing, model choice,
+session invisibility and token levers remain in their owning tickets.
 
 ## Tables in hooks.db
 
@@ -345,6 +536,26 @@ text because their owning delivery/adapter/job contracts evolve independently.
   shared, exclusive-create metadata, not a shared database writer.
 
 ## Changes
+
+- Step 2 review: the research scripts under `evaluate/` no longer write to the
+  record. Unknown line types are skipped and counted instead of making an agent
+  unreadable; `usage_files` keeps line counts in place of the `recognized` and
+  `problem` flags. Discovery and dedup storage are bounded by a 35-day window
+  with a 7-day margin, with pruning. `model_calls` gains `kind` and `session_id`
+  in migration 2: interactive launches carry no invented numbers and are left
+  out of MEX's spend. The usage warning waits for process exit.
+
+- Version 2 adds record.db migration 2: `usage_files`, `usage_events`,
+  `usage_snapshots`, `usage_windows` and the source-root/path index. The reason
+  is restart-safe incremental deduplication and plan-room observations without
+  storing transcript text. Existing version-1 tables/data and hooks schema stay
+  unchanged; Go recognizes additive record schema 2 for its existing reads.
+- Added the fail-open call writer, kept-call-site inventory, UTC totals, exact
+  per-agent token mapping, unreadable status and bounded incremental rules.
+- Record opens load `node:sqlite` lazily through `createRequire`, preserving
+  the builtin protocol through the existing bundle target and the CLI's quiet
+  startup. Only SQLite's experimental warning is suppressed during that load;
+  other warnings and record/schema error handling are retained.
 
 - Version 1 specifies the first shipped schemas, transactional migrations,
   exact columns/keys/constraints, table ownership and typed opening APIs.

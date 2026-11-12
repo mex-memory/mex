@@ -20,15 +20,15 @@ function open(home = temp()) { const record = openRecord({ home, isNetwork: () =
 import { git, fixtureRepos } from "./fixtures/repos.js";
 
 describe("record schema and ownership", () => {
-  it("creates every Node-owned table with WAL, version 1, and idempotent project/checkout registration", () => {
+  it("creates every Node-owned table with WAL, version 2, and idempotent project/checkout registration", () => {
     const directory = temp(); const project = temp();
     const writer = openRecord({ home: directory, projectPath: project, isNetwork: () => false }); closes.push(() => writer.close());
     writer.register(projectIdentity(project));
-    expect(schemaVersion(writer.db)).toBe(1);
+    expect(schemaVersion(writer.db)).toBe(2);
     expect(writer.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("wal");
     expect(writer.db.prepare("PRAGMA busy_timeout").get()!.timeout).toBe(5000);
     expect(writer.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all().map((row) => row.name))
-      .toEqual(["checkouts", "counters_node", "installs", "job_results", "jobs", "judgements", "model_calls", "notices", "own_usage", "projects", "review", "settings"]);
+      .toEqual(["checkouts", "counters_node", "installs", "job_results", "jobs", "judgements", "model_calls", "notices", "own_usage", "projects", "review", "settings", "usage_events", "usage_files", "usage_snapshots", "usage_windows"]);
     expect(writer.db.prepare("SELECT count(*) n FROM checkouts").get()!.n).toBe(1);
     expect(writer.project(projectIdentity(project).id)?.kind).toBe("folder");
     expect(existsSync(join(directory, "projects"))).toBe(false);
@@ -49,7 +49,7 @@ describe("record schema and ownership", () => {
       const home = temp(); const file = join(home, "record.db"); const db = new DatabaseSync(file);
       if (synthetic) db.exec("CREATE TABLE settings(scope TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(scope,key)); INSERT INTO settings VALUES('global','kept','yes')");
       db.close(); const writer = open(home);
-      expect(schemaVersion(writer.db)).toBe(1);
+      expect(schemaVersion(writer.db)).toBe(2);
       if (synthetic) expect(writer.setting("global", "kept")).toBe("yes");
     }
   });
@@ -58,7 +58,7 @@ describe("record schema and ownership", () => {
     expect(() => migrateRecord(db, [{ version: 1, sql: "CREATE TABLE partial(n); INSERT INTO no_such_table VALUES(1)" }])).toThrow();
     expect(schemaVersion(db)).toBe(0);
     expect(db.prepare("SELECT name FROM sqlite_schema WHERE name='partial'").get()).toBeUndefined();
-    migrateRecord(db); expect(schemaVersion(db)).toBe(1);
+    migrateRecord(db); expect(schemaVersion(db)).toBe(2);
   });
   it("refuses to write a newer schema, reports it to readers, and reads older tables without migrating", () => {
     const writer = open(); const home = writer.location.home;
@@ -83,6 +83,12 @@ describe("record schema and ownership", () => {
     expect(() => reader.all("INSERT INTO sessions VALUES('two') RETURNING *")).toThrow(/readonly/i);
     expect(() => reader.all("PRAGMA query_only=OFF")).not.toThrow();
     expect(() => reader.all("DELETE FROM sessions RETURNING *")).toThrow(/readonly/i);
+  });
+  it("keeps the supported hooks version at 1 when record.db advances to 2", () => {
+    const home = temp(); const db = new DatabaseSync(join(home, "hooks.db"));
+    db.exec("PRAGMA user_version=2"); db.close();
+    const reader = openHooksReadOnly({ home, isNetwork: () => false })!; closes.push(() => reader.close());
+    expect(reader.diagnostic).toContain("hooks.db schema version 2 is newer than supported version 1");
   });
 });
 

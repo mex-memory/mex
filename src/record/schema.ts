@@ -1,5 +1,5 @@
 /** Node alone owns these numbered, forward-only record.db migrations. */
-export const RECORD_SCHEMA_VERSION = 1;
+export const RECORD_SCHEMA_VERSION = 2;
 export interface Migration { version: number; sql: string; }
 export const recordMigrations: readonly Migration[] = [{ version: 1, sql: `
 CREATE TABLE IF NOT EXISTS projects (
@@ -59,4 +59,37 @@ CREATE TABLE IF NOT EXISTS counters_node (
  day TEXT NOT NULL, name TEXT NOT NULL, value INTEGER NOT NULL CHECK(value>=0), PRIMARY KEY(day,name)
 );
 CREATE TABLE IF NOT EXISTS settings (scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(scope,key));
+` }, { version: 2, sql: `
+CREATE TABLE usage_files (
+ path TEXT PRIMARY KEY, agent TEXT NOT NULL CHECK(agent IN ('claude','codex')),
+ root TEXT NOT NULL,
+ identity TEXT NOT NULL DEFAULT '', offset INTEGER NOT NULL DEFAULT 0 CHECK(offset>=0),
+ size INTEGER NOT NULL DEFAULT 0 CHECK(size>=0),
+ anchor TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT '{}',
+ mtime TEXT NOT NULL DEFAULT '',
+ usage_lines INTEGER NOT NULL DEFAULT 0 CHECK(usage_lines>=0),
+ skipped_lines INTEGER NOT NULL DEFAULT 0 CHECK(skipped_lines>=0),
+ problem_lines INTEGER NOT NULL DEFAULT 0 CHECK(problem_lines>=0),
+ failed INTEGER NOT NULL DEFAULT 0 CHECK(failed IN (0,1))
+);
+CREATE INDEX usage_files_root_path ON usage_files(root,path);
+CREATE TABLE usage_events (
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex')), event_id TEXT NOT NULL, day TEXT NOT NULL,
+ input INTEGER NOT NULL CHECK(input>=0), cache_write INTEGER NOT NULL CHECK(cache_write>=0),
+ cache_read INTEGER NOT NULL CHECK(cache_read>=0), output INTEGER NOT NULL CHECK(output>=0),
+ PRIMARY KEY(agent,event_id)
+);
+CREATE TABLE usage_windows (
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex')), window TEXT NOT NULL, observed_at TEXT NOT NULL,
+ used_percent REAL CHECK(used_percent>=0 AND used_percent<=100), resets_at TEXT,
+ status TEXT CHECK(status IN ('allowed','allowed_warning','rejected')),
+ PRIMARY KEY(agent,window)
+);
+ALTER TABLE model_calls ADD COLUMN kind TEXT NOT NULL DEFAULT 'headless' CHECK(kind IN ('headless','interactive'));
+ALTER TABLE model_calls ADD COLUMN session_id TEXT;
+CREATE TABLE usage_snapshots (
+ session_id TEXT NOT NULL, day TEXT NOT NULL,
+ input INTEGER NOT NULL CHECK(input>=0), cache_read INTEGER NOT NULL CHECK(cache_read>=0),
+ output INTEGER NOT NULL CHECK(output>=0), PRIMARY KEY(session_id,day)
+);
 ` }];

@@ -1,4 +1,5 @@
 import crossSpawn from "cross-spawn";
+import { recordInteractiveLaunch } from "../record/usage.js";
 import { execFile, type ChildProcess } from "node:child_process";
 import { buildAgentCommand } from "../agent-command.js";
 import { AI_TOOLS, type AiTool } from "../types.js";
@@ -146,6 +147,7 @@ function runInteractiveAgent(
       options.signal?.removeEventListener("abort", stop);
       cleanup ??= startCleanup();
       await cleanup;
+      recordInteractiveLaunch({ agent: tool, purpose: "setup.interactive", projectPath: cwd });
       const cleanupWarning = "MEX could not verify that the agent's helper processes stopped. Close any remaining agent sessions before resuming setup.";
       if (wasCancelled || options.signal?.aborted || signal === "SIGINT") resolve({ ...cancelled(), exitCode, signal,
         ...(!cleanupVerified ? { message: `AI population was cancelled. ${cleanupWarning}` } : {}) });

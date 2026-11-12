@@ -18,6 +18,9 @@ import (
 )
 
 const SchemaVersion = 1
+
+// Node's additive usage-reader migration does not change the tables read here.
+const RecordSchemaVersion = 2
 const ReaderBusyTimeoutMS = 10
 const WriterBusyTimeoutMS = 200
 const WriterOperationTimeout = 250 * time.Millisecond
@@ -37,8 +40,12 @@ func schemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	return version, err
 }
 
-func futureSchema(file string, version int) error {
-	return fmt.Errorf("%s schema version %d is newer than supported version %d; refusing to write; upgrade MEX", file, version, SchemaVersion)
+func futureSchema(file string, version int, known ...int) error {
+	supported := SchemaVersion
+	if len(known) > 0 {
+		supported = known[0]
+	}
+	return fmt.Errorf("%s schema version %d is newer than supported version %d; refusing to write; upgrade MEX", file, version, supported)
 }
 
 // Each numbered migration has its own transaction including user_version.
@@ -113,6 +120,11 @@ func openDatabase(path string, readOnly bool) (*sql.DB, error) {
 	query.Add("_pragma", "foreign_keys(1)")
 	if readOnly {
 		query.Add("_pragma", "query_only(1)")
+	} else {
+		// WAL with NORMAL sync: commits don't wait on a disk flush while holding the
+		// write lock, so concurrent hooks don't starve on a busy disk. A process crash
+		// loses nothing; only a power loss can drop the last few receipts.
+		query.Add("_pragma", "synchronous(1)")
 	}
 	uri.RawQuery = query.Encode()
 	db, err := sql.Open("sqlite", uri.String())
@@ -275,8 +287,8 @@ func OpenRecord(location Location) (*Reader, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ReaderOperationTimeout)
 	defer cancel()
 	version, err := schemaVersion(ctx, db)
-	if err == nil && version > SchemaVersion {
-		err = futureSchema("record.db", version)
+	if err == nil && version > RecordSchemaVersion {
+		err = futureSchema("record.db", version, RecordSchemaVersion)
 	}
 	if err != nil {
 		_ = db.Close()

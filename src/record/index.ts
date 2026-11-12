@@ -1,4 +1,5 @@
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import type { DatabaseSync, SQLInputValue } from "node:sqlite";
+import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { recordLocation, moveProjectData, type LocationOptions, type RecordLocation } from "./location.js";
@@ -15,11 +16,26 @@ export interface ProjectRow { id: string; root_path: string; kind: "git" | "fold
 export interface CheckoutRow { project_id: string; path: string; state: "on" | "off" | "off until"; off_until: string | null; provisional: "unborn" | "shallow" | null; }
 export interface SessionRow { session_id: string; agent: string; project_id: string; checkout: string; started_at: string; last_seen_at: string; paused: number; }
 
+const require = createRequire(import.meta.url);
+/** Keep the builtin protocol through bundling and defer SQLite until an actual open. */
+function database(file: string, readOnly = false): DatabaseSync {
+  const original = process.emitWarning;
+  process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
+    const message = typeof warning === "string" ? warning : warning.message;
+    if (/SQLite is an experimental feature/i.test(message)) return;
+    Reflect.apply(original, process, [warning, ...args]);
+  }) as typeof process.emitWarning;
+  try {
+    const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+    return new DatabaseSync(file, { readOnly });
+  } finally { process.emitWarning = original; }
+}
+
 export function schemaVersion(db: DatabaseSync): number {
   return Number(db.prepare("PRAGMA user_version").get()!.user_version);
 }
-function newer(file: string, version: number): Error {
-  return new Error(`${file} schema version ${version} is newer than supported version ${RECORD_SCHEMA_VERSION}; refusing to write. Upgrade MEX.`);
+function newer(file: string, version: number, supported = RECORD_SCHEMA_VERSION): Error {
+  return new Error(`${file} schema version ${version} is newer than supported version ${supported}; refusing to write. Upgrade MEX.`);
 }
 
 /** Each migration obtains the write lock, rechecks the version, and commits SQL + version together. */
@@ -47,7 +63,8 @@ export class RecordReader {
   constructor(protected readonly db: DatabaseSync, file: string) {
     db.exec(`PRAGMA busy_timeout=${READER_TIMEOUT_MS}; PRAGMA query_only=ON`);
     this.version = schemaVersion(db);
-    this.diagnostic = this.version > RECORD_SCHEMA_VERSION ? newer(file, this.version).message : undefined;
+    const supported = file === "hooks.db" ? 1 : RECORD_SCHEMA_VERSION;
+    this.diagnostic = this.version > supported ? newer(file, this.version, supported).message : undefined;
   }
   get<T>(sql: string, ...values: SQLInputValue[]): T | undefined { return this.db.prepare(sql).get(...values) as T | undefined; }
   all<T>(sql: string, ...values: SQLInputValue[]): T[] { return this.db.prepare(sql).all(...values) as T[]; }
@@ -153,11 +170,12 @@ export class RecordWriter {
 /** A command explicitly opens its writable record; existing commands are not changed by this module. */
 export function openRecord(options: LocationOptions & { projectPath?: string; git?: GitRunner } = {}): RecordWriter {
   const location = recordLocation(options);
-  const db = new DatabaseSync(location.record);
+  const db = database(location.record);
   try {
     db.exec(`PRAGMA busy_timeout=${WRITER_TIMEOUT_MS}`);
     if (schemaVersion(db) > RECORD_SCHEMA_VERSION) throw newer("record.db", schemaVersion(db));
-    db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON");
+    // NORMAL sync in WAL: a crash loses nothing; a power loss can drop the last commits, and a job then redoes one batch.
+    db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON");
     migrateRecord(db);
     const writer = new RecordWriter(db, location);
     if (options.projectPath) {
@@ -171,7 +189,7 @@ export function openRecord(options: LocationOptions & { projectPath?: string; gi
 
 function readOnly(file: string, name: string): RecordReader | undefined {
   if (!existsSync(file)) return undefined;
-  const db = new DatabaseSync(file, { readOnly: true });
+  const db = database(file, true);
   try { return new RecordReader(db, name); } catch (error) { db.close(); throw error; }
 }
 export function openRecordReadOnly(options: LocationOptions = {}): RecordReader | undefined {
