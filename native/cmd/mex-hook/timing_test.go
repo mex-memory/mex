@@ -66,7 +66,8 @@ func buildBinaries(t *testing.T) (shim, floor string) {
 
 func callOnce(t *testing.T, bin string) time.Duration {
 	t.Helper()
-	cmd := exec.Command(bin)
+	// The bare process ignores its arguments; the shim parses the payload.
+	cmd := exec.Command(bin, "claude-code", "PreToolUse")
 	cmd.Stdin = bytes.NewBufferString(payload)
 	var out bytes.Buffer
 	cmd.Stdout = &out

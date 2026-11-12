@@ -31,3 +31,4 @@ scripts/release-benchmark/*.mjs text eol=lf
 # Go sources stay LF so gofmt agrees on every OS.
 native/**/*.go text eol=lf
 native/go.mod text eol=lf
+native/**/testdata/** text eol=lf

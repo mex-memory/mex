@@ -1,0 +1,13 @@
+{
+  "agent": "claude-code",
+  "agent_version": "",
+  "kind": "session_start",
+  "session_id": "5f0c2a1e-1b7d-4c55-9a43-2e0f1c7d9b10",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "source": "compact",
+  "transcript": "/home/dev/.claude/projects/-home-dev-shop/5f0c2a1e-1b7d-4c55-9a43-2e0f1c7d9b10.jsonl",
+  "background": false
+}

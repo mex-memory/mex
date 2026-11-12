@@ -6,8 +6,15 @@
 package hook
 
 import (
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"time"
+
+	"github.com/mex-memory/mex/native/internal/adapter"
+	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
+	"github.com/mex-memory/mex/native/internal/contract"
 )
 
 // Version is set at build time with -ldflags "-X .../hook.Version=...".
@@ -52,10 +59,48 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 		return 0
 	}
 
-	_, _ = readPayload(stdin, readTimeout)
+	payload, ok := readPayload(stdin, readTimeout)
 
-	_, _ = stdout.Write(emptyReply)
+	// Registered command lines are `mex-hook <agent> <event>`.
+	if len(args) < 2 {
+		_, _ = stdout.Write(emptyReply)
+		return 0
+	}
+	agent, nativeEvent := args[0], args[1]
+	if dir := getenv("MEX_HOOK_RECORD"); dir != "" && ok {
+		record(dir, agent, nativeEvent, payload)
+	}
+	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok))
 	return 0
+}
+
+// handle turns one payload into the agent's reply. Nothing behind the shim
+// produces replies yet, so the reply is always empty.
+func handle(agent, nativeEvent string, payload []byte, ok bool) []byte {
+	profile, found := adapter.Lookup(agent)
+	if !found {
+		return emptyReply
+	}
+	if !ok {
+		return profile.EmptyReply(nativeEvent)
+	}
+	ev, err := profile.Parse(nativeEvent, payload)
+	if err != nil {
+		return profile.EmptyReply(nativeEvent)
+	}
+	out, _ := profile.Render(ev, contract.Reply{})
+	return out
+}
+
+// record saves a raw payload for building fixtures. Only runs when the person
+// sets MEX_HOOK_RECORD; payloads can hold private session text.
+func record(dir, agent, nativeEvent string, payload []byte) {
+	folder := filepath.Join(dir, filepath.Base(agent))
+	if os.MkdirAll(folder, 0o700) != nil {
+		return
+	}
+	name := fmt.Sprintf("%s-%d.json", filepath.Base(nativeEvent), time.Now().UnixNano())
+	_ = os.WriteFile(filepath.Join(folder, name), payload, 0o600)
 }
 
 // readPayload reads up to maxPayload bytes, then drains the rest so the agent
