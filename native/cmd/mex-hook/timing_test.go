@@ -53,7 +53,7 @@ func buildBinaries(t *testing.T) (shim, floor string) {
 	shim = filepath.Join(tmp, exe("mex-hook"))
 	goBuild(t, ".", shim)
 
-	src := filepath.Join(tmp, "floor")
+	src := filepath.Join(tmp, "floor-src")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
