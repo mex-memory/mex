@@ -27,6 +27,15 @@ continues throughout. New reports identify this method with
 `configuration.maintenanceObservation: "job-event-stream"`; earlier reports
 without that field used repeated job-status polling.
 
+## Startup diagnostics
+
+When small-fixture Hub startup crosses its budget, CI can run ten separate
+startup diagnostics after every release measurement has finished. These record
+wall time, process CPU, import time and aggregate synchronous filesystem/child
+process time. They contain fixed numeric fields and checkout identity, never
+paths, arguments or bootstrap tokens. Diagnostic runs do not contribute samples
+to a release report or change its verdict, budgets or confirmation policy.
+
 ## Separate graph characterization
 
 Run `node scripts/release-benchmark/graph-characterization.mjs --smoke` to verify

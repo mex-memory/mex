@@ -73,7 +73,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run test
+      # Preserve the CLI suite's test-mode build and deadline before parallel
+      # suites consume the same dist workers and grammar files.
+      - name: Build app before parallel tests
+        run: npm run build
+        timeout-minutes: 4
+        env:
+          NODE_ENV: test
+      - name: Test the completed app build
+        run: npm run test
+        env:
+          MEX_TEST_PREBUILT: '1'
       - name: Test isolated telemetry benchmark transport
         if: matrix.node-version == '22.22.0'
         run: npm run benchmark:telemetry:test
@@ -293,6 +303,14 @@ jobs:
           REQUIRED="$(node scripts/release-benchmark/ci-orchestrator.mjs retry-required --manifest test-results/release-benchmark/attempt-1/manifest.json)"
           echo "requires_confirmation=$REQUIRED" >> "$GITHUB_OUTPUT"
           echo "artifact_name=release-performance-attempt-1-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Diagnose small-fixture startup after measurements
+        if: steps.decision.outputs.requires_confirmation == 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: >-
+          node scripts/release-benchmark/startup-diagnostic.mjs
+          --report test-results/release-benchmark/attempt-1/report.attempt-1.json
+          --output test-results/release-benchmark/attempt-1/startup-diagnostic.json
       - name: Upload first release benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -335,6 +353,13 @@ jobs:
         id: evidence
         shell: bash
         run: echo "artifact_name=release-performance-attempt-2-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Diagnose small-fixture confirmation startup after measurements
+        continue-on-error: true
+        timeout-minutes: 5
+        run: >-
+          node scripts/release-benchmark/startup-diagnostic.mjs
+          --report test-results/release-benchmark/attempt-2/report.attempt-2.json
+          --output test-results/release-benchmark/attempt-2/startup-diagnostic.json
       - name: Upload second release benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
