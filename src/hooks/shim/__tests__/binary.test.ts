@@ -15,7 +15,9 @@ import {
 import { runNodeHook } from "../node-hook.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const hasGo = spawnSync("go", ["version"], { encoding: "utf8" }).status === 0;
+// Building the real binary is slow and CPU-heavy, so it runs only when asked
+// (the Go CI job sets this), not inside the parallel Node suite.
+const realBinary = process.env.MEX_TEST_REAL_HOOK_BINARY === "1" && spawnSync("go", ["version"], { encoding: "utf8" }).status === 0;
 
 let tmp: string;
 beforeAll(() => {
@@ -161,7 +163,7 @@ describe("Node fallback", () => {
   });
 });
 
-describe.skipIf(!hasGo)("with the real Go binary", () => {
+describe.skipIf(!realBinary)("with the real Go binary", () => {
   let built: string;
   beforeAll(() => {
     built = join(tmp, "real", binaryFileName());

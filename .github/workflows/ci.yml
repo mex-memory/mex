@@ -136,6 +136,19 @@ jobs:
         run: |
           node scripts/build-hook-binaries.mjs
           npm/hook-linux-x64/bin/mex-hook --self-test | grep '"ok":true'
+      - uses: actions/setup-node@v5
+        if: runner.os == 'Linux'
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - name: Node fallback against the real binary
+        if: runner.os == 'Linux'
+        working-directory: .
+        env:
+          MEX_TEST_REAL_HOOK_BINARY: '1'
+        run: |
+          npm ci
+          npx vitest run src/hooks/shim/__tests__/binary.test.ts
 
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install
