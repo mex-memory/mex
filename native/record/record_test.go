@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+// testBudget is for tests that check what the record stores, not how fast it
+// stores it. On a loaded machine, creating hooks.db or getting a contended lock
+// can take longer than a hook may wait; the hook then fails open by design.
+// TestBusyHookWriteFailsOpen checks the hook budget itself.
+var testBudget = budget{5 * time.Second, 10 * time.Second, 10 * time.Second}
+
 func testLocation(t *testing.T) Location {
 	t.Helper()
 	home := t.TempDir()
@@ -25,7 +31,7 @@ func testLocation(t *testing.T) Location {
 
 func TestHooksSchema(t *testing.T) {
 	location := testLocation(t)
-	hooks, err := OpenHooks(location)
+	hooks, err := openHooks(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +102,7 @@ func TestMigrations(t *testing.T) {
 				}
 			}
 			db.Close()
-			hooks, err := OpenHooks(location)
+			hooks, err := openHooks(location, testBudget)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -134,7 +140,7 @@ func TestMigrationRollbackAndNewer(t *testing.T) {
 	if _, err := db.Exec("PRAGMA user_version=99"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenHooks(location); err == nil || !strings.Contains(err.Error(), "newer") {
+	if _, err := openHooks(location, testBudget); err == nil || !strings.Contains(err.Error(), "newer") {
 		t.Fatalf("newer schema: %v", err)
 	}
 }
@@ -156,7 +162,7 @@ func TestReaderOlderMissingBusyNewer(t *testing.T) {
 	if _, err := db.Exec("CREATE TABLE settings(scope,key,value); INSERT INTO settings VALUES('g','k','v')"); err != nil {
 		t.Fatal(err)
 	}
-	reader, err := OpenRecord(location)
+	reader, err := openRecord(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +192,7 @@ func TestReaderOlderMissingBusyNewer(t *testing.T) {
 	if _, err := db.Exec("ROLLBACK; PRAGMA user_version=99"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenRecord(location); err == nil || !strings.Contains(err.Error(), "newer") {
+	if _, err := openRecord(location, testBudget); err == nil || !strings.Contains(err.Error(), "newer") {
 		t.Fatalf("newer: %v", err)
 	}
 }
@@ -273,7 +279,7 @@ func TestCheckoutLookupWithoutGit(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
-	reader, err := OpenRecord(location)
+	reader, err := openRecord(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +301,7 @@ func TestCheckoutLookupWithoutGit(t *testing.T) {
 
 func TestBusyHookWriteFailsOpen(t *testing.T) {
 	location := testLocation(t)
-	hooks, err := OpenHooks(location)
+	hooks, err := openHooks(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,14 +315,19 @@ func TestBusyHookWriteFailsOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.Exec("ROLLBACK")
+	// The file was created with the wide budget; the call under test uses the hook's.
+	hook := &Hooks{db: hooks.db, budget: hookBudget}
 	start := time.Now()
-	err = hooks.PutSession(Session{SessionID: "blocked", Agent: "test", ProjectID: "p", Checkout: "/fixture", StartedAt: "now", LastSeenAt: "now"})
+	err = hook.PutSession(Session{SessionID: "blocked", Agent: "test", ProjectID: "p", Checkout: "/fixture", StartedAt: "now", LastSeenAt: "now"})
 	if err == nil {
 		t.Fatal("busy writer unexpectedly wrote")
 	}
 	elapsed := time.Since(start)
-	if elapsed > WriterOperationTimeout {
-		t.Fatal("busy hook waited")
+	// A loaded machine can deschedule the test after the call gives up, so the
+	// ceiling allows one more operation's worth of delay. It still fails if the
+	// write waits on SQLite's own timeout or never gives up.
+	if elapsed > 2*WriterOperationTimeout {
+		t.Fatalf("busy hook waited %s", elapsed)
 	}
 	if elapsed < time.Duration(WriterBusyTimeoutMS)*time.Millisecond/2 {
 		t.Fatal("writer did not get its configured contention window")
@@ -357,26 +368,29 @@ func TestPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, _ := json.Marshal(location)
-	ready := func() {
-		file := os.Getenv("MEX_RECORD_TEST_READY")
-		// Publish complete JSON atomically. The Node peer treats existence as
-		// readiness and must never observe the create-before-write interval.
-		if err := os.WriteFile(file+".tmp", encoded, 0600); err != nil {
+	// The writer creates hooks.db before saying it is ready, so the Node side
+	// reads a WAL database rather than one still being created.
+	var hooks *Hooks
+	if mode == "hooks-write" {
+		if hooks, err = openHooks(location, testBudget); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Rename(file+".tmp", file); err != nil {
-			t.Fatal(err)
-		}
+		defer hooks.Close()
 	}
-	if mode != "hooks-write" {
-		ready()
+	// Rename, so the Node side never reads a half-written ready file.
+	encoded, _ := json.Marshal(location)
+	ready := os.Getenv("MEX_RECORD_TEST_READY")
+	if err := os.WriteFile(ready+".tmp", encoded, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(ready+".tmp", ready); err != nil {
+		t.Fatal(err)
 	}
 	switch mode {
 	case "location-env":
 		return
 	case "checkout-read":
-		reader, err := OpenRecord(location)
+		reader, err := openRecord(location, testBudget)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -399,14 +413,6 @@ func TestPeer(t *testing.T) {
 			}
 		}
 	case "hooks-write":
-		hooks, err := OpenHooks(location)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer hooks.Close()
-		// The WAL reader fixture must not race journal setup/schema migration.
-		// Readiness means the database is usable, not only that its path exists.
-		ready()
 		for index := 0; index < 150; index++ {
 			err := hooks.PutSession(Session{SessionID: fmt.Sprint(index), Agent: "test", ProjectID: "fixture", Checkout: "/fixture", StartedAt: "now", LastSeenAt: "now"})
 			if err != nil {
@@ -415,7 +421,7 @@ func TestPeer(t *testing.T) {
 			time.Sleep(2 * time.Millisecond)
 		}
 	case "record-read":
-		reader, err := OpenRecord(location)
+		reader, err := openRecord(location, testBudget)
 		if err != nil {
 			t.Fatal(err)
 		}

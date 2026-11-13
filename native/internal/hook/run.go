@@ -125,6 +125,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	}
 	sessionStart = ev.Kind == contract.SessionStart
 	h.beat(agent, ev.SessionID, ev.Cwd, ev.Kind == contract.SessionStart, now)
+	noteEdit(ev)
 	out, _ := profile.Render(ev, contract.Reply{})
 	return out
 }

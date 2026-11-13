@@ -1,4 +1,4 @@
-package record
+package place
 
 import (
 	"errors"
@@ -25,15 +25,16 @@ type LocationOptions struct {
 	ReadOnly  bool
 }
 
-func homeDir() (string, error) {
+// HomeDir is MEX's home: MEX_HOME/.mex when MEX_HOME is set, else ~/.mex.
+func HomeDir() (string, error) {
 	if override := strings.TrimSpace(os.Getenv("MEX_HOME")); override != "" {
-		return absolutePath(filepath.Join(override, ".mex"))
+		return AbsolutePath(filepath.Join(override, ".mex"))
 	}
 	user, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return absolutePath(filepath.Join(user, ".mex"))
+	return AbsolutePath(filepath.Join(user, ".mex"))
 }
 
 func cacheRoot() (string, error) {
@@ -72,7 +73,7 @@ func readPointer(pointer string) string {
 	if !filepath.IsAbs(text) || strings.ContainsRune(text, 0) {
 		return ""
 	}
-	candidate, err := absolutePath(text)
+	candidate, err := AbsolutePath(text)
 	if err != nil {
 		return ""
 	}
@@ -96,7 +97,7 @@ func pointerDirectory(pointer, home, cache string) string {
 }
 
 func locationPath(path string) (string, error) {
-	existing, err := absolutePath(path)
+	existing, err := AbsolutePath(path)
 	if err != nil {
 		return "", err
 	}
@@ -107,12 +108,12 @@ func locationPath(path string) (string, error) {
 		}
 		parent := filepath.Dir(existing)
 		if parent == existing {
-			return absolutePath(path)
+			return AbsolutePath(path)
 		}
 		suffix = append([]string{filepath.Base(existing)}, suffix...)
 		existing = parent
 	}
-	real, err := realPath(existing)
+	real, err := RealPath(existing)
 	if err != nil {
 		return "", err
 	}
@@ -124,9 +125,9 @@ func ResolveLocation(options LocationOptions) (Location, error) {
 	var home string
 	var err error
 	if options.Home != "" {
-		home, err = absolutePath(options.Home)
+		home, err = AbsolutePath(options.Home)
 	} else {
-		home, err = homeDir()
+		home, err = HomeDir()
 	}
 	if err != nil {
 		return Location{}, err
@@ -154,7 +155,7 @@ func ResolveLocation(options LocationOptions) (Location, error) {
 			return Location{}, err
 		}
 	}
-	cache, err = locationPath(filepath.Join(cache, shortHash(home)))
+	cache, err = locationPath(filepath.Join(cache, ShortHash(home)))
 	if err != nil {
 		return Location{}, err
 	}

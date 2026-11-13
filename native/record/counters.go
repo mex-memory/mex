@@ -10,7 +10,8 @@ import (
 // OpenHookCounters applies the usage budget to opening and migration as well as
 // writes. Contention must skip measurement rather than delay an agent hook.
 func OpenHookCounters(location Location) (*Hooks, error) {
-	return openHooks(location, 1, 10*time.Millisecond, true)
+	limits := budget{writerBusy: time.Millisecond, writer: 10 * time.Millisecond, reader: ReaderOperationTimeout}
+	return openHookDatabase(location, limits, true)
 }
 
 // RecordHookUsage writes only bounded usage counts. No payload, path or session ID

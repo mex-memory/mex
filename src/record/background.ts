@@ -7,6 +7,7 @@ import { recordLocation, type LocationOptions } from "./location.js";
 import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJobs, requeueReadyJobs, runOneBatch, type EnqueueOptions, type EnqueueResult } from "./jobs.js";
 import "./job-kinds.js";
 import { sendUsageReports } from "../telemetry/reporting.js";
+import { indexPending, queuePendingRefreshes } from "../file-index/pending.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
@@ -127,7 +128,7 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     const row = lease(writer);
     const live = leaseLive(row, settings);
     if (live && row.version === VERSION) return { started: false, reason: "running" };
-    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never })) {
+    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory)) {
       clearPending(writer);
       return { started: false, reason: "no-work" };
     }
@@ -248,6 +249,8 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
         try { await sendUsageReports(writer, clock()); } catch { /* Usage reporting never stops product jobs. */ }
       }
       requeueReadyJobs(writer);
+      // Files the hook saw edited get re-parsed.
+      queuePendingRefreshes(writer);
       const outcome = await runOneBatch(writer, self);
       if (outcome === "ran") { lastWork = clock(); continue; }
       const hubOpen = row.hub_until !== null && Date.parse(row.hub_until) > clock();

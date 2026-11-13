@@ -2,6 +2,7 @@ import { appendFileSync, existsSync } from "node:fs";
 import { registerJobKind, type BatchResult } from "./jobs.js";
 import { refreshOwnUsage, type OwnUsageOptions } from "./own-usage.js";
 import "../telemetry/reporting.js";
+import "../file-index/job.js";
 
 /**
  * Built-in job kinds. Later tickets add theirs (learning, judging, graph builds) the

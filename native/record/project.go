@@ -2,45 +2,12 @@ package record
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"os/exec"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
 )
-
-func shortHash(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])[:24]
-}
-
-func absolutePath(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	if runtime.GOOS == "windows" {
-		absolute = strings.Map(func(r rune) rune {
-			if r >= 'A' && r <= 'Z' {
-				return r + ('a' - 'A')
-			}
-			return r
-		}, absolute)
-	}
-	return filepath.Clean(absolute), nil
-}
-
-func realPath(path string) (string, error) {
-	real, err := platformRealPath(path)
-	if err != nil {
-		return "", err
-	}
-	return absolutePath(real)
-}
 
 type ProjectIdentity struct {
 	ID          string `json:"id"`

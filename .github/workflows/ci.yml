@@ -144,7 +144,7 @@ jobs:
         with:
           node-version: 22.22.0
           cache: npm
-      - name: Node fallback against the real binary
+      - name: Node fallback and file index against the real binary
         if: runner.os == 'Linux'
         working-directory: .
         env:
@@ -152,7 +152,7 @@ jobs:
         run: |
           npm ci
           # Keep other native process tests out of the capture deadline.
-          npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts
+          npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts src/file-index/__tests__/go-parity.test.ts
 
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install
