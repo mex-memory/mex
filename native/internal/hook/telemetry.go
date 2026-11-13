@@ -64,7 +64,7 @@ func recordHookUsage(h home, getenv Env, agent string, sessionStart, failed bool
 		return
 	}
 	for _, file := range []string{location.Hooks, location.Hooks + "-wal", location.Hooks + "-shm"} {
-		if info, err := os.Lstat(file); err == nil && !info.Mode().IsRegular() {
+		if info, err := os.Lstat(file); err == nil && (!info.Mode().IsRegular() || !singleTelemetryLink(file, info)) {
 			return
 		} else if err != nil && !os.IsNotExist(err) {
 			return
