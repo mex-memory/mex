@@ -98,6 +98,15 @@ var registry = map[string]Profile{}
 // Register adds a profile. Profiles register themselves in init.
 func Register(p Profile) { registry[p.Capabilities().Agent] = p }
 
+// Agents lists the registered agent ids.
+func Agents() []string {
+	out := make([]string, 0, len(registry))
+	for a := range registry {
+		out = append(out, a)
+	}
+	return out
+}
+
 // Lookup returns the profile for an agent id such as "claude-code".
 func Lookup(agent string) (Profile, bool) {
 	p, ok := registry[agent]

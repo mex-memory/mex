@@ -1,0 +1,13 @@
+{
+  "agent": "codex",
+  "agent_version": "",
+  "kind": "session_start",
+  "session_id": "01a1823f-9a65-7501-8207-3535ae7f6654",
+  "agent_id": "",
+  "cwd": "/probe/repo",
+  "project_id": "",
+  "checkout": "",
+  "source": "startup",
+  "transcript": "/probe/session.jsonl",
+  "background": false
+}

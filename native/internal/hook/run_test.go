@@ -190,3 +190,24 @@ func TestRecordSavesPayload(t *testing.T) {
 		t.Fatalf("recorded %q", got)
 	}
 }
+
+func TestCodexEventsReplyEmpty(t *testing.T) {
+	files, _ := filepath.Glob(filepath.Join("..", "adapter", "codex", "testdata", "payloads", "*.json"))
+	n := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, ".event.json") {
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, _, _ := strings.Cut(strings.TrimSuffix(filepath.Base(f), ".json"), "-")
+		code, out := run(t, []string{"codex", event}, bytes.NewReader(raw), noEnv)
+		assertEmptyReply(t, code, out)
+		n++
+	}
+	if n == 0 {
+		t.Fatal("no fixtures found")
+	}
+}

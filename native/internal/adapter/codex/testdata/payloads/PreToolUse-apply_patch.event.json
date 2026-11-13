@@ -1,0 +1,46 @@
+{
+  "agent": "codex",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "01a1823f-9a65-7501-8207-3535ae7f6654",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "patch",
+    "raw_name": "apply_patch",
+    "input": {
+      "files": [
+        {
+          "path": "/home/dev/shop/src/cart.ts",
+          "hunks": [
+            {
+              "old": "  return sum;\n",
+              "new": "  return sum - discount;\n"
+            }
+          ]
+        },
+        {
+          "path": "/home/dev/shop/src/discount.ts",
+          "hunks": [
+            {
+              "old": "",
+              "new": "export const discount = 0;\n"
+            }
+          ]
+        },
+        {
+          "path": "/home/dev/shop/src/old.ts",
+          "hunks": []
+        },
+        {
+          "path": "/home/dev/shop/src/new.ts",
+          "hunks": []
+        }
+      ]
+    }
+  },
+  "transcript": "/home/dev/.codex/sessions/rollout.jsonl",
+  "background": false
+}

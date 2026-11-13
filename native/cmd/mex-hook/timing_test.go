@@ -64,10 +64,15 @@ func buildBinaries(t *testing.T) (shim, floor string) {
 	return shim, floor
 }
 
+// mexHome is a throwaway MEX folder, so the timing runs include the heartbeat
+// write without touching the real ~/.mex.
+var mexHome string
+
 func callOnce(t *testing.T, bin string) time.Duration {
 	t.Helper()
 	// The bare process ignores its arguments; the shim parses the payload.
 	cmd := exec.Command(bin, "claude-code", "PreToolUse")
+	cmd.Env = append(os.Environ(), "MEX_HOME="+mexHome)
 	cmd.Stdin = bytes.NewBufferString(payload)
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -100,6 +105,10 @@ func TestNoOpTiming(t *testing.T) {
 		t.Skip("timing test skipped in -short mode")
 	}
 	shim, floor := buildBinaries(t)
+	mexHome = filepath.Join(t.TempDir(), "mex")
+	if err := os.MkdirAll(mexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	for range 10 { // warm the file cache and any antivirus scan
 		callOnce(t, shim)
