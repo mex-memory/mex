@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,18 +93,63 @@ type stats struct{ p50, p95, max time.Duration }
 
 func hookCount(t *testing.T, location localrecord.Location) int {
 	t.Helper()
-	db, err := sql.Open("sqlite", location.Hooks)
+	slash := filepath.ToSlash(location.Hooks)
+	if !strings.HasPrefix(slash, "/") {
+		slash = "/" + slash
+	}
+	uri := url.URL{Scheme: "file", Path: slash, RawQuery: "mode=ro"}
+	db, err := sql.Open("sqlite", uri.String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Do not hold a reader open while timing: that would keep WAL state alive
-	// across processes and change the production path being measured.
+	// Inspection must neither checkpoint/delete the warmed WAL nor hold a
+	// connection open while timing. Observe the actual counter-writer state.
 	defer db.Close()
 	var count int
 	if err := db.QueryRow("SELECT coalesce(sum(value),0) FROM counters_go WHERE name='agent:claude-code:hook.calls'").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count
+}
+
+func TestHookCountInspectionIsReadOnly(t *testing.T) {
+	location, err := localrecord.ResolveLocation(localrecord.LocationOptions{Home: t.TempDir(), Cache: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := localrecord.OpenHooks(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer initial.Close()
+	counters, err := localrecord.OpenHookCounters(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer counters.Close()
+	if err := initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := counters.RecordHookUsage("2026-11-13", "claude-code", false, false, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := counters.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(location.Hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := hookCount(t, location); count != 1 {
+		t.Fatalf("inspected count %d want 1", count)
+	}
+	after, err := os.ReadFile(location.Hooks)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("count inspection checkpointed or changed the database: %v", err)
+	}
+	if _, err := os.Stat(location.Hooks + "-wal"); err != nil {
+		t.Fatalf("count inspection removed the WAL: %v", err)
+	}
 }
 
 func summarize(s []time.Duration) stats {
