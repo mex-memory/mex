@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import crossSpawn from "cross-spawn";
+import { recordInteractiveLaunch } from "../record/usage.js";
 import { createInterface } from "node:readline";
 import type { MexConfig, SyncTarget, DriftIssue, AiTool } from "../types.js";
 import { AI_TOOLS } from "../types.js";
@@ -20,6 +21,7 @@ const INTERACTIVE_AI_TIMEOUT_MS = 15 * 60_000;
 export interface RunToolInteractiveOptions {
   /** Sync keeps its bounded default; setup passes null for a user-driven session. */
   timeoutMs?: number | null;
+  usagePurpose?: string;
 }
 
 function askUser(question: string): Promise<string> {
@@ -58,6 +60,7 @@ export function runToolInteractive(
     if (result.error) return false;
     return result.status === 0;
   } finally {
+    recordInteractiveLaunch({ agent: tool, purpose: options.usagePurpose ?? "sync.interactive", projectPath: cwd });
     session?.cleanup();
   }
 }
