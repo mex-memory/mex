@@ -38,6 +38,7 @@ type Env func(key string) string
 
 // Run handles one hook call and returns the process exit code, which is always 0.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (code int) {
+	started := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
 			code = 0
@@ -74,7 +75,10 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 	if dir := getenv("MEX_HOOK_RECORD"); dir != "" && ok {
 		record(dir, agent, nativeEvent, payload)
 	}
-	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok, homeFrom(getenv), time.Now()))
+	h := homeFrom(getenv)
+	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok, h, time.Now(), func(actual string, sessionStart, failed bool) {
+		recordHookUsage(h, getenv, actual, sessionStart, failed, time.Since(started))
+	}))
 	return 0
 }
 
@@ -84,9 +88,12 @@ var silent = []byte{}
 
 // handle turns one payload into the agent's reply. Nothing behind the shim
 // produces replies yet, so the reply is always empty.
-func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time.Time) []byte {
+func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time.Time, observe ...func(string, bool, bool)) []byte {
 	if !ok {
 		if p, found := adapter.Lookup(agent); found {
+			if len(observe) > 0 {
+				observe[0](agent, false, true)
+			}
 			return p.EmptyReply(nativeEvent)
 		}
 		return emptyReply
@@ -105,10 +112,18 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	if !found {
 		return emptyReply
 	}
+	sessionStart, failed := false, false
+	defer func() {
+		if len(observe) > 0 {
+			observe[0](agent, sessionStart, failed)
+		}
+	}()
 	ev, err := profile.Parse(nativeEvent, payload)
 	if err != nil {
+		failed = true
 		return profile.EmptyReply(nativeEvent)
 	}
+	sessionStart = ev.Kind == contract.SessionStart
 	h.beat(agent, ev.SessionID, ev.Cwd, ev.Kind == contract.SessionStart, now)
 	out, _ := profile.Render(ev, contract.Reply{})
 	return out

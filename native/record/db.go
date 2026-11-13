@@ -97,6 +97,14 @@ func migrate(ctx context.Context, db *sql.DB, migrations []migration) error {
 }
 
 func openDatabase(path string, readOnly bool) (*sql.DB, error) {
+	busyTimeout := WriterBusyTimeoutMS
+	if readOnly {
+		busyTimeout = ReaderBusyTimeoutMS
+	}
+	return openDatabaseWithBusyTimeout(path, readOnly, busyTimeout)
+}
+
+func openDatabaseWithBusyTimeout(path string, readOnly bool, busyTimeout int) (*sql.DB, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -111,10 +119,6 @@ func openDatabase(path string, readOnly bool) (*sql.DB, error) {
 		query.Set("mode", "ro")
 	} else {
 		query.Set("mode", "rwc")
-	}
-	busyTimeout := WriterBusyTimeoutMS
-	if readOnly {
-		busyTimeout = ReaderBusyTimeoutMS
 	}
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeout))
 	query.Add("_pragma", "foreign_keys(1)")
@@ -139,11 +143,15 @@ func openDatabase(path string, readOnly bool) (*sql.DB, error) {
 type Hooks struct{ db *sql.DB }
 
 func OpenHooks(location Location) (*Hooks, error) {
-	db, err := openDatabase(location.Hooks, false)
+	return openHooks(location, WriterBusyTimeoutMS, WriterOperationTimeout)
+}
+
+func openHooks(location Location, busyTimeout int, deadline time.Duration) (*Hooks, error) {
+	db, err := openDatabaseWithBusyTimeout(location.Hooks, false, busyTimeout)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), WriterOperationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 	version, err := schemaVersion(ctx, db)
 	if err == nil && version > SchemaVersion {

@@ -1,164 +1,82 @@
 # Telemetry
 
-MEX collects **pseudonymous, opt-out usage events** to understand feature use,
-success rates, and whether installations return. CLI and Hub events share one
-random installation UUID. When available, events also carry the project's
-existing random scaffold UUID and its configured AI-tool names. An installation
-is not a person: two computers have different IDs, and a shared installation
-has one ID. Multiple installations using one scaffold can indicate shared
-project use, but cannot establish a team or its size.
+MEX sends usage counts to help improve it. Telemetry is on by default, with a notice before any report is sent.
 
-## What is collected
-
-Every event has a name from a fixed catalog, an original UTC timestamp, a random
-event UUID for deduplication, and a random installation UUID (`distinct_id` and
-`installation_id`). Common properties are `schema_version: 2`, `source`
-(`cli` or `hub`), MEX version, OS platform, and Node version. Person-profile
-creation and GeoIP enrichment are explicitly disabled. All six events can also
-include these optional properties:
-
-| Property | Source and meaning |
-| --- | --- |
-| `scaffold_id` | The existing UUIDv4 in the project's `.mex/config.json`; telemetry never creates or repairs it. |
-| `configured_ai_tools` | A sorted, unique list of configured tool names: `claude`, `codex`, `copilot`, `cursor`, `opencode`, and/or `windsurf`. This is the project's setup selection, not the agent currently invoking MEX. |
-
-The metadata reader performs a bounded, read-only snapshot of the existing
-project configuration. Ordinary CLI commands reuse one snapshot; `setup` and
-`init` reread it at completion so newly saved configuration can appear in the
-completion event. The Hub keeps its project's snapshot from the first enabled
-event until restart. Missing, malformed, unreadable, or unsafe configuration
-omits this metadata. Invalid scaffold IDs and unknown tool names are excluded.
-An explicitly empty tool selection can appear as `[]`. MEX does not inspect
-running processes or tool accounts to determine which agent is in use.
-
-| Event | Additional fields | Purpose |
-| --- | --- | --- |
-| `cli.command_started` | Namespaced command, stage | Count eligible invocations, including those interrupted before completion |
-| `cli.command_completed` | Command, stage, outcome, duration in ms | Feature use and success/failure rates |
-| `hub.session_started` | None | Count successful Hub starts; not active engagement by itself |
-| `hub.page_viewed` | Fixed page category | Understand navigation without sending URLs |
-| `hub.action_completed` | Fixed action, stage, outcome, duration in ms; optional apply replay flag | Understand explicit actions and distinguish preview from apply |
-| `hub.job_completed` | Fixed job kind, outcome, duration in ms | Understand graph/Wiki job results |
-| `hub.team_access` | Fixed step: `card_viewed`, `button_clicked`, `dialog_opened`, or `submitted` | Count where people stop on the Hub's team-access card; never the details they enter |
-
-Commands use names such as `wiki.query` and `relay.draft.save`. Stages are
-`preview`, `apply`, or `direct`; the program derives the stage without sending
-argument values. Outcomes are `success`, `failure`, or `cancelled` (for Hub
-jobs). Durations are capped at 24 hours. CLI completion means the command's
-exit status; a successful preview is not a published artifact. For TUI and
-interval-watch launchers, completion describes startup of the interface or
-watcher, not the end of that later session.
-
-Hub pages are categories such as `knowledge_detail`, never a knowledge ID or a
-URL. Validated Hub actions and terminal job results are recorded on the local
-server. Ordinary API reads, polling, SSE, typing, and repeated renders do not
-produce usage events. Page and team-access events share a cap of 60 per minute
-per Hub process.
-
-CLI telemetry/configuration controls and explicitly pure discovery/read
-surfaces stay silent: `capabilities`, `logging`, `timeline`, Team list/show/
-contract/target reads, Spec reads, and `skills sync`. Hub bootstrap is counted
-by the Hub event rather than a second CLI event. Explicit Team mutation
-commands are eligible. Unknown commands and invalid options rejected before
-an action starts produce no command event.
-
-Inspect the current catalog, example payloads, queue limits, and existing local
-queue metadata without creating an ID, writing a queue, or sending anything:
-
-```bash
-mex telemetry inspect
+```sh
 mex telemetry status
+mex telemetry inspect
+mex telemetry off
+mex telemetry on
 ```
 
-## What is excluded
+The older `disable` and `enable` names remain aliases. `mex config set telemetry off|on` changes the same preference.
 
-MEX does not put names, email addresses, usernames, hostnames, Git identities,
-repository names/remotes, file paths, code, knowledge/log content, search text,
-raw arguments, receipt tokens, or Member/artifact IDs in events. The only
-project identifier is the existing random scaffold UUID described above.
-Unknown event properties and values are rejected, including when reading queued
-events back from disk.
+## Your controls
 
-Random IDs allow repeat-use measurement; this is pseudonymous data, not a claim
-of complete anonymity. A scaffold UUID can be linked to its project by anyone
-who also has access to that project's configuration. One person using several
-machines, a shared installation, or copied scaffolds retaining an ID can distort
-estimates of shared use. Requests go to [PostHog Cloud](https://posthog.com), US
-region (`https://us.i.posthog.com/batch/`). MEX does not add an IP address to the
-payload. The receiving service can observe the request's IP and ordinary
-transport metadata; disabling GeoIP is not a promise that transport metadata
-never exists.
+`DO_NOT_TRACK=1` and `MEX_TELEMETRY=0` disable telemetry for the invocation. `MEX_OFFLINE=1` also disables update fetching. Environment switches take precedence over the stored setting. Existing opt-outs survive an upgrade. An independent opt-out marker prevents an unrelated, stale configuration writer from turning telemetry back on. Unreadable, malformed or unsafe existing preferences keep telemetry off.
 
-## Delivery and performance
+The CLI shows this explanation once for the new reporting version, including after an upgrade from 0.8:
 
-Events enter a small local queue. Delivery runs opportunistically while a CLI
-command works and periodically while the Hub is open. CLI cleanup gives network
-delivery a 25 ms grace by default, then cancels outstanding delivery. There is no detached
-sender, retry loop, or telemetry daemon. Hub batching uses an unreferenced
-15-second timer; each request has a 2-second timeout. A request failure does not
-change product output or exit status.
+> MEX sends anonymous usage counts to help improve it: never code, file paths, prompts or repo names. Turn off any time: mex telemetry off (or DO_NOT_TRACK=1)
 
-The queue retains at most 256 events, 256 KiB of event payload, in a database
-bounded to 1 MiB. Events older than seven days are discarded on the next queue access and are never sent; without a daemon, an untouched
-queue file may physically remain on disk longer. Batches contain at most 32
-events.
-A busy or unavailable queue drops telemetry instead of waiting on another
-command. Queue and network work still have a small CPU/disk cost; latency is
-measured with the actual CLI, including unreachable and hanging servers.
+The installation ID is random and permits repeat-use measurement. This is pseudonymous data; the notice does not mean that successive reports are unlinkable.
 
-Delivery is best effort. A short command's final event can remain queued until
-another eligible invocation or Hub session; a final invocation might never be
-sent. Oldest events are evicted at the bounds. Retries retain the original event
-time and UUID. Abrupt termination can leave a start without a completion;
-absence of completion does not prove command failure. Do not interpret the
-resulting counts as an exhaustive audit log. Local queue expiry does not set
-the hosted analytics service's retention period.
+Turning telemetry off aborts this process's active send and clears pending reports. Pre-opt-out counters, including Go-owned counts through that UTC day, cannot be reported after re-enabling. The off action is retained locally when a record already exists; it is not sent after opting out.
 
-## Opt out
+## What is counted
 
-Any one of these disables collection and sending:
+Hooks increment daily counters in Go-owned `hooks.db`. The CLI, jobs and Hub increment counters in Node-owned `record.db`. Hooks do no network work and never create an installation ID. Counter names and agent names come from fixed allowlists.
 
-```bash
-mex telemetry disable
-# Equivalent persisted preference:
-mex config set telemetry off
-# Or an environment override:
-DO_NOT_TRACK=1 mex check
-MEX_TELEMETRY=0 mex check
-```
+Current producers measure front-door commands, setup outcomes, Hub sessions and page views, completed or failed jobs, graph jobs, and hook sessions, calls, parsing failures and processing-time histograms. Delivery features can use the closed knowledge-delivery and feedback counters as they are built. An uninstrumented feature does not manufacture a zero or a success.
 
-`mex telemetry enable` restores the stored preference and removes the local
-opt-out marker; environment overrides still win. The marker prevents unrelated
-concurrent preference writes from silently re-enabling telemetry. An unreadable,
-malformed, or unsafe existing global preference file also keeps telemetry off; a missing file uses the default. Development
-checkouts of MEX and `MEX_DEV` also disable telemetry.
-Opt-out is checked before capture and delivery. Explicit disable cancels this
-process's delivery and attempts to clear the existing bounded queue. A locked
-or damaged queue can prevent cleanup, but the stored opt-out still prevents
-sending on subsequent invocations. Already delivered events are not deleted
-by a local opt-out.
+The background process combines counters for each completed UTC day into one `daily` report. The ranges are `0`, `1`, `2–5`, `6–20`, `21–100` and `100+` (values above 100). It retains per-agent breakdowns when available. Hook p95 is a range derived from handler-time histogram buckets; the separate timing gate measures the full process call, including startup and counter writing.
 
-Telemetry uses `~/.mex/telemetry-id` (a random UUID, mode `0600`),
-`~/.mex/telemetry/outbox.db` (inside a directory created with mode `0700`), and
-the global preference in `~/.mex/config.json`. Explicit disable also writes
-`~/.mex/telemetry-disabled`, a small opt-out marker removed only by explicit
-enable. A short-lived SQLite rollback journal may exist during writes. The
-telemetry queue, installation identity, and preferences are local to the user;
-telemetry writes nothing to the project's Git artifacts. The existing scaffold
-UUID and tool selection are read from project configuration, which may already
-be shared through Git. `MEX_HOME` relocates the global `.mex` directory.
+A process that remains running checks for due reports once a minute. If it exits before midnight, a later invocation or session/background-process start can report the completed day. MEX does not start a permanent reporting daemon.
 
-## Voluntary feedback and contact
+## Event catalog
 
-`mex feedback` opens the separate [hosted feedback form](https://tally.so/r/KYjv4k).
-The Hub's **Join the hosted beta** dialog and the optional setup contact step use
-Web3Forms while keeping the user in the Hub. Terminal setup offers the same
-optional contact submission. Submitting setup contact requires an email; name
-is optional, and skipping never blocks setup.
+| Event | Trigger |
+| --- | --- |
+| `install.first_run` | First display of the new usage notice; retained as a lifetime local marker. |
+| `setup.finished` | The first completed setup or initialization in a checkout. Repeat runs still add to local setup counters. |
+| `daily` | Usage during a completed UTC day, at most one report per day. |
+| `share.done` | A completed sharing operation, through the lifecycle reporting interface. |
+| `on` | An explicit enable action. |
+| `off` | The local disable record; never sent after opting out. |
+| `uninstall` | The lifecycle reporting interface for uninstall. |
+| `error` | A fixed error code, through the lifecycle interface; no exception text. |
+| `ci.run` | One eligible automated CLI invocation, separately from personal usage. |
 
-Contact details go only to the form service, without an installation or
-scaffold ID. They are not recorded in telemetry, project files, or the local
-contact preference. The only saved contact state is a submitted/skipped marker
-under `~/.mex/setup/` (or the relocated `MEX_HOME` directory), shared across
-projects and Hub ports. A failed submission remains retryable. This preference
-is independent of the telemetry opt-out.
+Sharing, uninstall and later product features own their call sites. Their event types being available does not claim those features have shipped. Internal legacy producer categories are converted into counters; per-command and per-page events from the old queue are never drained by v3.
+
+## Privacy boundary
+
+Reports exclude code, prompts, knowledge text, arguments, searches, file paths, repository names or remotes, raw error messages, account names, contact details and session IDs.
+
+Allowed envelope fields are the fixed event name, event UUID, original timestamp, schema version, MEX version, operating system, source and a random installation ID for personal reports. The client requests no person profiles and no GeoIP. The ingestion service can observe ordinary transport metadata.
+
+Payloads permit only approved count ranges, known agent names, fixed command/outcome/error categories, and a shared-project UUID where applicable. Only an explicitly shared registered project with a share-created random ID may supply that UUID. Unshared scaffolds and repository-derived hashes do not supply it. Telemetry reads never create a project ID or mark a project as shared.
+
+CI sends one `ci.run` event with a fixed CI identity. It never creates or attaches a personal installation ID. The CLI prints the CI usage notice before the send. CI, people and totals must be analyzed separately.
+
+## Local state and delivery
+
+`mex telemetry inspect` is read-only: it shows the recent sent reports, pending lifecycle reports, controls and limits. It does not create an ID, initialize or repair storage, capture an event, or send.
+
+Counters and report records use the existing local databases. Preferences, the durable opt-out marker and the random installation UUID remain under `~/.mex`, or the configured MEX home. Nothing is written into tracked project files.
+
+Pending reports are limited to 128 records of at most 16 KiB each and expire after seven days. The latest 100 acknowledged reports are retained for inspection. Counters and daily deduplication markers have a seven-day reporting window; first-install and first-setup markers remain local for the installation's lifetime. Setup markers use a local checkout hash that is never a report property. Reports are validated again before sending. Unknown fields, raw numbers or malformed records never leave the machine.
+
+The existing background process handles personal delivery. A bounded lease coordinates foreground and background job runners. A failed request retains the same event UUID and timestamp for retry; the server can deduplicate that UUID after a lost acknowledgement. Each request is capped at two seconds, each batch at eight reports. No automatic network retry loop keeps the background process alive.
+
+The old v2 outbox is no longer a sending source. Explicit opt-out also attempts to purge it.
+
+Development checkouts and `MEX_DEV` disable collection and sending. Tests isolate the MEX home and use a silent sink or an explicit loopback-only transport seam.
+
+## Update notices
+
+Bare interactive `mex` checks for an update at most once per UTC day, with a 1.5-second deadline and a bounded response. This check sends no telemetry identity. It does not run in recognized agent sessions, background runs or CI. `MEX_OFFLINE=1` stops it.
+
+## Contact details
+
+Optional contact forms are separate from telemetry. Their name and email fields are not attached to installation or project IDs, included in usage reports, or recorded in tracked project files.

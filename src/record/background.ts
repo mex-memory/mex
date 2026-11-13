@@ -6,6 +6,7 @@ import { openRecord, type RecordWriter } from "./index.js";
 import { recordLocation, type LocationOptions } from "./location.js";
 import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJobs, requeueReadyJobs, runOneBatch, type EnqueueOptions, type EnqueueResult } from "./jobs.js";
 import "./job-kinds.js";
+import { sendUsageReports } from "../telemetry/reporting.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
@@ -236,11 +237,16 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     const recovered = recoverInterruptedJobs(writer, self);
     if (recovered) log(`resumed ${recovered} interrupted job${recovered === 1 ? "" : "s"}`);
     let lastWork = clock();
+    let lastTelemetry = -Infinity;
     for (;;) {
       if (!held || !beat()) return stop("lease-lost");
       const row = lease(writer);
       if (row.request === "exit") return stop("handover");
       if (memory() > settings.memoryMb * 1024 * 1024) return stop("memory");
+      if (clock() - lastTelemetry >= 60_000) {
+        lastTelemetry = clock();
+        try { await sendUsageReports(writer, clock()); } catch { /* Usage reporting never stops product jobs. */ }
+      }
       requeueReadyJobs(writer);
       const outcome = await runOneBatch(writer, self);
       if (outcome === "ran") { lastWork = clock(); continue; }

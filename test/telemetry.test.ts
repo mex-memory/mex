@@ -35,6 +35,8 @@ function restoreCwd(): void {
 }
 
 beforeEach(() => {
+  // These exercise a personal installation even when the suite runs on CI.
+  for (const key of ["CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "BUILDKITE", "CIRCLECI", "JENKINS_URL", "MEX_OFFLINE"]) vi.stubEnv(key, "");
   originalMexHome = process.env.MEX_HOME;
   originalDoNotTrack = process.env.DO_NOT_TRACK;
   originalMexTelemetry = process.env.MEX_TELEMETRY;
@@ -63,6 +65,7 @@ afterEach(async () => {
 
   rmSync(tempHome, { recursive: true, force: true });
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 // ── AC1: opt-out paths disable telemetry and prevent file creation ──
@@ -126,7 +129,7 @@ describe("opt-out precedence (AC1)", () => {
 // ── AC2: payload whitelist — v2 excludes project identity ──
 
 describe("payload whitelist (AC2)", () => {
-  it("buildPayload shows the v2 allowlist including transport privacy flags", async () => {
+  it("buildPayload shows the v3 count allowlist and transport privacy flags", async () => {
     const { buildPayload } = await import("../src/telemetry/index.js");
     const payload = buildPayload("check", "test-scaffold-id");
 
@@ -134,17 +137,16 @@ describe("payload whitelist (AC2)", () => {
     expect(keys).toEqual([
       "$geoip_disable",
       "$process_person_profile",
-      "command",
+      "counts",
       "installation_id",
       "mex_version",
-      "node_version",
       "os",
       "schema_version",
       "source",
     ]);
-    expect(payload.command).toBe("check");
+    expect(payload.counts).toEqual({ commands: "1" });
     expect(payload).not.toHaveProperty("scaffold_id");
-    expect(payload.schema_version).toBe(2);
+    expect(payload.schema_version).toBe(3);
   });
 
   it("omits scaffold_id when not provided", async () => {
@@ -155,10 +157,9 @@ describe("payload whitelist (AC2)", () => {
     expect(keys).toEqual([
       "$geoip_disable",
       "$process_person_profile",
-      "command",
+      "counts",
       "installation_id",
       "mex_version",
-      "node_version",
       "os",
       "schema_version",
       "source",
@@ -185,7 +186,7 @@ describe("getPayloadPreview (AC3)", () => {
 
     const payload = getPayloadPreview("inspect", "scaffold-123", "machine-456");
 
-    expect(payload.command).toBe("wiki.query");
+    expect(payload.counts).toEqual({ commands: "1" });
     expect(payload).not.toHaveProperty("scaffold_id");
     expect(payload).not.toHaveProperty("machine_id");
     expect(JSON.stringify(payload)).not.toContain("machine-456");
@@ -341,8 +342,8 @@ describe("first-run notice (AC9)", () => {
 
       // Check it contains opt-out instructions
       const output = stderrSpy.mock.calls.map(c => c[0]).join("");
-      expect(output).toContain("mex telemetry disable");
-      expect(output).toContain("pseudonymous");
+      expect(output).toContain("mex telemetry off");
+      expect(output).toContain("anonymous usage counts");
       expect(output).toContain("DO_NOT_TRACK");
     } finally {
       Object.defineProperty(process.stderr, "isTTY", { value: originalIsTTY, configurable: true });
@@ -402,7 +403,7 @@ describe("no I/O at import time (AC10)", () => {
 // ── captureCommand: PII firewall ──
 
 describe("captureCommand PII firewall", () => {
-  it("ignores all project identity and emits a namespaced event", async () => {
+  it("ignores all caller identity and increments only a local counter", async () => {
     exitDevRepo(); // need telemetry enabled
     const { captureCommand, __setTransport } = await import("../src/telemetry/index.js");
     const events: Array<{ event: string; properties: Record<string, unknown> }> = [];
@@ -410,14 +411,14 @@ describe("captureCommand PII firewall", () => {
 
     captureCommand("check", "some-uuid-here");
 
-    expect(events).toHaveLength(1);
-    const props = events[0].properties;
-    expect(events[0].event).toBe("cli.command_started");
-    expect(props).not.toHaveProperty("scaffold_id");
-    expect(props.command).toBe("check");
-    expect(props).not.toHaveProperty("scaffold_name");
-    expect(props).not.toHaveProperty("origin");
-    expect(props).not.toHaveProperty("upstream");
+    expect(events).toEqual([]);
+    const { openRecordReadOnly } = await import("../src/record/index.js");
+    const reader = openRecordReadOnly();
+    try {
+      expect(reader?.all("SELECT name,value FROM counters_node")).toEqual([{ name: "commands", value: 1 }]);
+      expect(JSON.stringify(reader?.all("SELECT * FROM counters_node"))).not.toContain("some-uuid-here");
+    } finally { reader?.close(); }
+    expect(existsSync(join(tempHome, ".mex", "telemetry-id"))).toBe(false);
   });
 });
 

@@ -150,7 +150,7 @@ jobs:
           MEX_TEST_REAL_HOOK_BINARY: '1'
         run: |
           npm ci
-          npx vitest run src/hooks/shim/__tests__/binary.test.ts
+          npx vitest run src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts
 
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install

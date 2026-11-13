@@ -26,7 +26,9 @@ func homeFrom(getenv Env) home {
 		}
 	}
 	mex := getenv("MEX_HOME")
-	if mex == "" && user != "" {
+	if strings.TrimSpace(mex) != "" {
+		mex = filepath.Join(strings.TrimSpace(mex), ".mex")
+	} else if user != "" {
 		mex = filepath.Join(user, ".mex")
 	}
 	return home{user: user, mex: mex}

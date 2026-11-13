@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	localrecord "github.com/mex-memory/mex/native/record"
 )
 
 // The no-op budget: a hook that has nothing to do answers in 17 ms or less,
@@ -64,11 +67,7 @@ func buildBinaries(t *testing.T) (shim, floor string) {
 	return shim, floor
 }
 
-// mexHome is a throwaway MEX folder, so the timing runs include the heartbeat
-// write without touching the real ~/.mex.
-var mexHome string
-
-func callOnce(t *testing.T, bin string) time.Duration {
+func callOnce(t *testing.T, bin, mexHome string) time.Duration {
 	t.Helper()
 	// The bare process ignores its arguments; the shim parses the payload.
 	cmd := exec.Command(bin, "claude-code", "PreToolUse")
@@ -101,33 +100,76 @@ func ms(d time.Duration) string {
 }
 
 func TestNoOpTiming(t *testing.T) {
+	measureNoOp(t, false)
+}
+
+func TestNoOpTimingWithCounters(t *testing.T) {
+	measureNoOp(t, true)
+}
+
+func measureNoOp(t *testing.T, counters bool) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("timing test skipped in -short mode")
 	}
 	shim, floor := buildBinaries(t)
-	mexHome = filepath.Join(t.TempDir(), "mex")
-	if err := os.MkdirAll(mexHome, 0o700); err != nil {
+	mexHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mexHome, ".mex"), 0o700); err != nil {
 		t.Fatal(err)
+	}
+	var location localrecord.Location
+	if counters {
+		// Exercise the default-on production path even on CI. Everything is
+		// isolated by MEX_HOME and the hook cannot send network requests.
+		for _, key := range []string{"DO_NOT_TRACK", "MEX_TELEMETRY", "MEX_OFFLINE", "MEX_DEV", "CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "BUILDKITE", "CIRCLECI", "JENKINS_URL"} {
+			t.Setenv(key, "")
+		}
+		var err error
+		location, err = localrecord.ResolveLocation(localrecord.LocationOptions{Home: filepath.Join(mexHome, ".mex")})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	for range 10 { // warm the file cache and any antivirus scan
-		callOnce(t, shim)
-		callOnce(t, floor)
+		callOnce(t, shim, mexHome)
+		callOnce(t, floor, mexHome)
 	}
 	const runs = 200
 	shimRuns := make([]time.Duration, runs)
 	floorRuns := make([]time.Duration, runs)
 	for i := range runs { // interleaved, so machine load hits both alike
-		shimRuns[i] = callOnce(t, shim)
-		floorRuns[i] = callOnce(t, floor)
+		shimRuns[i] = callOnce(t, shim, mexHome)
+		floorRuns[i] = callOnce(t, floor, mexHome)
+	}
+	if counters {
+		db, err := sql.Open("sqlite", location.Hooks)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		var count int
+		if err := db.QueryRow("SELECT sum(value) FROM counters_go WHERE name='agent:claude-code:hook.calls'").Scan(&count); err != nil || count != runs+10 {
+			t.Fatalf("counter path was not measured: count=%d err=%v", count, err)
+		}
 	}
 	s, f := summarize(shimRuns), summarize(floorRuns)
 
-	line := fmt.Sprintf("mex-hook no-op on %s/%s: runs=%d p50=%sms p95=%sms max=%sms | bare process p50=%sms p95=%sms",
-		runtime.GOOS, runtime.GOARCH, runs, ms(s.p50), ms(s.p95), ms(s.max), ms(f.p50), ms(f.p95))
+	line := fmt.Sprintf("mex-hook no-op on %s/%s: counters=%t runs=%d p50=%sms p95=%sms max=%sms | bare process p50=%sms p95=%sms",
+		runtime.GOOS, runtime.GOARCH, counters, runs, ms(s.p50), ms(s.p95), ms(s.max), ms(f.p50), ms(f.p95))
 	t.Log(line)
 	if path := os.Getenv("MEX_HOOK_TIMING_OUT"); path != "" {
-		_ = os.WriteFile(path, []byte(line+"\n"), 0o644)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fmt.Fprintln(file, line); err != nil {
+			file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	budget := time.Duration(defaultBudgetMs) * time.Millisecond

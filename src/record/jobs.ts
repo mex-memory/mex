@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { JOB_STATES, type JobState, type RecordWriter, type RecordReader } from "./index.js";
+import { recordCounterIn } from "../telemetry/store.js";
 
 /**
  * One job model for the whole machine, stored in record.db `jobs` / `job_results`.
@@ -256,6 +257,7 @@ export async function runOneBatch(writer: RecordWriter, self: string): Promise<B
   const kind = kinds.get(job.kind)!;
   let result: BatchResult | undefined;
   let failure: string | undefined;
+  let usage: "jobs.completed" | "jobs.failed" | undefined;
   try {
     result = await kind.runBatch({
       job, writer,
@@ -271,7 +273,10 @@ export async function runOneBatch(writer: RecordWriter, self: string): Promise<B
     if (!current || current.owner !== self || current.state !== "running") return;
     if (failure !== undefined) {
       const failures = current.reason === failure ? current.failures + 1 : 1;
-      if (failures >= MAX_SAME_FAILURES) setState(writer.db, current, "failed", { reason: failure, failures });
+      if (failures >= MAX_SAME_FAILURES) {
+        setState(writer.db, current, "failed", { reason: failure, failures });
+        usage = "jobs.failed";
+      }
       else if (current.request === "cancel") setState(writer.db, current, "cancelled", { reason: null, failures });
       else if (current.request === "pause") setState(writer.db, current, "paused", { reason: failure, failures, request: null });
       else setState(writer.db, current, "queued", { reason: failure, failures });
@@ -293,11 +298,15 @@ export async function runOneBatch(writer: RecordWriter, self: string): Promise<B
       tokens_used: current.tokens_used + Math.max(0, Math.floor(r.tokens ?? 0)),
       progress: r.progress ?? current.progress, failures: 0, reason: null,
     };
-    if (r.done) setState(writer.db, current, r.gaps ? "done with gaps" : "done", { ...fields, progress: null });
+    if (r.done) {
+      setState(writer.db, current, r.gaps ? "done with gaps" : "done", { ...fields, progress: null });
+      usage = "jobs.completed";
+    }
     else if (current.request === "cancel") setState(writer.db, current, "cancelled", fields);
     else if (current.request === "pause") setState(writer.db, current, "paused", { ...fields, request: null });
     else setState(writer.db, current, "queued", fields);
   });
+  if (usage && job.kind !== "telemetry") recordCounterIn(writer, usage);
   return "ran";
 }
 
