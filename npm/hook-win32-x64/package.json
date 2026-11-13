@@ -1,0 +1,15 @@
+{
+  "name": "mex-agent-hook-win32-x64",
+  "version": "0.9.0-beta.0",
+  "description": "The mex-hook binary for win32 x64. Installed by mex-agent; not meant to be used directly.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mex-memory/mex.git",
+    "directory": "npm/hook-win32-x64"
+  },
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": ["bin"],
+  "preferUnplugged": true
+}

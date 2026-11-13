@@ -55,3 +55,6 @@ docs/launch/
 
 # Bundled statechart helper is produced by build:node, shipped in the tarball.
 skills/mex-statechart/scripts/runtime.mjs
+
+# Built by scripts/build-hook-binaries.mjs
+npm/hook-*/bin/
