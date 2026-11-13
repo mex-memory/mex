@@ -1477,6 +1477,7 @@ function maintenanceResult(
     ...(build.declinedInputs && build.declinedInputs.length > 0
       ? { declinedInputs: build.declinedInputs }
       : {}),
+    ...(build.typescript ? { typescript: build.typescript } : {}),
     ...(build.refresh ? { refresh: build.refresh } : {}),
     ...(published.recoveryPath ? { recoveryPath: published.recoveryPath } : {}),
   };

@@ -17,7 +17,7 @@ import { recallSource, rememberSource } from "./source-memo.js";
 // Package metadata does not initialize the compiler on a graph read.
 const TYPESCRIPT_COMPILER_VERSION: string = createRequire(import.meta.url)("typescript/package.json").version;
 // Pinned against extraction by the read-manifest compatibility test.
-export const CORPUS_EXTRACTOR_VERSION = "typescript-5.9-v7+tree-sitter-v4";
+export const CORPUS_EXTRACTOR_VERSION = "typescript-api-v8+tree-sitter-v4";
 export const RESOLVER_VERSION = "compiler-first-v3";
 
 export interface GraphManifest {
