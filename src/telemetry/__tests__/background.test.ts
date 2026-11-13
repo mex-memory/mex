@@ -26,7 +26,8 @@ describe("Go hook to background reporter", () => {
     });
     try {
       process.env.MEX_HOME=fixture;
-      const writer = openRecord({ isNetwork: () => false });
+      const checkout = join(fixture,"PRIVATE_PATH"); mkdirSync(checkout);
+      const writer = openRecord({ projectPath: checkout, isNetwork: () => false });
       const hooksPath = writer.location.hooks; writer.close();
       writeFileSync(join(fixture,".mex","config.json"),JSON.stringify({telemetryNoticeVersion:3}));
       writeFileSync(join(fixture,"package.json"),JSON.stringify({name:"report-chain-fixture",version:JSON.parse(readFileSync(join(repo,"package.json"),"utf8")).version,type:"module"}));
@@ -36,7 +37,7 @@ describe("Go hook to background reporter", () => {
       // Seed one real captured event; a cold best-effort open may skip capture.
       let observedCount: unknown;
       for (let attempt=0; attempt<11; attempt++) {
-        const result=spawnSync(binary,["claude-code","SessionStart"],{input:JSON.stringify({session_id:"PRIVATE_SESSION",cwd:"PRIVATE_PATH"}),cwd:fixture,env,encoding:"utf8",timeout:5000});
+        const result=spawnSync(binary,["claude-code","SessionStart"],{input:JSON.stringify({session_id:"PRIVATE_SESSION",cwd:checkout}),cwd:fixture,env,encoding:"utf8",timeout:5000});
         expect(result.status).toBe(0);
         expect(JSON.parse(result.stdout)).toEqual({});
         if (!existsSync(hooksPath)) continue;

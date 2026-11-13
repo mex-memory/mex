@@ -13,6 +13,7 @@ import {
   selfTestBinary,
 } from "../binary.js";
 import { runNodeHook } from "../node-hook.js";
+import { openRecord } from "../../../record/index.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 // The Go CI job builds the platform packages before enabling these checks.
@@ -187,5 +188,21 @@ describe.skipIf(!realBinary)("with the real Go binary", () => {
     const fallback = resolveHookRunner({ binary: copy });
     expect(fallback.kind).toBe("node");
     expect(await nodeReply('{"hook_event_name":"Stop"}')).toBe(nativeOut);
+  });
+
+  it("knows where MEX is on from the checkouts Node registered, and says so once elsewhere", () => {
+    const base = mkdtempSync(join(tmp, "home-"));
+    const env = { ...process.env, MEX_HOME: base, HOME: base, USERPROFILE: base };
+    const on = join(base, "on-repo");
+    const plain = join(base, "plain-repo");
+    for (const repo of [on, plain]) mkdirSync(join(repo, ".git"), { recursive: true });
+    openRecord({ home: join(base, ".mex"), projectPath: on, isNetwork: () => false }).close();
+
+    const start = (cwd: string) => execFileSync(built, ["claude-code", "SessionStart"], {
+      input: JSON.stringify({ session_id: "s", hook_event_name: "SessionStart", source: "startup", cwd }), encoding: "utf8", env,
+    });
+    expect(start(on)).toBe("{}\n");
+    expect(JSON.parse(start(plain))).toEqual({ systemMessage: "MEX is off here. Run `mex` to turn it on." });
+    expect(start(plain)).toBe("{}\n");
   });
 });

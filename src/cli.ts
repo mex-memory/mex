@@ -159,6 +159,11 @@ const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command
 program.hook("preAction", (_thisCommand, actionCommand) => cliTelemetry.start(actionCommand));
 program.hook("postAction", async () => {
   await cliTelemetry.finish(process.exitCode);
+  // Keep the hook shim's launcher pointing at this CLI.
+  try {
+    const { writeLauncher } = await import("./hooks/shim/launcher.js");
+    writeLauncher(mexHomeDir());
+  } catch { /* never affects the command */ }
   // Restart the background process when jobs are waiting. The marker check opens no database.
   try {
     if (existsSync(join(mexHomeDir(), "jobs-pending"))) {

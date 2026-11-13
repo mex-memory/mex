@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -14,8 +15,9 @@ import (
 // home is where the shim looks for the person's files. Tests point it at a
 // temp folder through the environment.
 type home struct {
-	user string // the person's home folder
-	mex  string // MEX's folder: MEX_HOME, else ~/.mex
+	user  string // the person's home folder
+	mex   string // MEX's folder: <MEX_HOME>/.mex, else ~/.mex (the same rule as Node's mexHomeDir)
+	codex string // Codex's folder: CODEX_HOME, else ~/.codex
 }
 
 func homeFrom(getenv Env) home {
@@ -25,13 +27,18 @@ func homeFrom(getenv Env) home {
 			user = p
 		}
 	}
-	mex := getenv("MEX_HOME")
-	if strings.TrimSpace(mex) != "" {
-		mex = filepath.Join(strings.TrimSpace(mex), ".mex")
+	h := home{user: user}
+	if base := strings.TrimSpace(getenv("MEX_HOME")); base != "" {
+		h.mex = filepath.Join(base, ".mex")
 	} else if user != "" {
-		mex = filepath.Join(user, ".mex")
+		h.mex = filepath.Join(user, ".mex")
 	}
-	return home{user: user, mex: mex}
+	if codex := strings.TrimSpace(getenv("CODEX_HOME")); codex != "" {
+		h.codex = codex
+	} else if user != "" {
+		h.codex = filepath.Join(user, ".codex")
+	}
+	return h
 }
 
 // mexInstalled reports whether MEX's folder exists. The shim never creates it.
@@ -77,9 +84,10 @@ type heartbeatFile struct {
 }
 
 // beat records that a session's hooks ran. The file's modification time is the
-// last call; its contents say which session it is. Errors are ignored.
+// last call; its contents say which session it is. Errors are ignored. Callers
+// check that MEX is installed first: this would create its folder otherwise.
 func (h home) beat(agent, sessionID, cwd string, sessionStart bool, now time.Time) {
-	if sessionID == "" || !h.mexInstalled() {
+	if sessionID == "" {
 		return
 	}
 	dir := h.heartbeatDir(agent)
@@ -129,16 +137,31 @@ func (h home) lastBeat(agent string) (time.Time, int) {
 // Policy switches: settings that stop an agent from running MEX's hooks.
 // ---------------------------------------------------------------------------
 
-// claudeManagedSettings is where Claude Code reads managed settings per OS.
-func claudeManagedSettings(goos string) string {
+// claudeManagedFolder is where Claude Code reads managed settings files per OS
+// (docs, 13 Nov 2026): managed-settings.json, then managed-settings.d/*.json in
+// name order. The macOS profile and the Windows registry are also policy
+// sources; the shim can't read those cheaply, so --status doesn't report them.
+var claudeManagedFolder = func(goos string) string {
 	switch goos {
 	case "windows":
-		return `C:\Program Files\ClaudeCode\managed-settings.json`
+		return `C:\Program Files\ClaudeCode`
 	case "darwin":
-		return "/Library/Application Support/ClaudeCode/managed-settings.json"
+		return "/Library/Application Support/ClaudeCode"
 	default:
-		return "/etc/claude-code/managed-settings.json"
+		return "/etc/claude-code"
 	}
+}
+
+// claudeManagedSettings lists the managed settings files in the order Claude
+// Code merges them.
+func claudeManagedSettings(goos string) []string {
+	folder := claudeManagedFolder(goos)
+	files := []string{filepath.Join(folder, "managed-settings.json")}
+	if extra, err := filepath.Glob(filepath.Join(folder, "managed-settings.d", "*.json")); err == nil {
+		sort.Strings(extra)
+		files = append(files, extra...)
+	}
+	return files
 }
 
 // hooksOff lists the switches that turn MEX's hooks off for an agent, each as
@@ -151,21 +174,27 @@ func (h home) hooksOff(agent, goos string) []string {
 		if jsonTrue(user, "disableAllHooks") {
 			off = append(off, user+": disableAllHooks")
 		}
-		managed := claudeManagedSettings(goos)
-		if jsonTrue(managed, "disableAllHooks") {
-			off = append(off, managed+": disableAllHooks")
-		}
-		if jsonTrue(managed, "allowManagedHooksOnly") {
-			off = append(off, managed+": allowManagedHooksOnly")
+		for _, managed := range claudeManagedSettings(goos) {
+			if jsonTrue(managed, "disableAllHooks") {
+				off = append(off, managed+": disableAllHooks")
+			}
+			if jsonTrue(managed, "allowManagedHooksOnly") {
+				off = append(off, managed+": allowManagedHooksOnly")
+			}
 		}
 	case "codex":
-		cfg := filepath.Join(h.user, ".codex", "config.toml")
+		// The feature switch lives in config.toml; the managed-only switch
+		// belongs in requirements.toml (docs, 13 Nov 2026). The system-wide
+		// requirements folder isn't documented, so only CODEX_HOME's is read.
+		cfg := filepath.Join(h.codex, "config.toml")
 		values := tomlValues(cfg)
 		if values["features.hooks"] == "false" || values["features.codex_hooks"] == "false" {
 			off = append(off, cfg+": [features] hooks = false")
 		}
-		if values["allow_managed_hooks_only"] == "true" {
-			off = append(off, cfg+": allow_managed_hooks_only = true")
+		for _, file := range []string{cfg, filepath.Join(h.codex, "requirements.toml")} {
+			if tomlValues(file)["allow_managed_hooks_only"] == "true" {
+				off = append(off, file+": allow_managed_hooks_only = true")
+			}
 		}
 	}
 	return off
@@ -226,7 +255,7 @@ func (h home) ownHookFiles(agent string) []string {
 	case "claude-code":
 		return []string{filepath.Join(h.user, ".claude", "settings.json")}
 	case "codex":
-		return []string{filepath.Join(h.user, ".codex", "hooks.json"), filepath.Join(h.user, ".codex", "config.toml")}
+		return []string{filepath.Join(h.codex, "hooks.json"), filepath.Join(h.codex, "config.toml")}
 	case "cursor":
 		return []string{filepath.Join(h.user, ".cursor", "hooks.json")}
 	case "copilot":

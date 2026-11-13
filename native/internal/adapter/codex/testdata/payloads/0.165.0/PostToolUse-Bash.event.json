@@ -1,0 +1,23 @@
+{
+  "agent": "codex",
+  "agent_version": "",
+  "kind": "post_tool",
+  "session_id": "01a1d655-2220-7f63-8af3-9ad9045dcb11",
+  "agent_id": "",
+  "cwd": "C:\\mex-test-tmp\\f03\\live\\crepo",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "shell",
+    "raw_name": "Bash",
+    "input": {
+      "command": "git status --short"
+    },
+    "output": {
+      "text": "fatal: detected dubious ownership in repository at 'C:/mex-test-tmp/f03/live/crepo'\n'C:/mex-test-tmp/f03/live/crepo' is owned by:\n\tmachine/person (S-1-5-21-0-0-0-1001)\nbut the current user is:\n\tmachine/CodexSandboxOffline (S-1-5-21-0-0-0-1001)\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory C:/mex-test-tmp/f03/live/crepo\n",
+      "ok": true
+    }
+  },
+  "transcript": "C:\\mex-test-tmp\\f03\\live\\codex-home\\sessions\\2026\\11\\14\\rollout-2026-11-14T00-44-26-01a1d655-2220-7f63-8af3-9ad9045dcb11.jsonl",
+  "background": false
+}

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 type Location struct {
@@ -16,7 +17,9 @@ type Location struct {
 	Hooks     string `json:"hooks"`
 }
 
-var regexpProjectID = regexp.MustCompile(`^[gf]-[a-f0-9]{24}$`)
+// regexpProjectID compiles on first use: this package is linked into the hook
+// shim, which pays for every package-level compile on each start.
+var regexpProjectID = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[gf]-[a-f0-9]{24}$`) })
 
 type LocationOptions struct {
 	Home      string
@@ -201,7 +204,7 @@ func ResolveLocation(options LocationOptions) (Location, error) {
 }
 
 func ProjectDataDirectory(location Location, id string) (string, error) {
-	if !regexpProjectID.MatchString(id) {
+	if !regexpProjectID().MatchString(id) {
 		return "", errors.New("invalid project id")
 	}
 	path := filepath.Join(location.Home, "projects", id)
