@@ -31,7 +31,8 @@ jobs:
           go-version: '1.27.x'
           cache-dependency-path: native/go.sum
       - run: go vet ./...
-      - run: go test -v ./...
+      # Package deadlines and process timing must not compete with each other.
+      - run: go test -count=1 -p 1 -v ./...
       - name: Cross-build record test binary without C
         shell: bash
         run: |
@@ -73,7 +74,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run test
+      # Preserve the CLI suite's build condition and 240-second deadline, before
+      # parallel suites consume the same dist workers and grammars.
+      - name: Build app before parallel tests
+        run: npm run build
+        timeout-minutes: 4
+        env:
+          NODE_ENV: test
+      - name: Test the completed app build
+        run: npm run test
+        env:
+          MEX_TEST_PREBUILT: '1'
       - name: Test isolated telemetry benchmark transport
         if: matrix.node-version == '22.22.0'
         run: npm run benchmark:telemetry:test
@@ -150,12 +161,14 @@ jobs:
           MEX_TEST_REAL_HOOK_BINARY: '1'
         run: |
           npm ci
-          npx vitest run src/hooks/shim/__tests__/binary.test.ts src/file-index/__tests__/go-parity.test.ts
+          # Keep other native process tests out of the capture deadline.
+          npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts src/file-index/__tests__/go-parity.test.ts
 
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install
     # behavior must remain portable whenever local Team state changes.
-    runs-on: ${{ matrix.os }}
+    # Use the Intel macOS pool after ARM runner-capacity cancellations.
+    runs-on: ${{ matrix.os == 'macos-15' && 'macos-15-intel' || matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false

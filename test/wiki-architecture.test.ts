@@ -423,6 +423,14 @@ function allTypeScriptFiles(): string[] {
  * and no event accepts query text, paths, artifact IDs, or arbitrary properties.
  */
 const TELEMETRY_COMPOSITION_ROOTS = ["src/cli.ts", "src/hub/command.ts"];
+// The machine worker and its existing writer use the counter/reporting layers;
+// neither accepts Wiki arguments. The update notice is a separate bounded
+// network operation at the bare interactive CLI entry point.
+const TELEMETRY_INFRASTRUCTURE_IMPORTS: Readonly<Record<string, string>> = {
+  "src/cli.ts": "src/telemetry/updates.js",
+  "src/record/background.ts": "src/telemetry/reporting.js",
+  "src/record/jobs.ts": "src/telemetry/store.js",
+};
 
 function findTelemetryLeaks(path: string, source: string): string[] {
   if (path.startsWith("src/telemetry/")) return [];
@@ -431,6 +439,7 @@ function findTelemetryLeaks(path: string, source: string): string[] {
   for (const specifier of importSpecifiers(code)) {
     const resolved = resolveSpecifier(path, specifier);
     if (!resolved.startsWith("src/telemetry/") || resolved === "src/telemetry/schema.js") continue;
+    if (TELEMETRY_INFRASTRUCTURE_IMPORTS[path] === resolved) continue;
     if (resolved !== "src/telemetry/index.js" || !TELEMETRY_COMPOSITION_ROOTS.includes(path)) {
       violations.push(`${path} imports ${resolved}; telemetry must use the CLI/Hub projection`);
     }
@@ -462,6 +471,10 @@ describe("telemetry keeps Wiki arguments behind the shared projection", () => {
       'import { captureEvent as send } from "../../telemetry/index.js";')).toHaveLength(1);
     expect(findTelemetryLeaks("src/cli.ts",
       'import { sendBatch } from "./telemetry/transport.js";')).toHaveLength(1);
+    expect(findTelemetryLeaks("src/wiki/cli/query.ts",
+      'import { recordCounterIn } from "../../telemetry/store.js";')).toHaveLength(1);
+    expect(findTelemetryLeaks("src/record/jobs.ts",
+      'import { sendBatch } from "../telemetry/transport.js";')).toHaveLength(1);
     expect(findTelemetryLeaks("src/wiki/query/query.ts",
       'export { captureEvent } from "../../telemetry/index.js";')).toHaveLength(1);
     expect(findTelemetryLeaks("src/cli.ts",
@@ -799,6 +812,7 @@ describe("no unscoped scaffold writes", () => {
       "src/team/artifacts/filesystem.ts": "atomically publishes bounded team-owned canonical artifacts",
       "src/team/local-state/receipt-signer.ts": "atomically provisions the bounded local-only C preview signing credential",
       "src/team/relay/cli/local-preview.ts": "removes only the exact contained checkout-local Relay receipt after successful apply",
+      "src/telemetry/store.ts": "writes only the empty jobs-pending marker in the machine record home; never a project file",
     };
 
     const outside = FILES.filter((path) => !path.startsWith("src/wiki/"));

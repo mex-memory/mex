@@ -26,9 +26,9 @@ const WriterBusyTimeoutMS = 200
 const WriterOperationTimeout = 250 * time.Millisecond
 const ReaderOperationTimeout = 100 * time.Millisecond
 
-// budget is how long one call may wait. Every exported opener uses hookBudget;
-// tests that check correctness rather than timing pass a wider one, so a loaded
-// machine can't fail them by being slow.
+// budget is how long one call may wait. Ordinary openers use hookBudget;
+// counter capture uses its smaller deadline. Correctness tests can pass a
+// wider budget without changing either production path.
 type budget struct{ writerBusy, writer, reader time.Duration }
 
 var hookBudget = budget{time.Duration(WriterBusyTimeoutMS) * time.Millisecond, WriterOperationTimeout, ReaderOperationTimeout}
@@ -104,24 +104,35 @@ func migrate(ctx context.Context, db *sql.DB, migrations []migration) error {
 }
 
 func openDatabase(path string, readOnly bool) (*sql.DB, error) {
+	busyTimeout := WriterBusyTimeoutMS
+	if readOnly {
+		busyTimeout = ReaderBusyTimeoutMS
+	}
+	return openDatabaseWithBusyTimeout(path, readOnly, busyTimeout)
+}
+
+func databaseURI(path string) (url.URL, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return nil, err
+		return url.URL{}, err
 	}
 	slash := filepath.ToSlash(absolute)
 	if !strings.HasPrefix(slash, "/") {
 		slash = "/" + slash
 	}
-	uri := url.URL{Scheme: "file", Path: slash}
+	return url.URL{Scheme: "file", Path: slash}, nil
+}
+
+func openDatabaseWithBusyTimeout(path string, readOnly bool, busyTimeout int) (*sql.DB, error) {
+	uri, err := databaseURI(path)
+	if err != nil {
+		return nil, err
+	}
 	query := url.Values{}
 	if readOnly {
 		query.Set("mode", "ro")
 	} else {
 		query.Set("mode", "rwc")
-	}
-	busyTimeout := WriterBusyTimeoutMS
-	if readOnly {
-		busyTimeout = ReaderBusyTimeoutMS
 	}
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeout))
 	query.Add("_pragma", "foreign_keys(1)")
@@ -143,20 +154,69 @@ func openDatabase(path string, readOnly bool) (*sql.DB, error) {
 	return db, nil
 }
 
-type Hooks struct {
-	db     *sql.DB
-	budget budget
+func openCounterReader(path string) (*sql.DB, error) {
+	uri, err := databaseURI(path)
+	if err != nil {
+		return nil, err
+	}
+	// This private connection only reads user_version. mode=ro enforces its
+	// read-only access; the default zero busy timeout fails immediately.
+	uri.RawQuery = "mode=ro"
+	db, err := sql.Open("sqlite", uri.String())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	return db, nil
 }
 
-func OpenHooks(location Location) (*Hooks, error) { return openHooks(location, hookBudget) }
+type Hooks struct {
+	db          *sql.DB
+	budget      budget
+	counterOnly bool
+}
+
+func OpenHooks(location Location) (*Hooks, error) {
+	return openHooks(location, hookBudget)
+}
 
 func openHooks(location Location, limits budget) (*Hooks, error) {
-	db, err := openDatabase(location.Hooks, false)
+	return openHookDatabase(location, limits, false)
+}
+
+func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hooks, error) {
+	busyTimeout := WriterBusyTimeoutMS
+	if counterOnly {
+		busyTimeout = 1
+	}
+	db, err := openDatabaseWithBusyTimeout(location.Hooks, false, busyTimeout)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), limits.writer)
 	defer cancel()
+	if counterOnly {
+		// Keep the small WAL sidecars for the next short-lived counter writer.
+		// Recreating/deleting them on every hook is costly on Windows. SQLite
+		// still checkpoints automatically; journal mode and sync policy do not change.
+		conn, err := db.Conn(ctx)
+		if err == nil {
+			err = conn.Raw(func(driverConn any) error {
+				fc, ok := driverConn.(sqlite.FileControl)
+				if !ok {
+					return fmt.Errorf("SQLite file control is unavailable")
+				}
+				_, err := fc.FileControlPersistWAL("main", 1)
+				return err
+			})
+			_ = conn.Close()
+		}
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	version, err := schemaVersion(ctx, db)
 	if err == nil && version > SchemaVersion {
 		err = futureSchema("hooks.db", version)
@@ -175,14 +235,42 @@ func openHooks(location Location, limits budget) (*Hooks, error) {
 			err = migrate(ctx, db, []migration{{1, string(data)}})
 		}
 	}
+	if err == nil && counterOnly {
+		// Keep a read-only pager alive without constructing another SQLite
+		// connection. The pinned SQLite closes main before attached pagers;
+		// lifetime/checkpoint tests qualify that order on driver upgrades.
+		// The attachment holds no read transaction and shares the open deadline.
+		uri, uriErr := databaseURI(location.Hooks)
+		err = uriErr
+		if err == nil {
+			uri.RawQuery = "mode=ro"
+			_, err = db.ExecContext(ctx, "ATTACH DATABASE ? AS counter_readonly", uri.String())
+		}
+		if err == nil {
+			var readerVersion int
+			err = db.QueryRowContext(ctx, "PRAGMA counter_readonly.user_version").Scan(&readerVersion)
+			if err == nil && readerVersion > SchemaVersion {
+				err = futureSchema("hooks.db", readerVersion)
+			}
+		}
+	}
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Hooks{db, limits}, nil
+	return &Hooks{db: db, budget: limits, counterOnly: counterOnly}, nil
 }
 
-func (hooks *Hooks) Close() error { return hooks.db.Close() }
+func (hooks *Hooks) Close() error {
+	return hooks.db.Close()
+}
+
+func (hooks *Hooks) busyTimeout() int {
+	if hooks.counterOnly {
+		return 1
+	}
+	return WriterBusyTimeoutMS
+}
 
 type Session struct {
 	SessionID  string `json:"session_id"`
@@ -216,7 +304,7 @@ func (hooks *Hooks) write(ctx context.Context, statement string, args ...any) er
 	}
 	defer conn.Close()
 	defer func() {
-		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout=%d", WriterBusyTimeoutMS))
+		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout=%d", hooks.busyTimeout()))
 	}()
 	for {
 		remaining := time.Until(until).Milliseconds()
@@ -264,7 +352,7 @@ func (hooks *Hooks) Session(id string) (*Session, error) {
 		return nil, err
 	}
 	defer func() {
-		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout=%d", WriterBusyTimeoutMS))
+		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout=%d", hooks.busyTimeout()))
 	}()
 	var session Session
 	err = conn.QueryRowContext(ctx, "SELECT session_id,agent,project_id,checkout,started_at,last_seen_at,paused FROM sessions WHERE session_id=?", id).

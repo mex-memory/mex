@@ -172,11 +172,13 @@ export class RecordWriter {
 }
 
 /** A command explicitly opens its writable record; existing commands are not changed by this module. */
-export function openRecord(options: LocationOptions & { projectPath?: string; git?: GitRunner } = {}): RecordWriter {
+export function openRecord(options: LocationOptions & { projectPath?: string; git?: GitRunner; busyTimeoutMs?: number } = {}): RecordWriter {
+  const timeout = options.busyTimeoutMs ?? WRITER_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > WRITER_TIMEOUT_MS) throw new Error("Invalid record writer timeout");
   const location = recordLocation(options);
   const db = database(location.record);
   try {
-    db.exec(`PRAGMA busy_timeout=${WRITER_TIMEOUT_MS}`);
+    db.exec(`PRAGMA busy_timeout=${timeout}`);
     if (schemaVersion(db) > RECORD_SCHEMA_VERSION) throw newer("record.db", schemaVersion(db));
     // NORMAL sync in WAL: a crash loses nothing; a power loss can drop the last commits, and a job then redoes one batch.
     db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON");

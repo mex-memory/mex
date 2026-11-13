@@ -8,7 +8,7 @@ import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporte
 import { registerRemovedCommands, removedCommandMessage } from "./removed-commands.js";
 import { VERSION } from "./version.js";
 import { unsupportedNodeMessage } from "./node-version.js";
-import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
+import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, enableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
 import { mexHomeDir, setGlobalConfigKey } from "./global-config.js";
 import { createCliTelemetry, telemetryProjectLocation } from "./cli-telemetry.js";
 export { isTelemetryExemptCommand } from "./cli-telemetry.js";
@@ -129,6 +129,7 @@ async function runSetupCommand(options: {
   force?: boolean;
 }): Promise<void> {
   try {
+    if (!options.dryRun) showFirstRunNotice();
     if (options.browser) {
       await runBrowserCommand({ ...options, setup: true });
       return;
@@ -157,7 +158,7 @@ const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command
 });
 program.hook("preAction", (_thisCommand, actionCommand) => cliTelemetry.start(actionCommand));
 program.hook("postAction", async () => {
-  cliTelemetry.finish(process.exitCode);
+  await cliTelemetry.finish(process.exitCode);
   // Keep the hook shim's launcher pointing at this CLI.
   try {
     const { writeLauncher } = await import("./hooks/shim/launcher.js");
@@ -181,6 +182,9 @@ program
   .option("--no-open", "Print the Hub link without opening a browser")
   .action(async (opts: { port?: number; open: boolean }) => {
     try {
+      showFirstRunNotice();
+      const { showUpdateNotice } = await import("./telemetry/updates.js");
+      await showUpdateNotice();
       const { resolveDefaultEntry } = await import("./setup/entry.js");
       if (await resolveDefaultEntry() === "hub") await runBrowserCommand(opts);
       else await runSetupCommand(opts);
@@ -197,6 +201,7 @@ program
   .action(async (_opts: { port?: number; open: boolean }, command: Command) => {
     const opts = command.optsWithGlobals();
     try {
+      showFirstRunNotice();
       const { launchHub } = await import("./hub/command.js");
       await launchHub({ port: opts.port, openBrowser: opts.open });
     } catch (err) {
@@ -1037,8 +1042,10 @@ const telemetryCmd = program
     "after",
     "\nOpting out:\n"
       + "  mex telemetry disable   Turn telemetry off for every project (~/.mex/config.json)\n"
+      + "  mex telemetry off       The same opt-out, with a shorter name\n"
       + "  DO_NOT_TRACK=1          Standard cross-tool opt-out, honoured per invocation\n"
       + "  MEX_TELEMETRY=0         mex-specific env opt-out, honoured per invocation\n"
+      + "  MEX_OFFLINE=1           Stop telemetry and update fetching\n"
       + "\nEnvironment variables win over the stored setting. `mex telemetry status`\n"
       + "reports which one is in effect.\n",
   );
@@ -1050,6 +1057,8 @@ function describeTelemetryReason(reason: string | undefined): string {
       return "The DO_NOT_TRACK environment variable is set to 1.";
     case "MEX_TELEMETRY":
       return "The MEX_TELEMETRY environment variable is set to 0.";
+    case "MEX_OFFLINE":
+      return "MEX_OFFLINE=1 stops telemetry and update fetching.";
     case "dev":
       return "This is a mex development checkout; telemetry never runs from one.";
     case "config":
@@ -1078,7 +1087,7 @@ function disableTelemetryWithNotice(): void {
 
 function setTelemetryEnabled(enabled: boolean): void {
   try {
-    if (enabled) setGlobalConfigKey("telemetry", "on");
+    if (enabled) enableTelemetry();
     else disableTelemetryWithNotice();
   } catch (err) {
     console.error((err as Error).message);
@@ -1102,17 +1111,19 @@ function setTelemetryEnabled(enabled: boolean): void {
 
 telemetryCmd
   .command("disable")
+  .alias("off")
   .description("Turn telemetry off for every project (writes ~/.mex/config.json)")
   .action(() => setTelemetryEnabled(false));
 
 telemetryCmd
   .command("enable")
+  .alias("on")
   .description("Turn telemetry back on for every project")
   .action(() => setTelemetryEnabled(true));
 
 telemetryCmd
   .command("inspect")
-  .description("Inspect event examples, privacy fields, and local queue limits (without sending)")
+  .description("Inspect pending and sent usage reports, privacy fields, and limits without sending")
   .action(() => {
     try {
       console.log(JSON.stringify(getTelemetryInspection(), null, 2));
@@ -1130,7 +1141,7 @@ telemetryCmd
     const result = isEnabled();
     if (result.enabled) {
       console.log("Telemetry: enabled");
-      console.log("Turn it off with `mex telemetry disable`, DO_NOT_TRACK=1, or MEX_TELEMETRY=0.");
+      console.log("Turn it off with `mex telemetry off`, DO_NOT_TRACK=1, MEX_TELEMETRY=0, or MEX_OFFLINE=1.");
       return;
     }
     console.log(`Telemetry: disabled (reason: ${result.reason})`);
@@ -1155,7 +1166,7 @@ configCmd
           return;
         }
         if (value === "off") disableTelemetryWithNotice();
-        else setGlobalConfigKey("telemetry", "on");
+        else enableTelemetry();
         console.log(`Telemetry set to "${value}" in ~/.mex/config.json`);
       } else if (key === "feedback") {
         if (value !== "on" && value !== "off") {

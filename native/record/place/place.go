@@ -2,6 +2,7 @@ package place
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -63,20 +64,41 @@ func cacheRoot() (string, error) {
 	}
 }
 
-func readPointer(pointer, home, cache string) string {
-	info, err := os.Stat(pointer)
+func readPointer(pointer string) string {
+	file, err := os.Open(pointer)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	info, err := file.Stat()
 	if err != nil || info.Size() > 4096 {
 		return ""
 	}
-	data, err := os.ReadFile(pointer)
-	if err != nil {
+	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil || len(data) > 4096 {
 		return ""
 	}
 	text := strings.TrimSpace(string(data))
 	if !filepath.IsAbs(text) || strings.ContainsRune(text, 0) {
 		return ""
 	}
-	candidate, err := locationPath(text)
+	candidate, err := AbsolutePath(text)
+	if err != nil {
+		return ""
+	}
+	return candidate
+}
+
+func pointerDirectory(pointer, home, cache string) string {
+	if pointer == "" {
+		return ""
+	}
+	// home has already been resolved through the filesystem. An exact match
+	// needs no second realpath and cannot redirect to a different directory.
+	if pointer == home {
+		return home
+	}
+	candidate, err := locationPath(pointer)
 	if err == nil && (candidate == home || candidate == cache) {
 		return candidate
 	}
@@ -109,9 +131,12 @@ func locationPath(path string) (string, error) {
 
 // ResolveLocation never shells out. A cached pointer skips filesystem detection.
 func ResolveLocation(options LocationOptions) (Location, error) {
-	home, err := HomeDir()
+	var home string
+	var err error
 	if options.Home != "" {
 		home, err = AbsolutePath(options.Home)
+	} else {
+		home, err = HomeDir()
 	}
 	if err != nil {
 		return Location{}, err
@@ -119,6 +144,18 @@ func ResolveLocation(options LocationOptions) (Location, error) {
 	home, err = locationPath(home)
 	if err != nil {
 		return Location{}, err
+	}
+	pointer := filepath.Join(home, "location")
+	published := readPointer(pointer)
+	if published == home {
+		// A published local location does not depend on the cache at all.
+		// Avoid probing/canonicalizing unused cache ancestors on every hook.
+		if !options.ReadOnly {
+			if err := os.MkdirAll(home, 0700); err != nil {
+				return Location{}, err
+			}
+		}
+		return Location{home, home, filepath.Join(home, "record.db"), filepath.Join(home, "hooks.db")}, nil
 	}
 	cache := options.Cache
 	if cache == "" {
@@ -131,8 +168,7 @@ func ResolveLocation(options LocationOptions) (Location, error) {
 	if err != nil {
 		return Location{}, err
 	}
-	pointer := filepath.Join(home, "location")
-	directory := readPointer(pointer, home, cache)
+	directory := pointerDirectory(published, home, cache)
 	if directory == "" {
 		detector := options.IsNetwork
 		if detector == nil {
@@ -160,7 +196,7 @@ func ResolveLocation(options LocationOptions) (Location, error) {
 			} else if !errors.Is(openErr, os.ErrExist) {
 				return Location{}, openErr
 			}
-			if published := readPointer(pointer, home, cache); published != "" {
+			if published := pointerDirectory(readPointer(pointer), home, cache); published != "" {
 				directory = published
 			}
 		}

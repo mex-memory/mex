@@ -16,6 +16,10 @@ import { __resetTelemetryForTest, __setTelemetryEndpointForTest, __setTransport,
 import { claimBatch, closeOutbox, enqueue, finishBatch, inspectOutbox, OUTBOX_LIMITS, purgeOutbox } from "../src/telemetry/outbox.js";
 import { eventAttributes, makeEvent, validateStoredEvent, type TelemetryAttributes, type TelemetryEvent } from "../src/telemetry/schema.js";
 import * as telemetryTransport from "../src/telemetry/transport.js";
+import { openRecord } from "../src/record/index.js";
+import { recordCounter, recordLifecycle, inspectReports } from "../src/telemetry/store.js";
+import { sendUsageReports } from "../src/telemetry/reporting.js";
+import { validateReport } from "../src/telemetry/report-schema.js";
 
 let root: string;
 let cwd: string;
@@ -23,6 +27,7 @@ let prior: Record<string, string | undefined>;
 const servers: Server[] = [];
 const pause = (ms = 0) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 beforeEach(() => {
+  for (const key of ["CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "BUILDKITE", "CIRCLECI", "JENKINS_URL", "MEX_OFFLINE"]) vi.stubEnv(key, "");
   cwd = process.cwd();
   prior = Object.fromEntries(["MEX_HOME", "MEX_TELEMETRY", "DO_NOT_TRACK", "MEX_DEV"].map((key) => [key, process.env[key]]));
   root = mkdtempSync(join(tmpdir(), "mex-telemetry-delivery-"));
@@ -42,6 +47,7 @@ afterEach(async () => {
   }
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   process.chdir(cwd);
   for (const [key, value] of Object.entries(prior)) {
     if (value === undefined) delete process.env[key]; else process.env[key] = value;
@@ -83,15 +89,18 @@ describe("closed event schema", () => {
     expect(captured).not.toHaveBeenCalled();
     expect(existsSync(join(root, ".mex"))).toBe(false);
   });
-  it("uses the same installation ID for CLI and Hub, without project or person fields", () => {
+  it("combines CLI and Hub usage into a single daily report without project or person fields", async () => {
     const calls: Record<string, unknown>[] = [];
     __setTransport((_name, attrs) => { calls.push(attrs); });
-    captureEvent("cli.command_started", { command: "wiki.query", stage: "direct" });
-    captureEvent("hub.page_viewed", { page: "knowledge" });
-    expect(calls).toHaveLength(2);
-    expect(calls[0].installation_id).toBe(calls[1].installation_id);
-    expect(calls[0]).toMatchObject({ schema_version: 2, source: "cli", $process_person_profile: false, $geoip_disable: true });
-    expect(calls[1].source).toBe("hub");
+    setGlobalConfigKey("telemetryNoticeVersion", 3);
+    const yesterday = Date.now() - 86400000;
+    recordCounter("commands", 1, undefined, yesterday);
+    recordCounter("hub.pages", 1, undefined, yesterday);
+    const writer = openRecord();
+    try { await sendUsageReports(writer); } finally { writer.close(); }
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ schema_version: 3, source: "person", counts: { commands: "1", "hub.pages": "1" },
+      $process_person_profile: false, $geoip_disable: true });
     expect(JSON.stringify(calls)).not.toMatch(/scaffold_id|machine_id|member_id|email|session_id/);
   });
   it("rechecks persisted property values and envelope keys, not just live callers", () => {
@@ -321,7 +330,7 @@ describe("noninitializing audit and filesystem containment", () => {
     expect(readFileSync(target, "utf8")).toBe('{"private":"keep"}');
   });
   it("inspect never creates files, even with telemetry enabled", () => {
-    expect(getTelemetryInspection()).toMatchObject({ enabled: true, installation_id: null, queue: { state: "absent", events: 0 } });
+    expect(getTelemetryInspection()).toMatchObject({ enabled: true, installation_id: null, pending: [], sent: [] });
     expect(readdirSync(root)).toEqual([]);
   });
   it("inspect leaves existing database bytes and directory entries unchanged", () => {
@@ -350,12 +359,16 @@ describe("noninitializing audit and filesystem containment", () => {
   });
 });
 
-describe("silent bounded delivery", () => {
+describe("silent bounded v3 delivery", () => {
+  function queuedReport() {
+    setGlobalConfigKey("telemetryNoticeVersion", 3);
+    recordLifecycle("on");
+    return openRecord();
+  }
   it("cancels a real DNS lookup sent only to a loopback UDP blackhole", async () => {
     const blackhole = createSocket("udp4");
     blackhole.bind(0, "127.0.0.1"); await once(blackhole, "listening");
     const address = blackhole.address();
-    let queries = 0; blackhole.on("message", () => { queries++; });
     const original = Resolver.prototype.resolve4;
     const callbacks: string[] = [];
     const resolve = vi.spyOn(Resolver.prototype, "resolve4").mockImplementation(function(this: Resolver, hostname: string, callback: any) {
@@ -364,100 +377,70 @@ describe("silent bounded delivery", () => {
       return original.call(this, hostname, (error, values) => { callbacks.push(error?.code ?? "resolved"); callback(error, values); });
     });
     const cancel = vi.spyOn(Resolver.prototype, "cancel");
+    const writer = queuedReport();
     try {
-      // DNS is hard-pinned to the blackhole above before any resolver call; no
-      // PostHog address can be resolved and no production connection can start.
       __setTelemetryEndpointForTest(null);
       const firstQuery = once(blackhole, "message", { signal: AbortSignal.timeout(1000) });
-      captureEvent("cli.command_started", { command: "check" });
-      // Observe an in-flight query before measuring cancellation. A fixed sleep
-      // can leave scheduled dispatch and cold HTTPS setup inside this interval.
+      const sending = sendUsageReports(writer);
       await firstQuery;
-      expect(callbacks).toEqual([]); expect(cancel).not.toHaveBeenCalled();
-      const started = performance.now(); await flush({ deadlineMs: 25 });
+      expect(callbacks).toEqual([]);
+      const started = performance.now(); disableTelemetry();
+      await sending;
       expect(performance.now() - started).toBeLessThan(150);
-      await pause(10);
       expect(resolve).toHaveBeenCalledOnce(); expect(cancel).toHaveBeenCalled();
-      expect(queries).toBeGreaterThan(0); expect(callbacks).toEqual(["ECANCELLED"]);
-      const count = queries; await pause(25); expect(queries).toBe(count);
-      expect(inspectOutbox().events).toBe(1);
+      await expect.poll(() => callbacks, { timeout: 150 }).toEqual(["ECANCELLED"]);
+      expect(inspectReports().pending).toEqual([]);
     } finally {
-      __setTelemetryEndpointForTest("http://127.0.0.1:1/batch/");
+      writer.close(); __setTelemetryEndpointForTest("http://127.0.0.1:1/batch/");
       resolve.mockRestore(); cancel.mockRestore();
       await new Promise<void>((done) => blackhole.close(() => done()));
     }
   });
-  it("explicit disable aborts an in-flight request and clears its queued claim", async () => {
-    let started!: () => void; const received = new Promise<void>((resolve) => { started = resolve; });
-    await endpoint((request) => { request.resume(); started(); });
-    captureEvent("cli.command_started", { command: "check" }); await received;
-    expect(disableTelemetry()).toEqual({ purged: true });
-    await flush(); expect(inspectOutbox().events).toBe(0);
-    expect(isEnabled()).toEqual({ enabled: false, reason: "config" });
+  it("keeps personal command flush and Hub shutdown free of network sends", async () => {
+    const send = vi.spyOn(telemetryTransport, "sendBatch");
+    const stop = startHubTelemetry();
+    captureEvent("cli.command_started", { command: "check" });
+    captureEvent("hub.session_started"); captureEvent("hub.page_viewed", { page: "knowledge" });
+    await flush(); await stop(); await stop();
+    expect(send).not.toHaveBeenCalled();
+    expect(existsSync(join(root,".mex","telemetry-id"))).toBe(false);
+    const writer = openRecord();
+    try {
+      expect(writer.db.prepare("SELECT name,value FROM counters_node ORDER BY name").all())
+        .toEqual([{name:"commands",value:1},{name:"hub.pages",value:1},{name:"hub.sessions",value:1}]);
+    } finally { writer.close(); }
   });
-  it("sends one correct batch, then removes only acknowledged events", async () => {
-    const bodies: Array<{ batch: TelemetryEvent[] }> = [];
+  it("sends only validated v3 reports and removes only acknowledged entries", async () => {
+    const bodies: Array<{ batch: unknown[] }> = [];
     await endpoint((request, response) => {
       let body = ""; request.on("data", (part) => { body += part; });
       request.on("end", () => { bodies.push(JSON.parse(body)); response.end('{"status":1}'); });
     });
-    captureEvent("cli.command_started", { command: "wiki.query", stage: "direct" });
-    captureEvent("cli.command_completed", { command: "wiki.query", stage: "direct", outcome: "success", duration_ms: 5 });
-    // Successful delivery is independent from the best-effort CLI exit grace.
-    await expect.poll(() => inspectOutbox().events, { timeout: 2_000 }).toBe(0);
-    await flush({ deadlineMs: 50 });
-    expect(bodies).toHaveLength(1);
-    expect(bodies[0].batch.map((item) => item.event)).toEqual(["cli.command_started", "cli.command_completed"]);
-    expect(bodies[0].batch.every(validateStoredEvent)).toBe(true);
-    expect(inspectOutbox().events).toBe(0);
-    captureEvent("cli.command_started", { command: "check" });
-    await flush({ deadlineMs: 50 });
-    expect(bodies).toHaveLength(1);
-    expect(inspectOutbox().events).toBe(1);
+    const writer = queuedReport();
+    try {
+      expect(await sendUsageReports(writer)).toBe(1);
+      expect(bodies).toHaveLength(1); expect(bodies[0].batch.every(validateReport)).toBe(true);
+      expect(inspectReports().pending).toEqual([]); expect(inspectReports().sent).toHaveLength(1);
+    } finally { writer.close(); }
   });
-  it("retains an unavailable batch and aborts a hung request within the flush grace", async () => {
-    await endpoint((request) => { request.resume(); });
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    captureEvent("cli.command_started", { command: "check" });
-    await pause(5);
-    const started = performance.now();
-    await flush({ deadlineMs: 25 });
-    expect(performance.now() - started).toBeLessThan(150); // scheduler headroom; whole-process harness owns performance gate
-    expect(inspectOutbox().events).toBe(1);
-    expect(stderr).not.toHaveBeenCalled();
-  });
-  it("never follows an ingestion redirect", async () => {
+  it("never follows an ingestion redirect and retains the report for later use", async () => {
     let calls = 0;
     await endpoint((_request, response) => { calls++; response.writeHead(302, { Location: "https://example.com/private" }); response.end(); });
-    captureEvent("cli.command_started", { command: "check" });
-    await expect.poll(() => calls, { timeout: 2_000 }).toBe(1);
-    await flush({ deadlineMs: 50 });
-    expect(calls).toBe(1); expect(inspectOutbox().events).toBe(1);
+    const writer = queuedReport();
+    try {
+      expect(await sendUsageReports(writer)).toBe(0);
+      expect(calls).toBe(1); expect(inspectReports().pending).toHaveLength(1);
+    } finally { writer.close(); }
   });
-  it("checks opt-out again before scheduled send; explicit disable clears queued events", async () => {
+  it("honors opt-out after a report was queued but before the worker sends", async () => {
     let calls = 0;
     await endpoint((_request, response) => { calls++; response.end('{"status":1}'); });
-    captureEvent("cli.command_started", { command: "check" });
-    process.env.DO_NOT_TRACK = "1";
-    await flush();
-    expect(calls).toBe(0); expect(inspectOutbox().events).toBe(1);
-    expect(disableTelemetry()).toEqual({ purged: true });
-    expect(inspectOutbox().events).toBe(0);
-    captureEvent("cli.command_started", { command: "check" });
-    expect(inspectOutbox().events).toBe(0);
-  });
-  it("batches Hub activity at lifecycle shutdown without counting idle timer ticks", async () => {
-    const batches: TelemetryEvent[][] = [];
-    // This case owns lifecycle batching; real HTTP delivery is covered above.
-    vi.spyOn(telemetryTransport, "sendBatch").mockImplementation((events) => {
-      batches.push([...events]);
-      return { done: Promise.resolve(true), abort() {} };
-    });
-    const stop = startHubTelemetry();
-    captureEvent("hub.session_started"); captureEvent("hub.page_viewed", { page: "knowledge" });
-    await pause(5); expect(batches).toHaveLength(0);
-    await stop(); await stop();
-    expect(batches).toHaveLength(1); expect(batches[0]).toHaveLength(2);
+    const writer = queuedReport();
+    try {
+      process.env.DO_NOT_TRACK = "1";
+      expect(await sendUsageReports(writer)).toBe(0); expect(calls).toBe(0);
+      expect(disableTelemetry()).toEqual({ purged: true }); expect(inspectReports().pending).toEqual([]);
+    } finally { writer.close(); }
   });
   it("the test endpoint seam cannot be directed to a remote origin or arbitrary path", () => {
     for (const value of ["https://us.i.posthog.com/batch/", "http://example.com:80/batch/", "http://127.0.0.1:80/private", "http://user@127.0.0.1:80/batch/"]) {

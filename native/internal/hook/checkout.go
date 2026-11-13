@@ -12,8 +12,8 @@ import (
 )
 
 // MEX is on in a checkout once `mex` has registered it and it isn't switched
-// off. The hook can't open SQLite (it would add milliseconds to every call),
-// so Node mirrors each `checkouts` row into a small file:
+// off. Checkout lookup does not open SQLite, so Node mirrors each `checkouts`
+// row into a small file:
 // <record directory>/hook-checkouts/<ShortHash(root)>.json
 // (src/record/hook-checkouts.ts writes it).
 

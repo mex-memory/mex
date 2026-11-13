@@ -1,5 +1,5 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
@@ -16,9 +16,9 @@ import { runNodeHook } from "../node-hook.js";
 import { openRecord } from "../../../record/index.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-// Building the real binary is slow and CPU-heavy, so it runs only when asked
-// (the Go CI job sets this), not inside the parallel Node suite.
-const realBinary = process.env.MEX_TEST_REAL_HOOK_BINARY === "1" && spawnSync("go", ["version"], { encoding: "utf8" }).status === 0;
+// The Go CI job builds the platform packages before enabling these checks.
+// Test the shipped artifact without competing compilation during capture.
+const realBinary = process.env.MEX_TEST_REAL_HOOK_BINARY === "1";
 
 let tmp: string;
 beforeAll(() => {
@@ -167,11 +167,8 @@ describe("Node fallback", () => {
 describe.skipIf(!realBinary)("with the real Go binary", () => {
   let built: string;
   beforeAll(() => {
-    built = join(tmp, "real", binaryFileName());
-    execFileSync("go", ["build", "-trimpath", "-o", built, "./cmd/mex-hook"], {
-      cwd: join(repoRoot, "native"),
-      env: { ...process.env, CGO_ENABLED: "0" },
-    });
+    built = join(repoRoot, "npm", `hook-${process.platform}-${process.arch}`, "bin", binaryFileName());
+    expect(existsSync(built), "Build platform packages with node scripts/build-hook-binaries.mjs first").toBe(true);
   }, 120_000);
 
   it("passes its self-test", () => {

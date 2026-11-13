@@ -42,7 +42,7 @@ export class IndexReader {
 
   constructor(private readonly db: DatabaseSync, readonly pointer: Pointer, private readonly directory: string, private readonly key: string, readonly root: string) {
     this.pathRow = db.prepare("SELECT path,hash,lang,is_test,mtime_ns,reason FROM paths WHERE path=?");
-    this.record = db.prepare("SELECT data FROM main.records WHERE hash=?1 AND lang=?2 UNION ALL SELECT data FROM base.records WHERE hash=?1 AND lang=?2 LIMIT 1");
+    this.record = db.prepare("SELECT data FROM main.records WHERE hash=? AND lang=? UNION ALL SELECT data FROM base.records WHERE hash=? AND lang=? LIMIT 1");
     const ids = db.prepare("SELECT value FROM meta WHERE key='pattern_ids'").get() as { value: string } | undefined;
     this.patternIds = new Set(ids ? JSON.parse(ids.value) as string[] : []);
   }
@@ -75,7 +75,7 @@ export class IndexReader {
   }
 
   private fileRecord(row: PathRow): FileRecord | undefined {
-    const found = this.record.get(row.hash!, row.lang!) as { data: string } | undefined;
+    const found = this.record.get(row.hash!, row.lang!, row.hash!, row.lang!) as { data: string } | undefined;
     return found ? parseRecord(row.hash!, row.lang!, found.data) : undefined;
   }
 
@@ -105,8 +105,8 @@ export class IndexReader {
   /** Definitions with this name, with spans moved through pending edits. Callers check it is unique. */
   symbolsNamed(name: string): SymbolHit[] {
     const rows = this.db.prepare(`SELECT p.path, p.mtime_ns, s.kind, s.start, s.end FROM
-      (SELECT hash,lang,kind,start,end FROM main.symbols WHERE name=?1 UNION ALL SELECT hash,lang,kind,start,end FROM base.symbols WHERE name=?1) s
-      JOIN paths p ON p.hash=s.hash AND p.lang=s.lang WHERE p.reason IS NULL ORDER BY p.path, s.start, s.end, s.kind`).all(name) as Array<{ path: string; mtime_ns: string; kind: SymbolKind; start: number; end: number }>;
+      (SELECT hash,lang,kind,start,end FROM main.symbols WHERE name=? UNION ALL SELECT hash,lang,kind,start,end FROM base.symbols WHERE name=?) s
+      JOIN paths p ON p.hash=s.hash AND p.lang=s.lang WHERE p.reason IS NULL ORDER BY p.path, s.start, s.end, s.kind`).all(name, name) as Array<{ path: string; mtime_ns: string; kind: SymbolKind; start: number; end: number }>;
     const hits: SymbolHit[] = [];
     const seen = new Set<string>();
     for (const row of rows) {
@@ -143,9 +143,9 @@ export class IndexReader {
       const key = `${row.hash}:${row.lang}`;
       files.set(key, (files.get(key) ?? 0) + 1);
     }
-    const marks = wanted.map((_, index) => `?${index + 1}`).join(",");
+    const marks = wanted.map(() => "?").join(",");
     const rows = this.db.prepare(`SELECT hash,lang,pattern,count FROM main.counts WHERE pattern IN (${marks})
-      UNION SELECT hash,lang,pattern,count FROM base.counts WHERE pattern IN (${marks})`).all(...wanted) as Array<{ hash: string; lang: string; pattern: string; count: number }>;
+      UNION SELECT hash,lang,pattern,count FROM base.counts WHERE pattern IN (${marks})`).all(...wanted, ...wanted) as Array<{ hash: string; lang: string; pattern: string; count: number }>;
     for (const row of rows) {
       const times = files.get(`${row.hash}:${row.lang}`);
       if (times) counts[row.pattern] = counts[row.pattern]! + row.count * times;

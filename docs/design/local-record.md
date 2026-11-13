@@ -27,6 +27,23 @@ background process. A missing, busy, unreadable or incompatible file produces
 an error the hook caller ignores, allowing the agent call. Never use SQLite's
 `immutable` option for these live databases: readers must see WAL commits.
 
+Telemetry counter writers use a 1 ms busy timeout and separate 10 ms open and
+write deadlines, skipping measurement when either budget expires. Each hook's
+counter increments form one atomic SQLite statement. These short-lived writers
+retain the WAL sidecar files for reuse across processes. A private `mode=ro`
+attachment keeps a read-only pager alive while the writable main pager closes,
+leaving committed counters in WAL instead of checkpointing every hook and
+synchronizing its next WAL header. This avoids a second SQLite connection.
+The pinned SQLite closes main before attachments; WAL-lifetime tests qualify
+that order when upgrading the driver. The attachment holds no read transaction
+and cannot write the database. The 1,000-page
+automatic checkpoint and WAL/NORMAL policy remain active. Committed counters
+survive process exit; a power failure can still lose unsynchronized counters.
+The main open and attachment share the same 10 ms deadline. Counter-only
+connections retain the 1 ms busy policy across session operations, avoiding a
+redundant PRAGMA on each usage write. Ordinary session writers
+retain their existing checkpoint and final-close cleanup.
+
 There is no separate `usage.db`. The machine-wide usage log is `model_calls` and
 `own_usage` inside `record.db`. Existing checkout `.mex/graph.db`, `wiki.db`,
 `team.db` and Hub jobs are unchanged by this storage foundation.
