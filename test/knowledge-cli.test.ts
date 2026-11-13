@@ -85,6 +85,29 @@ describe("shipped knowledge commands", () => {
     expect(run(["expand", id]).stdout).toContain("  source:");
     expect(readdirSync(repo)).toEqual([]);
   });
+  it("edits and permanently retires personal notes through the shipped commands", () => {
+    const saved = run(["note", "Fixtures use random input.", "--json"]);
+    const id = saved.json().entry.mex.id;
+    const changed = run(["edit", id, "Fixtures use seeded input because failures must reproduce.", "--json"], repo, true);
+    expect(changed.status, changed.stderr).toBe(0);
+    expect(changed.json()).toMatchObject({ ok: true, entry: { mex: { id, checks: [] }, text: "Fixtures use seeded input because failures must reproduce." } });
+    expect(run(["recall", "seeded", "--json"]).json().entries[0].id).toBe(id);
+    const retired = run(["wrong", id, "The test suite now uses recorded input.", "--json"], repo, true);
+    expect(retired.status, retired.stderr).toBe(0);
+    expect(retired.json()).toMatchObject({ ok: true, status: "retired", retired: { by: "mex wrong" } });
+    expect(run(["recall", "fixtures", "--json"]).json().entries).toEqual([]);
+    expect(run(["expand", id, "--json"]).json()).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
+    const second = run(["note", "A disposable note.", "--json"]).json().entry.mex.id;
+    expect(run(["forget", second, "No longer useful.", "--json"]).json()).toMatchObject({ ok: true, status: "retired" });
+    expect(readdirSync(repo)).toEqual([]);
+    expect(existsSync(join(mexBase, ".mex", "config.json"))).toBe(false);
+  });
+  it.each(["edit", "wrong", "forget"])("rejects a missing %s target before interactive telemetry initializes storage", command => {
+    const result = run(["--no-open", command, "mx_absent1", "A corrected fact or reason.", "--json"], repo, true);
+    expect(result.status).toBe(1); expect(result.stderr).toBe("");
+    expect(result.json()).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
+    expect(existsSync(mexBase)).toBe(false);
+  });
   it("returns empty reads and controlled JSON errors without initializing storage", () => {
     const empty = run(["recall", "fixtures", "--json"]);
     expect(empty.status, empty.stderr).toBe(0); expect(empty.json()).toEqual({ ok: true, entries: [], truncated: false });

@@ -112,6 +112,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "relay"
     || commandName === "spec"
     || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
+    || commandName === "edit" || commandName === "wrong" || commandName === "forget"
     || commandName === "skills";
 }
 
@@ -1389,7 +1390,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand",
+    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget",
     "doctor", "jobs", "completion",
     "telemetry", "config", "feedback", "hub",
   ];

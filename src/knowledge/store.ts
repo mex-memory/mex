@@ -6,6 +6,7 @@ import type { LocationOptions } from "../record/location.js";
 import { realPath } from "../record/project.js";
 import { assertPersonQuote, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type EntryKind, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, createEntryFile, readEntryFile } from "./files.js";
+import { retiredIds } from "./state.js";
 
 export interface KnowledgeOptions extends LocationOptions { projectPath: string; }
 export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
@@ -23,18 +24,18 @@ function registeredCheckout(reader: RecordReader, requested: string): CheckoutRo
     current = parent;
   }
 }
-function readDirectory(options: KnowledgeOptions): string | undefined {
+function readDirectory(options: KnowledgeOptions): { directory: string; retired: Set<string> } | undefined {
   const location = recordLocation({ ...options, create: false });
   // No record and no home is a normal empty read, never a setup action.
   if (!existsSync(location.home)) return undefined;
   const reader = openRecordReadOnly(options);
-  let projectId: string;
   try {
     if (reader?.diagnostic) throw new KnowledgeError("RECORD_UNAVAILABLE", reader.diagnostic);
-    projectId = (reader && registeredCheckout(reader, options.projectPath)?.project_id) || projectIdentity(options.projectPath).id;
+    const projectId = (reader && registeredCheckout(reader, options.projectPath)?.project_id) || projectIdentity(options.projectPath).id;
+    if (!/^[gf]-[a-f0-9]{24}$/u.test(projectId)) throw new KnowledgeError("UNSAFE_STORE", "Invalid registered project identity.");
+    const directory = containedDirectory(location.home, ["projects", projectId, "notes"]);
+    return directory ? { directory, retired: retiredIds(reader, projectId) } : undefined;
   } finally { reader?.close(); }
-  if (!/^[gf]-[a-f0-9]{24}$/u.test(projectId)) throw new KnowledgeError("UNSAFE_STORE", "Invalid registered project identity.");
-  return containedDirectory(location.home, ["projects", projectId, "notes"]);
 }
 function display(entry: KnowledgeEntry): PersonalEntry {
   const day = Number(entry.mex.created.slice(8, 10));
@@ -76,8 +77,8 @@ function load(directory: string, id: string): KnowledgeEntry | undefined {
 }
 export function expand(id: string, options: KnowledgeOptions): PersonalEntry {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Expected a stable entry id such as mx_7f3k2a.");
-  const directory = readDirectory(options);
-  const entry = directory && load(directory, id);
+  const store = readDirectory(options);
+  const entry = store && !store.retired.has(id) && load(store.directory, id);
   if (!entry) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
   return display(entry);
 }
@@ -92,8 +93,9 @@ export function recall(query: string, options: KnowledgeOptions, limit = 20): Re
   const terms = [...new Set(words(query))];
   if (!terms.length) throw new KnowledgeError("INVALID_QUERY", "Search requires at least one word.");
   if (!Number.isInteger(limit) || limit < 1 || limit > KNOWLEDGE_LIMITS.results) throw new KnowledgeError("INVALID_LIMIT", "Search limit must be between 1 and 100.");
-  const directory = readDirectory(options);
-  if (!directory) return { entries: [], truncated: false };
+  const store = readDirectory(options);
+  if (!store) return { entries: [], truncated: false };
+  const { directory, retired } = store;
   const names: string[] = [];
   const handle = opendirSync(directory);
   try {
@@ -111,6 +113,7 @@ export function recall(query: string, options: KnowledgeOptions, limit = 20): Re
     if (content === undefined) continue;
     totalBytes += Buffer.byteLength(content, "utf8");
     if (totalBytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", "Personal notes exceed the byte scan limit.");
+    if (retired.has(id)) continue;
     const entry = parseEntry(content);
     if (entry.mex.id !== id) throw new KnowledgeError("INVALID_ENTRY", "Entry id does not match its filename.");
     if (entry.mex.status !== "active") continue;

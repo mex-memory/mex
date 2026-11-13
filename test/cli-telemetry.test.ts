@@ -79,7 +79,7 @@ describe("CLI invocation telemetry", () => {
     }]);
   });
 
-  it.each(["capabilities", "logging", "timeline", "hub", "note", "log", "recall", "expand", "telemetry.inspect", "member.list", "inbox.contract", "relay.draft.show", "new-private-command"])(
+  it.each(["capabilities", "logging", "timeline", "hub", "note", "log", "recall", "expand", "edit", "wrong", "forget", "telemetry.inspect", "member.list", "inbox.contract", "relay.draft.show", "new-private-command"])(
     "keeps pure discovery, Hub bootstrap, meta and unknown commands silent: %s", async (path) => {
       const root = new Command("mex");
       const command = path.split(".").reduce((parent, name) => parent.command(name), root);

@@ -51,7 +51,36 @@ export function buildKnowledgeCommands(): Command[] {
         }
       });
     });
-  return [save, search, full];
+  const change = new Command("edit")
+    .description("Replace a personal note's claim; obsolete checks are cleared")
+    .argument("<id>", "Stable entry id")
+    .argument("<text>", "The corrected fact and its reason")
+    .addOption(new Option("--kind <kind>", "Entry kind").choices([...ENTRY_KINDS]))
+    .option("--scope <glob>", "Repository-relative scope (repeatable)", (value: string, previous: string[]) => [...previous, value], [])
+    .option("--one-line <text>", "The complete corrected claim in one line")
+    .option("--json", "Print the corrected entry as JSON")
+    .action(async (id, text, opts) => {
+      await run(opts.json, async () => {
+        const { edit } = await import("./mutations.js");
+        const saved = edit(id, { text, kind: opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine }, { projectPath: process.cwd() });
+        if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
+        else console.log(`Updated personal note ${id}\n${saved.entry.mex.one_line}`);
+      });
+    });
+  const retire = (["wrong", "forget"] as const).map(action => new Command(action)
+    .description(action === "wrong" ? "Retire an incorrect note and keep its reason" : "Hide a note permanently, keeping a local tombstone")
+    .argument("<id>", "Stable entry id")
+    .argument("<reason>", "Why this entry should no longer be used")
+    .option("--json", "Print the retirement record as JSON")
+    .action(async (id, reason, opts) => {
+      await run(opts.json, async () => {
+        const { forget, wrong } = await import("./mutations.js");
+        const marker = (action === "wrong" ? wrong : forget)(id, reason, { projectPath: process.cwd() });
+        if (opts.json) console.log(JSON.stringify({ ok: true, level: "personal", status: "retired", ...marker }));
+        else console.log(`Retired personal note ${id}: ${marker.retired.reason}`);
+      });
+    }));
+  return [save, search, full, change, ...retire];
 }
 async function run(json: boolean | undefined, action: () => Promise<void>): Promise<void> {
   try { await action(); }

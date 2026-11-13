@@ -1,4 +1,4 @@
-import { constants, openSync, closeSync, fstatSync, readSync, lstatSync, mkdirSync, writeSync, linkSync, unlinkSync } from "node:fs";
+import { constants, openSync, closeSync, fstatSync, readSync, lstatSync, mkdirSync, writeSync, linkSync, unlinkSync, renameSync, fsyncSync } from "node:fs";
 import { join, relative, isAbsolute, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { absolutePath, realPath } from "../record/project.js";
@@ -77,6 +77,39 @@ export function createEntryFile(directory: string, id: string, content: string):
         const current = lstatSync(temporary, { bigint: true });
         if (current.isFile() && !current.isSymbolicLink() && current.dev === owned.dev && current.ino === owned.ino) unlinkSync(temporary);
       } catch { /* An owned staging file may remain; recall ignores it. */ }
+    }
+  }
+}
+
+/** Caller holds the local record's write transaction to serialize MEX editors. */
+export function replaceEntryFile(directory: string, id: string, expected: string, content: string): void {
+  if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Invalid entry id.");
+  if (Buffer.byteLength(content, "utf8") > KNOWLEDGE_LIMITS.entryBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
+  const target = join(directory, `${id}.md`);
+  const temporary = join(directory, `.entry-${randomBytes(12).toString("hex")}.tmp`);
+  let fd: number | undefined;
+  let owned: { dev: bigint; ino: bigint } | undefined;
+  try {
+    fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
+    owned = fstatSync(fd, { bigint: true });
+    const bytes = Buffer.from(content, "utf8");
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = writeSync(fd, bytes, offset, bytes.length - offset);
+      if (count <= 0) throw new KnowledgeError("STORE_UNAVAILABLE", "The entry could not be written completely.");
+      offset += count;
+    }
+    fsyncSync(fd);
+    const completed = fd; fd = undefined; closeSync(completed);
+    if (readEntryFile(target) !== expected) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again before editing.");
+    renameSync(temporary, target);
+  } finally {
+    if (fd !== undefined) { try { closeSync(fd); } catch { /* preserve publication outcome */ } }
+    if (owned) {
+      try {
+        const current = lstatSync(temporary, { bigint: true });
+        if (current.isFile() && !current.isSymbolicLink() && current.dev === owned.dev && current.ino === owned.ino) unlinkSync(temporary);
+      } catch { /* an owned staging file can remain, but is never an entry */ }
     }
   }
 }
