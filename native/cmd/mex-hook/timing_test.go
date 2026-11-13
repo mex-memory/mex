@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 	localrecord "github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
+	"modernc.org/sqlite"
 )
 
 // The no-op budget: a hook that has nothing to do answers in 17 ms or less at
@@ -120,14 +122,40 @@ func callOnce(t *testing.T, bin, mexHome string) time.Duration {
 
 type stats struct{ p50, p95, max time.Duration }
 
-func hookCount(t *testing.T, location localrecord.Location) int {
-	t.Helper()
+func hookReadOnlyURI(location localrecord.Location) string {
 	slash := filepath.ToSlash(location.Hooks)
 	if !strings.HasPrefix(slash, "/") {
 		slash = "/" + slash
 	}
 	uri := url.URL{Scheme: "file", Path: slash, RawQuery: "mode=ro"}
-	db, err := sql.Open("sqlite", uri.String())
+	return uri.String()
+}
+
+func prepareTimingHooks(t *testing.T, location localrecord.Location) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", location.Hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+	schema, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0001_init.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fixture preparation is outside the real hook's timed interval and limits.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = db.ExecContext(ctx, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;\n"+string(schema)+fmt.Sprintf("\nPRAGMA user_version=%d; COMMIT;", localrecord.SchemaVersion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func hookCount(t *testing.T, location localrecord.Location) int {
+	t.Helper()
+	db, err := sql.Open("sqlite", hookReadOnlyURI(location))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,23 +174,41 @@ func TestHookCountInspectionIsReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial, err := localrecord.OpenHooks(location)
+	initial := prepareTimingHooks(t, location)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := initial.Conn(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer initial.Close()
-	counters, err := localrecord.OpenHookCounters(location)
+	err = conn.Raw(func(driverConn any) error {
+		fc, ok := driverConn.(sqlite.FileControl)
+		if !ok {
+			return fmt.Errorf("SQLite file control is unavailable")
+		}
+		_, err := fc.FileControlPersistWAL("main", 1)
+		return err
+	})
+	_ = conn.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer counters.Close()
+	if _, err := initial.ExecContext(ctx, "INSERT INTO counters_go VALUES('2026-11-13','agent:claude-code:hook.calls',1),('2026-11-13','agent:claude-code:hook.ms.0',1)"); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := sql.Open("sqlite", hookReadOnlyURI(location))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var version int
+	if err := reader.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != localrecord.SchemaVersion {
+		t.Fatalf("fixture reader version=%d: %v", version, err)
+	}
 	if err := initial.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := counters.RecordHookUsage("2026-11-13", "claude-code", false, false, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := counters.Close(); err != nil {
+	if err := reader.Close(); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(location.Hooks)
@@ -220,10 +266,7 @@ func measureNoOp(t *testing.T, counters bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		hooks, err := localrecord.OpenHooks(location)
-		if err != nil {
-			t.Fatal(err)
-		}
+		hooks := prepareTimingHooks(t, location)
 		if err := hooks.Close(); err != nil {
 			t.Fatal(err)
 		}
