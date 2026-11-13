@@ -163,3 +163,18 @@ func TestMexHomeUsesTheSameBaseRuleAsNode(t *testing.T) {
 		t.Fatalf("MEX_HOME is a base directory, got %s", h.mex)
 	}
 }
+
+func TestUnknownAgentDoesNotReadTelemetryPolicy(t *testing.T) {
+	_, base := fakeHome(t, true)
+	env := func(key string) string {
+		switch key {
+		case "DO_NOT_TRACK", "MEX_TELEMETRY", "MEX_OFFLINE", "MEX_DEV", "CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "BUILDKITE", "CIRCLECI", "JENKINS_URL":
+			t.Fatalf("unsupported agent consulted telemetry policy: %s", key)
+		}
+		return base(key)
+	}
+	var out bytes.Buffer
+	if Run([]string{"unknown-agent", "Stop"}, strings.NewReader(`{}`), &out, &bytes.Buffer{}, env) != 0 || !json.Valid(out.Bytes()) {
+		t.Fatalf("unsupported agent did not fail open: %q", out.String())
+	}
+}

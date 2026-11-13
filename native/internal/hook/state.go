@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mex-memory/mex/native/record/place"
 )
 
 // home is where the shim looks for the person's files. Tests point it at a
@@ -18,6 +20,9 @@ type home struct {
 	user  string // the person's home folder
 	mex   string // MEX's folder: <MEX_HOME>/.mex, else ~/.mex (the same rule as Node's mexHomeDir)
 	codex string // Codex's folder: CODEX_HOME, else ~/.codex
+	// Resolves at most once per invocation, after telemetry policy checks, so
+	// checkout lookup and counters share the validated location.
+	usageLocation func() (place.Location, bool)
 }
 
 func homeFrom(getenv Env) home {

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mex-memory/mex/native/internal/adapter"
@@ -78,8 +79,13 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 		record(dir, agent, nativeEvent, payload)
 	}
 	h := homeFrom(getenv)
+	resolveUsage := sync.OnceValues(func() (place.Location, bool) { return hookUsageLocation(h, getenv) })
+	h.usageLocation = resolveUsage
 	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok, h, time.Now(), func(actual string, sessionStart, failed bool) {
-		recordHookUsage(h, getenv, actual, sessionStart, failed, time.Since(started))
+		usageLocation, usageEnabled := resolveUsage()
+		if usageEnabled {
+			recordHookUsage(usageLocation, actual, sessionStart, failed, time.Since(started))
+		}
 	}))
 	return 0
 }
@@ -158,9 +164,14 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 
 // recordDirectory is where the local record lives: MEX's folder, or the cache
 // folder the location pointer names for a network home. Callers check that MEX
-// is installed. Network detection is skipped: it is too slow for a hook, and
-// the pointer records the answer once Node has made it.
+// is installed. Reuse telemetry's validated location when available; otherwise
+// the checkout-only lookup skips network detection and reads Node's pointer.
 func (h home) recordDirectory() string {
+	if h.usageLocation != nil {
+		if location, enabled := h.usageLocation(); enabled {
+			return location.Directory
+		}
+	}
 	// The usual case costs one small read: no pointer yet (no writer has run,
 	// so nothing is elsewhere), or a pointer naming MEX's own folder.
 	data, err := os.ReadFile(filepath.Join(h.mex, "location"))

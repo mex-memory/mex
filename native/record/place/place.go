@@ -2,6 +2,7 @@ package place
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -64,12 +65,17 @@ func cacheRoot() (string, error) {
 }
 
 func readPointer(pointer string) string {
-	info, err := os.Stat(pointer)
+	file, err := os.Open(pointer)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	info, err := file.Stat()
 	if err != nil || info.Size() > 4096 {
 		return ""
 	}
-	data, err := os.ReadFile(pointer)
-	if err != nil {
+	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil || len(data) > 4096 {
 		return ""
 	}
 	text := strings.TrimSpace(string(data))
