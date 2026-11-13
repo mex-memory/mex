@@ -583,8 +583,8 @@ describe("graph construction integration", () => {
     const manifestBefore = before.getMetadata("manifest_hash");
     const configBefore = before.getMetadata("config_hash");
     expect(before.getMetadata("grammar_hash")).toMatch(/^[a-f0-9]{64}$/);
-    expect(before.getMetadata("compiler_version")).toBe("5.9.3");
-    expect(before.getMetadata("extractor_version")).toContain("typescript-5.9");
+    expect(before.getMetadata("compiler_version")).toMatch(/^(tsrs|tsgo)-/u);
+    expect(before.getMetadata("extractor_version")).toContain("typescript-api");
     beforeDb.close();
 
     expect(await engine.sync([])).toMatchObject({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0 });

@@ -23,8 +23,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSameResolvedPath, toPosix } from "../paths.js";
 import type {
-  BuildResult, DeclinedCompilerInput, GraphEngine, GraphPublicationReport, NodeSearchOptions, SkippedSourceFile,
+  BuildResult, DeclinedCompilerInput, GraphEngine, GraphPublicationReport, GraphTypeScriptReport, NodeSearchOptions, SkippedSourceFile,
 } from "./engine.js";
+import type { GraphCompilers } from "./extraction/compiler-policy.js";
 import {
   GRAPH_CORPUS_GLOB_OPTIONS,
   graphCorpusIgnoreGlobs,
@@ -309,6 +310,8 @@ interface StagedFile {
 
 interface StagedCorpus {
   files: StagedFile[];
+  /** Which compilers built the TypeScript graph, for Health; absent without TypeScript files. */
+  typescript?: GraphTypeScriptReport;
   /** Files discovered but not indexed, carried through to the build result. */
   skipped: GraphSkippedSourceFile[];
   /** Config inputs the containment policy declined during compiler extraction. */
@@ -352,6 +355,8 @@ interface ExtractionReuse {
 }
 
 const EXTRACTION_CACHE_IDENTITY_KEY = "extraction_cache_identity";
+/** The last build's {@link GraphTypeScriptReport}. */
+const TYPESCRIPT_REPORT_METADATA_KEY = "typescript_compilers";
 const EXTRACTION_PROJECT_STATES_KEY = "extraction_project_states";
 const EXTRACTION_PROJECT_INPUTS_KEY = "extraction_project_inputs";
 /** Past this, project inputs are not recorded and every refresh builds every program. */
@@ -376,7 +381,12 @@ function encodeProjectInputs(root: string, inputs: Record<string, CompilerProjec
     return at;
   };
   const projects = Object.fromEntries(Object.entries(inputs).sort(([left], [right]) => compareCodePoints(left, right))
-    .map(([id, entry]) => [id, { observed: entry.observed.map(intern), state: entry.state.map(intern) }]));
+    .map(([id, entry]) => [id, {
+      observed: entry.observed.map(intern),
+      state: entry.state.map(intern),
+      ...(entry.compiler ? { compiler: entry.compiler } : {}),
+      ...(entry.notes?.length ? { notes: entry.notes } : {}),
+    }]));
   const encoded = JSON.stringify({ paths, projects });
   return encoded.length <= MAX_PROJECT_INPUTS_BYTES ? encoded : undefined;
 }
@@ -385,7 +395,7 @@ function decodeProjectInputs(root: string, encoded: string | null): Record<strin
   if (!encoded) return undefined;
   try {
     const { paths, projects } = JSON.parse(encoded) as {
-      paths: string[]; projects: Record<string, { observed: number[]; state: number[] }>;
+      paths: string[]; projects: Record<string, { observed: number[]; state: number[]; compiler?: string; notes?: string[] }>;
     };
     const pathAt = (at: number): string => {
       const path = paths[at];
@@ -393,7 +403,12 @@ function decodeProjectInputs(root: string, encoded: string | null): Record<strin
       return path === ".." || path.startsWith("../") ? resolve(root, path).replaceAll("\\", "/") : path;
     };
     return Object.fromEntries(Object.entries(projects)
-      .map(([id, entry]) => [id, { observed: entry.observed.map(pathAt), state: entry.state.map(pathAt) }]));
+      .map(([id, entry]) => [id, {
+        observed: entry.observed.map(pathAt),
+        state: entry.state.map(pathAt),
+        ...(typeof entry.compiler === "string" ? { compiler: entry.compiler } : {}),
+        ...(Array.isArray(entry.notes) ? { notes: entry.notes.filter((note) => typeof note === "string") } : {}),
+      }]));
   } catch {
     return undefined;
   }
@@ -704,6 +719,8 @@ class GraphEngineImpl implements GraphEngine {
       }
       timeGraphPhase("publish.invariants", () => store.validateInvariants(expectedNodes));
       store.setMetadata("compiler_version", staged.compiler.compilerVersion);
+      if (staged.typescript) store.setMetadata(TYPESCRIPT_REPORT_METADATA_KEY, JSON.stringify(staged.typescript));
+      else store.deleteMetadata(TYPESCRIPT_REPORT_METADATA_KEY);
       store.setMetadata("extractor_version", CORPUS_EXTRACTOR_VERSION);
       store.setMetadata("resolver_version", RESOLVER_VERSION);
       store.setMetadata("config_hash", staged.configHash);
@@ -730,6 +747,7 @@ class GraphEngineImpl implements GraphEngine {
       ...(staged.declinedInputs.length > 0
         ? { declinedInputs: [...staged.declinedInputs] }
         : {}),
+      ...(staged.typescript ? { typescript: staged.typescript } : {}),
       ...(delta ? { [DELTA_AUDIT_SCOPE]: [...delta.rewritten.map((group) => group.path), ...delta.removed] } : {}),
       publication: delta
         ? { publication: "delta", filesRewritten: delta.rewritten.length + delta.removed.length }
@@ -1007,9 +1025,22 @@ async function stageCorpus(
     });
     reportParsed(0);
 
+    // The compiler: TypeScript 7.1's API (tsrs, falling back to tsgo, then
+    // 5.9 per project) unless the caller chose one.
+    let compilers: GraphCompilers | undefined;
+    // A caller that replaces 5.9 program creation (a test seam) keeps 5.9.
+    if (!compilerExtraction?.selectCompiler && !compilerExtraction?.programFactory && compilerFiles.length > 0) {
+      const policy = await import("./extraction/compiler-policy.js");
+      const choice = policy.graphCompilerChoice();
+      compilers = await policy.loadGraphCompilers(choice);
+    }
+
     // Incremental extraction (issue #209): plan which files to extract again,
     // or record why the whole corpus is extracted.
-    const identity = extractionCacheIdentity(manifest.manifestHash, configSources);
+    const identity = extractionCacheIdentity(
+      compilers ? `${manifest.manifestHash}\n${compilers.identity}` : manifest.manifestHash,
+      configSources,
+    );
     const discoveredByPath = new Map(discovered.map((file) => [file.relPath, file]));
     const isCompilerFile = (path: string): boolean => COMPILER_LANGUAGES.has(detectLanguage(path));
     let plan: IncrementalExtractionPlan | { reason: string } = "reason" in reuse ? reuse
@@ -1032,6 +1063,7 @@ async function stageCorpus(
     const extractCompilerFiles = (incremental?: CompilerIncrementalInput): CompilerExtractionResult => {
       const semanticInputLedger = createGraphSemanticInputLedger();
       return timeGraphPhase("compiler.total", () => buildTypeScriptExtraction(root, compilerPaths, {
+        ...compilers?.options,
         ...compilerExtraction,
         ...(incremental ? { incremental } : {}),
         stagedInputs: compilerInputs,
@@ -1195,6 +1227,14 @@ async function stageCorpus(
     }
     return {
       files,
+      ...(compilerFiles.length > 0 ? {
+        typescript: {
+          compiler: compilers?.description ?? `custom (${Object.values(compiler.projectCompilers)[0] ?? compiler.compilerVersion})`,
+          projects: { ...compiler.projectCompilers },
+          notes: Object.entries(compiler.projectCompilerNotes)
+            .flatMap(([project, notes]) => notes.map((note) => ({ project, note }))),
+        },
+      } : {}),
       skipped,
       declinedInputs: [...compiler.declinedInputs],
       compiler: {

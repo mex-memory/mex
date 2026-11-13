@@ -43,6 +43,15 @@ export interface SkippedSourceFile {
 }
 
 /** Summary of a build/sync pass — for the `mex graph` CLI. */
+export interface GraphTypeScriptReport {
+  /** The compiler chosen for the repository, for example `tsrs 0.25.0`. */
+  compiler: string;
+  /** Projects by the compiler that built them. */
+  projects: Record<string, string>;
+  /** Per project, in plain words: a fallback and its reason, or a translated tsconfig. */
+  notes: Array<{ project: string; note: string }>;
+}
+
 export interface BuildResult {
   filesIndexed: number;
   nodesCreated: number;
@@ -66,6 +75,12 @@ export interface BuildResult {
    * affected project's type resolution is less complete than it looks.
    */
   declinedInputs?: DeclinedCompilerInput[];
+  /**
+   * Which compiler built the TypeScript/JavaScript graph, and every project
+   * that was built differently or whose tsconfig was translated, with why.
+   * Absent when the corpus has no TypeScript or JavaScript.
+   */
+  typescript?: GraphTypeScriptReport;
   /** How a refresh did its work (issue #209). Absent from a clean build. */
   refresh?: GraphRefreshReport;
 }
