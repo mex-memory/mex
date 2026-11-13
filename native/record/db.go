@@ -26,6 +26,13 @@ const WriterBusyTimeoutMS = 200
 const WriterOperationTimeout = 250 * time.Millisecond
 const ReaderOperationTimeout = 100 * time.Millisecond
 
+// budget is how long one call may wait. Every exported opener uses hookBudget;
+// tests that check correctness rather than timing pass a wider one, so a loaded
+// machine can't fail them by being slow.
+type budget struct{ writerBusy, writer, reader time.Duration }
+
+var hookBudget = budget{time.Duration(WriterBusyTimeoutMS) * time.Millisecond, WriterOperationTimeout, ReaderOperationTimeout}
+
 //go:embed schema/hooks/*.sql
 var schemas embed.FS
 
@@ -136,14 +143,19 @@ func openDatabase(path string, readOnly bool) (*sql.DB, error) {
 	return db, nil
 }
 
-type Hooks struct{ db *sql.DB }
+type Hooks struct {
+	db     *sql.DB
+	budget budget
+}
 
-func OpenHooks(location Location) (*Hooks, error) {
+func OpenHooks(location Location) (*Hooks, error) { return openHooks(location, hookBudget) }
+
+func openHooks(location Location, limits budget) (*Hooks, error) {
 	db, err := openDatabase(location.Hooks, false)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), WriterOperationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), limits.writer)
 	defer cancel()
 	version, err := schemaVersion(ctx, db)
 	if err == nil && version > SchemaVersion {
@@ -167,7 +179,7 @@ func OpenHooks(location Location) (*Hooks, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Hooks{db}, nil
+	return &Hooks{db, limits}, nil
 }
 
 func (hooks *Hooks) Close() error { return hooks.db.Close() }
@@ -183,7 +195,7 @@ type Session struct {
 }
 
 func (hooks *Hooks) PutSession(session Session) error {
-	ctx, cancel := context.WithTimeout(context.Background(), WriterOperationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.writer)
 	defer cancel()
 	return hooks.write(ctx, `INSERT INTO sessions(session_id,agent,project_id,checkout,started_at,last_seen_at,paused)
  VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET last_seen_at=excluded.last_seen_at,paused=excluded.paused`,
@@ -194,7 +206,7 @@ func (hooks *Hooks) PutSession(session Session) error {
 // cannot repeatedly miss each newly released lock. The total wait budget stays
 // WriterBusyTimeoutMS; it does not restart with each attempt.
 func (hooks *Hooks) write(ctx context.Context, statement string, args ...any) error {
-	until := time.Now().Add(time.Duration(WriterBusyTimeoutMS) * time.Millisecond)
+	until := time.Now().Add(hooks.budget.writerBusy)
 	if deadline, ok := ctx.Deadline(); ok && deadline.Add(-25*time.Millisecond).Before(until) {
 		until = deadline.Add(-25 * time.Millisecond)
 	}
@@ -241,7 +253,7 @@ func (hooks *Hooks) write(ctx context.Context, statement string, args ...any) er
 }
 
 func (hooks *Hooks) Session(id string) (*Session, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), ReaderOperationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.reader)
 	defer cancel()
 	conn, err := hooks.db.Conn(ctx)
 	if err != nil {
@@ -269,6 +281,7 @@ func (hooks *Hooks) Session(id string) (*Session, error) {
 type Reader struct {
 	db      *sql.DB
 	Version int
+	budget  budget
 }
 type Project struct {
 	ID, RootPath, Kind, CreatedAt string
@@ -276,7 +289,9 @@ type Project struct {
 }
 
 // Missing/busy/incompatible files return errors quickly; callers ignore them and allow the call.
-func OpenRecord(location Location) (*Reader, error) {
+func OpenRecord(location Location) (*Reader, error) { return openRecord(location, hookBudget) }
+
+func openRecord(location Location, limits budget) (*Reader, error) {
 	if _, err := os.Stat(location.Record); err != nil {
 		return nil, err
 	}
@@ -284,7 +299,7 @@ func OpenRecord(location Location) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), ReaderOperationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), limits.reader)
 	defer cancel()
 	version, err := schemaVersion(ctx, db)
 	if err == nil && version > RecordSchemaVersion {
@@ -294,7 +309,7 @@ func OpenRecord(location Location) (*Reader, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Reader{db, version}, nil
+	return &Reader{db, version, limits}, nil
 }
 
 func (reader *Reader) Close() error { return reader.db.Close() }
@@ -306,7 +321,7 @@ func (reader *Reader) CheckoutProjectID(checkout string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), ReaderOperationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), reader.budget.reader)
 	defer cancel()
 	requested := path
 	query := "SELECT project_id,provisional FROM checkouts WHERE path=?"
@@ -335,7 +350,7 @@ func (reader *Reader) CheckoutProjectID(checkout string) (string, bool, error) {
 	}
 }
 func (reader *Reader) Project(id string) (*Project, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), ReaderOperationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), reader.budget.reader)
 	defer cancel()
 	var project Project
 	err := reader.db.QueryRowContext(ctx, "SELECT id,root_path,kind,shared,created_at FROM projects WHERE id=?", id).
@@ -349,7 +364,7 @@ func (reader *Reader) Project(id string) (*Project, error) {
 	return &project, nil
 }
 func (reader *Reader) Setting(scope, key string) (string, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), ReaderOperationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), reader.budget.reader)
 	defer cancel()
 	var value string
 	err := reader.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE scope=? AND key=?", scope, key).Scan(&value)
