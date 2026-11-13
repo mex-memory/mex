@@ -317,9 +317,16 @@ func (reader *Reader) Close() error { return reader.db.Close() }
 // CheckoutProjectID is the hook path: native path normalization and one indexed
 // read, never Git. Only an unregistered checkout may need ResolveProject.
 func (reader *Reader) CheckoutProjectID(checkout string) (string, bool, error) {
+	_, id, found, err := reader.CheckoutRoot(checkout)
+	return id, found, err
+}
+
+// CheckoutRoot is CheckoutProjectID plus the registered checkout folder that
+// matched (normalized as Node stores it), for a path anywhere inside it.
+func (reader *Reader) CheckoutRoot(checkout string) (string, string, bool, error) {
 	path, err := realPath(checkout)
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reader.budget.reader)
 	defer cancel()
@@ -333,18 +340,18 @@ func (reader *Reader) CheckoutProjectID(checkout string) (string, bool, error) {
 		var provisional sql.NullString
 		err = reader.db.QueryRowContext(ctx, query, path).Scan(&id, &provisional)
 		if err != nil && err != sql.ErrNoRows {
-			return "", false, err
+			return "", "", false, err
 		}
 		_, markerErr := os.Stat(filepath.Join(path, ".git"))
 		if err == nil && (path == requested || strings.HasPrefix(id, "g-") || provisional.Valid || markerErr == nil) {
-			return id, true, nil
+			return path, id, true, nil
 		}
 		if markerErr == nil {
-			return "", false, nil
+			return "", "", false, nil
 		}
 		parent := filepath.Dir(path)
 		if parent == path {
-			return "", false, nil
+			return "", "", false, nil
 		}
 		path = parent
 	}
