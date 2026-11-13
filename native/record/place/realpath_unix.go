@@ -1,6 +1,6 @@
 //go:build !windows
 
-package record
+package place
 
 import "path/filepath"
 
