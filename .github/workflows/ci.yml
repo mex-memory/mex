@@ -102,6 +102,35 @@ jobs:
           MEX_TELEMETRY=0 ./node_modules/.bin/mex graph query where-defined Vehicle | grep '"type":"result"'
           MEX_TELEMETRY=0 ./node_modules/.bin/mex graph query where-defined User | grep '"type":"result"'
 
+  go:
+    name: go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    defaults:
+      run:
+        working-directory: native
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/go.mod
+          cache: false
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - name: go test
+        env:
+          MEX_HOOK_TIMING_OUT: ${{ runner.temp }}/hook-timing.txt
+        run: go test -count=1 -v ./...
+      - name: Record hook timing
+        if: always()
+        run: cat "$RUNNER_TEMP/hook-timing.txt" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install
     # behavior must remain portable whenever local Team state changes.
