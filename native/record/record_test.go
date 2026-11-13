@@ -358,8 +358,13 @@ func TestPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded, _ := json.Marshal(location)
-	if err := os.WriteFile(os.Getenv("MEX_RECORD_TEST_READY"), encoded, 0600); err != nil {
-		t.Fatal(err)
+	ready := func() {
+		if err := os.WriteFile(os.Getenv("MEX_RECORD_TEST_READY"), encoded, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mode != "hooks-write" {
+		ready()
 	}
 	switch mode {
 	case "location-env":
@@ -393,6 +398,9 @@ func TestPeer(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer hooks.Close()
+		// The WAL reader fixture must not race journal setup/schema migration.
+		// Readiness means the database is usable, not only that its path exists.
+		ready()
 		for index := 0; index < 150; index++ {
 			err := hooks.PutSession(Session{SessionID: fmt.Sprint(index), Agent: "test", ProjectID: "fixture", Checkout: "/fixture", StartedAt: "now", LastSeenAt: "now"})
 			if err != nil {
