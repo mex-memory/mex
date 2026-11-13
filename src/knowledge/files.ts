@@ -54,10 +54,10 @@ export function createEntryFile(directory: string, id: string, content: string):
   if (Buffer.byteLength(content, "utf8") > KNOWLEDGE_LIMITS.entryBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
   const temporary = join(directory, `.entry-${randomBytes(12).toString("hex")}.tmp`);
   let fd: number | undefined;
-  let owned = false;
+  let owned: { dev: bigint; ino: bigint } | undefined;
   try {
     fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
-    owned = true;
+    owned = fstatSync(fd, { bigint: true });
     const bytes = Buffer.from(content, "utf8");
     let offset = 0;
     while (offset < bytes.length) {
@@ -65,10 +65,18 @@ export function createEntryFile(directory: string, id: string, content: string):
       if (written <= 0) throw new KnowledgeError("STORE_UNAVAILABLE", "The note could not be written completely.");
       offset += written;
     }
-    closeSync(fd); fd = undefined;
+    const completed = fd; fd = undefined;
+    closeSync(completed);
     linkSync(temporary, join(directory, `${id}.md`));
   } finally {
-    if (fd !== undefined) closeSync(fd);
-    if (owned) unlinkSync(temporary);
+    // Cleanup must not turn a published note into a reported failure or hide
+    // the original write/publication error. Never remove a replacement file.
+    if (fd !== undefined) { try { closeSync(fd); } catch { /* best effort */ } }
+    if (owned) {
+      try {
+        const current = lstatSync(temporary, { bigint: true });
+        if (current.isFile() && !current.isSymbolicLink() && current.dev === owned.dev && current.ino === owned.ino) unlinkSync(temporary);
+      } catch { /* An owned staging file may remain; recall ignores it. */ }
+    }
   }
 }

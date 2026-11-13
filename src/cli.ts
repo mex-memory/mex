@@ -94,6 +94,7 @@ export function createHubRunOptions(
 }
 
 export const program = new Command();
+let cliStarted = false;
 registerRemovedCommands(program);
 
 /** Commands whose machine/read-only contract must precede any global notice. */
@@ -157,7 +158,12 @@ const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command
   const { root, discovery } = telemetryProjectLocation(command);
   return getProjectTelemetryContext(root, discovery);
 });
-program.hook("preAction", (_thisCommand, actionCommand) => cliTelemetry.start(actionCommand));
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  let family = actionCommand;
+  while (family.parent && family.parent !== program) family = family.parent;
+  if (cliStarted && !isFirstRunNoticeExemptCommand(family === program ? undefined : family.name())) showFirstRunNotice();
+  cliTelemetry.start(actionCommand);
+});
 program.hook("postAction", async () => {
   cliTelemetry.finish(process.exitCode);
   // Restart the background process when jobs are waiting. The marker check opens no database.
@@ -1143,6 +1149,7 @@ if (process.argv[1]) {
 }
 // Refuse unsupported Node before any command runs, so it cannot fail halfway.
 export function runCli(): void {
+  cliStarted = true;
   const unsupportedNode = unsupportedNodeMessage(process.versions.node);
   if (unsupportedNode !== null) {
     console.error(unsupportedNode);
@@ -1154,7 +1161,6 @@ export function runCli(): void {
       process.exitCode = 1;
       return;
     }
-    if (!isFirstRunNoticeExemptCommand(process.argv[2])) showFirstRunNotice();
     const commandArgv = process.argv.slice(2);
     const teamJsonContext = inspectTeamJsonInvocation(commandArgv);
     if (teamJsonContext !== null && hasMissingTeamApplyValue(commandArgv)) {

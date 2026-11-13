@@ -11,15 +11,34 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "mex-knowledge-cli-")); repo = join(root, "repo"); mexBase = join(root, "user"); mkdirSync(repo);
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
-function run(args: string[], cwd = repo) {
-  const result = spawnSync(process.execPath, [cli, ...args], {
+function run(args: string[], cwd = repo, interactive = false) {
+  const preload = "data:text/javascript,Object.defineProperty(process.stderr,'isTTY',{value:true});globalThis.fetch=()=>{throw new Error('Unexpected network')};";
+  const result = spawnSync(process.execPath, [...(interactive ? ["--import", preload] : []), cli, ...args], {
     cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024,
-    env: { ...process.env, MEX_HOME: mexBase, MEX_TELEMETRY: "0", MEX_BACKGROUND: "0", NO_COLOR: "1" },
+    env: { ...process.env, MEX_HOME: mexBase, MEX_TELEMETRY: interactive ? "1" : "0", ...(interactive ? { DO_NOT_TRACK: "0", MEX_OFFLINE: "1" } : {}), MEX_BACKGROUND: "0", NO_COLOR: "1" },
   });
   expect(result.error, result.stderr).toBeUndefined();
   return { ...result, json: () => JSON.parse(result.stdout) };
 }
 describe("shipped knowledge commands", () => {
+  it("keeps reads noninitializing with global options and interactive telemetry enabled", () => {
+    for (const leading of [["--no-open"], ["--port", "4321"]]) {
+      const result = run([...leading, "recall", "fixtures", "--json"], repo, true);
+      expect(result.status, result.stderr).toBe(0); expect(result.stderr).toBe("");
+      expect(result.json()).toEqual({ ok: true, entries: [], truncated: false });
+      expect(existsSync(mexBase)).toBe(false);
+    }
+    const missing = run(["--no-open", "expand", "mx_absent1", "--json"], repo, true);
+    expect(missing.status).toBe(1); expect(missing.stderr).toBe("");
+    expect(missing.json()).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
+    expect(existsSync(mexBase)).toBe(false);
+  });
+  it("still shows the notice for an eligible interactive command after global options", () => {
+    const result = run(["--no-open", "completion", "bash"], repo, true);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("MEX collects");
+    expect(JSON.parse(readFileSync(join(mexBase, ".mex", "config.json"), "utf8")).firstRunNoticeShown).toBe(true);
+  });
   it("saves a complete entry, recalls its short form and expands its source", () => {
     const text = "Fixtures make tests reproducible because they use fixed data.";
     const saved = run(["note", text, "--kind", "recipe", "--scope", "test/**", "--scope", "src/**", "--json"]);
