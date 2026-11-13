@@ -20,7 +20,8 @@ export function telemetryProjectLocation(command: Command, cwd = process.cwd()):
 
 export function isTelemetryExemptCommand(commandName: string, parentName?: string, fullPath?: string): boolean {
   const path = fullPath ?? (parentName && parentName !== "mex" ? `${parentName}.${commandName}` : commandName);
-  return path === "mex" || !(TELEMETRY_COMMANDS as readonly string[]).includes(path);
+  // Knowledge reads must stay noninitializing even as the usage catalog grows.
+  return path === "mex" || path === "recall" || path === "expand" || !(TELEMETRY_COMMANDS as readonly string[]).includes(path);
 }
 
 function telemetryStage(command: Command, path: string): TelemetryAttributes["stage"] {

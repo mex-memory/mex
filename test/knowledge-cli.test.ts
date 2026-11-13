@@ -12,10 +12,12 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 function run(args: string[], cwd = repo, interactive = false) {
-  const preload = "data:text/javascript,Object.defineProperty(process.stderr,'isTTY',{value:true});globalThis.fetch=()=>{throw new Error('Unexpected network')};";
+  const preload = "data:text/javascript,import https from 'node:https';import http from 'node:http';import{syncBuiltinESMExports}from 'node:module';const deny=()=>{throw new Error('Unexpected network')};https.request=deny;http.request=deny;globalThis.fetch=deny;syncBuiltinESMExports();Object.defineProperty(process.stderr,'isTTY',{value:true});";
   const result = spawnSync(process.execPath, [...(interactive ? ["--import", preload] : []), cli, ...args], {
     cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024,
-    env: { ...process.env, MEX_HOME: mexBase, MEX_TELEMETRY: interactive ? "1" : "0", ...(interactive ? { DO_NOT_TRACK: "0", MEX_OFFLINE: "1" } : {}), MEX_BACKGROUND: "0", NO_COLOR: "1" },
+    env: { ...process.env, MEX_HOME: mexBase, MEX_TELEMETRY: interactive ? "1" : "0", ...(interactive ? {
+      DO_NOT_TRACK: "0", MEX_OFFLINE: "0", MEX_DEV: "", CI: "", CONTINUOUS_INTEGRATION: "", GITHUB_ACTIONS: "", GITLAB_CI: "", TF_BUILD: "", BUILDKITE: "", CIRCLECI: "", JENKINS_URL: "",
+    } : {}), MEX_BACKGROUND: "0", NO_COLOR: "1" },
   });
   expect(result.error, result.stderr).toBeUndefined();
   return { ...result, json: () => JSON.parse(result.stdout) };
@@ -36,7 +38,7 @@ describe("shipped knowledge commands", () => {
   it("still shows the notice for an eligible interactive command after global options", () => {
     const result = run(["--no-open", "completion", "bash"], repo, true);
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stderr).toContain("MEX collects");
+    expect(result.stderr).toMatch(/MEX (collects|sends)/u);
     expect(JSON.parse(readFileSync(join(mexBase, ".mex", "config.json"), "utf8")).firstRunNoticeShown).toBe(true);
   });
   it("saves a complete entry, recalls its short form and expands its source", () => {

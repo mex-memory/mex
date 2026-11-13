@@ -70,16 +70,9 @@ describe.skipIf(!goAvailable)("real Node/Go interoperability", () => {
     try {
       expect(await readyFile(run.ready, run.child)).toEqual(location);
       for (let attempt = 0; attempt < 3000; attempt++) {
-        try {
-          // First-open schema reads can contend just like later WAL queries.
-          reader ??= openHooksReadOnly(options);
-          const count = reader?.get<{ n: number }>("SELECT count(*) n FROM sessions")?.n;
-          if (count !== undefined) { observed.add(count); if (count === 150) break; }
-        } catch (error) {
-          const code = (error as { errcode?: number }).errcode;
-          const busy = typeof code === "number" && [5, 6].includes(code & 0xff);
-          if (!busy && !/no such table/.test(String(error))) throw error;
-        }
+        reader ??= openHooksReadOnly(options);
+        const count = reader?.get<{ n: number }>("SELECT count(*) n FROM sessions")?.n;
+        if (count !== undefined) { observed.add(count); if (count === 150) break; }
         await sleep(2);
       }
       await run.done;
