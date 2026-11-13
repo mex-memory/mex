@@ -1,0 +1,29 @@
+{
+  "agent": "codex",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "01a1d655-2220-7f63-8af3-9ad9045dcb11",
+  "agent_id": "",
+  "cwd": "C:\\mex-test-tmp\\f03\\live\\crepo",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "patch",
+    "raw_name": "apply_patch",
+    "input": {
+      "files": [
+        {
+          "path": "C:/mex-test-tmp/f03/live/crepo/calc.py",
+          "hunks": [
+            {
+              "old": "def add(a, b):\n    return a + b\n",
+              "new": "def add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "transcript": "C:\\mex-test-tmp\\f03\\live\\codex-home\\sessions\\2026\\11\\14\\rollout-2026-11-14T00-44-26-01a1d655-2220-7f63-8af3-9ad9045dcb11.jsonl",
+  "background": false
+}

@@ -29,9 +29,10 @@ var caps = adapter.Capabilities{
 		{Kind: contract.PostTool, NativeEvent: "PostToolUse", Context: adapter.ChannelToolResult, ReplaceOutput: true, PersonLine: true, TimeoutSeconds: 10},
 		{Kind: contract.PostToolFailure, NativeEvent: "PostToolUseFailure", Context: adapter.ChannelToolResult, PersonLine: true, TimeoutSeconds: 10},
 		{Kind: contract.PostToolBatch, NativeEvent: "PostToolBatch", Context: adapter.ChannelSystem, PersonLine: true, TimeoutSeconds: 10},
-		// PreCompact's stdout becomes compaction instructions; MEX steers it as
-		// plain text, not as reply context.
-		{Kind: contract.PreCompact, NativeEvent: "PreCompact", Context: adapter.ChannelNone, PersonLine: true, TimeoutSeconds: 10},
+		// PreCompact's stdout becomes compaction instructions, so its empty
+		// reply is no output at all; MEX steers it as plain text, not as reply
+		// context. Claude Code discards systemMessage here (docs, 13 Nov 2026).
+		{Kind: contract.PreCompact, NativeEvent: "PreCompact", Context: adapter.ChannelNone, TimeoutSeconds: 10},
 		// PostCompact can't add context; the recovery block goes out on
 		// SessionStart with source "compact".
 		{Kind: contract.PostCompact, NativeEvent: "PostCompact", Context: adapter.ChannelNone, TimeoutSeconds: 10},
@@ -52,7 +53,13 @@ func (Profile) Command(binary, nativeEvent string) adapter.Command {
 	return adapter.Command{Path: binary, Args: []string{Agent, nativeEvent}}
 }
 
-func (Profile) EmptyReply(string) []byte { return []byte("{}\n") }
+func (Profile) EmptyReply(nativeEvent string) []byte {
+	if nativeEvent == "PreCompact" {
+		// Any stdout here would become instructions for the summary.
+		return []byte{}
+	}
+	return []byte("{}\n")
+}
 
 // payload is the union of the fields MEX reads from any Claude Code hook.
 type payload struct {
@@ -67,6 +74,7 @@ type payload struct {
 	ToolInput      json.RawMessage `json:"tool_input"`
 	ToolResponse   json.RawMessage `json:"tool_response"`
 	Error          string          `json:"error"`
+	CompactSummary string          `json:"compact_summary"`
 	ToolCalls      []batchCall     `json:"tool_calls"`
 }
 
@@ -94,6 +102,8 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		Transcript: p.TranscriptPath,
 	}
 	switch kind {
+	case contract.PostCompact:
+		ev.Summary = p.CompactSummary
 	case contract.SessionStart:
 		ev.Source = p.Source
 	case contract.Prompt:
@@ -219,7 +229,7 @@ type specificOutput struct {
 func (pr Profile) Render(ev contract.Event, r contract.Reply) ([]byte, []string) {
 	support, ok := caps.Support(ev.Kind)
 	if !ok || r.Empty() {
-		return pr.EmptyReply(""), nil
+		return pr.EmptyReply(support.NativeEvent), nil
 	}
 	var dropped []string
 	out := output{}
@@ -276,9 +286,14 @@ func (pr Profile) Render(ev contract.Event, r contract.Reply) ([]byte, []string)
 	if spec.AdditionalContext != "" || spec.PermissionDecision != "" || spec.UpdatedInput != nil || spec.UpdatedToolOutput != nil {
 		out.HookSpecificOutput = spec
 	}
+	if out == (output{}) {
+		// Everything was dropped: answer like the empty reply (on PreCompact,
+		// "{}" would become compaction instructions).
+		return pr.EmptyReply(support.NativeEvent), dropped
+	}
 	b, err := json.Marshal(out)
 	if err != nil {
-		return pr.EmptyReply(""), append(dropped, "all")
+		return pr.EmptyReply(support.NativeEvent), append(dropped, "all")
 	}
 	return append(b, '\n'), dropped
 }

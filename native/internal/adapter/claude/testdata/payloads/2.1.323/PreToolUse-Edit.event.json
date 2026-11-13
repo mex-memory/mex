@@ -1,0 +1,21 @@
+{
+  "agent": "claude-code",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "3786cc60-44f2-452f-a595-f9db31303cdf",
+  "agent_id": "",
+  "cwd": "C:\\mex-test-tmp\\f03\\live\\repo",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "edit",
+    "raw_name": "Edit",
+    "input": {
+      "path": "C:/mex-test-tmp/f03/live/repo/math.ts",
+      "old": "export function add(a: number, b: number) {\n  return a + b;\n}\n",
+      "new": "export function add(a: number, b: number) {\n  return a + b;\n}\n\nexport function subtract(a: number, b: number) {\n  return a - b;\n}\n"
+    }
+  },
+  "transcript": "C:\\Users\\person\\.claude\\projects\\C--mex-test-tmp-f03-live-repo\\3786cc60-44f2-452f-a595-f9db31303cdf.jsonl",
+  "background": false
+}

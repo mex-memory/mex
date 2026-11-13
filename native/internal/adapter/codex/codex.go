@@ -35,8 +35,9 @@ var caps = adapter.Capabilities{
 		{Kind: contract.PostCompact, NativeEvent: "PostCompact", Context: adapter.ChannelNone, PersonLine: true, TimeoutSeconds: 10},
 		{Kind: contract.SubagentStart, NativeEvent: "SubagentStart", Context: adapter.ChannelSystem, PersonLine: true, TimeoutSeconds: 10},
 		{Kind: contract.Stop, NativeEvent: "Stop", Context: adapter.ChannelNone, Deny: true, PersonLine: true, TimeoutSeconds: 10},
-		// SessionEnd defaults to 1 s and allows at most 3.
-		{Kind: contract.SessionEnd, NativeEvent: "SessionEnd", Context: adapter.ChannelNone, TimeoutSeconds: 1},
+		// SessionEnd defaults to 1 s and allows at most 3. On Windows Codex starts
+		// every hook through PowerShell (about 0.5 s), so 1 s is too tight.
+		{Kind: contract.SessionEnd, NativeEvent: "SessionEnd", Context: adapter.ChannelNone, TimeoutSeconds: 3},
 	},
 	FailureBlocks: false,
 	SubagentID:    "agent_id",

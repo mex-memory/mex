@@ -57,7 +57,9 @@ type Event struct {
 	Tool         *Tool     `json:"tool,omitempty"`
 	Batch        []Tool    `json:"batch,omitempty"`
 	Transcript   string    `json:"transcript"`
-	Background   bool      `json:"background"`
+	// Summary is the compaction summary on post_compact, where the agent gives it.
+	Summary    string `json:"summary,omitempty"`
+	Background bool   `json:"background"`
 }
 
 type PromptIn struct {
