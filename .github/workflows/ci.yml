@@ -126,7 +126,9 @@ jobs:
       - name: go test
         env:
           MEX_HOOK_TIMING_OUT: ${{ runner.temp }}/hook-timing.txt
-        run: go test -count=1 -v ./...
+        # One package at a time: the timing test starts hundreds of processes,
+        # which would starve the record tests' lock deadlines.
+        run: go test -count=1 -p 1 -v ./...
       - name: Record hook timing
         if: always()
         run: cat "$RUNNER_TEMP/hook-timing.txt" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
