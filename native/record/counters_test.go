@@ -2,8 +2,62 @@ package record
 
 import (
 	"os"
+	"path/filepath"
+	"sort"
 	"testing"
+	"time"
 )
+
+// Keep the portable process timing gate authoritative. This breakdown makes
+// filesystem/SQLite regressions diagnosable on the actual CI operating system.
+func TestCounterCycleTimingBreakdown(t *testing.T) {
+	options := LocationOptions{Home: filepath.Join(t.TempDir(), ".mex"), Cache: t.TempDir()}
+	location, err := ResolveLocation(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := OpenHooks(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	options.ReadOnly = true
+	const samples = 100
+	stages := [4][]time.Duration{}
+	for range samples {
+		start := time.Now()
+		resolved, err := ResolveLocation(options)
+		stages[0] = append(stages[0], time.Since(start))
+		if err != nil || resolved != location {
+			t.Fatalf("location changed: %v", err)
+		}
+		start = time.Now()
+		hooks, err := OpenHookCounters(resolved)
+		stages[1] = append(stages[1], time.Since(start))
+		if err != nil {
+			t.Fatal(err)
+		}
+		start = time.Now()
+		err = hooks.RecordHookUsage("2026-11-13", "claude-code", false, false, 0)
+		stages[2] = append(stages[2], time.Since(start))
+		closeStart := time.Now()
+		closeErr := hooks.Close()
+		stages[3] = append(stages[3], time.Since(closeStart))
+		if err != nil || closeErr != nil {
+			t.Fatalf("counter cycle: write=%v close=%v", err, closeErr)
+		}
+	}
+	for index, name := range []string{"resolve", "open", "increment", "close"} {
+		values := stages[index]
+		sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+		t.Logf("counter cycle %s: samples=%d p50=%.3fms p95=%.3fms max=%.3fms", name, samples,
+			float64(values[samples/2])/float64(time.Millisecond),
+			float64(values[samples*95/100])/float64(time.Millisecond),
+			float64(values[samples-1])/float64(time.Millisecond))
+	}
+}
 
 func TestCounterConnectionsReuseWALAndKeepCountsAcrossClose(t *testing.T) {
 	location := testLocation(t)
