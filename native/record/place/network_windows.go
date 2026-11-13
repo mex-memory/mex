@@ -1,4 +1,4 @@
-package record
+package place
 
 import (
 	"path/filepath"

@@ -868,6 +868,49 @@ program
 // ── Knowledge entries ──
 for (const command of buildKnowledgeCommands()) program.addCommand(command);
 
+// ── File index ──
+const indexCommand = program
+  .command("index")
+  .description("Build or refresh this checkout's file index now (outlines, names and pattern counts per file)")
+  .option("--full", "Read every file again instead of only the changed ones")
+  .option("--workers <n>", "Worker threads (0 runs in this process)", (value) => Number(value))
+  .option("--json", "Print the build summary as JSON")
+  .action(async (options: { full?: boolean; workers?: number; json?: boolean }) => {
+    try {
+      const { runIndexBuild } = await import("./file-index/command.js");
+      await runIndexBuild(options);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+indexCommand
+  .command("status")
+  .description("When this checkout's index was built and how many files it covers")
+  .option("--json", "Print as JSON")
+  .action(async (options: { json?: boolean }) => {
+    try {
+      const { runIndexStatus } = await import("./file-index/command.js");
+      await runIndexStatus(options);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+indexCommand
+  .command("outline <file>")
+  .description("Show a file's symbols with their current line numbers")
+  .option("--json", "Print as JSON")
+  .action(async (file: string, options: { json?: boolean }) => {
+    try {
+      const { runIndexOutline } = await import("./file-index/command.js");
+      await runIndexOutline(file, options);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+
 // ── Background jobs ──
 const jobsCommand = program
   .command("jobs")

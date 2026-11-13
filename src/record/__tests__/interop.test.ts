@@ -68,11 +68,16 @@ describe.skipIf(!goAvailable)("real Node/Go interoperability", () => {
     const run = peer("hooks-write", home, cache);
     let reader: ReturnType<typeof openHooksReadOnly>; const observed = new Set<number>();
     try {
+      // Go has created hooks.db in WAL mode before it reports ready, so every read here must succeed.
       expect(await readyFile(run.ready, run.child)).toEqual(location);
+      reader = openHooksReadOnly(options);
+      expect(reader).toBeDefined();
       for (let attempt = 0; attempt < 3000; attempt++) {
-        reader ??= openHooksReadOnly(options);
-        const count = reader?.get<{ n: number }>("SELECT count(*) n FROM sessions")?.n;
-        if (count !== undefined) { observed.add(count); if (count === 150) break; }
+        const finished = run.child.exitCode !== null;
+        const count = reader!.get<{ n: number }>("SELECT count(*) n FROM sessions")!.n;
+        observed.add(count);
+        // Stop once Go exits so a failed writer reports its own error instead of a timeout.
+        if (count === 150 || finished) break;
         await sleep(2);
       }
       await run.done;

@@ -143,14 +143,14 @@ jobs:
         with:
           node-version: 22.22.0
           cache: npm
-      - name: Node fallback against the real binary
+      - name: Node fallback and file index against the real binary
         if: runner.os == 'Linux'
         working-directory: .
         env:
           MEX_TEST_REAL_HOOK_BINARY: '1'
         run: |
           npm ci
-          npx vitest run src/hooks/shim/__tests__/binary.test.ts
+          npx vitest run src/hooks/shim/__tests__/binary.test.ts src/file-index/__tests__/go-parity.test.ts
 
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install
