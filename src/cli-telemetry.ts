@@ -49,7 +49,7 @@ export function createCliTelemetry(
     start(command: Command): void {
       try {
         const path = telemetryCommandPath(command);
-        if (path === "setup" && !command.opts().cli && !command.opts().dryRun) return;
+        if (path === "setup" && command.opts().browser) return;
         if (isTelemetryExemptCommand(command.name(), command.parent?.name(), path)) return;
         const context = (): TelemetryProjectContext => {
           try { return readProjectContext?.(command) ?? {}; } catch { return {}; }

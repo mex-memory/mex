@@ -1,0 +1,25 @@
+{
+  "agent": "claude-code",
+  "agent_version": "",
+  "kind": "post_tool_batch",
+  "session_id": "3786cc60-44f2-452f-a595-f9db31303cdf",
+  "agent_id": "",
+  "cwd": "C:\\mex-test-tmp\\f03\\live\\repo",
+  "project_id": "",
+  "checkout": "",
+  "batch": [
+    {
+      "name": "read",
+      "raw_name": "Read",
+      "input": {
+        "path": "C:/mex-test-tmp/f03/live/repo/math.ts"
+      },
+      "output": {
+        "text": "1\texport function add(a: number, b: number) {\n2\t  return a + b;\n3\t}\n4\t",
+        "ok": true
+      }
+    }
+  ],
+  "transcript": "C:\\Users\\person\\.claude\\projects\\C--mex-test-tmp-f03-live-repo\\3786cc60-44f2-452f-a595-f9db31303cdf.jsonl",
+  "background": false
+}

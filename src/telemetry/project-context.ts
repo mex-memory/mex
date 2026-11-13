@@ -1,7 +1,11 @@
+import { openRecordReadOnly, type RecordReader } from "../record/index.js";
+import { realPath } from "../record/project.js";
+import { isTelemetryId } from "../global-config.js";
 import { gitDiscoveryCeilingReached } from "../repository-discovery.js";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { TELEMETRY_AI_TOOLS } from "./schema.js";
 import type { TelemetryAiTool, TelemetryProjectContext } from "./schema.js";
 
@@ -86,4 +90,29 @@ export function readTelemetryProjectContext(startDir: string, discovery: "git-ro
   } catch {
     return {};
   }
+}
+
+/** Only a share-created ID from a proven shared record may leave this machine. */
+export function readSharedProjectTelemetryContext(startDir: string, discovery: "git-root" | "exact" = "git-root"): TelemetryProjectContext {
+  let reader: RecordReader | undefined;
+  try {
+    const root = projectRoot(startDir, discovery);
+    if (!root) return {};
+    reader = openRecordReadOnly({ create: false });
+    if (!reader || reader.diagnostic) return {};
+    const checkout = reader.get<{ project_id: string }>("SELECT project_id FROM checkouts WHERE path=?", realPath(root));
+    if (!checkout || reader.project(checkout.project_id)?.shared !== 1) return {};
+    const id = reader.setting(checkout.project_id, "shared.project_id");
+    return isTelemetryId(id) ? { scaffold_id: id } : {};
+  } catch { return {}; }
+  finally { reader?.close(); }
+}
+
+/** Local-only setup deduplication. This key is never a report property. */
+export function setupTelemetryKey(startDir: string): string | undefined {
+  try {
+    const root = projectRoot(startDir, "git-root");
+    if (!root || !lstatSync(root).isDirectory()) return undefined;
+    return `setup:${createHash("sha256").update(root).digest("hex")}`;
+  } catch { return undefined; }
 }

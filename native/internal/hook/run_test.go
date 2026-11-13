@@ -150,7 +150,14 @@ func TestClaudeCodeEventsReplyEmpty(t *testing.T) {
 		}
 		event, _, _ := strings.Cut(strings.TrimSuffix(filepath.Base(f), ".json"), "-")
 		code, out := run(t, []string{"claude-code", event}, bytes.NewReader(raw), noEnv)
-		assertEmptyReply(t, code, out)
+		if event == "PreCompact" {
+			// PreCompact's stdout becomes compaction instructions: no output at all.
+			if code != 0 || out != "" {
+				t.Fatalf("PreCompact: code %d, output %q, want no output", code, out)
+			}
+		} else {
+			assertEmptyReply(t, code, out)
+		}
 		n++
 	}
 	if n == 0 {

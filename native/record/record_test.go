@@ -316,7 +316,7 @@ func TestBusyHookWriteFailsOpen(t *testing.T) {
 	}
 	defer lock.Exec("ROLLBACK")
 	// The file was created with the wide budget; the call under test uses the hook's.
-	hook := &Hooks{hooks.db, hookBudget}
+	hook := &Hooks{db: hooks.db, budget: hookBudget}
 	start := time.Now()
 	err = hook.PutSession(Session{SessionID: "blocked", Agent: "test", ProjectID: "p", Checkout: "/fixture", StartedAt: "now", LastSeenAt: "now"})
 	if err == nil {
@@ -433,7 +433,9 @@ func TestPeer(t *testing.T) {
 		seen := map[string]bool{}
 		for attempt := 0; attempt < 5000; attempt++ {
 			value, found, err := reader.Setting("interop", "progress")
-			if err != nil {
+			// A bounded read may time out while the Node writer is active.
+			// Retry only that transient failure within this same polling bound.
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatal(err)
 			}
 			if found {

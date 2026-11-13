@@ -11,12 +11,15 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/mex-memory/mex/native/internal/adapter"
 	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
 	_ "github.com/mex-memory/mex/native/internal/adapter/codex"  // registers the profile
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/record/place"
 )
 
 // Version is set at build time with -ldflags "-X .../hook.Version=...".
@@ -38,6 +41,7 @@ type Env func(key string) string
 
 // Run handles one hook call and returns the process exit code, which is always 0.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (code int) {
+	started := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
 			code = 0
@@ -74,7 +78,15 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 	if dir := getenv("MEX_HOOK_RECORD"); dir != "" && ok {
 		record(dir, agent, nativeEvent, payload)
 	}
-	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok, homeFrom(getenv), time.Now()))
+	h := homeFrom(getenv)
+	resolveUsage := sync.OnceValues(func() (place.Location, bool) { return hookUsageLocation(h, getenv) })
+	h.usageLocation = resolveUsage
+	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok, h, time.Now(), func(actual string, sessionStart, failed bool) {
+		usageLocation, usageEnabled := resolveUsage()
+		if usageEnabled {
+			recordHookUsage(usageLocation, actual, sessionStart, failed, time.Since(started))
+		}
+	}))
 	return 0
 }
 
@@ -83,10 +95,14 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 var silent = []byte{}
 
 // handle turns one payload into the agent's reply. Nothing behind the shim
-// produces replies yet, so the reply is always empty.
-func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time.Time) []byte {
+// produces replies yet, so the reply is empty apart from the "MEX is off
+// here" notice.
+func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time.Time, observe ...func(string, bool, bool)) []byte {
 	if !ok {
 		if p, found := adapter.Lookup(agent); found {
+			if len(observe) > 0 {
+				observe[0](agent, false, true)
+			}
 			return p.EmptyReply(nativeEvent)
 		}
 		return emptyReply
@@ -105,14 +121,71 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	if !found {
 		return emptyReply
 	}
+	sessionStart, failed := false, false
+	defer func() {
+		if len(observe) > 0 {
+			observe[0](agent, sessionStart, failed)
+		}
+	}()
 	ev, err := profile.Parse(nativeEvent, payload)
 	if err != nil {
+		failed = true
 		return profile.EmptyReply(nativeEvent)
 	}
+	sessionStart = ev.Kind == contract.SessionStart
+	if !h.mexInstalled() {
+		out, _ := profile.Render(ev, contract.Reply{})
+		return out
+	}
 	h.beat(agent, ev.SessionID, ev.Cwd, ev.Kind == contract.SessionStart, now)
-	noteEdit(ev)
+
+	// Where MEX isn't on, exit at once: nothing behind this line runs. A repo
+	// MEX was never turned on in gets one notice, at the first session there.
+	recordDirectory := h.recordDirectory()
+	path, isFile := eventPath(ev)
+	checkout, state := findCheckout(recordDirectory, path, isFile, now)
+	if state != switchedOn {
+		reply := contract.Reply{}
+		if state == unregistered && ev.Kind == contract.SessionStart && ev.AgentID == "" && firstOffNotice(recordDirectory, ev.Cwd) {
+			reply.PersonLine = offNotice
+		}
+		out, _ := profile.Render(ev, reply)
+		return out
+	}
+	ev.ProjectID, ev.Checkout = checkout.ProjectID, checkout.Root
+
+	if ev.Kind == contract.SessionStart {
+		startBackground(h, recordDirectory)
+	}
+	noteEdit(ev, recordDirectory)
 	out, _ := profile.Render(ev, contract.Reply{})
 	return out
+}
+
+// recordDirectory is where the local record lives: MEX's folder, or the cache
+// folder the location pointer names for a network home. Callers check that MEX
+// is installed. Reuse telemetry's validated location when available; otherwise
+// the checkout-only lookup skips network detection and reads Node's pointer.
+func (h home) recordDirectory() string {
+	if h.usageLocation != nil {
+		if location, enabled := h.usageLocation(); enabled {
+			return location.Directory
+		}
+	}
+	// The usual case costs one small read: no pointer yet (no writer has run,
+	// so nothing is elsewhere), or a pointer naming MEX's own folder.
+	data, err := os.ReadFile(filepath.Join(h.mex, "location"))
+	if err != nil {
+		return h.mex
+	}
+	if own, err := place.AbsolutePath(h.mex); err == nil && strings.TrimSpace(string(data)) == own {
+		return h.mex
+	}
+	location, err := place.ResolveLocation(place.LocationOptions{Home: h.mex, ReadOnly: true, IsNetwork: func(string) (bool, error) { return false, errNoDetection }})
+	if err != nil {
+		return ""
+	}
+	return location.Directory
 }
 
 // record saves a raw payload for building fixtures. Only runs when the person
