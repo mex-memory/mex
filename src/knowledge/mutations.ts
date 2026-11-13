@@ -2,7 +2,10 @@ import { join } from "node:path";
 import { openRecord, type RecordWriter } from "../record/index.js";
 import { assertPersonQuote, EntryIdSchema, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readEntryFile, replaceEntryFile } from "./files.js";
-import { expand, type KnowledgeOptions, type NoteInput, type PersonalEntry } from "./store.js";
+import { personalSnapshot, type KnowledgeOptions, type NoteInput, type PersonalEntry } from "./store.js";
+import { references } from "./references.js";
+import { gateEntry, sanitizeText, stripHidden, hasSecret } from "./gates.js";
+import { knowledgeProject } from "./context.js";
 import { saveTombstone, tombstone, type Tombstone } from "./state.js";
 
 function assertId(id: string): void {
@@ -37,15 +40,17 @@ export function editedEntry(entry: KnowledgeEntry, input: NoteInput, now: Date):
 
 export function edit(id: string, input: NoteInput, options: KnowledgeOptions, now = new Date()): PersonalEntry {
   assertId(id);
-  const before = expand(id, options);
-  const changed = editedEntry(before.entry, input, now);
+  const before = personalSnapshot(id, options);
+  const context = references(knowledgeProject(options).root);
+  const changed = gateEntry(editedEntry(before.entry, input, now), context);
+  assertPersonQuote(changed, sanitizeText(input.text, context));
   const writer = openRecord(options);
   try {
     writer.db.exec("BEGIN IMMEDIATE");
     const found = current(writer, options, id);
-    if (serializeEntry(found.entry) !== serializeEntry(before.entry)) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again before editing.");
+    if (found.content !== before.content) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again before editing.");
     replaceEntryFile(found.directory, id, found.content, serializeEntry(changed));
-    return { ...before, entry: changed };
+    return { level: "personal", label: before.label, entry: changed };
   } finally {
     // Only a lock is held here; the filesystem publication is the edit's commit.
     try { writer.db.exec("ROLLBACK"); } catch { /* do not hide an edit outcome */ }
@@ -56,8 +61,9 @@ export function edit(id: string, input: NoteInput, options: KnowledgeOptions, no
 /** Retire locally in one durable transaction; restored old Markdown stays hidden. */
 export function forget(id: string, reason: string, options: KnowledgeOptions, now = new Date(), action: "forget" | "wrong" = "forget"): Tombstone {
   assertId(id);
-  const before = expand(id, options);
-  const retired = { reason, by: `mex ${action}`, at: now.toISOString().slice(0, 10) };
+  const before = personalSnapshot(id, options, knowledgeProject(options), undefined, false);
+  if (hasSecret(reason)) throw new KnowledgeError("SECRET_FOUND", "The retirement reason contains a possible secret.");
+  const retired = { reason: stripHidden(reason), by: `mex ${action}`, at: now.toISOString().slice(0, 10) };
   serializeEntry({ ...before.entry, mex: { ...before.entry.mex, status: "retired", retired } });
   const writer = openRecord(options);
   try {

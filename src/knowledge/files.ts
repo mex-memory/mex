@@ -23,6 +23,11 @@ export function containedDirectory(home: string, parts: string[], create = false
 }
 /** Exact regular-file read, bounded even if the file grows while it is open. */
 export function readEntryFile(path: string): string | undefined {
+  return readBoundedTextFile(path, KNOWLEDGE_LIMITS.entryBytes);
+}
+/** Host/source text has its own explicit bound; entry reads keep the 64 KiB limit. */
+export function readBoundedTextFile(path: string, maxBytes: number): string | undefined {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 1024 * 1024) throw new KnowledgeError("STORE_LIMIT", "Invalid text read bound.");
   let fd: number;
   let expected;
   try {
@@ -35,12 +40,12 @@ export function readEntryFile(path: string): string | undefined {
     const before = fstatSync(fd, { bigint: true });
     if (before.dev !== expected.dev || before.ino !== expected.ino) throw new KnowledgeError("STORE_CHANGED", "A note changed while it was opened; retry the command.");
     if (!before.isFile()) throw new KnowledgeError("UNSAFE_STORE", "A note must be a regular file.");
-    if (before.size > BigInt(KNOWLEDGE_LIMITS.entryBytes)) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
-    const bytes = Buffer.alloc(KNOWLEDGE_LIMITS.entryBytes + 1);
+    if (before.size > BigInt(maxBytes)) throw new KnowledgeError("ENTRY_TOO_LARGE", "File exceeds the size limit.");
+    const bytes = Buffer.alloc(maxBytes + 1);
     let length = 0, read: number;
     do { read = readSync(fd, bytes, length, bytes.length - length, null); length += read; } while (read > 0 && length < bytes.length);
     const after = fstatSync(fd, { bigint: true });
-    if (length > KNOWLEDGE_LIMITS.entryBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
+    if (length > maxBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "File exceeds the size limit.");
     if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || BigInt(length) !== after.size) {
       throw new KnowledgeError("STORE_CHANGED", "A note changed while it was read; retry the command.");
     }
@@ -86,6 +91,10 @@ export function replaceEntryFile(directory: string, id: string, expected: string
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Invalid entry id.");
   if (Buffer.byteLength(content, "utf8") > KNOWLEDGE_LIMITS.entryBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
   const target = join(directory, `${id}.md`);
+  const originalDirectory = lstatSync(directory, { bigint: true });
+  if (!originalDirectory.isDirectory() || originalDirectory.isSymbolicLink() || realPath(directory) !== absolutePath(directory)) {
+    throw new KnowledgeError("UNSAFE_STORE", "Entry storage contains a redirected directory.");
+  }
   const temporary = join(directory, `.entry-${randomBytes(12).toString("hex")}.tmp`);
   let fd: number | undefined;
   let owned: { dev: bigint; ino: bigint } | undefined;
@@ -101,6 +110,10 @@ export function replaceEntryFile(directory: string, id: string, expected: string
     }
     fsyncSync(fd);
     const completed = fd; fd = undefined; closeSync(completed);
+    const currentDirectory = lstatSync(directory, { bigint: true });
+    if (currentDirectory.dev !== originalDirectory.dev || currentDirectory.ino !== originalDirectory.ino || realPath(directory) !== absolutePath(directory)) {
+      throw new KnowledgeError("STORE_CHANGED", "The entry directory changed; retry the command.");
+    }
     if (readEntryFile(target) !== expected) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again before editing.");
     renameSync(temporary, target);
   } finally {

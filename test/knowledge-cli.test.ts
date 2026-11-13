@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { serializeEntry, parseEntry } from "../src/knowledge/entry.js";
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
 let root: string, repo: string, mexBase: string;
@@ -106,6 +107,25 @@ describe("shipped knowledge commands", () => {
     const result = run(["--no-open", command, "mx_absent1", "A corrected fact or reason.", "--json"], repo, true);
     expect(result.status).toBe(1); expect(result.stderr).toBe("");
     expect(result.json()).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
+    expect(existsSync(mexBase)).toBe(false);
+  });
+  it("previews team changes, binds apply to the exact proposal and retires the original file", () => {
+    const id = "mx_teamcli1", text = "Fixtures use fixed data because failures must reproduce.";
+    const file = join(repo, ".mex/learned", `${id}.md`);
+    mkdirSync(join(repo, ".mex/learned"), { recursive: true });
+    const original = serializeEntry({ mex: { id, kind: "rule", scope: ["**"], source: { type: "person", ref: "person typed this fact", quote: text }, evidence: "person", one_line: text, checks: [], status: "active", created: "2026-11-14" }, text });
+    writeFileSync(file, original);
+    const correction = "Fixtures use recorded data because seeds alone are insufficient.";
+    const preview = run(["edit", id, correction, "--json"], repo, true);
+    expect(preview.status, preview.stderr).toBe(0); expect(preview.json().applied).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(original); expect(existsSync(mexBase)).toBe(false);
+    const changed = run(["edit", id, correction, "--apply", "--expect", preview.json().preview.revision, "--json"]);
+    expect(changed.status, changed.stderr).toBe(0); expect(changed.json().entry.text).toBe(correction);
+    const retirement = run(["forget", id, "No longer current.", "--json"]);
+    expect(retirement.json().preview.diff).toContain("retired");
+    expect(run(["forget", id, "No longer current.", "--apply", "--expect", retirement.json().preview.revision, "--json"]).status).toBe(0);
+    expect(parseEntry(readFileSync(file, "utf8")).mex).toMatchObject({ status: "retired", retired: { reason: "No longer current." } });
+    expect(run(["recall", "fixtures", "--json"]).json().entries).toEqual([]);
     expect(existsSync(mexBase)).toBe(false);
   });
   it("returns empty reads and controlled JSON errors without initializing storage", () => {
