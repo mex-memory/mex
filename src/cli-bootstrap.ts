@@ -21,6 +21,11 @@ if (isMainModule) {
     process.exitCode = 1;
   } else if (process.argv.length === 3 && ["--version", "-V"].includes(process.argv[2]!)) {
     console.log(VERSION);
+  } else if (process.argv[2] === "__background" && process.argv.length === 3) {
+    // MEX's own background process: no telemetry, notices or command parsing.
+    const { runBackground } = await import("./record/background.js");
+    const reason = await runBackground();
+    process.exitCode = reason === "error" ? 1 : 0;
   } else if (removedCommandMessage(process.argv.slice(2)) !== null) {
     console.error(removedCommandMessage(process.argv.slice(2)));
     process.exitCode = 1;
