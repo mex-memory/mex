@@ -27,10 +27,10 @@ tool also blocks. Dirty checkouts cannot provide release evidence.
 
 ## Current adapters
 
-Hook timing runs the real Go no-op process test, with its existing 17 ms median
-budget and 3 ms allowance above the bare-process median on a slow host. It
-records p50, p95 and maximum separately; p95 is not claimed to have a 17 ms
-budget. Where present, the counters-active timing test is included too.
+Hook timing runs the real Go no-op process test, with its existing 17 ms p95
+budget and 3 ms allowance above the bare-process p95 on a slow host. It
+records p50, p95 and maximum separately; the maximum has no 17 ms guarantee.
+Where present, the counters-active timing test is included too.
 An environment variable cannot raise the budget or enable cached test results.
 
 The other six benchmark adapters are **not built**. Versioned datasets and

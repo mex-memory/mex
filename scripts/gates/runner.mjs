@@ -26,7 +26,7 @@ export function validEvidence(value) {
         || timing.p50_ms > timing.p95_ms || timing.p95_ms > timing.max_ms || timing.bare_p50_ms > timing.bare_p95_ms) return false;
       // The Go test enforces the unrounded deadline. At this report boundary,
       // allow only the 0.01 ms precision lost by its two-decimal rendering.
-      if (timing.p50_ms > 17 && timing.p50_ms > timing.bare_p50_ms + 3.01) return false;
+      if (timing.p95_ms > 17 && timing.p95_ms > timing.bare_p95_ms + 3.01) return false;
     }
   }
   return true;

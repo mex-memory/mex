@@ -32,6 +32,23 @@ test('missing required adapters and failed later checks block release', async ()
   assert.equal(releaseReady(report), false);
 });
 
+test('hook timing validates the same p95 budget as the native process gate', async () => {
+  for (const [p95, bareP95, ready] of [
+    [17, 3, true],
+    [17.02, 3, false],
+    [20, 17, true],
+    [20.02, 17, false],
+  ]) {
+    const evidence = { ...hookPass, timings: { TestNoOpTiming: {
+      ...timing, p95_ms: p95, max_ms: p95, bare_p95_ms: bareP95,
+    } } };
+    const report = await runGates({ root: '.', source, adapters: {
+      ...adapters, 'hook-timing': async () => evidence,
+    } });
+    assert.equal(releaseReady(report), ready, `p95=${p95}, bare p95=${bareP95}`);
+  }
+});
+
 test('empty, skipped, malformed and private evidence cannot pass or leak', async () => {
   for (const evidence of [
     {}, { ...pass, checks: { total: 0, failed: 0, skipped: 0 } },
