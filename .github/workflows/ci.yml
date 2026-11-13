@@ -72,12 +72,20 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm ci
+      # The CLI suite checks production output under NODE_ENV=test. Finish that
+      # build before parallel suites consume the same dist workers and grammars.
+      - name: Install and build before parallel app tests
+        run: npm ci
+        env:
+          NODE_ENV: test
       - run: npm run typecheck
       - name: Test release gate policy and isolation
         if: matrix.node-version == '22.22.0'
         run: npm run gates:test
-      - run: npm run test
+      - name: Test the completed app build
+        run: npm run test
+        env:
+          MEX_TEST_PREBUILT: '1'
       - name: Test isolated telemetry benchmark transport
         if: matrix.node-version == '22.22.0'
         run: npm run benchmark:telemetry:test
