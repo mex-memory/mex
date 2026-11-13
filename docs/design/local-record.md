@@ -30,13 +30,18 @@ an error the hook caller ignores, allowing the agent call. Never use SQLite's
 Telemetry counter writers use a 1 ms busy timeout and separate 10 ms open and
 write deadlines, skipping measurement when either budget expires. Each hook's
 counter increments form one atomic SQLite statement. These short-lived writers
-retain the WAL sidecar files for reuse across processes. A private read-only
-connection closes after each counter writer, leaving committed counters in the
-WAL instead of checkpointing every hook and synchronizing its next WAL header.
-It holds no read transaction and cannot write the database. The 1,000-page
+retain the WAL sidecar files for reuse across processes. A private `mode=ro`
+attachment keeps a read-only pager alive while the writable main pager closes,
+leaving committed counters in WAL instead of checkpointing every hook and
+synchronizing its next WAL header. This avoids a second SQLite connection.
+The pinned SQLite closes main before attachments; WAL-lifetime tests qualify
+that order when upgrading the driver. The attachment holds no read transaction
+and cannot write the database. The 1,000-page
 automatic checkpoint and WAL/NORMAL policy remain active. Committed counters
 survive process exit; a power failure can still lose unsynchronized counters.
-Both connection opens share the same 10 ms deadline. Ordinary session writers
+The main open and attachment share the same 10 ms deadline. Counter-only
+connections retain the 1 ms busy policy across session operations, avoiding a
+redundant PRAGMA on each usage write. Ordinary session writers
 retain their existing checkpoint and final-close cleanup.
 
 There is no separate `usage.db`. The machine-wide usage log is `model_calls` and

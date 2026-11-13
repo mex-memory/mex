@@ -47,8 +47,12 @@ func (hooks *Hooks) RecordHookUsage(day, agent string, sessionStart, failed bool
 		return err
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout=1"); err != nil {
-		return err
+	// Counter-only pools open and restore every connection with this policy.
+	// Ordinary session writers still need the tighter policy for a usage call.
+	if !hooks.counterOnly {
+		if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout=1"); err != nil {
+			return err
+		}
 	}
 	values := make([]string, 0, len(names))
 	args := make([]any, 0, 2*len(names))
@@ -58,7 +62,7 @@ func (hooks *Hooks) RecordHookUsage(day, agent string, sessionStart, failed bool
 	}
 	// One SQLite statement is atomic, including a constraint/trigger failure.
 	// Avoid a separate BEGIN, statement per counter, and COMMIT for every hook.
-	_, err = conn.ExecContext(ctx, "INSERT INTO counters_go(day,name,value) VALUES"+strings.Join(values, ",")+
+	_, err = conn.ExecContext(ctx, "INSERT INTO main.counters_go(day,name,value) VALUES"+strings.Join(values, ",")+
 		" ON CONFLICT(day,name) DO UPDATE SET value=min(2147483647,value+1)", args...)
 	return err
 }

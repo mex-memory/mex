@@ -92,7 +92,8 @@ func TestCounterCycleTimingBreakdown(t *testing.T) {
 		}
 	}
 	// The production API deliberately skips measurement at its 10 ms deadline.
-	// Report those skips here; the real-process gate still requires every write.
+	// Report those skips here; the real-process gate requires 200 observed saved
+	// writes within its fixed attempt limit.
 	// A deadline may race a commit, but must never leave half a counter pair.
 	reader, err := openCounterReader(location.Hooks)
 	if err != nil {
@@ -171,7 +172,7 @@ func TestCounterCloseRetainsCommittedWALAndAllowsAutomaticCheckpoints(t *testing
 				t.Fatal(err)
 			}
 			defer hooks.Close()
-			if _, err := hooks.counterReader.Exec("DELETE FROM counters_go"); err == nil {
+			if _, err := hooks.db.Exec("DELETE FROM counter_readonly.counters_go"); err == nil {
 				t.Fatal("counter guard allowed a database write")
 			}
 			// Initialize the WAL header outside the usage call's strict budget.
@@ -237,6 +238,31 @@ ON CONFLICT(day,name) DO UPDATE SET value=value+1`)
 				t.Fatalf("committed WAL counters: %d %v", total, err)
 			}
 		})
+	}
+}
+
+func TestCounterBusyTimeoutSurvivesSessionOperations(t *testing.T) {
+	location := testLocation(t)
+	// Check connection policy with correctness-test limits, outside any timing
+	// measurement. Production counter opens and writes retain their own caps.
+	hooks, err := openHookDatabase(location, testBudget, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hooks.Close()
+	if err := hooks.PutSession(Session{SessionID: "fixture", Agent: "test", ProjectID: "p", Checkout: "/fixture", StartedAt: "now", LastSeenAt: "now"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, read := range []bool{false, true} {
+		if read {
+			if _, err := hooks.Session("fixture"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var busy int
+		if err := hooks.db.QueryRow("PRAGMA busy_timeout").Scan(&busy); err != nil || busy != 1 {
+			t.Fatalf("counter busy timeout after session operation: %d %v", busy, err)
+		}
 	}
 }
 

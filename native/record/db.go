@@ -172,11 +172,9 @@ func openCounterReader(path string) (*sql.DB, error) {
 }
 
 type Hooks struct {
-	db     *sql.DB
-	budget budget
-	// Counter-only read-only connection, closed after the writer. It holds no
-	// read transaction, so normal automatic checkpoints can still complete.
-	counterReader *sql.DB
+	db          *sql.DB
+	budget      budget
+	counterOnly bool
 }
 
 func OpenHooks(location Location) (*Hooks, error) {
@@ -198,7 +196,6 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), limits.writer)
 	defer cancel()
-	var counterReader *sql.DB
 	if counterOnly {
 		// Keep the small WAL sidecars for the next short-lived counter writer.
 		// Recreating/deleting them on every hook is costly on Windows. SQLite
@@ -239,14 +236,19 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 		}
 	}
 	if err == nil && counterOnly {
-		// If every short hook is the final writable connection, SQLite
-		// checkpoints on each close and syncs the WAL header on the next write.
-		// Leave committed frames in the persistent WAL by closing a read-only
-		// connection last. The same open deadline covers both connections.
-		counterReader, err = openCounterReader(location.Hooks)
+		// Keep a read-only pager alive without constructing another SQLite
+		// connection. The pinned SQLite closes main before attached pagers;
+		// lifetime/checkpoint tests qualify that order on driver upgrades.
+		// The attachment holds no read transaction and shares the open deadline.
+		uri, uriErr := databaseURI(location.Hooks)
+		err = uriErr
+		if err == nil {
+			uri.RawQuery = "mode=ro"
+			_, err = db.ExecContext(ctx, "ATTACH DATABASE ? AS counter_readonly", uri.String())
+		}
 		if err == nil {
 			var readerVersion int
-			readerVersion, err = schemaVersion(ctx, counterReader)
+			err = db.QueryRowContext(ctx, "PRAGMA counter_readonly.user_version").Scan(&readerVersion)
 			if err == nil && readerVersion > SchemaVersion {
 				err = futureSchema("hooks.db", readerVersion)
 			}
@@ -254,20 +256,20 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 	}
 	if err != nil {
 		_ = db.Close()
-		if counterReader != nil {
-			_ = counterReader.Close()
-		}
 		return nil, err
 	}
-	return &Hooks{db: db, budget: limits, counterReader: counterReader}, nil
+	return &Hooks{db: db, budget: limits, counterOnly: counterOnly}, nil
 }
 
 func (hooks *Hooks) Close() error {
-	err := hooks.db.Close()
-	if hooks.counterReader != nil {
-		err = errors.Join(err, hooks.counterReader.Close())
+	return hooks.db.Close()
+}
+
+func (hooks *Hooks) busyTimeout() int {
+	if hooks.counterOnly {
+		return 1
 	}
-	return err
+	return WriterBusyTimeoutMS
 }
 
 type Session struct {
@@ -302,7 +304,7 @@ func (hooks *Hooks) write(ctx context.Context, statement string, args ...any) er
 	}
 	defer conn.Close()
 	defer func() {
-		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout=%d", WriterBusyTimeoutMS))
+		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout=%d", hooks.busyTimeout()))
 	}()
 	for {
 		remaining := time.Until(until).Milliseconds()
@@ -350,7 +352,7 @@ func (hooks *Hooks) Session(id string) (*Session, error) {
 		return nil, err
 	}
 	defer func() {
-		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout=%d", WriterBusyTimeoutMS))
+		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout=%d", hooks.busyTimeout()))
 	}()
 	var session Session
 	err = conn.QueryRowContext(ctx, "SELECT session_id,agent,project_id,checkout,started_at,last_seen_at,paused FROM sessions WHERE session_id=?", id).
