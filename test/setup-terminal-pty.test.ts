@@ -238,19 +238,25 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(existsSync(f.record)).toBe(false);
   });
 
-  it("shows real code graph parsing progress before pausing for manual population", async () => {
+  it("retains real code graph parsing counts after pausing for manual population", async () => {
     const f = fixture("incomplete");
     codeRepository(f);
     const result = await terminal(f, ["--mode", "code-repo", "--tool", "none"], [
       { expect: "Choose your AI tools", input: "\r" },
-      { expect: "Parsing source files" },
-      { expect: "files parsed" },
+      // Small repositories can finish between terminal frames. Inspect the
+      // retained real progress instead of racing Ink's render interval.
+      { expect: "> Show setup prompt", input: "d" },
+      { expect: "Details", input: "\u001b[5~" },
+      { quietMs: 100, input: "\u001b[5~" },
+      { quietMs: 100, input: "\u001b[5~" },
+      { quietMs: 100, input: "d" },
       { expect: "> Show setup prompt", input: "\u001b[A" },
       { expect: "> Finish later", input: "\r" },
     ]);
     expect(result.exitCode, result.output).toBe(2);
     expect(result.output).toContain("Code graph");
-    expect(result.output).toMatch(/\d+\s*\/\s*20\s+files parsed/);
+    expect(result.output).toContain("Parsing source files: 0 / 20 files parsed");
+    expect(result.output).toContain("Parsing source files: 20 / 20 files parsed");
     expect(result.output).not.toContain("Setup needs attention");
     expect(existsSync(join(f.project, ".mex/graph.db"))).toBe(true);
     // The manual queue prepares a readable Wiki before any population tasks.
