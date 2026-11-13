@@ -154,7 +154,7 @@ jobs:
 
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install
-    # behavior must remain portable whenever local Team state changes.
+    # behavior must remain portable whenever local Team state or personal knowledge changes.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -171,6 +171,9 @@ jobs:
       - name: Run focused storage, byte-identity, and containment tests
         run: >-
           npx vitest run --maxWorkers=1
+          src/knowledge/__tests__/entry.test.ts
+          src/knowledge/__tests__/store.test.ts
+          test/knowledge-cli.test.ts
           src/team/local-state/__tests__/team-local-state.test.ts
           src/team/artifacts/__tests__/filesystem.test.ts
           src/team/artifacts/__tests__/filesystem-identity.test.ts

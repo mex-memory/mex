@@ -773,6 +773,7 @@ describe("no unscoped scaffold writes", () => {
       "src/config.ts": "writes config.json",
       "src/global-config.ts": "writes the global config and telemetry id",
       "src/events.ts": "appends to events/decisions.jsonl",
+      "src/knowledge/files.ts": "publishes bounded personal note files through exclusive local staging and no-overwrite links under the MEX project-data home; never edits a repository file",
       "src/record/background.ts": "writes only the background process's own log, the jobs-pending marker and the lease row in the machine record home; never a repo file",
       "src/record/job-kinds.ts": "appends only to the trace file a demo job is given (demo and test runs); never a repo file",
       "src/record/location.ts": "publishes only the machine record location pointer and creates machine/project data directories; never Wiki Markdown",

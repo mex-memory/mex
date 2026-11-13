@@ -1,0 +1,73 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const cli = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
+let root: string, repo: string, mexBase: string;
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "mex-knowledge-cli-")); repo = join(root, "repo"); mexBase = join(root, "user"); mkdirSync(repo);
+});
+afterEach(() => rmSync(root, { recursive: true, force: true }));
+function run(args: string[], cwd = repo) {
+  const result = spawnSync(process.execPath, [cli, ...args], {
+    cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024,
+    env: { ...process.env, MEX_HOME: mexBase, MEX_TELEMETRY: "0", MEX_BACKGROUND: "0", NO_COLOR: "1" },
+  });
+  expect(result.error, result.stderr).toBeUndefined();
+  return { ...result, json: () => JSON.parse(result.stdout) };
+}
+describe("shipped knowledge commands", () => {
+  it("saves a complete entry, recalls its short form and expands its source", () => {
+    const text = "Fixtures make tests reproducible because they use fixed data.";
+    const saved = run(["note", text, "--kind", "recipe", "--scope", "test/**", "--scope", "src/**", "--json"]);
+    expect(saved.status, saved.stderr).toBe(0); expect(saved.stderr).toBe("");
+    const id = saved.json().entry.mex.id;
+    expect(saved.json()).toMatchObject({ ok: true, level: "personal", entry: { mex: { scope: ["test/**", "src/**"], checks: [], source: { type: "person", quote: text }, evidence: "person" }, text } });
+    const recalled = run(["recall", "TESTS fixed", "--json"]);
+    expect(recalled.status, recalled.stderr).toBe(0); expect(recalled.stderr).toBe("");
+    expect(recalled.json()).toMatchObject({ ok: true, entries: [{ id, one_line: text }], truncated: false });
+    expect(recalled.json().entries[0]).not.toHaveProperty("entry");
+    const expanded = run(["expand", id, "--json"]);
+    expect(expanded.status, expanded.stderr).toBe(0);
+    expect(expanded.json().entry).toEqual(saved.json().entry);
+    expect(readdirSync(repo)).toEqual([]);
+    expect(existsSync(join(mexBase, ".mex", "config.json"))).toBe(false);
+  });
+  it("works from a second real worktree with one shared MEX home", () => {
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe", timeout: 5000 });
+    git("init", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.test");
+    writeFileSync(join(repo, "README.md"), "# Fixture\n"); git("add", "README.md"); git("commit", "-m", "Fixture");
+    const second = join(root, "second"); git("worktree", "add", "-b", "feature", second);
+    const saved = run(["note", "Fixtures make tests reproducible.", "--json"]); expect(saved.status, saved.stderr).toBe(0);
+    const recalled = run(["recall", "fixtures", "--json"], second); expect(recalled.status, recalled.stderr).toBe(0);
+    expect(recalled.json().entries[0].id).toBe(saved.json().entry.mex.id);
+    expect(git("status", "--porcelain").toString()).toBe("");
+  });
+  it("keeps log as the same note command, with human output and no scaffold", () => {
+    const saved = run(["log", "Fixtures keep tests reproducible."]);
+    expect(saved.status, saved.stderr).toBe(0); expect(saved.stdout).toContain("Saved personal note mx_");
+    expect(saved.stdout).toContain("[you said,");
+    const recalled = run(["recall", "fixtures"]);
+    expect(recalled.status, recalled.stderr).toBe(0); expect(recalled.stdout).toContain("more: mex expand mx_");
+    const id = /mx_[a-z0-9]+/u.exec(recalled.stdout)![0];
+    expect(run(["expand", id]).stdout).toContain("  source:");
+    expect(readdirSync(repo)).toEqual([]);
+  });
+  it("returns empty reads and controlled JSON errors without initializing storage", () => {
+    const empty = run(["recall", "fixtures", "--json"]);
+    expect(empty.status, empty.stderr).toBe(0); expect(empty.json()).toEqual({ ok: true, entries: [], truncated: false });
+    for (const [args, code] of [
+      [["expand", "mx_absent1", "--json"], "NOT_FOUND"],
+      [["expand", "../escape", "--json"], "INVALID_ID"],
+      [["recall", "fixtures", "--limit", "1.5", "--json"], "INVALID_LIMIT"],
+      [["note", "A fact.", "--scope", "../escape", "--json"], "INVALID_ENTRY"],
+    ] as const) {
+      const result = run([...args]); expect(result.status).toBe(1); expect(result.stderr).toBe("");
+      expect(result.json()).toMatchObject({ ok: false, error: { code } });
+    }
+    expect(existsSync(mexBase)).toBe(false); expect(readdirSync(repo)).toEqual([]);
+  });
+});

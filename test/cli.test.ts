@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
-import { Command, InvalidArgumentError } from "commander";
+import { InvalidArgumentError } from "commander";
 import { exec, execFileSync, spawnSync } from "node:child_process";
 import {
   lstatSync,
@@ -14,23 +14,10 @@ import {
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { runLog } from "../src/events.js";
 import { createRepositoryGraphPort } from "../src/graph/application-adapter.js";
-import type { MexConfig } from "../src/types.js";
-
-vi.mock("../src/events.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/events.js")>()),
-  runLog: vi.fn(),
-}));
 
 let parseIntArg: typeof import("../src/cli.js").parseIntArg;
 let parsePositiveIntArg: typeof import("../src/cli.js").parsePositiveIntArg;
-
-const config: MexConfig = {
-  projectRoot: process.cwd(),
-  scaffoldRoot: `${process.cwd()}/.mex`,
-  aiTools: [],
-};
 
 beforeAll(async () => {
   const originalArgv = process.argv;
@@ -44,41 +31,9 @@ beforeAll(async () => {
   }
 });
 
-beforeEach(() => {
-  vi.mocked(runLog).mockResolvedValue(undefined);
-});
-
 afterEach(() => {
   vi.restoreAllMocks();
 });
-
-function buildProgram(): Command {
-  const program = new Command();
-  program
-    .name("mex")
-    .exitOverride()
-    .configureOutput({
-      writeOut: () => {},
-      writeErr: () => {},
-    });
-
-  program
-    .command("log <message>")
-    .description("Append a decision, note, risk, or todo to the mex event log")
-    .option("--type <type>", "Event type: decision, note, risk, todo", "note")
-    .option("--file <path>", "Related file path (repeatable)", (value, prev: string[]) => [...prev, value], [])
-    .action(async (message, opts) => {
-      try {
-        const { runLog } = await import("../src/events.js");
-        await runLog(config, message, { kind: opts.type, files: opts.file });
-      } catch (err) {
-        console.error((err as Error).message);
-        process.exit(1);
-      }
-    });
-
-  return program;
-}
 
 describe("CLI argument parsers", () => {
   it("parses non-negative integers", () => {
@@ -95,71 +50,6 @@ describe("CLI argument parsers", () => {
     for (const value of ["0", "-1", "foo"]) {
       expect(() => parsePositiveIntArg(value)).toThrow(InvalidArgumentError);
     }
-  });
-});
-
-describe("mex log parsing", () => {
-  it("passes the default type through as note", async () => {
-    const program = buildProgram();
-    await program.parseAsync(["node", "mex", "log", "captured context"]);
-
-    expect(runLog).toHaveBeenCalledWith(config, "captured context", {
-      kind: "note",
-      files: [],
-    });
-  });
-
-  it("preserves repeated --file values", async () => {
-    const program = buildProgram();
-    await program.parseAsync([
-      "node",
-      "mex",
-      "log",
-      "tracked files",
-      "--file",
-      "src/cli.ts",
-      "--file",
-      "test/cli.test.ts",
-      "--file",
-      "README.md",
-    ]);
-
-    expect(runLog).toHaveBeenCalledWith(config, "tracked files", {
-      kind: "note",
-      files: ["src/cli.ts", "test/cli.test.ts", "README.md"],
-    });
-  });
-
-  it("passes --type decision through as kind", async () => {
-    const program = buildProgram();
-    await program.parseAsync(["node", "mex", "log", "choose commander", "--type", "decision"]);
-
-    expect(runLog).toHaveBeenCalledWith(config, "choose commander", {
-      kind: "decision",
-      files: [],
-    });
-  });
-
-  it("reports invalid --type failures from the log handler", async () => {
-    vi.mocked(runLog).mockRejectedValueOnce(
-      new Error('Unknown event type "invalid". Use decision, note, risk, or todo.'),
-    );
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
-      throw new Error(`process.exit ${code}`);
-    }) as typeof process.exit);
-    const program = buildProgram();
-
-    await expect(
-      program.parseAsync(["node", "mex", "log", "bad type", "--type", "invalid"]),
-    ).rejects.toThrow("process.exit 1");
-
-    expect(runLog).toHaveBeenCalledWith(config, "bad type", {
-      kind: "invalid",
-      files: [],
-    });
-    expect(errorSpy).toHaveBeenCalledWith('Unknown event type "invalid". Use decision, note, risk, or todo.');
-    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });
 
@@ -748,7 +638,7 @@ describe("built CLI main-module guard", () => {
     }
   });
 
-  it("backfills scaffold_id on an existing scaffold when an explicit log write loads config", () => {
+  it("saves log as a personal note without changing scaffold identity", () => {
     const fixture = mkdtempSync(join(tmpdir(), "mex-migrate-"));
     try {
       const mexPath = join(fixture, ".mex");
@@ -759,7 +649,7 @@ describe("built CLI main-module guard", () => {
       const result = spawnSync(process.execPath, [cliPath, "log", "Explicit project note"], {
         cwd: fixture,
         encoding: "utf8",
-        env: { ...process.env, NO_COLOR: "1" },
+        env: { ...process.env, MEX_HOME: join(fixture, "user"), MEX_BACKGROUND: "0", MEX_TELEMETRY: "0", NO_COLOR: "1" },
       });
       expect(result.status).toBe(0);
 
@@ -767,7 +657,8 @@ describe("built CLI main-module guard", () => {
         aiTools: string[];
         scaffold_id?: string;
       };
-      expect(raw.scaffold_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(raw.scaffold_id).toBeUndefined();
+      expect(result.stdout).toContain("Saved personal note mx_");
       expect(raw.aiTools).toEqual(["claude"]); // existing keys preserved
     } finally {
       rmSync(fixture, { recursive: true, force: true });

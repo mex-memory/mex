@@ -7,6 +7,7 @@ import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
 import { registerRemovedCommands, removedCommandMessage } from "./removed-commands.js";
 import { VERSION } from "./version.js";
+import { buildKnowledgeCommands } from "./knowledge/cli.js";
 import { unsupportedNodeMessage } from "./node-version.js";
 import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
 import { mexHomeDir, setGlobalConfigKey } from "./global-config.js";
@@ -109,6 +110,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "inbox"
     || commandName === "relay"
     || commandName === "spec"
+    || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
     || commandName === "skills";
 }
 
@@ -857,25 +859,8 @@ program
     return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), { write: createGraphCliWriter() }, options));
   });
 
-// ── Agent Memory Events ──
-program
-  .command("log <message>")
-  .description("Append a decision, note, risk, or todo to the mex event log")
-  .option("--type <type>", "Event type: decision, note, risk, todo", "note")
-  .option("--file <path>", "Related file path (repeatable)", (value, prev: string[]) => [...prev, value], [])
-  .option("--source <source>", "Where the event came from (e.g. meeting, manual, agent)")
-  .option("--status <status>", "Lifecycle status (e.g. decided, implemented)")
-  .action(async (message, opts) => {
-    try {
-      const config = loadConfig();
-      const { runLog } = await import("./events.js");
-      await runLog(config, message, { kind: opts.type, files: opts.file, source: opts.source, status: opts.status });
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
-  });
+// ── Knowledge entries ──
+for (const command of buildKnowledgeCommands()) program.addCommand(command);
 
 // ── Background jobs ──
 const jobsCommand = program
@@ -1339,7 +1324,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "log",
+    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand",
     "doctor", "jobs", "completion",
     "telemetry", "config", "feedback", "hub",
   ];
