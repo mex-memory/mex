@@ -9,7 +9,7 @@ import { canonicalFileDiff } from "../team/artifacts/unified-diff.js";
 import type { RepoRelativePath } from "../team/contracts/shared.js";
 import { ENTRY_KINDS, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, assertPersonQuote, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readEntryFile } from "./files.js";
-import { gateEntry, sanitizeText } from "./gates.js";
+import { gateEntry, sanitizeText, assertNoSecrets } from "./gates.js";
 import { entryLabel } from "./labels.js";
 import { references, repoFile, type References } from "./references.js";
 import type { KnowledgeOptions } from "./store.js";
@@ -109,8 +109,8 @@ export function teamEntries(options: KnowledgeOptions, source?: References): { e
     if (bytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", "Team entries exceed the byte scan limit.");
     if (found.entry.mex.status === "retired") continue;
     try {
-      verifyEvidence(found.entry, root);
       const entry = gateEntry(found.entry, context);
+      verifyEvidence(entry, root);
       entries.push({ level: "team", label: entryLabel(entry, "team"), branch: branchStatus(item.path, found.content, baseline), entry });
     } catch (error) {
       if (!(error instanceof KnowledgeError) || !["SECRET_FOUND", "TEAM_EVIDENCE", "UNVERIFIED_SOURCE"].includes(error.code)) throw error;
@@ -124,8 +124,8 @@ export function expandTeam(id: string, options: KnowledgeOptions): TeamEntry | u
   const root = rootFor(options), item = teamFiles(root).find(item => item.id === id);
   const found = item && readAt(root, item);
   if (!found || found.entry.mex.status !== "active") return undefined;
-  verifyEvidence(found.entry, root);
   const entry = gateEntry(found.entry, references(root));
+  verifyEvidence(entry, root);
   return { level: "team", label: entryLabel(entry, "team"), branch: branchStatus(item!.path, found.content, defaultEntries(root)), entry };
 }
 
@@ -137,6 +137,7 @@ export function prepareTeamWrite(input: KnowledgeEntry, options: KnowledgeOption
   const existing = teamFiles(root).find(item => item.id === entry.mex.id);
   const path = existing?.path ?? `${ROOT}/${entry.mex.id}.md`;
   const before = existing ? readAt(root, existing)?.content ?? null : null;
+  if (before) assertNoSecrets(parseEntry(before));
   if (before && parseEntry(before).mex.status === "retired") throw new KnowledgeError("RETIRED_ENTRY", "A retired team entry cannot be restored.");
   if (!before && entry.mex.source.type === "person" && typedText === undefined) throw new KnowledgeError("UNVERIFIED_SOURCE", "A new person-sourced team entry requires the actual typed text.");
   const after = serializeEntry(entry);

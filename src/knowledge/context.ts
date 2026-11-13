@@ -6,7 +6,9 @@ import { realPath } from "../record/project.js";
 import { KnowledgeError } from "./contract.js";
 import { retiredIds } from "./state.js";
 
-export interface KnowledgeOptions extends LocationOptions { projectPath: string; }
+export interface KnowledgeOptions extends LocationOptions {
+  projectPath: string; consumerAgent?: string; env?: NodeJS.ProcessEnv; userHome?: string;
+}
 /** A pure snapshot; no registration, schema migration, folder or pointer creation. */
 export function knowledgeProject(options: KnowledgeOptions) {
   const location = recordLocation({ ...options, create: false });

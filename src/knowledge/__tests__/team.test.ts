@@ -102,5 +102,6 @@ describe("team entry storage", () => {
     expect(teamEntries(options())).toEqual({ entries: [], withheld: 1 });
     expect(recall("credential", options())).toEqual({ entries: [], truncated: false, withheld: 1 });
     expect(() => expand(entry.mex.id, options())).toThrow(/possible secret/);
+    expect(() => prepareTeamWrite(fact(entry.mex.id), options(), fact(entry.mex.id).text)).toThrow(/possible secret/);
   });
 });

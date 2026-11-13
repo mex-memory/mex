@@ -68,6 +68,7 @@ describe("explicit personal note changes", () => {
     const before = readFileSync(entryPath(saved.entry.mex.id), "utf8");
     expect(() => edit(saved.entry.mex.id, { text: " " }, options())).toThrow();
     expect(() => forget(saved.entry.mex.id, "", options())).toThrow();
+    expect(() => forget(saved.entry.mex.id, "gh\u200bp_" + "x".repeat(36), options())).toThrow(/possible secret/);
     expect(readFileSync(entryPath(saved.entry.mex.id), "utf8")).toBe(before);
     expect(expand(saved.entry.mex.id, options()).entry).toEqual(saved.entry);
   });

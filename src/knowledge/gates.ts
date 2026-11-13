@@ -12,6 +12,14 @@ const SECRETS = [
   /https?:\/\/[^\s/@:]+:[^\s/@]+@/iu,
 ];
 export function hasSecret(text: string): boolean { return SECRETS.some(pattern => pattern.test(text)); }
+const secretKey = /^(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|authorization|private[_ -]?key|aws_secret_access_key)$/iu;
+export function assertNoSecrets(value: unknown): void {
+  const visit = (value: unknown, key = ""): boolean => typeof value === "string"
+    ? hasSecret(value) || (secretKey.test(key) && value.length >= 8 && !/^\*+$|^\[REDACTED\]$/u.test(value))
+    : Array.isArray(value) ? value.some(item => visit(item))
+      : !!value && typeof value === "object" && Object.entries(value).some(([key, item]) => visit(item, key));
+  if (visit(value)) throw new KnowledgeError("SECRET_FOUND", "The entry contains a possible secret and was withheld.");
+}
 
 const commandStart = /\b(?:npm|pnpm|yarn|npx|bun|node|python3?|pip3?|git|go|cargo|make|cmake|curl|wget|bash|sh|sudo|rm|chmod|powershell|pwsh|cmd)\s+/u;
 export function sanitizeText(value: string, source: References): string {
@@ -49,7 +57,7 @@ export function gateEntry(input: KnowledgeEntry, source: References): KnowledgeE
     : Array.isArray(value) ? value.map(clean)
       : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, clean(v)])) : value;
   const entry = validateEntry(clean(input));
-  if (hasSecret(JSON.stringify(entry))) throw new KnowledgeError("SECRET_FOUND", "The entry contains a possible secret and was withheld.");
+  assertNoSecrets(entry);
   entry.text = sanitizeText(entry.text, source);
   entry.mex.one_line = sanitizeText(entry.mex.one_line, source);
   if (entry.mex.source.quote) entry.mex.source.quote = sanitizeText(entry.mex.source.quote, source);

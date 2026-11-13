@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { references } from "../references.js";
-import { sanitizeText, stripHidden, hasSecret } from "../gates.js";
+import { sanitizeText, stripHidden, hasSecret, assertNoSecrets } from "../gates.js";
 import { note } from "../store.js";
 
 let root: string;
@@ -49,5 +49,7 @@ describe("deterministic entry gates", () => {
       expect(() => note({ text: `A synthetic fixture: ${secret}` }, { projectPath: root, home, isNetwork: () => false })).toThrow(/possible secret/);
     }
     expect(existsSync(home)).toBe(false);
+    expect(() => assertNoSecrets({ saw: { value: { api_key: "a-synthetic-credential" } } })).toThrow(/possible secret/);
+    expect(() => assertNoSecrets({ quote: 'password="a-synthetic-credential"' })).toThrow(/possible secret/);
   });
 });

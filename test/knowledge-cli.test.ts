@@ -16,7 +16,7 @@ function run(args: string[], cwd = repo, interactive = false) {
   const preload = "data:text/javascript,import https from 'node:https';import http from 'node:http';import{syncBuiltinESMExports}from 'node:module';const deny=()=>{throw new Error('Unexpected network')};https.request=deny;http.request=deny;globalThis.fetch=deny;syncBuiltinESMExports();Object.defineProperty(process.stderr,'isTTY',{value:true});";
   const result = spawnSync(process.execPath, [...(interactive ? ["--import", preload] : []), cli, ...args], {
     cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024,
-    env: { ...process.env, MEX_HOME: mexBase, MEX_TELEMETRY: interactive ? "1" : "0", ...(interactive ? {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: join(root, "claude-host"), CLAUDE_CODE_PROJECT_DIR_NAME: "fixture-project", CODEX_HOME: join(root, "codex-host"), MEX_HOME: mexBase, MEX_TELEMETRY: interactive ? "1" : "0", ...(interactive ? {
       DO_NOT_TRACK: "0", MEX_OFFLINE: "0", MEX_DEV: "", CI: "", CONTINUOUS_INTEGRATION: "", GITHUB_ACTIONS: "", GITLAB_CI: "", TF_BUILD: "", BUILDKITE: "", CIRCLECI: "", JENKINS_URL: "",
     } : {}), MEX_BACKGROUND: "0", NO_COLOR: "1" },
   });
@@ -126,6 +126,41 @@ describe("shipped knowledge commands", () => {
     expect(run(["forget", id, "No longer current.", "--apply", "--expect", retirement.json().preview.revision, "--json"]).status).toBe(0);
     expect(parseEntry(readFileSync(file, "utf8")).mex).toMatchObject({ status: "retired", retired: { reason: "No longer current." } });
     expect(run(["recall", "fixtures", "--json"]).json().entries).toEqual([]);
+    expect(existsSync(mexBase)).toBe(false);
+  });
+  it("imports read-only hints, excludes their host, and supports explicit confirmation and forgetting", () => {
+    const directory = join(root, "claude-host/projects/fixture-project/memory"); mkdirSync(directory, { recursive: true });
+    const file = join(directory, "fixtures.md"), original = "Fixtures use fixed input because failures must reproduce.\n";
+    writeFileSync(file, original);
+    const refreshed = run(["hints", "refresh", "--json"], repo, true);
+    expect(refreshed.status, refreshed.stderr).toBe(0); expect(refreshed.json()).toMatchObject({ ok: true, imported: 1, expired: 0 });
+    expect(run(["recall", "fixtures", "--json"]).json().entries).toEqual([]);
+    expect(run(["recall", "fixtures", "--agent", "claude-code", "--json"]).json().entries).toEqual([]);
+    const entries = run(["recall", "fixtures", "--agent", "codex", "--json"]).json().entries;
+    expect(entries[0]).toMatchObject({ level: "hint", label: "[hint, seen once]" });
+    const id = entries[0].id;
+    expect(run(["expand", id, "--agent", "codex", "--json"]).json().entry.mex).toMatchObject({ kind: "hint", evidence: "observed", checks: [] });
+    const confirmed = run(["edit", id, "Fixtures use recorded input because seeds are insufficient.", "--json"]);
+    expect(confirmed.status, confirmed.stderr).toBe(0); expect(confirmed.json()).toMatchObject({ level: "personal", entry: { mex: { source: { type: "person" } } } });
+    expect(run(["recall", "fixtures", "--json"]).json().entries[0].level).toBe("personal");
+    writeFileSync(join(directory, "another.md"), "Compiler tests use recorded failures because diagnostics must remain stable.\n");
+    run(["hints", "refresh", "--json"]);
+    const second = run(["recall", "compiler", "--agent", "codex", "--json"]).json().entries[0].id;
+    expect(run(["wrong", second, "The compiler setup changed.", "--json"]).json()).toMatchObject({ level: "hint", status: "retired" });
+    run(["hints", "refresh", "--json"]);
+    expect(run(["recall", "compiler", "--agent", "codex", "--json"]).json().entries).toEqual([]);
+    expect(run(["hints", "status", "--json"]).json()).toMatchObject({ active: 0, confirmed: 1, expiryMonths: 6 });
+    expect(readFileSync(file, "utf8")).toBe(original);
+    expect(existsSync(join(repo, ".mex"))).toBe(false);
+  });
+  it("keeps empty hint status and invalid expiry configuration noninitializing", () => {
+    expect(run(["hints", "status", "--json"], repo, true).json()).toMatchObject({ active: 0, expiryMonths: 6, lastRefresh: null });
+    expect(run(["hints", "refresh", "--json"], repo, true).json()).toMatchObject({ imported: 0 });
+    expect(existsSync(mexBase)).toBe(false);
+    for (const months of ["0", "1.5", "nope"]) {
+      const result = run(["hints", "refresh", "--expiry-months", months, "--json"], repo, true);
+      expect(result.status).toBe(1); expect(result.json()).toMatchObject({ error: { code: "INVALID_SETTING" } });
+    }
     expect(existsSync(mexBase)).toBe(false);
   });
   it("returns empty reads and controlled JSON errors without initializing storage", () => {

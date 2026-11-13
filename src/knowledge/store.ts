@@ -9,10 +9,11 @@ import { references, type References } from "./references.js";
 import { gateEntry, sanitizeText } from "./gates.js";
 import { entryLabel, KNOWLEDGE_PRIORITY, type KnowledgeLevel } from "./labels.js";
 import { expandTeam, teamEntries, type TeamEntry } from "./team.js";
+import { readHints, type HintEntry } from "./hints.js";
 export type { KnowledgeOptions } from "./context.js";
 
 export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
-export type StoredEntry = PersonalEntry | TeamEntry;
+export type StoredEntry = PersonalEntry | TeamEntry | HintEntry;
 export interface NoteInput { text: string; kind?: EntryKind; scope?: string[]; oneLine?: string; }
 function readDirectory(project: KnowledgeProject): string | undefined {
   if (!existsSync(project.location.home)) return undefined;
@@ -79,6 +80,8 @@ export function expand(id: string, options: KnowledgeOptions): StoredEntry {
   catch (error) { if (!(error instanceof KnowledgeError) || error.code !== "NOT_FOUND") throw error; }
   const team = expandTeam(id, options);
   if (team) return team;
+  const hint = readHints(options).entries.find(item => item.entry.mex.id === id);
+  if (hint) return hint;
   throw new KnowledgeError("NOT_FOUND", "No active entry has that id in this project.");
 }
 export interface RecallItem {
@@ -87,7 +90,7 @@ export interface RecallItem {
   evidence: KnowledgeEntry["mex"]["evidence"]; created: string;
   branch?: TeamEntry["branch"];
 }
-export interface RecallResult { entries: RecallItem[]; truncated: boolean; withheld?: number; }
+export interface RecallResult { entries: RecallItem[]; truncated: boolean; withheld?: number; hintsPartial?: boolean; }
 export function recallItem(item: { level: KnowledgeLevel; label: string; entry: KnowledgeEntry; branch?: TeamEntry["branch"] }): RecallItem {
   const { id, kind, one_line, scope, source, evidence, created } = item.entry.mex;
   return { id, level: item.level, label: item.label, kind, one_line, scope, source: { type: source.type, ref: source.ref }, evidence, created, ...(item.branch ? { branch: item.branch } : {}) };
@@ -141,10 +144,12 @@ export function recall(query: string, options: KnowledgeOptions, limit = 20): Re
   const project = knowledgeProject(options);
   const personal = recallPersonal(query, options, limit, project);
   const team = teamEntries(options);
-  const items = [...personal.entries, ...team.entries.filter(item => !project.retired.has(item.entry.mex.id) && matchesQuery(item.entry, query)).map(recallItem)];
+  const hints = readHints(options);
+  const items = [...personal.entries, ...[...team.entries, ...hints.entries].filter(item => !project.retired.has(item.entry.mex.id) && matchesQuery(item.entry, query)).map(recallItem)];
   const seen = new Set<string>();
   const entries = items.filter(item => !seen.has(item.id) && !!seen.add(item.id));
   entries.sort((a, b) => KNOWLEDGE_PRIORITY.indexOf(a.level) - KNOWLEDGE_PRIORITY.indexOf(b.level)
     || b.created.localeCompare(a.created) || a.id.localeCompare(b.id));
-  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(team.withheld ? { withheld: team.withheld } : {}) };
+  const withheld = team.withheld + hints.withheld;
+  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(withheld ? { withheld } : {}), ...(hints.partial ? { hintsPartial: true } : {}) };
 }

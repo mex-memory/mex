@@ -62,8 +62,9 @@ export function edit(id: string, input: NoteInput, options: KnowledgeOptions, no
 export function forget(id: string, reason: string, options: KnowledgeOptions, now = new Date(), action: "forget" | "wrong" = "forget"): Tombstone {
   assertId(id);
   const before = personalSnapshot(id, options, knowledgeProject(options), undefined, false);
+  reason = stripHidden(reason);
   if (hasSecret(reason)) throw new KnowledgeError("SECRET_FOUND", "The retirement reason contains a possible secret.");
-  const retired = { reason: stripHidden(reason), by: `mex ${action}`, at: now.toISOString().slice(0, 10) };
+  const retired = { reason, by: `mex ${action}`, at: now.toISOString().slice(0, 10) };
   serializeEntry({ ...before.entry, mex: { ...before.entry.mex, status: "retired", retired } });
   const writer = openRecord(options);
   try {
