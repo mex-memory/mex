@@ -26,6 +26,11 @@ if (isMainModule) {
     const { runBackground } = await import("./record/background.js");
     const reason = await runBackground();
     process.exitCode = reason === "error" ? 1 : 0;
+  } else if (process.argv[2] === "__ensure-background" && process.argv.length === 3) {
+    // Started by the hook shim at session start when work is waiting: start the
+    // background process if it isn't running, then exit.
+    const { ensureBackground } = await import("./record/background.js");
+    ensureBackground();
   } else if (removedCommandMessage(process.argv.slice(2)) !== null) {
     console.error(removedCommandMessage(process.argv.slice(2)));
     process.exitCode = 1;
