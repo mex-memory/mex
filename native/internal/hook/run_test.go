@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -132,5 +134,59 @@ func TestVersion(t *testing.T) {
 	_, out := run(t, []string{"--version"}, nil, noEnv)
 	if strings.TrimSpace(out) != Version {
 		t.Fatalf("version = %q, want %q", out, Version)
+	}
+}
+
+func TestClaudeCodeEventsReplyEmpty(t *testing.T) {
+	files, _ := filepath.Glob(filepath.Join("..", "adapter", "claude", "testdata", "payloads", "*.json"))
+	n := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, ".event.json") {
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, _, _ := strings.Cut(strings.TrimSuffix(filepath.Base(f), ".json"), "-")
+		code, out := run(t, []string{"claude-code", event}, bytes.NewReader(raw), noEnv)
+		assertEmptyReply(t, code, out)
+		n++
+	}
+	if n == 0 {
+		t.Fatal("no fixtures found")
+	}
+}
+
+func TestUnknownAgentOrEventFailsOpen(t *testing.T) {
+	for _, args := range [][]string{{"no-such-agent", "PreToolUse"}, {"claude-code", "NoSuchEvent"}, {"claude-code"}} {
+		code, out := run(t, args, strings.NewReader(`{"hook_event_name":"PreToolUse"}`), noEnv)
+		assertEmptyReply(t, code, out)
+	}
+}
+
+func TestBrokenPayloadForKnownEventFailsOpen(t *testing.T) {
+	code, out := run(t, []string{"claude-code", "PreToolUse"}, strings.NewReader(`{"tool_input": [`), noEnv)
+	assertEmptyReply(t, code, out)
+}
+
+func TestRecordSavesPayload(t *testing.T) {
+	dir := t.TempDir()
+	env := func(k string) string {
+		if k == "MEX_HOOK_RECORD" {
+			return dir
+		}
+		return ""
+	}
+	body := `{"hook_event_name":"Stop","session_id":"s"}`
+	code, out := run(t, []string{"claude-code", "Stop"}, strings.NewReader(body), env)
+	assertEmptyReply(t, code, out)
+	files, _ := filepath.Glob(filepath.Join(dir, "claude-code", "Stop-*.json"))
+	if len(files) != 1 {
+		t.Fatalf("recorded %d files, want 1", len(files))
+	}
+	got, _ := os.ReadFile(files[0])
+	if string(got) != body {
+		t.Fatalf("recorded %q", got)
 	}
 }
