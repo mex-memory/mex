@@ -1,0 +1,56 @@
+name: TypeScript servers
+
+# tsrs builds the TypeScript graph by default and tsgo is its fallback. Before
+# a release pins a tsrs or tsgo version, tsrs must give exactly tsgo's graph on
+# a fixed set of real repositories: every node, edge and import.
+
+on:
+  push:
+    branches:
+      - main
+      - next
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - src/graph/extraction/**
+      - scripts/graph-compiler-parity.ts
+      - .github/workflows/typescript-servers.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: typescript-servers-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tsrs-matches-tsgo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - run: npm ci
+      - name: Fetch the pinned repositories
+        shell: bash
+        run: |
+          fetch() {
+            mkdir -p "$RUNNER_TEMP/repos/$1"
+            git -C "$RUNNER_TEMP/repos/$1" init -q
+            git -C "$RUNNER_TEMP/repos/$1" fetch -q --depth 1 "$2" "$3"
+            git -C "$RUNNER_TEMP/repos/$1" checkout -q FETCH_HEAD
+          }
+          fetch hono https://github.com/honojs/hono.git f6fbaf0299c48eea9e656e03e2ffe7ac755e8823
+          fetch novu https://github.com/novuhq/novu.git af704e0a74873b7ca99879a1e6870ff066462ee6
+          # Hono with its dependencies, so the checker resolves real types.
+          # npm 10 (Node 22's) crashes resolving Hono's tree; npm 11 does not.
+          (cd "$RUNNER_TEMP/repos/hono" && npx --yes npm@11.6.1 install --ignore-scripts --no-audit --no-fund >/dev/null)
+      - name: Compare tsrs with tsgo
+        run: >
+          npx vite-node scripts/graph-compiler-parity.ts --
+          --servers "$GITHUB_WORKSPACE" "$RUNNER_TEMP/repos/hono" "$RUNNER_TEMP/repos/novu"
