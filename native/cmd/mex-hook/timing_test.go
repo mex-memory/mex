@@ -89,6 +89,22 @@ func callOnce(t *testing.T, bin, mexHome string) time.Duration {
 
 type stats struct{ p50, p95, max time.Duration }
 
+func hookCount(t *testing.T, location localrecord.Location) int {
+	t.Helper()
+	db, err := sql.Open("sqlite", location.Hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Do not hold a reader open while timing: that would keep WAL state alive
+	// across processes and change the production path being measured.
+	defer db.Close()
+	var count int
+	if err := db.QueryRow("SELECT coalesce(sum(value),0) FROM counters_go WHERE name='agent:claude-code:hook.calls'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
 func summarize(s []time.Duration) stats {
 	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
 	n := len(s)
@@ -129,11 +145,22 @@ func measureNoOp(t *testing.T, counters bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		hooks, err := localrecord.OpenHooks(location)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := hooks.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	for range 10 { // warm the file cache and any antivirus scan
 		callOnce(t, shim, mexHome)
 		callOnce(t, floor, mexHome)
+	}
+	before := 0
+	if counters {
+		before = hookCount(t, location)
 	}
 	const runs = 200
 	shimRuns := make([]time.Duration, runs)
@@ -143,14 +170,8 @@ func measureNoOp(t *testing.T, counters bool) {
 		floorRuns[i] = callOnce(t, floor, mexHome)
 	}
 	if counters {
-		db, err := sql.Open("sqlite", location.Hooks)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer db.Close()
-		var count int
-		if err := db.QueryRow("SELECT sum(value) FROM counters_go WHERE name='agent:claude-code:hook.calls'").Scan(&count); err != nil || count != runs+10 {
-			t.Fatalf("counter path was not measured: count=%d err=%v", count, err)
+		if count := hookCount(t, location) - before; count != runs {
+			t.Fatalf("counter path was not measured for all timed samples: count=%d want=%d", count, runs)
 		}
 	}
 	s, f := summarize(shimRuns), summarize(floorRuns)

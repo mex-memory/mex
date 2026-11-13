@@ -31,7 +31,8 @@ jobs:
           go-version: '1.27.x'
           cache-dependency-path: native/go.sum
       - run: go vet ./...
-      - run: go test -v ./...
+      # Package deadlines and process timing must not compete with each other.
+      - run: go test -count=1 -p 1 -v ./...
       - name: Cross-build record test binary without C
         shell: bash
         run: |

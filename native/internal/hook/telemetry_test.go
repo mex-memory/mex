@@ -47,6 +47,16 @@ func telemetryHome(t *testing.T) (home, Env, localrecord.Location) {
 
 func TestHooksAccumulateOnlyLocalCounters(t *testing.T) {
 	h, env, location := telemetryHome(t)
+	// Exercise a ready local record. A cold migration has the same deliberately
+	// short best-effort budget as a hook write and may be skipped, especially on
+	// Windows. Bootstrap outside this accumulation test, as session setup does.
+	hooks, err := localrecord.OpenHooks(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hooks.Close(); err != nil {
+		t.Fatal(err)
+	}
 	for _, event := range []string{"SessionStart", "PreToolUse"} {
 		var out bytes.Buffer
 		payload := `{"session_id":"PRIVATE_SESSION","cwd":"/PRIVATE_PATH","hook_event_name":"` + event + `","tool_name":"Read","tool_input":{"file_path":"/PRIVATE_FILE"}}`
