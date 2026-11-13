@@ -35,6 +35,20 @@ const ldflags = `-s -w -X github.com/mex-memory/mex/native/internal/hook.Version
 
 // The shim now links the already-pinned SQLite driver. Preserve the actual
 // linked modules' license inventories beside every distributed binary.
+function goLicense(goroot) {
+  // Homebrew keeps the SDK under libexec and its license beside that folder.
+  for (const path of [join(goroot, "LICENSE"), join(dirname(goroot), "LICENSE")]) {
+    let info;
+    try { info = statSync(path); }
+    catch (error) { if (error.code === "ENOENT") continue; throw error; }
+    if (!info.isFile() || info.size > 16 * 1024) throw new Error("Invalid Go license inventory");
+    const text = readFileSync(path, "utf8");
+    if (!text.startsWith("Copyright 2009 The Go Authors.")) throw new Error("Unrecognized Go license inventory");
+    return text;
+  }
+  throw new Error("Missing Go standard library license inventory");
+}
+
 function dependencyNotices(env) {
   const cwd = join(root, "native");
   const format = '{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}';
@@ -45,7 +59,7 @@ function dependencyNotices(env) {
     if (revision) modules.set(name, { revision, directory: parts.join("|") });
   }
   const goroot = execFileSync("go", ["env", "GOROOT"], { cwd, env, encoding: "utf8" }).trim();
-  const notices = ["MEX hook dependency notices", "Upstream inventories may also describe components that are not linked.", "Go standard library", readFileSync(join(goroot, "LICENSE"), "utf8")];
+  const notices = ["MEX hook dependency notices", "Upstream inventories may also describe components that are not linked.", "Go standard library", goLicense(goroot)];
   let total = 0;
   for (const [name, module] of [...modules].sort(([a], [b]) => a.localeCompare(b))) {
     const files = readdirSync(module.directory).filter((name) => /^(LICENSE(?:$|[-_.])|COPYING|NOTICE)/i.test(name)).sort();
