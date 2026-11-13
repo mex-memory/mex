@@ -2,12 +2,15 @@ package hook
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	localrecord "github.com/mex-memory/mex/native/record"
 )
@@ -52,13 +55,25 @@ func TestHookTelemetryRefusesHardLinkedDatabaseFiles(t *testing.T) {
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		t.Run("hooks.db"+suffix, func(t *testing.T) {
 			_, env, location := telemetryHome(t)
-			// Keep the initialized WAL/SHM open, avoiding a cold migration in the
-			// hook's deliberately short measurement budget.
-			hooks, err := localrecord.OpenHooks(location)
+			// Prepare the real schema outside hook deadlines: this test checks
+			// alias refusal, not how quickly a cold schema can be initialized.
+			db, err := sql.Open("sqlite", location.Hooks)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer hooks.Close()
+			defer db.Close()
+			db.SetMaxOpenConns(1)
+			schema, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0001_init.sql"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_, err = db.ExecContext(ctx, "PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;\n"+string(schema)+fmt.Sprintf("\nPRAGMA user_version=%d; COMMIT;", localrecord.SchemaVersion))
+			cancel()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// This connection keeps the initialized WAL/SHM present for linking.
 			outside := filepath.Join(t.TempDir(), "outside")
 			if err := os.Link(location.Hooks+suffix, outside); err != nil {
 				t.Fatal(err)
@@ -68,11 +83,6 @@ func TestHookTelemetryRefusesHardLinkedDatabaseFiles(t *testing.T) {
 			if !json.Valid(out.Bytes()) {
 				t.Fatalf("hook did not fail open: %q", out.String())
 			}
-			db, err := sql.Open("sqlite", location.Hooks)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
 			var rows int
 			if err := db.QueryRow("SELECT count(*) FROM counters_go").Scan(&rows); err != nil {
 				t.Fatal(err)
