@@ -27,6 +27,13 @@ background process. A missing, busy, unreadable or incompatible file produces
 an error the hook caller ignores, allowing the agent call. Never use SQLite's
 `immutable` option for these live databases: readers must see WAL commits.
 
+Telemetry counter writers use a 1 ms busy timeout and separate 10 ms open and
+write deadlines, skipping measurement when either budget expires. Each hook's
+counter increments form one atomic SQLite statement. These short-lived writers
+retain the WAL sidecar files for reuse across processes; SQLite still checkpoints
+on close and at its usual 1,000-page threshold, using the same WAL/NORMAL policy.
+Ordinary session writers retain their existing final-close cleanup.
+
 There is no separate `usage.db`. The machine-wide usage log is `model_calls` and
 `own_usage` inside `record.db`. Existing checkout `.mex/graph.db`, `wiki.db`,
 `team.db` and Hub jobs are unchanged by this storage foundation.

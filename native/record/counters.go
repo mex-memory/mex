@@ -3,13 +3,14 @@ package record
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
 // OpenHookCounters applies the usage budget to opening and migration as well as
 // writes. Contention must skip measurement rather than delay an agent hook.
 func OpenHookCounters(location Location) (*Hooks, error) {
-	return openHooks(location, 1, 10*time.Millisecond)
+	return openHooks(location, 1, 10*time.Millisecond, true)
 }
 
 // RecordHookUsage writes only bounded usage counts. No payload, path or session ID
@@ -48,16 +49,15 @@ func (hooks *Hooks) RecordHookUsage(day, agent string, sessionStart, failed bool
 	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout=1"); err != nil {
 		return err
 	}
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	values := make([]string, 0, len(names))
+	args := make([]any, 0, 2*len(names))
 	for _, name := range names {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO counters_go(day,name,value) VALUES(?,?,1)
-    ON CONFLICT(day,name) DO UPDATE SET value=min(2147483647,value+1)`, day, "agent:"+agent+":"+name); err != nil {
-			return err
-		}
+		values = append(values, "(?,?,1)")
+		args = append(args, day, "agent:"+agent+":"+name)
 	}
-	return tx.Commit()
+	// One SQLite statement is atomic, including a constraint/trigger failure.
+	// Avoid a separate BEGIN, statement per counter, and COMMIT for every hook.
+	_, err = conn.ExecContext(ctx, "INSERT INTO counters_go(day,name,value) VALUES"+strings.Join(values, ",")+
+		" ON CONFLICT(day,name) DO UPDATE SET value=min(2147483647,value+1)", args...)
+	return err
 }

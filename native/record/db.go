@@ -143,16 +143,37 @@ func openDatabaseWithBusyTimeout(path string, readOnly bool, busyTimeout int) (*
 type Hooks struct{ db *sql.DB }
 
 func OpenHooks(location Location) (*Hooks, error) {
-	return openHooks(location, WriterBusyTimeoutMS, WriterOperationTimeout)
+	return openHooks(location, WriterBusyTimeoutMS, WriterOperationTimeout, false)
 }
 
-func openHooks(location Location, busyTimeout int, deadline time.Duration) (*Hooks, error) {
+func openHooks(location Location, busyTimeout int, deadline time.Duration, persistWAL bool) (*Hooks, error) {
 	db, err := openDatabaseWithBusyTimeout(location.Hooks, false, busyTimeout)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
+	if persistWAL {
+		// Keep the small WAL sidecars for the next short-lived counter writer.
+		// Recreating/deleting them on every hook is costly on Windows. SQLite
+		// still checkpoints normally; journal mode and sync policy do not change.
+		conn, err := db.Conn(ctx)
+		if err == nil {
+			err = conn.Raw(func(driverConn any) error {
+				fc, ok := driverConn.(sqlite.FileControl)
+				if !ok {
+					return fmt.Errorf("SQLite file control is unavailable")
+				}
+				_, err := fc.FileControlPersistWAL("main", 1)
+				return err
+			})
+			_ = conn.Close()
+		}
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	version, err := schemaVersion(ctx, db)
 	if err == nil && version > SchemaVersion {
 		err = futureSchema("hooks.db", version)
