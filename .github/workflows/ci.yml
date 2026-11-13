@@ -74,7 +74,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run test
+      # Preserve the CLI suite's build condition and 240-second deadline, before
+      # parallel suites consume the same dist workers and grammars.
+      - name: Build app before parallel tests
+        run: npm run build
+        timeout-minutes: 4
+        env:
+          NODE_ENV: test
+      - name: Test the completed app build
+        run: npm run test
+        env:
+          MEX_TEST_PREBUILT: '1'
       - name: Test isolated telemetry benchmark transport
         if: matrix.node-version == '22.22.0'
         run: npm run benchmark:telemetry:test
