@@ -46,8 +46,6 @@ export interface SkippedSourceFile {
 export interface GraphTypeScriptReport {
   /** The compiler chosen for the repository, for example `tsrs 0.25.0`. */
   compiler: string;
-  /** `pending` while this repository waits for its tsrs check; tsgo builds it meanwhile. */
-  check?: "pending";
   /** Projects by the compiler that built them. */
   projects: Record<string, string>;
   /** Per project, in plain words: a fallback and its reason, or a translated tsconfig. */

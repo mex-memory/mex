@@ -47,7 +47,6 @@ const buildResult = z.object({
   }).strict()).max(20_000).optional(),
   typescript: z.object({
     compiler: z.string().max(400),
-    check: z.literal("pending").optional(),
     projects: z.record(z.string().max(4_096), z.string().max(200)),
     notes: z.array(z.object({ project: z.string().max(4_096), note: z.string().max(2_000) }).strict()).max(20_000),
   }).strict().optional(),

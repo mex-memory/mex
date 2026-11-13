@@ -114,7 +114,6 @@ export interface GraphRefreshResult extends IndexJobResult {
    */
   typescript?: {
     compiler: string;
-    check?: "pending";
     projects: Readonly<Record<string, string>>;
     notes: ReadonlyArray<{ project: string; note: string }>;
   };

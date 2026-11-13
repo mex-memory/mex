@@ -1025,18 +1025,14 @@ async function stageCorpus(
     });
     reportParsed(0);
 
-    // The compiler: TypeScript 7.1's API unless the caller chose one. tsrs
-    // builds a repository once the background check found it agrees with
-    // tsgo there; until then, and after any disagreement, tsgo builds it.
+    // The compiler: TypeScript 7.1's API (tsrs, falling back to tsgo, then
+    // 5.9 per project) unless the caller chose one.
     let compilers: GraphCompilers | undefined;
-    let tsrsCheckPending = false;
     // A caller that replaces 5.9 program creation (a test seam) keeps 5.9.
     if (!compilerExtraction?.selectCompiler && !compilerExtraction?.programFactory && compilerFiles.length > 0) {
       const policy = await import("./extraction/compiler-policy.js");
       const choice = policy.graphCompilerChoice();
-      const storedVerdict = choice === "auto" ? policy.storedTsrsVerdict(root) : undefined;
-      tsrsCheckPending = choice === "auto" && !policy.verdictIsCurrent(storedVerdict);
-      compilers = await policy.loadGraphCompilers(choice, storedVerdict);
+      compilers = await policy.loadGraphCompilers(choice);
     }
 
     // Incremental extraction (issue #209): plan which files to extract again,
@@ -1234,7 +1230,6 @@ async function stageCorpus(
       ...(compilerFiles.length > 0 ? {
         typescript: {
           compiler: compilers?.description ?? `custom (${Object.values(compiler.projectCompilers)[0] ?? compiler.compilerVersion})`,
-          ...(tsrsCheckPending ? { check: "pending" as const } : {}),
           projects: { ...compiler.projectCompilers },
           notes: Object.entries(compiler.projectCompilerNotes)
             .flatMap(([project, notes]) => notes.map((note) => ({ project, note }))),

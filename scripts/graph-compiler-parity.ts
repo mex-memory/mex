@@ -1,6 +1,7 @@
 // Compare the graph a repository gets from the in-process TypeScript 5.9
 // compiler with the one it gets from TypeScript 7.1's API, edge by edge, and
-// time both. Run with: npx vite-node scripts/graph-compiler-parity.ts -- <repo> [--json out.json]
+// time both. Run with: npx vite-node scripts/graph-compiler-parity.ts -- <repo> [--server tsrs|tsgo] [--json out.json]
+// With --servers, compares tsrs with tsgo instead (the release check).
 //
 // Each extractor runs in its own child process so its time and peak memory
 // are measured alone.
@@ -15,6 +16,25 @@ import { compareCompilerExtractions, parityHolds } from "../src/graph/extraction
 
 const args = process.argv.slice(2).filter((arg) => arg !== "--");
 const mode = args[0];
+
+if (mode === "--servers") {
+  // Release check: tsrs must give exactly tsgo's graph on every repository given.
+  // Run with: npx vite-node scripts/graph-compiler-parity.ts -- --servers <repo>...
+  const { compareServersOnRepository } = await import("../src/graph/extraction/compiler-policy.js");
+  let failed = 0;
+  for (const repo of args.slice(1)) {
+    const comparison = await compareServersOnRepository(resolve(repo));
+    const report = comparison.report;
+    console.log(JSON.stringify({
+      repo, tsrs: comparison.tsrs, tsgo: comparison.tsgo, agrees: comparison.agrees, reason: comparison.reason,
+      timings: comparison.timings,
+      nodes: report?.nodes.matched, edges: report?.edges.matched,
+      onlyTsgo: report?.edges.onlyLeft.slice(0, 20), onlyTsrs: report?.edges.onlyRight.slice(0, 20),
+    }, null, 2));
+    if (!comparison.agrees) failed++;
+  }
+  process.exit(failed === 0 ? 0 : 1);
+}
 
 if (mode === "--extract") {
   // Child: extract with one compiler and write the result as JSON.
