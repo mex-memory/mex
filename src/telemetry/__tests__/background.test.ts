@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
+import { DatabaseSync } from "node:sqlite";
 import { once } from "node:events";
 import { build, stop } from "esbuild";
 import { openRecord } from "../../record/index.js";
@@ -24,7 +25,8 @@ describe("Go hook to background reporter", () => {
     });
     try {
       process.env.MEX_HOME=fixture;
-      const writer = openRecord({ isNetwork: () => false }); writer.close();
+      const writer = openRecord({ isNetwork: () => false });
+      const hooksPath = writer.location.hooks; writer.close();
       writeFileSync(join(fixture,".mex","config.json"),JSON.stringify({telemetryNoticeVersion:3}));
       writeFileSync(join(fixture,"package.json"),JSON.stringify({name:"report-chain-fixture",version:JSON.parse(readFileSync(join(repo,"package.json"),"utf8")).version,type:"module"}));
       const env: NodeJS.ProcessEnv = {...process.env,MEX_HOME:fixture,MEX_DEV:"",MEX_TELEMETRY:"1",MEX_OFFLINE:"",DO_NOT_TRACK:"",MEX_BACKGROUND:"0"};
@@ -33,6 +35,9 @@ describe("Go hook to background reporter", () => {
       const result=spawnSync(binary,["claude-code","SessionStart"],{input:JSON.stringify({session_id:"PRIVATE_SESSION",cwd:"PRIVATE_PATH"}),cwd:fixture,env,encoding:"utf8",timeout:5000});
       expect(result.status).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({});
+      const observed = new DatabaseSync(hooksPath, { readOnly: true });
+      try { expect(observed.prepare("SELECT value FROM counters_go WHERE name='agent:claude-code:hook.calls'").get()?.value, "The Go hook did not persist its counter before reporting").toBe(1); }
+      finally { observed.close(); }
       server.listen(0,"127.0.0.1"); await once(server,"listening");
       const address=server.address() as import("node:net").AddressInfo;
       mkdirSync(join(fixture,"dist")); const entry=join(fixture,"dist","background.mjs");
