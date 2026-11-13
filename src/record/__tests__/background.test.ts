@@ -24,7 +24,10 @@ const env = {
 };
 
 beforeAll(async () => {
-  const root = mkdtempSync(join(tmpdir(), "mex-bg-bundle-"));
+  // Inside the repo, so the bundle resolves packages it leaves external (the
+  // file-index job kind brings parser packages in).
+  mkdirSync(resolve("node_modules", ".cache"), { recursive: true });
+  const root = mkdtempSync(resolve("node_modules", ".cache", "mex-bg-bundle-"));
   writeFileSync(join(root, "package.json"), readFileSync(resolve("package.json")));
   await build({
     entry: { entry: resolve("src/record/background-entry.ts") }, outDir: join(root, "dist"), format: ["esm"],
