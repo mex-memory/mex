@@ -23,6 +23,14 @@ function run(args: string[], cwd = repo, interactive = false) {
   return { ...result, json: () => JSON.parse(result.stdout) };
 }
 describe("shipped knowledge commands", () => {
+  it("rejects invalid notes before telemetry can initialize storage", () => {
+    for (const name of ["note", "log"]) {
+      const result = run(["--no-open", name, "A fact.", "--scope", "../escape", "--json"], repo, true);
+      expect(result.status).toBe(1); expect(result.stderr).toBe("");
+      expect(result.json()).toMatchObject({ ok: false, error: { code: "INVALID_ENTRY" } });
+      expect(existsSync(mexBase)).toBe(false);
+    }
+  });
   it("keeps reads noninitializing with global options and interactive telemetry enabled", () => {
     for (const leading of [["--no-open"], ["--port", "4321"]]) {
       const result = run([...leading, "recall", "fixtures", "--json"], repo, true);
