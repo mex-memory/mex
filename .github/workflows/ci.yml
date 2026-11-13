@@ -16,6 +16,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: native
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: native/go.sum
+      - run: go vet ./...
+      - run: go test -v ./...
+      - name: Cross-build record test binary without C
+        shell: bash
+        run: |
+          output="$(mktemp -d)"
+          for target in windows/amd64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            GOOS="$os" GOARCH="$arch" go test -c -trimpath -o "$output/record-$os-$arch.test" ./record
+            wc -c "$output/record-$os-$arch.test"
+          done
+
   checkpoint-policy:
     if: github.event_name == 'pull_request' && github.base_ref == 'integration/human-team-memory-v1'
     runs-on: ubuntu-24.04

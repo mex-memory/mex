@@ -1,4 +1,5 @@
 import crossSpawn from "cross-spawn";
+import { createCallUsage, recordModelCall } from "../record/usage.js";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -48,6 +49,8 @@ const DIAGNOSTIC_BYTES = 8 * 1024;
 const DISCOVERY_TIMEOUT_MS = 5_000;
 
 export interface HeadlessPopulationOptions {
+  /** Accounting label only; never sent to the agent. */
+  readonly usagePurpose?: string;
   readonly selectedTools: readonly AiTool[];
   /** Run exactly this agent (still checked for availability); otherwise MEX picks one (see findAvailableSetupAgent). */
   readonly tool?: BackgroundAgentTool;
@@ -322,11 +325,13 @@ function runHeadlessAgent(
       try { options.onActivity?.({ tool, ...activity }); } catch { /* observation only */ }
     };
     const decoder = createPopulationActivityDecoder(tool, emitActivity);
+    const accounting = createCallUsage(tool, options.prompt);
     const transcript = options.onTranscript ? createPopulationTranscriptDecoder(tool, (entry) => {
       if (closing || failure || options.signal?.aborted) return;
       try { options.onTranscript?.({ tool, ...entry }); } catch { /* observation only */ }
     }) : undefined;
     child.stdout?.on("data", (chunk: Buffer) => {
+      accounting.write(chunk);
       stdout.append(chunk);
       // Count stdout records even when their type has no visible activity signal.
       if (!closing && !failure && chunk.includes(10)) timer.refresh();
@@ -378,6 +383,10 @@ function runHeadlessAgent(
       releasePermissions?.();
       if (decoder.usage) {
         try { options.onUsage?.(decoder.usage); } catch { /* observation only */ }
+      }
+      const measured = accounting.finish();
+      for (const usage of measured.byModel ?? [measured]) {
+        recordModelCall({ ...usage, ...(measured.sessionId ? { sessionId: measured.sessionId } : {}), agent: tool, purpose: options.usagePurpose ?? "setup.population", projectPath: cwd });
       }
       if (options.signal?.aborted) reject(new HeadlessPopulationError("cancelled", tool));
       else if (failure) reject(failure);
