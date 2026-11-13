@@ -4,10 +4,12 @@ import { delimiter, join } from "node:path";
 
 /** Children and CLI subprocesses inherit one run-local discovery boundary. */
 export default function setup(): () => void {
-  const keys = ["TMPDIR", "TMP", "TEMP", "GIT_CEILING_DIRECTORIES"] as const;
+  const keys = ["TMPDIR", "TMP", "TEMP", "GIT_CEILING_DIRECTORIES", "MEX_HOME"] as const;
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const root = mkdtempSync(join(tmpdir(), "mex-vitest-"));
   for (const key of ["TMPDIR", "TMP", "TEMP"]) process.env[key] = root;
+  // Accounting in real fake-agent launches must never open the user's record.
+  process.env.MEX_HOME = join(root, "user-home");
   process.env.GIT_CEILING_DIRECTORIES = [root, previous.GIT_CEILING_DIRECTORIES].filter(Boolean).join(delimiter);
   return () => {
     for (const key of keys) {
