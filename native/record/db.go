@@ -104,16 +104,23 @@ func openDatabase(path string, readOnly bool) (*sql.DB, error) {
 	return openDatabaseWithBusyTimeout(path, readOnly, busyTimeout)
 }
 
-func openDatabaseWithBusyTimeout(path string, readOnly bool, busyTimeout int) (*sql.DB, error) {
+func databaseURI(path string) (url.URL, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return nil, err
+		return url.URL{}, err
 	}
 	slash := filepath.ToSlash(absolute)
 	if !strings.HasPrefix(slash, "/") {
 		slash = "/" + slash
 	}
-	uri := url.URL{Scheme: "file", Path: slash}
+	return url.URL{Scheme: "file", Path: slash}, nil
+}
+
+func openDatabaseWithBusyTimeout(path string, readOnly bool, busyTimeout int) (*sql.DB, error) {
+	uri, err := databaseURI(path)
+	if err != nil {
+		return nil, err
+	}
 	query := url.Values{}
 	if readOnly {
 		query.Set("mode", "ro")
@@ -140,20 +147,43 @@ func openDatabaseWithBusyTimeout(path string, readOnly bool, busyTimeout int) (*
 	return db, nil
 }
 
-type Hooks struct{ db *sql.DB }
+func openCounterReader(path string) (*sql.DB, error) {
+	uri, err := databaseURI(path)
+	if err != nil {
+		return nil, err
+	}
+	// This private connection only reads user_version. mode=ro enforces its
+	// read-only access; the default zero busy timeout fails immediately.
+	uri.RawQuery = "mode=ro"
+	db, err := sql.Open("sqlite", uri.String())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	return db, nil
+}
+
+type Hooks struct {
+	db *sql.DB
+	// Counter-only read-only connection, closed after the writer. It holds no
+	// read transaction, so normal automatic checkpoints can still complete.
+	counterReader *sql.DB
+}
 
 func OpenHooks(location Location) (*Hooks, error) {
 	return openHooks(location, WriterBusyTimeoutMS, WriterOperationTimeout, false)
 }
 
-func openHooks(location Location, busyTimeout int, deadline time.Duration, persistWAL bool) (*Hooks, error) {
+func openHooks(location Location, busyTimeout int, deadline time.Duration, counterOnly bool) (*Hooks, error) {
 	db, err := openDatabaseWithBusyTimeout(location.Hooks, false, busyTimeout)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
-	if persistWAL {
+	var counterReader *sql.DB
+	if counterOnly {
 		// Keep the small WAL sidecars for the next short-lived counter writer.
 		// Recreating/deleting them on every hook is costly on Windows. SQLite
 		// still checkpoints normally; journal mode and sync policy do not change.
@@ -192,14 +222,37 @@ func openHooks(location Location, busyTimeout int, deadline time.Duration, persi
 			err = migrate(ctx, db, []migration{{1, string(data)}})
 		}
 	}
+	if err == nil && counterOnly {
+		// If every short hook is the final writable connection, SQLite
+		// checkpoints on each close and syncs the WAL header on the next write.
+		// Leave committed frames in the persistent WAL by closing a read-only
+		// connection last. The same open deadline covers both connections.
+		counterReader, err = openCounterReader(location.Hooks)
+		if err == nil {
+			var readerVersion int
+			readerVersion, err = schemaVersion(ctx, counterReader)
+			if err == nil && readerVersion > SchemaVersion {
+				err = futureSchema("hooks.db", readerVersion)
+			}
+		}
+	}
 	if err != nil {
 		_ = db.Close()
+		if counterReader != nil {
+			_ = counterReader.Close()
+		}
 		return nil, err
 	}
-	return &Hooks{db}, nil
+	return &Hooks{db: db, counterReader: counterReader}, nil
 }
 
-func (hooks *Hooks) Close() error { return hooks.db.Close() }
+func (hooks *Hooks) Close() error {
+	err := hooks.db.Close()
+	if hooks.counterReader != nil {
+		err = errors.Join(err, hooks.counterReader.Close())
+	}
+	return err
+}
 
 type Session struct {
 	SessionID  string `json:"session_id"`

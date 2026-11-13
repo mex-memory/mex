@@ -1,7 +1,10 @@
 package record
 
 import (
+	"database/sql"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -20,9 +23,7 @@ func TestCounterCycleTimingBreakdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := initial.Close(); err != nil {
-		t.Fatal(err)
-	}
+	defer initial.Close()
 	options.ReadOnly = true
 	const samples = 100
 	stages := [4][]time.Duration{}
@@ -43,7 +44,7 @@ func TestCounterCycleTimingBreakdown(t *testing.T) {
 				float64(values[count-1])/float64(time.Millisecond))
 		}
 	})
-	for range samples {
+	for sample := range samples {
 		start := time.Now()
 		resolved, err := ResolveLocation(options)
 		stages[0] = append(stages[0], time.Since(start))
@@ -54,6 +55,12 @@ func TestCounterCycleTimingBreakdown(t *testing.T) {
 		hooks, err := OpenHookCounters(resolved)
 		stages[1] = append(stages[1], time.Since(start))
 		if err != nil {
+			t.Errorf("counter cycle sample %d open: %v", sample, err)
+			continue
+		}
+		// Keep initialization outside the steady counter cycle, as in the
+		// real process gate's warm-ups. The counter reader now owns WAL reuse.
+		if err := initial.Close(); err != nil {
 			t.Fatal(err)
 		}
 		start = time.Now()
@@ -63,9 +70,147 @@ func TestCounterCycleTimingBreakdown(t *testing.T) {
 		closeErr := hooks.Close()
 		stages[3] = append(stages[3], time.Since(closeStart))
 		if err != nil || closeErr != nil {
-			t.Fatalf("counter cycle: write=%v close=%v", err, closeErr)
+			t.Errorf("counter cycle sample %d: write=%v close=%v", sample, err, closeErr)
 		}
 	}
+}
+
+func TestCounterCloseRetainsCommittedWALAndAllowsAutomaticCheckpoints(t *testing.T) {
+	for _, checkpoint := range []int{1000, 1} {
+		t.Run(fmt.Sprint(checkpoint), func(t *testing.T) {
+			location := testLocation(t)
+			initial, err := OpenHooks(location)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := initial.Close(); err != nil {
+				t.Fatal(err)
+			}
+			hooks, err := OpenHookCounters(location)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer hooks.Close()
+			if _, err := hooks.counterReader.Exec("DELETE FROM counters_go"); err == nil {
+				t.Fatal("counter guard allowed a database write")
+			}
+			// Initialize the WAL header outside the usage call's strict budget.
+			if _, err := hooks.db.Exec("INSERT INTO counters_go VALUES('2026-11-13','agent:codex:hook.calls',0)"); err != nil {
+				t.Fatal(err)
+			}
+			var sync int
+			if err := hooks.db.QueryRow("PRAGMA synchronous").Scan(&sync); err != nil || sync != 1 {
+				t.Fatalf("synchronous policy changed: %d %v", sync, err)
+			}
+			if checkpoint == 1 {
+				// Force the existing automatic checkpoint path in a tiny fixture.
+				if _, err := hooks.db.Exec("PRAGMA wal_autocheckpoint=1"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if checkpoint == 1 {
+				// This subcase checks SQLite checkpoint progress, whose disk flush
+				// may exceed the best-effort usage deadline on a slow filesystem.
+				_, err = hooks.db.Exec(`INSERT INTO counters_go VALUES
+('2026-11-13','agent:codex:hook.calls',1),('2026-11-13','agent:codex:hook.ms.0',1)
+ON CONFLICT(day,name) DO UPDATE SET value=value+1`)
+			} else {
+				err = hooks.RecordHookUsage("2026-11-13", "codex", false, false, 0)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := hooks.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// A main-file-only copy is intentionally stale when no checkpoint
+			// occurred. Never use this as a backup method for a live WAL database.
+			main, err := os.ReadFile(location.Hooks)
+			if err != nil {
+				t.Fatal(err)
+			}
+			copyPath := filepath.Join(t.TempDir(), "main-only.db")
+			if err := os.WriteFile(copyPath, main, 0600); err != nil {
+				t.Fatal(err)
+			}
+			copyDB, err := sql.Open("sqlite", copyPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer copyDB.Close()
+			want := 0
+			if checkpoint == 1 {
+				want = 2
+			}
+			var mainCount int
+			if err := copyDB.QueryRow("SELECT coalesce(sum(value),0) FROM counters_go").Scan(&mainCount); err != nil || mainCount != want {
+				t.Fatalf("checkpoint=%d main-only count=%d want=%d: %v", checkpoint, mainCount, want, err)
+			}
+			// A normal independent connection must read every committed WAL row.
+			reader, err := OpenHooks(location)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			var total int
+			if err := reader.db.QueryRow("SELECT sum(value) FROM counters_go").Scan(&total); err != nil || total != 2 {
+				t.Fatalf("committed WAL counters: %d %v", total, err)
+			}
+		})
+	}
+}
+
+func TestCommittedCountersSurviveProcessExitWithoutClose(t *testing.T) {
+	location := testLocation(t)
+	initial, err := OpenHooks(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCounterCrashWriter$")
+	cmd.Env = append(os.Environ(), "MEX_COUNTER_CRASH_FIXTURE="+location.Hooks)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("counter process: %v\n%s", err, output)
+	}
+	reader, err := OpenHooks(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var total int
+	if err := reader.db.QueryRow("SELECT sum(value) FROM counters_go").Scan(&total); err != nil || total != 2 {
+		t.Fatalf("committed counters after process exit: %d %v", total, err)
+	}
+}
+
+func TestCounterCrashWriter(t *testing.T) {
+	path := os.Getenv("MEX_COUNTER_CRASH_FIXTURE")
+	if path == "" {
+		return
+	}
+	location := Location{Hooks: path}
+	initial, err := OpenHooks(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Initialize the first WAL header outside the best-effort usage budget.
+	if _, err := initial.db.Exec("INSERT INTO counters_go VALUES('2026-11-13','agent:codex:hook.calls',0)"); err != nil {
+		t.Fatal(err)
+	}
+	hooks, err := OpenHookCounters(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := hooks.RecordHookUsage("2026-11-13", "codex", false, false, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately bypass all SQLite Close calls after a committed statement.
+	os.Exit(0)
 }
 
 func TestCounterConnectionsReuseWALAndKeepCountsAcrossClose(t *testing.T) {
@@ -74,11 +219,14 @@ func TestCounterConnectionsReuseWALAndKeepCountsAcrossClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial.Close()
+	defer initial.Close()
 	var wal, shm os.FileInfo
 	for index := 0; index < 20; index++ {
 		hooks, err := OpenHookCounters(location)
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err := initial.Close(); err != nil {
 			t.Fatal(err)
 		}
 		var checkpoint int
