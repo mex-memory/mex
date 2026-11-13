@@ -151,12 +151,14 @@ jobs:
           MEX_TEST_REAL_HOOK_BINARY: '1'
         run: |
           npm ci
-          npx vitest run src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts
+          # Keep other native process tests out of the capture deadline.
+          npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts
 
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install
     # behavior must remain portable whenever local Team state changes.
-    runs-on: ${{ matrix.os }}
+    # Use the Intel macOS pool after ARM runner-capacity cancellations.
+    runs-on: ${{ matrix.os == 'macos-15' && 'macos-15-intel' || matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
