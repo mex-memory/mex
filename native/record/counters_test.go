@@ -26,6 +26,23 @@ func TestCounterCycleTimingBreakdown(t *testing.T) {
 	options.ReadOnly = true
 	const samples = 100
 	stages := [4][]time.Duration{}
+	// A failed open/write is useful timing evidence too. Cleanup runs after
+	// Fatal, so retain completed stages instead of losing the whole profile.
+	t.Cleanup(func() {
+		for index, name := range []string{"resolve", "open", "increment", "close"} {
+			values := stages[index]
+			count := len(values)
+			if count == 0 {
+				t.Logf("counter cycle %s: samples=0", name)
+				continue
+			}
+			sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+			t.Logf("counter cycle %s: samples=%d p50=%.3fms p95=%.3fms max=%.3fms", name, count,
+				float64(values[count/2])/float64(time.Millisecond),
+				float64(values[count*95/100])/float64(time.Millisecond),
+				float64(values[count-1])/float64(time.Millisecond))
+		}
+	})
 	for range samples {
 		start := time.Now()
 		resolved, err := ResolveLocation(options)
@@ -48,14 +65,6 @@ func TestCounterCycleTimingBreakdown(t *testing.T) {
 		if err != nil || closeErr != nil {
 			t.Fatalf("counter cycle: write=%v close=%v", err, closeErr)
 		}
-	}
-	for index, name := range []string{"resolve", "open", "increment", "close"} {
-		values := stages[index]
-		sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
-		t.Logf("counter cycle %s: samples=%d p50=%.3fms p95=%.3fms max=%.3fms", name, samples,
-			float64(values[samples/2])/float64(time.Millisecond),
-			float64(values[samples*95/100])/float64(time.Millisecond),
-			float64(values[samples-1])/float64(time.Millisecond))
 	}
 }
 
