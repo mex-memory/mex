@@ -68,10 +68,8 @@ describe.skipIf(!goAvailable)("real Node/Go interoperability", () => {
       expect(await readyFile(run.ready, run.child)).toEqual(location);
       for (let attempt = 0; attempt < 3000; attempt++) {
         reader ??= openHooksReadOnly(options);
-        try {
-          const count = reader?.get<{ n: number }>("SELECT count(*) n FROM sessions")?.n;
-          if (count !== undefined) { observed.add(count); if (count === 150) break; }
-        } catch (error) { if (!/no such table/.test(String(error))) throw error; }
+        const count = reader?.get<{ n: number }>("SELECT count(*) n FROM sessions")?.n;
+        if (count !== undefined) { observed.add(count); if (count === 150) break; }
         await sleep(2);
       }
       await run.done;
