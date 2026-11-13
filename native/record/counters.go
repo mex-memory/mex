@@ -17,6 +17,12 @@ func OpenHookCounters(location Location) (*Hooks, error) {
 // RecordHookUsage writes only bounded usage counts. No payload, path or session ID
 // enters these rows. The small deadline is deliberately below the normal writer budget.
 func (hooks *Hooks) RecordHookUsage(day, agent string, sessionStart, failed bool, elapsedMS int64) error {
+	return hooks.recordHookUsage(day, agent, sessionStart, failed, elapsedMS, 10*time.Millisecond)
+}
+
+// Correctness tests can exercise the same atomic operation with a fixture
+// deadline, independently of the exported best-effort production call.
+func (hooks *Hooks) recordHookUsage(day, agent string, sessionStart, failed bool, elapsedMS int64, timeout time.Duration) error {
 	if _, err := time.Parse("2006-01-02", day); err != nil {
 		return err
 	}
@@ -40,7 +46,7 @@ func (hooks *Hooks) RecordHookUsage(day, agent string, sessionStart, failed bool
 	if failed {
 		names = append(names, "hook.errors")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	conn, err := hooks.db.Conn(ctx)
 	if err != nil {

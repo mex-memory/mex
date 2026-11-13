@@ -21,7 +21,7 @@ func TestCounterCycleTimingBreakdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial, err := OpenHooks(location)
+	initial, err := openHooks(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ FROM counters_go WHERE day='2026-11-13'`).Scan(&calls, &bucket); err != nil {
 
 func TestCounterDeadlineRollsBackTheWholeBatch(t *testing.T) {
 	location := testLocation(t)
-	initial, err := OpenHooks(location)
+	initial, err := openHooks(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ SELECT value FROM delay);
 END`); err != nil {
 		t.Fatal(err)
 	}
-	hooks, err := OpenHookCounters(location)
+	hooks, err := openHookDatabase(location, testBudget, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ END`); err != nil {
 	if _, err := hooks.db.Exec("DROP TRIGGER stall_bucket"); err != nil {
 		t.Fatal(err)
 	}
-	if err := hooks.RecordHookUsage("2026-11-13", "codex", false, false, 0); err != nil {
+	if err := hooks.recordHookUsage("2026-11-13", "codex", false, false, 0, testBudget.writer); err != nil {
 		t.Fatal(err)
 	}
 	var total int
@@ -160,14 +160,14 @@ func TestCounterCloseRetainsCommittedWALAndAllowsAutomaticCheckpoints(t *testing
 	for _, checkpoint := range []int{1000, 1} {
 		t.Run(fmt.Sprint(checkpoint), func(t *testing.T) {
 			location := testLocation(t)
-			initial, err := OpenHooks(location)
+			initial, err := openHooks(location, testBudget)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err := initial.Close(); err != nil {
 				t.Fatal(err)
 			}
-			hooks, err := OpenHookCounters(location)
+			hooks, err := openHookDatabase(location, testBudget, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +196,7 @@ func TestCounterCloseRetainsCommittedWALAndAllowsAutomaticCheckpoints(t *testing
 ('2026-11-13','agent:codex:hook.calls',1),('2026-11-13','agent:codex:hook.ms.0',1)
 ON CONFLICT(day,name) DO UPDATE SET value=value+1`)
 			} else {
-				err = hooks.RecordHookUsage("2026-11-13", "codex", false, false, 0)
+				err = hooks.recordHookUsage("2026-11-13", "codex", false, false, 0, testBudget.writer)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -228,7 +228,7 @@ ON CONFLICT(day,name) DO UPDATE SET value=value+1`)
 				t.Fatalf("checkpoint=%d main-only count=%d want=%d: %v", checkpoint, mainCount, want, err)
 			}
 			// A normal independent connection must read every committed WAL row.
-			reader, err := OpenHooks(location)
+			reader, err := openHooks(location, testBudget)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -268,7 +268,7 @@ func TestCounterBusyTimeoutSurvivesSessionOperations(t *testing.T) {
 
 func TestCommittedCountersSurviveProcessExitWithoutClose(t *testing.T) {
 	location := testLocation(t)
-	initial, err := OpenHooks(location)
+	initial, err := openHooks(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestCommittedCountersSurviveProcessExitWithoutClose(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("counter process: %v\n%s", err, output)
 	}
-	reader, err := OpenHooks(location)
+	reader, err := openHooks(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestCounterCrashWriter(t *testing.T) {
 		return
 	}
 	location := Location{Hooks: path}
-	initial, err := OpenHooks(location)
+	initial, err := openHooks(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,14 +305,14 @@ func TestCounterCrashWriter(t *testing.T) {
 	if _, err := initial.db.Exec("INSERT INTO counters_go VALUES('2026-11-13','agent:codex:hook.calls',0)"); err != nil {
 		t.Fatal(err)
 	}
-	hooks, err := OpenHookCounters(location)
+	hooks, err := openHookDatabase(location, testBudget, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := initial.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := hooks.RecordHookUsage("2026-11-13", "codex", false, false, 0); err != nil {
+	if err := hooks.recordHookUsage("2026-11-13", "codex", false, false, 0, testBudget.writer); err != nil {
 		t.Fatal(err)
 	}
 	// Deliberately bypass all SQLite Close calls after a committed statement.
@@ -320,15 +320,17 @@ func TestCounterCrashWriter(t *testing.T) {
 }
 
 func TestCounterConnectionsReuseWALAndKeepCountsAcrossClose(t *testing.T) {
+	// This checks WAL identity and committed counts, not best-effort latency.
+	// The real process gate and deadline rollback test retain production caps.
 	location := testLocation(t)
-	initial, err := OpenHooks(location)
+	initial, err := openHooks(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer initial.Close()
 	var wal, shm os.FileInfo
 	for index := 0; index < 20; index++ {
-		hooks, err := OpenHookCounters(location)
+		hooks, err := openHookDatabase(location, testBudget, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -339,7 +341,7 @@ func TestCounterConnectionsReuseWALAndKeepCountsAcrossClose(t *testing.T) {
 		if err := hooks.db.QueryRow("PRAGMA wal_autocheckpoint").Scan(&checkpoint); err != nil || checkpoint != 1000 {
 			t.Fatalf("auto-checkpoint changed: %d %v", checkpoint, err)
 		}
-		if err := hooks.RecordHookUsage("2026-11-13", "codex", true, true, 3); err != nil {
+		if err := hooks.recordHookUsage("2026-11-13", "codex", true, true, 3, testBudget.writer); err != nil {
 			t.Fatal(err)
 		}
 		if err := hooks.Close(); err != nil {
@@ -358,7 +360,7 @@ func TestCounterConnectionsReuseWALAndKeepCountsAcrossClose(t *testing.T) {
 		}
 		wal, shm = currentWAL, currentSHM
 	}
-	reader, err := OpenHooks(location)
+	reader, err := openHooks(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +377,7 @@ func TestCounterConnectionsReuseWALAndKeepCountsAcrossClose(t *testing.T) {
 
 func TestCounterBatchIsAtomicAndSaturates(t *testing.T) {
 	location := testLocation(t)
-	hooks, err := OpenHooks(location)
+	hooks, err := openHooks(location, testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +386,7 @@ func TestCounterBatchIsAtomicAndSaturates(t *testing.T) {
 WHEN NEW.name='agent:codex:sessions' BEGIN SELECT RAISE(ABORT,'fixture'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if err := hooks.RecordHookUsage("2026-11-13", "codex", true, true, 3); err == nil {
+	if err := hooks.recordHookUsage("2026-11-13", "codex", true, true, 3, testBudget.writer); err == nil {
 		t.Fatal("counter batch should fail")
 	}
 	var rows int
@@ -395,7 +397,7 @@ WHEN NEW.name='agent:codex:sessions' BEGIN SELECT RAISE(ABORT,'fixture'); END`);
 INSERT INTO counters_go VALUES('2026-11-13','agent:codex:hook.calls',2147483647)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := hooks.RecordHookUsage("2026-11-13", "codex", false, false, 3); err != nil {
+	if err := hooks.recordHookUsage("2026-11-13", "codex", false, false, 3, testBudget.writer); err != nil {
 		t.Fatal(err)
 	}
 	var calls int64
