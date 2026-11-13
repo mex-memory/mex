@@ -359,7 +359,13 @@ func TestPeer(t *testing.T) {
 	}
 	encoded, _ := json.Marshal(location)
 	ready := func() {
-		if err := os.WriteFile(os.Getenv("MEX_RECORD_TEST_READY"), encoded, 0600); err != nil {
+		file := os.Getenv("MEX_RECORD_TEST_READY")
+		// Publish complete JSON atomically. The Node peer treats existence as
+		// readiness and must never observe the create-before-write interval.
+		if err := os.WriteFile(file+".tmp", encoded, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(file+".tmp", file); err != nil {
 			t.Fatal(err)
 		}
 	}
