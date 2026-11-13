@@ -1,0 +1,1 @@
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"command":"mex-run npm test","description":"Run tests","run_in_background":false,"timeout":120000}}}

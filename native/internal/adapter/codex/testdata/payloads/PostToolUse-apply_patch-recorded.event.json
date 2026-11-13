@@ -1,0 +1,34 @@
+{
+  "agent": "codex",
+  "agent_version": "",
+  "kind": "post_tool",
+  "session_id": "01a1823f-9a65-7501-8207-3535ae7f6654",
+  "agent_id": "",
+  "cwd": "/probe/repo",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "patch",
+    "raw_name": "apply_patch",
+    "input": {
+      "files": [
+        {
+          "path": "/probe/repo/math.js",
+          "hunks": [
+            {
+              "old": "export function add(a, b) {\n",
+              "new": "// adds two numbers\nexport function add(a, b) {\n"
+            }
+          ]
+        }
+      ]
+    },
+    "output": {
+      "text": "Success. Updated the following files:\nM /probe/repo\\math.js\n",
+      "ok": true,
+      "exit_code": 0
+    }
+  },
+  "transcript": "/probe/session.jsonl",
+  "background": false
+}
