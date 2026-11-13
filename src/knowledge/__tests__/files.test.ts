@@ -3,6 +3,7 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEntryFile, readEntryFile, replaceEntryFile } from "../files.js";
+import { realPath } from "../../record/project.js";
 
 vi.mock("node:fs", async importOriginal => {
   const fs = await importOriginal<typeof import("node:fs")>();
@@ -11,7 +12,9 @@ vi.mock("node:fs", async importOriginal => {
 const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
 let root: string, directory: string;
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "mex-knowledge-files-"));
+  // Temp roots can use aliases (for example Windows short names).
+  // Resolve the selected fixture root; redirects beneath it remain forbidden.
+  root = realPath(mkdtempSync(join(tmpdir(), "mex-knowledge-files-")));
   directory = join(root, "notes"); mkdirSync(directory);
   vi.mocked(linkSync).mockImplementation(fs.linkSync);
   vi.mocked(unlinkSync).mockImplementation(fs.unlinkSync);

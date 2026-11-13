@@ -9,6 +9,7 @@ import { openRecordReadOnly, projectIdentity } from "../../record/index.js";
 import { prepareTeamWrite, applyTeamWrite } from "../team.js";
 import { parseEntry, serializeEntry } from "../entry.js";
 import { MEMORY_LIMITS } from "../host-memory.js";
+import { realPath } from "../../record/project.js";
 
 let root: string, repo: string, home: string, claude: string, codex: string, memory: string;
 const start = "2026-01-31T12:00:00.000Z";
@@ -29,7 +30,7 @@ function codexSummary(name: string, cwd: string, text: string, at = new Date(), 
 }
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] }); clock(start);
-  root = mkdtempSync(join(tmpdir(), "mex-memory-hints-")); repo = join(root, "repo"); home = join(root, "mex-home"); claude = join(root, "chosen-claude"); codex = join(root, "chosen-codex"); mkdirSync(repo);
+  root = realPath(mkdtempSync(join(tmpdir(), "mex-memory-hints-"))); repo = join(root, "repo"); home = join(root, "mex-home"); claude = join(root, "chosen-claude"); codex = join(root, "chosen-codex"); mkdirSync(repo);
   git(repo, "init", "-b", "main"); git(repo, "config", "user.name", "Fixture"); git(repo, "config", "user.email", "fixture@example.test");
   writeFileSync(join(repo, "README.md"), "# Fixture\n"); git(repo, "add", "README.md"); git(repo, "commit", "-m", "Fixture");
   memory = join(claude, "projects", repo.replace(/[^a-zA-Z0-9]/gu, "-"), "memory");

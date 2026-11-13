@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { references } from "../references.js";
 import { sanitizeText, stripHidden, hasSecret, assertNoSecrets } from "../gates.js";
 import { note } from "../store.js";
+import { realPath } from "../../record/project.js";
 
 let root: string;
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "mex-entry-gates-"));
+  root = realPath(mkdtempSync(join(tmpdir(), "mex-entry-gates-")));
   writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "node tests/run.js" } }));
   mkdirSync(join(root, "docs")); writeFileSync(join(root, "docs/testing.md"), "Tests use `npm test`. See https://example.test/testing for the reason.\n");
   mkdirSync(join(root, "scripts")); writeFileSync(join(root, "scripts/check.mjs"), "// A fixture; this is never executed.\n");
