@@ -11,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/mex-memory/mex/native/internal/adapter"
 	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
 	_ "github.com/mex-memory/mex/native/internal/adapter/codex"  // registers the profile
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/record/place"
 )
 
 // Version is set at build time with -ldflags "-X .../hook.Version=...".
@@ -83,7 +85,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 var silent = []byte{}
 
 // handle turns one payload into the agent's reply. Nothing behind the shim
-// produces replies yet, so the reply is always empty.
+// produces replies yet, so the reply is empty apart from the "MEX is off
+// here" notice.
 func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time.Time) []byte {
 	if !ok {
 		if p, found := adapter.Lookup(agent); found {
@@ -109,10 +112,54 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	if err != nil {
 		return profile.EmptyReply(nativeEvent)
 	}
+	if !h.mexInstalled() {
+		out, _ := profile.Render(ev, contract.Reply{})
+		return out
+	}
 	h.beat(agent, ev.SessionID, ev.Cwd, ev.Kind == contract.SessionStart, now)
-	noteEdit(ev)
+
+	// Where MEX isn't on, exit at once: nothing behind this line runs. A repo
+	// MEX was never turned on in gets one notice, at the first session there.
+	recordDirectory := h.recordDirectory()
+	path, isFile := eventPath(ev)
+	checkout, state := findCheckout(recordDirectory, path, isFile, now)
+	if state != switchedOn {
+		reply := contract.Reply{}
+		if state == unregistered && ev.Kind == contract.SessionStart && ev.AgentID == "" && firstOffNotice(recordDirectory, ev.Cwd) {
+			reply.PersonLine = offNotice
+		}
+		out, _ := profile.Render(ev, reply)
+		return out
+	}
+	ev.ProjectID, ev.Checkout = checkout.ProjectID, checkout.Root
+
+	if ev.Kind == contract.SessionStart {
+		startBackground(h, recordDirectory)
+	}
+	noteEdit(ev, recordDirectory)
 	out, _ := profile.Render(ev, contract.Reply{})
 	return out
+}
+
+// recordDirectory is where the local record lives: MEX's folder, or the cache
+// folder the location pointer names for a network home. Callers check that MEX
+// is installed. Network detection is skipped: it is too slow for a hook, and
+// the pointer records the answer once Node has made it.
+func (h home) recordDirectory() string {
+	// The usual case costs one small read: no pointer yet (no writer has run,
+	// so nothing is elsewhere), or a pointer naming MEX's own folder.
+	data, err := os.ReadFile(filepath.Join(h.mex, "location"))
+	if err != nil {
+		return h.mex
+	}
+	if own, err := place.AbsolutePath(h.mex); err == nil && strings.TrimSpace(string(data)) == own {
+		return h.mex
+	}
+	location, err := place.ResolveLocation(place.LocationOptions{Home: h.mex, ReadOnly: true, IsNetwork: func(string) (bool, error) { return false, errNoDetection }})
+	if err != nil {
+		return ""
+	}
+	return location.Directory
 }
 
 // record saves a raw payload for building fixtures. Only runs when the person

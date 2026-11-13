@@ -1,0 +1,16 @@
+{
+  "agent": "claude-code",
+  "agent_version": "",
+  "kind": "prompt",
+  "session_id": "3786cc60-44f2-452f-a595-f9db31303cdf",
+  "agent_id": "",
+  "cwd": "C:\\mex-test-tmp\\f03\\live\\repo",
+  "project_id": "",
+  "checkout": "",
+  "prompt": {
+    "text": "Do these steps in order, briefly: 1) Read math.ts. 2) Use Grep to find 'add' in this folder. 3) Use Glob for *.ts. 4) Edit math.ts to add an exported subtract(a, b) function below add. 5) Run the shell command: git status --short. 6) Run the shell command: git definitely-not-a-command (it will fail; that's expected). 7) Use the Task tool to start a subagent that reads README.md and reports its first line. Then reply DONE.",
+    "typed": true
+  },
+  "transcript": "C:\\Users\\person\\.claude\\projects\\C--mex-test-tmp-f03-live-repo\\3786cc60-44f2-452f-a595-f9db31303cdf.jsonl",
+  "background": false
+}

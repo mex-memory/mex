@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { recordLocation, moveProjectData, type LocationOptions, type RecordLocation } from "./location.js";
 import { projectIdentity, realPath, type ProjectIdentity, type GitRunner } from "./project.js";
 import { RECORD_SCHEMA_VERSION, recordMigrations, type Migration } from "./schema.js";
+import { HOOK_CHECKOUTS_DIRECTORY, writeHookCheckouts } from "./hook-checkouts.js";
 
 export { recordLocation, projectDataDirectory } from "./location.js";
 export { projectIdentity } from "./project.js";
@@ -116,8 +117,11 @@ export class RecordWriter {
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     this.finishProjectMoves();
+    this.writeHookCheckouts();
     return this.project(registeredId)!;
   }
+  /** Mirror the checkouts table for the hook; call after any change to a checkout row (register, on/off). */
+  writeHookCheckouts(): void { writeHookCheckouts(this.db, this.location.directory); }
   private promote(oldId: string, project: ProjectIdentity): void {
     const previous = this.project(oldId)!;
     this.db.prepare("INSERT INTO projects(id,root_path,kind,shared,created_at) VALUES(?,?,'git',?,?) ON CONFLICT(id) DO NOTHING")
@@ -183,6 +187,8 @@ export function openRecord(options: LocationOptions & { projectPath?: string; gi
       if (!stored || stored.provisional) writer.register(projectIdentity(options.projectPath, options.git));
     }
     writer.finishProjectMoves();
+    // Records registered before the hook mirror existed get it on their next open.
+    if (!existsSync(join(location.directory, HOOK_CHECKOUTS_DIRECTORY))) writer.writeHookCheckouts();
     return writer;
   } catch (error) { db.close(); throw error; }
 }

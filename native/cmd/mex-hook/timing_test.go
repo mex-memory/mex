@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,18 +12,47 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/mex-memory/mex/native/record/place"
 )
 
-// The no-op budget: a hook that has nothing to do answers in 17 ms or less,
-// measured as wall time of the whole process.
+// The no-op budget: a hook that has nothing to do answers in 17 ms or less at
+// p95, measured as wall time of the whole process.
 const defaultBudgetMs = 17
 
 // Process start alone can exceed the budget on a loaded machine. The test then
-// checks the part the shim controls: its median may be at most this much slower
+// checks the part the shim controls: its p95 may be at most this much slower
 // than a bare Go program that only prints the reply.
 const overheadMs = 3
 
-const payload = `{"hook_event_name":"PreToolUse","session_id":"timing","tool_name":"Read","tool_input":{"file_path":"/tmp/x"}}`
+// payload is a Read inside a checkout where MEX is on, so the timed path is the
+// full one: parse, heartbeat, checkout lookup, render.
+var payload string
+
+// mexOnCheckout makes a checkout with MEX on in the throwaway MEX folder and
+// returns a payload reading a file in it.
+func mexOnCheckout(t *testing.T, tmp string) string {
+	t.Helper()
+	repo := filepath.Join(tmp, "repo")
+	file := filepath.Join(repo, "src", "a.ts")
+	for _, dir := range []string{filepath.Join(repo, ".git"), filepath.Dir(file), filepath.Join(mexHome, ".mex", "hook-checkouts")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = os.WriteFile(file, []byte("export const a = 1;\n"), 0o600)
+	root, err := place.RealPath(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirror, _ := json.Marshal(map[string]any{"version": 1, "project_id": "g-0123456789abcdef01234567", "root": root, "state": "on", "off_until": "", "provisional": false})
+	_ = os.WriteFile(filepath.Join(mexHome, ".mex", "hook-checkouts", place.ShortHash(root)+".json"), mirror, 0o600)
+	body, _ := json.Marshal(map[string]any{
+		"hook_event_name": "PreToolUse", "session_id": "timing", "cwd": repo,
+		"tool_name": "Read", "tool_input": map[string]any{"file_path": file},
+	})
+	return string(body)
+}
 
 const floorSource = `package main
 
@@ -105,10 +135,9 @@ func TestNoOpTiming(t *testing.T) {
 		t.Skip("timing test skipped in -short mode")
 	}
 	shim, floor := buildBinaries(t)
-	mexHome = filepath.Join(t.TempDir(), "mex")
-	if err := os.MkdirAll(mexHome, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	tmp := t.TempDir()
+	mexHome = filepath.Join(tmp, "mex")
+	payload = mexOnCheckout(t, tmp)
 
 	for range 10 { // warm the file cache and any antivirus scan
 		callOnce(t, shim)
@@ -134,12 +163,12 @@ func TestNoOpTiming(t *testing.T) {
 	if v, err := strconv.Atoi(os.Getenv("MEX_HOOK_BUDGET_MS")); err == nil && v > 0 {
 		budget = time.Duration(v) * time.Millisecond
 	}
-	if s.p50 <= budget {
+	if s.p95 <= budget {
 		return
 	}
-	if s.p50 > f.p50+overheadMs*time.Millisecond {
-		t.Fatalf("p50 %sms is over the %sms budget and %sms over a bare process",
-			ms(s.p50), ms(budget), ms(s.p50-f.p50))
+	if s.p95 > f.p95+overheadMs*time.Millisecond {
+		t.Fatalf("p95 %sms is over the %sms budget and %sms over a bare process",
+			ms(s.p95), ms(budget), ms(s.p95-f.p95))
 	}
-	t.Logf("p50 is over budget, but within %dms of a bare process: the machine is slow, not the shim", overheadMs)
+	t.Logf("p95 is over budget, but within %dms of a bare process: the machine is slow, not the shim", overheadMs)
 }

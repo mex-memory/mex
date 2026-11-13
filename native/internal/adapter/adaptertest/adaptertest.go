@@ -46,7 +46,10 @@ func Golden(t *testing.T, path string, got []byte) {
 // PayloadFiles lists the payload fixtures in testdata/payloads.
 func PayloadFiles(t *testing.T) []string {
 	t.Helper()
+	// Hand-written fixtures at the top, recorded ones in a folder per agent version.
 	all, err := filepath.Glob(filepath.Join("testdata", "payloads", "*.json"))
+	recorded, _ := filepath.Glob(filepath.Join("testdata", "payloads", "*", "*.json"))
+	all = append(all, recorded...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,13 +121,16 @@ type ReplyCase struct {
 }
 
 // CheckReplies renders each reply against its fixture and compares the output
-// with testdata/replies/<name>.json. Every output must be valid JSON.
+// with testdata/replies/<name>.json. Every output must be valid JSON, or no
+// output at all where that is the profile's empty reply for the event.
 func CheckReplies(t *testing.T, p adapter.Profile, cases []ReplyCase) {
 	t.Helper()
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
-			out, dropped := p.Render(ParseFixture(t, p, c.Fixture), c.Reply)
-			if !json.Valid(out) {
+			ev := ParseFixture(t, p, c.Fixture)
+			out, dropped := p.Render(ev, c.Reply)
+			support, _ := p.Capabilities().Support(ev.Kind)
+			if emptyAllowed := len(p.EmptyReply(support.NativeEvent)) == 0; !(emptyAllowed && len(out) == 0) && !json.Valid(out) {
 				t.Fatalf("invalid JSON: %s", out)
 			}
 			if strings.Join(dropped, ",") != strings.Join(c.Dropped, ",") {
