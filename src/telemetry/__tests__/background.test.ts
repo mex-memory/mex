@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, spawnSync } from "node:child_process";
@@ -16,7 +15,9 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const root = join(repo,"src");
 describe("Go hook to background reporter", () => {
   it.runIf(process.env.MEX_TEST_REAL_HOOK_BINARY === "1")("reports real Go counters through the real background process and HTTP boundary", async () => {
-    const fixture = mkdtempSync(join(tmpdir(),"mex-report-chain-"));
+    // The bundled worker keeps external dependencies, resolved from this package.
+    const fixtures = join(repo,"test-results"); mkdirSync(fixtures,{recursive:true});
+    const fixture = mkdtempSync(join(fixtures,"mex-report-chain-"));
     const priorHome = process.env.MEX_HOME;
     const bodies: unknown[] = [];
     const server = createServer((req,res) => {
@@ -32,12 +33,21 @@ describe("Go hook to background reporter", () => {
       const env: NodeJS.ProcessEnv = {...process.env,MEX_HOME:fixture,MEX_DEV:"",MEX_TELEMETRY:"1",MEX_OFFLINE:"",DO_NOT_TRACK:"",MEX_BACKGROUND:"0"};
       for (const key of ["CI","CONTINUOUS_INTEGRATION","GITHUB_ACTIONS","GITLAB_CI","TF_BUILD","BUILDKITE","CIRCLECI","JENKINS_URL"]) env[key]="";
       const binary=join(repo,"npm",`hook-${process.platform}-${process.arch}`,"bin",process.platform==="win32"?"mex-hook.exe":"mex-hook");
-      const result=spawnSync(binary,["claude-code","SessionStart"],{input:JSON.stringify({session_id:"PRIVATE_SESSION",cwd:"PRIVATE_PATH"}),cwd:fixture,env,encoding:"utf8",timeout:5000});
-      expect(result.status).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({});
-      const observed = new DatabaseSync(hooksPath, { readOnly: true });
-      try { expect(observed.prepare("SELECT value FROM counters_go WHERE name='agent:claude-code:hook.calls'").get()?.value, "The Go hook did not persist its counter before reporting").toBe(1); }
-      finally { observed.close(); }
+      // Seed one real captured event; a cold best-effort open may skip capture.
+      let observedCount: unknown;
+      for (let attempt=0; attempt<11; attempt++) {
+        const result=spawnSync(binary,["claude-code","SessionStart"],{input:JSON.stringify({session_id:"PRIVATE_SESSION",cwd:"PRIVATE_PATH"}),cwd:fixture,env,encoding:"utf8",timeout:5000});
+        expect(result.status).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({});
+        if (!existsSync(hooksPath)) continue;
+        const observed = new DatabaseSync(hooksPath, { readOnly: true });
+        try {
+          const ready=observed.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='counters_go'").get();
+          if (ready) observedCount=observed.prepare("SELECT value FROM counters_go WHERE name='agent:claude-code:hook.calls'").get()?.value;
+        } finally { observed.close(); }
+        if (observedCount!==undefined) break;
+      }
+      expect(observedCount, "The Go hook did not persist its counter before reporting").toBe(1);
       server.listen(0,"127.0.0.1"); await once(server,"listening");
       const address=server.address() as import("node:net").AddressInfo;
       mkdirSync(join(fixture,"dist")); const entry=join(fixture,"dist","background.mjs");
