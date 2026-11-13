@@ -64,6 +64,31 @@ describe("Hub production telemetry lifecycle", () => {
     expect(process.listeners("SIGTERM").filter(listener => !priorListeners.has(listener))).toEqual([]);
   });
 
+  it("shuts down cleanly when termination arrives at the readiness announcement", async () => {
+    const priorListeners = new Set(process.listeners("SIGTERM"));
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer });
+    vi.mocked(process.stdout.write).mockImplementation((chunk) => {
+      if (String(chunk).includes("/#token=")) {
+        const stop = process.listeners("SIGTERM").find(listener => !priorListeners.has(listener));
+        if (!stop) throw new Error("Readiness was announced without a shutdown handler.");
+        stop("SIGTERM");
+      }
+      return true;
+    });
+    await runHubCommand({ projectRoot: "/private/project", scaffoldId: "fixture", openBrowser: false });
+    expect(mocks.order).toEqual(["http", "jobs", "telemetry"]);
+    expect(process.listeners("SIGTERM").filter(listener => !priorListeners.has(listener))).toEqual([]);
+  });
+
+  it("releases shutdown listeners when readiness output fails", async () => {
+    const priorListeners = process.listeners("SIGTERM");
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer });
+    vi.mocked(process.stdout.write).mockImplementation(() => { throw new Error("output failed"); });
+    await expect(runHubCommand({ projectRoot: "/private/project", scaffoldId: "fixture", openBrowser: false })).rejects.toThrow("output failed");
+    expect(process.listeners("SIGTERM")).toEqual(priorListeners);
+    expect(mocks.order).toEqual(["http", "jobs", "telemetry"]);
+  });
+
   it("does not count a failed listener startup as a Hub session", async () => {
     mocks.startServer.mockRejectedValue(new Error("listener failed"));
     await expect(runHubCommand({ projectRoot: "/private", scaffoldId: "private", openBrowser: false })).rejects.toThrow("listener failed");

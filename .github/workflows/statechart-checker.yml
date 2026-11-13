@@ -7,7 +7,8 @@ permissions:
   contents: read
 jobs:
   checker:
-    runs-on: ${{ matrix.os }}
+    # Keep macOS qualification available when the arm64 pool cannot acquire a runner.
+    runs-on: ${{ matrix.os == 'macos-15' && 'macos-15-intel' || matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false

@@ -1,8 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, rmdirSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { openHooksReadOnly, openRecord, projectIdentity, recordLocation } from "../index.js";
 import { fixtureRepos, git } from "./fixtures/repos.js";
 
@@ -16,10 +17,12 @@ describe.skipIf(!goAvailable)("real Node/Go interoperability", () => {
   });
   afterEach(() => vi.unstubAllEnvs());
   let binary: string;
-  beforeAll(() => {
+  beforeAll(async () => {
     binary = join(temp(), process.platform === "win32" ? "record.test.exe" : "record.test");
-    execFileSync("go", ["test", "-c", "-o", binary, "./record"], {
-      cwd: resolve("native"), env: { ...process.env, CGO_ENABLED: "0" }, timeout: 240000, windowsHide: true, stdio: "pipe",
+    // A cold Go compile can outlast Vitest's runner RPC deadline. Keep the
+    // worker responsive while retaining the compiler and hook deadlines.
+    await promisify(execFile)("go", ["test", "-c", "-o", binary, "./record"], {
+      cwd: resolve("native"), env: { ...process.env, CGO_ENABLED: "0" }, timeout: 240000, windowsHide: true,
     });
   }, 250000);
 

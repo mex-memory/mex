@@ -1,0 +1,79 @@
+name: Release gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Features required for this release
+        type: choice
+        required: true
+        default: beta.1
+        options: [beta.1, beta.2, final]
+  push:
+    tags: ['v0.9.0*', '0.9.0*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gates-${{ github.ref }}-${{ inputs.release || 'tag' }}
+  cancel-in-progress: false
+
+jobs:
+  gates:
+    name: gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    env:
+      MEX_GATE_RELEASE: ${{ inputs.release || '' }}
+      MEX_OFFLINE: '1'
+      MEX_TELEMETRY: '0'
+      DO_NOT_TRACK: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - run: npm ci
+      - run: npm run gates:test
+      - name: Run seven free gates
+        run: npm run gates -- --report test-results/gates/${{ runner.os }}.json
+      - name: Upload sanitized gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gates-${{ runner.os }}-${{ github.run_attempt }}
+          path: test-results/gates/${{ runner.os }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  release-gates:
+    # This stable check belongs to the tagged commit. It is not a PR merge check.
+    needs: gates
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      MEX_GATE_RELEASE: ${{ inputs.release || '' }}
+      MEX_GATE_JOB_RESULT: ${{ needs.gates.result }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gates-*-${{ github.run_attempt }}
+          path: test-results/gates/matrix
+          merge-multiple: true
+      - name: Require passing evidence from every OS at this commit
+        run: node scripts/gates/matrix.mjs test-results/gates/matrix

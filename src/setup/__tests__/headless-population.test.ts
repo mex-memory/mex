@@ -72,7 +72,7 @@ describe("headless population process", () => {
 
   it("pre-approves only the mex commands headless Claude population needs", () => {
     for (const shell of ["Bash", "PowerShell"]) {
-      for (const command of ["mex graph scope", "mex graph get", "mex graph query", "mex wiki query", "mex wiki apply", "mex wiki validate", "mex wiki --help", "mex --help", "mex impact", "mex logging", "mex log"]) {
+      for (const command of ["mex graph scope", "mex graph get", "mex graph query", "mex wiki query", "mex wiki apply", "mex wiki validate", "mex wiki --help", "mex --help", "mex impact", "mex logging"]) {
         expect(HEADLESS_CLAUDE_ALLOWED_TOOLS).toContain(`${shell}(${command}:*)`);
       }
     }

@@ -101,6 +101,7 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
   let jobs: HubJobManager | undefined;
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
   let stopTelemetry: (() => Promise<void>) | undefined;
+  let shutdown: ReturnType<typeof listenForShutdown> | undefined;
   try {
     const bootstrapToken = createBootstrapToken();
     let expectedOrigin: string | null = null;
@@ -125,14 +126,16 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
     expectedOrigin = server.origin;
     stopTelemetry = startHubTelemetry();
     emitHubTelemetry(captureEvent, "hub.session_started", {});
+    shutdown = listenForShutdown();
     const bootstrapUrl = `${server.origin}/#token=${encodeURIComponent(bootstrapToken)}`;
 
     process.stdout.write(`\nProject Hub running at ${server.origin}\n`);
     process.stdout.write(`One-time bootstrap link (valid for 5 minutes):\n${bootstrapUrl}\n`);
     process.stdout.write("Press Ctrl+C to stop.\n\n");
     if (options.openBrowser) openHubBrowser(bootstrapUrl);
-    await waitForShutdownSignal();
+    await shutdown.done;
   } finally {
+    shutdown?.cancel();
     // Stop accepting requests before aborting or reconciling any executors.
     try {
       await server?.close();
@@ -153,6 +156,7 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
   const captureEvent = createProjectTelemetryCapture(options.projectRoot);
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
   let stopTelemetry: (() => Promise<void>) | undefined;
+  let shutdown: ReturnType<typeof listenForShutdown> | undefined;
   let jobs: HubJobManager | undefined;
   let security: HubSessionManager | undefined;
   let assets: HubAssetManifest | undefined;
@@ -228,6 +232,7 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
     expectedOrigin = server.origin;
     stopTelemetry = startHubTelemetry();
     emitHubTelemetry(captureEvent, "hub.session_started", {});
+    shutdown = listenForShutdown(options.signal);
     const bootstrapUrl = `${server.origin}/#token=${encodeURIComponent(bootstrapToken)}`;
 
     options.onListening?.({ origin: server.origin, bootstrapUrl });
@@ -235,9 +240,10 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
       reportMessage(`Project Hub setup wizard running at ${server.origin}\nOne-time bootstrap link (valid for 5 minutes):\n${bootstrapUrl}\nPress Ctrl+C to stop.\n`);
     }
     if (options.openBrowser && !options.signal?.aborted) openHubBrowser(bootstrapUrl);
-    await waitForShutdownSignal(options.signal);
+    await shutdown.done;
   } finally {
     closing = true;
+    shutdown?.cancel();
     try {
       await server?.close();
     } finally {
@@ -321,17 +327,22 @@ async function composeProductionHub(
   }
 }
 
-function waitForShutdownSignal(signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) { resolve(); return; }
-    const complete = () => {
-      process.off("SIGINT", complete);
-      process.off("SIGTERM", complete);
-      signal?.removeEventListener("abort", complete);
+function listenForShutdown(signal?: AbortSignal): { done: Promise<void>; cancel: () => void } {
+  let cancel!: () => void;
+  let completed = false;
+  const done = new Promise<void>((resolve) => {
+    cancel = () => {
+      if (completed) return;
+      completed = true;
+      process.off("SIGINT", cancel);
+      process.off("SIGTERM", cancel);
+      signal?.removeEventListener("abort", cancel);
       resolve();
     };
-    process.once("SIGINT", complete);
-    process.once("SIGTERM", complete);
-    signal?.addEventListener("abort", complete, { once: true });
+    if (signal?.aborted) { cancel(); return; }
+    process.once("SIGINT", cancel);
+    process.once("SIGTERM", cancel);
+    signal?.addEventListener("abort", cancel, { once: true });
   });
+  return { done, cancel };
 }

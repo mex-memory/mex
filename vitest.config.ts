@@ -28,6 +28,8 @@ export default defineConfig({
       "evaluate/compare/test/**",
       "evaluate/graph/test/**",
       "scripts/benchmark-telemetry.test.js",
+      // Gate harness tests use node:test and run separately via gates:test.
+      "scripts/gates/test/**",
       // The Hub web workspace supplies its own jsdom/CSS configuration and the
       // browser suite is collected by Playwright, not the root Node test run.
       "packages/hub-web/**",

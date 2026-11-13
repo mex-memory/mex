@@ -7,6 +7,7 @@ import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
 import { registerRemovedCommands, removedCommandMessage } from "./removed-commands.js";
 import { VERSION } from "./version.js";
+import { buildKnowledgeCommands } from "./knowledge/cli.js";
 import { unsupportedNodeMessage } from "./node-version.js";
 import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, enableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
 import { mexHomeDir, setGlobalConfigKey } from "./global-config.js";
@@ -93,6 +94,7 @@ export function createHubRunOptions(
 }
 
 export const program = new Command();
+let cliStarted = false;
 registerRemovedCommands(program);
 
 /** Commands whose machine/read-only contract must precede any global notice. */
@@ -109,6 +111,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "inbox"
     || commandName === "relay"
     || commandName === "spec"
+    || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
     || commandName === "skills";
 }
 
@@ -156,7 +159,12 @@ const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command
   const { root, discovery } = telemetryProjectLocation(command);
   return getProjectTelemetryContext(root, discovery);
 });
-program.hook("preAction", (_thisCommand, actionCommand) => cliTelemetry.start(actionCommand));
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  let family = actionCommand;
+  while (family.parent && family.parent !== program) family = family.parent;
+  if (cliStarted && !isFirstRunNoticeExemptCommand(family === program ? undefined : family.name())) showFirstRunNotice();
+  cliTelemetry.start(actionCommand);
+});
 program.hook("postAction", async () => {
   await cliTelemetry.finish(process.exitCode);
   // Keep the hook shim's launcher pointing at this CLI.
@@ -867,25 +875,8 @@ program
     return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), { write: createGraphCliWriter() }, options));
   });
 
-// ── Agent Memory Events ──
-program
-  .command("log <message>")
-  .description("Append a decision, note, risk, or todo to the mex event log")
-  .option("--type <type>", "Event type: decision, note, risk, todo", "note")
-  .option("--file <path>", "Related file path (repeatable)", (value, prev: string[]) => [...prev, value], [])
-  .option("--source <source>", "Where the event came from (e.g. meeting, manual, agent)")
-  .option("--status <status>", "Lifecycle status (e.g. decided, implemented)")
-  .action(async (message, opts) => {
-    try {
-      const config = loadConfig();
-      const { runLog } = await import("./events.js");
-      await runLog(config, message, { kind: opts.type, files: opts.file, source: opts.source, status: opts.status });
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
-  });
+// ── Knowledge entries ──
+for (const command of buildKnowledgeCommands()) program.addCommand(command);
 
 // ── File index ──
 const indexCommand = program
@@ -1217,6 +1208,7 @@ if (process.argv[1]) {
 }
 // Refuse unsupported Node before any command runs, so it cannot fail halfway.
 export function runCli(): void {
+  cliStarted = true;
   const unsupportedNode = unsupportedNodeMessage(process.versions.node);
   if (unsupportedNode !== null) {
     console.error(unsupportedNode);
@@ -1228,7 +1220,6 @@ export function runCli(): void {
       process.exitCode = 1;
       return;
     }
-    if (!isFirstRunNoticeExemptCommand(process.argv[2])) showFirstRunNotice();
     const commandArgv = process.argv.slice(2);
     const teamJsonContext = inspectTeamJsonInvocation(commandArgv);
     if (teamJsonContext !== null && hasMissingTeamApplyValue(commandArgv)) {
@@ -1398,7 +1389,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "log",
+    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand",
     "doctor", "jobs", "completion",
     "telemetry", "config", "feedback", "hub",
   ];

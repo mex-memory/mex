@@ -20,7 +20,9 @@ export function telemetryProjectLocation(command: Command, cwd = process.cwd()):
 
 export function isTelemetryExemptCommand(commandName: string, parentName?: string, fullPath?: string): boolean {
   const path = fullPath ?? (parentName && parentName !== "mex" ? `${parentName}.${commandName}` : commandName);
-  return path === "mex" || !(TELEMETRY_COMMANDS as readonly string[]).includes(path);
+  // Generic usage hooks must not initialize knowledge storage before input
+  // validation or turn a read into a write as the usage catalog grows.
+  return ["mex", "note", "log", "recall", "expand"].includes(path) || !(TELEMETRY_COMMANDS as readonly string[]).includes(path);
 }
 
 function telemetryStage(command: Command, path: string): TelemetryAttributes["stage"] {

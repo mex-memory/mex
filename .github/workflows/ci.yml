@@ -81,6 +81,9 @@ jobs:
         timeout-minutes: 4
         env:
           NODE_ENV: test
+      - name: Test release gate policy and isolation
+        if: matrix.node-version == '22.22.0'
+        run: npm run gates:test
       - name: Test the completed app build
         run: npm run test
         env:
@@ -166,7 +169,7 @@ jobs:
 
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install
-    # behavior must remain portable whenever local Team state changes.
+    # behavior must remain portable whenever local Team state or personal knowledge changes.
     # Use the Intel macOS pool after ARM runner-capacity cancellations.
     runs-on: ${{ matrix.os == 'macos-15' && 'macos-15-intel' || matrix.os }}
     timeout-minutes: 45
@@ -184,6 +187,10 @@ jobs:
       - name: Run focused storage, byte-identity, and containment tests
         run: >-
           npx vitest run --maxWorkers=1
+          src/knowledge/__tests__/entry.test.ts
+          src/knowledge/__tests__/files.test.ts
+          src/knowledge/__tests__/store.test.ts
+          test/knowledge-cli.test.ts
           src/team/local-state/__tests__/team-local-state.test.ts
           src/team/artifacts/__tests__/filesystem.test.ts
           src/team/artifacts/__tests__/filesystem-identity.test.ts
@@ -302,6 +309,14 @@ jobs:
           REQUIRED="$(node scripts/release-benchmark/ci-orchestrator.mjs retry-required --manifest test-results/release-benchmark/attempt-1/manifest.json)"
           echo "requires_confirmation=$REQUIRED" >> "$GITHUB_OUTPUT"
           echo "artifact_name=release-performance-attempt-1-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Diagnose small-fixture startup after measurements
+        if: steps.decision.outputs.requires_confirmation == 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: >-
+          node scripts/release-benchmark/startup-diagnostic.mjs
+          --report test-results/release-benchmark/attempt-1/report.attempt-1.json
+          --output test-results/release-benchmark/attempt-1/startup-diagnostic.json
       - name: Upload first release benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -344,6 +359,13 @@ jobs:
         id: evidence
         shell: bash
         run: echo "artifact_name=release-performance-attempt-2-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Diagnose small-fixture confirmation startup after measurements
+        continue-on-error: true
+        timeout-minutes: 5
+        run: >-
+          node scripts/release-benchmark/startup-diagnostic.mjs
+          --report test-results/release-benchmark/attempt-2/report.attempt-2.json
+          --output test-results/release-benchmark/attempt-2/startup-diagnostic.json
       - name: Upload second release benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
