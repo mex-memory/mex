@@ -73,6 +73,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - name: Test release gate policy and isolation
+        if: matrix.node-version == '22.22.0'
+        run: npm run gates:test
       - run: npm run test
       - name: Test isolated telemetry benchmark transport
         if: matrix.node-version == '22.22.0'
