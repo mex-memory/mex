@@ -48,7 +48,8 @@ jobs:
           fetch hono https://github.com/honojs/hono.git f6fbaf0299c48eea9e656e03e2ffe7ac755e8823
           fetch novu https://github.com/novuhq/novu.git af704e0a74873b7ca99879a1e6870ff066462ee6
           # Hono with its dependencies, so the checker resolves real types.
-          (cd "$RUNNER_TEMP/repos/hono" && npm install --ignore-scripts --no-audit --no-fund >/dev/null)
+          # npm 10 (Node 22's) crashes resolving Hono's tree; npm 11 does not.
+          (cd "$RUNNER_TEMP/repos/hono" && npx --yes npm@11.6.1 install --ignore-scripts --no-audit --no-fund >/dev/null)
       - name: Compare tsrs with tsgo
         run: >
           npx vite-node scripts/graph-compiler-parity.ts --
