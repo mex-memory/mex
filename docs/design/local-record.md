@@ -27,6 +27,23 @@ background process. A missing, busy, unreadable or incompatible file produces
 an error the hook caller ignores, allowing the agent call. Never use SQLite's
 `immutable` option for these live databases: readers must see WAL commits.
 
+Telemetry counter writers use a 1 ms busy timeout and separate 10 ms open and
+write deadlines, skipping measurement when either budget expires. Each hook's
+counter increments form one atomic SQLite statement. These short-lived writers
+retain the WAL sidecar files for reuse across processes. A private `mode=ro`
+attachment keeps a read-only pager alive while the writable main pager closes,
+leaving committed counters in WAL instead of checkpointing every hook and
+synchronizing its next WAL header. This avoids a second SQLite connection.
+The pinned SQLite closes main before attachments; WAL-lifetime tests qualify
+that order when upgrading the driver. The attachment holds no read transaction
+and cannot write the database. The 1,000-page
+automatic checkpoint and WAL/NORMAL policy remain active. Committed counters
+survive process exit; a power failure can still lose unsynchronized counters.
+The main open and attachment share the same 10 ms deadline. Counter-only
+connections retain the 1 ms busy policy across session operations, avoiding a
+redundant PRAGMA on each usage write. Ordinary session writers
+retain their existing checkpoint and final-close cleanup.
+
 There is no separate `usage.db`. The machine-wide usage log is `model_calls` and
 `own_usage` inside `record.db`. Existing checkout `.mex/graph.db`, `wiki.db`,
 `team.db` and Hub jobs are unchanged by this storage foundation.
@@ -635,7 +652,42 @@ text because their owning delivery/adapter/job contracts evolve independently.
   migration of the other side's file. Filesystem `location` publication is
   shared, exclusive-create metadata, not a shared database writer.
 
+## Files the hook reads without SQLite
+
+Opening SQLite costs the hook shim milliseconds on every call, so the shim
+reads small plain files that Node keeps beside the databases. The databases
+stay the source of truth: whoever changes the rows rewrites the file, and a
+missing or unreadable file means "MEX is off here", which is the safe answer.
+
+| File | Written by | Read by | Shape |
+| --- | --- | --- | --- |
+| `<record directory>/hook-checkouts/<key>.json` | Node, `src/record/hook-checkouts.ts`, after any change to a `checkouts` row (`RecordWriter.writeHookCheckouts()`; registration calls it, `mex off`/`on` must too) and on the first open of a record that has none | the shim, `native/internal/hook/checkout.go` | `{"version":1,"project_id","root","state","off_until","provisional"}`, one per `checkouts` row; `key` is the 24-hex short hash of `root`, the real checkout path |
+| `<record directory>/hook-notices/off-<key>` | the shim | the shim | created with exclusive-create when the "MEX is off here" notice is shown; `key` is the short hash of the repo root (nearest folder holding `.git`, else the folder) |
+| `<MEX home>/bin/launcher.json` | Node CLI, after every command (`src/hooks/shim/launcher.ts`), only when the home exists and the entry is a built `.js` | the shim | `{"version":1,"node","entry"}`: how to start `node <entry> __ensure-background` |
+| `<MEX home>/heartbeats/<agent>/<session>` | the shim | `mex-hook --status` | one small JSON file per session; its modification time is the last hook call; pruned after 7 days at session start |
+| `<record directory>/index-checkouts/<key>.json` | Node, file index | the shim | see the file index contract |
+
+The checkout lookup follows `RecordWriter.checkout`: walk up from the folder of
+the touched file (or the session's `cwd`), accept a registration found there,
+and stop at an unregistered folder holding `.git`. A folder (non-Git) project
+covers only its own folder unless it holds `.git`. The shim first tries the
+path as given and resolves links only when that finds nothing, because
+resolving links opens a file handle on Windows. `state` is `on`, `off`, or
+`off until` with `off_until` an ISO time; past that time the checkout is on.
+
+The record directory is MEX's home unless the home's `location` pointer names
+the cache folder; the shim reads the pointer and skips network detection.
+
+The heartbeat files stand in for `hooks.db` `sessions.last_seen_at` until the
+first ticket that opens `hooks.db` on the hook path (delivery-01) moves them
+there.
+
 ## Changes
+
+- Version 3, foundation-03 additions (no schema change): plain files the hook
+  reads without SQLite (hook checkout mirrors, the off-notice markers, the
+  launcher file, heartbeat files), so the shim knows where MEX is on and can
+  start waiting background work at session start.
 
 - Version 3: record.db migration 3 adds the job columns and the
   `background` lease row. The job model, its transitions and the rule for new

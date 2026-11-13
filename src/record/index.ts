@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { recordLocation, moveProjectData, type LocationOptions, type RecordLocation } from "./location.js";
 import { projectIdentity, realPath, type ProjectIdentity, type GitRunner } from "./project.js";
 import { RECORD_SCHEMA_VERSION, recordMigrations, type Migration } from "./schema.js";
+import { HOOK_CHECKOUTS_DIRECTORY, writeHookCheckouts } from "./hook-checkouts.js";
 
 export { recordLocation, projectDataDirectory } from "./location.js";
 export { projectIdentity } from "./project.js";
@@ -116,8 +117,11 @@ export class RecordWriter {
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     this.finishProjectMoves();
+    this.writeHookCheckouts();
     return this.project(registeredId)!;
   }
+  /** Mirror the checkouts table for the hook; call after any change to a checkout row (register, on/off). */
+  writeHookCheckouts(): void { writeHookCheckouts(this.db, this.location.directory); }
   private promote(oldId: string, project: ProjectIdentity): void {
     const previous = this.project(oldId)!;
     this.db.prepare("INSERT INTO projects(id,root_path,kind,shared,created_at) VALUES(?,?,'git',?,?) ON CONFLICT(id) DO NOTHING")
@@ -168,11 +172,13 @@ export class RecordWriter {
 }
 
 /** A command explicitly opens its writable record; existing commands are not changed by this module. */
-export function openRecord(options: LocationOptions & { projectPath?: string; git?: GitRunner } = {}): RecordWriter {
+export function openRecord(options: LocationOptions & { projectPath?: string; git?: GitRunner; busyTimeoutMs?: number } = {}): RecordWriter {
+  const timeout = options.busyTimeoutMs ?? WRITER_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > WRITER_TIMEOUT_MS) throw new Error("Invalid record writer timeout");
   const location = recordLocation(options);
   const db = database(location.record);
   try {
-    db.exec(`PRAGMA busy_timeout=${WRITER_TIMEOUT_MS}`);
+    db.exec(`PRAGMA busy_timeout=${timeout}`);
     if (schemaVersion(db) > RECORD_SCHEMA_VERSION) throw newer("record.db", schemaVersion(db));
     // NORMAL sync in WAL: a crash loses nothing; a power loss can drop the last commits, and a job then redoes one batch.
     db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON");
@@ -183,6 +189,8 @@ export function openRecord(options: LocationOptions & { projectPath?: string; gi
       if (!stored || stored.provisional) writer.register(projectIdentity(options.projectPath, options.git));
     }
     writer.finishProjectMoves();
+    // Records registered before the hook mirror existed get it on their next open.
+    if (!existsSync(join(location.directory, HOOK_CHECKOUTS_DIRECTORY))) writer.writeHookCheckouts();
     return writer;
   } catch (error) { db.close(); throw error; }
 }

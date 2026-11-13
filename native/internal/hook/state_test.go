@@ -191,3 +191,56 @@ func TestStatus(t *testing.T) {
 		t.Errorf("codex: %+v", c)
 	}
 }
+
+func TestMexHomeMeansTheParentOfDotMex(t *testing.T) {
+	base := t.TempDir()
+	h := homeFrom(func(k string) string {
+		switch k {
+		case "MEX_HOME":
+			return base
+		case "HOME", "USERPROFILE":
+			return "/home/person"
+		}
+		return ""
+	})
+	// The same rule as Node's mexHomeDir and native/record/place.HomeDir.
+	if h.mex != filepath.Join(base, ".mex") {
+		t.Fatalf("mex = %q", h.mex)
+	}
+}
+
+func TestCodexHomeAndRequirements(t *testing.T) {
+	user := t.TempDir()
+	codexHome := t.TempDir()
+	h := homeFrom(func(k string) string {
+		switch k {
+		case "HOME", "USERPROFILE":
+			return user
+		case "CODEX_HOME":
+			return codexHome
+		}
+		return ""
+	})
+	write(t, filepath.Join(codexHome, "requirements.toml"), "allow_managed_hooks_only = true\n")
+	off := h.hooksOff("codex", "linux")
+	if len(off) != 1 || !strings.Contains(off[0], "requirements.toml") {
+		t.Errorf("requirements.toml in CODEX_HOME: %v", off)
+	}
+	write(t, filepath.Join(codexHome, "hooks.json"), `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/x/.mex/bin/mex-hook codex Stop"}]}]}}`)
+	if !h.hasOwnHooks("codex") {
+		t.Error("CODEX_HOME's hooks.json must count")
+	}
+}
+
+func TestClaudeManagedSettingsDropIns(t *testing.T) {
+	folder := t.TempDir()
+	saved := claudeManagedFolder
+	claudeManagedFolder = func(string) string { return folder }
+	t.Cleanup(func() { claudeManagedFolder = saved })
+	write(t, filepath.Join(folder, "managed-settings.d", "20-hooks.json"), `{"allowManagedHooksOnly": true}`)
+	h, _ := fakeHome(t, true)
+	off := h.hooksOff("claude-code", "linux")
+	if len(off) != 1 || !strings.Contains(off[0], "20-hooks.json") {
+		t.Errorf("drop-in folder: %v", off)
+	}
+}

@@ -1,0 +1,25 @@
+{
+  "agent": "claude-code",
+  "agent_version": "",
+  "kind": "post_tool",
+  "session_id": "3786cc60-44f2-452f-a595-f9db31303cdf",
+  "agent_id": "",
+  "cwd": "C:\\mex-test-tmp\\f03\\live\\repo",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "edit",
+    "raw_name": "Edit",
+    "input": {
+      "path": "C:/mex-test-tmp/f03/live/repo/math.ts",
+      "old": "export function add(a: number, b: number) {\n  return a + b;\n}\n",
+      "new": "export function add(a: number, b: number) {\n  return a + b;\n}\n\nexport function subtract(a: number, b: number) {\n  return a - b;\n}\n"
+    },
+    "output": {
+      "text": "{\"filePath\":\"C:\\\\mex-test-tmp\\\\f03\\\\live\\\\repo\\\\math.ts\",\"oldString\":\"export function add(a: number, b: number) {\\n  return a + b;\\n}\\n\",\"newString\":\"export function add(a: number, b: number) {\\n  return a + b;\\n}\\n\\nexport function subtract(a: number, b: number) {\\n  return a - b;\\n}\\n\",\"originalFile\":\"export function add(a: number, b: number) {\\n  return a + b;\\n}\\n\",\"structuredPatch\":[{\"oldStart\":1,\"oldLines\":3,\"newStart\":1,\"newLines\":7,\"lines\":[\" export function add(a: number, b: number) {\",\"   return a + b;\",\" }\",\"+\",\"+export function subtract(a: number, b: number) {\",\"+  return a - b;\",\"+}\"]}],\"userModified\":false,\"replaceAll\":false}",
+      "ok": true
+    }
+  },
+  "transcript": "C:\\Users\\person\\.claude\\projects\\C--mex-test-tmp-f03-live-repo\\3786cc60-44f2-452f-a595-f9db31303cdf.jsonl",
+  "background": false
+}

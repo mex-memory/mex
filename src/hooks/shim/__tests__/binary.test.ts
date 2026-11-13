@@ -1,5 +1,5 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
@@ -13,11 +13,12 @@ import {
   selfTestBinary,
 } from "../binary.js";
 import { runNodeHook } from "../node-hook.js";
+import { openRecord } from "../../../record/index.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-// Building the real binary is slow and CPU-heavy, so it runs only when asked
-// (the Go CI job sets this), not inside the parallel Node suite.
-const realBinary = process.env.MEX_TEST_REAL_HOOK_BINARY === "1" && spawnSync("go", ["version"], { encoding: "utf8" }).status === 0;
+// The Go CI job builds the platform packages before enabling these checks.
+// Test the shipped artifact without competing compilation during capture.
+const realBinary = process.env.MEX_TEST_REAL_HOOK_BINARY === "1";
 
 let tmp: string;
 beforeAll(() => {
@@ -166,11 +167,8 @@ describe("Node fallback", () => {
 describe.skipIf(!realBinary)("with the real Go binary", () => {
   let built: string;
   beforeAll(() => {
-    built = join(tmp, "real", binaryFileName());
-    execFileSync("go", ["build", "-trimpath", "-o", built, "./cmd/mex-hook"], {
-      cwd: join(repoRoot, "native"),
-      env: { ...process.env, CGO_ENABLED: "0" },
-    });
+    built = join(repoRoot, "npm", `hook-${process.platform}-${process.arch}`, "bin", binaryFileName());
+    expect(existsSync(built), "Build platform packages with node scripts/build-hook-binaries.mjs first").toBe(true);
   }, 120_000);
 
   it("passes its self-test", () => {
@@ -190,5 +188,21 @@ describe.skipIf(!realBinary)("with the real Go binary", () => {
     const fallback = resolveHookRunner({ binary: copy });
     expect(fallback.kind).toBe("node");
     expect(await nodeReply('{"hook_event_name":"Stop"}')).toBe(nativeOut);
+  });
+
+  it("knows where MEX is on from the checkouts Node registered, and says so once elsewhere", () => {
+    const base = mkdtempSync(join(tmp, "home-"));
+    const env = { ...process.env, MEX_HOME: base, HOME: base, USERPROFILE: base };
+    const on = join(base, "on-repo");
+    const plain = join(base, "plain-repo");
+    for (const repo of [on, plain]) mkdirSync(join(repo, ".git"), { recursive: true });
+    openRecord({ home: join(base, ".mex"), projectPath: on, isNetwork: () => false }).close();
+
+    const start = (cwd: string) => execFileSync(built, ["claude-code", "SessionStart"], {
+      input: JSON.stringify({ session_id: "s", hook_event_name: "SessionStart", source: "startup", cwd }), encoding: "utf8", env,
+    });
+    expect(start(on)).toBe("{}\n");
+    expect(JSON.parse(start(plain))).toEqual({ systemMessage: "MEX is off here. Run `mex` to turn it on." });
+    expect(start(plain)).toBe("{}\n");
   });
 });

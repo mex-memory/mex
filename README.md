@@ -434,17 +434,17 @@ Existing Markdown scaffolds remain valid, and Graph reads never migrate a store 
 
 MEX does not upload its canonical records, Graph, Wiki index, drafts, identity selection, or Hub sessions to a MEX service. It provides no automatic team transport: sharing happens through normal Git actions you perform. The Hub binds to loopback, and MEX's local retrieval layer requires no model credentials.
 
-MEX has **pseudonymous CLI and Hub usage telemetry**, enabled by default unless you opt out. Namespaced commands, outcomes, explicit Hub actions, page categories, and job results help measure feature use and returning installations. Both surfaces reuse one random installation UUID. When available, events also include the existing scaffold UUID to estimate shared-project use and configured AI-tool names from project setup; these do not identify the currently invoking agent or prove team size. Someone with access to project configuration can associate its scaffold UUID with that project. Names, repository remotes, argument values, paths, content, search text, and contact details stay excluded. The ingestion service can observe ordinary transport metadata. Delivery uses a bounded local queue and short CLI cleanup grace; offline telemetry does not change command results.
+MEX sends usage counts to help improve it. Hooks, jobs and the Hub count locally; the background process sends daily summaries with numbers in ranges. Telemetry is on by default, with this explanation before sending: **MEX sends anonymous usage counts to help improve it: never code, file paths, prompts or repo names. Turn off any time: `mex telemetry off` (or `DO_NOT_TRACK=1`).** Personal reports use a random installation UUID; CI reports are counted separately and never create one. Only explicitly shared projects can include a share-created random project ID. Existing opt-outs survive an upgrade.
 
 Check or disable telemetry with:
 
 ```bash
 mex telemetry inspect
 mex telemetry status
-mex telemetry disable
+mex telemetry off
 ```
 
-It can also be disabled with `MEX_TELEMETRY=0` or `DO_NOT_TRACK=1`. See the [telemetry policy](TELEMETRY.md) for the controls, event catalog, privacy boundary, and delivery limits. Coding agents connected to MEX may have their own network and telemetry behavior; that is governed by those tools, not by MEX.
+`mex telemetry on` enables it again; `disable` and `enable` remain aliases. `MEX_TELEMETRY=0` and `DO_NOT_TRACK=1` disable telemetry; `MEX_OFFLINE=1` also stops update fetching. See the [telemetry policy](TELEMETRY.md) for the event catalog, random-ID privacy boundary, inspection and delivery limits. Coding agents connected to MEX may have their own network and telemetry behavior, governed by those tools.
 
 ## What MEX is not
 

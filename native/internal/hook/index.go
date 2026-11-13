@@ -20,18 +20,15 @@ var errNoDetection = errors.New("network detection is skipped on the hook path")
 // indexed checkout it writes a line shift, so outlines stay right until the
 // background re-parse. It never parses, never opens a database, and ignores
 // every error.
-func noteEdit(ev contract.Event) {
-	if ev.Kind != contract.PostTool || ev.Tool == nil || ev.Tool.Output == nil || !ev.Tool.Output.OK {
+func noteEdit(ev contract.Event, recordDirectory string) {
+	if recordDirectory == "" || ev.Kind != contract.PostTool || ev.Tool == nil || ev.Tool.Output == nil || !ev.Tool.Output.OK {
 		return
 	}
 	edits := editsOf(*ev.Tool)
 	if len(edits) == 0 {
 		return
 	}
-	location, err := place.ResolveLocation(place.LocationOptions{ReadOnly: true, IsNetwork: func(string) (bool, error) { return false, errNoDetection }})
-	if err != nil {
-		return
-	}
+	location := place.Location{Directory: recordDirectory}
 	wrote := false
 	for _, edit := range edits {
 		checkout, found := shift.FindCheckout(location.Directory, edit.path)

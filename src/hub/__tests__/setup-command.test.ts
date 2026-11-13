@@ -136,6 +136,32 @@ describe("Hub setup process", () => {
     expect(removeAbortListener).toHaveBeenCalledWith("abort", expect.any(Function));
   });
 
+  it("shuts down cleanly when termination arrives in onListening", async () => {
+    const priorListeners = new Set(process.listeners("SIGTERM"));
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    await runSetupHubCommand({
+      projectRoot: "/private/project", openBrowser: false,
+      onListening: () => {
+        const stop = process.listeners("SIGTERM").find(listener => !priorListeners.has(listener));
+        if (!stop) throw new Error("Readiness was announced without a shutdown handler.");
+        stop("SIGTERM");
+      },
+    });
+    expect(mocks.order).toEqual(["http", "setup", "telemetry"]);
+    expect(process.listeners("SIGTERM").filter(listener => !priorListeners.has(listener))).toEqual([]);
+  });
+
+  it("releases shutdown listeners when onListening throws", async () => {
+    const priorListeners = process.listeners("SIGTERM");
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    await expect(runSetupHubCommand({
+      projectRoot: "/private/project", openBrowser: false,
+      onListening: () => { throw new Error("callback failed"); },
+    })).rejects.toThrow("callback failed");
+    expect(process.listeners("SIGTERM")).toEqual(priorListeners);
+    expect(mocks.order).toEqual(["http", "setup", "telemetry"]);
+  });
+
   it("handles cancellation from onListening before browser launch or shutdown wait", async () => {
     const controller = new AbortController();
     const priorInterrupt = process.listeners("SIGINT");
