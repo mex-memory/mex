@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openRecord, projectIdentity } from "../index.js";
 import { realPath, shortHash } from "../project.js";
-import { HOOK_CHECKOUTS_DIRECTORY } from "../hook-checkouts.js";
+import { HOOK_CHECKOUTS_DIRECTORY, writeHookCheckout } from "../hook-checkouts.js";
 
 const temps: string[] = [];
 afterEach(() => { for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -45,6 +45,25 @@ describe("hook checkout mirror", () => {
     rmSync(join(home, HOOK_CHECKOUTS_DIRECTORY), { recursive: true });
     openRecord({ home, isNetwork: () => false }).close();
     expect(mirror(home, project).project_id).toBe(projectIdentity(project).id);
+  });
+
+  it("does not overwrite an in-flight off switch with another writer's older snapshot", () => {
+    const home = temp(), project = temp();
+    const control = openRecord({ home, projectPath: project, isNetwork: () => false });
+    const registration = openRecord({ home, busyTimeoutMs: 0, isNetwork: () => false });
+    try {
+      control.db.exec("BEGIN IMMEDIATE");
+      control.db.prepare("UPDATE checkouts SET state='off' WHERE project_id=?").run(control.checkout(project)!.project_id);
+      writeHookCheckout(control.checkout(project)!, home);
+      registration.writeHookCheckouts();
+      expect(mirror(home, project).state).toBe("off");
+      control.db.exec("COMMIT");
+      registration.writeHookCheckouts();
+      expect(mirror(home, project).state).toBe("off");
+    } finally {
+      try { control.db.exec("ROLLBACK"); } catch { /* already committed */ }
+      registration.close(); control.close();
+    }
   });
 
   it("never fails the command that registers", () => {

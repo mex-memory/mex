@@ -15,6 +15,7 @@ const results = (id: string) => writer.db.prepare("SELECT batch,summary FROM job
 function project(name: string) {
   const path = join(home, name);
   writer.db.prepare("INSERT OR IGNORE INTO projects(id,root_path,kind,created_at) VALUES(?,?,'folder','2026-01-01')").run(`f-${name.padEnd(24, "0")}`, path);
+  writer.db.prepare("INSERT OR IGNORE INTO checkouts(project_id,path) VALUES(?,?)").run(`f-${name.padEnd(24, "0")}`, path);
   return `f-${name.padEnd(24, "0")}`;
 }
 

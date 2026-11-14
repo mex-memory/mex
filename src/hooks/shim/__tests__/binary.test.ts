@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   binaryFileName,
   findNativeBinary,
@@ -133,6 +133,16 @@ describe("Node fallback", () => {
 
   it("does nothing for MEX's own background runs", async () => {
     expect(await nodeReply("{}", { MEX_BACKGROUND: "1" })).toBe("{}\n");
+  });
+
+  it("honors terminal-wide off without listening to stdin", async () => {
+    const stdin = new PassThrough();
+    const listen = vi.spyOn(stdin, "on");
+    let out = "";
+    expect(await runNodeHook({ stdin, write: text => { out += text; }, env: { MEX_OFF: "1" } })).toBe(0);
+    expect(out).toBe("{}\n");
+    expect(listen).not.toHaveBeenCalled();
+    stdin.destroy();
   });
 
   it("gives up on a stdin that never closes", async () => {

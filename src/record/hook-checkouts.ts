@@ -14,7 +14,7 @@ export const HOOK_CHECKOUT_VERSION = 1;
 export const HOOK_CHECKOUTS_DIRECTORY = "hook-checkouts";
 
 interface Row { project_id: string; path: string; state: string; off_until: string | null; provisional: string | null; }
-interface Source { prepare(sql: string): { all(): unknown[] } }
+interface Source { exec(sql: string): void; prepare(sql: string): { all(): unknown[] } }
 
 export function hookCheckoutText(row: Row): string {
   return `${JSON.stringify({
@@ -23,9 +23,23 @@ export function hookCheckoutText(row: Row): string {
   })}\n`;
 }
 
+/** Strict publication for commands which must report an off switch as saved. */
+export function writeHookCheckout(row: Row, recordDirectory: string): void {
+  const directory = join(recordDirectory, HOOK_CHECKOUTS_DIRECTORY);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const file = join(directory, `${shortHash(row.path)}.json`);
+  const text = hookCheckoutText(row);
+  try { if (readFileSync(file, "utf8") === text) return; } catch { /* publish below */ }
+  writeAtomic(file, text);
+}
+
 /** Rewrites changed mirrors and removes mirrors of checkouts that are gone. Best effort: never throws. */
 export function writeHookCheckouts(db: Source, recordDirectory: string): void {
+  let held = false;
   try {
+    // Serialize the read and publication with checkout mutations. Otherwise
+    // an older registration snapshot can overwrite a newer off command.
+    db.exec("BEGIN IMMEDIATE"); held = true;
     const directory = join(recordDirectory, HOOK_CHECKOUTS_DIRECTORY);
     const rows = db.prepare("SELECT project_id,path,state,off_until,provisional FROM checkouts").all() as Row[];
     mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -33,13 +47,12 @@ export function writeHookCheckouts(db: Source, recordDirectory: string): void {
     for (const row of rows) {
       const name = `${shortHash(row.path)}.json`;
       keep.add(name);
-      const file = join(directory, name);
-      const text = hookCheckoutText(row);
-      try { if (readFileSync(file, "utf8") === text) continue; } catch { /* not written yet */ }
-      try { writeAtomic(file, text); } catch { /* the next registration retries */ }
+      try { writeHookCheckout(row, recordDirectory); } catch { /* the next registration retries */ }
     }
     for (const name of readdirSync(directory)) {
       if (name.endsWith(".json") && !keep.has(name)) { try { unlinkSync(join(directory, name)); } catch { /* retried next time */ } }
     }
-  } catch { /* the hook then treats the checkout as off, which is safe */ }
+    db.exec("COMMIT"); held = false;
+  } catch { /* an explicit control command uses strict publication instead */ }
+  finally { if (held) { try { db.exec("ROLLBACK"); } catch { /* original failure */ } } }
 }

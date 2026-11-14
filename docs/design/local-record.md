@@ -641,6 +641,22 @@ text because their owning delivery/adapter/job contracts evolve independently.
 
 ## Crossing the line
 
+### Control policy (foundation-04 slice two)
+
+No database schema change. Node owns global settings `enabled` and
+`capture.enabled` (scope `global`) and project `capture.enabled` settings;
+Go owns `sessions.paused`. Node publishes bounded `controls.json` in MEX home
+and `hook-capture/<project-id>.json` in the record directory. Go publishes
+`hook-paused/<shortHash(agent + NUL + session-id)>` with the session transaction.
+The hook reads these without opening Node's database. See
+[agent-controls.md](agent-controls.md) for defaults, precedence, publication,
+recovery and the version-one `consume_prompt` reply addition.
+
+Session pause is preserved through same-ID resume/compaction; lifecycle writes
+must not reset it. New session IDs start unpaused. Global off does not erase
+per-checkout or session choices, and capture has independent project/global
+choices. A Node writer can repair its own settings mirrors; readers never do.
+
 - Node finished a capture batch: write the last consumed journal ID into
   `record.db.settings`, scope = project ID, key = `journal.consumed`, value =
   decimal ID. Go prunes up to that ID at the next session start.

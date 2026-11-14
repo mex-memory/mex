@@ -46,7 +46,7 @@ export function readPayload(stdin: NodeJS.ReadableStream | null, timeoutMs = REA
 /** Handles one hook call. Never throws; the exit code is always 0. */
 export async function runNodeHook(io: NodeHookIO): Promise<0> {
   try {
-    if (io.env.MEX_BACKGROUND === "1") {
+    if (io.env.MEX_OFF === "1" || io.env.MEX_BACKGROUND === "1") {
       io.write(EMPTY_REPLY);
       return 0;
     }

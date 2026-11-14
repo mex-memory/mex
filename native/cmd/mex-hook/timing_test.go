@@ -53,6 +53,11 @@ func mexOnCheckout(t *testing.T, tmp, mexHome string) string {
 	}
 	mirror, _ := json.Marshal(map[string]any{"version": 1, "project_id": "g-0123456789abcdef01234567", "root": root, "state": "on", "off_until": "", "provisional": false})
 	_ = os.WriteFile(filepath.Join(mexHome, ".mex", "hook-checkouts", place.ShortHash(root)+".json"), mirror, 0o600)
+	// Exercise the persisted on state after someone has used an off/on switch,
+	// including its bounded control-file read in the unchanged timing budget.
+	if err := os.WriteFile(filepath.Join(mexHome, ".mex", "controls.json"), []byte(`{"version":1,"off":false,"capture":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	body, _ := json.Marshal(map[string]any{
 		"hook_event_name": "PreToolUse", "session_id": "timing", "cwd": repo,
 		"tool_name": "Read", "tool_input": map[string]any{"file_path": file},
@@ -279,6 +284,7 @@ func TestNoOpTimingWithCounters(t *testing.T) {
 
 func measureNoOp(t *testing.T, counters bool) {
 	t.Helper()
+	t.Setenv("MEX_OFF", "")
 	if testing.Short() {
 		t.Skip("timing test skipped in -short mode")
 	}

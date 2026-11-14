@@ -29,6 +29,7 @@ type KindSupport struct {
 	NativeEvent   string  // the agent's own event name
 	Context       Channel // where Reply.Context lands
 	Deny          bool
+	ConsumePrompt bool // consume a local control before the prompt reaches the model
 	ReplaceInput  bool
 	ReplaceOutput bool
 	PersonLine    bool

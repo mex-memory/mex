@@ -107,5 +107,6 @@ legacy cleanup and purge. Built-CLI tests use disposable homes and inert
 discovery executables; they run no model. They also exercise the installed
 recovery bundle after a simulated package removal. Go tests cover missing-CLI
 detection, session-start-only cleanup, legacy suppression and configuration
-overrides. Interactive model-visible context, typed pause/resume, lean model
+overrides. Session and off/capture controls are described in
+[agent-controls.md](agent-controls.md). Interactive model-visible context, lean model
 runs and current Windows timing are outside these deterministic checks.
