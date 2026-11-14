@@ -13,7 +13,7 @@ If you discover a security vulnerability in mex, please report it responsibly.
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-Instead, please email **thedakshjaitly@gmail.com** with:
+Instead, please email **info@mexmemory.com** with:
 
 - A description of the vulnerability
 - Steps to reproduce the issue
