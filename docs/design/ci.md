@@ -125,3 +125,4 @@ gated path.
   placeholders. Packing always pins all six to the packed root's own version.
 
 Keep actual tags, credentials, namespace claims and approval with the owner.
+
