@@ -2,6 +2,8 @@ package delivery
 
 import (
 	"strings"
+
+	"github.com/mex-memory/mex/native/internal/contract"
 )
 
 // Commands are matched as words, never as regular expressions: a shell
@@ -228,6 +230,41 @@ func signatureMatches(lines []string, signature string) bool {
 }
 
 func collapse(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// exitUnknown: the agent sent output with no exit code and no exit header.
+func exitUnknown(out *contract.ToolOutput) bool {
+	if out == nil || !out.OK || out.ExitCode != nil {
+		return false
+	}
+	first, _, _ := strings.Cut(out.Text, "\n")
+	return !strings.HasPrefix(strings.TrimSpace(first), "Exit code")
+}
+
+var readTools = map[string]bool{"cat": true, "type": true, "get-content": true, "gc": true, "head": true, "tail": true, "less": true, "more": true,
+	"grep": true, "egrep": true, "rg": true, "findstr": true, "select-string": true, "sed": true, "nl": true, "awk": true, "jq": true,
+	"ls": true, "dir": true, "find": true, "git": true, "echo": true, "printf": true, "wc": true, "diff": true}
+
+// readsOrSearches: every segment of the command only reads, searches or
+// prints; such output can carry an error text without anything failing.
+func readsOrSearches(command string) bool {
+	segs := shellSegments(command)
+	if len(segs) == 0 {
+		return true
+	}
+	for _, seg := range segs {
+		w := words(seg)
+		for len(w) > 0 && strings.Contains(w[0], "=") {
+			w = w[1:]
+		}
+		if len(w) == 0 {
+			continue
+		}
+		if !readTools[strings.ToLower(strings.TrimSuffix(lastPart(w[0]), ".exe"))] {
+			return false
+		}
+	}
+	return true
+}
 
 // codexFailed reads Codex's "Exit code: N" output header, the only failure
 // signal Codex gives, when the profile has not already marked the failure.

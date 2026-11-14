@@ -44,6 +44,7 @@ type toolView struct {
 	added    string // text the call adds: edit new, write content, patch additions
 	created  bool
 	failed   bool
+	unknown  bool // the agent gave no exit status (Codex 0.165 shell output)
 	output   *contract.ToolOutput
 	project  string
 	checkout string
@@ -97,6 +98,7 @@ func views(ev contract.Event, resolve Resolver) []toolView {
 		t := tools[i]
 		base := toolView{name: t.Name, output: t.Output, project: ev.ProjectID, checkout: ev.Checkout}
 		base.failed = ev.Kind == contract.PostToolFailure || (t.Output != nil && codexFailed(base))
+		base.unknown = !base.failed && exitUnknown(t.Output)
 		switch t.Name {
 		case contract.ToolShell:
 			base.command = t.Input.Command
@@ -345,7 +347,15 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 			if v.checkout == "" {
 				continue
 			}
-			if v.failed && e.Kind == "hint" && folderInScope(it, v.rel) {
+			// With no exit status, the whole signature in the output of a
+			// command that doesn't just read or search files counts as the
+			// failure: reading a log can show the error text without anything
+			// failing.
+			maybeFailed := v.failed || (v.unknown && !readsOrSearches(v.command))
+			if maybeFailed && failLines == nil && v.output != nil {
+				failLines = failureLines(v.output.Text)
+			}
+			if maybeFailed && e.Kind == "hint" && folderInScope(it, v.rel) {
 				for _, t := range triggers(it, "anti") {
 					if signatureMatches(failLines, t.Pattern) {
 						add(momentFailure, tierPattern, true, true)
