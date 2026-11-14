@@ -178,3 +178,10 @@ export function discardShare(options: KnowledgeOptions): { branch: string; branc
   clearShareState(dir);
   return { branch: state.branch, branchKept };
 }
+
+/** An unfinished share, if one was killed. */
+export function pendingShare(options: KnowledgeOptions): ShareState | undefined {
+  const project = knowledgeProject(options);
+  if (!existsSync(project.location.home)) return undefined;
+  return readShareState(join(project.location.home, "projects", project.projectId));
+}
