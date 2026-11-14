@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { recordCheck } from "../check.js";
+import { knowledgeProject } from "../context.js";
 import { serializeEntry, type EntryCheck } from "../entry.js";
 import { rebuildNative } from "../native.js";
 import { entry } from "./fixtures.js";
@@ -50,5 +51,20 @@ describe.skipIf(!enabled)("current checks before native publication", () => {
     const { root, options } = fixture();
     expect(rebuildNative({ ...options, env: { ...options.env, MEX_HOOK_BINARY: join(root, "missing-binary") } }).selected).toBe(0);
     expect(existsSync(join(root, ".claude/rules/mex.md"))).toBe(false);
+  });
+
+  it("does not let a personal copy's held checks authorize the team's broken copy", () => {
+    const { root, file, options } = fixture();
+    writeFileSync(file, JSON.stringify({ scripts: { test: "other", lint: "eslint" } }));
+    const check = recordCheck(binary, { checkout: root, kind: "key", role: "complete", target: { file: "package.json", pointer: "/scripts/lint" } }) as EntryCheck;
+    const project = knowledgeProject(options);
+    const notes = join(project.location.home, "projects", project.projectId, "notes");
+    mkdirSync(notes, { recursive: true });
+    writeFileSync(join(notes, "mx_checked.md"), serializeEntry(entry("mx_checked", {
+      checks: [check], source: { type: "docs", ref: "package.json" }, evidence: "docs",
+    }, "The lint script uses eslint.")));
+    expect(rebuildNative(options).selected).toBe(1);
+    expect(existsSync(join(root, ".claude/rules/mex.md"))).toBe(false);
+    expect(existsSync(join(root, ".claude/rules/mex-local.md"))).toBe(true);
   });
 });
