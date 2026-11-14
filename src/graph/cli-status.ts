@@ -1,32 +1,32 @@
 import { collectGraphGarbage, graphLocation, whatMexStores } from "./storage.js";
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
 import type { GraphStatus, GraphSourceChanges } from "../team/contracts/graph.js";
 import type { Diagnostic } from "../team/contracts/shared.js";
 import type { GraphCommandOptions } from "./cli-graph.js";
 import { inspectGraphStatus } from "./status.js";
-/** Strictly read-only graph health/freshness command. */
+/** Graph health and freshness. Reads only, apart from collecting unreferenced graph files. */
 export async function runGraphStatus(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
   const location = graphLocation(rootDir);
   collectGraphGarbage(location);
   const stores = whatMexStores(location.recordDirectory);
-  const inspected = await inspectGraphStatus({ projectRoot: rootDir });
-  const leftovers = await orphanGraphFileDiagnostics(rootDir, inspected);
-  const status = leftovers.length > 0
-    ? { ...inspected, diagnostics: [...inspected.diagnostics, ...leftovers] }
-    : inspected;
+  const status = await inspectGraphStatus({ projectRoot: rootDir });
   if (options.json) console.log(JSON.stringify({ ...status, stores }, null, 2));
-  else { printStatus(status); console.log("What MEX stores"); console.log(JSON.stringify(stores, null, 2)); }
+  else { printStatus(status); printStores(stores, location.projectId); }
 }
 
-/**
- * Name owned graph files left under `.mex/` (issue #205). Read-only: an
- * interrupted maintenance run leaves a full-size candidate that otherwise
- * stays invisible unless someone lists the directory. The store's own status
- * is unchanged; these are reported alongside it.
- */
-async function orphanGraphFileDiagnostics(_root: string, _status: GraphStatus): Promise<Diagnostic[]> { return []; }
+function megabytes(bytes: number): string {
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+}
+
+/** "What MEX stores": every project's index folder, against the shared cap. */
+function printStores(stores: ReturnType<typeof whatMexStores>, current: string): void {
+  console.log(`What MEX stores: ${megabytes(stores.bytes)} of ${megabytes(stores.cap)} (least recently used projects are removed first)`);
+  for (const project of [...stores.projects].sort((left, right) => right.lastUse - left.lastUse)) {
+    const used = project.lastUse ? new Date(project.lastUse).toISOString().slice(0, 10) : "never";
+    console.log(`  ${project.projectId === current ? "* " : "  "}${project.folder}: graph ${megabytes(project.graphBytes)}, file index ${megabytes(project.fileIndexBytes)}, `
+      + `${project.checkouts.length} checkout${project.checkouts.length === 1 ? "" : "s"}, last used ${used}`);
+  }
+}
 
 function printStatus(status: GraphStatus): void {
   const branch = status.currentRepo.branch ?? "detached/no branch";
