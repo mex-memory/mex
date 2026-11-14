@@ -1,0 +1,242 @@
+name: Release
+
+on:
+  push:
+    tags: ['v0.9.0*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Rehearse without publishing
+        type: boolean
+        default: true
+      require_gates:
+        description: Require passing same-commit release gates (only dry runs may skip)
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - '.github/workflows/gates.yml'
+      - 'scripts/release/**'
+      - 'scripts/gates/**'
+      - 'npm/**'
+      - 'scripts/build-hook-binaries.mjs'
+      - 'native/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src/hooks/shim/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      json: ${{ steps.plan.outputs.json }}
+      dry_run: ${{ steps.plan.outputs.dry_run }}
+      require_gates: ${{ steps.plan.outputs.require_gates }}
+      release: ${{ steps.plan.outputs.release }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Decide version, mode and publish order
+        id: plan
+        env:
+          RELEASE_DRY_RUN: ${{ inputs.dry_run }}
+          RELEASE_REQUIRE_GATES: ${{ inputs.require_gates }}
+        run: node scripts/release/cli.mjs plan
+
+  gate-checks:
+    needs: plan
+    if: needs.plan.outputs.require_gates == 'true'
+    uses: ./.github/workflows/gates.yml
+    with:
+      release: ${{ needs.plan.outputs.release }}
+
+  release-gates:
+    # Authorization can pass for a rehearsal; only the reusable workflow
+    # produces passing gate evidence. Keep the UI distinction explicit.
+    name: Release authorization
+    needs: [plan, gate-checks]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      gate_result: ${{ steps.verdict.outputs.gate_result }}
+      gate_commit: ${{ steps.verdict.outputs.gate_commit }}
+    env:
+      RELEASE_PLAN: ${{ needs.plan.outputs.json }}
+      RELEASE_GATE_RESULT: ${{ needs.gate-checks.result }}
+      RELEASE_GATE_COMMIT: ${{ needs.gate-checks.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Authorize or prove the missing-gates refusal
+        id: verdict
+        run: node scripts/release/cli.mjs authorize
+
+  build:
+    needs: [plan, release-gates]
+    if: always() && needs.plan.result == 'success' && needs.release-gates.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      artifact_name: ${{ steps.artifact.outputs.name }}
+    env:
+      RELEASE_PLAN: ${{ needs.plan.outputs.json }}
+      RELEASE_GATE_RESULT: ${{ needs.release-gates.outputs.gate_result }}
+      RELEASE_GATE_COMMIT: ${{ needs.release-gates.outputs.gate_commit }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - run: node scripts/release/cli.mjs npm "$RUNNER_TEMP/release-npm"
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - run: node --test scripts/release/*.test.mjs
+      - run: npm run build
+      - run: node scripts/build-hook-binaries.mjs
+      - name: Prove Linux binary version and pack seven artifacts
+        run: |
+          npm/hook-linux-x64/bin/mex-hook --self-test
+          node scripts/release/cli.mjs pack "$RUNNER_TEMP/release-bundle"
+          git diff --exit-code
+      - id: artifact
+        run: echo "name=release-bundle-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ runner.temp }}/release-bundle/
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke:
+    needs: [plan, release-gates, build]
+    if: always() && needs.release-gates.result == 'success' && needs.build.result == 'success'
+    runs-on: ${{ matrix.os == 'macos-15' && 'macos-15-intel' || matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    env:
+      RELEASE_PLAN: ${{ needs.plan.outputs.json }}
+      RELEASE_GATE_RESULT: ${{ needs.release-gates.outputs.gate_result }}
+      RELEASE_GATE_COMMIT: ${{ needs.release-gates.outputs.gate_commit }}
+    steps:
+      - name: Keep temporary files on the fast disk
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $temp = Join-Path $env:RUNNER_TEMP 'tmp'
+          New-Item -ItemType Directory -Force $temp | Out-Null
+          "TEMP=$temp" >> $env:GITHUB_ENV
+          "TMP=$temp" >> $env:GITHUB_ENV
+          "npm_config_cache=$(Join-Path $env:RUNNER_TEMP 'npm-cache')" >> $env:GITHUB_ENV
+          "GOCACHE=$(Join-Path $env:RUNNER_TEMP 'go-build')" >> $env:GITHUB_ENV
+          "GOMODCACHE=$(Join-Path $env:RUNNER_TEMP 'go-mod')" >> $env:GITHUB_ENV
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release-bundle/
+      - run: node scripts/release/cli.mjs npm "${{ runner.temp }}/release-npm"
+      - name: Install from a loopback registry and prove npm platform selection
+        run: node scripts/release/cli.mjs smoke "${{ runner.temp }}/release-bundle"
+
+  dry-run:
+    needs: [plan, release-gates, build, smoke]
+    if: always() && needs.release-gates.result == 'success' && needs.build.result == 'success' && needs.smoke.result == 'success' && needs.plan.outputs.dry_run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RELEASE_PLAN: ${{ needs.plan.outputs.json }}
+      RELEASE_GATE_RESULT: ${{ needs.release-gates.outputs.gate_result }}
+      RELEASE_GATE_COMMIT: ${{ needs.release-gates.outputs.gate_commit }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release-bundle/
+      - run: node scripts/release/cli.mjs npm "$RUNNER_TEMP/release-npm"
+      - name: Rehearse npm and GitHub publication
+        run: node scripts/release/cli.mjs dry-publish "$RUNNER_TEMP/release-bundle"
+
+  publish:
+    needs: [plan, release-gates, build, smoke]
+    if: always() && needs.release-gates.result == 'success' && needs.build.result == 'success' && needs.smoke.result == 'success' && needs.plan.outputs.dry_run == 'false' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_PLAN: ${{ needs.plan.outputs.json }}
+      RELEASE_GATE_RESULT: ${{ needs.release-gates.outputs.gate_result }}
+      RELEASE_GATE_COMMIT: ${{ needs.release-gates.outputs.gate_commit }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release-bundle/
+      - run: node scripts/release/cli.mjs npm "$RUNNER_TEMP/release-npm"
+      - name: Publish packages in order
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node scripts/release/cli.mjs publish "$RUNNER_TEMP/release-bundle"
+
+  github-release:
+    needs: [plan, release-gates, build, smoke, publish]
+    if: always() && needs.release-gates.result == 'success' && needs.build.result == 'success' && needs.smoke.result == 'success' && needs.plan.outputs.dry_run == 'false' && github.event_name != 'pull_request' && needs.publish.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      RELEASE_PLAN: ${{ needs.plan.outputs.json }}
+      RELEASE_GATE_RESULT: ${{ needs.release-gates.outputs.gate_result }}
+      RELEASE_GATE_COMMIT: ${{ needs.release-gates.outputs.gate_commit }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release-bundle/
+      - name: Create or complete the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/release/cli.mjs github "$RUNNER_TEMP/release-bundle"

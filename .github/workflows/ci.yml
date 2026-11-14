@@ -93,6 +93,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run gates:test
       - run: node --test scripts/ci/*.test.mjs
+      - run: node --test scripts/release/*.test.mjs
       - name: Test isolated telemetry benchmark transport
         run: npm run benchmark:telemetry:test
       - name: Run evaluator tests
