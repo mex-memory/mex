@@ -263,8 +263,6 @@ func backticked(s string) []string {
 	return out
 }
 
-var generatedRE = lazy(`(?i)\b(generated|auto-generated|do not edit|codegen)\b`)
-
 // promptWords are the build intents that bring a recipe to the first prompt.
 var promptWordRE = lazy(`(?i)\b(test|tests|testing|build|lint|typecheck|type-check|format|migrate|deploy|bench|benchmark)\b`)
 
@@ -310,7 +308,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 			}
 			switch e.Kind {
 			case "pitfall":
-				if inScope(it, v.rel) && generatedRE().MatchString(e.OneLine+" "+e.Text) {
+				if inScope(it, v.rel) && it.Generated {
 					add(momentEdit, scopeTier(it, v.rel), false, false)
 				}
 			case "decision":

@@ -28,6 +28,7 @@ func lazy(pattern string) func() *regexp.Regexp {
 	return sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(pattern) })
 }
 
+var generatedRE = lazy(`(?i)\b(generated|auto-generated|do not edit|codegen)\b`)
 var idRE = lazy(`^mx_[a-z0-9]{6,64}$`)
 var hashRE = lazy(`^sha256:[a-f0-9]{64}$`)
 var driveRE = lazy(`^[A-Za-z]:`)

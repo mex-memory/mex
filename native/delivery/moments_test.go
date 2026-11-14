@@ -646,3 +646,61 @@ func TestRecipeRederivation(t *testing.T) {
 		})
 	}
 }
+
+func TestFailOpen(t *testing.T) {
+	setup := func(t *testing.T) (*fixture, contract.Event) {
+		f := newFixture(t)
+		f.entry(spec{id: "mx_pitfal", kind: "pitfall", scope: "**", oneLine: "Pitfall."})
+		return f, f.event(contract.PostToolBatch, read(f.file("a.ts", "a"), "a"))
+	}
+	t.Run("corrupt hooks.db", func(t *testing.T) {
+		f, ev := setup(t)
+		os.WriteFile(filepath.Join(f.dir, "hooks.db"), []byte("not a database, just text that is long enough to look like a header......"), 0o600)
+		if reply, err := Handle(ev, f.env()); err == nil && reply.Context != "" {
+			t.Fatal("delivered through a corrupt ledger")
+		}
+	})
+	t.Run("locked hooks.db", func(t *testing.T) {
+		f, ev := setup(t)
+		f.send(f.event(contract.SessionStart))
+		db, err := sql.Open("sqlite", filepath.Join(f.dir, "hooks.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		conn, _ := db.Conn(t.Context())
+		defer conn.Close()
+		if _, err := conn.ExecContext(t.Context(), "BEGIN IMMEDIATE"); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		reply, err := Handle(ev, f.env())
+		if err == nil || reply.Context != "" {
+			t.Fatalf("a locked ledger must refuse, got %q %v", reply.Context, err)
+		}
+		if d := time.Since(start); d > 2*time.Second {
+			t.Fatalf("waited %s on a locked ledger", d)
+		}
+		conn.ExecContext(t.Context(), "ROLLBACK")
+		mustHave(t, f.send(ev), "Pitfall.")
+	})
+	t.Run("corrupt snapshot files", func(t *testing.T) {
+		f, ev := setup(t)
+		f.send(f.event(contract.PostToolBatch, read(f.file("b.ts", "b"), "b")))
+		matches, _ := filepath.Glob(filepath.Join(f.dir, "delivery-entries", "*"))
+		if len(matches) < 2 {
+			t.Fatal("snapshot files missing", matches)
+		}
+		for _, m := range matches {
+			os.WriteFile(m, []byte("garbage"), 0o600)
+		}
+		f.session = "s2"
+		ev.SessionID = "s2"
+		mustHave(t, f.send(ev), "Pitfall.")
+	})
+	t.Run("invalid entry file is skipped", func(t *testing.T) {
+		f, ev := setup(t)
+		os.WriteFile(filepath.Join(filepath.FromSlash(f.root), ".mex", "learned", "mx_broken.md"), []byte("---\nmex: [\n---\n"), 0o600)
+		mustHave(t, f.send(ev), "Pitfall.")
+	})
+}

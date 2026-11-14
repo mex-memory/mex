@@ -354,3 +354,51 @@ func pruneDelivery(ctx context.Context, c *sql.Conn, cutoff string, keep func(st
 	}
 	return nil
 }
+
+// Presence lists the entries given (or replaced) in the current epoch of a
+// session's agent, with aliases resolved, without taking the writer lock.
+// Callers use it to drop repeats before packing; CheckAndMark rechecks under
+// the lock, so a race costs at most one skipped item, never a double send.
+func (hooks *Hooks) Presence(sessionID, agentID, projectID, checkout string) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.reader)
+	defer cancel()
+	present := map[string]bool{}
+	var epoch int
+	err := hooks.db.QueryRowContext(ctx, `SELECT epoch FROM epochs WHERE session_id=? AND agent_id=? ORDER BY epoch DESC LIMIT 1`, sessionID, agentID).Scan(&epoch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return present, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	aliases := map[string]string{}
+	rows, err := hooks.db.QueryContext(ctx, `SELECT old_id,new_id FROM aliases WHERE project_id=? AND checkout=? LIMIT 10001`, projectID, checkout)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var a, b string
+		if err = rows.Scan(&a, &b); err != nil {
+			break
+		}
+		aliases[a] = b
+	}
+	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	rows, err = hooks.db.QueryContext(ctx, `SELECT DISTINCT entry_id FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? AND action IN ('given','replaced') AND moment<>'correction' LIMIT 20000`, sessionID, agentID, epoch, projectID, checkout)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			break
+		}
+		for hops := 0; aliases[id] != "" && hops < 64; hops++ {
+			id = aliases[id]
+		}
+		present[id] = true
+	}
+	return present, errors.Join(err, rows.Err(), rows.Close())
+}

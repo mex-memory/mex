@@ -32,13 +32,26 @@ become candidates. Source discovery is bounded to 10,000 directory children
 and 8 MiB; individual reads stop at 64 KiB. Regular-file identity and size/time
 are checked around reads. The cache is disposable and lives beside hooks.db.
 
-Source metadata is inspected on every load, including additions and removals;
-an in-place edit cannot be discovered from a directory timestamp alone. Parsed
-entries are reused by size/mtime with the evaluator's two-second race window.
-Scope regexps use the file index's existing dialect and compile on demand,
-once per distinct scope in a load. Full/one-line strings include derived labels.
-Token estimates use max(UTF-8 bytes/4, whitespace words × 1.3), rounded up.
-No offline tokenizer was available for calibration.
+Source metadata is inspected on every full load, including additions and
+removals; an in-place edit cannot be discovered from a directory timestamp
+alone. Parsed entries are reused by size/mtime with the evaluator's two-second
+race window. Full/one-line strings include derived labels. Token estimates use
+max(UTF-8 bytes/4, whitespace words x 1.3), rounded up. No offline tokenizer
+was available for calibration.
+
+Scopes in the common shapes (a plain path, `dir/**`, `**`) match without a
+regular expression; other globs compile once per distinct scope in a load.
+
+**The light snapshot.** Every call with a moment reads only a light index
+(`delivery-entries/<key>.light.gob`): each entry's id, kind, level, scope,
+`when` triggers, command-check targets and one-line form, with no text. It is
+valid while a stamp over the stores' listings is unchanged: a hash of every
+entry file's name, size and modification time, read from the directory
+listing alone (one handle per folder), and while no file is newer than two
+seconds before the index was written. Any change, or an unreadable index,
+falls back to the full load, which rewrites both files. The full snapshot (with
+text) is loaded only after a moment found a candidate that this epoch doesn't
+already have.
 
 A snapshot is a codec/store projection, not authorization to send its text.
 Team evidence, privacy, current command/link checks, tombstones and hint source
@@ -63,26 +76,50 @@ are in [local-record.md](local-record.md).
 
 ## Measurements
 
-Measured on Windows with Go 1.27 and synthetic entry files, using
-`MEX_DELIVERY_MEASURE=1 go test -p 1 -count=1 -v -run 'TestHooksOpenTiming|TestSnapshotTiming' ./record ./delivery/entries`:
+All on one Windows 11 laptop that was also running other builds (Go 1.27),
+so absolute numbers are high; compare columns, not machines. On CI's
+windows-2022 runner the no-op shim measured 7.65 ms p50 against 6.84 ms for a
+bare process (foundation-03).
 
-| Probe | Runs | p50 | p95 |
-| --- | ---: | ---: | ---: |
-| OpenHooks plus Close | 200 | 3.75 ms | 6.15 ms |
-| Unchanged 500-entry snapshot | 200 | 7.11 ms | 12.40 ms |
+Snapshot loads, 500 synthetic pitfalls, `go test -bench 500 -benchtime 1000x
+./delivery/entries` (measured):
 
-The snapshot's cold rebuild was 328.26 ms (one run, measured). Directory
-enumeration metadata avoids a separate stat per file; before that change,
-unchanged p50 was 88.68 ms (200 runs, measured). The snapshot misses the design's
-few-ms cold/sub-ms warm goal on this filesystem. Freshness checks remain;
-future moment wiring must account for this cost. The sample full form is
-estimated at 21 tokens. Actual deliveries in this slice: zero, zero tokens.
+| Load | per call |
+| --- | ---: |
+| Full snapshot, unchanged files | 13-21 ms |
+| Light index, unchanged files | 3.2 ms |
 
-Opening SQLite exceeds the 3 ms p95 heartbeat allowance, so no-op calls retain
-file heartbeats. Transactions update the database sighting when already open;
-status combines both sources. Whole-process timing qualification is recorded
-with the step report; a lifecycle/open probe includes the real transaction and
-is more work than the open-only sample above.
+The full load's cost was file-system calls around each read and decoding
+the JSON cache of all entries; compiling 500 scope globs added about 4 ms
+before scopes matched without regular expressions. The light index is gob:
+JSON decoding alone was 5 ms of 8 ms.
+
+Whole process, Claude Code `PostToolBatch` of Read calls through the real
+binary, 200 interleaved runs each,
+`MEX_DELIVERY_MEASURE=1 go test -run TestDeliveryBatchTiming ./cmd/mex-hook`
+(measured, ms):
+
+| Entries | Tools | bare p50 / p95 | no match p50 / p95 | repeat match p50 / p95 |
+| ---: | ---: | --- | --- | --- |
+| 50 | 1 | 19.97 / 31.02 | 30.37 / 41.26 | 38.41 / 55.41 |
+| 50 | 4 | 19.80 / 28.18 | 31.19 / 42.08 | 40.00 / 52.66 |
+| 50 | 10 | 20.50 / 26.94 | 34.79 / 45.74 | 42.88 / 55.87 |
+| 500 | 1 | 19.58 / 24.48 | 30.83 / 37.58 | 38.57 / 46.64 |
+| 500 | 4 | 19.07 / 25.09 | 30.93 / 37.22 | 38.64 / 45.89 |
+| 500 | 10 | 19.68 / 25.00 | 33.82 / 41.58 | 41.96 / 52.13 |
+
+"No match" reads files no entry covers: no SQLite is opened. "Repeat match"
+reads files whose pitfalls this epoch already has: hooks.db is opened and the
+presence read answers, without loading text. The no-op shim on the same
+machine runs about 7 ms over the bare process, so a batch that matches
+nothing costs about 4 ms more than a no-op, and the cost no longer grows with
+the number of entries. Before the light index, 500 entries cost 39.8 ms p50
+for one tool (no match).
+
+Opening SQLite exceeds the 3 ms p95 heartbeat allowance (OpenHooks plus Close,
+200 runs: 3.75 ms p50, 6.15 ms p95), so no-op calls keep file heartbeats.
+Transactions update the database sighting when already open; status combines
+both sources.
 
 ## Moments
 
@@ -168,6 +205,5 @@ the entry id so the agent can ask for more. No warnings and no clock times.
 
 ## Remaining slices
 
-Batch latency and the reserved lane's limits follow, then
-recovery/resume/rewind/subagent briefs. A final deterministic corpus and demo
-qualify the complete controller.
+Recovery/resume/rewind/subagent briefs follow. A final deterministic corpus
+and demo qualify the complete controller.

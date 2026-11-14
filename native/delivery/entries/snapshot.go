@@ -8,12 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
@@ -28,12 +26,17 @@ type Item struct {
 	Hash                      string `json:"hash"`
 	Full, OneLine             string
 	FullTokens, OneLineTokens int
-	Scopes                    []*regexp.Regexp `json:"-"`
+	Scopes                    []*Scope `json:"-"`
 	// Hint eligibility depends on source identity, consumer and observation
 	// state, not just a valid file. The later gate must explicitly clear it.
 	NeedsHintGate bool
+	// Generated is true when the entry says its files are generated; such a
+	// pitfall also fires at an edit attempt.
+	Generated bool `json:"generated,omitempty"`
 }
 type Snapshot struct {
+	// Light snapshots carry no text and only command checks (LoadLight).
+	Light          bool
 	Items          []Item
 	Retired        []string
 	Parsed, Reused int
@@ -85,7 +88,7 @@ func Load(directory, home, project, checkout string) (Snapshot, error) {
 		stores = append(stores, store{home, []string{"projects", project, "notes"}, "personal", false}, store{home, []string{"projects", project, "hints"}, "hint", false})
 	}
 	total, seen := 0, 0
-	globs := map[string]*regexp.Regexp{}
+	globs := map[string]*Scope{}
 	dirty := old.Files == nil
 	for _, s := range stores {
 		root, err := contained(s.base, s.parts)
@@ -182,17 +185,17 @@ func Load(directory, home, project, checkout string) (Snapshot, error) {
 					item.OneLine = label + " " + hit.Entry.OneLine
 					item.FullTokens = EstimateTokens(item.Full)
 					item.OneLineTokens = EstimateTokens(item.OneLine)
+					item.Generated = generatedRE().MatchString(hit.Entry.OneLine + " " + hit.Entry.Text)
 					for _, scope := range hit.Entry.Scope {
-						re := globs[scope]
-						if re == nil {
+						sc := globs[scope]
+						if sc == nil {
 							var err error
-							re, err = index.CompileGlob(scope)
-							if err != nil {
+							if sc, err = newScope(scope); err != nil {
 								return err
 							}
-							globs[scope] = re
+							globs[scope] = sc
 						}
-						item.Scopes = append(item.Scopes, re)
+						item.Scopes = append(item.Scopes, sc)
 					}
 					result.Items = append(result.Items, item)
 				}
@@ -289,7 +292,8 @@ func readRegular(path string, max int) ([]byte, error) {
 	if err != nil || !os.SameFile(before, opened) {
 		return nil, ErrInvalid
 	}
-	data, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
+	buf := make([]byte, 0, opened.Size()+1)
+	data, err := readAllInto(buf, io.LimitReader(f, int64(max)+1))
 	if err != nil {
 		return nil, err
 	}
@@ -342,5 +346,23 @@ func label(e *Entry, level string) string {
 		}
 		d, _ := time.Parse("2006-01-02", e.Created)
 		return "[you said, " + d.Format("2 Jan") + "]"
+	}
+}
+
+// readAllInto reads into a buffer sized from the file's length, so a large
+// cache file is read without repeated growth.
+func readAllInto(buf []byte, r io.Reader) ([]byte, error) {
+	for {
+		if len(buf) == cap(buf) {
+			buf = append(buf, 0)[:len(buf)]
+		}
+		n, err := r.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if err == io.EOF {
+			return buf, nil
+		}
+		if err != nil {
+			return buf, err
+		}
 	}
 }

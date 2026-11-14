@@ -168,7 +168,7 @@ func collect(ev contract.Event, env Environment) []*group {
 			return g
 		}
 		g := &group{project: project, checkout: checkout}
-		if snap, err := entries.Load(env.RecordDirectory, env.Home, project, checkout); err == nil && len(snap.Items) > 0 {
+		if snap, err := entries.LoadLight(env.RecordDirectory, env.Home, project, checkout); err == nil && len(snap.Items) > 0 {
 			g.snap = &snap
 		}
 		byCheckout[key] = g
@@ -210,16 +210,61 @@ func collect(ev contract.Event, env Environment) []*group {
 // deliver runs the hard gates that need storage, the verdict table, packing
 // and the ledger for one checkout, and renders what the ledger gave.
 func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (string, error) {
+	verdicts := map[string]string{}
+	verdictOf := func(id string) string {
+		if v, ok := verdicts[id]; ok {
+			return v
+		}
+		v, ok, err := h.VerdictOf(g.project, g.checkout, id)
+		out := unknown
+		if err == nil && ok {
+			out = v.Verdict
+		}
+		verdicts[id] = out
+		return out
+	}
+	// Dedupe before the cut: what this epoch already has never takes a slot,
+	// and a repeat moment never loads text. Broken entries stay so they can
+	// bring their correction.
+	present, err := h.Presence(ev.SessionID, ev.AgentID, g.project, g.checkout)
+	if err != nil {
+		return "", err
+	}
+	fresh := g.cands[:0:0]
+	for _, c := range g.cands {
+		if !present[c.item.Entry.ID] || verdictOf(c.item.Entry.ID) == broken {
+			fresh = append(fresh, c)
+		}
+	}
+	g.cands = fresh
+	if len(g.cands) == 0 {
+		return "", nil
+	}
+	if g.snap.Light {
+		// A light snapshot found the moment; the text comes from the full one.
+		full, err := entries.Load(env.RecordDirectory, env.Home, g.project, g.checkout)
+		if err != nil {
+			return "", err
+		}
+		byID := map[string]*entries.Item{}
+		for i := range full.Items {
+			byID[full.Items[i].Entry.ID] = &full.Items[i]
+		}
+		var kept []candidate
+		for _, c := range g.cands {
+			if it := byID[c.item.Entry.ID]; it != nil && it.Hash == c.item.Hash {
+				c.item = it
+				kept = append(kept, c)
+			}
+		}
+		g.snap, g.cands = &full, kept
+		if len(kept) == 0 {
+			return "", nil
+		}
+	}
 	cov := loadCoverage(ev.Agent, g.checkout, g.firstRel)
 	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: g.project, checkout: g.checkout}
 	defer senv.close()
-	verdictOf := func(id string) string {
-		v, ok, err := h.VerdictOf(g.project, g.checkout, id)
-		if err != nil || !ok {
-			return unknown
-		}
-		return v.Verdict
-	}
 	// Strongest moment per entry, then the verdict decides the form.
 	best := map[string]candidate{}
 	var ids []string
