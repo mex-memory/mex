@@ -7,7 +7,6 @@ import { recordCheck } from "../check.js";
 import { knowledgeProject } from "../context.js";
 import { serializeEntry, type EntryCheck } from "../entry.js";
 import { rebuildNative } from "../native.js";
-import { knowledgeProject } from "../context.js";
 import { prepareShare } from "../share-plan.js";
 import { discardShare, pendingShare, runShare } from "../share.js";
 import { note } from "../store.js";
