@@ -25,13 +25,18 @@ type launcher struct {
 const launcherVersion = 1
 
 func (h home) launcher() (launcher, bool) {
-	f, err := os.Open(filepath.Join(h.mex, "bin", "launcher.json"))
+	path := filepath.Join(h.mex, "bin", "launcher.json")
+	before, err := os.Lstat(path)
+	if err != nil || !before.Mode().IsRegular() || before.Size() > 4096 {
+		return launcher{}, false
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		return launcher{}, false
 	}
 	defer f.Close()
 	stat, err := f.Stat()
-	if err != nil || !stat.Mode().IsRegular() || stat.Size() > 4096 {
+	if err != nil || !stat.Mode().IsRegular() || stat.Size() > 4096 || !os.SameFile(before, stat) {
 		return launcher{}, false
 	}
 	data, err := io.ReadAll(io.LimitReader(f, 4097))
@@ -39,7 +44,7 @@ func (h home) launcher() (launcher, bool) {
 		return launcher{}, false
 	}
 	var l launcher
-	if json.Unmarshal(data, &l) != nil || l.Version != launcherVersion || l.Node == "" || l.Entry == "" {
+	if json.Unmarshal(data, &l) != nil || l.Version != launcherVersion || !filepath.IsAbs(l.Node) || !filepath.IsAbs(l.Entry) {
 		return launcher{}, false
 	}
 	return l, true

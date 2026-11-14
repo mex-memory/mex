@@ -58,12 +58,21 @@ function writeRecovery(writer: RecordWriter): void {
 function recordChange(writer: RecordWriter, change: InstallChange, options: InstallOptions): void {
   if (equalSnapshot(change.before, change.after)) return;
   if (activeRows(writer).length >= MAX_CHANGES) throw new Error("Installation history is full; uninstall before reinstalling.");
-  writer.db.prepare("INSERT INTO installs(agent,path,key,old_value,new_value,ts) VALUES(?,?,?,?,?,?)")
+  const intent = writer.db.prepare("INSERT INTO installs(agent,path,key,old_value,new_value,ts) VALUES(?,?,?,?,?,?)")
     .run(change.agent, change.path, `${PREFIX}${change.kind}`, JSON.stringify(change.before), JSON.stringify(change.after), new Date().toISOString());
   // Commit the record and its recovery mirror before touching settings.
   writeRecovery(writer);
   options.beforeWrite?.(change);
-  replaceFile(change.path, change.before, change.after);
+  try {
+    replaceFile(change.path, change.before, change.after);
+  } catch (error) {
+    // A checked replacement that failed did not apply this delta. Retain its
+    // audit bytes, but don't let a later undo treat a concurrent user edit as
+    // an installation we actually published.
+    writer.db.prepare("UPDATE installs SET key=? WHERE id=?").run(`cancelled:${PREFIX}${change.kind}`, intent.lastInsertRowid);
+    try { writeRecovery(writer); } catch { /* Preserve the original failure. */ }
+    throw error;
+  }
 }
 
 function available(agent: Agent, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): boolean {
@@ -114,11 +123,11 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
       if (writer) writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES('global','install.runner',?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
         .run(command === nodeCommand ? "node" : "native");
       if (!native) result.notices.push("Native hook binary unavailable; using the fail-open Node fallback.");
-      const put = (path: string, bytes: Buffer, agent = "mex", kind: InstallChange["kind"] = "runtime", mode?: number) => {
-        path = installPath(path);
+      const put = (path: string, bytes: Buffer, agent = "mex", kind: InstallChange["kind"] = "runtime", mode?: number, expected?: Snapshot) => {
+        path = resolve(path);
         if (bytes.length > (kind === "settings" ? MAX_SETTINGS_BYTES : MAX_RUNTIME_BYTES)) throw new Error(`Installed file would exceed its bound: ${path}`);
         assertUntracked(path);
-        const before = readSnapshot(path);
+        const before = expected ?? readSnapshot(path);
         const change: InstallChange = { path, agent, kind, before, after: { data: bytes.toString("base64"), mode: mode ?? (before.data === null ? 0o600 : before.mode) } };
         if (!equalSnapshot(before, change.after)) { if (writer) recordChange(writer, change, options); result.changes.push(change); }
       };
@@ -127,8 +136,8 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
       put(fallback, fallbackBytes);
       put(launcherFile(mexHome), Buffer.from(`${JSON.stringify({ version: 1, node, entry })}\n`));
       for (const agent of agents) {
-        const before = snapshotBytes(readSnapshot(paths[agent], MAX_SETTINGS_BYTES));
-        put(paths[agent], installSettings(before, agent, command, platform, [nativeCommand, nodeCommand]), agent, "settings");
+        const before = readSnapshot(paths[agent], MAX_SETTINGS_BYTES);
+        put(paths[agent], installSettings(snapshotBytes(before), agent, command, platform, [nativeCommand, nodeCommand]), agent, "settings", undefined, before);
       }
       if (agents.includes("codex")) {
         result.notices.push(CODEX_TRUST_NOTICE);

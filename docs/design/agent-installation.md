@@ -46,6 +46,9 @@ the record schema. Each `file-v1:settings` or `file-v1:runtime` row holds the
 original and installed bytes as base64 plus file permissions. The row commits
 before the filesystem write; an interrupted install can therefore be undone.
 Upgrades append changes rather than replacing the original baseline.
+The prepared settings edit is bound to its original snapshot. A concurrent
+user edit or redirected parent aborts publication; a known failed replacement
+keeps a cancelled audit record instead of becoming an active undo operation.
 
 A bounded `<MEX home>/install-recovery.json` mirror contains only active
 user-settings records. It is private local data, like the database; it must
@@ -57,10 +60,14 @@ active installation history to 512 changes, and the mirror to 8 MiB.
 The native hook bounds launcher metadata reads to 4 KiB before decoding it.
 
 At session start, a native shim whose launcher names a definitely missing CLI
-can call the surviving recovery bundle with an 800 ms deadline. The bundle
-also handles its own fallback hook calls. It restores recorded user settings
+starts a detached native worker. That worker bounds the surviving Node bundle
+to five seconds without making the foreground hook wait for cold Node startup.
+Ordinary tool hooks do not read launcher metadata. The bundle also handles its
+own fallback hook calls. It restores recorded user settings
 without opening either database or running any repository command. Permission
 errors, malformed metadata and background runs never authorize cleanup.
+Recovery takes the same lock as installation/uninstall and rechecks the missing
+CLI inside that lock, so a concurrent reinstall cannot lose its hook entries.
 The Node CLI can reconcile the unchanged records on a later uninstall.
 
 ## Uninstall

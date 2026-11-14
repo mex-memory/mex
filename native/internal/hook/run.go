@@ -58,6 +58,11 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return 0
 		case "--status":
 			return status(stdout, homeFrom(getenv), runtime.GOOS)
+		case "--cleanup-orphan":
+			if getenv("MEX_BACKGROUND") != "1" {
+				cleanupOrphan(homeFrom(getenv), orphanCleanupTimeout)
+			}
+			return 0
 		}
 	}
 

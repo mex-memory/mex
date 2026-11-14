@@ -2,14 +2,16 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as settingsModule from "../settings.js";
+import { withContainedArtifactLock } from "../../team/artifacts/filesystem.js";
 import { installAgents, installationChanges, recoveryFile, uninstallAgents, type InstallOptions } from "../index.js";
 import { applyOrphanRecovery } from "../recovery.js";
 import { readSnapshot } from "../files.js";
 import { EVENTS, installSettings, parseSettings } from "../settings.js";
 
 const temps: string[] = [];
-afterEach(() => { for (const path of temps.splice(0)) rmSync(path, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); for (const path of temps.splice(0)) rmSync(path, { recursive: true, force: true }); });
 function write(path: string, value: string | Buffer) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, value); }
 function fixture() {
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), "mex-install-"))); temps.push(base);
@@ -130,6 +132,23 @@ describe("machine-wide hook installation", () => {
     expect((await uninstallAgents({ home: f.home })).conflicts).toEqual([]);
     expect(readFileSync(f.claude, "utf8")).toBe(original);
     expect(existsSync(join(f.home, "bin", "mex-hook.cjs"))).toBe(false);
+  });
+
+  it("refuses to overwrite a user edit made after the settings JSON was prepared", async () => {
+    const f = fixture();
+    write(f.claude, '{"env":{"ORIGINAL":"kept"}}');
+    const original = settingsModule.installSettings;
+    const concurrent = '{"env":{"ORIGINAL":"kept","CONCURRENT":"user edit"}}\r\n';
+    vi.spyOn(settingsModule, "installSettings").mockImplementation((...args) => {
+      const result = original(...args);
+      write(f.claude, concurrent);
+      return result;
+    });
+    await expect(installAgents(f.options)).rejects.toThrow("File changed before installation");
+    expect(readFileSync(f.claude, "utf8")).toBe(concurrent);
+    expect(installationChanges({ home: f.home }).some(row => row.path === f.claude)).toBe(false);
+    expect((await uninstallAgents({ home: f.home })).conflicts).toEqual([]);
+    expect(readFileSync(f.claude, "utf8")).toBe(concurrent);
   });
 
   it("uses the Node fallback when a binary is missing or fails self-test", async () => {
@@ -257,14 +276,36 @@ describe("machine-wide hook installation", () => {
     const f = fixture();
     const original = '{ "env": {"SAFE": "old"} }\r\n'; write(f.claude, original);
     await installAgents(f.options);
+    rmSync(f.entry);
     expect(existsSync(recoveryFile(f.home))).toBe(true);
     const record = readFileSync(join(f.home, "record.db"));
-    expect(applyOrphanRecovery(f.home)).toBe(true);
+    expect(await applyOrphanRecovery(f.home)).toBe(true);
     expect(readFileSync(f.claude, "utf8")).toBe(original);
     expect(existsSync(f.codex)).toBe(false);
     expect(readFileSync(join(f.home, "record.db"))).toEqual(record);
     // The CLI can finish/reconcile cleanup later without a Go database write.
     expect((await uninstallAgents({ home: f.home })).conflicts).toEqual([]);
+  });
+
+  it("does not recover settings while an installer holds the shared lock", async () => {
+    const f = fixture();
+    await installAgents(f.options);
+    const installed = readFileSync(f.claude);
+    rmSync(f.entry);
+    await withContainedArtifactLock(f.home, "install", ".install.lock", async () => {
+      expect(await applyOrphanRecovery(f.home)).toBe(false);
+      expect(readFileSync(f.claude)).toEqual(installed);
+    });
+    expect(await applyOrphanRecovery(f.home)).toBe(true);
+    expect(existsSync(f.claude)).toBe(false);
+  });
+
+  it("rechecks that the CLI is absent before applying orphan recovery", async () => {
+    const f = fixture();
+    await installAgents(f.options);
+    const installed = readFileSync(f.claude);
+    expect(await applyOrphanRecovery(f.home)).toBe(false);
+    expect(readFileSync(f.claude)).toEqual(installed);
   });
 });
 

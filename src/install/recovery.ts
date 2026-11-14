@@ -1,4 +1,6 @@
 import { isAbsolute, join } from "node:path";
+import { statSync } from "node:fs";
+import { withContainedArtifactLock } from "../team/artifacts/filesystem.js";
 import { equalSnapshot, MAX_SETTINGS_BYTES, readSnapshot, replaceFile, samePath, snapshotBytes, type Snapshot } from "./files.js";
 import { object, undoSettings } from "./settings.js";
 
@@ -27,9 +29,23 @@ export function restoreSettings(row: RecoveryRow): void {
   replaceFile(row.path, current, desired);
 }
 
-/** Called only after the surviving hook has established that the CLI is absent. */
-export function applyOrphanRecovery(home: string): boolean {
+/** Only a valid launcher naming a definitely absent CLI authorizes cleanup. */
+export function cliMissing(home: string): boolean {
   try {
+    const bytes = snapshotBytes(readSnapshot(join(home, "bin", "launcher.json"), 4096));
+    if (bytes === null) return false;
+    const launcher = JSON.parse(bytes.toString("utf8"));
+    if (!object(launcher) || launcher.version !== 1 || typeof launcher.entry !== "string" || !isAbsolute(launcher.entry)) return false;
+    try { statSync(launcher.entry); return false; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  } catch { return false; }
+}
+
+/** Cooperate with install/uninstall and recheck authority after obtaining their lock. */
+export async function applyOrphanRecovery(home: string): Promise<boolean> {
+  try {
+    return await withContainedArtifactLock(home, "install", ".install.lock", () => {
+    if (!cliMissing(home)) return false;
     const path = join(home, "install-recovery.json");
     const bytes = snapshotBytes(readSnapshot(path, 8 << 20));
     if (bytes === null) return false;
@@ -45,5 +61,6 @@ export function applyOrphanRecovery(home: string): boolean {
       try { restoreSettings(row as unknown as RecoveryRow); } catch { blocked.add(row.path); }
     }
     return blocked.size === 0;
+    });
   } catch { return false; }
 }
