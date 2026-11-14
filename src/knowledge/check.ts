@@ -303,7 +303,8 @@ function diffConformance(root: string, base: string, entries: Array<{ entry: Kno
   return findings;
 }
 
-function cachedVerdicts(options: KnowledgeOptions, projectId: string, root: string): Map<string, Verdict> | undefined {
+/** Verdicts the evaluator last saved for this checkout, read-only. */
+export function cachedVerdicts(options: KnowledgeOptions, projectId: string, root: string): Map<string, Verdict> | undefined {
   let reader;
   try { reader = openHooksReadOnly(options); } catch { return undefined; }
   if (!reader) return undefined;
