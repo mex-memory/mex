@@ -299,3 +299,35 @@ func TestManyEntriesAreFast(t *testing.T) {
 		t.Fatalf("too slow: %s", elapsed)
 	}
 }
+
+// Overload signatures come before the body. The check must see a change in
+// the body, not only in the first signature (found by the knowledge bench:
+// a method's caching was removed and the check stayed held).
+const overloaded = `export class Request {
+  parse(kind: 'a'): string
+  parse(kind: 'b'): number
+  parse(kind: string) {
+    return (this.cache ??= compute(kind))
+  }
+}
+`
+
+func TestSymbolCheckSeesOverloadBody(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "src/request.ts", overloaded)
+	zero := 0
+	ix := &fakeIndex{outlines: map[string][]index.Symbol{"src/request.ts": {
+		{Name: "Request", Kind: "class", Start: 1, End: 7},
+		{Name: "parse", Kind: "method", Start: 2, End: 2, Parent: &zero},
+		{Name: "parse", Kind: "method", Start: 3, End: 3, Parent: &zero},
+		{Name: "parse", Kind: "method", Start: 4, End: 6, Parent: &zero},
+	}}}
+	c, err := indexed(t, root, ix).Record("symbol", Complete, map[string]any{"file": "src/request.ts", "symbol": "Request.parse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "src/request.ts", strings.Replace(overloaded, "return (this.cache ??= compute(kind))", "return compute(kind)", 1))
+	if r := indexed(t, root, ix).Evaluate(&Entry{ID: "mx_overld", Status: "active", Checks: []Check{c}}); r.Verdict != Broken {
+		t.Fatalf("a changed overload body must not hold: %+v", r)
+	}
+}

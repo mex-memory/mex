@@ -719,9 +719,20 @@ Reserved/exempt candidates bypass main-budget admission but remain counted.
 Presence is keyed by session, agent id, epoch, project, checkout and canonical
 entry id. The project/checkout fields prevent the same id in two repositories
 from colliding. A receipt has a random id and a block id shared by the receipts
-in one reply. Context will start with `[mex <block_id>]`; no text is emitted by
-the lifecycle-only controller yet. `content_hash` records the entry revision
-for later corrections. Existing receipts migrate with empty new fields.
+in one reply, and the reply's context block starts with `[mex <block_id>]`.
+`content_hash` covers the entry file's hash and the text sent, so a resume can
+tell an entry whose text changed. Existing receipts migrate with empty new
+fields. A candidate marked `Correction` is written once per entry per epoch,
+only when that entry was given in the epoch, in the reserved lane. A candidate
+marked `Resend` is given again although the epoch has it (the transcript shows
+a rewind dropped it). Withheld and held-back outcomes are written once per
+entry per epoch. `Presence` reads what an epoch gave, with the blocks that
+carried it, without the writer lock; `EpochGiven` and `EpochFiles` read an
+epoch's deliveries and edited files for recovery, resume and subagent briefs.
+
+`epoch_files` (PK session, agent id, epoch, project, checkout, path) holds the
+files edited in an epoch that some entry's scope covers, at most 512 per epoch,
+written by `NoteEdits`; pruning removes at most 256 rows per start.
 
 Epoch reasons are startup, compact, clear, fork, subagent and rewind. Resume
 keeps the epoch. Startup and repeated subagent registration are idempotent.
@@ -768,6 +779,18 @@ choices. A Node writer can repair its own settings mirrors; readers never do.
 - No shared writable connection, no ATTACH-based cross-file write, and no
   migration of the other side's file. Filesystem `location` publication is
   shared, exclusive-create metadata, not a shared database writer.
+
+### Delivery's own files (record directory)
+
+| File | Holds |
+| --- | --- |
+| `delivery-entries/<key>.json` | Full parsed entries per checkout, reused by size and modification time |
+| `delivery-entries/<key>.light.bin` | The light index (ids, kinds, scopes, triggers, command targets, one-line forms) with a stamp over the stores' listings |
+| `delivery-transcripts/<hash>.bin` | Per Claude Code transcript: bytes read, the active branch's blocks, and parent links |
+| `delivery-hints/<short hash of project id>.json` | Written by Node: hints eligible for delivery per agent, with expiry |
+
+All are disposable caches except the hint mirror, which Node rewrites; a
+missing or unreadable file falls back to the slow path or to "no hints".
 
 ## Files the hook reads without SQLite
 

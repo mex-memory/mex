@@ -118,6 +118,24 @@ nothing costs about 4 ms more than a no-op, and the cost no longer grows with
 the number of entries. Before the light index, 500 entries cost 39.8 ms p50
 for one tool (no match).
 
+The same test on Linux (WSL 2, Ubuntu, Go 1.27, 200 interleaved runs each,
+measured, ms). The no-op shim there measured 7.95 p50 / 9.72 p95 against 4.54 /
+5.36 for the bare process:
+
+| Entries | Tools | bare p50 / p95 | no match p50 / p95 | repeat match p50 / p95 |
+| ---: | ---: | --- | --- | --- |
+| 50 | 1 | 4.69 / 10.97 | 9.12 / 12.70 | 12.79 / 19.63 |
+| 50 | 4 | 4.78 / 8.81 | 9.39 / 14.57 | 13.26 / 22.00 |
+| 50 | 10 | 4.57 / 6.87 | 9.57 / 12.55 | 13.97 / 20.07 |
+| 500 | 1 | 4.63 / 5.92 | 14.13 / 18.86 | 17.51 / 22.25 |
+| 500 | 4 | 4.46 / 5.76 | 13.68 / 16.69 | 17.46 / 20.48 |
+| 500 | 10 | 4.60 / 5.92 | 15.17 / 19.12 | 19.58 / 23.70 |
+
+On Linux the listing stamp costs one `lstat` per entry file (Windows gets
+size and time from the directory read itself), so 500 entries add about 5 ms
+over 50. A checkout with hundreds of entries in one store is the case to
+watch; a stamp per kind folder would cut it if it matters.
+
 Opening SQLite exceeds the 3 ms p95 heartbeat allowance (OpenHooks plus Close,
 200 runs: 3.75 ms p50, 6.15 ms p95), so no-op calls keep file heartbeats.
 Transactions update the database sighting when already open; status combines
@@ -227,6 +245,42 @@ the entry id so the agent can ask for more. No warnings and no clock times.
   so Codex, which reads through its shell, gets read moments too. The output
   is matched for anti-patterns only when one file is read.
 
+## Knowledge bench gate
+
+`scripts/gates/knowledge.mjs` runs the bench through the real evaluator and
+this controller (see `scripts/gates/README.md`). Its probe,
+`mex-hook --delivery-probe`, runs the verdict stage a moment uses for given
+entries, without the ledger. Result on the pinned corpus (46 claims, six
+checkpoints of Hono from T0 to T1, measured on Windows, two runs alike):
+
+| Checkpoint | True | Stale | True, full | Stale, full | Pointers | Withheld |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| C0 | 46 | 0 | 46 | 0 | 0 | 0 |
+| C1 | 43 | 3 | 38 | 0 | 5 | 3 |
+| C2 | 41 | 5 | 34 | 0 | 9 | 3 |
+| C3 | 37 | 9 | 27 | 0 | 12 | 7 |
+| C4 | 32 | 14 | 21 | 0 | 13 | 12 |
+| C5 | 31 | 15 | 20 | 0 | 13 | 13 |
+
+No stale claim and no broken entry reached the model in full at any
+checkpoint. At T1, 65% of the claims still true go out in full; the rest go
+out as pointers because their code changed. Evaluator time per checkpoint was
+317-752 ms against the gate's 1,000 ms. The corpus is hand-written and small;
+the numbers describe this corpus, not MEX in general.
+
+The first run found an evaluator bug: a symbol with TypeScript overloads was
+fingerprinted at its first signature, so a change to the method body (here,
+removing a cache) left the check held and a stale claim went out in full. The
+check now fingerprints all same-named declarations together; a symbol declared
+once keeps its fingerprint.
+
+## Demo
+
+`node scripts/delivery-demo.mjs` builds the binary, makes a throwaway repo and
+MEX home, and sends Claude Code payloads: a read of a file with a pitfall, a
+command that has a recipe, a failure with a recorded fix's signature, then the
+same three again. It prints three deliveries, each once.
+
 ## Contract changes to copy
 
 - Hook events: optional normalized `model` on session start; a rendered block's
@@ -242,8 +296,14 @@ the entry id so the agent can ask for more. No warnings and no clock times.
   written into agent rule files; a recorded fix is a `hint` whose `when: anti`
   literal is its failure signature. There is no successor metadata field.
 - Hint mirror file `delivery-hints/<short hash>.json`, written by Node.
+- Hook binary: `mex-hook --delivery-probe` (JSON request on stdin, like
+  `--check-run`).
 
-## Remaining slices
+## Left for later tickets
 
-A deterministic knowledge corpus with its gate and a demo script qualify the
-complete controller.
+Ranking beyond tiers, rendering and probes (delivery-02); pattern automata,
+the speed bump and edit checks for rules and code facts (delivery-03);
+smaller reads and outputs (delivery-04); the compaction steer and the lever
+ledger (delivery-05). The start brief fills the session-start and recovery
+slots (knowledge-05); capture fills "where we left off" and writes recorded
+fixes (learning-01), which need a check to be sent.
