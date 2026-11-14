@@ -1,6 +1,7 @@
 export const TARGETS = Object.freeze(['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64']);
-export const packagesFor = (version) => [...TARGETS.map((target) => ({ name: `mex-agent-hook-${target}`, directory: `npm/hook-${target}`, file: `mex-agent-hook-${target}-${version}.tgz`, target })), { name: 'mex-agent', directory: '.', file: `mex-agent-${version}.tgz` }];
-export const optionalFor = (version) => Object.fromEntries(TARGETS.map((target) => [`mex-agent-hook-${target}`, version]));
+export const packageNameFor = (target) => `mex-agent-hook-${target === 'win32-x64' ? 'windows-x64' : target}`;
+export const packagesFor = (version) => [...TARGETS.map((target) => ({ name: packageNameFor(target), directory: `npm/hook-${target}`, file: `${packageNameFor(target)}-${version}.tgz`, target })), { name: 'mex-agent', directory: '.', file: `mex-agent-${version}.tgz` }];
+export const optionalFor = (version) => Object.fromEntries(TARGETS.map((target) => [packageNameFor(target), version]));
 
 export function makePlan({ event, refType, refName, dryRun = true, requireGates = true, version, platformVersions, commit }) {
   if (!['push', 'pull_request', 'workflow_dispatch'].includes(event)) throw new Error('Unsupported release event');

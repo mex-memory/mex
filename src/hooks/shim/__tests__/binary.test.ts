@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
@@ -47,9 +47,11 @@ async function nodeReply(input: string, env: NodeJS.ProcessEnv = {}): Promise<st
 
 describe("platformPackageName", () => {
   it("names one package per supported platform", () => {
-    for (const p of ["linux", "darwin", "win32"]) {
+    for (const p of ["linux", "darwin"]) {
       for (const a of ["x64", "arm64"]) expect(platformPackageName(p, a)).toBe(`mex-agent-hook-${p}-${a}`);
     }
+    expect(platformPackageName("win32", "x64")).toBe("mex-agent-hook-windows-x64");
+    expect(platformPackageName("win32", "arm64")).toBe("mex-agent-hook-win32-arm64");
   });
 
   it("returns null for unsupported platforms", () => {
@@ -57,16 +59,17 @@ describe("platformPackageName", () => {
     expect(platformPackageName("linux", "ia32")).toBeNull();
   });
 
-  it("matches a package folder in npm/", () => {
-    const pkg = JSON.parse(
-      execFileSync(process.execPath, ["-p", "JSON.stringify(require('./npm/hook-linux-x64/package.json'))"], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      }),
-    ) as { name: string; os: string[]; cpu: string[] };
-    expect(pkg.name).toBe(platformPackageName("linux", "x64"));
-    expect(pkg.os).toEqual(["linux"]);
-    expect(pkg.cpu).toEqual(["x64"]);
+  it("matches all platform package manifests in npm/", () => {
+    for (const platform of ["linux", "darwin", "win32"]) {
+      for (const arch of ["x64", "arm64"]) {
+        const pkg = JSON.parse(readFileSync(join(repoRoot, "npm", `hook-${platform}-${arch}`, "package.json"), "utf8")) as {
+          name: string; os: string[]; cpu: string[];
+        };
+        expect(pkg.name).toBe(platformPackageName(platform, arch));
+        expect(pkg.os).toEqual([platform]);
+        expect(pkg.cpu).toEqual([arch]);
+      }
+    }
   });
 });
 
@@ -88,6 +91,15 @@ describe("findNativeBinary", () => {
     expect(findNativeBinary({ platform: "win32", arch: "arm64", resolve: () => manifest })).toBe(
       join(dirname(manifest), "bin", "mex-hook.exe"),
     );
+  });
+
+  it("resolves Windows x64 from the published windows-x64 package", () => {
+    const manifest = fakePackage("win32", "x64", true);
+    const resolve = vi.fn(() => manifest);
+    expect(findNativeBinary({ platform: "win32", arch: "x64", resolve })).toBe(
+      join(dirname(manifest), "bin", "mex-hook.exe"),
+    );
+    expect(resolve).toHaveBeenCalledWith("mex-agent-hook-windows-x64/package.json");
   });
 });
 
