@@ -28,8 +28,14 @@ an error the hook caller ignores, allowing the agent call. Never use SQLite's
 `immutable` option for these live databases: readers must see WAL commits.
 
 Telemetry counter writers use a 1 ms busy timeout and separate 10 ms open and
-write deadlines, skipping measurement when either budget expires. Each hook's
-counter increments form one atomic SQLite statement. These short-lived writers
+write deadlines. When either budget expires, the hook appends its counts to
+`<record directory>/counters-pending` (one `day<TAB>name<TAB>n` line per
+counter, at most 64 KiB) instead of dropping them. The next hook renames that
+file to its own claim, adds the counts to its write and removes it; if that
+write misses too, everything goes back to the file. Only hook counter names
+are read back. A process that dies between the claim and its write loses
+those counts; nothing is counted twice. Each hook's counter increments form
+one atomic SQLite statement. These short-lived writers
 retain the WAL sidecar files for reuse across processes. A private `mode=ro`
 attachment keeps a read-only pager alive while the writable main pager closes,
 leaving committed counters in WAL instead of checkpointing every hook and
@@ -734,6 +740,7 @@ missing or unreadable file means "MEX is off here", which is the safe answer.
 | --- | --- | --- | --- |
 | `<record directory>/hook-checkouts/<key>.json` | Node, `src/record/hook-checkouts.ts`, after any change to a `checkouts` row (`RecordWriter.writeHookCheckouts()`; registration calls it, `mex off`/`on` must too) and on the first open of a record that has none | the shim, `native/internal/hook/checkout.go` | `{"version":1,"project_id","root","state","off_until","provisional"}`, one per `checkouts` row; `key` is the 24-hex short hash of `root`, the real checkout path |
 | `<record directory>/hook-notices/off-<key>` | the shim | the shim | created with exclusive-create when the "MEX is off here" notice is shown; `key` is the short hash of the repo root (nearest folder holding `.git`, else the folder) |
+| `<record directory>/counters-pending` | the shim, when a counter write misses its deadline | the shim, on its next counter write | `day<TAB>name<TAB>n` lines of hook counters only; at most 64 KiB; claimed by rename (`counters-pending.<pid>.claim`) and removed once added |
 | `<MEX home>/bin/launcher.json` | Node CLI, after every command (`src/hooks/shim/launcher.ts`), only when the home exists and the entry is a built `.js` | the shim | `{"version":1,"node","entry"}`: how to start `node <entry> __ensure-background` |
 | `<MEX home>/heartbeats/<agent>/<session>` | the shim | `mex-hook --status` | one small JSON file per session; its modification time is the last hook call; pruned after 7 days at session start |
 | `<record directory>/index-checkouts/<key>.json` | Node, file index | the shim | see the file index contract |

@@ -74,10 +74,7 @@ func recordHookUsage(location localrecord.Location, agent string, sessionStart, 
 			return
 		}
 	}
-	hooks, err := localrecord.OpenHookCounters(location)
-	if err != nil {
-		return
-	}
-	defer hooks.Close()
-	_ = hooks.RecordHookUsage(time.Now().UTC().Format("2006-01-02"), agent, sessionStart, failed, elapsed.Milliseconds())
+	// A write that misses its 10 ms deadline is kept for the next call
+	// instead of lost.
+	_ = localrecord.RecordHookUsageOrDefer(location, time.Now().UTC().Format("2006-01-02"), agent, sessionStart, failed, elapsed.Milliseconds())
 }
