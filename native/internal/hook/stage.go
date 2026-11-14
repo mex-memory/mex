@@ -3,6 +3,7 @@ package hook
 import (
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -58,7 +59,7 @@ func movesGit(command string) bool {
 	for _, segment := range shellparse.Segments(command) {
 		words := shellparse.Words(segment)
 		for i := 0; i < 1 && i < len(words); i++ {
-			if strings.ToLower(strings.TrimSuffix(filepath.Base(filepath.ToSlash(words[i])), ".exe")) != "git" {
+			if strings.ToLower(strings.TrimSuffix(path.Base(strings.ReplaceAll(words[i], `\`, "/")), ".exe")) != "git" {
 				continue
 			}
 			// Skip global options like -C <dir> or -c key=value.
