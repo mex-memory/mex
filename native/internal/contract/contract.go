@@ -6,7 +6,7 @@ package contract
 import "encoding/json"
 
 // Version of the event and reply shapes.
-const Version = 0
+const Version = 1
 
 type Kind string
 
@@ -115,6 +115,7 @@ const (
 )
 
 type Reply struct {
+	ConsumePrompt bool        `json:"consume_prompt,omitempty"`
 	Context       string      `json:"context,omitempty"`
 	Decision      Decision    `json:"decision,omitempty"`
 	Reason        string      `json:"reason,omitempty"`
@@ -125,6 +126,6 @@ type Reply struct {
 
 // Empty reports whether the reply asks for nothing. Most replies are empty.
 func (r Reply) Empty() bool {
-	return r.Context == "" && r.Decision != Deny && r.ReplaceInput == nil &&
+	return !r.ConsumePrompt && r.Context == "" && r.Decision != Deny && r.ReplaceInput == nil &&
 		r.ReplaceOutput == nil && r.PersonLine == ""
 }

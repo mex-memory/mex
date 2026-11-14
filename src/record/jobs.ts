@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { JOB_STATES, type JobState, type RecordWriter, type RecordReader } from "./index.js";
 import { recordCounterIn } from "../telemetry/store.js";
+import { automaticWorkEnabled } from "../controls/index.js";
 
 /**
  * One job model for the whole machine, stored in record.db `jobs` / `job_results`.
@@ -216,6 +217,7 @@ function claim(writer: RecordWriter, self: string): JobRow | undefined {
     for (const job of queued) {
       const kind = kinds.get(job.kind);
       if (!kind) continue; // A kind from a newer MEX: leave it for that version.
+      if (self.startsWith("background:") && !automaticWorkEnabled(writer, job.project_id)) continue;
       if (job.project_id) {
         const busy = writer.db.prepare("SELECT 1 FROM jobs WHERE state='running' AND project_id=? AND id!=?").get(job.project_id, job.id);
         if (busy) continue;

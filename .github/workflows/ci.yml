@@ -269,6 +269,8 @@ jobs:
           src/setup/__tests__/contact.test.ts
           src/setup/__tests__/global-install.test.ts
           src/setup/__tests__/global-install-process.test.ts
+          src/controls/__tests__/controls.test.ts
+          src/record/__tests__/background.test.ts
           src/wiki/operations/__tests__/durability.test.ts
           src/wiki/operations/__tests__/identity-precision.test.ts
           src/wiki/operations/__tests__/integrity.test.ts
@@ -297,6 +299,9 @@ jobs:
           npx vitest run --maxWorkers=1 test/setup-terminal-conpty.test.ts
       - run: npm run build
         if: matrix.part == 'storage-package'
+      - name: Check controls through the built CLI
+        if: matrix.part == 'storage-package'
+        run: npx vitest run --maxWorkers=1 test/controls-cli.test.ts
       - name: Smoke test the packed install
         if: matrix.part == 'storage-package'
         run: npm run test:hub:package

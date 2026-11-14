@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build } from "tsup";
 import type { RecordWriter } from "../index.js";
+import { setGlobalEnabled } from "../../controls/index.js";
 
 /**
  * Real background processes, killed for real. The entry is bundled once into a temp
@@ -77,6 +78,21 @@ function queueDemo(params: Record<string, unknown>) {
 const alive = (pid: number) => jobs.processAlive(pid);
 
 describe("the background process, for real", () => {
+  it("stops between batches when globally off and resumes the pending job after restart", async () => {
+    const queued = queueDemo({ batches: 8, delayMs: 100 });
+    const first = start(); expect(first.started).toBe(true);
+    await until(() => job(queued.id).batch, batch => batch >= 1);
+    setGlobalEnabled(writer, false);
+    await until(() => lease().owner, owner => owner === null);
+    const held = job(queued.id).batch;
+    expect(job(queued.id).state).toBe("queued");
+    expect(start()).toEqual({ started: false, reason: "disabled" });
+    expect(job(queued.id).batch).toBe(held);
+    setGlobalEnabled(writer, true);
+    expect(start().started).toBe(true);
+    await until(() => job(queued.id).state, state => state === "done");
+    expect(resultRows(queued.id)).toEqual([...Array(8).keys()]);
+  });
   it.each([1, 3, 5])("killed hard during batch %i leaves no partial batch and redoes at most one", async (killAt) => {
     const trace = join(home, "trace.txt");
     const queued = queueDemo({ batches: 8, delayMs: 300, traceFile: trace });

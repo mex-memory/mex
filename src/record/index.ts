@@ -6,6 +6,7 @@ import { recordLocation, moveProjectData, type LocationOptions, type RecordLocat
 import { projectIdentity, realPath, type ProjectIdentity, type GitRunner } from "./project.js";
 import { RECORD_SCHEMA_VERSION, recordMigrations, type Migration } from "./schema.js";
 import { HOOK_CHECKOUTS_DIRECTORY, writeHookCheckouts } from "./hook-checkouts.js";
+import { repairControlMirrors } from "../controls/mirrors.js";
 
 export { recordLocation, projectDataDirectory } from "./location.js";
 export { projectIdentity } from "./project.js";
@@ -191,6 +192,7 @@ export function openRecord(options: LocationOptions & { projectPath?: string; gi
     writer.finishProjectMoves();
     // Records registered before the hook mirror existed get it on their next open.
     if (!existsSync(join(location.directory, HOOK_CHECKOUTS_DIRECTORY))) writer.writeHookCheckouts();
+    repairControlMirrors(db, location);
     return writer;
   } catch (error) { db.close(); throw error; }
 }

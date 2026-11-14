@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
@@ -24,6 +25,7 @@ type home struct {
 	// Resolves at most once per invocation, after telemetry policy checks, so
 	// checkout lookup and counters share the validated location.
 	usageLocation func() (place.Location, bool)
+	capture       func(contract.Event, string, controls)
 }
 
 func homeFrom(getenv Env) home {

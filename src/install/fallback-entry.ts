@@ -4,7 +4,7 @@ import { runNodeHook } from "../hooks/shim/node-hook.js";
 
 async function main(): Promise<void> {
   if (process.argv.includes("--mex-managed")) process.exit(0);
-  if (process.env.MEX_BACKGROUND === "1") {
+  if (process.env.MEX_OFF === "1" || process.env.MEX_BACKGROUND === "1") {
     if (!process.argv.includes("--cleanup") && process.argv.at(-1) !== "PreCompact") process.stdout.write("{}\n");
     process.exit(0);
   }

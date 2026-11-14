@@ -70,9 +70,16 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 		}
 	}
 
-	// MEX's own background runs must never trigger MEX.
-	if getenv("MEX_BACKGROUND") == "1" {
-		_, _ = stdout.Write(emptyReply)
+	// Terminal-wide off and MEX's own runs do nothing before reading input,
+	// resolving storage, capturing payloads or starting background work.
+	if getenv("MEX_OFF") == "1" || getenv("MEX_BACKGROUND") == "1" {
+		out := emptyReply
+		if len(args) >= 2 {
+			if profile, found := adapter.Lookup(args[0]); found {
+				out = profile.EmptyReply(args[1])
+			}
+		}
+		_, _ = stdout.Write(out)
 		return 0
 	}
 	for _, arg := range args {
@@ -90,10 +97,14 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 		return 0
 	}
 	agent, nativeEvent := args[0], args[1]
-	if dir := getenv("MEX_HOOK_RECORD"); dir != "" && ok {
-		record(dir, agent, nativeEvent, payload)
-	}
 	h := homeFrom(getenv)
+	if dir := getenv("MEX_HOOK_RECORD"); dir != "" && ok {
+		h.capture = func(ev contract.Event, directory string, global controls) {
+			if captureEnabled(directory, ev.ProjectID, global) {
+				record(dir, ev.Agent, nativeEvent, payload)
+			}
+		}
+	}
 	resolveUsage := sync.OnceValues(func() (place.Location, bool) { return hookUsageLocation(h, getenv) })
 	h.usageLocation = resolveUsage
 	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok, h, time.Now(), func(actual string, sessionStart, failed bool) {
@@ -115,7 +126,7 @@ var silent = []byte{}
 func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time.Time, observe ...func(string, bool, bool)) []byte {
 	if !ok {
 		if p, found := adapter.Lookup(agent); found {
-			if len(observe) > 0 {
+			if len(observe) > 0 && !h.controls().Off {
 				observe[0](agent, false, true)
 			}
 			return p.EmptyReply(nativeEvent)
@@ -136,9 +147,11 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	if !found {
 		return emptyReply
 	}
+	global := h.controls()
+	observeAllowed := !global.Off
 	sessionStart, failed := false, false
 	defer func() {
-		if len(observe) > 0 {
+		if observeAllowed && len(observe) > 0 {
 			observe[0](agent, sessionStart, failed)
 		}
 	}()
@@ -148,20 +161,52 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 	sessionStart = ev.Kind == contract.SessionStart
+	if _, control := sessionControl(ev); global.Off && !control {
+		return profile.EmptyReply(nativeEvent)
+	}
 	if h.orphaned(sessionStart) {
 		return profile.EmptyReply(nativeEvent)
 	}
 	if !h.mexInstalled() {
+		if !global.Off && h.capture != nil {
+			h.capture(ev, "", global)
+		}
 		out, _ := profile.Render(ev, contract.Reply{})
 		return out
 	}
-	h.beat(agent, ev.SessionID, ev.Cwd, ev.Kind == contract.SessionStart, now)
 
 	// Where MEX isn't on, exit at once: nothing behind this line runs. A repo
 	// MEX was never turned on in gets one notice, at the first session there.
 	recordDirectory := h.recordDirectory()
 	path, isFile := eventPath(ev)
 	checkout, state := findCheckout(recordDirectory, path, isFile, now)
+	ev.ProjectID, ev.Checkout = checkout.ProjectID, checkout.Root
+	if paused, recognized := sessionControl(ev); recognized && state != unregistered {
+		observeAllowed = false
+		support, _ := profile.Capabilities().Support(contract.Prompt)
+		if !support.ConsumePrompt || !changeSessionPause(ev, recordDirectory, paused) {
+			return profile.EmptyReply(nativeEvent)
+		}
+		line := "MEX is resumed for this session."
+		if paused {
+			line = "MEX is paused for this session. Type `mex resume` to resume."
+		}
+		if global.Off {
+			line += " MEX is still off everywhere."
+		} else if state == switchedOff {
+			line += " MEX is still off for this repo."
+		}
+		out, _ := profile.Render(ev, contract.Reply{ConsumePrompt: true, PersonLine: line})
+		return out
+	}
+	if global.Off || state == switchedOff || sessionPaused(recordDirectory, agent, ev.SessionID) {
+		observeAllowed = false
+		return profile.EmptyReply(nativeEvent)
+	}
+	h.beat(agent, ev.SessionID, ev.Cwd, ev.Kind == contract.SessionStart, now)
+	if h.capture != nil {
+		h.capture(ev, recordDirectory, global)
+	}
 	if state != switchedOn {
 		reply := contract.Reply{}
 		if state == unregistered && ev.Kind == contract.SessionStart && ev.AgentID == "" && firstOffNotice(recordDirectory, ev.Cwd) {
@@ -170,7 +215,6 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		out, _ := profile.Render(ev, reply)
 		return out
 	}
-	ev.ProjectID, ev.Checkout = checkout.ProjectID, checkout.Root
 
 	if ev.Kind == contract.SessionStart {
 		startBackground(h, recordDirectory)

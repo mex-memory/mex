@@ -53,10 +53,10 @@ export function backgroundSettings(writer?: RecordWriter): BackgroundSettings {
   };
 }
 
-/** Off when MEX_BACKGROUND=0 or the `background.enabled` setting is "false". */
+/** Global/terminal off and the separate background setting all hold automatic work. */
 export function backgroundEnabled(writer?: RecordWriter): boolean {
-  if (process.env.MEX_BACKGROUND === "0") return false;
-  return !writer || setting(writer, "enabled") !== "false";
+  if (process.env.MEX_OFF === "1" || process.env.MEX_BACKGROUND === "0") return false;
+  return !writer || (setting(writer, "enabled") !== "false" && writer.setting("global", "enabled") !== "false");
 }
 /** True inside MEX's own background process (and the agent runs it starts): never trigger MEX from there. */
 export function insideBackground(): boolean { return process.env.MEX_BACKGROUND === "1"; }
@@ -119,6 +119,7 @@ const STARTING_MS = 10_000;
  * waits for the process; safe to call from any command or a session start.
  */
 export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
+  if ((options.env ?? process.env).MEX_OFF === "1") return { started: false, reason: "disabled" };
   if (insideBackground()) return { started: false, reason: "inside-background" };
   let writer: RecordWriter | undefined;
   try {
@@ -177,10 +178,11 @@ export interface RunOptions extends LocationOptions {
   memory?: () => number;
   clock?: () => number;
 }
-export type ExitReason = "lease-held" | "handover" | "idle" | "memory" | "lease-lost" | "error";
+export type ExitReason = "lease-held" | "handover" | "idle" | "memory" | "lease-lost" | "disabled" | "error";
 
 /** The background process's main loop. Resolves with why it stopped. */
 export async function runBackground(options: RunOptions = {}): Promise<ExitReason> {
+  if (process.env.MEX_OFF === "1") return "disabled";
   const home = options.home ?? process.env.MEX_RECORD_HOME;
   const writer = openRecord({ ...options, ...(home ? { home } : {}) });
   const settings = { ...backgroundSettings(writer), ...options.settings };
@@ -226,6 +228,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
   };
 
   try {
+    if (!backgroundEnabled(writer)) return stop("disabled");
     const deadline = clock() + settings.takeoverMs;
     for (let acquired = tryAcquire(); acquired !== true; acquired = tryAcquire()) {
       if (acquired === "duplicate" || clock() >= deadline) return stop("lease-held");
@@ -240,6 +243,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     let lastWork = clock();
     let lastTelemetry = -Infinity;
     for (;;) {
+      if (!backgroundEnabled(writer)) return stop("disabled");
       if (!held || !beat()) return stop("lease-lost");
       const row = lease(writer);
       if (row.request === "exit") return stop("handover");

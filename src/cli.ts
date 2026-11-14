@@ -114,7 +114,8 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
     || commandName === "edit" || commandName === "wrong" || commandName === "forget"
     || commandName === "hints"
-    || commandName === "skills" || commandName === "install" || commandName === "uninstall";
+    || commandName === "skills" || commandName === "install" || commandName === "uninstall"
+    || commandName === "off" || commandName === "on" || commandName === "capture";
 }
 
 async function runBrowserCommand(options: { port?: number; open: boolean; mode?: string; setup?: boolean }): Promise<void> {
@@ -172,7 +173,8 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   let family = actionCommand;
   while (family.parent && family.parent !== program) family = family.parent;
   // Uninstall must not recreate the launcher or restart pending jobs.
-  if (family.name() === "uninstall" || (family.name() === "install" && family.opts().dryRun)) return;
+  if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture"
+    || (family.name() === "install" && family.opts().dryRun)) return;
   // Keep the hook shim's launcher pointing at this CLI.
   try {
     const { writeLauncher } = await import("./hooks/shim/launcher.js");
@@ -227,6 +229,34 @@ program.command("uninstall")
   .option("--json", "Print a machine-readable restoration summary")
   .action(async (options: { dryRun?: boolean; purge?: boolean; json?: boolean }) => {
     try { const { runUninstall } = await import("./install/cli.js"); await runUninstall(options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+
+program.command("off")
+  .description("Turn MEX off for this registered repo")
+  .option("--all", "Turn MEX off everywhere")
+  .option("--for <duration>", "Turn back on automatically after a duration such as 2h")
+  .option("--json", "Print the saved switch state")
+  .action(async (options: { for?: string; all?: boolean; json?: boolean }) => {
+    try { const { runCheckoutSwitch } = await import("./controls/cli.js"); runCheckoutSwitch(false, options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+
+program.command("on")
+  .description("Turn MEX back on for this registered repo")
+  .option("--all", "Clear global off; repo and session switches still apply")
+  .option("--json", "Print the saved switch state")
+  .action(async (options: { all?: boolean; json?: boolean }) => {
+    try { const { runCheckoutSwitch } = await import("./controls/cli.js"); runCheckoutSwitch(true, options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+
+program.command("capture <state>")
+  .description("Turn capture off or on without changing delivery")
+  .option("--all", "Change capture everywhere")
+  .option("--json", "Print the saved capture state")
+  .action(async (state: string, options: { all?: boolean; json?: boolean }) => {
+    try { const { runCaptureSwitch } = await import("./controls/cli.js"); runCaptureSwitch(state, options); }
     catch (error) { console.error((error as Error).message); process.exitCode = 1; }
   });
 

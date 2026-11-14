@@ -24,7 +24,7 @@ var caps = adapter.Capabilities{
 	Agent: Agent,
 	Kinds: []adapter.KindSupport{
 		{Kind: contract.SessionStart, NativeEvent: "SessionStart", Context: adapter.ChannelSystem, PersonLine: true, TimeoutSeconds: 10},
-		{Kind: contract.Prompt, NativeEvent: "UserPromptSubmit", Context: adapter.ChannelSystem, PersonLine: true, TimeoutSeconds: 10},
+		{Kind: contract.Prompt, NativeEvent: "UserPromptSubmit", Context: adapter.ChannelSystem, ConsumePrompt: true, PersonLine: true, TimeoutSeconds: 10},
 		{Kind: contract.PreTool, NativeEvent: "PreToolUse", Context: adapter.ChannelSystem, Deny: true, ReplaceInput: true, PersonLine: true, TimeoutSeconds: 10},
 		{Kind: contract.PostTool, NativeEvent: "PostToolUse", Context: adapter.ChannelToolResult, ReplaceOutput: true, PersonLine: true, TimeoutSeconds: 10},
 		{Kind: contract.PostToolFailure, NativeEvent: "PostToolUseFailure", Context: adapter.ChannelToolResult, PersonLine: true, TimeoutSeconds: 10},
@@ -232,6 +232,17 @@ func (pr Profile) Render(ev contract.Event, r contract.Reply) ([]byte, []string)
 		return pr.EmptyReply(support.NativeEvent), nil
 	}
 	var dropped []string
+	if r.ConsumePrompt {
+		if ev.Kind == contract.Prompt && support.ConsumePrompt {
+			// Consumed controls carry only a confirmation for the person.
+			b, err := json.Marshal(output{Decision: "block", Reason: r.PersonLine})
+			if err != nil {
+				return pr.EmptyReply(support.NativeEvent), []string{"consume_prompt"}
+			}
+			return append(b, '\n'), nil
+		}
+		dropped = append(dropped, "consume_prompt")
+	}
 	out := output{}
 	spec := &specificOutput{HookEventName: support.NativeEvent}
 
