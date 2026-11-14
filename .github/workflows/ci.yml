@@ -201,8 +201,10 @@ jobs:
     if: needs.changes.outputs.docs_only != 'true'
     # Filesystem containment, SQLite migration/locking, and packed-install
     # behavior must remain portable whenever local Team state or personal knowledge changes.
-    # Use the Intel macOS pool after ARM runner-capacity cancellations.
-    runs-on: ${{ matrix.os == 'macos-15' && 'macos-15-intel' || matrix.os }}
+    # Apple silicon runners (macos-15). The Intel pool took 5-11 minutes per part
+    # on the same commit; if arm64 capacity runs short again, route back to
+    # macos-15-intel here.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
