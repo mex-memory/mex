@@ -23,14 +23,27 @@ Renames consider both paths. Pushes run everything. PR runs replace older runs;
 pushes retain a verdict per commit. Windows temporary files and caches use the
 fast `RUNNER_TEMP` disk before setup actions restore caches.
 
-For a listed flake, rerun once and investigate a second failure. Otherwise treat
-a red check as a real failure and fix it. Do not widen assertions, raise budgets
-or add global retries.
+Treat a red check as a failure to investigate. If a test fails and passes on the
+same commit, fix its cause in the next PR touching it, or in a dedicated PR.
+A rerun is a temporary diagnostic, never the resolution. Do not widen product
+budgets, ignore unhandled errors or add blanket retries. These fixes use no retries.
 
-## Known flakes
+## Failures fixed
 
-Reserved for the reviewed list: test, same-commit failed/passed runs, tracking
-issue and narrow retry. No flakes are approved by this page yet.
+| Failure and evidence | Cause and fix |
+| --- | --- |
+| Vitest `onTaskUpdate` RPC timeout: seven jobs on 13 November; [failed](https://github.com/mex-memory/mex/actions/runs/43386214015/job/131755397141), [same-commit pass](https://github.com/mex-memory/mex/actions/runs/43386214015/job/131761722362) | The record interop test compiled its Go peer with a synchronous call. A cold compile blocks the Vitest worker past its 60-second RPC timer, so the run fails after every test has passed. A local 65-second synchronous child reproduces it; the async version passes. `next` already fixed the cause on 13 November: the interop compile became async, and the acknowledged runner waits for replies before fixture work. None has happened since. On top of that, the root jobs now set up Go with its cache, so the compile is fast, and the file-index parity test compiles asynchronously too. |
+| TLC `resource-limited` and premature test timeout: [failed](https://github.com/mex-memory/mex/actions/runs/43491181614/job/132112478879), [same-commit pass](https://github.com/mex-memory/mex/actions/runs/43491181614/job/132114145466) | The failed revisions launched a separate JVM with a five-second cap and abandoned checks at a 15-second test timeout. Current code records provenance in the checking JVM, fixes heap/CPU/workers at 512 MB/2/1, and lets the unchanged 60-second checker limit settle before the test hang guard. Ten real TLC checks pass locally, including cancellation and deliberate resource exhaustion. |
+| DNS blackhole cancellation: [failed](https://github.com/mex-memory/mex/actions/runs/43224152952/job/131202892032), [same-commit pass](https://github.com/mex-memory/mex/actions/runs/43224152952/job/131720565325) | A 150 ms wall-clock assertion measured scheduling delay. The real loopback DNS test now awaits and asserts the actual `ECANCELLED` callback, resolver cancellation, settled send and purged queue. The test hang guard remains; production deadlines are unchanged. |
+| Killed setup recovery: [macOS failure](https://github.com/mex-memory/mex/actions/runs/43388888751/job/131763793497), [Linux failure](https://github.com/mex-memory/mex/actions/runs/41837404813/job/126599777958) | Killing when the first scaffold file appeared raced remaining file writes. A child-only preload parks the real built CLI after scaffolding and before population. The test kills it there, then proves the same complete recovery and unique knowledge/grounding assertions. Windows tree cleanup is asynchronous and bounded, with direct owned-child termination if tree enumeration is denied. |
+| Counter timing sample loss: [macOS failure](https://github.com/mex-memory/mex/actions/runs/43580726558/job/132404735726) | Reopening the SQLite observer between calls added WAL/pager work. One read-only observer now releases each read transaction before the next hook; a separate test proves fresh reads and refused writes. The 200 persisted samples, 210-attempt ceiling and timing rules remain. Slower-machine counter loss outside this fixture remains a product problem, described below. |
+
+Historical record writer/migration/interop contention did not recur in the
+435 recorded jobs after the 13 November 18:14 UTC merge of the fixture-budget
+and readiness fixes (62 successful Go jobs, 43 successful root jobs). It is not
+an active flake or a retry exemption. Feature-branch assertion/package bugs are
+also excluded. Release performance had 24 failures in the history; it remains
+advisory on pushes/tags/manual runs, with no flake retry.
 
 ## Hook timing
 
@@ -41,6 +54,16 @@ current per-OS p50-overhead baseline lives in
 `max(2 * recorded overhead, recorded overhead + 3 ms, 5 ms)`. The release adapter
 clears report mode and budget overrides. A reported strict failure still needs
 product investigation even when ordinary CI passes.
+
+The counter write is best effort: a 10 ms opener/write deadline and 1 ms busy
+timeout can lose counts on slow storage. Windows CI measured about 5 ms extra
+at the median with counters (15.69 versus 10.47 ms); this is real work. Local
+profiling separates open/pragmas/schema/guard/insert/commit/close with
+`go test -v ./record -run '^$' -bench BenchmarkCounterPhases -benchtime=100x`
+from `native/`. The isolated opener still reported 98 deadlines in 100 cycles
+on the development machine. Keeping a timing observer open improves fixture
+mechanics; it does not certify standalone counter reliability or fix the storage
+design. Neither this cost nor strict timing failures qualify for a retry.
 
 ## Release path
 
