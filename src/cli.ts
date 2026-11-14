@@ -189,28 +189,29 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   } catch { /* never affects the command */ }
 });
 
+async function runRepoStartCommand(): Promise<void> {
+  try {
+    const { runRepoStart } = await import("./repo-start/command.js");
+    process.exitCode = (await runRepoStart()).exitCode;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
+
 program
   .name("mex")
-  .description("Project memory for your agents — open the Hub or use a CLI command")
+  .description("Project memory for your agents — run it in a repo to turn MEX on there")
   .version(VERSION)
   .showHelpAfterError()
-  .option("--port <n>", "Bind a specific loopback port", parsePortArg)
-  .option("--no-open", "Print the Hub link without opening a browser")
-  .action(async (opts: { port?: number; open: boolean }) => {
-    try {
-      showFirstRunNotice();
-      const { showUpdateNotice } = await import("./telemetry/updates.js");
-      await showUpdateNotice();
-      if (process.env.MEX_INSTALL_AUTO !== "0" && process.env.MEX_BACKGROUND !== "1") {
-        const { runInstall } = await import("./install/cli.js");
-        await runInstall();
-      }
-      const { resolveDefaultEntry } = await import("./setup/entry.js");
-      if (await resolveDefaultEntry() === "hub") await runBrowserCommand(opts);
-      else await runSetupCommand(opts);
-    } catch (error) {
-      await reportSetupCommandError(error);
-    }
+  // Kept for `mex hub`, which reads them as global options.
+  .option("--port <n>", "Bind a specific loopback port (with `mex hub`)", parsePortArg)
+  .option("--no-open", "Print the Hub link without opening a browser (with `mex hub`)")
+  .action(async () => {
+    showFirstRunNotice();
+    const { showUpdateNotice } = await import("./telemetry/updates.js");
+    await showUpdateNotice();
+    await runRepoStartCommand();
   });
 
 program.command("install")
@@ -315,36 +316,34 @@ program.addCommand(buildRelayCommand({
   io: processTeamCommandIo(),
 }));
 
-// ── Setup (terminal by default; explicit browser and read-only paths) ──
+// ── Setup: an alias of bare `mex`; the 0.8 flows stay reachable until they are removed ──
+const LEGACY_SETUP_FLAGS = ["legacy", "cli", "mode", "dryRun", "tool", "yes", "force"] as const;
 const setupCommand = program
   .command("setup")
-  .description("Set up MEX in the terminal; use --browser for browser setup")
-  .option("--cli", "Run setup in the terminal (the default)")
-  .addOption(new Option("--browser", "Run setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force"]))
-  .option("--mode <mode>", "Template mode: code-repo or agent-memory (preserves saved mode)")
-  .option("--dry-run", "Show what would happen without making changes")
-  .option("--port <n>", "Bind a specific loopback port", parsePortArg)
-  .option("--no-open", "Show the Hub link without opening a browser")
-  .option("--tool <tool>", "Terminal setup: preselect an AI tool (repeatable; none for no tool; --yes skips review)", (value: string, previous: string[] = []) => [...previous, value])
-  .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
-  .option("--force", "Terminal setup: run the full flow even when MEX is already set up here")
+  .description("Turn MEX on for this repo (the same as `mex`)")
+  .addOption(new Option("--legacy", "Run the 0.8 terminal setup").hideHelp())
+  .addOption(new Option("--cli", "0.8 terminal setup").hideHelp())
+  .addOption(new Option("--browser", "Run the 0.8 setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force", "legacy"]))
+  .addOption(new Option("--mode <mode>", "0.8 setup: template mode, code-repo or agent-memory").hideHelp())
+  .addOption(new Option("--dry-run", "0.8 setup: show what would happen without making changes").hideHelp())
+  .option("--port <n>", "With --browser: bind a specific loopback port", parsePortArg)
+  .option("--no-open", "With --browser: show the Hub link without opening a browser")
+  .addOption(new Option("--tool <tool>", "0.8 setup: preselect an AI tool").argParser((value: string, previous: string[] = []) => [...previous, value]).hideHelp())
+  .addOption(new Option("--yes", "0.8 setup: never wait on a question").hideHelp())
+  .addOption(new Option("--force", "0.8 setup: run the full flow").hideHelp())
   .addHelpText(
     "after",
-    "\nSetup modes:\n"
-      + "  Terminal (default, or --cli)  Runs setup in this terminal. --tool, --yes, --force and\n"
-      + "                                --dry-run apply only here.\n"
-      + "  Browser (--browser)           Runs setup in the local browser Hub. It cannot be combined\n"
-      + "                                with --cli, --tool, --yes, --force or --dry-run.\n"
-      + "\nOn a checkout that is already set up, setup reports its status and does no work;\n"
-      + "it finishes only what is missing otherwise. --force runs the full flow; authored\n"
-      + "files are always preserved.\n"
-      + "\n--no-open prints the Hub link instead of opening it in a browser. In the terminal\n"
-      + "mode this is the link to the finishing Hub page; in the browser mode it is the setup link.\n"
-      + "\nNo agent CLI MEX can launch? Paste one prompt into your agent instead: it runs\n"
-      + "`mex setup next --start` first, then does what it prints, until setup is complete.\n",
+    "\n`mex setup` does what `mex` does: it turns MEX on for this repo and shows what it\n"
+      + "found. `mex setup --browser` runs the 0.8 setup in the local browser Hub.\n",
   )
   .action(async (_opts, command: Command) => {
-    await runSetupCommand(command.optsWithGlobals());
+    const options = command.optsWithGlobals<Parameters<typeof runSetupCommand>[0] & { legacy?: boolean; cli?: boolean }>();
+    if (options.browser || LEGACY_SETUP_FLAGS.some(flag => (options as Record<string, unknown>)[flag] !== undefined)) {
+      await runSetupCommand(options);
+      return;
+    }
+    showFirstRunNotice();
+    await runRepoStartCommand();
   });
 
 setupCommand

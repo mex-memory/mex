@@ -39,8 +39,8 @@ afterEach(() => {
 
 describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReason ? ` (${skipReason})` : ""}`, { timeout: 35_000 }, () => {
   it.each([
-    { entry: "mex setup", command: ["setup"] },
-    { entry: "bare mex", command: [] },
+    { entry: "mex setup --legacy", command: ["setup", "--legacy"] },
+    { entry: "mex setup --cli", command: ["setup", "--cli"] },
   ])("$entry shows the ASCII banner and choices at 80x24 before any setup writes, then cancels cleanly", async ({ command }) => {
     const f = fixture("incomplete");
     // Without --mode both entries set up a code repository, which needs Git.
@@ -56,8 +56,8 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
   });
 
   it.each([
-    { entry: "mex setup", command: ["setup"] },
-    { entry: "bare mex", command: [] },
+    { entry: "mex setup --legacy", command: ["setup", "--legacy"] },
+    { entry: "mex setup --cli", command: ["setup", "--cli"] },
   ])("$entry in a folder without Git stops before the tool picker and writes nothing (#287)", async ({ command }) => {
     const f = fixture("incomplete");
     const result = await terminal(f, [], [], { columns: 80, rows: 24, command });
@@ -66,6 +66,23 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(result.output).not.toContain("Choose your AI tools");
     expect(readdirSync(f.project)).toEqual([]);
     expect(existsSync(f.record)).toBe(false);
+  });
+
+  it.each([
+    { entry: "bare mex", command: [] as string[] },
+    { entry: "mex setup", command: ["setup"] },
+  ])("$entry in a terminal draws the rich first screen at 80x24 and adds nothing to git", async ({ command }) => {
+    const f = fixture("incomplete");
+    Object.assign(f.env, { MEX_HOME: f.root, HOME: f.root, MEX_INSTALL_AUTO: "0", MEX_BACKGROUND: "0", MEX_OFFLINE: "1" });
+    delete f.env.CLAUDECODE; delete f.env.CODEX_THREAD_ID;
+    execFileSync("git", ["-c", "init.templateDir=", "init", "--quiet"], { cwd: f.project, stdio: "pipe", env: f.env });
+    const result = await terminal(f, [], [], { columns: 80, rows: 24, command });
+    expect(result.exitCode, result.output).toBe(0);
+    expect(result.output).toMatch(/MEX · project · \d+\.\d s · \$0 · nothing added to git/u);
+    expect(result.output).toContain("◌ The file index: in the background (`mex jobs`)");
+    expect(result.raw).toMatch(/\x1b\[/u);
+    expect(result.output).not.toContain("Choose your AI tools");
+    expect(spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: f.project, encoding: "utf8" }).stdout).toBe("");
   });
 
   it("Ctrl+D on the configuration screen cancels without creating files", async () => {

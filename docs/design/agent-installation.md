@@ -1,7 +1,7 @@
 # Machine-wide agent installation
 
-`mex` installs hooks for detected Claude Code and Codex CLIs before continuing
-to the existing project entry point. `mex install` retries installation or
+`mex` installs hooks for detected Claude Code and Codex CLIs, then turns MEX on
+for the repository it runs in and shows the first screen (`src/repo-start/`). `mex install` retries installation or
 updates it after an upgrade. `mex install --dry-run` lists destinations without
 creating a home, database, runtime or settings file. JSON summaries contain
 paths and actions, never settings contents or saved snapshots.
@@ -10,8 +10,23 @@ The installer owns only user-level agent hook entries, its stable runtime
 under the MEX home, and explicitly owned untracked prototype hook entries in
 the current repository. It never edits tracked files, grants Codex hook trust,
 changes hook policy switches, or launches an agent. Codex installations show
-one line directing the person to `/hooks`. Repo registration and the new setup
-screen are separate work; this slice retains the existing project entry flow.
+one line directing the person to `/hooks`, on the first screen of the run that
+changed the hooks.
+
+## Repository exclude blocks
+
+Turning a repository on adds one block to the repository's shared
+`info/exclude` file (found with `git rev-parse --git-path info/exclude`, so
+every worktree uses the same file). The block hides `/.mex/*` and un-hides only
+what `mex share` commits: `.mex/learned/`, `.mex/config.json`,
+`.mex/sources.json` and `.mex/native.json`. Tracked files are unaffected.
+
+Blocks are fenced by named markers (`# mex: <name> begin` / `# mex: <name> end`)
+so other MEX features keep separate blocks. Each change is journaled in the
+record's `installs` table (`exclude-v1:<name>`) before the file is written.
+`mex uninstall` restores a file that still holds exactly what MEX wrote to its
+earlier bytes, and from a file the person edited since removes only MEX's
+block.
 
 ## Destinations and commands
 

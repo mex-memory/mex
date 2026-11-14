@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ hub: vi.fn(), setup: vi.fn(), entry: vi.fn(), parseTools: vi.fn(), capture: vi.fn(), next: vi.fn() }));
+const mocks = vi.hoisted(() => ({ hub: vi.fn(), setup: vi.fn(), entry: vi.fn(), parseTools: vi.fn(), capture: vi.fn(), next: vi.fn(), repoStart: vi.fn() }));
+vi.mock("../src/repo-start/command.js", () => ({ runRepoStart: mocks.repoStart }));
 vi.mock("../src/hub/command.js", () => ({ launchHub: mocks.hub }));
 vi.mock("../src/setup/index.js", () => ({ runSetup: mocks.setup, parseSetupTools: mocks.parseTools }));
 vi.mock("../src/setup/entry.js", () => ({ resolveDefaultEntry: mocks.entry, findSetupProjectRoot: () => "/project" }));
@@ -13,6 +14,7 @@ beforeEach(() => {
   vi.resetModules(); vi.clearAllMocks(); vi.stubEnv("MEX_TELEMETRY", "0");
   mocks.setup.mockResolvedValue({ outcome: "complete", message: "Setup complete.", exitCode: 0 });
   mocks.entry.mockResolvedValue("setup");
+  mocks.repoStart.mockResolvedValue({ exitCode: 0, place: "git" });
   mocks.parseTools.mockImplementation((tools: string[]) => tools.includes("none") ? [] : tools);
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); process.exitCode = 0; });
@@ -22,7 +24,7 @@ describe("setup entry points", () => {
     const prompts = await import("../src/agent-prompt.js");
     const cleanup = vi.spyOn(prompts, "cleanupStaleSetupPrompts");
     const { program } = await import("../src/cli.js");
-    await program.parseAsync(["setup"], { from: "user" });
+    await program.parseAsync(["setup", "--legacy"], { from: "user" });
     expect(mocks.setup).toHaveBeenCalledOnce();
     expect(cleanup).not.toHaveBeenCalled();
   });
@@ -53,21 +55,18 @@ describe("setup entry points", () => {
     expect(mocks.entry).not.toHaveBeenCalled();
   });
 
-  it.each(["setup", "hub"] as const)("opens the correct default surface for a checkout needing %s", async (entry) => {
-    mocks.entry.mockResolvedValue(entry);
+  it.each([[[]], [["setup"]], [["--no-open", "--port", "48123"]]] as const)("turns the repo on for %j without the 0.8 setup or the Hub", async (args) => {
+    mocks.repoStart.mockResolvedValue({ exitCode: 1, place: "refused" });
     const { program } = await import("../src/cli.js");
-    await program.parseAsync(["--no-open", "--port", "48123"], { from: "user" });
-    expect(mocks.entry).toHaveBeenCalledExactlyOnceWith();
-    if (entry === "setup") {
-      expect(mocks.setup).toHaveBeenCalledExactlyOnceWith({ dryRun: undefined, mode: undefined, port: 48123, openBrowser: false });
-      expect(mocks.hub).not.toHaveBeenCalled();
-    } else {
-      expect(mocks.hub).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: 48123, openBrowser: false }));
-      expect(mocks.setup).not.toHaveBeenCalled();
-    }
+    await program.parseAsync([...args], { from: "user" });
+    expect(mocks.repoStart).toHaveBeenCalledExactlyOnceWith();
+    expect(process.exitCode).toBe(1);
+    expect(mocks.setup).not.toHaveBeenCalled();
+    expect(mocks.hub).not.toHaveBeenCalled();
+    expect(mocks.entry).not.toHaveBeenCalled();
   });
 
-  it.each([["setup"], ["setup", "--cli"], ["setup", "--dry-run"], ["setup", "--mode", "agent-memory"]])("uses terminal setup for %j", async (...args) => {
+  it.each([["setup", "--legacy"], ["setup", "--cli"], ["setup", "--dry-run"], ["setup", "--mode", "agent-memory"]])("uses the 0.8 terminal setup for %j", async (...args) => {
     const { program } = await import("../src/cli.js");
     await program.parseAsync(args, { from: "user" });
     expect(mocks.setup).toHaveBeenCalledExactlyOnceWith({
@@ -89,18 +88,16 @@ describe("setup entry points", () => {
     expect(mocks.setup).not.toHaveBeenCalled();
   });
 
-  it("describes both setup modes, the browser conflicts, and --no-open in --help (#275)", async () => {
+  it("describes setup as the alias of `mex`, keeps --browser and hides the 0.8 terminal flags in --help", async () => {
     const { program } = await import("../src/cli.js");
     const command = program.commands.find(command => command.name() === "setup")!;
     let help = "";
     command.configureOutput({ writeOut: (text) => { help += text; } });
     command.outputHelp();
-    expect(help).toContain("Setup modes:");
-    expect(help).toContain("Terminal (default, or --cli)");
-    expect(help).toContain("Browser (--browser)");
-    expect(help.replace(/\s+/g, " ")).toContain("It cannot be combined with --cli, --tool, --yes, --force or --dry-run.");
-    expect(help.replace(/\s+/g, " ")).toContain("On a checkout that is already set up, setup reports its status and does no work;");
-    expect(help).toContain("--no-open prints the Hub link instead of opening it in a browser.");
+    expect(help).toContain("Turn MEX on for this repo (the same as `mex`)");
+    expect(help).toContain("--browser");
+    expect(help).toContain("--no-open");
+    for (const hidden of ["--legacy", "--cli", "--tool", "--yes", "--force", "--dry-run", "--mode"]) expect(help).not.toContain(hidden);
   });
 
   it("passes --force to terminal setup so a set-up checkout reruns the full flow (#284)", async () => {
@@ -131,14 +128,14 @@ describe("setup entry points", () => {
   ])("maps the %s result to its exit code", async (outcome, exitCode) => {
     const { program } = await import("../src/cli.js");
     mocks.setup.mockResolvedValue({ outcome, exitCode, message: "Setup result." });
-    await program.parseAsync(["setup"], { from: "user" });
+    await program.parseAsync(["setup", "--legacy"], { from: "user" });
     expect(process.exitCode).toBe(exitCode);
   });
 
-  it("handles a failed bare-command inspection without starting setup or the Hub", async () => {
+  it("reports a failed bare command without starting the 0.8 setup or the Hub", async () => {
     const { program } = await import("../src/cli.js");
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    mocks.entry.mockRejectedValue(new Error("Could not inspect the project."));
+    mocks.repoStart.mockRejectedValue(new Error("Could not inspect the project."));
     await program.parseAsync([], { from: "user" });
     expect(process.exitCode).toBe(1);
     expect(error).toHaveBeenCalledWith("Could not inspect the project.");

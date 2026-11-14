@@ -802,6 +802,8 @@ describe("no unscoped scaffold writes", () => {
       "src/record/hook-checkouts.ts": "writes and removes only the hook checkout mirrors under the machine record directory; never a repo file",
       "src/record/job-kinds.ts": "appends only to the trace file a demo job is given (demo and test runs); never a repo file",
       "src/record/location.ts": "publishes only the machine record location pointer and creates machine/project data directories; never Wiki Markdown",
+      "src/repo-start/exclude.ts": "writes only MEX's own named, journaled blocks in a repository's git info/exclude file, atomically, and restores them on uninstall; never a tracked file",
+      "src/repo-start/facts.ts": "atomically writes only the derived setup facts files (setup.json, recipes.json, code-facts.json) under the machine record's project folder; never a repo file",
       "src/setup/anchor.ts": "edits root tool configs only, never .mex/, and only inside its own markers",
       "src/setup/global-install.ts": "removes only the private temporary npm working directory after the owned global installation finishes",
       "src/setup/headless-population.ts": "creates and removes only its own byte-exact Cursor permission file while background sessions run; never a user's file",
