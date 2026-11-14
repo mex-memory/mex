@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { entry } from "./fixtures.js";
+import type { KnowledgeEntry } from "../entry.js";
 import { areaOf, isBroad, selectNative, type Candidate } from "../native-select.js";
 
 const team = (e: KnowledgeEntry): Candidate => ({ level: "team", entry: e });
