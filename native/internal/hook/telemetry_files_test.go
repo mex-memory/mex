@@ -68,7 +68,11 @@ func TestHookTelemetryRefusesHardLinkedDatabaseFiles(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_, err = db.ExecContext(ctx, "PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;\n"+string(schema)+fmt.Sprintf("\nPRAGMA user_version=%d; COMMIT;", localrecord.SchemaVersion))
+			second, readErr := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0002_delivery.sql"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			_, err = db.ExecContext(ctx, "PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;\n"+string(schema)+string(second)+fmt.Sprintf("\nPRAGMA user_version=%d; COMMIT;", localrecord.SchemaVersion))
 			cancel()
 			if err != nil {
 				t.Fatal(err)

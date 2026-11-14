@@ -14,6 +14,7 @@
       "files": [
         {
           "path": "/home/dev/shop/src/cart.ts",
+          "kind": "update",
           "hunks": [
             {
               "old": "  return sum;\n",
@@ -23,6 +24,7 @@
         },
         {
           "path": "/home/dev/shop/src/discount.ts",
+          "kind": "add",
           "hunks": [
             {
               "old": "",
@@ -32,10 +34,12 @@
         },
         {
           "path": "/home/dev/shop/src/old.ts",
+          "kind": "update",
           "hunks": []
         },
         {
           "path": "/home/dev/shop/src/new.ts",
+          "kind": "add",
           "hunks": []
         }
       ]

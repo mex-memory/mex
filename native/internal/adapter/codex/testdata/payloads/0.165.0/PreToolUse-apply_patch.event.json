@@ -14,6 +14,7 @@
       "files": [
         {
           "path": "C:/mex-test-tmp/f03/live/crepo/calc.py",
+          "kind": "update",
           "hunks": [
             {
               "old": "def add(a, b):\n    return a + b\n",

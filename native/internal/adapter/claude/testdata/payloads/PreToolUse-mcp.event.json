@@ -7,6 +7,7 @@
   "cwd": "/home/dev/shop",
   "project_id": "",
   "checkout": "",
+  "agent_type": "Explore",
   "tool": {
     "name": "other",
     "raw_name": "mcp__github__get_issue",

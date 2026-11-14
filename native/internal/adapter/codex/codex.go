@@ -63,6 +63,8 @@ type payload struct {
 	Cwd            string          `json:"cwd"`
 	AgentID        string          `json:"agent_id"`
 	Source         string          `json:"source"`
+	Model          string          `json:"model"`
+	AgentType      string          `json:"agent_type"`
 	Prompt         string          `json:"prompt"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
@@ -91,6 +93,8 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 	switch kind {
 	case contract.SessionStart:
 		ev.Source = p.Source
+		ev.Model = p.Model
+		ev.AgentType = p.AgentType
 	case contract.Prompt:
 		// Codex doesn't say whether a prompt was typed or pasted.
 		ev.Prompt = &contract.PromptIn{Text: p.Prompt, Typed: true}
@@ -151,13 +155,13 @@ func commandString(raw json.RawMessage) string {
 func patchFiles(patch []shellparse.PatchFile) []contract.PatchFile {
 	files := make([]contract.PatchFile, 0, len(patch))
 	for _, f := range patch {
-		pf := contract.PatchFile{Path: f.Path, Hunks: []contract.Hunk{}}
+		pf := contract.PatchFile{Path: f.Path, Kind: string(f.Kind), Hunks: []contract.Hunk{}}
 		for _, c := range f.Chunks {
 			pf.Hunks = append(pf.Hunks, contract.Hunk{Old: joinLines(c.Before), New: joinLines(c.After)})
 		}
 		files = append(files, pf)
 		if f.MoveTo != "" {
-			files = append(files, contract.PatchFile{Path: f.MoveTo, Hunks: []contract.Hunk{}})
+			files = append(files, contract.PatchFile{Path: f.MoveTo, Kind: "add", Hunks: []contract.Hunk{}})
 		}
 	}
 	return files

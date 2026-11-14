@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
-import { makePlan, authorize, requireEvidence, optionalFor, TARGETS } from './plan.mjs';
+import { makePlan, authorize, requireEvidence, optionalFor, packageNameFor, TARGETS } from './plan.mjs';
+import { platformPackageName } from '../../src/hooks/shim/binary.ts';
 import { checkManifest, verifyBundle } from './bundle.mjs';
 import { publishBundle, githubReleaseArgs } from './publish.mjs';
 import { localRegistry } from './registry.mjs';
@@ -14,6 +15,22 @@ const commit = 'a'.repeat(40), version = '0.9.0-beta.1';
 const input = (extra = {}) => ({ event: 'pull_request', version, commit, platformVersions: Array(6).fill(extra.version || version), ...extra });
 const plan = makePlan(input());
 const passing = { result: 'success', commit };
+
+test('release artifacts and optional dependencies match the shipped platform resolver and manifests', () => {
+  const optional = optionalFor(version);
+  for (const entry of plan.packages.filter((entry) => entry.target)) {
+    const [os, cpu] = entry.target.split('-');
+    const manifest = JSON.parse(readFileSync(new URL(`../../${entry.directory}/package.json`, import.meta.url)));
+    assert.equal(entry.name, platformPackageName(os, cpu));
+    assert.equal(manifest.name, entry.name);
+    assert.deepEqual(manifest.os, [os]);
+    assert.deepEqual(manifest.cpu, [cpu]);
+    assert.equal(entry.file, `${manifest.name}-${version}.tgz`);
+    assert.equal(optional[manifest.name], version);
+  }
+  assert.equal(optional['mex-agent-hook-windows-x64'], version);
+  assert.equal(Object.hasOwn(optional, 'mex-agent-hook-win32-x64'), false);
+});
 
 test('tags must match all seven versions and select exact dist-tags', () => {
   for (const v of ['0.9.0-beta.1', '0.9.0-beta.2', '0.9.0-rc.3', '0.9.0']) {
@@ -83,7 +100,7 @@ test('tampered bundle checksum fails before extraction or publishing', async () 
   await assert.rejects(verifyBundle(directory, plan), /checksum/);
 });
 
-test('read-only registry gives npm all six choices and npm installs only the host', async () => {
+test('read-only registry installs only the selected platform, including renamed Windows x64', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'mex-release-registry-'));
   for (const entry of plan.packages) {
     const source = join(directory, entry.name); mkdirSync(join(source, 'package'), { recursive: true });
@@ -95,13 +112,16 @@ test('read-only registry gives npm all six choices and npm installs only the hos
   try {
     const metadata = await (await fetch(registry.origin + '/mex-agent')).json();
     assert.equal(Object.keys(metadata.versions[version].optionalDependencies).length, 6);
-    const project = join(directory, 'consumer'); mkdirSync(project); writeFileSync(join(project, 'package.json'), '{"private":true}');
-    await npm(['install', `mex-agent@${version}`, '--registry', registry.origin, '--cache', join(directory, 'cache'), '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: project, env: npmEnvironment() });
-    const lock = JSON.parse(readFileSync(join(project, 'package-lock.json')));
-    assert.equal(lock.packages['node_modules/mex-agent'].version, version);
-    // npm may keep unsupported optional metadata in the lock; actual install is decisive.
-    const installed = TARGETS.filter((target) => { try { readFileSync(join(project, 'node_modules/mex-agent-hook-' + target + '/package.json')); return true; } catch { return false; } });
-    assert.deepEqual(installed, [`${process.platform}-${process.arch}`]);
+    for (const selected of new Set([`${process.platform}-${process.arch}`, 'win32-x64'])) {
+      const [os, cpu] = selected.split('-');
+      const project = join(directory, 'consumer-' + selected); mkdirSync(project); writeFileSync(join(project, 'package.json'), '{"private":true}');
+      await npm(['install', `mex-agent@${version}`, '--os', os, '--cpu', cpu, '--registry', registry.origin, '--cache', join(directory, 'cache'), '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: project, env: npmEnvironment() });
+      const lock = JSON.parse(readFileSync(join(project, 'package-lock.json')));
+      assert.equal(lock.packages['node_modules/mex-agent'].version, version);
+      // npm may keep unsupported optional metadata in the lock; actual install is decisive.
+      const installed = TARGETS.filter((target) => { try { readFileSync(join(project, 'node_modules', packageNameFor(target), 'package.json')); return true; } catch { return false; } });
+      assert.deepEqual(installed, [selected]);
+    }
   } finally { await registry.close(); }
 });
 
