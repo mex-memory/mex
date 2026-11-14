@@ -109,6 +109,11 @@ files, and keeps edited generated files when their ownership cannot be verified.
 
 `mex share` takes a person from solo to shared in one command.
 
+Notes with checks are evaluated against current files before they are offered,
+then checked again against the default branch in the temporary worktree before
+any entry is written. A cached verdict cannot authorize sharing. Config and
+source inventories are published as complete atomic replacements.
+
 1. **Preview** (`mex share`): your personal notes that are active, backed by
    strong evidence, not broken or changed, and not already on the default
    branch, strongest and broadest first. Notes that fail the share checks are

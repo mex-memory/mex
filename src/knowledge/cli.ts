@@ -212,7 +212,7 @@ export function buildKnowledgeCommands(): Command[] {
       if (waiting) throw new KnowledgeError("SHARE_IN_PROGRESS", `A share to ${waiting.branch} stopped at "${waiting.step}". Run mex share --finish or mex share --discard.`);
       if (opts.apply) {
         if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the share with mex share, then pass --apply --expect <revision>.");
-        const done = runShare(options, opts.expect, { pr: opts.pr });
+        const done = runShare(options, opts.expect, { pr: opts.pr, skip: opts.skip });
         print(done, `Shared ${done.entries.length} entries on ${done.branch} (${done.files.length} files). Your branch wasn't touched.\n${nextStep(done)}`);
         return;
       }
@@ -235,11 +235,9 @@ function nextStep(done: { branch: string; pr?: string }): string {
 
 /** Shared rule files change in the same working-tree change as the team entry. */
 async function sharedRuleFiles(options: { projectPath: string }): Promise<string[]> {
-  try {
-    const { rebuildNative } = await import("./native.js");
-    const result = rebuildNative(options, { sharedOnly: true, force: true });
-    return [...result.written ?? [], ...result.removed ?? []];
-  } catch { return []; }
+  const { rebuildNative } = await import("./native.js");
+  const result = rebuildNative(options, { sharedOnly: true, force: true });
+  return [...result.written ?? [], ...result.removed ?? []];
 }
 
 /** Personal note changes reach the hidden local rule files between sessions. */
