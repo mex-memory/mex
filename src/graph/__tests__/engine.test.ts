@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../storage.js";
 // ============================================================================
 // mex code-graph — end-to-end engine test
 // ============================================================================
@@ -90,7 +91,7 @@ describe("GraphEngine build + reads", () => {
   });
 
   it("keeps the external-content FTS index consistent after duplicate node ids", () => {
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       const nodes = db.prepare("SELECT COUNT(*) AS count FROM nodes").get() as { count: number };
       const indexed = db.prepare("SELECT COUNT(*) AS count FROM nodes_fts_docsize").get() as { count: number };
@@ -121,7 +122,7 @@ describe("GraphEngine build + reads", () => {
   });
 
   it("retains grounding fingerprints and body hashes for public and private properties", () => {
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       const fingerprints = new FingerprintStore(db);
       for (const name of ["_basePath", "#req"]) {
@@ -151,7 +152,7 @@ describe("GraphEngine build + reads", () => {
   });
 
   it("writes a schema_versions row (migration safety)", () => {
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       expect(readSchemaVersion(db)).toBe(DB_SCHEMA_VERSION);
     } finally {
@@ -169,7 +170,7 @@ describe("GraphEngine build + reads", () => {
     const route = engine.searchNodes("health").find((node) => node.kind === "route");
     const handlerId = findId("healthHandler");
     expect(route).toBeDefined();
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       expect(db.prepare("SELECT kind, provenance FROM edges WHERE source = ? AND target = ?")
         .get(route!.id, handlerId)).toMatchObject({ kind: "references", provenance: "framework" });
@@ -180,7 +181,7 @@ describe("GraphEngine build + reads", () => {
     const route = engine.searchNodes("POST /imported").find((node) => node.kind === "route");
     const handlerId = findId("importedHandler");
     expect(route).toBeDefined();
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       expect(db.prepare(
         "SELECT kind, provenance, confidence, resolution_method FROM edges WHERE source = ? AND target = ?",

@@ -1,3 +1,5 @@
+import { currentGraphPath } from "../../graph/storage.js";
+import { plantGraph } from "../../graph/__tests__/plant-graph.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -508,18 +510,18 @@ function insertNode(db: ReturnType<typeof openGraphDatabase>, id: string, file: 
 }
 
 function buildFixtureGraph(root: string, files: string[]): void {
-  const mex = join(root, ".mex");
-  mkdirSync(mex, { recursive: true });
-  const db = openGraphDatabase(join(mex, "graph.db"));
-  try {
-    const insertFile = db.prepare("INSERT INTO files (path, content_hash, language, size, modified_at, indexed_at) VALUES (?, 'h', 'typescript', 1, 0, 0)");
-    for (const file of files) {
-      insertFile.run(file);
-      insertNode(db, `fn:${file}`, file);
+  plantGraph(root, (graphFile) => {
+    const db = openGraphDatabase(graphFile);
+    try {
+      const insertFile = db.prepare("INSERT INTO files (path, content_hash, language, size, modified_at, indexed_at) VALUES (?, 'h', 'typescript', 1, 0, 0)");
+      for (const file of files) {
+        insertFile.run(file);
+        insertNode(db, `fn:${file}`, file);
+      }
+    } finally {
+      db.close();
     }
-  } finally {
-    db.close();
-  }
+  });
 }
 
 describe("graph-backed plan", () => {
@@ -538,7 +540,7 @@ describe("graph-backed plan", () => {
     const root = tempRoot();
     expect(readGraphSubsystemInputs(root)).toBeNull();
     mkdirSync(join(root, ".mex"), { recursive: true });
-    writeFileSync(join(root, ".mex", "graph.db"), "not a database");
+    plantGraph(root, "not a database");
     expect(readGraphSubsystemInputs(root)).toBeNull();
   });
 });

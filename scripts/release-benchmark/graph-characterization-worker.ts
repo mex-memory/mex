@@ -26,7 +26,7 @@ process.on("message", async (message: { mode?: string }) => {
     }
     const beforeCpu = process.cpuUsage();
     const start = performance.now();
-    graph = createGraphEngine({ rootDir: root, dbPath: join(root, ".mex", "graph.db") });
+    graph = createGraphEngine({ rootDir: root });
     const result = message.mode === "build"
       ? await graph.build()
       : await graph.sync(message.mode === "changed" ? ["packages/p0/module-0.ts"] : []);

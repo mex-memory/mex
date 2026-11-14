@@ -34,7 +34,7 @@ const buildResult = z.object({
   health: z.object({ ok: count, partial: count, failed: count }).strict().optional(),
   skipped: z.array(z.object({
     filePath: text,
-    reason: z.literal("corpus-limit"),
+    reason: z.enum(["corpus-limit", "binary", "unreadable", "missing"]),
     limit: text,
     limitBytes: count,
     observedBytes: count.optional(),

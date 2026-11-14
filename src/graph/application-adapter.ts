@@ -1,3 +1,4 @@
+import { currentGraphPath } from "./storage.js";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type {
@@ -252,13 +253,14 @@ export interface RepositoryGraphPortOptions {
  */
 export class RepositoryGraphPort implements GraphPort {
   readonly #projectRoot: string;
-  readonly #dbPath: string;
+  readonly #explicitDbPath: string | undefined;
+  get #dbPath(): string { return this.#explicitDbPath ?? currentGraphPath(this.#projectRoot); }
   readonly #deps: AdapterDependencies;
   readonly #candidateExecution?: "process";
 
   constructor(projectRoot: string, options: RepositoryGraphPortOptions = {}) {
     this.#projectRoot = resolve(projectRoot);
-    this.#dbPath = options.dbPath ?? resolve(this.#projectRoot, ".mex", "graph.db");
+    this.#explicitDbPath = options.dbPath;
     this.#candidateExecution = options.candidateExecution;
     this.#deps = {
       inspectStatus: options.__internal?.inspectStatus ?? inspectGraphStatus,

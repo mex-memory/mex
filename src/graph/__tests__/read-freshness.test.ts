@@ -1,5 +1,8 @@
+import { currentGraphPath } from "../storage.js";
+import { plantGraph } from "./plant-graph.js";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -68,33 +71,32 @@ describe("graph read freshness equivalence", () => {
     await build(root); expect((await compare(root)).status).toBe("fresh");
     rmSync(join(root, ".mex/config.json")); expect((await compare(root)).status).not.toBe("fresh");
   });
-  it("hashes source hidden from Git by an ignore rule", async () => {
-    const root = await fixture(); put(root, ".gitignore", ".mex/\nignored.py\n");
+  it("leaves source hidden by .gitignore out of the graph and out of freshness", async () => {
+    const root = await fixture(); put(root, ".gitignore", "ignored.py\n");
     put(root, "ignored.py", original); await build(root);
     expect((await compare(root)).status).toBe("fresh");
-    expect(git(root, "status", "--porcelain")).not.toContain("ignored.py");
-    const before = statSync(join(root, "ignored.py")); put(root, "ignored.py", changed);
-    expect(statSync(join(root, "ignored.py")).mtimeMs).toBe(before.mtimeMs);
-    const status = await compare(root); expect(status.status).not.toBe("fresh");
-    expect(status.changes.modified).toContain("ignored.py");
+    put(root, "ignored.py", changed);
+    expect((await compare(root)).status).toBe("fresh");
+    const loaded = await loadFreshGraphReadSession(root);
+    try { expect(loaded.session!.graph.coverageFor("ignored.py")).toEqual({ indexed: false, reason: "excluded" }); }
+    finally { loaded.session?.close(); }
   });
   it("walks a non-Git repository and detects restored-mtime edits", async () => {
     const root = await fixture(false); await compare(root);
     const before = statSync(join(root, "src/a.py")); put(root, "src/a.py", changed); utimesSync(join(root, "src/a.py"), before.atime, before.mtime);
     expect((await compare(root)).status).not.toBe("fresh");
   });
-  it("revokes an open read when the database is replaced", async () => {
-    const root = await fixture(); const path = join(root, ".mex/graph.db");
-    const saved = join(root, ".mex/replacement.db"); copyFileSync(path, saved);
+  it("revokes an open read when another graph is published", async () => {
+    const root = await fixture(); const saved = readFileSync(currentGraphPath(root));
     const loaded = await loadFreshGraphReadSession(root); expect(loaded.session).not.toBeNull();
     try {
-      const later = new Date(Date.now() + 2000); copyFileSync(saved, path); utimesSync(path, later, later);
-      expect(await loaded.session!.revalidateFreshness()).toMatchObject({ valid: false, code: "GRAPH_INDEX_READER_SNAPSHOT_CHANGED" });
+      plantGraph(root, saved);
+      expect(await loaded.session!.revalidateFreshness()).toMatchObject({ valid: false });
     } finally { loaded.session?.close(); }
   });
   it("revokes an open read when the graph is rebuilt", async () => {
     const root = await fixture(); const loaded = await loadFreshGraphReadSession(root); expect(loaded.session).not.toBeNull();
-    try { put(root, "src/a.py", changed); await build(root); expect(await loaded.session!.revalidateFreshness()).toMatchObject({ valid: false, code: "GRAPH_INDEX_READER_SNAPSHOT_CHANGED" }); }
+    try { put(root, "src/a.py", changed); await build(root); expect(await loaded.session!.revalidateFreshness()).toMatchObject({ valid: false, code: "GRAPH_INDEX_READER_DATABASE_CHANGED" }); }
     finally { loaded.session?.close(); }
   });
   it("matches the full-walk verdict after every seeded random edit", async () => {

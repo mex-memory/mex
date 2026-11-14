@@ -67,9 +67,10 @@ describe("oversized files do not abort a graph build", () => {
       await engine.build();
       // The skipped file is absent from the staged corpus by design, so naming
       // it as changed must not read as a source that disappeared mid-build.
-      const result = await engine.sync(["src/generated.ts"]);
-
-      expect(result.skipped?.map((file) => file.filePath)).toEqual(["src/generated.ts"]);
+      await expect(engine.sync(["src/generated.ts"])).resolves.toBeDefined();
+      const reader = createGraphEngine({ rootDir: root, readOnly: true });
+      try { expect(reader.coverageFor("src/generated.ts")).toEqual({ indexed: false, reason: "too big" }); }
+      finally { reader.close(); }
     } finally {
       engine.close();
     }

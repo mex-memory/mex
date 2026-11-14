@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../graph/storage.js";
 /**
  * Setup binds each ordinary scoped freshness proof to the graph file and HEAD
  * for the population phase. Every apply proves its linked source bytes again;
@@ -18,7 +19,7 @@ export interface SetupGraphFreshness {
 }
 
 /** The graph file as the reader binds it, and Git HEAD. */
-export function graphIdentity(projectRoot: string, dbPath = resolve(projectRoot, ".mex", "graph.db")): string | null {
+export function graphIdentity(projectRoot: string, dbPath = currentGraphPath(projectRoot)): string | null {
   let file: string;
   try {
     const stats = statSync(dbPath);
@@ -44,7 +45,7 @@ export function createSetupGraphFreshness(projectRoot: string, dependencies: {
   let audited: Pick<InternalGraphFreshObservationToken, "canonicalDbPath" | "databaseIdentity"> | null = null;
   let changed = false;
   const loadFresh: typeof loadFreshGraphReadSession = async (projectRootArg, options = {}) => {
-    const dbPath = options.dbPath ?? resolve(projectRootArg, ".mex", "graph.db");
+    const dbPath = options.dbPath ?? currentGraphPath(projectRootArg);
     const identity = graphIdentity(root, dbPath);
     if (previous !== undefined && identity !== previous) {
       changed = true;

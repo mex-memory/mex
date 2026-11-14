@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../storage.js";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -68,7 +69,7 @@ describe("Rust graph discovery", () => {
     const inspect = engine.searchNodes("inspect").find((node) => node.name === "inspect")!;
     expect(engine.getCallees(repeat.id).map((node) => node.id)).toContain(repeat.id);
     expect(engine.getCallees(inspect.id)).toEqual([]);
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       expect(db.prepare("SELECT reference_name, receiver, status FROM unresolved_refs WHERE from_node_id = ? AND reference_kind = 'calls'")
         .get(inspect.id)).toMatchObject({ reference_name: "other.repeat", receiver: "other", status: "unresolved" });
@@ -86,7 +87,7 @@ describe("Rust graph discovery", () => {
 
   it("includes new Rust files in incremental change discovery", () => {
     writeFileSync(join(root, "added.rs"), "pub fn added() {}\n");
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       expect(findChangedSourceFiles(root, db)).toContain("added.rs");
     } finally {
@@ -108,7 +109,7 @@ describe("Rust graph discovery", () => {
     ]));
     const aliasCaller = engine.searchNodes("invoke_alias").find((node) => node.name === "invoke_alias")!;
     expect(engine.getCallees(aliasCaller.id).map((node) => node.id)).toContain(target!.id);
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       expect(db.prepare(
         `SELECT local_name, imported_name, resolved_file_path, target_id FROM import_bindings

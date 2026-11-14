@@ -1,3 +1,6 @@
+import { assertTextSource, unavailableFileReason } from "./source-errors.js";
+import { collectGraphGarbage, graphLocation, graphStoragePathAllowed, withGraphStorageContext } from "./storage.js";
+import { currentGraphPath } from "./storage.js";
 import { discoverGraphReadPaths } from "./read-discovery.js";
 import { Glob, Ignore } from "glob";
 import { createHash } from "node:crypto";
@@ -13,7 +16,7 @@ import {
   statSync,
 } from "node:fs";
 import { lstat as lstatAsync, open as openAsync } from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSameResolvedPath, resolveRealPath, resolveRealPathAsync } from "../paths.js";
 import { promisify } from "node:util";
 import type {
@@ -478,10 +481,25 @@ export async function inspectGraphStatus(
 export async function inspectGraphStatusWithFreshObservation(
   options: InspectGraphStatusOptions,
 ): Promise<InternalGraphStatusInspection> {
+  return withGraphStorageContext(() => inspectGraphStatusInContext(options));
+}
+/**
+ * The published graph, or, when the index folder is unsafe (a link above it),
+ * a path inside it that the containment check below refuses with a diagnostic.
+ */
+function statusGraphPath(projectRoot: string): string {
+  try { return currentGraphPath(projectRoot); }
+  catch (error) {
+    if ((error as Error).message !== "Unsafe graph directory") throw error;
+    return join(graphLocation(projectRoot).directory, "graph-missing.db");
+  }
+}
+async function inspectGraphStatusInContext(options: InspectGraphStatusOptions): Promise<InternalGraphStatusInspection> {
   const projectRoot = resolve(options.projectRoot);
+  if (!options.dbPath) { try { collectGraphGarbage(graphLocation(projectRoot)); } catch { /* The inspector reports unavailable or unsafe roots below. */ } }
   const requestedDbPath = options.dbPath
     ? (isAbsolute(options.dbPath) ? resolve(options.dbPath) : resolve(projectRoot, options.dbPath))
-    : resolve(projectRoot, ".mex", "graph.db");
+    : statusGraphPath(projectRoot);
   const context: InspectionContext = {
     options,
     projectRoot,
@@ -1297,7 +1315,7 @@ function resolveContainedDatabasePath(
   projectRoot: string,
   requestedPath: string,
 ): ContainedDatabaseResult {
-  if (!isPathContained(projectRoot, requestedPath)) {
+  if (!isPathContained(projectRoot, requestedPath) && !graphStoragePathAllowed(projectRoot, requestedPath)) {
     return { database: undefined, diagnostic: containmentDiagnostic("GRAPH_INDEX_PATH_OUTSIDE_PROJECT") };
   }
   let projectRootRealPath: string;
@@ -1357,7 +1375,7 @@ function resolveContainedDatabasePath(
       };
     }
   }
-  if (!isPathContained(projectRootRealPath, canonicalPath)) {
+  if (!isPathContained(projectRootRealPath, canonicalPath) && !graphStoragePathAllowed(projectRoot, canonicalPath)) {
     return { database: undefined, diagnostic: containmentDiagnostic("GRAPH_INDEX_PATH_OUTSIDE_PROJECT") };
   }
   return {
@@ -1893,7 +1911,7 @@ function readStableContainedUtf8File(
     );
   }
   const canonicalPath = resolveRealPath(absolutePath);
-  if (!isPathContained(projectRootRealPath, canonicalPath)) {
+  if (!isPathContained(projectRootRealPath, canonicalPath) && !graphStoragePathAllowed(projectRoot, canonicalPath)) {
     throw containedFileError(
       "GRAPH_CONTAINED_FILE_OUTSIDE_PROJECT",
       "The resolved file target escapes the project root.",
@@ -1967,7 +1985,7 @@ async function readStableContainedUtf8FileAsync(
     );
   }
   const canonicalPath = await resolveRealPathAsync(absolutePath);
-  if (!isPathContained(projectRootRealPath, canonicalPath)) {
+  if (!isPathContained(projectRootRealPath, canonicalPath) && !graphStoragePathAllowed(projectRoot, canonicalPath)) {
     throw containedFileError(
       "GRAPH_CONTAINED_FILE_OUTSIDE_PROJECT",
       "The resolved file target escapes the project root.",
@@ -2121,6 +2139,7 @@ async function readLiveSourcesConcurrently(
           path,
           () => afterSourceRead?.(path),
         );
+        assertTextSource(content);
         const bytes = Buffer.byteLength(content, "utf8");
         results[index] = { ok: true, bytes, hash: sha256(content) };
         completedBytes += bytes;
@@ -2151,6 +2170,7 @@ function readLiveSourceSync(
       path,
       () => afterSourceRead?.(path),
     );
+    assertTextSource(content);
     return { ok: true, bytes: Buffer.byteLength(content, "utf8"), hash: sha256(content) };
   } catch (error) {
     return { ok: false, error };
@@ -2243,7 +2263,7 @@ async function inspectLiveSources(
       // A file the bounded policy will not read for its own size is skipped by
       // indexing too, so the corpus observation stays complete and the walk
       // continues. Only a corpus-wide breach makes the observation partial.
-      if (isPerFileCorpusLimitError(error)) {
+      if (isPerFileCorpusLimitError(error) || unavailableFileReason(error)) {
         discoveredPaths.delete(path);
         reportPathDiagnostic({
           code: "GRAPH_SOURCE_FILE_SKIPPED",

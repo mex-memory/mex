@@ -135,8 +135,10 @@ export const TS_FIXTURE: Fixture = {
     { name: "rename the package", apply: replace("package.json", "\"fixture-ts\"", "\"fixture-ts-renamed\"") },
     { name: "change tsconfig", apply: replace("tsconfig.json", "\"target\": \"ES2022\"", "\"target\": \"ES2020\""), expectMode: "full" },
     { name: "change package.json", apply: replace("package.json", "\"type\": \"module\"", "\"type\": \"module\",\n  \"imports\": { \"#util\": \"./src/util/index.ts\" }"), expectMode: "full" },
-    { name: "file stops parsing", apply: write("src/helpers.ts", "export function helper(input: string): string {\n  return input.trim(\n}}}} ((( [[[ export const = ;\n"), refuses: true },
-    // Not the last published bytes, or the refresh after the refusal is a no-op.
+    { name: "file stops parsing", apply: write("src/helpers.ts", "export function helper(input: string): string {\n  return input.trim(\n}}}} ((( [[[ export const = ;\n") },
+    // 0.8 refused to publish here; now the file is reported as not covered and
+    // the rest of the graph publishes. The mode isn't asserted: a file that no
+    // longer parses can't prove its dependents unaffected, so the refresh may go full.
     { name: "file parses again", apply: write("src/helpers.ts", "export function helper(input: string): string {\n  return input.trim().toLowerCase();\n}\n"), expectMode: "incremental" },
     { name: "branch-switch batch", apply: all(
       write("src/util/math.ts", "export function add(a: number, b: number): number {\n  return a + b + 0;\n}\n\nexport function scale(value: number, factor: number): number {\n  return value * factor;\n}\n"),

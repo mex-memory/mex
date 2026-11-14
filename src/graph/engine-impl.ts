@@ -1,3 +1,8 @@
+import { assertTextSource, unavailableFileReason } from "./source-errors.js";
+import { discoverGraphReadPaths } from "./read-discovery.js";
+import { skippedByRule } from "../file-index/discover.js";
+import { graphCoverage } from "./read-coverage.js";
+import { currentGraphPath, graphStoragePathAllowed } from "./storage.js";
 import { graphManifest, configHashForSources, discoverGraphConfigSources, CORPUS_EXTRACTOR_VERSION, RESOLVER_VERSION, type GraphManifest } from "./manifest.js";
 export { graphManifest, graphManifestHash, graphManifestDiffersOnlyByConfig, type GraphManifest, type GraphManifestInputs } from "./manifest.js";
 import { GraphSourceStagingError, type GraphSourceStagingFailure } from "./source-errors.js";
@@ -416,9 +421,10 @@ function decodeProjectInputs(root: string, encoded: string | null): Record<strin
 
 class GraphEngineImpl implements GraphEngine {
   private readonly rootDir: string;
-  private readonly dbPath: string;
+  private dbPath: string;
   private readonly readOnly: boolean;
   private readonly immutable: boolean;
+  private readonly managed: boolean;
   private readonly sourceFileAccess: GraphSourceFileAccess;
   private readonly internal: GraphEngineInternalHooks;
   private readonly compilerExtraction?: CompilerExtractionOptions;
@@ -434,7 +440,9 @@ class GraphEngineImpl implements GraphEngine {
       throw new TypeError("An adopted graph database must be an immutable read-only connection.");
     }
     this.rootDir = resolve(options.rootDir);
-    this.dbPath = options.dbPath ?? resolve(this.rootDir, ".mex", "graph.db");
+    this.dbPath = options.dbPath ?? currentGraphPath(this.rootDir);
+    if (options.dbPath !== undefined && options.readOnly !== true && /^graph-base-[a-z0-9-]+\.db$/.test(basename(this.dbPath)) && graphStoragePathAllowed(this.rootDir, this.dbPath)) throw new Error("Published graphs are immutable");
+    this.managed = options.dbPath === undefined;
     this.readOnly = options.readOnly ?? false;
     this.immutable = options.immutable ?? false;
     this.sourceFileAccess = options.sourceFileAccess
@@ -455,8 +463,8 @@ class GraphEngineImpl implements GraphEngine {
       this.internal.beforeDatabaseOpen?.();
       this.db = timeGraphPhase("engine.openDatabase", () => openGraphDatabase(this.dbPath, {
         allowRebuild,
-        readOnly: this.readOnly,
-        immutable: this.immutable,
+        readOnly: this.readOnly || this.managed,
+        immutable: this.immutable || this.managed,
       }));
       this.store = new GraphStore(this.db);
     }
@@ -464,6 +472,13 @@ class GraphEngineImpl implements GraphEngine {
   }
 
   async build(rootDir?: string): Promise<BuildResult> {
+    if (this.managed && !this.readOnly) {
+      this.close();
+      const { rebuildGraph } = await import("./maintenance.js");
+      const result = await rebuildGraph(rootDir ?? this.rootDir);
+      this.dbPath = currentGraphPath(this.rootDir);
+      return { ...result, skipped: result.skipped ? [...result.skipped] : undefined, declinedInputs: result.declinedInputs ? [...result.declinedInputs] : undefined, typescript: result.typescript ? { ...result.typescript, projects: { ...result.typescript.projects }, notes: [...result.typescript.notes] } : undefined };
+    }
     if (this.readOnly) throw new Error("A read-only graph engine cannot build an index.");
     const started = Date.now();
     const root = rootDir ? resolve(rootDir) : this.rootDir;
@@ -478,7 +493,7 @@ class GraphEngineImpl implements GraphEngine {
       { reason: "a rebuild extracts in full" },
     );
     try {
-      timeGraphPhase("stage.parseRegressionCheck", () => this.assertNoNewParseFailures(staged));
+
       const { publication: _publication, ...result } = await this.publish(staged, root, gitBeforeStaging, false);
       return { ...result, durationMs: Date.now() - started };
     } finally {
@@ -487,6 +502,13 @@ class GraphEngineImpl implements GraphEngine {
   }
 
   async sync(changedFiles: string[]): Promise<BuildResult> {
+    if (this.managed && !this.readOnly) {
+      this.close();
+      const { refreshGraph } = await import("./maintenance.js");
+      const result = await refreshGraph(this.rootDir);
+      this.dbPath = currentGraphPath(this.rootDir);
+      return { ...result, skipped: result.skipped ? [...result.skipped] : undefined, declinedInputs: result.declinedInputs ? [...result.declinedInputs] : undefined, typescript: result.typescript ? { ...result.typescript, projects: { ...result.typescript.projects }, notes: [...result.typescript.notes] } : undefined };
+    }
     if (this.readOnly) throw new Error("A read-only graph engine cannot synchronize an index.");
     const started = Date.now();
     const changed = [...new Set(changedFiles.map((file) =>
@@ -550,7 +572,7 @@ class GraphEngineImpl implements GraphEngine {
           message: "The changed source still exists but was absent from the staged corpus.",
         })));
       }
-      timeGraphPhase("stage.parseRegressionCheck", () => this.assertNoNewParseFailures(staged));
+
       const previousFiles = new Map(this.getStore(true).getAllFileRecords()
         .map((file) => [file.path, file.contentHash]));
       const filesChanged = staged.files.filter((file) => previousFiles.get(file.record.path) !== file.record.contentHash)
@@ -599,23 +621,6 @@ class GraphEngineImpl implements GraphEngine {
       store.setMetadata(GRAPH_SNAPSHOT_METADATA_KEY, serialized);
       if (incrementalStateCurrent) store.setMetadata(INCREMENTAL_STATE_METADATA_KEY, incrementalStateMarker(serialized));
     });
-  }
-
-  private assertNoNewParseFailures(staged: StagedCorpus): void {
-    const store = this.getStore(true);
-    const previousFiles = store.getAllFileRecords();
-    if (previousFiles.length === 0) return;
-    const previous = new Map(previousFiles.map((file) => [file.path, file.parseStatus ?? "ok"]));
-    const newlyFailed = staged.files.filter((file) => (
-      file.record.parseStatus === "failed" && previous.get(file.record.path) !== "failed"
-    ));
-    if (newlyFailed.length === 0) return;
-    throw new GraphSourceStagingError(newlyFailed.map((file) => ({
-      filePath: file.record.path,
-      operation: "parse",
-      code: "GRAPH_SOURCE_PARSE_FAILED",
-      message: "The source no longer parses; the last trustworthy graph snapshot was preserved.",
-    })));
   }
 
   private async publish(
@@ -717,6 +722,14 @@ class GraphEngineImpl implements GraphEngine {
           }
         });
       }
+      timeGraphPhase("publish.coverage", () => {
+        // Rows only for files the corpus considered and did not index; every
+        // other path's coverage follows from `files` (see coverageFor).
+        this.db!.exec("CREATE TABLE IF NOT EXISTS coverage(path TEXT PRIMARY KEY, reason TEXT NOT NULL) WITHOUT ROWID; DELETE FROM coverage;");
+        const cover = this.db!.prepare("INSERT OR REPLACE INTO coverage(path,reason) VALUES(?,?)");
+        for (const file of staged.files) if (file.record.parseStatus === "failed") cover.run(file.record.path, "parse failed");
+        for (const file of staged.skipped) cover.run(file.filePath, file.reason === "corpus-limit" ? "too big" : file.reason);
+      });
       timeGraphPhase("publish.invariants", () => store.validateInvariants(expectedNodes));
       store.setMetadata("compiler_version", staged.compiler.compilerVersion);
       if (staged.typescript) store.setMetadata(TYPESCRIPT_REPORT_METADATA_KEY, JSON.stringify(staged.typescript));
@@ -809,7 +822,7 @@ class GraphEngineImpl implements GraphEngine {
   }
 
   searchNodes(query: string, options?: NodeSearchOptions): GraphNode[] {
-    return this.getStore().search(query, options);
+    return this.getStore().search(query, options).filter(node => this.fileVisible(node.filePath));
   }
 
   searchSource(query: string, limit = 40) {
@@ -827,11 +840,30 @@ class GraphEngineImpl implements GraphEngine {
     }));
   }
 
-  getNode(id: string): GraphNode | null { return this.getStore().getNodeById(id); }
-  getCallers(id: string): GraphNode[] { return getCallers(this.getStore(), id); }
-  getCallees(id: string): GraphNode[] { return getCallees(this.getStore(), id); }
+  getNode(id: string): GraphNode | null { const node = this.getStore().getNodeById(id); return node && this.fileVisible(node.filePath) ? node : null; }
+  getCallers(id: string): GraphNode[] { return getCallers(this.getStore(), id).filter(node => this.fileVisible(node.filePath)); }
+  getCallees(id: string): GraphNode[] { return getCallees(this.getStore(), id).filter(node => this.fileVisible(node.filePath)); }
   getIncoming(id: string, kinds?: GraphEdge["kind"][]) { return getIncoming(this.getStore(), id, kinds); }
   getOutgoing(id: string, kinds?: GraphEdge["kind"][]) { return getOutgoing(this.getStore(), id, kinds); }
+
+  private coverageStatement?: { db: SqliteDatabase; statement: ReturnType<SqliteDatabase["prepare"]> | null };
+  /** The coverage row of one path, or undefined when it has none (or the graph predates coverage). */
+  private coverageRow(path: string): string | undefined {
+    this.getStore();
+    if (this.coverageStatement?.db !== this.db) {
+      const has = !!this.db!.prepare("SELECT 1 FROM sqlite_master WHERE name='coverage' AND type='table'").get();
+      this.coverageStatement = { db: this.db!, statement: has ? this.db!.prepare("SELECT reason FROM coverage WHERE path=?") : null };
+    }
+    const row = this.coverageStatement.statement?.get(path) as { reason: string } | undefined;
+    return row?.reason;
+  }
+
+  private fileVisible(path: string): boolean { return this.coverageRow(path) === undefined; }
+
+  coverageFor(path: string): { indexed: true } | { indexed: false; reason: string } {
+    const relativePath = toPosix(relative(this.rootDir, resolve(this.rootDir, path)));
+    return graphCoverage(relativePath, this.coverageRow(relativePath), this.getStore().getFileRecord(relativePath) !== null, this.rootDir);
+  }
 
   close(): void {
     if (this.db) this.db.close();
@@ -2098,7 +2130,7 @@ async function discoverSourceFilesConcurrently(
   let canonicalRoot: string;
   try {
     canonicalRoot = realpathSync(root);
-    matches = discoverBoundedGraphPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
+    matches = discoverGraphReadPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
       ...GRAPH_CORPUS_GLOB_OPTIONS,
       cwd: root,
       ignore: graphCorpusIgnoreGlobs(root),
@@ -2149,11 +2181,13 @@ async function discoverSourceFilesConcurrently(
         if (read.error !== undefined) throw read.error;
         const file = read.file!;
         sourceBytes = addGraphCorpusBytes(sourceBytes, Buffer.byteLength(file.source, "utf8"), "source");
-        const contentHash = sha256(file.source);
+        assertTextSource(file.source);
+          const contentHash = sha256(file.source);
         sourceSpool?.stage(entry.relPath, file.source);
         files.push({ relPath: entry.relPath, contentHash, size: file.size, modifiedAt: file.modifiedAt });
       } catch (error) {
-        if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(entry.relPath, error));
+        if (unavailableFileReason(error)) skipped.push(unavailableSourceFile(entry.relPath, error));
+          else if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(entry.relPath, error));
         else {
           failures.push(sourceStagingFailure(entry.relPath, "read", error));
           // The corpus limit stops discovery, as the sequential loop does.
@@ -2178,7 +2212,7 @@ function discoverSourceFiles(
   let canonicalRoot: string;
   try {
     canonicalRoot = realpathSync(root);
-    matches = discoverBoundedGraphPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
+    matches = discoverGraphReadPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
       ...GRAPH_CORPUS_GLOB_OPTIONS,
       cwd: root,
       ignore: graphCorpusIgnoreGlobs(root),
@@ -2210,11 +2244,13 @@ function discoverSourceFiles(
           Buffer.byteLength(file.source, "utf8"),
           "source",
         );
-        const contentHash = sha256(file.source);
+        assertTextSource(file.source);
+          const contentHash = sha256(file.source);
         sourceSpool?.stage(relPath, file.source);
         files.push({ relPath, contentHash, size: file.size, modifiedAt: file.modifiedAt });
       } catch (error) {
-        if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(relPath, error));
+        if (unavailableFileReason(error)) skipped.push(unavailableSourceFile(relPath, error));
+        else if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(relPath, error));
         else {
           failures.push(sourceStagingFailure(relPath, "read", error));
           if (error instanceof GraphCorpusLimitError) break;
@@ -2238,6 +2274,7 @@ function discoverSourceFiles(
     }
     try {
       const source = sourceFileAccess.read(callbackPath);
+      assertTextSource(source);
       const actualBytes = Buffer.byteLength(source, "utf8");
       sourceBytes = addGraphCorpusBytes(sourceBytes, actualBytes, "source");
       const identityAfter = lstatSync(canonicalPath);
@@ -2253,7 +2290,8 @@ function discoverSourceFiles(
       });
       sourceSpool?.stage(relPath, source);
     } catch (error) {
-      if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(relPath, error));
+      if (unavailableFileReason(error)) skipped.push(unavailableSourceFile(relPath, error));
+        else if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(relPath, error));
       else {
         failures.push(sourceStagingFailure(relPath, "read", error));
         if (error instanceof GraphCorpusLimitError) break;
@@ -2262,6 +2300,10 @@ function discoverSourceFiles(
   }
   if (failures.length > 0) throw new GraphSourceStagingError(failures);
   return { files, skipped };
+}
+
+function unavailableSourceFile(filePath: string, error: unknown): GraphSkippedSourceFile {
+  return { filePath, reason: unavailableFileReason(error)!, limit: "per-file", limitBytes: 0, message: error instanceof Error ? error.message : String(error) };
 }
 
 function skippedSourceFile(

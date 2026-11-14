@@ -1,3 +1,4 @@
+import { graphStoragePathAllowed } from "./storage.js";
 import { existsSync, lstatSync, realpathSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { createGraphEngine, GraphSourceStagingError } from "./engine-impl.js";
@@ -22,16 +23,12 @@ function checkDirectory(path: string, expected: GraphCandidateRequest["workspace
 
 function checkPaths(request: GraphCandidateRequest): void {
   if (!isAbsolute(request.projectRoot) || !isAbsolute(request.workspace)
-    || dirname(request.candidatePath) !== join(request.projectRoot, ".mex")
-    || !/^graph\.db\.candidate-[a-f0-9]{32,128}$/u.test(basename(request.candidatePath))) {
+    || !graphStoragePathAllowed(request.projectRoot, request.candidatePath)
+    || !/^graph-tmp-\d+-[a-z0-9-]+\.db$/u.test(basename(request.candidatePath))) {
     throw new Error("Invalid candidate path.");
   }
   checkDirectory(dirname(request.candidatePath), request.mexIdentity);
   checkDirectory(request.workspace, request.workspaceIdentity);
-  const path = relative(realpathSync(request.projectRoot), request.mexIdentity.realPath);
-  if (isAbsolute(path) || path === ".." || path.startsWith("../") || path.startsWith("..\\")) {
-    throw new Error("Candidate escaped the project.");
-  }
   if (existsSync(request.candidatePath)) {
     const stats = lstatSync(request.candidatePath);
     if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("Unsafe candidate file.");

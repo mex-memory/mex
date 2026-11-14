@@ -1,3 +1,5 @@
+import { cloneGraph, discardGraphTemporary, finalizeGraph, graphLocation, graphTemporary, publishGraph, readGraphPointer } from "./storage.js";
+import { currentGraphPath } from "./storage.js";
 import { committedReferenceLookup, type GroundingDocumentReader, type GroundingFailureKind } from "./grounding-failures.js";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -172,7 +174,7 @@ export async function loadReadOnlyGroundingRuntime(
   config: MexConfig,
   options: LoadReadOnlyGroundingRuntimeOptions = {},
 ): Promise<ReadOnlyGroundingRuntimeResult> {
-  const dbPath = resolve(config.projectRoot, ".mex", "graph.db");
+  const dbPath = currentGraphPath(config.projectRoot);
   const internal = (options as LoadReadOnlyGroundingRuntimeInternalOptions).__internal;
   const statusOptions = { projectRoot: config.projectRoot, dbPath };
   const inspectBase = options.inspectStatus
@@ -291,6 +293,8 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
   let priorSession: InternalGraphReadSession | null = null;
   let graph: GraphEngine | null = null;
   let db: SqliteDatabase | null = null;
+  const storage = graphLocation(config.projectRoot);
+  const draft = graphTemporary(storage);
   try {
     // Preserve fingerprints for inline ids before refresh can replace them.
     // The maintenance lease prevents a cooperating publisher from changing the
@@ -301,8 +305,10 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
     priorSession = null;
 
     await lease.refresh();
-    graph = createGraphEngine({ rootDir: config.projectRoot, dbPath: lease.databasePath });
-    db = openGraphDatabase(lease.databasePath);
+    const pointer = readGraphPointer(storage)!;
+    cloneGraph(lease.databasePath, draft);
+    graph = createGraphEngine({ rootDir: config.projectRoot, dbPath: draft, readOnly: true });
+    db = openGraphDatabase(draft);
     const fingerprints = new FingerprintStore(db);
     await prepareGroundingCodeHashing();
     const assembled = assembleGroundingRuntime(config.projectRoot, graph, db, fingerprints, anchorFingerprints);
@@ -316,7 +322,10 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
         closed = true;
         try {
           assembled.close();
+          finalizeGraph(draft);
+          publishGraph(storage, draft, pointer);
         } finally {
+          discardGraphTemporary(draft);
           lease.release();
         }
       },
@@ -325,6 +334,7 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
     try { priorSession?.close(); } catch { /* preserve the maintenance failure */ }
     try { graph?.close(); } catch { /* preserve the maintenance failure */ }
     try { db?.close(); } catch { /* preserve the maintenance failure */ }
+    discardGraphTemporary(draft);
     lease.release();
     throw error;
   }

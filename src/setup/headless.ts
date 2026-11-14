@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../graph/storage.js";
 import { populationWarning, fillPopulationPlaceholders, populationPlaceholderFiles, unpopulatedScaffoldFiles } from "./population-audit.js";
 import { withSetupLock } from "./setup-lock.js";
 import { existsSync } from "node:fs";
@@ -201,7 +202,7 @@ export function inspectSetupStatus(projectRoot: string): SetupStatus {
   const hasGit = existsSync(resolve(root, ".git"));
   const hasScaffold = existsSync(resolve(mexDir, "ROUTER.md"));
   const populated = isScaffoldPopulated(mexDir);
-  const graphReady = existsSync(resolve(mexDir, "graph.db"));
+  const graphReady = existsSync(currentGraphPath(projectRoot));
   const wikiReady = existsSync(resolve(mexDir, "wiki.db"));
   const configuredTools = hasScaffold || existsSync(resolve(mexDir, "config.json"))
     ? loadConfiguredAiTools(mexDir)

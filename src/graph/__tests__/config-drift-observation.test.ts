@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../storage.js";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -59,7 +60,7 @@ function driftConfig(root: string): void {
 }
 
 function updateSnapshot(root: string, update: (snapshot: GraphSnapshot) => GraphSnapshot): void {
-  const db = openSqlite(join(root, ".mex", "graph.db"));
+  const db = openSqlite(currentGraphPath(root));
   try {
     const row = db.prepare("SELECT value FROM project_metadata WHERE key = ?")
       .get(GRAPH_SNAPSHOT_METADATA_KEY) as { value: string };

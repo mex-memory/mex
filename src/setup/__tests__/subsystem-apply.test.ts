@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../../graph/storage.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -64,7 +65,7 @@ describe("scope guard", () => {
     const guard = new ScopeGuard(root);
     expect(guard.take()).toEqual([]);
     writeFileSync(join(root, ".mex", "local", "batch.json"), "[]");
-    writeFileSync(join(root, ".mex", "graph.db"), "binary");
+    writeFileSync(currentGraphPath(root), "binary");
     writeFileSync(join(root, ".mex", "ROUTER.md"), "# Router, edited\n");
     writeFileSync(join(root, "src", "app.ts"), "export const a = 2;\n");
     expect(guard.take()).toEqual([".mex/ROUTER.md", "src/app.ts"]);
