@@ -708,3 +708,17 @@ func TestFailOpen(t *testing.T) {
 		mustHave(t, f.send(ev), "Pitfall.")
 	})
 }
+
+// Codex 0.165 sends shell output with no exit status. The exact signature
+// then counts, unless the command only reads or searches files.
+func TestFixWithNoExitStatus(t *testing.T) {
+	f := newFixture(t)
+	f.agent = "codex"
+	f.entry(spec{id: "mx_fixdb2", kind: "hint", oneLine: "Start the test database with docker compose.", when: []string{"anti:connect ECONNREFUSED 127.0.0.1:5432"}})
+	noExit := func(command, out string) contract.Tool {
+		return contract.Tool{Name: contract.ToolShell, RawName: "Bash", Input: contract.ToolInput{Command: command}, Output: &contract.ToolOutput{Text: out, OK: true}}
+	}
+	mustBeEmpty(t, f.send(f.event(contract.PostTool, noExit("cat logs/test.log", "Error: connect ECONNREFUSED 127.0.0.1:5432"))))
+	mustBeEmpty(t, f.send(f.event(contract.PostTool, noExit("rg ECONNREFUSED logs", "logs/a: connect ECONNREFUSED 127.0.0.1:5432"))))
+	mustHave(t, f.send(f.event(contract.PostTool, noExit("node fail.js", "Error: connect ECONNREFUSED 127.0.0.1:5432"))), "docker compose")
+}
