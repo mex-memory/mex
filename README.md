@@ -475,6 +475,7 @@ MEX keeps team memory in repository files and provides local retrieval and revie
 - Read the [graph retrieval benchmark results](https://github.com/mex-memory/mex/blob/v0.8.5/evaluate/RESULTS.md), including the blind-graded comparison against an ordinary file-search baseline.
 - Inspect the CLI locally with `mex capabilities --json` and `mex commands`.
 - Join the [MEX community on Discord](https://discord.gg/FEdNsQ4Qt4) or visit [mexmemory.com](https://mexmemory.com).
+- Contact the team at [info@mexmemory.com](mailto:info@mexmemory.com).
 
 ### Explain behavior with a state diagram
 
