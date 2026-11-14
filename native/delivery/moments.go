@@ -11,6 +11,7 @@ import (
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/shellparse"
+	"github.com/mex-memory/mex/native/record/place"
 )
 
 // Trigger strength tiers (sheet 30, ranking step 2). Lower is stronger.
@@ -66,10 +67,35 @@ type Resolver func(path string, isFile bool) (project, checkout string)
 
 func slash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
 
+// relTo is p relative to the checkout. The checkout is registered by its
+// real path, but agents report the path they were given, which may run
+// through a link (a symlinked checkout, or /var on macOS). The plain answer
+// needs no system call; only a path that lands outside is resolved, and a
+// file that doesn't exist yet is placed by its folder.
 func relTo(checkout, p string) (string, bool) {
 	if checkout == "" || p == "" {
 		return "", false
 	}
+	if r, ok := plainRel(checkout, p); ok {
+		return r, true
+	}
+	root := filepath.FromSlash(checkout)
+	if r, ok := place.RelativeToCheckout(root, filepath.FromSlash(p)); ok {
+		return r, true
+	}
+	dir, base := filepath.Split(filepath.FromSlash(p))
+	if real, err := filepath.EvalSymlinks(dir); err == nil && base != "" {
+		if r, ok := plainRel(checkout, filepath.Join(real, base)); ok {
+			return r, true
+		}
+		if realRoot, err := filepath.EvalSymlinks(root); err == nil {
+			return plainRel(realRoot, filepath.Join(real, base))
+		}
+	}
+	return "", false
+}
+
+func plainRel(checkout, p string) (string, bool) {
 	r, err := filepath.Rel(filepath.FromSlash(checkout), filepath.FromSlash(p))
 	if err != nil {
 		return "", false
