@@ -30,6 +30,10 @@ type StageOptions struct {
 	// files ('/' separators), or whose own file is one of them. Nil means
 	// every entry.
 	Paths []string
+	// Force evaluates every entry, even when its inputs are unchanged.
+	Force bool
+	// TeamOnly skips personal notes and hints (CI has no MEX home).
+	TeamOnly bool
 	// Deadline stops the run between entries; Unfinished then says so.
 	Deadline time.Time
 	Now      time.Time
@@ -43,7 +47,29 @@ type StageReport struct {
 	Invalid    int            `json:"invalid"`
 	Counts     map[string]int `json:"counts"`
 	Unfinished bool           `json:"unfinished"`
-	Results    []Result       `json:"results"`
+	// Results holds what this run evaluated.
+	Results []Result `json:"results"`
+	// Items lists every valid entry with its current verdict.
+	Items []StageItem `json:"items"`
+	// Problems lists entry files that aren't valid entries.
+	Problems []StageProblem `json:"problems"`
+}
+
+// StageItem is one entry as the run left it.
+type StageItem struct {
+	ID      string `json:"id"`
+	Level   string `json:"level"`
+	Path    string `json:"path"`
+	Kind    string `json:"kind"`
+	Status  string `json:"status"`
+	Verdict string `json:"verdict"`
+}
+
+// StageProblem is an entry file that couldn't be read as an entry.
+type StageProblem struct {
+	Level string `json:"level"`
+	Path  string `json:"path"`
+	Error string `json:"error"`
 }
 
 // RunStage is stage one of keeping knowledge true: free, local, no model. It
@@ -52,7 +78,11 @@ type StageReport struct {
 // theirs, so a formatting-only change is recorded once and then reused.
 func RunStage(opts StageOptions) (StageReport, error) {
 	report := StageReport{Counts: map[string]int{}}
-	loaded, err := LoadAll(opts.Checkout, opts.MexHome, opts.ProjectID)
+	home, project := opts.MexHome, opts.ProjectID
+	if opts.TeamOnly {
+		home, project = "", ""
+	}
+	loaded, err := LoadAll(opts.Checkout, home, project)
 	if err != nil {
 		return report, err
 	}
@@ -69,9 +99,11 @@ func RunStage(opts StageOptions) (StageReport, error) {
 			asOf = ix.AsOf()
 		}
 	}
-	cached, err := opts.Store.Verdicts(opts.ProjectID, opts.Checkout)
-	if err != nil {
-		cached = map[string]localrecord.Verdict{}
+	cached := map[string]localrecord.Verdict{}
+	if opts.Store != nil {
+		if found, err := opts.Store.Verdicts(opts.ProjectID, opts.Checkout); err == nil {
+			cached = found
+		}
 	}
 	wanted := map[string]bool{}
 	for _, p := range opts.Paths {
@@ -88,34 +120,44 @@ func RunStage(opts StageOptions) (StageReport, error) {
 	for _, l := range loaded {
 		if l.Err != nil {
 			report.Invalid++
+			report.Problems = append(report.Problems, StageProblem{Level: l.Level, Path: l.Path, Error: l.Err.Error()})
 			continue
 		}
 		report.Entries++
 		valid = append(valid, l.Entry.ID)
-		if opts.Paths != nil && !touches(l, opts.Checkout, wanted) {
+		item := StageItem{ID: l.Entry.ID, Level: l.Level, Path: l.Path, Kind: l.Entry.Kind, Status: l.Entry.Status}
+		keep := func() {
 			if v, ok := cached[l.Entry.ID]; ok {
+				item.Verdict = v.Verdict
 				report.Counts[v.Verdict]++
 			}
+			report.Items = append(report.Items, item)
+		}
+		if opts.Paths != nil && !touches(l, opts.Checkout, wanted) {
+			keep()
 			continue
 		}
 		if report.Unfinished || (!opts.Deadline.IsZero() && time.Now().After(opts.Deadline)) {
 			report.Unfinished = true
-			if v, ok := cached[l.Entry.ID]; ok {
-				report.Counts[v.Verdict]++
-			}
+			keep()
 			continue
 		}
 		inputs := ev.inputsHash(l, asOf)
-		if v, ok := cached[l.Entry.ID]; ok && v.InputsHash == inputs {
+		if v, ok := cached[l.Entry.ID]; ok && v.InputsHash == inputs && !opts.Force {
 			report.Reused++
-			report.Counts[v.Verdict]++
+			keep()
 			continue
 		}
 		res := ev.Evaluate(l.Entry)
 		report.Evaluated++
 		report.Counts[res.Verdict]++
 		report.Results = append(report.Results, res)
+		item.Verdict = res.Verdict
+		report.Items = append(report.Items, item)
 		fresh = append(fresh, localrecord.Verdict{EntryID: l.Entry.ID, Verdict: res.Verdict, InputsHash: inputs, CheckedAt: checkedAt})
+	}
+	if opts.Store == nil {
+		return report, nil
 	}
 	if len(fresh) > 0 {
 		if err := opts.Store.PutVerdicts(opts.ProjectID, opts.Checkout, fresh); err != nil {
