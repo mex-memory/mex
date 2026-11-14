@@ -130,12 +130,14 @@ jobs:
   smoke:
     needs: [plan, release-gates, build]
     if: always() && needs.release-gates.result == 'success' && needs.build.result == 'success'
-    runs-on: ${{ matrix.os == 'macos-15' && 'macos-15-intel' || matrix.os }}
+    # Each runner checks that npm picks its own platform package: Linux x64,
+    # macOS arm64, macOS x64 and Windows x64.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2022]
+        os: [ubuntu-24.04, macos-15, macos-15-intel, windows-2022]
     env:
       RELEASE_PLAN: ${{ needs.plan.outputs.json }}
       RELEASE_GATE_RESULT: ${{ needs.release-gates.outputs.gate_result }}

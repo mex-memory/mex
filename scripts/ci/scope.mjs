@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 export function classify(paths, event = 'pull_request') {
   const docsOnly = event === 'pull_request' && paths.length > 0 && paths.every((path) =>
     /^docs\/(?:[^/]+\.md|design\/[^/]+\.md|diagrams\/.*\.svg)$/.test(path));
-  return { docsOnly, workflows: event !== 'pull_request' || paths.some((path) => path.startsWith('.github/workflows/')) };
+  return { docsOnly, workflows: event !== 'pull_request' || paths.some((path) => path.startsWith('.github/workflows/') || path === '.github/actionlint.yaml') };
 }
 
 export function changedPaths(base, head, git = (args) => execFileSync('git', args, { encoding: 'utf8' })) {
