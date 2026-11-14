@@ -2,6 +2,7 @@ import { currentGraphPath } from "../src/graph/storage.js";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { dirname } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentCommandDeps } from "../src/graph/cli-agent.js";
 import {
@@ -225,7 +226,8 @@ describe("graph reads after a config-only change", () => {
   it("does not touch the store while reading it drifted", async () => {
     const { root } = await fixture();
     driftConfig(root);
-    const mexDir = join(root, ".mex");
+    // The store is the published graph's index folder.
+    const mexDir = dirname(currentGraphPath(root));
     const before = readdirSync(mexDir).sort().map((name) => {
       const path = join(mexDir, name);
       return statSync(path).isFile()

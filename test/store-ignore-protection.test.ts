@@ -1,17 +1,17 @@
 import { currentGraphPath } from "../src/graph/storage.js";
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rebuildGraph } from "../src/graph/maintenance.js";
-import { SETUP_IGNORE_RULES } from "../src/setup/ignore.js";
 
 /**
  * Issue #110: `mex graph` in a checkout that had never run `mex setup` left
  * `graph.db`, `-wal` and `-shm` untracked, so the reporter's next `git add -A`
- * would have committed a database. Setup writes `.mex/.gitignore` at step 2,
- * but a store writer invoked on its own never passed through setup.
+ * would have committed a database. The graph now lives in the MEX home, not
+ * the checkout, so a graph build leaves nothing in the repository to stage
+ * and writes no ignore rules there either.
  */
 
 const roots: string[] = [];
@@ -31,39 +31,34 @@ function scratchRepo(): string {
 }
 
 describe("local store protection outside mex setup (#110)", () => {
-  it("writes .mex/.gitignore before a graph rebuild creates the store", async () => {
+  it("builds the graph outside the checkout and writes nothing into it", async () => {
     const root = scratchRepo();
+    const before = readdirSync(root).sort();
 
     await rebuildGraph(root);
 
-    const ignorePath = join(root, ".mex", ".gitignore");
     expect(existsSync(currentGraphPath(root))).toBe(true);
-    expect(existsSync(ignorePath)).toBe(true);
-    const rules = readFileSync(ignorePath, "utf-8").split(/\r?\n/);
-    for (const rule of SETUP_IGNORE_RULES) expect(rules).toContain(rule);
+    expect(currentGraphPath(root).toLowerCase().startsWith(root.toLowerCase())).toBe(false);
+    expect(readdirSync(root).sort()).toEqual(before);
   });
 
-  it("leaves `git add -A` unable to stage the store, which is the actual complaint", async () => {
+  it("leaves `git add -A` nothing of MEX's to stage, which is the actual complaint", async () => {
     const root = scratchRepo();
 
     await rebuildGraph(root);
     execFileSync("git", ["add", "-A"], { cwd: root });
     const staged = execFileSync("git", ["ls-files", "--cached"], { cwd: root, encoding: "utf-8" });
 
-    expect(staged).toContain(".mex/.gitignore");
-    expect(staged).not.toMatch(/graph\.db/);
+    expect(staged.split(/\r?\n/).filter(Boolean).sort()).toEqual(["package.json", "src/a.ts"]);
   });
 
-  it("does not disturb an existing ignore file's own rules", async () => {
+  it("does not touch an existing .mex/.gitignore", async () => {
     const root = scratchRepo();
     mkdirSync(join(root, ".mex"));
     writeFileSync(join(root, ".mex", ".gitignore"), "# hand written\nscratch/\n");
 
     await rebuildGraph(root);
 
-    const content = readFileSync(join(root, ".mex", ".gitignore"), "utf-8");
-    expect(content).toContain("# hand written");
-    expect(content).toContain("scratch/");
-    for (const rule of SETUP_IGNORE_RULES) expect(content).toContain(rule);
+    expect(readFileSync(join(root, ".mex", ".gitignore"), "utf-8")).toBe("# hand written\nscratch/\n");
   });
 });

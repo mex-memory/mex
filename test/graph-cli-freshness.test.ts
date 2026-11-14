@@ -335,20 +335,7 @@ describe("agent graph freshness-bound readers", () => {
     expect(JSON.stringify(records)).not.toContain("return \\\"old\\\"");
   });
 
-  it("answers a targeted read whose .mex directory junction stays inside the project", async () => {
-    const built = await fixture("mex-cli-contained-junction-index-");
-    mkdirSync(join(built.root, "cache"), { recursive: true });
-    renameSync(join(built.root, ".mex"), join(built.root, "cache", "mex-index"));
-    // "junction" is a Windows directory junction; other platforms ignore the
-    // type and create an ordinary directory symlink.
-    symlinkSync(join(built.root, "cache", "mex-index"), join(built.root, ".mex"), "junction");
-
-    const records = await capture((deps) => runGraphGet([built.nodeId], built.root, deps));
-
-    expect(records.some((record) => record.type === "error")).toBe(false);
-    expect(JSON.stringify(records)).toContain("stableFact");
-  });
-
+  // 0.8 checked a .mex directory junction here; the graph no longer lives in .mex.
   it("answers a targeted read through a case-variant project root on a case-insensitive volume", async (context) => {
     const built = await fixture("mex-cli-case-root-");
     const name = basename(built.root);
@@ -396,7 +383,7 @@ describe("agent graph freshness-bound readers", () => {
   // Windows denies rename of an open file; the bound-file Windows test covers that protection.
   it.skipIf(process.platform === "win32")("rejects atomic database replacement between identity capture and immutable open", async () => {
     const built = await fixture("mex-cli-db-replace-");
-    const replacementPath = join(built.root, ".mex", "replacement.db");
+    const replacementPath = join(dirname(built.dbPath), "replacement.db");
     copyFileSync(built.dbPath, replacementPath);
     const replacementBytes = readFileSync(replacementPath);
     const output: string[] = [];
@@ -420,8 +407,8 @@ describe("agent graph freshness-bound readers", () => {
   // Windows denies rename of an open file; the bound-file Windows test covers that protection.
   it.skipIf(process.platform === "win32")("binds SQLite to the inspected database across a path A-to-B-to-A swap", async () => {
     const built = await fixture("mex-cli-db-aba-");
-    const originalPath = join(built.root, ".mex", "original.db");
-    const forgedPath = join(built.root, ".mex", "forged.db");
+    const originalPath = join(dirname(built.dbPath), "original.db");
+    const forgedPath = join(dirname(built.dbPath), "forged.db");
     copyFileSync(built.dbPath, forgedPath);
     const forged = openSqlite(forgedPath);
     try {
@@ -454,7 +441,7 @@ describe("agent graph freshness-bound readers", () => {
 
   it.runIf(process.platform === "win32")("prevents replacement of the bound database on Windows", async () => {
     const built = await fixture("mex-cli-db-windows-lock-");
-    const replacement = join(built.root, ".mex", "replacement.db");
+    const replacement = join(dirname(built.dbPath), "replacement.db");
     copyFileSync(built.dbPath, replacement);
     let attempted = false;
     const session = await openImmutableGraphReadSession(built.root, built.dbPath, {
@@ -515,7 +502,7 @@ describe("agent graph freshness-bound readers", () => {
 
   it("keeps successful production reads and Scope filesystem-read-only", async () => {
     const built = await fixture("mex-cli-readonly-");
-    const before = directorySnapshot(join(built.root, ".mex"));
+    const before = directorySnapshot(dirname(built.dbPath));
     const sourceBefore = fileIdentity(built.sourcePath);
 
     const get = await capture((deps) => runGraphGet([built.nodeId], built.root, deps));
@@ -525,7 +512,7 @@ describe("agent graph freshness-bound readers", () => {
     expect(get.some((record) => record.type === "source")).toBe(true);
     expect(query.some((record) => record.type === "result")).toBe(true);
     expect(scope.some((record) => record.type === "source")).toBe(true);
-    expect(directorySnapshot(join(built.root, ".mex"))).toEqual(before);
+    expect(directorySnapshot(dirname(built.dbPath))).toEqual(before);
     expect(fileIdentity(built.sourcePath)).toEqual(sourceBefore);
     expect(existsSync(`${built.dbPath}-wal`)).toBe(false);
     expect(existsSync(`${built.dbPath}-shm`)).toBe(false);
@@ -602,5 +589,5 @@ function fileIdentity(path: string): Record<string, unknown> {
 }
 
 function directorySnapshot(path: string): Record<string, ReturnType<typeof fileIdentity>> {
-  return Object.fromEntries(readdirSync(path).sort().map((name) => [name, fileIdentity(join(path, name))]));
+  return Object.fromEntries(readdirSync(path).sort().filter((name) => statSync(join(path, name)).isFile()).map((name) => [name, fileIdentity(join(path, name))]));
 }
