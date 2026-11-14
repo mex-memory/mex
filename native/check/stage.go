@@ -82,10 +82,15 @@ func RunStage(opts StageOptions) (StageReport, error) {
 	if opts.TeamOnly {
 		home, project = "", ""
 	}
-	loaded, err := LoadAll(opts.Checkout, home, project)
+	var cache *entryCache
+	if opts.RecordDirectory != "" && opts.Store != nil {
+		cache = openEntryCache(EntryCachePath(opts.RecordDirectory, opts.Checkout))
+	}
+	loaded, err := loadAll(opts.Checkout, home, project, cache)
 	if err != nil {
 		return report, err
 	}
+	defer cache.save(time.Now())
 	ev, err := NewEvaluator(opts.Checkout)
 	if err != nil {
 		return report, err

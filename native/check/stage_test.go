@@ -1,6 +1,8 @@
 package check
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -128,5 +130,56 @@ func TestStage(t *testing.T) {
 	late.Deadline = time.Now().Add(-time.Second)
 	if r, _ := RunStage(late); !r.Unfinished || r.Evaluated != 0 {
 		t.Fatalf("deadline: %+v", r)
+	}
+}
+
+// The entry cache: an unchanged, settled entry file is not read again; an
+// edited one is, and so is one modified just before the cache was written.
+func TestEntryCache(t *testing.T) {
+	root, records := t.TempDir(), t.TempDir()
+	write(t, root, "package.json", pkg)
+	teamEntry(t, root, "mx_script", record(t, root, "key", Complete, map[string]any{"file": "package.json", "pointer": "/scripts/test"}))
+	entry := filepath.Join(root, ".mex", "learned", "mx_script.md")
+	settled := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(entry, settled, settled); err != nil {
+		t.Fatal(err)
+	}
+	store := &memoryStore{rows: map[string]localrecord.Verdict{}}
+	opts := StageOptions{Checkout: root, ProjectID: "p1", RecordDirectory: records, Store: store}
+	if r, err := RunStage(opts); err != nil || r.Counts[Held] != 1 {
+		t.Fatalf("first run: %+v %v", r, err)
+	}
+	cachePath := EntryCachePath(records, root)
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("no cache written: %v", err)
+	}
+
+	// Settled and unchanged: served from the cache, so even an unreadable
+	// file would not be read.
+	c := openEntryCache(cachePath)
+	info, _ := os.Stat(entry)
+	if hit, ok := c.old[entry]; !ok || hit.Entry == nil || hit.Entry.ID != "mx_script" || hit.MTime != info.ModTime().UnixNano() {
+		t.Fatalf("cache row: %+v", c.old)
+	}
+	if l := c.read(entry, Team, info); l.Err != nil || l.Entry.ID != "mx_script" || c.dirty {
+		t.Fatalf("cached read: %+v dirty=%v", l, c.dirty)
+	}
+
+	// An edit changes size or time: the file is read again.
+	write(t, root, ".mex/learned/mx_script.md", "not an entry any more")
+	if err := os.Chtimes(entry, settled, settled); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := RunStage(opts); r.Invalid != 1 || r.Entries != 0 {
+		t.Fatalf("edited entry: %+v", r)
+	}
+
+	// A file modified within the racy window of the cache's write is never
+	// trusted, even with the same size and time.
+	c = openEntryCache(cachePath)
+	info, _ = os.Stat(entry)
+	c.written = info.ModTime().UnixNano() + int64(time.Second)
+	if l := c.read(entry, Team, info); l.Err == nil || !c.dirty {
+		t.Fatalf("racy entry served from the cache: %+v", l)
 	}
 }
