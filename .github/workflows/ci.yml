@@ -190,6 +190,10 @@ jobs:
           src/knowledge/__tests__/entry.test.ts
           src/knowledge/__tests__/files.test.ts
           src/knowledge/__tests__/store.test.ts
+          src/knowledge/__tests__/mutations.test.ts
+          src/knowledge/__tests__/team.test.ts
+          src/knowledge/__tests__/gates.test.ts
+          src/knowledge/__tests__/hints.test.ts
           test/knowledge-cli.test.ts
           src/team/local-state/__tests__/team-local-state.test.ts
           src/team/artifacts/__tests__/filesystem.test.ts

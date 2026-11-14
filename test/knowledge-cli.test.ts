@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { serializeEntry, parseEntry } from "../src/knowledge/entry.js";
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
 let root: string, repo: string, mexBase: string;
@@ -15,7 +16,7 @@ function run(args: string[], cwd = repo, interactive = false) {
   const preload = "data:text/javascript,import https from 'node:https';import http from 'node:http';import{syncBuiltinESMExports}from 'node:module';const deny=()=>{throw new Error('Unexpected network')};https.request=deny;http.request=deny;globalThis.fetch=deny;syncBuiltinESMExports();Object.defineProperty(process.stderr,'isTTY',{value:true});";
   const result = spawnSync(process.execPath, [...(interactive ? ["--import", preload] : []), cli, ...args], {
     cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024,
-    env: { ...process.env, MEX_HOME: mexBase, MEX_TELEMETRY: interactive ? "1" : "0", ...(interactive ? {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: join(root, "claude-host"), CLAUDE_CODE_PROJECT_DIR_NAME: "fixture-project", CODEX_HOME: join(root, "codex-host"), MEX_HOME: mexBase, MEX_TELEMETRY: interactive ? "1" : "0", ...(interactive ? {
       DO_NOT_TRACK: "0", MEX_OFFLINE: "0", MEX_DEV: "", CI: "", CONTINUOUS_INTEGRATION: "", GITHUB_ACTIONS: "", GITLAB_CI: "", TF_BUILD: "", BUILDKITE: "", CIRCLECI: "", JENKINS_URL: "",
     } : {}), MEX_BACKGROUND: "0", NO_COLOR: "1" },
   });
@@ -84,6 +85,83 @@ describe("shipped knowledge commands", () => {
     const id = /mx_[a-z0-9]+/u.exec(recalled.stdout)![0];
     expect(run(["expand", id]).stdout).toContain("  source:");
     expect(readdirSync(repo)).toEqual([]);
+  });
+  it("edits and permanently retires personal notes through the shipped commands", () => {
+    const saved = run(["note", "Fixtures use random input.", "--json"]);
+    const id = saved.json().entry.mex.id;
+    const changed = run(["edit", id, "Fixtures use seeded input because failures must reproduce.", "--json"], repo, true);
+    expect(changed.status, changed.stderr).toBe(0);
+    expect(changed.json()).toMatchObject({ ok: true, entry: { mex: { id, checks: [] }, text: "Fixtures use seeded input because failures must reproduce." } });
+    expect(run(["recall", "seeded", "--json"]).json().entries[0].id).toBe(id);
+    const retired = run(["wrong", id, "The test suite now uses recorded input.", "--json"], repo, true);
+    expect(retired.status, retired.stderr).toBe(0);
+    expect(retired.json()).toMatchObject({ ok: true, status: "retired", retired: { by: "mex wrong" } });
+    expect(run(["recall", "fixtures", "--json"]).json().entries).toEqual([]);
+    expect(run(["expand", id, "--json"]).json()).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
+    const second = run(["note", "A disposable note.", "--json"]).json().entry.mex.id;
+    expect(run(["forget", second, "No longer useful.", "--json"]).json()).toMatchObject({ ok: true, status: "retired" });
+    expect(readdirSync(repo)).toEqual([]);
+    expect(existsSync(join(mexBase, ".mex", "config.json"))).toBe(false);
+  });
+  it.each(["edit", "wrong", "forget"])("rejects a missing %s target before interactive telemetry initializes storage", command => {
+    const result = run(["--no-open", command, "mx_absent1", "A corrected fact or reason.", "--json"], repo, true);
+    expect(result.status).toBe(1); expect(result.stderr).toBe("");
+    expect(result.json()).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
+    expect(existsSync(mexBase)).toBe(false);
+  });
+  it("previews team changes, binds apply to the exact proposal and retires the original file", () => {
+    const id = "mx_teamcli1", text = "Fixtures use fixed data because failures must reproduce.";
+    const file = join(repo, ".mex/learned", `${id}.md`);
+    mkdirSync(join(repo, ".mex/learned"), { recursive: true });
+    const original = serializeEntry({ mex: { id, kind: "rule", scope: ["**"], source: { type: "person", ref: "person typed this fact", quote: text }, evidence: "person", one_line: text, checks: [], status: "active", created: "2026-11-14" }, text });
+    writeFileSync(file, original);
+    const correction = "Fixtures use recorded data because seeds alone are insufficient.";
+    const preview = run(["edit", id, correction, "--json"], repo, true);
+    expect(preview.status, preview.stderr).toBe(0); expect(preview.json().applied).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(original); expect(existsSync(mexBase)).toBe(false);
+    const changed = run(["edit", id, correction, "--apply", "--expect", preview.json().preview.revision, "--json"]);
+    expect(changed.status, changed.stderr).toBe(0); expect(changed.json().entry.text).toBe(correction);
+    const retirement = run(["forget", id, "No longer current.", "--json"]);
+    expect(retirement.json().preview.diff).toContain("retired");
+    expect(run(["forget", id, "No longer current.", "--apply", "--expect", retirement.json().preview.revision, "--json"]).status).toBe(0);
+    expect(parseEntry(readFileSync(file, "utf8")).mex).toMatchObject({ status: "retired", retired: { reason: "No longer current." } });
+    expect(run(["recall", "fixtures", "--json"]).json().entries).toEqual([]);
+    expect(existsSync(mexBase)).toBe(false);
+  });
+  it("imports read-only hints, excludes their host, and supports explicit confirmation and forgetting", () => {
+    const directory = join(root, "claude-host/projects/fixture-project/memory"); mkdirSync(directory, { recursive: true });
+    const file = join(directory, "fixtures.md"), original = "Fixtures use fixed input because failures must reproduce.\n";
+    writeFileSync(file, original);
+    const refreshed = run(["hints", "refresh", "--json"], repo, true);
+    expect(refreshed.status, refreshed.stderr).toBe(0); expect(refreshed.json()).toMatchObject({ ok: true, imported: 1, expired: 0 });
+    expect(run(["recall", "fixtures", "--json"]).json().entries).toEqual([]);
+    expect(run(["recall", "fixtures", "--agent", "claude-code", "--json"]).json().entries).toEqual([]);
+    const entries = run(["recall", "fixtures", "--agent", "codex", "--json"]).json().entries;
+    expect(entries[0]).toMatchObject({ level: "hint", label: "[hint, seen once]" });
+    const id = entries[0].id;
+    expect(run(["expand", id, "--agent", "codex", "--json"]).json().entry.mex).toMatchObject({ kind: "hint", evidence: "observed", checks: [] });
+    const confirmed = run(["edit", id, "Fixtures use recorded input because seeds are insufficient.", "--json"]);
+    expect(confirmed.status, confirmed.stderr).toBe(0); expect(confirmed.json()).toMatchObject({ level: "personal", entry: { mex: { source: { type: "person" } } } });
+    expect(run(["recall", "fixtures", "--json"]).json().entries[0].level).toBe("personal");
+    writeFileSync(join(directory, "another.md"), "Compiler tests use recorded failures because diagnostics must remain stable.\n");
+    run(["hints", "refresh", "--json"]);
+    const second = run(["recall", "compiler", "--agent", "codex", "--json"]).json().entries[0].id;
+    expect(run(["wrong", second, "The compiler setup changed.", "--json"]).json()).toMatchObject({ level: "hint", status: "retired" });
+    run(["hints", "refresh", "--json"]);
+    expect(run(["recall", "compiler", "--agent", "codex", "--json"]).json().entries).toEqual([]);
+    expect(run(["hints", "status", "--json"]).json()).toMatchObject({ active: 0, confirmed: 1, expiryMonths: 6 });
+    expect(readFileSync(file, "utf8")).toBe(original);
+    expect(existsSync(join(repo, ".mex"))).toBe(false);
+  });
+  it("keeps empty hint status and invalid expiry configuration noninitializing", () => {
+    expect(run(["hints", "status", "--json"], repo, true).json()).toMatchObject({ active: 0, expiryMonths: 6, lastRefresh: null });
+    expect(run(["hints", "refresh", "--json"], repo, true).json()).toMatchObject({ imported: 0 });
+    expect(existsSync(mexBase)).toBe(false);
+    for (const months of ["0", "1.5", "nope"]) {
+      const result = run(["hints", "refresh", "--expiry-months", months, "--json"], repo, true);
+      expect(result.status).toBe(1); expect(result.json()).toMatchObject({ error: { code: "INVALID_SETTING" } });
+    }
+    expect(existsSync(mexBase)).toBe(false);
   });
   it("returns empty reads and controlled JSON errors without initializing storage", () => {
     const empty = run(["recall", "fixtures", "--json"]);
