@@ -79,7 +79,7 @@ export function prepareShare(options: KnowledgeOptions, choose: { skip?: string[
   const plan: SharePlan = { root, projectId: project.projectId, base: base.sha, baseName: base.name, branch: freeBranch(root, now), share: [], blocked: [], skipped: [], revision: "", entries: [] };
   for (const c of notes) {
     const { id } = c.entry.mex;
-    const verdict = verdicts.get(id);
+    const verdict = verdicts.get(`personal/${id}`);
     if (skip.has(id)) plan.skipped.push({ id, reason: "you left it out" });
     else if (onBase.has(id)) plan.skipped.push({ id, reason: `already shared on ${base.name}` });
     else if (!STRONG.has(c.entry.mex.evidence)) plan.skipped.push({ id, reason: "evidence too weak for the team" });

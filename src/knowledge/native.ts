@@ -62,7 +62,7 @@ export function rebuildNative(options: KnowledgeOptions, rebuild: RebuildOptions
   const verdicts = candidates.some(c => c.entry.mex.checks.length) ? currentVerdicts(options, project) ?? new Map() : new Map();
   const { selected } = selectNative(candidates, verdicts);
   const plan = planNative(project.root, agents, selected);
-  const unchecked = candidates.filter(c => c.entry.mex.checks.length && verdicts.get(c.entry.mex.id) !== "held").length;
+  const unchecked = candidates.filter(c => c.entry.mex.checks.length && verdicts.get(`${c.level}/${c.entry.mex.id}`) !== "held").length;
   if (unchecked) plan.notes.push(`${unchecked} checked entries withheld until their current checks hold.`);
   if (rebuild.sharedOnly) plan.files = plan.files.filter(f => f.sharing === "shared");
   const projectDirectory = home && !rebuild.sharedOnly ? containedDirectory(home, ["projects", project.projectId], true) : undefined;

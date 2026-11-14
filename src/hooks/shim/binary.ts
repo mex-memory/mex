@@ -21,7 +21,8 @@ const SELF_TEST_TIMEOUT_MS = 3_000;
 /** The npm package that carries the binary for a platform, or null if there is none. */
 export function platformPackageName(platform: string = process.platform, arch: string = process.arch): string | null {
   const key = `${platform}-${arch}`;
-  return SUPPORTED.has(key) ? `mex-agent-hook-${key}` : null;
+  if (!SUPPORTED.has(key)) return null;
+  return `mex-agent-hook-${key === "win32-x64" ? "windows-x64" : key}`;
 }
 
 export function binaryFileName(platform: string = process.platform): string {

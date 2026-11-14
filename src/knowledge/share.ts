@@ -75,7 +75,7 @@ function writeShare(worktree: string, plan: SharePlan, originalOptions: Knowledg
   const options = { ...originalOptions, projectPath: worktree };
   if (plan.entries.some(c => c.entry.mex.checks.length)) {
     const verdicts = currentVerdicts(options, knowledgeProject(options));
-    if (plan.entries.some(c => c.entry.mex.checks.length && verdicts?.get(c.entry.mex.id) !== "held")) {
+    if (plan.entries.some(c => c.entry.mex.checks.length && verdicts?.get(`personal/${c.entry.mex.id}`) !== "held")) {
       throw new KnowledgeError("SHARE_CHECKS", "A note's checks do not hold on the default branch; update the note or the default branch before sharing.");
     }
   }

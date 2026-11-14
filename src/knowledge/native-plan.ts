@@ -12,13 +12,15 @@
  * - Team entries go in shared files; personal notes in local files that git
  *   is told to ignore.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, posix } from "node:path";
 import type { NativeAgent } from "./agents-in-use.js";
 import { renderNative, type NativeFormat } from "./native-render.js";
 import { areaOf, type Candidate } from "./native-select.js";
 import { GENERATED_MARK } from "./rule-files.js";
+import { containedDirectory, readBoundedTextFile } from "./files.js";
+import { realPath } from "../record/project.js";
 
 export type Sharing = "shared" | "local";
 export interface PlannedFile { path: string; format: NativeFormat; sharing: Sharing; area: string; agents: NativeAgent[]; text: string; ids: string[]; dropped: string[]; }
@@ -28,9 +30,13 @@ const FORBIDDEN = new Set(["CLAUDE.md", "CLAUDE.local.md"]);
 
 /** A file at this path that MEX didn't generate: never written over. */
 export function ownedByPerson(root: string, path: string): boolean {
-  const full = join(root, path);
-  if (!existsSync(full)) return false;
-  try { return !readFileSync(full, "utf8").slice(0, 4096).includes(GENERATED_MARK); } catch { return true; }
+  try {
+    root = realPath(root);
+    const parts = path.split("/");
+    if (parts.length > 1 && !containedDirectory(root, parts.slice(0, -1))) return false;
+    const text = readBoundedTextFile(join(root, path), 8 * 1024);
+    return text !== undefined && !text.includes(GENERATED_MARK);
+  } catch { return true; }
 }
 
 function slug(area: string): string { return area.replace(/[^A-Za-z0-9]+/gu, "-").replace(/^-|-$/gu, "").toLowerCase(); }

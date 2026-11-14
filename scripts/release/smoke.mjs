@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { verifyBundle } from './bundle.mjs';
 import { localRegistry } from './registry.mjs';
 import { npm, run, npmEnvironment } from './commands.mjs';
-import { TARGETS } from './plan.mjs';
+import { packageNameFor, TARGETS } from './plan.mjs';
 import { resolveHookRunner } from '../../src/hooks/shim/binary.ts';
 
 export async function smokeBundle(directory, plan) {
@@ -22,7 +22,7 @@ export async function smokeBundle(directory, plan) {
     const selected = [];
     for (const target of TARGETS) {
       let path;
-      try { path = require.resolve(`mex-agent-hook-${target}/package.json`); } catch (error) { if (error.code === 'MODULE_NOT_FOUND') continue; throw error; }
+      try { path = require.resolve(`${packageNameFor(target)}/package.json`); } catch (error) { if (error.code === 'MODULE_NOT_FOUND') continue; throw error; }
       const rel = relative(realpathSync(project), realpathSync(path));
       if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('Resolved package outside clean consumer');
       if (JSON.parse(readFileSync(path)).version !== plan.version) throw new Error('Installed platform version mismatch');
@@ -37,7 +37,7 @@ export async function smokeBundle(directory, plan) {
       ? await run('cmd.exe', ['/d', '/c', 'node_modules\\.bin\\mex.cmd', '--version'], { cwd: project, env })
       : await run(join(project, 'node_modules/.bin/mex'), ['--version'], { cwd: project, env })).trim();
     if (cliVersion !== plan.version) throw new Error(`CLI version mismatch: ${cliVersion}`);
-    console.log(`Registry install selected only mex-agent-hook-${host}; native resolver, self-test and mex --version ${plan.version} passed.`);
+    console.log(`Registry install selected only ${packageNameFor(host)}; native resolver, self-test and mex --version ${plan.version} passed.`);
     console.log(`Retained isolated consumer: ${work}`);
   } finally { await registry.close(); }
 }
