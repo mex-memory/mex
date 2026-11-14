@@ -1,10 +1,8 @@
 package entries
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/gob"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -13,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mex-memory/mex/native/internal/binenc"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
@@ -33,7 +32,7 @@ type lightFile struct {
 }
 
 func lightPath(directory, project, checkout string) string {
-	return filepath.Join(directory, "delivery-entries", place.ShortHash(project+"\n"+checkout)+".light.gob")
+	return filepath.Join(directory, "delivery-entries", place.ShortHash(project+"\n"+checkout)+".light.bin")
 }
 
 type storeRoot struct {
@@ -130,10 +129,9 @@ func LoadLight(directory, home, project, checkout string) (Snapshot, error) {
 	}
 	path := lightPath(directory, project, checkout)
 	if b, err := readRegular(path, 8*1024*1024); err == nil {
-		var lf lightFile
 		// A file modified within 2 s of the write may share its timestamp
 		// with an edit that came after it: never trust it.
-		if gob.NewDecoder(bytes.NewReader(b)).Decode(&lf) == nil && lf.Version == lightVersion && lf.Stamp == stamp && newest < lf.Written-int64(2*time.Second) {
+		if lf, err := decodeLight(b); err == nil && lf.Version == lightVersion && lf.Stamp == stamp && newest < lf.Written-int64(2*time.Second) {
 			snap := Snapshot{Light: true, Items: lf.Items}
 			for i := range snap.Items {
 				it := &snap.Items[i]
@@ -159,7 +157,7 @@ func LoadLight(directory, home, project, checkout string) (Snapshot, error) {
 	for _, it := range full.Items {
 		lf.Items = append(lf.Items, lighten(it))
 	}
-	saveGob(path, lf)
+	saveFile(path, encodeLight(lf))
 	return full, nil
 }
 
@@ -178,12 +176,90 @@ func lighten(it Item) Item {
 	return Item{Entry: &e, Level: it.Level, Path: it.Path, Hash: it.Hash, Generated: it.Generated, NeedsHintGate: it.NeedsHintGate}
 }
 
-func saveGob(path string, v any) {
-	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(v); err != nil {
-		return
+const (
+	maxLightItems = 20000
+	maxList       = 256
+)
+
+func encodeLight(lf lightFile) []byte {
+	var w binenc.Writer
+	w.Uint(uint64(lf.Version))
+	w.Int(lf.Written)
+	w.String(lf.Stamp)
+	w.Uint(uint64(len(lf.Items)))
+	for _, it := range lf.Items {
+		e := it.Entry
+		w.String(it.Level)
+		w.String(it.Path)
+		w.String(it.Hash)
+		w.Bool(it.Generated)
+		w.Bool(it.NeedsHintGate)
+		w.String(e.ID)
+		w.String(e.Kind)
+		w.Strings(e.Scope)
+		w.String(e.Source.Type)
+		w.String(e.Source.Ref)
+		w.String(e.Evidence)
+		w.String(e.OneLine)
+		w.Uint(uint64(len(e.When)))
+		for _, t := range e.When {
+			w.String(t.Type)
+			w.String(t.Match)
+			w.String(t.Pattern)
+		}
+		w.Uint(uint64(len(e.Checks)))
+		for _, c := range e.Checks {
+			w.String(c.Kind)
+			w.String(c.Role)
+			for _, k := range []string{"run", "file", "pointer"} {
+				v, _ := c.Target[k].(string)
+				w.String(v)
+			}
+		}
+		w.Strings(e.Companions)
+		w.String(e.Status)
+		w.String(e.Created)
 	}
-	b := buf.Bytes()
+	return w.Bytes()
+}
+
+func decodeLight(b []byte) (lightFile, error) {
+	r := binenc.NewReader(b)
+	lf := lightFile{Version: int(r.Uint()), Written: r.Int(), Stamp: r.String()}
+	if lf.Version != lightVersion {
+		return lightFile{}, ErrInvalid
+	}
+	n := r.Count(maxLightItems)
+	lf.Items = make([]Item, 0, n)
+	for i := 0; i < n && r.Err() == nil; i++ {
+		it := Item{Level: r.String(), Path: r.String(), Hash: r.String(), Generated: r.Bool(), NeedsHintGate: r.Bool()}
+		e := &Entry{ID: r.String(), Kind: r.String(), Scope: r.Strings(maxList)}
+		e.Source = Source{Type: r.String(), Ref: r.String()}
+		e.Evidence, e.OneLine = r.String(), r.String()
+		for j, m := 0, r.Count(maxList); j < m; j++ {
+			e.When = append(e.When, Trigger{Type: r.String(), Match: r.String(), Pattern: r.String()})
+		}
+		for j, m := 0, r.Count(maxList); j < m; j++ {
+			c := Check{Kind: r.String(), Role: r.String(), Target: map[string]any{}}
+			for _, k := range []string{"run", "file", "pointer"} {
+				if v := r.String(); v != "" {
+					c.Target[k] = v
+				}
+			}
+			e.Checks = append(e.Checks, c)
+		}
+		e.Companions = r.Strings(maxList)
+		e.Status, e.Created = r.String(), r.String()
+		it.Entry = e
+		lf.Items = append(lf.Items, it)
+	}
+	if err := r.Done(); err != nil {
+		return lightFile{}, err
+	}
+	return lf, nil
+}
+
+func saveFile(path string, b []byte) {
 	dir := filepath.Dir(path)
 	if os.MkdirAll(dir, 0o700) != nil {
 		return

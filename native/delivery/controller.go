@@ -81,6 +81,7 @@ type group struct {
 	snap              *entries.Snapshot
 	cands             []candidate
 	firstRel          string
+	edits             []string // files edited in this call that some entry covers
 }
 
 // Handle must be called after checkout, consent and pause resolution. Events
@@ -120,6 +121,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	}
 	defer h.Close()
 
+	var blocks []string
 	if isLifecycle {
 		req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
 		req.Reason, req.CompactSignal = reason, signal
@@ -127,13 +129,28 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		if ev.Model == "" && ev.AgentID == "" {
 			req.Budget = 0 // keep the known window across signals without model metadata
 		}
-		if _, err := h.CheckAndMark(req); err != nil {
+		res, err := h.CheckAndMark(req)
+		if err != nil {
 			return contract.Reply{}, err
+		}
+		text, err := lifecycleBlock(h, ev, env, reason, signal, res.Epoch)
+		if err != nil {
+			return contract.Reply{}, err
+		}
+		if text != "" {
+			blocks = append(blocks, text)
 		}
 	}
 
-	var blocks []string
 	for _, g := range groups {
+		if len(g.edits) > 0 {
+			if err := h.NoteEdits(record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: g.project, Checkout: g.checkout}, ev.AgentID, g.edits); err != nil {
+				return contract.Reply{}, err
+			}
+		}
+		if len(g.cands) == 0 {
+			continue
+		}
 		text, err := deliver(h, ev, env, g)
 		if err != nil {
 			return contract.Reply{}, err
@@ -196,15 +213,33 @@ func collect(ev contract.Event, env Environment) []*group {
 				g.firstRel = v.rel
 			}
 			g.cands = append(g.cands, found...)
+			if isEdit(v) && covered(g.snap, v.rel) {
+				g.edits = append(g.edits, v.rel)
+			}
 		}
 	}
 	var out []*group
 	for _, g := range order {
-		if len(g.cands) > 0 {
+		if len(g.cands) > 0 || len(g.edits) > 0 {
 			out = append(out, g)
 		}
 	}
 	return out
+}
+
+func isEdit(v toolView) bool {
+	return v.rel != "" && (v.name == contract.ToolEdit || v.name == contract.ToolWrite || v.name == contract.ToolPatch) && (v.output == nil || v.output.OK)
+}
+
+// covered reports whether any entry's scope covers a path: only such edits
+// matter to the recovery block, so only they are written down.
+func covered(snap *entries.Snapshot, rel string) bool {
+	for i := range snap.Items {
+		if inScope(&snap.Items[i], rel) {
+			return true
+		}
+	}
+	return false
 }
 
 // deliver runs the hard gates that need storage, the verdict table, packing
@@ -231,9 +266,30 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		return "", err
 	}
 	fresh := g.cands[:0:0]
+	var onBranch blockState
 	for _, c := range g.cands {
-		if !present[c.item.Entry.ID] || verdictOf(c.item.Entry.ID) == broken {
+		id := c.item.Entry.ID
+		carried := present[id]
+		if len(carried) == 0 || verdictOf(id) == broken {
 			fresh = append(fresh, c)
+			continue
+		}
+		// Claude Code: a rewind can drop the block that carried it.
+		if ev.Agent == "claude-code" && ev.Transcript != "" {
+			if onBranch == nil {
+				onBranch = transcriptBlocks(env.RecordDirectory, ev.Transcript)
+			}
+			gone := true
+			for _, b := range carried {
+				if active, known := onBranch(b); !known || active {
+					gone = false
+					break
+				}
+			}
+			if gone {
+				c.resend = true
+				fresh = append(fresh, c)
+			}
 		}
 	}
 	g.cands = fresh

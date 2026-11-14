@@ -29,6 +29,9 @@ type DeliveryCandidate struct {
 	// epoch no longer holds. It is written once per entry per epoch, only
 	// when the entry was given, and always in the reserved lane.
 	Correction bool
+	// Resend gives an entry again although the ledger has it this epoch: the
+	// transcript shows the agent no longer has it (a rewind).
+	Resend bool
 }
 type Receipt struct {
 	DeliveryCandidate
@@ -249,7 +252,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 				continue
 			}
 			c.Action, c.Reserved = "withheld", true
-		} else if present[id] {
+		} else if present[id] && !c.Resend {
 			continue
 		}
 		if c.Action == "" {
@@ -344,6 +347,7 @@ func pruneDelivery(ctx context.Context, c *sql.Conn, cutoff string, keep func(st
 	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	args := append(ids, cutoff)
 	for _, q := range []string{
+		`DELETE FROM epoch_files WHERE rowid IN (SELECT f.rowid FROM epoch_files f JOIN epochs e ON e.session_id=f.session_id AND e.agent_id=f.agent_id AND e.epoch=f.epoch WHERE f.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,
 		`DELETE FROM followups WHERE id IN (SELECT f.id FROM followups f JOIN deliveries d ON d.id=f.delivery_id WHERE d.session_id IN (` + marks + `) AND d.ts<? LIMIT 256)`,
 		`DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.session_id IN (` + marks + `) AND d.ts<? AND NOT EXISTS(SELECT 1 FROM followups f WHERE f.delivery_id=d.id) LIMIT 256)`,
 		`DELETE FROM epochs WHERE (session_id,agent_id,epoch) IN (SELECT e.session_id,e.agent_id,e.epoch FROM epochs e WHERE e.session_id IN (` + marks + `) AND e.started_at<? AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.session_id=e.session_id AND d.agent_id=e.agent_id AND d.epoch=e.epoch) LIMIT 64)`,
@@ -356,13 +360,14 @@ func pruneDelivery(ctx context.Context, c *sql.Conn, cutoff string, keep func(st
 }
 
 // Presence lists the entries given (or replaced) in the current epoch of a
-// session's agent, with aliases resolved, without taking the writer lock.
+// session's agent, with the blocks that carried them and aliases resolved,
+// without taking the writer lock.
 // Callers use it to drop repeats before packing; CheckAndMark rechecks under
 // the lock, so a race costs at most one skipped item, never a double send.
-func (hooks *Hooks) Presence(sessionID, agentID, projectID, checkout string) (map[string]bool, error) {
+func (hooks *Hooks) Presence(sessionID, agentID, projectID, checkout string) (map[string][]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.reader)
 	defer cancel()
-	present := map[string]bool{}
+	present := map[string][]string{}
 	var epoch int
 	err := hooks.db.QueryRowContext(ctx, `SELECT epoch FROM epochs WHERE session_id=? AND agent_id=? ORDER BY epoch DESC LIMIT 1`, sessionID, agentID).Scan(&epoch)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -386,19 +391,135 @@ func (hooks *Hooks) Presence(sessionID, agentID, projectID, checkout string) (ma
 	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
-	rows, err = hooks.db.QueryContext(ctx, `SELECT DISTINCT entry_id FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? AND action IN ('given','replaced') AND moment<>'correction' LIMIT 20000`, sessionID, agentID, epoch, projectID, checkout)
+	rows, err = hooks.db.QueryContext(ctx, `SELECT entry_id,block_id FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? AND action IN ('given','replaced') AND moment<>'correction' LIMIT 20000`, sessionID, agentID, epoch, projectID, checkout)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
+		var id, block string
+		if err = rows.Scan(&id, &block); err != nil {
 			break
 		}
 		for hops := 0; aliases[id] != "" && hops < 64; hops++ {
 			id = aliases[id]
 		}
-		present[id] = true
+		present[id] = append(present[id], block)
 	}
 	return present, errors.Join(err, rows.Err(), rows.Close())
+}
+
+// GivenRow is one entry given (or replaced) in an epoch.
+type GivenRow struct {
+	EntryID, Form, ContentHash, Moment, BlockID string
+}
+
+// latestEpoch returns the newest epoch number of a session's agent.
+func (hooks *Hooks) latestEpoch(ctx context.Context, sessionID, agentID string) (int, bool, error) {
+	var n int
+	err := hooks.db.QueryRowContext(ctx, `SELECT epoch FROM epochs WHERE session_id=? AND agent_id=? ORDER BY epoch DESC LIMIT 1`, sessionID, agentID).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	return n, err == nil, err
+}
+
+// EpochGiven lists what an epoch gave in one checkout, oldest first; epoch -1
+// means the newest. Corrections are not deliveries and are left out.
+func (hooks *Hooks) EpochGiven(sessionID, agentID, projectID, checkout string, epoch int) ([]GivenRow, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.reader)
+	defer cancel()
+	if epoch < 0 {
+		n, ok, err := hooks.latestEpoch(ctx, sessionID, agentID)
+		if err != nil || !ok {
+			return nil, 0, err
+		}
+		epoch = n
+	}
+	rows, err := hooks.db.QueryContext(ctx, `SELECT entry_id,form,content_hash,moment,block_id FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? AND action IN ('given','replaced') AND moment<>'correction' ORDER BY ts,rowid LIMIT 2000`, sessionID, agentID, epoch, projectID, checkout)
+	if err != nil {
+		return nil, epoch, err
+	}
+	var out []GivenRow
+	seen := map[string]bool{}
+	for rows.Next() {
+		var g GivenRow
+		if err = rows.Scan(&g.EntryID, &g.Form, &g.ContentHash, &g.Moment, &g.BlockID); err != nil {
+			break
+		}
+		if !seen[g.EntryID] {
+			seen[g.EntryID] = true
+			out = append(out, g)
+		}
+	}
+	return out, epoch, errors.Join(err, rows.Err(), rows.Close())
+}
+
+// EpochFiles lists the files edited in an epoch in one checkout.
+func (hooks *Hooks) EpochFiles(sessionID, agentID, projectID, checkout string, epoch int) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.reader)
+	defer cancel()
+	rows, err := hooks.db.QueryContext(ctx, `SELECT path FROM epoch_files WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? ORDER BY path LIMIT 512`, sessionID, agentID, epoch, projectID, checkout)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for rows.Next() {
+		var p string
+		if err = rows.Scan(&p); err != nil {
+			break
+		}
+		out = append(out, p)
+	}
+	return out, errors.Join(err, rows.Err(), rows.Close())
+}
+
+// NoteEdits records files edited in the current epoch, for the recovery block
+// after compaction. Callers pass only files some entry's scope covers. At most
+// 64 paths per call and 512 per epoch; with no epoch yet, nothing is written.
+func (hooks *Hooks) NoteEdits(session Session, agentID string, paths []string) error {
+	if hooks.counterOnly || len(paths) == 0 {
+		return nil
+	}
+	if len(paths) > 64 {
+		paths = paths[:64]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.writer)
+	defer cancel()
+	conn, err := hooks.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err = hooks.retryStatement(ctx, conn, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
+	var epoch, count int
+	err = conn.QueryRowContext(ctx, `SELECT epoch FROM epochs WHERE session_id=? AND agent_id=? ORDER BY epoch DESC LIMIT 1`, session.SessionID, agentID).Scan(&epoch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err = conn.QueryRowContext(ctx, `SELECT count(*) FROM epoch_files WHERE session_id=? AND agent_id=? AND epoch=?`, session.SessionID, agentID, epoch).Scan(&count); err != nil {
+		return err
+	}
+	for _, p := range paths {
+		if count >= 512 {
+			break
+		}
+		if p == "" || len(p) > 4096 || strings.ContainsRune(p, 0) {
+			continue
+		}
+		res, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO epoch_files VALUES(?,?,?,?,?,?)`, session.SessionID, agentID, epoch, session.ProjectID, session.Checkout, p)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			count++
+		}
+	}
+	_, err = conn.ExecContext(ctx, "COMMIT")
+	return err
 }

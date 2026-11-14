@@ -54,6 +54,7 @@ type Event struct {
 	Checkout     string    `json:"checkout"`
 	Source       string    `json:"source,omitempty"`
 	Model        string    `json:"model,omitempty"`
+	AgentType    string    `json:"agent_type,omitempty"` // subagent_start: the subagent's type, where the agent says
 	Prompt       *PromptIn `json:"prompt,omitempty"`
 	Tool         *Tool     `json:"tool,omitempty"`
 	Batch        []Tool    `json:"batch,omitempty"`

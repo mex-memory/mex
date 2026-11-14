@@ -10,6 +10,7 @@ import (
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/internal/shellparse"
 )
 
 // Trigger strength tiers (sheet 30, ranking step 2). Lower is stronger.
@@ -55,6 +56,7 @@ type candidate struct {
 	exempt  bool // exact matches: never held back by the budget
 	reserve bool // failure fixes and corrections use the reserved lane
 	rel     string
+	resend  bool // the ledger has it, but the agent's transcript no longer does
 }
 
 // Resolver finds the registered checkout for a path. isFile is false for a
@@ -113,6 +115,25 @@ func views(ev contract.Event, resolve Resolver) []toolView {
 				}
 			}
 			out = append(out, base)
+			// A shell command that reads files (cat, sed -n, head, nl and the
+			// PowerShell forms) is a read of each: Codex has no read tool of
+			// its own. The output is the file text only when one file is read.
+			if !base.failed {
+				reads := shellparse.Reads(t.Input.Command, filepath.FromSlash(folder), ev.Agent == "codex")
+				for i, r := range reads {
+					if i >= 8 {
+						break
+					}
+					v := toolView{name: contract.ToolRead, path: slash(r.Path), project: ev.ProjectID, checkout: ev.Checkout}
+					if len(reads) == 1 {
+						v.output = t.Output
+					}
+					if resolve != nil {
+						v.project, v.checkout = resolve(v.path, true)
+					}
+					out = append(out, v)
+				}
+			}
 		case contract.ToolPatch:
 			for _, f := range t.Input.Files {
 				v := base

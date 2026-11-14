@@ -159,7 +159,7 @@ func contentHash(text string) string {
 func requestCandidates(plan []planned) []record.DeliveryCandidate {
 	var out []record.DeliveryCandidate
 	for _, p := range plan {
-		c := record.DeliveryCandidate{EntryID: p.item.Entry.ID, Moment: p.moment, Form: p.form, Tokens: p.tokens, Reserved: p.reserve, Exempt: p.exempt, ContentHash: contentHash(p.item.Hash + "\n" + p.text)}
+		c := record.DeliveryCandidate{EntryID: p.item.Entry.ID, Moment: p.moment, Form: p.form, Tokens: p.tokens, Reserved: p.reserve, Exempt: p.exempt, Resend: p.resend, ContentHash: contentHash(p.item.Hash + "\n" + p.text)}
 		switch {
 		case p.correction:
 			c.Correction, c.Moment, c.Form = true, "correction", "one-line"
@@ -214,6 +214,8 @@ func render(block string, plan []planned, receipts []record.Receipt) string {
 	for _, p := range plan {
 		id := p.item.Entry.ID
 		switch {
+		case p.correction && corrected[id] && p.text != "":
+			b.WriteString(strings.TrimSpace(p.text) + " (" + id + ")\n")
 		case p.correction && corrected[id]:
 			b.WriteString("Correction: the MEX note " + id + " given earlier no longer matches the code; set it aside.\n")
 		case !p.correction && given[id] && p.text != "":

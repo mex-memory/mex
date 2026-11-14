@@ -43,7 +43,7 @@ Scopes in the common shapes (a plain path, `dir/**`, `**`) match without a
 regular expression; other globs compile once per distinct scope in a load.
 
 **The light snapshot.** Every call with a moment reads only a light index
-(`delivery-entries/<key>.light.gob`): each entry's id, kind, level, scope,
+(`delivery-entries/<key>.light.bin`): each entry's id, kind, level, scope,
 `when` triggers, command-check targets and one-line form, with no text. It is
 valid while a stamp over the stores' listings is unchanged: a hash of every
 entry file's name, size and modification time, read from the directory
@@ -87,12 +87,14 @@ Snapshot loads, 500 synthetic pitfalls, `go test -bench 500 -benchtime 1000x
 | Load | per call |
 | --- | ---: |
 | Full snapshot, unchanged files | 13-21 ms |
-| Light index, unchanged files | 3.2 ms |
+| Light index, unchanged files | 2.0 ms |
 
 The full load's cost was file-system calls around each read and decoding
 the JSON cache of all entries; compiling 500 scope globs added about 4 ms
-before scopes matched without regular expressions. The light index is gob:
-JSON decoding alone was 5 ms of 8 ms.
+before scopes matched without regular expressions. The light index uses a small
+length-prefixed binary encoding (`native/internal/binenc`): JSON decoding
+alone was 5 ms of 8 ms, and `encoding/gob`, tried first, adds about 0.5 ms of
+package start-up to every hook call. With it the light load is 2.0 ms.
 
 Whole process, Claude Code `PostToolBatch` of Read calls through the real
 binary, 200 interleaved runs each,
@@ -191,13 +193,51 @@ outcomes are logged once per entry per epoch.
 The rendered block is `[mex <block id>]` then one line per item, ending with
 the entry id so the agent can ask for more. No warnings and no clock times.
 
+## Session life
+
+- **Epochs** advance at startup, clear, fork, compaction and a new subagent;
+  resume keeps the epoch. Compaction's two signals (PostCompact and
+  SessionStart `compact`) confirm one transition in either order.
+- **Edited files.** An edit, write or patch to a file that some entry's scope
+  covers is written to `epoch_files` (at most 512 per epoch). Edits to files
+  no entry covers write nothing.
+- **Recovery after compaction** goes out on SessionStart `compact`, the
+  compaction signal that can carry text on both agents: one-line forms of the
+  entries the previous epoch gave whose scope covers a file it edited, newest
+  first, verdicts re-checked, within 400 tokens; then the ids of the rest, at
+  most 20. Recovered entries count as given in the new epoch. Everything else
+  comes back at its next moment. The priority line and "where we left off"
+  slots are empty until the start brief and capture fill them.
+- **Resume** sends nothing again. An entry given in this epoch that is now
+  broken or gone gets a correction; one whose text changed gets its new
+  one-line form, marked "Updated". Both use the reserved lane.
+- **Rewind (Claude Code).** Before skipping a repeat, the controller checks
+  that a block which carried the entry is still on the transcript's active
+  branch: the chain of `parentUuid` links from the newest message. The answer
+  is cached per transcript (`delivery-transcripts/<hash>.bin`) and updated from
+  appended bytes; a new branch re-walks the stored links. A block the
+  transcript never mentions, a transcript over 64 MiB, or more than 16 MiB
+  appended since the last look all answer "still there": no resend on doubt.
+- **Subagents** have their own ledger and a 600-token budget. An editing
+  subagent starts with one-liners of what the main session was given this
+  epoch. Types that only look (`Explore`, `Plan`, `claude-code-guide`,
+  `statusline-setup`) get moment items only; unknown types count as editing.
+- **Shell reads.** A shell command that reads files (`cat`, `sed -n`, `head`,
+  `tail`, `nl -ba ... | sed -n`, the PowerShell forms) is a read of each file,
+  so Codex, which reads through its shell, gets read moments too. The output
+  is matched for anti-patterns only when one file is read.
+
 ## Contract changes to copy
 
 - Hook events: optional normalized `model` on session start; a rendered block's
   id names committed receipt rows through `deliveries.block_id`.
 - Local record: hooks schema version 2, the epoch/delivery columns, aliases,
   bounded pruning, database/file heartbeat fallback and delivery cache above.
-- Hook events: `kind` (`add`, `update`, `delete`) on patch files.
+- Hook events: `kind` (`add`, `update`, `delete`) on patch files; optional
+  `agent_type` on subagent start.
+- Local record: `epoch_files` in hooks schema version 2; deliveries keep the
+  block id that carried them, and a resend after a rewind is a second
+  `given` row in the same epoch.
 - Entry file: the native coverage marker `<!-- mex:<id> -->` for entries
   written into agent rule files; a recorded fix is a `hint` whose `when: anti`
   literal is its failure signature. There is no successor metadata field.
@@ -205,5 +245,5 @@ the entry id so the agent can ask for more. No warnings and no clock times.
 
 ## Remaining slices
 
-Recovery/resume/rewind/subagent briefs follow. A final deterministic corpus
-and demo qualify the complete controller.
+A deterministic knowledge corpus with its gate and a demo script qualify the
+complete controller.

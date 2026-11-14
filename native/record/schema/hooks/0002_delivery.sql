@@ -14,3 +14,8 @@ CREATE TABLE aliases (
 CREATE INDEX deliveries_presence ON deliveries(session_id,agent_id,epoch,project_id,checkout,entry_id,action);
 CREATE INDEX epochs_age ON epochs(started_at,session_id,agent_id,epoch);
 CREATE INDEX sessions_seen ON sessions(last_seen_at,session_id);
+CREATE TABLE epoch_files (
+ session_id TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', epoch INTEGER NOT NULL,
+ project_id TEXT NOT NULL, checkout TEXT NOT NULL, path TEXT NOT NULL,
+ PRIMARY KEY(session_id,agent_id,epoch,project_id,checkout,path)
+);
