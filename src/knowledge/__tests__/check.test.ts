@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { buildIndex } from "../../file-index/build.js";
+import { literalPattern } from "../../file-index/classify.js";
+import { indexDirectory, writePatterns } from "../../file-index/store.js";
 import { formatCheck, recordCheck, runCheck, storeGates, type CheckReport } from "../check.js";
+import { knowledgeProject } from "../context.js";
 import { serializeEntry, type EntryCheck, type KnowledgeEntry } from "../entry.js";
 import { references } from "../references.js";
 
@@ -65,6 +69,26 @@ describe("mex check without the native binary", () => {
     expect(report.ok).toBe(true);
     expect(formatCheck(report, root)).toContain("native binary");
   });
+  it("--diff refuses to run rather than pass every entry as unknown", () => {
+    const { root } = repo();
+    writeTeam(root, entry("mx_plain01", "The API uses date-fns."));
+    git(root, "add", "."); git(root, "commit", "-q", "-m", "base");
+    expect(() => runCheck({ projectPath: root, binary: null, diff: "HEAD" })).toThrow(/native binary/u);
+  });
+  it("a rule's own entry file doesn't count against it in the file index", async () => {
+    const { root, home } = repo();
+    mkdirSync(home, { recursive: true });
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "dates.ts"), "import m from 'moment'\n");
+    writeTeam(root, entry("mx_moment1", "Never import from 'moment'.", [], { kind: "rule", when: [{ type: "anti", match: "literal", pattern: "from 'moment'" }] }));
+    git(root, "add", "."); git(root, "commit", "-q", "-m", "base");
+    const project = knowledgeProject({ projectPath: root });
+    writePatterns(indexDirectory(project.location.directory, project.projectId), [literalPattern("from 'moment'")]);
+    await buildIndex({ root, projectId: project.projectId, recordDirectory: project.location.directory, workers: 0 });
+    const notes = runCheck({ projectPath: root, binary: null }).findings.filter(f => f.kind === "conformance");
+    expect(notes.map(f => f.message)).toEqual([`"from 'moment'" occurs 1 times in **`]);
+    expect(notes[0]?.proven).toBe(false);
+  }, 60_000);
   it("prints no score", () => {
     const report: CheckReport = { ok: true, source: "native", entries: [], counts: { held: 3, changed: 1, broken: 0, unknown: 0 }, findings: [], problems: 0 };
     report.entries.push({ id: "mx_a00001", level: "team", path: "x", kind: "fact", verdict: "held", one_line: "x", checks: [] });
@@ -145,6 +169,21 @@ describe.skipIf(!enabled)("mex check with the native evaluator", () => {
     const report = runCheck({ projectPath: root, binary, diff: "HEAD~1" });
     expect(report.entries.find(e => e.id === "mx_test001")?.verdict).toBe("broken");
     expect(report.ok).toBe(true);
+  });
+
+  it("--diff doesn't fail a new rule on its own words, or on the rule files that repeat them", () => {
+    const root = setup();
+    git(root, "checkout", "-q", "-b", "rule");
+    writeTeam(root, entry("mx_lodash1", "Never import from 'lodash' in src.", [], { kind: "rule", when: [{ type: "anti", match: "literal", pattern: "from 'lodash'" }] }));
+    writeFileSync(join(root, "AGENTS.md"), "- Never import from 'lodash' in src.\n");
+    git(root, "add", "."); git(root, "commit", "-q", "-m", "add a rule");
+    expect(runCheck({ projectPath: root, binary, diff: "HEAD~1" }).findings.filter(f => f.proven)).toEqual([]);
+
+    writeFileSync(join(root, "src", "util.ts"), "import { pick } from 'lodash'\n");
+    git(root, "add", "."); git(root, "commit", "-q", "-m", "use it");
+    expect(runCheck({ projectPath: root, binary, diff: "HEAD~2" }).findings.filter(f => f.proven).map(f => f.message)).toEqual([
+      `src/util.ts adds "from 'lodash'", which "Never import from 'lodash' in src." rules out`,
+    ]);
   });
 
   it("refuses to record a check that doesn't pass today", () => {

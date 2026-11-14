@@ -87,7 +87,7 @@ export function recordCheck(binary: string, request: { checkout: string; project
 }
 
 function git(root: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync("git", ["-C", root, "-c", "core.quotePath=off", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
 }
 
 function entryFiles(directory: string, depth: number): string[] {
@@ -155,11 +155,30 @@ export function registerPatterns(recordDirectory: string, projectId: string, ent
   return add.length !== known.length && writePatterns(directory, add);
 }
 
+/**
+ * An anti-pattern is about the code a rule covers, not about text that
+ * names it: the team entry files (a rule always names its own pattern) and
+ * Markdown, where rule files shared to agents repeat it. A scope that names
+ * Markdown files itself still covers them.
+ */
+function namesOnly(file: string, scope: string): boolean {
+  if (file.startsWith(".mex/")) return true;
+  return /\.(?:md|mdx|mdc)$/iu.test(file) && !/\.(?:md|mdx|mdc)$/iu.test(scope);
+}
+
+function occurrences(text: string, pattern: string): number {
+  return pattern ? text.split(pattern).length - 1 : 0;
+}
+
 /** Rules whose anti-pattern occurs in their scope, from the file index. */
-function conformance(recordDirectory: string, projectId: string, root: string, entries: Array<{ entry: KnowledgeEntry; path: string }>): Finding[] {
+function conformance(recordDirectory: string, projectId: string, root: string, entries: Array<{ entry: KnowledgeEntry; path: string }>, teamFiles: string[]): Finding[] {
   const index = openIndex({ recordDirectory, projectId, checkout: root });
   if (!index) return [];
   const findings: Finding[] = [];
+  // The index counts tracked entry files too; take their own mentions out.
+  const teamTexts = teamFiles.flatMap(path => {
+    try { const text = readEntryFile(path); return text === undefined ? [] : [{ rel: relative(root, path).split(sep).join("/"), text }]; } catch { return []; }
+  });
   try {
     for (const { entry, path } of entries) {
       if (entry.mex.status !== "active") continue;
@@ -167,8 +186,9 @@ function conformance(recordDirectory: string, projectId: string, root: string, e
         if (when.type !== "anti" || when.match !== "literal") continue;
         const id = patternId(when.pattern);
         for (const scope of entry.mex.scope) {
-          const count = index.patternCounts(scope, [id])[id];
-          if (count) findings.push({ kind: "conformance", id: entry.mex.id, path, message: `"${when.pattern}" occurs ${count} times in ${scope}`, proven: false });
+          const own = teamTexts.filter(t => scope === "**" || globMatch(scope, t.rel)).reduce((sum, t) => sum + occurrences(t.text, when.pattern), 0);
+          const count = (index.patternCounts(scope, [id])[id] ?? 0) - own;
+          if (count > 0) findings.push({ kind: "conformance", id: entry.mex.id, path, message: `"${when.pattern}" occurs ${count} times in ${scope}`, proven: false });
         }
       }
     }
@@ -201,7 +221,12 @@ export function runCheck(options: CheckOptions): CheckReport {
   const binary = options.binary === undefined ? nativeBinary(options.env) : options.binary;
   const homeExists = existsSync(project.location.home);
   const diff = options.diff;
-  if (diff) git(root, "rev-parse", "--verify", `${diff}^{commit}`);
+  if (diff) {
+    git(root, "rev-parse", "--verify", `${diff}^{commit}`);
+    // Without the evaluator every entry would read "unknown" and a branch
+    // that breaks one would pass; a CI gate must not pass by default.
+    if (!binary) throw new KnowledgeError("CHECKS_UNAVAILABLE", "mex check --diff needs MEX's native binary for this platform; reinstall MEX or set MEX_HOOK_BINARY.");
+  }
 
   const teamDir = join(root, ".mex", "learned");
   const files: Array<{ path: string; level: Level }> = entryFiles(teamDir, 1).map(path => ({ path, level: "team" }));
@@ -252,7 +277,7 @@ export function runCheck(options: CheckOptions): CheckReport {
   }
   report.findings.push(...storeGates(files, references(root)));
   const withEntries = [...parsed.entries()].map(([path, entry]) => ({ path, entry }));
-  if (!diff && homeExists) report.findings.push(...conformance(project.location.directory, project.projectId, root, withEntries));
+  if (!diff && homeExists) report.findings.push(...conformance(project.location.directory, project.projectId, root, withEntries, files.filter(f => f.level === "team").map(f => f.path)));
   if (diff) report.findings.push(...diffConformance(root, diff, withEntries));
 
   report.problems = report.findings.filter(f => f.proven).length;
@@ -269,7 +294,7 @@ function diffConformance(root: string, base: string, entries: Array<{ entry: Kno
     for (const when of entry.mex.when ?? []) {
       if (when.type !== "anti" || when.match !== "literal") continue;
       for (const [file, lines] of added) {
-        if (!entry.mex.scope.some(scope => scope === "**" || globMatch(scope, file))) continue;
+        if (!entry.mex.scope.some(scope => (scope === "**" || globMatch(scope, file)) && !namesOnly(file, scope))) continue;
         const count = lines.filter(line => line.includes(when.pattern)).length;
         if (count) findings.push({ kind: "diff", id: entry.mex.id, path, message: `${file} adds "${when.pattern}", which "${entry.mex.one_line}" rules out`, proven: true });
       }
