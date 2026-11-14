@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -330,9 +331,10 @@ func measureNoOp(t *testing.T, counters bool) {
 		before = readHookCount(t, observer)
 	}
 	const runs = 200
-	// Measure actual captured calls. Best-effort storage may skip a call at its
-	// production deadline, so allow a fixed number of extra fixture attempts.
-	// Every retained latency still comes from a real persisted counter write.
+	// Measure actual captured calls. A write that misses its production
+	// deadline is kept in the pending file and added by a later call, so allow
+	// a fixed number of extra fixture attempts. Every retained latency still
+	// comes from a call whose counter write landed.
 	const maxCounterSkips = 10
 	limit := runs
 	if counters {
@@ -348,10 +350,10 @@ func measureNoOp(t *testing.T, counters bool) {
 		if counters {
 			count := readHookCount(t, observer)
 			if count == last {
-				continue
+				continue // deferred to a later call
 			}
-			if count != last+1 {
-				t.Fatalf("counter count changed unexpectedly: before=%d after=%d", last, count)
+			if count < last || count-before > attempts {
+				t.Fatalf("counter count changed unexpectedly: before=%d after=%d attempts=%d", last, count, attempts)
 			}
 			last = count
 		}
@@ -362,8 +364,9 @@ func measureNoOp(t *testing.T, counters bool) {
 		t.Fatalf("counter capture samples: recorded=%d want=%d attempted=%d limit=%d", len(shimRuns), runs, attempts, limit)
 	}
 	if counters {
-		if count := readHookCount(t, observer) - before; count != runs {
-			t.Fatalf("counter sample count=%d want=%d", count, runs)
+		// No call is lost: every attempt is either counted or still pending.
+		if count, pending := readHookCount(t, observer)-before, pendingHookCalls(t, location); count+pending != attempts {
+			t.Fatalf("counter calls: counted=%d pending=%d attempts=%d", count, pending, attempts)
 		}
 		t.Logf("counter capture samples: recorded=%d attempted=%d skipped=%d limit=%d", runs, attempts, attempts-runs, limit)
 	}
@@ -396,4 +399,28 @@ func measureNoOp(t *testing.T, counters bool) {
 	if verdict != nil {
 		t.Fatal(verdict)
 	}
+}
+
+// pendingHookCalls sums the hook calls waiting in the pending counter file.
+func pendingHookCalls(t *testing.T, location localrecord.Location) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(location.Directory, localrecord.PendingCountersName))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) == 3 && strings.HasSuffix(parts[1], ":hook.calls") {
+			n, err := strconv.Atoi(parts[2])
+			if err != nil {
+				t.Fatalf("pending line %q", line)
+			}
+			total += n
+		}
+	}
+	return total
 }
