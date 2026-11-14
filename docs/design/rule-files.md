@@ -62,6 +62,9 @@ procedure or recipe; backed by a person, docs, CI or review; scoped to the
 whole repo or a folder (`**` or `dir/**`, not a file pattern); not broken or
 changed; at most 600 characters; and not itself read from a rule file. Team
 entries go into shared files; personal notes into local files.
+Entries with checks need a held result from the current native evaluator;
+cached verdicts do not authorize publication after the source changes. If
+current checks are unavailable, checked entries are left out.
 
 ## Which files (who loads what)
 
@@ -72,7 +75,7 @@ Codex with `AGENTS.md` or `.codex/`, or Codex hooks that ran here.
 | Agent | File per area | Notes |
 | --- | --- | --- |
 | Codex | `<area>/AGENTS.md` | Only where the folder has no AGENTS.md of a person's |
-| Claude Code | `.claude/rules/mex[-local][-area].md` with `paths:` | Skipped where a generated AGENTS.md covers the area and the folder has no CLAUDE.md, since Claude then reads AGENTS.md |
+| Claude Code | `.claude/rules/mex.md`, `mex-local.md`, or `mex[-local]-area-<slug>-<hash>.md` with `paths:` | Skipped where a generated AGENTS.md covers the area and the folder has no CLAUDE.md, since Claude then reads AGENTS.md |
 
 MEX never creates `CLAUDE.md` or `CLAUDE.local.md` and never writes into a
 file it didn't generate. Every generated file starts with
@@ -80,6 +83,12 @@ file it didn't generate. Every generated file starts with
 comment. Caps: 6 KiB for a Claude rules file, 8 KiB for a generated
 AGENTS.md (Codex reads 32 KiB along a path); the weakest entries are left
 out first, and the output says so.
+
+Area filenames include a stable hash so nested folders and punctuation cannot
+collide. Shared area files and personal root files use separate names. Personal
+rules are hidden before publication and are never written into a tracked file.
+Manifest cleanup accepts only native output paths, refuses linked parents and
+files, and keeps edited generated files when their ownership cannot be verified.
 
 ## Writing
 

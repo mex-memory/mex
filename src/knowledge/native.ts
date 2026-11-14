@@ -1,11 +1,12 @@
 /**
  * Rebuild the agents' native rule files from the entries: select layer A,
- * plan who loads what, write. Never while a session runs in the checkout.
+ * plan who loads what, write. Background rebuilds wait between sessions;
+ * explicitly requested shared edits can force their matching native change.
  */
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { agentsInUse, liveSessions, type NativeAgent } from "./agents-in-use.js";
-import { cachedVerdicts } from "./check.js";
+import { currentVerdicts } from "./check.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { parseEntry } from "./entry.js";
 import { containedDirectory, readEntryFile } from "./files.js";
@@ -57,9 +58,11 @@ export function rebuildNative(options: KnowledgeOptions, rebuild: RebuildOptions
   }
   const candidates: Candidate[] = teamEntries(options).entries.map(e => ({ level: "team" as const, entry: e.entry }));
   if (home && !rebuild.sharedOnly) candidates.push(...personalNotes(home, project.projectId, project.retired, project.root));
-  const verdicts = cachedVerdicts(options, project.projectId, project.root) ?? new Map();
+  const verdicts = candidates.some(c => c.entry.mex.checks.length) ? currentVerdicts(options, project) ?? new Map() : new Map();
   const { selected } = selectNative(candidates, verdicts);
   const plan = planNative(project.root, agents, selected);
+  const unchecked = candidates.filter(c => c.entry.mex.checks.length && verdicts.get(c.entry.mex.id) !== "held").length;
+  if (unchecked) plan.notes.push(`${unchecked} checked entries withheld until their current checks hold.`);
   if (rebuild.sharedOnly) plan.files = plan.files.filter(f => f.sharing === "shared");
   const projectDirectory = home && !rebuild.sharedOnly ? containedDirectory(home, ["projects", project.projectId], true) : undefined;
   return { ...writeNative(plan, { root: project.root, projectDirectory }), agents, selected: selected.length };
