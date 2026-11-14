@@ -59,6 +59,34 @@ func (ev *Evaluator) Record(kind, role string, target map[string]any) (Check, er
 			return Check{}, fmt.Errorf("%w: %s can't be read", ErrNotRecordable, file)
 		}
 		c.Saw["hash"] = textHash(string(data))
+	case "value":
+		file = str(target, "file")
+		now, res, ok := ev.readValue(file, str(target, "symbol"))
+		if !ok {
+			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, res.Reason)
+		}
+		c.Saw["value"] = now
+	case "symbol":
+		file = str(target, "file")
+		if ev.index == nil {
+			return Check{}, fmt.Errorf("%w: symbol checks need the file index", ErrNotRecordable)
+		}
+		fp, res, ok := ev.fingerprint(file, str(target, "symbol"))
+		if !ok {
+			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, res.Reason)
+		}
+		c.Saw["fingerprint"] = fp
+	case "pattern":
+		count, res, ok := ev.patternCount(target)
+		if !ok {
+			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, res.Reason)
+		}
+		c.Saw["count"] = count
+		// A count covers a whole scope; it records no single file.
+		if got := ev.run(c); got.Status != Pass {
+			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, got.Reason)
+		}
+		return c, nil
 	default:
 		return Check{}, fmt.Errorf("%w: %s checks are not built yet", ErrNotRecordable, kind)
 	}

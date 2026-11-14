@@ -260,6 +260,7 @@ func TestRecordRefusesWhatDoesNotPass(t *testing.T) {
 		{"section", map[string]any{"file": "README.md", "heading": "Install"}},
 		{"source", map[string]any{"url": "https://example.com"}},
 		{"value", map[string]any{"file": "README.md", "symbol": "x"}},
+		{"relation", map[string]any{"query": "imports", "from": "a/**", "to": "b/**"}},
 	}
 	for _, c := range cases {
 		if _, err := ev.Record(c.kind, Complete, c.target); !errors.Is(err, ErrNotRecordable) {
