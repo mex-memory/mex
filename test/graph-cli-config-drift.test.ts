@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../src/graph/storage.js";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,7 +77,7 @@ function driftConfig(root: string): void {
 }
 
 function breakEngineIdentity(root: string): void {
-  const db = openSqlite(join(root, ".mex", "graph.db"));
+  const db = openSqlite(currentGraphPath(root));
   try {
     const row = db.prepare("SELECT value FROM project_metadata WHERE key = ?")
       .get(GRAPH_SNAPSHOT_METADATA_KEY) as { value: string };

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createGraphEngine } from "../../../graph/index.js";
 import { openGraphDatabase } from "../../../graph/db/database.js";
+import { currentGraphPath } from "../../../graph/storage.js";
 import { openSqlite } from "../../../graph/db/sqlite.js";
 import { FingerprintStore } from "../../../graph/fingerprint-store.js";
 import { MinHashReconciler } from "../../../graph/reconcile-engine.js";
@@ -47,7 +48,7 @@ beforeAll(async () => {
   await engine.build(root);
   helperId = engine.searchNodes("helper").find((node) => node.kind === "function")!.id;
 
-  const graphDbPath = join(scaffoldRoot, "graph.db");
+  const graphDbPath = currentGraphPath(root);
   const graphDb = openGraphDatabase(graphDbPath);
   const grounding = deriveGrounding(
     createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(graphDb)), graphDb),

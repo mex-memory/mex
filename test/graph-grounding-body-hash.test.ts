@@ -9,6 +9,7 @@
  * and assert that drift is still detected afterwards.
  */
 
+import { removeGraph } from "../src/graph/__tests__/plant-graph.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,9 +95,7 @@ async function captureBaselines(config: MexConfig, scaffold: string): Promise<vo
 
 /** Delete the disposable index and rebuild it, as `mex graph rebuild` does. */
 async function rebuildGraphFromScratch(root: string): Promise<void> {
-  rmSync(join(root, ".mex", "graph.db"), { force: true });
-  rmSync(join(root, ".mex", "graph.db-wal"), { force: true });
-  rmSync(join(root, ".mex", "graph.db-shm"), { force: true });
+  removeGraph(root);
   await buildGraph(root);
 }
 
@@ -112,7 +111,7 @@ afterEach(() => {
 });
 
 describe("the grounding body hash is committed to Markdown", () => {
-  it("captures it into the scaffold, so drift survives deleting and rebuilding graph.db", async () => {
+  it("captures it into the scaffold, so drift survives forgetting and rebuilding the graph", async () => {
     const { root, source, scaffold, config } = fixture();
     await buildGraph(root);
     await authorGrounding(config, scaffold, "calculateOrderTotal");

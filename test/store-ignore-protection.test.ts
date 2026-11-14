@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../src/graph/storage.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -36,7 +37,7 @@ describe("local store protection outside mex setup (#110)", () => {
     await rebuildGraph(root);
 
     const ignorePath = join(root, ".mex", ".gitignore");
-    expect(existsSync(join(root, ".mex", "graph.db"))).toBe(true);
+    expect(existsSync(currentGraphPath(root))).toBe(true);
     expect(existsSync(ignorePath)).toBe(true);
     const rules = readFileSync(ignorePath, "utf-8").split(/\r?\n/);
     for (const rule of SETUP_IGNORE_RULES) expect(rules).toContain(rule);

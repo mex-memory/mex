@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../../../graph/storage.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -79,7 +80,7 @@ describe("expected setup failures through the real Hub runner", () => {
     expect(resumed.prompt?.length).toBeGreaterThan(100);
     expect(resumed.message).not.toContain("not a valid JSON");
     for (const run of observed) expect(SetupRunSchema.safeParse(run).success).toBe(true);
-    expect(existsSync(join(root, ".mex", "graph.db"))).toBe(false);
+    expect(existsSync(currentGraphPath(root))).toBe(false);
     expect(existsSync(join(root, ".mex", "wiki.db"))).toBe(false);
   });
 
@@ -94,7 +95,7 @@ describe("expected setup failures through the real Hub runner", () => {
       "A Git ignore rule hides .mex/config.json. Remove the broad .mex ignore so canonical MEX files can be committed.");
     expect(readFileSync(join(root, ".gitignore"), "utf8")).toBe(".mex/\n");
     expect(existsSync(join(root, ".mex", "config.json"))).toBe(false);
-    expect(existsSync(join(root, ".mex", "graph.db"))).toBe(false);
+    expect(existsSync(currentGraphPath(root))).toBe(false);
     expect(existsSync(join(root, ".mex", "wiki.db"))).toBe(false);
     expect(runner.snapshot().populationTool).toBeNull();
     expect(runner.snapshot().prompt).toBeNull();

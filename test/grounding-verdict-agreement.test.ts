@@ -6,6 +6,7 @@
  * the Wiki's `resolveGrounding` through the Wiki's own graph adapter. They
  * must name the same verdict, and it must be the right one.
  */
+import { currentGraphPath } from "../src/graph/storage.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -158,9 +159,9 @@ async function checkVerdict(fx: Fixture): Promise<{ verdict: GroundingVerdict | 
 function wikiVerdict(fx: Fixture): { verdict: GroundingVerdict; stored: string | null } {
   const parsed = parseWikiMarkdown({ path: "context/orders.md", text: readFileSync(fx.scaffold, "utf-8") });
   const entity = parsed.entities[0]!.entity;
-  const dbPath = join(fx.root, ".mex", "graph.db");
+  const dbPath = currentGraphPath(fx.root);
   const db = openGraphDatabase(dbPath);
-  const engine = createGraphEngine({ rootDir: fx.root, dbPath });
+  const engine = createGraphEngine({ rootDir: fx.root });
   try {
     const graph = createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db, { projectRoot: fx.root });
     const verdict = groundingVerdict(resolveGrounding(entity.groundsTo[0]!, graph, { fact: `${entity.title}\n\n${entity.body}` })).verdict;
@@ -211,9 +212,9 @@ describe("check and the Wiki share one code-link verdict", () => {
 
 /** Run `fn` with the Wiki's graph adapter over the fixture's graph. */
 function withWikiGraph<T>(fx: Fixture, fn: (graph: ReturnType<typeof createGroundingGraph>) => T): T {
-  const dbPath = join(fx.root, ".mex", "graph.db");
+  const dbPath = currentGraphPath(fx.root);
   const db = openGraphDatabase(dbPath);
-  const engine = createGraphEngine({ rootDir: fx.root, dbPath });
+  const engine = createGraphEngine({ rootDir: fx.root });
   try {
     return fn(createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db, { projectRoot: fx.root }));
   } finally {

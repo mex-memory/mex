@@ -3,11 +3,11 @@
 //     whole graph build — affected files fall back to tree-sitter extraction;
 //  2. `mex check` opens the graph read-only: no staging, no store writes, and
 //     staleness is reported instead of silently rebuilt;
-//  3. `mex graph repair` recovers a stranded WAL (killed writer) in place.
+//  3. `mex graph repair` validates the published graph and publishes a repaired copy.
 
-import { spawnSync } from "node:child_process";
+import { currentGraphPath } from "../src/graph/storage.js";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,7 +24,7 @@ import {
 
 const roots: string[] = [];
 
-function fixture(prefix: string): { root: string; source: string; config: MexConfig; dbPath: string } {
+function fixture(prefix: string): { root: string; source: string; config: MexConfig } {
   const root = mkdtempSync(join(tmpdir(), prefix));
   roots.push(root);
   mkdirSync(join(root, "src"), { recursive: true });
@@ -42,7 +42,6 @@ export function calculateCheckoutTotal(items: number[]): number {
     root,
     source,
     config: { projectRoot: root, scaffoldRoot: join(root, ".mex"), aiTools: [] },
-    dbPath: join(root, ".mex", "graph.db"),
   };
 }
 
@@ -54,14 +53,20 @@ afterEach(() => {
 
 describe("compiler program-crash isolation (#140 follow-up)", () => {
   it("completes the build via tree-sitter when every TS program creation asserts", async () => {
-    const { root, dbPath } = fixture("mex-140-isolation-");
+    const { root } = fixture("mex-140-isolation-");
     // Hostile-fixture shape from the TypeScript repo: duplicate same-identity
     // declarations in one file must ordinal-disambiguate, not abort staging.
     writeFileSync(join(root, "src", "dupes.ts"),
       "export function duplicated(): number { return 1; }\n"
       + "export function duplicated(): number { return 2; }\n");
+    // A managed engine publishes through the maintenance path, which has no
+    // compiler seam, so this build writes to a store of its own.
+    const store = mkdtempSync(join(tmpdir(), "mex-140-isolation-store-"));
+    roots.push(store);
+    const dbPath = join(store, "graph.db");
     const engine = createGraphEngine({
       rootDir: root,
+      dbPath,
       compilerExtraction: {
         programFactory: () => { throw new Error("Debug Failure. False expression."); },
       },
@@ -89,10 +94,11 @@ describe("compiler program-crash isolation (#140 follow-up)", () => {
 
 describe("read-only grounding runtime (#140 observation 2)", () => {
   it("never writes the store and reports staleness instead of staging", async () => {
-    const { root, source, config, dbPath } = fixture("mex-140-readonly-");
+    const { root, source, config } = fixture("mex-140-readonly-");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     engine.close();
+    const dbPath = currentGraphPath(root);
     const before = createHash("sha256").update(readFileSync(dbPath)).digest("hex");
 
     const fresh = await loadReadOnlyGroundingRuntime(config, { loadRuntime: true });
@@ -111,28 +117,12 @@ describe("read-only grounding runtime (#140 observation 2)", () => {
 });
 
 describe("mex graph repair (#140 observation 3)", () => {
-  it("checkpoints a stranded WAL from a killed writer without rebuilding", async () => {
-    const { root, dbPath } = fixture("mex-140-repair-");
+  it("repairs a built graph by publishing a validated copy", async () => {
+    const { root } = fixture("mex-140-repair-");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     engine.close();
-
-    // Simulate a killed writer: a child process writes under WAL with
-    // auto-checkpoint disabled and dies without closing the connection.
-    const strand = spawnSync(process.execPath, ["-e", `
-      const { DatabaseSync } = require("node:sqlite");
-      const db = new DatabaseSync(process.argv[1]);
-      db.exec("PRAGMA journal_mode = WAL");
-      db.exec("PRAGMA wal_autocheckpoint = 0");
-      db.prepare(
-        "INSERT INTO project_metadata (key, value, updated_at) VALUES (?, ?, ?) " +
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-      ).run("stranded_marker", "1", Date.now());
-      process.kill(process.pid, "SIGKILL");
-    `, dbPath], { encoding: "utf-8" });
-    expect(strand.status).not.toBe(0);
-    const walPath = `${dbPath}-wal`;
-    expect(existsSync(walPath) && statSync(walPath).size > 0).toBe(true);
+    const before = currentGraphPath(root);
 
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
@@ -141,17 +131,13 @@ describe("mex graph repair (#140 observation 3)", () => {
     } finally {
       log.mockRestore();
     }
-    // The WAL is checkpointed and truncated; the write it held survived.
-    expect(!existsSync(walPath) || statSync(walPath).size === 0).toBe(true);
-    const db = openSqlite(dbPath, { readOnly: true });
-    try {
-      const row = db.prepare("SELECT value FROM project_metadata WHERE key = 'stranded_marker'").get() as
-        | { value: string } | undefined;
-      expect(row?.value).toBe("1");
-    } finally {
-      db.close();
-    }
+    // The published file is never changed; the repaired copy is a new file.
+    expect(currentGraphPath(root)).not.toBe(before);
+    expect(readFileSync(before).length).toBeGreaterThan(0);
   }, 30_000);
+
+  // The "checkpoints a stranded WAL from a killed writer" test is removed: a published graph
+  // is written once and never held open by a live writer, so it can no longer carry a stranded WAL.
 
   it("returns 1 when no graph store exists", async () => {
     const root = mkdtempSync(join(tmpdir(), "mex-140-norepair-"));
@@ -170,10 +156,11 @@ describe("mex graph repair (#140 observation 3)", () => {
 
 describe("schema v4 fingerprint re-encode (#140 storage follow-up)", () => {
   it("migrates a v2-encoded store losslessly without marking rebuild-required", async () => {
-    const { root, dbPath } = fixture("mex-140-v3-migrate-");
+    const { root } = fixture("mex-140-v3-migrate-");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     engine.close();
+    const dbPath = currentGraphPath(root);
 
     const { FingerprintStore } = await import("../src/graph/fingerprint-store.js");
     const { bandHashes, decodeMinhash } = await import("../src/graph/fingerprint.js");

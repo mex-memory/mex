@@ -1,3 +1,5 @@
+import { currentGraphPath } from "../src/graph/storage.js";
+import { plantGraph } from "../src/graph/__tests__/plant-graph.js";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
@@ -60,7 +62,7 @@ async function fixture(prefix: string): Promise<Fixture> {
   const node = engine.searchNodes("stableFact").find((entry) => entry.name === "stableFact");
   if (!node) throw new Error("fixture node missing");
   engine.close();
-  const dbPath = join(root, ".mex", "graph.db");
+  const dbPath = currentGraphPath(root);
   removeEmptySidecars(dbPath);
   return { root, sourcePath, dbPath, nodeId: node.id, original };
 }
@@ -263,7 +265,7 @@ describe("agent graph freshness-bound readers", () => {
     });
   });
 
-  it("re-audits a database rewritten after the fresh observation instead of trusting its identity", async () => {
+  it("refuses a graph published after the fresh observation instead of answering from the old one", async () => {
     const built = await fixture("mex-cli-audited-rewrite-");
     const output: string[] = [];
     const observedStatuses: string[] = [];
@@ -277,26 +279,28 @@ describe("agent graph freshness-bound readers", () => {
       },
       beforeFinalFreshnessValidation() {
         // A dangling edge: a structural fault only the audit can see, of the
-        // relational kind a targeted read's audit always covers, written in
-        // place so the path stays the same.
-        const writer = openSqlite(built.dbPath);
-        try {
-          writer.exec("PRAGMA foreign_keys = OFF");
-          writer.prepare("INSERT INTO edges (source, target, kind) VALUES (?, ?, ?)")
-            .run(built.nodeId, "function:missing-target", "calls");
-        } finally {
-          writer.close();
-        }
-        removeEmptySidecars(built.dbPath);
-        const past = new Date("2024-01-01T00:00:00.000Z");
-        utimesSync(built.dbPath, past, past);
+        // relational kind a targeted read's audit always covers, published as
+        // the checkout's newer graph.
+        const bytes = readFileSync(built.dbPath);
+        plantGraph(built.root, (file) => {
+          writeFileSync(file, bytes);
+          const writer = openSqlite(file);
+          try {
+            writer.exec("PRAGMA foreign_keys = OFF");
+            writer.prepare("INSERT INTO edges (source, target, kind) VALUES (?, ?, ?)")
+              .run(built.nodeId, "function:missing-target", "calls");
+          } finally {
+            writer.close();
+          }
+        });
       },
     });
 
     await runGraphGet([built.nodeId], built.root, deps);
 
     const records = output.map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(observedStatuses).toEqual(["fresh", "corrupt"]);
+    // The newer publication revokes the read before a second inspection is needed.
+    expect(observedStatuses).toEqual(["fresh"]);
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({ type: "error", code: "GRAPH_UNAVAILABLE" });
     expect(JSON.stringify(records)).not.toContain("return \\\"old\\\"");
@@ -385,34 +389,9 @@ describe("agent graph freshness-bound readers", () => {
     expect(JSON.stringify(records)).not.toContain("return \\\"old\\\"");
   });
 
-  it("refuses an immutable reader when WAL activity begins after the fresh observation", async () => {
-    const built = await fixture("mex-cli-wal-race-");
-    const output: string[] = [];
-    let writer: ReturnType<typeof openSqlite> | null = null;
-    let walSize = 0;
-    const deps = internalDeps(output, {
-      freshRead: {
-        afterStatusInspection() {
-          writer = openSqlite(built.dbPath);
-          writer.exec("PRAGMA wal_autocheckpoint = 0");
-          writer.prepare(
-            "UPDATE project_metadata SET updated_at = ? WHERE key = 'manifest_hash'",
-          ).run(Date.now());
-          walSize = statSync(`${built.dbPath}-wal`).size;
-        },
-      },
-    });
-
-    try {
-      await runGraphQuery("where-defined", "stableFact", built.root, deps);
-      const records = output.map((line) => JSON.parse(line) as Record<string, unknown>);
-      expectUnavailableOnly(records, "GRAPH_INDEX_READER_SIDECAR_ACTIVITY");
-      expect(walSize).toBeGreaterThan(0);
-      expect(statSync(`${built.dbPath}-wal`).size).toBe(walSize);
-    } finally {
-      writer?.close();
-    }
-  });
+  // The "refuses an immutable reader when WAL activity begins after the fresh observation" test is removed: a
+  // published graph has no live writer. A leftover sidecar still refuses the read (see the injected-sidecar
+  // test below and in graph-integration.test.ts); any change to the published bytes is a database change.
 
   // Windows denies rename of an open file; the bound-file Windows test covers that protection.
   it.skipIf(process.platform === "win32")("rejects atomic database replacement between identity capture and immutable open", async () => {
@@ -568,7 +547,7 @@ describe("agent graph freshness-bound readers", () => {
       .find((entry) => entry.name === "invalidUtf8Fact");
     engine.close();
     expect(node).toBeDefined();
-    removeEmptySidecars(join(root, ".mex", "graph.db"));
+    removeEmptySidecars(currentGraphPath(root));
 
     const records = await capture((deps) => runGraphGet([node!.id], root, deps));
 

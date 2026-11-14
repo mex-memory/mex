@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../src/graph/storage.js";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -189,7 +190,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     const address = new URL(result.events[2].match!);
     expect(await canConnect(Number(address.port))).toBe(false);
     expect(readFileSync(join(f.project, ".mex/AGENTS.md"), "utf8")).not.toContain("[YYYY-MM-DD]");
-    expect(existsSync(join(f.project, ".mex/graph.db"))).toBe(false);
+    expect(existsSync(currentGraphPath(f.project))).toBe(false);
     expect(existsSync(join(f.project, ".mex/wiki.db"))).toBe(false);
     expectPromptCleaned(f);
   });
@@ -258,7 +259,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(result.output).toContain("Parsing source files: 0 / 20 files parsed");
     expect(result.output).toContain("Parsing source files: 20 / 20 files parsed");
     expect(result.output).not.toContain("Setup needs attention");
-    expect(existsSync(join(f.project, ".mex/graph.db"))).toBe(true);
+    expect(existsSync(currentGraphPath(f.project))).toBe(true);
     // The manual queue prepares a readable Wiki before any population tasks.
     expect(existsSync(join(f.project, ".mex/wiki.db"))).toBe(true);
     expect(result.output).toContain("not finished.");
@@ -280,7 +281,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(result.output).toContain("Population prompt (paste it into your agent):");
     expect(result.output).toContain("run `mex setup next --start` first, then do exactly what it prints.");
     expect(result.output).not.toContain("Choose your AI tools");
-    expect(existsSync(join(f.project, ".mex/graph.db"))).toBe(true);
+    expect(existsSync(currentGraphPath(f.project))).toBe(true);
     expect(existsSync(f.record)).toBe(false);
   });
 
@@ -338,7 +339,7 @@ process.send({ type: "ready" });
     expect(summary).toContain("MEX_PTY_HEAP_SENTINEL");
     expect(summary).toContain("FATAL ERROR: Reached heap limit");
     expect(existsSync(f.record)).toBe(false);
-    expect(existsSync(join(f.project, ".mex/graph.db"))).toBe(false);
+    expect(existsSync(currentGraphPath(f.project))).toBe(false);
     const worker = JSON.parse(readFileSync(f.workerRecord, "utf8")) as { pid: number; workspace: string; candidatePath: string };
     expect(isAlive(worker.pid)).toBe(false);
     expect(existsSync(worker.workspace)).toBe(false);

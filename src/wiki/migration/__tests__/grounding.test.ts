@@ -22,6 +22,7 @@
  * second migration run must be a no-op. Both are asserted below against a real
  * grounding run, not a simulation of one.
  */
+import { currentGraphPath } from "../../../graph/storage.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -114,8 +115,8 @@ async function buildGraph(project: Project): Promise<void> {
 }
 
 function withGraph<T>(project: Project, body: (graph: GroundingGraph) => T): T {
-  const dbPath = join(project.root, ".mex", "graph.db");
-  const engine = createGraphEngine({ rootDir: project.root, dbPath });
+  const dbPath = currentGraphPath(project.root);
+  const engine = createGraphEngine({ rootDir: project.root });
   const db = openGraphDatabase(dbPath);
   try {
     return body(createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db));
@@ -126,7 +127,7 @@ function withGraph<T>(project: Project, body: (graph: GroundingGraph) => T): T {
 }
 
 function nodeIdOf(project: Project, name: string): string {
-  const engine = createGraphEngine({ rootDir: project.root, dbPath: join(project.root, ".mex", "graph.db") });
+  const engine = createGraphEngine({ rootDir: project.root });
   try {
     const node = engine.searchNodes(name).find((entry) => entry.kind === "function");
     if (node === undefined) throw new Error(`no function node named ${name}`);
@@ -251,7 +252,7 @@ describe("tier 2 — a grounded scaffold, migrated", () => {
     expect(current).not.toBe(original);
 
     // The baseline `mex ground` cached when the grounding was made.
-    const db = openGraphDatabase(join(project.root, ".mex", "graph.db"));
+    const db = openGraphDatabase(currentGraphPath(project.root));
     try {
       new FingerprintStore(db).saveBaseline({
         subject: { kind: "scaffold", id: ".mex/patterns/rotate-tokens.md" },

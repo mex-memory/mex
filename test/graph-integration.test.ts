@@ -1,4 +1,7 @@
+import { currentGraphPath } from "../src/graph/storage.js";
+import { plantGraph } from "../src/graph/__tests__/plant-graph.js";
 import {
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -53,7 +56,7 @@ function fixture(): { root: string; config: MexConfig; source: string; scaffold:
 }
 
 function graphPersistenceSnapshot(root: string) {
-  const dbPath = join(root, ".mex", "graph.db");
+  const dbPath = currentGraphPath(root);
   const db = openSqlite(dbPath, { readOnly: true, immutable: true });
   try {
     return {
@@ -256,7 +259,7 @@ describe("code-graph grounding integration", () => {
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     engine.close();
-    const dbPath = join(root, ".mex", "graph.db");
+    const dbPath = currentGraphPath(root);
     const inspected = await inspectGraphStatusWithFreshObservation({ projectRoot: root, dbPath });
     expect(inspected.graphStatus.status).toBe("fresh");
     expect(inspected.freshObservation).not.toBeNull();
@@ -308,7 +311,7 @@ describe("code-graph grounding integration", () => {
       .toBe(true);
     runtime!.close();
 
-    const db = openSqlite(join(root, ".mex", "graph.db"), { readOnly: true, immutable: true });
+    const db = openSqlite(currentGraphPath(root), { readOnly: true, immutable: true });
     try {
       const grounded = db.prepare("SELECT COUNT(*) AS count FROM _mex_grounded_source")
         .get() as { count: number };
@@ -505,7 +508,7 @@ describe("code-graph grounding integration", () => {
     // post-move state): no grounded-source row, no fingerprint row, and no
     // compatibility alias. Without per-node atomic migration the anchor pass
     // finds no baseline and silently skips, leaving GROUNDING_GONE behind.
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       db.prepare("DELETE FROM _mex_grounded_source WHERE node_id = ?").run(node.id);
       db.prepare("DELETE FROM node_fingerprints WHERE node_id = ?").run(node.id);
@@ -559,7 +562,7 @@ describe("code-graph grounding integration", () => {
     // the frontmatter fingerprint but copy the stored baseline verbatim, so the
     // stored row can keep a neighbour id that has since been re-identified.
     // That alone scores the anchor AMBIGUOUS while grounds_to scores MOVED.
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       const row = db.prepare("SELECT fingerprint FROM _mex_grounded_source WHERE node_id = ?")
         .get(node.id) as { fingerprint: string };
@@ -631,48 +634,16 @@ describe("code-graph grounding integration", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("probes WAL state on the canonical target of a contained graph symlink", async () => {
-    const { root, config, source } = fixture();
-    writeFileSync(source, "export const service = 1;\n");
-    const graphPath = join(root, ".mex", "graph.db");
-    const targetPath = join(root, ".mex", "graph-target.db");
-    const engine = createGraphEngine({ rootDir: root });
-    await engine.build();
-    engine.close();
-    renameSync(graphPath, targetPath);
-    symlinkSync("graph-target.db", graphPath);
-    const fresh = await inspectGraphStatus({ projectRoot: root });
-    expect(fresh.status).toBe("fresh");
-
-    let writer: ReturnType<typeof openSqlite> | null = null;
-    try {
-      const loaded = await loadReadOnlyGroundingRuntime(config, {
-        __internal: {
-          afterStatusInspection() {
-            writer = openSqlite(targetPath);
-            writer.exec("PRAGMA wal_autocheckpoint = 0");
-            writer.prepare("UPDATE project_metadata SET updated_at = ? WHERE key = 'manifest_hash'")
-              .run(Date.now());
-          },
-        },
-      } as unknown as Parameters<typeof loadReadOnlyGroundingRuntime>[1]);
-      expect(loaded.runtime).toBeNull();
-      expect(loaded.graphStatus.status).toBe("degraded");
-      expect(loaded.graphStatus.diagnostics).toContainEqual(expect.objectContaining({
-        code: "GRAPH_INDEX_READER_SIDECAR_ACTIVITY",
-      }));
-    } finally {
-      writer?.close();
-    }
-  });
+  // The "probes WAL state on the canonical target of a contained graph symlink" test is removed: the graph
+  // is no longer a database in the checkout's .mex folder that can be a symlink with a live writer's WAL.
 
   it("rejects a graph that commits and checkpoints between immutable reader probes", async () => {
     const { root, config, source } = fixture();
     writeFileSync(source, "export const service = 1;\n");
-    const graphPath = join(root, ".mex", "graph.db");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     engine.close();
+    const graphPath = currentGraphPath(root);
     const fresh = await inspectGraphStatus({ projectRoot: root });
     expect(fresh.status).toBe("fresh");
     let probes = 0;
@@ -702,15 +673,14 @@ describe("code-graph grounding integration", () => {
     }));
   });
 
-  // Windows denies rename of an open file; the bound-file Windows test covers that protection.
-  it.skipIf(process.platform === "win32")("rejects an atomically replaced database whose public status fields still match", async () => {
+  it("rejects a newly published database whose public status fields still match", async () => {
     const { root, config, source } = fixture();
     writeFileSync(source, "export const service = 1;\n");
-    const graphPath = join(root, ".mex", "graph.db");
     const replacementPath = join(root, ".mex", "graph-replacement.db");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     engine.close();
+    const graphPath = currentGraphPath(root);
 
     writeFileSync(replacementPath, readFileSync(graphPath));
     const replacement = openSqlite(replacementPath);
@@ -755,7 +725,8 @@ describe("code-graph grounding integration", () => {
     const loaded = await loadReadOnlyGroundingRuntime(config, {
       __internal: {
         afterDatabaseIdentityRead() {
-          renameSync(replacementPath, graphPath);
+          // Publishing moves the pointer; the open reader's own file is never replaced.
+          plantGraph(root, (file) => copyFileSync(replacementPath, file));
           replaced = true;
         },
         afterDatabaseOpen(database) {
@@ -780,10 +751,10 @@ describe("code-graph grounding integration", () => {
   it("discards grounding results when the graph changes after the loader returns", async () => {
     const { root, config, source, scaffold } = fixture();
     writeFileSync(source, "export const service = 1;\n");
-    const graphPath = join(root, ".mex", "graph.db");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     engine.close();
+    const graphPath = currentGraphPath(root);
     const loaded = await loadReadOnlyGroundingRuntime(config);
     expect(loaded.runtime).not.toBeNull();
 
@@ -916,7 +887,7 @@ describe("code-graph grounding integration", () => {
     const result = await rebuildGraph(root);
     expect(result.status.status).toBe("fresh");
 
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       const routes = db.prepare(
         "SELECT name, signature FROM nodes WHERE kind = 'route' ORDER BY name",

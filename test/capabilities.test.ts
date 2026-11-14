@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../src/graph/storage.js";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
@@ -564,7 +565,7 @@ describe("mex capabilities manifest", () => {
     }));
     execFileSync("git", ["add", "src/example.ts", ".mex/ROUTER.md", ".mex/config.json"], { cwd: root });
     execFileSync("git", ["commit", "--quiet", "-m", "fixture"], { cwd: root });
-    const graph = createGraphEngine({ rootDir: root, dbPath: join(root, ".mex", "graph.db") });
+    const graph = createGraphEngine({ rootDir: root });
     try {
       await graph.build();
     } finally {
