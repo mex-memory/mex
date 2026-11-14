@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { KnowledgeEntry } from "../entry.js";
+import { entry } from "./fixtures.js";
 import { areaOf, isBroad, selectNative, type Candidate } from "../native-select.js";
 
-export function entry(id: string, over: Partial<KnowledgeEntry["mex"]> = {}, text = "Use date-fns, because moment is unmaintained."): KnowledgeEntry {
-  return {
-    mex: { id, kind: "rule", scope: ["**"], source: { type: "person", ref: "mex note 2026-11-15", quote: text }, evidence: "person", one_line: text, checks: [], status: "active", created: "2026-11-15", ...over },
-    text,
-  };
-}
 const team = (e: KnowledgeEntry): Candidate => ({ level: "team", entry: e });
 
 describe("layer A selection", () => {
