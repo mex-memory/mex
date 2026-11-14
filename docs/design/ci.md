@@ -16,7 +16,8 @@ advisory or path-filtered workflows.
 | `release.yml` | Decisions, seven packages, three-OS registry smoke, dry/real publication | `v0.9.0*` tags; release-path PRs (always dry); manual once on `main` |
 | `setup-agent-smoke.yml` | Setup with controlled fake agents | Manual |
 
-Docs-only PRs run scope detection, a workflow-lint no-op and the aggregate. Only
+Docs-only PRs run two small jobs: change detection (which also lints any changed
+workflow) and the aggregate. Only
 Markdown under `docs/` and diagram SVGs qualify. Root Markdown ships in the
 package; skill files, calibration JSON, code and workflow edits run full CI.
 Renames consider both paths. Pushes run everything. PR runs replace older runs;

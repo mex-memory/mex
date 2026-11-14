@@ -30,19 +30,9 @@ jobs:
       - name: Classify changes against the merge base
         id: scope
         run: node scripts/ci/scope.mjs
-
-  actionlint:
-    needs: changes
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      # Keep a successful job result when lint is unnecessary, so the aggregate
-      # never needs to accept unexplained skips on a source pull request.
-      - run: echo 'Workflow changes require actionlint; other changes need no lint.'
-      - uses: actions/checkout@v5
-        if: needs.changes.outputs.workflows == 'true'
+      # Workflow edits are linted here, so they cost no extra job.
       - name: Lint every workflow with verified actionlint 1.7.7
-        if: needs.changes.outputs.workflows == 'true'
+        if: steps.scope.outputs.workflows == 'true'
         shell: bash
         run: |
           curl --fail --location --retry 2 --output "$RUNNER_TEMP/actionlint.tar.gz" https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
@@ -350,7 +340,7 @@ jobs:
           retention-days: 7
 
   ci-passed:
-    needs: [changes, actionlint, check, package, go, storage-portability, hub-browser]
+    needs: [changes, check, package, go, storage-portability, hub-browser]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
