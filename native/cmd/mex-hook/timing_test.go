@@ -159,9 +159,13 @@ func hookCount(t *testing.T, location localrecord.Location) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Inspection must neither checkpoint/delete the warmed WAL nor hold a
-	// connection open while timing. Observe the actual counter-writer state.
+	// Inspection must never checkpoint/delete the warmed WAL.
 	defer db.Close()
+	return readHookCount(t, db)
+}
+
+func readHookCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
 	var count int
 	if err := db.QueryRow("SELECT coalesce(sum(value),0) FROM counters_go WHERE name='agent:claude-code:hook.calls'").Scan(&count); err != nil {
 		t.Fatal(err)
@@ -227,6 +231,34 @@ func TestHookCountInspectionIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestTimingObserverReleasesReadTransactions(t *testing.T) {
+	location, err := localrecord.ResolveLocation(localrecord.LocationOptions{Home: t.TempDir(), Cache: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := prepareTimingHooks(t, location)
+	observer, err := sql.Open("sqlite", hookReadOnlyURI(location))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
+	observer.SetMaxOpenConns(1)
+	if count := readHookCount(t, observer); count != 0 {
+		t.Fatal(count)
+	}
+	if _, err := observer.Exec("INSERT INTO counters_go VALUES('2026-11-13','forbidden',1)"); err == nil {
+		t.Fatal("timing observer allowed a write")
+	}
+	for count := 1; count <= 3; count++ {
+		if _, err := writer.Exec("INSERT INTO counters_go VALUES('2026-11-13','agent:claude-code:hook.calls',1) ON CONFLICT(day,name) DO UPDATE SET value=value+1"); err != nil {
+			t.Fatal(err)
+		}
+		if got := readHookCount(t, observer); got != count {
+			t.Fatalf("observer retained an old read transaction: got=%d want=%d", got, count)
+		}
+	}
+}
+
 func summarize(s []time.Duration) stats {
 	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
 	n := len(s)
@@ -277,8 +309,19 @@ func measureNoOp(t *testing.T, counters bool) {
 		callOnce(t, floor, mexHome)
 	}
 	before := 0
+	var observer *sql.DB
 	if counters {
-		before = hookCount(t, location)
+		var err error
+		observer, err = sql.Open("sqlite", hookReadOnlyURI(location))
+		if err != nil {
+			t.Fatal(err)
+		}
+		observer.SetMaxOpenConns(1)
+		defer observer.Close()
+		// Reuse one read-only observer. Reopening a pager between every call
+		// adds unrelated filesystem/sidecar work. QueryRow.Scan completes each
+		// read transaction before the next hook starts; no read lock is held.
+		before = readHookCount(t, observer)
 	}
 	const runs = 200
 	// Measure actual captured calls. Best-effort storage may skip a call at its
@@ -297,8 +340,7 @@ func measureNoOp(t *testing.T, counters bool) {
 		shimTime := callOnce(t, shim, mexHome)
 		floorTime := callOnce(t, floor, mexHome)
 		if counters {
-			// This observer closes before the next timed process and never writes.
-			count := hookCount(t, location)
+			count := readHookCount(t, observer)
 			if count == last {
 				continue
 			}
@@ -314,7 +356,7 @@ func measureNoOp(t *testing.T, counters bool) {
 		t.Fatalf("counter capture samples: recorded=%d want=%d attempted=%d limit=%d", len(shimRuns), runs, attempts, limit)
 	}
 	if counters {
-		if count := hookCount(t, location) - before; count != runs {
+		if count := readHookCount(t, observer) - before; count != runs {
 			t.Fatalf("counter sample count=%d want=%d", count, runs)
 		}
 		t.Logf("counter capture samples: recorded=%d attempted=%d skipped=%d limit=%d", runs, attempts, attempts-runs, limit)
