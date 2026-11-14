@@ -53,6 +53,7 @@ describe("bare mex in a repository", () => {
     const lines = result.stdout.trimEnd().split("\n");
     expect(lines[0]).toMatch(/^MEX - repo - \d+\.\d s - \$0 - nothing added to git$/u);
     expect(lines).toContain(".. The file index: in the background (`mex jobs`)");
+    expect(lines).toContain("ok No test or build commands found in config");
     expect(result.stdout).not.toMatch(/\x1b\[/u);
     localState(f.root);
     expect(f.status()).toBe("");
@@ -77,6 +78,28 @@ describe("bare mex in a repository", () => {
     expect(uninstall.status, uninstall.stderr).toBe(0);
     expect(uninstall.stdout).toContain(f.exclude);
     expect(readFileSync(f.exclude).equals(before)).toBe(true);
+  });
+
+  it("lists recipes from config on the screen and saves recipes.json outside the repo", () => {
+    const f = fixture();
+    writeFileSync(join(f.root, "package.json"), JSON.stringify({ name: "demo", workspaces: ["packages/*"], scripts: { test: "vitest run", build: "tsc -b" } }));
+    mkdirSync(join(f.root, "packages", "core"), { recursive: true });
+    mkdirSync(join(f.root, "packages", "web"), { recursive: true });
+    writeFileSync(join(f.root, "packages", "core", "package.json"), JSON.stringify({ name: "@demo/core", scripts: { build: "tsc" } }));
+    writeFileSync(join(f.root, "packages", "web", "package.json"), JSON.stringify({ name: "@demo/web", dependencies: { "@demo/core": "*" }, scripts: { test: "vitest" } }));
+    git(f.root, "add", "."); git(f.root, "commit", "-qm", "workspace");
+    const result = f.run([], { env: { MEX_HOOK_BINARY: join(f.base, "missing-hook") } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("ok Test and build commands for 3 packages (build @demo/core first)");
+    const projects = join(f.home, "projects");
+    const recipes = JSON.parse(readFileSync(join(projects, readdirSync(projects)[0]!, "recipes.json"), "utf8"));
+    expect(recipes).toMatchObject({ version: 1, manager: "npm", build_order: ["packages/core", "packages/web"], checks: "no evaluator" });
+    expect(recipes.recipes.map((recipe: { command: string }) => recipe.command).sort()).toEqual([
+      "npm run build", "npm run build --workspace packages/core", "npm run test", "npm run test --workspace packages/web",
+    ]);
+    const setup = JSON.parse(readFileSync(join(projects, readdirSync(projects)[0]!, "setup.json"), "utf8"));
+    expect(setup.found).toMatchObject({ packages: 3, recipes: 4 });
+    expect(f.status()).toBe("");
   });
 
   it("covers the repository's other worktrees and keeps them clean", () => {

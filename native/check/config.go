@@ -10,13 +10,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"go.yaml.in/yaml/v3"
 )
 
 var errUnsupported = errors.New("unsupported file type")
 
-// parseConfig reads a JSON (comments and trailing commas allowed) or YAML
-// file into plain JSON-shaped values. Other formats are unsupported.
+// parseConfig reads a JSON (comments and trailing commas allowed), YAML,
+// TOML or INI-style file (tox.ini, setup.cfg, .properties) into plain
+// JSON-shaped values. Other formats are unsupported.
 func parseConfig(name string, data []byte) (any, error) {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".json", ".jsonc":
@@ -34,8 +36,60 @@ func parseConfig(name string, data []byte) (any, error) {
 			return nil, err
 		}
 		return normalize(v)
+	case ".toml":
+		var v map[string]any
+		if err := toml.Unmarshal(data, &v); err != nil {
+			return nil, err
+		}
+		return normalize(v)
+	case ".ini", ".cfg", ".properties":
+		return parseINI(data), nil
 	}
 	return nil, errUnsupported
+}
+
+// parseINI reads INI-style text the way tox and setuptools do: "[section]"
+// headers, "key = value" or "key: value" pairs, indented continuation lines
+// joined with newlines, and whole-line "#" or ";" comments. Keys before any
+// section (a .properties file) sit at the top level; sections are objects of
+// strings. A repeated key keeps its last value. Names are kept as written.
+func parseINI(data []byte) map[string]any {
+	doc := map[string]any{}
+	current := doc
+	key := ""
+	for _, raw := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		if key != "" && (raw[0] == ' ' || raw[0] == '\t') {
+			prev, _ := current[key].(string)
+			if prev == "" {
+				current[key] = trimmed
+			} else {
+				current[key] = prev + "\n" + trimmed
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			name := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			section, ok := doc[name].(map[string]any)
+			if !ok {
+				section = map[string]any{}
+				doc[name] = section
+			}
+			current, key = section, ""
+			continue
+		}
+		i := strings.IndexAny(trimmed, "=:")
+		if i <= 0 {
+			key = ""
+			continue
+		}
+		key = strings.TrimSpace(trimmed[:i])
+		current[key] = strings.TrimSpace(trimmed[i+1:])
+	}
+	return doc
 }
 
 // stripJSONC removes comments and trailing commas outside strings.

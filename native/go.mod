@@ -3,6 +3,7 @@ module github.com/mex-memory/mex/native
 go 1.27.0
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	go.yaml.in/yaml/v3 v3.0.4
 	modernc.org/sqlite v1.62.0
 )

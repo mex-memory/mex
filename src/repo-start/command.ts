@@ -80,6 +80,19 @@ async function readAgentMemory(root: string): Promise<NotesFound | undefined> {
   } catch { return undefined; }
 }
 
+/** Read recipes and save recipes.json; a failure leaves the line out rather than stopping the screen. */
+async function readRecipes(root: string, projectId: string, env: NodeJS.ProcessEnv) {
+  try {
+    const [{ scanRecipes }, { nativeBinary }, { recordLocation }, { writeFactFile }] = await Promise.all([
+      import("./recipes/index.js"), import("../knowledge/check.js"), import("../record/location.js"), import("./facts.js"),
+    ]);
+    const location = recordLocation();
+    const file = scanRecipes({ root, binary: nativeBinary(env), projectId, recordDirectory: location.directory });
+    writeFactFile(location, projectId, "recipes.json", file);
+    return file;
+  } catch { return undefined; }
+}
+
 export async function runRepoStart(options: RepoStartOptions = {}): Promise<RepoStartResult> {
   const env = options.env ?? process.env;
   const write = options.write ?? ((line: string) => process.stdout.write(`${line}\n`));
@@ -136,7 +149,14 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       killAt("queued", env);
       writer.close(); writer = undefined;
 
-      // The free step: local reads only. Later steps add recipes, rule files and history.
+      // The free step: local reads only. Later steps add rule files and history.
+      const recipes = await readRecipes(checkout.path, projectId, env);
+      if (recipes) {
+        const { recipeSummary } = await import("./recipes/index.js");
+        const summary = recipeSummary(recipes);
+        findings.push({ state: "ok", text: summary.line });
+        for (const note of summary.notes.slice(0, 3)) findings.push({ state: "attention", text: note });
+      }
       const memory = await readAgentMemory(checkout.path);
       if (memory && memory.count > 0) {
         findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory` });
@@ -149,7 +169,10 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       try {
         writeFactFile(recordLocation(), projectId, "setup.json", {
           version: 1, last_run: new Date().toISOString(), ms: Math.round(elapsed()), caller,
-          found: { packages: 0, recipes: 0, rule_files: 0, rule_conflicts: 0, hints: memory?.count ?? 0 },
+          found: {
+            packages: new Set(recipes?.recipes.map(recipe => recipe.package) ?? []).size, recipes: recipes?.recipes.length ?? 0,
+            rule_files: 0, rule_conflicts: 0, hints: memory?.count ?? 0,
+          },
           exclude: { file: place.excludeFile, block: hidden },
         });
       } catch { /* the screen doesn't depend on its record */ }

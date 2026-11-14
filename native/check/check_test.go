@@ -284,3 +284,49 @@ func TestDatesReadAsText(t *testing.T) {
 		t.Fatalf("entry date: %v %#v", err, e)
 	}
 }
+
+func TestTOMLAndINIKeyAndCommandChecks(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[workspace]\nmembers = [\"crates/*\"]\n")
+	write(t, root, "tox.ini", "[tox]\nenvlist = py311, lint\n\n[testenv]\ncommands =\n    pytest {posargs}\n    # a comment line\n    coverage report\n\n[testenv:lint]\ncommands = ruff check .\n")
+	write(t, root, "gradle/wrapper/gradle-wrapper.properties", "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.9-bin.zip\n")
+
+	key := record(t, root, "key", Complete, map[string]any{"file": "Cargo.toml", "pointer": "/package/name"})
+	if key.Saw["value"] != "demo" {
+		t.Fatalf("toml key saw %v", key.Saw["value"])
+	}
+	tox := record(t, root, "key", Complete, map[string]any{"file": "tox.ini", "pointer": "/testenv/commands"})
+	if tox.Saw["value"] != "pytest {posargs}\ncoverage report" {
+		t.Fatalf("ini key saw %q", tox.Saw["value"])
+	}
+	lint := record(t, root, "command", Supporting, map[string]any{"run": "tox -e lint", "file": "tox.ini", "pointer": "/testenv:lint/commands"})
+	wrapper := record(t, root, "command", Complete, map[string]any{"run": "./gradlew test", "file": "gradle/wrapper/gradle-wrapper.properties", "pointer": "/distributionUrl"})
+
+	ev := evaluator(t, root)
+	for _, c := range []Check{key, tox, lint, wrapper} {
+		if got := ev.run(c); got.Status != Pass {
+			t.Fatalf("%s %v: %s", c.Kind, c.Target, got.Reason)
+		}
+	}
+
+	write(t, root, "tox.ini", "[tox]\nenvlist = py311\n\n[testenv]\ncommands = pytest -x\n")
+	write(t, root, "Cargo.toml", "[package]\nname = \"renamed\"\n")
+	ev = evaluator(t, root)
+	if got := ev.run(tox); got.Status != Fail {
+		t.Fatalf("changed tox commands: %s", got.Status)
+	}
+	if got := ev.run(lint); got.Status != Gone {
+		t.Fatalf("removed tox env: %s", got.Status)
+	}
+	if got := ev.run(key); got.Status != Fail {
+		t.Fatalf("renamed crate: %s", got.Status)
+	}
+}
+
+func TestParseINI(t *testing.T) {
+	doc := parseINI([]byte("top=1\r\n[a]\nk: v\n  more\n; c\nk2 = \n  first\n[a]\nk = last\n"))
+	a := doc["a"].(map[string]any)
+	if doc["top"] != "1" || a["k"] != "last" || a["k2"] != "first" {
+		t.Fatalf("parsed %#v", doc)
+	}
+}
