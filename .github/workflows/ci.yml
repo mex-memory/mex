@@ -65,6 +65,12 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+      # Interop compiles a real Go peer inside Vitest. Avoid a cold toolchain
+      # download/build competing with all four workers on the shared runner.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
       - run: npm ci --prefer-offline --no-audit --no-fund
       # Preserve the CLI suite's build condition and 240-second deadline, before
       # parallel suites consume the same dist workers and grammars.
