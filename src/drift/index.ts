@@ -70,6 +70,8 @@ export interface RunDriftCheckOpts {
   groundingRuntimeLoader?: (config: MexConfig) => Promise<GroundingRuntime | null>;
   /** Receive optional grounding/freshness warnings without writing to stderr. */
   graphWarning?: (message: string) => void;
+  /** False skips the file-age checks (`mex check --legacy`). */
+  ageChecks?: boolean;
 }
 
 /** Internal report used by graph-aware CLI surfaces; not re-exported at package root. */
@@ -227,7 +229,7 @@ export async function runDriftCheckWithGraphStatus(
 
       // Staleness check. Template-owned files are skipped, and the commit
       // signal counts only commits to what this file describes (#237).
-      const stalenessIssues = isTemplateOwnedScaffoldFile(toPosix(relative(scaffoldRoot, filePath)))
+      const stalenessIssues = opts.ageChecks === false || isTemplateOwnedScaffoldFile(toPosix(relative(scaffoldRoot, filePath)))
         ? []
         : await checkStaleness(
           source,

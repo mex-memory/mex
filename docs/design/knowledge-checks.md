@@ -96,3 +96,44 @@ stored check passed when it was written.
 `go.yaml.in/yaml/v3` v3.0.4 (MIT and Apache-2.0) reads entry frontmatter and
 YAML config. Aliases, anchors and custom tags in entries are refused, as in
 the Node codec.
+
+## `mex check`
+
+`mex check` evaluates every team entry, personal note and hint through the
+native evaluator (`mex-hook --check-run`) and stores the verdicts when MEX is
+set up on the machine. It prints per-entry verdicts ("120 held, 9 being
+checked, 3 withheld, 2 unknown") with the reason for each entry that isn't
+held, then store gates and conformance. There is no score.
+
+| Finding | Problem (exit 1) |
+| --- | --- |
+| A team entry is broken: a complete check fails | Yes |
+| An entry file that isn't a valid entry (team) | Yes |
+| A possible secret in an entry | Yes |
+| Hidden characters in a team entry | Yes |
+| A command or link the repo doesn't have | No, noted |
+| Two entries saying the same thing | No, noted |
+| A rule's anti-pattern occurs in its scope (file index count) | No, noted |
+
+Changed and unknown entries never fail the run.
+
+`mex check --diff <base>` is for pre-push and CI. It needs no graph, no MEX
+home and stores nothing. It checks team entries only and fails when the
+branch breaks a team entry it touched (the entry file, or a file its checks
+read), or adds a line containing an anti-pattern a team rule names, in that
+rule's scope. An entry that was already broken before the branch is listed
+but doesn't fail it.
+
+`mex check --legacy` runs the 0.8 prose checkers on an old scaffold, without
+the file-age checks. `--quiet`, `--fix` and `--verbose` apply to it.
+
+Without the native binary for the platform, `mex check` shows the verdicts
+last saved on the machine and says so.
+
+`mex check` also lists the literal patterns entries use in the file index's
+`patterns.json`, so the next index refresh counts them.
+
+Writers record checks with `{"action":"record", checkout, kind, role, target}`
+on `mex-hook --check-run`'s stdin; it answers `{ok, check}` or `{ok:false,
+error}`.
+

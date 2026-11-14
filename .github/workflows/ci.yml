@@ -165,7 +165,7 @@ jobs:
         run: |
           npm ci
           # Keep other native process tests out of the capture deadline.
-          npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts src/file-index/__tests__/go-parity.test.ts
+          npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts src/file-index/__tests__/go-parity.test.ts src/knowledge/__tests__/check.test.ts
 
   storage-portability:
     # Filesystem containment, SQLite migration/locking, and packed-install

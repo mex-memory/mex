@@ -320,73 +320,71 @@ setupCommand
     }
   });
 
-// ── Layer 2: Drift Detection ──
+// ── Knowledge checks ──
 program
   .command("check")
-  .description("Run every deterministic drift check, including scaffold and Wiki code links; read-only, no AI")
-  .option("--json", "Output full drift report as JSON")
-  .option("--quiet", "Single-line summary only")
-  .option("--fix", "Run sync to fix any issues found")
-  .option("--verbose", "Show detailed diagnostic output")
-  .option("--stale-warn-days <n>", "Warn when a file hasn't changed in N days (default 30)", parseIntArg)
-  .option("--stale-error-days <n>", "Error when a file hasn't changed in N days (default 90)", parseIntArg)
-  .option("--stale-warn-commits <n>", "Warn when a file has N commits since its last change (default 50)", parseIntArg)
-  .option("--stale-error-commits <n>", "Error when a file has N commits since its last change (default 200)", parseIntArg)
+  .description("Check every knowledge entry against the code, plus store gates and conformance; read-only, no AI")
+  .option("--json", "Output the report as JSON")
+  .option("--diff <base>", "Check this branch against <base> for pre-push and CI; needs no graph and stores nothing")
+  .option("--legacy", "Run the 0.8 prose checkers on an old scaffold, without the file-age checks")
+  .option("--quiet", "With --legacy: single-line summary only")
+  .option("--fix", "With --legacy: run sync to fix any issues found")
+  .option("--verbose", "With --legacy: show detailed diagnostic output")
   .action(async (opts) => {
     try {
-      const config = loadConfig();
-      const { runDriftCheckWithGraphStatus } = await import("./drift/index.js");
-      const { DEFAULT_STALENESS_THRESHOLDS } = await import("./drift/checkers/staleness.js");
-
-      const stalenessThresholds = {
-        warnDays: opts.staleWarnDays ?? config.stalenessThresholds?.warnDays ?? DEFAULT_STALENESS_THRESHOLDS.warnDays,
-        errorDays: opts.staleErrorDays ?? config.stalenessThresholds?.errorDays ?? DEFAULT_STALENESS_THRESHOLDS.errorDays,
-        warnCommits: opts.staleWarnCommits ?? config.stalenessThresholds?.warnCommits ?? DEFAULT_STALENESS_THRESHOLDS.warnCommits,
-        errorCommits: opts.staleErrorCommits ?? config.stalenessThresholds?.errorCommits ?? DEFAULT_STALENESS_THRESHOLDS.errorCommits,
-      };
-
-      const report = await runDriftCheckWithGraphStatus(
-        { ...config, stalenessThresholds },
-        { verbose: opts.verbose },
-      );
-
-      // An unfinished setup is said first, with the one line that continues it.
-      const { describeUnfinishedSetup } = await import("./setup/unfinished.js");
-      const unfinished = describeUnfinishedSetup(config.projectRoot);
-      if (opts.json) {
-        const setup = unfinished === null ? {} : { setup: { done: unfinished.done, total: unfinished.total, finished: false, message: unfinished.line } };
-        reportJSON({ ...report, ...setup } as typeof report, { verbose: opts.verbose });
-      } else if (opts.quiet) {
-        if (unfinished) console.log(unfinished.line);
-        reportQuiet(report);
-      } else {
-        if (unfinished) console.log(`${unfinished.line}\n`);
-        if (opts.verbose) reportVerbose(report);
-        reportConsole(report);
-      }
-
-      // If --fix and there are issues, jump to sync
-      const hasErrors = report.issues.some((i) => i.severity === "error");
-      if (opts.fix && hasErrors) {
-        const { runSync } = await import("./sync/index.js");
-        await runSync(config, {});
+      if (opts.legacy) {
+        await runLegacyCheck(opts);
         return;
       }
-
-      if (hasErrors) {
-        process.exitCode = 1;
-        return;
+      const { runCheck, formatCheck, hasLegacyScaffold } = await import("./knowledge/check.js");
+      const report = runCheck({ projectPath: process.cwd(), diff: opts.diff });
+      if (opts.json) console.log(JSON.stringify(report));
+      else {
+        const { realPath } = await import("./record/project.js");
+        console.log(formatCheck(report, realPath(process.cwd())));
+        if (!report.entries.length && hasLegacyScaffold(process.cwd())) console.log("This repo has a 0.8 scaffold: mex check --legacy checks it.");
       }
-
-      // Warm moment — a clean check just gave the user value. Quietly invite
-      // feedback (only on success, never right before an error exit).
-      maybeShowInvite();
+      if (!report.ok) process.exitCode = 1;
     } catch (err) {
-      console.error((err as Error).message);
+      if (opts.json) console.log(JSON.stringify({ ok: false, error: { code: (err as { code?: string }).code ?? "CHECK_FAILED", message: (err as Error).message } }));
+      else console.error((err as Error).message);
       process.exitCode = 1;
-      return;
     }
   });
+
+async function runLegacyCheck(opts: { json?: boolean; quiet?: boolean; fix?: boolean; verbose?: boolean }): Promise<void> {
+  const config = loadConfig();
+  const { runDriftCheckWithGraphStatus } = await import("./drift/index.js");
+  const report = await runDriftCheckWithGraphStatus(config, { verbose: opts.verbose, ageChecks: false });
+
+  // An unfinished setup is said first, with the one line that continues it.
+  const { describeUnfinishedSetup } = await import("./setup/unfinished.js");
+  const unfinished = describeUnfinishedSetup(config.projectRoot);
+  if (opts.json) {
+    const setup = unfinished === null ? {} : { setup: { done: unfinished.done, total: unfinished.total, finished: false, message: unfinished.line } };
+    reportJSON({ ...report, ...setup } as typeof report, { verbose: opts.verbose });
+  } else if (opts.quiet) {
+    if (unfinished) console.log(unfinished.line);
+    reportQuiet(report);
+  } else {
+    if (unfinished) console.log(`${unfinished.line}
+`);
+    if (opts.verbose) reportVerbose(report);
+    reportConsole(report);
+  }
+
+  const hasErrors = report.issues.some((i) => i.severity === "error");
+  if (opts.fix && hasErrors) {
+    const { runSync } = await import("./sync/index.js");
+    await runSync(config, {});
+    return;
+  }
+  if (hasErrors) {
+    process.exitCode = 1;
+    return;
+  }
+  maybeShowInvite();
+}
 
 // ── Code Graph ──
 const graphCommand = program
