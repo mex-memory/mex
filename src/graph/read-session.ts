@@ -450,7 +450,8 @@ async function loadFreshGraphReadSessionInContext(projectRoot: string, options: 
       ));
     }
 
-    if (driftedSources.length > 0) installGraphViews(base.db, undefined, driftedSources);
+    // Drifted files stay visible: drift-aware readers (graph get, grounding)
+    // check them against the source themselves and report the drift.
     const guardedStatus: GraphStatus = { ...graphStatus, diagnostics: [...graphStatus.diagnostics] };
     const ownedBase = base;
     base = null;
