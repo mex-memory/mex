@@ -57,7 +57,7 @@ func TestHookRunsTheFreeStage(t *testing.T) {
 	}
 	detached := 0
 	saved := startDetachedStage
-	startDetachedStage = func(string, string) { detached++ }
+	startDetachedStage = func(string, string) bool { detached++; return true }
 	t.Cleanup(func() { startDetachedStage = saved })
 
 	// Reads use the hook's short budget, so retry on a loaded machine.
@@ -120,10 +120,23 @@ func TestHookRunsTheFreeStage(t *testing.T) {
 	if detached != 1 || verdict() != check.Held {
 		t.Fatalf("budget: detached %d", detached)
 	}
+	// While that run is going, another hook out of budget starts no second one.
+	run(t, []string{"claude-code", "SessionStart"}, strings.NewReader(sessionStart(root)), env)
+	if detached != 1 {
+		t.Fatalf("a second detached run started: %d", detached)
+	}
 	// The detached run finishes it.
 	found, _ := findCheckout(h.mex, root, false, time.Now())
 	checkStage([]string{projectID, found.Root}, env)
 	if got := verdict(); got != check.Broken {
 		t.Fatalf("detached run: %q", got)
+	}
+	// It released the lock: the next run out of budget can start one.
+	if !takeStageLock(h.mex, found.Root, time.Now()) {
+		t.Fatal("the detached run kept its lock")
+	}
+	// A lock left by a run that died is taken over.
+	if takeStageLock(h.mex, found.Root, time.Now()) || !takeStageLock(h.mex, found.Root, time.Now().Add(time.Minute)) {
+		t.Fatal("stale lock handling")
 	}
 }
