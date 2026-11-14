@@ -9,6 +9,10 @@ on:
         type: choice
         default: powershell.exe
         options: [powershell.exe, pwsh.exe]
+      implementation_revision:
+        description: Optional full baseline SHA; verify production sources are unchanged
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -19,7 +23,7 @@ jobs:
     timeout-minutes: 20
     env:
       MEX_TELEMETRY: '0'
-      MEX_ACCEPTANCE_BASE: c2883d9343be46696ff20c1a8efebe0761239702
+      MEX_ACCEPTANCE_BASE: ${{ inputs.implementation_revision || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with:

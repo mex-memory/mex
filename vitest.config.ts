@@ -33,6 +33,8 @@ export default defineConfig({
       "scripts/gates/test/**",
       "scripts/ci/*.test.mjs",
       "scripts/release/*.test.mjs",
+      // These run through node:test in the package CI job and Windows workflow.
+      "scripts/acceptance/*.test.mjs",
       // The Hub web workspace supplies its own jsdom/CSS configuration and the
       // browser suite is collected by Playwright, not the root Node test run.
       "packages/hub-web/**",
