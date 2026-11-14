@@ -324,31 +324,28 @@ func measureNoOp(t *testing.T, counters bool) {
 
 	line := fmt.Sprintf("mex-hook no-op on %s/%s: counters=%t runs=%d p50=%sms p95=%sms max=%sms | bare process p50=%sms p95=%sms",
 		runtime.GOOS, runtime.GOARCH, counters, runs, ms(s.p50), ms(s.p95), ms(s.max), ms(f.p50), ms(f.p95))
-	t.Log(line)
+	budget := time.Duration(defaultBudgetMs) * time.Millisecond
+	if v, err := strconv.Atoi(os.Getenv("MEX_HOOK_BUDGET_MS")); err == nil && v > 0 {
+		budget = time.Duration(v) * time.Millisecond
+	}
+	strict := strictTimingPassed(s, f, budget)
+	detail, verdict := timingVerdict(os.Getenv("MEX_HOOK_TIMING_MODE"), runtime.GOOS, counters, s, f, budget)
+	lines := []string{line, fmt.Sprintf("strict rule passed=%t (p95 budget=%sms, allowance over bare=%dms); bare process max=%sms", strict, ms(budget), overheadMs, ms(f.max)), detail}
+	for _, entry := range lines {
+		t.Log(entry)
+	}
 	if path := os.Getenv("MEX_HOOK_TIMING_OUT"); path != "" {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := fmt.Fprintln(file, line); err != nil {
-			file.Close()
-			t.Fatal(err)
-		}
-		if err := file.Close(); err != nil {
-			t.Fatal(err)
+		_, writeErr := fmt.Fprintln(file, strings.Join(lines, "\n"))
+		closeErr := file.Close()
+		if writeErr != nil || closeErr != nil {
+			t.Fatalf("write timing summary: %v; close: %v", writeErr, closeErr)
 		}
 	}
-
-	budget := time.Duration(defaultBudgetMs) * time.Millisecond
-	if v, err := strconv.Atoi(os.Getenv("MEX_HOOK_BUDGET_MS")); err == nil && v > 0 {
-		budget = time.Duration(v) * time.Millisecond
+	if verdict != nil {
+		t.Fatal(verdict)
 	}
-	if s.p95 <= budget {
-		return
-	}
-	if s.p95 > f.p95+overheadMs*time.Millisecond {
-		t.Fatalf("p95 %sms is over the %sms budget and %sms over a bare process",
-			ms(s.p95), ms(budget), ms(s.p95-f.p95))
-	}
-	t.Logf("p95 is over budget, but within %dms of a bare process: the machine is slow, not the shim", overheadMs)
 }
