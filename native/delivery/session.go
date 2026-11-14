@@ -3,7 +3,9 @@ package delivery
 import (
 	"strings"
 
+	"github.com/mex-memory/mex/native/brief"
 	"github.com/mex-memory/mex/native/delivery/entries"
+	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record"
 )
@@ -27,12 +29,14 @@ var readOnlyAgents = map[string]bool{"explore": true, "plan": true, "claude-code
 // corrections, or the subagent brief, and records them in the ledger.
 func lifecycleBlock(h *record.Hooks, ev contract.Event, env Environment, reason string, signal int, epoch record.Epoch) (string, error) {
 	switch {
+	case reason == "startup" || reason == "clear" || reason == "fork":
+		return startBlock(h, ev, env)
 	case reason == "compact" && signal == 1 && epoch.Number > 0:
 		return recovery(h, ev, env, epoch.Number-1)
 	case reason == "resume":
 		return resumeCorrections(h, ev, env)
 	case reason == "subagent" && !readOnlyAgents[strings.ToLower(ev.AgentType)]:
-		return brief(h, ev, env)
+		return subagentStartBrief(h, ev, env)
 	}
 	return "", nil
 }
@@ -54,6 +58,10 @@ func loadKnown(h *record.Hooks, ev contract.Event, env Environment) (*known, err
 	k := &known{snap: &snap, byID: map[string]*entries.Item{}, senv: &shapeEnv{recordDirectory: env.RecordDirectory, project: ev.ProjectID, checkout: ev.Checkout}, h: h, ev: ev, cache: map[string]string{}}
 	for i := range snap.Items {
 		k.byID[snap.Items[i].Entry.ID] = &snap.Items[i]
+	}
+	for _, imported := range brief.ReadImported(brief.Options{Checkout: ev.Checkout, MexHome: env.Home, ProjectID: ev.ProjectID}) {
+		it := imported
+		k.byID[it.Entry.ID] = &it
 	}
 	return k, nil
 }
@@ -156,13 +164,20 @@ func recovery(h *record.Hooks, ev contract.Event, env Environment, previous int)
 		}
 		tail = "Also given before compaction, back when they apply: " + strings.Join(rest, ", ") + "."
 	}
-	return commit(h, ev, env, "MEX notes for the files you were editing:", plan, tail)
+	return commit(h, ev, env, brief.Priority+"\nMEX notes for the files you were editing:", plan, tail)
 }
 
 func coversAny(it *entries.Item, files []string) bool {
 	for _, f := range files {
 		if inScope(it, f) {
 			return true
+		}
+		if it.Level == "rule-file" {
+			for _, scope := range it.Entry.Scope {
+				if index.MatchesScope(scope, f) {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -184,6 +199,9 @@ func resumeCorrections(h *record.Hooks, ev contract.Event, env Environment) (str
 	var plan []planned
 	used := 0
 	for _, g := range given {
+		if g.EntryID == startMarker {
+			continue
+		}
 		it := k.byID[g.EntryID]
 		var p planned
 		switch {
@@ -215,10 +233,9 @@ func resumeCorrections(h *record.Hooks, ev contract.Event, env Environment) (str
 	return commit(h, ev, env, "MEX notes changed since they were given:", plan, "")
 }
 
-// brief: an editing subagent starts with the parent's priority line (the
-// start brief's slot, filled by a later ticket) and one-liners of what the
+// An editing subagent starts with the parent's priority line and one-liners of what the
 // parent was given this epoch, within its own 600-token budget.
-func brief(h *record.Hooks, ev contract.Event, env Environment) (string, error) {
+func subagentStartBrief(h *record.Hooks, ev contract.Event, env Environment) (string, error) {
 	given, _, err := h.EpochGiven(ev.SessionID, "", ev.ProjectID, ev.Checkout, -1)
 	if err != nil || len(given) == 0 {
 		return "", err
@@ -229,7 +246,7 @@ func brief(h *record.Hooks, ev contract.Event, env Environment) (string, error) 
 	}
 	defer k.senv.close()
 	var plan []planned
-	used := 0
+	used := entries.EstimateTokens(brief.Priority)
 	for i := len(given) - 1; i >= 0; i-- {
 		s, ok := k.oneLine(given[i].EntryID, "brief")
 		if !ok || used+s.lineTok > subagentBrief {
@@ -238,5 +255,5 @@ func brief(h *record.Hooks, ev contract.Event, env Environment) (string, error) 
 		used += s.lineTok
 		plan = append(plan, planned{shaped: s, form: "one-line", text: s.oneLine, tokens: s.lineTok})
 	}
-	return commit(h, ev, env, "MEX notes the main session has for this work:", plan, "")
+	return commit(h, ev, env, brief.Priority+"\nMEX notes the main session has for this work:", plan, "")
 }

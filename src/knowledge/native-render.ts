@@ -21,7 +21,7 @@ export function byStrength(a: Candidate, b: Candidate): number {
 }
 
 function item(c: Candidate): string {
-  return `- ${c.entry.text.replace(/\s+/gu, " ").trim()} <!-- ${c.entry.mex.id} -->`;
+  return `- ${c.entry.text.replace(/\s+/gu, " ").trim()} <!-- mex:${c.entry.mex.id} -->`;
 }
 
 function frame(format: NativeFormat, area: string): { head: string; tail: string } {

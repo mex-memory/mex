@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { containedDirectory } from "./files.js";
+import { realPath } from "../record/project.js";
 import type { NativePlan, Sharing } from "./native-plan.js";
 import { GENERATED_MARK } from "./rule-files.js";
 
@@ -83,7 +84,9 @@ export interface WriteOptions {
 
 /** Apply a plan. Shared files go to the working tree; local ones too, hidden from git. */
 export function writeNative(plan: NativePlan, options: WriteOptions): NativeWrite {
-  const { root } = options;
+  // A checkout root may use the OS's ordinary alias (/var on macOS). Resolve
+  // that anchor once; containedDirectory still refuses redirected descendants.
+  const root = realPath(options.root);
   const result: NativeWrite = { written: [], unchanged: [], removed: [], kept: [], notes: [...plan.notes] };
   const manifestPath: Record<Sharing, string | undefined> = {
     shared: join(root, SHARED_MANIFEST),

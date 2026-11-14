@@ -11,6 +11,7 @@ import (
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/shellparse"
+	"github.com/mex-memory/mex/native/record/place"
 )
 
 // Trigger strength tiers (sheet 30, ranking step 2). Lower is stronger.
@@ -68,6 +69,16 @@ func slash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
 func relTo(checkout, p string) (string, bool) {
 	if checkout == "" || p == "" {
 		return "", false
+	}
+	// Checkout mirrors use real paths; payloads can use an OS alias such as
+	// /var on macOS. Resolve the same anchor before comparing containment.
+	if real, err := place.RealPath(checkout); err == nil {
+		checkout = real
+	}
+	if real, err := place.RealPath(p); err == nil {
+		p = real
+	} else if parent, err := place.RealPath(filepath.Dir(p)); err == nil {
+		p = filepath.Join(parent, filepath.Base(p))
 	}
 	r, err := filepath.Rel(filepath.FromSlash(checkout), filepath.FromSlash(p))
 	if err != nil {

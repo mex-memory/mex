@@ -194,7 +194,7 @@ jobs:
         run: |
           npm ci --prefer-offline --no-audit --no-fund
           # Keep other native process tests out of the capture deadline.
-          npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts src/file-index/__tests__/go-parity.test.ts src/knowledge/__tests__/check.test.ts src/knowledge/__tests__/rule-cache.test.ts
+          npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts src/file-index/__tests__/go-parity.test.ts src/knowledge/__tests__/check.test.ts src/knowledge/__tests__/rule-cache.test.ts src/knowledge/__tests__/brief.test.ts
 
   storage-portability:
     needs: changes

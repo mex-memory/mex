@@ -1,6 +1,7 @@
 /**
  * Rebuild the agents' native rule files from the entries: select layer A,
- * plan who loads what, write. Never while a session runs in the checkout.
+ * plan who loads what, write. Background rebuilds wait between sessions;
+ * explicitly requested shared edits can force their matching native change.
  */
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";

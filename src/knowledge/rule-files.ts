@@ -12,6 +12,8 @@ import { parse as parseYaml } from "yaml";
 import { KNOWLEDGE_LIMITS } from "./contract.js";
 import { validateEntry, type KnowledgeEntry } from "./entry.js";
 import { fileHash, sections, textHash } from "./sections.js";
+import { containedDirectory, readBoundedTextFile } from "./files.js";
+import { realPath } from "../record/project.js";
 
 export const AGENTS = ["claude-code", "codex", "cursor", "copilot", "gemini", "opencode"] as const;
 export type Agent = (typeof AGENTS)[number];
@@ -106,7 +108,7 @@ function agentsFor(path: string, format: RuleFile["format"], present: Set<string
     case "agents": {
       const agents: Agent[] = ["codex", "cursor", "copilot"];
       if (folder === ".") agents.push("opencode");
-      if (!sibling("CLAUDE.md") && !sibling("CLAUDE.local.md")) agents.unshift("claude-code");
+      if (basename(path) === "AGENTS.md" && !sibling("CLAUDE.md") && !sibling("CLAUDE.local.md")) agents.unshift("claude-code");
       return agents;
     }
     case "cursor-rules": case "cursorrules": return ["cursor"];
@@ -116,6 +118,7 @@ function agentsFor(path: string, format: RuleFile["format"], present: Set<string
 }
 
 export function discoverRuleFiles(root: string): Array<RuleFile & { text: string; data: Record<string, unknown> }> {
+  root = realPath(root);
   const all = listFiles(root);
   const present = new Set(all);
   const out: Array<RuleFile & { text: string; data: Record<string, unknown> }> = [];
@@ -124,16 +127,17 @@ export function discoverRuleFiles(root: string): Array<RuleFile & { text: string
     if (!format) continue;
     if (out.length >= MAX_RULE_FILES) break;
     const full = join(root, path);
-    let bytes: Buffer;
+    let text: string;
     try {
-      const stat = statSync(full);
-      if (!stat.isFile() || stat.size > MAX_RULE_FILE_BYTES) continue;
-      bytes = readFileSync(full);
+      const parent = posix.dirname(path);
+      if (parent !== "." && !containedDirectory(root, parent.split("/"))) continue;
+      const read = readBoundedTextFile(full, MAX_RULE_FILE_BYTES);
+      if (read === undefined) continue;
+      text = read;
     } catch { continue; }
-    const text = bytes.toString("utf8");
     if (text.includes(GENERATED_MARK)) continue; // MEX wrote it; the entries are the source.
     const { data } = frontmatter(text);
-    out.push({ path, format, agents: agentsFor(path, format, present), scope: scopeOf(path, format, data), hash: fileHash(bytes), text, data });
+    out.push({ path, format, agents: agentsFor(path, format, present), scope: scopeOf(path, format, data), hash: fileHash(Buffer.from(text)), text, data });
   }
   return out;
 }

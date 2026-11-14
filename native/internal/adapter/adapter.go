@@ -92,6 +92,16 @@ type Profile interface {
 	Command(binary, nativeEvent string) Command
 }
 
+// InstructionObserver is an optional, native-only observability callback. It
+// does not introduce a delivery event or change the normalized hook contract.
+type InstructionLoad struct {
+	Event contract.Event
+	Path  string
+}
+type InstructionObserver interface {
+	ParseInstructionLoad(nativeEvent string, payload []byte) (InstructionLoad, bool, error)
+}
+
 var ErrUnknownEvent = errors.New("unknown event")
 
 var registry = map[string]Profile{}

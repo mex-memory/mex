@@ -180,7 +180,7 @@ func Load(directory, home, project, checkout string) (Snapshot, error) {
 						continue
 					}
 					item := Item{Entry: hit.Entry, Level: s.level, Path: full, Hash: hit.Hash, NeedsHintGate: s.level == "hint"}
-					label := label(hit.Entry, s.level)
+					label := Label(hit.Entry, s.level)
 					item.Full = label + " " + hit.Entry.Text
 					item.OneLine = label + " " + hit.Entry.OneLine
 					item.FullTokens = EstimateTokens(item.Full)
@@ -327,7 +327,9 @@ func saveCache(path string, c cacheFile) {
 // EstimateTokens is an estimate: the larger of UTF-8 bytes/4 and 1.3 pieces
 // per whitespace word. No tokenizer is linked into the short-lived hook.
 func EstimateTokens(s string) int { return max((len(s)+3)/4, (len(strings.Fields(s))*13+9)/10) }
-func label(e *Entry, level string) string {
+
+// Label is shared by every delivery form, so content hashes agree on resume.
+func Label(e *Entry, level string) string {
 	switch level {
 	case "hint":
 		return "[hint, seen once]"

@@ -7,9 +7,61 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestStartBriefOnceMarkerIsAtomicForTheWholeBatch(t *testing.T) {
+	location := testLocation(t)
+	initial, err := openHooks(location, testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.Close()
+	var sent atomic.Int32
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h, err := openHooks(location, testBudget)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer h.Close()
+			req := deliveryRequest()
+			req.OnceEntry = "mx_startbrief"
+			req.Candidates = append([]DeliveryCandidate{{EntryID: "mx_startbrief", Moment: "start-brief", Form: "one-line", Tokens: 100}}, req.Candidates...)
+			res, err := h.CheckAndMark(req)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if len(res.Receipts) > 0 {
+				sent.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if sent.Load() != 1 {
+		t.Fatalf("brief sent %d times", sent.Load())
+	}
+	h, err := openHooks(location, testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	req := deliveryRequest()
+	req.OnceEntry = "mx_startbrief"
+	req.Candidates[0].EntryID = "mx_newnote"
+	res, err := h.CheckAndMark(req)
+	if err != nil || len(res.Receipts) != 0 || res.Epoch.TokensSent != 200 {
+		t.Fatal(res, err)
+	}
+}
 
 func deliveryRequest() DeliveryRequest {
 	return DeliveryRequest{Session: Session{SessionID: "s", Agent: "test", ProjectID: "project", Checkout: "/repo"}, Budget: 2000, Now: time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC), Candidates: []DeliveryCandidate{{EntryID: "mx_abcdef", Moment: "read", Form: "full", Tokens: 100, ContentHash: "hash"}}}
