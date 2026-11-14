@@ -30,10 +30,14 @@ export async function localRegistry(directory, plan) {
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body)); return;
       }
       // Never forward local credentials or arbitrary redirect destinations.
-      const upstream = await fetch('https://registry.npmjs.org' + request.url, { headers: { accept: 'application/vnd.npm.install-v1+json' }, redirect: 'error', signal: AbortSignal.timeout(30_000) });
-      const text = await upstream.text();
-      if (Buffer.byteLength(text) > 32 * 1024 * 1024) throw new Error('Registry metadata exceeds limit');
-      response.writeHead(upstream.status, { 'content-type': 'application/json' }).end(text);
+      // Tarballs are binary: pass the bytes through untouched. The smoke installs
+      // with replace-registry-host=never, so public tarballs normally go straight
+      // to the public registry and only metadata comes through here.
+      const tarball = path.includes('/-/');
+      const upstream = await fetch('https://registry.npmjs.org' + request.url, { headers: tarball ? {} : { accept: 'application/vnd.npm.install-v1+json' }, redirect: 'error', signal: AbortSignal.timeout(30_000) });
+      const bytes = Buffer.from(await upstream.arrayBuffer());
+      if (bytes.byteLength > 64 * 1024 * 1024) throw new Error('Registry response exceeds limit');
+      response.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') || (tarball ? 'application/octet-stream' : 'application/json') }).end(bytes);
     } catch { if (!response.headersSent) response.writeHead(502); response.end('Registry fixture could not serve dependency'); }
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });

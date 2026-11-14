@@ -15,7 +15,7 @@ export async function smokeBundle(directory, plan) {
   const env = { ...npmEnvironment(), MEX_HOME: join(work, 'home'), MEX_TELEMETRY: '0', MEX_BACKGROUND: '1', NODE_PATH: '' };
   const registry = await localRegistry(directory, plan);
   try {
-    await npm(['install', `mex-agent@${plan.version}`, '--omit=dev', '--prefer-offline', '--no-audit', '--no-fund', '--registry', registry.origin], { cwd: project, env });
+    await npm(['install', `mex-agent@${plan.version}`, '--omit=dev', '--prefer-offline', '--no-audit', '--no-fund', '--registry', registry.origin, '--replace-registry-host=never'], { cwd: project, env });
     const installed = join(project, 'node_modules/mex-agent/package.json');
     const require = createRequire(installed), host = `${process.platform}-${process.arch}`;
     if (!TARGETS.includes(host)) throw new Error('Unsupported smoke host');
