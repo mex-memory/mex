@@ -67,6 +67,8 @@ type Resolver func(path string, isFile bool) (project, checkout string)
 
 func slash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
 
+// relTo resolves OS aliases and links before comparing containment, including
+// a prospective file whose parent exists. Checkout mirrors use real paths.
 func relTo(checkout, p string) (string, bool) {
 	if checkout == "" || p == "" {
 		return "", false
@@ -81,6 +83,10 @@ func relTo(checkout, p string) (string, bool) {
 	} else if parent, err := place.RealPath(filepath.Dir(p)); err == nil {
 		p = filepath.Join(parent, filepath.Base(p))
 	}
+	return plainRel(checkout, p)
+}
+
+func plainRel(checkout, p string) (string, bool) {
 	r, err := filepath.Rel(filepath.FromSlash(checkout), filepath.FromSlash(p))
 	if err != nil {
 		return "", false

@@ -722,3 +722,21 @@ func TestFixWithNoExitStatus(t *testing.T) {
 	mustBeEmpty(t, f.send(f.event(contract.PostTool, noExit("rg ECONNREFUSED logs", "logs/a: connect ECONNREFUSED 127.0.0.1:5432"))))
 	mustHave(t, f.send(f.event(contract.PostTool, noExit("node fail.js", "Error: connect ECONNREFUSED 127.0.0.1:5432"))), "docker compose")
 }
+
+// The agent reports a path through a link (a symlinked checkout, or /var on
+// macOS) while the checkout is registered by its real path.
+func TestPathThroughALink(t *testing.T) {
+	f := newFixture(t)
+	f.entry(spec{id: "mx_linkpf", kind: "pitfall", scope: "src/**", oneLine: "Linked path pitfall."})
+	f.file("src/a.ts", "a")
+	link := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(filepath.FromSlash(f.root), link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	f.resolve = func(string, bool) (string, string) { return f.project, f.root }
+	mustHave(t, f.send(f.event(contract.PostToolBatch, read(slash(filepath.Join(link, "src", "a.ts")), "a"))), "Linked path pitfall.")
+	// A file that doesn't exist yet is placed by its folder.
+	if r, ok := relTo(f.root, slash(filepath.Join(link, "src", "new.ts"))); !ok || r != "src/new.ts" {
+		t.Fatal(r, ok)
+	}
+}

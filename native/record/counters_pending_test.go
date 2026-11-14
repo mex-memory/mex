@@ -60,12 +60,23 @@ func TestMissedCounterWriteIsAddedByTheNextCall(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := RecordHookUsageOrDefer(location, "2026-11-14", "claude-code", false, false, 3); err != nil {
-		t.Fatal(err)
+	// Each write has the hook's 10 ms deadline, and a busy machine can miss
+	// it: that call defers its counts too, and a later call adds them all.
+	// Count every call made until one lands.
+	calls := 1
+	for {
+		calls++
+		err := RecordHookUsageOrDefer(location, "2026-11-14", "claude-code", false, false, 3)
+		if err == nil {
+			break
+		}
+		if calls > 50 {
+			t.Fatal("no write landed in 50 calls:", err)
+		}
 	}
 	got := counterTotals(t, location)
-	if got["agent:claude-code:hook.calls"] != 2 || got["agent:claude-code:sessions"] != 1 || got["agent:claude-code:hook.ms.2"] != 2 {
-		t.Fatalf("counts: %v", got)
+	if got["agent:claude-code:hook.calls"] != calls || got["agent:claude-code:sessions"] != 1 || got["agent:claude-code:hook.ms.2"] != calls {
+		t.Fatalf("counts after %d calls: %v", calls, got)
 	}
 	if _, err := os.Stat(filepath.Join(location.Directory, PendingCountersName)); !os.IsNotExist(err) {
 		t.Fatal("pending file left after it was added")
