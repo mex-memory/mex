@@ -56,3 +56,22 @@ describe("rebuilding native files", () => {
     expect(rebuildNative({ projectPath: root }, { sharedOnly: true }).written).toEqual([".claude/rules/mex.md"]);
   });
 });
+
+describe("the background rebuild", () => {
+  it("runs as a job and writes the files", async () => {
+    const { root } = setup();
+    await import("../../record/job-kinds.js");
+    const { openRecord } = await import("../../record/index.js");
+    const { runPendingInForeground } = await import("../../record/background.js");
+    const { queueNativeRebuild } = await import("../native-job.js");
+    const writer = openRecord({ create: true, projectPath: root });
+    try {
+      const projectId = writer.checkout(root)!.project_id;
+      queueNativeRebuild(writer, projectId, root);
+      expect(await runPendingInForeground(writer, 20_000)).toBeGreaterThan(0);
+      const row = writer.db.prepare("SELECT state, reason FROM jobs WHERE kind='native-files'").get() as { state: string };
+      expect(row.state).toBe("done");
+    } finally { writer.close(); }
+    expect(readFileSync(join(root, ".claude/rules/mex.md"), "utf8")).toContain("mx_team01");
+  }, 60_000);
+});
