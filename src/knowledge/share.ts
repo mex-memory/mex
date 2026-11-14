@@ -149,7 +149,8 @@ const OWN = /^(?:\.mex\/(?:learned\/(?:[a-z]+\/)?mx_[a-z0-9]{6,64}\.md|config\.j
 
 /** Undo the share's own writes in its temporary worktree, so git removes it without forcing. */
 function undoOwnWrites(worktree: string): void {
-  const status = git(worktree, "status", "--porcelain", "--untracked-files=all", "-z");
+  // Raw output: trimming would eat the leading space of " M path".
+  const status = execFileSync("git", ["-C", worktree, "status", "--porcelain", "--untracked-files=all", "-z"], { encoding: "utf8", windowsHide: true });
   for (const record of status.split("\0").filter(Boolean)) {
     const code = record.slice(0, 2), path = record.slice(3);
     if (!OWN.test(path)) continue;
