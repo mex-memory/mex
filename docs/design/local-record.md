@@ -787,7 +787,7 @@ choices. A Node writer can repair its own settings mirrors; readers never do.
 | `delivery-entries/<key>.json` | Full parsed entries per checkout, reused by size and modification time |
 | `delivery-entries/<key>.light.bin` | The light index (ids, kinds, scopes, triggers, command targets, one-line forms) with a stamp over the stores' listings |
 | `delivery-transcripts/<hash>.bin` | Per Claude Code transcript: bytes read, the active branch's blocks, and parent links |
-| `delivery-hints/<short hash of project id>.json` | Written by Node: hints eligible for delivery per agent, with expiry |
+| `delivery-hints/<short hash of project id>.json` | Written by Node (`writeHintMirror`) after every hint change: `{"version":1,"agents":{"<agent>":[{"id","expires"}]}}` |
 
 All are disposable caches except the hint mirror, which Node rewrites; a
 missing or unreadable file falls back to the slow path or to "no hints".

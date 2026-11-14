@@ -74,7 +74,10 @@ func shape(c candidate, verdict string, env *shapeEnv) shaped {
 		return s
 	}
 	if it.Level == "hint" || kind == "hint" {
-		if verdict == held || (verdict == unknown && it.Level != "hint") {
+		// An observed hint carries no checks, so its verdict is unknown; the
+		// Node side's mirror, which already gated it, vouches for its source.
+		// Any check that does run and doubts it withholds it.
+		if verdict == held || verdict == unknown {
 			return s
 		}
 		return withhold()

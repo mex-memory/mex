@@ -367,7 +367,7 @@ func TestVerdictTable(t *testing.T) {
 	cells = append(cells,
 		cell{"fact", "team", held, "full"}, cell{"fact", "team", changed, "pointer"}, cell{"fact", "team", broken, "withheld"}, cell{"fact", "team", unknown, "pointer"},
 		cell{"recipe", "team", held, "full"}, cell{"recipe", "team", changed, "full"}, cell{"recipe", "team", broken, "rederived"}, cell{"recipe", "team", unknown, "full"},
-		cell{"hint", "hint", held, "full"}, cell{"hint", "hint", changed, "withheld"}, cell{"hint", "hint", broken, "withheld"}, cell{"hint", "hint", unknown, "withheld"},
+		cell{"hint", "hint", held, "full"}, cell{"hint", "hint", changed, "withheld"}, cell{"hint", "hint", broken, "withheld"}, cell{"hint", "hint", unknown, "full"},
 		cell{"rule", "personal", held, "full"}, cell{"rule", "personal", changed, "full"}, cell{"rule", "personal", broken, "withheld"}, cell{"rule", "personal", unknown, "full"},
 	)
 	for _, c := range cells {
@@ -589,11 +589,15 @@ func TestHintNeedsMirror(t *testing.T) {
 	mirror := HintMirrorPath(f.dir, f.project)
 	os.MkdirAll(filepath.Dir(mirror), 0o700)
 	os.WriteFile(mirror, []byte(`{"version":1,"agents":{"codex":[{"id":"mx_hint01","expires":"2999-01-01T00:00:00Z"}]}}`), 0o600)
-	// Sheet 40: an observed hint whose verdict is unknown (no checks) is withheld.
+	// An observed hint has no checks (verdict unknown): the mirror vouches.
 	f.agent, f.session = "codex", "s0"
+	mustHave(t, f.send(f.event(contract.PostToolFailure, shell("pnpm e2e", "upload timed out after 30s", false))), "retry the flaky upload")
+	// A check that doubts it still withholds it.
+	f.verdict("mx_hint01", changed)
+	f.session = "s9"
 	mustBeEmpty(t, f.send(f.event(contract.PostToolFailure, shell("pnpm e2e", "upload timed out after 30s", false))))
-	f.agent, f.session = "claude-code", "s1"
 	f.verdict("mx_hint01", held)
+	f.agent, f.session = "claude-code", "s1"
 	mustBeEmpty(t, f.send(fail))
 	os.WriteFile(mirror, []byte(`{"version":1,"agents":{"codex":[{"id":"mx_hint01","expires":"2999-01-01T00:00:00Z"}],"claude-code":[{"id":"mx_hint01","expires":"2000-01-01T00:00:00Z"}]}}`), 0o600)
 	mustBeEmpty(t, f.send(fail))

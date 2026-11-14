@@ -174,7 +174,9 @@ there and stays for output trimming. Failures use their own event everywhere.
   those files.
 - **Hints** observed in agent memory go out only when the Node side's mirror
   `delivery-hints/<short hash of project id>.json` lists them, unexpired, for
-  this agent. No mirror means no hints.
+  this agent. Node rewrites it after every hint refresh, expiry, confirmation
+  and forget (`writeHintMirror` in `src/knowledge/hints.ts`), and removes it
+  when it can't be written. No mirror means no hints.
 
 ## Verdicts
 
@@ -183,7 +185,7 @@ there and stays for output trimming. Failures use their own event everywhere.
 | rule, decision, pitfall, procedure | full | full | withheld; one correction if given this epoch | full |
 | fact | full | pointer to today's code | withheld | pointer |
 | recipe | full | full while its script exists, else re-derived | re-derived, else withheld | full while its script exists, else re-derived |
-| hint (observed) | full | withheld | withheld | withheld |
+| hint (observed) | full | withheld | withheld | full (the mirror vouches) |
 | team hint | full | withheld | withheld | full |
 | personal note | full | full | withheld | full |
 
@@ -192,8 +194,11 @@ A pointer names the symbol and its current line range from the file index
 location means withheld. Re-derivation reads the recipe's manifest and up to 63
 workspace manifests (`packages/*`, `apps/*`, `libs/*`, `services/*`), scores
 script names by shared name parts and the recipe's own words, and answers only
-when one script wins by a clear margin. An observed hint with no checks has an
-unknown verdict and is withheld, so recorded fixes need a check to be sent.
+when one script wins by a clear margin. Observed hints carry no checks by
+design, so their verdict is unknown; the Node side's mirror, written from the
+same eligibility a read uses (the source still holds the claim, not the
+agent's own memory, not forgotten, not expired), stands in for it. A check
+that runs and doubts a hint withholds it.
 
 ## Admission and form
 
