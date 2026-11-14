@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { mexHomeDir } from "../global-config.js";
-import { enqueueJob, registerJobKind } from "../record/jobs.js";
-import type { RecordWriter } from "../record/index.js";
+import { registerJobKind } from "../record/jobs.js";
 import { liveSessions } from "./agents-in-use.js";
 
 export interface NativeJobParams { checkout: string; }
@@ -30,8 +29,3 @@ registerJobKind<NativeJobParams, Record<string, never>>({
     } catch { return true; }
   },
 });
-
-/** Ask the background process to rebuild a checkout's native files. */
-export function queueNativeRebuild(writer: RecordWriter, projectId: string, checkout: string): void {
-  enqueueJob(writer, { kind: "native-files", projectId, params: { checkout } });
-}

@@ -63,11 +63,10 @@ describe("the background rebuild", () => {
     await import("../../record/job-kinds.js");
     const { openRecord } = await import("../../record/index.js");
     const { runPendingInForeground } = await import("../../record/background.js");
-    const { queueNativeRebuild } = await import("../native-job.js");
+    const { queueNativeRebuild } = await import("../native-queue.js");
+    expect(queueNativeRebuild(root)).toBe(true);
     const writer = openRecord({ create: true, projectPath: root });
     try {
-      const projectId = writer.checkout(root)!.project_id;
-      queueNativeRebuild(writer, projectId, root);
       expect(await runPendingInForeground(writer, 20_000)).toBeGreaterThan(0);
       const row = writer.db.prepare("SELECT state, reason FROM jobs WHERE kind='native-files'").get() as { state: string };
       expect(row.state).toBe("done");
