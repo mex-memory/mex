@@ -28,6 +28,9 @@ func normalizeGlob(glob string) string {
 }
 
 // globRegexp compiles a scope glob.
+// CompileGlob shares the file index's scope dialect with delivery.
+func CompileGlob(glob string) (*regexp.Regexp, error) { return globRegexp(glob) }
+
 func globRegexp(glob string) (*regexp.Regexp, error) {
 	raw := strings.Split(normalizeGlob(glob), "/")
 	segments := raw[:0:0]

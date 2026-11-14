@@ -3,12 +3,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { confirmHint, expireHints, forgetHint, hintExpiresAt, hintStatus, readHints, refreshHints } from "../hints.js";
+import { confirmHint, expireHints, forgetHint, hintExpiresAt, hintMirrorPath, hintStatus, readHints, refreshHints } from "../hints.js";
 import { note, recall, expand } from "../store.js";
 import { openRecordReadOnly, projectIdentity } from "../../record/index.js";
 import { prepareTeamWrite, applyTeamWrite } from "../team.js";
 import { parseEntry, serializeEntry } from "../entry.js";
 import { MEMORY_LIMITS } from "../host-memory.js";
+import { knowledgeProject } from "../context.js";
 import { realPath } from "../../record/project.js";
 
 let root: string, repo: string, home: string, claude: string, codex: string, memory: string;
@@ -188,5 +189,25 @@ describe("hint lifecycle under a fake clock", () => {
     for (let i = 0; i < MEMORY_LIMITS.files + 1; i++) topic(`empty-${i}.md`, "# Index only");
     const result = refreshHints(options()); expect(result.partial).toBe(true);
     expect(readHints(options()).entries).toEqual([]);
+  });
+});
+
+describe("the delivery hint mirror", () => {
+  const mirror = () => {
+    const project = knowledgeProject(options());
+    const path = hintMirrorPath(project.location.directory, project.projectId);
+    return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as { version: number; agents: Record<string, Array<{ id: string; expires: string }>> } : undefined;
+  };
+  it("lists each hint for the other agent only, with its expiry, and drops it when forgotten", () => {
+    topic("fixtures.md", "Fixtures use fixed inputs because failures must reproduce.");
+    expect(refreshHints(options()).imported).toBe(1);
+    const written = mirror();
+    expect(written?.version).toBe(1);
+    expect(written?.agents["claude-code"]).toEqual([]);
+    expect(written?.agents.codex).toHaveLength(1);
+    const [hint] = written!.agents.codex;
+    expect(new Date(hint.expires).getTime()).toBe(hintExpiresAt(new Date(start).getTime(), 6));
+    forgetHint(hint.id, "not true here", options());
+    expect(mirror()?.agents.codex).toEqual([]);
   });
 });

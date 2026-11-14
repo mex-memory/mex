@@ -8,6 +8,7 @@
   "project_id": "",
   "checkout": "",
   "source": "startup",
+  "model": "claude-sonnet-5-5",
   "transcript": "/home/dev/.claude/projects/-home-dev-shop/5f0c2a1e-1b7d-4c55-9a43-2e0f1c7d9b10.jsonl",
   "background": false
 }
