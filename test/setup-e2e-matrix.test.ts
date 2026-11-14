@@ -1,4 +1,5 @@
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { writeFileSync } from "node:fs";
 import { runSetupNext } from "../src/setup/next.js";
 import { readNextGraph } from "../src/setup/next-graph.js";
@@ -14,6 +15,7 @@ import { readNextGraph } from "../src/setup/next-graph.js";
  */
 import { existsSync, readFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   inspectSetupStatus,
@@ -275,32 +277,63 @@ describe("setup recovery across current entry points", () => {
     "reruns successfully after the built setup process is killed",
     async () => {
       const project = fixtureRepository();
+      const parked = join(scriptedRoot, "setup-parked");
+      const preload = join(scriptedRoot, "park-before-population.mjs");
+      // Park the built CLI after it finishes scaffolding, before population.
+      // --yes deliberately uses the manual population path, so a fake agent
+      // cannot provide this barrier. Only this child loads the fixture hook.
+      writeFileSync(preload, `
+        import { writeFileSync } from 'node:fs';
+        for (const stream of [process.stdout, process.stderr]) {
+          const write = stream.write.bind(stream);
+          stream.write = (chunk, ...args) => {
+            const result = write(chunk, ...args);
+            if (String(chunk).includes('Populate the scaffold')) {
+              writeFileSync(process.env.MEX_E2E_PAUSE_READY, String(process.pid));
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);
+              process.exit(3);
+            }
+            return result;
+          };
+        }
+      `);
       const child = spawn(
         process.execPath,
-        [CLI, "setup", "--yes", "--tool", "none"],
+        ["--import", pathToFileURL(preload).href, CLI, "setup", "--yes", "--tool", "none"],
         {
           cwd: project,
-          env: { ...process.env, MEX_SETUP_BACKGROUND_AGENTS: "0" },
-          stdio: "ignore",
+          env: { ...process.env, MEX_SETUP_BACKGROUND_AGENTS: "0", MEX_E2E_PAUSE_READY: parked },
+          stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
           detached: process.platform !== "win32",
         },
       );
+      let output = "";
+      child.stdout!.on("data", (part) => { output += part; });
+      child.stderr!.on("data", (part) => { output += part; });
+      let closed = false;
+      child.once("exit", () => { closed = true; });
       const exited = new Promise<void>((done) =>
         child.once("exit", () => done()),
       );
       try {
-        await waitFor(() =>
-          existsSync(join(project, ".mex/context/architecture.md")),
-        );
-        expect(child.exitCode).toBeNull();
+        // A file appearing is not a completed scaffold: killing during its
+        // writes can leave unrelated knowledge files half-written. Wait for
+        // the completed-scaffold barrier before killing the real process.
+        await waitFor(() => closed || existsSync(parked));
+        expect(closed, output).toBe(false);
+        expect(inspectSetupStatus(project).ready).toBe(false);
       } finally {
         if (child.pid && child.exitCode === null) {
-          if (process.platform === "win32")
-            spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-              windowsHide: true,
-            });
-          else process.kill(-child.pid, "SIGKILL");
+          if (process.platform === "win32") {
+            try {
+              await promisify(execFile)("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, timeout: 5_000 });
+            } catch {
+              // Restricted Windows hosts can deny task-tree enumeration. The
+              // barrier is after the graph child settled; kill our CLI directly.
+              child.kill("SIGKILL");
+            }
+          } else process.kill(-child.pid, "SIGKILL");
         }
         await exited;
       }

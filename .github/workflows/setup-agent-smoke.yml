@@ -5,15 +5,15 @@ permissions:
   contents: read
 jobs:
   setup:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22.22.0
           cache: npm
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund
       - run: npx vitest run test/setup-e2e-matrix.test.ts test/setup-next.test.ts test/setup-per-subsystem.test.ts --maxWorkers=2
         env:
           MEX_TELEMETRY: "0"

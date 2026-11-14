@@ -1,0 +1,195 @@
+name: Release performance
+
+on:
+  push:
+    branches: [main, next]
+    tags: ['v0.9.0*', '0.9.0*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release_performance_attempt_1:
+    name: release-performance-attempt-1
+    # Runtime budgets are characterized only on this exact image and Node patch.
+    # A potentially material crossing is confirmed by a separately allocated job.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      requires_confirmation: ${{ steps.decision.outputs.requires_confirmation }}
+      artifact_name: ${{ steps.decision.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Read the exact Playwright browser version
+        id: playwright
+        run: echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Playwright Chromium
+        run: |
+          # Playwright downloads its own Chromium. Exclude the unused runner
+          # Chrome apt source so unrelated metadata errors cannot block setup.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          npx playwright install --with-deps chromium
+      - run: npm run build
+      - name: Measure the first release-performance attempt
+        env:
+          MEX_ENFORCE_RELEASE_BUDGETS: "1"
+        run: >-
+          node scripts/release-benchmark/ci-orchestrator.mjs attempt
+          --report test-results/release-benchmark/attempt-1/report.attempt-1.json
+          --manifest test-results/release-benchmark/attempt-1/manifest.json
+      - name: Publish the bounded confirmation decision
+        id: decision
+        shell: bash
+        run: |
+          REQUIRED="$(node scripts/release-benchmark/ci-orchestrator.mjs retry-required --manifest test-results/release-benchmark/attempt-1/manifest.json)"
+          echo "requires_confirmation=$REQUIRED" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=release-performance-attempt-1-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Diagnose small-fixture startup after measurements
+        if: steps.decision.outputs.requires_confirmation == 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: >-
+          node scripts/release-benchmark/startup-diagnostic.mjs
+          --report test-results/release-benchmark/attempt-1/report.attempt-1.json
+          --output test-results/release-benchmark/attempt-1/startup-diagnostic.json
+      - name: Upload first release benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.decision.outputs.artifact_name }}
+          path: test-results/release-benchmark/attempt-1/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release_performance_attempt_2:
+    name: release-performance-attempt-2
+    needs: release_performance_attempt_1
+    if: needs.release_performance_attempt_1.outputs.requires_confirmation == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      artifact_name: ${{ steps.evidence.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Read the exact Playwright browser version
+        id: playwright
+        run: echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Playwright Chromium
+        run: |
+          # Playwright downloads its own Chromium. Exclude the unused runner
+          # Chrome apt source so unrelated metadata errors cannot block setup.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          npx playwright install --with-deps chromium
+      - run: npm run build
+      - name: Measure the fresh-runner confirmation attempt
+        env:
+          MEX_ENFORCE_RELEASE_BUDGETS: "1"
+        run: >-
+          node scripts/release-benchmark/ci-orchestrator.mjs attempt
+          --report test-results/release-benchmark/attempt-2/report.attempt-2.json
+          --manifest test-results/release-benchmark/attempt-2/manifest.json
+      - name: Publish the bounded evidence identity
+        id: evidence
+        shell: bash
+        run: echo "artifact_name=release-performance-attempt-2-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Diagnose small-fixture confirmation startup after measurements
+        continue-on-error: true
+        timeout-minutes: 5
+        run: >-
+          node scripts/release-benchmark/startup-diagnostic.mjs
+          --report test-results/release-benchmark/attempt-2/report.attempt-2.json
+          --output test-results/release-benchmark/attempt-2/startup-diagnostic.json
+      - name: Upload second release benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.evidence.outputs.artifact_name }}
+          path: test-results/release-benchmark/attempt-2/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release-performance:
+    concurrency:
+      group: release-performance-final-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    # Stable advisory result. Finalize every enabled run so missing, cancelled
+    # or malformed producers stay visible; this is outside ci-passed.
+    needs: [release_performance_attempt_1, release_performance_attempt_2]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+      - name: Download first release benchmark evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.release_performance_attempt_1.outputs.artifact_name }}
+          path: test-results/release-benchmark/attempt-1/
+      - name: Download fresh-runner confirmation evidence
+        if: needs.release_performance_attempt_1.outputs.requires_confirmation == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.release_performance_attempt_2.outputs.artifact_name }}
+          path: test-results/release-benchmark/attempt-2/
+      - name: Finalize release performance without a confirmation
+        if: needs.release_performance_attempt_1.outputs.requires_confirmation != 'true'
+        run: >-
+          node scripts/release-benchmark/ci-orchestrator.mjs finalize
+          --first-report test-results/release-benchmark/attempt-1/report.attempt-1.json
+          --first-manifest test-results/release-benchmark/attempt-1/manifest.json
+          --output test-results/release-benchmark/report.json
+      - name: Finalize release performance with fresh-runner confirmation
+        if: needs.release_performance_attempt_1.outputs.requires_confirmation == 'true'
+        run: >-
+          node scripts/release-benchmark/ci-orchestrator.mjs finalize
+          --first-report test-results/release-benchmark/attempt-1/report.attempt-1.json
+          --first-manifest test-results/release-benchmark/attempt-1/manifest.json
+          --second-report test-results/release-benchmark/attempt-2/report.attempt-2.json
+          --second-manifest test-results/release-benchmark/attempt-2/manifest.json
+          --output test-results/release-benchmark/report.json
+      - name: Upload final release benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-performance-${{ github.run_attempt }}
+          path: test-results/release-benchmark/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Track a failing next performance result
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/next'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/ci/performance-issue.mjs
+

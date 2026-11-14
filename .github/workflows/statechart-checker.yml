@@ -3,8 +3,45 @@ on:
   push:
     branches: [main, next]
   pull_request:
+    paths:
+      - 'src/statechart/**'
+      - 'skills/mex-statechart/**'
+      - '.claude/skills/mex-statechart/**'
+      - '.agents/skills/mex-statechart/**'
+      - 'packages/hub-contracts/src/statechart.ts'
+      - 'packages/hub-web/src/pages/DiagramsPage.tsx'
+      - 'packages/hub-web/src/components/StatechartCanvas*'
+      - 'packages/hub-web/src/lib/statechart-graph*'
+      - 'packages/hub-web/src/api/diagrams-client*'
+      - 'packages/hub-web/src/api/client.ts'
+      - 'packages/hub-web/src/app/App*'
+      - 'packages/hub-web/src/app/diagrams-page*'
+      - 'packages/hub-web/src/app/navigation.ts'
+      - 'packages/hub-web/src/dev/diagram-fixtures.ts'
+      - 'packages/hub-web/src/dev/fixture-api.ts'
+      - 'packages/hub-web/src/styles/diagrams.module.css'
+      - 'packages/hub-web/src/styles/statechart-graph.module.css'
+      - 'packages/hub-web/src/styles/global.css'
+      - 'packages/hub-web/vite.config.ts'
+      - 'packages/hub-web/package.json'
+      - 'packages/hub-contracts/package.json'
+      - 'tsconfig.json'
+      - 'packages/hub-web/scripts/**'
+      - 'src/hub/app.ts'
+      - 'src/hub/services.ts'
+      - 'test/hub-diagrams-integration.test.ts'
+      - 'test/hub-e2e/diagrams*.spec.ts'
+      - 'scripts/statechart-*.mjs'
+      - 'tsup.config.ts'
+      - 'vitest.statechart.config.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/statechart-checker.yml'
 permissions:
   contents: read
+concurrency:
+  group: statechart-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   checker:
     # Keep macOS qualification available when the arm64 pool cannot acquire a runner.
@@ -16,6 +53,16 @@ jobs:
         os: [ubuntu-24.04, macos-15, windows-2022]
     steps:
       - uses: actions/checkout@v5
+      # RUNNER_TEMP is on the fast D: disk; the default temporary folder is on C:.
+      - name: Keep temporary files on the fast disk
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $temp = Join-Path $env:RUNNER_TEMP 'tmp'
+          New-Item -ItemType Directory -Force $temp | Out-Null
+          "TEMP=$temp" >> $env:GITHUB_ENV
+          "TMP=$temp" >> $env:GITHUB_ENV
+          "npm_config_cache=$(Join-Path $env:RUNNER_TEMP 'npm-cache')" >> $env:GITHUB_ENV
       - uses: actions/setup-node@v5
         with:
           node-version: 22.22.0
@@ -24,11 +71,19 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - run: npm ci
-      - name: Fetch and verify immutable TLC 1.7.4
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - uses: actions/cache@v4
+        id: tlc
+        with:
+          path: ${{ runner.temp }}/tla2tools.jar
+          key: tlc-936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+      - name: Fetch immutable TLC 1.7.4 on cache miss
+        if: steps.tlc.outputs.cache-hit != 'true'
+        shell: bash
+        run: curl --fail --location --retry 2 --output "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+      - name: Verify TLC even on a cache hit
         shell: bash
         run: |
-          curl --fail --location --retry 2 --output "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
           node --input-type=module -e 'import { readFileSync } from "node:fs"; import { createHash } from "node:crypto"; import { join } from "node:path"; if (createHash("sha256").update(readFileSync(join(process.env.RUNNER_TEMP, "tla2tools.jar"))).digest("hex") !== "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88") throw new Error("TLC checksum mismatch");'
           echo "TLA2TOOLS=$RUNNER_TEMP/tla2tools.jar" >> "$GITHUB_ENV"
       - run: npm run test:statechart:checker

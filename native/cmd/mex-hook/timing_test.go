@@ -159,9 +159,13 @@ func hookCount(t *testing.T, location localrecord.Location) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Inspection must neither checkpoint/delete the warmed WAL nor hold a
-	// connection open while timing. Observe the actual counter-writer state.
+	// Inspection must never checkpoint/delete the warmed WAL.
 	defer db.Close()
+	return readHookCount(t, db)
+}
+
+func readHookCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
 	var count int
 	if err := db.QueryRow("SELECT coalesce(sum(value),0) FROM counters_go WHERE name='agent:claude-code:hook.calls'").Scan(&count); err != nil {
 		t.Fatal(err)
@@ -227,6 +231,34 @@ func TestHookCountInspectionIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestTimingObserverReleasesReadTransactions(t *testing.T) {
+	location, err := localrecord.ResolveLocation(localrecord.LocationOptions{Home: t.TempDir(), Cache: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := prepareTimingHooks(t, location)
+	observer, err := sql.Open("sqlite", hookReadOnlyURI(location))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
+	observer.SetMaxOpenConns(1)
+	if count := readHookCount(t, observer); count != 0 {
+		t.Fatal(count)
+	}
+	if _, err := observer.Exec("INSERT INTO counters_go VALUES('2026-11-13','forbidden',1)"); err == nil {
+		t.Fatal("timing observer allowed a write")
+	}
+	for count := 1; count <= 3; count++ {
+		if _, err := writer.Exec("INSERT INTO counters_go VALUES('2026-11-13','agent:claude-code:hook.calls',1) ON CONFLICT(day,name) DO UPDATE SET value=value+1"); err != nil {
+			t.Fatal(err)
+		}
+		if got := readHookCount(t, observer); got != count {
+			t.Fatalf("observer retained an old read transaction: got=%d want=%d", got, count)
+		}
+	}
+}
+
 func summarize(s []time.Duration) stats {
 	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
 	n := len(s)
@@ -277,8 +309,19 @@ func measureNoOp(t *testing.T, counters bool) {
 		callOnce(t, floor, mexHome)
 	}
 	before := 0
+	var observer *sql.DB
 	if counters {
-		before = hookCount(t, location)
+		var err error
+		observer, err = sql.Open("sqlite", hookReadOnlyURI(location))
+		if err != nil {
+			t.Fatal(err)
+		}
+		observer.SetMaxOpenConns(1)
+		defer observer.Close()
+		// Reuse one read-only observer. Reopening a pager between every call
+		// adds unrelated filesystem/sidecar work. QueryRow.Scan completes each
+		// read transaction before the next hook starts; no read lock is held.
+		before = readHookCount(t, observer)
 	}
 	const runs = 200
 	// Measure actual captured calls. Best-effort storage may skip a call at its
@@ -297,8 +340,7 @@ func measureNoOp(t *testing.T, counters bool) {
 		shimTime := callOnce(t, shim, mexHome)
 		floorTime := callOnce(t, floor, mexHome)
 		if counters {
-			// This observer closes before the next timed process and never writes.
-			count := hookCount(t, location)
+			count := readHookCount(t, observer)
 			if count == last {
 				continue
 			}
@@ -314,7 +356,7 @@ func measureNoOp(t *testing.T, counters bool) {
 		t.Fatalf("counter capture samples: recorded=%d want=%d attempted=%d limit=%d", len(shimRuns), runs, attempts, limit)
 	}
 	if counters {
-		if count := hookCount(t, location) - before; count != runs {
+		if count := readHookCount(t, observer) - before; count != runs {
 			t.Fatalf("counter sample count=%d want=%d", count, runs)
 		}
 		t.Logf("counter capture samples: recorded=%d attempted=%d skipped=%d limit=%d", runs, attempts, attempts-runs, limit)
@@ -324,31 +366,28 @@ func measureNoOp(t *testing.T, counters bool) {
 
 	line := fmt.Sprintf("mex-hook no-op on %s/%s: counters=%t runs=%d p50=%sms p95=%sms max=%sms | bare process p50=%sms p95=%sms",
 		runtime.GOOS, runtime.GOARCH, counters, runs, ms(s.p50), ms(s.p95), ms(s.max), ms(f.p50), ms(f.p95))
-	t.Log(line)
+	budget := time.Duration(defaultBudgetMs) * time.Millisecond
+	if v, err := strconv.Atoi(os.Getenv("MEX_HOOK_BUDGET_MS")); err == nil && v > 0 {
+		budget = time.Duration(v) * time.Millisecond
+	}
+	strict := strictTimingPassed(s, f, budget)
+	detail, verdict := timingVerdict(os.Getenv("MEX_HOOK_TIMING_MODE"), runtime.GOOS, counters, s, f, budget)
+	lines := []string{line, fmt.Sprintf("strict rule passed=%t (p95 budget=%sms, allowance over bare=%dms); bare process max=%sms", strict, ms(budget), overheadMs, ms(f.max)), detail}
+	for _, entry := range lines {
+		t.Log(entry)
+	}
 	if path := os.Getenv("MEX_HOOK_TIMING_OUT"); path != "" {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := fmt.Fprintln(file, line); err != nil {
-			file.Close()
-			t.Fatal(err)
-		}
-		if err := file.Close(); err != nil {
-			t.Fatal(err)
+		_, writeErr := fmt.Fprintln(file, strings.Join(lines, "\n"))
+		closeErr := file.Close()
+		if writeErr != nil || closeErr != nil {
+			t.Fatalf("write timing summary: %v; close: %v", writeErr, closeErr)
 		}
 	}
-
-	budget := time.Duration(defaultBudgetMs) * time.Millisecond
-	if v, err := strconv.Atoi(os.Getenv("MEX_HOOK_BUDGET_MS")); err == nil && v > 0 {
-		budget = time.Duration(v) * time.Millisecond
+	if verdict != nil {
+		t.Fatal(verdict)
 	}
-	if s.p95 <= budget {
-		return
-	}
-	if s.p95 > f.p95+overheadMs*time.Millisecond {
-		t.Fatalf("p95 %sms is over the %sms budget and %sms over a bare process",
-			ms(s.p95), ms(budget), ms(s.p95-f.p95))
-	}
-	t.Logf("p95 is over budget, but within %dms of a bare process: the machine is slow, not the shim", overheadMs)
 }
