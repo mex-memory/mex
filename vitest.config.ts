@@ -48,6 +48,7 @@ export default defineConfig({
     env: {
       MEX_TELEMETRY: "0",
       MEX_SETUP_BACKGROUND_AGENTS: "0",
+      MEX_INSTALL_AUTO: "0",
     },
     // The root suite opens many independent immutable SQLite snapshots. Keep
     // cross-file concurrency below the platform resource cliff so a busy test

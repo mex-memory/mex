@@ -66,6 +66,12 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 		_, _ = stdout.Write(emptyReply)
 		return 0
 	}
+	for _, arg := range args {
+		if arg == "--mex-managed" {
+			// Prototype project registrations are inert after machine install.
+			return 0
+		}
+	}
 
 	payload, ok := readPayload(stdin, readTimeout)
 
@@ -133,6 +139,9 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 	sessionStart = ev.Kind == contract.SessionStart
+	if h.orphaned(sessionStart) {
+		return profile.EmptyReply(nativeEvent)
+	}
 	if !h.mexInstalled() {
 		out, _ := profile.Render(ev, contract.Reply{})
 		return out

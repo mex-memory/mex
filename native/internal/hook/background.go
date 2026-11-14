@@ -2,6 +2,7 @@ package hook
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,8 +25,17 @@ type launcher struct {
 const launcherVersion = 1
 
 func (h home) launcher() (launcher, bool) {
-	data, err := os.ReadFile(filepath.Join(h.mex, "bin", "launcher.json"))
+	f, err := os.Open(filepath.Join(h.mex, "bin", "launcher.json"))
 	if err != nil {
+		return launcher{}, false
+	}
+	defer f.Close()
+	stat, err := f.Stat()
+	if err != nil || !stat.Mode().IsRegular() || stat.Size() > 4096 {
+		return launcher{}, false
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil || len(data) > 4096 {
 		return launcher{}, false
 	}
 	var l launcher

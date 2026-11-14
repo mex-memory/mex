@@ -114,7 +114,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
     || commandName === "edit" || commandName === "wrong" || commandName === "forget"
     || commandName === "hints"
-    || commandName === "skills";
+    || commandName === "skills" || commandName === "install" || commandName === "uninstall";
 }
 
 async function runBrowserCommand(options: { port?: number; open: boolean; mode?: string; setup?: boolean }): Promise<void> {
@@ -167,8 +167,12 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
   if (cliStarted && !isFirstRunNoticeExemptCommand(family === program ? undefined : family.name())) showFirstRunNotice();
   cliTelemetry.start(actionCommand);
 });
-program.hook("postAction", async () => {
+program.hook("postAction", async (_thisCommand, actionCommand) => {
   await cliTelemetry.finish(process.exitCode);
+  let family = actionCommand;
+  while (family.parent && family.parent !== program) family = family.parent;
+  // Uninstall must not recreate the launcher or restart pending jobs.
+  if (family.name() === "uninstall" || (family.name() === "install" && family.opts().dryRun)) return;
   // Keep the hook shim's launcher pointing at this CLI.
   try {
     const { writeLauncher } = await import("./hooks/shim/launcher.js");
@@ -195,12 +199,35 @@ program
       showFirstRunNotice();
       const { showUpdateNotice } = await import("./telemetry/updates.js");
       await showUpdateNotice();
+      if (process.env.MEX_INSTALL_AUTO !== "0" && process.env.MEX_BACKGROUND !== "1") {
+        const { runInstall } = await import("./install/cli.js");
+        await runInstall();
+      }
       const { resolveDefaultEntry } = await import("./setup/entry.js");
       if (await resolveDefaultEntry() === "hub") await runBrowserCommand(opts);
       else await runSetupCommand(opts);
     } catch (error) {
       await reportSetupCommandError(error);
     }
+  });
+
+program.command("install")
+  .description("Install or update machine-wide agent hooks; no tracked files are edited")
+  .option("--dry-run", "List installation changes without writing")
+  .option("--json", "Print a machine-readable summary without settings contents")
+  .action(async (options: { dryRun?: boolean; json?: boolean }) => {
+    try { const { runInstall } = await import("./install/cli.js"); await runInstall(options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+
+program.command("uninstall")
+  .description("Restore changes made by MEX, keeping data unless --purge is given")
+  .option("--dry-run", "List the recorded changes without writing")
+  .option("--purge", "Also delete MEX data after hooks are safely removed")
+  .option("--json", "Print a machine-readable restoration summary")
+  .action(async (options: { dryRun?: boolean; purge?: boolean; json?: boolean }) => {
+    try { const { runUninstall } = await import("./install/cli.js"); await runUninstall(options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
   });
 
 program
