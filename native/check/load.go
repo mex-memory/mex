@@ -46,7 +46,11 @@ func PersonalDirectories(mexHome, projectID string) (notes, hints string) {
 // LoadAll reads a checkout's team entries and its project's notes and hints.
 // A missing folder holds nothing.
 func LoadAll(checkout, mexHome, projectID string) ([]Loaded, error) {
-	team, err := LoadStore(TeamDirectory(checkout), Team, 1)
+	return loadAll(checkout, mexHome, projectID, nil)
+}
+
+func loadAll(checkout, mexHome, projectID string, cache *entryCache) ([]Loaded, error) {
+	team, err := loadStore(TeamDirectory(checkout), Team, 1, cache)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +58,7 @@ func LoadAll(checkout, mexHome, projectID string) ([]Loaded, error) {
 	if projectID != "" && mexHome != "" {
 		notes, hints := PersonalDirectories(mexHome, projectID)
 		for _, store := range []struct{ dir, level string }{{notes, Personal}, {hints, Hint}} {
-			found, err := LoadStore(store.dir, store.level, 0)
+			found, err := loadStore(store.dir, store.level, 0, cache)
 			if err != nil {
 				return nil, err
 			}
@@ -70,6 +74,10 @@ func LoadAll(checkout, mexHome, projectID string) ([]Loaded, error) {
 // LoadStore reads <id>.md files in dir, and in subfolders down to depth.
 // Links and other non-regular files are skipped, never followed.
 func LoadStore(dir, level string, depth int) ([]Loaded, error) {
+	return loadStore(dir, level, depth, nil)
+}
+
+func loadStore(dir, level string, depth int, cache *entryCache) ([]Loaded, error) {
 	var out []Loaded
 	var walk func(string, int) error
 	walk = func(folder string, left int) error {
@@ -98,7 +106,11 @@ func LoadStore(dir, level string, depth int) ([]Loaded, error) {
 			if len(out) >= MaxEntries {
 				return ErrTooMany
 			}
-			out = append(out, readEntry(full, level))
+			var info os.FileInfo
+			if cache != nil {
+				info, _ = child.Info()
+			}
+			out = append(out, cache.read(full, level, info))
 		}
 		return nil
 	}

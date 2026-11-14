@@ -666,6 +666,8 @@ missing or unreadable file means "MEX is off here", which is the safe answer.
 | `<MEX home>/bin/launcher.json` | Node CLI, after every command (`src/hooks/shim/launcher.ts`), only when the home exists and the entry is a built `.js` | the shim | `{"version":1,"node","entry"}`: how to start `node <entry> __ensure-background` |
 | `<MEX home>/heartbeats/<agent>/<session>` | the shim | `mex-hook --status` | one small JSON file per session; its modification time is the last hook call; pruned after 7 days at session start |
 | `<record directory>/index-checkouts/<key>.json` | Node, file index | the shim | see the file index contract |
+| `<record directory>/check-entries/<key>.json` | the check evaluator (the shim's free stage, `mex check`) | the check evaluator | a cache of parsed entry files by path, size and modification time (`docs/design/knowledge-checks.md`); `key` is the short hash of the checkout root; safe to delete |
+| `<record directory>/check-entries/<key>.stage` | the shim, when the free stage hands its rest to a detached run | the shim | empty lock file: one detached `--check-stage` run per checkout; older than 40 s means its run died |
 
 The checkout lookup follows `RecordWriter.checkout`: walk up from the folder of
 the touched file (or the session's `cwd`), accept a registration found there,

@@ -65,6 +65,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return 0
 		case "--check-stage":
 			return checkStage(args[1:], getenv)
+		case "--check-run":
+			return checkRun(stdin, stdout)
 		}
 	}
 

@@ -92,21 +92,31 @@ describe("CLI smoke test against a fixture scaffold", { timeout: testTimeoutMs }
     expect(result.stdout.trim()).toBe(pkg.version);
   });
 
-  it("check reports a healthy scaffold with exit code 0", () => {
+  it("check --legacy reports a healthy scaffold with exit code 0", () => {
     const root = project();
     scaffold(root);
 
-    const result = mex(root, ["check"]);
+    const result = mex(root, ["check", "--legacy"]);
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("100/100");
   });
 
-  it("check --json emits a parseable report with the expected shape", () => {
+  it("check with no entries says so and points an old scaffold at --legacy", () => {
     const root = project();
     scaffold(root);
 
-    const result = mex(root, ["check", "--json"]);
+    const result = mex(root, ["check"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("No knowledge entries here yet.");
+    expect(result.stdout).toContain("mex check --legacy");
+  });
+
+  it("check --legacy --json emits a parseable report with the expected shape", () => {
+    const root = project();
+    scaffold(root);
+
+    const result = mex(root, ["check", "--legacy", "--json"]);
     expect(result.status).toBe(0);
     const report = JSON.parse(result.stdout) as { score?: number; issues?: unknown[] };
     expect(report.score).toBe(100);

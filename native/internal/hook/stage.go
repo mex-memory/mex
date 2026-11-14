@@ -106,23 +106,54 @@ func freeStage(ev contract.Event, h home, recordDirectory string) {
 		Checkout: ev.Checkout, ProjectID: ev.ProjectID, MexHome: h.mex, RecordDirectory: recordDirectory,
 		Store: hooks, Paths: paths, Deadline: time.Now().Add(budget),
 	})
-	if err == nil && report.Unfinished {
-		startDetachedStage(ev.ProjectID, ev.Checkout)
+	if err == nil && report.Unfinished && takeStageLock(recordDirectory, ev.Checkout, time.Now()) && !startDetachedStage(ev.ProjectID, ev.Checkout) {
+		_ = os.Remove(stageLockPath(recordDirectory, ev.Checkout))
 	}
 }
 
-// startDetachedStage runs `mex-hook --check-stage` in the background.
-var startDetachedStage = func(projectID, checkout string) {
+// stageLockPath marks a detached run in progress for one checkout, so a
+// burst of hooks that each run out of budget starts one run, not many.
+func stageLockPath(recordDirectory, checkout string) string {
+	return strings.TrimSuffix(check.EntryCachePath(recordDirectory, checkout), ".json") + ".stage"
+}
+
+// takeStageLock claims the detached run. A lock older than a detached run
+// can last belongs to a run that died, and is taken over.
+func takeStageLock(recordDirectory, checkout string, now time.Time) bool {
+	lock := stageLockPath(recordDirectory, checkout)
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		return false
+	}
+	for try := 0; try < 2; try++ {
+		file, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = file.Close()
+			return true
+		}
+		info, statErr := os.Stat(lock)
+		if statErr != nil || now.Sub(info.ModTime()) < stageBudgetDetached+10*time.Second {
+			return false
+		}
+		_ = os.Remove(lock)
+	}
+	return false
+}
+
+// startDetachedStage runs `mex-hook --check-stage` in the background and
+// says whether it started.
+var startDetachedStage = func(projectID, checkout string) bool {
 	self, err := os.Executable()
 	if err != nil {
-		return
+		return false
 	}
 	cmd := exec.Command(self, "--check-stage", projectID, checkout)
 	cmd.Dir = checkout
 	detach(cmd)
-	if cmd.Start() == nil {
-		_ = cmd.Process.Release()
+	if cmd.Start() != nil {
+		return false
 	}
+	_ = cmd.Process.Release()
+	return true
 }
 
 // checkStage is `mex-hook --check-stage <project> <checkout>`: one full run
@@ -139,6 +170,7 @@ func checkStage(args []string, getenv Env) int {
 	if recordDirectory == "" {
 		return 0
 	}
+	defer os.Remove(stageLockPath(recordDirectory, args[1]))
 	hooks, err := localrecord.OpenHooks(hooksLocation(h, recordDirectory))
 	if err != nil {
 		return 0
