@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"path"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -186,7 +185,7 @@ func resolvePointer(doc any, pointer string) (value any, found bool) {
 	return current, true
 }
 
-var makeTarget = regexp.MustCompile(`^([A-Za-z0-9_.%/-]+(?:\s+[A-Za-z0-9_.%/-]+)*)\s*::?(?:[^=]|$)`)
+var makeTarget = lazy(`^([A-Za-z0-9_.%/-]+(?:\s+[A-Za-z0-9_.%/-]+)*)\s*::?(?:[^=]|$)`)
 
 // makeTargets lists the rule names a Makefile defines.
 func makeTargets(data []byte) map[string]bool {
@@ -195,7 +194,7 @@ func makeTargets(data []byte) map[string]bool {
 		if strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if m := makeTarget.FindStringSubmatch(line); m != nil {
+		if m := makeTarget().FindStringSubmatch(line); m != nil {
 			for _, name := range strings.Fields(m[1]) {
 				targets[name] = true
 			}

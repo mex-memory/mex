@@ -1,15 +1,14 @@
 package check
 
 import (
-	"regexp"
 	"strings"
 )
 
 var (
-	atxHeading    = regexp.MustCompile(`^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$`)
-	setextHeading = regexp.MustCompile(`^ {0,3}(=+|-+)[ \t]*$`)
-	fence         = regexp.MustCompile("^ {0,3}(```+|~~~+)")
-	whitespace    = regexp.MustCompile(`\s+`)
+	atxHeading    = lazy(`^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$`)
+	setextHeading = lazy(`^ {0,3}(=+|-+)[ \t]*$`)
+	fence         = lazy("^ {0,3}(```+|~~~+)")
+	whitespace    = lazy(`\s+`)
 )
 
 type heading struct {
@@ -23,7 +22,7 @@ func headings(lines []string) []heading {
 	var out []heading
 	inFence := ""
 	for i, line := range lines {
-		if m := fence.FindStringSubmatch(line); m != nil {
+		if m := fence().FindStringSubmatch(line); m != nil {
 			marker := m[1][:3]
 			if inFence == "" {
 				inFence = marker
@@ -35,11 +34,11 @@ func headings(lines []string) []heading {
 		if inFence != "" {
 			continue
 		}
-		if m := atxHeading.FindStringSubmatch(line); m != nil {
+		if m := atxHeading().FindStringSubmatch(line); m != nil {
 			out = append(out, heading{line: i, level: len(m[1]), text: strings.TrimSpace(m[2])})
 			continue
 		}
-		if i > 0 && strings.TrimSpace(lines[i-1]) != "" && setextHeading.MatchString(line) {
+		if i > 0 && strings.TrimSpace(lines[i-1]) != "" && setextHeading().MatchString(line) {
 			if len(out) > 0 && out[len(out)-1].line == i-1 {
 				continue
 			}
@@ -63,7 +62,7 @@ func section(data []byte, title string) (string, bool) {
 			continue
 		}
 		start := h.line + 1
-		if start < len(lines) && setextHeading.MatchString(lines[start]) && !atxHeading.MatchString(lines[h.line]) {
+		if start < len(lines) && setextHeading().MatchString(lines[start]) && !atxHeading().MatchString(lines[h.line]) {
 			start++
 		}
 		end := len(lines)
@@ -84,5 +83,5 @@ func section(data []byte, title string) (string, bool) {
 // textHash hashes prose with whitespace runs collapsed, so re-wrapping,
 // indentation and blank lines don't count as a change.
 func textHash(text string) string {
-	return hashBytes([]byte(strings.TrimSpace(whitespace.ReplaceAllString(text, " "))))
+	return hashBytes([]byte(strings.TrimSpace(whitespace().ReplaceAllString(text, " "))))
 }
