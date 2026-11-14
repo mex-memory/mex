@@ -245,6 +245,11 @@ export async function uninstallAgents(options: LocationOptions & { purge?: boole
           try { process.kill(Number(running.pid), 0); result.conflicts.push("Background process is stopping; retry --purge after it exits."); }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") result.conflicts.push("Cannot confirm the background process has stopped."); }
         }
+        const models = writer.db.prepare("SELECT DISTINCT pid FROM model_batches WHERE state IN ('queued','running')").all();
+        for (const model of models) {
+          try { process.kill(Number(model.pid), 0); result.conflicts.push("Model work is active; retry --purge after it finishes."); break; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") { result.conflicts.push("Cannot confirm model work has stopped."); break; } }
+        }
       }
     });
   } finally { writer.close(); }

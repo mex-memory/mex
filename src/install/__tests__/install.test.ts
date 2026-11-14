@@ -9,6 +9,8 @@ import { installAgents, installationChanges, recoveryFile, uninstallAgents, type
 import { applyOrphanRecovery } from "../recovery.js";
 import { readSnapshot } from "../files.js";
 import { EVENTS, installSettings, parseSettings } from "../settings.js";
+import { openRecord } from "../../record/index.js";
+import { enqueueModelBatch, claimModelBatch, settleModelBatch } from "../../model-runner/budget-queue.js";
 
 const temps: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const path of temps.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -270,6 +272,19 @@ describe("machine-wide hook installation", () => {
     await expect(uninstallAgents({ home: f.home, purge: true })).rejects.toThrow("link or junction");
     expect(existsSync(f.home)).toBe(true);
     expect(existsSync(f.repo)).toBe(true);
+  });
+  it("keeps the record while model work owns it, then permits purge after it finishes", async () => {
+    const f = fixture(); await installAgents(f.options);
+    const writer = openRecord({ home: f.home });
+    try {
+      const batch = enqueueModelBatch(writer, { agent: "claude", model: "opus", projectPath: f.repo });
+      expect(claimModelBatch(writer, batch)).toBeUndefined();
+      const held = await uninstallAgents({ home: f.home, purge: true });
+      expect(held.purged).toBe(false); expect(held.conflicts).toContain("Model work is active; retry --purge after it finishes.");
+      expect(existsSync(writer.location.record)).toBe(true);
+      settleModelBatch(writer, batch, { input: 1, cache_read: 0, cache_write: 0, output: 1, model: "unknown", estimated: false });
+    } finally { writer.close(); }
+    expect((await uninstallAgents({ home: f.home, purge: true })).purged).toBe(true);
   });
 
   it("provides standalone settings recovery after the CLI has been removed", async () => {

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { JOB_STATES, type JobState, type RecordWriter, type RecordReader } from "./index.js";
 import { recordCounterIn } from "../telemetry/store.js";
 import { automaticWorkEnabled } from "../controls/index.js";
+import { ModelWaitError, modelJobReady, recoverModelBatches, withModelJob } from "../model-runner/budget-queue.js";
 
 /**
  * One job model for the whole machine, stored in record.db `jobs` / `job_results`.
@@ -192,12 +193,13 @@ export function recoverInterruptedJobs(writer: RecordWriter, self: string, alive
 
 /** Waiting jobs whose condition cleared go back to the queue. */
 export function requeueReadyJobs(writer: RecordWriter): number {
+  recoverModelBatches(writer);
   const waiting = writer.db.prepare("SELECT * FROM jobs WHERE state='waiting'").all() as unknown as JobRow[];
   let moved = 0;
   for (const job of waiting) {
     const kind = kinds.get(job.kind);
     let ready = false;
-    try { ready = kind ? (kind.ready ? kind.ready(job) : true) : false; } catch { ready = false; }
+    try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job) : true) : false; } catch { ready = false; }
     if (!ready) continue;
     inTransaction(writer.db, () => {
       const current = getJob(writer.db, job.id);
@@ -259,20 +261,28 @@ export async function runOneBatch(writer: RecordWriter, self: string): Promise<B
   const kind = kinds.get(job.kind)!;
   let result: BatchResult | undefined;
   let failure: string | undefined;
+  let modelHold: ModelWaitError | undefined;
   let usage: "jobs.completed" | "jobs.failed" | undefined;
   try {
-    result = await kind.runBatch({
+    result = await withModelJob({ jobId: job.id, batch: job.batch, projectId: job.project_id, recordHome: writer.location.home }, () => kind.runBatch({
       job, writer,
       params: JSON.parse(job.params || "{}"),
       checkpoint: job.checkpoint === null ? undefined : JSON.parse(job.checkpoint),
-    });
+    }));
   } catch (error) {
-    failure = plainCause(error);
+    if (error instanceof ModelWaitError) modelHold = error;
+    else failure = plainCause(error);
   }
   inTransaction(writer.db, () => {
     const current = getJob(writer.db, job.id);
     // Taken over while this batch ran (this runner was presumed dead): discard the batch.
     if (!current || current.owner !== self || current.state !== "running") return;
+    if (modelHold) {
+      if (current.request === "cancel") setState(writer.db, current, "cancelled", { reason: null });
+      else if (current.request === "pause") setState(writer.db, current, "paused", { request: null });
+      else setState(writer.db, current, "waiting", { reason: modelHold.message });
+      return;
+    }
     if (failure !== undefined) {
       const failures = current.reason === failure ? current.failures + 1 : 1;
       if (failures >= MAX_SAME_FAILURES) {
