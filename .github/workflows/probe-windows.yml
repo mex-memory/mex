@@ -1,0 +1,51 @@
+name: Codex hook command timing
+
+on:
+  workflow_dispatch:
+    inputs:
+      shell:
+        description: PowerShell executable to measure (command-path proxy only)
+        required: true
+        type: choice
+        default: powershell.exe
+        options: [powershell.exe, pwsh.exe]
+
+permissions:
+  contents: read
+
+jobs:
+  command-timing:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      MEX_TELEMETRY: '0'
+      MEX_ACCEPTANCE_BASE: c2883d9343be46696ff20c1a8efebe0761239702
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - run: npm install --global @openai/codex@0.167.2 --no-audit --no-fund
+      - run: node --test scripts/acceptance/codex-command-timing.test.mjs
+      - name: Measure the production-generated command without a model call
+        shell: pwsh
+        env:
+          TIMING_SHELL: ${{ inputs.shell }}
+        run: |
+          $shellPath = (Get-Command $env:TIMING_SHELL -CommandType Application -ErrorAction Stop).Source
+          node scripts/acceptance/codex-command-timing.mjs test-results/codex-command-timing $shellPath
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: codex-command-timing-${{ inputs.shell }}
+          path: test-results/codex-command-timing/timing.json
+          if-no-files-found: error
+          retention-days: 14
