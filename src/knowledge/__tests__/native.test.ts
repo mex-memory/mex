@@ -33,7 +33,7 @@ describe("rebuilding native files", () => {
     const result = rebuildNative({ projectPath: root });
     expect(result.agents).toEqual(["claude-code"]);
     expect(result.written?.sort()).toEqual([".claude/rules/mex-local.md", ".claude/rules/mex.md"]);
-    expect(readFileSync(join(root, ".claude/rules/mex.md"), "utf8")).toContain("<!-- mx_team01 -->");
+    expect(readFileSync(join(root, ".claude/rules/mex.md"), "utf8")).toContain("<!-- mex:mx_team01 -->");
     expect(readFileSync(join(root, ".claude/rules/mex-local.md"), "utf8")).toContain("small commits");
     expect(existsSync(join(root, "CLAUDE.md"))).toBe(false);
   });
