@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -50,6 +50,18 @@ describe("sections", () => {
 });
 
 describe("rule files", () => {
+  it("does not import a linked file or a tracked path behind a redirected folder", () => {
+    const outside = repo({ "CLAUDE.md": "# Private\n\nOutside instructions.\n" });
+    const root = repo({ "apps/api/CLAUDE.md": "# API\n\nOriginal instructions.\n" });
+    execFileSync("git", ["-C", root, "add", "."]);
+    rmSync(join(root, "apps/api"), { recursive: true });
+    try {
+      symlinkSync(outside, join(root, "apps/api"), process.platform === "win32" ? "junction" : "dir");
+      symlinkSync(join(outside, "CLAUDE.md"), join(root, "AGENTS.md"));
+    } catch { return; }
+    expect(scanRuleFiles(root).files).toEqual([]);
+    expect(scanRuleFiles(root).entries).toEqual([]);
+  });
   it("knows each format", () => {
     expect(ruleFormat("CLAUDE.md")).toBe("claude");
     expect(ruleFormat("apps/api/AGENTS.md")).toBe("agents");
