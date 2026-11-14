@@ -124,3 +124,22 @@ function complete(dir: string, root: string, state: ShareState, plan: SharePlan 
   if (run.pr) result.pr = openPr(root, { branch: state.branch, baseName: plan?.baseName ?? "main" }, state.ids.length);
   return result;
 }
+
+/** Finish a share that was killed: rewrite what's missing, commit, clean up. */
+export function finishShare(options: KnowledgeOptions, run: ShareRun = {}): ShareResult {
+  const { dir, root } = projectDirectory(options);
+  const state = readShareState(dir);
+  if (!state) throw new KnowledgeError("SHARE_NONE", "No unfinished share.");
+  if (state.step === "started" && !existsSync(state.worktree)) {
+    clearShareState(dir);
+    throw new KnowledgeError("SHARE_NONE", "That share had created nothing yet; run mex share again.");
+  }
+  // Rebuild the plan from the same notes, minus any that changed since.
+  let plan: SharePlan | undefined;
+  if (ORDER.indexOf(state.step) < ORDER.indexOf("written")) {
+    plan = prepareShare(options, { now: run.now });
+    plan.entries = plan.entries.filter(e => state.ids.includes(e.entry.mex.id));
+    if (plan.entries.length !== state.ids.length) plan = undefined;
+  }
+  return complete(dir, root, state, plan, run);
+}
