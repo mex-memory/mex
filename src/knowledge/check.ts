@@ -76,14 +76,21 @@ export function runNative(binary: string, request: Record<string, unknown>): Nat
 }
 
 /** Current, read-only checks for publication decisions. A cached held verdict
- * cannot authorize generating or sharing a claim after its source changed. */
+ * cannot authorize generating or sharing a claim after its source changed.
+ * Keys include the store level: a personal copy cannot prove a team copy. */
 export function currentVerdicts(options: KnowledgeOptions, project: KnowledgeProject): Map<string, Verdict> | undefined {
   const binary = nativeBinary(options.env);
   if (!binary) return undefined;
   try {
     const report = runNative(binary, { action: "evaluate", checkout: project.root, project_id: project.projectId,
       mex_home: project.location.home, record_directory: project.location.directory, store: false });
-    return new Map((report.items ?? []).map(item => [item.id, item.verdict]));
+    const verdicts = new Map<string, Verdict>();
+    for (const item of report.items ?? []) {
+      const key = `${item.level}/${item.id}`;
+      // Ambiguous duplicate ids within one store never authorize publication.
+      verdicts.set(key, verdicts.has(key) ? "unknown" : item.verdict);
+    }
+    return verdicts;
   } catch { return undefined; }
 }
 

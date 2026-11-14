@@ -26,7 +26,7 @@ describe("layer A selection", () => {
       team(entry("mx_chng01")),
       team(entry("mx_long01", {}, "x".repeat(700))),
       team(entry("mx_gone01", { status: "retired", retired: { reason: "old", by: "me", at: "2026-11-15" } })),
-    ], new Map([["mx_brok01", "broken"], ["mx_chng01", "changed"], ["mx_good01", "held"]]));
+    ], new Map([["team/mx_brok01", "broken"], ["team/mx_chng01", "changed"], ["team/mx_good01", "held"]]));
     expect(selected.map(c => c.entry.mex.id)).toEqual(["mx_good01"]);
     expect(Object.fromEntries(skipped.map(s => [s.id, s.reason]))).toEqual({
       mx_fact01: "a fact isn't loaded every session", mx_mine01: "evidence too weak", mx_file01: "scoped to files, not an area",
