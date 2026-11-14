@@ -5,7 +5,7 @@
  * never pushes, except when you ask for a pull request with --pr.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
@@ -142,4 +142,38 @@ export function finishShare(options: KnowledgeOptions, run: ShareRun = {}): Shar
     if (plan.entries.length !== state.ids.length) plan = undefined;
   }
   return complete(dir, root, state, plan, run);
+}
+
+/** Files a share writes; nothing else in its worktree is ever deleted. */
+const OWN = /^(?:\.mex\/(?:learned\/(?:[a-z]+\/)?mx_[a-z0-9]{6,64}\.md|config\.json|sources\.json|native\.json)|\.claude\/rules\/mex[\w-]*\.md|(?:[\w.-]+\/)*AGENTS\.md)$/u;
+
+/** Undo the share's own writes in its temporary worktree, so git removes it without forcing. */
+function undoOwnWrites(worktree: string): void {
+  const status = git(worktree, "status", "--porcelain", "--untracked-files=all", "-z");
+  for (const record of status.split("\0").filter(Boolean)) {
+    const code = record.slice(0, 2), path = record.slice(3);
+    if (!OWN.test(path)) continue;
+    const full = join(worktree, ...path.split("/"));
+    if (code === "??") {
+      if (path.endsWith("AGENTS.md") && !readFileSync(full, "utf8").includes("<!-- mex:generated")) continue;
+      unlinkSync(full);
+    } else git(worktree, "checkout", "-q", "--", path);
+  }
+}
+
+/** Drop an unfinished share: remove its worktree without forcing, and its branch only if it holds nothing. */
+export function discardShare(options: KnowledgeOptions): { branch: string; branchKept: boolean } {
+  const { dir, root } = projectDirectory(options);
+  const state = readShareState(dir);
+  if (!state) throw new KnowledgeError("SHARE_NONE", "No unfinished share.");
+  if (existsSync(state.worktree)) undoOwnWrites(state.worktree);
+  removeWorktree(root, state.worktree);
+  let branchKept = false;
+  try {
+    const tip = git(root, "rev-parse", "--verify", "--quiet", `refs/heads/${state.branch}`);
+    if (tip === state.base) git(root, "branch", "-d", state.branch);
+    else branchKept = true;
+  } catch { /* no branch was made */ }
+  clearShareState(dir);
+  return { branch: state.branch, branchKept };
 }
