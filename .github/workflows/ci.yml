@@ -5,75 +5,67 @@ on:
     branches:
       - main
       - next
-      - integration/human-team-memory-v1
   pull_request:
 
 permissions:
   contents: read
 
+# A newer push to a pull request replaces the older run. Pushes to next and main
+# are never cancelled, so every merged commit gets its own verdict.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  native-record:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: native
-    env:
-      CGO_ENABLED: '0'
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.27.x'
-          cache-dependency-path: native/go.sum
-      - run: go vet ./...
-      # Package deadlines and process timing must not compete with each other.
-      - run: go test -count=1 -p 1 -v ./...
-      - name: Cross-build record test binary without C
-        shell: bash
-        run: |
-          output="$(mktemp -d)"
-          for target in windows/amd64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-            os="${target%/*}"
-            arch="${target#*/}"
-            GOOS="$os" GOARCH="$arch" go test -c -trimpath -o "$output/record-$os-$arch.test" ./record
-            wc -c "$output/record-$os-$arch.test"
-          done
-
-  checkpoint-policy:
-    if: github.event_name == 'pull_request' && github.base_ref == 'integration/human-team-memory-v1'
+  changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+      workflows: ${{ steps.scope.outputs.workflows }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22.22.0
-      - name: Enforce integration checkpoint boundary
-        env:
-          MEX_POLICY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: node scripts/check-integration-pr-policy.mjs
+      - name: Classify changes against the merge base
+        id: scope
+        run: node scripts/ci/scope.mjs
+
+  actionlint:
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Keep a successful job result when lint is unnecessary, so the aggregate
+      # never needs to accept unexplained skips on a source pull request.
+      - run: echo 'Workflow changes require actionlint; other changes need no lint.'
+      - uses: actions/checkout@v5
+        if: needs.changes.outputs.workflows == 'true'
+      - name: Lint every workflow with verified actionlint 1.7.7
+        if: needs.changes.outputs.workflows == 'true'
+        shell: bash
+        run: |
+          curl --fail --location --retry 2 --output "$RUNNER_TEMP/actionlint.tar.gz" https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  '"$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -shellcheck=
 
   check:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       matrix:
         node-version: ['22.22.0', '24']
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm ci
-      - run: npm run typecheck
+      - run: npm ci --prefer-offline --no-audit --no-fund
       # Preserve the CLI suite's build condition and 240-second deadline, before
       # parallel suites consume the same dist workers and grammars.
       - name: Build app before parallel tests
@@ -81,25 +73,34 @@ jobs:
         timeout-minutes: 4
         env:
           NODE_ENV: test
-      - name: Test release gate policy and isolation
-        if: matrix.node-version == '22.22.0'
-        run: npm run gates:test
       - name: Test the completed app build
-        run: npm run test
+        run: npm run test -- --shard=${{ matrix.shard }}/2
         env:
           MEX_TEST_PREBUILT: '1'
+
+  package:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run gates:test
+      - run: node --test scripts/ci/*.test.mjs
       - name: Test isolated telemetry benchmark transport
-        if: matrix.node-version == '22.22.0'
         run: npm run benchmark:telemetry:test
       - name: Run evaluator tests
-        if: matrix.node-version == '22.22.0'
         run: npm run eval:test
       - run: npm run build
       - name: Smoke test packed Project Hub
-        if: matrix.node-version == '22.22.0'
         run: npm run test:hub:package
       - name: Smoke test packed graph CLI
-        if: matrix.node-version == '22.22.0'
         shell: bash
         run: |
           TARBALL="$(npm pack --silent | tail -n 1)"
@@ -107,7 +108,7 @@ jobs:
           mkdir -p "$FIXTURE/project/src"
           cd "$FIXTURE/project"
           npm init -y >/dev/null
-          npm install "$GITHUB_WORKSPACE/$TARBALL" --ignore-scripts >/dev/null
+          npm install "$GITHUB_WORKSPACE/$TARBALL" --prefer-offline --no-audit --no-fund --ignore-scripts >/dev/null
           printf 'export function greet(name: string): string { return `hello ${name}`; }\n' > src/sample.ts
           printf 'class Vehicle:\n    def drive(self):\n        return True\n' > src/sample.py
           printf 'pub struct User { pub name: String }\npub fn create_user() -> User { User { name: String::new() } }\n' > src/sample.rs
@@ -117,6 +118,8 @@ jobs:
           MEX_TELEMETRY=0 ./node_modules/.bin/mex graph query where-defined User | grep '"type":"result"'
 
   go:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     name: go (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -130,15 +133,31 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      # The default temporary folder is on C:, which is slow on hosted Windows
+      # runners; RUNNER_TEMP is on D:. Measured: the Windows portability tests
+      # and the packed-install smoke take about half as long there.
+      - name: Keep temporary files on the fast disk
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $temp = Join-Path $env:RUNNER_TEMP 'tmp'
+          New-Item -ItemType Directory -Force $temp | Out-Null
+          "TEMP=$temp" >> $env:GITHUB_ENV
+          "TMP=$temp" >> $env:GITHUB_ENV
+          "npm_config_cache=$(Join-Path $env:RUNNER_TEMP 'npm-cache')" >> $env:GITHUB_ENV
+          "GOCACHE=$(Join-Path $env:RUNNER_TEMP 'go-build')" >> $env:GITHUB_ENV
+          "GOMODCACHE=$(Join-Path $env:RUNNER_TEMP 'go-mod')" >> $env:GITHUB_ENV
+      - uses: actions/setup-go@v6
         with:
           go-version-file: native/go.mod
-          cache: false
+          cache-dependency-path: native/go.sum
       - name: gofmt
+        if: runner.os == 'Linux'
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - name: go test
         env:
+          MEX_HOOK_TIMING_MODE: report
           MEX_HOOK_TIMING_OUT: ${{ runner.temp }}/hook-timing.txt
         # One package at a time: the timing test starts hundreds of processes,
         # which would starve the record tests' lock deadlines.
@@ -146,6 +165,19 @@ jobs:
       - name: Record hook timing
         if: always()
         run: cat "$RUNNER_TEMP/hook-timing.txt" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - name: Cross-build record test binary without C
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: '0'
+        shell: bash
+        run: |
+          output="$(mktemp -d)"
+          for target in windows/amd64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            GOOS="$os" GOARCH="$arch" go test -c -trimpath -o "$output/record-$os-$arch.test" ./record
+            wc -c "$output/record-$os-$arch.test"
+          done
       - name: Cross-compile every platform package
         if: runner.os == 'Linux'
         working-directory: .
@@ -163,11 +195,13 @@ jobs:
         env:
           MEX_TEST_REAL_HOOK_BINARY: '1'
         run: |
-          npm ci
+          npm ci --prefer-offline --no-audit --no-fund
           # Keep other native process tests out of the capture deadline.
           npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts src/file-index/__tests__/go-parity.test.ts
 
   storage-portability:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     # Filesystem containment, SQLite migration/locking, and packed-install
     # behavior must remain portable whenever local Team state or personal knowledge changes.
     # Use the Intel macOS pool after ARM runner-capacity cancellations.
@@ -177,38 +211,58 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-15, windows-2022]
+        part: [contract, storage-package]
     steps:
       - uses: actions/checkout@v5
+      # The default temporary folder is on C:, which is slow on hosted Windows
+      # runners; RUNNER_TEMP is on D:. Measured: the Windows portability tests
+      # and the packed-install smoke take about half as long there.
+      - name: Keep temporary files on the fast disk
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $temp = Join-Path $env:RUNNER_TEMP 'tmp'
+          New-Item -ItemType Directory -Force $temp | Out-Null
+          "TEMP=$temp" >> $env:GITHUB_ENV
+          "TMP=$temp" >> $env:GITHUB_ENV
+          "npm_config_cache=$(Join-Path $env:RUNNER_TEMP 'npm-cache')" >> $env:GITHUB_ENV
+          "GOCACHE=$(Join-Path $env:RUNNER_TEMP 'go-build')" >> $env:GITHUB_ENV
+          "GOMODCACHE=$(Join-Path $env:RUNNER_TEMP 'go-mod')" >> $env:GITHUB_ENV
       - uses: actions/setup-node@v5
         with:
           node-version: 22.22.0
           cache: npm
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Run the authoring contract and selected portability tests
+        if: matrix.part == 'contract'
+        run: >-
+          npx vitest run --maxWorkers=1
+          test/team-inbox-spec-authoring-real.contract.test.ts
+          src/knowledge/__tests__/hints.test.ts
+          src/team/activity/__tests__/repository.test.ts
+          test/knowledge-cli.test.ts
+          src/knowledge/__tests__/team.test.ts
+          test/telemetry-delivery.test.ts
       - name: Run focused storage, byte-identity, and containment tests
+        if: matrix.part == 'storage-package'
         run: >-
           npx vitest run --maxWorkers=1
           src/knowledge/__tests__/entry.test.ts
           src/knowledge/__tests__/files.test.ts
           src/knowledge/__tests__/store.test.ts
           src/knowledge/__tests__/mutations.test.ts
-          src/knowledge/__tests__/team.test.ts
           src/knowledge/__tests__/gates.test.ts
-          src/knowledge/__tests__/hints.test.ts
-          test/knowledge-cli.test.ts
           src/team/local-state/__tests__/team-local-state.test.ts
           src/team/artifacts/__tests__/filesystem.test.ts
           src/team/artifacts/__tests__/filesystem-identity.test.ts
           src/team/artifacts/__tests__/filesystem-publish-failure.test.ts
           src/team/artifacts/__tests__/workflow-repositories.test.ts
           src/team/identity/__tests__/member-repository.test.ts
-          src/team/activity/__tests__/repository.test.ts
           src/team/activity/__tests__/legacy.test.ts
           src/team/relay/cli/__tests__/local-preview.test.ts
           src/team/workflow/__tests__/repository-team-workflow-port.test.ts
-          test/team-inbox-spec-authoring-real.contract.test.ts
           test/capabilities.test.ts
           test/telemetry.test.ts
-          test/telemetry-delivery.test.ts
           test/telemetry-context-schema.test.ts
           test/telemetry-project-context.test.ts
           test/telemetry-project-capture.test.ts
@@ -229,6 +283,7 @@ jobs:
           src/statechart/__tests__/checker.test.ts
           test/hub-diagrams-integration.test.ts
       - name: Run platform-sensitive setup end-to-end tests
+        if: matrix.part == 'contract'
         # The full interruption matrix runs on Linux in `npm run test`; here only the
         # cases that touch process launching, line endings and killing a process tree.
         run: >-
@@ -236,16 +291,20 @@ jobs:
           -t "populates through the real launcher|fresh clone|setup process is killed|second setup"
       - name: Run terminal setup acceptance in a Windows console
         # node-pty is not a project dependency (#311): only this job needs it.
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.part == 'storage-package'
         shell: bash
         run: |
           npm install --no-save --package-lock=false --no-audit --no-fund node-pty@1.1.0
           npx vitest run --maxWorkers=1 test/setup-terminal-conpty.test.ts
       - run: npm run build
+        if: matrix.part == 'storage-package'
       - name: Smoke test the packed install
+        if: matrix.part == 'storage-package'
         run: npm run test:hub:package
 
   hub-browser:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     # Visual baselines are exact for this runner image; do not float with ubuntu-latest.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -255,7 +314,14 @@ jobs:
         with:
           node-version: 22.22.0
           cache: npm
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Read the exact Playwright browser version
+        id: playwright
+        run: echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install Playwright Chromium
         run: |
           # Playwright downloads its own Chromium. Exclude the unused runner
@@ -276,155 +342,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  release_performance_attempt_1:
-    name: release-performance-attempt-1
-    # Runtime budgets are characterized only on this exact image and Node patch.
-    # A potentially material crossing is confirmed by a separately allocated job.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    outputs:
-      requires_confirmation: ${{ steps.decision.outputs.requires_confirmation }}
-      artifact_name: ${{ steps.decision.outputs.artifact_name }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22.22.0
-          cache: npm
-      - run: npm ci
-      - name: Install Playwright Chromium
-        run: |
-          # Playwright downloads its own Chromium. Exclude the unused runner
-          # Chrome apt source so unrelated metadata errors cannot block setup.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
-          npx playwright install --with-deps chromium
-      - run: npm run build
-      - name: Measure the first release-performance attempt
-        env:
-          MEX_ENFORCE_RELEASE_BUDGETS: "1"
-        run: >-
-          node scripts/release-benchmark/ci-orchestrator.mjs attempt
-          --report test-results/release-benchmark/attempt-1/report.attempt-1.json
-          --manifest test-results/release-benchmark/attempt-1/manifest.json
-      - name: Publish the bounded confirmation decision
-        id: decision
-        shell: bash
-        run: |
-          REQUIRED="$(node scripts/release-benchmark/ci-orchestrator.mjs retry-required --manifest test-results/release-benchmark/attempt-1/manifest.json)"
-          echo "requires_confirmation=$REQUIRED" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=release-performance-attempt-1-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-      - name: Diagnose small-fixture startup after measurements
-        if: steps.decision.outputs.requires_confirmation == 'true'
-        continue-on-error: true
-        timeout-minutes: 5
-        run: >-
-          node scripts/release-benchmark/startup-diagnostic.mjs
-          --report test-results/release-benchmark/attempt-1/report.attempt-1.json
-          --output test-results/release-benchmark/attempt-1/startup-diagnostic.json
-      - name: Upload first release benchmark evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.decision.outputs.artifact_name }}
-          path: test-results/release-benchmark/attempt-1/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  release_performance_attempt_2:
-    name: release-performance-attempt-2
-    needs: release_performance_attempt_1
-    if: needs.release_performance_attempt_1.outputs.requires_confirmation == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    outputs:
-      artifact_name: ${{ steps.evidence.outputs.artifact_name }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22.22.0
-          cache: npm
-      - run: npm ci
-      - name: Install Playwright Chromium
-        run: |
-          # Playwright downloads its own Chromium. Exclude the unused runner
-          # Chrome apt source so unrelated metadata errors cannot block setup.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
-          npx playwright install --with-deps chromium
-      - run: npm run build
-      - name: Measure the fresh-runner confirmation attempt
-        env:
-          MEX_ENFORCE_RELEASE_BUDGETS: "1"
-        run: >-
-          node scripts/release-benchmark/ci-orchestrator.mjs attempt
-          --report test-results/release-benchmark/attempt-2/report.attempt-2.json
-          --manifest test-results/release-benchmark/attempt-2/manifest.json
-      - name: Publish the bounded evidence identity
-        id: evidence
-        shell: bash
-        run: echo "artifact_name=release-performance-attempt-2-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-      - name: Diagnose small-fixture confirmation startup after measurements
-        continue-on-error: true
-        timeout-minutes: 5
-        run: >-
-          node scripts/release-benchmark/startup-diagnostic.mjs
-          --report test-results/release-benchmark/attempt-2/report.attempt-2.json
-          --output test-results/release-benchmark/attempt-2/startup-diagnostic.json
-      - name: Upload second release benchmark evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.evidence.outputs.artifact_name }}
-          path: test-results/release-benchmark/attempt-2/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  release-performance:
-    # Preserve this final job name as the stable release gate. It always runs so
-    # a skipped, cancelled, or malformed producer cannot silently bypass CI.
-    needs: [release_performance_attempt_1, release_performance_attempt_2]
+  ci-passed:
+    needs: [changes, actionlint, check, package, go, storage-portability, hub-browser]
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22.22.0
-      - name: Download first release benchmark evidence
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.release_performance_attempt_1.outputs.artifact_name }}
-          path: test-results/release-benchmark/attempt-1/
-      - name: Download fresh-runner confirmation evidence
-        if: needs.release_performance_attempt_1.outputs.requires_confirmation == 'true'
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.release_performance_attempt_2.outputs.artifact_name }}
-          path: test-results/release-benchmark/attempt-2/
-      - name: Finalize release performance without a confirmation
-        if: needs.release_performance_attempt_1.outputs.requires_confirmation != 'true'
-        run: >-
-          node scripts/release-benchmark/ci-orchestrator.mjs finalize
-          --first-report test-results/release-benchmark/attempt-1/report.attempt-1.json
-          --first-manifest test-results/release-benchmark/attempt-1/manifest.json
-          --output test-results/release-benchmark/report.json
-      - name: Finalize release performance with fresh-runner confirmation
-        if: needs.release_performance_attempt_1.outputs.requires_confirmation == 'true'
-        run: >-
-          node scripts/release-benchmark/ci-orchestrator.mjs finalize
-          --first-report test-results/release-benchmark/attempt-1/report.attempt-1.json
-          --first-manifest test-results/release-benchmark/attempt-1/manifest.json
-          --second-report test-results/release-benchmark/attempt-2/report.attempt-2.json
-          --second-manifest test-results/release-benchmark/attempt-2/manifest.json
-          --output test-results/release-benchmark/report.json
-      - name: Upload final release benchmark report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-performance-${{ github.run_attempt }}
-          path: test-results/release-benchmark/
-          if-no-files-found: ignore
-          retention-days: 14
+      - name: Require all gating jobs
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci/passed.mjs

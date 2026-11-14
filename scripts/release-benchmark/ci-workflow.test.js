@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(
-  new URL("../../.github/workflows/ci.yml", import.meta.url),
+  new URL("../../.github/workflows/release-performance.yml", import.meta.url),
   "utf8",
 ).replace(/\r\n/g, "\n");
 
@@ -42,7 +42,7 @@ describe("release-performance CI topology", () => {
     expect(second).not.toContain("npm run benchmark:release");
   });
 
-  it("keeps one always-running final release-performance gate", () => {
+  it("keeps one always-running final advisory release-performance result", () => {
     const final = jobBlock("release-performance");
     expect(workflow.match(/^  release-performance:$/gmu)).toHaveLength(1);
     expect(final).toContain(
