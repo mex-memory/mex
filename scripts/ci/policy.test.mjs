@@ -103,5 +103,7 @@ test('statechart qualification includes every skill surface and excludes ordinar
   for (const path of ['src/statechart/checker.ts', 'skills/mex-statechart/upstream/scripts/lib.mjs', '.claude/skills/mex-statechart/SKILL.md', '.agents/skills/mex-statechart/SKILL.md', 'packages/hub-contracts/src/statechart.ts', 'packages/hub-web/src/pages/DiagramsPage.tsx', 'packages/hub-web/src/components/StatechartCanvas.tsx', 'scripts/statechart-pack-smoke.mjs', 'vitest.statechart.config.ts', 'package.json', 'package-lock.json', '.github/workflows/statechart-checker.yml']) assert.equal(triggers(path), true, path);
   for (const path of ['docs/extractors.md', 'src/knowledge/store.ts', 'packages/hub-web/src/pages/RelaysPage.tsx', 'src/hub/setup/engine.ts', 'packages/hub-web/src/styles/relay.module.css']) assert.equal(triggers(path), false, path);
   assert.deepEqual(workflow.on.push.branches, ['main', 'next']);
-  assert.equal(workflow.concurrency['cancel-in-progress'], true);
+  // Superseded pull request runs are cancelled; pushes to next/main never are.
+  assert.equal(workflow.concurrency['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}");
+  assert.match(workflow.concurrency.group, /github\.event\.pull_request\.number \|\| github\.sha/);
 });
