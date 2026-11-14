@@ -1,5 +1,5 @@
 {
-  "name": "mex-agent-hook-win32-x64",
+  "name": "mex-agent-hook-windows-x64",
   "version": "0.9.0-beta.0",
   "description": "The mex-hook binary for win32 x64. Installed by mex-agent; not meant to be used directly.",
   "license": "MIT",
