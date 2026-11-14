@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { launcherFile, writeLauncher } from "../launcher.js";
@@ -25,5 +25,14 @@ describe("hook launcher file", () => {
     expect(writeLauncher(home, "src/cli.ts", "/usr/bin/node")).toBe(false);
     expect(writeLauncher(home, "", "/usr/bin/node")).toBe(false);
     expect(existsSync(launcherFile(home))).toBe(false);
+  });
+
+  it("leaves an installed launcher to the journaling installer", () => {
+    const home = temp();
+    writeLauncher(home, "dist/cli.js", "/original/node");
+    const before = readFileSync(launcherFile(home));
+    writeFileSync(join(home, "install-recovery.json"), "{}");
+    expect(writeLauncher(home, "dist/cli.js", "/new/node")).toBe(false);
+    expect(readFileSync(launcherFile(home))).toEqual(before);
   });
 });

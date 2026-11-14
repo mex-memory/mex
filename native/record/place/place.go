@@ -106,6 +106,11 @@ func pointerDirectory(pointer, home, cache string) string {
 }
 
 func locationPath(path string) (string, error) {
+	// Published locations already exist. RealPath validates them while opening
+	// the Windows handle, so a separate Stat duplicates filesystem work.
+	if real, err := RealPath(path); err == nil {
+		return real, nil
+	}
 	existing, err := AbsolutePath(path)
 	if err != nil {
 		return "", err

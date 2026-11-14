@@ -172,9 +172,10 @@ func openCounterReader(path string) (*sql.DB, error) {
 }
 
 type Hooks struct {
-	db          *sql.DB
-	budget      budget
-	counterOnly bool
+	db            *sql.DB
+	budget        budget
+	counterOnly   bool
+	counterReader *sql.DB
 }
 
 func OpenHooks(location Location) (*Hooks, error) {
@@ -196,6 +197,7 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), limits.writer)
 	defer cancel()
+	var counterReader *sql.DB
 	if counterOnly {
 		// Keep the small WAL sidecars for the next short-lived counter writer.
 		// Recreating/deleting them on every hook is costly on Windows. SQLite
@@ -236,19 +238,13 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 		}
 	}
 	if err == nil && counterOnly {
-		// Keep a read-only pager alive without constructing another SQLite
-		// connection. The pinned SQLite closes main before attached pagers;
-		// lifetime/checkpoint tests qualify that order on driver upgrades.
-		// The attachment holds no read transaction and shares the open deadline.
-		uri, uriErr := databaseURI(location.Hooks)
-		err = uriErr
-		if err == nil {
-			uri.RawQuery = "mode=ro"
-			_, err = db.ExecContext(ctx, "ATTACH DATABASE ? AS counter_readonly", uri.String())
-		}
+		// A separate read-only connection only reads the database header. ATTACH
+		// also loads both schemas, work the counter writer does not need.
+		// Close this connection last to retain the WAL without a close checkpoint.
+		counterReader, err = openCounterReader(location.Hooks)
 		if err == nil {
 			var readerVersion int
-			err = db.QueryRowContext(ctx, "PRAGMA counter_readonly.user_version").Scan(&readerVersion)
+			readerVersion, err = schemaVersion(ctx, counterReader)
 			if err == nil && readerVersion > SchemaVersion {
 				err = futureSchema("hooks.db", readerVersion)
 			}
@@ -256,13 +252,20 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 	}
 	if err != nil {
 		_ = db.Close()
+		if counterReader != nil {
+			_ = counterReader.Close()
+		}
 		return nil, err
 	}
-	return &Hooks{db: db, budget: limits, counterOnly: counterOnly}, nil
+	return &Hooks{db: db, budget: limits, counterOnly: counterOnly, counterReader: counterReader}, nil
 }
 
 func (hooks *Hooks) Close() error {
-	return hooks.db.Close()
+	err := hooks.db.Close()
+	if hooks.counterReader != nil {
+		err = errors.Join(err, hooks.counterReader.Close())
+	}
+	return err
 }
 
 func (hooks *Hooks) busyTimeout() int {

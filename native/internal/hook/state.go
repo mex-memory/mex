@@ -17,9 +17,10 @@ import (
 // home is where the shim looks for the person's files. Tests point it at a
 // temp folder through the environment.
 type home struct {
-	user  string // the person's home folder
-	mex   string // MEX's folder: <MEX_HOME>/.mex, else ~/.mex (the same rule as Node's mexHomeDir)
-	codex string // Codex's folder: CODEX_HOME, else ~/.codex
+	user   string // the person's home folder
+	mex    string // MEX's folder: <MEX_HOME>/.mex, else ~/.mex (the same rule as Node's mexHomeDir)
+	codex  string // Codex's folder: CODEX_HOME, else ~/.codex
+	claude string // Claude's folder: CLAUDE_CONFIG_DIR, else ~/.claude
 	// Resolves at most once per invocation, after telemetry policy checks, so
 	// checkout lookup and counters share the validated location.
 	usageLocation func() (place.Location, bool)
@@ -33,6 +34,10 @@ func homeFrom(getenv Env) home {
 		}
 	}
 	h := home{user: user}
+	h.claude = strings.TrimSpace(getenv("CLAUDE_CONFIG_DIR"))
+	if h.claude == "" && user != "" {
+		h.claude = filepath.Join(user, ".claude")
+	}
 	if base := strings.TrimSpace(getenv("MEX_HOME")); base != "" {
 		h.mex = filepath.Join(base, ".mex")
 	} else if user != "" {
@@ -53,6 +58,13 @@ func (h home) mexInstalled() bool {
 	}
 	st, err := os.Stat(h.mex)
 	return err == nil && st.IsDir()
+}
+
+func (h home) claudeDirectory() string {
+	if h.claude != "" {
+		return h.claude
+	}
+	return filepath.Join(h.user, ".claude")
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +187,7 @@ func (h home) hooksOff(agent, goos string) []string {
 	var off []string
 	switch agent {
 	case "claude-code":
-		user := filepath.Join(h.user, ".claude", "settings.json")
+		user := filepath.Join(h.claudeDirectory(), "settings.json")
 		if jsonTrue(user, "disableAllHooks") {
 			off = append(off, user+": disableAllHooks")
 		}
@@ -258,7 +270,7 @@ func tomlValues(path string) map[string]string {
 func (h home) ownHookFiles(agent string) []string {
 	switch agent {
 	case "claude-code":
-		return []string{filepath.Join(h.user, ".claude", "settings.json")}
+		return []string{filepath.Join(h.claudeDirectory(), "settings.json")}
 	case "codex":
 		return []string{filepath.Join(h.codex, "hooks.json"), filepath.Join(h.codex, "config.toml")}
 	case "cursor":

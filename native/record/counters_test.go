@@ -172,7 +172,7 @@ func TestCounterCloseRetainsCommittedWALAndAllowsAutomaticCheckpoints(t *testing
 				t.Fatal(err)
 			}
 			defer hooks.Close()
-			if _, err := hooks.db.Exec("DELETE FROM counter_readonly.counters_go"); err == nil {
+			if _, err := hooks.counterReader.Exec("DELETE FROM counters_go"); err == nil {
 				t.Fatal("counter guard allowed a database write")
 			}
 			// Initialize the WAL header outside the usage call's strict budget.

@@ -17,6 +17,9 @@ export function writeLauncher(home: string, entry: string | undefined = process.
   try {
     // Only a built CLI can be started by the shim; a source run (tsx, tests) leaves the file alone.
     if (!entry || !entry.endsWith(".js") || !existsSync(home)) return false;
+    // Once installed, the install service journals launcher upgrades. Ordinary
+    // commands must not invalidate the original bytes recorded for uninstall.
+    if (existsSync(join(home, "install-recovery.json"))) return false;
     const file = launcherFile(home);
     const text = `${JSON.stringify({ version: LAUNCHER_VERSION, node, entry: resolve(entry) })}\n`;
     try { if (readFileSync(file, "utf8") === text) return false; } catch { /* not written yet */ }
