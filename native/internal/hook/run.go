@@ -58,6 +58,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return 0
 		case "--status":
 			return status(stdout, homeFrom(getenv), runtime.GOOS)
+		case "--check-stage":
+			return checkStage(args[1:], getenv)
 		}
 	}
 
@@ -158,6 +160,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		startBackground(h, recordDirectory)
 	}
 	noteEdit(ev, recordDirectory)
+	freeStage(ev, h, recordDirectory)
 	out, _ := profile.Render(ev, contract.Reply{})
 	return out
 }
