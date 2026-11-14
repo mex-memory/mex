@@ -271,6 +271,9 @@ jobs:
           src/setup/__tests__/global-install-process.test.ts
           src/controls/__tests__/controls.test.ts
           src/model-runner/__tests__/runner.test.ts
+          src/model-runner/__tests__/budget-policy.test.ts
+          src/model-runner/__tests__/budget-queue.test.ts
+          src/model-runner/__tests__/budget-process.test.ts
           src/setup/__tests__/headless-population.test.ts
           src/record/__tests__/background.test.ts
           src/wiki/operations/__tests__/durability.test.ts

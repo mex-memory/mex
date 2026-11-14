@@ -119,7 +119,10 @@ function codexSnapshot(db: DatabaseSync, session: string, day: string, tokens: T
   }
 }
 
-function windows(db: DatabaseSync, agent: Agent, event: Record<string, unknown>, timestamp: string): void {
+export interface UsageWindowObservation {
+  agent: string; window: string; observed_at: string; used_percent: number | null; resets_at: string | null; status: string | null;
+}
+export function decodeUsageWindows(agent: string, event: Record<string, unknown>, timestamp: string): UsageWindowObservation[] {
   const payload = object(event.payload);
   const codex = object(payload?.rate_limits ?? event.rate_limits);
   const claude = object(event.rate_limit_info);
@@ -131,6 +134,7 @@ function windows(db: DatabaseSync, agent: Agent, event: Record<string, unknown>,
     const key = typeof claude.rateLimitType === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(claude.rateLimitType) ? claude.rateLimitType : "plan";
     entries.push([key, claude]);
   }
+  const observations: UsageWindowObservation[] = [];
   for (const [key, info] of entries) {
     const percent = agent === "codex" ? info.used_percent : typeof info.utilization === "number" ? info.utilization * 100 : undefined;
     const used = typeof percent === "number" && Number.isFinite(percent) && percent >= 0 && percent <= 100 ? percent : null;
@@ -138,10 +142,15 @@ function windows(db: DatabaseSync, agent: Agent, event: Record<string, unknown>,
     const resets = typeof reset === "number" && reset >= 0 && reset <= 4_102_444_800 ? new Date(reset * 1000).toISOString() : null;
     const status = ["allowed", "allowed_warning", "rejected"].includes(String(info.status)) ? String(info.status) : null;
     if (used === null && resets === null && status === null) continue;
+    observations.push({ agent, window: key, observed_at: timestamp, used_percent: used, resets_at: resets, status });
+  }
+  return observations;
+}
+export function saveUsageWindow(db: DatabaseSync, observation: UsageWindowObservation): void {
     sql(db, `INSERT INTO usage_windows VALUES(?,?,?,?,?,?) ON CONFLICT(agent,window) DO UPDATE SET
       observed_at=excluded.observed_at,used_percent=excluded.used_percent,resets_at=excluded.resets_at,status=excluded.status
-      WHERE excluded.observed_at>=usage_windows.observed_at`).run(agent, key, timestamp, used, resets, status);
-  }
+      WHERE excluded.observed_at>=usage_windows.observed_at`).run(observation.agent, observation.window,
+        observation.observed_at, observation.used_percent, observation.resets_at, observation.status);
 }
 
 type LineKind = "usage" | "skipped" | "problem";
@@ -157,7 +166,7 @@ function consume(db: DatabaseSync, agent: Agent, line: Buffer, state: FileState,
   if (!e) return "skipped";
   const date = new Date(String(e.timestamp));
   const timestamp = Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
-  if (timestamp) windows(db, agent, e, timestamp);
+  if (timestamp) for (const observation of decodeUsageWindows(agent, e, timestamp)) saveUsageWindow(db, observation);
   if (agent === "claude") {
     const message = object(e.message);
     if (e.type !== "assistant" || message?.usage === undefined) return "skipped";

@@ -1,15 +1,18 @@
 # MEX's model runner
 
-Foundation-04 slice three supplies one process owner and accounting boundary for
-MEX's non-interactive model calls. It adds no scheduled model work, database
-migration, package-root export or interactive-agent behavior change. The usage
-cap and machine queue are the next slice; live plan acceptance remains OSS-61.
+Foundation-04 supplies one process owner and accounting boundary for MEX's
+non-interactive model calls. The [automatic allowance and machine queue](model-budget.md)
+add durable admissions through record migration 4. No scheduled model task,
+package-root export or interactive-agent behavior change is added; live plan
+acceptance remains OSS-61.
 
 ## Entry points
 
 `src/model-runner/index.ts` exposes the internal `runModel` API: agent, prompt,
 project root, an accounting purpose, model role/setup, optional cancellation
 and timeout. It returns the final text, selected model and observed usage.
+Automatic work supplies `automatic: { estimate }` to reserve allowance;
+explicit user commands omit it and remain uncapped while joining the same lane.
 Prompts go through stdin, with a 1 MiB limit, rather than command arguments or
 new prompt files. Text tasks disable Claude's tools and use Codex's read-only
 sandbox. Results have a 1 MiB limit and an 8 MiB total JSON stream limit;
