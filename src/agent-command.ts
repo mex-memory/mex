@@ -1,5 +1,8 @@
 ﻿import { AI_TOOLS, type AiTool } from "./types.js";
 
+import { buildModelCommand } from "./model-runner/command.js";
+import type { ModelSelection } from "./model-runner/models.js";
+
 export interface AgentCommand {
   readonly command: string;
   readonly args: string[];
@@ -167,7 +170,7 @@ export function buildAgentCommand(
   tool: AiTool,
   instruction: string,
   mode: "interactive" | "headless",
-  options: { allowNonGit?: boolean; opencodeConfig?: string | null } = {},
+  options: ModelSelection & { allowNonGit?: boolean; opencodeConfig?: string | null } = {},
 ): AgentCommand | null {
   // Background CLIs are listed separately: AI_TOOLS.cli is the interactive command.
   if (mode === "headless") return isBackgroundAgentTool(tool) ? buildBackgroundCommand(tool, instruction, options) : null;
@@ -179,18 +182,11 @@ export function buildAgentCommand(
 function buildBackgroundCommand(
   tool: BackgroundAgentTool,
   instruction: string,
-  options: { allowNonGit?: boolean; opencodeConfig?: string | null },
+  options: ModelSelection & { allowNonGit?: boolean; opencodeConfig?: string | null },
 ): AgentCommand | null {
-  if (tool === "claude") {
-    return {
-      command: BACKGROUND_AGENT_CLIS.claude,
-      args: [
-        "-p", instruction, "--permission-mode", "acceptEdits",
-        "--allowedTools", HEADLESS_CLAUDE_ALLOWED_TOOLS.join(","),
-        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-      ],
-    };
-  }
+  if (tool === "claude" || tool === "codex") return buildModelCommand(tool, instruction, {
+    ...options, access: "workspace", allowedTools: HEADLESS_CLAUDE_ALLOWED_TOOLS,
+  });
   if (tool === "cursor") {
     // Print mode, documented NDJSON events, and workspace trust without a
     // prompt (headless only). Permissions come from the session's project file.
@@ -216,10 +212,5 @@ function buildBackgroundCommand(
       env: { OPENCODE_CONFIG_CONTENT: config },
     };
   }
-  // `exec` is non-interactive and defaults to never asking for approval.
-  // Keep workspace confinement without the removed `--full-auto` shorthand.
-  return {
-    command: BACKGROUND_AGENT_CLIS.codex,
-    args: ["exec", "--json", "--sandbox", "workspace-write", ...(options.allowNonGit ? ["--skip-git-repo-check"] : []), instruction],
-  };
+  return null;
 }

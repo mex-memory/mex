@@ -366,10 +366,11 @@ when complete and consistent with terminal totals, produces separate model rows.
 
 ### Kept call sites
 
-All headless setup agents pass through `src/setup/headless-population.ts`, using
-the arguments constructed by `src/agent-command.ts`. A separate bounded observer
-does not change the existing activity/transcript/usage callbacks, flags, agent
-selection, permissions, success/failure handling or stdout. It records after
+All headless setup agents pass through `src/setup/headless-population.ts` and
+the shared `src/model-runner/process.ts` owner, also used by the one-shot text
+API. Argument/model policy is described in [model-runner.md](model-runner.md).
+The bounded observer preserves the existing activity/transcript/usage callbacks,
+agent selection, permissions, success/failure handling and stdout. It records after
 pipe drains, including failed/cancelled attempts. One row represents an agent
 invocation's reported aggregate (or one row per reported model), including its
 turns, tools and retries; assistant block usage and terminal totals are never

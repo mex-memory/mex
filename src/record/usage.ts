@@ -130,7 +130,7 @@ export function jsonLines(consume: (event: Record<string, unknown>) => void, inv
 }
 
 /** One headless invocation, including every reported turn; Claude's terminal total wins. */
-export function createCallUsage(agent: string, sent: string) {
+export function createCallUsage(agent: string, sent: string, maxLineBytes = 1024 * 1024) {
   let outputBytes = 0, model = "unknown", terminal: Tokens | undefined, sessionId: string | undefined;
   let byModel: Array<Tokens & { model: string; estimated: boolean }> | undefined;
   let incomplete = false;
@@ -195,7 +195,7 @@ export function createCallUsage(agent: string, sent: string) {
         }
       }
     }
-  }, () => { incomplete = true; });
+  }, () => { incomplete = true; }, Number.isSafeInteger(maxLineBytes) && maxLineBytes > 0 ? Math.min(maxLineBytes, 8 * 1024 * 1024) : 1024 * 1024);
   return {
     write(chunk: Buffer) { outputBytes += chunk.length; decoder.write(chunk); },
     finish() {

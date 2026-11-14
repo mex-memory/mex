@@ -270,6 +270,8 @@ jobs:
           src/setup/__tests__/global-install.test.ts
           src/setup/__tests__/global-install-process.test.ts
           src/controls/__tests__/controls.test.ts
+          src/model-runner/__tests__/runner.test.ts
+          src/setup/__tests__/headless-population.test.ts
           src/record/__tests__/background.test.ts
           src/wiki/operations/__tests__/durability.test.ts
           src/wiki/operations/__tests__/identity-precision.test.ts
