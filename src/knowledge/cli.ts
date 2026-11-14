@@ -164,7 +164,16 @@ export function buildKnowledgeCommands(): Command[] {
       if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
       else console.log(`${result.active} active hints; ${result.confirmed} confirmed; expiry ${result.expiryMonths} calendar months.`);
     }));
-  return [save, search, full, change, ...retire, hints];
+  const rules = new Command("rules")
+    .description("Read the repo's rule files (CLAUDE.md, AGENTS.md, Cursor, Copilot, Gemini) into entries and list what needs review")
+    .option("--json", "Print the scan as JSON")
+    .action(async opts => run(opts.json, async () => {
+      const { refreshRuleFiles, formatRules } = await import("./rule-cache.js");
+      const cache = refreshRuleFiles({ projectPath: process.cwd() });
+      if (opts.json) console.log(JSON.stringify({ ok: true, ...cache }));
+      else console.log(formatRules(cache));
+    }));
+  return [save, search, full, change, ...retire, hints, rules];
 }
 function printPreview(preview: { revision: string; diff: string }, json: boolean | undefined): void {
   if (json) console.log(JSON.stringify({ ok: true, applied: false, preview }));
