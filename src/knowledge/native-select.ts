@@ -33,6 +33,7 @@ export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<stri
     else if (!STRONG.has(m.evidence)) skip(c, "evidence too weak");
     else if (!m.scope.every(isBroad)) skip(c, "scoped to files, not an area");
     else if (verdict === "broken" || verdict === "changed") skip(c, `verdict is ${verdict}`);
+    else if (m.checks.length && verdict !== "held") skip(c, "current checks have not held");
     else if (c.entry.text.length > MAX_NATIVE_TEXT) skip(c, "too long for a rule file");
     else selected.push(c);
   }

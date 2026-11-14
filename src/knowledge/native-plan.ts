@@ -13,6 +13,7 @@
  *   is told to ignore.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, posix } from "node:path";
 import type { NativeAgent } from "./agents-in-use.js";
 import { renderNative, type NativeFormat } from "./native-render.js";
@@ -35,7 +36,10 @@ export function ownedByPerson(root: string, path: string): boolean {
 function slug(area: string): string { return area.replace(/[^A-Za-z0-9]+/gu, "-").replace(/^-|-$/gu, "").toLowerCase(); }
 
 function claudePath(area: string, sharing: Sharing): string {
-  const name = ["mex", sharing === "local" ? "local" : "", slug(area)].filter(Boolean).join("-");
+  // Keep team areas separate from the personal root, and retain the exact
+  // area identity when punctuation or nested folders share the same slug.
+  const areaName = area ? `area-${slug(area).slice(0, 64)}-${createHash("sha256").update(area).digest("hex").slice(0, 12)}` : "";
+  const name = ["mex", sharing === "local" ? "local" : "", areaName].filter(Boolean).join("-");
   return `.claude/rules/${name}.md`;
 }
 
