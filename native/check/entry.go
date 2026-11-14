@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"regexp"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -37,9 +36,9 @@ type Check struct {
 }
 
 var (
-	idPattern   = regexp.MustCompile(`^mx_[a-z0-9]{6,64}$`)
-	hashPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
-	frontmatter = regexp.MustCompile(`(?s)\A---\n(.*?)\n---\n`)
+	idPattern   = lazy(`^mx_[a-z0-9]{6,64}$`)
+	hashPattern = lazy(`^sha256:[a-f0-9]{64}$`)
+	frontmatter = lazy(`(?s)\A---\n(.*?)\n---\n`)
 )
 
 // ErrInvalidEntry is wrapped by every parse failure.
@@ -53,7 +52,7 @@ func ParseEntry(data []byte) (*Entry, error) {
 		return nil, fmt.Errorf("%w: larger than %d bytes", ErrInvalidEntry, MaxEntryBytes)
 	}
 	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
-	m := frontmatter.FindSubmatch(data)
+	m := frontmatter().FindSubmatch(data)
 	if m == nil {
 		return nil, fmt.Errorf("%w: no frontmatter", ErrInvalidEntry)
 	}
@@ -71,7 +70,7 @@ func ParseEntry(data []byte) (*Entry, error) {
 		return nil, fmt.Errorf("%w: no mex block", ErrInvalidEntry)
 	}
 	e := envelope.Mex
-	if !idPattern.MatchString(e.ID) {
+	if !idPattern().MatchString(e.ID) {
 		return nil, fmt.Errorf("%w: bad id", ErrInvalidEntry)
 	}
 	if e.Status != "active" && e.Status != "retired" {
@@ -92,7 +91,7 @@ func ParseEntry(data []byte) (*Entry, error) {
 			return nil, fmt.Errorf("%w: check %d reads too many files", ErrInvalidEntry, i)
 		}
 		for path, hash := range c.Files {
-			if !safeRelative(path) || !hashPattern.MatchString(hash) {
+			if !safeRelative(path) || !hashPattern().MatchString(hash) {
 				return nil, fmt.Errorf("%w: check %d has a bad file hash", ErrInvalidEntry, i)
 			}
 		}
