@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildAgentCommand, HEADLESS_CLAUDE_ALLOWED_TOOLS } from "../../agent-command.js";
+import { MODEL_SYSTEM_PROMPT } from "../../model-runner/command.js";
 import {
   HeadlessPopulationError,
   launchHeadlessSetupPopulation,
@@ -15,6 +16,7 @@ import {
 
 const roots: string[] = [];
 const children: number[] = [];
+const codexFlags = ["exec", "--json", "--ephemeral", "--disable", "hooks", "-c", "project_doc_max_bytes=0", "-c", "memories.generate_memories=false", "-c", "memories.use_memories=false", "--sandbox", "workspace-write", "--model", "gpt-6.1-sol"];
 
 afterEach(() => {
   for (const pid of children.splice(0)) {
@@ -43,9 +45,9 @@ describe("headless population process", () => {
       expect(existsSync(join(fixture.root, observed.pointer))).toBe(true);
       expect(observed.args.join(" ")).not.toContain(prompt);
       expect(observed.args).toContainEqual(expect.stringMatching(/^Read the full setup population prompt from/));
-      if (tool === "codex") expect(observed.args.slice(0, -1)).toEqual(["exec", "--json", "--sandbox", "workspace-write"]);
+      if (tool === "codex") expect(observed.args.slice(0, -1)).toEqual(codexFlags);
       else expect(observed.args).toEqual([
-        "-p", expect.any(String), "--permission-mode", "acceptEdits",
+        "-p", expect.any(String), "--safe-mode", "--no-session-persistence", "--model", "opus", "--system-prompt", MODEL_SYSTEM_PROMPT, "--permission-mode", "acceptEdits",
         "--allowedTools", HEADLESS_CLAUDE_ALLOWED_TOOLS.join(","),
         "--output-format", "stream-json", "--verbose", "--include-partial-messages",
       ]);
@@ -67,7 +69,7 @@ describe("headless population process", () => {
     expect(buildAgentCommand("windsurf", "prompt", "headless")).toBeNull();
     expect(buildAgentCommand("cursor", "prompt", "interactive")).toBeNull();
     expect(buildAgentCommand("codex", "prompt", "headless", { allowNonGit: true })?.args)
-      .toEqual(["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "prompt"]);
+      .toEqual([...codexFlags, "--skip-git-repo-check", "prompt"]);
   });
 
   it("pre-approves only the mex commands headless Claude population needs", () => {
