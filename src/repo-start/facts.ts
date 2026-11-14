@@ -4,7 +4,7 @@
  * into `<MEX home>/projects/<project-id>/`.
  */
 import { randomBytes } from "node:crypto";
-import { lstatSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectDataDirectory, type RecordLocation } from "../record/location.js";
 import type { Caller } from "./caller.js";
@@ -26,6 +26,7 @@ export function writeFactFile(location: RecordLocation, projectId: string, name:
   const file = join(directory, name);
   const bytes = `${JSON.stringify(value, null, 2)}\n`;
   if (Buffer.byteLength(bytes) > MAX_FACT_BYTES) throw new Error(`${name} exceeds its size bound.`);
+  removeAbandonedTemporaries(directory, name);
   const temporary = join(directory, `.${name}.${process.pid}-${randomBytes(6).toString("hex")}`);
   try {
     writeFileSync(temporary, bytes, { flag: "wx", mode: 0o600 });
@@ -34,6 +35,21 @@ export function writeFactFile(location: RecordLocation, projectId: string, name:
     try { unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
   return file;
+}
+
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** Temp files a killed writer left behind; never one a live process may still rename. */
+function removeAbandonedTemporaries(directory: string, name: string): void {
+  let entries: string[] = [];
+  try { entries = readdirSync(directory); } catch { return; }
+  for (const entry of entries) {
+    const match = new RegExp(`^\\.${name.replace(/[.]/gu, "\\.")}\\.(\\d+)-[0-9a-f]{12}$`, "u").exec(entry);
+    if (!match || Number(match[1]) === process.pid || alive(Number(match[1]))) continue;
+    try { unlinkSync(join(directory, entry)); } catch { /* another writer removed it */ }
+  }
 }
 
 /** A missing, unreadable or unknown-version file reads as nothing found. */

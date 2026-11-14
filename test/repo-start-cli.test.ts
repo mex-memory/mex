@@ -52,7 +52,7 @@ describe("bare mex in a repository", () => {
     expect(result.status, result.stderr).toBe(0);
     const lines = result.stdout.trimEnd().split("\n");
     expect(lines[0]).toMatch(/^MEX - repo - \d+\.\d s - \$0 - nothing added to git$/u);
-    expect(lines).toContain(".. The file index: in the background (`mex jobs`)");
+    expect(lines).toContain(".. Git history and the file index: in the background (`mex jobs`)");
     expect(lines).toContain("ok No test or build commands found in config");
     expect(result.stdout).not.toMatch(/\x1b\[/u);
     localState(f.root);
@@ -100,6 +100,41 @@ describe("bare mex in a repository", () => {
     const setup = JSON.parse(readFileSync(join(projects, readdirSync(projects)[0]!, "setup.json"), "utf8"));
     expect(setup.found).toMatchObject({ packages: 3, recipes: 4 });
     expect(f.status()).toBe("");
+  });
+
+  it("mines git history in the background; a job killed mid-batch is redone and leaves no half-written file", () => {
+    const f = fixture();
+    for (let i = 0; i < 4; i++) {
+      writeFileSync(join(f.root, "schema.ts"), `export const v = ${i};\n`);
+      writeFileSync(join(f.root, "types.ts"), `export type V = ${i};\n`);
+      git(f.root, "add", "."); git(f.root, "commit", "-qm", `change ${i}`);
+    }
+    expect(f.run().status).toBe(0);
+    const projects = join(f.home, "projects");
+    const facts = () => join(projects, readdirSync(projects)[0]!, "code-facts.json");
+    const killed = f.run(["jobs", "run"], { env: { [KILL_AT_VARIABLE]: "code-facts" } });
+    expect(killed.signal).toBe("SIGKILL");
+    expect(existsSync(facts())).toBe(false);
+    const again = f.run(["jobs", "run"]);
+    expect(again.status, again.stderr).toBe(0);
+    const mined = JSON.parse(readFileSync(facts(), "utf8"));
+    expect(mined).toMatchObject({ version: 1, skipped: null, commits_read: 5 });
+    expect(mined.change_together).toContainEqual({ a: "schema.ts", b: "types.ts", confidence: 1, support: 4 });
+    expect(leftovers(f)).toEqual([]);
+    expect(f.status()).toBe("");
+  });
+
+  it("says a shallow clone skips git history", () => {
+    const f = fixture();
+    writeFileSync(join(f.root, "b.txt"), "b\n"); git(f.root, "add", "."); git(f.root, "commit", "-qm", "second");
+    const shallow = join(f.base, "shallow");
+    git(f.base, "clone", "-q", "--depth", "1", `file://${f.root}`, shallow);
+    const result = f.run([], { cwd: shallow });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("!! Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)");
+    expect(result.stdout).toContain(".. The file index: in the background (`mex jobs`)");
+    const projects = join(f.home, "projects");
+    expect(JSON.parse(readFileSync(join(projects, readdirSync(projects)[0]!, "code-facts.json"), "utf8"))).toMatchObject({ skipped: "shallow clone" });
   });
 
   it("covers the repository's other worktrees and keeps them clean", () => {

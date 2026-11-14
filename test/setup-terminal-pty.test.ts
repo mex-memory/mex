@@ -79,7 +79,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     const result = await terminal(f, [], [], { columns: 80, rows: 24, command });
     expect(result.exitCode, result.output).toBe(0);
     expect(result.output).toMatch(/MEX · project · \d+\.\d s · \$0 · nothing added to git/u);
-    expect(result.output).toContain("◌ The file index: in the background (`mex jobs`)");
+    expect(result.output).toContain("◌ Git history and the file index: in the background (`mex jobs`)");
     expect(result.raw).toMatch(/\x1b\[/u);
     expect(result.output).not.toContain("Choose your AI tools");
     expect(spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: f.project, encoding: "utf8" }).stdout).toBe("");

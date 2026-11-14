@@ -146,6 +146,11 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     } else {
       const { queueIndexBuild } = await import("../file-index/command.js");
       queueIndexBuild(writer, projectId, checkout.path);
+      // Queued after the index, so layer rules can read its imports.
+      if (!place.shallow) {
+        const { queueJob } = await import("../record/background.js");
+        queueJob(writer, { kind: "code-facts", projectId, params: { checkout: checkout.path } });
+      }
       killAt("queued", env);
       writer.close(); writer = undefined;
 
@@ -162,7 +167,10 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory` });
       }
       killAt("free-step", env);
-      findings.push({ state: "background", text: "The file index: in the background (`mex jobs`)" });
+      if (place.shallow) {
+        findings.push({ state: "attention", text: "Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)" });
+        findings.push({ state: "background", text: "The file index: in the background (`mex jobs`)" });
+      } else findings.push({ state: "background", text: "Git history and the file index: in the background (`mex jobs`)" });
 
       const { recordLocation } = await import("../record/location.js");
       const { writeFactFile } = await import("./facts.js");
@@ -176,6 +184,12 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
           exclude: { file: place.excludeFile, block: hidden },
         });
       } catch { /* the screen doesn't depend on its record */ }
+      if (place.shallow) {
+        try {
+          const { skippedFacts } = await import("./history/job.js");
+          writeFactFile(recordLocation(), projectId, "code-facts.json", skippedFacts("shallow clone"));
+        } catch { /* readers treat a missing file as nothing found */ }
+      }
       killAt("facts", env);
     }
   } finally { writer?.close(); }
