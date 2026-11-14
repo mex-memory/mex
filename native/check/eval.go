@@ -64,6 +64,7 @@ type Result struct {
 // Evaluator evaluates entries against one checkout. It reads each file once.
 type Evaluator struct {
 	files *files
+	index Index
 }
 
 // NewEvaluator opens a checkout for reading. Reads never leave it.
@@ -175,6 +176,12 @@ func (ev *Evaluator) run(c Check) CheckResult {
 		return ev.section(c)
 	case "source":
 		return ev.source(c)
+	case "value":
+		return ev.valueCheck(c)
+	case "symbol":
+		return ev.symbolCheck(c)
+	case "pattern":
+		return ev.patternCheck(c)
 	}
 	return CheckResult{Status: Floor, Reason: fmt.Sprintf("%s checks are not evaluated yet", c.Kind)}
 }
