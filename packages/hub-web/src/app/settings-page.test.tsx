@@ -15,6 +15,36 @@ function renderSettings(api: HubApi) {
   </HubApiProvider></QueryClientProvider>) };
 }
 
+describe("Drift alert setting", () => {
+  it("is on by default and saves an opt-out only when changed", async () => {
+    const user = userEvent.setup();
+    const api = createFixtureApi();
+    const save = vi.spyOn(api, "setDriftAlerts");
+    renderSettings(api);
+    const toggle = await screen.findByRole("checkbox", { name: /Notify me about drift/ }, { timeout: 5_000 });
+    expect(toggle).toBeChecked();
+    expect(screen.getByText(/Enabled by default/)).toBeVisible();
+    expect(save).not.toHaveBeenCalled();
+
+    await user.click(toggle);
+    expect(save).toHaveBeenCalledWith({ enabled: false });
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Notify me about drift/ })).not.toBeChecked());
+    expect(screen.getByText(/adds a post-commit check/)).toBeVisible();
+
+    await user.click(screen.getByRole("checkbox", { name: /Notify me about drift/ }));
+    expect(save).toHaveBeenLastCalledWith({ enabled: true });
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Notify me about drift/ })).toBeChecked());
+  });
+
+  it("says when a notification could not be shown and when no hook was added", async () => {
+    const api = createFixtureApi();
+    vi.spyOn(api, "getDriftAlerts").mockResolvedValue({ enabled: true, commitHook: false, lastDelivery: "failed" });
+    renderSettings(api);
+    expect(await screen.findByText(/The last notification could not be shown/, undefined, { timeout: 5_000 })).toBeVisible();
+    expect(screen.getByText("Checks run while Hub or mex watch --interval is open.")).toBeVisible();
+  });
+});
+
 describe("Checkout logging settings", () => {
   it("loads the quiet default without writing and exposes the project-notes destination", async () => {
     const api = createFixtureApi();

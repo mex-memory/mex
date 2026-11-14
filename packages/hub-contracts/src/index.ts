@@ -105,6 +105,30 @@ export type HubOnboardingCompleteRequest = z.infer<typeof HubOnboardingCompleteR
 /** Whether recent history has more than one distinct commit author; never the authors themselves. */
 export const HubRepositoryContributorsSchema = z.object({ moreThanOne: z.boolean() }).strict();
 export type HubRepositoryContributors = z.infer<typeof HubRepositoryContributorsSchema>;
+/** What `mex sync` would act on right now. Detecting it changes nothing and starts no agent. */
+export const DriftStatusSchema = z.object({
+  state: z.enum(["needs_sync", "comment_review", "in_sync"]),
+  checkedAt: isoTimestamp,
+  issueCount: z.number().int().nonnegative(),
+  fileCount: z.number().int().nonnegative(),
+  files: z.array(z.object({
+    path: z.string().min(1).max(4_096),
+    errors: z.number().int().nonnegative(),
+    warnings: z.number().int().nonnegative(),
+  }).strict()).max(HUB_LIMITS.maxPageSize),
+  commentOnlyCount: z.number().int().nonnegative(),
+  warningOnlyCount: z.number().int().nonnegative(),
+  codeLinks: z.enum(["checked", "partial"]),
+}).strict();
+export type DriftStatus = z.infer<typeof DriftStatusSchema>;
+export const DriftAlertSettingsSchema = z.object({
+  enabled: z.boolean(),
+  commitHook: z.boolean(),
+  lastDelivery: z.enum(["none", "sent", "failed"]),
+}).strict();
+export const DriftAlertUpdateRequestSchema = z.object({ enabled: z.boolean() }).strict();
+export type DriftAlertSettings = z.infer<typeof DriftAlertSettingsSchema>;
+export type DriftAlertUpdateRequest = z.infer<typeof DriftAlertUpdateRequestSchema>;
 
 /** Shared primitives for route-private contract entry points. */
 export const HubIsoTimestampSchema = isoTimestamp;

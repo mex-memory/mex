@@ -268,11 +268,14 @@ test.describe("populated development fixture", () => {
       await expect(page.locator('[data-overview-workbench="ready"]')).toBeVisible();
       const focus = await page.getByRole("region", { name: "Attention", exact: true }).boundingBox();
       const activity = await page.getByRole("region", { name: "Latest team memory" }).boundingBox();
+      const drift = await page.getByRole("region", { name: "Knowledge drift" }).boundingBox();
       expect(focus).not.toBeNull();
       expect(activity).not.toBeNull();
+      expect(drift).not.toBeNull();
       if (width === 1440) {
-        expect(focus!.x).toBeLessThan(activity!.x);
-        expect(Math.abs(focus!.y - activity!.y)).toBeLessThanOrEqual(1);
+        expect(focus!.x).toBeLessThan(drift!.x);
+        expect(Math.abs(focus!.y - drift!.y)).toBeLessThanOrEqual(1);
+        expect(drift!.y + drift!.height).toBeLessThanOrEqual(activity!.y);
       } else {
         expect(focus!.y).toBeLessThan(activity!.y);
       }

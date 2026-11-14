@@ -23,6 +23,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Verify Java runtime readiness
+        timeout-minutes: 1
+        run: java -version
       - run: npm ci
       - name: Fetch and verify immutable TLC 1.7.4
         shell: bash

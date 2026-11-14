@@ -1,5 +1,8 @@
 export type {
   AgentLoggingMode,
+  DriftAlertSettings,
+  DriftAlertUpdateRequest,
+  DriftStatus,
   AgentLoggingPolicy,
   AgentLoggingUpdateRequest,
   HubOnboardingState,

@@ -364,6 +364,29 @@
   gap: 0;
 }
 
+.driftFiles {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.driftFiles li {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.driftFiles code {
+  overflow-wrap: anywhere;
+}
+
+.driftFiles span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
 .activityRow {
   min-width: 0;
   padding: 14px 0;

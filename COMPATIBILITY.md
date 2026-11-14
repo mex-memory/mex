@@ -52,6 +52,21 @@ shipping new versions.
 If you only use the `mex` CLI, most of this still applies, but CLI flags
 themselves are best-effort (see [CLI surface](#cli-surface) below).
 
+## Unreleased: skills for Cursor, GitHub Copilot, OpenCode and Windsurf
+
+`mex setup` and `mex skills sync` now manage the official skills for these four
+tools as well. After upgrading, a project with one of them recorded in
+`.mex/config.json` gets the following on its next sync:
+
+- one shared copy of each skill in `.agents/skills/`, the same copy Codex uses
+- a managed block in `.cursorrules`, `.github/copilot-instructions.md`,
+  `.windsurfrules`, or, for OpenCode, `AGENTS.md`
+
+Run `mex skills sync --dry-run` first. Bytes outside the managed block are
+preserved, and an existing unmanaged `.agents/skills/mex-*` directory is reported
+as a conflict rather than overwritten. Commit the results if teammates should
+receive them. See [Agent skills by tool](docs/agent-skills.md).
+
 ## Upgrading to 0.8.5
 
 Once 0.8.5 is available on npm, upgrade the CLI and run the skill-sync commands

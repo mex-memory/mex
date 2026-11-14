@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `mex setup` and `mex skills sync` install the official Inbox, Relay, and Statechart skills for Cursor, GitHub Copilot, OpenCode, and Windsurf. All four share one copy in `.agents/skills/` with Codex. See [Agent skills by tool](docs/agent-skills.md) for install steps and smoke checks.
+- Hub Overview shows whether knowledge has drifted from the code and whether `mex sync` has work to do. The check is read-only, starts no agent, and works without Git.
+- Drift alerts are enabled by default: a desktop notification when `mex sync` has new work. Hub and `mex watch --interval` initialize the checkout-local preference and add a post-commit check in supported Git repositories. Settings can turn alerts off, remove that check, and preserve the opt-out across restarts. Existing non-shell, inactive, and managed hooks are left untouched.
+
 ## [0.8.5] - 2026-10-29
 
 ### Added

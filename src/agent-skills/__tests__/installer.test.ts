@@ -19,8 +19,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  AGENT_SKILL_TARGETS,
   AgentAssetsError,
   MEX_MANAGED_SKILL_METADATA,
+  SUPPORTED_AGENT_SKILL_CLIENTS,
   applyAgentAssetsPlan,
   defaultAgentSkillIgnoreChecker,
   planAgentAssets,
@@ -55,6 +57,67 @@ describe("managed agent asset installation", () => {
     expect(exists(fixture.project, instructions)).toBe(true);
     expect(exists(fixture.project, otherRoot)).toBe(false);
     expect(exists(fixture.project, otherInstructions)).toBe(false);
+  });
+
+  it.each([
+    ["cursor", ".cursorrules", "/mex-inbox"],
+    ["copilot", ".github/copilot-instructions.md", "/mex-inbox"],
+    ["opencode", "AGENTS.md", "$mex-inbox"],
+    ["windsurf", ".windsurfrules", "/mex-inbox"],
+  ] as const)("installs %s through the shared skill copy and its own instructions", (client, instructions, invocation) => {
+    const fixture = createFixture();
+    const report = sync(fixture, [client]);
+
+    expect(report).toMatchObject({ applied: true, changed: true, conflicted: false });
+    for (const skill of ["mex-inbox", "mex-relay", "mex-statechart"] as const) {
+      expectInstalledBytes(fixture, skill, `.agents/skills/${skill}`);
+    }
+    expect(read(fixture.project, instructions)).toContain(invocation);
+    expect(exists(fixture.project, ".claude")).toBe(false);
+  });
+
+  it("plans one skill copy and one instruction edit for clients that share them", () => {
+    const fixture = createFixture();
+    const clients = ["windsurf", "opencode", "copilot", "cursor", "codex"] as const;
+    const report = sync(fixture, clients);
+
+    expect(report).toMatchObject({ applied: true, conflicted: false });
+    expect(report.clients).toEqual(["codex", "cursor", "copilot", "opencode", "windsurf"]);
+    expect(report.actions.map((action) => action.path).sort()).toEqual([
+      ".agents/skills/mex-inbox",
+      ".agents/skills/mex-relay",
+      ".agents/skills/mex-statechart",
+      ".cursorrules",
+      ".github/copilot-instructions.md",
+      ".windsurfrules",
+      "AGENTS.md",
+    ]);
+
+    const rerun = sync(fixture, clients);
+    expect(rerun.changed).toBe(false);
+    expect(rerun.actions.every((action) => action.action === "noop")).toBe(true);
+  });
+
+  it("renders one block for every client that shares an instruction file", () => {
+    for (const client of SUPPORTED_AGENT_SKILL_CLIENTS) {
+      const sharing = SUPPORTED_AGENT_SKILL_CLIENTS.filter((other) => (
+        AGENT_SKILL_TARGETS[other].instructionsPath === AGENT_SKILL_TARGETS[client].instructionsPath
+      ));
+      for (const other of sharing) {
+        expect(renderManagedInstructionBlock(other)).toBe(renderManagedInstructionBlock(client));
+      }
+    }
+  });
+
+  it("appends to an existing tool anchor without changing its bytes", () => {
+    const fixture = createFixture();
+    write(fixture.project, ".cursorrules", "Hand-written rule\n");
+    const report = sync(fixture, ["cursor"]);
+
+    expect(report.conflicted).toBe(false);
+    const content = read(fixture.project, ".cursorrules");
+    expect(content.startsWith("Hand-written rule\n")).toBe(true);
+    expect(content).toContain(renderManagedInstructionBlock("cursor"));
   });
 
   it("installs both clients from one canonical source with deterministic ownership", () => {

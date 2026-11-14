@@ -13,12 +13,12 @@ edges:
     condition: "when distinguishing canonical artifacts from local projections"
   - target: "patterns/release-performance-gate.md"
     condition: "when the change also affects packed-install or release gates"
-last_updated: 2026-10-26
+last_updated: 2026-11-05
 mex:
   id: mx_01M1M0CJJD2AQZ6XKHV4VKYTGJ
   type: pattern
   status: promoted
-  revision: 8
+  revision: 9
   title: dogfood-mex-setup
   grounds_to:
     - node: function:9055347f917caf8721a2f6d4e18bcc9a
@@ -64,6 +64,12 @@ global `mex`.
 
 ## Gotchas
 
+- Setup's skills phase follows the supported integration registry, independently
+  of whether a population CLI is available. Cursor, Copilot, OpenCode and
+  Windsurf receive official skills too. A conflicted scaffold-pointer block
+  remains byte-identical while the separate managed skills block may still be
+  appended; setup tests must verify both the preserved authored bytes and that
+  expected addition rather than require the whole instruction file to be unchanged.
 - Source-based setup state detection must recognize deeply nested layouts such
   as `src/main/java/com/acme/App.java`. Walk until the first source match
   without a depth cap, retaining graph default/configured ignores and dependency

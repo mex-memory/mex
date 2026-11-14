@@ -21,6 +21,10 @@ export const KNOWN_LEGACY_INSTRUCTION_SHA256: Readonly<
   codex: [
     "ee60a376430adccfcc24b5c880f6b5a449c1c959a039dc047f057bd80907ee91",
   ],
+  cursor: [],
+  copilot: [],
+  opencode: [],
+  windsurf: [],
 };
 
 export interface ManagedInstructionEdit {

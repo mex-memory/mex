@@ -315,8 +315,7 @@ async function runLockedSetup(
     throw classifySetupFileSystemError(error, "Could not save the AI tool selection in .mex/config.json.") ?? error;
   }
 
-  const selectedAgentClients = selectedTools.filter((tool) => tool === "claude" || tool === "codex");
-  if (selectedAgentClients.length > 0) {
+  if (selectedTools.length > 0) {
     report("skills");
     let agentAssets: ReturnType<typeof installSetupAgentAssets>;
     try {

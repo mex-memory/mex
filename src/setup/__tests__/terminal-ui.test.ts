@@ -338,9 +338,9 @@ describe("terminal setup HUD", () => {
     expect(app.lastFrame()).toContain("[now ] Project knowledge");
   });
 
-  it("does not promise agent skills for an editor-only integration", async () => {
-    const app = await show({ screen: "progress", tools: initial.tools.map(tool => ({ ...tool, selected: tool.id === "cursor" })) });
-    expect(app.lastFrame()).not.toContain("Agent skills");
+  it.each(["cursor", "windsurf", "copilot", "opencode"])("shows the skills phase for the %s integration", async client => {
+    const app = await show({ screen: "progress", tools: initial.tools.map(tool => ({ ...tool, selected: tool.id === client, cliAvailable: false })) });
+    expect(app.lastFrame()).toContain("Agent skills");
   });
 
   it.each([

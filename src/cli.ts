@@ -44,6 +44,8 @@ import {
   type TeamRelayCliServiceFactory,
 } from "./team/relay/cli/index.js";
 import {
+  AGENT_SKILL_TARGETS,
+  SUPPORTED_AGENT_SKILL_CLIENTS,
   renderInstructionChangePreview,
   type AgentAssetsReport,
   type AgentSkillClient,
@@ -92,7 +94,7 @@ export function parsePortArg(raw: string): number {
 }
 
 function isAgentSkillClient(value: string): value is AgentSkillClient {
-  return value === "claude" || value === "codex";
+  return (SUPPORTED_AGENT_SKILL_CLIENTS as readonly string[]).includes(value);
 }
 
 function collectAgentSkillClient(
@@ -102,7 +104,7 @@ function collectAgentSkillClient(
   const normalized = raw.trim().toLowerCase();
   if (!isAgentSkillClient(normalized)) {
     throw new InvalidArgumentError(
-      `Unknown agent tool "${raw}". Use claude or codex.`,
+      `Unknown agent tool "${raw}". Use one of: ${SUPPORTED_AGENT_SKILL_CLIENTS.join(", ")}.`,
     );
   }
   return [...previous, normalized];
@@ -122,8 +124,9 @@ function renderAgentSkillSyncReport(report: AgentAssetsReport): void {
     console.warn(`! ${warning.message}`);
     if (warning.resolution) console.warn(`  ${warning.resolution}`);
   }
-  const clients = report.clients.map((client) => client === "claude" ? "Claude Code" : "Codex");
-  const clientList = clients.length === 2 ? `${clients[0]} and ${clients[1]}` : clients[0]!;
+  const clientList = new Intl.ListFormat("en").format(
+    report.clients.map((client) => AGENT_SKILL_TARGETS[client].displayName),
+  );
   const newSession = `a new ${clientList} session to guarantee the synced skills and project instructions are loaded.`;
   if (report.conflicted) {
     console.warn(`Resolve the reported conflicts and rerun mex skills sync. Then start ${newSession}`);
@@ -415,7 +418,7 @@ skillsCommand
   .option("--json", "Emit one machine-readable sync report")
   .option(
     "--tool <tool>",
-    "Sync one supported client (claude or codex); repeat to select both",
+    `Sync one supported client (${SUPPORTED_AGENT_SKILL_CLIENTS.join(", ")}); repeat to select several`,
     collectAgentSkillClient,
     [],
   )
@@ -428,7 +431,7 @@ skillsCommand
       const clients = [...new Set(opts.tool.length > 0 ? opts.tool : configured)];
       if (clients.length === 0) {
         throw new Error(
-          "No supported agent is selected. Run mex setup or pass --tool claude and/or --tool codex.",
+          `No supported agent is selected. Run mex setup or pass --tool with one of: ${SUPPORTED_AGENT_SKILL_CLIENTS.join(", ")}.`,
         );
       }
       const { syncAgentAssets } = await import("./agent-skills/index.js");
