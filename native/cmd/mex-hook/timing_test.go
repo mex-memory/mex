@@ -315,7 +315,7 @@ func measureNoOp(t *testing.T, counters bool) {
 		callOnce(t, shim, mexHome)
 		callOnce(t, floor, mexHome)
 	}
-	before := 0
+	before, committedBefore := 0, 0
 	var observer *sql.DB
 	if counters {
 		var err error
@@ -328,7 +328,14 @@ func measureNoOp(t *testing.T, counters bool) {
 		// Reuse one read-only observer. Reopening a pager between every call
 		// adds unrelated filesystem/sidecar work. QueryRow.Scan completes each
 		// read transaction before the next hook starts; no read lock is held.
-		before = readHookCount(t, observer)
+		committedBefore = readHookCount(t, observer)
+		// Warmup calls can still be deferred under the production write budget.
+		// Include those calls in the baseline before a measured call flushes
+		// them; otherwise that flush looks like duplicate measured counters.
+		before = committedBefore + pendingHookCalls(t, location)
+		if before != 10 {
+			t.Fatalf("warmup calls: counted=%d pending=%d want=10", committedBefore, before-committedBefore)
+		}
 	}
 	const runs = 200
 	// Measure actual captured calls. A write that misses its production
@@ -342,7 +349,7 @@ func measureNoOp(t *testing.T, counters bool) {
 	}
 	shimRuns := make([]time.Duration, 0, runs)
 	floorRuns := make([]time.Duration, 0, runs)
-	attempts, last := 0, before
+	attempts, last := 0, committedBefore
 	for attempts < limit && len(shimRuns) < runs {
 		attempts++
 		shimTime := callOnce(t, shim, mexHome)
