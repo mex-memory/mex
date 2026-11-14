@@ -4,8 +4,10 @@ import { buildModelCommand } from "./command.js";
 import { ModelRunError } from "./errors.js";
 import { selectModel, type ModelAgent, type ModelSelection } from "./models.js";
 import { runModelProcess, MAX_PROCESS_TIMEOUT_MS, type ModelProcessOptions, type ModelProcessResult } from "./process.js";
+import type { AutomaticModelBatch } from "./budget-queue.js";
 
 export { ModelRunError } from "./errors.js";
+export { ModelWaitError } from "./budget-queue.js";
 export { DEFAULT_MODELS, selectModel } from "./models.js";
 export type { ModelAgent, ModelRole, ModelSetup, ModelTable } from "./models.js";
 export const MAX_MODEL_PROMPT_BYTES = 1024 * 1024;
@@ -21,6 +23,8 @@ export interface ModelRequest extends ModelSelection {
   /** Total wall-clock budget, in addition to the shared inactivity deadline. */
   timeoutMs?: number;
   allowNonGit?: boolean;
+  /** Automatic work reserves allowance; explicit commands omit this and remain uncapped. */
+  automatic?: AutomaticModelBatch;
   /** Tests only; product requests never supply transports. */
   __internal?: ModelProcessOptions["__internal"];
 }
@@ -59,6 +63,7 @@ export async function runModel(request: ModelRequest): Promise<ModelResult> {
     const result = await runModelProcess(request.agent, invocation, resolve(request.projectRoot), {
       prompt: request.prompt, input: request.prompt, purpose: request.purpose,
       maxLineBytes: MAX_MODEL_STREAM_BYTES,
+      requestedModel: model, automatic: request.automatic,
       signal: controller.signal, timeoutMs: timeout,
       totalTimeoutMs: Number.isFinite(timeout) ? Math.max(1, Math.min(MAX_PROCESS_TIMEOUT_MS, timeout)) : MAX_PROCESS_TIMEOUT_MS,
       onStdoutChunk: chunk => {

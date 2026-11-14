@@ -1,7 +1,8 @@
 import crossSpawn from "cross-spawn";
 import type { ChildProcess } from "node:child_process";
 import type { AgentCommand, BackgroundAgentTool } from "../agent-command.js";
-import { createCallUsage, recordModelCall } from "../record/usage.js";
+import { createCallUsage, recordModelCall, warnUsageFailure } from "../record/usage.js";
+import { acquireModelAdmission, type AutomaticModelBatch, type ModelAdmission } from "./budget-queue.js";
 import { createPopulationActivityDecoder, USAGE_LIMIT_PATTERN, usageLimitResetTime, type PopulationActivitySignal, type PopulationAgentUsage } from "./activity.js";
 import { createPopulationTranscriptDecoder, type PopulationTranscriptSignal } from "./transcript.js";
 import { ModelRunError, type ModelFailure } from "./errors.js";
@@ -18,6 +19,9 @@ export interface ModelProcessOptions {
   timeoutMs?: number;
   totalTimeoutMs?: number;
   maxLineBytes?: number;
+  requestedModel?: string;
+  automatic?: AutomaticModelBatch;
+  queueTimeoutMs?: number;
   onStdoutChunk?: (chunk: Buffer) => void;
   onActivity?: (activity: PopulationActivitySignal & { tool: BackgroundAgentTool }) => void;
   onTranscript?: (entry: PopulationTranscriptSignal & { tool: BackgroundAgentTool }) => void;
@@ -26,11 +30,25 @@ export interface ModelProcessOptions {
 }
 export interface ModelProcessResult { usage: ReturnType<ReturnType<typeof createCallUsage>["finish"]>; }
 
-export function runModelProcess(
+export async function runModelProcess(
   tool: BackgroundAgentTool,
   invocation: AgentCommand,
   cwd: string,
   options: ModelProcessOptions,
+): Promise<ModelProcessResult> {
+  const modelIndex = invocation.args.indexOf("--model");
+  const model = options.requestedModel ?? (modelIndex >= 0 ? invocation.args[modelIndex + 1] : undefined) ?? "unknown";
+  const admission = await acquireModelAdmission({ agent: tool, model, projectPath: cwd, automatic: options.automatic }, options.signal, options.queueTimeoutMs);
+  try { return await runOwnedProcess(tool, invocation, cwd, options, admission); }
+  finally { admission?.close(); }
+}
+
+function runOwnedProcess(
+  tool: BackgroundAgentTool,
+  invocation: AgentCommand,
+  cwd: string,
+  options: ModelProcessOptions,
+  admission?: ModelAdmission,
 ): Promise<ModelProcessResult> {
   if (options.signal?.aborted) return Promise.reject(new ModelRunError("cancelled"));
   const requestedTimeout = options.timeoutMs ?? MAX_PROCESS_TIMEOUT_MS;
@@ -63,7 +81,7 @@ export function runModelProcess(
       try { options.onActivity?.({ tool, ...activity }); } catch { /* observation only */ }
     };
     const decoder = createPopulationActivityDecoder(tool, emitActivity, options.maxLineBytes);
-    const accounting = createCallUsage(tool, options.prompt, options.maxLineBytes);
+    const accounting = createCallUsage(tool, options.prompt, options.maxLineBytes, event => admission?.observe(event));
     const transcript = options.onTranscript ? createPopulationTranscriptDecoder(tool, (entry) => {
       if (closing || failure || options.signal?.aborted) return;
       try { options.onTranscript?.({ tool, ...entry }); } catch { /* observation only */ }
@@ -126,9 +144,12 @@ export function runModelProcess(
         try { options.onUsage?.(decoder.usage); } catch { /* observation only */ }
       }
       const measured = accounting.finish();
+      let recorded = true;
       for (const usage of measured.byModel ?? [measured]) {
-        recordModelCall({ ...usage, ...(measured.sessionId ? { sessionId: measured.sessionId } : {}), agent: tool, purpose: options.purpose, projectPath: cwd });
+        const saved = recordModelCall({ ...usage, ...(measured.sessionId ? { sessionId: measured.sessionId } : {}), agent: tool, purpose: options.purpose, projectPath: cwd, batchId: admission?.id }, admission ? { home: admission.home } : {});
+        recorded = saved && recorded;
       }
+      try { admission?.finish(measured, recorded); } catch { warnUsageFailure(); }
       if (options.signal?.aborted) reject(new ModelRunError("cancelled", tool));
       else if (failure) reject(failure);
       // A limit notice in a session that still finished cleanly is advisory.
