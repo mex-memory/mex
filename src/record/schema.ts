@@ -1,5 +1,5 @@
 /** Node alone owns these numbered, forward-only record.db migrations. */
-export const RECORD_SCHEMA_VERSION = 3;
+export const RECORD_SCHEMA_VERSION = 4;
 export interface Migration { version: number; sql: string; }
 export const recordMigrations: readonly Migration[] = [{ version: 1, sql: `
 CREATE TABLE IF NOT EXISTS projects (
@@ -106,4 +106,25 @@ CREATE TABLE background (
  request TEXT CHECK(request IN ('exit')), hub_until TEXT, spawned_at TEXT
 );
 INSERT INTO background(id) VALUES(1);
+` }, { version: 4, sql: `
+CREATE TABLE model_batches (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ agent TEXT NOT NULL, requested_model TEXT NOT NULL,
+ automatic INTEGER NOT NULL CHECK(automatic IN (0,1)),
+ state TEXT NOT NULL CHECK(state IN ('queued','running','done','cancelled','interrupted')),
+ owner TEXT NOT NULL, pid INTEGER NOT NULL CHECK(pid>0),
+ project_id TEXT REFERENCES projects(id), job_id TEXT REFERENCES jobs(id), job_batch INTEGER,
+ created_at TEXT NOT NULL, admitted_at TEXT, finished_at TEXT,
+ reserved_units INTEGER NOT NULL CHECK(reserved_units>=0),
+ charged_units INTEGER NOT NULL DEFAULT 0 CHECK(charged_units>=0),
+ estimated INTEGER NOT NULL DEFAULT 1 CHECK(estimated IN (0,1)),
+ pricing TEXT NOT NULL CHECK(length(pricing)<=4096),
+ wait_reason TEXT CHECK(wait_reason IN ('cap','fallback','usage-window','off','queue','storage','pricing'))
+);
+CREATE INDEX model_batches_queue ON model_batches(state,id);
+CREATE UNIQUE INDEX model_batches_one_running ON model_batches(state) WHERE state='running';
+CREATE INDEX model_batches_spend ON model_batches(automatic,admitted_at);
+CREATE INDEX model_batches_job ON model_batches(job_id,job_batch,id);
+ALTER TABLE model_calls ADD COLUMN batch_id INTEGER REFERENCES model_batches(id);
+CREATE INDEX model_calls_batch ON model_calls(batch_id);
 ` }];

@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -23,14 +24,30 @@ func (hooks *Hooks) RecordHookUsage(day, agent string, sessionStart, failed bool
 // Correctness tests can exercise the same atomic operation with a fixture
 // deadline, independently of the exported best-effort production call.
 func (hooks *Hooks) recordHookUsage(day, agent string, sessionStart, failed bool, elapsedMS int64, timeout time.Duration) error {
-	if _, err := time.Parse("2006-01-02", day); err != nil {
+	names, err := usageNames(day, agent, sessionStart, failed, elapsedMS)
+	if err != nil {
 		return err
 	}
+	counts := map[counterKey]int{}
+	for _, name := range names {
+		counts[counterKey{day, name}]++
+	}
+	return hooks.addCounts(counts, timeout)
+}
+
+// counterKey is one row of counters_go.
+type counterKey struct{ day, name string }
+
+// usageNames lists the counters one hook call adds to.
+func usageNames(day, agent string, sessionStart, failed bool, elapsedMS int64) ([]string, error) {
+	if _, err := time.Parse("2006-01-02", day); err != nil {
+		return nil, err
+	}
 	if agent != "claude-code" && agent != "codex" {
-		return fmt.Errorf("unknown telemetry agent")
+		return nil, fmt.Errorf("unknown telemetry agent")
 	}
 	if elapsedMS < 0 {
-		return fmt.Errorf("negative hook duration")
+		return nil, fmt.Errorf("negative hook duration")
 	}
 	bucket := 5
 	for i, upper := range []int64{0, 1, 5, 20, 100} {
@@ -39,12 +56,24 @@ func (hooks *Hooks) recordHookUsage(day, agent string, sessionStart, failed bool
 			break
 		}
 	}
-	names := []string{"hook.calls", fmt.Sprintf("hook.ms.%d", bucket)}
+	short := []string{"hook.calls", fmt.Sprintf("hook.ms.%d", bucket)}
 	if sessionStart {
-		names = append(names, "sessions")
+		short = append(short, "sessions")
 	}
 	if failed {
-		names = append(names, "hook.errors")
+		short = append(short, "hook.errors")
+	}
+	names := make([]string, len(short))
+	for i, name := range short {
+		names[i] = "agent:" + agent + ":" + name
+	}
+	return names, nil
+}
+
+// addCounts adds every count in one statement, within the deadline.
+func (hooks *Hooks) addCounts(counts map[counterKey]int, timeout time.Duration) error {
+	if len(counts) == 0 {
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -60,15 +89,25 @@ func (hooks *Hooks) recordHookUsage(day, agent string, sessionStart, failed bool
 			return err
 		}
 	}
-	values := make([]string, 0, len(names))
-	args := make([]any, 0, 2*len(names))
-	for _, name := range names {
-		values = append(values, "(?,?,1)")
-		args = append(args, day, "agent:"+agent+":"+name)
+	keys := make([]counterKey, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].day != keys[j].day {
+			return keys[i].day < keys[j].day
+		}
+		return keys[i].name < keys[j].name
+	})
+	values := make([]string, 0, len(keys))
+	args := make([]any, 0, 3*len(keys))
+	for _, key := range keys {
+		values = append(values, "(?,?,?)")
+		args = append(args, key.day, key.name, counts[key])
 	}
 	// One SQLite statement is atomic, including a constraint/trigger failure.
 	// Avoid a separate BEGIN, statement per counter, and COMMIT for every hook.
 	_, err = conn.ExecContext(ctx, "INSERT INTO main.counters_go(day,name,value) VALUES"+strings.Join(values, ",")+
-		" ON CONFLICT(day,name) DO UPDATE SET value=min(2147483647,value+1)", args...)
+		" ON CONFLICT(day,name) DO UPDATE SET value=min(2147483647,value+excluded.value)", args...)
 	return err
 }

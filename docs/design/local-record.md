@@ -28,8 +28,14 @@ an error the hook caller ignores, allowing the agent call. Never use SQLite's
 `immutable` option for these live databases: readers must see WAL commits.
 
 Telemetry counter writers use a 1 ms busy timeout and separate 10 ms open and
-write deadlines, skipping measurement when either budget expires. Each hook's
-counter increments form one atomic SQLite statement. These short-lived writers
+write deadlines. When either budget expires, the hook appends its counts to
+`<record directory>/counters-pending` (one `day<TAB>name<TAB>n` line per
+counter, at most 64 KiB) instead of dropping them. The next hook renames that
+file to its own claim, adds the counts to its write and removes it; if that
+write misses too, everything goes back to the file. Only hook counter names
+are read back. A process that dies between the claim and its write loses
+those counts; nothing is counted twice. Each hook's counter increments form
+one atomic SQLite statement. These short-lived writers
 retain the WAL sidecar files for reuse across processes. A private `mode=ro`
 attachment keeps a read-only pager alive while the writable main pager closes,
 leaving committed counters in WAL instead of checkpointing every hook and
@@ -63,9 +69,10 @@ and preserves compatible existing rows. Arbitrary historical layouts are not
 a supported migration input; no version-0 schema was shipped. Future structural
 changes need a numbered migration rather than editing migration 1.
 
-Current versions: **record.db = 2; hooks.db = 1**. Node migration 2 adds only
-own-usage reader bookkeeping and plan-window tables; all version-1 definitions
-and rows are preserved. Go's read-only record reader recognizes version 2;
+Current versions: **record.db = 4; hooks.db = 1**. Migration 2 adds own-usage
+reader bookkeeping/windows; migration 3 adds jobs/background ownership;
+migration 4 adds model admissions and call attribution. Earlier definitions
+and rows are preserved. Go's read-only record reader recognizes version 4;
 its hooks writer/migrations remain at version 1.
 
 A writer seeing a newer version refuses to write, with the file, found version,
@@ -304,6 +311,7 @@ its logical writer. Go and Node may read every table.
 | `job_results` | PK (`job_id`,`batch`); `summary` | Job runner, per batch |
 | `model_calls` | INTEGER PK `id`; `ts`, nullable `project_id`, `purpose`, `agent`, `model`, `input`, `cache_write`, `cache_read`, `output`, `estimated`; migration 2 adds `kind` (headless/interactive, default headless) and nullable `session_id` | Model-call accounting boundary |
 | `own_usage` | PK (`day`,`agent`); `input`, `cache_write`, `cache_read`, `output`, `estimated` | Own-usage log reader |
+| `model_batches` (migration 4) | Integer queue PK; admission/owner/project/job identity, automatic mode, state/times, reserved/charged reference units, estimated pricing profile and waiting reason; one running row per machine | Shared model admission owner; `model_calls.batch_id` links calls |
 | `usage_files` (migration 2) | PK `path`; `agent` (claude/codex), `root`, `identity`, nonnegative `offset` and last observed `size`, `anchor`, JSON `state`, file `mtime`, line counts `usage_lines`, `skipped_lines`, `problem_lines`, and 0/1 `failed` (the file itself couldn't be read) | Own-usage log reader |
 | `usage_events` (migration 2) | PK (`agent`,`event_id`); `day`, four nonnegative token classes | Own-usage deduplication/attribution |
 | `usage_snapshots` (migration 2) | PK (`session_id`,`day`); nonnegative cumulative `input`, `cache_read`, `output` | Codex daily cumulative endpoints |
@@ -366,10 +374,11 @@ when complete and consistent with terminal totals, produces separate model rows.
 
 ### Kept call sites
 
-All headless setup agents pass through `src/setup/headless-population.ts`, using
-the arguments constructed by `src/agent-command.ts`. A separate bounded observer
-does not change the existing activity/transcript/usage callbacks, flags, agent
-selection, permissions, success/failure handling or stdout. It records after
+All headless setup agents pass through `src/setup/headless-population.ts` and
+the shared `src/model-runner/process.ts` owner, also used by the one-shot text
+API. Argument/model policy is described in [model-runner.md](model-runner.md).
+The bounded observer preserves the existing activity/transcript/usage callbacks,
+agent selection, permissions, success/failure handling and stdout. It records after
 pipe drains, including failed/cancelled attempts. One row represents an agent
 invocation's reported aggregate (or one row per reported model), including its
 turns, tools and retries; assistant block usage and terminal totals are never
@@ -509,6 +518,58 @@ details are saved. Missing information returns no window, not inferred room.
 Claude transcripts need not contain these events; no real local transcripts
 were inspected to claim their availability. Cap policy, pausing, model choice,
 session invisibility and token levers are separate work.
+
+## Model admissions and automatic allowance
+
+Node migration 4 adds `model_batches`: integer queue ID, agent/requested model,
+automatic flag, queued/running/done/cancelled/interrupted state, owner/PID,
+nullable project/job/batch attribution, created/admitted/finished times,
+reserved/charged integer reference-price units, estimated flag, bounded pricing
+JSON and an allowlisted waiting reason. A partial unique index permits one
+running model batch for the machine. `model_calls.batch_id` is a nullable
+foreign key; old calls stay untagged. No prompt or reply is saved in this ledger.
+
+The admission owner in `src/model-runner/budget-queue.ts` commits before a child
+starts. Automatic calls explicitly supply a bounded token estimate; process
+foreground/background status does not determine whether spending is automatic.
+Claims check spend, reservations, controls and visible plan windows in one write
+transaction. No transaction spans a model run or queue wait. All supported MEX
+headless invocations, including explicit setup, use this lane.
+
+Start at 3% of the larger of seven UTC days and one quarter of 28 UTC days, with
+a seven-reference-batch floor. The fixed reference batch is 4,000 input and
+1,000 output tokens, valued at the largest shipped agent reference profile.
+When no own usage is readable, the fallback is seven admitted automatic attempts
+in seven UTC days. Failed/interrupted attempts count; unstarted cancellations
+do not. Retries reserve again. Explicit commands are logged and uncapped.
+
+Weights are reference-price estimates, never subscription bills. Own-usage logs
+lack model labels; fixed per-agent reference weights and conservative subtraction
+of MEX headless tokens value the baseline without changing source counters.
+Read projections label this estimated and name the profile. Unknown requested
+automatic model prices hold work; observed missing model labels remain unknown.
+Price data, long-context/cache assumptions and limits are in model-budget.md.
+
+Reported usage settles a reservation after pipe closure. Missing/estimated
+accounting retains at least the reservation. A dead admitted owner leaves a
+conservative charge, including linked usage when present; live owners are not
+displaced on a timer. Reported actual overshoot is charged before another
+admission. This is admission control, not a hard provider token/dollar quota.
+
+Unexpired selected-agent windows at 75% or rejected hold automatic work.
+Observations from logs and ephemeral model output use the same normalizer;
+only bounded numeric/status/window data is kept. Missing room is unknown.
+Eligible explicit commands precede automatic work; automatic work prefers
+visible sooner resets, with FIFO ties. Cap/window holds do not block an eligible
+explicit command or another provider. Queue waits are at most 30 seconds, with
+256 pending admissions; automatic jobs yield rather than occupying the worker.
+
+Job holds preserve checkpoint, batch number and failure count and requeue when
+their condition clears. The job writer's home is carried through admission and
+accounting. Hooks never join or wait on the queue. Automatic storage failure
+holds work. If the record cannot even open for an explicit command, its existing
+continue-with-warning accounting behavior remains; coordination is unavailable
+for that degraded run. No automatic call uses that fallback.
 
 ## Jobs and the background process
 
@@ -679,6 +740,7 @@ missing or unreadable file means "MEX is off here", which is the safe answer.
 | --- | --- | --- | --- |
 | `<record directory>/hook-checkouts/<key>.json` | Node, `src/record/hook-checkouts.ts`, after any change to a `checkouts` row (`RecordWriter.writeHookCheckouts()`; registration calls it, `mex off`/`on` must too) and on the first open of a record that has none | the shim, `native/internal/hook/checkout.go` | `{"version":1,"project_id","root","state","off_until","provisional"}`, one per `checkouts` row; `key` is the 24-hex short hash of `root`, the real checkout path |
 | `<record directory>/hook-notices/off-<key>` | the shim | the shim | created with exclusive-create when the "MEX is off here" notice is shown; `key` is the short hash of the repo root (nearest folder holding `.git`, else the folder) |
+| `<record directory>/counters-pending` | the shim, when a counter write misses its deadline | the shim, on its next counter write | `day<TAB>name<TAB>n` lines of hook counters only; at most 64 KiB; claimed by rename (`counters-pending.<pid>.claim`) and removed once added |
 | `<MEX home>/bin/launcher.json` | Node CLI, after every command (`src/hooks/shim/launcher.ts`), only when the home exists and the entry is a built `.js` | the shim | `{"version":1,"node","entry"}`: how to start `node <entry> __ensure-background` |
 | `<MEX home>/heartbeats/<agent>/<session>` | the shim | `mex-hook --status` | one small JSON file per session; its modification time is the last hook call; pruned after 7 days at session start |
 | `<record directory>/index-checkouts/<key>.json` | Node, file index | the shim | see the file index contract |

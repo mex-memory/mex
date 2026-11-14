@@ -33,6 +33,8 @@ export interface ModelCall extends Tokens {
   projectId?: string; projectPath?: string; timestamp?: string;
   /** The agent's own session id for a headless run, when its output reports one. */
   sessionId?: string;
+  /** Internal admission attribution; observed provider model remains independent. */
+  batchId?: number;
 }
 /**
  * An interactive session MEX opens is driven and watched by the person. Its real tokens land in the
@@ -56,6 +58,7 @@ function warnOnExit(): void {
   process.once("exit", () => { try { process.stderr.write(`${USAGE_WARNING}
 `); } catch { /* observation only */ } });
 }
+export function warnUsageFailure(): void { warnOnExit(); }
 /** Test seam: whether a deferred warning is waiting for process exit. */
 export function usageWarningPending(): boolean { return warningPending; }
 
@@ -67,9 +70,9 @@ function insertCall(call: ModelCall & { kind: "headless" | "interactive" }, opti
     writer = (options.open ?? openRecord)({ ...options, projectPath: call.projectPath });
     const project = call.projectId ?? (call.projectPath ? writer.checkout(call.projectPath)?.project_id : undefined);
     const session = typeof call.sessionId === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(call.sessionId) ? call.sessionId : null;
-    writer.db.prepare(`INSERT INTO model_calls(ts,project_id,purpose,agent,model,input,cache_write,cache_read,output,estimated,kind,session_id)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(ts, project ?? null, call.purpose, call.agent, call.model,
-        call.input, call.cache_write, call.cache_read, call.output, Number(call.estimated), call.kind, session);
+    writer.db.prepare(`INSERT INTO model_calls(ts,project_id,purpose,agent,model,input,cache_write,cache_read,output,estimated,kind,session_id,batch_id)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(ts, project ?? null, call.purpose, call.agent, call.model,
+        call.input, call.cache_write, call.cache_read, call.output, Number(call.estimated), call.kind, session, call.batchId ?? null);
     return true;
   } catch {
     try { if (options.warn) options.warn(USAGE_WARNING); else warnOnExit(); } catch { /* observation only */ }
@@ -130,7 +133,7 @@ export function jsonLines(consume: (event: Record<string, unknown>) => void, inv
 }
 
 /** One headless invocation, including every reported turn; Claude's terminal total wins. */
-export function createCallUsage(agent: string, sent: string) {
+export function createCallUsage(agent: string, sent: string, maxLineBytes = 1024 * 1024, onEvent?: (event: Record<string, unknown>) => void) {
   let outputBytes = 0, model = "unknown", terminal: Tokens | undefined, sessionId: string | undefined;
   let byModel: Array<Tokens & { model: string; estimated: boolean }> | undefined;
   let incomplete = false;
@@ -148,6 +151,7 @@ export function createCallUsage(agent: string, sent: string) {
     seen.set(key, next);
   };
   const decoder = jsonLines((e) => {
+    try { onEvent?.(e); } catch { warnOnExit(); }
     const message = object(e.message);
     const label = message?.model ?? e.model;
     if (typeof label === "string" && /^[a-zA-Z0-9_.:/-]{1,128}$/.test(label)) { model = label; models.add(label); }
@@ -195,7 +199,7 @@ export function createCallUsage(agent: string, sent: string) {
         }
       }
     }
-  }, () => { incomplete = true; });
+  }, () => { incomplete = true; }, Number.isSafeInteger(maxLineBytes) && maxLineBytes > 0 ? Math.min(maxLineBytes, 8 * 1024 * 1024) : 1024 * 1024);
   return {
     write(chunk: Buffer) { outputBytes += chunk.length; decoder.write(chunk); },
     finish() {

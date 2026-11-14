@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,16 @@ func TestHooksAccumulateOnlyLocalCounters(t *testing.T) {
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
+	}
+	// A write that missed its 10 ms deadline waits in the pending file for the
+	// next call; together nothing is lost.
+	if pending, err := os.ReadFile(filepath.Join(location.Directory, localrecord.PendingCountersName)); err == nil {
+		for _, line := range strings.Split(string(pending), "\n") {
+			if parts := strings.Split(line, "\t"); len(parts) == 3 {
+				n, _ := strconv.Atoi(parts[2])
+				values[parts[1]] += n
+			}
+		}
 	}
 	if values["agent:claude-code:sessions"] != 1 || values["agent:claude-code:hook.calls"] != 2 {
 		t.Fatalf("counts: %v", values)

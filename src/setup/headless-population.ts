@@ -1,6 +1,6 @@
 import crossSpawn from "cross-spawn";
-import { createCallUsage, recordModelCall } from "../record/usage.js";
-import type { ChildProcess } from "node:child_process";
+import { runModelProcess } from "../model-runner/process.js";
+import { ModelRunError } from "../model-runner/errors.js";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
@@ -15,13 +15,10 @@ import {
 } from "../agent-command.js";
 import { AI_TOOLS, type AiTool } from "../types.js";
 import {
-  createPopulationActivityDecoder,
-  USAGE_LIMIT_PATTERN,
-  usageLimitResetTime,
   type PopulationActivitySignal,
   type PopulationAgentUsage,
 } from "./population-activity.js";
-import { createPopulationTranscriptDecoder, type PopulationTranscriptSignal } from "./population-transcript.js";
+import { type PopulationTranscriptSignal } from "./population-transcript.js";
 import { createPopulationSession, SetupPopulationError } from "./population.js";
 
 import { parsePlanState, SETUP_PLAN_STATE_FILE, type SetupPlanState } from "./subsystem-state.js";
@@ -43,9 +40,6 @@ export interface HeadlessPopulationLaunchResult {
   readonly completed: boolean;
 }
 
-const POPULATION_TIMEOUT_MS = 15 * 60_000;
-const TERMINATE_GRACE_MS = 500;
-const DIAGNOSTIC_BYTES = 8 * 1024;
 const DISCOVERY_TIMEOUT_MS = 5_000;
 
 export interface HeadlessPopulationOptions {
@@ -280,185 +274,22 @@ export function acquireCursorPermissions(projectRoot: string): (() => void) | nu
   };
 }
 
-function runHeadlessAgent(
+async function runHeadlessAgent(
   tool: BackgroundAgentTool,
   instruction: string,
   cwd: string,
   options: HeadlessPopulationOptions,
 ): Promise<boolean> {
-  if (options.signal?.aborted) return Promise.reject(new HeadlessPopulationError("cancelled"));
+  if (options.signal?.aborted) throw new HeadlessPopulationError("cancelled");
   const invocation = buildAgentCommand(tool, instruction, "headless", { allowNonGit: options.allowNonGit });
-  if (invocation === null) return Promise.reject(new HeadlessPopulationError("launch", tool));
-  let releasePermissions: (() => void) | null = null;
-  if (tool === "cursor") {
-    releasePermissions = acquireCursorPermissions(cwd);
-    if (releasePermissions === null) return Promise.reject(new HeadlessPopulationError("launch", tool));
-  }
-  const requestedTimeout = options.timeoutMs ?? POPULATION_TIMEOUT_MS;
-  const timeoutMs = Number.isFinite(requestedTimeout)
-    ? Math.max(1, Math.min(POPULATION_TIMEOUT_MS, requestedTimeout))
-    : POPULATION_TIMEOUT_MS;
-  return new Promise((resolve, reject) => {
-    let child: ChildProcess;
-    try {
-      child = (options.__internal?.spawn ?? crossSpawn)(invocation.command, invocation.args, {
-        cwd,
-        ...(invocation.env === undefined ? {} : { env: { ...process.env, ...invocation.env } }),
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        // POSIX process groups include agent-created shell/worker descendants.
-        detached: process.platform !== "win32",
-      });
-    } catch {
-      releasePermissions?.();
-      reject(new HeadlessPopulationError("launch", tool));
-      return;
-    }
-    const stdout = boundedDiagnostic();
-    const stderr = boundedDiagnostic();
-    let failure: HeadlessPopulationError | undefined;
-    let treeCleanup: Promise<void> | undefined;
-    let closing = false;
-    const emitActivity = (activity: PopulationActivitySignal) => {
-      if (closing || failure || options.signal?.aborted) return;
-      // An observer must not leave an otherwise healthy child unowned.
-      try { options.onActivity?.({ tool, ...activity }); } catch { /* observation only */ }
-    };
-    const decoder = createPopulationActivityDecoder(tool, emitActivity);
-    const accounting = createCallUsage(tool, options.prompt);
-    const transcript = options.onTranscript ? createPopulationTranscriptDecoder(tool, (entry) => {
-      if (closing || failure || options.signal?.aborted) return;
-      try { options.onTranscript?.({ tool, ...entry }); } catch { /* observation only */ }
-    }) : undefined;
-    child.stdout?.on("data", (chunk: Buffer) => {
-      accounting.write(chunk);
-      stdout.append(chunk);
-      // Count stdout records even when their type has no visible activity signal.
-      if (!closing && !failure && chunk.includes(10)) timer.refresh();
-      if (!closing && !failure && !options.signal?.aborted) {
-        decoder.write(chunk);
-        transcript?.write(chunk);
-      }
-    });
-    let stderrLimit = false;
-    let stderrReset: string | undefined;
-    let stderrTail = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr.append(chunk);
-      const text = stderrTail + chunk.toString("utf8");
-      stderrLimit ||= USAGE_LIMIT_PATTERN.test(text);
-      if (stderrLimit) stderrReset = usageLimitResetTime(text) ?? stderrReset;
-      stderrTail = text.slice(-512);
-    });
-    child.once("spawn", () => emitActivity({ kind: "starting", state: "running" }));
-    const stop = (reason: HeadlessPopulationError) => {
-      if (closing || failure) return;
-      failure = reason;
-      transcript?.dispose();
-      treeCleanup = terminateProcessTree(child);
-    };
-    const cancelled = () => stop(new HeadlessPopulationError("cancelled", tool));
-    const parentExit = () => killProcessTreeOnExit(child);
-    const timer = setTimeout(() => stop(new HeadlessPopulationError("timeout", tool)), timeoutMs);
-    timer.unref();
-    process.once("exit", parentExit);
-    options.signal?.addEventListener("abort", cancelled, { once: true });
-    child.once("error", () => stop(new HeadlessPopulationError("launch", tool)));
-    child.once("exit", () => {
-      // A successful POSIX child must not leave background helpers holding its
-      // pipes or editing after the prompt is removed. Windows cancellation uses
-      // taskkill while the parent PID is still alive, to retain the tree relation.
-      if (!treeCleanup && process.platform !== "win32") treeCleanup = terminateProcessTree(child);
-    });
-    child.once("close", async (code, signal) => {
-      // `close` follows the pipe drains, so a final JSON record without a newline
-      // is decoded before observers are detached and the launch promise settles.
-      decoder.end();
-      transcript?.end();
-      closing = true;
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", cancelled);
-      await treeCleanup;
-      process.removeListener("exit", parentExit);
-      releasePermissions?.();
-      if (decoder.usage) {
-        try { options.onUsage?.(decoder.usage); } catch { /* observation only */ }
-      }
-      const measured = accounting.finish();
-      for (const usage of measured.byModel ?? [measured]) {
-        recordModelCall({ ...usage, ...(measured.sessionId ? { sessionId: measured.sessionId } : {}), agent: tool, purpose: options.usagePurpose ?? "setup.population", projectPath: cwd });
-      }
-      if (options.signal?.aborted) reject(new HeadlessPopulationError("cancelled", tool));
-      else if (failure) reject(failure);
-      // A limit notice in a session that still finished cleanly is advisory.
-      else if ((decoder.usageLimited || stderrLimit) && (code !== 0 || signal || decoder.failed || !decoder.completed)) {
-        reject(new HeadlessPopulationError("usage_limit", tool, decoder.resetTime ?? stderrReset));
-      } else if (code !== 0 || signal || decoder.failed) {
-        reject(new HeadlessPopulationError(
-          decoder.usageLimited || USAGE_LIMIT_PATTERN.test(stderr.text()) ? "usage_limit" : classifyFailure(stderr.text(), stdout.text()),
-          tool,
-        ));
-      } else if (!decoder.completed) reject(new HeadlessPopulationError("protocol", tool));
-      else resolve(true);
-    });
-    try {
-      if (child.pid) options.__internal?.onSpawn?.(child.pid);
-    } catch {
-      stop(new HeadlessPopulationError("failed", tool));
-    }
-    if (options.signal?.aborted) cancelled();
-  });
-}
-
-function boundedDiagnostic(): { append: (chunk: Buffer) => void; text: () => string } {
-  const buffer = Buffer.alloc(DIAGNOSTIC_BYTES);
-  let length = 0;
-  return {
-    append: (chunk) => { length += chunk.copy(buffer, length, 0, Math.max(0, buffer.length - length)); },
-    text: () => buffer.subarray(0, length).toString("utf8"),
-  };
-}
-
-function classifyFailure(stderr: string, stdout: string): PopulationFailure {
-  const text = `${stderr}\n${stdout}`;
-  if (/unexpected argument|unknown (?:option|argument)|unrecognized (?:option|argument)/iu.test(text)) return "arguments";
-  if (/not (?:logged|signed) in|not authenticated|authentication (?:failed|required)|invalid api key|unauthorized|please (?:log|sign) in/iu.test(text)) return "authentication";
-  return "failed";
-}
-
-function signalProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (!child.pid) return;
-  try { process.kill(-child.pid, signal); } catch { child.kill(signal); }
-}
-
-function terminateProcessTree(child: ChildProcess): Promise<void> {
-  if (!child.pid) return Promise.resolve();
-  if (process.platform === "win32") {
-    return new Promise((resolve) => {
-      // cross-spawn may launch an npm .cmd wrapper; killing that wrapper alone
-      // leaves Node and its grandchildren running. Never involve a command shell.
-      const killer = crossSpawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-        stdio: "ignore", windowsHide: true, timeout: DISCOVERY_TIMEOUT_MS,
-      });
-      killer.once("error", () => { child.kill("SIGKILL"); resolve(); });
-      killer.once("close", () => { child.kill("SIGKILL"); resolve(); });
-    });
-  }
-  // Do not retain an unnecessary grace timer once the complete group is gone.
-  try { process.kill(-child.pid, 0); } catch { return Promise.resolve(); }
-  signalProcessGroup(child, "SIGTERM");
-  return new Promise((resolve) => {
-    setTimeout(() => { signalProcessGroup(child, "SIGKILL"); resolve(); }, TERMINATE_GRACE_MS);
-  });
-}
-
-function killProcessTreeOnExit(child: ChildProcess): void {
-  if (!child.pid) return;
-  if (process.platform === "win32") {
-    // Node's exit hook cannot await work. Normal Hub shutdown uses AbortSignal
-    // and the asynchronous path; this bounded fallback handles process.exit().
-    crossSpawn.sync("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-      stdio: "ignore", windowsHide: true, timeout: DISCOVERY_TIMEOUT_MS,
-    });
-  } else signalProcessGroup(child, "SIGKILL");
+  if (invocation === null) throw new HeadlessPopulationError("launch", tool);
+  const release = tool === "cursor" ? acquireCursorPermissions(cwd) : undefined;
+  if (release === null) throw new HeadlessPopulationError("launch", tool);
+  try {
+    await runModelProcess(tool, invocation, cwd, { ...options, purpose: options.usagePurpose ?? "setup.population" });
+    return true;
+  } catch (error) {
+    if (error instanceof ModelRunError) throw new HeadlessPopulationError(error.category === "output" ? "protocol" : error.category, tool, error.resetTime);
+    throw new HeadlessPopulationError("failed", tool);
+  } finally { release?.(); }
 }

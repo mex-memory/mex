@@ -128,7 +128,7 @@ export class RecordWriter {
     this.db.prepare("INSERT INTO projects(id,root_path,kind,shared,created_at) VALUES(?,?,'git',?,?) ON CONFLICT(id) DO NOTHING")
       .run(project.id, project.rootPath, previous.shared, previous.created_at);
     this.db.prepare("UPDATE projects SET shared=max(shared,?) WHERE id=?").run(previous.shared, project.id);
-    for (const table of ["jobs", "model_calls", "review"]) {
+    for (const table of ["jobs", "model_batches", "model_calls", "review"]) {
       this.db.prepare(`UPDATE ${table} SET project_id=? WHERE project_id=?`).run(project.id, oldId);
     }
     this.db.prepare("UPDATE checkouts SET project_id=?,provisional=NULL WHERE project_id=?").run(project.id, oldId);
