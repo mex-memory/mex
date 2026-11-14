@@ -25,6 +25,10 @@ type DeliveryCandidate struct {
 	EntryID, Moment, Form, Action, ContentHash string
 	Tokens                                     int
 	Reserved, Exempt                           bool
+	// Correction marks a short note that an entry given earlier in this
+	// epoch no longer holds. It is written once per entry per epoch, only
+	// when the entry was given, and always in the reserved lane.
+	Correction bool
 }
 type Receipt struct {
 	DeliveryCandidate
@@ -198,20 +202,31 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			return result, err
 		}
 	}
-	rows, err = conn.QueryContext(ctx, `SELECT DISTINCT entry_id FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? AND action IN ('given','replaced')`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout)
+	// logged keeps one withheld or held-back row per entry per epoch, and
+	// corrected one correction, so repeated moments don't grow the table.
+	logged := map[string]bool{}
+	corrected := map[string]bool{}
+	rows, err = conn.QueryContext(ctx, `SELECT entry_id,action,moment FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? LIMIT 20000`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout)
 	if err != nil {
 		return result, err
 	}
 	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
+		var id, action, moment string
+		if err = rows.Scan(&id, &action, &moment); err != nil {
 			break
 		}
 		id, err = canonical(id)
 		if err != nil {
 			break
 		}
-		present[id] = true
+		switch {
+		case moment == "correction":
+			corrected[id] = true
+		case action == "given" || action == "replaced":
+			present[id] = true
+		default:
+			logged[id+"\x00"+action] = true
+		}
 	}
 	err = errors.Join(err, rows.Err(), rows.Close())
 	if err != nil {
@@ -229,7 +244,12 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		if err != nil {
 			return result, err
 		}
-		if present[id] {
+		if c.Correction {
+			if !present[id] || corrected[id] {
+				continue
+			}
+			c.Action, c.Reserved = "withheld", true
+		} else if present[id] {
 			continue
 		}
 		if c.Action == "" {
@@ -240,6 +260,13 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			c.Action = "held-back"
 			sends = false
 		}
+		if !sends && !c.Correction {
+			key := id + "\x00" + c.Action
+			if logged[key] {
+				continue
+			}
+			logged[key] = true
+		}
 		receipt, err := receiptID()
 		if err != nil {
 			return result, err
@@ -249,6 +276,12 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			return result, err
 		}
 		result.Receipts = append(result.Receipts, Receipt{c, receipt, block})
+		if c.Correction {
+			corrected[id] = true
+			e.SessionTokens += c.Tokens
+			e.ReservedTokens += c.Tokens
+			continue
+		}
 		if sends {
 			present[id] = true
 			e.SessionTokens += c.Tokens

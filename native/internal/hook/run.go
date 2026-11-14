@@ -227,6 +227,14 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			return !os.IsNotExist(err)
 		}
 		return now.Sub(info.ModTime()) <= 30*24*time.Hour
+	}, Resolve: func(path string, isFile bool) (string, string) {
+		// Each touched path picks its own repo; one that is off or not
+		// registered gets nothing.
+		c, st := findCheckout(recordDirectory, path, isFile, now)
+		if st != switchedOn {
+			return "", ""
+		}
+		return c.ProjectID, c.Root
 	}})
 	if deliveryErr != nil {
 		failed = true

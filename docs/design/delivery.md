@@ -1,10 +1,11 @@
 # Delivery controller
 
 The Go shim calls `native/delivery.Handle` after its existing checkout,
-off-switch and session-pause gates. The controller is silent in this first
-slice. Session lifecycle owns durable epochs now; moments, verdict gates,
-admission scoring and rendering are added in subsequent slices. Events with
-no implemented moment return before any snapshot read or SQLite open.
+off-switch and session-pause gates. The controller is silent by default: a
+note goes out only when its moment comes, every hard gate passes and its
+verdict allows it, and the ledger admits it in the same transaction that
+records it. Events with no moment return before any snapshot read or SQLite
+open; events whose moments find no candidate return before SQLite.
 
 Each `(session_id, agent_id)` has its own epochs. Startup establishes an epoch;
 resume keeps it; clear, fork and compaction advance it. A subagent gets its own
@@ -83,21 +84,90 @@ status combines both sources. Whole-process timing qualification is recorded
 with the step report; a lifecycle/open probe includes the real transaction and
 is more work than the open-only sample above.
 
+## Moments
+
+| Kind | Moment | Trigger |
+| --- | --- | --- |
+| pitfall | `read` | First read this epoch of a file in its scope; one whose text says the files are generated also fires at an edit (`edit`) |
+| rule | `read-risk` | A read whose text contains one of its `when: anti` literal patterns. A rule with no pattern is never pushed at a read |
+| recipe | `command` | A shell command that runs the recipe's command: same tool and script, recipe arguments as a prefix. Package-manager `run`, launchers, leading `VAR=x` and anything after `--` are ignored |
+| hint (recorded fix) | `failure` | A failed command whose output contains the fix's `when: anti` signature whole (whitespace collapsed). Near misses stay silent. Codex failures are read from its `Exit code:` header |
+| decision | `rejected` | An edit, write or patch that adds the rejected option, in scope or in a manifest; or a typed prompt that names it as a word |
+| procedure | `create` | A new file matching its `when: creates` globs (or scope). Creation comes from the payload: Claude's Write response, Codex's `*** Add File` |
+| recipe | `prompt` | A typed prompt that asks to test, build, lint, typecheck, format, migrate, deploy or bench brings the recipe whose script names that word |
+
+Facts are not pushed at moments; their edit check is the next ticket's.
+
+Claude Code sends PostToolUse per call and PostToolBatch once per batch of
+parallel calls. Moments go out once per batch; PostToolUse delivers nothing
+there and stays for output trimming. Failures use their own event everywhere.
+
+## Gates
+
+- **Repo:** each touched path resolves its own registered checkout through the
+  hook checkout mirrors; a command uses its literal leading `cd` folder, else
+  the shell's folder. A path whose repo is off or unregistered gets nothing.
+- **Verdict:** the table below.
+- **Once per epoch,** after alias resolution, in the ledger transaction.
+- **Native coverage:** an entry read from a rule file the agent loads for that
+  path (Claude Code: `CLAUDE.md`, `CLAUDE.local.md` and `.claude/CLAUDE.md`
+  along the path, `.claude/rules/*.md`, and `AGENTS.md` where a folder has no
+  `CLAUDE.md`; Codex: `AGENTS.override.md` or `AGENTS.md` along the path) is
+  not sent; nor is an entry whose id marker `<!-- mex:<id> -->` is in one of
+  those files.
+- **Hints** observed in agent memory go out only when the Node side's mirror
+  `delivery-hints/<short hash of project id>.json` lists them, unexpired, for
+  this agent. No mirror means no hints.
+
+## Verdicts
+
+| Kind | held | changed | broken | unknown |
+| --- | --- | --- | --- | --- |
+| rule, decision, pitfall, procedure | full | full | withheld; one correction if given this epoch | full |
+| fact | full | pointer to today's code | withheld | pointer |
+| recipe | full | full while its script exists, else re-derived | re-derived, else withheld | full while its script exists, else re-derived |
+| hint (observed) | full | withheld | withheld | withheld |
+| team hint | full | withheld | withheld | full |
+| personal note | full | full | withheld | full |
+
+A pointer names the symbol and its current line range from the file index
+(or the file when the symbol can't be placed) and never repeats the claim; no
+location means withheld. Re-derivation reads the recipe's manifest and up to 63
+workspace manifests (`packages/*`, `apps/*`, `libs/*`, `services/*`), scores
+script names by shared name parts and the recipe's own words, and answers only
+when one script wins by a clear margin. An observed hint with no checks has an
+unknown verdict and is withheld, so recorded fixes need a check to be sent.
+
+## Admission and form
+
+Candidates are packed per reply: failure fixes first, then trigger strength
+(exact pattern, command, file, folder, prompt), then evidence. The first item
+goes in full when it fits under the 600-token moment ceiling, the rest in
+one-line form; items that don't fit are logged as held back. Companions travel
+in one-line form beyond the ceiling. Under the ledger lock each item must clear
+the online-knapsack bar psi(z) = (U*e/L)^z * (L/e) for value per token, where z
+is the share of the epoch budget used; past three epoch budgets in a session z
+rises by 0.5. Exact matches and failure fixes are exempt from the budget;
+failure fixes and corrections use the reserved lane. Withheld and held-back
+outcomes are logged once per entry per epoch.
+
+The rendered block is `[mex <block id>]` then one line per item, ending with
+the entry id so the agent can ask for more. No warnings and no clock times.
+
 ## Contract changes to copy
 
 - Hook events: optional normalized `model` on session start; a rendered block's
   id names committed receipt rows through `deliveries.block_id`.
 - Local record: hooks schema version 2, the epoch/delivery columns, aliases,
   bounded pruning, database/file heartbeat fallback and delivery cache above.
-- Entry file: no change in this slice. There is no successor metadata field.
-  Native coverage markers and InstructionsLoaded belong to the next slice.
+- Hook events: `kind` (`add`, `update`, `delete`) on patch files.
+- Entry file: the native coverage marker `<!-- mex:<id> -->` for entries
+  written into agent rule files; a recorded fix is a `hint` whose `when: anti`
+  literal is its failure signature. There is no successor metadata field.
+- Hint mirror file `delivery-hints/<short hash>.json`, written by Node.
 
 ## Remaining slices
 
-Moment matching and per-tool checkout resolution precede snapshot candidates.
-Hard gates include scope, verdict, presence/aliases, native coverage and consent.
-Verdict forms withhold broken text and turn changed code facts into real current
-code pointers. Main admission adds the rising bar and per-moment form choice;
-the small renderer emits one committed marker block. Batch collection and the
-reserved lane follow, then recovery/resume/rewind/subagent briefs. A final
-deterministic corpus and demo qualify the complete controller.
+Batch latency and the reserved lane's limits follow, then
+recovery/resume/rewind/subagent briefs. A final deterministic corpus and demo
+qualify the complete controller.

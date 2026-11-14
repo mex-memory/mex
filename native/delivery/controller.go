@@ -1,5 +1,7 @@
-// Package delivery owns context admission. Its first stage is silent: moments
-// supply gated candidates later; lifecycle calls already own durable epochs.
+// Package delivery owns context admission: one controller per context epoch
+// decides what the agent gets and when. It is silent by default; a note goes
+// out only when its moment comes, every hard gate passes and its verdict
+// allows it, and the ledger records it in the same transaction that admits it.
 package delivery
 
 import (
@@ -8,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/safefile"
 	"github.com/mex-memory/mex/native/record"
@@ -17,6 +20,9 @@ type Environment struct {
 	Home, RecordDirectory string
 	Now                   time.Time
 	KeepSession           func(agent, sessionID string) bool
+	// Resolve finds the registered checkout of a touched path; nil means
+	// every tool uses the event's own checkout.
+	Resolve Resolver
 }
 
 // EpochBudget uses conservative window anchors. An absent or unknown model
@@ -32,41 +38,77 @@ func EpochBudget(model string, subagent bool) int {
 	return 2000
 }
 
-// Handle must be called after checkout, consent and pause resolution. Events
-// with no implemented moment return before any file read or SQLite open.
-func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
-	req := record.DeliveryRequest{Session: record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: ev.ProjectID, Checkout: ev.Checkout}, AgentID: ev.AgentID, Now: env.Now, Budget: EpochBudget(ev.Model, ev.AgentID != "")}
-	req.KeepSession = env.KeepSession
-	if ev.Model == "" && ev.AgentID == "" {
-		req.Budget = 0
-	} // Preserve the known window across signals without model metadata.
+// lifecycle maps an event to the epoch change it causes, if any.
+func lifecycle(ev contract.Event) (reason string, signal int, ok bool) {
 	switch ev.Kind {
 	case contract.SessionStart:
 		switch ev.Source {
 		case "", "startup":
-			req.Reason = "startup"
-		case "resume", "clear", "compact", "fork":
-			req.Reason = ev.Source
-		default:
-			return contract.Reply{}, nil
-		}
-		if req.Reason == "compact" {
-			req.CompactSignal = 1
+			return "startup", 0, true
+		case "resume", "clear", "fork":
+			return ev.Source, 0, true
+		case "compact":
+			return "compact", 1, true
 		}
 	case contract.PostCompact:
-		req.Reason = "compact"
-		req.CompactSignal = 2
+		return "compact", 2, true
 	case contract.SubagentStart:
-		if ev.AgentID == "" {
-			return contract.Reply{}, nil
+		if ev.AgentID != "" {
+			return "subagent", 0, true
 		}
-		req.Reason = "subagent"
-	default:
+	}
+	return "", 0, false
+}
+
+// momentKind reports whether an event can carry a moment. Claude Code sends
+// PostToolUse per call and PostToolBatch once per batch of parallel calls:
+// moments go out once per batch, so its PostToolUse delivers nothing (it
+// stays for output trimming). Failures arrive on their own event everywhere.
+func momentKind(ev contract.Event) bool {
+	switch ev.Kind {
+	case contract.PostToolBatch, contract.PostToolFailure:
+		return true
+	case contract.PostTool:
+		return ev.Agent != "claude-code"
+	case contract.Prompt:
+		return ev.Prompt != nil && ev.Prompt.Typed && strings.TrimSpace(ev.Prompt.Text) != ""
+	}
+	return false
+}
+
+type group struct {
+	project, checkout string
+	snap              *entries.Snapshot
+	cands             []candidate
+	firstRel          string
+}
+
+// Handle must be called after checkout, consent and pause resolution. Events
+// with no moment return before any file read or SQLite open; events whose
+// moments find no candidate return before SQLite.
+func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
+	reason, signal, isLifecycle := lifecycle(ev)
+	isMoment := momentKind(ev)
+	if !isLifecycle && !isMoment {
 		return contract.Reply{}, nil
 	}
-	if ev.ProjectID == "" || ev.Checkout == "" || ev.SessionID == "" || env.RecordDirectory == "" {
+	if ev.SessionID == "" || env.RecordDirectory == "" {
 		return contract.Reply{}, nil
 	}
+	if env.Now.IsZero() {
+		env.Now = time.Now()
+	}
+	if isLifecycle && (ev.ProjectID == "" || ev.Checkout == "") {
+		isLifecycle = false
+	}
+	var groups []*group
+	if isMoment {
+		groups = collect(ev, env)
+	}
+	if !isLifecycle && len(groups) == 0 {
+		return contract.Reply{}, nil
+	}
+
 	for _, name := range []string{"hooks.db", "hooks.db-wal", "hooks.db-shm"} {
 		if !safefile.Regular(filepath.Join(env.RecordDirectory, name)) {
 			return contract.Reply{}, errors.New("redirected hooks database")
@@ -77,6 +119,159 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		return contract.Reply{}, err
 	}
 	defer h.Close()
-	_, err = h.CheckAndMark(req)
-	return contract.Reply{}, err
+
+	if isLifecycle {
+		req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
+		req.Reason, req.CompactSignal = reason, signal
+		req.Budget = EpochBudget(ev.Model, ev.AgentID != "")
+		if ev.Model == "" && ev.AgentID == "" {
+			req.Budget = 0 // keep the known window across signals without model metadata
+		}
+		if _, err := h.CheckAndMark(req); err != nil {
+			return contract.Reply{}, err
+		}
+	}
+
+	var blocks []string
+	for _, g := range groups {
+		text, err := deliver(h, ev, env, g)
+		if err != nil {
+			return contract.Reply{}, err
+		}
+		if text != "" {
+			blocks = append(blocks, text)
+		}
+	}
+	return contract.Reply{Context: strings.Join(blocks, "\n\n")}, nil
+}
+
+func baseRequest(ev contract.Event, env Environment, project, checkout string) record.DeliveryRequest {
+	return record.DeliveryRequest{
+		Session:     record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: project, Checkout: checkout},
+		AgentID:     ev.AgentID,
+		Now:         env.Now,
+		KeepSession: env.KeepSession,
+	}
+}
+
+// collect finds candidates per checkout without touching SQLite. Snapshots
+// load once per checkout per call.
+func collect(ev contract.Event, env Environment) []*group {
+	byCheckout := map[string]*group{}
+	var order []*group
+	get := func(project, checkout string) *group {
+		if project == "" || checkout == "" {
+			return nil
+		}
+		key := project + "\n" + checkout
+		if g, ok := byCheckout[key]; ok {
+			return g
+		}
+		g := &group{project: project, checkout: checkout}
+		if snap, err := entries.Load(env.RecordDirectory, env.Home, project, checkout); err == nil && len(snap.Items) > 0 {
+			g.snap = &snap
+		}
+		byCheckout[key] = g
+		order = append(order, g)
+		return g
+	}
+	if ev.Kind == contract.Prompt {
+		if g := get(ev.ProjectID, ev.Checkout); g != nil && g.snap != nil {
+			g.cands = promptMoments(ev.Prompt.Text, g.snap)
+		}
+	} else {
+		hintGates := map[string]func(*entries.Item) bool{}
+		for _, v := range views(ev, env.Resolve) {
+			g := get(v.project, v.checkout)
+			if g == nil || g.snap == nil {
+				continue
+			}
+			gate := hintGates[g.project]
+			if gate == nil {
+				gate = hintGate(env.RecordDirectory, g.project, ev.Agent, env.Now)
+				hintGates[g.project] = gate
+			}
+			found := moments(v, g.snap, gate)
+			if len(found) > 0 && g.firstRel == "" {
+				g.firstRel = v.rel
+			}
+			g.cands = append(g.cands, found...)
+		}
+	}
+	var out []*group
+	for _, g := range order {
+		if len(g.cands) > 0 {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// deliver runs the hard gates that need storage, the verdict table, packing
+// and the ledger for one checkout, and renders what the ledger gave.
+func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (string, error) {
+	cov := loadCoverage(ev.Agent, g.checkout, g.firstRel)
+	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: g.project, checkout: g.checkout}
+	defer senv.close()
+	verdictOf := func(id string) string {
+		v, ok, err := h.VerdictOf(g.project, g.checkout, id)
+		if err != nil || !ok {
+			return unknown
+		}
+		return v.Verdict
+	}
+	// Strongest moment per entry, then the verdict decides the form.
+	best := map[string]candidate{}
+	var ids []string
+	for _, c := range g.cands {
+		id := c.item.Entry.ID
+		if cov.covers(c.item) {
+			continue
+		}
+		old, ok := best[id]
+		if !ok {
+			ids = append(ids, id)
+		}
+		if !ok || c.tier < old.tier || (c.reserve && !old.reserve) {
+			best[id] = c
+		}
+	}
+	if len(ids) == 0 {
+		return "", nil
+	}
+	var items []shaped
+	var corrections []planned
+	for _, id := range ids {
+		s := shape(best[id], verdictOf(id), senv)
+		items = append(items, s)
+		if s.action == "withheld" && s.verdict == broken {
+			// Sent only if this entry was given earlier in the epoch; the
+			// ledger decides under its lock.
+			corrections = append(corrections, planned{shaped: s, form: "one-line", tokens: 20, correction: true})
+		}
+	}
+	byID := map[string]*entries.Item{}
+	for i := range g.snap.Items {
+		byID[g.snap.Items[i].Entry.ID] = &g.snap.Items[i]
+	}
+	companion := func(id string) *shaped {
+		it := byID[id]
+		if it == nil || cov.covers(it) {
+			return nil
+		}
+		s := shape(candidate{item: it, moment: "companion", tier: tierFolder}, verdictOf(id), senv)
+		return &s
+	}
+	plan := append(corrections, pack(items, companion)...)
+	req := baseRequest(ev, env, g.project, g.checkout)
+	req.Candidates = requestCandidates(plan)
+	req.Admit = admit(plan)
+	res, err := h.CheckAndMark(req)
+	if err != nil {
+		return "", err
+	}
+	if len(res.Receipts) == 0 {
+		return "", nil
+	}
+	return render(res.Receipts[0].BlockID, plan, res.Receipts), nil
 }

@@ -153,13 +153,13 @@ func commandString(raw json.RawMessage) string {
 func patchFiles(patch []shellparse.PatchFile) []contract.PatchFile {
 	files := make([]contract.PatchFile, 0, len(patch))
 	for _, f := range patch {
-		pf := contract.PatchFile{Path: f.Path, Hunks: []contract.Hunk{}}
+		pf := contract.PatchFile{Path: f.Path, Kind: string(f.Kind), Hunks: []contract.Hunk{}}
 		for _, c := range f.Chunks {
 			pf.Hunks = append(pf.Hunks, contract.Hunk{Old: joinLines(c.Before), New: joinLines(c.After)})
 		}
 		files = append(files, pf)
 		if f.MoveTo != "" {
-			files = append(files, contract.PatchFile{Path: f.MoveTo, Hunks: []contract.Hunk{}})
+			files = append(files, contract.PatchFile{Path: f.MoveTo, Kind: "add", Hunks: []contract.Hunk{}})
 		}
 	}
 	return files

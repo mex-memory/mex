@@ -94,6 +94,7 @@ type ToolInput struct {
 
 type PatchFile struct {
 	Path  string `json:"path"`
+	Kind  string `json:"kind,omitempty"` // "add", "update" or "delete"; empty when unknown
 	Hunks []Hunk `json:"hunks"`
 }
 
