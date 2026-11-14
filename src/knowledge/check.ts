@@ -10,7 +10,7 @@ import { patternId } from "../file-index/classify.js";
 import { indexDirectory, readPatterns, writePatterns } from "../file-index/store.js";
 import { openIndex } from "../file-index/read.js";
 import { openHooksReadOnly } from "../record/index.js";
-import { knowledgeProject, type KnowledgeOptions } from "./context.js";
+import { knowledgeProject, type KnowledgeOptions, type KnowledgeProject } from "./context.js";
 import { KnowledgeError } from "./contract.js";
 import { parseEntry, type KnowledgeEntry } from "./entry.js";
 import { readEntryFile } from "./files.js";
@@ -73,6 +73,18 @@ export function runNative(binary: string, request: Record<string, unknown>): Nat
   catch { throw new KnowledgeError("CHECKS_UNAVAILABLE", "The check evaluator gave no answer."); }
   if (!parsed.ok) throw new KnowledgeError("CHECKS_FAILED", parsed.error ?? "The check evaluator failed.");
   return parsed as NativeReport;
+}
+
+/** Current, read-only checks for publication decisions. A cached held verdict
+ * cannot authorize generating or sharing a claim after its source changed. */
+export function currentVerdicts(options: KnowledgeOptions, project: KnowledgeProject): Map<string, Verdict> | undefined {
+  const binary = nativeBinary(options.env);
+  if (!binary) return undefined;
+  try {
+    const report = runNative(binary, { action: "evaluate", checkout: project.root, project_id: project.projectId,
+      mex_home: project.location.home, record_directory: project.location.directory, store: false });
+    return new Map((report.items ?? []).map(item => [item.id, item.verdict]));
+  } catch { return undefined; }
 }
 
 /** Record a check against today's code, through the evaluator. Writers use it. */

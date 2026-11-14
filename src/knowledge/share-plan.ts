@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cachedVerdicts } from "./check.js";
+import { currentVerdicts } from "./check.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { KnowledgeError } from "./contract.js";
 import { serializeEntry } from "./entry.js";
@@ -73,16 +73,18 @@ export function prepareShare(options: KnowledgeOptions, choose: { skip?: string[
   const base = defaultBase(root);
   const onBase = new Set((tryGit(root, "ls-tree", "-r", "--name-only", base.sha, "--", ".mex/learned") ?? "").split("\n").filter(Boolean)
     .map(path => /(mx_[a-z0-9]{6,64})\.md$/u.exec(path)?.[1]).filter((id): id is string => !!id));
-  const verdicts = cachedVerdicts(options, project.projectId, root) ?? new Map();
+  const notes = personalNotes(project.location.home, project.projectId, project.retired, root).sort(byStrength);
+  const verdicts = notes.some(c => c.entry.mex.checks.length) ? currentVerdicts(options, project) ?? new Map() : new Map();
   const skip = new Set(choose.skip ?? []);
   const plan: SharePlan = { root, projectId: project.projectId, base: base.sha, baseName: base.name, branch: freeBranch(root, now), share: [], blocked: [], skipped: [], revision: "", entries: [] };
-  for (const c of personalNotes(project.location.home, project.projectId, project.retired, root).sort(byStrength)) {
+  for (const c of notes) {
     const { id } = c.entry.mex;
     const verdict = verdicts.get(id);
     if (skip.has(id)) plan.skipped.push({ id, reason: "you left it out" });
     else if (onBase.has(id)) plan.skipped.push({ id, reason: `already shared on ${base.name}` });
     else if (!STRONG.has(c.entry.mex.evidence)) plan.skipped.push({ id, reason: "evidence too weak for the team" });
     else if (verdict === "broken" || verdict === "changed") plan.skipped.push({ id, reason: `verdict is ${verdict}` });
+    else if (c.entry.mex.checks.length && verdict !== "held") plan.skipped.push({ id, reason: "current checks have not held" });
     else {
       const problems = shareProblems(c.entry);
       if (problems.length) { plan.blocked.push(...problems); continue; }

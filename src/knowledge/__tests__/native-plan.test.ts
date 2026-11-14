@@ -19,6 +19,14 @@ const mine = (id: string, scope = "**"): Candidate => ({ level: "personal", entr
 const summary = (plan: ReturnType<typeof planNative>) => plan.files.map(f => [f.path, f.sharing, f.agents.join("+"), f.ids.join(",")]);
 
 describe("the who-loads-what plan", () => {
+  it("keeps colliding area slugs and personal/team names in distinct files", () => {
+    const plan = planNative(repo(), ["claude-code"], [
+      team("mx_dash01", "apps/a-b/**"), team("mx_nested", "apps/a/b/**"),
+      team("mx_local1", "local/**"), mine("mx_note01"),
+    ]);
+    expect(new Set(plan.files.map(file => file.path)).size).toBe(4);
+    expect(plan.files.find(file => file.sharing === "local")?.ids).toEqual(["mx_note01"]);
+  });
   it("Codex gets one AGENTS.md per area; Claude reads it where the folder has no CLAUDE.md", () => {
     const root = repo({ "CLAUDE.md": "# Mine\n" });
     const plan = planNative(root, ["claude-code", "codex"], [team("mx_root01"), team("mx_api001", "apps/api/**")]);

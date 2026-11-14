@@ -5,13 +5,14 @@
  * never pushes, except when you ask for a pull request with --pr.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { KnowledgeError } from "./contract.js";
 import { serializeEntry } from "./entry.js";
-import { containedDirectory } from "./files.js";
+import { containedDirectory, readBoundedTextFile } from "./files.js";
+import { currentVerdicts } from "./check.js";
 import { rebuildNative } from "./native.js";
 import { scanRuleFiles } from "./rule-files.js";
 import { git, prepareShare, type SharePlan } from "./share-plan.js";
@@ -41,24 +42,43 @@ function writeConfig(worktree: string): void {
   const file = join(worktree, ".mex", "config.json");
   let config: Record<string, unknown> = {};
   if (existsSync(file)) {
-    try { config = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>; }
+    try {
+      config = JSON.parse(readBoundedTextFile(file, 1024 * 1024)!) as Record<string, unknown>;
+      if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error();
+    }
     catch { throw new KnowledgeError("SHARE_CONFIG", ".mex/config.json isn't valid JSON; fix it before sharing."); }
   }
   const next = { ...config, knowledge: { version: 1, shared: true } };
-  writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`);
+  writeMetadata(file, next);
 }
 
 /** What was read to build the team's knowledge, so teammates don't pay to read it again. */
 function writeSources(worktree: string): void {
   const scan = scanRuleFiles(worktree);
   const sources = { version: 1, rule_files: scan.files.map(f => ({ path: f.path, hash: f.hash, agents: f.agents })) };
-  writeFileSync(join(worktree, ".mex", "sources.json"), `${JSON.stringify(sources, null, 2)}\n`);
+  writeMetadata(join(worktree, ".mex", "sources.json"), sources);
+}
+
+/** A killed process leaves either the original metadata or its complete
+ * replacement, never a partially overwritten config or source inventory. */
+function writeMetadata(path: string, value: unknown): void {
+  const temporary = join(dirname(path), `.${basename(path)}.${randomBytes(8).toString("hex")}.tmp`);
+  try {
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+    renameSync(temporary, path);
+  } finally { try { unlinkSync(temporary); } catch { /* renamed, or preserve the original error */ } }
 }
 
 const digest = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
 
-function writeShare(worktree: string, plan: SharePlan): Record<string, string | null> {
-  const options = { projectPath: worktree };
+function writeShare(worktree: string, plan: SharePlan, originalOptions: KnowledgeOptions): Record<string, string | null> {
+  const options = { ...originalOptions, projectPath: worktree };
+  if (plan.entries.some(c => c.entry.mex.checks.length)) {
+    const verdicts = currentVerdicts(options, knowledgeProject(options));
+    if (plan.entries.some(c => c.entry.mex.checks.length && verdicts?.get(c.entry.mex.id) !== "held")) {
+      throw new KnowledgeError("SHARE_CHECKS", "A note's checks do not hold on the default branch; update the note or the default branch before sharing.");
+    }
+  }
   const paths = new Set([".mex/config.json", ".mex/sources.json"]);
   for (const c of plan.entries) {
     const preview = prepareTeamWrite(c.entry, options, c.entry.mex.source.quote);
@@ -121,10 +141,10 @@ export function runShare(options: KnowledgeOptions, expected: string, run: Share
   if (run.stopAfter === "started") throw new KnowledgeError("SHARE_STOPPED", "Stopped after started.");
   git(plan.root, "worktree", "add", "-q", "-b", plan.branch, state.worktree, plan.base);
   step(dir, state, "worktree", run.stopAfter);
-  return complete(dir, plan.root, state, plan, run);
+  return complete(dir, plan.root, state, plan, run, options);
 }
 
-function complete(dir: string, root: string, state: ShareState, plan: SharePlan | undefined, run: ShareRun): ShareResult {
+function complete(dir: string, root: string, state: ShareState, plan: SharePlan | undefined, run: ShareRun, options: KnowledgeOptions): ShareResult {
   validateWorktree(dir, root, state);
   let sha = git(root, "rev-parse", `refs/heads/${state.branch}`);
   if (state.step === "written" && sha !== state.base) {
@@ -139,7 +159,7 @@ function complete(dir: string, root: string, state: ShareState, plan: SharePlan 
   }
   if (ORDER.indexOf(state.step) < ORDER.indexOf("written")) {
     if (!plan) throw new KnowledgeError("SHARE_LOST", "The share's notes changed since it started; discard it and share again.");
-    state.files = writeShare(state.worktree, plan);
+    state.files = writeShare(state.worktree, plan, options);
     step(dir, state, "written", run.stopAfter);
   }
   if (ORDER.indexOf(state.step) < ORDER.indexOf("committed")) {
@@ -172,7 +192,7 @@ export function finishShare(options: KnowledgeOptions, run: ShareRun = {}): Shar
     if (plan.base !== state.base || plan.entries.length !== state.ids.length || !state.entryHashes
       || plan.entries.some(e => state.entryHashes![e.entry.mex.id] !== digest(serializeEntry(e.entry)))) plan = undefined;
   }
-  return complete(dir, root, state, plan, run);
+  return complete(dir, root, state, plan, run, options);
 }
 
 /** Files a share writes; nothing else in its worktree is ever deleted. */

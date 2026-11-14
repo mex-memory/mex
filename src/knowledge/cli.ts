@@ -245,11 +245,9 @@ function nextStep(done: { branch: string; pr?: string }): string {
 
 /** Shared rule files change in the same working-tree change as the team entry. */
 async function sharedRuleFiles(options: { projectPath: string }): Promise<string[]> {
-  try {
-    const { rebuildNative } = await import("./native.js");
-    const result = rebuildNative(options, { sharedOnly: true, force: true });
-    return [...result.written ?? [], ...result.removed ?? []];
-  } catch { return []; }
+  const { rebuildNative } = await import("./native.js");
+  const result = rebuildNative(options, { sharedOnly: true, force: true });
+  return [...result.written ?? [], ...result.removed ?? []];
 }
 
 /** Personal note changes reach the hidden local rule files between sessions. */
