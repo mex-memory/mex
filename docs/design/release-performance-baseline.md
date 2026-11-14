@@ -373,14 +373,16 @@ inconsistent raw sample evidence, are never retried as budget noise.
 Enforcement exits 0 for a pass, 1 for a budget failure, and 2 when a pass cannot
 produce a valid bounded report.
 
-The dedicated CI topology uses `release-performance-attempt-1`, a conditional
-`release-performance-attempt-2`, and the final required
-`release-performance` aggregation job. Each measuring job installs Chromium on
-the pinned image and retains its raw report and bounded decision manifest for
+The advisory `.github/workflows/release-performance.yml` runs on pushes to
+`next` and `main`, 0.9 release tags, and manual dispatch. It uses
+`release-performance-attempt-1`, a conditional `release-performance-attempt-2`,
+and the final `release-performance` aggregation job; none is a required PR check. Each measuring job installs
+Chromium on the pinned image and retains its raw report and bounded decision manifest for
 14 days. The final job retains the combined report; it runs even if a producer
-was cancelled or failed so missing evidence cannot silently skip the gate. The
-first raw attempt is still retained when advisory sample support makes a second
-runner unnecessary. Runtime candidates in that report are `ceil(p95 * 1.15)`
+was cancelled or failed so missing evidence remains a visible failure. A red
+result on a push to `next` opens or updates one tracking issue. The first raw
+attempt is still retained when advisory sample support makes a second runner
+unnecessary. Runtime candidates in that report are `ceil(p95 * 1.15)`
 independently for each fixture profile, route, read, and maintenance operation.
 The committed values are copied exactly from the first healthy retained pinned
 report; its enforcing rerun must pass before Checkpoint A is considered green.

@@ -5,7 +5,7 @@ export async function hookTiming({ root, run = runProcess }) {
   const result = await run('go', ['test', '-count=1', '-p', '1', '-json', '-run', '^TestNoOpTiming(WithCounters)?$', './cmd/mex-hook'], {
     cwd: join(root, 'native'), timeoutMs: 180_000,
     env: { ...process.env, CGO_ENABLED: '0', GOFLAGS: '', GOOS: { win32: 'windows', darwin: 'darwin', linux: 'linux' }[process.platform],
-      GOARCH: { x64: 'amd64', arm64: 'arm64' }[process.arch], MEX_HOOK_BUDGET_MS: '', MEX_HOOK_TIMING_OUT: '', MEX_TELEMETRY: '0', DO_NOT_TRACK: '1', MEX_OFFLINE: '1' },
+      GOARCH: { x64: 'amd64', arm64: 'arm64' }[process.arch], MEX_HOOK_TIMING_MODE: '', MEX_HOOK_BUDGET_MS: '', MEX_HOOK_TIMING_OUT: '', MEX_TELEMETRY: '0', DO_NOT_TRACK: '1', MEX_OFFLINE: '1' },
   });
   if (result.reason) return { status: result.reason === 'tool-unavailable' ? 'unavailable' : 'fail', reason: result.reason };
   if (result.code !== 0) return { status: 'fail', reason: 'checks-failed' };

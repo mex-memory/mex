@@ -1,4 +1,5 @@
 import { defineConfig, configDefaults } from "vitest/config";
+import CISequencer from "./scripts/ci/sequencer.mjs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,6 +31,8 @@ export default defineConfig({
       "scripts/benchmark-telemetry.test.js",
       // Gate harness tests use node:test and run separately via gates:test.
       "scripts/gates/test/**",
+      "scripts/ci/*.test.mjs",
+      "scripts/release/*.test.mjs",
       // The Hub web workspace supplies its own jsdom/CSS configuration and the
       // browser suite is collected by Playwright, not the root Node test run.
       "packages/hub-web/**",
@@ -53,6 +56,7 @@ export default defineConfig({
     // cross-file concurrency below the platform resource cliff so a busy test
     // runner cannot turn a valid index into a transient CANTOPEN/corrupt read.
     maxWorkers: 4,
+    sequence: { sequencer: CISequencer },
     // Real Graph/Wiki/Hub integration scenarios build bounded repositories and
     // databases. This is a hang guard, not a performance budget; numeric timing
     // enforcement belongs to benchmark:release on the pinned runner.

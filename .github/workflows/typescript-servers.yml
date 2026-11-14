@@ -35,7 +35,7 @@ jobs:
         with:
           node-version: 22.22.0
           cache: npm
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit --no-fund
       - name: Fetch the pinned repositories
         shell: bash
         run: |

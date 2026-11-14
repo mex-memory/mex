@@ -25,8 +25,10 @@ if (!npmCli) {
   throw new Error("The packed Hub smoke must run through npm so its CLI entry is known.");
 }
 const work = mkdtempSync(join(tmpdir(), "mex-hub-pack-smoke-"));
-const npmCache = join(work, "npm-cache");
-mkdirSync(npmCache, { recursive: true });
+// Reuse npm's configured cache (setup-node restores it in CI). The consumer
+// projects and node_modules remain fresh; cached registry tarballs do not carry
+// project state. Prefer cached metadata while allowing uncached dependencies.
+const npmCache = runNpm(["config", "get", "cache"], root).trim();
 let child;
 
 try {
@@ -120,6 +122,7 @@ try {
     "--no-audit",
     "--no-fund",
     "--omit=dev",
+    "--prefer-offline",
     "--cache",
     npmCache,
   ], project);
@@ -977,6 +980,7 @@ async function verifyFreshCodeRepoSetup(tarball, workRoot, cache, version) {
     "--no-audit",
     "--no-fund",
     "--omit=dev",
+    "--prefer-offline",
     "--cache",
     cache,
   ], project);

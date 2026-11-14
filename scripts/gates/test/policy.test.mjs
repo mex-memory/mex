@@ -132,3 +132,27 @@ test('hook adapter requires actual named timing tests and pins budget and cache 
     assert.doesNotMatch(JSON.stringify(evidence), /PRIVATE_/);
   }
 });
+
+
+test('a report-mode environment cannot relax the release timing verdict', async () => {
+  const previous = process.env.MEX_HOOK_TIMING_MODE;
+  process.env.MEX_HOOK_TIMING_MODE = 'report';
+  try {
+    let childEnvironment;
+    const evidence = await hookTiming({ root: '.', run: async (_command, _args, options) => {
+      childEnvironment = options.env;
+      // Simulate native strict failure versus an otherwise successful report run.
+      return options.env.MEX_HOOK_TIMING_MODE === 'report'
+        ? { code: 0, stdout: goEvents() } : { code: 1, stdout: '' };
+    } });
+    assert.equal(childEnvironment.MEX_HOOK_TIMING_MODE, '');
+    assert.equal(childEnvironment.MEX_HOOK_BUDGET_MS, '');
+    assert.equal(childEnvironment.MEX_HOOK_TIMING_OUT, '');
+    assert.equal(evidence.status, 'fail');
+    const report = await runGates({ root: '.', source, adapters: { ...adapters, 'hook-timing': async () => evidence } });
+    assert.equal(releaseReady(report), false);
+  } finally {
+    if (previous === undefined) delete process.env.MEX_HOOK_TIMING_MODE;
+    else process.env.MEX_HOOK_TIMING_MODE = previous;
+  }
+});

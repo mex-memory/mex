@@ -3,7 +3,8 @@
  * keeps outlines exact after an edit. Building Go is slow and CPU-heavy, so
  * this runs only when MEX_TEST_REAL_HOOK_BINARY=1 (the Go CI job sets it).
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -69,8 +70,10 @@ describe.skipIf(!enabled)("file index in Go and Node", () => {
     const env = { ...process.env, CGO_ENABLED: "0" };
     peer = join(root, `index.test${exe}`);
     hook = join(root, `mex-hook${exe}`);
-    execFileSync("go", ["test", "-c", "-o", peer, "./index"], { cwd: native, env, timeout: 240_000, stdio: "pipe" });
-    execFileSync("go", ["build", "-o", hook, "./cmd/mex-hook"], { cwd: native, env, timeout: 240_000, stdio: "pipe" });
+    // Cold compilers may exceed the worker RPC deadline. Keep the worker's
+    // event loop responsive while retaining both compiler timeouts.
+    await promisify(execFile)("go", ["test", "-c", "-o", peer, "./index"], { cwd: native, env, timeout: 240_000, windowsHide: true });
+    await promisify(execFile)("go", ["build", "-o", hook, "./cmd/mex-hook"], { cwd: native, env, timeout: 240_000, windowsHide: true });
   }, 300_000);
 
   afterAll(() => {

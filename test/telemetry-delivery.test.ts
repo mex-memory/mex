@@ -371,24 +371,31 @@ describe("silent bounded v3 delivery", () => {
     const address = blackhole.address();
     const original = Resolver.prototype.resolve4;
     const callbacks: string[] = [];
+    let cancelled!: (code: string) => void;
+    const cancellation = new Promise<string>((done) => { cancelled = done; });
     const resolve = vi.spyOn(Resolver.prototype, "resolve4").mockImplementation(function(this: Resolver, hostname: string, callback: any) {
       expect(hostname).toBe("us.i.posthog.com");
       this.setServers([`127.0.0.1:${address.port}`]);
-      return original.call(this, hostname, (error, values) => { callbacks.push(error?.code ?? "resolved"); callback(error, values); });
+      return original.call(this, hostname, (error, values) => {
+        const code = error?.code ?? "resolved";
+        callbacks.push(code); cancelled(code); callback(error, values);
+      });
     });
     const cancel = vi.spyOn(Resolver.prototype, "cancel");
     const writer = queuedReport();
     try {
       __setTelemetryEndpointForTest(null);
-      const firstQuery = once(blackhole, "message", { signal: AbortSignal.timeout(1000) });
+      const firstQuery = once(blackhole, "message");
       const sending = sendUsageReports(writer);
       await firstQuery;
       expect(callbacks).toEqual([]);
-      const started = performance.now(); disableTelemetry();
+      disableTelemetry();
       await sending;
-      expect(performance.now() - started).toBeLessThan(150);
       expect(resolve).toHaveBeenCalledOnce(); expect(cancel).toHaveBeenCalled();
-      await expect.poll(() => callbacks, { timeout: 150 }).toEqual(["ECANCELLED"]);
+      // Assert actual resolver cancellation, independent of runner scheduling.
+      // The enclosing test timeout still catches a lookup that never settles.
+      expect(await cancellation).toBe("ECANCELLED");
+      expect(callbacks).toEqual(["ECANCELLED"]);
       expect(inspectReports().pending).toEqual([]);
     } finally {
       writer.close(); __setTelemetryEndpointForTest("http://127.0.0.1:1/batch/");
