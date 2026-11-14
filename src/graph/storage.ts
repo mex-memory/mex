@@ -6,13 +6,17 @@ import { checkoutKey, indexDirectory, writeAtomic, writeLocator } from "../file-
 import { recordLocation, type LocationOptions } from "../record/location.js";
 import { absolutePath, projectIdentity, realPath } from "../record/project.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
+import { installGraphViews } from "./overlay.js";
 
 export const INDEX_DISK_CAP = 5 * 1024 ** 3;
 const GRACE_MS = 60_000;
 const BASE = /^graph-base-[a-z0-9-]+\.db$/;
+const OVERLAY = /^graph-o-[a-f0-9]{24}-[a-z0-9-]+\.db$/;
 const TEMP = /^graph-tmp-(\d+)-[a-z0-9-]+\.db(?:-(?:journal|wal|shm))?$/;
 export interface GraphPointer {
-  version: 1; root: string; base: string; overlay: null; as_of: string;
+  version: 1; root: string; base: string;
+  /** The checkout's overlay over `base`, or null when its files equal the base. */
+  overlay: string | null; as_of: string;
   head: string | null; files: number; nodes: number; edges: number;
   build: Record<string, unknown>;
 }
@@ -97,7 +101,7 @@ export function readGraphPointer(location: GraphLocation): GraphPointer | undefi
   try {
     if (!regular(file) || statSync(file).size > 64 * 1024) return undefined;
     const p = JSON.parse(readFileSync(file, "utf8")) as GraphPointer;
-    if (p.version !== 1 || p.root !== location.root || !BASE.test(p.base) || p.overlay !== null
+    if (p.version !== 1 || p.root !== location.root || !BASE.test(p.base) || (p.overlay !== null && !(OVERLAY.test(p.overlay) && p.overlay.startsWith(`graph-o-${location.key}-`)))
       || !Number.isFinite(Date.parse(p.as_of))) return undefined;
     return p;
   } catch { return undefined; }
@@ -109,7 +113,7 @@ export function currentGraphPath(root: string, options: LocationOptions = {}): s
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return join(resolve(root), ".mex", "graph-missing.db"); throw error; }
   const pointer = readGraphPointer(location);
   if (pointer) touchLocation(location);
-  const file = join(location.directory, pointer?.base ?? "graph-missing.db");
+  const file = join(location.directory, pointer?.overlay ?? pointer?.base ?? "graph-missing.db");
   if (!pointer && existsSync(file)) throw new Error("Graph data has no published pointer");
   return file;
 }
@@ -119,22 +123,24 @@ export function graphStoragePathAllowed(root: string, file: string): boolean {
     assertGraphDirectory(location.directory);
     if (absolutePath(dirname(file)) !== absolutePath(location.directory)) return false;
     const name = basename(file);
-    if (!BASE.test(name) && !TEMP.test(name) && name !== "graph-missing.db") return false;
+    if (!BASE.test(name) && !OVERLAY.test(name) && !TEMP.test(name) && name !== "graph-missing.db") return false;
     return !existsSync(file) || regular(file);
   } catch { return false; }
 }
 /** Whether `file` is a published base of this checkout's project (named, located and shaped like one). */
 export function isPublishedGraph(root: string, file: string): boolean {
-  return BASE.test(basename(file)) && graphStoragePathAllowed(root, file);
+  return (BASE.test(basename(file)) || OVERLAY.test(basename(file))) && graphStoragePathAllowed(root, file);
 }
 export function openCurrentGraph(root: string): SqliteDatabase | undefined {
   const location = graphLocation(root);
   const pointer = readGraphPointer(location);
   if (!pointer) return undefined;
-  const file = join(location.directory, pointer.base);
+  const file = join(location.directory, pointer.overlay ?? pointer.base);
   if (!regular(file)) return undefined;
   touchGraph(root);
-  return openSqlite(file, { readOnly: true, immutable: true });
+  const db = openSqlite(file, { readOnly: true, immutable: true });
+  try { if (pointer.overlay) installGraphViews(db, file); } catch (error) { db.close(); throw error; }
+  return db;
 }
 export function touchGraph(root: string, now = Date.now()): void {
   touchLocation(graphLocation(root), now);
@@ -176,18 +182,41 @@ export function finalizeGraph(file: string): void {
   }
   const fd = openSync(file, "r+"); try { fsyncSync(fd); } finally { closeSync(fd); }
 }
-/** Publish the pointer last. No published database name is ever overwritten. */
-export function publishGraph(location: GraphLocation, temporary: string, data: Omit<GraphPointer, "version" | "root" | "base" | "overlay" | "as_of">): string {
+type PointerData = Omit<GraphPointer, "version" | "root" | "base" | "overlay" | "as_of">;
+function publishedName(location: GraphLocation, kind: "base" | "overlay"): string {
+  const stamp = `${Date.now().toString(36)}-${randomBytes(16).toString("hex")}`;
+  return kind === "base" ? `graph-base-${stamp}.db` : `graph-o-${location.key}-${stamp}.db`;
+}
+function renameTemporary(location: GraphLocation, temporary: string, name: string): string {
   assertGraphDirectory(location.directory);
   if (dirname(temporary) !== location.directory || !TEMP.test(basename(temporary))) throw new Error("Unsafe graph candidate path");
-  const name = `graph-base-${Date.now().toString(36)}-${randomBytes(16).toString("hex")}.db`;
   const target = join(location.directory, name);
   renameSync(temporary, target);
-  const pointer: GraphPointer = { ...data, version: 1, root: location.root, base: name, overlay: null, as_of: new Date().toISOString() };
+  return target;
+}
+/** Point the checkout at `base` (and `overlay`), last. No published database name is ever overwritten. */
+export function publishGraphPointer(location: GraphLocation, base: string, overlay: string | null, data: PointerData): void {
+  assertGraphDirectory(location.directory);
+  if (!BASE.test(base) || !regular(join(location.directory, base))
+    || (overlay !== null && (!OVERLAY.test(overlay) || !regular(join(location.directory, overlay))))) throw new Error("Unsafe graph pointer");
+  const pointer: GraphPointer = { ...data, version: 1, root: location.root, base, overlay, as_of: new Date().toISOString() };
   mkdirSync(join(location.directory, "graph-checkouts"), { recursive: true, mode: 0o700 });
   assertGraphDirectory(join(location.directory, "graph-checkouts"));
   writeAtomic(graphPointerFile(location), `${JSON.stringify(pointer)}\n`);
   touchLocation(location);
+}
+/** Publish a finished temporary file as a new base for this checkout. */
+export function publishGraph(location: GraphLocation, temporary: string, data: PointerData): string {
+  const name = publishedName(location, "base");
+  const target = renameTemporary(location, temporary, name);
+  publishGraphPointer(location, name, null, data);
+  return target;
+}
+/** Publish a finished temporary file as this checkout's overlay over `base`. */
+export function publishGraphOverlay(location: GraphLocation, temporary: string, base: string, data: PointerData): string {
+  const name = publishedName(location, "overlay");
+  const target = renameTemporary(location, temporary, name);
+  publishGraphPointer(location, base, name, data);
   return target;
 }
 export function acquireGraphWriter(location: GraphLocation): { assertOwned(): void; release(): void } {
@@ -234,7 +263,7 @@ function pointers(directory: string): GraphPointer[] {
     for (const name of readdirSync(join(directory, "graph-checkouts"))) {
       const file = join(directory, "graph-checkouts", name);
       if (!name.endsWith(".json") || !regular(file) || statSync(file).size > 65536) continue;
-      try { const p = JSON.parse(readFileSync(file, "utf8")) as GraphPointer; if (p.version === 1 && BASE.test(p.base)) out.push(p); } catch { /* incomplete pointer */ }
+      try { const p = JSON.parse(readFileSync(file, "utf8")) as GraphPointer; if (p.version === 1 && BASE.test(p.base) && (p.overlay === null || OVERLAY.test(p.overlay))) out.push(p); } catch { /* incomplete pointer */ }
     }
   } catch { /* absent */ }
   return out;
@@ -247,8 +276,16 @@ export function collectGraphGarbage(location: GraphLocation, now = Date.now()): 
   for (const name of names) {
     const file = join(location.directory, name);
     if (!regular(file)) continue;
+    // An audit record goes with its database.
+    if (name.endsWith(".db-audit.json")) {
+      const database = name.slice(0, -"-audit.json".length);
+      if ((BASE.test(database) || OVERLAY.test(database)) && !names.includes(database)) {
+        try { unlinkSync(file); count++; } catch { /* retried next time */ }
+      }
+      continue;
+    }
     const temp = TEMP.exec(name);
-    if ((temp && !processAlive(Number(temp[1]))) || (BASE.test(name) && !live.has(name) && now - statSync(file).mtimeMs > GRACE_MS)) {
+    if ((temp && !processAlive(Number(temp[1]))) || ((BASE.test(name) || OVERLAY.test(name)) && !live.has(name) && now - statSync(file).mtimeMs > GRACE_MS)) {
       try { unlinkSync(file); count++; } catch { /* reader may hold the old base on Windows */ }
     }
   }
@@ -311,4 +348,19 @@ export function enforceIndexCap(location: GraphLocation, cap = INDEX_DISK_CAP): 
     } finally { writer.release(); }
   }
   return removed;
+}
+
+/** The newest base another checkout of this project points at, for a checkout that has none yet. */
+export function siblingBase(location: GraphLocation): GraphPointer | undefined {
+  return pointers(location.directory)
+    .filter(pointer => pointer.root !== location.root && regular(join(location.directory, pointer.base)))
+    .sort((left, right) => Date.parse(right.as_of) - Date.parse(left.as_of))[0];
+}
+/** Point a checkout with no graph at a sibling's base; its next refresh writes the overlay. */
+export function adoptSiblingBase(location: GraphLocation): boolean {
+  if (readGraphPointer(location)) return false;
+  const sibling = siblingBase(location);
+  if (!sibling) return false;
+  publishGraphPointer(location, sibling.base, null, { head: null, files: sibling.files, nodes: sibling.nodes, edges: sibling.edges, build: { adoptedFrom: sibling.root } });
+  return true;
 }

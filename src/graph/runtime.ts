@@ -304,7 +304,8 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
     priorSession.close();
     priorSession = null;
 
-    await lease.refresh();
+    // The writable grounding runtime clones one full database, so it needs a base, not an overlay.
+    await lease.refresh({ __internal: { publishAsBase: true } } as Parameters<typeof lease.refresh>[0]);
     const pointer = readGraphPointer(storage)!;
     cloneGraph(lease.databasePath, draft);
     graph = createGraphEngine({ rootDir: config.projectRoot, dbPath: draft, readOnly: true });

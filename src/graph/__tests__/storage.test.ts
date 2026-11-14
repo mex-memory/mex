@@ -29,7 +29,8 @@ describe("graph pointer storage", () => {
     const old = openCurrentGraph(root)!;
     const oldRows = old.prepare("SELECT * FROM nodes ORDER BY id").all();
     writeFileSync(join(root,"example.py"), "def renamed():\n    return 2\n");
-    await refreshGraph(root);
+    // A rebuild replaces the base (a refresh would add an overlay over it).
+    await rebuildGraph(root);
     const after = currentGraphPath(root);
     expect(after).not.toBe(before);
     expect(old.prepare("SELECT * FROM nodes ORDER BY id").all()).toEqual(oldRows);

@@ -1,3 +1,4 @@
+import { installGraphViews, OVERLAY_NAME } from "../overlay.js";
 // ============================================================================
 // mex code-graph — database open / schema init  (A3)
 // ============================================================================
@@ -14,7 +15,7 @@
 //   * journal_mode=WAL persists in the file header; re-asserting is harmless.
 
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { schemaPath } from "../assets.js";
 import { GRAPH_CORPUS_LIMITS } from "../corpus-policy.js";
 import { GraphRebuildRequiredError } from "../errors.js";
@@ -92,9 +93,13 @@ export function openGraphDatabase(
   assertFts5Available();
 
   if (options.readOnly) {
-    return options.immutable
+    const db = options.immutable || OVERLAY_NAME.test(basename(dbPath))
       ? openImmutableGraphDatabase(dbPath)
       : openReadOnlyGraphDatabase(dbPath);
+    if (OVERLAY_NAME.test(basename(dbPath))) {
+      try { installGraphViews(db, dbPath); } catch (error) { db.close(); throw error; }
+    }
+    return db;
   }
   const db = openSqlite(dbPath);
   configureConnection(db);

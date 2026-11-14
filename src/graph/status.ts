@@ -1,3 +1,4 @@
+import { installGraphViews } from "./overlay.js";
 import { assertTextSource, unavailableFileReason } from "./source-errors.js";
 import { collectGraphGarbage, graphLocation, graphStoragePathAllowed, withGraphStorageContext } from "./storage.js";
 import { currentGraphPath } from "./storage.js";
@@ -852,6 +853,10 @@ async function inspectGraphStatusAttempt(
           diagnostics,
         }));
     }
+
+    // Structure was checked on the file itself; invariants and data are read
+    // through the overlay, as every reader sees them.
+    installGraphViews(db, database.canonicalPath);
 
     const coreInvariantFailures = structureAudited ? [] : timeGraphPhase("inspect.invariants", () => inspectCoreInvariants(db!, {
       fingerprints: context.options.structuralAudit !== "graph",
@@ -2606,23 +2611,23 @@ function inspectCoreInvariants(
       WHERE n.id IS NULL
     `],
     ["node(s) missing from full-text search", `
-      SELECT COUNT(*) AS count FROM nodes n
-      LEFT JOIN nodes_fts_docsize fts ON fts.id = n.rowid
+      SELECT COUNT(*) AS count FROM main.nodes n
+      LEFT JOIN main.nodes_fts_docsize fts ON fts.id = n.rowid
       WHERE fts.id IS NULL
     `],
     ["orphan node full-text row(s)", `
-      SELECT COUNT(*) AS count FROM nodes_fts_docsize fts
-      LEFT JOIN nodes n ON n.rowid = fts.id
+      SELECT COUNT(*) AS count FROM main.nodes_fts_docsize fts
+      LEFT JOIN main.nodes n ON n.rowid = fts.id
       WHERE n.rowid IS NULL
     `],
     ["source chunk(s) missing from full-text search", `
-      SELECT COUNT(*) AS count FROM source_chunks c
-      LEFT JOIN source_chunks_fts_docsize fts ON fts.id = c.id
+      SELECT COUNT(*) AS count FROM main.source_chunks c
+      LEFT JOIN main.source_chunks_fts_docsize fts ON fts.id = c.id
       WHERE fts.id IS NULL
     `],
     ["orphan source-chunk full-text row(s)", `
-      SELECT COUNT(*) AS count FROM source_chunks_fts_docsize fts
-      LEFT JOIN source_chunks c ON c.id = fts.id
+      SELECT COUNT(*) AS count FROM main.source_chunks_fts_docsize fts
+      LEFT JOIN main.source_chunks c ON c.id = fts.id
       WHERE c.id IS NULL
     `],
   ];

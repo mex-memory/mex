@@ -20,22 +20,8 @@ export function graphCoverage(path: string, reason: string | undefined, indexed:
   return { indexed: false, reason: existsSync(join(root, path)) ? "not indexed yet" : "missing" };
 }
 
-/** A read connection hides only files whose absence is proven by its observation. */
-export function installGraphReadCoverage(db: SqliteDatabase, excluded: readonly string[] = []): void {
-  const hasCoverage = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='coverage'").get();
-  const bad = hasCoverage ? db.prepare("SELECT path FROM main.coverage WHERE reason IS NOT NULL AND path IN (SELECT path FROM main.files)").all() as Array<{path:string}> : [];
-  if (!bad.length && !excluded.length) return;
-  db.exec("PRAGMA query_only=OFF");
-  try {
-  db.exec("CREATE TEMP TABLE IF NOT EXISTS graph_uncovered(path TEXT PRIMARY KEY) WITHOUT ROWID;");
-  const insert = db.prepare("INSERT OR IGNORE INTO graph_uncovered VALUES(?)");
-  for (const path of [...bad.map(row=>row.path), ...excluded]) insert.run(path);
-  db.exec(`
-    CREATE TEMP VIEW IF NOT EXISTS nodes AS SELECT * FROM main.nodes WHERE file_path NOT IN (SELECT path FROM graph_uncovered);
-    CREATE TEMP VIEW IF NOT EXISTS edges AS SELECT * FROM main.edges
-      WHERE source NOT IN (SELECT id FROM main.nodes WHERE file_path IN (SELECT path FROM graph_uncovered))
-        AND target NOT IN (SELECT id FROM main.nodes WHERE file_path IN (SELECT path FROM graph_uncovered));
-    CREATE TEMP VIEW IF NOT EXISTS source_chunks AS SELECT * FROM main.source_chunks WHERE file_path NOT IN (SELECT path FROM graph_uncovered);
-  `);
-  } finally { db.exec("PRAGMA query_only=ON"); }
-}
+/**
+ * Files that failed to parse are filtered by the read API (`coverageFor`),
+ * so a graph with one bad file still reads its tables directly, without views.
+ */
+export function installGraphReadCoverage(_db: SqliteDatabase): void { /* see above */ }

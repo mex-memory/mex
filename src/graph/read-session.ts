@@ -1,4 +1,4 @@
-import { installGraphReadCoverage } from "./read-coverage.js";
+import { installGraphViews } from "./overlay.js";
 import { currentGraphPath, isPublishedGraph, withGraphStorageContext } from "./storage.js";
 import { absolutePath } from "../record/project.js";
 import { createHash } from "node:crypto";
@@ -180,6 +180,7 @@ export function openImmutableGraphReadSessionSync(
       );
     }
     pendingDb = openGraphDatabase(boundFile.databasePath, { readOnly: true, immutable: true });
+    installGraphViews(pendingDb, canonicalDbPath);
     const sharedDb = pendingDb;
     graph = createGraphReadEngine(sharedDb, projectRoot);
     pendingDb = null;
@@ -296,6 +297,7 @@ export async function openImmutableGraphReadSession(
       );
     }
     pendingDb = openGraphDatabase(boundFile.databasePath, { readOnly: true, immutable: true });
+    installGraphViews(pendingDb, canonicalDbPath);
     await options.afterDatabaseOpen?.(pendingDb);
     const sharedDb = pendingDb;
     graph = createGraphReadEngine(sharedDb, projectRoot);
@@ -387,9 +389,13 @@ async function loadFreshGraphReadSessionInContext(projectRoot: string, options: 
   const inspection = await inspectObservation({ projectRoot, dbPath, ...audit });
   await options.afterStatusInspection?.(inspection);
   const { graphStatus } = inspection;
+  // Files that failed to parse are reported as not covered and every other
+  // file still answers, for every reader. Reading past source drift is a
+  // choice the caller makes (`allowDegradedReads`).
   const degraded = graphStatus.status !== "fresh"
-    && options.allowDegradedReads === true
     && (inspection.degradedObservation ?? null) !== null
+    && (options.allowDegradedReads === true
+      || inspection.degradedObservation!.degradations.every(degradation => degradation === "parse-degraded"))
       ? inspection.degradedObservation!
       : null;
   const degradations: readonly GraphReadDegradation[] = degraded?.degradations ?? [];
@@ -444,7 +450,7 @@ async function loadFreshGraphReadSessionInContext(projectRoot: string, options: 
       ));
     }
 
-    installGraphReadCoverage(base.db, driftedSources);
+    if (driftedSources.length > 0) installGraphViews(base.db, undefined, driftedSources);
     const guardedStatus: GraphStatus = { ...graphStatus, diagnostics: [...graphStatus.diagnostics] };
     const ownedBase = base;
     base = null;

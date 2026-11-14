@@ -1,4 +1,5 @@
-import { acquireGraphWriter, assertGraphDirectory, cloneGraph, collectGraphGarbage, currentGraphPath, discardGraphTemporary, enforceIndexCap, finalizeGraph, graphLocation, graphStoragePathAllowed, verifiedGraphLocation, graphTemporary, publishGraph, withGraphStorageContext, type GraphLocation } from "./storage.js";
+import { acquireGraphWriter, adoptSiblingBase, assertGraphDirectory, cloneGraph, collectGraphGarbage, currentGraphPath, discardGraphTemporary, enforceIndexCap, finalizeGraph, graphLocation, graphStoragePathAllowed, verifiedGraphLocation, graphTemporary, publishGraph, publishGraphOverlay, publishGraphPointer, readGraphPointer, siblingBase, withGraphStorageContext, type GraphLocation } from "./storage.js";
+import { overlayTooLarge, planOverlay, writeOverlay } from "./overlay-write.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -41,7 +42,6 @@ import {
   inspectGraphStatus,
 } from "./status.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
-import { tryEnsureSetupIgnoreProtection } from "../setup/ignore.js";
 import { GraphCandidateProcessError, runGraphCandidateProcess, type GraphCandidateProcessOptions } from "./candidate-process.js";
 import { flushGraphPhaseTimings, timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
 
@@ -136,6 +136,8 @@ interface GraphMaintenanceInternalHooks {
   now?: () => Date;
   inspectStatus?: typeof inspectGraphStatus;
   afterLockAcquired?: () => void | Promise<void>;
+  /** Publish a refresh as a new base even when an overlay would do (the writable grounding runtime). */
+  publishAsBase?: boolean;
   afterCandidateBuilt?: (candidatePath: string) => void | Promise<void>;
   afterCandidateValidated?: (candidatePath: string, status: GraphStatus) => void | Promise<void>;
   beforeRepairCandidateMaterialize?: (candidatePath: string) => void;
@@ -202,7 +204,7 @@ export function acquireGraphMaintenanceLease(
   const internalOptions = options as InternalMaintenanceOptions;
   const paths = resolveMaintenancePaths(projectRoot, mode === "rebuild");
   assertMaintenanceDirectoryUnchanged(paths);
-  if (mode !== "rebuild" && !existsSync(paths.database)) {
+  if (mode !== "rebuild" && !existsSync(paths.database) && !siblingBase(paths.location)) {
     throw new GraphMaintenanceError(
       "GRAPH_INDEX_MISSING",
       "The graph index does not exist. Run `mex graph rebuild` first.",
@@ -214,18 +216,16 @@ export function acquireGraphMaintenanceLease(
   // that never went through `mex setup` (issue #110). Deliberately after the
   // missing-index refusal, so a mistyped `refresh` in an unindexed checkout
   // leaves nothing behind.
-  const protection = tryEnsureSetupIgnoreProtection(projectRoot);
-  if (!protection.ok) {
-    // Reported, never fatal: the store is still valid, the checkout is merely
-    // unprotected. Emitted directly rather than through `progress` so it cannot
-    // turn an already-cancelled signal into a throw before the lease exists.
-    options.onProgress?.({
-      phase: "discover",
-      message: `Could not ignore local MEX data: ${protection.reason}`,
-    });
-  }
+  // The graph lives in the MEX home, not the checkout, so a graph writer no
+  // longer writes ignore rules into the user's repository.
   const lock = acquireMaintenanceLock(paths, internalOptions);
   paths.writer = lock;
+  if (mode !== "rebuild" && !existsSync(paths.database)) {
+    try {
+      adoptSiblingBase(paths.location);
+      paths.database = currentGraphPath(projectRoot);
+    } catch (error) { lock.release(); throw error; }
+  }
   let released = false;
   let active = false;
   const run = async (
@@ -301,7 +301,9 @@ export async function ensureGraphCurrent(
     assertRefreshable(status);
   } catch (error) {
     if (!(error instanceof GraphMaintenanceError)) throw error;
-    return { ...await rebuildGraph(projectRoot, options), operation: "rebuild" };
+    let sibling = false;
+    try { sibling = status.status === "missing" && !!siblingBase(graphLocation(projectRoot)); } catch { /* no index folder */ }
+    if (!sibling) return { ...await rebuildGraph(projectRoot, options), operation: "rebuild" };
   }
   return { ...await refreshGraph(projectRoot, options), operation: "refresh" };
 }
@@ -391,10 +393,10 @@ async function refreshGraphWithLease(
         // bytes of an earlier audit. Recording them spares the next
         // inspection that audit, as a publication's record does.
         if (!options.__internal?.inspectStatus && sameLiveDatabaseStat(statBeforeInspect, statBefore)
-          && !auditRecordProvenInProcess(realpathSync(paths.database), statBefore!)) {
+          && !auditRecordProvenInProcess(realpathSync.native(paths.database), statBefore!)) {
           const audited = captureDatabaseIdentity(paths.database);
           if (sameLiveDatabaseStat(statBeforeInspect, audited)) {
-            recordAuditedDatabase(realpathSync(paths.database), audited.size, audited.digest);
+            recordAuditedDatabase(realpathSync.native(paths.database), audited.size, audited.digest);
           }
         }
         const finished = currentDate(options);
@@ -407,10 +409,15 @@ async function refreshGraphWithLease(
       }
     }
     const priorIdentity = captureDatabaseIdentity(paths.database);
+    // A checkout reads its base plus its overlay; the refresh starts from the
+    // base alone, so the result can be published as an overlay over that base.
+    const pointer = readGraphPointer(paths.location);
+    const startFrom = pointer?.overlay ? join(paths.location.directory, pointer.base) : paths.database;
+    const startIdentity = startFrom === paths.database ? priorIdentity : captureDatabaseIdentity(startFrom);
 
     candidatePath = ownedPath(paths, "candidate", createToken(options));
     const copyPath = candidatePath;
-    timeGraphPhase("envelope.copy", () => copyExactDatabase(paths, paths.database, copyPath, priorIdentity, false));
+    timeGraphPhase("envelope.copy", () => copyExactDatabase(paths, startFrom, copyPath, startIdentity, false));
     const buildResult = await timeGraphPhaseAsync("envelope.candidate", () =>
       refreshCandidate(paths, copyPath, options));
     await options.__internal?.afterCandidateBuilt?.(candidatePath);
@@ -427,7 +434,7 @@ async function refreshGraphWithLease(
     await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
     assertMaintenanceDirectoryUnchanged(paths);
 
-    const published = await timeGraphPhaseAsync("envelope.publish", () => publishCandidate({
+    const publication = {
       paths,
       candidatePath: copyPath,
       candidate,
@@ -435,7 +442,11 @@ async function refreshGraphWithLease(
       priorIdentity,
       retainRecovery: false,
       options,
-    }));
+    };
+    const published = (pointer && !options.__internal?.publishAsBase
+      ? await timeGraphPhaseAsync("envelope.overlay", () => publishOverlay(publication, pointer.base))
+      : undefined)
+      ?? await timeGraphPhaseAsync("envelope.publish", () => publishCandidate(publication));
     candidatePath = null;
     const finished = currentDate(options);
     return maintenanceResult(started, finished, buildResult, published);
@@ -660,10 +671,63 @@ async function publishCandidate(input: CandidatePublicationInput): Promise<Candi
     ...counts, build: { finishedAt: currentDate(options).toISOString() },
   });
   paths.database = database;
-  recordAuditedDatabase(realpathSync(database), candidate.identity.size, candidate.identity.digest);
+  recordAuditedDatabase(realpathSync.native(database), candidate.identity.size, candidate.identity.digest);
   collectGraphGarbage(paths.location);
   enforceIndexCap(paths.location);
   await options.__internal?.afterPublish?.(database);
+  return { status: candidate.status, diagnostics: candidate.status.diagnostics };
+}
+
+/**
+ * Publish a refreshed candidate as this checkout's overlay over `base`, or
+ * as the base alone when their files are equal. Undefined when an overlay
+ * can't be trusted or the change is large; the caller then publishes the
+ * candidate as a new base.
+ */
+async function publishOverlay(input: CandidatePublicationInput, base: string): Promise<CandidatePublicationResult | undefined> {
+  const { paths, options, candidate } = input;
+  const basePath = join(paths.location.directory, base);
+  assertMaintenanceDirectoryUnchanged(paths);
+  assertNotAborted(options.signal);
+  await options.__internal?.beforeLiveRevalidation?.();
+  revalidateLiveDatabase(paths.database, input.priorIdentity);
+  assertCandidateUnchanged(input.candidatePath, candidate);
+  const plan = timeGraphPhase("overlay.plan", () => planOverlay(basePath, input.candidatePath));
+  if ("reason" in plan || overlayTooLarge(plan)) return undefined;
+  assertMaintenanceDirectoryUnchanged(paths);
+  assertNotAborted(options.signal);
+  revalidateLiveDatabase(paths.database, input.priorIdentity);
+  if (currentGraphPath(paths.projectRoot) !== paths.database) throw new GraphMaintenanceError("GRAPH_MAINTENANCE_RACE", "The graph pointer changed during construction.");
+  assertCandidateUnchanged(input.candidatePath, candidate);
+  const countsDb = openSqlite(input.candidatePath, { readOnly: true, immutable: true });
+  let counts: { nodes: number; edges: number };
+  try { counts = countsDb.prepare("SELECT (SELECT count(*) FROM nodes) nodes, (SELECT count(*) FROM edges) edges").get() as typeof counts; } finally { countsDb.close(); }
+  const data = {
+    head: candidate.status.currentRepo.head, files: candidate.status.parseHealth.ok + candidate.status.parseHealth.partial + candidate.status.parseHealth.failed,
+    ...counts, build: { finishedAt: currentDate(options).toISOString(), overlayFiles: plan.files.length },
+  };
+  progress(options, "publish", "Publishing the validated graph pointer.");
+  if (plan.files.length === 0 && !plan.whole) {
+    publishGraphPointer(paths.location, base, null, data);
+    paths.database = basePath;
+  } else {
+    const overlay = graphTemporary(paths.location);
+    try {
+      const failed = timeGraphPhase("overlay.write", () => writeOverlay({ base: basePath, refreshed: input.candidatePath, target: overlay, root: paths.projectRoot, files: plan.files }));
+      if (failed) return undefined;
+      finalizeGraph(overlay);
+      paths.database = publishGraphOverlay(paths.location, overlay, base, data);
+    } finally { discardGraphTemporary(overlay); }
+    // The candidate the overlay came from passed the full audit, and base plus
+    // overlay reads exactly its rows: readers need not audit them again.
+    const published = captureDatabaseIdentity(paths.database);
+    recordAuditedDatabase(realpathSync.native(paths.database), published.size, published.digest);
+  }
+  // The refreshed candidate was only the means to the overlay.
+  cleanupOwnedDatabase(paths, input.candidatePath);
+  collectGraphGarbage(paths.location);
+  enforceIndexCap(paths.location);
+  await options.__internal?.afterPublish?.(paths.database);
   return { status: candidate.status, diagnostics: candidate.status.diagnostics };
 }
 
