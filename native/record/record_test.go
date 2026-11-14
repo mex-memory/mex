@@ -38,7 +38,7 @@ func TestHooksSchema(t *testing.T) {
 	defer hooks.Close()
 	ctx := context.Background()
 	version, err := schemaVersion(ctx, hooks.db)
-	if err != nil || version != 1 {
+	if err != nil || version != SchemaVersion {
 		t.Fatalf("version %d: %v", version, err)
 	}
 	var mode string
@@ -62,7 +62,7 @@ func TestHooksSchema(t *testing.T) {
 		names = append(names, name)
 	}
 	rows.Close()
-	if strings.Join(names, ",") != "counters_go,deliveries,epochs,followups,journal,ledger,notices_shown,outputs,sessions,verdicts" {
+	if strings.Join(names, ",") != "aliases,counters_go,deliveries,epochs,followups,journal,ledger,notices_shown,outputs,sessions,verdicts" {
 		t.Fatal(names)
 	}
 	session := Session{"s", "test", "f-012345678901234567890123", "/fixture", "now", "later", false}
@@ -79,10 +79,10 @@ func TestHooksSchema(t *testing.T) {
 	if _, err := hooks.db.Exec("INSERT INTO verdicts VALUES('p','c','e','invalid','h','now')"); err == nil {
 		t.Fatal("invalid verdict accepted")
 	}
-	if _, err := hooks.db.Exec("INSERT INTO epochs VALUES('s','',0,'now',0)"); err != nil {
+	if _, err := hooks.db.Exec("INSERT INTO epochs(session_id,agent_id,epoch,started_at,tokens_sent) VALUES('s','',0,'now',0)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := hooks.db.Exec("INSERT INTO deliveries VALUES('d','s','',0,'now','read','e','invalid',0,'given')"); err == nil {
+	if _, err := hooks.db.Exec("INSERT INTO deliveries(id,session_id,agent_id,epoch,ts,moment,entry_id,form,tokens,action) VALUES('d','s','',0,'now','read','e','invalid',0,'given')"); err == nil {
 		t.Fatal("invalid form accepted")
 	}
 }

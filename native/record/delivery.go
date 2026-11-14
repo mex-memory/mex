@@ -1,0 +1,323 @@
+package record
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Epoch is the single budget and presence boundary for one agent's context.
+type Epoch struct {
+	Number                                             int
+	Reason                                             string
+	Budget, TokensSent, ReservedTokens, CompactSignals int
+	SessionTokens                                      int
+}
+
+// DeliveryCandidate is already gated and rendered by the controller. Admit is
+// evaluated under the writer lock so parallel calls see the same budget.
+type DeliveryCandidate struct {
+	EntryID, Moment, Form, Action, ContentHash string
+	Tokens                                     int
+	Reserved, Exempt                           bool
+}
+type Receipt struct {
+	DeliveryCandidate
+	ID, BlockID string
+}
+type DeliveryRequest struct {
+	Session Session
+	AgentID string
+	// Empty reason keeps the current epoch. Resume likewise never advances it.
+	Reason string
+	// CompactSignal is 1 for SessionStart and 2 for PostCompact. Different
+	// signals confirm a transition; a repeated signal starts the next cycle.
+	CompactSignal int
+	Budget        int
+	Now           time.Time
+	Candidates    []DeliveryCandidate
+	Aliases       map[string]string
+	Admit         func(Epoch, DeliveryCandidate) bool
+	// KeepSession conservatively protects file-heartbeat sessions whose
+	// no-op calls deliberately do not open SQLite. Called at most 64 times.
+	KeepSession func(agent, sessionID string) bool
+}
+type DeliveryResult struct {
+	Epoch    Epoch
+	Receipts []Receipt
+}
+
+// CheckAndMark commits the lifecycle, aliases, dedupe, admission, receipts and
+// counters together. Nothing may be rendered until this returns successfully.
+func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, err error) {
+	defer func() {
+		if err != nil {
+			result = DeliveryResult{}
+		}
+	}()
+	if hooks.counterOnly || req.Session.SessionID == "" || req.Session.Agent == "" || req.Session.ProjectID == "" || req.Session.Checkout == "" {
+		return result, errors.New("invalid delivery session")
+	}
+	for _, field := range []string{req.Session.SessionID, req.Session.Agent, req.AgentID, req.Session.ProjectID, req.Session.Checkout} {
+		if len(field) > 4096 || strings.ContainsRune(field, 0) {
+			return result, errors.New("invalid delivery identity")
+		}
+	}
+	if len(req.Candidates) > 1000 || len(req.Aliases) > 10000 {
+		return result, errors.New("delivery batch exceeds bound")
+	}
+	if req.Now.IsZero() {
+		req.Now = time.Now()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.writer)
+	defer cancel()
+	conn, err := hooks.db.Conn(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer conn.Close()
+	if err = hooks.retryStatement(ctx, conn, "BEGIN IMMEDIATE"); err != nil {
+		return result, err
+	}
+	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
+	// Match existing record timestamps. Retention uses a conservative age
+	// boundary; no timestamp is included in model-facing text.
+	stamp := req.Now.UTC().Format(time.RFC3339Nano)
+	var agent string
+	var paused bool
+	err = conn.QueryRowContext(ctx, "SELECT agent,paused FROM sessions WHERE session_id=?", req.Session.SessionID).Scan(&agent, &paused)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+	if err == nil && (agent != req.Session.Agent || paused) {
+		return result, errors.New("session unavailable for delivery")
+	}
+	_, err = conn.ExecContext(ctx, `INSERT INTO sessions(session_id,agent,project_id,checkout,started_at,last_seen_at,paused)
+ VALUES(?,?,?,?,?,?,0) ON CONFLICT(session_id) DO UPDATE SET last_seen_at=excluded.last_seen_at
+ WHERE sessions.last_seen_at < ?`, req.Session.SessionID, req.Session.Agent, req.Session.ProjectID, req.Session.Checkout, stamp, stamp, req.Now.Add(-30*time.Second).UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return result, err
+	}
+	e := Epoch{}
+	err = conn.QueryRowContext(ctx, `SELECT epoch,reason,budget,tokens_sent,reserved_tokens,compact_signals FROM epochs
+ WHERE session_id=? AND agent_id=? ORDER BY epoch DESC LIMIT 1`, req.Session.SessionID, req.AgentID).
+		Scan(&e.Number, &e.Reason, &e.Budget, &e.TokensSent, &e.ReservedTokens, &e.CompactSignals)
+	missing := errors.Is(err, sql.ErrNoRows)
+	if err != nil && !missing {
+		return result, err
+	}
+	if req.Budget <= 0 {
+		req.Budget = 2000
+		if !missing {
+			req.Budget = e.Budget
+		}
+	}
+	reason := req.Reason
+	if reason == "" || reason == "resume" {
+		reason = "startup"
+	}
+	advance := !missing && (req.Reason == "clear" || req.Reason == "fork" || req.Reason == "rewind")
+	if req.Reason == "compact" {
+		if req.CompactSignal != 1 && req.CompactSignal != 2 && req.CompactSignal != 4 {
+			return result, errors.New("invalid compaction signal")
+		}
+		advance = !missing && (e.Reason != "compact" || e.CompactSignals&req.CompactSignal != 0)
+	}
+	if missing || advance {
+		number := 0
+		if advance {
+			number = e.Number + 1
+		}
+		e = Epoch{Number: number, Reason: reason, Budget: req.Budget}
+		if req.Reason == "compact" {
+			e.CompactSignals = req.CompactSignal
+		}
+		_, err = conn.ExecContext(ctx, `INSERT INTO epochs(session_id,agent_id,epoch,started_at,reason,budget,compact_signals) VALUES(?,?,?,?,?,?,?)`, req.Session.SessionID, req.AgentID, e.Number, stamp, e.Reason, e.Budget, e.CompactSignals)
+	} else if req.Reason == "compact" {
+		e.CompactSignals |= req.CompactSignal
+		_, err = conn.ExecContext(ctx, `UPDATE epochs SET compact_signals=? WHERE session_id=? AND agent_id=? AND epoch=?`, e.CompactSignals, req.Session.SessionID, req.AgentID, e.Number)
+	}
+	if err != nil {
+		return result, err
+	}
+	// Persist explicit merges. The entry codec has no successor field; callers
+	// must obtain these from an authoritative merge operation, never prose.
+	for old, next := range req.Aliases {
+		if old == "" || next == "" || old == next || len(old) > 128 || len(next) > 128 || strings.ContainsRune(old, 0) || strings.ContainsRune(next, 0) {
+			return result, errors.New("invalid alias")
+		}
+		_, err = conn.ExecContext(ctx, `INSERT INTO aliases VALUES(?,?,?,?) ON CONFLICT(project_id,checkout,old_id) DO UPDATE SET new_id=excluded.new_id`, req.Session.ProjectID, req.Session.Checkout, old, next)
+		if err != nil {
+			return result, err
+		}
+	}
+	aliases := map[string]string{}
+	rows, err := conn.QueryContext(ctx, `SELECT old_id,new_id FROM aliases WHERE project_id=? AND checkout=? LIMIT 10001`, req.Session.ProjectID, req.Session.Checkout)
+	if err != nil {
+		return result, err
+	}
+	for rows.Next() {
+		var a, b string
+		if err = rows.Scan(&a, &b); err != nil {
+			break
+		}
+		aliases[a] = b
+	}
+	err = errors.Join(err, rows.Err(), rows.Close())
+	if err != nil {
+		return result, err
+	}
+	if len(aliases) > 10000 {
+		return result, errors.New("alias bound exceeded")
+	}
+	canonical := func(id string) (string, error) {
+		seen := map[string]bool{}
+		for aliases[id] != "" {
+			if seen[id] || len(seen) >= 64 {
+				return "", errors.New("alias cycle or chain too long")
+			}
+			seen[id] = true
+			id = aliases[id]
+		}
+		return id, nil
+	}
+	for id := range aliases {
+		if _, err = canonical(id); err != nil {
+			return result, err
+		}
+	}
+	present := map[string]bool{}
+	if len(req.Candidates) > 0 {
+		err = conn.QueryRowContext(ctx, `SELECT coalesce(sum(tokens_sent+reserved_tokens),0) FROM epochs WHERE session_id=? AND agent_id=?`, req.Session.SessionID, req.AgentID).Scan(&e.SessionTokens)
+		if err != nil {
+			return result, err
+		}
+	}
+	rows, err = conn.QueryContext(ctx, `SELECT DISTINCT entry_id FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? AND action IN ('given','replaced')`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout)
+	if err != nil {
+		return result, err
+	}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			break
+		}
+		id, err = canonical(id)
+		if err != nil {
+			break
+		}
+		present[id] = true
+	}
+	err = errors.Join(err, rows.Err(), rows.Close())
+	if err != nil {
+		return result, err
+	}
+	block, err := receiptID()
+	if err != nil {
+		return result, err
+	}
+	for _, c := range req.Candidates {
+		if c.EntryID == "" || len(c.EntryID) > 128 || strings.ContainsRune(c.EntryID, 0) || len(c.ContentHash) > 256 || strings.ContainsRune(c.ContentHash, 0) || c.Tokens < 0 || c.Tokens > 1000000 {
+			return result, errors.New("invalid delivery candidate")
+		}
+		id, err := canonical(c.EntryID)
+		if err != nil {
+			return result, err
+		}
+		if present[id] {
+			continue
+		}
+		if c.Action == "" {
+			c.Action = "given"
+		}
+		sends := c.Action == "given" || c.Action == "replaced"
+		if sends && !c.Exempt && !c.Reserved && (e.TokensSent+c.Tokens > e.Budget || (req.Admit != nil && !req.Admit(e, c))) {
+			c.Action = "held-back"
+			sends = false
+		}
+		receipt, err := receiptID()
+		if err != nil {
+			return result, err
+		}
+		_, err = conn.ExecContext(ctx, `INSERT INTO deliveries(id,session_id,agent_id,epoch,ts,moment,entry_id,form,tokens,action,content_hash,block_id,project_id,checkout) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, receipt, req.Session.SessionID, req.AgentID, e.Number, stamp, c.Moment, c.EntryID, c.Form, c.Tokens, c.Action, c.ContentHash, block, req.Session.ProjectID, req.Session.Checkout)
+		if err != nil {
+			return result, err
+		}
+		result.Receipts = append(result.Receipts, Receipt{c, receipt, block})
+		if sends {
+			present[id] = true
+			e.SessionTokens += c.Tokens
+			if c.Reserved {
+				e.ReservedTokens += c.Tokens
+			} else {
+				e.TokensSent += c.Tokens
+			}
+		}
+	}
+	_, err = conn.ExecContext(ctx, `UPDATE epochs SET tokens_sent=?,reserved_tokens=? WHERE session_id=? AND agent_id=? AND epoch=?`, e.TokensSent, e.ReservedTokens, req.Session.SessionID, req.AgentID, e.Number)
+	if err != nil {
+		return result, err
+	}
+	if req.Reason == "startup" || req.Reason == "clear" {
+		if err = pruneDelivery(ctx, conn, req.Now.Add(-30*24*time.Hour).UTC().Format(time.RFC3339Nano), req.KeepSession); err != nil {
+			return result, err
+		}
+	}
+	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return DeliveryResult{}, err
+	}
+	result.Epoch = e
+	return result, nil
+}
+
+func receiptID() (string, error) {
+	var id [12]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(id[:]), nil
+}
+
+// A start removes at most 256 followups, 256 receipts and 64 empty epochs.
+// No cascading delete may turn a small prune into unbounded work. Other
+// session records belong to their owners, so sessions themselves stay intact.
+func pruneDelivery(ctx context.Context, c *sql.Conn, cutoff string, keep func(string, string) bool) error {
+	rows, err := c.QueryContext(ctx, `SELECT session_id,agent FROM sessions WHERE last_seen_at<? ORDER BY last_seen_at LIMIT 64`, cutoff)
+	if err != nil {
+		return err
+	}
+	var ids []any
+	for rows.Next() {
+		var id, agent string
+		if err = rows.Scan(&id, &agent); err != nil {
+			break
+		}
+		if keep == nil || !keep(agent, id) {
+			ids = append(ids, id)
+		}
+	}
+	err = errors.Join(err, rows.Err(), rows.Close())
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := append(ids, cutoff)
+	for _, q := range []string{
+		`DELETE FROM followups WHERE id IN (SELECT f.id FROM followups f JOIN deliveries d ON d.id=f.delivery_id WHERE d.session_id IN (` + marks + `) AND d.ts<? LIMIT 256)`,
+		`DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.session_id IN (` + marks + `) AND d.ts<? AND NOT EXISTS(SELECT 1 FROM followups f WHERE f.delivery_id=d.id) LIMIT 256)`,
+		`DELETE FROM epochs WHERE (session_id,agent_id,epoch) IN (SELECT e.session_id,e.agent_id,e.epoch FROM epochs e WHERE e.session_id IN (` + marks + `) AND e.started_at<? AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.session_id=e.session_id AND d.agent_id=e.agent_id AND d.epoch=e.epoch) LIMIT 64)`,
+	} {
+		if _, err := c.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("prune delivery: %w", err)
+		}
+	}
+	return nil
+}

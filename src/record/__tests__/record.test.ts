@@ -84,11 +84,11 @@ describe("record schema and ownership", () => {
     expect(() => reader.all("PRAGMA query_only=OFF")).not.toThrow();
     expect(() => reader.all("DELETE FROM sessions RETURNING *")).toThrow(/readonly/i);
   });
-  it("keeps the supported hooks version at 1 when record.db advances to 2", () => {
+  it("refuses a future hooks version independently of record.db", () => {
     const home = temp(); const db = new DatabaseSync(join(home, "hooks.db"));
-    db.exec("PRAGMA user_version=2"); db.close();
+    db.exec("PRAGMA user_version=3"); db.close();
     const reader = openHooksReadOnly({ home, isNetwork: () => false })!; closes.push(() => reader.close());
-    expect(reader.diagnostic).toContain("hooks.db schema version 2 is newer than supported version 1");
+    expect(reader.diagnostic).toContain("hooks.db schema version 3 is newer than supported version 2");
   });
 });
 

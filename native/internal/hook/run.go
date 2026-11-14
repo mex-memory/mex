@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mex-memory/mex/native/delivery"
 	"github.com/mex-memory/mex/native/internal/adapter"
 	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
 	_ "github.com/mex-memory/mex/native/internal/adapter/codex"  // registers the profile
@@ -120,9 +121,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 // Empty output with exit 0 means "do nothing" to every agent.
 var silent = []byte{}
 
-// handle turns one payload into the agent's reply. Nothing behind the shim
-// produces replies yet, so the reply is empty apart from the "MEX is off
-// here" notice.
+// handle turns one payload into the agent's reply after consent and checkout
+// resolution. Delivery errors are ignored so every agent call can continue.
 func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time.Time, observe ...func(string, bool, bool)) []byte {
 	if !ok {
 		if p, found := adapter.Lookup(agent); found {
@@ -221,7 +221,18 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	}
 	noteEdit(ev, recordDirectory)
 	freeStage(ev, h, recordDirectory)
-	out, _ := profile.Render(ev, contract.Reply{})
+	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
+		if err != nil {
+			return !os.IsNotExist(err)
+		}
+		return now.Sub(info.ModTime()) <= 30*24*time.Hour
+	}})
+	if deliveryErr != nil {
+		failed = true
+		reply = contract.Reply{}
+	}
+	out, _ := profile.Render(ev, reply)
 	return out
 }
 

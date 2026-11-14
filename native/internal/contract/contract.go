@@ -53,6 +53,7 @@ type Event struct {
 	ProjectID    string    `json:"project_id"`
 	Checkout     string    `json:"checkout"`
 	Source       string    `json:"source,omitempty"`
+	Model        string    `json:"model,omitempty"`
 	Prompt       *PromptIn `json:"prompt,omitempty"`
 	Tool         *Tool     `json:"tool,omitempty"`
 	Batch        []Tool    `json:"batch,omitempty"`

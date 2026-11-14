@@ -69,6 +69,7 @@ type payload struct {
 	HookEventName  string          `json:"hook_event_name"`
 	AgentID        string          `json:"agent_id"`
 	Source         string          `json:"source"`
+	Model          string          `json:"model"`
 	Prompt         string          `json:"prompt"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
@@ -100,6 +101,7 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		AgentID:    p.AgentID,
 		Cwd:        p.Cwd,
 		Transcript: p.TranscriptPath,
+		Model:      p.Model,
 	}
 	switch kind {
 	case contract.PostCompact:

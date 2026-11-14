@@ -63,6 +63,7 @@ type payload struct {
 	Cwd            string          `json:"cwd"`
 	AgentID        string          `json:"agent_id"`
 	Source         string          `json:"source"`
+	Model          string          `json:"model"`
 	Prompt         string          `json:"prompt"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
@@ -91,6 +92,7 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 	switch kind {
 	case contract.SessionStart:
 		ev.Source = p.Source
+		ev.Model = p.Model
 	case contract.Prompt:
 		// Codex doesn't say whether a prompt was typed or pasted.
 		ev.Prompt = &contract.PromptIn{Text: p.Prompt, Typed: true}
