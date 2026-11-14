@@ -1,7 +1,9 @@
 // Knowledge-03 supplies observations from the real evaluator/delivery path.
 // This module scores them; it is not registered as a live adapter by itself.
 // Historical percentages and legacy health flags are never current evidence.
-const CLAIMS = 132;
+// The corpus states its own size; a corpus smaller than this is too thin to
+// score. (The deleted 0.8 corpus had 132 claims; the 0.9 corpora differ.)
+const MIN_CLAIMS = 40;
 const CHECKPOINTS = 6;
 const CHECK_BUDGET_MS = 1000;
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
@@ -12,6 +14,8 @@ const keys = (value, allowed) => value && typeof value === 'object' && !Array.is
 const fraction = (numerator, denominator) => denominator ? numerator / denominator : null;
 
 function corpusRows(corpus, expected) {
+  const CLAIMS = corpus?.manifest?.claims;
+  if (!Number.isSafeInteger(CLAIMS) || CLAIMS < MIN_CLAIMS) invalid();
   if (!expected || typeof expected.commit !== 'string' || typeof expected.corpusSha256 !== 'string'
     || !SHA.test(expected.commit) || !DIGEST.test(expected.corpusSha256)
     || corpus?.manifest?.schema_version !== 2 || corpus.manifest.claims !== CLAIMS
@@ -37,11 +41,11 @@ function corpusRows(corpus, expected) {
       || typeof label.truth !== 'boolean' || labels.has(key) || label.checkpoint === 'C0' && !label.truth) invalid();
     labels.set(key, label.truth);
   }
-  return { claimIds, labels };
+  return { claimIds, labels, CLAIMS };
 }
 
 export function gradeKnowledge(corpus, observed, expected) {
-  const { claimIds, labels } = corpusRows(corpus, expected);
+  const { claimIds, labels, CLAIMS } = corpusRows(corpus, expected);
   if (!keys(observed, ['schema_version', 'format', 'candidate_commit', 'dataset_sha256', 'seeded_claims', 'checkpoints'])
     || observed.schema_version !== 1 || observed.format !== 'knowledge-0.9-facts'
     || observed.candidate_commit !== expected.commit || observed.dataset_sha256 !== expected.corpusSha256

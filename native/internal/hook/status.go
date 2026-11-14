@@ -3,10 +3,13 @@ package hook
 import (
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
 	"github.com/mex-memory/mex/native/internal/adapter"
+	localrecord "github.com/mex-memory/mex/native/record"
 )
 
 type agentStatus struct {
@@ -28,12 +31,33 @@ type statusReport struct {
 // `mex` uses it to say "MEX isn't running in Codex here" and why.
 func status(stdout io.Writer, h home, goos string) int {
 	report := statusReport{Version: Version, Agents: []agentStatus{}}
+	directory := h.recordDirectory()
+	var beats map[string]map[string]time.Time
+	if directory != "" {
+		beats, _ = localrecord.HookHeartbeats(localrecord.Location{Hooks: filepath.Join(directory, "hooks.db")}, time.Now().Add(-heartbeatMaxAge))
+	}
 	for _, name := range adapter.Agents() {
 		s := agentStatus{Agent: name, HooksOff: h.hooksOff(name, goos)}
 		if s.HooksOff == nil {
 			s.HooksOff = []string{}
 		}
-		if last, n := h.lastBeat(name); n > 0 {
+		seen := map[string]time.Time{}
+		for id, stamp := range beats[name] {
+			seen[safeName(id)] = stamp
+		}
+		files, _ := os.ReadDir(h.heartbeatDir(name))
+		for _, f := range files {
+			if info, err := f.Info(); err == nil && !info.IsDir() && info.ModTime().After(seen[f.Name()]) {
+				seen[f.Name()] = info.ModTime()
+			}
+		}
+		var last time.Time
+		for _, stamp := range seen {
+			if stamp.After(last) {
+				last = stamp
+			}
+		}
+		if n := len(seen); n > 0 {
 			ts := last.UTC().Format(time.RFC3339)
 			s.LastHeartbeat, s.Sessions = &ts, n
 		}

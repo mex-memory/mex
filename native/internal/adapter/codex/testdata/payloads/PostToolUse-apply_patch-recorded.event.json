@@ -14,6 +14,7 @@
       "files": [
         {
           "path": "/probe/repo/math.js",
+          "kind": "update",
           "hunks": [
             {
               "old": "export function add(a, b) {\n",

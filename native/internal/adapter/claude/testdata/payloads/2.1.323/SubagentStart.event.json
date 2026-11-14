@@ -7,6 +7,7 @@
   "cwd": "C:\\mex-test-tmp\\f03\\live\\repo",
   "project_id": "",
   "checkout": "",
+  "agent_type": "general-purpose",
   "transcript": "C:\\Users\\person\\.claude\\projects\\C--mex-test-tmp-f03-live-repo\\3786cc60-44f2-452f-a595-f9db31303cdf.jsonl",
   "background": false
 }

@@ -17,7 +17,7 @@ import (
 	"modernc.org/sqlite"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // Node's additive model-admission migration does not change the tables read here.
 const RecordSchemaVersion = 4
@@ -231,10 +231,17 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 		}
 	}
 	if err == nil && version < SchemaVersion {
-		var data []byte
-		data, err = schemas.ReadFile("schema/hooks/0001_init.sql")
+		var steps []migration
+		for i, name := range []string{"0001_init.sql", "0002_delivery.sql"} {
+			var data []byte
+			data, err = schemas.ReadFile("schema/hooks/" + name)
+			if err != nil {
+				break
+			}
+			steps = append(steps, migration{i + 1, string(data)})
+		}
 		if err == nil {
-			err = migrate(ctx, db, []migration{{1, string(data)}})
+			err = migrate(ctx, db, steps)
 		}
 	}
 	if err == nil && counterOnly {
@@ -297,15 +304,20 @@ func (hooks *Hooks) PutSession(session Session) error {
 // cannot repeatedly miss each newly released lock. The total wait budget stays
 // WriterBusyTimeoutMS; it does not restart with each attempt.
 func (hooks *Hooks) write(ctx context.Context, statement string, args ...any) error {
-	until := time.Now().Add(hooks.budget.writerBusy)
-	if deadline, ok := ctx.Deadline(); ok && deadline.Add(-25*time.Millisecond).Before(until) {
-		until = deadline.Add(-25 * time.Millisecond)
-	}
 	conn, err := hooks.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	return hooks.retryStatement(ctx, conn, statement, args...)
+}
+
+func (hooks *Hooks) retryStatement(ctx context.Context, conn *sql.Conn, statement string, args ...any) error {
+	var err error
+	until := time.Now().Add(hooks.budget.writerBusy)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Add(-25*time.Millisecond).Before(until) {
+		until = deadline.Add(-25 * time.Millisecond)
+	}
 	defer func() {
 		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout=%d", hooks.busyTimeout()))
 	}()

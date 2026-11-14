@@ -109,8 +109,11 @@ gated path.
   at integration.
 - Claim `mex-agent-hook-linux-x64`, `mex-agent-hook-linux-arm64`,
   `mex-agent-hook-darwin-x64`, `mex-agent-hook-darwin-arm64`,
-  `mex-agent-hook-win32-x64`, `mex-agent-hook-win32-arm64`; confirm publish rights
+  `mex-agent-hook-windows-x64`, `mex-agent-hook-win32-arm64`; confirm publish rights
   for these and `mex-agent`.
+- Windows x64 uses the registered `mex-agent-hook-windows-x64` name after npm
+  rejected `mex-agent-hook-win32-x64` as spam. Its target directory, npm `os`
+  constraint and binary name remain `hook-win32-x64`, `win32` and `mex-hook.exe`.
 - Create `npm-publish` with required maintainer reviewers and release-ref restrictions.
 - Configure trusted publishing for all seven packages: this repository,
   `release.yml`, environment `npm-publish`. Alternatively set an authorized

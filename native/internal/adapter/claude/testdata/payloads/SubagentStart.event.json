@@ -7,6 +7,7 @@
   "cwd": "/home/dev/shop",
   "project_id": "",
   "checkout": "",
+  "agent_type": "Explore",
   "transcript": "/home/dev/.claude/projects/-home-dev-shop/5f0c2a1e-1b7d-4c55-9a43-2e0f1c7d9b10.jsonl",
   "background": false
 }

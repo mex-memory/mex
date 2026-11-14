@@ -33,17 +33,31 @@ records p50, p95 and maximum separately; the maximum has no 17 ms guarantee.
 Where present, the counters-active timing test is included too.
 An environment variable cannot raise the budget or enable cached test results.
 
-The other six benchmark adapters are **not built**. Versioned datasets and
-independent answer keys are being restored privately. Supplied historical
-reports can describe an older release; a current pass requires the live
-product checks on the release commit. The runner currently exits with a
-blocked release, even when hook timing passes.
+The knowledge bench (`knowledge.mjs`) is live. The other five benchmark
+adapters are **not built**. Supplied historical reports can describe an older
+release; a current pass requires the live product checks on the release
+commit.
 
-`knowledge-score.mjs` is ready for the knowledge-check implementation to use.
-It requires all 132 seeded facts at all six exact source checkpoints, the
-expected corpus digest and candidate commit, source-only truth labels and
-observations from the real verdict/delivery path. The private loader verifies
-corpus file hashes before scoring. Every query records a full fact, pointer,
+**Knowledge bench.** The adapter clones the public subject (Hono) into the
+system temp folder, rebuilds the deterministic corpus with
+`scripts/knowledge-bench/build-corpus.mjs` and refuses it unless its digest is
+the one pinned in `knowledge.mjs`, builds the hook binary, and runs
+`scripts/knowledge-bench/run.mjs`: at T0 it registers a worktree with MEX,
+records each claim's check with the real evaluator and writes the claims as
+team facts; at each of the six checkpoints it refreshes the file index, runs
+the evaluator (storing verdicts) and asks the delivery controller what it
+would send (`mex-hook --delivery-probe`). The corpus is 46 hand-written claims
+(20 package.json keys, 12 source literals, 14 behaviours backed by symbol
+fingerprints) with independent truth functions over `git show` text; 15 are
+false by T1. It stands in for a corpus written by setup and capture: run
+`run.mjs --corpus <dir>` with any corpus of the same shape to swap one in.
+No network means `tool-unavailable`, which blocks a required gate.
+
+`knowledge-score.mjs` scores the observations. The corpus states its size
+(at least 40 claims) and needs six exact source checkpoints, the expected
+corpus digest and candidate commit, source-only truth labels and observations
+from the real verdict/delivery path. Corpus file hashes are verified before
+scoring. Every query records a full fact, pointer,
 withheld result or retrieval miss; a pointer must contain no original claim.
 Broken delivery, stale full text and changed/unknown-changed full code facts
 fail. Check evaluation has a fixed 1,000 ms ceiling per checkpoint; query and
@@ -51,9 +65,8 @@ graph-build time are not included in that measurement. True/stale counts and
 rates remain available to the private report. Empty C0 delivery and incomplete,
 duplicate, stale-commit or mismatched-corpus observations fail closed.
 
-This scorer is not registered as a live adapter until the knowledge-check
-implementation calls its actual evaluator and delivery code. Historical
-percentages and legacy warning-only results cannot satisfy its input format.
+Historical percentages and legacy warning-only results cannot satisfy its
+input format.
 Only the reduced count result goes into the public gate report.
 
 Adapters are fixed, repository-owned functions, given the checkout root, release
