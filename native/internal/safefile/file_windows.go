@@ -1,4 +1,4 @@
-package hook
+package safefile
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 	"syscall"
 )
 
-func safeTelemetryFile(path string) bool {
+func Regular(path string) bool {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return false

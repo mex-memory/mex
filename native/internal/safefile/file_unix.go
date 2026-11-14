@@ -1,13 +1,13 @@
 //go:build !windows
 
-package hook
+package safefile
 
 import (
 	"os"
 	"syscall"
 )
 
-func safeTelemetryFile(path string) bool {
+func Regular(path string) bool {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return os.IsNotExist(err)
