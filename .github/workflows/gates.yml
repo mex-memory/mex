@@ -31,7 +31,9 @@ jobs:
   gates:
     name: gates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # The upgrade gate checks out novu (about 7,000 files) several times; on
+    # Windows that alone takes about 15 minutes.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -64,7 +66,15 @@ jobs:
           cache-dependency-path: native/go.sum
       - run: npm ci
       - run: npm run gates:test
+      # Pinned public commits for the upgrade gate; the key changes with the corpus.
+      - name: Restore upgrade subjects
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mex-gate-cache/upgrade/*.git
+          key: upgrade-subjects-${{ runner.os }}-${{ hashFiles('scripts/gates/upgrade-corpus/manifest.json') }}
       - name: Run seven free gates
+        env:
+          MEX_GATE_CACHE: ${{ runner.temp }}/mex-gate-cache
         run: npm run gates -- --report test-results/gates/${{ runner.os }}.json
       - name: Upload sanitized gate report
         if: always()
