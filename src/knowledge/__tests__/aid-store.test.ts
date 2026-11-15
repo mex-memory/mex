@@ -19,10 +19,10 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 const options = () => ({ projectPath: repo, home, isNetwork: () => false });
-/** Ranks a query to the entry whose one line shares its first word, else nothing. */
+/** Ranks a query to the entries whose one line or alias shares its first word; the gate sends the top one. */
 const byFirstWord: AidRanker = (entries, queries) => new Map(queries.map(q => {
   const word = q.text.split(" ")[0].toLowerCase();
-  return [q.id, entries.filter(e => e.mex.one_line.toLowerCase().includes(word) || (e.mex.aliases ?? []).some(a => a.toLowerCase().startsWith(word))).map((e, i) => ({ id: e.mex.id, score: 1 / (i + 1) }))];
+  return [q.id, entries.filter(e => e.mex.one_line.toLowerCase().includes(word) || (e.mex.aliases ?? []).some(a => a.toLowerCase().startsWith(word))).map((e, i) => ({ id: e.mex.id, score: 1 / (i + 1), sent: i === 0 }))];
 }));
 
 describe("mex alias and mex ask on a personal note", () => {

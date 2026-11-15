@@ -1,12 +1,14 @@
 /**
  * Aliases and asks: the words a person would type when an entry matters,
  * written onto the entry so that the hook stays a lookup. Each candidate passes
- * a deterministic filter before it is kept. It is ranked by the delivery
- * ranker (`mex-hook --recall`) against the project's entries, with all of the
- * entry's candidates added to it, and kept only when it ranks its own entry
- * first by a clear margin. A candidate that would pull in another entry is
- * dropped with the reason. Aliases and asks are retrieval aids only: never
- * delivered text and never evidence.
+ * a deterministic filter before it is kept, using the delivery ranker and its
+ * prompt gate (`mex-hook --recall`) over the project's own entries. A candidate
+ * that, typed as a prompt, would already make the gate send another entry is
+ * dropped: keeping it would steal that prompt. Otherwise it is kept when, added
+ * to its entry, it ranks that entry first by a clear margin. The rule has no
+ * parameters learned from any repository; every verdict is recorded with its
+ * reason. Aliases and asks are retrieval aids only: never delivered text and
+ * never evidence.
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -76,8 +78,7 @@ export const nativeAidRanker: AidRanker = (entries, queries) => {
  * project; the target's own current aids are rechecked with the new ones.
  * Deterministic: the same corpus and candidates give the same verdicts.
  */
-export interface AidRules { prior: "first" | "sent" | "off"; margin: number; }
-export function filterAids(target: KnowledgeEntry, candidates: readonly AidCandidate[], corpus: readonly KnowledgeEntry[], rank: AidRanker = nativeAidRanker, rules: AidRules = { prior: (process.env.MEX_AID_PRIOR as AidRules["prior"]) || "first", margin: Number(process.env.MEX_AID_MARGIN ?? AID_MARGIN) }): AidFilterResult {
+export function filterAids(target: KnowledgeEntry, candidates: readonly AidCandidate[], corpus: readonly KnowledgeEntry[], rank: AidRanker = nativeAidRanker): AidFilterResult {
   const verdicts: AidVerdict[] = [];
   const pending: AidCandidate[] = [];
   const seen = new Set<string>();
@@ -97,9 +98,11 @@ export function filterAids(target: KnowledgeEntry, candidates: readonly AidCandi
     mex: { ...target.mex, aliases: pending.filter(c => c.kind === "alias").map(c => c.text), asks: pending.filter(c => c.kind === "ask").map(c => c.text) },
   };
   const others = corpus.filter(e => e.mex.id !== target.mex.id);
-  // Two passes. Without the candidates, words that already find another entry
-  // belong to that entry: an alias made of them would pull this one in for
-  // prompts about the other. With them, this entry must then lead by a margin.
+  // Two passes. Without the candidates: if a candidate, typed as a prompt,
+  // would already make the prompt gate send another entry, adding it here would
+  // steal that prompt, so it is dropped. Sharing a few words with another entry
+  // is not enough; that happens to most useful aliases. With the candidates:
+  // this entry must come first and lead the next by a margin.
   const queries = pending.map((c, i) => ({ id: String(i), text: c.text }));
   const before = pending.length ? rank([target, ...others], queries.map(q => ({ ...q, id: `b${q.id}` }))) : new Map<string, Ranked[]>();
   // The index validates each entry as a whole; the bounds are applied after ranking.
@@ -109,17 +112,16 @@ export function filterAids(target: KnowledgeEntry, candidates: readonly AidCandi
   pending.forEach((c, i) => {
     const list = ranked.get(String(i)) ?? [];
     const own = list.find(r => r.id === target.mex.id);
-    const priorList = before.get(`b${i}`) ?? [];
-    const prior = rules.prior === "off" ? undefined : rules.prior === "sent" ? priorList.find(r => r.sent && r.id !== target.mex.id) : priorList[0];
+    const prior = (before.get(`b${i}`) ?? []).find(r => r.sent && r.id !== target.mex.id);
     const verdict: AidVerdict = { entry: target.mex.id, kind: c.kind, text: c.text, kept: false, reason: "" };
-    if (prior && prior.id !== target.mex.id) Object.assign(verdict, { reason: `already finds ${prior.id} first`, top: prior.id });
+    if (prior) Object.assign(verdict, { reason: `would already send ${prior.id}`, top: prior.id });
     else if (!own) verdict.reason = "matches no words of its entry";
     else if (list[0].id !== target.mex.id) Object.assign(verdict, { reason: `ranks ${list[0].id} above its own entry`, top: list[0].id, score: own.score });
     else {
       const second = list.find(r => r.id !== target.mex.id)?.score ?? 0;
       const margin = (own.score - second) / Math.max(own.score, 1e-9);
       Object.assign(verdict, { score: own.score, margin: Math.round(margin * 1000) / 1000 });
-      if (margin < rules.margin) verdict.reason = `leads ${list.find(r => r.id !== target.mex.id)!.id} by less than ${rules.margin * 100}%`;
+      if (margin < AID_MARGIN) verdict.reason = `leads ${list.find(r => r.id !== target.mex.id)!.id} by less than ${AID_MARGIN * 100}%`;
       else if (kept[c.kind].length >= LIMITS[c.kind].count) verdict.reason = `over the limit of ${LIMITS[c.kind].count}`;
       else { verdict.kept = true; verdict.reason = "ranks its own entry first"; kept[c.kind].push(c.text); }
     }

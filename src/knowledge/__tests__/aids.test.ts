@@ -12,7 +12,7 @@ const logging = entry("mx_logged", { one_line: "Every delivery writes one log li
 const corpus = [webhook, client, logging];
 
 describe("alias filter rules (scripted ranker)", () => {
-  const scripted = (lists: Record<string, Array<{ id: string; score: number }>>): AidRanker => (_entries, queries) => new Map(queries.map(q => [q.id, lists[q.id] ?? []]));
+  const scripted = (lists: Record<string, Array<{ id: string; score: number; sent?: boolean }>>): AidRanker => (_entries, queries) => new Map(queries.map(q => [q.id, lists[q.id] ?? []]));
   it("keeps a candidate that ranks its own entry first with a margin, and records why others were dropped", () => {
     const result = filterAids(webhook, [
       { kind: "alias", text: "429 storm" }, { kind: "alias", text: "auth headers" }, { kind: "ask", text: "close call?" }, { kind: "alias", text: "nothing" },
@@ -28,6 +28,17 @@ describe("alias filter rules (scripted ranker)", () => {
       ["auth headers", false, "ranks mx_client above its own entry"],
       ["close call?", false, "leads mx_logged by less than 25%"],
       ["nothing", false, "matches no words of its entry"],
+    ]);
+  });
+  it("drops a candidate that, typed alone, would already send another entry, but not one that only shares words", () => {
+    const result = filterAids(webhook, [{ kind: "alias", text: "client retries" }, { kind: "alias", text: "retry storm" }], corpus, scripted({
+      b0: [{ id: "mx_client", score: 1, sent: true }, { id: "mx_webhk1", score: .5 }],
+      b1: [{ id: "mx_client", score: .4 }],
+      "0": [{ id: "mx_webhk1", score: 1 }], "1": [{ id: "mx_webhk1", score: 1 }, { id: "mx_client", score: .3 }],
+    } as never));
+    expect(result.verdicts.map(v => [v.text, v.kept, v.reason])).toEqual([
+      ["client retries", false, "would already send mx_client"],
+      ["retry storm", true, "ranks its own entry first"],
     ]);
   });
   it("drops empty, too long, duplicate and title-repeating candidates before ranking", () => {
