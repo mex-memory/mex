@@ -96,10 +96,10 @@ async function readAgentMemory(root: string): Promise<NotesFound | undefined> {
 }
 
 /** Read the repo's rule files (knowledge-05) and save their scan; the line names `mex rules` when some need review. */
-async function readRules(root: string): Promise<{ files: number; conflicts: number; line: string } | undefined> {
+async function readRules(root: string, listing?: Promise<string[] | undefined>): Promise<{ files: number; conflicts: number; line: string } | undefined> {
   try {
     const { refreshRuleFiles } = await import("../knowledge/rule-cache.js");
-    const cache = refreshRuleFiles({ projectPath: root });
+    const cache = refreshRuleFiles({ projectPath: root }, new Date(), await listing);
     const conflicts = cache.review.filter(item => item.kind === "conflict").length;
     const stale = cache.review.filter(item => item.kind === "stale").length;
     const parts = [`${cache.files.length} rule ${cache.files.length === 1 ? "file" : "files"} read`];
@@ -218,6 +218,10 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     if (!automaticWorkEnabled(writer, projectId)) {
       findings.push({ state: "attention", text: "MEX is off everywhere, so nothing was read or queued. `mex on --all` turns it back on." });
     } else {
+      // The rule-file scan's file list walks the whole tree for untracked files; start it now so
+      // it runs while recipes are read.
+      const { listRepositoryFilesAsync } = await import("../knowledge/rule-files.js");
+      const listing = listRepositoryFilesAsync(checkout.path);
       const { queueIndexBuild } = await import("../file-index/command.js");
       queueIndexBuild(writer, projectId, checkout.path);
       // Queued after the index, so layer rules can read its imports.
@@ -236,7 +240,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         findings.push({ state: "ok", text: git ? summary.line : summary.line.replace("this repo", "this folder") });
         for (const note of summary.notes.slice(0, 3)) findings.push({ state: "attention", text: note });
       }
-      const rules = await readRules(checkout.path);
+      const rules = await readRules(checkout.path, listing);
       if (rules && rules.files > 0) findings.push({ state: "ok", text: rules.line });
       const memory = await readAgentMemory(checkout.path);
       if (memory && memory.count > 0) {
