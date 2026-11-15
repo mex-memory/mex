@@ -127,7 +127,7 @@ describe("bare mex in a repository", () => {
     expect(again.status, again.stderr).toBe(0);
     const mined = JSON.parse(readFileSync(facts(), "utf8"));
     expect(mined).toMatchObject({ version: 1, skipped: null, commits_read: 5 });
-    expect(mined.change_together).toContainEqual({ a: "schema.ts", b: "types.ts", confidence: 1, support: 4 });
+    expect(mined.change_together).toContainEqual({ a: "schema.ts", b: "types.ts", confidence: 1, support: 4, kind: "related" });
     expect(leftovers(f)).toEqual([]);
     expect(f.status()).toBe("");
   });

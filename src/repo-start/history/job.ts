@@ -14,10 +14,12 @@ export interface CodeFactsParams { checkout: string; }
 export interface CodeFactsFile {
   version: 1;
   built_at: string;
+  /** The checkout the history was read from; the background process re-reads it when its HEAD moves. */
+  checkout?: string;
   head: string | null;
   commits_read: number;
   skipped: null | "shallow clone" | "no git" | "no commits";
-  change_together: Array<{ a: string; b: string; confidence: number; support: number }>;
+  change_together: Array<{ a: string; b: string; confidence: number; support: number; kind: "test" | "mirror" | "related" }>;
   layer_rules: Array<{ from: string; to: string; imports: number }>;
   generated: Array<{ path: string; signal: "marker" | "gitattributes" | "history" }>;
   /** Why layer rules are empty when they couldn't be computed. */
@@ -49,6 +51,7 @@ export function skippedFacts(skipped: NonNullable<CodeFactsFile["skipped"]>, hea
   return { version: 1, built_at: new Date().toISOString(), head, commits_read: 0, skipped, change_together: [], layer_rules: [], generated: [] };
 }
 
+
 /** Build code facts for one checkout. Read-only git commands only. */
 export async function buildCodeFacts(root: string, projectId: string, location: RecordLocation): Promise<CodeFactsFile> {
   const mine = await import("./mine.js");
@@ -59,6 +62,8 @@ export async function buildCodeFacts(root: string, projectId: string, location: 
   } catch {
     try { git(root, ["rev-parse", "--git-dir"]); return skippedFacts("no commits"); } catch { return skippedFacts("no git"); }
   }
+  // Separate commits, not merged pull requests as one change: on flask, where pull requests land
+  // as merges, pairs learned from the merges' whole diffs held 0.82 against 0.90 from the commits.
   const commits = mine.parseLog(git(root, ["log", "--no-renames", "--no-merges", "--name-only", "--format=%x1e%H", "-n", String(mine.HISTORY_LIMITS.commits), head]));
   if (!commits.length) return skippedFacts("no commits", head);
   const tracked = git(root, ["ls-files", "-z"]).split("\0").filter(Boolean).slice(0, MAX_FILES);
@@ -102,8 +107,8 @@ export async function buildCodeFacts(root: string, projectId: string, location: 
   }
 
   return {
-    version: 1, built_at: new Date().toISOString(), head, commits_read: commits.length, skipped: null,
-    change_together: mine.changeTogether(commits, keep),
+    version: 1, built_at: new Date().toISOString(), checkout: root, head, commits_read: commits.length, skipped: null,
+    change_together: mine.changeTogether(commits, keep, mine.PAIR_PARAMS, path => generated.has(path)),
     layer_rules: layerRules,
     generated: [...generated].map(([path, signal]) => ({ path, signal })).sort((a, b) => a.path.localeCompare(b.path)).slice(0, mine.HISTORY_LIMITS.generated),
     ...(layersSkipped ? { layers_skipped: layersSkipped } : {}),

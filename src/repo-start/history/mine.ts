@@ -28,7 +28,16 @@ export interface PairParams { confidence: number; support: number; bulkFiles: nu
 export const PAIR_PARAMS: PairParams = { confidence: HISTORY_LIMITS.confidence, support: HISTORY_LIMITS.support, bulkFiles: HISTORY_LIMITS.bulkFiles };
 /** The measure always counts test commits up to this size, whatever the learning cap, so the target never moves. */
 export const EVALUATION_BULK_FILES = 30;
-export interface ChangeTogether { a: string; b: string; confidence: number; support: number; }
+/**
+ * What kind of pair it is, so readers can weigh and report each on its own:
+ * - `test`: a test and the code it tests (same name stem), which an agent can often guess;
+ * - `mirror`: the same path under two folders (parallel copies kept in step);
+ * - `related`: anything else, the pairs naming alone wouldn't reveal.
+ * Lockfiles and generated files are never part of a pair: installing or regenerating
+ * updates them, which recipes and the generated list already say.
+ */
+export type PairKind = "test" | "mirror" | "related";
+export interface ChangeTogether { a: string; b: string; confidence: number; support: number; kind: PairKind; }
 export interface LayerRule { from: string; to: string; imports: number; }
 export interface GeneratedFile { path: string; signal: "marker" | "gitattributes" | "history"; }
 
@@ -43,8 +52,45 @@ export function parseLog(text: string): Commit[] {
   return commits;
 }
 
-/** Directional pairs: when A changes, B changes too. Bulk commits are left out. */
-export function changeTogether(commits: Commit[], keep?: (path: string) => boolean, params: PairParams = PAIR_PARAMS): ChangeTogether[] {
+const LOCKFILES = new Set([
+  "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "deno.lock",
+  "Cargo.lock", "poetry.lock", "uv.lock", "Pipfile.lock", "pdm.lock", "go.sum", "composer.lock", "Gemfile.lock",
+  "mix.lock", "pubspec.lock", "Podfile.lock", "packages.lock.json", "flake.lock", "gradle.lockfile",
+]);
+const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+/** A lockfile a package manager rewrites. */
+export function isLockfile(path: string): boolean { return LOCKFILES.has(fileName(path)); }
+
+const TEST_FOLDERS = new Set(["test", "tests", "__tests__", "spec", "specs", "__snapshots__", "testdata"]);
+/** A test file by its name (foo.test.ts, foo.spec.js, test_foo.py, foo_test.go, FooTest.java) or folder. */
+export function isTestPath(path: string): boolean {
+  const parts = path.split("/");
+  if (parts.slice(0, -1).some(part => TEST_FOLDERS.has(part.toLowerCase()))) return true;
+  const name = parts.at(-1)!;
+  const stem = name.slice(0, name.indexOf(".") > 0 ? name.indexOf(".") : undefined);
+  return /\.(?:test|spec)s?\./iu.test(name) || /^tests?_/u.test(stem) || /_tests?$/u.test(stem) || /[a-z0-9]Tests?$/u.test(stem);
+}
+/** The name a test and its code share: cookie.test.ts, test_cookie.py, CookieTest.java -> cookie. */
+function testStem(path: string): string {
+  const name = fileName(path);
+  const stem = name.slice(0, name.indexOf(".") > 0 ? name.indexOf(".") : undefined);
+  return stem.replace(/^tests?_/u, "").replace(/_tests?$/u, "").replace(/([a-z0-9])Tests?$/u, "$1").toLowerCase();
+}
+/** How a kept pair is labelled; see PairKind. */
+export function pairKind(a: string, b: string): PairKind {
+  if ((isTestPath(a) || isTestPath(b)) && testStem(a) === testStem(b)) return "test";
+  const x = a.split("/"), y = b.split("/");
+  let shared = 0;
+  while (shared < x.length && shared < y.length && x[x.length - 1 - shared] === y[y.length - 1 - shared]) shared++;
+  // The file name and at least its folder repeat under a different leading path.
+  return shared >= 2 ? "mirror" : "related";
+}
+
+/**
+ * Directional pairs: when A changes, B changes too. Bulk commits are left out, and so are
+ * lockfiles and the paths `skip` names (generated files).
+ */
+export function changeTogether(commits: Commit[], keep?: (path: string) => boolean, params: PairParams = PAIR_PARAMS, skip?: (path: string) => boolean): ChangeTogether[] {
   const count = new Map<string, number>();
   const pairs = new Map<string, Map<string, number>>();
   for (const commit of commits) {
@@ -60,13 +106,14 @@ export function changeTogether(commits: Commit[], keep?: (path: string) => boole
     }
   }
   const out: ChangeTogether[] = [];
+  const dropped = (path: string) => isLockfile(path) || (skip?.(path) ?? false);
   for (const [a, row] of pairs) {
-    if (keep && !keep(a)) continue;
+    if ((keep && !keep(a)) || dropped(a)) continue;
     const total = count.get(a)!;
     for (const [b, support] of row) {
-      if (support < params.support || (keep && !keep(b))) continue;
+      if (support < params.support || (keep && !keep(b)) || dropped(b)) continue;
       const confidence = support / total;
-      if (confidence >= params.confidence) out.push({ a, b, confidence: Math.round(confidence * 1000) / 1000, support });
+      if (confidence >= params.confidence) out.push({ a, b, confidence: Math.round(confidence * 1000) / 1000, support, kind: pairKind(a, b) });
     }
   }
   return out.sort((x, y) => y.support - x.support || x.a.localeCompare(y.a) || x.b.localeCompare(y.b)).slice(0, HISTORY_LIMITS.pairs);
