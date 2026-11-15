@@ -186,7 +186,9 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   } catch { /* never affects the command */ }
   // Restart the background process when jobs are waiting. The marker check opens no database.
   try {
-    if (existsSync(join(mexHomeDir(), "jobs-pending"))) {
+    // Default sync decides whether its own accepted work may continue. A held
+    // or paused invocation must not wake an unrelated host's queued judge.
+    if (!(family.name() === "sync" && !family.opts().deep) && existsSync(join(mexHomeDir(), "jobs-pending"))) {
       const { restartIfPending } = await import("./record/background.js");
       restartIfPending();
     }
@@ -1107,7 +1109,7 @@ program
     try {
       if (opts.deep) {
         const { runSync } = await import("./sync/index.js");
-        await runSync(loadConfig(), { dryRun: opts.dryRun, includeWarnings: opts.warnings });
+        await runSync(opts.dryRun ? findConfig() : loadConfig(), { dryRun: opts.dryRun, includeWarnings: opts.warnings });
       } else {
         if (opts.warnings) throw new Error("Use `mex sync --deep --warnings` to include legacy warning-only files.");
         const { runJudgeSync } = await import("./judge/sync.js");

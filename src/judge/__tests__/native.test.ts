@@ -18,6 +18,7 @@ import { buildIndex } from "../../file-index/build.js";
 import { literalPattern } from "../../file-index/classify.js";
 import { indexDirectory, writePatterns } from "../../file-index/store.js";
 import { runJudgeSync } from "../sync.js";
+import { shortHash } from "../../record/project.js";
 
 let base: string, binary: string;
 beforeAll(() => {
@@ -62,8 +63,18 @@ it("ships distinct judge/deep CLI paths and a noninitializing dry run with no la
   execFileSync("git", ["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Baseline"], { stdio: "pipe" });
   // Discovery may find this runner; executing it is always a test failure.
   writeFileSync(join(bin, process.platform === "win32" ? "claude.cmd" : "claude"), process.platform === "win32" ? "@exit /b 93\r\n" : "#!/bin/sh\nexit 93\n", { mode: 0o755 });
-  const env = { ...process.env, MEX_HOME: user, MEX_BACKGROUND: "0", MEX_TELEMETRY: "1", MEX_HOOK_BINARY: binary, MEX_SETUP_BACKGROUND_AGENTS: "0", NO_COLOR: "1", PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
-  const preload = "data:text/javascript,import https from 'node:https';import http from 'node:http';import{syncBuiltinESMExports}from 'node:module';const deny=()=>{throw new Error('Unexpected network')};https.request=deny;http.request=deny;globalThis.fetch=deny;syncBuiltinESMExports();Object.defineProperty(process.stderr,'isTTY',{value:true});";
+  const env = { ...process.env, CODEX_THREAD_ID: "", CLAUDECODE: "", MEX_HOME: user, MEX_BACKGROUND: "0", MEX_TELEMETRY: "1", MEX_HOOK_BINARY: binary, MEX_SETUP_BACKGROUND_AGENTS: "0", NO_COLOR: "1", PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  const preload = "data:text/javascript," + encodeURIComponent(`
+    import https from 'node:https'; import http from 'node:http'; import child from 'node:child_process';
+    import {writeFileSync} from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+    const deny=()=>{throw new Error('Unexpected network')}; https.request=deny; http.request=deny; globalThis.fetch=deny;
+    const spawn=child.spawn;
+    child.spawn=(command,args,options)=>{
+      if(args.includes('__background')) { writeFileSync(process.env.MEX_TEST_BG_TRACE,'attempted'); throw new Error('Unexpected background start'); }
+      return spawn(command,args,options);
+    };
+    syncBuiltinESMExports(); Object.defineProperty(process.stderr,'isTTY',{value:true});
+  `);
   const run = (...args: string[]) => spawnSync(process.execPath, ["--import", preload, resolve("dist/cli.js"), "sync", ...args], { cwd: root, env, encoding: "utf8", timeout: 15_000 });
   const missing = run("--dry-run"); expect(missing.status, missing.stderr).toBe(1); expect(missing.stderr).toContain("not registered"); expect(existsSync(user)).toBe(false);
   const writer = openRecord({ home, projectPath: root, isNetwork: () => false });
@@ -74,8 +85,18 @@ it("ships distinct judge/deep CLI paths and a noninitializing dry run with no la
     expect(readFileSync(writer.location.record)).toEqual(before);
     const warning = run("--dry-run", "--warnings"); expect(warning.status).toBe(1); expect(warning.stderr).toContain("--deep --warnings");
     const normal = run(); expect(normal.status, normal.stderr + normal.stdout).toBe(0); expect(normal.stdout).toContain("Knowledge judge: done"); expect(normal.stdout).not.toContain("Running drift check");
+    const projectId = writer.checkout(root)!.project_id;
+    const held = enqueueJob(writer, { kind: "judge", projectId, params: { checkout: root, agent: "claude", near: [] } }).job;
+    const paused = join(writer.location.directory, "hook-paused"); mkdirSync(paused);
+    writeFileSync(join(paused, shortHash("codex\0paused-sync")), ""); writeFileSync(join(home, "jobs-pending"), "");
+    const trace = join(base, "sync-background-attempt");
+    Object.assign(env, { CODEX_THREAD_ID: "paused-sync", MEX_BACKGROUND: "", MEX_TELEMETRY: "0", MEX_TEST_BG_TRACE: trace });
+    const pausedRun = run(); expect(pausedRun.status, pausedRun.stderr + pausedRun.stdout).toBe(0); expect(pausedRun.stdout).toContain("paused in this session");
+    expect(existsSync(trace)).toBe(false); expect(writer.db.prepare("SELECT state FROM jobs WHERE id=?").get(held.id)!.state).toBe("queued");
+    Object.assign(env, { CODEX_THREAD_ID: "", MEX_BACKGROUND: "0" });
     mkdirSync(join(root, ".mex")); writeFileSync(join(root, ".mex/ROUTER.md"), "---\nname: router\ndescription: Fixture\n---\n# Fixture\n");
     const deep = run("--deep", "--dry-run", "--warnings"); expect(deep.status, deep.stderr + deep.stdout).toBe(0); expect(deep.stdout).toContain("Running drift check"); expect(deep.stdout).not.toContain("Knowledge judge:");
+    expect(existsSync(join(root, ".mex/config.json"))).toBe(false);
     const help = run("--help"); expect(help.stdout).toContain("--deep");
   } finally { writer.close(); }
 });

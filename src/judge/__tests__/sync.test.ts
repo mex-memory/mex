@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openRecord, type RecordWriter } from "../../record/index.js";
@@ -25,10 +25,10 @@ const answer = (request: ModelRequest): ModelResult => ({
   selectedModel: "fixture-cheap", usage: { input: 30, cache_write: 0, cache_read: 0, output: 10, model: "fixture", estimated: false },
   text: JSON.stringify({ results: JSON.parse(request.prompt.split("Evidence follows as JSON:\n")[1]!).entries.map((e: { id: string }) => ({ id: e.id, result: "still-true" })) }),
 });
-function pending(sessionId?: string) {
+function pending(sessionId?: string, agent = "claude-code") {
   const directory = join(writer.location.directory, "judge-pending"); mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, `${shortHash(root)}.json`), JSON.stringify({ version: 1, project_id: projectId,
-    checkout: root, agent: "claude-code", reason: "edit", generation: "1", near: ["api.ts"], not_before: Date.now() + 60_000,
+    checkout: root, agent, reason: "edit", generation: "1", near: ["api.ts"], not_before: Date.now() + 60_000,
     ...(sessionId ? { session_id: sessionId } : {}) }));
 }
 async function sync(extra = {}) {
@@ -37,7 +37,7 @@ async function sync(extra = {}) {
 }
 beforeEach(() => {
   base = realpathSync(mkdtempSync(join(tmpdir(), "mex-sync-judge-"))); root = join(base, "repo"); home = join(base, ".mex"); mkdirSync(root);
-  vi.stubEnv("MEX_HOME", base); vi.stubEnv("CODEX_THREAD_ID", ""); vi.stubEnv("CLAUDECODE", "");
+  vi.stubEnv("MEX_HOME", base); vi.stubEnv("MEX_BACKGROUND", "0"); vi.stubEnv("CODEX_THREAD_ID", ""); vi.stubEnv("CLAUDECODE", "");
   git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
   writeFileSync(join(root, "api.ts"), "old\n"); git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Baseline");
   writeFileSync(join(root, "api.ts"), "new\n"); mkdirSync(join(root, ".mex/learned"), { recursive: true });
@@ -85,6 +85,64 @@ it("leaves timed-out work durable without bypassing idle after foreground handov
 it("reports a missing runner without creating a judge job", async () => {
   await expect(runJudgeSync({ home, projectPath: root }, { available: () => false })).rejects.toThrow("needs Claude Code or Codex");
   expect(count("jobs")).toBe(0); expect(dependencies.model).not.toHaveBeenCalled();
+});
+
+it("does not run an older host's queued job from a paused current session", async () => {
+  registerJobKind(createJudgeKind(dependencies));
+  const job = enqueueJob(writer, { kind: "judge", projectId, params: { checkout: root, agent: "claude", near: [] } }).job;
+  vi.stubEnv("CODEX_THREAD_ID", "current-paused-session");
+  const directory = join(writer.location.directory, "hook-paused"); mkdirSync(directory);
+  writeFileSync(join(directory, shortHash("codex\0current-paused-session")), "");
+  await sync();
+  expect(dependencies.model).not.toHaveBeenCalled(); expect(row(job.id)).toMatchObject({ state: "queued", batch: 0, params: job.params });
+});
+
+it("does not attempt a reused job with an unavailable runner just because another host is installed", async () => {
+  registerJobKind(createJudgeKind(dependencies));
+  const job = enqueueJob(writer, { kind: "judge", projectId, params: { checkout: root, agent: "claude", near: [] } }).job;
+  await expect(runJudgeSync({ home, projectPath: root }, { available: agent => agent === "codex", write: vi.fn() })).rejects.toThrow("existing judge job uses claude");
+  expect(dependencies.model).not.toHaveBeenCalled(); expect(row(job.id)).toMatchObject({ state: "queued", batch: 0, params: job.params });
+});
+
+it("can report a paused job without requiring its model CLI", async () => {
+  registerJobKind(createJudgeKind(dependencies));
+  const job = enqueueJob(writer, { kind: "judge", projectId, params: { checkout: root, agent: "claude", near: [] } }).job;
+  requestJob(writer, job.id, "pause");
+  expect(await runJudgeSync({ home, projectPath: root }, { available: () => false, write: vi.fn() })).toMatchObject({ id: job.id, state: "paused" });
+  expect(dependencies.model).not.toHaveBeenCalled();
+});
+
+it("does not borrow another editing session's queued job", async () => {
+  registerJobKind(createJudgeKind(dependencies));
+  const job = enqueueJob(writer, { kind: "judge", projectId, params: { checkout: root, agent: "codex", near: [], sessionId: "other-session" } }).job;
+  vi.stubEnv("CODEX_THREAD_ID", "current-session");
+  expect(await sync()).toMatchObject({ id: job.id, state: "queued", params: job.params });
+  expect(dependencies.model).not.toHaveBeenCalled();
+});
+
+it("does not use a different host when the invoking host's CLI is unavailable", async () => {
+  vi.stubEnv("CODEX_THREAD_ID", "current-session");
+  await expect(runJudgeSync({ home, projectPath: root }, { available: agent => agent === "claude", write: vi.fn() })).rejects.toThrow("This session needs codex");
+  expect(count("jobs")).toBe(0); expect(dependencies.model).not.toHaveBeenCalled();
+});
+
+it("does not bind the current session to a stale same-host paused request", async () => {
+  pending("old-paused-session", "codex"); vi.stubEnv("CODEX_THREAD_ID", "current-session");
+  const directory = join(writer.location.directory, "hook-paused"); mkdirSync(directory);
+  writeFileSync(join(directory, shortHash("codex\0old-paused-session")), "");
+  const job = await sync();
+  expect(job!.state).toBe("done"); expect(JSON.parse(job!.params).sessionId).toBe("current-session");
+  expect(dependencies.model).toHaveBeenCalledWith(expect.objectContaining({ agent: "codex" }));
+});
+
+it.each(["valid", "oversized", "linked"])("bounds the optional saved runner selection (%s)", async kind => {
+  const value = JSON.stringify({ aiTools: ["codex"], ...(kind === "oversized" ? { padding: "x".repeat(70_000) } : {}) });
+  const config = join(root, ".mex/config.json");
+  if (kind === "linked") {
+    const outside = join(base, "outside-config.json"); writeFileSync(outside, value); symlinkSync(outside, config, "file");
+  } else writeFileSync(config, value);
+  await sync();
+  expect(dependencies.model).toHaveBeenCalledWith(expect.objectContaining({ agent: kind === "valid" ? "codex" : "claude" }));
 });
 
 it("resumes an idle wait without making future background batches immediate", async () => {

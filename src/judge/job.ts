@@ -91,14 +91,18 @@ Evidence follows as JSON:\n${JSON.stringify(snapshot)}`;
 function request(params: JudgeParams, writer: RecordWriter, projectId: string): Record<string, unknown> {
   return { checkout: params.checkout, project_id: projectId, mex_home: writer.location.home, record_directory: writer.location.directory };
 }
+function matchingRequest(writer: RecordWriter, params: JudgeParams, projectId: string) {
+  const latest = pendingJudgeRequest(writer.location.directory, params.checkout);
+  return latest?.project_id === projectId && latest.agent === (params.agent === "claude" ? "claude-code" : "codex")
+    && (!params.sessionId || latest.session_id === params.sessionId) ? latest : undefined;
+}
 function allowed(writer: RecordWriter, params: JudgeParams, projectId: string): boolean {
   const checkout = writer.checkout(params.checkout);
-  const latest = pendingJudgeRequest(writer.location.directory, params.checkout);
-  const sameHost = latest?.project_id === projectId && latest.agent === (params.agent === "claude" ? "claude-code" : "codex");
+  const latest = matchingRequest(writer, params, projectId);
   return checkout?.path === params.checkout && checkout.project_id === projectId && checkout.state !== "off"
     && !(checkout.state === "off until" && Date.parse(checkout.off_until ?? "") > Date.now())
     && automaticWorkEnabled(writer, projectId) && sessionWorkEnabled(writer, params.agent, params.sessionId)
-    && (!sameHost || sessionWorkEnabled(writer, params.agent, latest.session_id));
+    && (!latest || sessionWorkEnabled(writer, params.agent, latest.session_id));
 }
 const IDLE_WAIT = "Waiting: the checkout is still being edited";
 function idle(writer: RecordWriter, params: JudgeParams, immediate = false): boolean {
@@ -143,8 +147,7 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
       });
       if (moreAdvice) return { checkpoint: state, summary: "Preparing the next page of corrections for advice already used" };
       // Recent touched files refine the request's path proximity without any transcript text.
-      const pendingRequest = pendingJudgeRequest(writer.location.directory, params.checkout);
-      const latest = pendingRequest?.project_id === projectId && pendingRequest.agent === (params.agent === "claude" ? "claude-code" : "codex") ? pendingRequest : undefined;
+      const latest = matchingRequest(writer, params, projectId);
       let near = latest?.near ?? params.near;
       const sessionId = latest?.session_id ?? params.sessionId;
       const hooks = openHooksReadOnly({ home: writer.location.home });
