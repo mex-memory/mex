@@ -48,6 +48,8 @@ type DeliveryRequest struct {
 	Budget        int
 	Now           time.Time
 	Candidates    []DeliveryCandidate
+	Observations  []FollowupObservation
+	EndEpoch      bool
 	Aliases       map[string]string
 	Admit         func(Epoch, DeliveryCandidate) bool
 	// KeepSession conservatively protects file-heartbeat sessions whose
@@ -75,7 +77,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			return result, errors.New("invalid delivery identity")
 		}
 	}
-	if len(req.Candidates) > 1000 || len(req.Aliases) > 10000 {
+	if len(req.Observations) > 1000 || len(req.Candidates) > 1000 || len(req.Aliases) > 10000 {
 		return result, errors.New("delivery batch exceeds bound")
 	}
 	if req.Now.IsZero() {
@@ -135,6 +137,11 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		}
 		advance = !missing && (e.Reason != "compact" || e.CompactSignals&req.CompactSignal != 0)
 	}
+	if advance {
+		if err = closeHoldbacks(ctx, conn, req.Session.SessionID, req.AgentID, e.Number, stamp); err != nil {
+			return result, err
+		}
+	}
 	if missing || advance {
 		number := 0
 		if advance {
@@ -151,6 +158,14 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	}
 	if err != nil {
 		return result, err
+	}
+	if err = observeHoldbacks(ctx, conn, req, e.Number, stamp); err != nil {
+		return result, err
+	}
+	if req.EndEpoch {
+		if err = closeHoldbacks(ctx, conn, req.Session.SessionID, req.AgentID, e.Number, stamp); err != nil {
+			return result, err
+		}
 	}
 	// Persist explicit merges. The entry codec has no successor field; callers
 	// must obtain these from an authoritative merge operation, never prose.
@@ -208,6 +223,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	// logged keeps one withheld or held-back row per entry per epoch, and
 	// corrected one correction, so repeated moments don't grow the table.
 	logged := map[string]bool{}
+	blockedIDs := map[string][]string{}
 	corrected := map[string]bool{}
 	rows, err = conn.QueryContext(ctx, `SELECT entry_id,action,moment FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? LIMIT 20000`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout)
 	if err != nil {
@@ -218,6 +234,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		if err = rows.Scan(&id, &action, &moment); err != nil {
 			break
 		}
+		rawID := id
 		id, err = canonical(id)
 		if err != nil {
 			break
@@ -229,6 +246,9 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			present[id] = true
 		default:
 			logged[id+"\x00"+action] = true
+			if action == "held-back" || action == "withheld" {
+				blockedIDs[id] = append(blockedIDs[id], rawID)
+			}
 		}
 	}
 	err = errors.Join(err, rows.Err(), rows.Close())
@@ -286,6 +306,11 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			continue
 		}
 		if sends {
+			for _, oldID := range blockedIDs[id] {
+				if err = deliveredLater(ctx, conn, req, e.Number, oldID, stamp); err != nil {
+					return result, err
+				}
+			}
 			present[id] = true
 			e.SessionTokens += c.Tokens
 			if c.Reserved {

@@ -6,6 +6,7 @@ package delivery
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 type Environment struct {
 	Home, RecordDirectory string
 	Now                   time.Time
+	Scorer                string // environment override, resolved without I/O
 	KeepSession           func(agent, sessionID string) bool
 	// Resolve finds the registered checkout of a touched path; nil means
 	// every tool uses the event's own checkout.
@@ -81,16 +83,24 @@ type group struct {
 	snap              *entries.Snapshot
 	cands             []candidate
 	firstRel          string
-	edits             []string // files edited in this call that some entry covers
+	text              string     // bounded prompt text
+	views             []toolView // references only; scoring text is assembled after hard gates
+	edits             []string   // files edited in this call that some entry covers
 }
 
 // Handle must be called after checkout, consent and pause resolution. Events
-// with no moment return before any file read or SQLite open; events whose
+// with no moment or lifecycle work return before any file read or SQLite open; events whose
 // moments find no candidate return before SQLite.
 func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	reason, signal, isLifecycle := lifecycle(ev)
 	isMoment := momentKind(ev)
-	if !isLifecycle && !isMoment {
+	isEnd := ev.Kind == contract.SessionEnd
+	if isEnd {
+		if _, err := os.Stat(filepath.Join(env.RecordDirectory, "hooks.db")); err != nil {
+			return contract.Reply{}, nil
+		}
+	}
+	if !isLifecycle && !isMoment && !isEnd {
 		return contract.Reply{}, nil
 	}
 	if ev.SessionID == "" || env.RecordDirectory == "" {
@@ -106,7 +116,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	if isMoment {
 		groups = collect(ev, env)
 	}
-	if !isLifecycle && len(groups) == 0 {
+	if !isLifecycle && !isEnd && len(groups) == 0 {
 		return contract.Reply{}, nil
 	}
 
@@ -122,9 +132,10 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	defer h.Close()
 
 	var blocks []string
-	if isLifecycle {
+	if isLifecycle || isEnd {
 		req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
 		req.Reason, req.CompactSignal = reason, signal
+		req.EndEpoch = isEnd
 		req.Budget = EpochBudget(ev.Model, ev.AgentID != "")
 		if ev.Model == "" && ev.AgentID == "" {
 			req.Budget = 0 // keep the known window across signals without model metadata
@@ -132,6 +143,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		res, err := h.CheckAndMark(req)
 		if err != nil {
 			return contract.Reply{}, err
+		}
+		if isEnd {
+			return contract.Reply{}, nil
 		}
 		text, err := lifecycleBlock(h, ev, env, reason, signal, res.Epoch)
 		if err != nil {
@@ -143,6 +157,17 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	}
 
 	for _, g := range groups {
+		obs, err := holdbackObservations(h, ev, g)
+		if err != nil {
+			return contract.Reply{}, err
+		}
+		if len(obs) > 0 {
+			req := baseRequest(ev, env, g.project, g.checkout)
+			req.Observations = obs
+			if _, err = h.CheckAndMark(req); err != nil {
+				return contract.Reply{}, err
+			}
+		}
 		if len(g.edits) > 0 {
 			if err := h.NoteEdits(record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: g.project, Checkout: g.checkout}, ev.AgentID, g.edits); err != nil {
 				return contract.Reply{}, err
@@ -195,6 +220,7 @@ func collect(ev contract.Event, env Environment) []*group {
 	if ev.Kind == contract.Prompt {
 		if g := get(ev.ProjectID, ev.Checkout); g != nil && g.snap != nil {
 			g.cands = promptMoments(ev.Prompt.Text, g.snap)
+			g.text = boundedText(ev.Prompt.Text, 64*1024)
 		}
 	} else {
 		hintGates := map[string]func(*entries.Item) bool{}
@@ -208,6 +234,7 @@ func collect(ev contract.Event, env Environment) []*group {
 				gate = hintGate(env.RecordDirectory, g.project, ev.Agent, env.Now)
 				hintGates[g.project] = gate
 			}
+			g.views = append(g.views, v)
 			found := moments(v, g.snap, gate)
 			if len(found) > 0 && g.firstRel == "" {
 				g.firstRel = v.rel
@@ -363,10 +390,58 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		s := shape(candidate{item: it, moment: "companion", tier: tierFolder}, verdictOf(id), senv)
 		return &s
 	}
-	plan := append(corrections, pack(items, companion)...)
+	name := scorerSetting(env, g.project)
+	var missed map[string]int
+	needsMisses := false
+	for _, s := range items {
+		if len(triggers(s.item, "anti")) > 0 {
+			needsMisses = true
+			break
+		}
+	}
+	if name == "risk" && needsMisses {
+		var err error
+		missed, err = h.MissedCounts(g.project, g.checkout)
+		if err != nil {
+			return "", err
+		}
+	}
+	query := g.text
+	if name == "bm25" || name == "risk" {
+		if name == "risk" {
+			query = ""
+		}
+		for _, v := range g.views {
+			if name == "risk" && (v.name != contract.ToolRead || v.output == nil) {
+				continue
+			}
+			if len(query) >= 65536 {
+				break
+			}
+			text := viewText(v)
+			if name == "risk" {
+				text = boundedText(v.output.Text, 65536)
+			}
+			query += boundedText(" "+text, 65536-len(query))
+		}
+	}
+	scorer := newScorer(name, query, g.snap, items, missed)
+	if scorer.BudgetOnly() {
+		for i := range items {
+			items[i].reserve = false
+			items[i].exempt = false
+		}
+	}
+	plan := append(corrections, pack(items, companion, scorer)...)
 	req := baseRequest(ev, env, g.project, g.checkout)
 	req.Candidates = requestCandidates(plan)
-	req.Admit = admit(plan)
+	req.Admit = admit(plan, scorer)
+	if scorer.BudgetOnly() {
+		for i := range req.Candidates {
+			req.Candidates[i].Exempt = false
+			req.Candidates[i].Reserved = false
+		}
+	}
 	res, err := h.CheckAndMark(req)
 	if err != nil {
 		return "", err

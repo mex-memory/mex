@@ -47,7 +47,15 @@ export function setCaptureEnabled(writer: RecordWriter, enabled: boolean, direct
   return scope;
 }
 
-function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean): void {
+export function setDeliveryScorer(writer: RecordWriter, value: string, directory?: string): string {
+  if (!["tiers", "bm25", "fcfs", "risk"].includes(value)) throw new Error("Use tiers, bm25, fcfs or risk for delivery.scorer.");
+  const scope = directory === undefined ? "global" : writer.checkout(directory)?.project_id;
+  if (!scope) throw new Error("MEX is not registered here. Run mex first.");
+  setPolicy(writer, scope, "delivery.scorer", value);
+  return scope;
+}
+
+function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string): void {
   writer.db.exec("BEGIN IMMEDIATE");
   try {
     writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")

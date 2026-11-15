@@ -18,6 +18,7 @@ import (
 // home is where the shim looks for the person's files. Tests point it at a
 // temp folder through the environment.
 type home struct {
+	scorer string // MEX_DELIVERY_SCORER override; no I/O
 	user   string // the person's home folder
 	mex    string // MEX's folder: <MEX_HOME>/.mex, else ~/.mex (the same rule as Node's mexHomeDir)
 	codex  string // Codex's folder: CODEX_HOME, else ~/.codex
@@ -35,7 +36,7 @@ func homeFrom(getenv Env) home {
 			user = p
 		}
 	}
-	h := home{user: user}
+	h := home{user: user, scorer: getenv("MEX_DELIVERY_SCORER")}
 	h.claude = strings.TrimSpace(getenv("CLAUDE_CONFIG_DIR"))
 	if h.claude == "" && user != "" {
 		h.claude = filepath.Join(user, ".claude")
