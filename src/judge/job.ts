@@ -34,6 +34,7 @@ function known(writer: RecordWriter, projectId: string, candidate: Candidate, ch
   const previous = readJudgement(writer, projectId, checkout, candidate.item.id);
   if (!previous || previous.entry_hash !== hash(candidate.content) || previous.evaluation_hash !== candidate.evaluationHash
     || previous.checks_hash !== checkHash(candidate) || !samePosition(previous.position, at)) return false;
+  if (previous.evaluation_hash && judgementInputsHash(previous) !== previous.inputs_hash) return false;
   try { if (!previous.files.every(file => { const text = readSource(checkout, file.path); return (text === null ? null : hash(text)) === file.hash; })) return false; }
   catch { return false; }
   return !!writer.db.prepare("SELECT 1 FROM judgements WHERE project_id=? AND entry_id=? AND inputs_hash=?").get(projectId, candidate.item.id, previous.inputs_hash);
@@ -74,6 +75,9 @@ export function judgeCandidates(report: NativeReport, params: JudgeParams, home:
     const observation = checks.get(item.id);
     const files = [...new Set([...entryFiles(found.entry), ...Object.keys(observation?.inputs ?? {})])].sort();
     const spare = item.verdict === "held";
+    // Native acceptance already re-proved this exact model confirmation. It
+    // needs no second paid check merely because complete checks also passed.
+    if (spare && item.label === "checked by model") continue;
     if (spare && !found.entry.mex.checks.some(c => c.role === "complete" && Object.entries(c.files).some(([file, baseline]) => {
       try { const current = readSource(params.checkout, file); return current === null || hash(current) !== baseline; } catch { return false; }
     }))) continue;
@@ -87,6 +91,7 @@ Use the claim, its checks and observations, current code, and ALL changes in eac
 Return only JSON: {"results":[{"id":"mx_...","result":"still-true"}]}.
 For an uncertain claim use result "cannot-tell". For a false claim use {"id":"mx_...","result":"rewritten","one_line":"current claim","text":"current fact and reason","checks":[{"kind":"value","role":"complete","target":{"file":"src/example.ts","symbol":"defaults"}}]}.
 Return exactly one result per supplied id. Rewrites must supply new check targets; MEX records their baselines against current code. Allowed check kinds: key, command, section, source, value, symbol, pattern, relation. Do not change scope, source, identity, or kind.
+Source/symbol fingerprints and literal occurrence counts support behavioral claims: refactoring can change them without disproving the behavior. Use supporting for those checks in behavior rewrites; use complete only when a key/value observation directly states the whole claim.
 Evidence follows as JSON:\n${JSON.stringify(snapshot)}`;
 }
 function request(params: JudgeParams, writer: RecordWriter, projectId: string): Record<string, unknown> {

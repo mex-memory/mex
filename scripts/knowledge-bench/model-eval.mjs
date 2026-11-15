@@ -43,7 +43,7 @@ try {
     }
     console.log(JSON.stringify({ paid_calls: 0, model: plan.model, claims: built.corpus.claims.length,
       checkpoints: plan.checkpoints.map(({ id, true: kept, stale }) => ({ id, true: kept, stale })),
-      check_writer_calls: plan.check_writer_calls, check_repair_calls_max: plan.check_repair_calls_max, max_calls: plan.max_calls,
+      check_writer_calls: plan.check_writer_calls, check_repair_calls_max: plan.check_repair_calls_max, judge_calls_max: plan.judge_calls_max, max_calls: plan.max_calls,
       privacy_withheld: plan.privacy_withheld,
       conservative_api_equivalent_usd: plan.conservative_api_equivalent_usd,
       approval_usd: plan.approval_usd, approval_hash: plan.approval_hash, price_source: plan.price_source }, null, 2));

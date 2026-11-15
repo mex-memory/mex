@@ -259,13 +259,17 @@ describe("judge job and queue", () => {
     await finish(queue());
     expect(calls).toHaveLength(1);
   });
-  it("rechecks after native evaluation identity changes even with identical observations", async () => {
+  it("rechecks altered attestations and native identity changes even with identical observations", async () => {
     add("mx_identity");
     report.results![0]!.evaluation_hash=hash("native snapshot one");
     await finish(queue());expect(calls).toHaveLength(1);
     await finish(queue());expect(calls).toHaveLength(1);
-    report.results![0]!.evaluation_hash=hash("native snapshot two");
+    const previous=readJudgement(writer,projectId,root,"mx_identity")!;previous.files=[];
+    writer.db.prepare("UPDATE settings SET value=? WHERE scope=? AND key=?")
+      .run(JSON.stringify(previous),projectId,`judge.${shortHash(root)}.mx_identity`);
     await finish(queue());expect(calls).toHaveLength(2);
+    report.results![0]!.evaluation_hash=hash("native snapshot two");
+    await finish(queue());expect(calls).toHaveLength(3);
     expect(readJudgement(writer,projectId,root,"mx_identity")?.evaluation_hash).toBe(hash("native snapshot two"));
   });
   it.each(["source", "entry", "branch", "consent"])("discards a model response when %s changes in flight", async what => {

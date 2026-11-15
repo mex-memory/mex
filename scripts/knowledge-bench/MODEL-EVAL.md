@@ -96,6 +96,12 @@ repair call for rejected claims, with bounded validation errors. Initial
 failures stay in `generation_diagnostics`; successful repairs are listed in
 `generation_repaired`. A transport, usage or budget failure stops the run.
 No hand-written fallback checks or truth labels enter either prompt.
+For these facts, source/symbol fingerprints and literal counts must be
+supporting: refactoring does not disprove behavior. Only directly stated
+key/value observations may be complete. Invalid roles are sent back to the
+model for repair rather than silently downgraded. Writer, repair and judge
+call ceilings are enforced separately; unused repair slots cannot fund
+additional judge calls.
 
 A fresh still-true result can restore a changed supporting check to held.
 Go verifies the sealed native evaluation, journal row, entry, checkout and
@@ -103,6 +109,9 @@ every source file before caching that result, and delivery labels it
 “checked by model.” A changed input, withdrawn result, partial scan or
 expired deadline cannot preserve an unverified model hold. Complete broken
 checks, unreadable evidence and CI team-only evaluation cannot be promoted.
+An accepted fresh model hold is excluded from spare checks, preventing a
+second paid confirmation. Altered attestations are not treated as completed
+work when the queue resumes.
 
 ## Prepare and execute
 

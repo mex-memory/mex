@@ -41,7 +41,8 @@ it("restores full labelled delivery for a fresh still-true judgment and expires 
   try {
     const projectId=writer.checkout(root)!.project_id,id="mx_stilltrue0";
     const request={checkout:root,project_id:projectId,mex_home:home,record_directory:writer.location.directory};
-    const checks=await recordChecks(request,[{kind:"source",role:"supporting",target:{file:"settings.ts"}}]);
+    const checks=await recordChecks(request,[{kind:"source",role:"supporting",target:{file:"settings.ts"}},
+      {kind:"value",role:"complete",target:{file:"settings.ts",symbol:"timeout"}}]);
     const path=join(root,".mex/learned",`${id}.md`);mkdirSync(join(root,".mex/learned"),{recursive:true});
     const original=serializeEntry(entry(id,{kind:"fact",checks:checks!},"The timeout is 30 seconds."));writeFileSync(path,original);
     const judgedCode="export const timeout = 30; // comment changed\n";writeFileSync(source,judgedCode);
@@ -78,7 +79,7 @@ it("restores full labelled delivery for a fresh still-true judgment and expires 
       expect((await verdict()).verdict).toBe("held");
     }
     set("x".repeat(129<<10));expect((await verdict()).verdict).toBe("changed");set(raw);
-    writeFileSync(source,"export const timeout = 60;\n");expect((await verdict()).verdict).toBe("changed");
+    writeFileSync(source,"export const timeout = 60;\n");expect((await verdict()).verdict).toBe("broken");
     writeFileSync(source,judgedCode);expect((await verdict()).verdict).toBe("held");
     writeFileSync(path,original.replace("30 seconds","60 seconds"));expect((await verdict()).verdict).toBe("changed");
     writeFileSync(path,original);expect((await verdict()).verdict).toBe("held");

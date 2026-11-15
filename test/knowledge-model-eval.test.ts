@@ -135,6 +135,40 @@ it("repairs only rejected model proposals once and keeps the initial diagnostic"
   expect(model.mock.calls.filter(([r])=>r.purpose==="judge-bench.repair")).toHaveLength(1);
   expect(report.checkpoints[0]!.score).toMatchObject({true_kept:2,generation_failed:0});
 });
+it("repairs an overstrong fingerprint role without changing an accepted model check",async()=>{
+  const opts=options(),model=vi.fn(async(request:ModelRequest)=>{
+    const response=fakeModel(request);
+    if(request.purpose==="judge-bench.checks") {
+      const value=JSON.parse(response.text);
+      value.results[0].checks=[{kind:"source",role:"complete",target:{file:"package.json"}}];
+      response.text=JSON.stringify(value);
+    }
+    return response;
+  });
+  const report=await runEvaluation({...opts,approvalHash:opts.plan.approval_hash,model});
+  expect(report.generation_repaired).toEqual(["one"]);
+  expect(report.generation_diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({claims:["one"],errors:[expect.objectContaining({reason:expect.stringContaining("supporting")})]})]));
+  const repairs=model.mock.calls.filter(([r])=>r.purpose==="judge-bench.repair");expect(repairs).toHaveLength(1);
+  expect(repairs[0]![0].prompt).toContain('"id":"mx_kbxone"');
+  expect(repairs[0]![0].prompt).not.toContain('"id":"mx_kbxtwo"');
+  expect(report.checkpoints[0]!.score).toMatchObject({true_kept:2,generation_failed:0});
+});
+it("does not transfer unused repair slots to a racing judge",async()=>{
+  const opts=options();let edits=0;
+  const model=vi.fn(async(request:ModelRequest)=>{
+    const response=fakeModel(request);
+    if(request.purpose==="judge") writeFileSync(join(request.projectRoot,"package.json"),JSON.stringify({name:"fixture",version:String(++edits+2)})+"\n");
+    return response;
+  });
+  try {
+    await expect(runEvaluation({...opts,approvalHash:opts.plan.approval_hash,model})).rejects.toThrow("approved run");
+    expect(model.mock.calls.filter(([r])=>r.purpose==="judge")).toHaveLength(opts.plan.judge_calls_max);
+    expect(model.mock.calls.filter(([r])=>r.purpose==="judge-bench.repair")).toHaveLength(0);
+    const report=JSON.parse(readFileSync(join(opts.work,"report.json"),"utf8"));
+    expect(report).toMatchObject({complete:false,stop_reason:"approved-bound"});
+    expect(report.ledger).toHaveLength(opts.plan.check_writer_calls+opts.plan.judge_calls_max);
+  } finally {execFileSync("git",["-C",join(opts.work,"checkout"),"restore","--","package.json"],{stdio:"pipe"});}
+});
 it("retains malformed generation in every denominator without hand-written fallback checks", async () => {
   const opts = options(), model = vi.fn(async request => ({ ...fakeModel(request), text: '{"results":[]}' }));
   const report = await runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model });
@@ -156,7 +190,7 @@ it("records model-proposed literal patterns and supplies their current source to
     const result = fakeModel(request);
     if (request.purpose === "judge-bench.checks") {
       const results = JSON.parse(result.text).results;
-      for (const r of results) r.checks = [{ kind: "pattern", role: "complete", target: {
+      for (const r of results) r.checks = [{ kind: "pattern", role: "supporting", target: {
         scope: "package.json", pattern: r.id.endsWith("one") ? '"name":"fixture"' : '"version":"1"', match: "literal",
       } }];
       result.text = JSON.stringify({ results });

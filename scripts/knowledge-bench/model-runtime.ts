@@ -64,6 +64,7 @@ Return only JSON: {"results":[{"id":"mx_...","checks":[{"kind":"key","role":"com
 Return exactly one result per supplied id, with 1–4 checks. Choose complete only if failure logically disproves the fact; otherwise choose supporting.
 Allowed kinds and exact target shapes: key {file,pointer} (JSON Pointer), value {file,symbol} (top-level literal declaration or dotted object path), source {file} (whole-file hash), symbol {file,symbol} (symbol fingerprint), pattern {scope,pattern,match:"literal"} (literal occurrence count; structural patterns cannot be recorded). Use exact symbol names from the code. All targets must name only the supplied file (pattern scope must equal that file). Propose targets only: never invent saw values, fingerprints or file hashes; the real evaluator records them.
 Symbol targets must come from indexed_symbols. Plain literal values are strings, numbers, booleans, null, arrays and objects; regular expressions, calls and computed initializers cannot be value checks. Prefer one or two strong recordable checks; every proposed check must be recordable. Use literal patterns or an indexed enclosing symbol when a nested helper is not indexed.
+For these facts, source, symbol and pattern checks MUST use role supporting. Moving or refactoring code can change a fingerprint or occurrence count without disproving its behavior. Only key and value checks may use complete, and only when the observed literal directly expresses the whole claim.
 Exact output schema: ${JSON.stringify(proposalSchema(claims))}.
 Evidence follows as JSON:\n${JSON.stringify(evidence)}`;
   if (Buffer.byteLength(prompt) > PROMPT_BYTES) throw new Error("Check-writing evidence exceeds the approved prompt bound");
@@ -107,13 +108,14 @@ export function makePlan(value: CorpusData, repo: string, candidateCommit: strin
     }, 2),
   }));
   const writerCalls = batches.filter(b => !b.privacy_withheld).length;
-  const maxCalls = writerCalls * 2 + checkpoints.reduce((n, cp) => n + cp.judge_call_bound, 0);
+  const judgeCalls = checkpoints.reduce((n, cp) => n + cp.judge_call_bound, 0);
+  const maxCalls = writerCalls * 2 + judgeCalls;
   const reservePerCall = ((PROMPT_BYTES + 8192) * PRICES.cache_write + OUTPUT_TOKENS * PRICES.output) / 1e6 * 1.1;
   const plan = { schema_version: 1, candidate_commit: candidateCommit, corpus_sha256: corpus.manifest.dataset_sha256,
     claims_sha256: fingerprint(corpus.claims), truth_sha256: fingerprint(corpus.labels),
     model: MODEL, price_source: PRICE_SOURCE, prices_usd_per_million: PRICES, approval_usd: APPROVAL_USD,
     prompt_bytes_max: PROMPT_BYTES, output_tokens_max: OUTPUT_TOKENS, check_writer_calls: writerCalls,
-    check_repair_calls_max:writerCalls, repair_rounds_max:1,
+    check_repair_calls_max:writerCalls, repair_rounds_max:1, judge_calls_max:judgeCalls,
     privacy_withheld: batches.filter(b => b.privacy_withheld).flatMap(b => b.ids),
     max_calls: maxCalls, conservative_api_equivalent_usd: Math.ceil(maxCalls * reservePerCall * 100) / 100,
     estimate_note: "UTF-8-byte upper estimate plus 8192 CLI/system tokens per call, 1h cache-write prices and 10% routing headroom; not an invoice guarantee. Actual usage and estimated flags are reported. CLI estimated budget can overshoot.",
@@ -135,7 +137,7 @@ export function proposalSchema(batch:CheckedCorpus["claims"]) {
     ["pattern",{scope:string,pattern:string,match:{const:"literal"}}],
   ] as const;
   const check={anyOf:targets.map(([kind,target])=>object({
-    kind:{const:kind},role:{enum:["complete","supporting"]},target:object(target),
+    kind:{const:kind},role:kind==="key" || kind==="value" ? {enum:["complete","supporting"]} : {const:"supporting"},target:object(target),
   }))};
   const result=object({
     id:{type:"string",enum:batch.map(c=>id(c.id))},
@@ -197,14 +199,18 @@ export async function runEvaluation(options: RunOptions) {
   const diagnostics:Array<{stage:string;claims:string[];errors?:unknown}>=[];
   const repaired=new Set<string>();
   const provenance = { platform: process.platform, node: process.version, binary_sha256: createHash("sha256").update(readFileSync(options.binary)).digest("hex") };
-  let charged = 0, fatal = false;
+  let charged = 0, fatal = false, stopReason:string|undefined;
   const reportFor = (complete: boolean) => ({ plan: options.plan, provenance, ledger, token_counts: tokenCounts(ledger),
-    proposed_checks: [...generated.values()], generation_failed: [...failed], generation_diagnostics:diagnostics, generation_repaired:[...repaired], checkpoints: observations, charged_api_equivalent_usd: charged, complete });
+    proposed_checks: [...generated.values()], generation_failed: [...failed], generation_diagnostics:diagnostics, generation_repaired:[...repaired], checkpoints: observations, charged_api_equivalent_usd: charged, complete, ...(stopReason ? {stop_reason:stopReason} : {}) });
   const persist = () => writeFileSync(join(options.work, "report.json"), JSON.stringify(reportFor(false), null, 2) + "\n", { mode: 0o600 });
   const model = async (request: ModelRequest) => {
     const bytes = Buffer.byteLength(request.prompt);
     const reserve = ((bytes + 8192) * PRICES.cache_write + OUTPUT_TOKENS * PRICES.output) / 1e6 * 1.1;
-    if (fatal || bytes > PROMPT_BYTES || ledger.length >= fresh.max_calls || charged + reserve > fresh.approval_usd) throw new Error("The approved model-call or cost bound was reached");
+    const limits:Record<string,number>={"judge-bench.checks":fresh.check_writer_calls,"judge-bench.repair":fresh.check_repair_calls_max,judge:fresh.judge_calls_max};
+    const allowed=limits[request.purpose];
+    if (fatal || allowed===undefined || ledger.filter(r=>r.purpose===request.purpose).length>=allowed || bytes > PROMPT_BYTES || ledger.length >= fresh.max_calls || charged + reserve > fresh.approval_usd) {
+      fatal=true;stopReason="approved-bound";persist();throw new Error("The approved model-call or cost bound was reached");
+    }
     const row: CallLedger = { purpose: request.purpose, prompt_bytes: bytes, reserve_usd: reserve, state: "reserved" };
     ledger.push(row); charged += reserve; persist();
     try {
@@ -218,7 +224,7 @@ export async function runEvaluation(options: RunOptions) {
       charged += actual - reserve; persist();
       if (actual > reserve || u.output > OUTPUT_TOKENS) throw new Error("Reported usage exceeded the approved per-call estimate");
       return result;
-    } catch { fatal = true; row.state = "failed"; persist(); throw new Error("Model call failed; no further paid calls are permitted in this run"); }
+    } catch { fatal = true;stopReason="model-call-failed"; row.state = "failed"; persist(); throw new Error("Model call failed; no further paid calls are permitted in this run"); }
   };
   let writer: ReturnType<typeof openRecord> | undefined;
   try {
@@ -251,6 +257,8 @@ export async function runEvaluation(options: RunOptions) {
     const record=async (claim:CheckedCorpus["claims"][number],stage:string)=>{
         const proposed = generated.get(id(claim.id));
         if(!proposed) return;
+        const invalid=proposed.checks.flatMap((c,index)=>c.role==="complete" && !["key","value"].includes(c.kind) ? [{index,reason:"Use supporting for source, symbol and pattern checks: refactoring does not disprove a behavioral fact"}] : []);
+        if(invalid.length) {failed.add(claim.id);diagnostics.push({stage,claims:[claim.id],errors:invalid});return;}
         const result=await recordChecksDetailed(request,proposed.checks);
         if(result.checks?.length) {recorded.set(claim.id,result.checks);failed.delete(claim.id);}
         else {failed.add(claim.id);diagnostics.push({stage,claims:[claim.id],errors:result.errors});}
