@@ -257,7 +257,7 @@ func TestPitfallOnFirstReadOnce(t *testing.T) {
 	}
 	mustHave(t, ctx, "never close it here", "(mx_pitfal)", "[team, from a person]")
 	mustBeEmpty(t, f.send(f.event(contract.PostToolBatch, read(p, "export const pool = 1"))))
-	if got := f.rows(""); len(got) != 1 || got[0] != "mx_pitfal:given:read:full" {
+	if got := f.rows(""); len(got) != 2 || got[0] != "mx_pitfal:given:read:full" || got[1] != "mx_pitfal:control:read:one-line" {
 		t.Fatal(got)
 	}
 }
@@ -312,7 +312,7 @@ func TestFailureFixExactSignatureOnly(t *testing.T) {
 	hit := shell("pnpm test", "Exit code 1\nError:   connect ECONNREFUSED 127.0.0.1:5432", false)
 	mustHave(t, f.send(f.event(contract.PostToolFailure, hit)), "docker compose up db")
 	mustBeEmpty(t, f.send(f.event(contract.PostToolFailure, hit)))
-	if got := f.rows("entry_id='mx_fixdb1'"); len(got) != 1 {
+	if got := f.rows("entry_id='mx_fixdb1'"); len(got) != 2 || got[0] != "mx_fixdb1:given:failure:full" || got[1] != "mx_fixdb1:control:failure:one-line" {
 		t.Fatal(got)
 	}
 	// A success never brings a fix.

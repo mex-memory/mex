@@ -1205,12 +1205,18 @@ const configCmd = program
 
 configCmd
   .command("set <key> <value>")
-  .description("Set a config value (e.g. delivery.scorer tiers|bm25|fcfs|risk)")
-  .option("--project", "Set delivery.scorer for the registered project")
+  .description("Set a config value (delivery.scorer or delivery.surface.<id>)")
+  .option("--project", "Set a delivery setting for the registered project")
   .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
-      if (options.project && key !== "delivery.scorer") throw new Error("--project is supported for delivery.scorer.");
-      if (key === "delivery.scorer") {
+      if (options.project && key !== "delivery.scorer" && !key.startsWith("delivery.surface.")) throw new Error("--project is supported for delivery settings.");
+      if (key.startsWith("delivery.surface.")) {
+        const { openRecord } = await import("./record/index.js");
+        const { setDeliverySurface } = await import("./controls/index.js");
+        const writer = openRecord();
+        try { setDeliverySurface(writer, key.slice(17), value, options.project ? process.cwd() : undefined); } finally { writer.close(); }
+        console.log("Delivery surface set to " + value + ".");
+      } else if (key === "delivery.scorer") {
         const { openRecord } = await import("./record/index.js");
         const { setDeliveryScorer } = await import("./controls/index.js");
         if (!["tiers", "bm25", "fcfs", "risk"].includes(value)) throw new Error("Use tiers, bm25, fcfs or risk for delivery.scorer.");
@@ -1237,7 +1243,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer, delivery.surface.<id>`);
         process.exitCode = 1;
         return;
       }

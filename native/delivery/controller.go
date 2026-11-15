@@ -21,9 +21,13 @@ import (
 )
 
 type Environment struct {
+	policy                *policyCache
 	Home, RecordDirectory string
 	Now                   time.Time
 	Scorer                string // environment override, resolved without I/O
+	Surfaces              string // all-surface state or JSON map, test override
+	Offline               bool
+	Notices               bool // adapter supports person-facing output on this event
 	Trace                 func(string, time.Duration)
 	KeepSession           func(agent, sessionID string) bool
 	// Resolve finds the registered checkout of a touched path; nil means
@@ -94,8 +98,9 @@ type group struct {
 }
 
 // Handle must be called after checkout, consent and pause resolution. Events
-// with no moment or lifecycle work return before any file read or SQLite open; events whose
-// moments find no candidate return before SQLite.
+// with no moment or lifecycle work return before any file read or SQLite open.
+// With no candidate, covered edit, pending observation or lifecycle work, the
+// event returns before SQLite.
 func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	reason, signal, isLifecycle := lifecycle(ev)
 	isMoment := momentKind(ev)
@@ -117,11 +122,14 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	if isLifecycle && (ev.ProjectID == "" || ev.Checkout == "") {
 		isLifecycle = false
 	}
+	var policies policyCache
+	env.policy = &policies
 	var groups []*group
 	if isMoment {
 		groups = collect(ev, env)
 	}
-	if !isLifecycle && !isEnd && len(groups) == 0 {
+	pending := isMoment && ev.Kind != contract.Prompt && record.SurfacePending(env.RecordDirectory, ev.SessionID, ev.AgentID)
+	if !isLifecycle && !isEnd && len(groups) == 0 && !pending {
 		return contract.Reply{}, nil
 	}
 
@@ -138,12 +146,25 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	}
 	h.Trace = env.Trace
 	defer h.Close()
+	var notices []string
+	if pending {
+		req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
+		req.SurfaceTools = surfaceTools(ev, env)
+		req.Notify = env.Notices
+		res, observeErr := h.CheckAndMark(req)
+		if observeErr != nil {
+			err = observeErr
+			return contract.Reply{}, err
+		}
+		notices = append(notices, res.Notices...)
+	}
 
 	var blocks []string
 	if isLifecycle || isEnd {
 		req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
 		req.Reason, req.CompactSignal = reason, signal
 		req.EndEpoch = isEnd
+		req.Notify = env.Notices
 		req.Budget = EpochBudget(ev.Model, ev.AgentID != "")
 		if ev.Model == "" && ev.AgentID == "" {
 			req.Budget = 0 // keep the known window across signals without model metadata
@@ -152,8 +173,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		if err != nil {
 			return contract.Reply{}, err
 		}
+		notices = append(notices, res.Notices...)
 		if isEnd {
-			return contract.Reply{}, nil
+			return contract.Reply{PersonLine: strings.Join(res.Notices, " ")}, nil
 		}
 		text, err := lifecycleBlock(h, ev, env, reason, signal, res.Epoch)
 		if err != nil {
@@ -209,7 +231,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			blocks = append(blocks, text)
 		}
 	}
-	return contract.Reply{Context: strings.Join(blocks, "\n\n")}, nil
+	return contract.Reply{Context: strings.Join(blocks, "\n\n"), PersonLine: strings.Join(notices, " ")}, nil
 }
 
 func baseRequest(ev contract.Event, env Environment, project, checkout string) record.DeliveryRequest {
@@ -218,6 +240,8 @@ func baseRequest(ev contract.Event, env Environment, project, checkout string) r
 		AgentID:     ev.AgentID,
 		Now:         env.Now,
 		KeepSession: env.KeepSession,
+		SurfaceMode: func(surface string) string { return surfaceSetting(env, project, surface) },
+		Offline:     env.Offline,
 	}
 }
 
@@ -306,6 +330,15 @@ func collect(ev contract.Event, env Environment) []*group {
 	}
 	var out []*group
 	for _, g := range order {
+		if len(g.cands) > 0 {
+			kept := g.cands[:0]
+			for _, c := range g.cands {
+				if surfaceSetting(env, g.project, record.SurfaceForMoment(c.moment)) != "off" {
+					kept = append(kept, c)
+				}
+			}
+			g.cands = kept
+		}
 		if len(g.cands) > 0 || len(g.edits) > 0 {
 			out = append(out, g)
 		}
@@ -375,8 +408,11 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 			if gone {
 				c.resend = true
 				fresh = append(fresh, c)
+				continue
 			}
 		}
+		c.control = true
+		fresh = append(fresh, c)
 	}
 	g.cands = fresh
 	if len(g.cands) == 0 {
@@ -577,7 +613,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	items, conflicts := resolveConflicts(items)
 	var known []record.GivenRow
 	if len(present) > 0 {
-		known, _, err = h.EpochGiven(ev.SessionID, ev.AgentID, g.project, g.checkout, -1)
+		known, _, err = h.EpochSelected(ev.SessionID, ev.AgentID, g.project, g.checkout, -1, true)
 		if err != nil {
 			return "", err
 		}
@@ -615,6 +651,12 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	plan := append(corrections, pack(items, companion, scorer)...)
 	req := baseRequest(ev, env, g.project, g.checkout)
 	req.Candidates = requestCandidates(plan)
+	surfaceTargets(plan, g.views, req.Candidates)
+	for i, p := range plan {
+		if p.control {
+			req.Candidates[i].Action = "control"
+		}
+	}
 	req.Conflicts = conflicts
 	comparisons := 0
 	req.Similar = func(c record.DeliveryCandidate, rows []record.GivenRow) string {

@@ -32,3 +32,6 @@ scripts/release-benchmark/*.mjs text eol=lf
 native/**/*.go text eol=lf
 native/go.mod text eol=lf
 native/**/testdata/** text eol=lf
+
+# The delivery replay golden pins the exact LF JSON produced by its writer.
+scripts/delivery-replay/golden.json text eol=lf

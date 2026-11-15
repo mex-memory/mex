@@ -45,12 +45,13 @@ type Options struct {
 }
 
 type Item struct {
-	ID      string `json:"id"`
-	Line    string `json:"line"`
-	Level   string `json:"level"`
-	Verdict string `json:"verdict"`
-	Tokens  int    `json:"tokens"`
-	Hash    string `json:"-"`
+	ID      string   `json:"id"`
+	Line    string   `json:"line"`
+	Level   string   `json:"level"`
+	Verdict string   `json:"verdict"`
+	Tokens  int      `json:"tokens"`
+	Hash    string   `json:"-"`
+	Scopes  []string `json:"-"`
 }
 
 type Result struct {
@@ -282,7 +283,7 @@ func Build(opts Options) (Result, error) {
 			label = "[repo]"
 		}
 		line := label + " " + e.OneLine
-		items := []Item{{ID: e.ID, Line: line, Level: c.level, Verdict: verdict, Tokens: TokenBound("\n" + line + " (" + e.ID + ")"), Hash: c.hash}}
+		items := []Item{{ID: e.ID, Line: line, Level: c.level, Verdict: verdict, Tokens: TokenBound("\n" + line + " (" + e.ID + ")"), Hash: c.hash, Scopes: append([]string{}, e.Scope...)}}
 		if len(e.Companions) > 32 {
 			return nil, false
 		}

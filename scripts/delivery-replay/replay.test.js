@@ -72,3 +72,21 @@ it("never remaps a path outside the historical checkout into the fixture", () =>
   expect(remap("/repo/../private/data", "/repo", "/fixture")).toBe("/outside-checkout");
   expect(remap("/other/file", "/repo", "/fixture")).toBe("/outside-checkout");
 });
+
+it("replays shadow receipts silently and reads the shared surface ledger", async () => {
+  const home=join(work,"shadow-home"),mex=join(home,".mex"),checkout=join(work,"shadow-repo");
+  mkdirSync(mex,{recursive:true});mkdirSync(join(checkout,".mex","learned"),{recursive:true});
+  writeFileSync(join(checkout,".mex","learned","mx_poolaa.md"),"---\nmex:\n  id: mx_poolaa\n  kind: pitfall\n  scope: [\"src/**\"]\n  source: {type: docs, ref: README.md}\n  evidence: docs\n  one_line: Keep the shared pool open.\n  checks: []\n  status: active\n  created: 2026-11-03\n---\nKeep the shared pool open because later requests reuse it.\n");
+  const records=await transcript(resolve("scripts/delivery-replay/fixture.jsonl"));
+  const events=convert(records,{session:"shadow-fixture",project:"project",checkout,oldRoot:"/repo"});
+  const env={...process.env,MEX_HOME:home,MEX_DELIVERY_SURFACES:"shadow",MEX_TELEMETRY:"0"};
+  const replay=spawnSync(binary,["--delivery-replay"],{input:events.map(e=>JSON.stringify(e)).join("\n")+"\n",encoding:"utf8",windowsHide:true,timeout:30000,env});
+  expect(replay.status,replay.stderr).toBe(0);
+  const replies=replay.stdout.trim().split("\n").map(line=>JSON.parse(line));
+  expect(replies.every(row=>!row.failed && Object.keys(row.reply).length===0)).toBe(true);
+  const report=spawnSync(binary,["--surfaces"],{input:JSON.stringify({project:"project",checkout}),encoding:"utf8",windowsHide:true,timeout:5000,env});
+  expect(report.status,report.stderr).toBe(0);
+  const pitfall=JSON.parse(report.stdout).surfaces.find(row=>row.surface==="read-pitfall");
+  expect(pitfall.live.firings).toBe(0);expect(pitfall.shadow.firings).toBe(1);expect(pitfall.shadow.settled).toBe(1);
+  expect(pitfall.baseKind).toBe("shadow");expect(pitfall.gate).toBe("collecting");
+});

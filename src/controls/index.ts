@@ -55,6 +55,15 @@ export function setDeliveryScorer(writer: RecordWriter, value: string, directory
   return scope;
 }
 
+export function setDeliverySurface(writer: RecordWriter, surface: string, value: string, directory?: string): string {
+  if (!["read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-previous", "graph-card"].includes(surface)) throw new Error("Unknown delivery surface.");
+  if (!["on", "shadow", "off"].includes(value)) throw new Error("Use on, shadow or off for a delivery surface.");
+  const scope = directory === undefined ? "global" : writer.checkout(directory)?.project_id;
+  if (!scope) throw new Error("MEX is not registered here. Run mex first.");
+  setPolicy(writer, scope, "delivery.surface." + surface, value);
+  return scope;
+}
+
 function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string): void {
   writer.db.exec("BEGIN IMMEDIATE");
   try {

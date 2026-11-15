@@ -3,9 +3,26 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openRecord } from "../../record/index.js";
-import { setCaptureEnabled, setDeliveryScorer, setGlobalEnabled } from "../index.js";
+import { setCaptureEnabled, setDeliveryScorer, setDeliverySurface, setGlobalEnabled } from "../index.js";
 
 describe("delivery scorer settings", () => {
+ it("preserves scorer and surface choices through independent writes and repair",()=>{
+  const home=mkdtempSync(join(tmpdir(),"mex-surface-home-"));
+  const project=mkdtempSync(join(tmpdir(),"mex-surface-project-"));
+  let writer=openRecord({home,projectPath:project,isNetwork:()=>false});
+  const id=writer.checkout(project)!.project_id;
+  try {
+   setDeliveryScorer(writer,"risk",project);setDeliverySurface(writer,"read-pitfall","shadow",project);setDeliverySurface(writer,"prompt","off",project);
+   setDeliverySurface(writer,"rescue-search","off");setGlobalEnabled(writer,false);
+   expect(JSON.parse(readFileSync(join(home,"hook-delivery",id+".json"),"utf8"))).toEqual({version:1,scorer:"risk",surfaces:{"read-pitfall":"shadow",prompt:"off"}});
+   expect(JSON.parse(readFileSync(join(home,"controls.json"),"utf8")).surfaces).toEqual({"rescue-search":"off"});
+   expect(()=>setDeliverySurface(writer,"invented","on")).toThrow("Unknown");
+   expect(()=>setDeliverySurface(writer,"prompt","invalid")).toThrow("on, shadow or off");
+   expect(()=>setDeliverySurface(writer,"prompt","on",home)).toThrow("not registered");
+   writer.close();writeFileSync(join(home,"hook-delivery",id+".json"),"{}");writer=openRecord({home,isNetwork:()=>false});
+   expect(JSON.parse(readFileSync(join(home,"hook-delivery",id+".json"),"utf8")).surfaces).toEqual({"read-pitfall":"shadow",prompt:"off"});
+  }finally{writer.close()}
+ });
  it("persists machine and project choices through independent control writes and repair", () => {
   const home=mkdtempSync(join(tmpdir(),"mex-scorer-home-"));
   const project=mkdtempSync(join(tmpdir(),"mex-scorer-project-"));

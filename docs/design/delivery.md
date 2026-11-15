@@ -1,11 +1,93 @@
 # Delivery controller
 
+## Surfaces and efficacy
+
+`native/record/surfaces.go` defines the closed surface vocabulary. Read pitfalls,
+read-risk rules, edits (including rejected alternatives and file creation),
+command recipes, failure fixes, prompts, start briefs and recovery keep their
+existing `on` default. Recovery includes subagent briefs and corrections.
+New rescue, history, previous-selection and future card surfaces default to
+`shadow`. Unknown historical moments migrate to `unknown`.
+
+`mex config set delivery.surface.<surface> on|shadow|off [--project]` uses
+the same global/project settings and mirrors as the scorer. Mirrors carry a
+`surfaces` object. `MEX_DELIVERY_SURFACES` accepts a whole-surface override or
+a JSON object for deterministic tests. Policy files are read only after an
+eligible candidate exists. An explicitly off candidate is filtered before
+opening hooks storage. Gate-off markers are derived from committed SQLite
+state; a missing marker can cost a database check but cannot authorize a send.
+
+Shadow uses the live selection, shaping, packing, locked admission, budget
+debit and dedupe. Only the receipt action changes; its rendering is empty.
+Shadow entries count as virtually present for later shadow selection and recovery.
+Live recovery never corrects or recovers an item that was only shadowed.
+Immutable receipt targets describe the exact observation to test, so changing
+an entry after delivery cannot rewrite the outcome. No observed prompt, edit
+body or command is retained; command targets are exact-command digests.
+
+Acted is positive evidence in the next 40 original tool calls of the same
+session and agent, ending at epoch closure if sooner. Batch tools count once
+each; derived shell-read views and patch files do not add calls. The first
+successful scoped edit settles a read/edit rule: it either avoids every
+recorded literal or edits an explicitly named file. Missing edit text cannot
+prove avoidance. A recipe needs its exact command to run, even if it fails;
+a failure fix needs a recorded fix command to run or a proven successful
+identical rerun. Claude success batches prove success; an unlabelled Codex
+shell result does not prove a rerun or file open succeeded. Prompt,
+start and recovery items need a scope open/edit. A rescue needs a named path
+or identifier. Unknown command exit status never proves a successful rerun.
+Cards reserve an id but require a later replacement-specific acted definition.
+
+Three controls are retained separately: shadow, held-back, and time-matched
+suppression. The last records an actual eligible candidate suppressed by
+epoch dedupe, once per entry/epoch, with the same acted target. Empty candidate
+sets get no invented target or control row. The report chooses a settled
+shadow base first, then held-back, then time-matched suppression, and exposes
+all three counts. These are conditional coincidence rates, not randomized
+causal controls. A base with no settled windows is reported as unavailable.
+One firing is one surface/block/action, with separate receipts and targets for
+its entries. A firing settles once all its windows settle and counts as acted
+if at least one named item was used. First/repeat is per surface/session/agent/
+checkout; items in the same block share the firing's classification.
+The first block is an atomic SQLite claim, independent of session length.
+
+The stored gate is fixed before admission: at least 30 settled live firings,
+acted at least 30%, a Wilson 95% lower bound strictly above the control rate,
+and repeats no worse than first firings. Missing controls/repeats keep
+collecting after the primary efficacy checks. An ineffective first-only
+surface can still fail. Evaluations use rollup deltas of at least 30 new settled
+live firings, with cumulative first/repeat populations; revisiting old evidence
+cannot count as another failure. Two
+consecutive failed batches turn the surface off and claim one person-facing
+notice atomically on a capable event (otherwise at the next lifecycle open).
+Knowledge is never deleted. Shadow-only evidence cannot
+promote a surface, and offline replay cannot advance any gate.
+
+`mex what --surfaces [--json]` reads the Go projection: live/shadow firings,
+settled acted rates beside their named base rates, first/repeat counts,
+estimated tokens, false-send estimate (settled windows with no acted evidence),
+and gate state/reason. Daily telemetry receives aggregate counts only.
+The pre-existing probe-based false-send estimate remains available in `mex what`.
+
+Pending windows and rollups are SQLite state. A per-session directory is only
+an existence hint to avoid opening storage on an ordinary tool miss. Its active
+marker is created while holding the writer lock. Retirement keeps a unique
+guard until commit; rollback restores active, and a crash leaves a conservative
+hint. Post-commit cleanup cannot remove another writer's active marker. There
+is no shared JSON counter. Work is bounded to current pending windows, not
+historical events. Non-tool no-op events still return before this hint lookup.
+
+`scripts/delivery-replay/run.mjs --surfaces-shadow` forces every surface to
+shadow and uses the same Go report. Saved sessions without MEX measure
+coincidence, not effect. Historical tool commands are never executed.
+
 ## Ranking and observations
 
 `delivery.scorer` selects `tiers` (default), `bm25`, `fcfs` or `risk`.
 The existing global settings and project control mirrors carry it; the
 `MEX_DELIVERY_SCORER` environment override is intended for deterministic
-comparisons. Tool misses do not read another settings file or open SQLite.
+comparisons. Tool misses do not read settings; only a pending acted window or
+a covered edit makes a miss open the observation ledger.
 The same scorer orders candidates and supplies admission values. FCFS uses
 only the budget; the other settings retain exact-match exemptions and the
 rising bar, including its increase after the session ceiling.
@@ -373,6 +455,62 @@ check now fingerprints all same-named declarations together; a symbol declared
 once keeps its fingerprint.
 
 ## Demo
+
+## Surface ledger and contention
+
+Every receipt has one closed surface id (`native/record/surfaces.go`). Existing
+surfaces default to `on`; new rescues, history and comparison surfaces default
+to `shadow`. `delivery.surface.<id>` accepts `on`, `shadow` or `off` globally
+or per project. The complete map shares the scorer's small hook mirror.
+`MEX_DELIVERY_SURFACES` overrides the map for deterministic tests. An off
+surface is filtered before opening SQLite. Shadow selects and spends the same
+virtual budget as a live send, commits the same receipt except its action,
+and renders nothing.
+
+Schema 7 stores immutable targets and incremental, forty-tool-call windows.
+The window ends at forty calls or epoch closure. One firing is a surface's
+block, even when it contains several entries; it is acted on if any of those
+entries is used. First versus repeat is claimed atomically per session and
+agent. Commands are exact digests; paths and scopes are checkout-relative.
+The acted definitions are executable Go tables with fixture streams.
+
+Reports show the base kind with its rate: shadow first, then held-back, then
+time-matched suppressed candidates. The latter means an otherwise eligible
+entry suppressed by epoch dedupe, with the actual target it would name. Empty
+matches have no knowable target and create no artificial negative control.
+The false-send estimate counts settled firings with no observed use. None of
+these observations proves a causal effect.
+
+Gate constants are stored before the first firing: thirty settled live
+firings, thirty percent acted, a Wilson 95% lower bound above the available
+base rate, and repeat use at least first use. Evaluations use disjoint batches
+of new live observations. Missing base or repeat evidence keeps a passing
+candidate collecting. Two efficacy failures turn the surface off, preserve
+knowledge, and claim one person-facing notice. Offline playback cannot advance
+a gate. Configuring `on` does not silently erase a stored off decision.
+
+`mex what --surfaces` and the replay use the same Go report. Telemetry accepts
+aggregate counts only. A saved session without MEX measures coincidence,
+not effect.
+
+An epoch records candidate tokens, admitted tokens, its budget and budget-only
+holdbacks. Candidate demand is the largest rendered size offered per canonical
+entry and checkout in that epoch, after identity, verdict, native coverage,
+similarity and dedupe checks. A repeated rejected offer cannot inflate demand.
+Moment-size holdbacks are included in demand, but do not count as epoch-budget
+holdbacks. Companion sizes are included individually; a rejected family counts
+as one held root bundle. Budget-only means capacity failed while the scorer
+would admit it. A scorer rejection, including one also exceeding capacity,
+does not meet that definition.
+
+Admitted tokens include live and virtual shadow selections, reserved corrections
+and existing exemptions. Those lanes can exceed the ordinary budget by policy;
+offered over budget alone does not prove the scorer constrained selection.
+Contention is the share of measured epochs with offered tokens above budget,
+reported with actual budget-only holds. Pre-migration epochs are explicitly
+unmeasured. Epochs belong to the session's primary checkout because its budget
+is shared across checkouts; per-checkout demand is claimed separately within
+it. The view covers retained epochs and does not invent a lifetime denominator.
 
 `node scripts/delivery-demo.mjs` builds the binary, makes a throwaway repo and
 MEX home, and sends Claude Code payloads: a read of a file with a pitfall, a

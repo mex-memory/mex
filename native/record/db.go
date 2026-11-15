@@ -17,7 +17,7 @@ import (
 	"modernc.org/sqlite"
 )
 
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 // Node's additive model-admission migration does not change the tables read here.
 const RecordSchemaVersion = 4
@@ -65,6 +65,9 @@ func migrate(ctx context.Context, db *sql.DB, migrations []migration) error {
 		return futureSchema("hooks.db", version)
 	}
 	for _, step := range migrations {
+		if step.version <= version {
+			continue
+		}
 		conn, err := db.Conn(ctx)
 		if err != nil {
 			return err
@@ -81,6 +84,7 @@ func migrate(ctx context.Context, db *sql.DB, migrations []migration) error {
 			if current > SchemaVersion {
 				return futureSchema("hooks.db", current)
 			}
+			version = current
 			if current < step.version {
 				if step.version != current+1 {
 					return fmt.Errorf("missing hooks.db migration %d", current+1)
@@ -91,6 +95,7 @@ func migrate(ctx context.Context, db *sql.DB, migrations []migration) error {
 				if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", step.version)); err != nil {
 					return err
 				}
+				version = step.version
 			}
 			_, err := conn.ExecContext(ctx, "COMMIT")
 			return err
@@ -101,6 +106,54 @@ func migrate(ctx context.Context, db *sql.DB, migrations []migration) error {
 		}
 	}
 	return nil
+}
+
+// A genuinely empty database has no intermediate versions to preserve. Build
+// the same embedded schema atomically, avoiding seven first-use commits. An
+// existing store still upgrades one numbered transaction at a time.
+func initializeEmptyHooks(ctx context.Context, db *sql.DB, steps []migration) (bool, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return false, err
+	}
+	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
+	var current int
+	if err = conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&current); err != nil {
+		return false, err
+	}
+	if current > SchemaVersion {
+		return false, futureSchema("hooks.db", current)
+	}
+	if current != 0 {
+		return false, nil
+	}
+	var populated bool
+	if err = conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%')`).Scan(&populated); err != nil {
+		return false, err
+	}
+	if populated {
+		return false, nil
+	}
+	if len(steps) != SchemaVersion {
+		return false, errors.New("incomplete initial hooks schema")
+	}
+	for i, step := range steps {
+		if step.version != i+1 {
+			return false, errors.New("unordered initial hooks schema")
+		}
+		if _, err = conn.ExecContext(ctx, step.sql); err != nil {
+			return false, err
+		}
+	}
+	if _, err = conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion)); err != nil {
+		return false, err
+	}
+	_, err = conn.ExecContext(ctx, "COMMIT")
+	return err == nil, err
 }
 
 func openDatabase(path string, readOnly bool) (*sql.DB, error) {
@@ -172,6 +225,8 @@ func openCounterReader(path string) (*sql.DB, error) {
 }
 
 type Hooks struct {
+	directory     string
+	newID         func() (string, error)      // deterministic receipt identities in fixtures
 	Trace         func(string, time.Duration) // explicit diagnostics only
 	db            *sql.DB
 	budget        budget
@@ -188,6 +243,9 @@ func openHooks(location Location, limits budget) (*Hooks, error) {
 }
 
 func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hooks, error) {
+	if location.Directory == "" {
+		location.Directory = filepath.Dir(location.Hooks)
+	}
 	busyTimeout := WriterBusyTimeoutMS
 	if counterOnly {
 		busyTimeout = 1
@@ -233,7 +291,7 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 	}
 	if err == nil && version < SchemaVersion {
 		var steps []migration
-		for i, name := range []string{"0001_init.sql", "0002_delivery.sql", "0003_followups.sql", "0004_rendering.sql", "0005_probes.sql", "0006_intent.sql"} {
+		for i, name := range []string{"0001_init.sql", "0002_delivery.sql", "0003_followups.sql", "0004_rendering.sql", "0005_probes.sql", "0006_intent.sql", "0007_surfaces.sql"} {
 			var data []byte
 			data, err = schemas.ReadFile("schema/hooks/" + name)
 			if err != nil {
@@ -242,7 +300,13 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 			steps = append(steps, migration{i + 1, string(data)})
 		}
 		if err == nil {
-			err = migrate(ctx, db, steps)
+			initialized := false
+			if version == 0 {
+				initialized, err = initializeEmptyHooks(ctx, db, steps)
+			}
+			if err == nil && !initialized {
+				err = migrate(ctx, db, steps)
+			}
 		}
 	}
 	if err == nil && counterOnly {
@@ -265,7 +329,7 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 		}
 		return nil, err
 	}
-	return &Hooks{db: db, budget: limits, counterOnly: counterOnly, counterReader: counterReader}, nil
+	return &Hooks{directory: location.Directory, db: db, budget: limits, counterOnly: counterOnly, counterReader: counterReader}, nil
 }
 
 func (hooks *Hooks) Close() error {

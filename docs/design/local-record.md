@@ -1,4 +1,47 @@
-# Contract: the local record (record version 4, hooks version 6)
+# Contract: the local record (record version 4, hooks version 7)
+
+## Surface ledger
+
+Migration `0007_surfaces.sql` rebuilds the deliveries action constraint with
+`shadow` and `control`, preserving receipt ids, order, followups and touches.
+The copy refuses more than 100,000 receipts or followups. Historical moments
+map to their surface; unrecognized moments become `unknown`.
+
+`surface_windows` holds immutable bounded targets, a 40-call expiry, first/repeat,
+acted and settled bits. Commands are digests; observed tool text is not stored.
+`surface_firings` groups a surface/block/action's windows; pending decreases
+incrementally and the group's maximum acted bit settles once, avoiding repeated
+samples from multi-item replies. Rollups retain both firing and receipt counts.
+`surface_session_first` atomically claims each surface's first block for a
+session/agent/checkout, so first/repeat never scans historical receipts.
+`surface_stats` rolls up firings, settled/acted and estimated tokens by project,
+checkout, surface, action and repeat. `surface_gates` stores fixed minimums
+(30 firings, .30 acted rate, Wilson z 1.959963984540054), evaluation snapshots,
+consecutive failures, state/reason and the once-only notice claim. Windows,
+rollups, gate transitions and receipt admission use the same writer transaction.
+Pruning receipt windows preserves their aggregate counts.
+
+Epochs gain `tool_calls`, `candidate_tokens`, `admitted_tokens` and `budget_held`.
+The last three columns reserve contention accounting in this migration.
+Node recognizes version 7 read-only; Go remains its sole writer.
+Empty hooks databases initialize the same embedded schema atomically in one
+transaction. Existing databases retain one transaction per numbered upgrade;
+already applied versions do not acquire redundant writer locks. Initialization
+and upgrades keep the existing writer deadline and roll back on failure.
+
+`delivery.surface.<id>` is an `on|shadow|off` setting at global/project scope.
+Node publishes the complete `surfaces` map alongside `scorer` in controls.json
+and hook-delivery/<project>.json under its writer lock. The environment override
+`MEX_DELIVERY_SURFACES` is an all-surface state or a JSON object for fixtures.
+
+Two derived hints live beside the record. `surface-pending/<session-agent hash>/`
+contains empty active/retiring markers; presence only enables a SQLite check,
+never authorizes a receipt. Retirement guards survive rollback/crash and are
+removed non-recursively after commit. `surface-off/<project>/<surface>` is an
+empty marker published only after a committed gate-off transition. Missing
+markers cannot bypass the SQLite gate. No authoritative counter or state is
+updated through JSON files. `mex-hook --surfaces` accepts project and checkout
+on stdin and reads the same bounded projection as `mex what --surfaces`.
 
 ## Delivery additions
 
