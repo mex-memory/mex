@@ -6,6 +6,7 @@
 package hook
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,8 +18,11 @@ import (
 
 	"github.com/mex-memory/mex/native/delivery"
 	"github.com/mex-memory/mex/native/internal/adapter"
-	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
-	_ "github.com/mex-memory/mex/native/internal/adapter/codex"  // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/antigravity" // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/claude"      // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/codex"       // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/cursor"      // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/gemini"      // registers the profile
 	"github.com/mex-memory/mex/native/internal/contract"
 	localrecord "github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
@@ -181,6 +185,9 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		if handled {
 			ev, err, instruction = load.Event, loadErr, &load
 		}
+	}
+	if errors.Is(err, adapter.ErrSkip) {
+		return profile.EmptyReply(nativeEvent)
 	}
 	if err != nil {
 		failed = true

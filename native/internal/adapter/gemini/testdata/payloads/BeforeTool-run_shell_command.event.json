@@ -1,0 +1,19 @@
+{
+  "agent": "gemini",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "g-91ab",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "shell",
+    "raw_name": "run_shell_command",
+    "input": {
+      "command": "npm test"
+    }
+  },
+  "transcript": "/home/dev/.gemini/tmp/shop/chats/session-g-91ab.json",
+  "background": false
+}

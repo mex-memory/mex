@@ -1,0 +1,23 @@
+{
+  "agent": "antigravity",
+  "agent_version": "",
+  "kind": "post_tool_failure",
+  "session_id": "a-55c2",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "shell",
+    "raw_name": "run_command",
+    "input": {
+      "command": "npm test"
+    },
+    "output": {
+      "text": "exit status 1",
+      "ok": false
+    }
+  },
+  "transcript": "/home/dev/.gemini/antigravity/brain/a-55c2/transcript.jsonl",
+  "background": false
+}

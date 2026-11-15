@@ -282,6 +282,10 @@ func (h home) ownHookFiles(agent string) []string {
 		return []string{filepath.Join(h.user, ".cursor", "hooks.json")}
 	case "copilot":
 		return []string{filepath.Join(h.user, ".copilot", "hooks.json")}
+	case "antigravity":
+		return []string{filepath.Join(h.user, ".gemini", "config", "hooks.json")}
+	case "gemini":
+		return []string{filepath.Join(h.user, ".gemini", "settings.json")}
 	}
 	return nil
 }

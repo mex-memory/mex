@@ -1,0 +1,23 @@
+{
+  "agent": "cursor",
+  "agent_version": "3.2.1",
+  "kind": "post_tool",
+  "session_id": "c-7f1e",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "read",
+    "raw_name": "Read",
+    "input": {
+      "path": "/home/dev/shop/src/cart.ts"
+    },
+    "output": {
+      "text": "export const x = 1;\n",
+      "ok": true
+    }
+  },
+  "transcript": "/home/dev/.cursor/projects/shop/agent-transcripts/c-7f1e.jsonl",
+  "background": false
+}
