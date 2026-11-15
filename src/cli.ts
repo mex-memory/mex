@@ -1242,11 +1242,19 @@ const configCmd = program
 configCmd
   .command("set <key> <value>")
   .description("Set a config value (e.g. delivery.scorer tiers|bm25|fcfs|risk)")
-  .option("--project", "Set delivery.scorer for the registered project")
+  .option("--project", "Set delivery.scorer or learning.sharing for the registered project")
   .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
-      if (options.project && key !== "delivery.scorer") throw new Error("--project is supported for delivery.scorer.");
-      if (key === "delivery.scorer") {
+      if (options.project && !["delivery.scorer", "learning.sharing"].includes(key)) throw new Error("--project is supported for delivery.scorer and learning.sharing.");
+      if (key === "learning.sharing") {
+        if (!options.project) throw new Error("Use --project to set learning.sharing for this repository.");
+        if (!["automatic", "manual"].includes(value)) throw new Error("Use automatic or manual for learning.sharing.");
+        const { openRecord } = await import("./record/index.js");
+        const { setLearningSharing } = await import("./controls/index.js");
+        const writer = openRecord();
+        try { setLearningSharing(writer, value, process.cwd()); } finally { writer.close(); }
+        console.log(value === "manual" ? "Learned notes stay personal until mex share." : "Eligible learned notes can reach this shared repository after their diff is shown.");
+      } else if (key === "delivery.scorer") {
         const { openRecord } = await import("./record/index.js");
         const { setDeliveryScorer } = await import("./controls/index.js");
         if (!["tiers", "bm25", "fcfs", "risk"].includes(value)) throw new Error("Use tiers, bm25, fcfs or risk for delivery.scorer.");
@@ -1273,7 +1281,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer, learning.sharing`);
         process.exitCode = 1;
         return;
       }

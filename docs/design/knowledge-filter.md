@@ -147,3 +147,59 @@ classification quality and plain-word private facts still need the separate
 model evaluation. Deterministic fixtures use fake model responses and exercise
 rollback, recovery, corrections, duplicate retirement, privacy holds, uncertainty,
 cap holds and source/consent changes without live model calls.
+
+## Evidence and the working tree
+
+A separate code policy decides which producer-verified evidence can reach the
+team: a lasting person statement; two independent sessions for unsure statements;
+two distinct authorized, merged PRs for docs/CI/reviews; or an observation with
+verified corroboration of the same claim in CI, a script or docs. Repeats inside
+one session, pasted/scripted input and delivered-note echoes do not qualify.
+The runtime producer here is captured person input. Collection of docs/reviews
+and their authority proofs belongs to learn-deeper; the general policy cases
+are covered by a deterministic fixture table, not by invented PR observations.
+
+Consolidation transactionally stages one offer per learned note. Previously
+consolidated notes are backfilled from their private provenance, never by
+adopting arbitrary personal Markdown. The background job rechecks the exact
+personal bytes, privacy holds, current native checks, source authority and
+repository visibility. GitHub-origin authority is a current write permission or
+proof that the signed-in person has merged a PR there. Unavailable authority
+stays personal; public or unknown visibility sends session entries to private
+Review staging. GitHub lookups happen in the background, never in hooks.
+
+A retained host transcript must contain the exact quote in a unique user message
+whose first 1,200 characters match the captured message digest. Assistant/tool
+rows do not count. The session/project/host and current delivery ledger are
+checked again. A missing, moved, ambiguous or out-of-bound transcript is held;
+older session provenance without its message digest is not automatically shared.
+Explicit notes retain their existing typed-source proof under their stable ID.
+
+Once the repo shares, eligible entries use the existing exact-diff team writer.
+The job queues the diff for its triggering main session and waits for Go's
+person-visible-output receipt. The receipt is specific to that session, checkout,
+branch and proposed bytes. Source, privacy, consent, checks, team decisions and
+checkout inputs are re-proved before publication under the record and Git locks.
+The result is an unstaged working-tree file plus a visible status line. MEX does
+not create a branch, stage, commit or push in this flow. Recovery recognizes
+exact approved output after a write-before-receipt interruption without creating
+a second file or repeating the status line.
+
+An existing shared entry is never automatically overwritten by a captured
+correction. Retired shared entries stay retired. Potential conflicts with recorded
+team decisions are held conservatively when scopes overlap; semantic refinement
+belongs to Review. If current write gates would change the verified quote or
+fact, the candidate stays personal rather than certifying replacement text.
+Undelivered previews time out after five minutes into private Review staging.
+The bounded Review list, actions and daily notification line are the next slice.
+
+A project can hold all automatic offers for explicit sharing:
+
+```sh
+mex config set learning.sharing manual --project
+mex config set learning.sharing automatic --project
+```
+
+Automatic mode still requires a shared repo, current evidence, private visibility,
+checks, privacy gates and the exact diff receipt. The setting lives only in the
+private project record. This adds no entry-file or database schema fields.
