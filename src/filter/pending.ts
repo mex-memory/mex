@@ -2,7 +2,7 @@ import { lstatSync, opendirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import type { RecordWriter } from "../record/index.js";
-import type { EnqueueOptions, EnqueueResult } from "../record/jobs.js";
+import { requestJob, type EnqueueOptions, type EnqueueResult } from "../record/jobs.js";
 import { shortHash } from "../record/project.js";
 import { containedDirectory, readBoundedTextFile } from "../knowledge/files.js";
 import { filterAllowed, type FilterParams } from "./input.js";
@@ -20,9 +20,11 @@ export function filterPending(directory: string, writer?: RecordWriter): boolean
       while ((child = handle.readSync())) {
         if (++visited > 32) return true; // The rotating consumer handles larger sets.
         if (!child.isFile() || !/^[a-f0-9]{24}\.json$/u.test(child.name)) continue;
-        const raw = readBoundedTextFile(join(root, child.name), 16 << 10);
-        const parsed = Request.safeParse(JSON.parse(raw ?? "null"));
-        if (parsed.success && writer.setting("filter", `finished.${shortHash(parsed.data.checkout)}`) !== parsed.data.generation) return true;
+        try {
+          const raw = readBoundedTextFile(join(root, child.name), 16 << 10);
+          const parsed = Request.safeParse(JSON.parse(raw ?? "null"));
+          if (parsed.success && writer.setting("filter", `finished.${shortHash(parsed.data.checkout)}`) !== parsed.data.generation) return true;
+        } catch { /* An invalid request must not hide another checkout's work. */ }
       }
       return false;
     } finally { handle.closeSync(); }
@@ -47,7 +49,19 @@ export function queuePendingFilters(writer: RecordWriter, queue: (writer: Record
     if (writer.setting("filter", `finished.${shortHash(r.checkout)}`) === r.generation) continue;
     const params: FilterParams = { checkout: r.checkout, agent: r.agent === "claude-code" ? "claude" : "codex", generation: r.generation };
     if (name !== `${shortHash(r.checkout)}.json` || !filterAllowed(writer, r.project_id, params)) continue;
-    const result = queue(writer, { kind: "filter", projectId: r.project_id, params });
+    let result = queue(writer, { kind: "filter", projectId: r.project_id, params });
+    // A host/account or checkout hold must not pin this repo to an older
+    // session forever. A fresh eligible request can replace automatic waiting
+    // work; running and explicitly paused jobs retain their owner's intent.
+    if (result.existing && result.job.state === "waiting") {
+      const previous = JSON.parse(result.job.params) as FilterParams;
+      if (previous.checkout !== params.checkout || previous.agent !== params.agent) {
+        const cancelled = requestJob(writer, result.job.id, "cancel", { state: "waiting", params: result.job.params });
+        if (cancelled.state !== "cancelled") continue;
+        finishRequest(writer, previous);
+        result = queue(writer, { kind: "filter", projectId: r.project_id, params });
+      }
+    }
     if (!result.existing) queued++;
   } catch { /* A bounded later pass retries unavailable requests. */ }
   if (ordered.length) writer.db.prepare("INSERT INTO settings VALUES('filter','requests.after',?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(ordered.at(-1)!);
@@ -61,7 +75,12 @@ export function finishRequest(writer: RecordWriter, params: FilterParams): void 
   // acknowledge their generation in Node instead of deleting a hook's newer file.
   const raw = readBoundedTextFile(path, 16 << 10);
   if (!raw) return;
-  const r = Request.parse(JSON.parse(raw));
-  if (r.generation === params.generation) writer.db.prepare("INSERT INTO settings VALUES('filter',?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
-    .run(`finished.${shortHash(params.checkout)}`, r.generation);
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return; }
+  const parsed = Request.safeParse(value);
+  if (!parsed.success) return;
+  const r = parsed.data;
+  if (r.generation === params.generation && r.checkout === params.checkout && r.project_id === writer.checkout(params.checkout)?.project_id)
+    writer.db.prepare("INSERT INTO settings VALUES('filter',?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
+      .run(`finished.${shortHash(params.checkout)}`, r.generation);
 }

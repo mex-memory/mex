@@ -12,7 +12,8 @@ atomically replaces one metadata file per session under `filter-sessions/`:
 project, checkout, host, session id, last activity, explicit finish status, and
 host transcript reference. Only SessionEnd marks finished; later prompts clear
 it. The existing per-hook heartbeat detects other activity, including activity
-after a finish marker, without adding writes to ordinary tool hooks.
+after a finish marker, without adding writes to ordinary tool hooks. Finish
+and heartbeat comparisons retain nanosecond precision.
 Session start and pre-compaction atomically replace a bounded checkout
 request under `filter-pending/`. Neither file contains message or reply text.
 Subagents do not request learning. Redirected directories are refused. Hooks
@@ -20,7 +21,10 @@ never wait for a model and never write Node's database.
 
 Node validates the registration and controls, then queues the `filter` project
 job. It reuses the existing project claim, machine-exclusive learning lane,
-dead-process recovery, and automatic model allowance. Requests remain durable;
+dead-process recovery, and automatic model allowance. A fresh eligible request
+from another host or checkout can replace an automatically waiting job while
+preserving unread input; running and explicitly paused work are not replaced.
+Requests remain durable;
 Node acknowledges their exact generation without unlinking a concurrent Go
 replacement. A pass without eligible input finishes without a model call. A
 later session/pre-compaction request revisits deferred input.

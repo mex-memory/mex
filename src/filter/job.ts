@@ -30,13 +30,29 @@ interface Checkpoint { position: Position; scanAfter?: number; carry?: number[];
 export interface FilterDependencies { model: typeof runModel; recordChecks: typeof recordChecks; clock: () => number; cheap?: boolean; }
 const dependencies: FilterDependencies = { model: runModel, recordChecks, clock: Date.now };
 const BATCH_BYTES = 512 << 10, STORE_BYTES = 8 << 20;
+const sourceSchema = z.object({ session: z.string().max(512).nullable(), row: z.number().int().positive().safe().nullable(),
+  at: z.string().max(64), marks: z.enum(["", "pasted", "scripted", "pasted,scripted"]), delivered: z.array(z.string().max(512)).max(128),
+  note_id: z.string().regex(/^mx_[a-z0-9]{6,64}$/u).optional(), note_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional() }).strict();
+const candidateSchema = Item.omit({ checks: true }).extend({ checks: z.array(CheckSchema).max(32), needs_checks: z.boolean(), source: sourceSchema }).strict();
+const batchSchema = z.object({ version: z.literal(1), phase: z.enum(["draft", "complete"]), input_hash: z.string().regex(/^[a-f0-9]{64}$/u),
+  position: z.object({ branch: z.string().max(1024).nullable(), head: z.string().regex(/^[a-f0-9]{40,64}$/u).nullable() }).strict(),
+  answers: z.array(Item).max(128), repair_attempted: z.boolean().optional(), repair: z.array(Item).max(128).optional(),
+  candidates: z.array(candidateSchema).max(128).optional(), model: z.string().min(1).max(128), tokens: z.number().int().nonnegative().safe(),
+}).strict().refine(value => (value.phase !== "complete" || value.candidates !== undefined)
+  && [...value.answers, ...(value.repair ?? []), ...(value.candidates ?? [])].every(item => item.label !== "task"));
+function candidateRoom(writer: RecordWriter, project: string): boolean {
+  const size = writer.db.prepare("SELECT count(*) n,coalesce(sum(length(CAST(value AS BLOB))),0) bytes FROM settings WHERE scope=? AND key LIKE 'filter.batch.%'").get(project)!;
+  return Number(size.n) < 128 && Number(size.bytes) <= STORE_BYTES - BATCH_BYTES;
+}
 
 /** Returns only validated local candidates; it has no entry-write authority. */
 export function readFilterBatch(writer: RecordWriter, project: string, key: string): CachedBatch | undefined {
   const raw = writer.setting(project, `filter.batch.${key}`);
   if (!raw || Buffer.byteLength(raw) > BATCH_BYTES) return undefined;
-  const value = JSON.parse(raw) as CachedBatch;
-  return value.version === 1 && value.input_hash === key ? value : undefined;
+  try {
+    const parsed = batchSchema.safeParse(JSON.parse(raw));
+    return parsed.success && parsed.data.input_hash === key ? parsed.data : undefined;
+  } catch { return undefined; }
 }
 function save(writer: RecordWriter, project: string, value: CachedBatch, job: JobRow, commit?: () => void): void {
   const bytes = JSON.stringify(value);
@@ -119,8 +135,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
         const key = hash(JSON.stringify({ input: stableInput(input), position: at })).slice(7);
         let cached = readFilterBatch(writer, project, key);
         if (!cached) {
-          const size = writer.db.prepare("SELECT count(*) n,coalesce(sum(length(CAST(value AS BLOB))),0) bytes FROM settings WHERE scope=? AND key LIKE 'filter.batch.%'").get(project)!;
-          if (Number(size.n) >= 128 || Number(size.bytes) > STORE_BYTES - BATCH_BYTES) return { checkpoint: state, wait: "Waiting: local filter candidates need consolidation" };
+          if (!candidateRoom(writer, project)) return { checkpoint: state, wait: "Waiting: local filter candidates need consolidation" };
         }
         const prompt = filterPrompt(input);
         if (Buffer.byteLength(prompt) > FILTER_LIMITS.promptBytes) throw new Error("The filter's prompt limit was reached.");
@@ -205,7 +220,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
       const params = JSON.parse(job.params) as FilterParams;
       if (!filterAllowed(writer, job.project_id!, params)) return false;
       if (job.reason === "Sign in to the selected agent CLI before retrying." || job.reason === "The selected agent reached its usage limit.") return false;
-      if (job.reason === "Waiting: local filter candidates need consolidation") return false;
+      if (job.reason === "Waiting: local filter candidates need consolidation") return candidateRoom(writer, job.project_id!);
       if (job.reason === "Waiting: the filter needs the installed check evaluator") return !!nativeBinary();
       return true;
     },

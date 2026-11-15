@@ -45,20 +45,26 @@ function metadata(writer: RecordWriter, project: string, checkout: string, sessi
   const parsed = Metadata.safeParse(value);
   return parsed.success && parsed.data.project_id === project && parsed.data.checkout === checkout && parsed.data.session_id === session ? parsed.data : undefined;
 }
-function heartbeat(writer: RecordWriter, agent: string, session: string): number {
-  if (agent !== "codex" && agent !== "claude-code") return 0;
+function timestampNs(value: string): bigint | undefined {
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) return undefined;
+  const fraction = (value.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/u)?.[1] ?? "").padEnd(9, "0").slice(3, 9);
+  return BigInt(milliseconds) * 1_000_000n + BigInt(fraction || "0");
+}
+function heartbeat(writer: RecordWriter, agent: string, session: string): bigint | undefined {
+  if (agent !== "codex" && agent !== "claude-code") return 0n;
   const directory = containedDirectory(writer.location.home, ["heartbeats", agent]);
-  if (!directory) return 0;
+  if (!directory) return 0n;
   const name = Buffer.from(session).map(c => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || [45, 46, 95].includes(c) ? c : 95).toString();
   const path = join(directory, !name || name === "." || name === ".." ? "_" : name);
   try {
     const raw = readBoundedTextFile(path, 4096);
-    if (!raw) return 0;
+    if (!raw) return 0n;
     const value = JSON.parse(raw);
     // A sanitized-name collision is uncertainty, never proof of inactivity.
-    if (value.session_id !== session || value.agent !== agent) return Infinity;
-    return lstatSync(path).mtimeMs;
-  } catch { return Infinity; }
+    if (value.session_id !== session || value.agent !== agent) return undefined;
+    return lstatSync(path, { bigint: true }).mtimeNs;
+  } catch { return undefined; }
 }
 function personalNotes(writer: RecordWriter, project: string): NoteInput[] {
   const dir = containedDirectory(writer.location.home, ["projects", project, "notes"]);
@@ -121,10 +127,12 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
     const eligible = rows.filter(row => {
       if (row.paused || row.id <= acknowledged(writer, project, row.session_id)) return false;
       const meta = metadata(writer, project, params.checkout, row.session_id);
-      const activity = Math.max(Date.parse(row.last_seen_at), heartbeat(writer, row.agent, row.session_id));
-      const seen = Math.max(activity, meta ? Date.parse(meta.seen_at) : 0);
-      const finished = meta?.finished && Date.parse(meta.seen_at) >= activity;
-      if (!Number.isFinite(seen) || (!finished && seen > now - FILTER_LIMITS.idleMs)) return false;
+      const lastSeen = timestampNs(row.last_seen_at), beat = heartbeat(writer, row.agent, row.session_id);
+      if (lastSeen === undefined || beat === undefined) return false;
+      const activity = lastSeen > beat ? lastSeen : beat, recorded = meta ? timestampNs(meta.seen_at) : undefined;
+      const seen = recorded !== undefined && recorded > activity ? recorded : activity;
+      const finished = meta?.finished && recorded !== undefined && recorded >= activity;
+      if (!finished && seen > BigInt(Math.trunc(now - FILTER_LIMITS.idleMs)) * 1_000_000n) return false;
       if (meta?.transcript) transcripts.set(row.session_id, { path: meta.transcript, agent: meta.agent === "claude-code" ? "claude" : "codex" });
       return true;
     });

@@ -142,11 +142,12 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
   });
 }
 
-/** Pause, cancel or resume. A running job is asked, and stops after its current batch. */
-export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume"): JobRow {
+/** Pause, cancel or resume. Automatic replacements can require an unchanged snapshot. */
+export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: Pick<JobRow, "state" | "params">): JobRow {
   return inTransaction(writer.db, () => {
     const job = getJob(writer.db, id);
     if (!job) throw new Error("That job no longer exists.");
+    if (expected && (job.state !== expected.state || job.params !== expected.params)) return job;
     if (action === "resume") {
       if (job.state === "paused" || job.state === "waiting" || job.state === "failed") {
         // Resuming a failed job starts its failure count again; learned results and position stay.

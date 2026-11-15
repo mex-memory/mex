@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, utimesSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openRecord, type RecordWriter } from "../../record/index.js";
@@ -13,9 +13,9 @@ import { hash } from "../../judge/evidence.js";
 import { enqueueModelBatch, claimModelBatch, settleModelBatch } from "../../model-runner/budget-queue.js";
 import { REFERENCE_BATCH } from "../../model-runner/budget-prices.js";
 import { note } from "../../knowledge/store.js";
-import { createFilterKind, type FilterDependencies } from "../job.js";
+import { createFilterKind, readFilterBatch, type FilterDependencies } from "../job.js";
 import { filterInput, type FilterInput, type FilterParams } from "../input.js";
-import { queuePendingFilters } from "../pending.js";
+import { filterPending, queuePendingFilters } from "../pending.js";
 import { replyContexts } from "../transcript.js";
 
 let suite: string, binary: string, base: string, root: string, home: string, writer: RecordWriter, hooks: DatabaseSync, project: string;
@@ -233,6 +233,62 @@ describe("filter batches and provenance", () => {
     const directory = join(home, "heartbeats", "codex"); mkdirSync(directory, { recursive: true });
     const path = join(directory, "s"); writeFileSync(path, JSON.stringify({ agent: "codex", session_id: "s" })); utimesSync(path, new Date(now), new Date(now));
     expect(filterInput(writer, project, params(), true, now)).toBeUndefined();
+  });
+  it("admits a finished session with a sub-millisecond heartbeat, but rejects subsequent activity", () => {
+    add("s", "finished with nanoseconds", { finished: true });
+    const directory = join(home, "heartbeats", "codex"); mkdirSync(directory, { recursive: true });
+    const path = join(directory, "s"); writeFileSync(path, JSON.stringify({ agent: "codex", session_id: "s" }));
+    utimesSync(path, now / 1000 + 0.0005, now / 1000 + 0.0005);
+    const ns = lstatSync(path, { bigint: true }).mtimeNs;
+    const seen = new Date(Number(ns / 1_000_000n)).toISOString().replace(/\.\d{3}Z$/u, `.${String(ns % 1_000_000_000n).padStart(9, "0")}Z`);
+    const meta = join(writer.location.directory, "filter-sessions", `${shortHash(project + "\0s")}.json`);
+    writeFileSync(meta, JSON.stringify({ ...JSON.parse(readFileSync(meta, "utf8")), seen_at: seen }));
+    expect(filterInput(writer, project, params(), true, now)?.messages).toHaveLength(1);
+    utimesSync(path, now / 1000 + 0.002, now / 1000 + 0.002);
+    expect(filterInput(writer, project, params(), true, now)).toBeUndefined();
+  });
+  it("ignores corrupt cached data without exposing its private contents in an error", async () => {
+    add("s", "Tests use vitest because the project chose it."); await run(queue());
+    const key = String(writer.db.prepare("SELECT key FROM settings WHERE key LIKE 'filter.batch.%'").get()!.key);
+    writer.db.prepare("UPDATE settings SET value=? WHERE scope=? AND key=?").run('{broken private material', project, key);
+    expect(readFilterBatch(writer, project, key.slice("filter.batch.".length))).toBeUndefined();
+  });
+  it("wakes a valid request even if another request is malformed", () => {
+    const dir = join(writer.location.directory, "filter-pending"); mkdirSync(dir);
+    writeFileSync(join(dir, `${"0".repeat(24)}.json`), "{invalid");
+    writeFileSync(join(dir, `${shortHash(root)}.json`), JSON.stringify({ version: 1, project_id: project, checkout: root, agent: "codex", generation: "1" }));
+    expect(filterPending(writer.location.directory, writer)).toBe(true);
+    registerJobKind(createFilterKind(deps)); expect(queuePendingFilters(writer, enqueueJob)).toBe(1);
+  });
+  it("automatically resumes when consolidation makes room in the candidate store", async () => {
+    add("s", "Tests use vitest because the project chose it.");
+    for (let n = 0; n < 128; n++) writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, `filter.batch.full${n}`, "{}");
+    const id = queue(); expect((await run(id)).state).toBe("waiting"); expect(calls).toHaveLength(0);
+    writer.db.prepare("DELETE FROM settings WHERE scope=? AND key='filter.batch.full0'").run(project);
+    expect(requeueReadyJobs(writer)).toBe(1);
+  });
+  it("lets a new agent replace an automatically waiting host without acknowledging unread input", async () => {
+    add("s", "Tests use vitest because the project chose it.");
+    const previous = queue();
+    writer.db.prepare("UPDATE jobs SET state='waiting',reason=? WHERE id=?").run("Sign in to the selected agent CLI before retrying.", previous);
+    const dir = join(writer.location.directory, "filter-pending"); mkdirSync(dir);
+    writeFileSync(join(dir, `${shortHash(root)}.json`), JSON.stringify({ version: 1, project_id: project, checkout: root, agent: "claude-code", generation: "new" }));
+    expect(queuePendingFilters(writer, enqueueJob)).toBe(1);
+    expect(row(previous).state).toBe("cancelled"); expect(writer.setting(project, "journal.consumed")).toBeUndefined();
+    const next = writer.db.prepare("SELECT * FROM jobs WHERE state='queued'").get()!;
+    expect(JSON.parse(String(next.params)).agent).toBe("claude");
+    await run(String(next.id)); expect(calls).toHaveLength(1); expect(writer.setting(project, "journal.consumed")).toBe("1");
+  });
+  it.each(["running", "paused"])("does not replace a waiting job that became %s during dispatch", state => {
+    const previous = queue(); writer.db.prepare("UPDATE jobs SET state='waiting',reason='held' WHERE id=?").run(previous);
+    const dir = join(writer.location.directory, "filter-pending"); mkdirSync(dir);
+    writeFileSync(join(dir, `${shortHash(root)}.json`), JSON.stringify({ version: 1, project_id: project, checkout: root, agent: "claude-code", generation: "new" }));
+    expect(queuePendingFilters(writer, (w, options) => {
+      const snapshot = enqueueJob(w, options);
+      writer.db.prepare("UPDATE jobs SET state=? WHERE id=?").run(state, previous);
+      return snapshot;
+    })).toBe(0);
+    expect(row(previous)).toMatchObject({ state, request: null });
   });
   it("respects capture switches and preserves completed request generations", async () => {
     add("s", "Tests use vitest because the project chose it.");
