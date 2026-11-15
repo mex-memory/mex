@@ -85,15 +85,37 @@ export function wrap(text: string, width: number | undefined, indent: number): s
   return lines;
 }
 
+/** Hanging indent for a header or note that runs onto more lines. */
+const CONTINUATION_INDENT = 4;
+
+/** The header breaks only between its parts, so "nothing added to git" never splits; long parts still wrap. */
+function wrapHeader(parts: readonly string[], dot: string, width: number | undefined): string[] {
+  const whole = parts.join(dot);
+  if (!width || whole.length <= width) return [whole];
+  const pad = " ".repeat(CONTINUATION_INDENT);
+  const lines: string[] = [];
+  let line = "";
+  for (const part of parts) {
+    if (line === "") { line = part; continue; }
+    if (line.length + dot.length + part.length <= width) { line += dot + part; continue; }
+    lines.push(line);
+    line = pad + part;
+  }
+  lines.push(line);
+  // Only a continuation line can be too long (a part longer than the window): wrap its text under the indent.
+  return lines.flatMap(text => text.length <= width ? [text]
+    : wrap(text.slice(CONTINUATION_INDENT), width - CONTINUATION_INDENT, 0).map(part => pad + part));
+}
+
 export function renderScreen(model: ScreenModel, mode: ScreenMode): string[] {
   const dot = mode.ascii ? " - " : " · ";
-  const header = ["MEX", model.name, formatSeconds(model.ms), `$${model.costUsd.toFixed(model.costUsd === 0 ? 0 : 2)}`]
-    .concat(model.hidden ? ["nothing added to git"] : []).join(dot);
+  const parts = ["MEX", model.name, formatSeconds(model.ms), `$${model.costUsd.toFixed(model.costUsd === 0 ? 0 : 2)}`]
+    .concat(model.hidden ? ["nothing added to git"] : []);
   const lines: string[] = [];
   const add = (text: string, indent: number, style?: (text: string) => string) => {
     for (const line of wrap(text, mode.width, indent)) lines.push(style && mode.color ? style(line) : line);
   };
-  add(header, 0, paint.bold);
+  for (const line of wrapHeader(parts, dot, mode.width)) lines.push(mode.color ? paint.bold(line) : line);
   for (const finding of model.findings) {
     const mark = MARKS[finding.state][mode.ascii ? 1 : 0];
     const text = `${mark} ${finding.text}`;
@@ -104,6 +126,6 @@ export function renderScreen(model: ScreenModel, mode: ScreenMode): string[] {
     lines.push(style(mark) + wrapped[0]!.slice(mark.length));
     lines.push(...wrapped.slice(1));
   }
-  for (const note of model.notes) add(note, 0, paint.dim);
+  for (const note of model.notes) add(note, CONTINUATION_INDENT, paint.dim);
   return lines;
 }

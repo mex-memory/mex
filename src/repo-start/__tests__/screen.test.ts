@@ -65,6 +65,17 @@ describe("the first screen", () => {
     expect(lines[first + 1]!.startsWith("   ")).toBe(true);
   });
 
+  it("breaks the header only between its parts and indents what runs on, like notes", () => {
+    const lines = renderScreen(model, screenMode({ stdoutTTY: true, columns: 40, env: {}, platform: "darwin" }));
+    expect(lines.slice(0, 2)).toEqual(["MEX - novu - 2.4 s - $0", "    nothing added to git"]);
+    const note = lines.findIndex(line => line.startsWith("Hooks:"));
+    expect(lines.slice(note)).toEqual(["Hooks: Claude Code and Codex, in your", "    user settings."]);
+    const long = renderScreen({ ...model, name: "n".repeat(60) }, screenMode({ stdoutTTY: true, columns: 40, env: {}, platform: "darwin" }));
+    for (const line of long) expect(line.length).toBeLessThanOrEqual(40);
+    expect(long[0]).toBe("MEX");
+    expect(long[1]!.startsWith("    n")).toBe(true);
+  });
+
   it("wraps the rich form too and never exceeds the width with NO_COLOR at 80 columns", () => {
     const narrow = { ...model, findings: [{ state: "ok" as const, text: "x".repeat(200) }] };
     for (const line of renderScreen(narrow, screenMode({ stdoutTTY: true, columns: 80, env: { NO_COLOR: "1" }, platform: "darwin" }))) {
