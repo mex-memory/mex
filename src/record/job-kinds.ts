@@ -5,6 +5,7 @@ import "../telemetry/reporting.js";
 import "../file-index/job.js";
 import "../knowledge/native-job.js";
 import "../repo-start/history/job.js";
+import "../judge/job.js";
 
 /**
  * Built-in job kinds. Later tickets add theirs (learning, judging, graph builds) the

@@ -84,7 +84,7 @@ export interface JobKind<P = unknown, C = unknown> {
   sideEffects: "none" | "idempotent";
   runBatch(context: BatchContext<P, C>): Promise<BatchResult<C>> | BatchResult<C>;
   /** For a waiting job: true when it can continue. Default: continue on the next pass. */
-  ready?(job: JobRow): boolean;
+  ready?(job: JobRow, writer: RecordWriter): boolean;
 }
 
 const kinds = new Map<string, JobKind<any, any>>();
@@ -205,7 +205,7 @@ export function requeueReadyJobs(writer: RecordWriter): number {
   for (const job of waiting) {
     const kind = kinds.get(job.kind);
     let ready = false;
-    try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job) : true) : false; } catch { ready = false; }
+    try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job, writer) : true) : false; } catch { ready = false; }
     if (!ready) continue;
     inTransaction(writer.db, () => {
       const current = getJob(writer.db, job.id);

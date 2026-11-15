@@ -8,7 +8,7 @@ const SECRETS = [
   /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/u,
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u,
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/u,
-  /\b(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|authorization)\s*[:=]\s*["']?(?:Bearer\s+)?[A-Za-z0-9_+\/.=-]{8,}/iu,
+  /\b(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|authorization)["']?\s*[:=]\s*["']?(?:Bearer\s+)?[A-Za-z0-9_+\/.=-]{8,}/iu,
   /https?:\/\/[^\s/@:]+:[^\s/@]+@/iu,
 ];
 export function hasSecret(text: string): boolean { return SECRETS.some(pattern => pattern.test(text)); }
