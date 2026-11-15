@@ -4,7 +4,7 @@ import { z } from "zod";
 import { automaticWorkEnabled } from "../controls/index.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import { shortHash } from "../record/project.js";
-import { containedDirectory, readBoundedTextFile, readEntryFile } from "../knowledge/files.js";
+import { containedDirectory, readBoundedTextFile, readEntryFile, personalReadGuard } from "../knowledge/files.js";
 import { parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { repoFile } from "../knowledge/references.js";
 import { assertNoSecrets } from "../knowledge/gates.js";
@@ -68,6 +68,7 @@ function heartbeat(writer: RecordWriter, agent: string, session: string): bigint
   } catch { return undefined; }
 }
 function personalNotes(writer: RecordWriter, project: string): NoteInput[] {
+  const check = personalReadGuard(join(writer.location.home, "projects", project, "notes"));
   const dir = containedDirectory(writer.location.home, ["projects", project, "notes"]);
   if (!dir) return [];
   const names: string[] = [], handle = opendirSync(dir);
@@ -90,7 +91,7 @@ function personalNotes(writer: RecordWriter, project: string): NoteInput[] {
     notes.push({ id: entry.mex.id, path, hash: hash(raw), entry });
     if (notes.length === FILTER_LIMITS.notes) break;
   }
-  return notes;
+  check(); return notes;
 }
 /** Bounded repository context helps the same text-only call propose check targets. */
 function contextFiles(checkout: string, messages: Message[], notes: NoteInput[]): FilterInput["files"] {
