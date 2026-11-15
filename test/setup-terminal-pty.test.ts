@@ -79,7 +79,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     execFileSync("git", ["-c", "init.templateDir=", "init", "--quiet"], { cwd: f.project, stdio: "pipe", env: f.env });
     const result = await terminal(f, [], [], { columns: 80, rows: 24, command });
     expect(result.exitCode, result.output).toBe(0);
-    expect(result.output).toMatch(/MEX · project · \d+\.\d s · \$0 · nothing added to git/u);
+    expect(result.output).toContain("MEX · project · $0 · nothing added to git");
     // It waits for the file index and git history with a live line, then shows what they found.
     expect(result.output).toMatch(/✓ Indexed \d+ files?/u);
     expect(result.output).toContain("✓ Git history: no commits yet");
@@ -101,7 +101,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(result.output).toContain("Not a git repo. MEX can remember notes, rules and recipes for agents here,");
     expect(result.output.split("Turn on here? [y/n]").length).toBe(2);
     if (on) {
-      expect(result.output).toMatch(/MEX · project · \d+\.\d s · \$0/u);
+      expect(result.output).toContain("MEX · project · $0");
       expect(existsSync(join(f.project, ".mex", "project.json"))).toBe(true);
     } else {
       expect(result.output).toContain("MEX stays off here.");

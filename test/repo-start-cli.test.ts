@@ -63,7 +63,8 @@ describe("bare mex in a repository", () => {
     const result = f.run();
     expect(result.status, result.stderr).toBe(0);
     const lines = result.stdout.trimEnd().split("\n");
-    expect(lines[0]).toMatch(/^MEX - repo - \d+\.\d s - \$0 - nothing added to git$/u);
+    // The time is on the closing line only, once everything is done.
+    expect(lines[0]).toBe("MEX - repo - $0 - nothing added to git");
     expect(lines).toContain("ok No test or build commands found in config");
     // `mex` waits for the file index and git history, then says what they found.
     expect(lines).toContainEqual(expect.stringMatching(/^ok Indexed \d+ files?$/u));
@@ -129,6 +130,8 @@ describe("bare mex in a repository", () => {
     const first = f.run(["--no-wait"]);
     expect(first.status).toBe(0);
     expect(first.stdout).toContain(".. Git history and the file index: in the background (`mex jobs`)");
+    // Not waiting, the header keeps the time to the first screen.
+    expect(first.stdout).toMatch(/^MEX - repo - \d+\.\d s - \$0 - nothing added to git$/mu);
     expect(first.stdout).not.toContain("Done in");
     const projects = join(f.home, "projects");
     const facts = () => join(projects, readdirSync(projects)[0]!, "code-facts.json");
@@ -250,7 +253,7 @@ describe("bare mex in a repository", () => {
     const on = f.run(["--folder"], { cwd: plain });
     expect(on.status, on.stderr).toBe(0);
     const lines = on.stdout.trimEnd().split("\n");
-    expect(lines[0]).toMatch(/^MEX - notes - \d+\.\d s - \$0$/u);
+    expect(lines[0]).toBe("MEX - notes - $0");
     expect(lines).toContain("ok Test and build commands for this folder");
     expect(lines).toContainEqual(expect.stringMatching(/^ok Indexed \d+ files?$/u));
     expect(lines.join("\n")).not.toContain("Git history");

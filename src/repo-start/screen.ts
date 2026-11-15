@@ -110,10 +110,14 @@ function wrapHeader(parts: readonly string[], dot: string, width: number | undef
     : wrap(text.slice(CONTINUATION_INDENT), width - CONTINUATION_INDENT, 0).map(part => pad + part));
 }
 
-/** The header: "MEX · name · 0.4 s · $0 · nothing added to git". In colour, MEX and the name stand out. */
-export function renderHeader(model: Pick<ScreenModel, "name" | "ms" | "costUsd" | "hidden">, mode: ScreenMode): string[] {
+/**
+ * The header: "MEX · name · 0.4 s · $0 · nothing added to git". In colour, MEX and the name stand
+ * out. Without `ms` it leaves the time out: when `mex` goes on to finish its work, the closing
+ * "Done in" line gives the one time that matters.
+ */
+export function renderHeader(model: Pick<ScreenModel, "name" | "costUsd" | "hidden"> & { ms?: number }, mode: ScreenMode): string[] {
   const dot = mode.ascii ? " - " : " · ";
-  const parts = ["MEX", model.name, formatSeconds(model.ms), `$${model.costUsd.toFixed(model.costUsd === 0 ? 0 : 2)}`]
+  const parts = ["MEX", model.name, ...(model.ms === undefined ? [] : [formatSeconds(model.ms)]), `$${model.costUsd.toFixed(model.costUsd === 0 ? 0 : 2)}`]
     .concat(model.hidden ? ["nothing added to git"] : []);
   const lines = wrapHeader(parts, dot, mode.width);
   if (!mode.color) return lines;

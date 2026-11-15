@@ -298,7 +298,9 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   if (hooks.note) notes.push(hooks.note);
   notes.push(...hooks.notices);
   const name = basename(displayPath(checkout.path));
-  for (const line of renderHeader({ name, ms: elapsed(), costUsd: 0, hidden }, mode)) write(line);
+  // Waiting, the time goes on the closing "Done in" line; a header time would only be the first part.
+  const finishing = waiting && finishJobs.length > 0;
+  for (const line of renderHeader({ name, ...(finishing ? {} : { ms: elapsed() }), costUsd: 0, hidden }, mode)) write(line);
   if (mode.color) write("");
   for (const line of renderFindings(findings, mode)) write(line);
 
