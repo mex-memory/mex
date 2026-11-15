@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mex-memory/mex/native/capture"
 	"github.com/mex-memory/mex/native/delivery"
 	"github.com/mex-memory/mex/native/internal/adapter"
 	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
@@ -264,11 +265,21 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 
-	if ev.Kind == contract.SessionStart {
-		startBackground(h, recordDirectory)
+	if reply, handled := typedNote(ev, h); handled {
+		out, _ := profile.Render(ev, reply)
+		return out
+	}
+	// Capture runs before delivery: typed text is saved before the reply
+	// starts, whatever delivery does next.
+	if captureEnabled(recordDirectory, ev.ProjectID, global) {
+		capture.Hook(ev, capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env})
 	}
 	noteEdit(ev, recordDirectory)
 	freeStage(ev, h, recordDirectory)
+	judgeReady := false
+	if ev.Kind == contract.Stop {
+		judgeReady = requestJudge(ev, recordDirectory, nil)
+	}
 	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Trace: h.deliveryTrace, Scorer: h.scorer, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
@@ -290,6 +301,10 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		}
 		failed = true
 		reply = contract.Reply{}
+	}
+	// Session setup and the free verdict stage finish before Node discovers work.
+	if ev.Kind == contract.SessionStart || judgeReady {
+		startBackground(h, recordDirectory)
 	}
 	out, _ := profile.Render(ev, reply)
 	return out

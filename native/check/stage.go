@@ -63,6 +63,8 @@ type StageItem struct {
 	Kind    string `json:"kind"`
 	Status  string `json:"status"`
 	Verdict string `json:"verdict"`
+	// EntryHash binds a consumer to the exact entry this evaluator parsed.
+	EntryHash string `json:"entry_hash"`
 }
 
 // StageProblem is an entry file that couldn't be read as an entry.
@@ -130,7 +132,7 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		}
 		report.Entries++
 		valid = append(valid, l.Entry.ID)
-		item := StageItem{ID: l.Entry.ID, Level: l.Level, Path: l.Path, Kind: l.Entry.Kind, Status: l.Entry.Status}
+		item := StageItem{ID: l.Entry.ID, Level: l.Level, Path: l.Path, Kind: l.Entry.Kind, Status: l.Entry.Status, EntryHash: l.Hash}
 		keep := func() {
 			if v, ok := cached[l.Entry.ID]; ok {
 				item.Verdict = v.Verdict

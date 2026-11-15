@@ -53,7 +53,7 @@ func (h home) launcher() (launcher, bool) {
 // workWaiting reports whether jobs or index re-parses are waiting. Both markers
 // are plain files, so this costs two stats.
 func workWaiting(h home, recordDirectory string) bool {
-	return exists(filepath.Join(h.mex, "jobs-pending")) || (recordDirectory != "" && exists(filepath.Join(recordDirectory, "index-pending")))
+	return exists(filepath.Join(h.mex, "jobs-pending")) || (recordDirectory != "" && (exists(filepath.Join(recordDirectory, "index-pending")) || exists(filepath.Join(recordDirectory, "judge-pending"))))
 }
 
 // startBackground starts MEX's Node side detached when work is waiting.

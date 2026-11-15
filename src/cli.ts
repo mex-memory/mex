@@ -117,7 +117,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "what"
     || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief" || commandName === "upgrade"
     || commandName === "skills" || commandName === "install" || commandName === "uninstall"
-    || commandName === "off" || commandName === "on" || commandName === "capture";
+    || commandName === "off" || commandName === "on" || commandName === "capture" || commandName === "handoff";
 }
 
 async function runBrowserCommand(options: { port?: number; open: boolean; mode?: string; setup?: boolean }): Promise<void> {
@@ -388,6 +388,28 @@ setupCommand
       process.exitCode = await runSetupHandoff();
     } catch (error) {
       await reportSetupCommandError(error);
+    }
+  });
+
+// ── Handoff ──
+program
+  .command("handoff [line...]")
+  .description("Hand this branch to a teammate: write .mex/handoffs/<branch>.md with no AI; `mex handoff done` closes it")
+  .option("--to <name>", "Who it is for")
+  .option("--yes", "Write without asking after the preview")
+  .option("--dry-run", "Show the preview only")
+  .option("--branch <name>", "With done: the handoff's branch")
+  .option("--json", "Print the result as JSON")
+  .addHelpText("after", "\nThe handoff holds the branch, uncommitted file names, your last ask, the last failing\ncommand and one optional line of yours. It passes a secret scan and a check for names,\nhosts and emails the repo doesn't already contain. You commit it; MEX never pushes.\nThe next agent session on the branch gets it once. It closes when the branch merges,\nat the receiver's first commit, or with `mex handoff done`.\n")
+  .action(async (words: string[], opts: { to?: string; yes?: boolean; dryRun?: boolean; branch?: string; json?: boolean }) => {
+    try {
+      const { runHandoff } = await import("./knowledge/handoff-cli.js");
+      process.exitCode = await runHandoff(words, opts);
+    } catch (error) {
+      const err = error as { code?: string; message: string };
+      if (opts.json) console.log(JSON.stringify({ ok: false, error: { code: err.code ?? "HANDOFF_FAILED", message: err.message } }));
+      else console.error(err.message);
+      process.exitCode = 1;
     }
   });
 
@@ -1471,7 +1493,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 function buildCompletion(shell: string): string {
   const commands = [
     "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget",
-    "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief", "upgrade",
+    "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief", "upgrade", "handoff",
     "telemetry", "config", "feedback", "hub",
   ];
   if (shell === "bash") {

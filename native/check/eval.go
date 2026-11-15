@@ -154,6 +154,11 @@ func (ev *Evaluator) floor(c Check, inputs map[string]string) []string {
 			changed = append(changed, path)
 		}
 	}
+	// An authored check may omit a target from its recorded floor. The result
+	// still names every explicit target read, without changing floor semantics.
+	if file := str(c.Target, "file"); file != "" {
+		inputs[file] = inputState(ev.files.read(file))
+	}
 	sort.Strings(changed)
 	return changed
 }
