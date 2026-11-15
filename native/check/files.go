@@ -39,7 +39,12 @@ func openFiles(checkout string) (*files, error) {
 	return &files{root: root, cache: map[string]fileRead{}}, nil
 }
 
-func (f *files) Close() error { return f.root.Close() }
+func (f *files) Close() error {
+	if f.root == nil {
+		return nil
+	}
+	return f.root.Close()
+}
 
 // safeRelative accepts the entry codec's repository-relative file paths.
 func safeRelative(path string) bool {
@@ -67,6 +72,9 @@ func (f *files) read(path string) fileRead {
 
 func (f *files) load(path string) fileRead {
 	if !safeRelative(path) {
+		return fileRead{err: errUnreadable}
+	}
+	if f.root == nil {
 		return fileRead{err: errUnreadable}
 	}
 	file, err := f.root.Open(path)

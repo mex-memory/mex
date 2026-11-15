@@ -41,7 +41,7 @@ func startBlock(h *record.Hooks, ev contract.Event, env Environment) (string, er
 	req.OnceEntry = startMarker
 	req.Candidates = []record.DeliveryCandidate{{EntryID: startMarker, Moment: "start-brief", Form: "one-line", Action: "given", Tokens: brief.TokenBound(brief.Priority) + 32, ContentHash: contentHash(brief.Priority)}}
 	for _, item := range result.Items {
-		req.Candidates = append(req.Candidates, record.DeliveryCandidate{EntryID: item.ID, Moment: "start-brief", Form: "one-line", Action: "given", Tokens: item.Tokens, ContentHash: contentHash(item.Hash + "\n" + item.Line)})
+		req.Candidates = append(req.Candidates, record.DeliveryCandidate{EntryID: item.ID, EntryHash: item.Hash, Moment: "start-brief", Form: "one-line", Action: "given", Tokens: item.Tokens, ContentHash: contentHash(item.Hash + "\n" + item.Line)})
 	}
 	res, err := h.CheckAndMark(req)
 	if err != nil {

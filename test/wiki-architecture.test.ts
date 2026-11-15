@@ -814,6 +814,7 @@ describe("no unscoped scaffold writes", () => {
       "src/file-index/pending.ts": "removes and restores only the index-pending marker in the machine record directory; never a repo file",
       "src/judge/pending.ts": "consumes and restores bounded judge requests inside a checked machine-record directory after verifying checkout ownership; never an entry or repo file",
       "src/judge/notices.ts": "atomically publishes only bounded notice-ID hints inside the contained machine-record judge-notices directory; never entry text or a repository file",
+      "src/judge/advice.ts": "atomically publishes only bounded advisory-ID hints inside the contained machine-record judge-advice directory; stores advisory text in record.db and never changes repository files",
       "src/file-index/shifts.ts": "writes and removes only line-shift files under the machine record's project index folder; never a repo file",
       "src/file-index/store.ts": "writes only immutable index snapshots, their pointers, patterns.json and checkout locators under the machine record directory, and removes snapshots nothing points at; never a repo file",
       "src/record/background.ts": "writes only the background process's own log, the jobs-pending marker and the lease row in the machine record home; never a repo file",
