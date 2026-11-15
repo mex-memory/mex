@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mex-memory/mex/native/internal/contract"
 	localrecord "github.com/mex-memory/mex/native/record"
@@ -169,4 +170,8 @@ func changeSessionPause(ev contract.Event, directory string, paused bool) bool {
 	defer hooks.Close()
 	err = hooks.SetSessionPaused(localrecord.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: ev.ProjectID, Checkout: ev.Checkout, Paused: paused}, func(value bool) error { return publishPause(file, value) })
 	return err == nil
+}
+
+func whatPrompt(ev contract.Event) bool {
+	return ev.Kind == contract.Prompt && ev.AgentID == "" && ev.Prompt != nil && ev.Prompt.Typed && ev.SessionID != "" && strings.EqualFold(strings.TrimSpace(ev.Prompt.Text), "mex what")
 }

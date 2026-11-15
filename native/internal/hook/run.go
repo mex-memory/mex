@@ -20,6 +20,7 @@ import (
 	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
 	_ "github.com/mex-memory/mex/native/internal/adapter/codex"  // registers the profile
 	"github.com/mex-memory/mex/native/internal/contract"
+	localrecord "github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
@@ -70,6 +71,14 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return checkRun(stdin, stdout)
 		case "--delivery-probe":
 			return deliveryProbe(stdin, stdout)
+		case "--delivery-replay":
+			return deliveryReplay(stdin, stdout, getenv)
+		case "--pair-study":
+			return pairStudy(stdin, stdout)
+		case "--probe":
+			return explicitProbe(stdin, stdout, getenv)
+		case "--recall":
+			return recallRank(stdin, stdout)
 		}
 	}
 
@@ -101,6 +110,12 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 	}
 	agent, nativeEvent := args[0], args[1]
 	h := homeFrom(getenv)
+	if len(args) > 2 && args[2] == "--delivery-trace" {
+		h.deliveryError = func(err error) { _, _ = fmt.Fprintln(stderr, "delivery failed:", err) }
+		h.deliveryTrace = func(name string, elapsed time.Duration) {
+			_, _ = fmt.Fprintf(stderr, "delivery phase %s %d\n", name, elapsed.Nanoseconds())
+		}
+	}
 	if dir := getenv("MEX_HOOK_RECORD"); dir != "" && ok {
 		h.capture = func(ev contract.Event, directory string, global controls) {
 			if captureEnabled(directory, ev.ProjectID, global) {
@@ -163,7 +178,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 	sessionStart = ev.Kind == contract.SessionStart
-	if _, control := sessionControl(ev); global.Off && !control {
+	if _, control := sessionControl(ev); global.Off && !control && !whatPrompt(ev) {
 		return profile.EmptyReply(nativeEvent)
 	}
 	if h.orphaned(sessionStart) {
@@ -183,6 +198,24 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	path, isFile := eventPath(ev)
 	checkout, state := findCheckout(recordDirectory, path, isFile, now)
 	ev.ProjectID, ev.Checkout = checkout.ProjectID, checkout.Root
+	if whatPrompt(ev) && state != unregistered {
+		observeAllowed = false
+		support, _ := profile.Capabilities().Support(contract.Prompt)
+		if !support.ConsumePrompt {
+			return profile.EmptyReply(nativeEvent)
+		}
+		for _, name := range []string{"hooks.db", "hooks.db-wal", "hooks.db-shm"} {
+			if !safeTelemetryFile(filepath.Join(recordDirectory, name)) {
+				return profile.EmptyReply(nativeEvent)
+			}
+		}
+		summary, err := localrecord.ReadWhat(filepath.Join(recordDirectory, "hooks.db"), ev.SessionID, ev.ProjectID, ev.Checkout)
+		if err != nil {
+			return profile.EmptyReply(nativeEvent)
+		}
+		out, _ := profile.Render(ev, contract.Reply{ConsumePrompt: true, PersonLine: summary.Line()})
+		return out
+	}
 	if paused, recognized := sessionControl(ev); recognized && state != unregistered {
 		observeAllowed = false
 		support, _ := profile.Capabilities().Support(contract.Prompt)
@@ -223,7 +256,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	}
 	noteEdit(ev, recordDirectory)
 	freeStage(ev, h, recordDirectory)
-	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Scorer: h.scorer, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Trace: h.deliveryTrace, Scorer: h.scorer, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)
@@ -239,6 +272,9 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return c.ProjectID, c.Root
 	}})
 	if deliveryErr != nil {
+		if h.deliveryError != nil {
+			h.deliveryError(deliveryErr)
+		}
 		failed = true
 		reply = contract.Reply{}
 	}

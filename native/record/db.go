@@ -17,7 +17,7 @@ import (
 	"modernc.org/sqlite"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 6
 
 // Node's additive model-admission migration does not change the tables read here.
 const RecordSchemaVersion = 4
@@ -172,6 +172,7 @@ func openCounterReader(path string) (*sql.DB, error) {
 }
 
 type Hooks struct {
+	Trace         func(string, time.Duration) // explicit diagnostics only
 	db            *sql.DB
 	budget        budget
 	counterOnly   bool
@@ -232,7 +233,7 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 	}
 	if err == nil && version < SchemaVersion {
 		var steps []migration
-		for i, name := range []string{"0001_init.sql", "0002_delivery.sql", "0003_followups.sql"} {
+		for i, name := range []string{"0001_init.sql", "0002_delivery.sql", "0003_followups.sql", "0004_rendering.sql", "0005_probes.sql", "0006_intent.sql"} {
 			var data []byte
 			data, err = schemas.ReadFile("schema/hooks/" + name)
 			if err != nil {

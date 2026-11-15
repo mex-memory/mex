@@ -18,11 +18,13 @@ import (
 // home is where the shim looks for the person's files. Tests point it at a
 // temp folder through the environment.
 type home struct {
-	scorer string // MEX_DELIVERY_SCORER override; no I/O
-	user   string // the person's home folder
-	mex    string // MEX's folder: <MEX_HOME>/.mex, else ~/.mex (the same rule as Node's mexHomeDir)
-	codex  string // Codex's folder: CODEX_HOME, else ~/.codex
-	claude string // Claude's folder: CLAUDE_CONFIG_DIR, else ~/.claude
+	deliveryError func(error) // explicit diagnostic mode only; never model context
+	deliveryTrace func(string, time.Duration)
+	scorer        string // MEX_DELIVERY_SCORER override; no I/O
+	user          string // the person's home folder
+	mex           string // MEX's folder: <MEX_HOME>/.mex, else ~/.mex (the same rule as Node's mexHomeDir)
+	codex         string // Codex's folder: CODEX_HOME, else ~/.codex
+	claude        string // Claude's folder: CLAUDE_CONFIG_DIR, else ~/.claude
 	// Resolves at most once per invocation, after telemetry policy checks, so
 	// checkout lookup and counters share the validated location.
 	usageLocation func() (place.Location, bool)

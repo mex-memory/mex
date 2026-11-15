@@ -86,6 +86,7 @@ func TestFCFSUsesBudgetWithoutExactExemptions(t *testing.T) {
 			}
 			req := baseRequest(f.event(contract.SessionStart), f.env(), f.project, f.root)
 			req.Budget = 1
+			req.Intent = "working"
 			if _, err = h.CheckAndMark(req); err != nil {
 				t.Fatal(err)
 			}

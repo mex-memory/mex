@@ -42,6 +42,7 @@ type toolView struct {
 	path     string // absolute, forward slashes
 	rel      string // relative to the checkout, forward slashes
 	command  string
+	removed  string // bounded old edit text
 	added    string // text the call adds: edit new, write content, patch additions
 	created  bool
 	failed   bool
@@ -168,6 +169,7 @@ func views(ev contract.Event, resolve Resolver) []toolView {
 				v.path = slash(f.Path)
 				var b strings.Builder
 				for _, h := range f.Hunks {
+					v.removed += boundedText(h.Old, 32768-len(v.removed))
 					b.WriteString(h.New)
 					b.WriteByte('\n')
 				}
@@ -185,6 +187,9 @@ func views(ev contract.Event, resolve Resolver) []toolView {
 			base.path = slash(t.Input.Path)
 			switch t.Name {
 			case contract.ToolEdit:
+				if t.Input.Old != nil {
+					base.removed = boundedText(*t.Input.Old, 32768)
+				}
 				if t.Input.New != nil {
 					base.added = *t.Input.New
 				}
@@ -422,7 +427,7 @@ func promptMoments(text string, snap *entries.Snapshot) []candidate {
 		case "decision":
 			for _, t := range triggers(it, "rejected") {
 				if len(t.Pattern) >= 3 && wordIn(text, t.Pattern) {
-					out = append(out, candidate{item: it, moment: momentPrompt, tier: tierPrompt})
+					out = append(out, candidate{item: it, moment: momentPrompt, tier: tierPattern, exempt: true})
 					break
 				}
 			}
@@ -446,6 +451,17 @@ func promptMoments(text string, snap *entries.Snapshot) []candidate {
 				}
 			}
 		}
+	}
+	// A unique matching build intent retains the original recipe moment.
+	// Ambiguous intents go through the lexical gate instead of sending every recipe.
+	var recipeIndexes []int
+	for i, c := range out {
+		if c.item.Entry.Kind == "recipe" {
+			recipeIndexes = append(recipeIndexes, i)
+		}
+	}
+	if len(recipeIndexes) == 1 {
+		out[recipeIndexes[0]].tier = tierCommand
 	}
 	return out
 }

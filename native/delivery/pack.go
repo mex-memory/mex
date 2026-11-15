@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/record"
 )
 
@@ -46,6 +47,7 @@ type planned struct {
 	tokens     int
 	correction bool
 	heldBack   bool
+	parent     string
 }
 
 // pack orders and sizes one reply: failure fixes first, then the strongest
@@ -60,7 +62,8 @@ func pack(items []shaped, companions func(id string) *shaped, scorers ...Scorer)
 	sort.SliceStable(items, func(i, j int) bool { return scorer.Less(items[i], items[j]) })
 	var out []planned
 	seen := map[string]bool{}
-	used, reserved, fulls := 0, 0, 0
+	used, reserved := 0, 0
+	markerPaid := false
 	for _, s := range items {
 		id := s.item.Entry.ID
 		if seen[id] {
@@ -68,7 +71,19 @@ func pack(items []shaped, companions func(id string) *shaped, scorers ...Scorer)
 		}
 		seen[id] = true
 		p := planned{shaped: s}
-		if s.action == "withheld" {
+		if s.action == "withheld" || s.action == "held-back" {
+			out = append(out, p)
+			continue
+		}
+		duplicate := false
+		for _, prior := range out {
+			if !prior.heldBack && prior.action != "withheld" && itemSimilar(s.item, prior.item) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			p.action, p.detail = "withheld", "similar"
 			out = append(out, p)
 			continue
 		}
@@ -76,15 +91,17 @@ func pack(items []shaped, companions func(id string) *shaped, scorers ...Scorer)
 		if s.reserve {
 			limit, spent = reservedLane, &reserved
 		}
-		if s.fullTok > 0 && s.fullTok <= limit-*spent && (fulls == 0 || s.reserve || s.action == "replaced") {
-			p.form, p.text, p.tokens = "full", s.full, s.fullTok
-			if !s.reserve && s.action != "replaced" {
-				fulls++
-			}
-		} else if s.lineTok > 0 && s.lineTok <= limit-*spent {
-			p.form, p.text, p.tokens = "one-line", s.oneLine, s.lineTok
+		overhead := entries.EstimateTokens(" (" + id + ")")
+		if !markerPaid {
+			overhead += 8
+		}
+		fullCost, lineCost := s.fullTok+overhead, s.lineTok+overhead
+		if s.fullTok > 0 && fullCost <= limit-*spent && (*spent+fullCost <= momentTarget || *spent == 0 || s.reserve || s.action == "replaced") {
+			p.form, p.text, p.tokens = "full", s.full, fullCost
+		} else if s.lineTok > 0 && lineCost <= limit-*spent {
+			p.form, p.text, p.tokens = "one-line", s.oneLine, lineCost
 		} else {
-			p.form, p.tokens, p.heldBack = "one-line", s.lineTok, true
+			p.form, p.tokens, p.heldBack = "one-line", lineCost, true
 			out = append(out, p)
 			continue
 		}
@@ -92,6 +109,7 @@ func pack(items []shaped, companions func(id string) *shaped, scorers ...Scorer)
 			p.form = "pointer"
 		}
 		*spent += p.tokens
+		markerPaid = true
 		out = append(out, p)
 	}
 	// Companions travel with what was chosen, in one-line form.
@@ -110,8 +128,8 @@ func pack(items []shaped, companions func(id string) *shaped, scorers ...Scorer)
 					continue
 				}
 				seen[cid] = true
-				c.reserve = false
-				out = append(out, planned{shaped: *c, form: "one-line", text: c.oneLine, tokens: c.lineTok})
+				c.reserve, c.exempt = out[i].reserve, out[i].exempt
+				out = append(out, planned{shaped: *c, form: "one-line", text: c.oneLine, tokens: c.lineTok + entries.EstimateTokens(" ("+cid+")"), parent: out[i].item.Entry.ID})
 			}
 		}
 	}
@@ -128,6 +146,8 @@ func requestCandidates(plan []planned) []record.DeliveryCandidate {
 	var out []record.DeliveryCandidate
 	for _, p := range plan {
 		c := record.DeliveryCandidate{EntryID: p.item.Entry.ID, Moment: p.moment, Form: p.form, Tokens: p.tokens, Reserved: p.reserve, Exempt: p.exempt, Resend: p.resend, ContentHash: contentHash(p.item.Hash + "\n" + p.text)}
+		c.Detail, c.Parent = p.detail, p.parent
+		c.Title, c.Kind, c.Level = p.item.Entry.OneLine, p.item.Entry.Kind, p.item.Level
 		switch {
 		case p.correction:
 			c.Correction, c.Moment, c.Form = true, "correction", "one-line"

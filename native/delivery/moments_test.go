@@ -12,7 +12,6 @@ import (
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/internal/contract"
-	"github.com/mex-memory/mex/native/record"
 )
 
 // fixture is one checkout with MEX on, its record directory and entries.
@@ -125,12 +124,36 @@ func (f *fixture) file(rel, content string) string {
 
 func (f *fixture) verdict(id, v string) {
 	f.t.Helper()
-	h, err := record.OpenHooks(record.Location{Directory: f.dir, Hooks: filepath.Join(f.dir, "hooks.db")})
+	// Fixture preparation is outside hook deadlines. Verdict-table tests check
+	// the controller's truth table; production lock/deadline tests live in record.
+	db, err := sql.Open("sqlite", filepath.Join(f.dir, "hooks.db"))
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	defer h.Close()
-	if err := h.PutVerdicts(f.project, f.root, []record.Verdict{{EntryID: id, Verdict: v, InputsHash: "x", CheckedAt: "2026-11-14T00:00:00Z"}}); err != nil {
+	defer db.Close()
+	if _, err = db.Exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON"); err != nil {
+		f.t.Fatal(err)
+	}
+	var version int
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		f.t.Fatal(err)
+	}
+	for i, name := range []string{
+		"0001_init.sql", "0002_delivery.sql", "0003_followups.sql",
+		"0004_rendering.sql", "0005_probes.sql", "0006_intent.sql",
+	} {
+		if version >= i+1 {
+			continue
+		}
+		schema, err := os.ReadFile(filepath.Join("..", "record", "schema", "hooks", name))
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		if _, err = db.Exec("BEGIN IMMEDIATE;" + string(schema) + fmt.Sprintf("; PRAGMA user_version=%d; COMMIT;", i+1)); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	if _, err = db.Exec("INSERT INTO verdicts VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,checkout,entry_id) DO UPDATE SET verdict=excluded.verdict,inputs_hash=excluded.inputs_hash,checked_at=excluded.checked_at", f.project, f.root, id, v, "x", "2026-11-14T00:00:00Z"); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -253,6 +276,7 @@ func TestClaudePostToolUseIsSilentBatchDelivers(t *testing.T) {
 
 func TestRuleNeedsRiskEvidence(t *testing.T) {
 	f := newFixture(t)
+	f.setIntent("working")
 	f.entry(spec{id: "mx_rulelg", kind: "rule", scope: "apps/api/**", oneLine: "Log through src/logger, not console.log.", when: []string{"anti:console.log("}})
 	f.entry(spec{id: "mx_rulenp", kind: "rule", scope: "apps/api/**", oneLine: "A rule with no pattern waits."})
 	clean := f.file("apps/api/a.ts", "logger.info(1)\n")
@@ -540,14 +564,14 @@ func TestBudgetRisingBarAndExemptions(t *testing.T) {
 	}
 }
 
-func TestOneMomentFullThenOneLine(t *testing.T) {
+func TestOneMomentFullFormsUnderTarget(t *testing.T) {
 	f := newFixture(t)
 	f.entry(spec{id: "mx_aaaaaa", kind: "pitfall", scope: "src/x.ts", oneLine: "First, file-specific.", text: "First, file-specific, with its reason."})
 	f.entry(spec{id: "mx_bbbbbb", kind: "pitfall", scope: "src/**", oneLine: "Second, folder-wide.", text: "Second, folder-wide, with its long reason."})
 	ctx := f.send(f.event(contract.PostToolBatch, read(f.file("src/x.ts", "x"), "x")))
-	mustHave(t, ctx, "with its reason", "Second, folder-wide.")
-	if strings.Contains(ctx, "long reason") {
-		t.Fatal("second item not in one-line form")
+	mustHave(t, ctx, "with its reason", "Second, folder-wide,")
+	if !strings.Contains(ctx, "long reason") {
+		t.Fatal("second item lost full form under target")
 	}
 	if strings.Index(ctx, "First") > strings.Index(ctx, "Second") {
 		t.Fatal("file-specific item not first")
@@ -607,6 +631,7 @@ func TestHintNeedsMirror(t *testing.T) {
 
 func TestNoWarningsOrClockTimesInText(t *testing.T) {
 	f := newFixture(t)
+	f.setIntent("working")
 	f.file("package.json", `{"scripts":{"build":"tsc"}}`)
 	f.entry(spec{id: "mx_pitfal", kind: "pitfall", scope: "**", oneLine: "Pitfall."})
 	f.entry(spec{id: "mx_recipe", kind: "recipe", oneLine: "Build: `pnpm build`.", checks: []string{commandCheck("pnpm build", "build")}})

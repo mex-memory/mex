@@ -159,6 +159,21 @@ func prepareTimingHooks(t *testing.T, location localrecord.Location) *sql.DB {
 		t.Fatal(err)
 	}
 	schema = append(schema, third...)
+	fourth, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0004_rendering.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema = append(schema, fourth...)
+	fifth, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0005_probes.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema = append(schema, fifth...)
+	sixth, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0006_intent.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema = append(schema, sixth...)
 	// Fixture preparation is outside the real hook's timed interval and limits.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -326,6 +341,7 @@ func measureNoOp(t *testing.T, counters bool) {
 		callOnce(t, floor, mexHome)
 	}
 	before := 0
+	beforePending := 0
 	var observer *sql.DB
 	if counters {
 		var err error
@@ -339,6 +355,7 @@ func measureNoOp(t *testing.T, counters bool) {
 		// adds unrelated filesystem/sidecar work. QueryRow.Scan completes each
 		// read transaction before the next hook starts; no read lock is held.
 		before = readHookCount(t, observer)
+		beforePending = pendingHookCalls(t, location)
 	}
 	const runs = 200
 	// Measure actual captured calls. A write that misses its production
@@ -362,7 +379,7 @@ func measureNoOp(t *testing.T, counters bool) {
 			if count == last {
 				continue // deferred to a later call
 			}
-			if count < last || count-before > attempts {
+			if count < last || count-before > attempts+beforePending {
 				t.Fatalf("counter count changed unexpectedly: before=%d after=%d attempts=%d", last, count, attempts)
 			}
 			last = count
@@ -375,7 +392,7 @@ func measureNoOp(t *testing.T, counters bool) {
 	}
 	if counters {
 		// No call is lost: every attempt is either counted or still pending.
-		if count, pending := readHookCount(t, observer)-before, pendingHookCalls(t, location); count+pending != attempts {
+		if count, pending := readHookCount(t, observer)-before, pendingHookCalls(t, location); count+pending != attempts+beforePending {
 			t.Fatalf("counter calls: counted=%d pending=%d attempts=%d", count, pending, attempts)
 		}
 		t.Logf("counter capture samples: recorded=%d attempted=%d skipped=%d limit=%d", runs, attempts, attempts-runs, limit)

@@ -76,6 +76,7 @@ func nativeFiles(agent, checkout, rel string, exists func(string) bool) []string
 type coverage struct {
 	files map[string]bool // rule files loaded, relative to the checkout
 	ids   map[string]bool // entry ids marked inside them
+	texts []string
 }
 
 var markerRE = lazy(`<!--\s*mex:(mx_[a-z0-9]{6,64})\s*-->`)
@@ -99,11 +100,16 @@ func loadCoverage(agent, checkout, rel string) coverage {
 			}
 		}
 	}
+	total := 0
 	for _, f := range files {
 		c.files[f] = true
 		data, err := readBounded(filepath.Join(checkout, filepath.FromSlash(f)), maxRuleFileBytes)
 		if err != nil {
 			continue
+		}
+		total += len(data)
+		if total <= 1<<20 {
+			c.texts = append(c.texts, string(data))
 		}
 		for _, m := range markerRE().FindAllSubmatch(data, 512) {
 			c.ids[string(m[1])] = true

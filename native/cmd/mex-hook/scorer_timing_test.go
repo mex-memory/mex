@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,10 @@ func TestScorerDeliveryTiming(t *testing.T) {
 	t.Setenv("MEX_TELEMETRY", "0")
 	t.Setenv("MEX_OFF", "")
 	t.Setenv("MEX_BACKGROUND", "")
+	base := os.Getenv("MEX_DELIVERY_BASE_BINARY")
+	if base == "" {
+		t.Skip("interleaved base binary required")
+	}
 	shim, floor := buildBinaries(t)
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "home")
@@ -31,6 +36,23 @@ func TestScorerDeliveryTiming(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := source["cwd"].(string)
+	baseHome := filepath.Join(tmp, "base-home")
+	os.MkdirAll(filepath.Join(baseHome, ".mex", "hook-checkouts"), 0700)
+	for _, sub := range []string{"hook-checkouts", ""} {
+		children, _ := os.ReadDir(filepath.Join(home, ".mex", sub))
+		for _, child := range children {
+			if child.IsDir() {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(home, ".mex", sub, child.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(filepath.Join(baseHome, ".mex", sub, child.Name()), b, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	learned := filepath.Join(repo, ".mex", "learned")
 	if err := os.MkdirAll(learned, 0700); err != nil {
 		t.Fatal(err)
@@ -62,32 +84,57 @@ func TestScorerDeliveryTiming(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command(bin, "claude-code", "PostToolBatch")
-		cmd.Env = append(os.Environ(), "MEX_HOME="+home, "MEX_DELIVERY_SCORER="+scorer)
+		cmd := exec.Command(bin, "claude-code", "PostToolBatch", "--delivery-trace")
+		activeHome := home
+		if bin == base {
+			activeHome = baseHome
+		}
+		cmd.Env = append(os.Environ(), "MEX_HOME="+activeHome, "MEX_DELIVERY_SCORER="+scorer)
 		cmd.Stdin = bytes.NewReader(body)
+		var diagnostics bytes.Buffer
+		cmd.Stderr = &diagnostics
 		start := time.Now()
 		out, err := cmd.Output()
 		elapsed := time.Since(start)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if bin == shim && !strings.Contains(string(out), "Keep the shared pool open because") {
-			t.Fatalf("%s session=%s: %s", scorer, session, out)
+		if (bin == shim || bin == base) && !strings.Contains(string(out), "Keep the shared pool open because") {
+			t.Errorf("%s binary=%s session=%s: %s", scorer, filepath.Base(bin), session, append(out, diagnostics.Bytes()...))
 		}
 		return elapsed
 	}
-	const runs = 200
+	runs := 200
+	if raw := os.Getenv("MEX_DELIVERY_MEASURE_RUNS"); raw != "" {
+		var err error
+		runs, err = strconv.Atoi(raw)
+		if err != nil || runs < 200 || runs > 5000 {
+			t.Fatal("measurement runs must be between 200 and 5000")
+		}
+	}
 	for _, scorer := range []string{"tiers", "bm25", "fcfs", "risk"} {
 		if selected := os.Getenv("MEX_DELIVERY_MEASURE_SCORER"); selected != "" && selected != scorer {
 			continue
 		}
 		for i := 0; i < 5; i++ {
 			invoke(shim, scorer, fmt.Sprintf("warm-%s-%d", scorer, i))
+			invoke(base, scorer, fmt.Sprintf("warm-%s-%d", scorer, i))
 		}
-		var bare, delivery []time.Duration
+		var bare, delivery, baseline, delta []time.Duration
 		for i := 0; i < runs; i++ {
 			bare = append(bare, invoke(floor, scorer, "bare"))
-			delivery = append(delivery, invoke(shim, scorer, fmt.Sprintf("measure-%s-%d", scorer, i)))
+			var b, d time.Duration
+			session := fmt.Sprintf("measure-%s-%d", scorer, i)
+			if i%2 == 0 {
+				b = invoke(base, scorer, session)
+				d = invoke(shim, scorer, session)
+			} else {
+				d = invoke(shim, scorer, session)
+				b = invoke(base, scorer, session)
+			}
+			baseline = append(baseline, b)
+			delivery = append(delivery, d)
+			delta = append(delta, d-b)
 		}
 		db, err := sql.Open("sqlite", filepath.Join(home, ".mex", "hooks.db"))
 		if err != nil {
@@ -97,9 +144,11 @@ func TestScorerDeliveryTiming(t *testing.T) {
 		err = db.QueryRow("SELECT count(*),min(tokens),max(tokens),sum(tokens) FROM deliveries WHERE action='given' AND session_id LIKE ?", "measure-"+scorer+"-%").Scan(&count, &minTokens, &maxTokens, &sum)
 		db.Close()
 		if err != nil || count != runs {
-			t.Fatal(count, err)
+			t.Errorf("receipts=%d want=%d error=%v", count, runs, err)
 		}
 		b, d := summarize(bare), summarize(delivery)
+		baseStats, diff := summarize(baseline), summarize(delta)
+		t.Logf("scorer=%s entries=500 paired runs=%d base p50=%s p95=%s; current p50=%s p95=%s; paired delta p50=%s p95=%s (ms)", scorer, runs, ms(baseStats.p50), ms(baseStats.p95), ms(d.p50), ms(d.p95), ms(diff.p50), ms(diff.p95))
 		t.Logf("scorer=%s entries=500 fresh-delivery runs=%d: bare p50=%s p95=%s; delivery p50=%s p95=%s (ms); receipt tokens min=%d max=%d mean=%.2f (estimated tokens, counted receipts=%d)", scorer, runs, ms(b.p50), ms(b.p95), ms(d.p50), ms(d.p95), minTokens, maxTokens, float64(sum)/float64(count), count)
 	}
 }

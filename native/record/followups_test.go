@@ -45,7 +45,7 @@ func TestFollowupMigrationFromTwoPreservesDataAndChecks(t *testing.T) {
 	}
 	defer h.Close()
 	version, err := schemaVersion(context.Background(), h.db)
-	if err != nil || version != 3 {
+	if err != nil || version != SchemaVersion {
 		t.Fatal(version, err)
 	}
 	var n int
