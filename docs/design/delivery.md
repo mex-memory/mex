@@ -7,7 +7,9 @@ read-risk rules, edits (including rejected alternatives and file creation),
 command recipes, failure fixes, prompts, start briefs and recovery keep their
 existing `on` default. Recovery includes subagent briefs and corrections.
 New rescue, history, card and working-set start-brief surfaces default to
-`trial`. Unknown
+`trial`. Handoff and "where we left off" blocks have the `carry` surface, on.
+A delivery path the ledger doesn't know yet maps to `unknown`, which also
+stays on: the ledger measures surfaces and never silences one by omission. Unknown
 historical moments migrate to `unknown`.
 
 A `trial` surface is shadow until 30 of its shadow firings have settled, so its
@@ -143,13 +145,15 @@ Seeds, in order, at most 30: uncommitted and staged files (`git status`),
 files the previous session on this checkout edited (`epoch_files`) and files
 committed since it started, then the branch's diff against the default branch
 (`origin/HEAD`, else `main` or `master`). One hop, at most 100 files: relative
-imports in both directions from the file index, then co-change partners from
-the last 2,000 non-merge commits. A co-change pair's weight sums
-`exp(-commits ago / 500)` over commits of at most 200 files; it counts only
-with at most 25 partners per file and at least two shared commits of at most
-30 files. Branch-name words are split on `/ - _ .` and case changes, at least
-three letters, generic words dropped. Git runs without optional locks, so the
-job never rewrites the person's index.
+imports in both directions from the file index, then each seed's co-change
+partners, at most 25, most supported first. Co-change comes from the
+project's change-together facts (`code-facts.json`, the code-facts job's one
+walk over the last 2,000 non-merge commits, re-read when HEAD moves), so the
+working set reads no history of its own and history is walked once. That
+walk also writes the fix table for the bug-history notice. Branch-name words
+are split on `/ - _ .` and case changes, at least three letters, generic
+words dropped. Git runs without optional locks, so the job never rewrites the
+person's index.
 
 An entry's relevance adds up per link and is capped at 1: a scope naming a
 seed file 0.6, one naming a hop file 0.3, a directory scope at least two
@@ -221,8 +225,8 @@ per-entry verdicts, and graph cards (graph-03) follow the same rule.
 
 ### Bug-history notice
 
-When the agent edits a file with at least three fix commits in the last 2,000
-commits, the last within 180 days, one line says "History: <file> was fixed N
+When the agent edits a file with at least three fix commits in the code-facts
+walk (the last 2,000 commits), the last within 180 days, one line says "History: <file> was fixed N
 times, the last <age>." with the age in whole days, weeks or months. At most
 once per file and three per session, both checked under the record's write
 lock (`SessionOnce`, `SessionMax` on a candidate). The fix history is written

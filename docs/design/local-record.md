@@ -58,11 +58,11 @@ count shadow receipts and are checked under the write lock.
 Node writes, Go reads, all under `projects/<id>/working-set/`:
 
 - `<checkout key>.json`: version 1, `head`, `branch`, `defaultBranch`, `made`
-  (ISO), `seeds`, `hops`, `words`, `fixes` (path → [count, last Unix seconds]).
+  (ISO), `seeds`, `hops`, `words`.
   At most 2 MiB; the hook rejects other versions.
 - `<checkout key>.fixes`: "MXF1" then 16-byte little-endian records (FNV-1a 64
   of the checkout-relative path, fix count u32, last fix u32 Unix seconds),
-  sorted by key.
+  sorted by key. Written by the code-facts job from its history walk.
 
 Requests are `working-set-requests/<project>~<checkout key>.json`
 (`{"project","root"}`), with `working-set-pending` touched in the record
