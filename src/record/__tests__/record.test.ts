@@ -86,9 +86,9 @@ describe("record schema and ownership", () => {
   });
   it("refuses a future hooks version independently of record.db", () => {
     const home = temp(); const db = new DatabaseSync(join(home, "hooks.db"));
-    db.exec("PRAGMA user_version=3"); db.close();
+    db.exec("PRAGMA user_version=7"); db.close();
     const reader = openHooksReadOnly({ home, isNetwork: () => false })!; closes.push(() => reader.close());
-    expect(reader.diagnostic).toContain("hooks.db schema version 3 is newer than supported version 2");
+    expect(reader.diagnostic).toContain("hooks.db schema version 7 is newer than supported version 6");
   });
 });
 
@@ -122,6 +122,16 @@ describe("location and identity", () => {
     expect(readFileSync(join(home, "location"), "utf8")).toBe(`${fallback.home}\n`);
     expect(recordLocation({ ...options, isNetwork: () => { throw Error("cached"); } })).toEqual(fallback);
     expect(queries).toBe(2);
+  });
+  it.skipIf(process.platform !== "win32")("treats the system drive as local without the drive query", () => {
+    const home = temp(), drive = home.slice(0, 2);
+    const other = `${drive.toLowerCase() === "z:" ? "Y" : "Z"}:`;
+    let queries = 0;
+    const driveType = (asked: string) => { queries++; expect(asked).toBe(other); return "4"; };
+    expect(windowsNetworkHome(home, { realPath: () => home, driveType, systemDrive: drive.toUpperCase() })).toBe(false);
+    expect(queries).toBe(0);
+    expect(windowsNetworkHome(home.replace(/^[A-Za-z]:/u, other), { realPath: (path) => path, driveType, systemDrive: drive })).toBe(true);
+    expect(queries).toBe(1);
   });
   it("uses an isolated local cache for a network home and follows the cached pointer on second open", () => {
     const home = temp(); const cache = temp(); let calls = 0;

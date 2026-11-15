@@ -2,7 +2,10 @@ import { Command, Option } from "commander";
 import { ENTRY_KINDS, KnowledgeError } from "./contract.js";
 
 export function buildKnowledgeCommands(): Command[] {
-  const save = new Command("note")
+  const sessionWhat = new Command("what").description("Read what MEX gave or withheld this session")
+ .option("--session <id>","Session identifier").option("--json","Print receipt titles and counts as JSON")
+ .action(async opts=>run(opts.json,async()=>{const {what,whatLine}=await import("./what.js");const result=what({projectPath:process.cwd()},opts.session);if(opts.json)console.log(JSON.stringify({ok:true,...result}));else {console.log(whatLine(result));for(const it of result.items)console.log(`${it.action} ${it.id} ${it.title}`);if(result.partial)console.log("More receipts exist; this view reached its work limit.");}}));
+ const save = new Command("note")
     .alias("log")
     .description("Save a personal fact and its reason (log remains an alias for one release)")
     .argument("<text>", "A fact and its reason")
@@ -49,6 +52,7 @@ export function buildKnowledgeCommands(): Command[] {
       await run(opts.json, async () => {
         const { expand } = await import("./store.js");
         const item = expand(id, { projectPath: process.cwd(), consumerAgent: opts.agent });
+ const {noteProbe}=await import("./what.js");noteProbe(id,"opened",{projectPath:process.cwd()});
         if (opts.json) console.log(JSON.stringify({ ok: true, ...item }));
         else {
           const { serializeEntry } = await import("./entry.js");
@@ -131,12 +135,14 @@ export function buildKnowledgeCommands(): Command[] {
           if (!opts.apply) { printPreview(preview, opts.json); return; }
           if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the team change, then pass --apply --expect <revision>.");
           const saved = applyTeamWrite(preview, opts.expect, options);
+          if (action === "wrong") (await import("./what.js")).noteProbe(id, "wrong", options);
           const native = await sharedRuleFiles(options);
           if (opts.json) console.log(JSON.stringify({ ok: true, id, level: "team", status: "retired", retired: saved.entry.mex.retired, native }));
           else console.log(`Retired team entry ${id}: ${saved.entry.mex.retired!.reason}${native.length ? `\nRule files updated in the same change: ${native.join(", ")}` : ""}`);
           return;
         }
         const marker = (action === "wrong" ? wrong : forget)(id, reason, { projectPath: process.cwd() });
+        if (action === "wrong") (await import("./what.js")).noteProbe(id, "wrong", options);
         await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, level: "personal", status: "retired", ...marker }));
         else console.log(`Retired personal note ${id}: ${marker.retired.reason}`);
@@ -236,7 +242,7 @@ export function buildKnowledgeCommands(): Command[] {
       const result = previewBrief({ projectPath: process.cwd() }, opts.agent, opts.path);
       console.log(opts.json ? JSON.stringify(result) : result.text);
     }));
-  return [save, search, full, change, ...retire, hints, rules, share, brief];
+  return [sessionWhat, save, search, full, change, ...retire, hints, rules, share, brief];
 }
 /** After a share: the pull request, or the push command (MEX doesn't push on its own). */
 function nextStep(done: { branch: string; pr?: string }): string {

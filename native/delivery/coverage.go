@@ -82,6 +82,7 @@ type coverage struct {
 	ids        map[string]bool // entry ids marked inside them
 	native     brief.Coverage
 	agent, rel string
+	texts      []string // loaded rule-file text, for the similarity check
 }
 
 var markerRE = lazy(`<!--\s*mex:(mx_[a-z0-9]{6,64})\s*-->`)
@@ -117,7 +118,7 @@ func loadCoverage(agent, checkout, rel string, context ...brief.Options) coverag
 			}
 		}
 	}
-	nativeBytes := 0
+	nativeBytes, textBytes := 0, 0
 	for _, f := range files {
 		data, err := readBounded(filepath.Join(checkout, filepath.FromSlash(f)), maxRuleFileBytes)
 		if err != nil {
@@ -146,6 +147,9 @@ func loadCoverage(agent, checkout, rel string, context ...brief.Options) coverag
 			}
 		}
 		c.files[f] = true
+		if textBytes += len(data); textBytes <= 1<<20 {
+			c.texts = append(c.texts, string(data))
+		}
 		// Generated text is authenticated by its manifest and exact file hash.
 		if bytes.Contains(data, []byte("<!-- mex:generated")) {
 			continue

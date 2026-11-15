@@ -24,13 +24,15 @@ const (
 // shaped is a candidate after the verdict decided what reaches the model.
 type shaped struct {
 	candidate
-	verdict  string
-	action   string // given, replaced, withheld
-	full     string // text for the full form ("" when only one form exists)
-	oneLine  string
-	fullTok  int
-	lineTok  int
-	hashText string // what the content hash covers
+	verdict   string
+	action    string // given, replaced, withheld
+	full      string // text for the full form ("" when only one form exists)
+	oneLine   string
+	fullTok   int
+	lineTok   int
+	hashText  string // what the content hash covers
+	detail    string // stable receipt reason, never canonical entry text
+	conflicts []string
 }
 
 // shapeEnv gives the verdict stage what it may read: the checkout's files and

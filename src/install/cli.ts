@@ -1,4 +1,4 @@
-import { installAgents, installationChanges, uninstallAgents, type InstallResult } from "./index.js";
+import { excludeChanges, installAgents, installationChanges, uninstallAgents, type InstallResult } from "./index.js";
 
 function summary(result: InstallResult) {
   return { agents: result.agents, changes: result.changes.map(change => ({ path: change.path, kind: change.kind,
@@ -18,7 +18,7 @@ export async function runInstall(options: { dryRun?: boolean; json?: boolean } =
 
 export async function runUninstall(options: { dryRun?: boolean; json?: boolean; purge?: boolean } = {}): Promise<void> {
   const changes = installationChanges();
-  const paths = [...new Set(changes.map(change => change.path))];
+  const paths = [...new Set([...changes.map(change => change.path), ...excludeChanges()])];
   if (!options.json) {
     console.log(paths.length ? "MEX will restore (hooks first, shim last):" : "No recorded installation changes.");
     for (const path of paths) console.log(`  ${path}`);

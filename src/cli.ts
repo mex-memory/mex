@@ -113,6 +113,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "spec"
     || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
     || commandName === "edit" || commandName === "wrong" || commandName === "forget"
+    || commandName === "what"
     || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief"
     || commandName === "skills" || commandName === "install" || commandName === "uninstall"
     || commandName === "off" || commandName === "on" || commandName === "capture" || commandName === "handoff";
@@ -189,28 +190,34 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   } catch { /* never affects the command */ }
 });
 
+async function runRepoStartCommand(options: { folder?: boolean; wait?: boolean } = {}): Promise<void> {
+  try {
+    const { runRepoStart } = await import("./repo-start/command.js");
+    const result = await runRepoStart({ ...(options.folder ? { folder: true } : {}), ...(options.wait === false ? { wait: false } : {}) });
+    process.exitCode = result.exitCode;
+    // Stopped waiting with work still running here: the background process has taken it over.
+    if (result.exitNow) process.exit(result.exitCode);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
+
 program
   .name("mex")
-  .description("Project memory for your agents — open the Hub or use a CLI command")
+  .description("Project memory for your agents — run it in a repo to turn MEX on there")
   .version(VERSION)
   .showHelpAfterError()
-  .option("--port <n>", "Bind a specific loopback port", parsePortArg)
-  .option("--no-open", "Print the Hub link without opening a browser")
-  .action(async (opts: { port?: number; open: boolean }) => {
-    try {
-      showFirstRunNotice();
-      const { showUpdateNotice } = await import("./telemetry/updates.js");
-      await showUpdateNotice();
-      if (process.env.MEX_INSTALL_AUTO !== "0" && process.env.MEX_BACKGROUND !== "1") {
-        const { runInstall } = await import("./install/cli.js");
-        await runInstall();
-      }
-      const { resolveDefaultEntry } = await import("./setup/entry.js");
-      if (await resolveDefaultEntry() === "hub") await runBrowserCommand(opts);
-      else await runSetupCommand(opts);
-    } catch (error) {
-      await reportSetupCommandError(error);
-    }
+  // Kept for `mex hub`, which reads them as global options.
+  .option("--port <n>", "Bind a specific loopback port (with `mex hub`)", parsePortArg)
+  .option("--no-open", "Print the Hub link without opening a browser (with `mex hub`)")
+  .option("--folder", "Turn MEX on in a folder that isn't a git repo, without the question")
+  .option("--no-wait", "Show the first screen and leave the file index and git history to the background")
+  .action(async (options: { folder?: boolean; wait?: boolean }) => {
+    showFirstRunNotice();
+    const { showUpdateNotice } = await import("./telemetry/updates.js");
+    await showUpdateNotice();
+    await runRepoStartCommand(options);
   });
 
 program.command("install")
@@ -315,63 +322,68 @@ program.addCommand(buildRelayCommand({
   io: processTeamCommandIo(),
 }));
 
-// ── Setup (terminal by default; explicit browser and read-only paths) ──
+// ── Setup: an alias of bare `mex`; the 0.8 flows stay reachable until they are removed ──
+const LEGACY_SETUP_FLAGS = ["legacy", "cli", "mode", "dryRun", "tool", "yes", "force"] as const;
 const setupCommand = program
   .command("setup")
-  .description("Set up MEX in the terminal; use --browser for browser setup")
-  .option("--cli", "Run setup in the terminal (the default)")
-  .addOption(new Option("--browser", "Run setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force"]))
-  .option("--mode <mode>", "Template mode: code-repo or agent-memory (preserves saved mode)")
-  .option("--dry-run", "Show what would happen without making changes")
-  .option("--port <n>", "Bind a specific loopback port", parsePortArg)
-  .option("--no-open", "Show the Hub link without opening a browser")
-  .option("--tool <tool>", "Terminal setup: preselect an AI tool (repeatable; none for no tool; --yes skips review)", (value: string, previous: string[] = []) => [...previous, value])
-  .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
-  .option("--force", "Terminal setup: run the full flow even when MEX is already set up here")
+  .description("Turn MEX on for this repo (the same as `mex`)")
+  .addOption(new Option("--legacy", "Run the 0.8 terminal setup").hideHelp())
+  .addOption(new Option("--cli", "0.8 terminal setup").hideHelp())
+  .addOption(new Option("--browser", "Run the 0.8 setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force", "legacy"]))
+  .addOption(new Option("--mode <mode>", "0.8 setup: template mode, code-repo or agent-memory").hideHelp())
+  .addOption(new Option("--dry-run", "0.8 setup: show what would happen without making changes").hideHelp())
+  .option("--port <n>", "With --browser: bind a specific loopback port", parsePortArg)
+  .option("--no-open", "With --browser: show the Hub link without opening a browser")
+  .addOption(new Option("--tool <tool>", "0.8 setup: preselect an AI tool").argParser((value: string, previous: string[] = []) => [...previous, value]).hideHelp())
+  .addOption(new Option("--yes", "0.8 setup: never wait on a question").hideHelp())
+  .addOption(new Option("--force", "0.8 setup: run the full flow").hideHelp())
+  .option("--folder", "Turn MEX on in a folder that isn't a git repo, without the question")
+  .option("--no-wait", "Show the first screen and leave the file index and git history to the background")
   .addHelpText(
     "after",
-    "\nSetup modes:\n"
-      + "  Terminal (default, or --cli)  Runs setup in this terminal. --tool, --yes, --force and\n"
-      + "                                --dry-run apply only here.\n"
-      + "  Browser (--browser)           Runs setup in the local browser Hub. It cannot be combined\n"
-      + "                                with --cli, --tool, --yes, --force or --dry-run.\n"
-      + "\nOn a checkout that is already set up, setup reports its status and does no work;\n"
-      + "it finishes only what is missing otherwise. --force runs the full flow; authored\n"
-      + "files are always preserved.\n"
-      + "\n--no-open prints the Hub link instead of opening it in a browser. In the terminal\n"
-      + "mode this is the link to the finishing Hub page; in the browser mode it is the setup link.\n"
-      + "\nNo agent CLI MEX can launch? Paste one prompt into your agent instead: it runs\n"
-      + "`mex setup next --start` first, then does what it prints, until setup is complete.\n",
+    "\n`mex setup` does what `mex` does: it turns MEX on for this repo and shows what it\n"
+      + "found. `mex setup --browser` runs the 0.8 setup in the local browser Hub.\n",
   )
   .action(async (_opts, command: Command) => {
-    await runSetupCommand(command.optsWithGlobals());
+    const options = command.optsWithGlobals<Parameters<typeof runSetupCommand>[0] & { legacy?: boolean; cli?: boolean }>();
+    if (options.browser || LEGACY_SETUP_FLAGS.some(flag => (options as Record<string, unknown>)[flag] !== undefined)) {
+      await runSetupCommand(options);
+      return;
+    }
+    showFirstRunNotice();
+    await runRepoStartCommand({ folder: (options as { folder?: boolean }).folder, wait: (options as { wait?: boolean }).wait });
   });
 
 setupCommand
   .command("next")
-  .option("--start", "Start a new chat: settle earlier tasks, including batches without receipts")
-  .option("--retry <task>", "Hand an abandoned running task out again (use its printed task id)")
-  .description("Continue setup one step at a time from your agent's chat: apply the last step, print the next")
+  .option("--start", "0.8 setup: start a new chat, settling earlier tasks")
+  .option("--retry <task>", "0.8 setup: hand an abandoned running task out again (use its printed task id)")
+  .description("For your agent: turn MEX on here, print what was found, and the question to put to you")
   .addHelpText(
     "after",
-    "\nFor agents MEX cannot launch itself. Each call applies what the previous step wrote\n"
-      + "(or gives that step's fix task), records progress, and prints the next task as a file\n"
-      + "under .mex/local/setup-next/ with the exact next command. The last call finalizes Graph\n"
-      + "and Wiki. Start each new chat with `mex setup next --start`; earlier tasks must be stopped.\n"
-      + "Then follow the printed commands (`mex setup next` without --start).\n",
+    "\nRun by an agent: it does what `mex` does without asking anything, then prints the\n"
+      + "question to put to the person and the exact command to run on yes. Nothing paid starts.\n"
+      + "With nothing to ask it says so. The 0.8 one-step setup continues with --start or --retry,\n"
+      + "or when a 0.8 setup-next session is already in progress here.\n",
   )
   .action(async (options: { retry?: string; start?: boolean }) => {
     try {
       const { findSetupProjectRoot } = await import("./setup/entry.js");
-      const { runSetupNext } = await import("./setup/next.js");
-      const result = await runSetupNext({
-        ...(options.retry === undefined ? {} : { retry: options.retry }),
-        ...(options.start === undefined ? {} : { start: options.start }),
-        projectRoot: findSetupProjectRoot(),
-        onProgress: (line) => console.error(line),
-      });
-      console.log(result.output);
-      process.exitCode = result.exitCode;
+      const projectRoot = findSetupProjectRoot();
+      const { legacySetupNextInProgress, runSetupHandoff } = await import("./repo-start/handoff.js");
+      if (options.start || options.retry !== undefined || legacySetupNextInProgress(projectRoot)) {
+        const { runSetupNext } = await import("./setup/next.js");
+        const result = await runSetupNext({
+          ...(options.retry === undefined ? {} : { retry: options.retry }),
+          ...(options.start === undefined ? {} : { start: options.start }),
+          projectRoot,
+          onProgress: (line) => console.error(line),
+        });
+        console.log(result.output);
+        process.exitCode = result.exitCode;
+        return;
+      }
+      process.exitCode = await runSetupHandoff();
     } catch (error) {
       await reportSetupCommandError(error);
     }
@@ -1222,14 +1234,23 @@ telemetryCmd
 // ── Config ──
 const configCmd = program
   .command("config")
-  .description("Manage global mex configuration");
+  .description("Manage mex configuration");
 
 configCmd
   .command("set <key> <value>")
-  .description("Set a global config value (e.g. telemetry on|off)")
-  .action((key: string, value: string) => {
+  .description("Set a config value (e.g. delivery.scorer tiers|bm25|fcfs|risk)")
+  .option("--project", "Set delivery.scorer for the registered project")
+  .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
-      if (key === "telemetry") {
+      if (options.project && key !== "delivery.scorer") throw new Error("--project is supported for delivery.scorer.");
+      if (key === "delivery.scorer") {
+        const { openRecord } = await import("./record/index.js");
+        const { setDeliveryScorer } = await import("./controls/index.js");
+        if (!["tiers", "bm25", "fcfs", "risk"].includes(value)) throw new Error("Use tiers, bm25, fcfs or risk for delivery.scorer.");
+        const writer = openRecord();
+        try { setDeliveryScorer(writer, value, options.project ? process.cwd() : undefined); } finally { writer.close(); }
+        console.log("Delivery scorer set to " + value + (options.project ? " for this project." : " for this machine."));
+      } else if (key === "telemetry") {
         if (value !== "on" && value !== "off") {
           console.error(`Invalid value "${value}" for telemetry. Use "on" or "off".`);
           process.exitCode = 1;
@@ -1249,7 +1270,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer`);
         process.exitCode = 1;
         return;
       }
@@ -1469,7 +1490,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 function buildCompletion(shell: string): string {
   const commands = [
     "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget",
-    "doctor", "jobs", "completion", "hints", "rules", "share", "brief", "handoff",
+    "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief", "handoff",
     "telemetry", "config", "feedback", "hub",
   ];
   if (shell === "bash") {

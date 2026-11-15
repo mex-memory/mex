@@ -72,7 +72,25 @@ func TestHookTelemetryRefusesHardLinkedDatabaseFiles(t *testing.T) {
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
-			_, err = db.ExecContext(ctx, "PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;\n"+string(schema)+string(second)+fmt.Sprintf("\nPRAGMA user_version=%d; COMMIT;", localrecord.SchemaVersion))
+			third, readErr := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0003_followups.sql"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			fourth, readErr := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0004_rendering.sql"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			fifth, readErr := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0005_probes.sql"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			sixth, readErr := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0006_intent.sql"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			_, err = db.ExecContext(ctx, "PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;\n"+
+				string(schema)+string(second)+string(third)+string(fourth)+string(fifth)+string(sixth)+
+				fmt.Sprintf("\nPRAGMA user_version=%d; COMMIT;", localrecord.SchemaVersion))
 			cancel()
 			if err != nil {
 				t.Fatal(err)

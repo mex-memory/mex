@@ -1,4 +1,62 @@
-# Contract: the local record (version 4)
+# Contract: the local record (record version 4, hooks version 6)
+
+## Delivery additions
+
+Migration 0006 adds `epochs.last_failure`, initially empty. It contains only
+the SHA-256 digest of the last observed failing command, including its project,
+checkout and working folder. An exact rerun in that epoch establishes
+`reproducing`, unless the epoch is `changing`. Observations ride on calls that
+already open hooks.db; a tool miss still opens no database. New epochs clear
+the digest. Commands and prompt text are never stored by this observation.
+
+Delivery transactions disable connection-local WAL auto-checkpointing so
+COMMIT does not perform a checkpoint inside the 250 ms writer deadline.
+SQLite still checkpoints on last close. WAL mode, NORMAL sync, lock limits
+and operation deadlines stay unchanged; errors still produce empty replies.
+
+Node remains the sole `record.db` writer; Go remains the sole `hooks.db`
+writer, including explicit CLI feedback. Node's hooks reader supports schema
+6 and refuses future versions without migrating them.
+
+Hooks migration 0003 rebuilds `followups` transactionally to extend its CHECK
+set with `failure`, `delivered-later` and `nothing`, retaining the earlier
+probe kinds and rows. Upgrade work is bounded at 100,000 rows. Observations
+contain receipt identities and closed kinds, never raw prompts/code/commands.
+Repeated observations for a receipt/kind are deduped under the writer lock.
+
+Migration 0004 adds `deliveries.detail` and `delivery_conflicts`, keyed by
+session, agent, epoch, project, checkout, winner and loser. Existing action
+values stay fixed. Similarity and conflicts use `withheld` with a detail;
+conflicts enter Review only when their winning entry is present. Companion
+admission checks parent plus children atomically. The conflict table is the
+bounded hook-written seam for later Review/Hub surfaces.
+
+Migration 0005 adds epoch `intent` (`working`, `investigating`, `changing`,
+`reproducing`) and `closed`; new epochs start investigating while migrated
+epochs preserve working behavior. Receipt `title`, `kind` and `level` support
+read-only explanations without loading entry bodies. `delivery_touches`
+stores receipt ids only, for observed later scope touches. These foreign-key
+children are pruned in bounded batches before parent receipts/epochs.
+
+Delivered `followed`, `missed`, `opened` and `wrong` probes require the same
+session, agent, epoch, project and checkout as their receipt. Explicit CLI
+probes require a single active matching context, optionally constrained by
+`MEX_SESSION_ID`; ambiguity records nothing. Estimated false sends are closed
+deliveries with neither any followup nor a later scope touch. This is an
+observation-limited estimate, never a deletion policy.
+
+Daily `counters_go` keys reuse `agent:<agent>:knowledge.delivered` and the
+four probe names. Only closed counts enter the existing telemetry rollup;
+receipt ids, titles, paths and event text do not. Consent/opt-out behavior is
+unchanged.
+
+Files read without SQLite additionally include the existing controls mirrors'
+optional scorer value (`delivery.scorer`), and the prompt-only statistics
+cache alongside delivery entries. The scorer does not add a no-op file read.
+The statistics cache binds its listing stamp and entry hashes to the light
+snapshot and stores tf/df/length/field data without original title/body text.
+It is disposable; stale or incompatible data is rebuilt through source reads.
+Ordinary read-only `mex what` never creates or repairs either database.
 
 Owner: the local record (`src/record/`, `native/record/`).
 

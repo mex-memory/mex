@@ -5,7 +5,7 @@
  * what it doesn't load itself. Disagreements and stale mentions go to Review.
  */
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -51,11 +51,28 @@ export function ruleFormat(path: string): RuleFile["format"] | undefined {
   return undefined;
 }
 
+const LIST_ARGS = ["ls-files", "--cached", "--others", "--exclude-standard", "-z"];
+const LIST_MAX_BUFFER = 64 * 1024 * 1024;
+
+/**
+ * The same list as the scan reads, started without waiting: finding untracked files walks the
+ * whole tree, about half a second for 12,000 files on Windows, so a caller starts it early and
+ * does other work meanwhile. Undefined when git can't list; the scan then lists by itself.
+ */
+export function listRepositoryFilesAsync(root: string): Promise<string[] | undefined> {
+  return new Promise(resolve => {
+    try {
+      execFile("git", ["-C", root, ...LIST_ARGS], { cwd: root, encoding: "utf8", maxBuffer: LIST_MAX_BUFFER, windowsHide: true },
+        (error, stdout) => resolve(error ? undefined : stdout.split("\0").filter(Boolean)));
+    } catch { resolve(undefined); }
+  });
+}
+
 /** Repository files git would list, without ignored ones. */
 function listFiles(root: string): string[] {
   try {
-    return execFileSync("git", ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"], windowsHide: true })
+    return execFileSync("git", ["-C", root, ...LIST_ARGS],
+      { encoding: "utf8", maxBuffer: LIST_MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"], windowsHide: true })
       .split("\0").filter(Boolean);
   } catch {
     const out: string[] = [];
@@ -117,9 +134,10 @@ function agentsFor(path: string, format: RuleFile["format"], present: Set<string
   }
 }
 
-export function discoverRuleFiles(root: string): Array<RuleFile & { text: string; data: Record<string, unknown> }> {
+/** `listed` is the repository's file list when the caller already has it (see listRepositoryFilesAsync). */
+export function discoverRuleFiles(root: string, listed?: readonly string[]): Array<RuleFile & { text: string; data: Record<string, unknown> }> {
   root = realPath(root);
-  const all = listFiles(root);
+  const all = listed ? [...listed] : listFiles(root);
   const present = new Set(all);
   const out: Array<RuleFile & { text: string; data: Record<string, unknown> }> = [];
   for (const path of all.sort()) {
@@ -282,8 +300,8 @@ function missingScripts(text: string, scripts: Scripts): string[] {
 }
 
 /** Read every rule file in a checkout. Pure: writes nothing. */
-export function scanRuleFiles(root: string, created = new Date().toISOString().slice(0, 10)): RuleScan {
-  const found = discoverRuleFiles(root);
+export function scanRuleFiles(root: string, created = new Date().toISOString().slice(0, 10), listed?: readonly string[]): RuleScan {
+  const found = discoverRuleFiles(root, listed);
   const entries: RuleEntry[] = [], review: ReviewItem[] = [];
   for (const file of found) {
     const result = fileEntries(file, created);

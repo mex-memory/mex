@@ -1,12 +1,8 @@
 import { isDevRepo, readGlobalConfig, readTelemetryPreference } from "../global-config.js";
 
 export const TELEMETRY_NOTICE_VERSION = 3;
-export function isCI(env: NodeJS.ProcessEnv = process.env): boolean {
-  return ["CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "BUILDKITE", "CIRCLECI"].some((key) => {
-    const value = env[key]?.trim().toLowerCase();
-    return value !== undefined && value !== "" && !["0", "false", "no"].includes(value);
-  }) || !!env.JENKINS_URL;
-}
+/** CI detection lives with the shared caller check; telemetry keeps its import site. */
+export { isCI } from "../repo-start/caller.js";
 
 export function telemetryEnabled(): { enabled: boolean; reason?: string } {
   if (process.env.DO_NOT_TRACK === "1") return { enabled: false, reason: "DO_NOT_TRACK" };

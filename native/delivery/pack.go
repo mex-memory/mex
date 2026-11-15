@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/record"
 )
 
@@ -18,35 +19,15 @@ const (
 	sessionFactor = 3
 )
 
-var tierWeight = map[int]float64{tierPattern: 16, tierCommand: 8, tierFile: 4, tierFolder: 2, tierPrompt: 1}
-
-var evidenceWeight = map[string]float64{"person": 6, "ci": 5, "docs": 4, "review": 3, "mined": 2, "observed": 1}
-
-// value is value per token: trigger strength, then evidence, over cost.
-// delivery-02 replaces this function; nothing else depends on its scale
-// except barLow and barHigh below.
-func value(s shaped, tokens int) float64 {
-	if tokens < 1 {
-		tokens = 1
-	}
-	e := evidenceWeight[s.item.Entry.Evidence]
-	if e == 0 {
-		e = 1
-	}
-	if s.item.Level == "personal" && s.item.Entry.Source.Type == "person" {
-		e = evidenceWeight["person"]
-	}
-	return tierWeight[s.tier] * e / float64(tokens)
-}
-
 // The rising bar of the online knapsack policy (Zhou, Chakrabarty and Lukose,
 // 2008): psi(z) = (U*e/L)^z * (L/e), z the share of the epoch budget used.
-// L is chosen so that at z=0 a command-tier item of 600 tokens with the
-// weakest evidence still passes (8*1/600); U is about the best value per token
-// (16*6/20).
+// L admits the weakest initial prompt item (and a weakest-evidence command
+// of 600 tokens). U admits only the strongest exact matches near saturation.
 const (
-	barLow  = 8.0 / 600.0 * math.E
-	barHigh = 5.0
+	barLow = 1.0 / 6000.0 * math.E
+	// Saturation boundary: person-backed exact file, two path segments,
+	// 20 estimated tokens. Stronger specificity remains lexicographically prior.
+	barHigh = patternBand * (2 + .0001*(3*257+2) + .000001/2)
 )
 
 func bar(z float64) float64 {
@@ -66,33 +47,23 @@ type planned struct {
 	tokens     int
 	correction bool
 	heldBack   bool
+	parent     string
 }
 
 // pack orders and sizes one reply: failure fixes first, then the strongest
 // trigger; full form for the first item, one-line after; a per-moment ceiling
 // that only companions may exceed. Items that don't fit are logged as held
 // back, never cut mid-text.
-func pack(items []shaped, companions func(id string) *shaped) []planned {
-	sort.SliceStable(items, func(i, j int) bool {
-		a, b := items[i], items[j]
-		if a.reserve != b.reserve {
-			return a.reserve
-		}
-		if a.tier != b.tier {
-			return a.tier < b.tier
-		}
-		ea, eb := evidenceWeight[a.item.Entry.Evidence], evidenceWeight[b.item.Entry.Evidence]
-		if ea != eb {
-			return ea > eb
-		}
-		if a.lineTok != b.lineTok {
-			return a.lineTok < b.lineTok
-		}
-		return a.item.Entry.ID < b.item.Entry.ID
-	})
+func pack(items []shaped, companions func(id string) *shaped, scorers ...Scorer) []planned {
+	var scorer Scorer = tiersScorer{}
+	if len(scorers) > 0 {
+		scorer = scorers[0]
+	}
+	sort.SliceStable(items, func(i, j int) bool { return scorer.Less(items[i], items[j]) })
 	var out []planned
 	seen := map[string]bool{}
-	used, reserved, fulls := 0, 0, 0
+	used, reserved := 0, 0
+	markerPaid := false
 	for _, s := range items {
 		id := s.item.Entry.ID
 		if seen[id] {
@@ -100,7 +71,19 @@ func pack(items []shaped, companions func(id string) *shaped) []planned {
 		}
 		seen[id] = true
 		p := planned{shaped: s}
-		if s.action == "withheld" {
+		if s.action == "withheld" || s.action == "held-back" {
+			out = append(out, p)
+			continue
+		}
+		duplicate := false
+		for _, prior := range out {
+			if !prior.heldBack && prior.action != "withheld" && itemSimilar(s.item, prior.item) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			p.action, p.detail = "withheld", "similar"
 			out = append(out, p)
 			continue
 		}
@@ -108,15 +91,17 @@ func pack(items []shaped, companions func(id string) *shaped) []planned {
 		if s.reserve {
 			limit, spent = reservedLane, &reserved
 		}
-		if s.fullTok > 0 && s.fullTok <= limit-*spent && (fulls == 0 || s.reserve || s.action == "replaced") {
-			p.form, p.text, p.tokens = "full", s.full, s.fullTok
-			if !s.reserve && s.action != "replaced" {
-				fulls++
-			}
-		} else if s.lineTok > 0 && s.lineTok <= limit-*spent {
-			p.form, p.text, p.tokens = "one-line", s.oneLine, s.lineTok
+		overhead := entries.EstimateTokens(" (" + id + ")")
+		if !markerPaid {
+			overhead += 8
+		}
+		fullCost, lineCost := s.fullTok+overhead, s.lineTok+overhead
+		if s.fullTok > 0 && fullCost <= limit-*spent && (*spent+fullCost <= momentTarget || *spent == 0 || s.reserve || s.action == "replaced") {
+			p.form, p.text, p.tokens = "full", s.full, fullCost
+		} else if s.lineTok > 0 && lineCost <= limit-*spent {
+			p.form, p.text, p.tokens = "one-line", s.oneLine, lineCost
 		} else {
-			p.form, p.tokens, p.heldBack = "one-line", s.lineTok, true
+			p.form, p.tokens, p.heldBack = "one-line", lineCost, true
 			out = append(out, p)
 			continue
 		}
@@ -124,6 +109,7 @@ func pack(items []shaped, companions func(id string) *shaped) []planned {
 			p.form = "pointer"
 		}
 		*spent += p.tokens
+		markerPaid = true
 		out = append(out, p)
 	}
 	// Companions travel with what was chosen, in one-line form.
@@ -142,8 +128,8 @@ func pack(items []shaped, companions func(id string) *shaped) []planned {
 					continue
 				}
 				seen[cid] = true
-				c.reserve = false
-				out = append(out, planned{shaped: *c, form: "one-line", text: c.oneLine, tokens: c.lineTok})
+				c.reserve, c.exempt = out[i].reserve, out[i].exempt
+				out = append(out, planned{shaped: *c, form: "one-line", text: c.oneLine, tokens: c.lineTok + entries.EstimateTokens(" ("+cid+")"), parent: out[i].item.Entry.ID})
 			}
 		}
 	}
@@ -160,6 +146,8 @@ func requestCandidates(plan []planned) []record.DeliveryCandidate {
 	var out []record.DeliveryCandidate
 	for _, p := range plan {
 		c := record.DeliveryCandidate{EntryID: p.item.Entry.ID, Moment: p.moment, Form: p.form, Tokens: p.tokens, Reserved: p.reserve, Exempt: p.exempt, Resend: p.resend, ContentHash: contentHash(p.item.Hash + "\n" + p.text)}
+		c.Detail, c.Parent = p.detail, p.parent
+		c.Title, c.Kind, c.Level = p.item.Entry.OneLine, p.item.Entry.Kind, p.item.Level
 		switch {
 		case p.correction:
 			c.Correction, c.Moment, c.Form = true, "correction", "one-line"
@@ -180,7 +168,11 @@ func requestCandidates(plan []planned) []record.DeliveryCandidate {
 
 // admit applies the rising bar under the ledger's lock. Past the session
 // ceiling the bar sits half a budget higher: harder, never closed.
-func admit(plan []planned) func(record.Epoch, record.DeliveryCandidate) bool {
+func admit(plan []planned, scorers ...Scorer) func(record.Epoch, record.DeliveryCandidate) bool {
+	var scorer Scorer = tiersScorer{}
+	if len(scorers) > 0 {
+		scorer = scorers[0]
+	}
 	byID := map[string]planned{}
 	for _, p := range plan {
 		byID[p.item.Entry.ID] = p
@@ -194,7 +186,7 @@ func admit(plan []planned) func(record.Epoch, record.DeliveryCandidate) bool {
 		if e.SessionTokens > sessionFactor*e.Budget {
 			z += 0.5
 		}
-		return value(p.shaped, c.Tokens) >= bar(z)
+		return scorer.BudgetOnly() || scorer.Value(p.shaped, c.Tokens) >= bar(z)
 	}
 }
 

@@ -82,7 +82,7 @@ describe.skipIf(!goAvailable)("real Node/Go interoperability", () => {
       }
       await run.done;
       expect(observed.has(150)).toBe(true); expect([...observed].some((n) => n > 0 && n < 150)).toBe(true);
-      expect(reader!.get<{ user_version: number }>("PRAGMA user_version")?.user_version).toBe(2);
+      expect(reader!.get<{ user_version: number }>("PRAGMA user_version")?.user_version).toBe(6);
       expect(() => reader!.all("DELETE FROM sessions RETURNING *")).toThrow(/readonly/i);
     } finally { reader?.close(); run.child.kill(); }
   }, 30000);

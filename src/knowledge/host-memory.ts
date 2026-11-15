@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstatSync, opendirSync, statSync } from "node:fs";
+import { lstatSync, opendirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseDocument } from "yaml";
@@ -33,6 +33,39 @@ function selectedDirectory(path: string): string | undefined {
   try { return statSync(path).isDirectory() ? realPath(path) : undefined; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
 }
+/**
+ * Git's common directory for a checkout root, read from the files git itself uses: a `.git`
+ * folder is its own, and a linked worktree's `.git` file names its git dir, whose `commondir`
+ * file names the shared one. Undefined when the layout is anything else.
+ */
+function commonDirFromFiles(root: string): string | undefined {
+  const dotGit = join(root, ".git");
+  const stat = lstatSync(dotGit, { throwIfNoEntry: false });
+  if (!stat) return undefined;
+  if (stat.isDirectory()) return dotGit;
+  if (!stat.isFile() || stat.size > 4096) return undefined;
+  const pointer = /^gitdir: (.+)$/mu.exec(readFileSync(dotGit, "utf8"))?.[1]?.trim();
+  if (!pointer) return undefined;
+  const gitDir = resolve(root, pointer);
+  try { return resolve(gitDir, readFileSync(join(gitDir, "commondir"), "utf8").trim()); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return gitDir; throw error; }
+}
+
+/**
+ * The main checkout of a linked worktree (the folder holding the common `.git`), or undefined.
+ * Read from git's files: a git start costs tens of milliseconds on Windows. Git answers only
+ * when the files don't.
+ */
+function mainCheckout(root: string): string | undefined {
+  try {
+    let common: string | undefined;
+    try { common = commonDirFromFiles(root); } catch { common = undefined; }
+    common ??= execFileSync("git", ["-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      { encoding: "utf8", timeout: 1500, maxBuffer: 4096, stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
+    return basename(common) === ".git" ? realPath(dirname(common)) : undefined;
+  } catch { return undefined; /* A non-Git folder has only its explicit project root. */ }
+}
+
 export function memoryRoots(options: MemoryOptions, onProblem?: (agent: MemoryAgent) => void): Array<{ agent: MemoryAgent; root: string }> {
   const env = options.env ?? process.env, userHome = options.userHome ?? homedir();
   const project = knowledgeProject(options), roots: Array<{ agent: MemoryAgent; root: string }> = [];
@@ -55,11 +88,8 @@ export function memoryRoots(options: MemoryOptions, onProblem?: (agent: MemoryAg
       if (root) roots.push({ agent: "claude-code", root });
     } else {
       const projectPaths = new Set([project.root]);
-      try {
-        const common = execFileSync("git", ["-C", project.root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-          { encoding: "utf8", timeout: 1500, maxBuffer: 4096, stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
-        if (basename(common) === ".git") projectPaths.add(realPath(dirname(common)));
-      } catch { /* A non-Git folder has only its explicit project root. */ }
+      const main = mainCheckout(project.root);
+      if (main) projectPaths.add(main);
       const override = env.CLAUDE_CODE_PROJECT_DIR_NAME;
       const names = override && /^[A-Za-z0-9._-]+$/u.test(override) && override !== "." && override !== ".."
         ? [override] : [...projectPaths].map(path => path.replace(/[^a-zA-Z0-9]/gu, "-"));

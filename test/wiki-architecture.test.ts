@@ -342,6 +342,10 @@ const GRAPH_IMPORT_ALLOWANCES: ReadonlyArray<{ file: string | null; allows: stri
   { file: null, allows: "src/graph/grounding" },
   { file: "src/wiki/query/budget.ts", allows: "src/graph/agent-protocol" },
   { file: "src/wiki/grounding/baseline.ts", allows: "src/graph/fingerprint-store" },
+  // Comparing authored bytes is not a Graph read. The upgrade reader must
+  // retain the Markdown decoder without loading the adapter's stores. Its
+  // recursive legacy-boundary test additionally pins this pure codec closure.
+  { file: "src/wiki/markdown/grounding-stores.ts", allows: "src/graph/fingerprint.js" },
 ];
 
 export function findGraphSeamViolations(path: string, source: string): string[] {
@@ -616,6 +620,15 @@ describe("one door onto the code graph", () => {
     expect(
       findGraphSeamViolations("src/wiki/grounding/resolve.ts", 'import { FingerprintStore } from "../../graph/fingerprint-store.js";'),
     ).toHaveLength(1);
+    expect(
+      findGraphSeamViolations("src/wiki/markdown/grounding-stores.ts", 'import { sameFingerprint } from "../../graph/fingerprint.js";'),
+    ).toEqual([]);
+    expect(
+      findGraphSeamViolations("src/wiki/markdown/grounding-stores.ts", 'import { GraphStore } from "../../graph/db/store.js";'),
+    ).toHaveLength(1);
+    expect(
+      findGraphSeamViolations("src/wiki/query/for-code.ts", 'import { sameFingerprint } from "../../graph/fingerprint.js";'),
+    ).toHaveLength(1);
   });
 
   it("does not constrain code outside the wiki engine", () => {
@@ -803,6 +816,10 @@ describe("no unscoped scaffold writes", () => {
       "src/record/hook-checkouts.ts": "writes and removes only the hook checkout mirrors under the machine record directory; never a repo file",
       "src/record/job-kinds.ts": "appends only to the trace file a demo job is given (demo and test runs); never a repo file",
       "src/record/location.ts": "publishes only the machine record location pointer and creates machine/project data directories; never Wiki Markdown",
+      "src/repo-start/exclude.ts": "writes only MEX's own named, journaled blocks in a repository's git info/exclude file, atomically, and restores them on uninstall; never a tracked file",
+      "src/repo-start/folder.ts": "creates only .mex/project.json (and the .mex folder when absent) in a folder without git that the person turned on, journaled, and removes exactly that on uninstall; never overwrites an existing marker",
+      "src/repo-start/offers.ts": "writes only the file MEX_TEST_FAKE_OFFER names, for the test-only fake offer; never a repo file",
+      "src/repo-start/facts.ts": "atomically writes only the derived setup facts files (setup.json, recipes.json, code-facts.json) under the machine record's project folder; never a repo file",
       "src/setup/anchor.ts": "edits root tool configs only, never .mex/, and only inside its own markers",
       "src/setup/global-install.ts": "removes only the private temporary npm working directory after the owned global installation finishes",
       "src/setup/headless-population.ts": "creates and removes only its own byte-exact Cursor permission file while background sessions run; never a user's file",
