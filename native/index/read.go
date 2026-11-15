@@ -423,3 +423,23 @@ func (r *Reader) Coverage(pathOrGlob string) (*CoverageAnswer, error) {
 	}
 	return answer, nil
 }
+
+// PathsMatching lists indexed paths a glob matches, in path order, at most
+// limit of them, and whether more matched. Brace expansion is not supported.
+func (r *Reader) PathsMatching(glob string, limit int) ([]string, bool, error) {
+	if strings.ContainsAny(glob, "{}") {
+		return nil, false, errors.New("brace expansion is not supported")
+	}
+	rows, err := r.scoped(glob)
+	if err != nil {
+		return nil, false, err
+	}
+	out := []string{}
+	for _, row := range rows {
+		if len(out) == limit {
+			return out, true, nil
+		}
+		out = append(out, row.path)
+	}
+	return out, false, nil
+}

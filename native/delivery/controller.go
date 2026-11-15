@@ -129,7 +129,11 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		groups = collect(ev, env)
 	}
 	pending := isMoment && ev.Kind != contract.Prompt && record.SurfacePending(env.RecordDirectory, ev.SessionID, ev.AgentID)
-	if !isLifecycle && !isEnd && len(groups) == 0 && !pending {
+	var stuck *rescue
+	if isMoment && ev.Kind != contract.Prompt {
+		stuck = findRescue(ev, env)
+	}
+	if !isLifecycle && !isEnd && len(groups) == 0 && !pending && stuck == nil {
 		return contract.Reply{}, nil
 	}
 
@@ -224,6 +228,15 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			continue
 		}
 		text, err := deliver(h, ev, env, g)
+		if err != nil {
+			return contract.Reply{}, err
+		}
+		if text != "" {
+			blocks = append(blocks, text)
+		}
+	}
+	if stuck != nil {
+		text, err := deliverRescue(h, ev, env, stuck)
 		if err != nil {
 			return contract.Reply{}, err
 		}

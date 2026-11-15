@@ -108,6 +108,8 @@ type ToolOutput struct {
 	Text     string `json:"text"`
 	OK       bool   `json:"ok"`
 	ExitCode *int   `json:"exit_code,omitempty"`
+	// Interrupted is set on a failure the person caused by stopping the tool.
+	Interrupted bool `json:"interrupted,omitempty"`
 }
 
 type Decision string

@@ -77,3 +77,15 @@ func TestRegistered(t *testing.T) {
 		t.Fatal("claude-code profile not registered")
 	}
 }
+
+func TestFailureCarriesInterrupt(t *testing.T) {
+	raw := []byte(`{"session_id":"s","cwd":"/repo","hook_event_name":"PostToolUseFailure","tool_name":"Read","tool_input":{"file_path":"/repo/a.ts"},"error":"Interrupted by user","is_interrupt":true}`)
+	ev, err := Profile{}.Parse("PostToolUseFailure", raw)
+	if err != nil || ev.Tool == nil || ev.Tool.Output == nil || !ev.Tool.Output.Interrupted || ev.Tool.Output.OK {
+		t.Fatalf("%+v %v", ev.Tool, err)
+	}
+	raw = []byte(`{"session_id":"s","cwd":"/repo","hook_event_name":"PostToolUseFailure","tool_name":"Read","tool_input":{"file_path":"/repo/a.ts"},"error":"File does not exist."}`)
+	if ev, _ = (Profile{}).Parse("PostToolUseFailure", raw); ev.Tool.Output.Interrupted {
+		t.Fatal("not interrupted")
+	}
+}
