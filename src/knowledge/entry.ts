@@ -33,6 +33,17 @@ function boundedJson(value: unknown): value is JsonValue {
   catch { return false; }
 }
 const value = z.custom<JsonValue>(boundedJson, "Expected bounded JSON data");
+const phrase = (max: number) => line.refine(s => s.length <= max && s.trim() === s, `Expected a trimmed phrase of at most ${max} characters`);
+const unique = (list: string[]) => new Set(list.map(s => s.toLowerCase())).size === list.length;
+/** Retrieval aids only: never delivered text and never evidence. */
+const aliases = z.array(phrase(KNOWLEDGE_LIMITS.aliasCharacters)).max(KNOWLEDGE_LIMITS.aliases).refine(unique, "Duplicate alias");
+const asks = z.array(phrase(KNOWLEDGE_LIMITS.askCharacters)).max(KNOWLEDGE_LIMITS.asks).refine(unique, "Duplicate ask");
+const sha = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u);
+/** The commit a decision cites. Patch id, subject and files let a squash or rebase copy match it. */
+const commit = z.object({
+  sha, patch_id: sha.optional(), subject: phrase(512).optional(),
+  files: z.array(file).max(KNOWLEDGE_LIMITS.commitFiles).optional(),
+}).strict();
 const checkBase = { role: z.enum(["complete", "supporting"]), files: z.record(file, hash).refine(v => Object.keys(v).length <= 128, "Too many check files") };
 const count = z.object({ count: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict();
 const match = z.enum(["literal", "structural"]);
@@ -59,7 +70,10 @@ const metadata = z.object({
   one_line: line.refine(s => s.length <= KNOWLEDGE_LIMITS.oneLineCharacters, "One-line claim is too long"),
   when: z.array(z.object({ type: z.enum(["anti", "required", "rejected", "creates"]), match, pattern: line }).strict()).max(32).optional(),
   checks: z.array(CheckSchema).max(32), companions: z.array(EntryIdSchema).max(32).optional(),
-  status: z.enum(["active", "retired"]),
+  aliases: aliases.optional(), asks: asks.optional(), commit: commit.optional(),
+  supersedes: z.array(EntryIdSchema).max(KNOWLEDGE_LIMITS.supersedes).optional(),
+  // proposed: written by an agent and not yet in force; never delivered as accepted knowledge.
+  status: z.enum(["active", "proposed", "retired"]),
   retired: z.object({ reason: line, by: line, at: date }).strict().optional(), created: date,
 }).strict().superRefine((m, ctx) => {
   if (m.source.type === "person" && !m.source.quote) ctx.addIssue({ code: "custom", path: ["source", "quote"], message: "A person source requires the exact typed quote" });

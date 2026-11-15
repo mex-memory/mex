@@ -171,3 +171,15 @@ func TestSnapshotTiming(t *testing.T) {
 	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
 	t.Logf("500 entries: cold (1 run) %s; unchanged (200 runs) p50 %s p95 %s; full form estimate %d tokens", elapsed, times[99], times[189], s.Items[0].FullTokens)
 }
+
+func TestCodecKeepsRetrievalAidsAndCommitAnchor(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	content := "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope: [\"**\"]\n  source: {type: observed, ref: commit}\n  evidence: observed\n  one_line: Use the logger.\n  checks: []\n  aliases: [log setup]\n  asks: [\"how do I log?\"]\n  commit: {sha: \"" + sha + "\", subject: \"Use the logger\", files: [src/log.ts]}\n  supersedes: [mx_older1]\n  status: proposed\n  created: 2026-11-15\n---\nUse the logger.\n"
+	e, err := Parse([]byte(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(e.Aliases, []string{"log setup"}) || !reflect.DeepEqual(e.Asks, []string{"how do I log?"}) || e.Commit == nil || e.Commit.SHA != sha || e.Commit.Subject != "Use the logger" || !reflect.DeepEqual(e.Commit.Files, []string{"src/log.ts"}) || !reflect.DeepEqual(e.Supersedes, []string{"mx_older1"}) || e.Status != "proposed" {
+		t.Fatalf("fields lost: %+v", e)
+	}
+}
