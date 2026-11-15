@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+// The test's cleanup child starts a fresh copy of this test binary and then a
+// cold Node. On Windows runners that took up to 5 s, the product's bound, and
+// failed the test 3 times in 20 CI runs. The child allows this much instead;
+// what the test checks is which cases clean up, not how fast.
+const peerCleanupTimeout = 30 * time.Second
+
 func TestOrphanCleanupOnlyForDefinitelyMissingCLI(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -54,7 +60,7 @@ func TestOrphanCleanupOnlyForDefinitelyMissingCLI(t *testing.T) {
 					t.Fatal("only a session start inspects an absent CLI")
 				}
 				if !sourceExists && sessionStart {
-					deadline := time.Now().Add(orphanCleanupTimeout + 2*time.Second)
+					deadline := time.Now().Add(peerCleanupTimeout + 2*time.Second)
 					for !exists(marker) && time.Now().Before(deadline) {
 						time.Sleep(10 * time.Millisecond)
 					}
@@ -71,6 +77,7 @@ func TestOrphanCleanupPeer(t *testing.T) {
 	if os.Getenv("MEX_ORPHAN_CLEANUP_TEST_CHILD") != "1" {
 		return
 	}
+	orphanCleanupTimeout = peerCleanupTimeout
 	Run([]string{"--cleanup-orphan"}, nil, io.Discard, io.Discard, os.Getenv)
 	os.Exit(0)
 }
