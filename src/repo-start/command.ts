@@ -11,7 +11,7 @@ import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { CheckoutRow, RecordWriter } from "../record/index.js";
 import { detectCaller, type Caller } from "./caller.js";
-import { classifyPlace, type Place } from "./place.js";
+import { classifyPlace, displayPath, type Place } from "./place.js";
 import { renderScreen, screenMode, type Finding, type ScreenModel } from "./screen.js";
 
 /** Test-only: kill the process at a step boundary to prove each one leaves a clean state. */
@@ -153,8 +153,8 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   const place = classifyPlace(options.cwd ?? process.cwd());
   if (place.kind === "refused") {
     write(place.reason === "drive-root"
-      ? `MEX doesn't turn on at a drive root (${place.root}). Run \`mex\` inside a project folder.`
-      : `MEX doesn't turn on in your home folder or above it (${place.root}); its hooks would cover every session below. Run \`mex\` inside a project folder.`);
+      ? `MEX doesn't turn on at a drive root (${displayPath(place.root)}). Run \`mex\` inside a project folder.`
+      : `MEX doesn't turn on in your home folder or above it (${displayPath(place.root)}); its hooks would cover every session below. Run \`mex\` inside a project folder.`);
     return { exitCode: 1, place: place.kind, turnedOn: false };
   }
 
@@ -168,7 +168,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     try { known = !!reader?.get("SELECT 1 AS found FROM checkouts WHERE path=?", place.root); } finally { reader?.close(); }
     if (!known && !options.folder) {
       if (!interactive) {
-        write(`${place.root} isn't a git repo, so MEX didn't turn it on. To turn it on for this folder, run: ${FOLDER_COMMAND}`);
+        write(`${displayPath(place.root)} isn't a git repo, so MEX didn't turn it on. To turn it on for this folder, run: ${FOLDER_COMMAND}`);
         return { exitCode: 0, place: place.kind, turnedOn: false, folderQuestion: true };
       }
       if (!await ask(FOLDER_QUESTION)) {
@@ -187,7 +187,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   try {
     if (place.kind === "git") {
       const { turnOnRepository } = await import("./turn-on.js");
-      const turnedOn = turnOnRepository(writer, place.root);
+      const turnedOn = turnOnRepository(writer, place.root, undefined, { top: place.root, shallow: place.shallow, commonDir: place.commonDir });
       projectId = turnedOn.projectId; checkout = turnedOn.checkout;
     } else {
       const { turnOnFolder } = await import("./folder.js");
@@ -274,7 +274,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   if (git && existsSync(join(checkout.path, ".mex", "ROUTER.md"))) notes.push("This repo has MEX 0.8 project files; `mex hub` opens them.");
   if (hooks.note) notes.push(hooks.note);
   notes.push(...hooks.notices);
-  const model: ScreenModel = { name: basename(checkout.path), ms: elapsed(), costUsd: 0, hidden, findings, notes };
+  const model: ScreenModel = { name: basename(displayPath(checkout.path)), ms: elapsed(), costUsd: 0, hidden, findings, notes };
   for (const line of renderScreen(model, mode)) write(line);
 
   // The offer slot: empty in beta.1; learning-03 registers its question.

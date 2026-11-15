@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { realPath } from "../src/record/project.js";
@@ -34,6 +34,14 @@ function localState(root: string): void {
   writeFileSync(join(root, ".mex", "local", "state.json"), "{}\n");
   writeFileSync(join(root, ".mex", "graph.db"), "");
   writeFileSync(join(root, ".mex", "wiki.db-wal"), "");
+}
+/** A run stopped by `process.kill(pid, "SIGKILL")`: Windows ends it with exit code 1 and no signal. */
+function expectKilled(result: ReturnType<typeof spawnSync>): void {
+  if (process.platform === "win32") {
+    expect(result.signal).toBeNull();
+    expect(result.status).toBe(1);
+  } else expect(result.signal).toBe("SIGKILL");
+  expect(String(result.stdout)).not.toMatch(/^MEX [-·] |Ran \d+ batch/mu);
 }
 function leftovers(f: ReturnType<typeof fixture>): string[] {
   const found = readdirSync(join(f.root, ".git", "info")).filter(name => name.startsWith(".mex-"));
@@ -113,7 +121,7 @@ describe("bare mex in a repository", () => {
     const projects = join(f.home, "projects");
     const facts = () => join(projects, readdirSync(projects)[0]!, "code-facts.json");
     const killed = f.run(["jobs", "run"], { env: { [KILL_AT_VARIABLE]: "code-facts" } });
-    expect(killed.signal).toBe("SIGKILL");
+    expectKilled(killed);
     expect(existsSync(facts())).toBe(false);
     const again = f.run(["jobs", "run"]);
     expect(again.status, again.stderr).toBe(0);
@@ -203,7 +211,8 @@ describe("bare mex in a repository", () => {
     const plain = join(f.base, "plain"); mkdirSync(plain);
     const folder = f.run([], { cwd: plain });
     expect(folder.status).toBe(0);
-    expect(folder.stdout).toBe(`${plain} isn't a git repo, so MEX didn't turn it on. To turn it on for this folder, run: mex --folder\n`);
+    // Shown as the folder is spelled on disk, even where MEX compares paths lowercased (Windows).
+    expect(folder.stdout).toBe(`${realpathSync.native(plain)} isn't a git repo, so MEX didn't turn it on. To turn it on for this folder, run: mex --folder\n`);
     expect(existsSync(join(f.home, "record.db"))).toBe(false);
     expect(existsSync(join(plain, ".mex"))).toBe(false);
   });
@@ -259,11 +268,11 @@ describe("bare mex in a repository", () => {
     expect(f.status()).toBe("");
   });
 
-  it.skipIf(process.platform === "win32").each(KILL_POINTS)("an interruption after %s leaves a clean state and the next run finishes", (point) => {
+  it.each(KILL_POINTS)("an interruption after %s leaves a clean state and the next run finishes", (point) => {
     const f = fixture();
     const before = readFileSync(f.exclude);
     const killed = f.run([], { env: { [KILL_AT_VARIABLE]: point } });
-    expect(killed.signal).toBe("SIGKILL");
+    expectKilled(killed);
     expect(leftovers(f)).toEqual([]);
     expect(f.status()).toBe("");
     const after = readFileSync(f.exclude);

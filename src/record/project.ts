@@ -13,17 +13,25 @@ export function absolutePath(path: string): string {
 }
 export function realPath(path: string): string { return absolutePath(realpathSync.native(path)); }
 export interface ProjectIdentity { id: string; kind: "git" | "folder"; rootPath: string; provisional?: "unborn" | "shallow"; }
+/** Answers a caller already has from git for this directory: its top level and whether the clone is shallow. */
+export interface KnownRepository { top?: string; shallow?: boolean; }
 export type GitRunner = (directory: string, args: string[]) => string;
 const runGit: GitRunner = (directory, args) => execFileSync("git", ["-C", directory, ...args], {
   encoding: "utf8", timeout: 1500, maxBuffer: 4 * 1024 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
 }).trim();
 
 /** Shallow and unborn repositories cannot prove their historical root: use a folder id. */
-export function projectIdentity(directory: string, git: GitRunner = runGit): ProjectIdentity {
+export function projectIdentity(directory: string, git: GitRunner = runGit, known: KnownRepository = {}): ProjectIdentity {
   let rootPath = realPath(directory);
   try {
-    rootPath = realPath(git(rootPath, ["rev-parse", "--show-toplevel"]));
-    if (git(rootPath, ["rev-parse", "--is-shallow-repository"]) === "true") {
+    // One git process for both answers, or none when the caller has them: each start costs tens of
+    // milliseconds on Windows.
+    const [top, shallow] = known.top !== undefined && known.shallow !== undefined
+      ? [known.top, known.shallow ? "true" : "false"]
+      : git(rootPath, ["rev-parse", "--show-toplevel", "--is-shallow-repository"]).split(/\r?\n/u);
+    if (!top) throw new Error("git printed no top level");
+    rootPath = realPath(top);
+    if (shallow === "true") {
       return { id: `f-${shortHash(rootPath)}`, kind: "folder", rootPath, provisional: "shallow" };
     }
     try {

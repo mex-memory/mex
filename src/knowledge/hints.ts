@@ -229,7 +229,10 @@ export function expireHints(options: MemoryOptions, now = new Date()): { expired
 export function refreshHints(options: MemoryOptions, now = new Date(), setting?: number) {
   if (setting !== undefined && (!Number.isSafeInteger(setting) || setting < 1 || setting > 120)) throw new KnowledgeError("INVALID_SETTING", "Hint expiry must be between 1 and 120 calendar months.");
   const discovery = discoverMemory(options, now), project = knowledgeProject(options);
-  const context = references(project.root), prepared: Array<{ candidate: typeof discovery.candidates[number]; entry: KnowledgeEntry }> = [];
+  // The repository walk is only needed to check notes; most refreshes find none.
+  let walked: ReturnType<typeof references> | undefined;
+  const context = () => walked ??= references(project.root);
+  const prepared: Array<{ candidate: typeof discovery.candidates[number]; entry: KnowledgeEntry }> = [];
   const sourceChecks = new Map<string, boolean>();
   const allowedRoots = memoryRoots(options);
   separateStorage(project.location.home, project.projectId, allowedRoots);
@@ -238,10 +241,10 @@ export function refreshHints(options: MemoryOptions, now = new Date(), setting?:
       const sourceKey = `${candidate.agent}\n${candidate.sourceRoot}\n${candidate.sourcePath}\n${candidate.sourceHash}`;
       if (!sourceChecks.has(sourceKey)) sourceChecks.set(sourceKey, checkMemorySource(candidate, options, allowedRoots));
       if (!sourceChecks.get(sourceKey)) { discovery.skipped++; discovery.partial = true; continue; }
-      const text = sanitizeText(candidate.text, context);
+      const text = sanitizeText(candidate.text, context());
       const id = `mx_${createHash("sha256").update(`${candidate.agent}\n${claimHash(text)}`).digest("hex").slice(0, 32)}`;
       const entry = gateEntry({ mex: { id, kind: "hint", scope: ["**"], source: { type: "agent-memory", ref: candidate.ref }, evidence: "observed", one_line: text,
-        checks: [], status: "active", created: new Date(candidate.observedAt).toISOString().slice(0, 10) }, text }, context);
+        checks: [], status: "active", created: new Date(candidate.observedAt).toISOString().slice(0, 10) }, text }, context());
       prepared.push({ candidate, entry });
     } catch (error) {
       if (!(error instanceof KnowledgeError) || !["SECRET_FOUND", "INVALID_ENTRY"].includes(error.code)) throw error;

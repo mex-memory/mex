@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { CheckoutRow, RecordWriter } from "../record/index.js";
-import { projectIdentity, realPath, type GitRunner } from "../record/project.js";
+import { projectIdentity, realPath, type GitRunner, type KnownRepository } from "../record/project.js";
 
 export interface TurnOnResult {
   projectId: string;
@@ -31,19 +32,29 @@ export function parseWorktrees(porcelain: string): string[] {
   return paths;
 }
 
+/** What `mex` already learned about the repository, so turning it on doesn't ask git again. */
+export interface KnownPlace extends KnownRepository {
+  /** The `.git` folder every worktree shares; without a `worktrees` folder in it there are no others. */
+  commonDir?: string;
+}
+
 /**
  * The yes for a repository: register the checkout `mex` ran in and every other
  * worktree git lists. An existing registration keeps its state, so a checkout
  * someone turned off with `mex off` stays off.
  */
-export function turnOnRepository(writer: RecordWriter, root: string, git: GitRunner = runGit): TurnOnResult {
+export function turnOnRepository(writer: RecordWriter, root: string, git: GitRunner = runGit, known: KnownPlace = {}): TurnOnResult {
   const existing = writer.checkout(root);
   const registered = !existing || !!existing.provisional;
-  const project = registered ? writer.register(projectIdentity(root, git)) : writer.project(existing.project_id)!;
+  const project = registered ? writer.register(projectIdentity(root, git, known)) : writer.project(existing.project_id)!;
   const checkout = writer.checkout(root)!;
   let worktrees = 0;
   let listed: string[] = [];
-  try { listed = parseWorktrees(git(root, ["worktree", "list", "--porcelain"])); } catch { /* git too old or busy: only this checkout */ }
+  // Git keeps each linked worktree under <common dir>/worktrees; with none there, skip the git start.
+  const linked = known.commonDir === undefined || existsSync(join(known.commonDir, "worktrees"));
+  if (linked) {
+    try { listed = parseWorktrees(git(root, ["worktree", "list", "--porcelain"])); } catch { /* git too old or busy: only this checkout */ }
+  }
   for (const path of listed) {
     let real: string;
     try { if (!existsSync(path)) continue; real = realPath(path); } catch { continue; }

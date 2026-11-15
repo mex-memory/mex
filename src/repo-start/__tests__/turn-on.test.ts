@@ -35,8 +35,9 @@ describe("where mex runs", () => {
     git(r.root, "worktree", "add", "-q", join(r.base, "wt"), "-b", "wt");
     const main = classifyPlace(join(r.root, "sub"), { home: r.home });
     const linked = classifyPlace(join(r.base, "wt"), { home: r.home });
-    expect(main).toEqual({ kind: "git", root: r.root, excludeFile: join(r.root, ".git", "info", "exclude"), shallow: false });
-    expect(linked).toMatchObject({ kind: "git", root: join(r.base, "wt"), excludeFile: join(r.root, ".git", "info", "exclude") });
+    expect(main).toEqual({ kind: "git", root: r.root, excludeFile: join(r.root, ".git", "info", "exclude"), shallow: false, commonDir: join(r.root, ".git") });
+    // Git prints a linked worktree's common dir in its own spelling; MEX's must match the main checkout's.
+    expect(linked).toMatchObject({ kind: "git", root: join(r.base, "wt"), excludeFile: join(r.root, ".git", "info", "exclude"), commonDir: join(r.root, ".git") });
     mkdirSync(join(r.base, "plain"));
     expect(classifyPlace(join(r.base, "plain"), { home: r.home })).toEqual({ kind: "folder", root: join(r.base, "plain") });
     expect(classifyPlace(r.base, { home: r.home })).toMatchObject({ kind: "refused", reason: "above-home" });
@@ -69,6 +70,29 @@ describe("turning a repository on", () => {
       expect(again).toMatchObject({ registered: false, worktrees: 0 });
       const fromWorktree = turnOnRepository(writer, wt);
       expect(fromWorktree.checkout.state).toBe("off");
+    } finally { writer.close(); }
+  });
+
+  it("asks git for worktrees only when the common dir has some, and reuses what classifyPlace knows", () => {
+    const r = repo();
+    const asked: string[] = [];
+    const counting = (directory: string, args: string[]) => {
+      asked.push(args.join(" "));
+      return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8" }).trim();
+    };
+    const place = classifyPlace(r.root, { home: r.home });
+    if (place.kind !== "git") throw new Error(`expected a git place, got ${place.kind}`);
+    const known = { top: place.root, shallow: place.shallow, commonDir: place.commonDir };
+    const writer = openRecord({ home: r.home, isNetwork: () => false });
+    try {
+      expect(turnOnRepository(writer, r.root, counting, known)).toMatchObject({ registered: true, worktrees: 0 });
+      // Only the root commit for the project id: no top level, shallow or worktree questions.
+      expect(asked).toEqual(["rev-list --max-parents=0 HEAD"]);
+      const wt = join(r.base, "wt");
+      git(r.root, "worktree", "add", "-q", wt, "-b", "wt");
+      asked.length = 0;
+      expect(turnOnRepository(writer, r.root, counting, known)).toMatchObject({ registered: false, worktrees: 1 });
+      expect(asked).toContain("worktree list --porcelain");
     } finally { writer.close(); }
   });
 });
