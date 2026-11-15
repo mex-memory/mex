@@ -36,6 +36,13 @@ export function snapshotNotes(writer: RecordWriter, project: string): NoteSnapsh
   const check = personalReadGuard(join(parent, "notes"));
   const snapshot = directorySnapshot(join(parent, "notes")); check(); return snapshot;
 }
+/** Read-only counterpart for previews; an absent project stays absent. */
+export function readNotes(home: string, project: string): NoteSnapshot {
+  const parent = containedDirectory(home, ["projects", project]);
+  if (!parent) return { files: new Map(), digest: digest(new Map()) };
+  const check = personalReadGuard(join(parent, "notes"));
+  const snapshot = directorySnapshot(join(parent, "notes")); check(); return snapshot;
+}
 function syncDirectory(path: string): void {
   let fd: number | undefined;
   try { fd = openSync(path, "r"); fsyncSync(fd); }

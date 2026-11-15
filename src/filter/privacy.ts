@@ -4,6 +4,7 @@ import { lstatSync } from "node:fs";
 import { readBoundedTextFile } from "../knowledge/files.js";
 import { assertNoSecrets } from "../knowledge/gates.js";
 import type { FilterCandidate } from "./job.js";
+import { backgroundEnvironment } from "./environment.js";
 
 export type PrivacyHold = "model-private" | "private-tag" | "new-name" | "new-host" | "new-email" | "source-privacy-unknown";
 export interface RepoVocabulary { words: Set<string>; text: string; }
@@ -11,7 +12,7 @@ const words = (s: string) => s.normalize("NFKC").match(/[\p{L}\p{N}_-]+/gu) ?? [
 /** Bounded, read-only repo vocabulary. Learned notes cannot attest to themselves. */
 export function repoVocabulary(root: string): RepoVocabulary {
   let paths: string[];
-  try { paths = execFileSync("git", ["ls-files", "-z"], { cwd: root, timeout: 5000, maxBuffer: 1 << 20, stdio: ["ignore", "pipe", "ignore"] }).toString().split("\0"); }
+  try { paths = execFileSync("git", ["ls-files", "-z"], { cwd: root, timeout: 5000, maxBuffer: 1 << 20, stdio: ["ignore", "pipe", "ignore"], env: backgroundEnvironment() }).toString().split("\0"); }
   catch { paths = ["README.md", "package.json", "pyproject.toml", "Cargo.toml", "go.mod"]; }
   const corpus: string[] = [];
   let bytes = 0, files = 0;

@@ -131,3 +131,39 @@ func TestJudgeReceiptCannotUseAnotherHostsCollidingSession(t *testing.T) {
 		t.Fatalf("colliding session marked the preview: %v %v", shown, err)
 	}
 }
+
+func TestLearningPreviewUsesTheSameSessionReceipt(t *testing.T) {
+	for _, agent := range []string{"claude-code", "codex"} {
+		t.Run(agent, func(t *testing.T) {
+			h, _ := fakeHome(t, true)
+			checkout := judgeRepo(t)
+			old, ev := seedJudgeNotice(t, h, checkout, agent)
+			id := strings.Replace(old, "judge.fix.", "learning.team.", 1)
+			key := place.ShortHash(checkout + "\x00" + agent + "\x00s1")
+			db, err := sql.Open("sqlite", filepath.Join(h.mex, "record.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec("UPDATE notices SET id=?,kind=? WHERE id=?", id, "learning-preview."+key, old); err != nil {
+				t.Fatal(err)
+			}
+			ids, _ := json.Marshal([]string{id})
+			write(t, filepath.Join(h.mex, "judge-notices", key+".json"), string(ids))
+			if got, _ := judgeNotice(ev, h, h.mex); got != id {
+				t.Fatal("learning preview not delivered", got)
+			}
+			other := ev
+			other.SessionID = "someone-else"
+			if got, _ := judgeNotice(other, h, h.mex); got != "" {
+				t.Fatal("preview crossed sessions")
+			}
+			if !markJudgeNotice(ev, h, h.mex, id, time.Now()) {
+				t.Fatal("no receipt")
+			}
+			if got, _ := judgeNotice(ev, h, h.mex); got != "" {
+				t.Fatal("preview repeated", got)
+			}
+		})
+	}
+}
