@@ -132,7 +132,7 @@ func LoadLight(directory, home, project, checkout string) (Snapshot, error) {
 		// A file modified within 2 s of the write may share its timestamp
 		// with an edit that came after it: never trust it.
 		if lf, err := decodeLight(b); err == nil && lf.Version == lightVersion && lf.Stamp == stamp && newest < lf.Written-int64(2*time.Second) {
-			snap := Snapshot{Light: true, Items: lf.Items}
+			snap := Snapshot{Light: true, Items: lf.Items, Stamp: stamp}
 			for i := range snap.Items {
 				it := &snap.Items[i]
 				if it.Entry == nil {
@@ -158,6 +158,7 @@ func LoadLight(directory, home, project, checkout string) (Snapshot, error) {
 		lf.Items = append(lf.Items, lighten(it))
 	}
 	saveFile(path, encodeLight(lf))
+	full.Stamp = stamp
 	return full, nil
 }
 
