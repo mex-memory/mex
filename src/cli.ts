@@ -190,6 +190,14 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
       restartIfPending();
     }
   } catch { /* never affects the command */ }
+  if (process.stderr.isTTY && Number(process.exitCode ?? 0) === 0 && !actionCommand.optsWithGlobals().json
+    && !["review", "completion", "__background", "__hook-note"].includes(family.name()) && !process.argv.includes("--json")) {
+    try {
+      const { dailyReviewLine } = await import("./review/daily.js");
+      const line = dailyReviewLine({ projectPath: process.cwd() });
+      if (line) console.error(line);
+    } catch { /* a reminder never affects the command */ }
+  }
 });
 
 async function runRepoStartCommand(options: { folder?: boolean; wait?: boolean } = {}): Promise<void> {

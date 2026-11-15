@@ -1,5 +1,6 @@
 import { Command, Option } from "commander";
 import { ENTRY_KINDS, KnowledgeError } from "./contract.js";
+import { buildReviewCommand } from "../review/cli.js";
 
 export function buildKnowledgeCommands(): Command[] {
   const sessionWhat = new Command("what").description("Read what MEX gave or withheld this session")
@@ -242,7 +243,7 @@ export function buildKnowledgeCommands(): Command[] {
       const result = previewBrief({ projectPath: process.cwd() }, opts.agent, opts.path);
       console.log(opts.json ? JSON.stringify(result) : result.text);
     }));
-  return [sessionWhat, save, search, full, change, ...retire, hints, rules, share, brief];
+  return [sessionWhat, save, search, full, change, ...retire, hints, rules, share, brief, buildReviewCommand()];
 }
 /** After a share: the pull request, or the push command (MEX doesn't push on its own). */
 function nextStep(done: { branch: string; pr?: string }): string {

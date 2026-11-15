@@ -22,13 +22,15 @@ import { typedQuote } from "./transcript.js";
 import { promotionDecision, type Evidence } from "./evidence.js";
 import { repositoryPolicy, sharingEnabled } from "./repository.js";
 import { backgroundEnvironment } from "./environment.js";
+import { stageReview, reviewQuiet, learningReviewId } from "../review/state.js";
+import { reviewReason } from "../review/reasons.js";
 
 export const PUBLICATION_WAIT = "Waiting: show the learned entry diff in this session";
 const PositionSchema = z.object({ branch: z.string().nullable(), head: z.string().nullable() }).strict();
 const Offer = z.object({ version: z.literal(1), id: EntryIdSchema, checkout: z.string().max(4096), position: PositionSchema,
   personal_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/u), state: z.enum(["pending", "preview", "applied", "held", "review"]),
   last_job: z.string().max(128).optional(), reason: z.string().max(128).optional(), notice: z.string().max(128).optional(),
-  actor: z.string().max(24).optional(), session: z.string().max(512).optional(), preview_at: z.number().optional(),
+  actor: z.string().max(24).optional(), session: z.string().max(512).optional(), preview_at: z.number().optional(), review_at: z.number().optional(),
   revision: z.string().max(64).optional(), after: z.string().max(64 << 10).optional(), metadata_hash: z.string().max(80).optional(),
 }).strict();
 type OfferRow = z.infer<typeof Offer>;
@@ -134,14 +136,21 @@ export async function publishNext(writer: RecordWriter, project: string, params:
   try { if (Buffer.byteLength(String(row.value)) > 128 << 10) throw new Error(); offer = Offer.parse(JSON.parse(String(row.value))); }
   catch { throw new Error("Learned-entry publication metadata is invalid; notes were kept."); }
   const hold = (reason: string, review = false) => {
-    offer = { ...offer, state: review ? "review" : "held", reason, last_job: job.id };
-    save(writer, project, params, job, offer);
+    offer = { ...offer, state: review ? "review" : "held", reason, last_job: job.id, ...(review ? { review_at: offer.review_at ?? deps.clock() } : {}) };
+    save(writer, project, params, job, offer, () => {
+      if (!review) return;
+      const personal = readPersonal(writer, project, offer.id);
+      if (personal && hash(personal.raw) === offer.personal_hash) stageReview(writer, project, learningReviewId(project, personal.entry), personal.entry,
+        { producer: "learning", key: keyFor(offer.id), checkout: params.checkout, level: "personal", path: personal.path, original_hash: offer.personal_hash }, reviewReason(reason), true, offer.review_at);
+    });
     return { results: 0, summary: "Learned entry stays personal: " + reason };
   };
   if (!sharingEnabled(writer, project, params.checkout)) return hold("not-shared");
   if (writer.setting(project, "learning.sharing") === "manual") return hold("manual-sharing");
   const found = readPersonal(writer, project, offer.id);
   if (!found || hash(found.raw) !== offer.personal_hash) return hold("personal-entry-changed");
+  const quiet = reviewQuiet(writer, project, found.entry, deps.clock());
+  if (quiet) return hold(quiet);
   const metadata = learningMetadata(writer, project, offer.id), metadataHash = hash(JSON.stringify(metadata));
   if (metadata.holds?.length || shareProblems(found.entry).length) return hold("privacy");
   if (found.entry.mex.source.type !== "person" || found.entry.mex.evidence !== "person") return hold("producer-evidence-unavailable");
@@ -205,7 +214,7 @@ export async function publishNext(writer: RecordWriter, project: string, params:
     try {
       if (!owned(writer, project, params, job) || !sharingEnabled(writer, project, params.checkout) || writer.setting(project, "learning.sharing") === "manual"
         || readPersonal(writer, project, offer.id)?.raw !== found.raw || hash(JSON.stringify(learningMetadata(writer, project, offer.id))) !== metadataHash
-        || stamp(params.checkout) !== observedStamp || !shown(writer, offer)) throw new Error("Publication inputs or consent changed; entry was kept personal.");
+        || stamp(params.checkout) !== observedStamp || !shown(writer, offer) || reviewQuiet(writer, project, found.entry, deps.clock())) throw new Error("Publication inputs or consent changed; entry was kept personal.");
       if (hash(JSON.stringify(deps.verify(writer, project, found.entry, sources))) !== hash(JSON.stringify(observations))) throw new Error("Publication source changed; entry was kept personal.");
       if (hash(JSON.stringify(teamEntries({ home: writer.location.home, projectPath: params.checkout }).entries.map(t => serializeEntry(t.entry)))) !== teamHash) throw new Error("Team decisions changed; entry was kept personal.");
       for (const [path, baseline] of Object.entries(result!.inputs!)) {
