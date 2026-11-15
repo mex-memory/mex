@@ -111,7 +111,9 @@ For an automatic team update, an explicit tool edit must prove the whole
 change from the note's recorded file baseline to today's bytes. The hook pairs
 pre/post edit events, computes the expected result from the tool input, and
 retains only before/after hashes. Reads and shell commands do not establish
-ownership. Chained edits preserve the original baseline. Failed, unpaired,
+ownership. Every evaluator input needs a unique authored baseline and, when
+changed, a matching edit proof. Unowned extra dependencies go to Review.
+Chained edits preserve the original baseline. Failed, unpaired,
 ambiguous, oversized or concurrent edits lose the proof; a Git move clears it.
 Proofs bind the main session, host, checkout, branch and HEAD. Git metadata is
 read directly, including linked-worktree and packed-ref layouts; the hook
@@ -124,6 +126,14 @@ and recorded a `notices_shown` receipt. It then rechecks branch, HEAD, original
 entry, all source hashes, evaluator observations, ownership, retirement,
 consent and runner ownership before applying through the existing team writer.
 A visible follow-up says which file changed and that it belongs in the same PR.
+Final publication runs under a Git-owned, verify-only prepared transaction
+holding HEAD and its referent. The branch, inputs, ownership and consent are
+checked again under those locks. The transaction always aborts, disables
+reference hooks, and changes neither refs nor the index. Git releases its locks
+on stdin EOF if the Node worker dies. Busy or unsupported Git transactions keep
+the fix in Review. These are background commands; hooks still read metadata
+directly. Session pauses are honored at queue admission, before and after a
+model call, and before applying a fix, using both Go's row and pause mirror.
 Other sessions and branches cannot display or acknowledge that preview. If the
 originating session never reaches another visible hook, a five-minute wait
 limit moves its team fix to Review; ambiguous provenance also goes there. This
@@ -135,6 +145,8 @@ Each batch holds at most five intents of at most 256 KiB each. Exact after-bytes
 make a crash after file publication replay safely. Old cached judgments route
 without another model call. Notices use a bounded list of at most 16 IDs per
 session, with exact primary-key reads rather than a hook-side queue scan.
+Deleted notice IDs are removed from hints, and required previews take priority
+over old status lines so a full hint list cannot silently block publication.
 No database migration, dependency or public package export is added.
 
 ## Verification

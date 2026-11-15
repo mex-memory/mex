@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -14,6 +14,8 @@ import { hash, position, type Candidate } from "../evidence.js";
 import type { Judgement } from "../result.js";
 import { existingFixBranch, fixPreviewReady, routeFixes, stageFixes } from "../routing.js";
 import "../job.js";
+import * as teamWrites from "../../knowledge/team.js";
+import { judgeActor } from "../ownership.js";
 
 let base: string, root: string, home: string, writer: RecordWriter, projectId: string, hooks: DatabaseSync;
 const id = "mx_route00", oldCode = "old behavior\n", newCode = "new behavior\n";
@@ -27,9 +29,10 @@ beforeEach(() => {
   write(join(root, "api.ts"), newCode);
   writer = openRecord({ home, projectPath: root, isNetwork: () => false }); projectId = writer.checkout(root)!.project_id;
   hooks = new DatabaseSync(writer.location.hooks);
-  hooks.exec("CREATE TABLE notices_shown(notice_id TEXT PRIMARY KEY,session_id TEXT,ts TEXT); PRAGMA user_version=6");
+  hooks.exec("CREATE TABLE notices_shown(notice_id TEXT PRIMARY KEY,session_id TEXT,ts TEXT); CREATE TABLE sessions(session_id TEXT PRIMARY KEY,agent TEXT,paused INTEGER); PRAGMA user_version=6");
+  hooks.prepare("INSERT INTO sessions VALUES('session','claude-code',0)").run();
 });
-afterEach(() => { hooks.close(); writer.close(); rmSync(base, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); hooks.close(); writer.close(); rmSync(base, { recursive: true, force: true }); });
 
 async function staged(level: "team" | "personal" = "team", outcome: "rewritten" | "cannot-tell" = "rewritten") {
   const beforeEntry = entry(id, { kind: "fact", checks: [check(oldCode)] }, "The API uses the old behavior.");
@@ -133,5 +136,66 @@ describe("where judge fixes land", () => {
   it("recovers exact after-bytes left by a crash without applying twice", async () => {
     const f = await staged("personal"); write(f.path, f.after); await routeFixes(writer, f.job, f.report);
     expect(f.reviews()).toHaveLength(0); expect(parseEntry(readFileSync(f.path, "utf8")).text).toContain("new behavior");
+  });
+  it("requires ownership for every evaluator input, including reads absent from authored baselines", async () => {
+    const f = await staged(); f.proof();
+    write(join(root, "other.ts"), "a pulled dependency\n");
+    const observation = f.report.results![0]!;
+    observation.inputs!["other.ts"] = hash("a pulled dependency\n");
+    const key = writer.db.prepare("SELECT key,value FROM settings WHERE key LIKE 'judge.fix.%'").get()!;
+    const fix = JSON.parse(key.value as string);
+    fix.judgement.checks_hash = hash(JSON.stringify({ verdict: "broken", checks: observation.checks, inputs: observation.inputs }));
+    fix.judgement.files.push({ path: "other.ts", hash: hash("a pulled dependency\n") });
+    writer.db.prepare("UPDATE settings SET value=? WHERE scope=? AND key=?").run(JSON.stringify(fix), projectId, key.key!);
+    expect(await routeFixes(writer, f.job, f.report)).toEqual({ waiting: false, gaps: true });
+    expect(f.reviews()).toHaveLength(1); expect(f.preview()).toBeUndefined(); expect(readFileSync(f.path, "utf8")).toBe(f.before);
+  });
+  it.each(["record", "mirror"])("honors a session pause in the %s after its preview was shown", async where => {
+    const f = await staged(); f.proof(); await routeFixes(writer, f.job, f.report); f.acknowledge();
+    if (where === "record") hooks.prepare("UPDATE sessions SET paused=1 WHERE session_id='session'").run();
+    else write(join(writer.location.directory, "hook-paused", shortHash("claude-code\0session")), "");
+    expect((await routeFixes(writer, f.job, f.report)).waiting).toBe(true);
+    expect(fixPreviewReady(writer, f.job)).toBe(false);
+    expect(readFileSync(f.path, "utf8")).toBe(f.before);
+  });
+  it("removes dead notice hints before admitting a new preview", async () => {
+    const f = await staged(); f.proof();
+    const marker = join(writer.location.directory, "judge-notices", `${judgeActor(root, "claude", "session")}.json`);
+    const dead = Array.from({ length: 16 }, (_, i) => `judge.fix.${i.toString(16).padStart(24, "0")}.preview`);
+    write(marker, JSON.stringify(dead));
+    await routeFixes(writer, f.job, f.report);
+    expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual([f.preview()!.id]);
+  });
+  it("admits a required preview when old live status lines fill the hints", async () => {
+    const f = await staged(); f.proof();
+    const actor = judgeActor(root, "claude", "session");
+    const marker = join(writer.location.directory, "judge-notices", `${actor}.json`);
+    const statuses = Array.from({ length: 16 }, (_, i) => `judge.fix.${i.toString(16).padStart(24, "0")}.updated`);
+    for (const status of statuses) writer.db.prepare("INSERT INTO notices VALUES(?,?,?,?)").run(status, `judge-updated.${actor}`, "{}", new Date().toISOString());
+    write(marker, JSON.stringify(statuses));
+    await routeFixes(writer, f.job, f.report);
+    const hints = JSON.parse(readFileSync(marker, "utf8"));
+    expect(hints).toHaveLength(16); expect(hints).toContain(f.preview()!.id);
+  });
+  it("protects publication from a concurrent Git branch switch", async () => {
+    const f = await staged(); f.proof(); await routeFixes(writer, f.job, f.report); f.acknowledge();
+    const apply = teamWrites.applyTeamWrite;
+    let switched = false;
+    vi.spyOn(teamWrites, "applyTeamWrite").mockImplementationOnce((...args) => {
+      try { git("switch", "-c", "unrelated"); switched = true; } catch { /* publication owns Git's HEAD lock */ }
+      return apply(...args);
+    });
+    await routeFixes(writer, f.job, f.report);
+    expect(switched).toBe(false); expect(git("branch", "--show-current")).toBe("work");
+    expect(readFileSync(f.path, "utf8")).toBe(f.after);
+  });
+  it("re-proves edit ownership after preparing the exact write", async () => {
+    const f = await staged(); f.proof(); await routeFixes(writer, f.job, f.report); f.acknowledge();
+    const prepare = teamWrites.prepareTeamWrite;
+    vi.spyOn(teamWrites, "prepareTeamWrite").mockImplementationOnce((...args) => {
+      const preview = prepare(...args); f.proof({ session_id: "another session" }); return preview;
+    });
+    await routeFixes(writer, f.job, f.report);
+    expect(readFileSync(f.path, "utf8")).toBe(f.before); expect(f.reviews()).toHaveLength(1);
   });
 });

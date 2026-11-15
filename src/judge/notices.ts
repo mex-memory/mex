@@ -15,11 +15,20 @@ export function wakeNotice(writer: RecordWriter, actor: string, id: string): voi
   const path = join(directory, `${actor}.json`);
   let ids: string[] = [];
   try { ids = IDs.parse(JSON.parse(readBoundedTextFile(path, 4096) ?? "[]")); } catch { /* replace invalid hints, never canonical data */ }
+  ids = ids.filter(id => writer.db.prepare("SELECT 1 FROM notices WHERE id=? AND kind IN (?,?)").get(id, `judge-preview.${actor}`, `judge-updated.${actor}`));
   const hooks = openHooksReadOnly({ home: writer.location.home });
   try {
     if (hooks && !hooks.diagnostic) ids = ids.filter(id => !hooks.get("SELECT 1 FROM notices_shown WHERE notice_id=?", id));
   } finally { hooks?.close(); }
-  if (!ids.includes(id) && ids.length < 16) ids.push(id);
+  if (!ids.includes(id)) {
+    // Preview receipts are required for publication; old status lines must not
+    // occupy every hint slot and silently prevent a new preview from arriving.
+    if (ids.length === 16 && id.endsWith(".preview")) {
+      const status = ids.findIndex(id => id.endsWith(".updated"));
+      if (status >= 0) ids.splice(status, 1);
+    }
+    if (ids.length < 16) ids.push(id);
+  }
   const temporary = join(directory, `.notice-${randomUUID()}`);
   try { writeFileSync(temporary, JSON.stringify(ids), { flag: "wx", mode: 0o600 }); renameSync(temporary, path); }
   finally { try { unlinkSync(temporary); } catch { /* already published */ } }

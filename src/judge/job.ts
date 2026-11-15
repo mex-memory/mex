@@ -11,6 +11,7 @@ import { evaluate, recordChecks } from "./native.js";
 import { pendingJudgeRequest, type JudgeParams } from "./pending.js";
 import { resultKey, readJudgement, type Judgement } from "./result.js";
 import { stageFixes, hasPendingFixes, needsRouting, routeFixes, fixPreviewReady, PREVIEW_WAIT } from "./routing.js";
+import { sessionWorkEnabled } from "./session.js";
 export { readJudgement, type Judgement } from "./result.js";
 
 const CheckRequest = z.object({ kind: z.enum(["key", "command", "section", "source", "value", "symbol", "pattern", "relation"]),
@@ -91,7 +92,7 @@ function allowed(writer: RecordWriter, params: JudgeParams, projectId: string): 
   const checkout = writer.checkout(params.checkout);
   return checkout?.path === params.checkout && checkout.project_id === projectId && checkout.state !== "off"
     && !(checkout.state === "off until" && Date.parse(checkout.off_until ?? "") > Date.now())
-    && automaticWorkEnabled(writer, projectId);
+    && automaticWorkEnabled(writer, projectId) && sessionWorkEnabled(writer, params.agent, params.sessionId);
 }
 const IDLE_WAIT = "Waiting: the checkout is still being edited";
 function idle(writer: RecordWriter, params: JudgeParams): boolean {

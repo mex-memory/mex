@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { openRecord, type RecordWriter } from "../../record/index.js";
 import { shortHash } from "../../record/project.js";
 import { enqueueJob, registerJobKind } from "../../record/jobs.js";
@@ -48,6 +49,17 @@ it("never queues a request whose project does not own that checkout", () => {
   mark({ project_id: `f-${"0".repeat(24)}` });
   expect(queuePendingJudgements(writer, enqueueJob)).toBe(0);
   expect(writer.db.prepare("SELECT count(*) n FROM jobs").get()!.n).toBe(0);
+});
+it("preserves a paused session's request and queues it only after resume", () => {
+  const hooks = new DatabaseSync(writer.location.hooks);
+  try {
+    hooks.exec("CREATE TABLE sessions(session_id TEXT,agent TEXT,paused INTEGER); INSERT INTO sessions VALUES('editing','codex',1); PRAGMA user_version=6");
+    mark({ session_id: "editing" });
+    expect(queuePendingJudgements(writer, enqueueJob)).toBe(0);
+    expect(existsSync(path)).toBe(true);
+    hooks.exec("UPDATE sessions SET paused=0");
+    expect(queuePendingJudgements(writer, enqueueJob)).toBe(1);
+  } finally { hooks.close(); }
 });
 
 it("keeps a concurrent edit request and restores a request if queueing fails", () => {
