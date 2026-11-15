@@ -39,6 +39,12 @@ export type { BackgroundAgentTool } from "../agent-command.js";
 /** What a background launch reports: the agent that ran (null when none could) and whether it finished. */
 export interface HeadlessPopulationLaunchResult {
   readonly tool: BackgroundAgentTool | null;
+  /**
+   * Selected agents probed for this run whose CLI was not usable, in selection order. Agents after
+   * the chosen one are never probed, so they are absent here; an empty list with `tool: null` means
+   * no selected tool can run setup automatically. Adapters that pick their own agent may omit it.
+   */
+  readonly unavailable?: BackgroundAgentTool[];
   readonly completed: boolean;
 }
 
@@ -113,16 +119,27 @@ export async function launchHeadlessSetupPopulation(
       if (options.signal?.aborted) throw new HeadlessPopulationError("cancelled");
       return available;
     };
-    const choice = options.tool !== undefined
-      ? await isAgentUsable(options.tool, options.projectRoot, isAvailable, options.requireCommands === true)
-        ? { tool: options.tool, selected: options.selectedTools.includes(options.tool) } : null
-      : await findAvailableSetupAgent(options.selectedTools, {
+    let search: { choice: SetupAgentChoice | null; unavailable: BackgroundAgentTool[] };
+    if (options.tool !== undefined) {
+      const requested = options.tool;
+      if (await isAgentUsable(requested, options.projectRoot, isAvailable, options.requireCommands === true)) {
+        search = { choice: { tool: requested, selected: options.selectedTools.includes(requested) }, unavailable: [] };
+      } else {
+        search = { choice: null, unavailable: [requested] };
+      }
+    } else {
+      search = await searchSetupAgent(options.selectedTools, {
         projectRoot: options.projectRoot, requireCommands: options.requireCommands === true, isAvailable,
       });
-    if (choice === null) return { tool: null, completed: false };
+    }
+    if (search.choice === null) return { tool: null, unavailable: search.unavailable, completed: false };
     const session = createPopulationSession(options.prompt, options.projectRoot);
     try {
-      return { tool: choice.tool, completed: await runHeadlessAgent(choice.tool, session.instruction, session.root, options) };
+      return {
+        tool: search.choice.tool,
+        unavailable: search.unavailable,
+        completed: await runHeadlessAgent(search.choice.tool, session.instruction, session.root, options),
+      };
     } finally {
       session.cleanup();
     }
@@ -157,6 +174,37 @@ export interface FindSetupAgentOptions {
   readonly isAvailable?: (command: string) => Promise<boolean>;
 }
 
+/** The outcome of one agent search: the agent to run (null when none is usable) and the selected agents probed in vain. */
+interface SetupAgentSearch {
+  readonly choice: SetupAgentChoice | null;
+  /** Selected background agents whose CLI was probed and not usable, in selection order. */
+  readonly unavailable: BackgroundAgentTool[];
+}
+
+async function searchSetupAgent(
+  selectedTools: readonly AiTool[],
+  options: FindSetupAgentOptions = {},
+): Promise<SetupAgentSearch> {
+  const isAvailable = options.isAvailable ?? ((command: string) => isAvailableAsync(command, options.signal));
+  const requireCommands = options.requireCommands === true;
+  const unavailable: BackgroundAgentTool[] = [];
+  for (const tool of selectedTools) {
+    if (!isBackgroundAgentTool(tool)) continue;
+    if (await isAgentUsable(tool, options.projectRoot, isAvailable, requireCommands)) {
+      return { choice: { tool, selected: true }, unavailable };
+    }
+    unavailable.push(tool);
+  }
+  if (selectedTools.length === 0) return { choice: null, unavailable };
+  for (const tool of UNSELECTED_FALLBACK_ORDER) {
+    if (selectedTools.includes(tool)) continue;
+    if (await isAgentUsable(tool, options.projectRoot, isAvailable, requireCommands)) {
+      return { choice: { tool, selected: false }, unavailable };
+    }
+  }
+  return { choice: null, unavailable };
+}
+
 /**
  * The agent background setup sessions use: the first agent the user selected
  * whose CLI is installed, in the user's order; otherwise any installed
@@ -168,18 +216,7 @@ export async function findAvailableSetupAgent(
   selectedTools: readonly AiTool[],
   options: FindSetupAgentOptions = {},
 ): Promise<SetupAgentChoice | null> {
-  const isAvailable = options.isAvailable ?? ((command: string) => isAvailableAsync(command, options.signal));
-  const requireCommands = options.requireCommands === true;
-  for (const tool of selectedTools) {
-    if (!isBackgroundAgentTool(tool)) continue;
-    if (await isAgentUsable(tool, options.projectRoot, isAvailable, requireCommands)) return { tool, selected: true };
-  }
-  if (selectedTools.length === 0) return null;
-  for (const tool of UNSELECTED_FALLBACK_ORDER) {
-    if (selectedTools.includes(tool)) continue;
-    if (await isAgentUsable(tool, options.projectRoot, isAvailable, requireCommands)) return { tool, selected: false };
-  }
-  return null;
+  return (await searchSetupAgent(selectedTools, options)).choice;
 }
 
 /** One line saying which agent runs the background sessions, when it is not simply the user's first choice. */

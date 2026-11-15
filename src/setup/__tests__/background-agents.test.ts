@@ -215,7 +215,7 @@ describe.each(NEW_AGENTS)("the %s adapter with a fake CLI", (tool) => {
     const result = await launchHeadlessSetupPopulation({
       ...fixture.options, onActivity: (entry) => activity.push(entry), onTranscript: (entry) => transcript.push(entry),
     });
-    expect(result).toEqual({ tool, completed: true });
+    expect(result).toEqual({ tool, unavailable: [], completed: true });
     const observed = fixture.observed();
     expect(fixture.spawn).toHaveBeenCalledWith(BACKGROUND_AGENT_CLIS[tool], expect.any(Array), expect.objectContaining({ cwd: fixture.root }));
     expect(observed.args).toEqual(buildAgentCommand(tool, observed.instruction, "headless")!.args);
@@ -262,7 +262,7 @@ describe.each(NEW_AGENTS)("the %s adapter with a fake CLI", (tool) => {
     const fixture = fakeAgent(tool, "");
     await expect(launchHeadlessSetupPopulation({
       ...fixture.options, __internal: { ...fixture.options.__internal, isAvailable: async () => false },
-    })).resolves.toEqual({ tool: null, completed: false });
+    })).resolves.toEqual({ tool: null, unavailable: [tool], completed: false });
     expect(fixture.spawn).not.toHaveBeenCalled();
     const missing = vi.fn((_command: string, _args: string[], options: object) =>
       crossSpawn(join(fixture.root, "no-such-agent-binary"), [], options));
