@@ -1,5 +1,99 @@
 # Delivery controller
 
+## Ranking and observations
+
+`delivery.scorer` selects `tiers` (default), `bm25`, `fcfs` or `risk`.
+The existing global settings and project control mirrors carry it; the
+`MEX_DELIVERY_SCORER` environment override is intended for deterministic
+comparisons. Tool misses do not read another settings file or open SQLite.
+The same scorer orders candidates and supplies admission values. FCFS uses
+only the budget; the other settings retain exact-match exemptions and the
+rising bar, including its increase after the session ceiling.
+
+Packing uses full forms while the 200-token target permits, then complete
+one-line forms, with a 600-token ordinary ceiling. Estimates include appended
+ids and the block marker. Companions travel with an admitted parent and their
+cost is checked with it. Context remains append-only and contains no clock
+times. Broken entries are withheld; changed code facts become pointers.
+
+Similarity runs before the cut and again under the ledger lock. It compares
+stemmed, stop-word-filtered word sets over the one-line and body, requiring
+0.95 containment and either the same kind or overlapping scope. Numbers and
+negative words must agree. This deliberately favors avoiding false merges;
+it does not recognize most paraphrases. Native rule text is read with existing
+per-file bounds and a 1 MiB aggregate bound. `withheld` receipts carry a
+`similar` detail instead of adding another action value.
+
+Conflict detection is narrow: opposing literal triggers, different observed
+values at an identical check target, or different commands for the same
+recipe command name in overlapping scopes. Personal notes precede native
+instructions, team entries and hints; evidence then id breaks ties. The
+winner names the other id in one line. Go writes `delivery_conflicts` in the
+same transaction as admission; Review/Hub consumers can read that table.
+Prose disagreement and the person's implicit experimental preference are
+not inferred.
+
+Typed prompts use the shared Go lexical ranker, also called by `mex recall`
+through `mex-hook --recall`. BM25F normalizes each field separately; title
+and derived aliases have weight three. Exact identifiers, query coverage,
+score gaps and other bounded features feed a small L2 logistic abstain gate.
+At most two candidates pass. Weights in `rank/frozen.go` were trained only
+on development prompts after five-fold validation; the sealed split was
+not read. Structural task notifications, standalone tool/log output and slash
+expansions do not create prompt moments. Exact decision and recipe moments
+remain separate. Recall applies its truth/privacy gates before ranking and
+reports legacy fallback in JSON when the native binary is unavailable.
+
+Prompt calls reuse one ranking result. A prompt-only `.rank.bin` cache next
+to the light snapshot stores term frequencies, document frequencies, lengths
+and exact-match metadata, validated against the listing stamp and entry
+hashes. It omits original title/body strings. Tool misses never read or build
+it. A cache miss builds once from the full snapshot; an admitted candidate
+loads only canonical selected entries, companions and prior entries needed
+for similarity, proving containment, regular files, hashes and active ids
+again. The optional BM25 admission setting retains its full corpus load. Ordinary
+hooks use no embeddings; the offline study scripts remain reproducible.
+
+Prompt statistics use a bounded, versioned `.rank.bin` cache, preserving the
+same scores and metadata checks as the statistics representation. No source
+prose is persisted there; canonical selected text is still proved afresh.
+`--delivery-trace` emits diagnostic phase durations to stderr only, including
+record open, lock, reads, admission/write and commit. Deadlines are unchanged.
+
+Epoch intent starts as `investigating`; an observed edit establishes
+`working`, literal removal can establish `changing`, and conservative typed
+shortcuts can establish `changing` or `reproducing`. A structured dependency
+removal from package.json establishes changing; an isolated JSON property
+deletion is insufficient evidence. An unchanged rerun of the latest observed
+failing command establishes reproducing on an existing record path. This
+observation stores only an epoch-local digest, never the command.
+Investigating rules wait
+until edit risk. Removing a convention can deliver it once as the current
+convention, without inventing an area usage count. Branch-name inference,
+manifest removal and unchanged-failure rerun detection are not implemented.
+
+Receipt probes observe exact recipe commands, written anti-patterns, explicit
+opened/wrong actions and subsequent scope touches. They run only on paths
+that already open storage. Explicit CLI feedback uses the Go writer and
+abstains when the active context is ambiguous. Counts feed local telemetry
+and risk; they never delete entries. Generic corrections are not guessed.
+The estimated false-send projection uses only closed epochs with neither a
+followup nor later scope touch; unobserved events limit that estimate.
+
+`mex what [--session id] [--json]` reads receipt titles and counts without
+creating or migrating storage. An exact, trimmed, case-insensitive typed
+`mex what` is consumed with one person-facing `MEX ·` line and no model
+context. It works through the existing prompt-consumption capability.
+
+`scripts/delivery-replay/` converts saved transcripts into normalized events
+and feeds the real binary's controller. It never executes saved commands or
+applies historical edits. Replays use current, copied source/check/rule files,
+so session-level labels are useful-at-some-point comparisons, not historical
+code-state or timestamp ground truth. Semantic output excludes random ids and
+timestamps; latency lives in a separate report. The synthetic fixture checks
+byte-identical output for all four settings. Offline model and ranking studies
+default to development data; only the reviewer should invoke `--split test`.
+
 The Go shim calls `native/delivery.Handle` after its existing checkout,
 off-switch and session-pause gates. The controller is silent by default: a
 note goes out only when its moment comes, every hard gate passes and its
@@ -203,9 +297,8 @@ that runs and doubts a hint withholds it.
 ## Admission and form
 
 Candidates are packed per reply: failure fixes first, then trigger strength
-(exact pattern, command, file, folder, prompt), then evidence. The first item
-goes in full when it fits under the 600-token moment ceiling, the rest in
-one-line form; items that don't fit are logged as held back. Companions travel
+(exact pattern, command, file, folder, prompt), then evidence. Full forms fill the 200-token target, then complete one-line forms fit
+under the 600-token moment ceiling; items that don't fit are logged as held back. Companions travel
 in one-line form beyond the ceiling. Under the ledger lock each item must clear
 the online-knapsack bar psi(z) = (U*e/L)^z * (L/e) for value per token, where z
 is the share of the epoch budget used; past three epoch budgets in a session z
@@ -306,7 +399,7 @@ same three again. It prints three deliveries, each once.
 
 ## Left for later tickets
 
-Ranking beyond tiers, rendering and probes (delivery-02); pattern automata,
+Pattern automata,
 the speed bump and edit checks for rules and code facts (delivery-03);
 smaller reads and outputs (delivery-04); the compaction steer and the lever
 ledger (delivery-05). The start brief fills the session-start and recovery
