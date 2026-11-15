@@ -162,8 +162,10 @@ Writers: `mex alias <id> add|remove <text>` and `mex ask ...` by hand (team entr
 take the usual preview and `--apply --expect`), and `mex entries enrich`, an
 opt-in backfill: the bare command shows what one call would cover at no cost,
 `--run` makes one batched call inside the model cap and saves a filtered
-preview, and `--apply --expect <revision>` writes exactly that preview. Later AI
-writers use `applyCandidateAids`. `mex note` itself makes no model call.
+preview, and `--apply --expect <revision>` writes exactly that preview. The
+memory filter's model call writes them for lasting items in the same call and
+keeps only what passes, before saving the candidate. Other AI writers use
+`applyCandidateAids`. `mex note` itself makes no model call.
 
 ## Decisions that cite a commit
 
