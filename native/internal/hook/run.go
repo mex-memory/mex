@@ -303,7 +303,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		reply = contract.Reply{}
 	}
 	// Session setup and the free verdict stage finish before Node discovers work.
-	if ev.Kind == contract.SessionStart || judgeReady {
+	if ev.Kind == contract.SessionStart || ev.Kind == contract.PreCompact || judgeReady {
 		startBackground(h, recordDirectory)
 	}
 	out, _ := profile.Render(ev, reply)

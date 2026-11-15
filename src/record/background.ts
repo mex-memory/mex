@@ -10,6 +10,7 @@ import { sendUsageReports } from "../telemetry/reporting.js";
 import { indexPending, queuePendingRefreshes } from "../file-index/pending.js";
 import { queueStaleCodeFacts } from "../repo-start/history/freshness.js";
 import { judgePending, queuePendingJudgements } from "../judge/pending.js";
+import { filterPending, queuePendingFilters } from "../filter/pending.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
@@ -131,7 +132,7 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     const row = lease(writer);
     const live = leaseLive(row, settings);
     if (live && row.version === VERSION) return { started: false, reason: "running" };
-    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory) && !judgePending(writer.location.directory)) {
+    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer)) {
       clearPending(writer);
       return { started: false, reason: "no-work" };
     }
@@ -262,6 +263,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       queuePendingRefreshes(writer);
       // Hooks request work with bounded files; only Node owns model jobs.
       try { queuePendingJudgements(writer, queueJob, clock()); } catch { /* a later pass retries */ }
+      try { queuePendingFilters(writer, queueJob); } catch { /* a later pass retries */ }
       // Code facts follow new commits: re-read a project's history once its HEAD has moved.
       if (clock() - lastFreshness >= 60_000) {
         lastFreshness = clock();
@@ -300,6 +302,7 @@ export async function runPendingInForeground(writer: RecordWriter, budgetMs = 60
   while (Date.now() < end) {
     // The same durable requests work when the detached process cannot start.
     queuePendingJudgements(writer, queueJob);
+    queuePendingFilters(writer, queueJob);
     requeueReadyJobs(writer);
     if (await runOneBatch(writer, self) === "idle") break;
     batches++;
