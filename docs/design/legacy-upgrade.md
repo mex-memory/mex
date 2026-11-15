@@ -22,6 +22,10 @@ become personal entries; original log files stay. Personal imports and approved
 local cleanup apply immediately after explicit application. Tracked changes are
 committed to a separate `mex/upgrade-YYYY-MM-DD` branch. Only `--pr` pushes.
 
+Fresh temporary worktrees are checked against the base and initialized with the
+reviewed source bytes, accounting for Git's LF/CRLF conversion. Original-source
+validation and recovery after initialization still compare exact bytes.
+
 ## What survives
 
 Human AGENTS/ROUTER/context/pattern documents remain. Router rows and obsolete

@@ -15,6 +15,7 @@ import { revisionOf } from "../team/artifacts/revision.js";
 import type { RepoRelativePath } from "../team/contracts/shared.js";
 import { prepareUpgrade, type UpgradePlan } from "./plan.js";
 import { readLegacyScaffold } from "./legacy-reader.js";
+import { seedOwnedCheckout } from "./checkout.js";
 import { applyChange, artifactLocation, digest, readBytes, readText, safePath } from "./safe-files.js";
 import type { UpgradeFileChange } from "./cleanup-plan.js";
 
@@ -160,6 +161,8 @@ function complete(dir: string, state: State, run: UpgradeRun): UpgradeResult {
   if (plan.tracked.length) {
     if (state.step === "local") {
       if (!existsSync(state.worktree)) git(plan.root, "-c", `core.hooksPath=${join(state.worktree, ".git", "upgrade-disabled")}`, "worktree", "add", "--quiet", "-b", plan.branch, state.worktree, plan.base);
+      worktree(state);
+      seedOwnedCheckout(state.worktree, plan.base, plan.tracked);
       checkpoint(dir, state, "worktree", run);
     }
     if (state.step !== "committed") {

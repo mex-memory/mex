@@ -15,6 +15,7 @@ import { upgradeDiff } from "./diff.js";
 import { planLegacyCleanup, type UpgradeFileChange } from "./cleanup-plan.js";
 import { convertLegacy } from "./convert-legacy.js";
 import { readLegacyScaffold } from "./legacy-reader.js";
+import { seedOwnedCheckout } from "./checkout.js";
 import { oldAssets, type OldAssets, type UpgradeIssue } from "./local-plan.js";
 import { applyChange, digest, readText, safePath } from "./safe-files.js";
 
@@ -99,6 +100,7 @@ export function prepareUpgrade(options: KnowledgeOptions, now = new Date()): Upg
       // cannot exist. Preview must never execute a repo's post-checkout hook.
       git(root, "-c", `core.hooksPath=${join(worktree, ".git", "upgrade-disabled")}`, "worktree", "add", "--quiet", "--detach", worktree, base.sha);
       if (firstLink(worktree)) throw new KnowledgeError("UPGRADE_LINK", "The upgrade base contains a link; its scratch worktree was kept for review.");
+      seedOwnedCheckout(worktree, base.sha, plan.tracked);
       const shared = { ...options, projectPath: worktree };
       for (const entry of team) {
         const ownPath = `.mex/learned/${entry.mex.id}.md`;

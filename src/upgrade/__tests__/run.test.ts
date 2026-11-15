@@ -82,6 +82,51 @@ describe("reviewed legacy upgrade", () => {
     await expect(runUpgrade(f.options, p.revision, { now })).rejects.toMatchObject({ code: "UPGRADE_DONE" });
   });
 
+  it.each([
+    { autocrlf: "true", eol: "\n", bom: "" },
+    { autocrlf: "input", eol: "\r\n", bom: "\uFEFF" },
+  ])("preserves reviewed bytes across Git line-ending conversion ($autocrlf)", async ({ autocrlf, eol, bom }) => {
+    const f = fixture();
+    f.git("config", "core.autocrlf", autocrlf); f.git("config", "core.safecrlf", "false");
+    put(f.root, "AGENTS.md", bom + readFileSync(join(f.root, "AGENTS.md"), "utf8").replace(/\n/gu, eol));
+    f.git("add", "AGENTS.md"); f.git("commit", "--allow-empty", "-qm", "reviewed instruction encoding");
+    const original = readFileSync(join(f.root, "AGENTS.md"), "utf8");
+    const p = prepareUpgrade(f.options, now);
+    const instructions = p.tracked.find(c => c.path === "AGENTS.md")!;
+    expect(instructions.before).toBe(original);
+    expect(instructions.after!.startsWith(`${bom}Human prefix.${eol}`)).toBe(true);
+    expect(instructions.after!.endsWith(`${eol}Human suffix.${eol}`)).toBe(true);
+    expect(prepareUpgrade(f.options, now).revision).toBe(p.revision);
+    const done = await runUpgrade(f.options, p.revision, { now });
+    expect(readFileSync(join(f.root, "AGENTS.md"), "utf8")).toBe(original);
+    const committed = execFileSync("git", ["-C", f.root, "show", `${done.branch}:AGENTS.md`], { encoding: "utf8" });
+    expect(committed).toBe(instructions.after!.replace(/\r\n/gu, "\n"));
+  });
+
+  it("rejects an original source's line-ending edit after preview even when Git considers it clean", async () => {
+    const f = fixture();
+    f.git("config", "core.autocrlf", "true"); f.git("config", "core.safecrlf", "false");
+    const p = prepareUpgrade(f.options, now), path = ".mex/context/cache.md";
+    put(f.root, path, readFileSync(join(f.root, path), "utf8").replace(/\n/gu, "\r\n"));
+    expect(f.git("diff", "--name-only", "HEAD", "--", path)).toBe("");
+    await expect(runUpgrade(f.options, p.revision, { now })).rejects.toMatchObject({ code: "STALE_PREVIEW" });
+    expect(existsSync(p.home)).toBe(false);
+  });
+
+  it.each(["worktree", "written"] as const)("keeps a byte-only human edit after the %s checkpoint", async stopAfter => {
+    const f = fixture();
+    f.git("config", "core.autocrlf", "true"); f.git("config", "core.safecrlf", "false");
+    const p = prepareUpgrade(f.options, now);
+    await expect(runUpgrade(f.options, p.revision, { now, stopAfter })).rejects.toMatchObject({ code: "UPGRADE_STOPPED" });
+    const project = knowledgeProject(f.options), dir = join(project.location.home, "projects", project.projectId);
+    const state = JSON.parse(readFileSync(join(dir, "upgrade.json"), "utf8")) as { worktree: string };
+    const path = join(state.worktree, "AGENTS.md"), edited = readFileSync(path, "utf8").replace(/\n/gu, "\r\n");
+    writeFileSync(path, edited);
+    await expect(finishUpgrade(f.options)).rejects.toMatchObject({ code: "STALE_PREVIEW" });
+    await expect(discardUpgrade(f.options)).rejects.toMatchObject({ code: "UPGRADE_CHANGED" });
+    expect(readFileSync(path, "utf8")).toBe(edited);
+  });
+
   it.each(["source", "base", "destination", "local"])("rejects a stale %s before any upgrade write", async change => {
     const f = fixture(), p = prepareUpgrade(f.options, now);
     if (change === "source") put(f.root, ".mex/context/cache.md", "A changed source.\n");
