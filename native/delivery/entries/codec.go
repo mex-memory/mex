@@ -60,6 +60,7 @@ type CommitAnchor struct {
 	PatchID string   `json:"patch_id,omitempty"`
 	Subject string   `json:"subject,omitempty"`
 	Files   []string `json:"files,omitempty"`
+	Quote   string   `json:"quote,omitempty"`
 }
 type Retirement struct {
 	Reason string `json:"reason"`
@@ -462,7 +463,7 @@ func metadata(v any) bool {
 		"supersedes": func(v any) bool { return list(v, 0, 8, ident) },
 		"commit": func(v any) bool {
 			sha := func(v any) bool { s, ok := v.(string); return ok && shaRE().MatchString(s) }
-			return object(v, map[string]rule{"sha": sha}, map[string]rule{"patch_id": sha, "subject": func(v any) bool { return trimmedLine(v, 512) }, "files": func(v any) bool { return list(v, 0, 64, file) }})
+			return object(v, map[string]rule{"sha": sha}, map[string]rule{"patch_id": sha, "subject": func(v any) bool { return trimmedLine(v, 512) }, "quote": func(v any) bool { return trimmedLine(v, 512) }, "files": func(v any) bool { return list(v, 0, 64, file) }})
 		},
 		"retired": func(v any) bool { return object(v, map[string]rule{"reason": line, "by": line, "at": date}, nil) },
 	}

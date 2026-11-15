@@ -12,14 +12,36 @@ export function buildKnowledgeCommands(): Command[] {
     .addOption(new Option("--kind <kind>", "Entry kind").choices([...ENTRY_KINDS]).default("rule"))
     .option("--scope <glob>", "Repository-relative scope (repeatable)", (value: string, previous: string[]) => [...previous, value], [])
     .option("--one-line <text>", "The complete claim in one line")
+    .option("--decision", "Save it as a decision")
+    .option("--commit <rev>", "The commit the decision records; it comes into force when that commit lands on the default branch")
+    .option("--quote <text>", "With --commit: the line of the commit the decision rests on (kept only if found in the commit)")
+    .option("--supersedes <id>", "With --decision: the earlier decision this one replaces (repeatable)", (value: string, previous: string[]) => [...previous, value], [])
     .option("--json", "Print the saved entry as JSON")
     .action(async (text, opts) => {
       await run(opts.json, async () => {
         const { note } = await import("./store.js");
-        const saved = note({ text, kind: opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine }, { projectPath: process.cwd() });
+        if ((opts.commit || opts.supersedes.length) && !opts.decision && opts.kind !== "decision") throw new KnowledgeError("INVALID_OPTION", "--commit and --supersedes go with --decision.");
+        if (opts.quote && !opts.commit) throw new KnowledgeError("INVALID_OPTION", "--quote goes with --commit.");
+        let commit, quoteNote = "";
+        if (opts.commit) {
+          const { commitFacts, runGit } = await import("./decisions.js");
+          const git = runGit(process.cwd());
+          const facts = commitFacts(git, opts.commit);
+          if (!facts) throw new KnowledgeError("COMMIT_NOT_FOUND", `No commit ${opts.commit} in this repository.`);
+          const { subject, ...rest } = facts;
+          commit = { ...rest, ...(subject ? { subject } : {}) } as NonNullable<import("./entry.js").KnowledgeEntry["mex"]["commit"]>;
+          if (opts.quote) {
+            const { ground, RESTATED } = await import("./grounding.js");
+            const source = [git(["log", "-1", "--format=%B", facts.sha]) ?? "", git(["show", "--format=", facts.sha]) ?? ""];
+            const checked = ground(String(opts.quote).trim(), source, RESTATED);
+            if (checked.kept) commit.quote = String(opts.quote).trim().replace(/\s+/gu, " ").slice(0, 512);
+            else quoteNote = `\nThe quote wasn't found in ${facts.sha.slice(0, 7)} (confidence ${checked.confidence}), so it was left out.`;
+          }
+        }
+        const saved = note({ text, kind: opts.decision ? "decision" : opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine, commit, supersedes: opts.supersedes }, { projectPath: process.cwd() });
         await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
-        else console.log(`Saved personal note ${saved.entry.mex.id} ${saved.label}\n${saved.entry.mex.one_line}`);
+        else console.log(`Saved personal note ${saved.entry.mex.id} ${saved.label}\n${saved.entry.mex.one_line}${commit ? `\nNot yet accepted: it comes into force when ${commit.sha.slice(0, 7)} lands on the default branch.` : ""}${quoteNote}`);
       });
     });
   const search = new Command("recall")
@@ -305,7 +327,21 @@ export function buildKnowledgeCommands(): Command[] {
       lines.push("", `To write exactly this: mex entries enrich --apply --expect ${preview.revision}`);
       console.log(lines.join("\n"));
     }));
-  return [sessionWhat, save, search, full, change, ...retire, ...aids, entries, hints, rules, share, brief];
+  const decisions = new Command("decisions")
+    .description("Check which decisions that cite a commit are in force: proposed until the commit lands on the default branch, withdrawn on a revert")
+    .option("--json", "Print every decision and its event log as JSON")
+    .action(async opts => run(opts.json, async () => {
+      const { acceptDecisions } = await import("./decisions.js");
+      const rows = acceptDecisions({ projectPath: process.cwd() });
+      if (opts.json) { console.log(JSON.stringify({ ok: true, decisions: rows })); return; }
+      if (!rows.length) { console.log("No decisions cite a commit here."); return; }
+      const label = { proposed: "not yet accepted", accepted: "in force", withdrawn: "withdrawn" } as const;
+      for (const r of rows) {
+        const last = r.events.at(-1);
+        console.log(`${r.id} [${label[r.state]}] ${r.one_line}\n  cites ${r.commit.slice(0, 7)}${last ? `; ${last.event} ${last.at.slice(0, 10)} via ${last.matched_by}${last.landed_sha ? ` (${last.landed_sha.slice(0, 7)})` : ""}` : ""}`);
+      }
+    }));
+  return [sessionWhat, save, search, full, change, ...retire, ...aids, entries, decisions, hints, rules, share, brief];
 }
 /** After a share: the pull request, or the push command (MEX doesn't push on its own). */
 function nextStep(done: { branch: string; pr?: string }): string {

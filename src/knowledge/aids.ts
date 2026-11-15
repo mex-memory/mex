@@ -50,7 +50,8 @@ export function corpusDigest(entries: readonly KnowledgeEntry[]): string {
   return `sha256:${h.digest("hex")}`;
 }
 
-interface Ranked { id: string; score: number; }
+/** sent: the shipped prompt gate would deliver this entry for the query. */
+interface Ranked { id: string; score: number; sent?: boolean; }
 export type AidRanker = (entries: KnowledgeEntry[], queries: Array<{ id: string; text: string }>) => Map<string, Ranked[]>;
 
 /** One `mex-hook --recall` call ranks every candidate; written aids are indexed as their own fields. */
@@ -58,13 +59,16 @@ export const nativeAidRanker: AidRanker = (entries, queries) => {
   const binary = rankBinary();
   if (!binary) throw new KnowledgeError("RANKER_UNAVAILABLE", "The native ranker is not installed; aliases and asks can't be checked.");
   const result = spawnSync(binary, ["--recall"], {
-    input: JSON.stringify({ entries: entries.map(e => ({ ...e.mex, text: e.text })), queries, recall: true, aids: true }),
+    input: JSON.stringify({ entries: entries.map(e => ({ ...e.mex, text: e.text })), queries, gates: [{ learned: true }], aids: true }),
     encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true, env: { ...process.env, MEX_BACKGROUND: "1" },
   });
-  let output: { ok?: boolean; results?: Array<{ id: string; ranked?: Ranked[] }> } | undefined;
+  let output: { ok?: boolean; results?: Array<{ id: string; ranked?: Ranked[]; selected?: Array<Array<{ id: string }>> }> } | undefined;
   try { output = result.status === 0 ? JSON.parse(result.stdout) : undefined; } catch { output = undefined; }
   if (!output?.ok || !Array.isArray(output.results)) throw new KnowledgeError("RANKER_UNAVAILABLE", "The native ranker failed; aliases and asks were not changed.");
-  return new Map(output.results.map(row => [row.id, (row.ranked ?? []).map(r => ({ id: String(r.id), score: Number(r.score) }))]));
+  return new Map(output.results.map(row => {
+    const sent = new Set((row.selected?.[0] ?? []).map(r => String(r.id)));
+    return [row.id, (row.ranked ?? []).map(r => ({ id: String(r.id), score: Number(r.score), sent: sent.has(String(r.id)) }))];
+  }));
 };
 
 /**
@@ -72,7 +76,8 @@ export const nativeAidRanker: AidRanker = (entries, queries) => {
  * project; the target's own current aids are rechecked with the new ones.
  * Deterministic: the same corpus and candidates give the same verdicts.
  */
-export function filterAids(target: KnowledgeEntry, candidates: readonly AidCandidate[], corpus: readonly KnowledgeEntry[], rank: AidRanker = nativeAidRanker): AidFilterResult {
+export interface AidRules { prior: "first" | "sent" | "off"; margin: number; }
+export function filterAids(target: KnowledgeEntry, candidates: readonly AidCandidate[], corpus: readonly KnowledgeEntry[], rank: AidRanker = nativeAidRanker, rules: AidRules = { prior: (process.env.MEX_AID_PRIOR as AidRules["prior"]) || "first", margin: Number(process.env.MEX_AID_MARGIN ?? AID_MARGIN) }): AidFilterResult {
   const verdicts: AidVerdict[] = [];
   const pending: AidCandidate[] = [];
   const seen = new Set<string>();
@@ -104,7 +109,8 @@ export function filterAids(target: KnowledgeEntry, candidates: readonly AidCandi
   pending.forEach((c, i) => {
     const list = ranked.get(String(i)) ?? [];
     const own = list.find(r => r.id === target.mex.id);
-    const prior = (before.get(`b${i}`) ?? [])[0];
+    const priorList = before.get(`b${i}`) ?? [];
+    const prior = rules.prior === "off" ? undefined : rules.prior === "sent" ? priorList.find(r => r.sent && r.id !== target.mex.id) : priorList[0];
     const verdict: AidVerdict = { entry: target.mex.id, kind: c.kind, text: c.text, kept: false, reason: "" };
     if (prior && prior.id !== target.mex.id) Object.assign(verdict, { reason: `already finds ${prior.id} first`, top: prior.id });
     else if (!own) verdict.reason = "matches no words of its entry";
@@ -113,7 +119,7 @@ export function filterAids(target: KnowledgeEntry, candidates: readonly AidCandi
       const second = list.find(r => r.id !== target.mex.id)?.score ?? 0;
       const margin = (own.score - second) / Math.max(own.score, 1e-9);
       Object.assign(verdict, { score: own.score, margin: Math.round(margin * 1000) / 1000 });
-      if (margin < AID_MARGIN) verdict.reason = `leads ${list.find(r => r.id !== target.mex.id)!.id} by less than ${AID_MARGIN * 100}%`;
+      if (margin < rules.margin) verdict.reason = `leads ${list.find(r => r.id !== target.mex.id)!.id} by less than ${rules.margin * 100}%`;
       else if (kept[c.kind].length >= LIMITS[c.kind].count) verdict.reason = `over the limit of ${LIMITS[c.kind].count}`;
       else { verdict.kept = true; verdict.reason = "ranks its own entry first"; kept[c.kind].push(c.text); }
     }

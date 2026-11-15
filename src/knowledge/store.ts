@@ -16,6 +16,8 @@ export type { KnowledgeOptions } from "./context.js";
 export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
 export type StoredEntry = PersonalEntry | TeamEntry | HintEntry;
 export interface NoteInput { text: string; kind?: EntryKind; scope?: string[]; oneLine?: string; }
+/** A decision that cites a commit is proposed until that commit lands on the default branch. */
+export interface DecisionInput { commit?: NonNullable<KnowledgeEntry["mex"]["commit"]>; supersedes?: string[]; }
 function readDirectory(project: KnowledgeProject): string | undefined {
   if (!existsSync(project.location.home)) return undefined;
   return containedDirectory(project.location.home, ["projects", project.projectId, "notes"]);
@@ -24,13 +26,14 @@ function display(entry: KnowledgeEntry): PersonalEntry {
   return { level: "personal", label: entryLabel(entry, "personal"), entry };
 }
 /** Explicit note creation is the only operation here that opens a writer. */
-export function note(input: NoteInput, options: KnowledgeOptions, now = new Date()): PersonalEntry {
+export function note(input: NoteInput & DecisionInput, options: KnowledgeOptions, now = new Date()): PersonalEntry {
   const created = now.toISOString().slice(0, 10);
   const entry: KnowledgeEntry = {
     mex: {
       id: `mx_${randomBytes(12).toString("hex")}`, kind: input.kind ?? "rule", scope: input.scope ?? ["**"],
       source: { type: "person", ref: `mex note ${created}`, quote: input.text }, evidence: "person",
-      one_line: input.oneLine ?? input.text.trim().replace(/\s+/gu, " "), checks: [], status: "active", created,
+      one_line: input.oneLine ?? input.text.trim().replace(/\s+/gu, " "), checks: [], status: input.commit ? "proposed" : "active", created,
+      ...(input.commit ? { commit: input.commit } : {}), ...(input.supersedes?.length ? { supersedes: input.supersedes } : {}),
     }, text: input.text.trim().replace(/\r\n/g, "\n"),
   };
   // Reject bad input before initializing any persistent state.

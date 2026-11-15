@@ -107,6 +107,9 @@ func listingStamp(home, project, checkout string) (string, int64, error) {
 			}
 		}
 	}
+	if home != "" {
+		_, _ = io.WriteString(h, "f:"+inForceStamp(home, project)+"\n")
+	}
 	for _, r := range storeRoots(home, project, checkout) {
 		_, _ = io.WriteString(h, "s:"+r.path+"\n")
 		if err := walk(r.path, r.nested, 0); err != nil {

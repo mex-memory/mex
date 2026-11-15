@@ -164,6 +164,7 @@ func Build(opts Options) (Result, error) {
 		defer home.Close()
 	}
 	cache := readRules(root, home, opts)
+	inForce := entries.InForce(opts.MexHome, opts.ProjectID)
 	result.Coverage = readCoverage(root, home, opts, cache)
 	all := []candidate{}
 	retired, sourceIDs := map[string]bool{}, map[string]bool{}
@@ -176,6 +177,12 @@ func Build(opts Options) (Result, error) {
 				return
 			}
 			e, err := entries.Parse(data)
+			if err == nil && e.Status == "proposed" {
+				// Delivered only once in force; the "not yet accepted" lane is separate.
+				if usable := entries.Usable(e, inForce); usable != nil {
+					e = usable
+				}
+			}
 			if err == nil && path.Base(name) == e.ID+".md" {
 				key := level + "/" + e.ID
 				duplicate = duplicate || sourceIDs[key]

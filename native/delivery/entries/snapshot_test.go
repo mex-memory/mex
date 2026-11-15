@@ -183,3 +183,31 @@ func TestCodecKeepsRetrievalAidsAndCommitAnchor(t *testing.T) {
 		t.Fatalf("fields lost: %+v", e)
 	}
 }
+
+func TestProposedEntriesNeedTheInForceMirror(t *testing.T) {
+	root, home, dir := t.TempDir(), t.TempDir(), t.TempDir()
+	notes := filepath.Join(home, "projects", "project", "notes")
+	if err := os.MkdirAll(notes, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sha := strings.Repeat("b", 40)
+	body := "---\nmex:\n  id: mx_decide1\n  kind: decision\n  scope: [\"**\"]\n  source: {type: observed, ref: commit}\n  evidence: observed\n  one_line: Use date-fns.\n  checks: []\n  commit: {sha: \"" + sha + "\"}\n  status: proposed\n  created: 2026-11-15\n---\nUse date-fns.\n"
+	if err := os.WriteFile(filepath.Join(notes, "mx_decide1.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := Load(dir, home, "project", root)
+	if err != nil || len(snap.Items) != 0 {
+		t.Fatalf("a proposed entry was delivered: %v %+v", err, snap.Items)
+	}
+	stamp, _, _ := listingStamp(home, "project", root)
+	if err := os.WriteFile(InForcePath(home, "project"), []byte(`{"version":1,"ids":["mx_decide1"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if again, _, _ := listingStamp(home, "project", root); again == stamp {
+		t.Fatal("the in-force mirror didn't change the listing stamp")
+	}
+	snap, err = Load(dir, home, "project", root)
+	if err != nil || len(snap.Items) != 1 || snap.Items[0].Entry.Status != "active" {
+		t.Fatalf("an in-force decision wasn't delivered: %v %+v", err, snap.Items)
+	}
+}

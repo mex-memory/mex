@@ -291,6 +291,13 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		failed = true
 		reply = contract.Reply{}
 	}
+	// One line, once per session, after a commit that reads like a decision.
+	if line := delivery.DecisionPrompt(ev, recordDirectory); line != "" {
+		if reply.Context != "" {
+			reply.Context += "\n\n"
+		}
+		reply.Context += line
+	}
 	out, _ := profile.Render(ev, reply)
 	return out
 }

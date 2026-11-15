@@ -263,6 +263,8 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       if (clock() - lastFreshness >= 60_000) {
         lastFreshness = clock();
         try { queueStaleCodeFacts(writer, queueJob, clock()); } catch { /* a missed pass waits for the next one */ }
+        // Decisions that cite a commit come into force when it lands; a decision-like commit is offered at the next start.
+        try { (await import("../knowledge/decisions.js")).decisionPass(writer); } catch { /* a missed pass waits for the next one */ }
       }
       const outcome = await runOneBatch(writer, self);
       if (outcome === "ran") { lastWork = clock(); continue; }

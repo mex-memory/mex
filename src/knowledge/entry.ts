@@ -43,6 +43,8 @@ const sha = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u);
 const commit = z.object({
   sha, patch_id: sha.optional(), subject: phrase(512).optional(),
   files: z.array(file).max(KNOWLEDGE_LIMITS.commitFiles).optional(),
+  /** A line of the commit the decision rests on, kept only if found in the commit. */
+  quote: phrase(512).optional(),
 }).strict();
 const checkBase = { role: z.enum(["complete", "supporting"]), files: z.record(file, hash).refine(v => Object.keys(v).length <= 128, "Too many check files") };
 const count = z.object({ count: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict();
