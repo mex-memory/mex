@@ -37,6 +37,13 @@ func needsJudge(report check.StageReport) bool {
 			}
 		}
 	}
+	// Policy changes can be proved by branch/history, a newer source or
+	// deliberate overrides even while their conformance checks still hold.
+	for _, item := range report.Items {
+		if item.Status == "active" && item.Level != "hint" && (item.Kind == "rule" || item.Kind == "decision" || item.Kind == "pitfall") {
+			return true
+		}
+	}
 	return false
 }
 

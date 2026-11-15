@@ -8,20 +8,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/internal/gitstate"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
 const judgeEditBytes = 64 << 10
 
-type judgePosition struct {
-	Branch string `json:"branch"`
-	Head   string `json:"head"`
-}
+type judgePosition = gitstate.Position
+
 type judgeEdit struct {
 	Path   string  `json:"path"`
 	Before *string `json:"before"`
@@ -71,56 +69,8 @@ func boundedJudgeRead(name string, max int64) ([]byte, error) {
 	return data, nil
 }
 
-var judgeOID = regexp.MustCompile(`^[a-f0-9]{40}([a-f0-9]{24})?$`)
-
-// Read Git metadata, never execute a repository command on a hook. Unusual or
-// unavailable metadata means no ownership proof, not an assumed branch.
 func judgeGitPosition(checkout string) (judgePosition, bool) {
-	dir := filepath.Join(checkout, ".git")
-	info, err := os.Lstat(dir)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 {
-		return judgePosition{}, false
-	}
-	if !info.IsDir() {
-		data, err := boundedJudgeRead(dir, 4096)
-		if err != nil || !strings.HasPrefix(string(data), "gitdir: ") {
-			return judgePosition{}, false
-		}
-		dir = strings.TrimSpace(strings.TrimPrefix(string(data), "gitdir: "))
-		if !filepath.IsAbs(dir) {
-			dir = filepath.Join(checkout, dir)
-		}
-	}
-	data, err := boundedJudgeRead(filepath.Join(dir, "HEAD"), 4096)
-	if err != nil {
-		return judgePosition{}, false
-	}
-	ref := strings.TrimSpace(strings.TrimPrefix(string(data), "ref: "))
-	if !strings.HasPrefix(string(data), "ref: ") || !strings.HasPrefix(ref, "refs/heads/") || strings.Contains(ref, "..") || strings.ContainsAny(ref, "\\\x00\r\n\t ") {
-		return judgePosition{}, false
-	}
-	common := dir
-	if data, err := boundedJudgeRead(filepath.Join(dir, "commondir"), 4096); err == nil {
-		common = strings.TrimSpace(string(data))
-		if !filepath.IsAbs(common) {
-			common = filepath.Join(dir, common)
-		}
-	}
-	head, err := boundedJudgeRead(filepath.Join(common, filepath.FromSlash(ref)), 128)
-	if err == nil && judgeOID.MatchString(strings.TrimSpace(string(head))) {
-		return judgePosition{ref, strings.TrimSpace(string(head))}, true
-	}
-	packed, err := boundedJudgeRead(filepath.Join(common, "packed-refs"), 256<<10)
-	if err != nil {
-		return judgePosition{}, false
-	}
-	for _, line := range strings.Split(string(packed), "\n") {
-		words := strings.Split(line, " ")
-		if len(words) == 2 && words[1] == ref && judgeOID.MatchString(words[0]) {
-			return judgePosition{ref, words[0]}, true
-		}
-	}
-	return judgePosition{}, false
+	return gitstate.Read(checkout)
 }
 
 func writeJudgeLocal(root *os.Root, dir, name string, data []byte) bool {

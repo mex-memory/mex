@@ -109,8 +109,10 @@ function original(fix: Fix, writer: RecordWriter, projectId: string) {
 }
 function freshChecks(fix: Fix, report: NativeReport): boolean {
   const item = report.items?.find(item => item.id === fix.item.id && item.path === fix.item.path && item.level === fix.item.level);
+  if(item?.rule_evidence_pending) return false;
   const observed = report.results?.find(result => result.entry_id === fix.item.id);
-  return item?.entry_hash === fix.judgement.entry_hash && !!observed && hash(JSON.stringify({ verdict: item.verdict, checks: observed.checks, inputs: observed.inputs })) === fix.judgement.checks_hash;
+  return item?.entry_hash === fix.judgement.entry_hash && !!observed && hash(JSON.stringify({ verdict: item.verdict, checks: observed.checks, inputs: observed.inputs,
+    ...(item.rule_evidence?.length ? { rule_evidence: item.rule_evidence } : {}) })) === fix.judgement.checks_hash;
 }
 function notice(writer: RecordWriter, key: string, fix: Fix, type: "preview" | "updated", text: string): void {
   if (!fix.sessionId) return;
