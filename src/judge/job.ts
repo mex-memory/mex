@@ -12,6 +12,8 @@ import { pendingJudgeRequest, type JudgeParams } from "./pending.js";
 import { resultKey, readJudgement, type Judgement } from "./result.js";
 import { stageFixes, hasPendingFixes, needsRouting, routeFixes, fixPreviewReady, PREVIEW_WAIT } from "./routing.js";
 import { sessionWorkEnabled } from "./session.js";
+import { refreshRuleChanges } from "./rule-change.js";
+import { refreshAdvice, modelAdvice } from "./advice.js";
 export { readJudgement, type Judgement } from "./result.js";
 
 const CheckRequest = z.object({ kind: z.enum(["key", "command", "section", "source", "value", "symbol", "pattern", "relation"]),
@@ -53,7 +55,8 @@ function save(writer: RecordWriter, projectId: string, results: Judgement[], job
     return true;
   } catch (error) { writer.db.exec("ROLLBACK"); throw error; }
 }
-function checkHash(candidate: Candidate): string { return hash(JSON.stringify({ verdict: candidate.item.verdict, checks: candidate.checks, inputs: candidate.inputs })); }
+function checkHash(candidate: Candidate): string { return hash(JSON.stringify({ verdict: candidate.item.verdict, checks: candidate.checks, inputs: candidate.inputs,
+  ...(candidate.item.rule_evidence?.length ? { rule_evidence: candidate.item.rule_evidence } : {}) })); }
 function candidates(report: NativeReport, params: JudgeParams, home: string, projectId: string, writer: RecordWriter): Candidate[] {
   if ((report.items?.length ?? 0) > JUDGE_LIMITS.entries) throw new Error("The judge's entry limit was reached.");
   const out: Candidate[] = [], ids = new Set<string>(), duplicates = new Set<string>();
@@ -62,7 +65,7 @@ function candidates(report: NativeReport, params: JudgeParams, home: string, pro
   for (const item of report.items ?? []) {
     if (ids.has(item.id)) duplicates.add(item.id);
     ids.add(item.id);
-    if (item.status !== "active" || item.level === "hint" || item.verdict === "unknown" || writer.setting(projectId, `knowledge.retired.${item.id}`)) continue;
+    if (item.status !== "active" || item.level === "hint" || item.rule_evidence_pending || (item.verdict === "unknown" && !item.rule_evidence?.length) || writer.setting(projectId, `knowledge.retired.${item.id}`)) continue;
     const found = readCandidate(item, params.checkout, home, projectId);
     if (!found) continue;
     bytes += Buffer.byteLength(found.content);
@@ -117,8 +120,24 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
       if (!samePosition(state.position, at)) return { checkpoint: state, done: true, gaps: true, summary: "Checkout changed; the judge left its results local and stopped" };
       if (!idle(writer, params)) return { checkpoint: state, wait: IDLE_WAIT };
       if (deps === dependencies && !nativeBinary()) return { checkpoint: state, wait: "Waiting: the judge needs the installed check evaluator" };
-      const report = await deps.evaluate(request(params, writer, projectId));
+      let report = await deps.evaluate(request(params, writer, projectId));
+      const rules = await refreshRuleChanges(writer,projectId,params.checkout,report,at,()=>{
+        const current=writer.db.prepare("SELECT state,owner,request FROM jobs WHERE id=?").get(job.id);
+        return allowed(writer,params,projectId) && current?.state==="running" && current.owner===job.owner && current.request===null;
+      });
+      if(rules.stopped) return {checkpoint:state,wait:"Waiting: MEX is off here or the judge was stopped"};
+      state.gaps ||= rules.limited;
+      if(rules.more) return {checkpoint:state,summary:"Checking the next page of free rule evidence"};
+      // Re-evaluate with the just-published free evidence, before model/cap
+      // admission. The native reader independently re-proves its bindings.
+      if (rules.snapshot.entries.length || report.items?.some(item=>item.rule_evidence?.length)) report = await deps.evaluate(request(params,writer,projectId));
       state.gaps ||= !!report.problems?.length;
+      state.gaps ||= !!report.items?.some(item=>item.rule_evidence_pending);
+      const moreAdvice = await refreshAdvice(writer, projectId, params.checkout, report, at, () => {
+        const current = writer.db.prepare("SELECT state,owner,request FROM jobs WHERE id=?").get(job.id);
+        return allowed(writer, params, projectId) && current?.state === "running" && current.owner === job.owner && current.request === null;
+      });
+      if (moreAdvice) return { checkpoint: state, summary: "Preparing the next page of corrections for advice already used" };
       // Recent touched files refine the request's path proximity without any transcript text.
       const latest = pendingJudgeRequest(writer.location.directory, params.checkout);
       let near = latest?.near ?? params.near;
@@ -160,6 +179,7 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
       if (!coherent(batch, snapshot)) return { checkpoint: state, summary: "Inputs changed after evaluation; checking again" };
       if (!await unchanged(params.checkout, writer.location.home, projectId, batch, snapshot)) return { checkpoint: state, summary: "Code changed before judgment; checking again" };
       if (!idle(writer, params)) return { checkpoint: state, wait: IDLE_WAIT };
+      if (!allowed(writer, params, projectId)) return { checkpoint: state, wait: "Waiting: MEX is off here" };
       progress?.(`checking ${batch.length} ${batch.length === 1 ? "entry" : "entries"}${batch[0]!.spare ? " with spare allowance" : ""}`);
       let result: ModelResult;
       try {
@@ -224,6 +244,17 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
       });
       if (!sameChecks || !allowed(writer, params, projectId) || !await unchanged(params.checkout, writer.location.home, projectId, batch, snapshot)) {
         return { checkpoint: state, tokens, summary: "Judge response discarded: entry, code, checkout or consent changed" };
+      }
+      // Persist the local correction before publishing routable rewrite state.
+      // A restart cannot apply a fix while skipping advice already used.
+      for (const result of saved) if (result.result === "rewritten") {
+        const candidate = batch.find(c => c.item.id === result.id)!;
+        await modelAdvice(writer, projectId, candidate, params.checkout, at, () => {
+          const current = writer.db.prepare("SELECT state,owner,request FROM jobs WHERE id=?").get(job.id);
+          return allowed(writer, params, projectId) && current?.state === "running" && current.owner === job.owner && current.request === null
+            && readCandidate(candidate.item, params.checkout, writer.location.home, projectId)?.content === candidate.content
+            && snapshot.files.every(f => { const text = readSource(params.checkout, f.path); return (text === null ? null : hash(text)) === f.current_hash; });
+        });
       }
       if (!save(writer, projectId, saved, job, batch, params, sessionId)) return { checkpoint: state, tokens, summary: "Judge ownership or entry eligibility changed; response discarded" };
       return { checkpoint: { ...state, gaps: state.gaps || saved.some(r => r.result === "cannot-tell") }, results: saved.length, tokens,

@@ -3,7 +3,7 @@ import { existsSync, opendirSync } from "node:fs";
 import { join } from "node:path";
 import { openRecord, projectIdentity, projectDataDirectory } from "../record/index.js";
 import { assertPersonQuote, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type EntryKind, type KnowledgeEntry } from "./entry.js";
-import { containedDirectory, createEntryFile, readEntryFile } from "./files.js";
+import { containedDirectory, createEntryFile, readEntryFile, personalReadGuard } from "./files.js";
 import { knowledgeProject, type KnowledgeOptions, type KnowledgeProject } from "./context.js";
 import { references, type References } from "./references.js";
 import { gateEntry, sanitizeText } from "./gates.js";
@@ -40,6 +40,7 @@ export function note(input: NoteInput, options: KnowledgeOptions, now = new Date
   const bytes = serializeEntry(gated);
   assertPersonQuote(gated, sanitizeText(input.text, source));
   const writer = openRecord({ ...options, create: true });
+  writer.db.exec("BEGIN IMMEDIATE");
   try {
     const projectId = writer.checkout(options.projectPath)?.project_id;
     if (!projectId || !/^[gf]-[a-f0-9]{24}$/u.test(projectId)) throw new KnowledgeError("RECORD_UNAVAILABLE", "The project could not be registered.");
@@ -49,7 +50,7 @@ export function note(input: NoteInput, options: KnowledgeOptions, now = new Date
     const directory = containedDirectory(writer.location.home, ["projects", projectId, "notes"], true)!;
     createEntryFile(directory, gated.mex.id, bytes);
     return display(gated);
-  } finally { writer.close(); }
+  } finally { writer.db.exec("ROLLBACK"); writer.close(); }
 }
 function words(text: string): string[] { return text.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []; }
 function load(directory: string, id: string): KnowledgeEntry | undefined {
@@ -103,6 +104,7 @@ export function matchesQuery(entry: KnowledgeEntry, query: string): boolean {
   return [...new Set(words(query))].every(term => searchable.has(term));
 }
 export function recallPersonal(query: string, options: KnowledgeOptions, limit = 20, project = knowledgeProject(options), source?: References, collect?: (entry: KnowledgeEntry) => void): RecallResult {
+  const check = personalReadGuard(join(project.location.home, "projects", project.projectId, "notes"));
   if (query.length > KNOWLEDGE_LIMITS.queryCharacters) throw new KnowledgeError("INVALID_QUERY", "Search text exceeds 256 characters.");
   const terms = [...new Set(words(query))];
   if (!terms.length) throw new KnowledgeError("INVALID_QUERY", "Search requires at least one word.");
@@ -141,6 +143,7 @@ export function recallPersonal(query: string, options: KnowledgeOptions, limit =
     }
   }
   matches.sort((a, b) => a.created !== b.created ? (a.created > b.created ? -1 : 1) : a.id < b.id ? -1 : a.id === b.id ? 0 : 1);
+  check();
   return { entries: matches.slice(0, limit), truncated: matches.length > limit };
 }
 

@@ -1,10 +1,11 @@
-# Knowledge judge: jobs and fix routing
+# Knowledge judge: jobs, fixes and used advice
 
-OSS-47, slices 1 and 2. The judge resolves entries whose free checks say changed
+OSS-47, slices 1 through 4. The judge resolves entries whose free checks say changed
 or broken, and opportunistically rechecks held entries with complete checks
 whose input bytes changed. It stores judgments locally and routes validated
-rewrites according to who changed the code. Rule-change evidence, corrections
-for delivered advice, and the `sync` command change follow separately.
+rewrites according to who changed the code. Free evidence can also doubt a
+policy itself. Corrections name observed work that followed a delivery. The
+`sync` command change follows separately.
 
 ## Scheduling and ownership
 
@@ -149,6 +150,73 @@ Deleted notice IDs are removed from hints, and required previews take priority
 over old status lines so a full hint list cannot silently block publication.
 No database migration, dependency or public package export is added.
 
+## Free evidence that a rule changed
+
+Before model admission, the background job collects free evidence for active
+team rules, decisions and pitfalls. Personal notes keep their separate delivery
+contract. This pass still runs when the model must wait
+above its cap. Hooks queue it for policy entries even when their conformance
+checks hold. An ordinary failed conformance check alone does not change rule
+delivery.
+
+- A literal anti-pattern count must rise **and** a required-pattern count fall,
+  against recorded counts in the same exact entry scope. Both patterns must
+  have corresponding `when` triggers. A fresh bounded source recount must
+  agree with the evaluator's indexed counts; missing/stale index observations
+  and ignored-file differences supply no migration evidence.
+- The current branch or a recent commit must name a specific subject from
+  the entry's patterns, symbols, file names or backtick identifiers, close to
+  replace, migrate, remove, rename or deprecate. Commit evidence must follow
+  the exact current committed entry revision; creation dates cannot prove
+  assertion order for a rewritten or uncommitted note. Local merge-commit bodies and squash subjects supply available PR
+  titles; this pass does not fetch remote PR metadata.
+- A newer checked docs/review policy must explicitly reverse a literal trigger
+  in the same exact scope. Both its entry bytes and actual source reads bind
+  the evidence. Similar prose or a changed document hash alone cannot prove a
+  contradiction. Same-date sources without provable order supply no evidence.
+- Typed speed-bump overrides must bind this exact entry hash and actual
+  main-agent bump receipts. Distinct stable person hashes count toward two
+  people; otherwise three distinct host/session pairs are required. Repeated
+  receipts, subagents and other projects do not supply extra people/sessions.
+
+Delivery-03 owns the actual speed bump. Its consumer seam is
+`Hooks.RecordRuleOverride`: a deliberate repeat records a typed
+`speed-bump-override` detail on an existing `wrong` followup, without command,
+code or prompt text. It never guesses person identity from agent identity.
+The blocker itself is not implemented by this slice. There is no network
+poller; newer network reviews/docs enter through checked local entries.
+
+Node writes a derived checkout snapshot in the existing project settings at
+`rule-change.<checkout hash>`, plus one pending Review row per checkout and
+entry. Exact proposal IDs bind the position and evidence; new evidence
+supersedes older pending cards while retaining their immutable snapshots.
+Accepted/dismissed exact snapshots stay closed on replay. Reasons say **free
+evidence**, separately from **checked by model**. No schema or canonical entry
+field changes. Go only reads Node's
+record; it remains the sole hooks/verdict writer.
+
+The free stage and delivery independently re-prove named branch/HEAD, exact
+entry bytes, source hashes and directory inventories. Added/deleted files
+invalidate count evidence too. A valid signal makes the policy changed and
+replaces its full claim with a code pointer; no usable location means
+withholding. The session brief omits it. Proven broken entries remain withheld.
+Changed rules with no rule-change evidence retain ordinary full delivery.
+Signals and their inputs enter the judge prompt and judgment fingerprint.
+Proofs share one bounded observed file view within each native invocation.
+If its proof budget runs out, known doubt remains a pointer or withholding;
+the incomplete proof cannot authorize a model call or fix publication.
+
+The free scan pages through 128 policies per batch with a durable cursor bound
+to the checkout position and entry manifest. It retains unvisited evidence,
+resets when the corpus changes, and finishes all pages before model admission.
+Other bounds are 32 recent commits per policy, 128 source files and directories
+per signal, 64 KiB per source, an 8 MiB source/entry scan and a 512 KiB snapshot
+(up to 10,000 signals while it fits). An incomplete proof leaves the job with
+gaps; a snapshot overflow rolls back without replacing prior evidence.
+Unsupported structural counts and unavailable sources are absent
+evidence. Named Git checkout identity is required by the native snapshot
+reader. These limits are implementation parameters, not quality measurements.
+
 ## Verification
 
 `src/judge/__tests__` covers queue order, five-entry batching, whole-file
@@ -168,3 +236,79 @@ and during consumption, then prove recovery leaves exactly one durable job.
 Existing job and background-process tests retain restart and lease coverage.
 No real model or live agent session is needed for these checks. Model quality
 and the paid end-to-end evaluation remain OSS-68.
+
+## Advice already used
+
+Given receipts retain the entry-byte hash, named branch/HEAD and recorded check
+fingerprint in `deliveries.detail`. Subsequent successful structured edits and
+shell invocations are linked through the existing `edit`/`command` follow-up
+kinds. These are temporal associations, not claims that advice caused an action.
+Edit contents, command arguments, output and prompts are never retained there.
+Commands have a digest and a closed executable/subcommand label; compound and
+unrecognized commands use a generic label. Failed commands and unknown outcomes
+are explicit. Recognized network/publication operations list possible outside
+repository effects as unverified; nothing attempts to undo them. Repeated
+identical observations are deduplicated. Each receipt keeps at most 64 effects.
+Successful edits exclude explicit failure events and paths with control characters.
+Each action retains the branch/HEAD and check-input fingerprint observed in the
+same ledger transaction, so repeating an action across a check transition is
+kept separate from repeating it against the same inputs.
+
+Broken complete checks prepare local advisories before model/cap admission, in
+pages of five entries. A model rewrite can also prepare an advisory, labelled
+`checked by model`, before its fix becomes routable. Advisories snapshot receipt
+and follow-up evidence in Node-owned settings and create local pending Review
+rows. Go remains the only hooks database writer. No schema migration or canonical
+entry field is added. Exact input, entry, branch, checkout, job and consent guards
+apply before publication. Snapshots merge older observations rather than losing
+them when the bounded hooks ledger is pruned.
+
+`Outdated since commit C` requires a contiguous broken-to-held transition in at
+most 32 first-parent commits. The real free evaluator checks historical Git
+blobs in memory, without checkout writes, command execution, index substitution
+or filesystem fallback. Omitted/unavailable inputs and historical symlink or
+submodule parents never masquerade as missing files. Parent checks do not list
+unrelated siblings. The transition is recomputed when HEAD changes, so recovery
+and a second break cannot inherit an obsolete commit. A delivery's input
+fingerprint is compared with the proved held snapshot; its follow-up actions
+are assessed separately using their own recorded inputs. A valid delivery does
+not certify later actions, and a HEAD alone cannot prove a clean working tree.
+Missing, shallow, unsupported, oversized or uncommitted history leaves timing
+unknown. Older actions without their own provenance remain unverified.
+
+`mex wrong <id> <reason> --all-along` explicitly confirms that every recorded use
+is suspect, after the usual retirement/preview gates succeed. Generic `mex wrong`
+does not make that historical assertion. The confirmation creates advisories
+for the recorded branches without switching branches or changing other working
+trees. Old receipts without entry/branch provenance cannot be assigned a proved
+historical classification. No history or cause is invented to fill that gap.
+
+A bounded advisory-ID hint, private to checkout and branch, wakes the native
+controller without needing an ordinary matching moment. The ledger rechecks the
+exact originating receipt and current actor/epoch under its lock, corrects once
+per entry per epoch and debits reserved tokens even after the ordinary budget
+is exhausted. Unsupported context channels leave the correction pending: for
+example, a Codex Stop waits for a later supported hook. A generic broken-entry
+correction also names current-epoch follow-ups when no historical advisory is
+ready. Correction text is bounded to the reserved lane; omitted observations
+point to the report.
+Each moment runs one advisory batch, and its actual reserved debit leaves the
+remaining lane for generic corrections and failure recipes. Already-corrected
+and never-delivered entries do not consume that correction allowance.
+
+`mex report [--json]` reads local advisories on the current checkout and named
+branch, including stored observations after ledger retention. It performs no
+migrations, registration, source scans or writes. Review cards themselves belong
+to the Review surface ticket. At the next new main session on that branch, one
+person-visible line points to the report. Resume, compaction, subagents, other
+branches and other checkouts do not consume it. Only a complete visible stdout
+write records that line as shown.
+
+The native hint contains at most 32 advisory IDs per branch, with each authoritative
+payload bounded to 64 KiB. An advisory retains at most 128 recent receipts, with
+explicit partial flags when evidence is bounded. Reports read at most 200
+advisories and merge available live effects with the durable snapshots. These
+receipt and report limits apply after checkout, branch and version selection,
+so unrelated branches cannot occupy all matching-result slots. These
+are implementation limits, not completeness or quality measurements. All slice-4
+fixtures are deterministic; no model call is needed to test either timeline.

@@ -2,7 +2,9 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { automaticWorkEnabled } from "../controls/index.js";
-import { EntryIdSchema, KnowledgeError, serializeEntry } from "../knowledge/entry.js";
+import { EntryIdSchema, KnowledgeError, serializeEntry, parseEntry } from "../knowledge/entry.js";
+import { stageReview, reviewQuiet } from "../review/state.js";
+import { learningMetadata } from "../filter/metadata.js";
 import { containedDirectory, replaceEntryFile } from "../knowledge/files.js";
 import { gateEntry } from "../knowledge/gates.js";
 import { references } from "../knowledge/references.js";
@@ -109,8 +111,10 @@ function original(fix: Fix, writer: RecordWriter, projectId: string) {
 }
 function freshChecks(fix: Fix, report: NativeReport): boolean {
   const item = report.items?.find(item => item.id === fix.item.id && item.path === fix.item.path && item.level === fix.item.level);
+  if(item?.rule_evidence_pending) return false;
   const observed = report.results?.find(result => result.entry_id === fix.item.id);
-  return item?.entry_hash === fix.judgement.entry_hash && !!observed && hash(JSON.stringify({ verdict: item.verdict, checks: observed.checks, inputs: observed.inputs })) === fix.judgement.checks_hash;
+  return item?.entry_hash === fix.judgement.entry_hash && !!observed && hash(JSON.stringify({ verdict: item.verdict, checks: observed.checks, inputs: observed.inputs,
+    ...(item.rule_evidence?.length ? { rule_evidence: item.rule_evidence } : {}) })) === fix.judgement.checks_hash;
 }
 function notice(writer: RecordWriter, key: string, fix: Fix, type: "preview" | "updated", text: string): void {
   if (!fix.sessionId) return;
@@ -121,8 +125,9 @@ function notice(writer: RecordWriter, key: string, fix: Fix, type: "preview" | "
   wakeNotice(writer, actor, `${key}.${type}`);
 }
 function review(writer: RecordWriter, job: JobRow, key: string, fix: Fix, reason: string): void {
-  writer.db.prepare("INSERT INTO review(id,project_id,entry_id,reason,state,created_at) VALUES(?,?,?,?,'pending',?) ON CONFLICT(id) DO NOTHING")
-    .run(key, job.project_id!, fix.item.id, `${reason} (checked by model)`, fix.judgement.at);
+  stageReview(writer, job.project_id!, key, fix.judgement.rewrite ?? parseEntry(fix.before),
+    { producer: "judge", key, checkout: fix.judgement.checkout, level: fix.item.level, path: fix.item.path, original_hash: fix.judgement.entry_hash },
+    `${reason} (checked by model)`, fix.item.level === "team" || !!learningMetadata(writer, job.project_id!, fix.item.id).sources?.length, Date.parse(fix.judgement.at));
   fix.state = "review"; set(writer, job.project_id!, key, fix);
   writer.db.prepare("DELETE FROM notices WHERE id=?").run(previewId(key));
 }
@@ -140,6 +145,9 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
     let rolledBack = false;
     try {
       if (!enabled(writer, job, checkout, fix)) { waiting = true; continue; }
+      if (reviewQuiet(writer, job.project_id!, fix.judgement.rewrite ?? parseEntry(fix.before))) {
+        fix.state = "discarded"; set(writer, job.project_id!, key, fix); writer.db.prepare("DELETE FROM notices WHERE id=?").run(previewId(key)); continue;
+      }
       if (writer.setting(job.project_id!, `knowledge.retired.${fix.item.id}`)) {
         // A retirement is final; no rewrite or Review resurrection.
         fix.state = "discarded"; set(writer, job.project_id!, key, fix); writer.db.prepare("DELETE FROM notices WHERE id=?").run(previewId(key)); continue;

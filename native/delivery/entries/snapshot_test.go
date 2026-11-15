@@ -171,3 +171,40 @@ func TestSnapshotTiming(t *testing.T) {
 	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
 	t.Logf("500 entries: cold (1 run) %s; unchanged (200 runs) p50 %s p95 %s; full form estimate %d tokens", elapsed, times[99], times[189], s.Items[0].FullTokens)
 }
+
+func TestReadersWithholdPendingConsolidation(t *testing.T) {
+	root, home, directory := t.TempDir(), t.TempDir(), t.TempDir()
+	notes := filepath.Join(home, "projects", "project", "notes")
+	if err := os.MkdirAll(notes, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(notes, "mx_abcdef.md"), []byte(fixtures(t)[0].Content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := LoadLight(directory, home, "project", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(notes), "notes.pending"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for name, load := range map[string]func() (Snapshot, error){
+		"full":        func() (Snapshot, error) { return Load(directory, home, "project", root) },
+		"light-cache": func() (Snapshot, error) { return LoadLight(directory, home, "project", root) },
+		"selected": func() (Snapshot, error) {
+			return Selected(home, "project", root, snap, map[string]bool{"mx_abcdef": true})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, err := load(); err == nil || len(got.Items) != 0 {
+				t.Fatal("delivered pending notes", got, err)
+			}
+		})
+	}
+}
+func TestCorrectionLabelUsesStatementDate(t *testing.T) {
+	e := &Entry{Created: "2026-11-12", Source: Source{Type: "person", Ref: "capture 2026-11-14 session example row 1"}}
+	if got := Label(e, "personal"); got != "[you said, 14 Nov]" {
+		t.Fatal(got)
+	}
+}

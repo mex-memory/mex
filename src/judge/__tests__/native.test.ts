@@ -11,6 +11,12 @@ import { createJudgeKind, readJudgement } from "../job.js";
 import { evaluate, recordChecks } from "../native.js";
 import { hash } from "../evidence.js";
 import { queuePendingJudgements } from "../pending.js";
+import { ModelWaitError } from "../../model-runner/index.js";
+import { refreshRuleChanges } from "../rule-change.js";
+import { position } from "../evidence.js";
+import { buildIndex } from "../../file-index/build.js";
+import { literalPattern } from "../../file-index/classify.js";
+import { indexDirectory, writePatterns } from "../../file-index/store.js";
 
 let base: string, binary: string;
 beforeAll(() => {
@@ -20,6 +26,64 @@ beforeAll(() => {
 }, 300_000);
 afterEach(() => vi.unstubAllEnvs());
 afterAll(() => rmSync(base, { recursive: true, force: true }));
+
+it("finishes every free page before model admission and retains more than 128 active signals",async()=>{
+  const root=join(base,"paged-repo"),home=join(base,"paged-home");mkdirSync(root);
+  vi.stubEnv("MEX_HOME",home);vi.stubEnv("MEX_HOOK_BINARY",binary);
+  const git=(...args:string[])=>execFileSync("git",["-C",root,...args],{stdio:"pipe"});
+  git("init","-b","migrate-specialSubject");git("-c","user.name=Test","-c","user.email=test@example.invalid","commit","--allow-empty","-qm","Baseline");
+  const writer=openRecord({home,projectPath:root,isNetwork:()=>false});
+  try {
+    const projectId=writer.checkout(root)!.project_id,request={checkout:root,project_id:projectId,mex_home:home,record_directory:writer.location.directory};
+    mkdirSync(join(root,".mex/learned"),{recursive:true});
+    for(let i=0;i<129;i++) {
+      const id=`mx_bulk${String(i).padStart(4,"0")}`;
+      writeFileSync(join(root,".mex/learned",`${id}.md`),serializeEntry(entry(id,{when:[{type:"anti",match:"literal",pattern:"specialSubject("}]})));
+    }
+    const model=vi.fn(async()=>{throw new ModelWaitError("cap");});registerJobKind(createJudgeKind({evaluate,recordChecks,model}));
+    const {job}=enqueueJob(writer,{kind:"judge",projectId,params:{checkout:root,agent:"codex",near:[]}});
+    const run=()=>runOneBatch(writer,"paged-native",{only:new Set([job.id])});
+    await run();expect(model).not.toHaveBeenCalled();expect(writer.db.prepare("SELECT count(*) n FROM review").get()!.n).toBe(128);
+    await run();expect(model).toHaveBeenCalledTimes(1);expect(writer.db.prepare("SELECT count(*) n FROM review").get()!.n).toBe(129);
+    expect((await evaluate(request)).items!.filter(item=>item.rule_evidence?.length)).toHaveLength(129);
+  } finally {writer.close();}
+});
+
+it("publishes free rule evidence and Review before the cap, invalidates new files, and never sends the old policy in a brief", async () => {
+  const root=join(base,"rule-repo"),home=join(base,"rule-home");mkdirSync(root);mkdirSync(join(root,"src"));
+  vi.stubEnv("MEX_HOME",home);vi.stubEnv("MEX_HOOK_BINARY",binary);
+  const git=(...args:string[])=>execFileSync("git",["-C",root,...args],{encoding:"utf8",stdio:"pipe"}).trim();
+  git("init","-b","work");git("config","user.name","Test");git("config","user.email","test@example.invalid");
+  writeFileSync(join(root,"src/dates.ts"),"datefns();datefns();\n");git("add",".");git("commit","-qm","Baseline");
+  const writer=openRecord({home,projectPath:root,isNetwork:()=>false});
+  try {
+    const projectId=writer.checkout(root)!.project_id,request={checkout:root,project_id:projectId,mex_home:home,record_directory:writer.location.directory};
+    mkdirSync(join(root,".mex/learned"),{recursive:true});
+    const value=entry("mx_policy0",{scope:["src/**"],when:[{type:"anti",match:"literal",pattern:"moment("},{type:"required",match:"literal",pattern:"datefns("}],checks:[
+      {kind:"pattern",role:"supporting",target:{scope:"src/**",pattern:"moment(",match:"literal"},saw:{count:0},files:{}},
+      {kind:"pattern",role:"supporting",target:{scope:"src/**",pattern:"datefns(",match:"literal"},saw:{count:2},files:{}}
+    ]},"Dates use datefns because that is the convention.");
+    const file=join(root,".mex/learned/mx_policy0.md"),original=serializeEntry(value);writeFileSync(file,original);
+    writeFileSync(join(root,"src/dates.ts"),"moment();datefns();\n");
+    writePatterns(indexDirectory(writer.location.directory,projectId),[literalPattern("moment("),literalPattern("datefns(")]);
+    await buildIndex({root,projectId,recordDirectory:writer.location.directory,workers:0});
+    const model=vi.fn(async(_request: {prompt:string})=>{throw new ModelWaitError("cap");});
+    registerJobKind(createJudgeKind({evaluate,recordChecks,model}));
+    const {job}=enqueueJob(writer,{kind:"judge",projectId,params:{checkout:root,agent:"codex",near:["src/dates.ts"]}});
+    await runOneBatch(writer,"rule-native",{only:new Set([job.id])});
+    expect(writer.db.prepare("SELECT state FROM jobs WHERE id=?").get(job.id)!.state).toBe("waiting");
+    expect(writer.db.prepare("SELECT reason FROM review WHERE entry_id='mx_policy0'").get()!.reason).toContain("free evidence");
+    expect(model).toHaveBeenCalledTimes(1);expect(model.mock.calls[0]![0]!.prompt).toContain("rule_change");
+    expect((await evaluate(request)).items![0]).toMatchObject({verdict:"changed",rule_evidence:[expect.stringContaining("count rose")]});
+    const brief=JSON.parse(execFileSync(binary,["--brief-run"],{encoding:"utf8",input:JSON.stringify({...request,path:"src/dates.ts",agent:"codex"})}));
+    expect(brief.ok).toBe(true);expect(brief.items).toEqual([]);
+    writeFileSync(join(root,"src/new.ts"),"datefns();datefns();\n");
+    expect((await evaluate(request)).items![0]!.rule_evidence).toBeUndefined();
+    const fresh=await evaluate(request);await refreshRuleChanges(writer,projectId,root,fresh,await position(root));
+    expect((await evaluate(request)).items![0]!.rule_evidence).toBeUndefined();
+    expect(readFileSync(file,"utf8")).toBe(original);expect(git("diff","--cached","--name-only")).toBe("");
+  } finally {writer.close();}
+});
 
 it("takes a real broken verdict through a fake judge and records current checks without changing either database owner", async () => {
   const root = join(base, "repo"), home = join(base, "home"); mkdirSync(root);

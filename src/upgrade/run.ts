@@ -108,14 +108,18 @@ function inputs(plan: UpgradePlan): void {
   for (const c of plan.tracked) if (readText(plan.root, c.path) !== c.before || staged.has(c.path)) throw new KnowledgeError("STALE_PREVIEW", `Upgrade target changed: ${c.path}`);
 }
 function local(plan: UpgradePlan): void {
-  const notes = containedDirectory(plan.home, ["projects", plan.projectId, "notes"], true)!;
-  for (const c of plan.personal) {
-    const current = readText(notes, c.path);
-    if (current === c.after) continue;
-    if (current !== null || c.before !== null || c.after === null) throw new KnowledgeError("UPGRADE_COLLISION", "An imported personal entry changed; it was kept.");
-    const entry = parseEntry(c.after);
-    createEntryFile(notes, entry.mex.id, c.after);
-  }
+  const writer = openRecord({ home: plan.home, projectPath: plan.root });
+  writer.db.exec("BEGIN IMMEDIATE");
+  try {
+    const notes = containedDirectory(plan.home, ["projects", plan.projectId, "notes"], true)!;
+    for (const c of plan.personal) {
+      const current = readText(notes, c.path);
+      if (current === c.after) continue;
+      if (current !== null || c.before !== null || c.after === null) throw new KnowledgeError("UPGRADE_COLLISION", "An imported personal entry changed; it was kept.");
+      const entry = parseEntry(c.after);
+      createEntryFile(notes, entry.mex.id, c.after);
+    }
+  } finally { writer.db.exec("ROLLBACK"); writer.close(); }
   for (const c of plan.local) applyChange(plan.root, c);
   if (plan.assets.hook) applyChange(plan.assets.gitDirectory, plan.assets.hook);
   for (const cache of plan.assets.caches) {

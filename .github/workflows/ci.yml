@@ -245,6 +245,7 @@ jobs:
           src/judge/__tests__/routing.test.ts
           src/judge/__tests__/publication.test.ts
           src/judge/__tests__/pending.test.ts
+          src/judge/__tests__/rule-change.test.ts
           test/telemetry-delivery.test.ts
       - name: Run focused storage, byte-identity, and containment tests
         if: matrix.part == 'storage-package'

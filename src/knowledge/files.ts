@@ -1,10 +1,22 @@
 import { constants, openSync, closeSync, fstatSync, readSync, lstatSync, mkdirSync, writeSync, linkSync, unlinkSync, renameSync, fsyncSync } from "node:fs";
-import { join, relative, isAbsolute, sep } from "node:path";
+import { join, relative, isAbsolute, sep, dirname, basename } from "node:path";
 import { randomBytes } from "node:crypto";
 import { absolutePath, realPath } from "../record/project.js";
 import { EntryIdSchema, KnowledgeError, KNOWLEDGE_LIMITS } from "./entry.js";
 
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
+/** A pending directory swap is never a readable/writable personal store. */
+export function personalReadGuard(directory: string): () => void {
+  if (basename(directory) !== "notes") return () => {};
+  const parent = dirname(directory);
+  const revision = () => {
+    try { lstatSync(join(parent, "notes.pending")); throw new KnowledgeError("STORE_BUSY", "Personal notes are being consolidated; retry after background recovery."); }
+    catch (e) { if (!missing(e)) throw e; }
+    return readBoundedTextFile(join(parent, "notes.revision"), 64);
+  };
+  const before = revision();
+  return () => { if (revision() !== before) throw new KnowledgeError("STORE_CHANGED", "Personal notes changed while being read; retry."); };
+}
 /** Refuse symlink/junction redirects below the already resolved MEX home. */
 export function containedDirectory(home: string, parts: string[], create = false): string | undefined {
   if (parts.some(part => !/^[A-Za-z0-9._-]+$/u.test(part) || part === "." || part === "..")) throw new KnowledgeError("UNSAFE_STORE", "Invalid note directory component.");
@@ -23,7 +35,8 @@ export function containedDirectory(home: string, parts: string[], create = false
 }
 /** Exact regular-file read, bounded even if the file grows while it is open. */
 export function readEntryFile(path: string): string | undefined {
-  return readBoundedTextFile(path, KNOWLEDGE_LIMITS.entryBytes);
+  const check = personalReadGuard(dirname(path));
+  const text = readBoundedTextFile(path, KNOWLEDGE_LIMITS.entryBytes); check(); return text;
 }
 /** Host/source text has its own explicit bound; entry reads keep the 64 KiB limit. */
 export function readBoundedTextFile(path: string, maxBytes: number): string | undefined {
@@ -55,6 +68,7 @@ export function readBoundedTextFile(path: string, maxBytes: number): string | un
 }
 /** Publish complete bytes without ever replacing an existing stable entry id. */
 export function createEntryFile(directory: string, id: string, content: string): void {
+  personalReadGuard(directory)();
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Invalid entry id.");
   if (Buffer.byteLength(content, "utf8") > KNOWLEDGE_LIMITS.entryBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
   const temporary = join(directory, `.entry-${randomBytes(12).toString("hex")}.tmp`);
@@ -88,6 +102,7 @@ export function createEntryFile(directory: string, id: string, content: string):
 
 /** Caller holds the local record's write transaction to serialize MEX editors. */
 export function replaceEntryFile(directory: string, id: string, expected: string, content: string): void {
+  personalReadGuard(directory)();
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Invalid entry id.");
   if (Buffer.byteLength(content, "utf8") > KNOWLEDGE_LIMITS.entryBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
   const target = join(directory, `${id}.md`);

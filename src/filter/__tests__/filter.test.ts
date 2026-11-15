@@ -18,6 +18,9 @@ import { filterInput, type FilterInput, type FilterParams } from "../input.js";
 import { filterPending, queuePendingFilters } from "../pending.js";
 import { replyContexts } from "../transcript.js";
 
+// Extraction tests exercise the staging seam; consolidation has its own integration fixtures.
+vi.mock("../consolidation.js", () => ({ consolidateNext: async () => undefined }));
+
 let suite: string, binary: string, base: string, root: string, home: string, writer: RecordWriter, hooks: DatabaseSync, project: string;
 let deps: FilterDependencies, calls: ModelRequest[];
 const now = Date.now(), old = new Date(now - 20 * 60_000).toISOString();

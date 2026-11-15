@@ -49,7 +49,11 @@ func judgeNotice(ev contract.Event, h home, directory string) (string, string) {
 		} else if shown {
 			continue
 		}
-		notice, err := reader.JudgeNotice(id, "judge-preview."+key, "judge-updated."+key)
+		kind := "judge"
+		if strings.HasPrefix(id, "learning.team.") {
+			kind = "learning"
+		}
+		notice, err := reader.JudgeNotice(id, kind+"-preview."+key, kind+"-updated."+key)
 		if err != nil {
 			return "", ""
 		}
@@ -73,7 +77,7 @@ func judgeNotice(ev contract.Event, h home, directory string) (string, string) {
 	return "", ""
 }
 
-var judgeNoticeID = regexp.MustCompile(`^judge\.fix\.[a-f0-9]{24}\.(preview|updated)$`)
+var judgeNoticeID = regexp.MustCompile(`^(judge\.fix|learning\.team)\.[a-f0-9]{24}\.(preview|updated)$`)
 
 func markJudgeNotice(ev contract.Event, h home, directory, id string, now time.Time) bool {
 	hooks, err := localrecord.OpenHooks(hooksLocation(h, directory))
