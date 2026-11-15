@@ -228,6 +228,18 @@ describe("a repository with every source", () => {
     expect(empty.recipes).toEqual([]);
     expect(recipeSummary(empty).line).toBe("No test or build commands found in config");
   });
+
+  it("reads a checkout with CRLF line endings (Git's autocrlf on Windows) exactly like one with LF", () => {
+    const crlf = Object.fromEntries(Object.entries(FIXTURE).map(([path, text]) => [path, text.replace(/\n/gu, "\r\n")]));
+    const now = new Date("2026-11-15T00:00:00Z");
+    const lf = scanRecipes({ root: repo(FIXTURE), binary: null, now });
+    const windows = scanRecipes({ root: repo(crlf), binary: null, now });
+    expect(project(windows)).toEqual(project(lf));
+    expect(windows.packages).toEqual(lf.packages);
+    expect(windows.build_order).toEqual(lf.build_order);
+    expect(windows.review).toEqual(lf.review);
+    expect(windows.recipes.map(recipe => recipe.entry)).toEqual(lf.recipes.map(recipe => recipe.entry));
+  });
 });
 
 const real = process.env.MEX_TEST_REAL_HOOK_BINARY === "1" && spawnSync("go", ["version"]).status === 0;
