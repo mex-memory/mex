@@ -1,6 +1,7 @@
 package capture
 
 import (
+	"strconv"
 	"strings"
 )
 
@@ -86,11 +87,17 @@ func Classify(failed, passed string, failedExit int, otherBetween bool) (Verdict
 		if disablingFlag(flag) {
 			return Rejected, "a check was turned off"
 		}
+		if !safeAddedFlag(fs, flag) {
+			return Rejected, "an unrecognised flag change"
+		}
 	}
 	for _, flag := range removed {
 		if strictFlag(flag) {
 			return Rejected, "a check was turned off"
 		}
+		// Removing an option can reduce coverage too. Abstain unless the
+		// unchanged run can establish the same work, rather than guessing.
+		return Rejected, "a flag was removed"
 	}
 	flagsChanged := len(added) > 0 || len(removed) > 0
 	switch {
@@ -102,6 +109,57 @@ func Classify(failed, passed string, failedExit int, otherBetween bool) (Verdict
 		return Candidate, "only flags differ"
 	}
 	return Flaky, "passed on a rerun with nothing changed"
+}
+
+// safeAddedFlag recognises execution/cache settings and additions that keep
+// or expand the work. Unknown flags abstain: a blacklist cannot know every
+// runner's selection, listing, collection-only or plugin-defined options.
+// Match the command as well as the complete option/value, so a familiar flag
+// on a different program is never assumed to have the same meaning.
+func safeAddedFlag(s segment, flag string) bool {
+	command := strings.TrimSpace(s.program() + " " + strings.Join(s.positionals(), " "))
+	switch command {
+	case "npm test":
+		return flag == "--runInBand" || flag == "NODE_ENV=test"
+	case "npm install":
+		return flag == "--legacy-peer-deps"
+	case "npm run lint":
+		return flag == "--cache=false"
+	case "npm run build":
+		return positiveOption(flag, "NODE_OPTIONS=--max-old-space-size=")
+	case "go test ./...":
+		return flag == "-race" || positiveOption(flag, "-count=") || positiveOption(flag, "-p=") || positiveOption(flag, "-parallel=")
+	case "cargo build", "cargo test":
+		return flag == "--locked" || flag == "--all-features"
+	case "docker compose up":
+		return flag == "--build"
+	case "gradle build", "./gradlew build":
+		return flag == "--refresh-dependencies"
+	case "mvn package":
+		return flag == "-U"
+	case "python pytest", "python3 pytest":
+		module := false
+		for _, f := range s.flags() {
+			module = module || f == "-m"
+		}
+		return module && flag == "--import-mode=importlib"
+	case "pytest":
+		return flag == "--import-mode=importlib"
+	case "npx tsc", "tsc":
+		return flag == "--incremental=false"
+	case "vitest run":
+		return flag == "--pool=forks" || flag == "--pool=threads"
+	}
+	return false
+}
+
+func positiveOption(flag, prefix string) bool {
+	value, ok := strings.CutPrefix(flag, prefix)
+	if !ok || value == "" || strings.Trim(value, "0123456789") != "" {
+		return false
+	}
+	n, err := strconv.Atoi(value)
+	return err == nil && n > 0
 }
 
 type segment struct {

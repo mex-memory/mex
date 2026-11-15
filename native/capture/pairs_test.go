@@ -150,3 +150,31 @@ func TestClassifyNeverAcceptsAPassingFirstRun(t *testing.T) {
 		t.Fatal(v)
 	}
 }
+
+func TestClassifyAbstainsFromUnknownAndNonRunningFlags(t *testing.T) {
+	for _, c := range []pairCase{
+		{"pytest", "pytest --collect-only", 1, false, Rejected},
+		{"pytest", "pytest --co", 1, false, Rejected},
+		{"pytest", "pytest --deselect=tests/test_security.py", 1, false, Rejected},
+		{"npm test", "npm test -- --listTests", 1, false, Rejected},
+		{"jest", "jest --listTests", 1, false, Rejected},
+		{"go test ./...", "go test -list=. ./...", 1, false, Rejected},
+		{"go test ./...", "go test -count=0 ./...", 1, false, Rejected},
+		{"pytest", "pytest -ksecurity", 1, false, Rejected},
+		{"pytest", "pytest --plugin-selected-tests", 1, false, Rejected},
+		{"npm test", "npm test -- --future-selection-flag", 1, false, Rejected},
+		{"npm test", "SKIP_TESTS=1 npm test", 1, false, Rejected},
+		{"go test ./...", "NODE_OPTIONS=--max-old-space-size=4096 go test ./...", 1, false, Rejected},
+		{"pytest", "pytest --runInBand", 1, false, Rejected},
+		{"python pytest", "python pytest --import-mode=importlib", 1, false, Rejected},
+		{"go test -race ./...", "go test ./...", 1, false, Rejected},
+		{"cargo test --all-features", "cargo test", 101, false, Rejected},
+		{"custom-check", "custom-check --locked", 1, false, Rejected},
+	} {
+		t.Run(c.passed, func(t *testing.T) {
+			if got, reason := Classify(c.failed, c.passed, c.exit, c.between); got != c.want {
+				t.Fatalf("%q -> %q: %s (%s), want %s", c.failed, c.passed, got, reason, c.want)
+			}
+		})
+	}
+}

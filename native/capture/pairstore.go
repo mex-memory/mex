@@ -80,7 +80,19 @@ func ReadPairs(recordDirectory, projectID string) ([]Pair, error) {
 	if f.Version != 1 {
 		return nil, errors.New("unknown pair store version")
 	}
-	return f.Pairs, nil
+	// A previous version may have kept or promoted unsafe flag changes.
+	// Do not expose those as candidates or hints under the current rule;
+	// ordinary reads still leave the stored bytes untouched.
+	out := f.Pairs[:0]
+	for _, p := range f.Pairs {
+		if p.Kind == string(Candidate) || p.Kind == "hint" {
+			if verdict, _ := Classify(p.Failed, p.Passed, p.Exit, false); verdict != Candidate {
+				continue
+			}
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 // track follows one session's commands for the strict rule. It runs on the

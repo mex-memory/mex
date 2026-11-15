@@ -1,6 +1,7 @@
 package capture
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -90,6 +91,56 @@ func TestStrictPairsAcrossSessions(t *testing.T) {
 	b.fail("go test ./...", 1)
 	if p := pairsOf(t, env)["go test ./... -> go test ./..."]; p.Kind != "flaky" {
 		t.Fatalf("%+v", p)
+	}
+}
+
+func TestUnsafeFlagChangesNeverBecomeHints(t *testing.T) {
+	for _, passed := range []string{"pytest --collect-only", "pytest --deselect=tests/test_security.py", "pytest --plugin-selected-tests"} {
+		t.Run(passed, func(t *testing.T) {
+			env := Env{RecordDirectory: t.TempDir()}
+			a := session{t, env, "a"}
+			a.fail("pytest", 1)
+			a.pass(passed)
+			b := session{t, env, "b"}
+			b.fail("pytest", 1)
+			if got := pairsOf(t, env); len(got) != 0 {
+				t.Fatalf("unsafe pair retained: %+v", got)
+			}
+			// An older version could have retained this candidate. Recheck
+			// its semantics too before another session can promote it.
+			if err := savePair(env, testProject, Pair{ID: PairID("pytest", 1, passed), Kind: "candidate", Failed: "pytest", Passed: passed, Exit: 1, Session: "old"}); err != nil {
+				t.Fatal(err)
+			}
+			b.fail("pytest", 1)
+			for _, p := range pairsOf(t, env) {
+				if p.Kind == "hint" {
+					t.Fatalf("unsafe historical candidate promoted: %+v", p)
+				}
+			}
+		})
+	}
+}
+
+func TestReadPairsWithholdsUnsafeHistoricalHintsWithoutRewriting(t *testing.T) {
+	env := Env{RecordDirectory: t.TempDir()}
+	path := PairsPath(env.RecordDirectory, testProject)
+	if err := writeJSON(path, pairFile{Version: 1, Pairs: []Pair{
+		{ID: "unsafe", Kind: "hint", Failed: "pytest", Passed: "pytest --collect-only", Exit: 1},
+		{ID: "safe", Kind: "hint", Failed: "cargo build", Passed: "cargo build --locked", Exit: 101},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairs, err := ReadPairs(env.RecordDirectory, testProject)
+	if err != nil || len(pairs) != 1 || pairs[0].ID != "safe" {
+		t.Fatalf("historical hint eligibility: %+v %v", pairs, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(before) != string(after) {
+		t.Fatal("read rewrote the pair store")
 	}
 }
 
