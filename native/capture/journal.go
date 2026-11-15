@@ -302,6 +302,7 @@ func Hook(ev contract.Event, env Env) {
 		prunePending(env)
 	}
 	_ = Save(ev, env)
+	_ = filterMetadata(ev, env)
 	_ = keepContinuity(ev, env)
 	_ = track(ev, env, func(session, entryID string) bool {
 		h, err := openHooks(env.RecordDirectory)
