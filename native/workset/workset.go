@@ -6,6 +6,7 @@ package workset
 
 import (
 	"bufio"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -254,4 +255,70 @@ func Request(recordDirectory, project, checkout string) error {
 		return err
 	}
 	return m.Close()
+}
+
+// pathKey is FNV-1a over the path's UTF-8 bytes, the key the background job
+// sorts the fix table by.
+func pathKey(p string) uint64 {
+	h := uint64(0xcbf29ce484222325)
+	for i := 0; i < len(p); i++ {
+		h ^= uint64(p[i])
+		h *= 0x100000001b3
+	}
+	return h
+}
+
+const fixesMagic = "MXF1"
+
+// Fixes is a file's fix history: fix commits in the window and the time of the
+// last one.
+type Fixes struct {
+	Count int
+	Last  time.Time
+}
+
+// FixesFor looks one checkout-relative file up in the fix table the
+// background job writes beside the working set. It opens one small file and
+// binary-searches fixed-size records, so it is cheap enough for an edit
+// moment. The checkout must already be canonical.
+func FixesFor(recordDirectory, project, checkout, rel string) (Fixes, bool) {
+	if !validComponent(project) || rel == "" {
+		return Fixes{}, false
+	}
+	p := filepath.Join(recordDirectory, "projects", project, "working-set", place.ShortHash(checkout)+".fixes")
+	if !safefile.Regular(p) {
+		return Fixes{}, false
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return Fixes{}, false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.Size() < 4 || (info.Size()-4)%16 != 0 || info.Size() > 4+16*65536 {
+		return Fixes{}, false
+	}
+	head := make([]byte, 4)
+	if _, err = f.ReadAt(head, 0); err != nil || string(head) != fixesMagic {
+		return Fixes{}, false
+	}
+	key := pathKey(rel)
+	rec := make([]byte, 16)
+	lo, hi := int64(0), (info.Size()-4)/16
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if _, err = f.ReadAt(rec, 4+mid*16); err != nil {
+			return Fixes{}, false
+		}
+		k := binary.LittleEndian.Uint64(rec)
+		switch {
+		case k == key:
+			return Fixes{Count: int(binary.LittleEndian.Uint32(rec[8:])), Last: time.Unix(int64(binary.LittleEndian.Uint32(rec[12:])), 0)}, true
+		case k < key:
+			lo = mid + 1
+		default:
+			hi = mid
+		}
+	}
+	return Fixes{}, false
 }

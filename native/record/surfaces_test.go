@@ -359,7 +359,7 @@ func TestSurfaceActedDefinitions(t *testing.T) {
 		{"start scope", "start-brief", target, open, true},
 		{"previous scope", "start-brief-previous", target, open, true},
 		{"recovery scope", "recovery", target, open, true},
-		{"history scope", "bug-history", target, edit, true},
+		{"history: an edit of the file is not acting on its history", "bug-history", target, edit, false},
 		{"rescue path", "rescue-wrong-path", SurfaceTarget{Paths: open.Paths}, open, true},
 		{"rescue symbol", "rescue-search", SurfaceTarget{Names: []string{"LoadRecord"}}, SurfaceTool{Names: []string{"LoadRecord"}, Success: true}, true},
 		{"wide path", "rescue-wide", SurfaceTarget{Paths: open.Paths}, open, true},
@@ -697,5 +697,23 @@ func TestSurfaceGateOncePerSession(t *testing.T) {
 	}
 	if !OncePerSession("start-brief") || OncePerSession("prompt") {
 		t.Fatal("once per session")
+	}
+}
+
+func TestBugHistoryActedIsTestsOrHistory(t *testing.T) {
+	target := SurfaceTarget{Paths: []string{"src/a.ts"}}
+	for _, c := range []struct {
+		tool SurfaceTool
+		want bool
+	}{
+		{SurfaceTool{Tested: true}, true},
+		{SurfaceTool{Tested: true, Success: false}, true},
+		{SurfaceTool{History: []string{"src/a.ts"}}, true},
+		{SurfaceTool{History: []string{"src/b.ts"}}, false},
+		{SurfaceTool{Paths: []string{"src/a.ts"}, Edit: true, Success: true}, false},
+	} {
+		if Acted("bug-history", target, c.tool) != c.want {
+			t.Fatalf("%+v", c.tool)
+		}
 	}
 }

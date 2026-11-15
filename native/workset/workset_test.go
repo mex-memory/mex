@@ -1,10 +1,12 @@
 package workset
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -127,5 +129,46 @@ func TestReadAndRequest(t *testing.T) {
 	}
 	if Request(record, "../escape", checkout) == nil || Read(record, "a/b", checkout) != nil {
 		t.Fatal("project names a path component")
+	}
+}
+
+func TestFixesTableLookup(t *testing.T) {
+	// FNV-1a 64 test vectors; the Node writer is checked against the same ones.
+	if pathKey("") != 0xcbf29ce484222325 || pathKey("a") != 0xaf63dc4c8601ec8c {
+		t.Fatal("path key")
+	}
+	record, checkout := t.TempDir(), t.TempDir()
+	project := "g-0123456789abcdef01234567"
+	real, _ := place.RealPath(checkout)
+	rows := map[string][2]uint32{"src/a.ts": {4, 1_700_000_000}, "src/b.ts": {3, 1_700_100_000}, "lib/c.go": {7, 1_700_200_000}}
+	keys := []string{"src/a.ts", "src/b.ts", "lib/c.go"}
+	sort.Slice(keys, func(i, j int) bool { return pathKey(keys[i]) < pathKey(keys[j]) })
+	out := []byte("MXF1")
+	for _, k := range keys {
+		rec := make([]byte, 16)
+		binary.LittleEndian.PutUint64(rec, pathKey(k))
+		binary.LittleEndian.PutUint32(rec[8:], rows[k][0])
+		binary.LittleEndian.PutUint32(rec[12:], rows[k][1])
+		out = append(out, rec...)
+	}
+	dir := filepath.Join(record, "projects", project, "working-set")
+	os.MkdirAll(dir, 0o700)
+	if err := os.WriteFile(filepath.Join(dir, place.ShortHash(real)+".fixes"), out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range keys {
+		fx, ok := FixesFor(record, project, real, k)
+		if !ok || fx.Count != int(rows[k][0]) || fx.Last.Unix() != int64(rows[k][1]) {
+			t.Fatal(k, fx, ok)
+		}
+	}
+	if _, ok := FixesFor(record, project, real, "src/none.ts"); ok {
+		t.Fatal("absent file")
+	}
+	if err := os.WriteFile(filepath.Join(dir, place.ShortHash(real)+".fixes"), []byte("MXF1short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := FixesFor(record, project, real, "src/a.ts"); ok {
+		t.Fatal("a malformed table answered")
 	}
 }

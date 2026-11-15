@@ -120,6 +120,10 @@ type SurfaceTool struct {
 	Command             string
 	Added               string
 	Edit, Open, Success bool
+	// Tested is a command that runs tests; History lists files a git
+	// history command (log, blame, show) named.
+	Tested  bool
+	History []string
 }
 
 // Acted is deliberately positive evidence. Unknown outcomes and missing edit
@@ -138,6 +142,21 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 	}
 	if surface == "failure-fix" {
 		return command() || (tool.Success && target.Failure != "" && target.Failure == tool.Command)
+	}
+	if surface == "bug-history" {
+		// The file is being edited already; acting on its history means
+		// running tests (pass or fail) or looking at what earlier fixes changed.
+		if tool.Tested {
+			return true
+		}
+		for _, p := range tool.History {
+			for _, named := range target.Paths {
+				if p == named {
+					return true
+				}
+			}
+		}
+		return false
 	}
 	if !tool.Success {
 		return false
@@ -182,8 +201,6 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 		return true
 	case "prompt", "start-brief", "start-brief-previous", "recovery":
 		return (tool.Open || tool.Edit) && scopeTouch()
-	case "bug-history":
-		return (tool.Open || tool.Edit) && touch()
 	case "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout":
 		if namedTouch() {
 			return true

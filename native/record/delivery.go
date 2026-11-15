@@ -44,6 +44,12 @@ type DeliveryCandidate struct {
 	// Resend gives an entry again although the ledger has it this epoch: the
 	// transcript shows the agent no longer has it (a rewind).
 	Resend bool
+	// SessionOnce gives an entry at most once per session and agent, and
+	// SessionMax caps how many receipts its surface gets in one session.
+	// Both count shadow receipts too and are checked under the write lock,
+	// so racing hook processes can't exceed them.
+	SessionOnce bool
+	SessionMax  int
 }
 type Receipt struct {
 	DeliveryCandidate
@@ -434,6 +440,16 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		id, err := canonical(c.EntryID)
 		if err != nil {
 			return result, err
+		}
+		if c.SessionOnce || c.SessionMax > 0 {
+			var given, entry int
+			err = conn.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(entry_id=?),0) FROM deliveries WHERE session_id=? AND agent_id=? AND surface=? AND action IN ('given','replaced','shadow')`, c.EntryID, req.Session.SessionID, req.AgentID, c.Surface).Scan(&given, &entry)
+			if err != nil {
+				return result, err
+			}
+			if (c.SessionOnce && entry > 0) || (c.SessionMax > 0 && given >= c.SessionMax) {
+				continue
+			}
 		}
 		if c.Correction {
 			if !present[id] || corrected[id] {

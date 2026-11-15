@@ -34,9 +34,9 @@ export const WORKING_SET_LIMITS = {
   hops: 100,
   /** A file needs this many fix commits to carry history. */
   fixMin: 3,
-  /** Fix histories older than this are not kept. */
-  fixKeepDays: 365,
-  fixFiles: 5000,
+  /** A fix older than this doesn't make a history notice. */
+  fixKeepDays: 180,
+  fixFiles: 4000,
   /** A git call that takes longer is abandoned; the job tries again next session. */
   gitTimeoutMs: 30_000,
 } as const;
@@ -272,10 +272,46 @@ export async function computeWorkingSet(options: ComputeOptions): Promise<Workin
   };
 }
 
+/** FNV-1a, 64 bits, over the UTF-8 path: the key the hook looks a file up by. */
+export function pathKey(path: string): bigint {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of Buffer.from(path, "utf8")) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash;
+}
+
+export const FIXES_MAGIC = "MXF1";
+
+/**
+ * The fix history as a sorted table the hook can search without parsing:
+ * "MXF1", then 16-byte records (path key u64, fix count u32, last fix as
+ * Unix seconds u32), little-endian, sorted by key.
+ */
+export function encodeFixes(fixes: Record<string, [number, number]>): Buffer {
+  const rows = Object.entries(fixes).map(([path, [count, last]]) => ({ key: pathKey(path), count, last }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const out = Buffer.alloc(4 + rows.length * 16);
+  out.write(FIXES_MAGIC, 0, "ascii");
+  rows.forEach((row, i) => {
+    out.writeBigUInt64LE(row.key, 4 + i * 16);
+    out.writeUInt32LE(Math.min(row.count, 0xffffffff), 12 + i * 16);
+    out.writeUInt32LE(Math.max(0, Math.min(row.last, 0xffffffff)), 16 + i * 16);
+  });
+  return out;
+}
+
+export function fixesFile(recordDirectory: string, projectId: string, root: string): string {
+  return join(workingSetDirectory(recordDirectory, projectId), `${checkoutKey(root)}.fixes`);
+}
+
 export async function writeWorkingSet(options: ComputeOptions): Promise<WorkingSetFile> {
   const set = await computeWorkingSet(options);
-  const file = workingSetFile(options.recordDirectory, options.projectId, realPath(options.root));
+  const root = realPath(options.root);
+  const file = workingSetFile(options.recordDirectory, options.projectId, root);
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  writeAtomic(fixesFile(options.recordDirectory, options.projectId, root), encodeFixes(set.fixes));
   writeAtomic(file, JSON.stringify(set));
   return set;
 }

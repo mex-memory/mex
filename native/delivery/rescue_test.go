@@ -6,8 +6,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
@@ -53,9 +55,12 @@ CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;`
 		t.Fatal(err)
 	}
 	for file, symbols := range files {
-		f.file(file, "x\n")
+		info, err := os.Stat(filepath.FromSlash(f.file(file, "x\n")))
+		if err != nil {
+			t.Fatal(err)
+		}
 		hash := "h-" + file
-		if _, err = snap.Exec(`INSERT INTO paths VALUES(?,?,?,0,2,'0',NULL,?)`, file, hash, "ts", path.Base(file)); err != nil {
+		if _, err = snap.Exec(`INSERT INTO paths VALUES(?,?,?,0,2,?,NULL,?)`, file, hash, "ts", strconv.FormatInt(info.ModTime().UnixNano(), 10), path.Base(file)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = snap.Exec(`INSERT INTO records VALUES(?,?,?)`, hash, "ts", `{"outline":[],"imports":[],"exports":[],"names":[],"patterns":{},"tokens":1,"lines":1}`); err != nil {
@@ -274,5 +279,18 @@ func TestSearchTermsAndVariants(t *testing.T) {
 		if regexHeavy(p) != heavy {
 			t.Fatal(p)
 		}
+	}
+}
+
+func TestRescueSkipsDefinitionsInFilesChangedSinceIndexing(t *testing.T) {
+	f := rescueFixture(t)
+	plantIndex(t, f, map[string][]plantedSymbol{"src/users.ts": {{"getUserById", "function", 12, 30}}})
+	// Changed outside any hook: no recorded edit explains the new time.
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(f.root, "src", "users.ts"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	if out := sendWith(t, f.event(contract.PostToolBatch, grep("getUserById", "No matches found")), rescueEnv(f, "on")); out != "" {
+		t.Fatal("pointed into a file that changed since it was indexed", out)
 	}
 }

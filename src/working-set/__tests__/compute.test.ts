@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveImport } from "../../file-index/imports.js";
 import { realPath } from "../../record/project.js";
-import { branchWords, coChangePartners, computeWorkingSet, fixHistory, isFixSubject, parseLog, workingSetFile, writeWorkingSet, WORKING_SET_LIMITS, type Commit } from "../compute.js";
+import { branchWords, coChangePartners, computeWorkingSet, encodeFixes, fixesFile, fixHistory, isFixSubject, parseLog, pathKey, workingSetFile, writeWorkingSet, WORKING_SET_LIMITS, type Commit } from "../compute.js";
 
 const c = (files: string[], fix = false, time = 0): Commit => ({ files, fix, time });
 
@@ -54,6 +54,24 @@ describe("fix history", () => {
   it("recognizes fix subjects without matching prefix or fixture", () => {
     expect(["fix: x", "fix(api): y", "Fixes the crash", "bug in parser"].every(isFixSubject)).toBe(true);
     expect(["Add prefix option", "Update fixtures", "feat: z"].some(isFixSubject)).toBe(false);
+  });
+});
+
+describe("the fix table", () => {
+  it("uses FNV-1a 64 keys, the same vectors the Go reader is tested with", () => {
+    expect(pathKey("")).toBe(0xcbf29ce484222325n);
+    expect(pathKey("a")).toBe(0xaf63dc4c8601ec8cn);
+  });
+
+  it("writes sorted 16-byte records after the magic", () => {
+    const table = encodeFixes({ "src/a.ts": [4, 1_700_000_000], "lib/c.go": [7, 1_700_200_000] });
+    expect(table.subarray(0, 4).toString("ascii")).toBe("MXF1");
+    expect(table.length).toBe(4 + 2 * 16);
+    const first = table.readBigUInt64LE(4), second = table.readBigUInt64LE(20);
+    expect(first < second).toBe(true);
+    const a = first === pathKey("src/a.ts") ? 4 : 20;
+    expect(table.readUInt32LE(a + 8)).toBe(4);
+    expect(table.readUInt32LE(a + 12)).toBe(1_700_000_000);
   });
 });
 
@@ -112,6 +130,7 @@ describe("computeWorkingSet on a repository", () => {
     const cached = JSON.parse(readFileSync(workingSetFile(record, "g-0123456789abcdef01234567", realPath(root)), "utf8"));
     expect(cached.version).toBe(1);
     expect(cached.seeds).toEqual(set.seeds);
+    expect(readFileSync(fixesFile(record, "g-0123456789abcdef01234567", realPath(root))).subarray(0, 4).toString("ascii")).toBe("MXF1");
   });
 
   it("works outside git with an empty set", async () => {

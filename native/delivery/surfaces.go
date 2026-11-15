@@ -156,6 +156,10 @@ func surfaceTools(ev contract.Event, env Environment) []record.SurfaceTool {
 		// proven success: Claude batches declare success, Codex needs an exit code.
 		if tool.Name == contract.ToolShell {
 			observation.Command = surfaceCommand(tool.Input.Command)
+			observation.Tested = testCommand(tool.Input.Command)
+			if ev.Checkout != "" {
+				observation.History = historyPaths(tool.Input.Command, ev.Cwd, ev.Checkout)
+			}
 			if ev.Agent == "codex" {
 				observation.Success = observation.Success && tool.Output.ExitCode != nil && *tool.Output.ExitCode == 0
 			} else if tool.Output != nil && tool.Output.ExitCode != nil && *tool.Output.ExitCode != 0 {
@@ -172,8 +176,10 @@ func surfaceTools(ev contract.Event, env Environment) []record.SurfaceTool {
 			key := v.project + "\n" + v.checkout
 			scoped := observation.Scoped[key]
 			scoped.Success = observation.Success
+			scoped.Tested = observation.Tested
 			if v.name == contract.ToolShell {
 				scoped.Command = surfaceCommand(v.command)
+				scoped.History = historyPaths(v.command, ev.Cwd, v.checkout)
 			}
 			if v.name == contract.ToolRead || isEdit(v) {
 				scoped.Paths = append(scoped.Paths, v.rel)
