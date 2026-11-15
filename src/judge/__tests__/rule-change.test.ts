@@ -36,6 +36,37 @@ beforeEach(()=>{
 afterEach(()=>{writer.close();vi.unstubAllEnvs();rmSync(base,{recursive:true,force:true});});
 
 describe("free rule-change evidence",()=>{
+ it("does not use a migration title older than the exact committed entry revision",async()=>{
+  const value=rule(),file=add(value);git("add",".");git("commit","-qm","Add original policy");
+  git("commit","--allow-empty","-qm","Replace moment");
+  value.mex.one_line="Dates have an explicitly refreshed policy.";value.text="The dates policy has been reviewed against current code.";
+  const content=serializeEntry(value);writeFileSync(file,content);report.items![0]!.entry_hash=hash(content);
+  git("add",".");git("commit","-qm","Review current policy");
+  expect((await refresh()).snapshot.entries).toEqual([]);
+ });
+ it("does not turn a newer code fact into evidence that a policy reversed",async()=>{
+  add(rule());source("docs/dates.md","A legacy adapter calls moment.\n");
+  add(entry("mx_newfact",{kind:"fact",created:"2026-11-02",scope:["src/**"],source:{type:"docs",ref:"docs/dates.md"},evidence:"docs",when:[{type:"required",match:"literal",pattern:"moment("}],checks:[{kind:"source",role:"supporting",target:{file:"docs/dates.md"},saw:{hash:hash("A legacy adapter calls moment.\n")},files:{"docs/dates.md":hash("A legacy adapter calls moment.\n")}}]}));
+  expect((await refresh()).snapshot.entries).toEqual([]);
+ });
+ it("keeps a personal policy under the personal-note contract",async()=>{
+  const value=rule(),content=serializeEntry(value),path=join(writer.location.home,"projects",projectId,"notes",`${value.mex.id}.md`);
+  mkdirSync(join(path,".."),{recursive:true});writeFileSync(path,content);
+  report.items!.push({id:value.mex.id,path,level:"personal",kind:"rule",status:"active",verdict:"held",entry_hash:hash(content)});
+  git("switch","-c","migrate-moment");
+  expect((await refresh()).snapshot.entries).toEqual([]);
+  expect(writer.db.prepare("SELECT count(*) n FROM review").get()!.n).toBe(0);
+ });
+ it("advances beyond the first page while retaining earlier evidence",async()=>{
+  for(let i=0;i<129;i++) {
+   const value=rule();value.mex.id=`mx_page${String(i).padStart(4,"0")}`;
+   value.mex.when=[{type:"anti",match:"literal",pattern:i===0||i===128?"specialSubject(":"neutralPattern("}];value.mex.checks=[];
+   add(value);
+  }
+  git("switch","-c","migrate-specialSubject");
+  const first=await refresh();expect(first.snapshot.entries.map(e=>e.id)).toEqual(["mx_page0000"]);
+  const second=await refresh();expect(second.snapshot.entries.map(e=>e.id)).toEqual(["mx_page0000","mx_page0128"]);
+ });
  it("requires both count directions in the same scoped pair; conformance alone is not a migration",async()=>{
   const file=add(rule()),before=readFileSync(file,"utf8");source("src/main.ts","moment(); datefns(); datefns();\n");observe(1,2);
   expect((await refresh()).snapshot.entries).toEqual([]);
@@ -54,10 +85,15 @@ describe("free rule-change evidence",()=>{
   expect((await refresh()).snapshot.entries).toEqual([]);
  });
  it("matches branch and newer commit/PR titles by subject and explicit change verbs",async()=>{
-  add(rule());git("switch","-c","migrate-moment-to-datefns");
+  add(rule());git("add",".");git("commit","-qm","Add policy");git("switch","-c","migrate-moment-to-datefns");
   expect((await refresh()).snapshot.entries[0]!.reasons[0]).toContain("branch");
   git("switch","work");git("commit","--allow-empty","-qm","Replace moment with datefns (#321)");
   expect((await refresh()).snapshot.entries[0]!.reasons[0]).toMatch(/^Commit [a-f0-9]{40} names/);
+ });
+ it("does not infer assertion order for an uncommitted entry rewrite",async()=>{
+  const value=rule(),file=add(value);git("add",".");git("commit","-qm","Add policy");git("commit","--allow-empty","-qm","Replace moment");
+  value.text="This is an uncommitted fresh assertion.";const content=serializeEntry(value);writeFileSync(file,content);report.items![0]!.entry_hash=hash(content);
+  expect((await refresh()).snapshot.entries).toEqual([]);
  });
  it("ignores unrelated words, substrings, old titles and explicit negation",async()=>{
   const value=rule();add(value);

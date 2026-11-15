@@ -23,7 +23,7 @@ export type Verdict = "held" | "changed" | "broken" | "unknown";
 type Level = "team" | "personal" | "hint";
 
 export interface CheckResult { index: number; kind: string; role: string; status: "pass" | "fail" | "gone" | "floor"; reason?: string; now?: unknown; files_changed?: string[]; }
-export interface NativeItem { id: string; level: Level; path: string; kind: string; status: string; verdict: Verdict; entry_hash?: string; rule_evidence?: string[]; }
+export interface NativeItem { id: string; level: Level; path: string; kind: string; status: string; verdict: Verdict; entry_hash?: string; rule_evidence?: string[]; rule_evidence_pending?: boolean; }
 export interface NativeReport {
   ok: true; stored: boolean; items: NativeItem[] | null;
   results: Array<{ entry_id: string; verdict: Verdict; checks: CheckResult[]; inputs?: Record<string, string> }> | null;

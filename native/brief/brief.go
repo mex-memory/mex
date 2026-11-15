@@ -275,7 +275,7 @@ func Build(opts Options) (Result, error) {
 			}
 		}
 		// The brief never repeats a policy currently doubted by the free pass.
-		if (e.Kind == "rule" || e.Kind == "decision" || e.Kind == "pitfall") && ruleChanges.For(e.ID, c.hash) != nil {
+		if c.level == "team" && (e.Kind == "rule" || e.Kind == "decision" || e.Kind == "pitfall") && ruleChanges.For(e.ID, c.hash) != nil {
 			return nil, false
 		}
 		verdict := evaluator.Evaluate(checkEntry(e)).Verdict

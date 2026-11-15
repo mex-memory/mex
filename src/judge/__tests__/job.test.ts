@@ -79,6 +79,12 @@ beforeEach(() => {
 afterEach(() => { writer.close(); vi.unstubAllEnvs(); rmSync(base, { recursive: true, force: true }); });
 
 describe("judge job and queue", () => {
+  it("leaves bounded but unproved rule evidence as a gap without a model call",async()=>{
+    add("mx_pending0");report.items![0]!.rule_evidence=["Rule may have changed"];
+    report.items![0]!.rule_evidence_pending=true;
+    const id=queue();expect((await finish(id)).state).toBe("done with gaps");
+    expect(calls).toHaveLength(0);expect(readJudgement(writer,projectId,root,"mx_pending0")).toBeUndefined();
+  });
   it.each(["before", "during"])("honors a session pause %s a model call", async when => {
     add("mx_paused0");
     const hooks = new DatabaseSync(writer.location.hooks);

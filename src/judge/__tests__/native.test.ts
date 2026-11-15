@@ -27,6 +27,28 @@ beforeAll(() => {
 afterEach(() => vi.unstubAllEnvs());
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 
+it("finishes every free page before model admission and retains more than 128 active signals",async()=>{
+  const root=join(base,"paged-repo"),home=join(base,"paged-home");mkdirSync(root);
+  vi.stubEnv("MEX_HOME",home);vi.stubEnv("MEX_HOOK_BINARY",binary);
+  const git=(...args:string[])=>execFileSync("git",["-C",root,...args],{stdio:"pipe"});
+  git("init","-b","migrate-specialSubject");git("-c","user.name=Test","-c","user.email=test@example.invalid","commit","--allow-empty","-qm","Baseline");
+  const writer=openRecord({home,projectPath:root,isNetwork:()=>false});
+  try {
+    const projectId=writer.checkout(root)!.project_id,request={checkout:root,project_id:projectId,mex_home:home,record_directory:writer.location.directory};
+    mkdirSync(join(root,".mex/learned"),{recursive:true});
+    for(let i=0;i<129;i++) {
+      const id=`mx_bulk${String(i).padStart(4,"0")}`;
+      writeFileSync(join(root,".mex/learned",`${id}.md`),serializeEntry(entry(id,{when:[{type:"anti",match:"literal",pattern:"specialSubject("}]})));
+    }
+    const model=vi.fn(async()=>{throw new ModelWaitError("cap");});registerJobKind(createJudgeKind({evaluate,recordChecks,model}));
+    const {job}=enqueueJob(writer,{kind:"judge",projectId,params:{checkout:root,agent:"codex",near:[]}});
+    const run=()=>runOneBatch(writer,"paged-native",{only:new Set([job.id])});
+    await run();expect(model).not.toHaveBeenCalled();expect(writer.db.prepare("SELECT count(*) n FROM review").get()!.n).toBe(128);
+    await run();expect(model).toHaveBeenCalledTimes(1);expect(writer.db.prepare("SELECT count(*) n FROM review").get()!.n).toBe(129);
+    expect((await evaluate(request)).items!.filter(item=>item.rule_evidence?.length)).toHaveLength(129);
+  } finally {writer.close();}
+});
+
 it("publishes free rule evidence and Review before the cap, invalidates new files, and never sends the old policy in a brief", async () => {
   const root=join(base,"rule-repo"),home=join(base,"rule-home");mkdirSync(root);mkdirSync(join(root,"src"));
   vi.stubEnv("MEX_HOME",home);vi.stubEnv("MEX_HOOK_BINARY",binary);

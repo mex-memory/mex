@@ -64,7 +64,7 @@ function candidates(report: NativeReport, params: JudgeParams, home: string, pro
   for (const item of report.items ?? []) {
     if (ids.has(item.id)) duplicates.add(item.id);
     ids.add(item.id);
-    if (item.status !== "active" || item.level === "hint" || (item.verdict === "unknown" && !item.rule_evidence?.length) || writer.setting(projectId, `knowledge.retired.${item.id}`)) continue;
+    if (item.status !== "active" || item.level === "hint" || item.rule_evidence_pending || (item.verdict === "unknown" && !item.rule_evidence?.length) || writer.setting(projectId, `knowledge.retired.${item.id}`)) continue;
     const found = readCandidate(item, params.checkout, home, projectId);
     if (!found) continue;
     bytes += Buffer.byteLength(found.content);
@@ -126,10 +126,12 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
       });
       if(rules.stopped) return {checkpoint:state,wait:"Waiting: MEX is off here or the judge was stopped"};
       state.gaps ||= rules.limited;
+      if(rules.more) return {checkpoint:state,summary:"Checking the next page of free rule evidence"};
       // Re-evaluate with the just-published free evidence, before model/cap
       // admission. The native reader independently re-proves its bindings.
       if (rules.snapshot.entries.length || report.items?.some(item=>item.rule_evidence?.length)) report = await deps.evaluate(request(params,writer,projectId));
       state.gaps ||= !!report.problems?.length;
+      state.gaps ||= !!report.items?.some(item=>item.rule_evidence_pending);
       // Recent touched files refine the request's path proximity without any transcript text.
       const latest = pendingJudgeRequest(writer.location.directory, params.checkout);
       let near = latest?.near ?? params.near;

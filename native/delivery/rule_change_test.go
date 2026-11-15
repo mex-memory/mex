@@ -42,6 +42,11 @@ func TestRuleChangeBecomesPointerWithoutRepeatingClaim(t *testing.T) {
 			if got := shape(candidate{item: &it}, broken, senv); got.action != "withheld" {
 				t.Fatalf("broken: %#v", got)
 			}
+			it.Level = "personal"
+			if got := shape(candidate{item: &it}, changed, senv); got.action != "given" {
+				t.Fatalf("personal note: %#v", got)
+			}
+			it.Level = "team"
 			f.file(".git/HEAD", "ref: refs/heads/other\n")
 			f.file(".git/refs/heads/other", head+"\n")
 			if got := shape(candidate{item: &it}, changed, senv); got.action != "given" {

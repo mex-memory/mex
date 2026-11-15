@@ -1,6 +1,7 @@
 /** Free signals doubt a policy; they never certify a rewrite or retire it. */
 import { lstatSync, opendirSync } from "node:fs";
 import { join, relative } from "node:path";
+import { z } from "zod";
 import { globPrefix, globToRegExp } from "../file-index/glob.js";
 import type { KnowledgeEntry } from "../knowledge/entry.js";
 import type { NativeReport } from "../knowledge/check.js";
@@ -9,7 +10,7 @@ import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import { absolutePath, realPath, shortHash } from "../record/project.js";
 import { git, hash, position, readCandidate, readSource, samePosition, type Position } from "./evidence.js";
 
-export const RULE_CHANGE_LIMITS = Object.freeze({ rules: 128, files: 128, directories: 128, bytes: 8 << 20, snapshot: 512 << 10 });
+export const RULE_CHANGE_LIMITS = Object.freeze({ rules: 128, signals: 10_000, files: 128, directories: 128, bytes: 8 << 20, snapshot: 512 << 10 });
 export const ruleChangeKey = (checkout: string) => `rule-change.${shortHash(checkout)}`;
 export interface RuleSignal {
   id: string; entry_hash: string; reasons: string[];
@@ -19,6 +20,16 @@ export interface RuleSignal {
 export interface RuleSnapshot { version: 1; checkout: string; position: Position; entries: RuleSignal[]; }
 type Loaded = { entry: KnowledgeEntry; content: string; path: string; level: string; verdict: string; inputs?: Record<string,string> };
 const policy = (entry: KnowledgeEntry) => ["rule", "decision", "pitfall"].includes(entry.mex.kind);
+const policyKind = (kind: string) => ["rule", "decision", "pitfall"].includes(kind);
+const sha = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const PositionSchema = z.object({branch:z.string().max(1024).nullable(),head:z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u).nullable()}).strict();
+const InputSchema = z.object({path:z.string().min(1).max(4096),hash:sha}).strict();
+const SnapshotSchema = z.object({version:z.literal(1),checkout:z.string().max(4096),position:PositionSchema,entries:z.array(z.object({
+  id:z.string().regex(/^mx_[a-z0-9]{6,64}$/u),entry_hash:sha,reasons:z.array(z.string().min(1).max(512)).min(1).max(5),
+  files:z.array(InputSchema).max(128),directories:z.array(InputSchema).max(128),
+}).strict()).max(RULE_CHANGE_LIMITS.signals)}).strict();
+const CursorSchema = z.object({position:PositionSchema,manifest:sha,after:z.string().regex(/^mx_[a-z0-9]{6,64}$/u)}).strict();
+const comparePath = (a: {path:string},b: {path:string}) => Buffer.compare(Buffer.from(a.path),Buffer.from(b.path));
 const words = (text: string) => text.toLowerCase().match(/[a-z0-9]+/gu) ?? [];
 const action = /^(?:replac(?:e|es|ed|ing)|migrat(?:e|es|ed|ing)|remov(?:e|es|ed|ing)|renam(?:e|es|ed|ing)|deprecat(?:e|es|ed|ing))$/u;
 const generic = new Set(["src", "lib", "index", "test", "tests", "use", "uses", "the", "with", "from", "must", "this", "that", "api", "json", "typescript"]);
@@ -100,7 +111,7 @@ function migration(checkout: string, entry: KnowledgeEntry, observations: CheckR
 }
 
 function contradicts(older: KnowledgeEntry, newer: KnowledgeEntry): boolean {
-  if (newer.mex.created <= older.mex.created || !["docs", "review"].includes(newer.mex.source.type)
+  if (!policy(newer) || newer.mex.created <= older.mex.created || !["docs", "review"].includes(newer.mex.source.type)
     || JSON.stringify([...older.mex.scope].sort()) !== JSON.stringify([...newer.mex.scope].sort())) return false;
   return (older.mex.when ?? []).some(a => (newer.mex.when ?? []).some(b => a.match === "literal" && b.match === "literal"
     && a.pattern === b.pattern && ((a.type === "anti" && b.type === "required") || (a.type === "required" && b.type === "anti"))
@@ -130,46 +141,63 @@ function overrides(writer: RecordWriter, projectId: string): Map<string, { peopl
 }
 
 /** Run before paid admission. Missing sources are absent evidence, never zero. */
-export async function refreshRuleChanges(writer: RecordWriter, projectId: string, checkout: string, report: NativeReport, at: Position, canPublish: ()=>boolean = ()=>true): Promise<{ snapshot: RuleSnapshot; limited: boolean; stopped?: true }> {
+export async function refreshRuleChanges(writer: RecordWriter, projectId: string, checkout: string, report: NativeReport, at: Position, canPublish: ()=>boolean = ()=>true): Promise<{ snapshot: RuleSnapshot; limited: boolean; more: boolean; stopped?: true }> {
   const snapshot: RuleSnapshot = { version: 1, checkout, position: at, entries: [] };
   const loaded: Loaded[] = [], seen = new Set<string>(), duplicates = new Set<string>();
+  if ((report.items?.length ?? 0)>10_000) throw new Error("Rule evidence exceeds the entry limit");
+  for(const item of report.items ?? []) { if(seen.has(item.id)) duplicates.add(item.id); seen.add(item.id); }
+  const items=(report.items ?? []).filter(item=>item.level==="team" && item.status==="active" && policyKind(item.kind)
+    && !duplicates.has(item.id) && !writer.setting(projectId,`knowledge.retired.${item.id}`)).sort((a,b)=>a.id.localeCompare(b.id));
+  const manifest=hash(JSON.stringify(items.map(item=>[item.id,item.entry_hash])));
+  const key=ruleChangeKey(checkout),cursorKey=`${key}.after`;
+  let after="",previous:RuleSnapshot|undefined;
+  const stored=writer.db.prepare("SELECT value FROM settings WHERE scope=? AND key=? AND length(CAST(value AS BLOB))<=?").get(projectId,key,RULE_CHANGE_LIMITS.snapshot)?.value;
+  if(typeof stored==="string") {
+    let parsed:RuleSnapshot;try {parsed=SnapshotSchema.parse(JSON.parse(stored));}catch {throw new Error("Stored rule evidence is invalid");}
+    if(parsed.checkout===checkout && samePosition(parsed.position,at)) previous=parsed;
+  }
+  const rawCursor=writer.db.prepare("SELECT value FROM settings WHERE scope=? AND key=? AND length(CAST(value AS BLOB))<=4096").get(projectId,cursorKey)?.value;
+  try { const cursor=CursorSchema.parse(JSON.parse(typeof rawCursor==="string"?rawCursor:"null")); if(cursor.manifest===manifest && samePosition(cursor.position,at)) after=cursor.after; } catch { /* A cursor is only a restart hint. */ }
+  const start=after?items.findIndex(item=>item.id>after):0;
+  const offset=start<0?0:start;
+  const page=items.slice(offset,offset+RULE_CHANGE_LIMITS.rules),pageIds=new Set(page.map(item=>item.id));
+  // Read this page first so a large source corpus cannot starve later pages.
+  const ordered=[...page,...items.filter(item=>!pageIds.has(item.id))];
   let bytes = 0;
-  for (const item of report.items ?? []) {
-    if (seen.has(item.id)) duplicates.add(item.id); seen.add(item.id);
-    if (item.level === "hint" || item.status !== "active" || writer.setting(projectId, `knowledge.retired.${item.id}`)) continue;
+  let limited=false;
+  for (const item of ordered) {
     const found = readCandidate(item, checkout, writer.location.home, projectId);
     if (!found || item.entry_hash !== hash(found.content)) continue;
     if ((bytes += Buffer.byteLength(found.content)) > RULE_CHANGE_LIMITS.bytes) break;
     loaded.push({ ...found, path: item.path, level: item.level, verdict: item.verdict, inputs: report.results?.find(r=>r.entry_id===item.id)?.inputs });
   }
-  const eligible = loaded.filter(l => !duplicates.has(l.entry.mex.id));
-  const rules = eligible.filter(l => policy(l.entry));
+  const eligible = loaded;
+  const rules = new Map(loaded.map(rule=>[rule.entry.mex.id,rule]));
   const repeated = overrides(writer, projectId), budget = { bytes: 0, work: 0, deadline: Date.now()+30_000, limited: false };
-  // Merge-commit bodies carry the PR title; squash commits carry it as subject.
-  const history = rules.length ? (await git(checkout, ["log", "-32", "--format=%H%x00%cI%x00%P%x00%s%x00%b%x00"], 128 << 10))?.split("\0") ?? [] : [];
+  const scannedIds=new Set<string>();
   let scanned=0;
-  for (const rule of rules.slice(0, RULE_CHANGE_LIMITS.rules)) {
+  for (const item of page) {
     if (Date.now()>budget.deadline) break;
-    scanned++;
+    scanned++;scannedIds.add(item.id);
+    const rule=rules.get(item.id); if(!rule) {limited=true;continue;}
     const entry = rule.entry, reasons: string[] = [];
     const pattern = migration(checkout,entry,report.results?.find(r=>r.entry_id===entry.mex.id)?.checks ?? [],budget);
     if (pattern) reasons.push("In scope, the anti-pattern count rose and the required-pattern count fell");
     if (at.branch && titleChangesRule(entry, at.branch.slice("refs/heads/".length))) reasons.push("The current branch names this subject and an explicit rule change");
-    // An exact committed entry also establishes order within one date. Entry
-    // dates deliberately carry no clocks, so otherwise same-day titles cannot
-    // prove which came first.
-    let baseline=-1;
-    if (rule.level==="team" && history.some((_,i)=>i%5===0)) {
+    // Creation is not the last assertion time. Only history after an exact
+    // committed entry revision may challenge that revision.
+    let history:string[]=[];
+    {
       const path=relative(checkout,rule.path).split("\\").join("/");
       const commit=(await git(checkout,["log","-1","--format=%H","--",path]))?.trim();
       if (commit && /^[a-f0-9]{40,64}$/u.test(commit)) {
         const text=await git(checkout,["show",`${commit}:${path}`],64<<10);
-        if (text!==undefined && hash(text)===hash(rule.content)) baseline=history.findIndex((value,i)=>i%5===0 && value.trim()===commit);
+        if (text!==undefined && hash(text)===hash(rule.content)) history=(await git(checkout,["log","-32","--format=%H%x00%cI%x00%P%x00%s%x00%b%x00",`${commit}..HEAD`],128<<10))?.split("\0") ?? [];
       }
     }
     for (let i = 0; i + 4 < history.length; i += 5) {
       const [commit, date, parents, subject, body] = history.slice(i, i + 5).map(s => s!.trim());
-      if (!/^[a-f0-9]{40,64}$/u.test(commit!) || !(date!.slice(0, 10)>entry.mex.created || (baseline>=0 && i<baseline))) continue;
+      if (!/^[a-f0-9]{40,64}$/u.test(commit!)) continue;
       const title = parents!.split(" ").length > 1 && /^Merge pull request #\d+/u.test(subject!) ? body!.split("\n").find(s => s.trim()) ?? "" : subject!;
       if (titleChangesRule(entry, title)) { reasons.push(`Commit ${commit} names this subject and an explicit rule change`); break; }
     }
@@ -192,14 +220,16 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
     }
     const count = repeated.get(`${entry.mex.id}:${hash(rule.content)}`);
     if (count && (count.people.size >= 2 || count.sessions.size >= 3)) reasons.push("The speed bump was deliberately overridden by at least two people or in at least three sessions");
-    if (reasons.length) snapshot.entries.push({ id: entry.mex.id, entry_hash: hash(rule.content), reasons, files, directories });
+    if (reasons.length) snapshot.entries.push({ id: entry.mex.id, entry_hash: hash(rule.content), reasons, files:files.sort(comparePath), directories:directories.sort(comparePath) });
   }
+  const nativeById=new Map(items.map(item=>[item.id,item]));
+  snapshot.entries.push(...(previous?.entries ?? []).filter(signal=>!scannedIds.has(signal.id) && nativeById.get(signal.id)?.entry_hash===signal.entry_hash));
+  snapshot.entries.sort((a,b)=>a.id.localeCompare(b.id));
+  const more=scanned>0 && offset+scanned<items.length;
   if (!samePosition(at, await position(checkout))) throw new Error("Checkout changed while collecting rule evidence");
-  const raw = JSON.stringify(snapshot);
-  if (Buffer.byteLength(raw) > RULE_CHANGE_LIMITS.snapshot) throw new Error("Rule evidence exceeds its storage bound");
   writer.db.exec("BEGIN IMMEDIATE");
   try {
-    if(!canPublish()) { writer.db.exec("COMMIT"); return {snapshot:{...snapshot,entries:[]},limited:false,stopped:true}; }
+    if(!canPublish()) { writer.db.exec("COMMIT"); return {snapshot:{...snapshot,entries:[]},limited:false,more:false,stopped:true}; }
     const active: RuleSignal[]=[];
     for (const signal of snapshot.entries) {
       const proposal=JSON.stringify({checkout,position:at,...signal});
@@ -221,8 +251,12 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
       writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO NOTHING").run(projectId,id,proposal);
     }
     snapshot.entries=active;
-    writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(projectId,ruleChangeKey(checkout),JSON.stringify(snapshot));
+    const raw=JSON.stringify(SnapshotSchema.parse(snapshot));
+    if(Buffer.byteLength(raw)>RULE_CHANGE_LIMITS.snapshot) throw new Error("Rule evidence exceeds its storage bound");
+    writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(projectId,key,raw);
+    if(more) writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(projectId,cursorKey,JSON.stringify({position:at,manifest,after:page[scanned-1]!.id}));
+    else writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(projectId,cursorKey);
     writer.db.exec("COMMIT");
   } catch (error) { writer.db.exec("ROLLBACK"); throw error; }
-  return { snapshot, limited: rules.length>scanned || bytes>RULE_CHANGE_LIMITS.bytes || budget.limited };
+  return { snapshot, more, limited: limited || bytes>RULE_CHANGE_LIMITS.bytes || budget.limited || (scanned===0 && page.length>0) };
 }

@@ -72,7 +72,7 @@ func shape(c candidate, verdict string, env *shapeEnv) shaped {
 	s := shaped{candidate: c, verdict: verdict, action: "given", full: it.Full, oneLine: it.OneLine, fullTok: it.FullTokens, lineTok: it.OneLineTokens}
 	withhold := func() shaped { s.action, s.full, s.oneLine, s.fullTok, s.lineTok = "withheld", "", "", 0, 0; return s }
 	kind := it.Entry.Kind
-	if verdict != broken && env != nil && (kind == "rule" || kind == "decision" || kind == "pitfall") {
+	if it.Level == "team" && verdict != broken && env != nil && (kind == "rule" || kind == "decision" || kind == "pitfall") {
 		if !env.rulesTried {
 			env.rulesTried = true
 			env.rules = rulechange.Read(env.recordDirectory, env.project, env.checkout)

@@ -28,14 +28,20 @@ type Signal struct {
 	Reasons     []string `json:"reasons"`
 	Files       []Input  `json:"files"`
 	Directories []Input  `json:"directories"`
+	// Pending keeps the claim out of full delivery when this invocation's
+	// proof budget is exhausted. It cannot authorize judging or publication.
+	Pending bool `json:"-"`
 }
 type Snapshot struct {
-	Version   int               `json:"version"`
-	Checkout  string            `json:"checkout"`
-	Position  gitstate.Position `json:"position"`
-	Entries   []Signal          `json:"entries"`
-	readBytes int64
-	readNames int
+	Version     int               `json:"version"`
+	Checkout    string            `json:"checkout"`
+	Position    gitstate.Position `json:"position"`
+	Entries     []Signal          `json:"entries"`
+	readBytes   int64
+	readNames   int
+	files       map[string]string
+	directories map[string]string
+	byID        map[string]*Signal
 }
 
 func Read(directory, project, checkout string) *Snapshot {
@@ -52,7 +58,7 @@ func Read(directory, project, checkout string) *Snapshot {
 		return nil
 	}
 	var s Snapshot
-	if json.Unmarshal([]byte(raw), &s) != nil || s.Version != 1 || s.Checkout != checkout || len(s.Entries) > 128 {
+	if json.Unmarshal([]byte(raw), &s) != nil || s.Version != 1 || s.Checkout != checkout || len(s.Entries) > 10_000 {
 		return nil
 	}
 	at, ok := gitstate.Read(checkout)
@@ -76,16 +82,21 @@ func (s *Snapshot) For(id, entryHash string) *Signal {
 	if s == nil {
 		return nil
 	}
-	var found *Signal
-	for i := range s.Entries {
-		if s.Entries[i].ID == id {
-			if found != nil {
-				return nil
+	if s.byID == nil {
+		s.byID = map[string]*Signal{}
+		for i := range s.Entries {
+			item := &s.Entries[i]
+			if _, duplicate := s.byID[item.ID]; duplicate {
+				s.byID[item.ID] = nil
+			} else {
+				s.byID[item.ID] = item
 			}
-			found = &s.Entries[i]
 		}
+		s.files = map[string]string{}
+		s.directories = map[string]string{}
 	}
-	if found == nil || found.EntryHash != entryHash || len(found.Reasons) == 0 || len(found.Reasons) > 4 || len(found.Files) > 128 || len(found.Directories) > 128 {
+	found := s.byID[id]
+	if found == nil || found.EntryHash != entryHash || len(found.Reasons) == 0 || len(found.Reasons) > 5 || len(found.Files) > 128 || len(found.Directories) > 128 {
 		return nil
 	}
 	for _, reason := range found.Reasons {
@@ -102,10 +113,19 @@ func (s *Snapshot) For(id, entryHash string) *Signal {
 		return nil
 	}
 	defer root.Close()
+	pending := func() *Signal { copy := *found; copy.Pending = true; return &copy }
 	var total int64
 	for _, input := range found.Files {
 		if !safe(input.Path) {
 			return nil
+		}
+		// Like the evaluator's file cache, proofs share one observed file view
+		// only within this hook/evaluation invocation, never across invocations.
+		if got, ok := s.files[input.Path]; ok {
+			if got != input.Hash {
+				return nil
+			}
+			continue
 		}
 		f, err := root.Open(input.Path)
 		if err != nil {
@@ -116,17 +136,28 @@ func (s *Snapshot) For(id, entryHash string) *Signal {
 			f.Close()
 			return nil
 		}
+		if s.readBytes+info.Size() > 8<<20 {
+			f.Close()
+			return pending()
+		}
 		data, e := io.ReadAll(io.LimitReader(f, (64<<10)+1))
 		f.Close()
 		total += int64(len(data))
 		s.readBytes += int64(len(data))
-		if e != nil || total > 8<<20 || s.readBytes > 8<<20 || digest(data) != input.Hash {
+		if e != nil || total > 8<<20 || digest(data) != input.Hash {
 			return nil
 		}
+		s.files[input.Path] = input.Hash
 	}
 	for _, input := range found.Directories {
 		if !safe(input.Path) {
 			return nil
+		}
+		if got, ok := s.directories[input.Path]; ok {
+			if got != input.Hash {
+				return nil
+			}
+			continue
 		}
 		f, err := root.Open(input.Path)
 		if err != nil {
@@ -135,8 +166,11 @@ func (s *Snapshot) For(id, entryHash string) *Signal {
 		rows, e := f.ReadDir(1001)
 		f.Close()
 		s.readNames += len(rows)
-		if e != nil && e != io.EOF || len(rows) > 1000 || s.readNames > 10_000 {
+		if e != nil && e != io.EOF || len(rows) > 1000 {
 			return nil
+		}
+		if s.readNames > 10_000 {
+			return pending()
 		}
 		names := make([]string, len(rows))
 		for i, row := range rows {
@@ -146,6 +180,7 @@ func (s *Snapshot) For(id, entryHash string) *Signal {
 		if digest([]byte(strings.Join(names, "\n"))) != input.Hash {
 			return nil
 		}
+		s.directories[input.Path] = input.Hash
 	}
 	return found
 }

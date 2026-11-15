@@ -66,8 +66,9 @@ type StageItem struct {
 	Status  string `json:"status"`
 	Verdict string `json:"verdict"`
 	// EntryHash binds a consumer to the exact entry this evaluator parsed.
-	EntryHash    string   `json:"entry_hash"`
-	RuleEvidence []string `json:"rule_evidence,omitempty"`
+	EntryHash           string   `json:"entry_hash"`
+	RuleEvidence        []string `json:"rule_evidence,omitempty"`
+	RuleEvidencePending bool     `json:"rule_evidence_pending,omitempty"`
 }
 
 // StageProblem is an entry file that couldn't be read as an entry.
@@ -137,13 +138,6 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		report.Entries++
 		valid = append(valid, l.Entry.ID)
 		item := StageItem{ID: l.Entry.ID, Level: l.Level, Path: l.Path, Kind: l.Entry.Kind, Status: l.Entry.Status, EntryHash: l.Hash}
-		var signal *rulechange.Signal
-		if l.Entry.Kind == "rule" || l.Entry.Kind == "decision" || l.Entry.Kind == "pitfall" {
-			signal = ruleChanges.For(l.Entry.ID, l.Hash)
-			if signal != nil {
-				item.RuleEvidence = signal.Reasons
-			}
-		}
 		keep := func() {
 			if v, ok := cached[l.Entry.ID]; ok {
 				item.Verdict = v.Verdict
@@ -161,8 +155,19 @@ func RunStage(opts StageOptions) (StageReport, error) {
 			continue
 		}
 		inputs := ev.inputsHash(l, asOf)
+		var signal *rulechange.Signal
+		if l.Level == "team" && (l.Entry.Kind == "rule" || l.Entry.Kind == "decision" || l.Entry.Kind == "pitfall") {
+			signal = ruleChanges.For(l.Entry.ID, l.Hash)
+			if signal != nil {
+				item.RuleEvidence = signal.Reasons
+				item.RuleEvidencePending = signal.Pending
+			}
+		}
 		if signal != nil {
 			raw, _ := json.Marshal(signal)
+			if signal.Pending {
+				raw = append(raw, []byte(" pending")...)
+			}
 			sum := sha256.Sum256([]byte(inputs + string(raw)))
 			inputs = "sha256:" + hex.EncodeToString(sum[:])
 		}
@@ -176,8 +181,10 @@ func RunStage(opts StageOptions) (StageReport, error) {
 			if res.Verdict != Broken {
 				res.Verdict = Changed
 			}
-			for _, input := range signal.Files {
-				res.Inputs[input.Path] = input.Hash
+			if !signal.Pending {
+				for _, input := range signal.Files {
+					res.Inputs[input.Path] = input.Hash
+				}
 			}
 		}
 		report.Evaluated++
