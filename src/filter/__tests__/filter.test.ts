@@ -104,6 +104,28 @@ describe("filter batches and provenance", () => {
     expect(writer.setting(project, "journal.consumed")).toBe("1");
     expect((await run(id)).state).toBe("done"); expect(calls).toHaveLength(1);
   });
+  it("writes aliases and asks in the same call, keeping only the ones the alias filter keeps", async () => {
+    add("s", "Tests use vitest because the project chose it.");
+    deps.model = vi.fn(async request => { calls.push(request); const r = answer(request); const body = JSON.parse(r.text);
+      body.items[0].aliases = ["flaky unit runs", "deploys failing"]; body.items[0].asks = ["why do the unit tests hang?"];
+      return { ...r, text: JSON.stringify(body) }; });
+    // Scripted ranker: "deploys" already sends another entry; everything else finds the candidate first.
+    deps.aids = (entries, queries) => new Map(queries.map(q => [q.id, q.id.startsWith("b") && q.text.includes("deploys")
+      ? [{ id: "mx_deploys1", score: 1, sent: true }] : [{ id: entries[0].mex.id, score: 1 }]]));
+    await run(queue());
+    expect(calls).toHaveLength(1);
+    expect(calls[0].prompt).toContain("doesn't know the entry exists");
+    expect(batches()[0].candidates[0]).toMatchObject({ aliases: ["flaky unit runs"], asks: ["why do the unit tests hang?"] });
+  });
+  it("leaves the aids out when the ranker can't check them", async () => {
+    add("s", "Tests use vitest because the project chose it.");
+    deps.model = vi.fn(async request => { calls.push(request); const r = answer(request); const body = JSON.parse(r.text);
+      body.items[0].aliases = ["flaky unit runs"]; return { ...r, text: JSON.stringify(body) }; });
+    deps.aids = () => { throw new Error("no ranker"); };
+    await run(queue());
+    expect(batches()[0].candidates[0].aliases).toBeUndefined();
+    expect(batches()[0].candidates[0].label).toBe("lasting");
+  });
   it("drops task items and never persists their text", async () => {
     add("s", "do a temporary thing");
     deps.model = vi.fn(async request => { const r = answer(request), data = JSON.parse(r.text); data.items[0].label = "task"; return { ...r, text: JSON.stringify(data) }; });
