@@ -10,7 +10,7 @@ import { entry } from "../../knowledge/__tests__/fixtures.js";
 import { createJudgeKind, readJudgement } from "../job.js";
 import { evaluate, recordChecks } from "../native.js";
 import { hash } from "../evidence.js";
-import { queuePendingJudgements } from "../pending.js";
+import { pendingJudgeRequest, queuePendingJudgements } from "../pending.js";
 import { ModelWaitError } from "../../model-runner/index.js";
 import { refreshRuleChanges } from "../rule-change.js";
 import { position } from "../evidence.js";
@@ -141,7 +141,13 @@ it("routes a real paired hook edit through a visible preview to the same PR with
     const model = vi.fn(async () => ({ selectedModel: "fake-cheap", usage: { input: 100, cache_write: 0, cache_read: 0, output: 20, model: "fake", estimated: false },
       text: JSON.stringify({ results: [{ id: "mx_owned00", result: "rewritten", text: "The test script runs new-test.", one_line: "Tests use new-test.", checks: [{ kind: "key", role: "complete", target: { file: "package.json", pointer: "/scripts/test" } }] }] }) }));
     registerJobKind(createJudgeKind({ evaluate, recordChecks, model }));
-    expect(queuePendingJudgements(writer, enqueueJob)).toBe(1);
+    const pending = pendingJudgeRequest(writer.location.directory, root);
+    expect(pending).toMatchObject({ reason: "idle", session_id: "editing", near: ["package.json"] });
+    expect(pending!.not_before).toBeLessThanOrEqual(Date.now());
+    // A transient hook-store read can defer dispatch to the next background
+    // pass. Keep the idle requirement above; never wait out an edit debounce.
+    await expect.poll(() => queuePendingJudgements(writer, enqueueJob), { timeout: 2000, interval: 20 }).toBe(1);
+    expect(writer.db.prepare("SELECT count(*) n FROM jobs WHERE kind='judge'").get()!.n).toBe(1);
     const job = writer.db.prepare("SELECT id FROM jobs WHERE kind='judge'").get()!;
     const run = () => runOneBatch(writer, "owned-native-test", { only: new Set([job.id as string]) });
     await run(); await run();

@@ -225,6 +225,23 @@ func (ev *Evaluator) key(c Check) CheckResult {
 		return CheckResult{Status: Floor, Reason: file + " can't be parsed"}
 	}
 	now, found := resolvePointer(doc, pointer)
+	if raw, member := c.Target["member"]; member {
+		name, valid := memberName(raw)
+		if !valid || c.Saw["value"] != true {
+			return CheckResult{Status: Floor, Reason: "invalid membership check"}
+		}
+		if !found {
+			return CheckResult{Status: Fail, Reason: "declared dependency is absent", Now: false}
+		}
+		present, err := dependencyMember(now, name)
+		if err != nil {
+			return CheckResult{Status: Floor, Reason: "dependency container can't be interpreted"}
+		}
+		if !present {
+			return CheckResult{Status: Fail, Reason: "declared dependency is absent", Now: false}
+		}
+		return CheckResult{Status: Pass, Now: true}
+	}
 	if !found {
 		return CheckResult{Status: Gone, Reason: fmt.Sprintf("%s has no %s", file, pointer)}
 	}
