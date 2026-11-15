@@ -74,6 +74,27 @@ function merge(found: Found[]): Array<Found & { origins: Origin[]; extra: Planne
   return out;
 }
 
+/** The language a command's tool belongs to; undefined for language-neutral tools such as make. */
+export function toolFamily(command: string): string | undefined {
+  const tool = command.trim().split(/\s+/u)[0] ?? "";
+  if (["npm", "pnpm", "yarn", "bun", "npx"].includes(tool)) return "node";
+  if (["tox", "pytest", "python", "python3", "flake8", "mypy", "ruff", "black", "nox"].includes(tool)) return "python";
+  if (tool === "cargo") return "rust";
+  if (["./gradlew", "gradlew", "gradle"].includes(tool)) return "gradle";
+  return undefined;
+}
+
+/**
+ * Test commands an agent can't choose between: two in one language, or a
+ * language-neutral one (make) beside any other. Suites in different languages
+ * (django's npm and tox) are not a conflict.
+ */
+export function conflictingTests(commands: string[]): boolean {
+  const families = commands.map(toolFamily);
+  if (commands.length > 1 && families.some(family => family === undefined)) return true;
+  return new Set(families).size < families.length;
+}
+
 function twoTestCommands(recipes: Array<{ package: string; purpose: Purpose; command: string; origins: Origin[] }>): ReviewItem[] {
   const byPackage = new Map<string, Array<{ command: string; file: string }>>();
   for (const recipe of recipes) {
@@ -84,7 +105,7 @@ function twoTestCommands(recipes: Array<{ package: string; purpose: Purpose; com
   }
   const out: ReviewItem[] = [];
   for (const [pkg, list] of byPackage) {
-    if (list.length < 2) continue;
+    if (!conflictingTests(list.map(item => item.command))) continue;
     out.push({ kind: "two-test-commands", paths: [...new Set(list.map(item => item.file))], message: `${list.length} different test commands for ${pkg || "the root"}: ${list.slice(0, 3).map(item => `\`${item.command}\``).join(", ")}` });
   }
   return out.slice(0, 20);

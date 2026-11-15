@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { ciMatch, firstPurposeLine, linePurpose } from "../ci.js";
-import { recipeSummary, recordChecks, scanRecipes, type RecipesFile } from "../index.js";
+import { conflictingTests, recipeSummary, recordChecks, scanRecipes, type RecipesFile } from "../index.js";
 import { buildOrder, scriptCommand } from "../node.js";
 import { gradleProjects, makeTargets, toxEnvs } from "../other.js";
 import { parseIni, RepoFiles } from "../source.js";
@@ -134,6 +134,22 @@ describe("edge cases from real repositories", () => {
     const file = scanRecipes({ root, binary: null });
     expect(file.partial).toBe(false);
     expect(file.packages.map(pkg => pkg.path)).toEqual(["", "packages/a"]);
+  });
+
+  it("flags two test commands only within one tool family", () => {
+    const django = scanRecipes({ root: repo({
+      "package.json": json({ name: "django", scripts: { test: "grunt test" } }),
+      "tox.ini": "[tox]\nenvlist = py3\n\n[testenv]\ncommands = python runtests.py\n",
+    }), binary: null });
+    expect(django.review).toEqual([]);
+    const wrapped = scanRecipes({ root: repo({
+      "package.json": json({ name: "app", scripts: { test: "vitest run" } }),
+      "Makefile": "test:\n\tnpm test\n",
+    }), binary: null });
+    expect(wrapped.review.map(item => item.message)).toEqual(["2 different test commands for the root: `npm run test`, `make test`"]);
+    expect(conflictingTests(["npm run test", "tox -e py3"])).toBe(false);
+    expect(conflictingTests(["pnpm run test", "npx vitest run"])).toBe(true);
+    expect(conflictingTests(["cargo test", "./gradlew test", "pytest"])).toBe(false);
   });
 
   it("marks steps after a background server or containers as needing services", () => {
