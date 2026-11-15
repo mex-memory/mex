@@ -27,7 +27,7 @@ function fixture() {
   const claude = join(user, ".claude", "settings.json");
   const codex = join(user, ".codex", "hooks.json");
   const options: InstallOptions = { home, userHome: user, cwd: repo, entry, fallbackFile: fallback,
-    nativeBinary: binary, selfTest: () => ({ ok: true }), available: agent => agent !== "copilot", env: {} };
+    nativeBinary: binary, selfTest: () => ({ ok: true }), available: agent => agent === "claude-code" || agent === "codex", env: {} };
   const copilot = join(user, ".copilot", "hooks.json");
   return { base, user, home, repo, entry, fallback, binary, claude, codex, copilot, options };
 }
@@ -364,7 +364,7 @@ describe("Copilot CLI: registered only after the hook command proves it runs", (
     write(f.copilot, JSON.stringify({ version: 1, hooks: { preToolUse: [other] } }));
     const result = await installAgents(withCopilot(f, { nativeBinary: null, commandTest: () => ({ ok: false, error: "node: not found" }) }));
     expect(result.agents).not.toContain("copilot");
-    expect(result.agents).toEqual(["claude-code", "codex"]);
+    expect(result.agents).toEqual(["claude-code", "codex", "opencode"]);
     expect(result.notices.some(line => line.includes("Copilot CLI") && line.includes("node: not found") && line.includes("mex doctor"))).toBe(true);
     expect(JSON.parse(readFileSync(f.copilot, "utf8"))).toEqual({ version: 1, hooks: { preToolUse: [other] } });
   });
@@ -398,5 +398,22 @@ describe("Copilot CLI: registered only after the hook command proves it runs", (
     expect(broken.ok).toBe(false);
     const missing = testCommand({ path: join(f.base, "no-such-node"), args: [join(f.base, "x.cjs")] }, process.env, script);
     expect(missing.ok).toBe(false);
+  });
+});
+
+describe("OpenCode: one plugin file, removed on uninstall", () => {
+  it("writes the plugin with the hook command and removes it again", async () => {
+    const f = fixture();
+    const xdg = join(f.user, "xdg");
+    const plugin = join(xdg, "opencode", "plugin", "mex.js");
+    const options: InstallOptions = { ...f.options, env: { XDG_CONFIG_HOME: xdg }, available: agent => agent === "opencode" };
+    const result = await installAgents(options);
+    expect(result.agents).toEqual(["opencode"]);
+    const text = readFileSync(plugin, "utf8");
+    expect(text).toContain("MEX hook plugin for OpenCode");
+    expect(text).toContain(JSON.stringify(join(f.home, "bin", process.platform === "win32" ? "mex-hook.exe" : "mex-hook")));
+    expect((await installAgents(options)).changes).toEqual([]);
+    expect((await uninstallAgents({ home: f.home })).conflicts).toEqual([]);
+    expect(existsSync(plugin)).toBe(false);
   });
 });

@@ -85,7 +85,7 @@ async function installHooks(): Promise<HookSummary> {
   try {
     const { installAgents, AGENT_NAMES } = await import("../install/index.js");
     const result = await installAgents();
-    if (!result.agents.length) return { note: "No supported agent found. Install Claude Code or Codex, then run `mex install`.", notices: [] };
+    if (!result.agents.length) return { note: "No supported agent found. Install Claude Code, Codex, Copilot CLI or OpenCode, then run `mex install`.", notices: [] };
     const where = result.agents.map(agent => AGENT_NAMES[agent]);
     return {
       note: `Hooks: ${list(where)}, in your user settings.`,
