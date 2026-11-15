@@ -453,7 +453,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		}
 	}
 	cov := loadCoverage(ev.Agent, g.checkout, g.firstRel, brief.Options{Checkout: g.checkout, MexHome: env.Home, ProjectID: g.project, Agent: ev.Agent, RecordDirectory: env.RecordDirectory, SessionID: ev.SessionID, AgentID: ev.AgentID, NativeCwd: ev.Cwd})
-	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: g.project, checkout: g.checkout}
+	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: g.project, checkout: g.checkout, hooks: h}
 	defer senv.close()
 	// Strongest moment per entry, then the verdict decides the form.
 	best := map[string]candidate{}

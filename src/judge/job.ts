@@ -9,7 +9,7 @@ import { runModel, ModelRunError, ModelWaitError, type ModelRequest, type ModelR
 import { JUDGE_LIMITS, hash, readCandidate, entryFiles, readSource, distance, orderCandidates, nextBatch, evidence, position, samePosition, unchanged, coherent, type Candidate, type Evidence, type Position } from "./evidence.js";
 import { evaluate, recordChecks } from "./native.js";
 import { pendingJudgeRequest, type JudgeParams } from "./pending.js";
-import { resultKey, readJudgement, type Judgement } from "./result.js";
+import { resultKey, readJudgement, judgementInputsHash, type Judgement } from "./result.js";
 import { stageFixes, hasPendingFixes, needsRouting, routeFixes, fixPreviewReady, PREVIEW_WAIT } from "./routing.js";
 import { sessionWorkEnabled } from "./session.js";
 import { refreshRuleChanges } from "./rule-change.js";
@@ -76,7 +76,7 @@ export function judgeCandidates(report: NativeReport, params: JudgeParams, home:
     if (spare && !found.entry.mex.checks.some(c => c.role === "complete" && Object.entries(c.files).some(([file, baseline]) => {
       try { const current = readSource(params.checkout, file); return current === null || hash(current) !== baseline; } catch { return false; }
     }))) continue;
-    out.push({ item, ...found, files, spare, distance: distance(files, params.near), checks: observation?.checks ?? [], inputs: observation?.inputs });
+    out.push({ item, ...found, files, spare, distance: distance(files, params.near), checks: observation?.checks ?? [], inputs: observation?.inputs, evaluationHash: observation?.evaluation_hash });
   }
   return orderCandidates(out.filter(c => !duplicates.has(c.item.id)));
 }
@@ -235,10 +235,13 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
           }
           if (!rewrite) outcome = "cannot-tell";
         }
-        saved.push({ version: 1, id: candidate.item.id, inputs_hash: hash(JSON.stringify({ entry: candidate.content, evidence: snapshot })),
+        const value: Judgement = { version: 1, id: candidate.item.id, inputs_hash: "",
           checkout: params.checkout, position: at, entry_hash: hash(candidate.content), checks_hash: checkHash(candidate),
+          ...(candidate.evaluationHash ? { evaluation_hash: candidate.evaluationHash } : {}),
           files: snapshot.files.map(f => ({ path: f.path, hash: f.current_hash })),
-          result: outcome, label: "checked by model", model: result.selectedModel, at: new Date().toISOString(), ...(rewrite ? { rewrite } : {}) });
+          result: outcome, label: "checked by model", model: result.selectedModel, at: new Date().toISOString(), ...(rewrite ? { rewrite } : {}) };
+        value.inputs_hash = value.evaluation_hash ? judgementInputsHash(value) : hash(JSON.stringify({ entry: candidate.content, evidence: snapshot }));
+        saved.push(value);
       }
       const tokens = result.usage.input + result.usage.cache_write + result.usage.cache_read + result.usage.output;
       // Index-backed checks can change without changing one of the entry's
@@ -247,7 +250,7 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
       const sameChecks = batch.every(candidate => {
         const item = fresh.items?.find(item => item.id === candidate.item.id && item.path === candidate.item.path && item.level === candidate.item.level);
         const checks = fresh.results?.find(item => item.entry_id === candidate.item.id);
-        return item?.entry_hash === hash(candidate.content) && checks !== undefined
+        return item?.entry_hash === hash(candidate.content) && checks !== undefined && checks.evaluation_hash === candidate.evaluationHash
           && checkHash({ ...candidate, item, checks: checks.checks, inputs: checks.inputs }) === checkHash(candidate);
       });
       if (!sameChecks || !allowed(writer, params, projectId) || !await unchanged(params.checkout, writer.location.home, projectId, batch, snapshot)) {

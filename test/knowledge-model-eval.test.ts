@@ -42,8 +42,8 @@ afterAll(() => {
 });
 const options = () => ({ plan: makePlan(corpus, subject, "b".repeat(40)), corpus, subject, binary, work: join(base, `run-${serial++}`), refreshIndex: () => {} });
 function fakeModel(request: ModelRequest): ModelResult {
-  const evidence = JSON.parse(request.prompt.split("Evidence follows as JSON:\n")[1]!);
-  const results = request.purpose === "judge-bench.checks" ? evidence.claims.map((c: { id: string }) => ({ id: c.id, checks: [
+  const evidence = JSON.parse(request.prompt.split("Evidence follows as JSON:\n")[1]!.split("\nRepair only")[0]!);
+  const results = request.purpose.startsWith("judge-bench.") ? evidence.claims.map((c: { id: string }) => ({ id: c.id, checks: [
     { kind: "key", role: "complete", target: { file: "package.json", pointer: c.id.endsWith("one") ? "/name" : "/version" } },
   ] })) : evidence.entries.map((e: { id: string }) => e.id.endsWith("one") ? { id: e.id, result: "still-true" } : {
     id: e.id, result: "rewritten", one_line: "The package version is 2.", text: "The package version is 2.",
@@ -119,6 +119,21 @@ it("stops after a transport failure, retaining a non-complete cost ledger", asyn
   expect(model).toHaveBeenCalledTimes(1);
   const report = JSON.parse(readFileSync(join(opts.work, "report.json"), "utf8"));
   expect(report.complete).toBe(false); expect(report.ledger[0].state).toBe("failed");
+});
+it("repairs only rejected model proposals once and keeps the initial diagnostic",async()=>{
+  const opts=options();
+  const model=vi.fn(async (request:ModelRequest)=>{
+    const response=fakeModel(request);
+    if(request.purpose==="judge-bench.checks") {
+      const value=JSON.parse(response.text);value.results[1].checks[0].target.pointer="/not-a-key";response.text=JSON.stringify(value);
+    }
+    return response;
+  });
+  const report=await runEvaluation({...opts,approvalHash:opts.plan.approval_hash,model});
+  expect(report.generation_repaired).toEqual(["two"]);
+  expect(report.generation_diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({stage:"initial-recording",claims:["two"]})]));
+  expect(model.mock.calls.filter(([r])=>r.purpose==="judge-bench.repair")).toHaveLength(1);
+  expect(report.checkpoints[0]!.score).toMatchObject({true_kept:2,generation_failed:0});
 });
 it("retains malformed generation in every denominator without hand-written fallback checks", async () => {
   const opts = options(), model = vi.fn(async request => ({ ...fakeModel(request), text: '{"results":[]}' }));

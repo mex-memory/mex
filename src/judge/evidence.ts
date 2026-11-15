@@ -16,6 +16,7 @@ export interface Candidate {
   /** Held, complete entries are opportunistic work, after the unresolved pile. */
   spare: boolean; distance: number;
   inputs?: Record<string, string>;
+  evaluationHash?: string;
 }
 export interface FileEvidence {
   path: string; current: string | null; current_hash: string | null;

@@ -70,16 +70,16 @@ rate and adds 10% routing headroom. See the
 Prompts over 100k input tokens have different prices; the ledger accounts
 for that tier if reported usage reaches it and stops after an estimate overrun.
 
-The counted maximum is **133 model invocations**: 20 initial writers plus
-up to 113 judge calls, including split batches and two failed retries per
-checkpoint. Each prompt is capped at 90,000 UTF-8 bytes and each reply at
+The counted maximum is **153 model invocations**: 20 initial writers, at
+most 20 repair calls, and up to 113 judge calls, including split batches and
+two failed retries per checkpoint. Each prompt is capped at 90,000 UTF-8 bytes and each reply at
 4,096 output tokens. Allowing another 8,192 system/CLI tokens per call gives
-a **$3.18 estimated conservative API-equivalent total**. Request a **$5
+a **$3.66 estimated conservative API-equivalent total**. Request a **$5
 allowance** before execution. Actual billing depends on the engineer's
 provider/account; this is an estimate, not a guaranteed invoice cap.
 
 The fingerprint binds candidate commit, claim text, truth labels, source
-hashes, batches, model, price table and limits. The runner reserves before
+hashes, batches, output schemas, model, price table and limits. The runner reserves before
 each call, retains a private cost ledger, stops after unknown/estimated usage
 or transport failure, and never silently switches models. The one-shot CLI
 uses safe mode, no tools, no persistent session, one turn, zero transport
@@ -89,6 +89,20 @@ estimated per-call budget. The
 does not equal billing enforcement. The provider
 [output/retry environment variables](https://code.claude.com/docs/en/env-vars)
 are additional bounds. An unexpected extra call is refused by the ledger.
+
+Writers use the CLI's JSON-schema output and receive the actual indexed
+symbol names. After native recording, each same-file batch gets at most one
+repair call for rejected claims, with bounded validation errors. Initial
+failures stay in `generation_diagnostics`; successful repairs are listed in
+`generation_repaired`. A transport, usage or budget failure stops the run.
+No hand-written fallback checks or truth labels enter either prompt.
+
+A fresh still-true result can restore a changed supporting check to held.
+Go verifies the sealed native evaluation, journal row, entry, checkout and
+every source file before caching that result, and delivery labels it
+“checked by model.” A changed input, withdrawn result, partial scan or
+expired deadline cannot preserve an unverified model hold. Complete broken
+checks, unreadable evidence and CI team-only evaluation cannot be promoted.
 
 ## Prepare and execute
 

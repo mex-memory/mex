@@ -11,7 +11,9 @@ import (
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/judgement"
 	"github.com/mex-memory/mex/native/internal/rulechange"
+	"github.com/mex-memory/mex/native/record"
 )
 
 // Verdicts as the evaluator stores them; a missing row is unknown.
@@ -46,6 +48,9 @@ type shapeEnv struct {
 	indexTried      bool
 	rules           *rulechange.Snapshot
 	rulesTried      bool
+	hooks           *record.Hooks
+	judged          *judgement.Reader
+	judgedTried     bool
 }
 
 func (s *shapeEnv) reader() *index.Reader {
@@ -59,6 +64,7 @@ func (s *shapeEnv) reader() *index.Reader {
 }
 
 func (s *shapeEnv) close() {
+	s.judged.Close()
 	if s.index != nil {
 		_ = s.index.Close()
 	}
@@ -70,6 +76,18 @@ func (s *shapeEnv) close() {
 func shape(c candidate, verdict string, env *shapeEnv) shaped {
 	it := c.item
 	s := shaped{candidate: c, verdict: verdict, action: "given", full: it.Full, oneLine: it.OneLine, fullTok: it.FullTokens, lineTok: it.OneLineTokens}
+	if verdict == held && it.Entry.Kind == "fact" && env != nil && env.hooks != nil {
+		if !env.judgedTried {
+			env.judgedTried = true
+			env.judged = judgement.Open(env.recordDirectory, env.project, env.checkout)
+		}
+		if v, ok, err := env.hooks.VerdictOf(env.project, env.checkout, it.Entry.ID); err == nil && ok && env.judged.Label(it.Entry.ID, it.Hash, v.InputsHash) {
+			s.full += "\n(checked by model)"
+			s.oneLine += " (checked by model)"
+			s.fullTok = entries.EstimateTokens(s.full)
+			s.lineTok = entries.EstimateTokens(s.oneLine)
+		}
+	}
 	withhold := func() shaped { s.action, s.full, s.oneLine, s.fullTok, s.lineTok = "withheld", "", "", 0, 0; return s }
 	kind := it.Entry.Kind
 	if it.Level == "team" && verdict != broken && env != nil && (kind == "rule" || kind == "decision" || kind == "pitfall") {

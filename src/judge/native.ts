@@ -30,13 +30,19 @@ export async function evaluate(request: Record<string, unknown>): Promise<Native
 
 /** The model proposes targets; only the evaluator can mint current baselines. */
 export async function recordChecks(request: Record<string, unknown>, items: unknown[]): Promise<EntryCheck[] | undefined> {
-  const result = await nativeRequest({ ...request, action: "record-batch", items }) as { results?: Array<{ ok: boolean; check?: unknown }> };
-  if (result.results?.length !== items.length) return undefined;
+  return (await recordChecksDetailed(request,items)).checks;
+}
+
+/** Recorder diagnostics for bounded proposal repair; no failed observation is minted. */
+export async function recordChecksDetailed(request: Record<string, unknown>, items: unknown[]): Promise<{checks?:EntryCheck[];errors:Array<{index:number;reason:string}>}> {
+  const result = await nativeRequest({ ...request, action: "record-batch", items }) as { results?: Array<{ ok: boolean; check?: unknown; error?:string }> };
+  if (result.results?.length !== items.length) return {errors:[{index:-1,reason:"Incomplete recorder response"}]};
   const checks: EntryCheck[] = [];
-  for (const item of result.results) {
+  const errors:Array<{index:number;reason:string}>=[];
+  for (const [index,item] of result.results.entries()) {
     const parsed = CheckSchema.safeParse(item.check);
-    if (!item.ok || !parsed.success) return undefined;
-    checks.push(parsed.data);
+    if (!item.ok || !parsed.success) errors.push({index,reason:(item.error ?? "Invalid recorded check").slice(0,512)});
+    else checks.push(parsed.data);
   }
-  return checks;
+  return errors.length ? {errors} : {checks,errors};
 }

@@ -36,7 +36,7 @@ func Probe(env Environment, project, checkout string, ids []string) ([]ProbeResu
 		return nil, err
 	}
 	defer h.Close()
-	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: project, checkout: checkout}
+	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: project, checkout: checkout, hooks: h}
 	defer senv.close()
 	out := make([]ProbeResult, 0, len(ids))
 	for _, id := range ids {

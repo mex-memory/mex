@@ -58,7 +58,9 @@ type Result struct {
 	Checks  []CheckResult `json:"checks"`
 	// Inputs maps every file the evaluation read to its hash today
 	// ("missing" or "unreadable" when it couldn't be read).
-	Inputs map[string]string `json:"inputs"`
+	Inputs         map[string]string `json:"inputs"`
+	EvaluationHash string            `json:"evaluation_hash,omitempty"`
+	Label          string            `json:"label,omitempty"`
 }
 
 // Evaluator evaluates entries against one checkout. It reads each file once.
