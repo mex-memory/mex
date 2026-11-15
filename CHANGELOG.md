@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `mex check` no longer reports alternation shorthand such as `tests/grounding|traversal|edges|store.test.ts` as `MISSING_PATH`. A value containing `|` names several files at once rather than one path, so it is skipped like other notations that are not paths (#202).
+
 ## [0.8.5] - 2026-10-29
 
 ### Added
