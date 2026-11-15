@@ -2,6 +2,7 @@ package capture
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -134,21 +135,74 @@ func isSHA(s string) bool {
 	return true
 }
 
-// git runs a read-only git command in the checkout. Optional locks are off,
-// so `status` never rewrites the index under the person's feet.
+// git reads metadata without invoking configured monitors, hooks, pagers,
+// signature verifiers or network helpers. Inherited Git routing and command
+// configuration cannot redirect the read. Status also checks for content
+// filters below, since those cannot be disabled with one fixed config key.
 func git(checkout string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", checkout}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
-	out, err := cmd.Output()
-	return string(out), err
+	prefix := []string{"--no-pager", "--no-replace-objects", "--literal-pathspecs", "-C", checkout,
+		"-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.DevNull,
+		"-c", "log.showSignature=false", "-c", "submodule.recurse=false",
+		"-c", "protocol.allow=never", "-c", "maintenance.auto=false", "-c", "gc.auto=0"}
+	cmd := exec.CommandContext(ctx, "git", append(prefix, args...)...)
+	for _, value := range os.Environ() {
+		key, _, _ := strings.Cut(value, "=")
+		// Keep the user's config locations for author identity and filter
+		// detection, but discard injected config, routing and trace sinks.
+		if strings.HasPrefix(strings.ToUpper(key), "GIT_") && key != "GIT_CONFIG_GLOBAL" && key != "GIT_CONFIG_SYSTEM" && key != "GIT_CONFIG_NOSYSTEM" {
+			continue
+		}
+		cmd.Env = append(cmd.Env, value)
+	}
+	cmd.Env = append(cmd.Env, "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=", "LC_ALL=C")
+	out := &gitOutput{}
+	cmd.Stdout = out
+	err := cmd.Run()
+	if out.exceeded {
+		return "", errors.New("git metadata exceeds its limit")
+	}
+	return out.buffer.String(), err
+}
+
+// Bound history, status and raw object reads before buffering their output.
+type gitOutput struct {
+	buffer   bytes.Buffer
+	exceeded bool
+}
+
+func (b *gitOutput) Write(p []byte) (int, error) {
+	if len(p) > (1<<20)-b.buffer.Len() {
+		b.exceeded = true
+		return 0, errors.New("git metadata exceeds its limit")
+	}
+	return b.buffer.Write(p)
 }
 
 // Uncommitted lists changed and untracked file names, at most limit of them,
 // and how many there are in all. ok is false when git couldn't say.
 func Uncommitted(checkout string, limit int) (names []string, total int, ok bool) {
-	out, err := git(checkout, "status", "--porcelain=v1", "-z", "--untracked-files=normal")
+	// Status may run clean/process filters while comparing tracked files.
+	// When any are configured, leave this observation unknown rather than
+	// running repository code or mistaking a skipped read for a clean tree.
+	filters, err := git(checkout, "config", "--includes", "--null", "--name-only", "--get-regexp", `^filter\..*\.(clean|process)$`)
+	var exit *exec.ExitError
+	if filters != "" || err == nil || !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		return nil, 0, false
+	}
+	// Inspecting submodule dirtiness would run Git inside another repo with
+	// its own filters. Do not report that uninspected tree as clean either.
+	index, err := git(checkout, "ls-files", "--stage", "-z")
+	if err != nil {
+		return nil, 0, false
+	}
+	for _, entry := range strings.Split(index, "\x00") {
+		if strings.HasPrefix(entry, "160000 ") {
+			return nil, 0, false
+		}
+	}
+	out, err := git(checkout, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=all")
 	if err != nil {
 		return nil, 0, false
 	}
