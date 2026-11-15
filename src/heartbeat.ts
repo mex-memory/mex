@@ -195,7 +195,7 @@ function printHeartbeat(result: HeartbeatResult, config: MexConfig): void {
     for (const f of result.staleFiles) {
       console.log(`  ${f.file} — last_updated ${f.days} days ago`);
     }
-    console.log(chalk.dim("  Review these files and run `mex sync` if they no longer match reality."));
+    console.log(chalk.dim("  Review these files and run `mex sync --deep` if they no longer match reality."));
   }
   if (result.memoryCleanupDue) {
     console.log();

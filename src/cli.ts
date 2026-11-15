@@ -167,6 +167,7 @@ const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command
 program.hook("preAction", (_thisCommand, actionCommand) => {
   let family = actionCommand;
   while (family.parent && family.parent !== program) family = family.parent;
+  if (family.name() === "sync" && family.opts().dryRun) return;
   if (cliStarted && !isFirstRunNoticeExemptCommand(family === program ? undefined : family.name())) showFirstRunNotice();
   cliTelemetry.start(actionCommand);
 });
@@ -177,7 +178,7 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   // Uninstall must not recreate the launcher or restart pending jobs.
   if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture"
     || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
-    || (family.name() === "install" && family.opts().dryRun)) return;
+    || (["install", "sync"].includes(family.name()) && family.opts().dryRun)) return;
   // Keep the hook shim's launcher pointing at this CLI.
   try {
     const { writeLauncher } = await import("./hooks/shim/launcher.js");
@@ -791,7 +792,7 @@ wikiCommand
   .option("--apply", "start the explicit agent review, rather than preview only")
   .option("--dry-run", "preview only, even if --apply was given")
   .option("--after <entity-id>", "resume bounded review after an existing entity id")
-  .option("--tool <name>", "optional interactive CLI override; otherwise uses the same agent chooser as mex sync")
+  .option("--tool <name>", "optional interactive CLI override; otherwise uses the same agent chooser as mex sync --deep")
   .action(async (options) => {
     const { runKnowledgeUpgrade } = await import("./sync/knowledge-upgrade.js");
     await runKnowledgeUpgrade(loadConfig(), options);
@@ -1095,18 +1096,25 @@ program
     }
   });
 
-// ── Layer 3: Targeted Sync ──
+// ── Knowledge freshness ──
 program
   .command("sync")
-  .description("Run drift check, then fix flagged files and review flagged Wiki entities in one interactive AI session")
+  .description("Run the knowledge judge now; use --deep for the interactive AI sync session")
+  .option("--deep", "Run the legacy drift check and interactive AI session")
   .option("--dry-run", "Show what would be synced without executing")
-  .option("--warnings", "Include warning-only files (by default only errors are synced)")
+  .option("--warnings", "With --deep: include warning-only files")
   .action(async (opts) => {
     try {
-      const config = loadConfig();
-      const { runSync } = await import("./sync/index.js");
-      await runSync(config, { dryRun: opts.dryRun, includeWarnings: opts.warnings });
-      maybeShowInvite();
+      if (opts.deep) {
+        const { runSync } = await import("./sync/index.js");
+        await runSync(loadConfig(), { dryRun: opts.dryRun, includeWarnings: opts.warnings });
+      } else {
+        if (opts.warnings) throw new Error("Use `mex sync --deep --warnings` to include legacy warning-only files.");
+        const { runJudgeSync } = await import("./judge/sync.js");
+        const job = await runJudgeSync({ projectPath: process.cwd(), dryRun: opts.dryRun });
+        if (job?.state === "failed") process.exitCode = 1;
+      }
+      if (!opts.dryRun) maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
