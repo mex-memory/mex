@@ -23,7 +23,8 @@ export interface FilterInput { messages: Message[]; notes: NoteInput[]; files: A
 export interface ScanWindow { after: number; carry?: number[]; deferred?: number[]; through?: number; more?: boolean; }
 interface Journal { id: number; session_id: string; ts: string; text: string; marks: string; last_seen_at: string; paused: number; agent: string; }
 const Metadata = z.object({ version: z.literal(1), project_id: z.string(), checkout: z.string(), agent: z.string(),
-  session_id: z.string(), seen_at: z.string().datetime({ offset: true }), finished: z.boolean(), transcript: z.string().max(4096) }).strict();
+  session_id: z.string(), seen_at: z.string().datetime({ offset: true }), finished: z.boolean(), transcript: z.string().max(4096),
+  branch: z.string().min(1).max(1024).optional(), head: z.string().regex(/^[a-f0-9]{40,64}$/u).optional(), position_at: z.string().datetime({ offset: true }).optional() }).strict();
 export const ackKey = (session: string) => `filter.session.${shortHash(session)}`;
 export function acknowledged(writer: RecordWriter, project: string, session: string): number {
   const n = Number(writer.setting(project, ackKey(session)) ?? 0);
@@ -46,7 +47,7 @@ export function filterSession(writer: RecordWriter, project: string, checkout: s
   const parsed = Metadata.safeParse(value);
   return parsed.success && parsed.data.project_id === project && parsed.data.checkout === checkout && parsed.data.session_id === session ? parsed.data : undefined;
 }
-function timestampNs(value: string): bigint | undefined {
+export function timestampNs(value: string): bigint | undefined {
   const milliseconds = Date.parse(value);
   if (!Number.isFinite(milliseconds)) return undefined;
   const fraction = (value.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/u)?.[1] ?? "").padEnd(9, "0").slice(3, 9);

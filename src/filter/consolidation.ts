@@ -6,13 +6,14 @@ import type { JobRow } from "../record/jobs.js";
 import { parseEntry, serializeEntry, validateEntry, KnowledgeError, type KnowledgeEntry } from "../knowledge/entry.js";
 import { gateEntry, assertNoSecrets } from "../knowledge/gates.js";
 import { references } from "../knowledge/references.js";
-import { claimHash, retiredClaimHashes } from "../knowledge/state.js";
+import { claimHash, retiredClaimHashes, localSettings } from "../knowledge/state.js";
 import { snapshotNotes, publishNotes, recoverNotes } from "../knowledge/personal-store.js";
 import { hash, readSource, samePosition, position, type Position } from "../judge/evidence.js";
 import { readFilterBatch, candidateSchema, sourceSchema, type FilterCandidate, type FilterDependencies } from "./job.js";
 import { filterAllowed, FILTER_LIMITS, type FilterParams } from "./input.js";
 import { privacyHolds, repoVocabulary } from "./privacy.js";
 import { backgroundEnvironment } from "./environment.js";
+import { stageContinuity, CONTINUITY_TTL } from "./continuity.js";
 
 const Group = z.object({ members: z.array(z.number().int().nonnegative()).min(1).max(128), target: z.string().max(128).nullable(), relation: z.enum(["duplicate", "correction"]), duplicates: z.array(z.string().max(128)).max(32).optional() }).strict();
 const Plan = z.object({ groups: z.array(Group).max(128) }).strict();
@@ -114,6 +115,25 @@ function observed(writer: RecordWriter, project: string): Map<string, Observatio
 export async function consolidateNext(writer: RecordWriter, project: string, params: FilterParams, job: JobRow, deps: FilterDependencies,
   at: Position): Promise<{ summary: string; results: number; tokens: number } | undefined> {
   recoverNotes(writer, project);
+  for (const row of localSettings(writer, project, "learning.pending.", 512 << 10)) {
+    let saved;
+    try { saved = z.object({ version: z.literal(1), reason: z.string(), candidates: z.array(candidateSchema).max(128) }).strict().parse(JSON.parse(row.value)); }
+    catch { throw new KnowledgeError("INVALID_STATE", "Pending learning data is invalid; it was kept private."); }
+    if (saved.reason !== "continuity-or-gates" || !saved.candidates.some(c => c.label === "next-session")) continue;
+    writer.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!filterAllowed(writer, project, params) || !samePosition(at, currentPosition(params.checkout)) || !writer.db.prepare("SELECT 1 FROM jobs WHERE id=? AND owner=? AND state='running' AND request IS NULL").get(job.id, job.owner)) throw new Error("Continuity ownership or checkout changed.");
+      const accepted = stageContinuity(writer, project, params.checkout, at, saved.candidates, deps.clock());
+      const keep = saved.candidates.filter(c => !accepted.has(c) && !(c.label === "next-session" && deps.clock() - Date.parse(c.source.at) >= CONTINUITY_TTL));
+      if (keep.length !== saved.candidates.length) {
+        if (keep.length) set(writer, project, row.key, { ...saved, candidates: keep });
+        else writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project, row.key);
+        writer.db.exec("COMMIT");
+        return { summary: "Retained continuity advanced or expired; other held candidates kept private", results: 0, tokens: 0 };
+      }
+      writer.db.exec("COMMIT");
+    } catch (error) { writer.db.exec("ROLLBACK"); throw error; }
+  }
   const rows = writer.db.prepare("SELECT key FROM settings WHERE scope=? AND key LIKE 'filter.batch.%' ORDER BY key LIMIT 128").all(project);
   const pending = rows.map(r => String(r.key).slice("filter.batch.".length)).find(key => {
     const b = readFilterBatch(writer, project, key); return b?.phase === "complete" && !writer.setting(project, `learning.applied.${key}`) && !writer.setting(project, `learning.held.${key}`);
@@ -245,6 +265,8 @@ Input follows as JSON:\n${JSON.stringify({ candidates, notes: inventory })}`;
   }
   publishNotes(writer, project, before, files, () => {
     for (const write of writes) write();
+    const carried = stageContinuity(writer, project, params.checkout, at, [...deferred].map(i => candidates[i]!), deps.clock());
+    for (const i of deferred) if (carried.has(candidates[i]!)) deferred.delete(i);
     if (deferred.size) set(writer, project, `learning.pending.${pending}`, { version: 1, reason: "continuity-or-gates", candidates: [...deferred].sort().map(i => candidates[i]) });
     writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project, `filter.batch.${pending}`);
     writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project, `learning.plan.${pending}`);

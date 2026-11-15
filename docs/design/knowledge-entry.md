@@ -82,7 +82,7 @@ codec validates its shape, while an evaluator establishes that it holds.
 
 | Kind | Target | Saw |
 | --- | --- | --- |
-| key | `{file, pointer}` (JSON Pointer) | `{value}` |
+| key | `{file, pointer}` (JSON Pointer), optional `member` for a dependency name | Exact `{value}`, or `{value: true}` for membership |
 | command | `{run, file, pointer}` | `{exists}` |
 | section | `{file, heading}` | `{hash}` |
 | source | `{file}` or `{url}` | `{hash}` |
