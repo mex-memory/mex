@@ -15,6 +15,7 @@ type fakeIndex struct {
 	outlines map[string][]index.Symbol
 	dropped  map[string]int
 	counts   map[string]int // pattern id -> count, for any scope
+	infos    map[string]*index.FileInfoAnswer
 }
 
 func (f *fakeIndex) Outline(path string) (*index.OutlineAnswer, *index.Miss) {
@@ -26,6 +27,9 @@ func (f *fakeIndex) Outline(path string) (*index.OutlineAnswer, *index.Miss) {
 }
 
 func (f *fakeIndex) FileInfo(path string) (*index.FileInfoAnswer, *index.Miss) {
+	if info, ok := f.infos[path]; ok {
+		return info, nil
+	}
 	return nil, &index.Miss{Path: path, NotIndexed: "not in the index"}
 }
 
@@ -250,6 +254,46 @@ func TestPatternCheck(t *testing.T) {
 	}
 	if PatternID("x") != "p"+strings.TrimPrefix(hashBytes([]byte("literal\nx")), "sha256:")[:15] {
 		t.Fatal("pattern id differs from the file index's")
+	}
+}
+
+func TestExactPatternRetainsFreshSourceProvenance(t *testing.T) {
+	root := t.TempDir()
+	const file = "src/use.ts"
+	const before = "use(oldName)\n"
+	write(t, root, file, before)
+	id := PatternID("oldName")
+	ix := &fakeIndex{counts: map[string]int{id: 1}, infos: map[string]*index.FileInfoAnswer{
+		file: {Hash: strings.TrimPrefix(hashBytes([]byte(before)), "sha256:")},
+	}}
+	target := map[string]any{"scope": file, "pattern": "oldName", "match": "literal"}
+	c, err := indexed(t, root, ix).Record("pattern", Complete, target)
+	if err != nil || c.Files[file] != hashBytes([]byte(before)) {
+		t.Fatalf("missing exact-file provenance: %v %+v", err, c)
+	}
+	run := func() Result {
+		return indexed(t, root, ix).Evaluate(&Entry{ID: "mx_exact0", Status: "active", Checks: []Check{c}})
+	}
+	if r := run(); r.Verdict != Held || r.Inputs[file] != c.Files[file] {
+		t.Fatalf("held input: %+v", r)
+	}
+	legacy := c
+	legacy.Files = map[string]string{}
+	if r := indexed(t, root, ix).Evaluate(&Entry{ID: "mx_oldpat", Status: "active", Checks: []Check{legacy}}); r.Inputs[file] != c.Files[file] {
+		t.Fatalf("an older exact-scope check lost its actual input: %+v", r)
+	}
+	const after = "use(newName)\n"
+	write(t, root, file, after)
+	if r := run(); r.Verdict != Changed || r.Checks[0].Status != Floor {
+		t.Fatalf("stale indexed count passed: %+v", r)
+	}
+	if _, err := indexed(t, root, ix).Record("pattern", Complete, target); !errors.Is(err, ErrNotRecordable) {
+		t.Fatalf("recorded a stale indexed count: %v", err)
+	}
+	ix.infos[file].Hash = strings.TrimPrefix(hashBytes([]byte(after)), "sha256:")
+	ix.counts[id] = 0
+	if r := run(); r.Verdict != Broken || r.Inputs[file] != hashBytes([]byte(after)) {
+		t.Fatalf("changed count: %+v", r)
 	}
 }
 

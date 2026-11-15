@@ -159,6 +159,11 @@ func (ev *Evaluator) floor(c Check, inputs map[string]string) []string {
 	if file := str(c.Target, "file"); file != "" {
 		inputs[file] = inputState(ev.files.read(file))
 	}
+	if c.Kind == "pattern" {
+		if file := exactPatternFile(c.Target); file != "" {
+			inputs[file] = inputState(ev.files.read(file))
+		}
+	}
 	sort.Strings(changed)
 	return changed
 }

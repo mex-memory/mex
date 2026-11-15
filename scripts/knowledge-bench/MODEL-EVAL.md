@@ -17,6 +17,12 @@ There are 46 hand-written claims and six source checkpoints. The model sees
 only the seed claim and its full C0 source file, never the old check targets,
 truth functions or labels. It proposes 1–4 checks per claim; Go records their
 observations. No hand-written check is substituted after a bad reply.
+Before recording, the writer registers only the model-proposed literal
+patterns and refreshes their counts in the real index. Structural patterns
+are not advertised because the recorder cannot mint them. Proposed targets
+and failed-generation IDs remain in the private report for diagnosis.
+Exact-file pattern checks retain the source hash and supply the source/diff
+to the judge; a stale indexed count cannot mint a new baseline.
 
 The production secret guard blocks the public basic-auth example (`b03`).
 That case remains in every denominator as privacy-withheld; its source is

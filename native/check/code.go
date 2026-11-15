@@ -257,6 +257,16 @@ func PatternID(pattern string) string {
 	return "p" + hex.EncodeToString(sum[:])[:15]
 }
 
+// An exact scope can retain the file provenance the judge needs. Globs keep
+// their index-backed scope semantics and do not expand into unbounded reads.
+func exactPatternFile(target map[string]any) string {
+	scope := str(target, "scope")
+	if safeRelative(scope) && !strings.ContainsAny(scope, "*?[]{}") {
+		return scope
+	}
+	return ""
+}
+
 // pattern: how often a literal pattern occurs in scope, from the file
 // index's counts (re-counted when the index refreshes).
 func (ev *Evaluator) patternCheck(c Check) CheckResult {
@@ -286,6 +296,16 @@ func (ev *Evaluator) patternCount(target map[string]any) (int, CheckResult, bool
 	count, counted := counts[id]
 	if !counted {
 		return 0, CheckResult{Status: Floor, Reason: "the file index doesn't count this pattern yet"}, false
+	}
+	if file := exactPatternFile(target); file != "" {
+		data, res, ok := ev.readTarget(file)
+		if !ok {
+			return 0, res, false
+		}
+		info, miss := ev.index.FileInfo(file)
+		if miss != nil || info.Hash == "" || !strings.HasPrefix(strings.TrimPrefix(hashBytes(data), "sha256:"), info.Hash) {
+			return 0, CheckResult{Status: Floor, Reason: file + " changed since the last parse"}, false
+		}
 	}
 	return count, CheckResult{}, true
 }

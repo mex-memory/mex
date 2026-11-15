@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { MODEL, checkPrompt, makePlan, proposals, runEvaluation, score, type CorpusData } from "../scripts/knowledge-bench/model-runtime.js";
 import type { ModelRequest, ModelResult } from "../src/model-runner/index.js";
+import { openRecord } from "../src/record/index.js";
+import { buildIndex } from "../src/file-index/build.js";
 
 let base: string, subject: string, binary: string, corpus: CorpusData, serial = 0;
 const git = (...args: string[]) => execFileSync("git", ["-C", subject, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
@@ -132,4 +134,33 @@ it("stops on estimated token usage before admitting any later call", async () =>
   expect(model).toHaveBeenCalledTimes(1);
   const report = JSON.parse(readFileSync(join(opts.work, "report.json"), "utf8"));
   expect(report.token_counts.unmeasured_calls).toBe(1); expect(report.complete).toBe(false);
+});
+it("records model-proposed literal patterns and supplies their current source to the judge", async () => {
+  const opts = options();
+  const model = vi.fn(async request => {
+    const result = fakeModel(request);
+    if (request.purpose === "judge-bench.checks") {
+      const results = JSON.parse(result.text).results;
+      for (const r of results) r.checks = [{ kind: "pattern", role: "complete", target: {
+        scope: "package.json", pattern: r.id.endsWith("one") ? '"name":"fixture"' : '"version":"1"', match: "literal",
+      } }];
+      result.text = JSON.stringify({ results });
+    }
+    return result;
+  });
+  const report = await runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model,
+    refreshIndex: async checkout => {
+      const writer = openRecord({ projectPath: checkout, isNetwork: () => false });
+      try { await buildIndex({ root: checkout, projectId: writer.checkout(checkout)!.project_id, recordDirectory: writer.location.directory, workers: 0 }); }
+      finally { writer.close(); }
+    },
+  });
+  expect(report.checkpoints[0]!.score).toMatchObject({ true_kept: 2, generation_failed: 0 });
+  expect(report.checkpoints[1]!.score).toMatchObject({ stale_caught: 1, generation_failed: 0 });
+  const judged = model.mock.calls.filter(([r]) => r.purpose === "judge");
+  expect(judged.length).toBeGreaterThan(0);
+  for (const [r] of judged) {
+    const evidence = JSON.parse(r.prompt.split("Evidence follows as JSON:\n")[1]!);
+    expect(evidence.files).toEqual(expect.arrayContaining([expect.objectContaining({ path: "package.json" })]));
+  }
 });
