@@ -60,6 +60,64 @@ Report results beside the historical **41/42 true kept and 16/16 stale caught**,
 explicitly as different samples. Do not infer an improvement from those
 different denominators or add checkpoints as if they were independent claims.
 
+## Accepted measurement checkpoint
+
+The accepted measurement ran on `a1c5dbb8cc73e1fa914b172ea01687551ae43337`.
+The subsequent delivery-expiry fix is committed in
+`2eefa7f9c56977478e02fdbe94b207f0e5f698d8` and was verified without another
+model run. Raw reports, proposals and account details remain private.
+
+| Checkpoint | True kept | Stale caught | Stale original full text |
+| --- | --- | --- | --- |
+| C0 | 45/46 | 0/0 | 0 |
+| C1 | 42/43 | 3/3 | 0 |
+| C2 | 40/41 | 3/5 | 0 |
+| C3 | 36/37 | 7/9 | 0 |
+| C4 | 29/32 | 12/14 | 0 |
+| C5 | 28/31 | 12/15 | 0 |
+
+All four former C5 pointer cases (`b05`, `b06`, `b08`, `b09`) deliver full
+original text. All 45 privacy-eligible claims record model-written checks,
+with zero generation failures or repair calls. The privacy block remains
+counted. C5 true losses are two cannot-tell pointers (`v04`, `b13`) and
+privacy-withheld `b03`; stale misses are cannot-tell pointers for `k08`,
+`b01` and `b04`. A cannot-tell outcome can also represent a rejected rewrite
+or check-recording failure; these reports do not distinguish those causes.
+
+The chart labels used in the experiment describe successive runs of the
+same corpus, with cumulative changes and newly generated model replies:
+
+| Label | Candidate | C5 true kept | C5 stale caught | Generation failures | Calls | Reported tokens |
+| --- | --- | --- | --- | --- | --- | --- |
+| Initial | `8fd41d74` | 12/31 | 10/15 | 22 | 49 | 731,518 |
+| Patterns | `2cec7f83` | 20/31 | 13/15 | 6 | 76 | 1,092,321 |
+| Delivery | `201ac957` | 26/31 | 14/15 | 0 | 127 | 1,830,225 |
+| Roles | `a1c5dbb8` | 28/31 | 12/15 | 0 | 94 | 1,312,395 |
+
+These are single attempts, not isolated feature-effect measurements.
+Positive stale detection fell from 13/15 in Patterns to 12/15 in Roles;
+withholding an uncertain claim is not relabelled as a positive catch.
+Every completed run served zero stale original full texts. This does not
+independently validate the semantics of every proposed replacement sentence.
+
+The accepted run reports 188 uncached input, 1,224,153 cache-write, 21,489
+cache-read and 66,565 output tokens, with reference API-equivalent valuation
+$0.306181469. Four completed runs total 346 calls, 4,966,459 tokens and
+$1.142882785 valuation. A separately retained, aborted structured-output
+attempt on `a029ed9b` made one call before any checkpoint: 16,621 reported
+tokens with no observed model identity and a conservative $0.0100738
+reservation rather than measured valuation. Across all attempts there are
+347 calls and 4,983,080 reported tokens. Known valuation plus reservation is
+about $1.153, within the authorized $5 allowance; these are not invoices.
+
+Code checkpoint `2eefa7f9` passes typechecks/build, Go vet/all tests and a
+full native-enabled suite of 6,891 tests in 465 files, with 16 tests and two
+files skipped, in one 275.24-second macOS run. All 15 CI jobs pass in
+[the exact-head CI run](https://github.com/mex-memory/mex/actions/runs/43772624270).
+Separate clean-commit gates pass all 283 knowledge checks and both
+200-sample timing checks. The overall release profile remains blocked by
+five existing unbuilt benchmark adapters; no threshold changed.
+
 ## Quote and limits
 
 The prepared run pins `claude-haiku-5-5`. The verified reference price is
