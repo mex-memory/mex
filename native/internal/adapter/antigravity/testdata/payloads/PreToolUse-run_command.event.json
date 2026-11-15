@@ -1,0 +1,19 @@
+{
+  "agent": "antigravity",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "a-55c2",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "shell",
+    "raw_name": "run_command",
+    "input": {
+      "command": "npm test"
+    }
+  },
+  "transcript": "/home/dev/.gemini/antigravity/brain/a-55c2/transcript.jsonl",
+  "background": false
+}

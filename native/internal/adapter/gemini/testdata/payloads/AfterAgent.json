@@ -1,0 +1,10 @@
+{
+  "session_id": "g-91ab",
+  "transcript_path": "/home/dev/.gemini/tmp/shop/chats/session-g-91ab.json",
+  "cwd": "/home/dev/shop",
+  "timestamp": "2026-11-15T10:00:00.000Z",
+  "hook_event_name": "AfterAgent",
+  "prompt": "add a discount",
+  "prompt_response": "Done.",
+  "stop_hook_active": false
+}
