@@ -54,7 +54,7 @@ function syncDirectory(path: string): void {
 function privateFile(parent: string, name: string, text: string): void {
   const tmp = join(parent, `.notes-${randomBytes(12).toString("hex")}.tmp`);
   writeFileSync(tmp, text, { flag: "wx", mode: 0o600 });
-  const fd = openSync(tmp, "r"); try { fsyncSync(fd); } finally { closeSync(fd); }
+  const fd = openSync(tmp, "r+"); try { fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(tmp, join(parent, name)); syncDirectory(parent);
 }
 /** Delete only a fully proved, flat copy owned by this publication. */
@@ -119,7 +119,7 @@ export function publishNotes(writer: RecordWriter, project: string, before: Note
   try {
     for (const [key, raw] of files) { if (parseEntry(raw).mex.id !== key) throw new KnowledgeError("INVALID_ENTRY", "A consolidated note has an invalid id."); createEntryFile(stage, key, raw); copied.set(key, raw); }
     staged = directorySnapshot(stage);
-    for (const name of readdirSync(stage)) { const fd = openSync(join(stage, name), "r"); try { fsyncSync(fd); } finally { closeSync(fd); } }
+    for (const name of readdirSync(stage)) { const fd = openSync(join(stage, name), "r+"); try { fsyncSync(fd); } finally { closeSync(fd); } }
     syncDirectory(stage);
   } catch (error) { try { removeCopy(stage, digest(copied)); } catch { /* keep an unproved copy */ } throw error; }
   let committed = false, pending = false;
