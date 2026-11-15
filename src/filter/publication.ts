@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { RecordWriter } from "../record/index.js";
 import { openHooksReadOnly } from "../record/index.js";
 import type { JobRow } from "../record/jobs.js";
-import { shortHash } from "../record/project.js";
+import { shortHash, projectIdentity, realPath } from "../record/project.js";
 import { parseEntry, EntryIdSchema, KnowledgeError, serializeEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { containedDirectory, readEntryFile } from "../knowledge/files.js";
 import { assertNoSecrets } from "../knowledge/gates.js";
@@ -151,6 +151,8 @@ export async function publishNext(writer: RecordWriter, project: string, params:
   const sources = metadata.sources ?? [], observations = deps.verify(writer, project, found.entry, sources);
   const sourceDecision = promotionDecision({ evidence: { source: "person", observations }, shared: true, manual: false, ...policy, privacyHolds: metadata.holds ?? [], checksHold: true, conflict: false });
   if (sourceDecision.destination !== "team") return hold(sourceDecision.reason, sourceDecision.destination === "review");
+  const targetMatches = () => projectIdentity(params.checkout).rootPath === realPath(params.checkout);
+  if (!targetMatches()) return hold("checkout-identity-changed");
   const observedStamp = stamp(params.checkout);
   let preview;
   try { preview = prepareTeamWrite(found.entry, { home: writer.location.home, projectPath: params.checkout }, found.entry.mex.source.quote); }
@@ -212,6 +214,7 @@ export async function publishNext(writer: RecordWriter, project: string, params:
       }
       assertNoSecrets(found.entry);
       if (shareProblems(found.entry).length) throw new KnowledgeError("SECRET_FOUND", "The learned entry was withheld by the sharing scan.");
+      if (!targetMatches()) throw new Error("Publication checkout identity changed; entry was kept personal.");
       if (preview.before === null) applyTeamWrite(preview, offer.revision!, { home: writer.location.home, projectPath: params.checkout }, found.entry.mex.source.quote);
       offer = { ...offer, state: "applied", last_job: job.id };
       set(writer, project, offer);

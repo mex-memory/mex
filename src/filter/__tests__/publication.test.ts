@@ -164,3 +164,9 @@ it("refuses redirected or ambiguous transcript proofs", () => {
   const alias = join(base, "codex", "sessions", "alias.jsonl"); symlinkSync(outside, alias); expect(typedQuote(alias, "codex", typed, hash(typed))).toBe(false);
   writeFileSync(transcript, readFileSync(transcript, "utf8").repeat(2)); expect(typedQuote(transcript, "codex", typed, hash(typed))).toBe(false);
 });
+it("cannot redirect the team writer into a different repository through Git environment", async () => {
+  const other = join(base, "unrelated"); mkdirSync(other); execFileSync("git", ["init", "-q", other], { stdio: "pipe" });
+  vi.stubEnv("GIT_DIR", join(other, ".git")); vi.stubEnv("GIT_WORK_TREE", other);
+  await run(); expect(saved().reason).toBe("checkout-identity-changed");
+  expect(existsSync(teamPath())).toBe(false); expect(existsSync(join(other, ".mex", "learned"))).toBe(false);
+});
