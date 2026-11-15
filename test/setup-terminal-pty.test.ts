@@ -80,7 +80,10 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     const result = await terminal(f, [], [], { columns: 80, rows: 24, command });
     expect(result.exitCode, result.output).toBe(0);
     expect(result.output).toMatch(/MEX · project · \d+\.\d s · \$0 · nothing added to git/u);
-    expect(result.output).toContain("◌ Git history and the file index: in the background (`mex jobs`)");
+    // It waits for the file index and git history with a live line, then shows what they found.
+    expect(result.output).toMatch(/✓ Indexed \d+ files?/u);
+    expect(result.output).toContain("✓ Git history: no commits yet");
+    expect(result.output).toMatch(/Done in \d+\.\d s · \$0/u);
     expect(result.raw).toMatch(/\x1b\[/u);
     expect(result.output).not.toContain("Choose your AI tools");
     expect(spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: f.project, encoding: "utf8" }).stdout).toBe("");

@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { absolutePath, realPath } from "../record/project.js";
+export { displayPath } from "../record/project.js";
 
 /**
  * Where `mex` runs. Only read-only, bounded git commands; nothing is created.
@@ -24,15 +24,6 @@ export type PlaceGit = (directory: string, args: string[]) => string;
 const runGit: PlaceGit = (directory, args) => execFileSync("git", ["-C", directory, ...args], {
   encoding: "utf8", timeout: 1500, maxBuffer: 1024 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
 }).trim();
-
-/**
- * A path as a person should read it. Windows paths are compared lowercased inside MEX;
- * the native real path gives back the folder names as they are on disk.
- */
-export function displayPath(path: string): string {
-  if (process.platform !== "win32") return path;
-  try { return realpathSync.native(path); } catch { return path; }
-}
 
 function within(base: string, path: string): boolean {
   const rel = relative(base, path);

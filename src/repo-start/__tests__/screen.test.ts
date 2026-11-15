@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { formatSeconds, renderScreen, screenMode, wrap, type ScreenModel } from "../screen.js";
+import { formatSeconds, LiveLine, progressLine, renderDone, renderScreen, screenMode, wrap, type ScreenModel } from "../screen.js";
+import { resultFindings } from "../finish.js";
+import type { JobRow } from "../../record/jobs.js";
 import { detectCaller, isAgentCaller } from "../caller.js";
 
 const model: ScreenModel = {
@@ -37,10 +39,11 @@ describe("the first screen", () => {
     const lines = renderScreen(model, screenMode({ stdoutTTY: true, columns: 120, env: {}, platform: "darwin" }));
     expect(lines.map(line => line.replace(/\x1b\[[0-9;]*m/gu, ""))).toEqual([
       "MEX · novu · 2.4 s · $0 · nothing added to git",
-      "✓ Test and build commands for 12 packages (build @novu/dal first)",
-      "✓ 21 notes from your Claude and Codex memory",
-      "◌ The file index: in the background (`mex jobs`)",
-      "Hooks: Claude Code and Codex, in your user settings.",
+      "",
+      "  ✓ Test and build commands for 12 packages (build @novu/dal first)",
+      "  ✓ 21 notes from your Claude and Codex memory",
+      "  ◌ The file index: in the background (`mex jobs`)",
+      "  Hooks: Claude Code and Codex, in your user settings.",
     ]);
     expect(lines.some(line => ANSI.test(line))).toBe(true);
   });
@@ -86,6 +89,39 @@ describe("the first screen", () => {
   it("claims nothing was added to git only when the block is in place", () => {
     const [header] = renderScreen({ ...model, hidden: false }, screenMode({ stdoutTTY: false, env: {} }));
     expect(header).toBe("MEX - novu - 2.4 s - $0");
+  });
+
+  it("draws a live progress line with a bar that never wraps, ASCII in a legacy console", () => {
+    const rich = screenMode({ stdoutTTY: true, columns: 80, env: {}, platform: "darwin" });
+    const plainText = (text: string) => text.replace(/\x1b\[[0-9;]*m/gu, "");
+    expect(plainText(progressLine("Indexing files", "4,210 of 12,306 files", 4210 / 12306, 0, rich)))
+      .toBe("  ⠋ Indexing files  ━━━━━━━─────────────  4,210 of 12,306 files");
+    const legacy = screenMode({ stdoutTTY: true, columns: 80, env: {}, platform: "win32" });
+    expect(plainText(progressLine("Indexing files", undefined, 0.5, 1, legacy))).toBe("  / Indexing files  ##########----------");
+    const narrow = screenMode({ stdoutTTY: true, columns: 60, env: {}, platform: "darwin" });
+    expect(plainText(progressLine("Reading git history", "a very long detail ".repeat(5), 0.2, 3, narrow)).length).toBeLessThan(60);
+    const written: string[] = [];
+    const line = new LiveLine(rich, text => written.push(text));
+    line.start("Indexing files"); line.update("1 of 2 files", 0.5); line.stop();
+    expect(written.every(text => text.startsWith("\r\x1b[2K"))).toBe(true);
+    expect(written.at(-1)).toBe("\r\x1b[2K");
+    expect(renderDone(8_400, screenMode({ stdoutTTY: false, env: {} }))).toEqual(["Done in 8.4 s - $0"]);
+  });
+
+  it("says what the finished work found, or why it didn't finish", () => {
+    const row = (kind: string, state: string, results = 0, reason: string | null = null) => ({ kind, state, results, reason }) as unknown as JobRow;
+    const facts = { version: 1 as const, built_at: "", head: "a", commits_read: 1200, skipped: null, layer_rules: [{ from: "a", to: "b", imports: 3 }], generated: [],
+      change_together: [{ a: "x.ts", b: "y.ts", confidence: 1, support: 4, kind: "related" as const }, { a: "y.ts", b: "x.ts", confidence: 1, support: 4, kind: "related" as const }] };
+    expect(resultFindings([row("file-index", "done", 11582), row("code-facts", "done")], facts)).toEqual([
+      { state: "ok", text: "Indexed 11,582 files" },
+      { state: "ok", text: "Git history (1,200 commits): 1 file pair changes together, 1 layer rule" },
+    ]);
+    expect(resultFindings([row("file-index", "failed", 0, "disk full")], undefined)).toEqual([
+      { state: "attention", text: "The file index didn't finish: disk full (`mex jobs`)" },
+    ]);
+    expect(resultFindings([row("code-facts", "done")], { ...facts, skipped: "no commits", change_together: [], layer_rules: [] })).toEqual([
+      { state: "ok", text: "Git history: no commits yet" },
+    ]);
   });
 
   it("formats measured time", () => {

@@ -12,6 +12,14 @@ export function absolutePath(path: string): string {
   return process.platform === "win32" ? absolute.replace(/[A-Z]/g, (letter) => letter.toLowerCase()) : absolute;
 }
 export function realPath(path: string): string { return absolutePath(realpathSync.native(path)); }
+/**
+ * A path as a person should read it. Windows paths are compared lowercased inside MEX;
+ * the native real path gives back the folder names as they are on disk.
+ */
+export function displayPath(path: string): string {
+  if (process.platform !== "win32") return path;
+  try { return realpathSync.native(path); } catch { return path; }
+}
 export interface ProjectIdentity { id: string; kind: "git" | "folder"; rootPath: string; provisional?: "unborn" | "shallow"; }
 /** Answers a caller already has from git for this directory: its top level and whether the clone is shallow. */
 export interface KnownRepository { top?: string; shallow?: boolean; }

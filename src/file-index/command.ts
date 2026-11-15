@@ -12,8 +12,9 @@ function locate(path: string): { writer: RecordWriter; projectId: string; checko
 }
 
 /** Queue a build or refresh of this checkout's index for the background process. */
-export function queueIndexBuild(writer: RecordWriter, projectId: string, checkout: string, full = false): void {
-  queueJob(writer, { kind: "file-index", projectId, params: { checkout, ...(full ? { full } : {}) } satisfies IndexJobParams });
+/** Queue a build or refresh; returns the job, or the one already open for the project. */
+export function queueIndexBuild(writer: RecordWriter, projectId: string, checkout: string, full = false): string {
+  return queueJob(writer, { kind: "file-index", projectId, params: { checkout, ...(full ? { full } : {}) } satisfies IndexJobParams }).job.id;
 }
 
 /** `mex index`: build or refresh now, in this terminal. */

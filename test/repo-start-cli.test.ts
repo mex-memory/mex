@@ -35,13 +35,17 @@ function localState(root: string): void {
   writeFileSync(join(root, ".mex", "graph.db"), "");
   writeFileSync(join(root, ".mex", "wiki.db-wal"), "");
 }
-/** A run stopped by `process.kill(pid, "SIGKILL")`: Windows ends it with exit code 1 and no signal. */
-function expectKilled(result: ReturnType<typeof spawnSync>): void {
+/**
+ * A run stopped by `process.kill(pid, "SIGKILL")`: Windows ends it with exit code 1 and no signal.
+ * Killed while waiting, the first screen was already shown; it never got to "Done".
+ */
+function expectKilled(result: ReturnType<typeof spawnSync>, screenShown = false): void {
   if (process.platform === "win32") {
     expect(result.signal).toBeNull();
     expect(result.status).toBe(1);
   } else expect(result.signal).toBe("SIGKILL");
-  expect(String(result.stdout)).not.toMatch(/^MEX [-·] |Ran \d+ batch/mu);
+  if (!screenShown) expect(String(result.stdout)).not.toMatch(/^MEX [-·] /mu);
+  expect(String(result.stdout)).not.toMatch(/^Done in |Ran \d+ batch/mu);
 }
 function leftovers(f: ReturnType<typeof fixture>): string[] {
   const found = readdirSync(join(f.root, ".git", "info")).filter(name => name.startsWith(".mex-"));
@@ -60,8 +64,12 @@ describe("bare mex in a repository", () => {
     expect(result.status, result.stderr).toBe(0);
     const lines = result.stdout.trimEnd().split("\n");
     expect(lines[0]).toMatch(/^MEX - repo - \d+\.\d s - \$0 - nothing added to git$/u);
-    expect(lines).toContain(".. Git history and the file index: in the background (`mex jobs`)");
     expect(lines).toContain("ok No test or build commands found in config");
+    // `mex` waits for the file index and git history, then says what they found.
+    expect(lines).toContainEqual(expect.stringMatching(/^ok Indexed \d+ files?$/u));
+    expect(lines).toContain("ok Git history (1 commit): no files change together often enough yet");
+    expect(lines.at(-1)).toMatch(/^Done in \d+\.\d s - \$0$/u);
+    expect(lines.join("\n")).not.toContain("in the background");
     expect(result.stdout).not.toMatch(/\x1b\[/u);
     localState(f.root);
     expect(f.status()).toBe("");
@@ -117,7 +125,11 @@ describe("bare mex in a repository", () => {
       writeFileSync(join(f.root, "types.ts"), `export type V = ${i};\n`);
       git(f.root, "add", "."); git(f.root, "commit", "-qm", `change ${i}`);
     }
-    expect(f.run().status).toBe(0);
+    // --no-wait leaves the work to the background, as before.
+    const first = f.run(["--no-wait"]);
+    expect(first.status).toBe(0);
+    expect(first.stdout).toContain(".. Git history and the file index: in the background (`mex jobs`)");
+    expect(first.stdout).not.toContain("Done in");
     const projects = join(f.home, "projects");
     const facts = () => join(projects, readdirSync(projects)[0]!, "code-facts.json");
     const killed = f.run(["jobs", "run"], { env: { [KILL_AT_VARIABLE]: "code-facts" } });
@@ -132,6 +144,19 @@ describe("bare mex in a repository", () => {
     expect(f.status()).toBe("");
   });
 
+  it("stops waiting at its time cap and leaves the rest to the background, where it finishes", () => {
+    const f = fixture();
+    const result = f.run([], { env: { MEX_TEST_WAIT_CAP_MS: "0" } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(".. The rest finishes in the background (`mex jobs` shows it)");
+    expect(result.stdout).not.toContain("Done in");
+    const finished = f.run(["jobs", "run"]);
+    expect(finished.stdout).toMatch(/^Ran \d+ batch/mu);
+    const projects = join(f.home, "projects");
+    expect(existsSync(join(projects, readdirSync(projects)[0]!, "code-facts.json"))).toBe(true);
+    expect(f.status()).toBe("");
+  });
+
   it("says a shallow clone skips git history", () => {
     const f = fixture();
     writeFileSync(join(f.root, "b.txt"), "b\n"); git(f.root, "add", "."); git(f.root, "commit", "-qm", "second");
@@ -140,7 +165,8 @@ describe("bare mex in a repository", () => {
     const result = f.run([], { cwd: shallow });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("!! Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)");
-    expect(result.stdout).toContain(".. The file index: in the background (`mex jobs`)");
+    expect(result.stdout).toMatch(/^ok Indexed \d+ files?$/mu);
+    expect(result.stdout).not.toContain("ok Git history");
     const projects = join(f.home, "projects");
     expect(JSON.parse(readFileSync(join(projects, readdirSync(projects)[0]!, "code-facts.json"), "utf8"))).toMatchObject({ skipped: "shallow clone" });
   });
@@ -226,7 +252,8 @@ describe("bare mex in a repository", () => {
     const lines = on.stdout.trimEnd().split("\n");
     expect(lines[0]).toMatch(/^MEX - notes - \d+\.\d s - \$0$/u);
     expect(lines).toContain("ok Test and build commands for this folder");
-    expect(lines).toContain(".. The file index: in the background (`mex jobs`); no git history here");
+    expect(lines).toContainEqual(expect.stringMatching(/^ok Indexed \d+ files?$/u));
+    expect(lines.join("\n")).not.toContain("Git history");
     const marker = JSON.parse(readFileSync(join(plain, ".mex", "project.json"), "utf8"));
     expect(marker.project_id).toMatch(/^f-[a-f0-9]{24}$/u);
     const facts = JSON.parse(readFileSync(join(f.home, "projects", marker.project_id, "code-facts.json"), "utf8"));
@@ -272,7 +299,7 @@ describe("bare mex in a repository", () => {
     const f = fixture();
     const before = readFileSync(f.exclude);
     const killed = f.run([], { env: { [KILL_AT_VARIABLE]: point } });
-    expectKilled(killed);
+    expectKilled(killed, point === "waiting");
     expect(leftovers(f)).toEqual([]);
     expect(f.status()).toBe("");
     const after = readFileSync(f.exclude);
@@ -280,6 +307,8 @@ describe("bare mex in a repository", () => {
     const next = f.run();
     expect(next.status, next.stderr).toBe(0);
     expect(next.stdout).toMatch(/^MEX - repo - .* - nothing added to git\n/u);
+    // The work a killed wait left behind is picked up and finished.
+    expect(next.stdout).toMatch(/^Done in /mu);
     localState(f.root);
     expect(f.status()).toBe("");
     expect(f.run(["uninstall"]).status).toBe(0);

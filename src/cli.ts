@@ -189,10 +189,13 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   } catch { /* never affects the command */ }
 });
 
-async function runRepoStartCommand(options: { folder?: boolean } = {}): Promise<void> {
+async function runRepoStartCommand(options: { folder?: boolean; wait?: boolean } = {}): Promise<void> {
   try {
     const { runRepoStart } = await import("./repo-start/command.js");
-    process.exitCode = (await runRepoStart(options.folder ? { folder: true } : {})).exitCode;
+    const result = await runRepoStart({ ...(options.folder ? { folder: true } : {}), ...(options.wait === false ? { wait: false } : {}) });
+    process.exitCode = result.exitCode;
+    // Stopped waiting with work still running here: the background process has taken it over.
+    if (result.exitNow) process.exit(result.exitCode);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
@@ -208,7 +211,8 @@ program
   .option("--port <n>", "Bind a specific loopback port (with `mex hub`)", parsePortArg)
   .option("--no-open", "Print the Hub link without opening a browser (with `mex hub`)")
   .option("--folder", "Turn MEX on in a folder that isn't a git repo, without the question")
-  .action(async (options: { folder?: boolean }) => {
+  .option("--no-wait", "Show the first screen and leave the file index and git history to the background")
+  .action(async (options: { folder?: boolean; wait?: boolean }) => {
     showFirstRunNotice();
     const { showUpdateNotice } = await import("./telemetry/updates.js");
     await showUpdateNotice();
@@ -333,6 +337,7 @@ const setupCommand = program
   .addOption(new Option("--yes", "0.8 setup: never wait on a question").hideHelp())
   .addOption(new Option("--force", "0.8 setup: run the full flow").hideHelp())
   .option("--folder", "Turn MEX on in a folder that isn't a git repo, without the question")
+  .option("--no-wait", "Show the first screen and leave the file index and git history to the background")
   .addHelpText(
     "after",
     "\n`mex setup` does what `mex` does: it turns MEX on for this repo and shows what it\n"
@@ -345,7 +350,7 @@ const setupCommand = program
       return;
     }
     showFirstRunNotice();
-    await runRepoStartCommand({ folder: (options as { folder?: boolean }).folder });
+    await runRepoStartCommand({ folder: (options as { folder?: boolean }).folder, wait: (options as { wait?: boolean }).wait });
   });
 
 setupCommand

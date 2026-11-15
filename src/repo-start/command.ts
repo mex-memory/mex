@@ -12,11 +12,14 @@ import { performance } from "node:perf_hooks";
 import type { CheckoutRow, RecordWriter } from "../record/index.js";
 import { detectCaller, type Caller } from "./caller.js";
 import { classifyPlace, displayPath, type Place } from "./place.js";
-import { renderScreen, screenMode, type Finding, type ScreenModel } from "./screen.js";
+import { renderDone, renderFindings, renderHeader, renderNotes, screenMode, type Finding } from "./screen.js";
+import type { FinishJob } from "./finish.js";
 
 /** Test-only: kill the process at a step boundary to prove each one leaves a clean state. */
 export const KILL_AT_VARIABLE = "MEX_REPO_START_KILL_AT";
-export const KILL_POINTS = ["installed", "registered", "hidden", "queued", "free-step", "facts"] as const;
+export const KILL_POINTS = ["installed", "registered", "hidden", "queued", "free-step", "facts", "waiting"] as const;
+/** How long `mex` waits for its own work before leaving it to the background process. */
+export const WAIT_CAP_MS = { person: 10 * 60_000, other: 100_000 } as const;
 export type KillPoint = typeof KILL_POINTS[number];
 
 export interface RepoStartOptions {
@@ -34,6 +37,10 @@ export interface RepoStartOptions {
   /** Whether questions may be asked; defaults to true only for a person at a terminal. */
   interactive?: boolean;
   ask?: (lines: readonly string[]) => Promise<boolean>;
+  /** `--no-wait`: leave the file index and git history to the background process. Waiting is the default. */
+  wait?: boolean;
+  /** How long to wait before handing the work on; defaults to WAIT_CAP_MS for the caller. */
+  waitCapMs?: number;
 }
 export interface RepoStartResult {
   exitCode: number;
@@ -45,6 +52,14 @@ export interface RepoStartResult {
   folderQuestion?: true;
   /** A paid offer that is due; agents and scripts only print its command. */
   offer?: { question: string; estimate: string; command: string };
+  /** Stopped waiting with work still running in this process: the caller exits now, and the background process takes over. */
+  exitNow?: true;
+}
+
+/** Test-only: a short wait, to prove a run that stops waiting hands its work on. */
+function testWaitCap(env: NodeJS.ProcessEnv): number | undefined {
+  const value = Number(env.MEX_TEST_WAIT_CAP_MS);
+  return env.MEX_TEST_WAIT_CAP_MS !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function killAt(point: KillPoint, env: NodeJS.ProcessEnv): void {
@@ -180,6 +195,8 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
 
   const findings: Finding[] = [];
   const notes: string[] = [];
+  const finishJobs: FinishJob[] = [];
+  const waiting = options.wait !== false;
   let writer: RecordWriter | undefined = openRecord();
   let projectId: string, checkout: CheckoutRow, hidden = false;
   const git = place.kind === "git";
@@ -223,11 +240,11 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       const { listRepositoryFilesAsync } = await import("../knowledge/rule-files.js");
       const listing = listRepositoryFilesAsync(checkout.path);
       const { queueIndexBuild } = await import("../file-index/command.js");
-      queueIndexBuild(writer, projectId, checkout.path);
+      finishJobs.push({ id: queueIndexBuild(writer, projectId, checkout.path), kind: "file-index" });
       // Queued after the index, so layer rules can read its imports.
       if (git && !shallow) {
         const { queueJob } = await import("../record/background.js");
-        queueJob(writer, { kind: "code-facts", projectId, params: { checkout: checkout.path } });
+        finishJobs.push({ id: queueJob(writer, { kind: "code-facts", projectId, params: { checkout: checkout.path } }).job.id, kind: "code-facts" });
       }
       killAt("queued", env);
       writer.close(); writer = undefined;
@@ -247,11 +264,13 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory` });
       }
       killAt("free-step", env);
-      if (shallow) {
-        findings.push({ state: "attention", text: "Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)" });
-        findings.push({ state: "background", text: "The file index: in the background (`mex jobs`)" });
-      } else if (git) findings.push({ state: "background", text: "Git history and the file index: in the background (`mex jobs`)" });
-      else findings.push({ state: "background", text: "The file index: in the background (`mex jobs`); no git history here" });
+      if (shallow) findings.push({ state: "attention", text: "Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)" });
+      // Waiting, the results take these lines' place once the work is done.
+      if (!waiting) {
+        if (shallow) findings.push({ state: "background", text: "The file index: in the background (`mex jobs`)" });
+        else if (git) findings.push({ state: "background", text: "Git history and the file index: in the background (`mex jobs`)" });
+        else findings.push({ state: "background", text: "The file index: in the background (`mex jobs`); no git history here" });
+      }
 
       const { recordLocation } = await import("../record/location.js");
       const { writeFactFile } = await import("./facts.js");
@@ -278,20 +297,49 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   if (git && existsSync(join(checkout.path, ".mex", "ROUTER.md"))) notes.push("This repo has MEX 0.8 project files; `mex hub` opens them.");
   if (hooks.note) notes.push(hooks.note);
   notes.push(...hooks.notices);
-  const model: ScreenModel = { name: basename(displayPath(checkout.path)), ms: elapsed(), costUsd: 0, hidden, findings, notes };
-  for (const line of renderScreen(model, mode)) write(line);
+  const name = basename(displayPath(checkout.path));
+  for (const line of renderHeader({ name, ms: elapsed(), costUsd: 0, hidden }, mode)) write(line);
+  if (mode.color) write("");
+  for (const line of renderFindings(findings, mode)) write(line);
+
+  let exitNow = false, exitCode = 0;
+  if (waiting && finishJobs.length) {
+    const { finishWork } = await import("./finish.js");
+    // Ctrl+C while waiting stops the wait, not the work: the background process takes it over.
+    let onInterrupt: (() => void) | undefined;
+    const interrupt = new Promise<void>(resolve => { onInterrupt = resolve; });
+    const handler = () => onInterrupt?.();
+    process.once("SIGINT", handler);
+    const finishWriter = openRecord();
+    try {
+      const finished = await finishWork({
+        writer: finishWriter, projectId, jobs: finishJobs, mode, live: mode.color,
+        capMs: options.waitCapMs ?? testWaitCap(env) ?? (caller === "person" ? WAIT_CAP_MS.person : WAIT_CAP_MS.other),
+        interrupt, onFirstProgress: () => killAt("waiting", env),
+      });
+      for (const line of renderFindings(finished.findings, mode)) write(line);
+      exitNow = finished.handedOff;
+      if (finished.interrupted) exitCode = 130;
+    } finally {
+      process.removeListener("SIGINT", handler);
+      finishWriter.close();
+    }
+  }
+  for (const line of renderNotes(notes, mode)) write(line);
+  if (waiting && finishJobs.length && !exitNow) for (const line of renderDone(elapsed(), mode)) write(line);
+  const ended = exitNow ? { exitNow: true as const } : {};
 
   // The offer slot: empty in beta.1; learning-03 registers its question.
   const { dueOffer } = await import("./offers.js");
   const context = { projectId, root: checkout.path };
   const offer = dueOffer(context);
-  if (!offer) return { exitCode: 0, place: place.kind, projectId, turnedOn: true };
+  if (!offer || exitCode) return { exitCode, place: place.kind, projectId, turnedOn: true, ...ended };
   const summary = { question: offer.question, estimate: offer.estimate, command: offer.command };
   if (!interactive) {
     write(`${offer.question} (${offer.estimate}). Nothing paid was started; to start it, run: ${offer.command}`);
-    return { exitCode: 0, place: place.kind, projectId, turnedOn: true, offer: summary };
+    return { exitCode: 0, place: place.kind, projectId, turnedOn: true, offer: summary, ...ended };
   }
   if (await ask([`${offer.question} ${offer.estimate}. [y/n]`])) write(await offer.start(context));
   else write(`Not started. \`${offer.command}\` starts it later.`);
-  return { exitCode: 0, place: place.kind, projectId, turnedOn: true, offer: summary };
+  return { exitCode: 0, place: place.kind, projectId, turnedOn: true, offer: summary, ...ended };
 }

@@ -58,7 +58,10 @@ const paint = {
   dim: (text: string) => `\x1b[2m${text}\x1b[22m`,
   green: (text: string) => `\x1b[32m${text}\x1b[39m`,
   yellow: (text: string) => `\x1b[33m${text}\x1b[39m`,
+  cyan: (text: string) => `\x1b[36m${text}\x1b[39m`,
 };
+/** Rich lines sit under the header with this margin; plain lines have none. */
+const MARGIN = "  ";
 
 export function formatSeconds(ms: number): string {
   const seconds = Math.max(0, ms) / 1000;
@@ -107,25 +110,103 @@ function wrapHeader(parts: readonly string[], dot: string, width: number | undef
     : wrap(text.slice(CONTINUATION_INDENT), width - CONTINUATION_INDENT, 0).map(part => pad + part));
 }
 
-export function renderScreen(model: ScreenModel, mode: ScreenMode): string[] {
+/** The header: "MEX · name · 0.4 s · $0 · nothing added to git". In colour, MEX and the name stand out. */
+export function renderHeader(model: Pick<ScreenModel, "name" | "ms" | "costUsd" | "hidden">, mode: ScreenMode): string[] {
   const dot = mode.ascii ? " - " : " · ";
   const parts = ["MEX", model.name, formatSeconds(model.ms), `$${model.costUsd.toFixed(model.costUsd === 0 ? 0 : 2)}`]
     .concat(model.hidden ? ["nothing added to git"] : []);
+  const lines = wrapHeader(parts, dot, mode.width);
+  if (!mode.color) return lines;
+  return lines.map((line, index) => {
+    if (index > 0 || !line.startsWith(`MEX${dot}${model.name}`)) return paint.dim(line);
+    const rest = line.slice(`MEX${dot}${model.name}`.length);
+    return `${paint.bold(paint.cyan("MEX"))}${paint.dim(dot)}${paint.bold(model.name)}${rest ? paint.dim(rest) : ""}`;
+  });
+}
+
+/** One line per finding: a mark, then the text, wrapped with a hanging indent. */
+export function renderFindings(findings: readonly Finding[], mode: ScreenMode): string[] {
   const lines: string[] = [];
-  const add = (text: string, indent: number, style?: (text: string) => string) => {
-    for (const line of wrap(text, mode.width, indent)) lines.push(style && mode.color ? style(line) : line);
-  };
-  for (const line of wrapHeader(parts, dot, mode.width)) lines.push(mode.color ? paint.bold(line) : line);
-  for (const finding of model.findings) {
+  const margin = mode.color ? MARGIN : "";
+  const width = mode.width === undefined ? undefined : mode.width - margin.length;
+  for (const finding of findings) {
     const mark = MARKS[finding.state][mode.ascii ? 1 : 0];
-    const text = `${mark} ${finding.text}`;
-    if (!mode.color) { add(text, mark.length + 1); continue; }
-    const wrapped = wrap(text, mode.width, mark.length + 1);
-    if (finding.state === "background") { for (const line of wrapped) lines.push(paint.dim(line)); continue; }
+    const wrapped = wrap(`${mark} ${finding.text}`, width, mark.length + 1);
+    if (!mode.color) { lines.push(...wrapped); continue; }
+    if (finding.state === "background") { for (const line of wrapped) lines.push(margin + paint.dim(line)); continue; }
     const style = finding.state === "ok" ? paint.green : paint.yellow;
-    lines.push(style(mark) + wrapped[0]!.slice(mark.length));
-    lines.push(...wrapped.slice(1));
+    lines.push(margin + style(mark) + wrapped[0]!.slice(mark.length));
+    lines.push(...wrapped.slice(1).map(line => margin + line));
   }
-  for (const note of model.notes) add(note, CONTINUATION_INDENT, paint.dim);
   return lines;
+}
+
+/** Notes after the findings, quieter. */
+export function renderNotes(notes: readonly string[], mode: ScreenMode): string[] {
+  const margin = mode.color ? MARGIN : "";
+  const width = mode.width === undefined ? undefined : mode.width - margin.length;
+  return notes.flatMap(note => wrap(note, width, CONTINUATION_INDENT).map(line => mode.color ? margin + paint.dim(line) : line));
+}
+
+/** The closing line once the work `mex` waited for is done. */
+export function renderDone(ms: number, mode: ScreenMode): string[] {
+  const text = `Done in ${formatSeconds(ms)}${mode.ascii ? " - " : " · "}$0`;
+  return mode.color ? ["", MARGIN + paint.dim(text)] : [text];
+}
+
+export function renderScreen(model: ScreenModel, mode: ScreenMode): string[] {
+  return [
+    ...renderHeader(model, mode),
+    ...(mode.color && model.findings.length ? [""] : []),
+    ...renderFindings(model.findings, mode),
+    ...renderNotes(model.notes, mode),
+  ];
+}
+
+const SPINNER = { unicode: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], ascii: ["|", "/", "-", "\\"] };
+const BAR_WIDTH = 20;
+
+/** One live line: a spinner, the step, and a bar when the total is known. Never wider than the window. */
+export function progressLine(step: string, detail: string | undefined, fraction: number | undefined, frame: number, mode: ScreenMode): string {
+  const spin = (mode.ascii ? SPINNER.ascii : SPINNER.unicode)[frame % (mode.ascii ? SPINNER.ascii.length : SPINNER.unicode.length)]!;
+  let bar = "";
+  if (fraction !== undefined) {
+    const filled = Math.max(0, Math.min(BAR_WIDTH, Math.round(fraction * BAR_WIDTH)));
+    const [on, off] = mode.ascii ? ["#", "-"] : ["━", "─"];
+    bar = `  ${paint.cyan(on.repeat(filled))}${paint.dim(off.repeat(BAR_WIDTH - filled))}`;
+  }
+  const text = `${MARGIN}${paint.cyan(spin)} ${step}${bar}${detail ? `  ${paint.dim(detail)}` : ""}`;
+  const visible = text.replace(/\x1b\[[0-9;]*m/gu, "");
+  // Too wide for the window: drop the detail, then the bar, so the line never wraps (a wrapped live line can't be redrawn).
+  if (mode.width !== undefined && visible.length >= mode.width) {
+    const short = `${MARGIN}${paint.cyan(spin)} ${step}`;
+    return short.replace(/\x1b\[[0-9;]*m/gu, "").length < mode.width ? short : short.slice(0, mode.width - 1);
+  }
+  return text;
+}
+
+/**
+ * A line redrawn in place while `mex` waits on its own work, only in a colour terminal. The
+ * spinner turns on a timer; `update` changes the words. `stop` clears it, so the result lines
+ * that follow take its place.
+ */
+export class LiveLine {
+  private frame = 0;
+  private timer: NodeJS.Timeout | undefined;
+  private step = "";
+  private detail: string | undefined;
+  private fraction: number | undefined;
+  constructor(private readonly mode: ScreenMode, private readonly out: (text: string) => void = text => { process.stdout.write(text); }) {}
+  start(step: string): void {
+    this.step = step; this.detail = undefined; this.fraction = undefined;
+    this.draw();
+    this.timer ??= setInterval(() => { this.frame++; this.draw(); }, 90);
+  }
+  update(detail: string | undefined, fraction?: number): void { this.detail = detail; this.fraction = fraction; this.draw(); }
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    this.out("\r\x1b[2K");
+  }
+  private draw(): void { this.out(`\r\x1b[2K${progressLine(this.step, this.detail, this.fraction, this.frame, this.mode)}`); }
 }
