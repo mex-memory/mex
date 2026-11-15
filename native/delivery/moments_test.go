@@ -12,6 +12,7 @@ import (
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/record"
 )
 
 // fixture is one checkout with MEX on, its record directory and entries.
@@ -30,6 +31,19 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	f := uninitializedFixture(t)
+	db := fixtureHooksDB(t, f.dir)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// Keep cold/no-op storage assertions explicit. Behavior fixtures prepare the
+// schema outside the 250 ms hook deadline; record tests cover migrations and
+// production deadline/fail-open behavior separately.
+func uninitializedFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{t: t, root: slash(t.TempDir()), home: t.TempDir(), dir: t.TempDir(), project: "project", session: "s1", agent: "claude-code", now: time.Now(), verdicts: map[string]string{}}
 	return f
@@ -122,21 +136,26 @@ func (f *fixture) file(rel, content string) string {
 	return slash(p)
 }
 
-func (f *fixture) verdict(id, v string) {
-	f.t.Helper()
-	// Fixture preparation is outside hook deadlines. Verdict-table tests check
-	// the controller's truth table; production lock/deadline tests live in record.
-	db, err := sql.Open("sqlite", filepath.Join(f.dir, "hooks.db"))
+func fixtureHooksDB(t *testing.T, directory string) *sql.DB {
+	t.Helper()
+	// Schema preparation is outside hook deadlines. These tests assert delivery
+	// behavior; migration and production lock/deadline tests live in record.
+	db, err := sql.Open("sqlite", filepath.Join(directory, "hooks.db"))
 	if err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
-	defer db.Close()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = db.Close()
+		}
+	}()
 	if _, err = db.Exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON"); err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	var version int
 	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	for i, name := range []string{
 		"0001_init.sql", "0002_delivery.sql", "0003_followups.sql",
@@ -147,12 +166,24 @@ func (f *fixture) verdict(id, v string) {
 		}
 		schema, err := os.ReadFile(filepath.Join("..", "record", "schema", "hooks", name))
 		if err != nil {
-			f.t.Fatal(err)
+			t.Fatal(err)
 		}
 		if _, err = db.Exec("BEGIN IMMEDIATE;" + string(schema) + fmt.Sprintf("; PRAGMA user_version=%d; COMMIT;", i+1)); err != nil {
-			f.t.Fatal(err)
+			t.Fatal(err)
 		}
 	}
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != record.SchemaVersion {
+		t.Fatalf("fixture schema %d: %v", version, err)
+	}
+	ok = true
+	return db
+}
+
+func (f *fixture) verdict(id, v string) {
+	f.t.Helper()
+	db := fixtureHooksDB(f.t, f.dir)
+	defer db.Close()
+	var err error
 	if _, err = db.Exec("INSERT INTO verdicts VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,checkout,entry_id) DO UPDATE SET verdict=excluded.verdict,inputs_hash=excluded.inputs_hash,checked_at=excluded.checked_at", f.project, f.root, id, v, "x", "2026-11-14T00:00:00Z"); err != nil {
 		f.t.Fatal(err)
 	}
@@ -263,12 +294,16 @@ func TestPitfallOnFirstReadOnce(t *testing.T) {
 }
 
 func TestClaudePostToolUseIsSilentBatchDelivers(t *testing.T) {
-	f := newFixture(t)
+	f := uninitializedFixture(t)
 	f.entry(spec{id: "mx_pitfal", kind: "pitfall", scope: "src/**", oneLine: "Read the README first."})
 	p := f.file("src/a.ts", "a\n")
 	mustBeEmpty(t, f.send(f.event(contract.PostTool, read(p, "a"))))
 	if _, err := os.Stat(filepath.Join(f.dir, "hooks.db")); err == nil {
 		t.Fatal("a silent PostToolUse opened hooks.db")
+	}
+	db := fixtureHooksDB(t, f.dir)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
 	}
 	f.agent = "codex"
 	mustHave(t, f.send(f.event(contract.PostTool, read(p, "a"))), "Read the README first.")

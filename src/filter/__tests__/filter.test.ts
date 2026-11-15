@@ -303,6 +303,32 @@ describe("filter batches and provenance", () => {
     expect(queuePendingFilters(writer, enqueueJob)).toBe(0);
     mark("two"); expect(queuePendingFilters(writer, enqueueJob)).toBe(1);
   });
+  it("holds older captured input while the requesting session is paused", async () => {
+    add("source", "Tests use vitest because the project chose it.");
+    hooks.prepare("INSERT INTO sessions VALUES(?,?,?,?,?,?,0)").run("current", "codex", project, root, old, old);
+    const directory = join(writer.location.directory, "hook-paused"); mkdirSync(directory);
+    const mirror = join(directory, shortHash("codex\0current")); writeFileSync(mirror, "");
+    registerJobKind(createFilterKind(deps));
+    const id = enqueueJob(writer, { kind: "filter", projectId: project, params: { ...params(), sessionId: "current" } }).job.id;
+    expect((await run(id)).state).toBe("waiting"); expect(calls).toHaveLength(0);
+    expect(writer.setting(project, "journal.consumed")).toBeUndefined();
+    rmSync(mirror); expect(requeueReadyJobs(writer)).toBe(1);
+    await run(id); expect(calls).toHaveLength(1);
+  });
+  it("lets a fresh unpaused session replace an older session's automatic pause hold", async () => {
+    add("source", "Tests use vitest because the project chose it.");
+    const paused = join(writer.location.directory, "hook-paused"); mkdirSync(paused);
+    writeFileSync(join(paused, shortHash("codex\0old")), "");
+    registerJobKind(createFilterKind(deps));
+    const id = enqueueJob(writer, { kind: "filter", projectId: project, params: { ...params(), sessionId: "old" } }).job.id;
+    expect((await run(id)).state).toBe("waiting");
+    const dir = join(writer.location.directory, "filter-pending"); mkdirSync(dir);
+    writeFileSync(join(dir, `${shortHash(root)}.json`), JSON.stringify({ version: 1, project_id: project, checkout: root, agent: "codex", generation: "new", session_id: "fresh" }));
+    expect(queuePendingFilters(writer, enqueueJob)).toBe(1); expect(row(id).state).toBe("cancelled");
+    const next = writer.db.prepare("SELECT * FROM jobs WHERE state='queued'").get()!;
+    expect(JSON.parse(String(next.params)).sessionId).toBe("fresh");
+    await run(String(next.id)); expect(calls).toHaveLength(1);
+  });
 });
 
 it("uses assistant tails only as transient context from a contained host transcript", () => {

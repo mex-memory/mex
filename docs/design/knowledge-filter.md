@@ -28,6 +28,8 @@ Requests remain durable;
 Node acknowledges their exact generation without unlinking a concurrent Go
 replacement. A pass without eligible input finishes without a model call. A
 later session/pre-compaction request revisits deferred input.
+Requests retain their triggering session; the shared session-pause guard also
+holds learning from older sessions while that requesting session is paused.
 
 Cheap lean runs admit any eligible session; otherwise at least 20 pending typed
 messages or an oldest message of 24 hours is required. Explicit unchecked notes

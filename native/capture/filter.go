@@ -54,6 +54,7 @@ func filterMetadata(ev contract.Event, env Env) error {
 	return filterFile(env.RecordDirectory, "filter-pending", place.ShortHash(ev.Checkout), map[string]any{
 		"version": 1, "project_id": ev.ProjectID, "checkout": ev.Checkout,
 		"agent": ev.Agent, "generation": now(env).UTC().Format(time.RFC3339Nano),
+		"session_id": ev.SessionID,
 	})
 }
 

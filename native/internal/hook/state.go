@@ -18,7 +18,8 @@ import (
 // home is where the shim looks for the person's files. Tests point it at a
 // temp folder through the environment.
 type home struct {
-	deliveryError func(error) // explicit diagnostic mode only; never model context
+	afterOutput   func(func()) // receipt callbacks run only after a complete stdout write
+	deliveryError func(error)  // explicit diagnostic mode only; never model context
 	deliveryTrace func(string, time.Duration)
 	scorer        string // MEX_DELIVERY_SCORER override; no I/O
 	user          string // the person's home folder

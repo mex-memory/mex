@@ -10,10 +10,11 @@ import { repoFile } from "../knowledge/references.js";
 import { assertNoSecrets } from "../knowledge/gates.js";
 import { hash } from "../judge/evidence.js";
 import { replyContexts } from "./transcript.js";
+import { sessionWorkEnabled } from "../judge/session.js";
 
 export const FILTER_LIMITS = { rows: 4096, messages: 64, notes: 8, characters: 1200, promptBytes: 256 << 10,
   files: 16, fileBytes: 16 << 10, idleMs: 10 * 60_000, ageMs: 24 * 60 * 60_000 } as const;
-export interface FilterParams { checkout: string; agent: "claude" | "codex"; generation?: string; }
+export interface FilterParams { checkout: string; agent: "claude" | "codex"; generation?: string; sessionId?: string; }
 export interface Message { id: string; row: number; session: string; at: string; text: string; marks: string;
   previous_reply: string | null; delivered: string[]; }
 export interface NoteInput { id: string; path: string; hash: string; entry: KnowledgeEntry; }
@@ -33,7 +34,7 @@ export function filterAllowed(writer: RecordWriter, project: string, params: Fil
   return !!checkout && checkout.project_id === project && checkout.state !== "off"
     && !(checkout.state === "off until" && Date.parse(checkout.off_until ?? "") > Date.now())
     && automaticWorkEnabled(writer, project) && writer.setting("global", "capture.enabled") !== "false"
-    && writer.setting(project, "capture.enabled") !== "false";
+    && writer.setting(project, "capture.enabled") !== "false" && sessionWorkEnabled(writer, params.agent, params.sessionId);
 }
 function metadata(writer: RecordWriter, project: string, checkout: string, session: string) {
   const dir = containedDirectory(writer.location.directory, ["filter-sessions"]);

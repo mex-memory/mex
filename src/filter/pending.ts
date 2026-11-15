@@ -8,7 +8,8 @@ import { containedDirectory, readBoundedTextFile } from "../knowledge/files.js";
 import { filterAllowed, type FilterParams } from "./input.js";
 
 const Request = z.object({ version: z.literal(1), project_id: z.string().regex(/^[gf]-[a-f0-9]{24}$/u),
-  checkout: z.string().max(4096).refine(isAbsolute), agent: z.enum(["claude-code", "codex"]), generation: z.string().min(1).max(128) }).strict();
+  checkout: z.string().max(4096).refine(isAbsolute), agent: z.enum(["claude-code", "codex"]), generation: z.string().min(1).max(128),
+  session_id: z.string().min(1).max(512).optional() }).strict();
 export function filterPending(directory: string, writer?: RecordWriter): boolean {
   try {
     const s = lstatSync(join(directory, "filter-pending"));
@@ -47,7 +48,8 @@ export function queuePendingFilters(writer: RecordWriter, queue: (writer: Record
     const raw = readBoundedTextFile(join(directory, name), 16 << 10);
     const r = Request.parse(JSON.parse(raw ?? ""));
     if (writer.setting("filter", `finished.${shortHash(r.checkout)}`) === r.generation) continue;
-    const params: FilterParams = { checkout: r.checkout, agent: r.agent === "claude-code" ? "claude" : "codex", generation: r.generation };
+    const params: FilterParams = { checkout: r.checkout, agent: r.agent === "claude-code" ? "claude" : "codex", generation: r.generation,
+      ...(r.session_id ? { sessionId: r.session_id } : {}) };
     if (name !== `${shortHash(r.checkout)}.json` || !filterAllowed(writer, r.project_id, params)) continue;
     let result = queue(writer, { kind: "filter", projectId: r.project_id, params });
     // A host/account or checkout hold must not pin this repo to an older
@@ -55,7 +57,7 @@ export function queuePendingFilters(writer: RecordWriter, queue: (writer: Record
     // work; running and explicitly paused jobs retain their owner's intent.
     if (result.existing && result.job.state === "waiting") {
       const previous = JSON.parse(result.job.params) as FilterParams;
-      if (previous.checkout !== params.checkout || previous.agent !== params.agent) {
+      if (previous.checkout !== params.checkout || previous.agent !== params.agent || previous.sessionId !== params.sessionId) {
         const cancelled = requestJob(writer, result.job.id, "cancel", { state: "waiting", params: result.job.params });
         if (cancelled.state !== "cancelled") continue;
         finishRequest(writer, previous);

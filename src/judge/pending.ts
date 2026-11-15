@@ -7,6 +7,7 @@ import { readBoundedTextFile, containedDirectory } from "../knowledge/files.js";
 import type { RecordWriter } from "../record/index.js";
 import type { EnqueueOptions, EnqueueResult } from "../record/jobs.js";
 import { shortHash } from "../record/project.js";
+import { sessionWorkEnabled } from "./session.js";
 
 export const REQUEST_DIRECTORY = "judge-pending";
 export const JudgeRequestSchema = z.object({
@@ -89,7 +90,8 @@ export function queuePendingJudgements(
       const checkout = writer.db.prepare("SELECT project_id,state,off_until FROM checkouts WHERE path=?").get(request.checkout) as { project_id: string; state: string; off_until: string | null } | undefined;
       if (!checkout || checkout.project_id !== request.project_id) continue;
       if (checkout.state === "off" || (checkout.state === "off until" && Date.parse(checkout.off_until ?? "") > now)
-        || !automaticWorkEnabled(writer, request.project_id, now) || request.not_before > now) continue;
+        || !automaticWorkEnabled(writer, request.project_id, now) || request.not_before > now
+        || !sessionWorkEnabled(writer, request.agent === "claude-code" ? "claude" : "codex", request.session_id)) continue;
       const params: JudgeParams = { checkout: request.checkout, agent: request.agent === "claude-code" ? "claude" : "codex", near: request.near,
         generation: request.generation, ...(request.session_id ? { sessionId: request.session_id } : {}) };
       const result = queue(writer, { kind: "judge", projectId: request.project_id, params });
