@@ -54,6 +54,13 @@ export function setDeliveryScorer(writer: RecordWriter, value: string, directory
   setPolicy(writer, scope, "delivery.scorer", value);
   return scope;
 }
+export function setLearningSharing(writer: RecordWriter, value: string, directory: string): string {
+  if (!["automatic", "manual"].includes(value)) throw new Error("Use automatic or manual for learning.sharing.");
+  const project = writer.checkout(directory)?.project_id;
+  if (!project) throw new Error("MEX is not registered here. Run mex first.");
+  setPolicy(writer, project, "learning.sharing", value);
+  return project;
+}
 
 function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string): void {
   writer.db.exec("BEGIN IMMEDIATE");

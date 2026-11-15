@@ -12,19 +12,21 @@ import { hash, readSource, samePosition, position, type Position } from "../judg
 import { readFilterBatch, candidateSchema, sourceSchema, type FilterCandidate, type FilterDependencies } from "./job.js";
 import { filterAllowed, FILTER_LIMITS, type FilterParams } from "./input.js";
 import { privacyHolds, repoVocabulary } from "./privacy.js";
+import { backgroundEnvironment } from "./environment.js";
 
 const Group = z.object({ members: z.array(z.number().int().nonnegative()).min(1).max(128), target: z.string().max(128).nullable(), relation: z.enum(["duplicate", "correction"]), duplicates: z.array(z.string().max(128)).max(32).optional() }).strict();
 const Plan = z.object({ groups: z.array(Group).max(128) }).strict();
 type Grouping = z.infer<typeof Plan>;
 interface Inventory { id: string; text: string; at: string; kind: string; scope: string[]; }
 interface Observation { candidate: FilterCandidate; sessions: string[]; }
-interface SourceRecord { source: FilterCandidate["source"]; quote: string; label: "lasting" | "unsure"; }
+import { learningMetadata as metadata, type SourceRecord } from "./metadata.js";
+import { stagePromotion } from "./publication.js";
 const newId = () => `mx_${randomBytes(12).toString("hex")}`;
 const normalized = (text: string) => text.normalize("NFKC").trim().replace(/\s+/gu, " ");
 const terms = (text: string) => new Set(text.toLocaleLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []);
 function currentPosition(checkout: string): Position {
   const read = (args: string[]) => {
-    try { return execFileSync("git", ["--literal-pathspecs", "-C", checkout, ...args], { encoding: "utf8", timeout: 1500, maxBuffer: 4096, stdio: ["ignore", "pipe", "ignore"] }).trim() || null; }
+    try { return execFileSync("git", ["--literal-pathspecs", "-C", checkout, ...args], { encoding: "utf8", timeout: 1500, maxBuffer: 4096, stdio: ["ignore", "pipe", "ignore"], env: backgroundEnvironment() }).trim() || null; }
     catch { return null; }
   };
   return { branch: read(["symbolic-ref", "--quiet", "HEAD"]), head: read(["rev-parse", "--verify", "HEAD"]) };
@@ -56,13 +58,7 @@ function holdBatch(writer: RecordWriter, project: string, key: string, candidate
     writer.db.exec("COMMIT");
   } catch (e) { writer.db.exec("ROLLBACK"); throw e; }
 }
-function metadata(writer: RecordWriter, project: string, id: string): { at?: string; holds?: string[]; sessions?: string[]; needs_checks?: boolean; sources?: SourceRecord[] } {
-  const raw = writer.setting(project, `learning.note.${id}`);
-  if (!raw) return {};
-  try { return z.object({ at: z.string().max(64), holds: z.array(z.string().max(64)).max(16), sessions: z.array(z.string().max(512)).max(128), needs_checks: z.boolean().optional(),
-    sources: z.array(z.object({ source: sourceSchema, quote: z.string().min(1).max(8192), label: z.enum(["lasting", "unsure"]) }).strict()).max(128).optional() }).strict().parse(JSON.parse(raw)); }
-  catch { throw new KnowledgeError("INVALID_ENTRY", "Consolidation metadata is invalid; notes were kept."); }
-}
+
 function sourceRecords(previous: SourceRecord[], candidates: FilterCandidate[]): SourceRecord[] {
   const records = new Map<string, SourceRecord>();
   for (const record of [...previous, ...candidates.filter(c => c.label === "lasting" || c.label === "unsure").map(c => ({ source: c.source, quote: c.quote, label: c.label as "lasting" | "unsure" }))]) {
@@ -232,6 +228,7 @@ Input follows as JSON:\n${JSON.stringify({ candidates, notes: inventory })}`;
     files.set(id, serializeEntry(gated)); published++;
     writes.push(() => { set(writer, project, `learning.note.${id}`, { at: c.source.at, holds: [...privacy].sort(), sessions: [...sessions], sources, needs_checks: c.needs_checks });
       writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(project, `filter.note.${id}`, hash(files.get(id)!));
+      stagePromotion(writer, project, id, params.checkout, at, hash(files.get(id)!));
       if (seenId) writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project, `learning.seen.${seenId}`);
     });
     for (const duplicate of group.duplicates ?? []) {

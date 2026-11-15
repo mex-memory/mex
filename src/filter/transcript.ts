@@ -2,6 +2,24 @@ import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, realpat
 import { homedir } from "node:os";
 import { join, relative, isAbsolute, sep } from "node:path";
 import type { Message } from "./input.js";
+import { hash } from "../judge/evidence.js";
+
+/** A promotion proof comes only from a matching user message, never an assistant/tool row. */
+export function typedQuote(path: string, agent: "claude" | "codex", quote: string, messageHash: string): boolean {
+  const body = transcriptTail(path, agent);
+  if (!body || !quote) return false;
+  let matches = 0;
+  for (const line of body.split("\n")) {
+    let row; try { row = JSON.parse(line); } catch { continue; }
+    if (!row || typeof row !== "object") continue;
+    const payload = row.type === "response_item" ? row.payload : row.message;
+    const role = agent === "claude" ? row.type : payload?.role;
+    if (role !== "user") continue;
+    const content = text(payload?.content);
+    if (content && content.includes(quote) && hash(Array.from(content).slice(0, 1200).join("")) === messageHash) matches++;
+  }
+  return matches === 1;
+}
 
 const TAIL_BYTES = 1024 * 1024;
 const tail = (text: string) => Array.from(text).slice(-600).join("");

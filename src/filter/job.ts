@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { sourceSchema } from "./provenance.js";
+export { sourceSchema } from "./provenance.js";
 import { isDeepStrictEqual } from "node:util";
 import { registerJobKind, type JobKind, type JobRow } from "../record/jobs.js";
 import type { RecordWriter } from "../record/index.js";
@@ -13,6 +15,7 @@ import { filterInput, advanceConsumed, ackKey, acknowledged, filterAllowed, FILT
 import { finishRequest } from "./pending.js";
 import { consolidateNext } from "./consolidation.js";
 import { statementDate } from "../knowledge/labels.js";
+import { publishNext, publicationReady, PUBLICATION_WAIT, type PublicationDependencies } from "./publication.js";
 
 const CheckRequest = z.object({ kind: z.enum(["key", "command", "section", "source", "value", "symbol", "pattern", "relation"]),
   role: z.enum(["complete", "supporting"]), target: z.record(z.unknown()) }).strict();
@@ -24,17 +27,15 @@ const Response = z.object({ items: z.array(Item).max(128) }).strict();
 type Answer = z.infer<typeof Item>;
 export interface FilterCandidate extends Omit<Answer, "checks"> {
   checks: EntryCheck[]; needs_checks: boolean;
-  source: { session: string | null; row: number | null; at: string; marks: string; delivered: string[]; note_id?: string; note_hash?: string; private_tag?: boolean };
+  source: { session: string | null; row: number | null; at: string; marks: string; delivered: string[]; note_id?: string; note_hash?: string; private_tag?: boolean; message_hash?: string };
 }
 interface CachedBatch { version: 1; phase: "draft" | "complete"; input_hash: string; position: Position;
   answers: Answer[]; repair_attempted?: boolean; repair?: Answer[]; candidates?: FilterCandidate[]; model: string; tokens: number; }
 interface Checkpoint { position: Position; scanAfter?: number; carry?: number[]; }
-export interface FilterDependencies { model: typeof runModel; recordChecks: typeof recordChecks; clock: () => number; cheap?: boolean; }
+export interface FilterDependencies { model: typeof runModel; recordChecks: typeof recordChecks; clock: () => number; cheap?: boolean; publication?: Partial<PublicationDependencies>; }
 const dependencies: FilterDependencies = { model: runModel, recordChecks, clock: Date.now };
 const BATCH_BYTES = 512 << 10, STORE_BYTES = 8 << 20;
-export const sourceSchema = z.object({ session: z.string().max(512).nullable(), row: z.number().int().positive().safe().nullable(),
-  at: z.string().max(64), marks: z.enum(["", "pasted", "scripted", "pasted,scripted"]), delivered: z.array(z.string().max(512)).max(128),
-  note_id: z.string().regex(/^mx_[a-z0-9]{6,64}$/u).optional(), note_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(), private_tag: z.boolean().optional() }).strict();
+
 export const candidateSchema = Item.omit({ checks: true }).extend({ checks: z.array(CheckSchema).max(32), needs_checks: z.boolean(), source: sourceSchema }).strict();
 const batchSchema = z.object({ version: z.literal(1), phase: z.enum(["draft", "complete"]), input_hash: z.string().regex(/^[a-f0-9]{64}$/u),
   position: z.object({ branch: z.string().max(1024).nullable(), head: z.string().regex(/^[a-f0-9]{40,64}$/u).nullable() }).strict(),
@@ -124,6 +125,8 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
         if (!filterAllowed(writer, project, params)) return { checkpoint: state, wait: "Waiting: capture or MEX is off here" };
         if (project.startsWith("g-") && !at.head) return { checkpoint: state, wait: "Waiting: Git checkout identity is unavailable" };
         if (!samePosition(state.position, at)) { finishRequest(writer, params); return { checkpoint: state, done: true, gaps: true, summary: "Checkout changed; filter candidates remain local" }; }
+        const publication = await publishNext(writer, project, params, job, deps.publication);
+        if (publication) return { checkpoint: state, ...publication };
         const consolidated = await consolidateNext(writer, project, params, job, deps, at);
         if (consolidated) return { checkpoint: state, ...consolidated };
         const cheap = deps.cheap ?? (!!DEFAULT_MODELS[params.agent].cheap && selectModel(params.agent, { role: "cheap" }) !== selectModel(params.agent, { role: "best" }));
@@ -196,6 +199,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
           const m = input.messages.find(m => m.id === a.source_id), n = input.notes.find(n => n.id === a.source_id);
           return { ...a, checks: checks.get(a) ?? [], needs_checks: !checks.get(a), source: { session: m?.session ?? null,
             row: m?.row ?? null, at: m?.at ?? statementDate(n!.entry), marks: m?.marks ?? "", delivered: m?.delivered ?? [],
+            message_hash: hash(m?.text ?? n?.entry.mex.source.quote ?? ""),
             private_tag: /<\s*\/?\s*private\b[^>]*>/iu.test(m?.text ?? n?.entry.mex.source.quote ?? ""),
             ...(n ? { note_id: n.id, note_hash: n.hash } : {}) } };
         });
@@ -224,6 +228,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
     ready(job, writer) {
       const params = JSON.parse(job.params) as FilterParams;
       if (!filterAllowed(writer, job.project_id!, params)) return false;
+      if (job.reason === PUBLICATION_WAIT) return publicationReady(writer, job);
       if (job.reason === "Sign in to the selected agent CLI before retrying." || job.reason === "The selected agent reached its usage limit.") return false;
       if (job.reason === "Waiting: local filter candidates need consolidation") return candidateRoom(writer, job.project_id!);
       if (job.reason === "Waiting: the filter needs the installed check evaluator") return !!nativeBinary();
