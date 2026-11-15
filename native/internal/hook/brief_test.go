@@ -16,6 +16,7 @@ func TestSessionStartDeliversCheckedBriefAndResumeDoesNotResend(t *testing.T) {
 			h, env := fakeHome(t, true)
 			root := repo(t, t.TempDir())
 			register(t, h, root, projectID, "on", "")
+			prepareStore(t, h)
 			write(t, filepath.Join(root, ".mex/learned/mx_rule01.md"), "---\nmex:\n  id: mx_rule01\n  kind: rule\n  scope: ['**']\n  source: {type: docs, ref: README.md}\n  evidence: docs\n  one_line: Small commits review faster.\n  checks: []\n  status: active\n  created: 2026-11-15\n---\nSmall commits review faster.\n")
 			// Warm the store just as machine installation does.
 			hooks, err := localrecord.OpenHooks(hooksLocation(h, h.mex))

@@ -546,7 +546,7 @@ func TestSurfaceGateAndWilson(t *testing.T) {
 		{30, 12, 15, 6, 15, 6, 30, 9, "fail"}, {30, 21, 15, 12, 15, 9, 30, 0, "fail"},
 		{30, 24, 15, 12, 15, 12, 30, 3, "pass"},
 	} {
-		state, _ := GateDecision(test.n, test.yes, test.first, test.fa, test.repeat, test.ra, test.base, test.ba)
+		state, _ := GateDecision(test.n, test.yes, test.first, test.fa, test.repeat, test.ra, test.base, test.ba, false)
 		if state != test.want {
 			t.Fatal(test, state)
 		}
@@ -627,5 +627,75 @@ func TestSurfaceRollupsAndTwoFreshGateFailures(t *testing.T) {
 	notices, err := evaluateSurfaceGates(ctx, conn, req.Session.ProjectID)
 	if err != nil || len(notices) > 0 {
 		t.Fatal(notices, err)
+	}
+}
+
+func TestSurfaceTrialShadowsUntilBaseThenSplitsSessions(t *testing.T) {
+	h, err := openHooks(testLocation(t), testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if SurfaceDefault("rescue-wrong-path") != "trial" || SurfaceDefault("read-pitfall") != "on" {
+		t.Fatal("defaults")
+	}
+	fire := func(session string) string {
+		req := deliveryRequest()
+		req.Session.SessionID = session
+		req.Candidates[0].Surface = "rescue-wrong-path"
+		req.Candidates[0].Target = SurfaceTarget{Paths: []string{"src/a.go"}}
+		result, err := h.CheckAndMark(req)
+		if err != nil || len(result.Receipts) != 1 {
+			t.Fatal(result, err)
+		}
+		end := deliveryRequest()
+		end.Session.SessionID = session
+		end.Candidates = nil
+		end.EndEpoch = true
+		if _, err = h.CheckAndMark(end); err != nil {
+			t.Fatal(err)
+		}
+		return result.Receipts[0].Action
+	}
+	for i := 0; i < TrialBaseFirings; i++ {
+		if action := fire(fmt.Sprintf("base-%d", i)); action != "shadow" {
+			t.Fatalf("firing %d before the base rate is measured was %s", i, action)
+		}
+	}
+	arms := map[string]int{}
+	for i := 0; i < 40; i++ {
+		session := fmt.Sprintf("trial-%d", i)
+		want := map[string]string{"on": "given", "shadow": "shadow"}[TrialArm(session, "", "rescue-wrong-path")]
+		got := fire(session)
+		if got != want {
+			t.Fatalf("session %s: %s, want %s", session, got, want)
+		}
+		arms[got]++
+	}
+	if arms["given"] == 0 || arms["shadow"] == 0 {
+		t.Fatal("one arm is empty", arms)
+	}
+	if _, err = h.db.Exec(`UPDATE surface_gates SET state='pass' WHERE surface='rescue-wrong-path'`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 8; i++ {
+		if action := fire(fmt.Sprintf("passed-%d", i)); action != "given" {
+			t.Fatal("a passed trial surface must send", action)
+		}
+	}
+}
+
+func TestSurfaceGateOncePerSession(t *testing.T) {
+	if state, _ := GateDecision(30, 24, 30, 24, 0, 0, 30, 3, true); state != "pass" {
+		t.Fatal(state)
+	}
+	if state, _ := GateDecision(30, 24, 30, 24, 0, 0, 30, 3, false); state != "collecting" {
+		t.Fatal(state)
+	}
+	if state, _ := GateDecision(30, 6, 30, 6, 0, 0, 30, 3, true); state != "fail" {
+		t.Fatal(state)
+	}
+	if !OncePerSession("start-brief") || OncePerSession("prompt") {
+		t.Fatal("once per session")
 	}
 }

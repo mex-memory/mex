@@ -12,6 +12,7 @@ import (
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/record"
 )
 
 // fixture is one checkout with MEX on, its record directory and entries.
@@ -32,6 +33,11 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{t: t, root: slash(t.TempDir()), home: t.TempDir(), dir: t.TempDir(), project: "project", session: "s1", agent: "claude-code", now: time.Now(), verdicts: map[string]string{}}
+	// Create the store outside the hook's deadline, as an installed MEX has it.
+	// A first call that must create it races the machine's load, not the code.
+	if err := record.PrepareHooks(record.Location{Directory: f.dir, Hooks: filepath.Join(f.dir, "hooks.db")}); err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 
@@ -264,6 +270,7 @@ func TestPitfallOnFirstReadOnce(t *testing.T) {
 
 func TestClaudePostToolUseIsSilentBatchDelivers(t *testing.T) {
 	f := newFixture(t)
+	f.dir = t.TempDir() // no store yet, so opening one would show
 	f.entry(spec{id: "mx_pitfal", kind: "pitfall", scope: "src/**", oneLine: "Read the README first."})
 	p := f.file("src/a.ts", "a\n")
 	mustBeEmpty(t, f.send(f.event(contract.PostTool, read(p, "a"))))

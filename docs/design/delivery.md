@@ -6,10 +6,20 @@
 read-risk rules, edits (including rejected alternatives and file creation),
 command recipes, failure fixes, prompts, start briefs and recovery keep their
 existing `on` default. Recovery includes subagent briefs and corrections.
-New rescue, history, previous-selection and future card surfaces default to
-`shadow`. Unknown historical moments migrate to `unknown`.
+New rescue, history and future card surfaces default to `trial`; the
+previous start-brief selection is a comparison that stays `shadow`. Unknown
+historical moments migrate to `unknown`.
 
-`mex config set delivery.surface.<surface> on|shadow|off [--project]` uses
+A `trial` surface is shadow until 30 of its shadow firings have settled, so its
+base rate is measured before anything is sent. From then on each session is
+assigned to the sending arm or the shadow arm by a stable hash of session,
+agent and surface: one session never mixes arms, and the shadow arm keeps
+measuring the base rate alongside the sending one. That makes the comparison
+a randomized one rather than a coincidence rate. A passed gate turns the
+surface on for every session; two failed batches turn it off. `shadow` never
+sends; `on` always sends while its gate allows.
+
+`mex config set delivery.surface.<surface> on|shadow|trial|off [--project]` uses
 the same global/project settings and mirrors as the scorer. Mirrors carry a
 `surfaces` object. `MEX_DELIVERY_SURFACES` accepts a whole-surface override or
 a JSON object for deterministic tests. Policy files are read only after an
@@ -55,7 +65,8 @@ The stored gate is fixed before admission: at least 30 settled live firings,
 acted at least 30%, a Wilson 95% lower bound strictly above the control rate,
 and repeats no worse than first firings. Missing controls/repeats keep
 collecting after the primary efficacy checks. An ineffective first-only
-surface can still fail. Evaluations use rollup deltas of at least 30 new settled
+surface can still fail. Surfaces that fire once per session by construction
+(the start brief) have no repeats, so the repeat rule doesn't apply to them. Evaluations use rollup deltas of at least 30 new settled
 live firings, with cumulative first/repeat populations; revisiting old evidence
 cannot count as another failure. Two
 consecutive failed batches turn the surface off and claim one person-facing

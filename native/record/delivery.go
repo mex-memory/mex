@@ -415,6 +415,11 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		if c.Mode == "off" || gateState == "off" {
 			continue
 		}
+		if c.Mode == "trial" {
+			if c.Mode, err = trialMode(ctx, conn, req, c.Surface, gateState); err != nil {
+				return result, err
+			}
+		}
 		if c.Mode != "on" && c.Mode != "shadow" {
 			return result, errors.New("invalid surface mode")
 		}

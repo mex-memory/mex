@@ -238,6 +238,21 @@ func OpenHooks(location Location) (*Hooks, error) {
 	return openHooks(location, hookBudget)
 }
 
+// prepareBudget is for creating or migrating the store outside a hook call,
+// where nothing waits on the answer.
+var prepareBudget = budget{5 * time.Second, 10 * time.Second, 10 * time.Second}
+
+// PrepareHooks creates or migrates hooks.db with a generous budget and closes
+// it. A hook call that finds the store ready only opens it; one that has to
+// create it pays the schema inside its own deadline and may fail open.
+func PrepareHooks(location Location) error {
+	h, err := openHooks(location, prepareBudget)
+	if err != nil {
+		return err
+	}
+	return h.Close()
+}
+
 func openHooks(location Location, limits budget) (*Hooks, error) {
 	return openHookDatabase(location, limits, false)
 }

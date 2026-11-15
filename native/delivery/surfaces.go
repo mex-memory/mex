@@ -57,12 +57,12 @@ func surfaceSetting(env Environment, project, surface string) (value string) {
 		return "off"
 	}
 	if env.Surfaces != "" {
-		if env.Surfaces == "on" || env.Surfaces == "shadow" || env.Surfaces == "off" {
+		if record.ValidSurfaceMode(env.Surfaces) {
 			return env.Surfaces
 		}
 		var overrides map[string]string
 		if json.Unmarshal([]byte(env.Surfaces), &overrides) == nil {
-			if v := overrides[surface]; v == "on" || v == "shadow" || v == "off" {
+			if v := overrides[surface]; record.ValidSurfaceMode(v) {
 				return v
 			}
 		}
@@ -76,7 +76,7 @@ func surfaceSetting(env Environment, project, surface string) (value string) {
 		m := readPolicy(env, p)
 		if m.Version == 1 {
 			v := m.Surfaces[surface]
-			if v == "on" || v == "shadow" || v == "off" {
+			if record.ValidSurfaceMode(v) {
 				return v
 			}
 		}

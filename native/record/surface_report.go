@@ -235,7 +235,7 @@ func evaluateSurfaceGates(ctx context.Context, c *sql.Conn, project string) ([]s
 		// First firings may all precede this batch in one long session. Compare
 		// cumulative first/repeat populations, while the efficacy interval uses
 		// only fresh firings so an old failure cannot be counted twice.
-		state, reason := GateDecision(total-g.evaluated, acted-g.acted, first, fa, repeats, ra, base.Settled, base.Acted)
+		state, reason := GateDecision(total-g.evaluated, acted-g.acted, first, fa, repeats, ra, base.Settled, base.Acted, OncePerSession(g.id))
 		if state == "collecting" {
 			continue
 		}

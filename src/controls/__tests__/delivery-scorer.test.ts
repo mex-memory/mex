@@ -17,7 +17,7 @@ describe("delivery scorer settings", () => {
    expect(JSON.parse(readFileSync(join(home,"hook-delivery",id+".json"),"utf8"))).toEqual({version:1,scorer:"risk",surfaces:{"read-pitfall":"shadow",prompt:"off"}});
    expect(JSON.parse(readFileSync(join(home,"controls.json"),"utf8")).surfaces).toEqual({"rescue-search":"off"});
    expect(()=>setDeliverySurface(writer,"invented","on")).toThrow("Unknown");
-   expect(()=>setDeliverySurface(writer,"prompt","invalid")).toThrow("on, shadow or off");
+   expect(()=>setDeliverySurface(writer,"prompt","invalid")).toThrow("on, shadow, trial or off");
    expect(()=>setDeliverySurface(writer,"prompt","on",home)).toThrow("not registered");
    writer.close();writeFileSync(join(home,"hook-delivery",id+".json"),"{}");writer=openRecord({home,isNetwork:()=>false});
    expect(JSON.parse(readFileSync(join(home,"hook-delivery",id+".json"),"utf8")).surfaces).toEqual({"read-pitfall":"shadow",prompt:"off"});

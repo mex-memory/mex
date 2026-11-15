@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -28,9 +29,54 @@ func ValidSurface(s string) bool {
 	}
 	return false
 }
+
+// SurfaceDefault: surfaces that sent before the ledger existed stay on. New ones
+// start in trial: shadow until the base rate is measured, then a randomized
+// share of sessions, until the gate turns them on or off.
 func SurfaceDefault(s string) string {
 	switch s {
 	case "read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery":
+		return "on"
+	case "unknown", "start-brief-previous":
+		return "shadow"
+	}
+	return "trial"
+}
+
+// ValidSurfaceMode lists the per-project states a setting may name.
+func ValidSurfaceMode(m string) bool { return m == "on" || m == "shadow" || m == "trial" || m == "off" }
+
+// OncePerSession surfaces fire at most once per session by construction, so
+// the gate's repeat comparison can never collect evidence for them.
+func OncePerSession(s string) bool { return s == "start-brief" || s == "start-brief-previous" }
+
+// Trial needs this many settled shadow firings before any session sends, so
+// the arm that sends is always compared with a measured base rate.
+const TrialBaseFirings = 30
+
+// trialMode resolves a trial surface for one session. Before the base rate is
+// measured every firing is shadow. Afterwards each session is assigned to the
+// sending or the shadow arm by a stable hash of session and surface, so one
+// session never mixes arms and the shadow arm keeps measuring the base rate.
+// A passed gate turns the surface on.
+func trialMode(ctx context.Context, c *sql.Conn, req DeliveryRequest, surface, gate string) (string, error) {
+	if gate == "pass" {
+		return "on", nil
+	}
+	var base int
+	if err := c.QueryRowContext(ctx, `SELECT coalesce(sum(settled),0) FROM surface_stats WHERE project_id=? AND surface=? AND action='shadow'`, req.Session.ProjectID, surface).Scan(&base); err != nil {
+		return "", err
+	}
+	if base < TrialBaseFirings {
+		return "shadow", nil
+	}
+	return TrialArm(req.Session.SessionID, req.AgentID, surface), nil
+}
+
+// TrialArm is the session's arm: half the sessions send, half stay shadow.
+func TrialArm(session, agent, surface string) string {
+	sum := sha256.Sum256([]byte("mex-trial\x00" + session + "\x00" + agent + "\x00" + surface))
+	if sum[0]&1 == 0 {
 		return "on"
 	}
 	return "shadow"
@@ -499,7 +545,10 @@ func WilsonLower(acted, total int, z float64) float64 {
 
 // GateDecision uses only settled live evidence. Missing controls cannot pass
 // or fail. Missing repeats cannot pass; primary efficacy checks can still fail.
-func GateDecision(total, acted, first, firstActed, repeats, repeatActed, baseTotal, baseActed int) (string, string) {
+//
+// A surface that fires once per session by construction has no repeats to
+// compare, so for it the repeat rule is not applicable rather than pending.
+func GateDecision(total, acted, first, firstActed, repeats, repeatActed, baseTotal, baseActed int, oncePerSession bool) (string, string) {
 	if total < 30 || baseTotal == 0 {
 		return "collecting", "insufficient settled live firings, repeats or controls"
 	}
@@ -509,6 +558,9 @@ func GateDecision(total, acted, first, firstActed, repeats, repeatActed, baseTot
 	}
 	if rate <= base || WilsonLower(acted, total, 1.959963984540054) <= base {
 		return "fail", "Wilson lower bound does not exceed control rate"
+	}
+	if oncePerSession {
+		return "pass", "acted gate passed; repeats not applicable"
 	}
 	if first == 0 || repeats == 0 {
 		return "collecting", "insufficient first or repeat evidence"
