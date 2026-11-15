@@ -330,3 +330,67 @@ func TestParseINI(t *testing.T) {
 		t.Fatalf("parsed %#v", doc)
 	}
 }
+
+// A check recorded in a checkout with LF line endings holds in one with CRLF (Git's
+// autocrlf on Windows), and the other way round: line endings aren't a change.
+func TestLineEndingsDontChangeChecks(t *testing.T) {
+	files := map[string]string{
+		"package.json":             "{\n  \"scripts\": {\n    \"test\": \"vitest\"\n  }\n}\n",
+		"Makefile":                 ".PHONY: test\ntest: deps\n\tgo test ./...\n\tgo vet ./...\n",
+		"tox.ini":                  "[testenv]\ncommands =\n    pytest {posargs}\n    coverage report\n",
+		"pyproject.toml":           "[tool.pytest.ini_options]\naddopts = \"\"\"\n-q\n--strict-markers\"\"\"\n[project]\nname = \"demo\"\n",
+		".github/workflows/ci.yml": "jobs:\n  test:\n    steps:\n      - run: |\n          npm ci\n          npm test\n",
+		"setup.cfg":                "[tool:pytest]\ntestpaths =\n    tests\n",
+	}
+	checks := []struct {
+		kind, role string
+		target     map[string]any
+	}{
+		{"command", Complete, map[string]any{"run": "npm test", "file": "package.json", "pointer": "/scripts/test"}},
+		{"command", Complete, map[string]any{"run": "make test", "file": "Makefile", "pointer": "/test"}},
+		{"key", Complete, map[string]any{"file": "tox.ini", "pointer": "/testenv/commands"}},
+		{"key", Complete, map[string]any{"file": "pyproject.toml", "pointer": "/tool/pytest/ini_options/addopts"}},
+		{"key", Complete, map[string]any{"file": "pyproject.toml", "pointer": "/project/name"}},
+		{"key", Complete, map[string]any{"file": ".github/workflows/ci.yml", "pointer": "/jobs/test/steps/0/run"}},
+		{"key", Complete, map[string]any{"file": "setup.cfg", "pointer": "/tool:pytest/testpaths"}},
+	}
+	for _, from := range []string{"\n", "\r\n"} {
+		to := map[string]string{"\n": "\r\n", "\r\n": "\n"}[from]
+		root := t.TempDir()
+		for name, content := range files {
+			write(t, root, name, strings.ReplaceAll(content, "\n", from))
+		}
+		recorded := make([]Check, len(checks))
+		for i, c := range checks {
+			recorded[i] = record(t, root, c.kind, c.role, c.target)
+		}
+		for name, content := range files {
+			write(t, root, name, strings.ReplaceAll(content, "\n", to))
+		}
+		ev := evaluator(t, root)
+		for _, c := range recorded {
+			if got := ev.run(c); got.Status != Pass {
+				t.Errorf("recorded with %q, read with %q: %s %v saw %q: %s %s", from, to, c.Kind, c.Target, c.Saw["value"], got.Status, got.Reason)
+			}
+		}
+	}
+}
+
+// TOML dates and times without an offset keep their text, so a check doesn't
+// depend on the time zone of the machine that recorded or reads it.
+func TestTOMLLocalDatesKeepTheirText(t *testing.T) {
+	v, err := parseConfig("x.toml", []byte("d = 2026-11-14\ndt = 2026-11-14T08:30:00\nt = 08:30:00\no = 2026-11-14T08:30:00Z\nn = 3\n[[a]]\nb = [1, 2]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := v.(map[string]any)
+	want := map[string]any{"d": "2026-11-14", "dt": "2026-11-14T08:30:00", "t": "08:30:00", "o": "2026-11-14T08:30:00Z", "n": float64(3)}
+	for key, value := range want {
+		if doc[key] != value {
+			t.Errorf("%s = %#v, want %#v", key, doc[key], value)
+		}
+	}
+	if b := doc["a"].([]any)[0].(map[string]any)["b"].([]any); len(b) != 2 || b[1] != float64(2) {
+		t.Errorf("array of tables: %#v", doc["a"])
+	}
+}

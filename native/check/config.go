@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
+	// Not BurntSushi/toml: it reads the local time zone at package init, which every
+	// hook start would pay for (most on Windows, where the zone comes from the registry).
+	"github.com/pelletier/go-toml/v2"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -38,7 +40,9 @@ func parseConfig(name string, data []byte) (any, error) {
 		return normalize(v)
 	case ".toml":
 		var v map[string]any
-		if err := toml.Unmarshal(data, &v); err != nil {
+		// Multi-line strings keep the file's line endings; a Windows checkout (autocrlf)
+		// must read the same values as any other. TOML strings can't hold a raw CR otherwise.
+		if err := toml.Unmarshal(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")), &v); err != nil {
 			return nil, err
 		}
 		return normalize(v)
@@ -155,6 +159,13 @@ func normalize(v any) (any, error) {
 		return float64(t), nil
 	case float32:
 		return float64(t), nil
+	case toml.LocalDate:
+		// TOML dates and times without an offset keep their text, never this machine's zone.
+		return t.String(), nil
+	case toml.LocalDateTime:
+		return t.String(), nil
+	case toml.LocalTime:
+		return t.String(), nil
 	case time.Time:
 		// YAML reads an unquoted date as a time; the Node codec keeps the text.
 		if t.Equal(t.Truncate(24*time.Hour)) && t.Location() == time.UTC {
