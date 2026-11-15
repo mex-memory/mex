@@ -32,6 +32,9 @@ directory identities. A final verification rejects modifications, replacements,
 directory additions and newly appearing optional inputs during the observation.
 Directory contents are re-enumerated and compared under a separate bounded
 verification budget because Windows can defer directory timestamp changes.
+File reads also compare a second descriptor pass against the captured bytes,
+and final verification rechecks source hashes under its own corpus bound. This
+detects same-size edits when Windows defers file timestamps until handle close.
 Consumers must still revalidate source hashes before applying a later preview;
 this observation is not a durable lock on the user's files.
 

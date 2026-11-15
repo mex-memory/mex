@@ -1,20 +1,29 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync, type Stats, type BigIntStats } from "node:fs";
+import { fstatSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync, type Stats, type BigIntStats } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LegacyFiles } from "../legacy-files.js";
 import { readLegacyScaffold } from "../legacy-reader.js";
 
 const state = vi.hoisted(() => ({
-  afterRead: undefined as (() => void) | undefined,
+  afterRead: undefined as ((fd: number) => void) | undefined,
   replacedParent: "",
   freezeDirectories: false,
   directories: new Map<string, unknown>(),
+  freezeFiles: false,
+  files: new Map<string, unknown>(),
 }));
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
+  const stableFile = (stat: Stats | BigIntStats) => {
+    if (!state.freezeFiles || !stat.isFile()) return stat;
+    const key = `${stat.dev}:${stat.ino}`;
+    if (!state.files.has(key)) state.files.set(key, stat);
+    return state.files.get(key);
+  };
   return {
     ...fs,
+    fstatSync: ((...args: unknown[]) => stableFile(Reflect.apply(fs.fstatSync, fs, args))) as typeof fs.fstatSync,
     lstatSync: ((...args: unknown[]) => {
       const stat = Reflect.apply(fs.lstatSync, fs, args) as Stats | BigIntStats | undefined;
       if (stat === undefined) return stat;
@@ -27,13 +36,13 @@ vi.mock("node:fs", async original => {
         if (key === "ino") return typeof target.ino === "bigint" ? target.ino + 1n : target.ino + 1;
         return Reflect.get(target, key);
       } });
-      return stat;
+      return stableFile(stat);
     }) as typeof fs.lstatSync,
     readSync: (...args: Parameters<typeof fs.readSync>) => {
       const size = (fs.readSync as (...args: Parameters<typeof fs.readSync>) => number)(...args);
       const action = state.afterRead;
       state.afterRead = undefined;
-      action?.();
+      action?.(args[0]);
       return size;
     },
   };
@@ -52,11 +61,14 @@ afterEach(() => {
   state.replacedParent = "";
   state.freezeDirectories = false;
   state.directories.clear();
+  state.freezeFiles = false;
+  state.files.clear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 it("refuses a same-inode edit while the descriptor is being consumed", () => {
   const root = fixture();
+  state.freezeFiles = true;
   const files = new LegacyFiles(root);
   state.afterRead = () => writeFileSync(join(root, ".mex/context/a.md"), "# Rule\nModified!\n");
   expect(() => files.read(".mex/context/a.md")).toThrow("LEGACY_CHANGED");
@@ -95,13 +107,15 @@ it("detects an actual parent replacement after its child descriptor closes", () 
 
 it("makes the whole snapshot incomplete if an earlier document changes during a later read", () => {
   const root = fixture();
+  state.freezeFiles = true;
   writeFileSync(join(root, "AGENTS.md"), "Human instructions.\n");
-  // Re-arm only after the first file is fully read (its second EOF read).
-  state.afterRead = () => {
-    state.afterRead = () => {
-      state.afterRead = () => writeFileSync(join(root, ".mex/context/a.md"), "# Rule\nChanged after parse.\n");
-    };
+  const later = lstatSync(join(root, "AGENTS.md"), { bigint: true });
+  const changeEarlier = (fd: number): void => {
+    if (fstatSync(fd, { bigint: true }).ino === later.ino) {
+      writeFileSync(join(root, ".mex/context/a.md"), "# Rule\nModified!\n");
+    } else state.afterRead = changeEarlier;
   };
+  state.afterRead = changeEarlier;
   const result = readLegacyScaffold(root);
   expect(result.complete).toBe(false);
   expect(result.diagnostics.some(item => item.code === "LEGACY_CHANGED")).toBe(true);

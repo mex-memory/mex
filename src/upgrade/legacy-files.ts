@@ -50,9 +50,9 @@ export class LegacyFiles {
   private readonly observed = new Map<string, BigIntStats>();
   private readonly absent = new Set<string>();
   private readonly listed = new Map<string, string>();
+  private readonly sourceHashes = new Map<string, string>();
   private entries = 0;
-  private files = 0;
-  private bytes = 0;
+  private readonly readBudget = { files: 0, bytes: 0 };
 
   constructor(root: string) {
     this.root = realpathSync(resolve(root));
@@ -128,14 +128,24 @@ export class LegacyFiles {
   }
 
   read(path: string): LegacySource | undefined {
+    const source = this.readSource(path, this.readBudget);
+    if (source) {
+      const previous = this.sourceHashes.get(path);
+      if (previous !== undefined && previous !== source.hash) throw new LegacyReadError("LEGACY_CHANGED", path);
+      this.sourceHashes.set(path, source.hash);
+    }
+    return source;
+  }
+
+  private readSource(path: string, budget: { files: number; bytes: number }): LegacySource | undefined {
     this.target(path);
     const parent = path.split("/").slice(0, -1).join("/");
     if (!this.directory(parent)) return undefined;
     const expected = this.observe(path);
     if (!expected) return undefined;
     if (!expected.isFile()) throw new LegacyReadError("LEGACY_UNSAFE_PATH", path);
-    if (++this.files > LEGACY_LIMITS.files || expected.size > BigInt(LEGACY_LIMITS.fileBytes)
-      || BigInt(this.bytes) + expected.size > BigInt(LEGACY_LIMITS.corpusBytes)) throw new LegacyReadError("LEGACY_LIMIT", path);
+    if (++budget.files > LEGACY_LIMITS.files || expected.size > BigInt(LEGACY_LIMITS.fileBytes)
+      || BigInt(budget.bytes) + expected.size > BigInt(LEGACY_LIMITS.corpusBytes)) throw new LegacyReadError("LEGACY_LIMIT", path);
     let fd: number | undefined;
     try {
       fd = openSync(this.target(path), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
@@ -149,10 +159,20 @@ export class LegacyFiles {
         length += n;
       }
       if (BigInt(length) !== expected.size || !same(expected, fstatSync(fd, { bigint: true }))) throw new LegacyReadError("LEGACY_CHANGED", path);
+      // Windows can defer file timestamp updates while this descriptor stays
+      // open. Compare a second bounded pass against the bytes already read.
+      const proof = Buffer.alloc(Math.min(buffer.length, 64 * 1024));
+      let checked = 0;
+      while (checked < buffer.length) {
+        const n = readSync(fd, proof, 0, Math.min(proof.length, buffer.length - checked), checked);
+        if (!n) break;
+        if (checked + n > length || !buffer.subarray(checked, checked + n).equals(proof.subarray(0, n))) throw new LegacyReadError("LEGACY_CHANGED", path);
+        checked += n;
+      }
+      if (checked !== length || !same(expected, fstatSync(fd, { bigint: true }))) throw new LegacyReadError("LEGACY_CHANGED", path);
       this.directory(parent);
       this.observe(path);
-      this.bytes += length;
-      if (this.bytes > LEGACY_LIMITS.corpusBytes) throw new LegacyReadError("LEGACY_LIMIT", path);
+      budget.bytes += length;
       const bytes = buffer.subarray(0, length);
       const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
       return { path, text, bytes: length, hash: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
@@ -168,6 +188,10 @@ export class LegacyFiles {
     const budget = { entries: 0 };
     for (const [path, expected] of this.listed) {
       if (listingHash(this.scan(path, budget)) !== expected) throw new LegacyReadError("LEGACY_CHANGED", path);
+    }
+    const sourceBudget = { files: 0, bytes: 0 };
+    for (const [path, expected] of this.sourceHashes) {
+      if (this.readSource(path, sourceBudget)?.hash !== expected) throw new LegacyReadError("LEGACY_CHANGED", path);
     }
     for (const [path, stat] of this.observed) {
       const current = lstatSync(this.target(path), { bigint: true });
