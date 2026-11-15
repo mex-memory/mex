@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { absolutePath } from "../record/project.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { KnowledgeError } from "./contract.js";
 import { serializeEntry } from "./entry.js";
@@ -218,7 +219,9 @@ function validateWorktree(dir: string, root: string, state: ShareState): void {
   }
   const link = firstLink(state.worktree);
   if (link) throw new KnowledgeError("SHARE_LINK", `The share's worktree holds a link (${link}); check it yourself before continuing.`);
-  const common = (cwd: string) => resolve(cwd, git(cwd, "rev-parse", "--git-common-dir"));
+  // Git prints the main checkout's common dir relative (".git") and a linked worktree's as its own
+  // absolute spelling; compare both in MEX's form, where Windows paths are lowercased.
+  const common = (cwd: string) => absolutePath(resolve(cwd, git(cwd, "rev-parse", "--git-common-dir")));
   if (common(state.worktree) !== common(root) || git(state.worktree, "symbolic-ref", "--quiet", "HEAD") !== `refs/heads/${state.branch}`)
     throw new KnowledgeError("SHARE_CHANGED", "The share's worktree identity changed.");
 }
