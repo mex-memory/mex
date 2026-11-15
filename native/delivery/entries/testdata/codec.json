@@ -391,5 +391,70 @@
     "name": "JSON HTML bytes",
     "accept": true,
     "content": "---\nmex:\n  id: mx_abcdef\n  kind: rule\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks:\n    - kind: key\n      role: complete\n      target:\n        file: package.json\n        pointer: /value\n      saw:\n        value: <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n      files: {}\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "legacy grounding: original baseline",
+    "accept": true,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: missing optional values",
+    "accept": true,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\"}\n      saw: {fingerprint: \"mh2:64:Original_CASE\"}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: old hex encoding",
+    "accept": true,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh:2:0123456789abcdef\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: complete role",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: complete\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: invented file hash",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {src/api.ts: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: bad node",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"api\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: bad fingerprint",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"today\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: unsafe file",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: ../api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: unknown observation",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: old-body, renewed: true, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: unbounded evidence",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: Unicode node kind",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"Kind:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: Unicode fingerprint payload",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:K\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "legacy grounding: invalid compact prefix",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"MH2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
   }
 ]

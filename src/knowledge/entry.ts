@@ -46,6 +46,12 @@ export const CheckSchema = z.discriminatedUnion("kind", [
   ]), saw: z.object({ hash }).strict() }).strict(),
   z.object({ ...checkBase, kind: z.literal("value"), target: z.object({ file, symbol: line }).strict(), saw: z.object({ value }).strict() }).strict(),
   z.object({ ...checkBase, kind: z.literal("symbol"), target: z.object({ file, symbol: line }).strict(), saw: z.object({ fingerprint: line }).strict() }).strict(),
+  // Imported 0.8 evidence only: a new evaluator cannot renew this baseline.
+  z.object({ kind: z.literal("legacy-grounding"), role: z.literal("supporting"),
+    target: z.object({ node: line.refine(s => /^[A-Za-z_]+:[0-9a-fA-F]{8,}$/u.test(s)), file: file.optional() }).strict(),
+    saw: z.object({ fingerprint: line.refine(s => /^(?:[mM][hH]:\d+:(?:[0-9a-fA-F]{2})+|mh2:\d+:[A-Za-z0-9_-]+)$/u.test(s)), bodyHash: line.optional(), codeHash: line.optional() }).strict(),
+    files: z.object({}).strict(),
+  }).strict(),
   z.object({ ...checkBase, kind: z.literal("pattern"), target: z.object({ scope, pattern: line, match: match.optional() }).strict(), saw: count }).strict(),
   z.object({ ...checkBase, kind: z.literal("relation"), target: z.object({ query: line, from: scope, to: scope }).strict(), saw: count }).strict(),
 ]);

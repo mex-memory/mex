@@ -841,6 +841,8 @@ describe("no unscoped scaffold writes", () => {
       "src/team/local-state/receipt-signer.ts": "atomically provisions the bounded local-only C preview signing credential",
       "src/team/relay/cli/local-preview.ts": "removes only the exact contained checkout-local Relay receipt after successful apply",
       "src/telemetry/store.ts": "writes only the empty jobs-pending marker in the machine record home; never a project file",
+      "src/upgrade/run.ts": "writes its exact approved upgrade journal/receipt and personal imports in machine state; unlinks only previewed disposable Wiki caches after hash checks; tracked publication stays in its owned temporary worktree",
+      "src/upgrade/safe-files.ts": "applies only byte-rechecked preview outputs through contained atomic publication; deletes only exact approved obsolete files, with no recursive removal",
     };
 
     const outside = FILES.filter((path) => !path.startsWith("src/wiki/"));

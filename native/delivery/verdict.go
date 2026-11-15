@@ -69,7 +69,18 @@ func shape(c candidate, verdict string, env *shapeEnv) shaped {
 	s := shaped{candidate: c, verdict: verdict, action: "given", full: it.Full, oneLine: it.OneLine, fullTok: it.FullTokens, lineTok: it.OneLineTokens}
 	withhold := func() shaped { s.action, s.full, s.oneLine, s.fullTok, s.lineTok = "withheld", "", "", 0, 0; return s }
 	kind := it.Entry.Kind
-	if it.Level == "personal" {
+	legacyFact := false
+	if kind == "fact" {
+		for _, c := range it.Entry.Checks {
+			if c.Kind == "legacy-grounding" {
+				legacyFact = true
+				break
+			}
+		}
+	}
+	// Imported documentation is not the user's own typed assertion. Its old
+	// code baseline remains unresolved at either storage level.
+	if it.Level == "personal" && !legacyFact {
 		if verdict == broken {
 			return withhold()
 		}

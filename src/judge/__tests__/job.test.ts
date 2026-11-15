@@ -96,6 +96,21 @@ describe("judge job and queue", () => {
       expect((await finish(id)).state).toBe("done"); expect(deps.model).toHaveBeenCalledTimes(1);
     } finally { hooks.close(); }
   });
+  it("keeps legacy evidence without a file out of the changed source's file baselines", async () => {
+    const file = add("mx_legacy01"), value = parseEntry(readFileSync(file, "utf8"));
+    value.mex.checks.push({ kind: "legacy-grounding", role: "supporting", target: { node: "function:deadbeef" },
+      saw: { fingerprint: "mh:1:abcd" }, files: {} });
+    writeFileSync(file, serializeEntry(value));
+    report.results![0]!.checks.push({ index: 1, kind: "legacy-grounding", role: "supporting", status: "floor" });
+    const before = readFileSync(file, "utf8"), id = queue();
+    expect((await finish(id)).state).toBe("done");
+    expect(calls).toHaveLength(1);
+    const snapshot = JSON.parse(calls[0]!.prompt.split("Evidence follows as JSON:\n")[1]!);
+    expect(snapshot.files).toEqual([expect.objectContaining({ path: "src/api.ts",
+      baselines: [expect.objectContaining({ hash: hash("old\n") })] })]);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
   it("keeps the original branch binding when the first model batch waits above the cap", async () => {
     add("mx_first00"); deps.model = vi.fn(async () => { throw new ModelWaitError("cap"); });
     const id = queue(); await run(id); expect(row(id).state).toBe("waiting");
