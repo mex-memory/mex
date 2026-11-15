@@ -262,6 +262,16 @@ func targetFiles(c Check) []string {
 	if f := str(c.Target, "file"); f != "" {
 		files = append(files, f)
 	}
+	if c.Kind == "pattern" {
+		if file := exactPatternFile(c.Target); file != "" {
+			for _, known := range files {
+				if known == file {
+					return files
+				}
+			}
+			files = append(files, file)
+		}
+	}
 	return files
 }
 

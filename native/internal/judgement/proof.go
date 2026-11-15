@@ -47,6 +47,9 @@ type Reader struct {
 	bytes             int
 }
 
+// MaxEvidenceFileBytes matches the queued judge's per-source evidence bound.
+const MaxEvidenceFileBytes = 64 << 10
+
 func Open(directory, project, checkout string) *Reader {
 	if directory == "" || project == "" || !safefile.Regular(filepath.Join(directory, "record.db")) {
 		return nil
@@ -133,12 +136,12 @@ func (r *Reader) fileHash(path string) string {
 	}
 	defer f.Close()
 	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() || st.Size() > 64<<10 {
+	if err != nil || !st.Mode().IsRegular() || st.Size() > MaxEvidenceFileBytes {
 		return ""
 	}
-	data, err := io.ReadAll(io.LimitReader(f, 64<<10+1))
+	data, err := io.ReadAll(io.LimitReader(f, MaxEvidenceFileBytes+1))
 	r.bytes += len(data)
-	if err != nil || len(data) > 64<<10 || r.bytes > 8<<20 {
+	if err != nil || len(data) > MaxEvidenceFileBytes || r.bytes > 8<<20 {
 		return ""
 	}
 	r.files[path] = digest(data)
@@ -197,8 +200,12 @@ func (r *Reader) CacheKey(id, entryHash, evaluationHash string) (string, bool) {
 	return cacheHash(evaluationHash, raw), true
 }
 
-// Label describes a held verdict only when this precise attestation produced it.
-func (r *Reader) Label(id, entryHash, cachedHash string) bool {
+// HeldInputs returns the native identity behind this precise, still-readable
+// attestation. Delivery must also match it to today's evaluator inputs.
+func (r *Reader) HeldInputs(id, entryHash, cachedHash string) (string, bool) {
 	p, raw, ok := r.read(id, entryHash)
-	return ok && cacheHash(p.EvaluationHash, raw) == cachedHash
+	if !ok || cacheHash(p.EvaluationHash, raw) != cachedHash {
+		return "", false
+	}
+	return p.EvaluationHash, true
 }

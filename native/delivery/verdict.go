@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mex-memory/mex/native/check"
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/judgement"
@@ -77,18 +78,31 @@ func shape(c candidate, verdict string, env *shapeEnv) shaped {
 	it := c.item
 	s := shaped{candidate: c, verdict: verdict, action: "given", full: it.Full, oneLine: it.OneLine, fullTok: it.FullTokens, lineTok: it.OneLineTokens}
 	if verdict == held && it.Entry.Kind == "fact" && env != nil && env.hooks != nil {
-		if v, ok, err := env.hooks.VerdictOf(env.project, env.checkout, it.Entry.ID); err == nil && ok && judgement.ModelKey(v.InputsHash) {
+		v, ok, err := env.hooks.VerdictOf(env.project, env.checkout, it.Entry.ID)
+		if err != nil || !ok {
+			verdict = unknown
+		} else if v.Verdict != held {
+			verdict = v.Verdict
+		} else if judgement.ModelKey(v.InputsHash) {
 			if !env.judgedTried {
 				env.judgedTried = true
 				env.judged = judgement.Open(env.recordDirectory, env.project, env.checkout)
 			}
-			if env.judged.Label(it.Entry.ID, it.Hash, v.InputsHash) {
+			want, valid := env.judged.HeldInputs(it.Entry.ID, it.Hash, v.InputsHash)
+			current, fresh := "", false
+			if valid {
+				current, fresh = check.CurrentInputsHash(env.checkout, env.recordDirectory, env.project, it)
+			}
+			if valid && fresh && current == want {
 				s.full += "\n(checked by model)"
 				s.oneLine += " (checked by model)"
 				s.fullTok = entries.EstimateTokens(s.full)
 				s.lineTok = entries.EstimateTokens(s.oneLine)
+			} else {
+				verdict = changed
 			}
 		}
+		s.verdict = verdict
 	}
 	withhold := func() shaped { s.action, s.full, s.oneLine, s.fullTok, s.lineTok = "withheld", "", "", 0, 0; return s }
 	kind := it.Entry.Kind

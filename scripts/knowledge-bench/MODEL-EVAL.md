@@ -109,6 +109,9 @@ every source file before caching that result, and delivery labels it
 “checked by model.” A changed input, withdrawn result, partial scan or
 expired deadline cannot preserve an unverified model hold. Complete broken
 checks, unreadable evidence and CI team-only evaluation cannot be promoted.
+Delivery also revalidates the proof and today's native input identity before
+using a cached model hold, even without an intervening scan. Exact-scope
+pattern cache identities include source for older empty-floor checks too.
 An accepted fresh model hold is excluded from spare checks, preventing a
 second paid confirmation. Altered attestations are not treated as completed
 work when the queue resumes.

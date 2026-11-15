@@ -41,11 +41,15 @@ it("restores full labelled delivery for a fresh still-true judgment and expires 
   try {
     const projectId=writer.checkout(root)!.project_id,id="mx_stilltrue0";
     const request={checkout:root,project_id:projectId,mex_home:home,record_directory:writer.location.directory};
+    const refreshIndex=()=>buildIndex({root,projectId,recordDirectory:writer.location.directory,workers:0});
+    await refreshIndex();
     const checks=await recordChecks(request,[{kind:"source",role:"supporting",target:{file:"settings.ts"}},
-      {kind:"value",role:"complete",target:{file:"settings.ts",symbol:"timeout"}}]);
+      {kind:"value",role:"complete",target:{file:"settings.ts",symbol:"timeout"}},
+      {kind:"symbol",role:"supporting",target:{file:"settings.ts",symbol:"timeout"}}]);
     const path=join(root,".mex/learned",`${id}.md`);mkdirSync(join(root,".mex/learned"),{recursive:true});
     const original=serializeEntry(entry(id,{kind:"fact",checks:checks!},"The timeout is 30 seconds."));writeFileSync(path,original);
     const judgedCode="export const timeout = 30; // comment changed\n";writeFileSync(source,judgedCode);
+    await refreshIndex();
     expect((await evaluate(request)).items![0]!.verdict).toBe("changed");
     const model=vi.fn(async()=>({selectedModel:"fixture",usage:{input:100,cache_write:0,cache_read:0,output:20,model:"fixture",estimated:false},text:JSON.stringify({results:[{id,result:"still-true"}]})}));
     registerJobKind(createJudgeKind({evaluate,recordChecks,model}));
@@ -61,6 +65,10 @@ it("restores full labelled delivery for a fresh still-true judgment and expires 
     const probe=spawnSync(binary,["--delivery-probe"],{encoding:"utf8",input:JSON.stringify({...request,entries:[id]})});
     expect(probe.status).toBe(0);expect(JSON.parse(probe.stdout).results[0]).toMatchObject({form:"full",verdict:"held"});
     expect(JSON.parse(probe.stdout).results[0].text).toContain("checked by model");
+    const directProbe=()=>{
+      const out=spawnSync(binary,["--delivery-probe"],{encoding:"utf8",input:JSON.stringify({...request,entries:[id]})});
+      expect(out.status).toBe(0);return JSON.parse(out.stdout).results[0];
+    };
     expect(readFileSync(path,"utf8")).toBe(original);
     const set=(value:string)=>writer.db.prepare("UPDATE settings SET value=? WHERE scope=? AND key=?").run(value,projectId,key);
     for(const change of [
@@ -75,17 +83,26 @@ it("restores full labelled delivery for a fresh still-true judgment and expires 
       (p:any)=>p.files[0].path="../settings.ts",
     ]) {
       const p=JSON.parse(raw);change(p);set(JSON.stringify(p));
+      expect(directProbe().form).toBe("pointer");
       expect((await verdict()).verdict).toBe("changed");set(raw);
       expect((await verdict()).verdict).toBe("held");
     }
     set("x".repeat(129<<10));expect((await verdict()).verdict).toBe("changed");set(raw);
-    writeFileSync(source,"export const timeout = 60;\n");expect((await verdict()).verdict).toBe("broken");
+    writeFileSync(source,"export const timeout = 60;\n");expect(directProbe().form).toBe("pointer");expect((await verdict()).verdict).toBe("broken");
     writeFileSync(source,judgedCode);expect((await verdict()).verdict).toBe("held");
-    writeFileSync(path,original.replace("30 seconds","60 seconds"));expect((await verdict()).verdict).toBe("changed");
+    writeFileSync(path,original.replace("30 seconds","60 seconds"));expect(directProbe().form).toBe("pointer");expect((await verdict()).verdict).toBe("changed");
     writeFileSync(path,original);expect((await verdict()).verdict).toBe("held");
-    git("checkout","-b","other");expect((await verdict()).verdict).toBe("changed");
+    git("checkout","-b","other");expect(directProbe().form).toBe("pointer");expect((await verdict()).verdict).toBe("changed");
     git("checkout","main");expect((await verdict()).verdict).toBe("held");
     writer.db.prepare("DELETE FROM judgements WHERE project_id=? AND entry_id=?").run(projectId,id);
+    expect(directProbe().form).toBe("pointer");
+    expect((await verdict()).verdict).toBe("changed");
+    const saved=JSON.parse(raw);
+    writer.db.prepare("INSERT INTO judgements(project_id,entry_id,inputs_hash,result,at) VALUES(?,?,?,?,?)")
+      .run(projectId,id,saved.inputs_hash,saved.result,saved.at);
+    expect((await verdict()).verdict).toBe("held");
+    writeFileSync(join(root,"unrelated.ts"),"export const other = 1;\n");await refreshIndex();
+    expect(directProbe()).toMatchObject({form:"pointer",verdict:"changed"});
     expect((await verdict()).verdict).toBe("changed");
   } finally { writer.close(); }
 });
