@@ -33,12 +33,11 @@ func lazy(expr string) func() *regexp.Regexp {
 	return sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(expr) })
 }
 
-// errorLine: a line that reports an error, warning, failure or assertion.
-// Matching is on substrings (TypeError, assertEquals, ERR!), so it keeps more
-// than it must rather than less.
-var errorLine = lazy(`(?i)(error|warn|fail|assert|panic|exception|traceback|fatal|denied|unhandled|[✗✘×✖]|^\s*●\s)`)
+// Error lines are matched on lowercase substrings (errorWords below:
+// TypeError, assertEquals, ERR!), so they keep more than they must rather
+// than less.
 
-// hardError: the subset that starts the first error block (not warnings).
+// hardError: the error lines that start the first error block (not warnings).
 var hardError = lazy(`(?i)(error|\bfail(ed|ure|ing)?\b|assert|panic|exception|traceback|fatal|[✗✘×✖]|^\s*●\s)`)
 
 // locationLine: path:line, path(line,col) as some compilers print it,
@@ -86,16 +85,44 @@ func classify(line string) Kind {
 	if strings.TrimSpace(line) == "" {
 		return keptNo
 	}
-	if errorLine().MatchString(line) {
+	// Cheap checks first: most lines of a long output match nothing, and a
+	// regular expression per line is what the hook would pay for.
+	lower := strings.ToLower(line)
+	if containsAny(lower, errorWords) || strings.HasPrefix(strings.TrimSpace(line), "●") {
 		return KeptError
 	}
-	if locationLine().MatchString(line) {
+	if mayLocate(line) && locationLine().MatchString(line) {
 		return KeptLocation
 	}
-	if summaryLine().MatchString(line) {
+	if containsAny(lower, summaryWords) && summaryLine().MatchString(line) {
 		return KeptSummary
 	}
 	return keptNo
+}
+
+// errorWords is errorLine as substrings (lowercase).
+var errorWords = []string{"error", "warn", "fail", "assert", "panic", "exception", "traceback", "fatal", "denied", "unhandled", "✗", "✘", "×", "✖"}
+
+// summaryWords: a line can only be a summary if it holds one of these.
+var summaryWords = []string{"test", "suite", "snapshot", "time", "duration", "start at", "ran ", "pass", "fail", "ok", "skip", "pending", "todo", "error", "warning", "result", "==", "build", "compiled", "finished", "done in", "added", "up to date", "audited", "vulnerab"}
+
+func containsAny(s string, words []string) bool {
+	for _, w := range words {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// mayLocate: a location needs ":<digit>", "(<digit>" or `", line `.
+func mayLocate(line string) bool {
+	for i := 0; i+1 < len(line); i++ {
+		if (line[i] == ':' || line[i] == '(') && line[i+1] >= '0' && line[i+1] <= '9' {
+			return true
+		}
+	}
+	return strings.Contains(line, `", line `)
 }
 
 // Header is what the model sees first when output is trimmed. ref names the
@@ -221,4 +248,22 @@ func group(n int) string {
 		s = s[:i] + "," + s[i:]
 	}
 	return s
+}
+
+// refPlaceholder stands in for the saved output's name until it is saved.
+const refPlaceholder = "\x00mex-out-ref\x00"
+
+// TrimAndSave trims text once and, only when that cuts something, saves the
+// full text with save and names it in the header. When nothing is cut or the
+// save fails, it returns text whole and false.
+func TrimAndSave(text string, exitCode int, save func() (int, error)) (string, bool) {
+	res := Trim(text, Header{ExitCode: exitCode, Ref: refPlaceholder})
+	if !res.Trimmed {
+		return text, false
+	}
+	n, err := save()
+	if err != nil {
+		return text, false
+	}
+	return strings.Replace(res.Text, refPlaceholder, Ref(n), 1), true
 }

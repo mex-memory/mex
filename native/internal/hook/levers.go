@@ -197,16 +197,13 @@ func trimShell(ev contract.Event, h home, recordDirectory string, state *leverSt
 	if len(text) <= output.MinChars || state.Failed[commandKey(command)] || !output.Noisy(command) {
 		return contract.Reply{}
 	}
-	// A dry run first: saving costs a write, so only save what will be cut.
-	if !output.Trim(text, output.Header{}).Trimmed {
+	trimmed, ok := output.TrimAndSave(text, 0, func() (int, error) {
+		return output.Save(recordDirectory, ev.ProjectID, text, output.SavedMeta{Command: command, Agent: ev.Agent, SessionID: ev.SessionID}, now)
+	})
+	if !ok {
 		return contract.Reply{}
 	}
-	n, err := output.Save(recordDirectory, ev.ProjectID, text, output.SavedMeta{Command: command, Agent: ev.Agent, SessionID: ev.SessionID}, now)
-	if err != nil {
-		return contract.Reply{}
-	}
-	res := output.Trim(text, output.Header{ExitCode: 0, Ref: output.Ref(n)})
-	return contract.Reply{ReplaceOutput: &contract.ToolOutput{Text: res.Text, OK: true}}
+	return contract.Reply{ReplaceOutput: &contract.ToolOutput{Text: trimmed, OK: true}}
 }
 
 // editedPaths lists files a successful tool call changed.

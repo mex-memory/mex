@@ -52,11 +52,8 @@ func Run(o RunOptions) int {
 		return code
 	}
 	text := capture.buf.String()
-	if code == 0 && !o.Raw && o.Save != nil && len(text) > MinChars && Noisy(o.Command) && Trim(text, Header{}).Trimmed {
-		if n, err := o.Save(text, code); err == nil {
-			_, _ = io.WriteString(o.Stdout, Trim(text, Header{ExitCode: code, Ref: Ref(n)}).Text)
-			return code
-		}
+	if code == 0 && !o.Raw && o.Save != nil && len(text) > MinChars && Noisy(o.Command) {
+		text, _ = TrimAndSave(text, code, func() (int, error) { return o.Save(text, code) })
 	}
 	_, _ = io.WriteString(o.Stdout, text)
 	return code
