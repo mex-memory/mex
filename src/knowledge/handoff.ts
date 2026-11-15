@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { KnowledgeError } from "./contract.js";
 import { hasSecret, stripHidden } from "./gates.js";
+import { openRecordReadOnly } from "../record/index.js";
+import { readContinuityItems, CONTINUITY_TTL } from "../filter/continuity.js";
 
 export const HANDOFF_DIR = ".mex/handoffs";
 const MAX_LINE = 280;
@@ -135,7 +137,14 @@ export function draftHandoff(input: HandoffInput, options: KnowledgeOptions): Ha
   if (snapshot?.last_ask) add(`- Last ask: "${flat(snapshot.last_ask, 160)}"`);
   if (snapshot?.last_failure) add(`- Last failing command: \`${flat(snapshot.last_failure.command, 120)}\` (exit ${snapshot.last_failure.exit})`);
   if (files.length) add(`- Uncommitted when handed off: ${files.slice(0, 5).join(", ")}${files.length > 5 ? ` and ${files.length - 5} more` : ""}`);
-  for (const item of (snapshot?.next_session ?? []).slice(0, 3)) add(`- Next session: ${flat(item, 160)}`);
+  const next = [...snapshot?.next_session ?? []], reader = openRecordReadOnly(options);
+  try {
+    const fullHead = tryGit(root, "rev-parse", "HEAD")?.trim(), now = (input.now ?? new Date()).getTime();
+    if (reader) for (const item of readContinuityItems(reader, project.projectId, root, branch)?.items ?? []) {
+      if (Date.parse(item.at) <= now && now - Date.parse(item.at) < CONTINUITY_TTL && (files.length || item.head === fullHead)) next.push(item.text);
+    }
+  } finally { reader?.close(); }
+  for (const item of [...new Set(next)].slice(0, 3)) add(`- Next session: ${flat(item, 160)}`);
   if (line) lines.push(`- From ${from}: ${line}`);
   const created = (input.now ?? new Date()).toISOString().slice(0, 10);
   const front = ["---", "mex: handoff", "version: 1", `branch: ${JSON.stringify(branch)}`, `from: ${JSON.stringify(from)}`, ...(to ? [`to: ${JSON.stringify(to)}`] : []), `created: ${created}`, "---"];
