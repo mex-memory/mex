@@ -31,6 +31,14 @@ export interface LegacySource {
   bytes: number;
 }
 
+interface DirectoryEntry { path: string; directory: boolean; unsafe: boolean; }
+
+function listingHash(entries: readonly DirectoryEntry[]): string {
+  const hash = createHash("sha256");
+  for (const entry of entries) hash.update(JSON.stringify([entry.path, entry.directory, entry.unsafe]) + "\n");
+  return hash.digest("hex");
+}
+
 function same(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino && a.mode === b.mode
     && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
@@ -41,6 +49,7 @@ export class LegacyFiles {
   readonly root: string;
   private readonly observed = new Map<string, BigIntStats>();
   private readonly absent = new Set<string>();
+  private readonly listed = new Map<string, string>();
   private entries = 0;
   private files = 0;
   private bytes = 0;
@@ -89,21 +98,33 @@ export class LegacyFiles {
     return true;
   }
 
-  list(path: string): Array<{ path: string; directory: boolean; unsafe: boolean }> {
+  private scan(path: string, budget: { entries: number }): DirectoryEntry[] {
     if (!this.directory(path)) return [];
-    const result: Array<{ path: string; directory: boolean; unsafe: boolean }> = [];
+    const result: DirectoryEntry[] = [];
     const handle = opendirSync(this.target(path));
     try {
       for (;;) {
         const entry = handle.readSync();
         if (!entry) break;
-        if (++this.entries > LEGACY_LIMITS.directoryEntries) throw new LegacyReadError("LEGACY_LIMIT", path);
+        if (++budget.entries > LEGACY_LIMITS.directoryEntries) throw new LegacyReadError("LEGACY_LIMIT", path);
         const child = path ? `${path}/${entry.name}` : entry.name;
         // Never follow links, even links whose destination is inside the repo.
         result.push({ path: child, directory: entry.isDirectory(), unsafe: entry.isSymbolicLink() || (!entry.isFile() && !entry.isDirectory()) });
       }
     } finally { handle.closeSync(); }
     return result.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  }
+
+  list(path: string): DirectoryEntry[] {
+    const budget = { entries: this.entries };
+    try {
+      const entries = this.scan(path, budget);
+      const hash = listingHash(entries);
+      const previous = this.listed.get(path);
+      if (previous !== undefined && previous !== hash) throw new LegacyReadError("LEGACY_CHANGED", path);
+      this.listed.set(path, hash);
+      return entries;
+    } finally { this.entries = budget.entries; }
   }
 
   read(path: string): LegacySource | undefined {
@@ -142,6 +163,12 @@ export class LegacyFiles {
   }
 
   verify(): void {
+    // NTFS can defer directory timestamp changes. Re-enumerate the exact
+    // directory sets, with a separate bounded verification-pass budget.
+    const budget = { entries: 0 };
+    for (const [path, expected] of this.listed) {
+      if (listingHash(this.scan(path, budget)) !== expected) throw new LegacyReadError("LEGACY_CHANGED", path);
+    }
     for (const [path, stat] of this.observed) {
       const current = lstatSync(this.target(path), { bigint: true });
       if (!same(stat, current) || current.isSymbolicLink()) throw new LegacyReadError("LEGACY_CHANGED", path);

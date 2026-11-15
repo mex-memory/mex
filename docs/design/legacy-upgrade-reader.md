@@ -30,6 +30,8 @@ Every read uses a regular-file descriptor, rejects links/junctions and parent
 redirects, bounds allocation and total retained bytes, and rechecks file and
 directory identities. A final verification rejects modifications, replacements,
 directory additions and newly appearing optional inputs during the observation.
+Directory contents are re-enumerated and compared under a separate bounded
+verification budget because Windows can defer directory timestamp changes.
 Consumers must still revalidate source hashes before applying a later preview;
 this observation is not a durable lock on the user's files.
 
