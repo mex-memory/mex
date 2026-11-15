@@ -316,6 +316,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		reply.Context += line
 	}
 	noticeID := ""
+	var adviceNoticeIDs []string
 	if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.PersonLine && !failed {
 		if id, text := judgeNotice(ev, h, recordDirectory); id != "" {
 			noticeID = id
@@ -325,18 +326,31 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			reply.PersonLine += text
 		}
 	}
+	if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.PersonLine && !failed {
+		if ids, text := adviceNotice(ev, h, recordDirectory); len(ids) > 0 {
+			adviceNoticeIDs = ids
+			if reply.PersonLine != "" {
+				reply.PersonLine += "\n"
+			}
+			reply.PersonLine += text
+		}
+	}
 	out, dropped := profile.Render(ev, reply)
-	if noticeID != "" {
+	if noticeID != "" || len(adviceNoticeIDs) > 0 {
 		for _, part := range dropped {
 			if part == "person_line" {
 				noticeID = ""
+				adviceNoticeIDs = nil
 			}
 		}
 	}
-	if noticeID != "" && h.afterOutput != nil {
+	if (noticeID != "" || len(adviceNoticeIDs) > 0) && h.afterOutput != nil {
 		h.afterOutput(func() {
-			if markJudgeNotice(ev, h, recordDirectory, noticeID, now) {
+			if noticeID != "" && markJudgeNotice(ev, h, recordDirectory, noticeID, now) {
 				startBackground(h, recordDirectory)
+			}
+			for _, id := range adviceNoticeIDs {
+				markJudgeNotice(ev, h, recordDirectory, id, now)
 			}
 		})
 	}

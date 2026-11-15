@@ -114,7 +114,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "spec"
     || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
     || commandName === "edit" || commandName === "wrong" || commandName === "forget"
-    || commandName === "what"
+    || commandName === "what" || commandName === "report"
     || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief" || commandName === "upgrade"
     || commandName === "skills" || commandName === "install" || commandName === "uninstall"
     || commandName === "off" || commandName === "on" || commandName === "capture" || commandName === "handoff";
@@ -190,6 +190,14 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
       restartIfPending();
     }
   } catch { /* never affects the command */ }
+  if (process.stderr.isTTY && Number(process.exitCode ?? 0) === 0 && !actionCommand.optsWithGlobals().json
+    && !["review", "completion", "__background", "__hook-note"].includes(family.name()) && !process.argv.includes("--json")) {
+    try {
+      const { dailyReviewLine } = await import("./review/daily.js");
+      const line = dailyReviewLine({ projectPath: process.cwd() });
+      if (line) console.error(line);
+    } catch { /* a reminder never affects the command */ }
+  }
 });
 
 async function runRepoStartCommand(options: { folder?: boolean; wait?: boolean } = {}): Promise<void> {
@@ -1507,7 +1515,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget",
+    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget", "report",
     "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief", "upgrade", "handoff",
     "telemetry", "config", "feedback", "hub",
   ];

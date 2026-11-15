@@ -16,6 +16,7 @@ import (
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/delivery/rank"
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/internal/gitstate"
 	"github.com/mex-memory/mex/native/internal/safefile"
 	"github.com/mex-memory/mex/native/record"
 )
@@ -92,21 +93,26 @@ type group struct {
 	text              string     // bounded prompt text
 	views             []toolView // references only; scoring text is assembled after hard gates
 	edits             []string   // files edited in this call that some entry covers
+	reservedUsed      int        // correction tokens already sent in this moment
 }
 
 // Handle must be called after checkout, consent and pause resolution. Events
-// with no moment or lifecycle work return before any file read or SQLite open; events whose
-// moments find no candidate return before SQLite.
+// with no moment, lifecycle or correction work return before SQLite. A bounded
+// advisory hint and an existing ledger allow follow-ups without a new candidate.
 func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	reason, signal, isLifecycle := lifecycle(ev)
 	isMoment := momentKind(ev)
 	isEnd := ev.Kind == contract.SessionEnd
+	var adviceIDs []string
+	if isMoment || ev.Kind == contract.SessionStart || ev.Kind == contract.SubagentStart || (ev.Kind == contract.Stop && ev.Agent == "claude-code") {
+		adviceIDs = record.AdviceIDs(env.RecordDirectory, ev.Checkout)
+	}
 	if isEnd {
 		if _, err := os.Stat(filepath.Join(env.RecordDirectory, "hooks.db")); err != nil {
 			return contract.Reply{}, nil
 		}
 	}
-	if !isLifecycle && !isMoment && !isEnd {
+	if !isLifecycle && !isMoment && !isEnd && len(adviceIDs) == 0 {
 		return contract.Reply{}, nil
 	}
 	if ev.SessionID == "" || env.RecordDirectory == "" {
@@ -122,7 +128,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	if isMoment {
 		groups = collect(ev, env)
 	}
-	if !isLifecycle && !isEnd && len(groups) == 0 {
+	if !isLifecycle && !isEnd && len(groups) == 0 && len(adviceIDs) == 0 {
 		return contract.Reply{}, nil
 	}
 
@@ -169,6 +175,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		}
 	}
 
+	adviceHandled := false
 	for _, g := range groups {
 		finish := phase(env.Trace, "record-observations")
 		obs, err := holdbackObservations(h, ev, g)
@@ -203,6 +210,17 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			return contract.Reply{}, fmt.Errorf("record-holdbacks: %w", err)
 		}
 		finish()
+		if len(adviceIDs) > 0 && !adviceHandled && g.checkout == ev.Checkout {
+			adviceHandled = true
+			block, err := adviceBlock(h, ev, env, adviceIDs)
+			if err != nil {
+				return contract.Reply{}, err
+			}
+			g.reservedUsed = block.tokens
+			if block.text != "" {
+				blocks = append(blocks, block.text)
+			}
+		}
 		if len(g.cands) == 0 {
 			continue
 		}
@@ -214,13 +232,24 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			blocks = append(blocks, text)
 		}
 	}
+	if len(adviceIDs) > 0 && !adviceHandled {
+		block, err := adviceBlock(h, ev, env, adviceIDs)
+		if err != nil {
+			return contract.Reply{}, err
+		}
+		if block.text != "" {
+			blocks = append(blocks, block.text)
+		}
+	}
 	return contract.Reply{Context: strings.Join(blocks, "\n\n")}, nil
 }
 
 func baseRequest(ev contract.Event, env Environment, project, checkout string) record.DeliveryRequest {
+	at, _ := gitstate.Read(checkout)
 	return record.DeliveryRequest{
-		Session:     record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: project, Checkout: checkout},
-		AgentID:     ev.AgentID,
+		Session: record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: project, Checkout: checkout},
+		AgentID: ev.AgentID,
+		Branch:  at.Branch, Head: at.Head,
 		Now:         env.Now,
 		KeepSession: env.KeepSession,
 	}
@@ -310,8 +339,9 @@ func collect(ev contract.Event, env Environment) []*group {
 		}
 	}
 	var out []*group
+	_, ledgerErr := os.Stat(filepath.Join(env.RecordDirectory, "hooks.db"))
 	for _, g := range order {
-		if len(g.cands) > 0 || len(g.edits) > 0 {
+		if len(g.cands) > 0 || len(g.edits) > 0 || (ledgerErr == nil && g.snap != nil && len(g.views) > 0 && hasAdviceEffects(g.views)) {
 			out = append(out, g)
 		}
 	}
@@ -355,6 +385,19 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	present, err := h.Presence(ev.SessionID, ev.AgentID, g.project, g.checkout)
 	if err != nil {
 		return "", fmt.Errorf("record-presence: %w", err)
+	}
+	corrected := map[string]bool{}
+	if len(present) > 0 {
+		epoch, found, err := h.CurrentEpoch(ev.SessionID, ev.AgentID)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			corrected, err = h.CorrectedAdvice(ev.SessionID, ev.AgentID, g.project, g.checkout, epoch.Number)
+			if err != nil {
+				return "", err
+			}
+		}
 	}
 	fresh := g.cands[:0:0]
 	var onBranch blockState
@@ -496,6 +539,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	}
 	var items []shaped
 	var corrections []planned
+	correctionTokens := 0
 	for _, id := range ids {
 		s := shape(best[id], verdictOf(id), senv)
 		if s.action == "given" && s.item.Entry.Kind == "rule" && intent == "investigating" {
@@ -513,10 +557,18 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 			}
 		}
 		items = append(items, s)
-		if s.action == "withheld" && s.verdict == broken {
+		if s.action == "withheld" && s.verdict == broken && len(present[id]) > 0 && !corrected[id] {
 			// Sent only if this entry was given earlier in the epoch; the
 			// ledger decides under its lock.
-			corrections = append(corrections, planned{shaped: s, form: "one-line", tokens: 20, correction: true})
+			text, err := currentCorrection(h, ev, g, id)
+			if err != nil {
+				return "", err
+			}
+			cost := entries.EstimateTokens(text) + 8
+			if correctionTokens+cost <= reservedLane-g.reservedUsed {
+				corrections = append(corrections, planned{shaped: s, text: text, form: "one-line", tokens: cost, correction: true})
+				correctionTokens += cost
+			}
 		}
 	}
 	byID := map[string]*entries.Item{}
@@ -617,7 +669,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 			items[i].exempt = false
 		}
 	}
-	plan := append(corrections, pack(items, companion, scorer)...)
+	plan := append(corrections, packReserved(items, companion, reservedLane-g.reservedUsed-correctionTokens, scorer)...)
 	req := baseRequest(ev, env, g.project, g.checkout)
 	req.Candidates = requestCandidates(plan)
 	req.Conflicts = conflicts

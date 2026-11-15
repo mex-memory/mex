@@ -15,7 +15,8 @@ import { publishNext, stagePromotion, publicationReady, PUBLICATION_WAIT, type P
 import { typedQuote } from "../transcript.js";
 import { setLearningSharing } from "../../controls/index.js";
 import "../job.js";
-import { saveTombstone } from "../../knowledge/state.js";
+import { claimHash, saveTombstone } from "../../knowledge/state.js";
+import { stageReview, learningReviewId } from "../../review/state.js";
 let suite: string, binary: string, base: string, root: string, home: string, project: string, writer: RecordWriter, hooks: DatabaseSync, job: JobRow;
 let entry: KnowledgeEntry, path: string, transcript: string, deps: Partial<PublicationDependencies>;
 const typed = "Tests use vitest because this project chose it.", at = "2026-11-15T10:00:00.000Z";
@@ -71,6 +72,16 @@ it("shows the exact diff before adding a checked entry, with no staging or commi
 it.each(["public", "unknown"] as const)("keeps %s session rules for Review", async visibility => {
   deps.repository = async () => ({ visibility, authorized: true }); expect((await run())?.summary).toContain("public-session");
   expect(saved().state).toBe("review"); expect(existsSync(teamPath())).toBe(false);
+});
+it("does not automatically publish a claim kept for its person", async () => {
+  writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, `review.keep.${claimHash(entry.text).slice(7)}`, '{"version":1}');
+  expect((await run())?.summary).toContain("kept-for-me"); expect(existsSync(teamPath())).toBe(false);
+});
+it("does not automatically publish an unanswered expired Review claim", async () => {
+  const key = learningReviewId(project, entry);
+  writeFileSync(join(root, "README.md"), typed); git("add", "README.md");
+  stageReview(writer, project, key, entry, { producer: "learning", key: `learning.offer.${entry.mex.id}`, checkout: root, level: "personal", path, original_hash: hash(serializeEntry(entry)) }, "checks", true, Date.now() - 31 * 86400000);
+  expect((await run())?.summary).toContain("review-expired"); expect(existsSync(teamPath())).toBe(false);
 });
 it.each(["privacy", "permission", "checks", "manual", "not-shared", "repo-opt-out", "transcript", "assistant", "pasted", "echo", "missing-digest"])("holds %s without writing a team file", async change => {
   if (change === "privacy") saveMeta({ ...meta(), holds: ["model-private"] });
