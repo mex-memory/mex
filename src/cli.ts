@@ -1008,6 +1008,16 @@ program
     }
   });
 
+program
+  .command("run")
+  .description("Run a command the way the Codex wrapper does: print it, run it, keep its exit code, shorten long successful output")
+  .requiredOption("--shell <shell>", "bash, zsh, sh, powershell or pwsh")
+  .argument("<command>", "The exact command, as one argument after --")
+  .action(async (command: string, options: { shell: string }) => {
+    const { runWrapped } = await import("./output/run.js");
+    process.exitCode = runWrapped(options.shell, command);
+  });
+
 // ── Background jobs ──
 const jobsCommand = program
   .command("jobs")

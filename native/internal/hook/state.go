@@ -40,7 +40,7 @@ func homeFrom(getenv Env) home {
 		}
 	}
 	h := home{user: user, scorer: getenv("MEX_DELIVERY_SCORER")}
-	h.levers = leverOptions{raw: getenv("MEX_RAW") == "1", noOutline: getenv("MEX_OUTLINE") == "0"}
+	h.levers = leverOptions{raw: getenv("MEX_RAW") == "1", noOutline: getenv("MEX_OUTLINE") == "0", shell: getenv("SHELL")}
 	h.claude = strings.TrimSpace(getenv("CLAUDE_CONFIG_DIR"))
 	if h.claude == "" && user != "" {
 		h.claude = filepath.Join(user, ".claude")

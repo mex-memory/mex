@@ -81,6 +81,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return explicitProbe(stdin, stdout, getenv)
 		case "--recall":
 			return recallRank(stdin, stdout)
+		case "run":
+			// The Codex wrapper: the command always runs, whatever MEX's state.
+			return runWrapped(args, stdin, stdout, stderr, getenv)
 		}
 	}
 
