@@ -242,6 +242,9 @@ jobs:
           src/team/activity/__tests__/repository.test.ts
           test/knowledge-cli.test.ts
           src/knowledge/__tests__/team.test.ts
+          src/judge/__tests__/routing.test.ts
+          src/judge/__tests__/publication.test.ts
+          src/judge/__tests__/pending.test.ts
           test/telemetry-delivery.test.ts
       - name: Run focused storage, byte-identity, and containment tests
         if: matrix.part == 'storage-package'

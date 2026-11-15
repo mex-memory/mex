@@ -84,7 +84,7 @@ export interface JobKind<P = unknown, C = unknown> {
   sideEffects: "none" | "idempotent";
   runBatch(context: BatchContext<P, C>): Promise<BatchResult<C>> | BatchResult<C>;
   /** For a waiting job: true when it can continue. Default: continue on the next pass. */
-  ready?(job: JobRow): boolean;
+  ready?(job: JobRow, writer: RecordWriter): boolean;
 }
 
 const kinds = new Map<string, JobKind<any, any>>();
@@ -142,11 +142,12 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
   });
 }
 
-/** Pause, cancel or resume. A running job is asked, and stops after its current batch. */
-export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume"): JobRow {
+/** Pause, cancel or resume. Automatic replacements can require an unchanged snapshot. */
+export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: Pick<JobRow, "state" | "params">): JobRow {
   return inTransaction(writer.db, () => {
     const job = getJob(writer.db, id);
     if (!job) throw new Error("That job no longer exists.");
+    if (expected && (job.state !== expected.state || job.params !== expected.params)) return job;
     if (action === "resume") {
       if (job.state === "paused" || job.state === "waiting" || job.state === "failed") {
         // Resuming a failed job starts its failure count again; learned results and position stay.
@@ -205,7 +206,7 @@ export function requeueReadyJobs(writer: RecordWriter): number {
   for (const job of waiting) {
     const kind = kinds.get(job.kind);
     let ready = false;
-    try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job) : true) : false; } catch { ready = false; }
+    try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job, writer) : true) : false; } catch { ready = false; }
     if (!ready) continue;
     inTransaction(writer.db, () => {
       const current = getJob(writer.db, job.id);

@@ -18,7 +18,8 @@ import (
 // home is where the shim looks for the person's files. Tests point it at a
 // temp folder through the environment.
 type home struct {
-	deliveryError func(error) // explicit diagnostic mode only; never model context
+	afterOutput   func(func()) // receipt callbacks run only after a complete stdout write
+	deliveryError func(error)  // explicit diagnostic mode only; never model context
 	deliveryTrace func(string, time.Duration)
 	scorer        string // MEX_DELIVERY_SCORER override; no I/O
 	aids          string // MEX_DELIVERY_ALIASES override; no I/O
@@ -30,6 +31,8 @@ type home struct {
 	// checkout lookup and counters share the validated location.
 	usageLocation func() (place.Location, bool)
 	capture       func(contract.Event, string, controls)
+	// getenv is the hook's environment, for marks such as a scripted prompt.
+	getenv Env
 }
 
 func homeFrom(getenv Env) home {
@@ -39,7 +42,7 @@ func homeFrom(getenv Env) home {
 			user = p
 		}
 	}
-	h := home{user: user, scorer: getenv("MEX_DELIVERY_SCORER"), aids: getenv("MEX_DELIVERY_ALIASES")}
+	h := home{user: user, getenv: getenv, scorer: getenv("MEX_DELIVERY_SCORER"), aids: getenv("MEX_DELIVERY_ALIASES")}
 	h.claude = strings.TrimSpace(getenv("CLAUDE_CONFIG_DIR"))
 	if h.claude == "" && user != "" {
 		h.claude = filepath.Join(user, ".claude")

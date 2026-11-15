@@ -809,8 +809,11 @@ describe("no unscoped scaffold writes", () => {
       "src/knowledge/rule-cache.ts": "writes only the derived rule-file scan (rule-files.json) under the MEX project-data home; never a repository file",
       "src/knowledge/enrich.ts": "writes and removes only its own enrich-preview.json under the MEX project-data home; entry changes go through files.ts and the team write path",
       "src/knowledge/decisions.ts": "writes only the decisions-in-force.json mirror under the MEX home and the decision-commits note under the record directory, atomically; never an entry or repository file",
+      "src/knowledge/handoff.ts": "writes or deletes only .mex/handoffs/<branch>.md in the working tree, after a shown preview (mex handoff) or an explicit mex handoff done; refuses redirected folders and files, stages through an exclusive temporary file, and never commits or pushes",
       "src/knowledge/hints.ts": "removes only disposable hint copies under the MEX project-data home after durable retirement or personal confirmation; refuses overlap with host memory and never writes host or repository files",
       "src/file-index/pending.ts": "removes and restores only the index-pending marker in the machine record directory; never a repo file",
+      "src/judge/pending.ts": "consumes and restores bounded judge requests inside a checked machine-record directory after verifying checkout ownership; never an entry or repo file",
+      "src/judge/notices.ts": "atomically publishes only bounded notice-ID hints inside the contained machine-record judge-notices directory; never entry text or a repository file",
       "src/file-index/shifts.ts": "writes and removes only line-shift files under the machine record's project index folder; never a repo file",
       "src/file-index/store.ts": "writes only immutable index snapshots, their pointers, patterns.json and checkout locators under the machine record directory, and removes snapshots nothing points at; never a repo file",
       "src/record/background.ts": "writes only the background process's own log, the jobs-pending marker and the lease row in the machine record home; never a repo file",
@@ -840,6 +843,8 @@ describe("no unscoped scaffold writes", () => {
       "src/team/local-state/receipt-signer.ts": "atomically provisions the bounded local-only C preview signing credential",
       "src/team/relay/cli/local-preview.ts": "removes only the exact contained checkout-local Relay receipt after successful apply",
       "src/telemetry/store.ts": "writes only the empty jobs-pending marker in the machine record home; never a project file",
+      "src/upgrade/run.ts": "writes its exact approved upgrade journal/receipt and personal imports in machine state; unlinks only previewed disposable Wiki caches after hash checks; tracked publication stays in its owned temporary worktree",
+      "src/upgrade/safe-files.ts": "applies only byte-rechecked preview outputs through contained atomic publication; deletes only exact approved obsolete files, with no recursive removal",
     };
 
     const outside = FILES.filter((path) => !path.startsWith("src/wiki/"));
@@ -879,6 +884,14 @@ describe("no unscoped scaffold writes", () => {
     expect(recordLocation).toContain("target = projectDataPath(location, newId)");
     expect(recordLocation).toContain("realPath(parent) !== absolutePath(parent)");
     expect(recordLocation).not.toMatch(/["'`][^"'`\r\n]*\.md(?:["'`/])/);
+
+    const judgeNotices = withoutComments(read("src/judge/notices.ts"));
+    expect([...judgeNotices.matchAll(WRITE_CALLS)]).toHaveLength(3);
+    expect([...judgeNotices.matchAll(/\bwriteFileSync\s*\(/g)]).toHaveLength(1);
+    expect([...judgeNotices.matchAll(FD_WRITE_CALLS)]).toHaveLength(0);
+    expect(judgeNotices).toContain('containedDirectory(writer.location.directory, ["judge-notices"], true)');
+    expect(judgeNotices).toContain('flag: "wx"');
+    expect([...judgeNotices.matchAll(/\brenameSync\s*\(/g)]).toHaveLength(1);
   });
 
   it("does not constrain code outside the wiki engine", () => {

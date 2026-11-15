@@ -91,11 +91,23 @@ codec validates its shape, while an evaluator establishes that it holds.
 | source | `{file}` or `{url}` | `{hash}` |
 | value | `{file, symbol}` | `{value}` |
 | symbol | `{file, symbol}` | `{fingerprint}` |
+| legacy-grounding | `{node, file?}` | `{fingerprint, bodyHash?, codeHash?}` (original 0.8 evidence) |
 | pattern | `{scope, pattern, match?}` | `{count}` |
 | relation | `{query, from, to}` | `{count}` |
 
 Values are bounded JSON. Source URLs use HTTP(S). Relation checks are encoded
 now for consumers; their evaluator belongs to later graph work.
+
+`legacy-grounding` is an import-only compatibility check. Its role is always
+`supporting`, `files` is exactly `{}`, and it retains the original Graph node
+ID and MinHash (`mh:` or `mh2:`) without translating or renewing them. Optional
+historical hashes and file paths stay absent when absent from the source.
+Unlike newly authored checks, it is deliberately unresolved: evaluation returns
+`floor` ("legacy grounding needs review"), giving `unknown` unless another
+check proves a worse verdict. A passing documentation check cannot certify it.
+Normal check recording cannot mint this kind. Explicit review replaces it with
+a current native check; unresolved code facts remain pointers or are withheld,
+and entries whose checks have not held stay out of generated rule files.
 
 ## Commands in the first slice
 
