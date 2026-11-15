@@ -218,3 +218,40 @@ func TestCodexEventsReplyEmpty(t *testing.T) {
 		t.Fatal("no fixtures found")
 	}
 }
+
+// On Copilot a hook that fails denies the tool call, so every Copilot call the
+// shim can't use must still answer "{}" with exit 0: no MEX home, a broken
+// payload, an unknown event, or MEX switched off.
+func TestCopilotFailsOpen(t *testing.T) {
+	home := t.TempDir()
+	env := func(k string) string {
+		switch k {
+		case "HOME", "USERPROFILE":
+			return home
+		case "MEX_HOME":
+			return filepath.Join(home, "missing-mex-home")
+		}
+		return ""
+	}
+	cases := []struct {
+		args []string
+		in   string
+	}{
+		{[]string{"copilot", "preToolUse"}, ""},
+		{[]string{"copilot", "preToolUse"}, "{"},
+		{[]string{"copilot", "noSuchEvent"}, `{"toolName":"bash"}`},
+		{[]string{"copilot", "preToolUse"}, `{"cwd":"/nowhere","toolName":"bash","toolArgs":"{\"command\":\"ls\"}"}`},
+		{[]string{"copilot", "postToolUse"}, `{"cwd":"/nowhere","toolName":"bash","toolArgs":"not json","toolResult":{"resultType":"success"}}`},
+	}
+	for _, c := range cases {
+		code, out := run(t, c.args, strings.NewReader(c.in), env)
+		assertEmptyReply(t, code, out)
+	}
+	code, out := run(t, []string{"copilot", "preToolUse"}, strings.NewReader("{}"), func(k string) string {
+		if k == "MEX_OFF" {
+			return "1"
+		}
+		return env(k)
+	})
+	assertEmptyReply(t, code, out)
+}

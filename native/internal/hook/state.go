@@ -218,6 +218,11 @@ func (h home) hooksOff(agent, goos string) []string {
 				off = append(off, file+": allow_managed_hooks_only = true")
 			}
 		}
+	case "copilot":
+		cfg := filepath.Join(h.user, ".copilot", "config.json")
+		if jsonTrue(cfg, "disableAllHooks") {
+			off = append(off, cfg+": disableAllHooks")
+		}
 	}
 	return off
 }

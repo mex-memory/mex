@@ -244,3 +244,20 @@ func TestClaudeManagedSettingsDropIns(t *testing.T) {
 		t.Errorf("drop-in folder: %v", off)
 	}
 }
+
+func TestCopilotDisableAllHooks(t *testing.T) {
+	user := t.TempDir()
+	h := homeFrom(func(k string) string {
+		if k == "HOME" || k == "USERPROFILE" {
+			return user
+		}
+		return ""
+	})
+	if off := h.hooksOff("copilot", "linux"); len(off) != 0 {
+		t.Fatalf("no config: %v", off)
+	}
+	write(t, filepath.Join(user, ".copilot", "config.json"), `{"disableAllHooks": true}`)
+	if off := h.hooksOff("copilot", "linux"); len(off) != 1 || !strings.Contains(off[0], "disableAllHooks") {
+		t.Errorf("got %v", off)
+	}
+}
