@@ -9,6 +9,7 @@ import { isAbsolute, sep } from "node:path";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { absolutePath, realPath, shortHash } from "../record/project.js";
 import { globPrefix, globToRegExp, normalizeGlob } from "./glob.js";
+import { resolveImport } from "./imports.js";
 import { applyShifts, pendingShifts, shiftSpan, shiftedPathKeys } from "./shifts.js";
 import { checkoutKey, indexDirectory, openSnapshot, parseRecord, readPointer, type Pointer } from "./store.js";
 import type { FileRecord, Lang, NotIndexedReason, OutlineItem, ReadMiss, SymbolKind } from "./types.js";
@@ -77,6 +78,34 @@ export class IndexReader {
   private fileRecord(row: PathRow): FileRecord | undefined {
     const found = this.record.get(row.hash!, row.lang!, row.hash!, row.lang!) as { data: string } | undefined;
     return found ? parseRecord(row.hash!, row.lang!, found.data) : undefined;
+  }
+
+  /**
+   * Relative imports between indexed files: importer → imported paths. Bounded
+   * by the index itself; read in the background only, never by a hook.
+   */
+  importEdges(limit = 50_000): Map<string, string[]> {
+    const rows = this.db.prepare(`SELECT p.path, r.data FROM paths p JOIN (SELECT hash,lang,data FROM main.records UNION ALL SELECT hash,lang,data FROM base.records) r
+      ON r.hash=p.hash AND r.lang=p.lang WHERE p.reason IS NULL`).iterate() as Iterable<{ path: string; data: string }>;
+    const known = new Set((this.db.prepare("SELECT path FROM paths WHERE reason IS NULL").all() as Array<{ path: string }>).map((row) => row.path));
+    const out = new Map<string, string[]>();
+    let edges = 0;
+    for (const row of rows) {
+      if (out.has(row.path)) continue;
+      let imports: Array<{ from: string }> = [];
+      try { imports = (JSON.parse(row.data) as { imports?: Array<{ from: string }> }).imports ?? []; } catch { continue; }
+      const targets: string[] = [];
+      for (const item of imports) {
+        const target = resolveImport(item.from, row.path, known);
+        if (target && target !== row.path && !targets.includes(target)) targets.push(target);
+      }
+      if (targets.length) {
+        out.set(row.path, targets);
+        edges += targets.length;
+        if (edges >= limit) break;
+      }
+    }
+    return out;
   }
 
   outline(path: string): OutlineAnswer | Miss {

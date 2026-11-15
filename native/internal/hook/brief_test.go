@@ -1,13 +1,16 @@
 package hook
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	localrecord "github.com/mex-memory/mex/native/record"
+	"github.com/mex-memory/mex/native/workset"
 )
 
 func TestSessionStartDeliversCheckedBriefAndResumeDoesNotResend(t *testing.T) {
@@ -57,5 +60,58 @@ func TestBriefPreviewDoesNotCreateTheMexHome(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "absent")); !os.IsNotExist(err) {
 		t.Fatal("preview created storage")
+	}
+}
+
+func TestSessionStartChoosesByWorkingSetAndAsksForAFreshOne(t *testing.T) {
+	h, env := fakeHome(t, true)
+	root := repo(t, t.TempDir())
+	register(t, h, root, projectID, "on", "")
+	prepareStore(t, h)
+	rule := func(id, scope, line string) {
+		write(t, filepath.Join(root, ".mex/learned/"+id+".md"), "---\nmex:\n  id: "+id+"\n  kind: rule\n  scope: ['"+scope+"']\n  source: {type: docs, ref: README.md}\n  evidence: docs\n  one_line: "+line+"\n  checks: []\n  status: active\n  created: 2026-11-15\n---\n"+line+"\n")
+	}
+	rule("mx_seedrl", "src/pay.ts", "Retry payments twice.")
+	rule("mx_glob01", "**", "Global one.")
+	rule("mx_glob02", "**", "Global two.")
+	rule("mx_glob03", "**", "Global three.")
+	directory := h.recordDirectory()
+	cache, err := workset.Path(directory, projectID, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := func(made time.Time) {
+		body, _ := json.Marshal(workset.Set{Version: 1, Made: made.UTC().Format(time.RFC3339Nano), Seeds: []string{"src/pay.ts"}})
+		write(t, cache, string(body))
+	}
+	set(time.Now())
+	start := func(session string) string {
+		payload, _ := json.Marshal(map[string]any{"session_id": session, "hook_event_name": "SessionStart", "source": "startup", "cwd": root})
+		code, out := run(t, []string{"claude-code", "SessionStart"}, strings.NewReader(string(payload)), env)
+		if code != 0 {
+			t.Fatal(code)
+		}
+		return out
+	}
+	out := start("ws-1")
+	if !strings.Contains(out, "Retry payments twice.") || !strings.Contains(out, "Global one.") || strings.Contains(out, "Global three.") {
+		t.Fatal(out)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(directory, "hooks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var action, surface string
+	if err = db.QueryRow(`SELECT action,surface FROM deliveries WHERE entry_id='mx_glob03'`).Scan(&action, &surface); err != nil || action != "shadow" || surface != "start-brief-previous" {
+		t.Fatal("the area pick was not kept for comparison", action, surface, err)
+	}
+	if _, err = os.Stat(workset.PendingMarker(directory)); !os.IsNotExist(err) {
+		t.Fatal("a fresh working set asked for a refresh")
+	}
+	set(time.Now().Add(-time.Hour))
+	start("ws-2")
+	if _, err = os.Stat(workset.PendingMarker(directory)); err != nil {
+		t.Fatal("an old working set didn't ask for a refresh")
 	}
 }

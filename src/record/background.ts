@@ -8,6 +8,7 @@ import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJo
 import "./job-kinds.js";
 import { sendUsageReports } from "../telemetry/reporting.js";
 import { indexPending, queuePendingRefreshes } from "../file-index/pending.js";
+import { queueWorkingSetRequests, workingSetPending } from "../working-set/job.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
@@ -129,7 +130,7 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     const row = lease(writer);
     const live = leaseLive(row, settings);
     if (live && row.version === VERSION) return { started: false, reason: "running" };
-    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory)) {
+    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory) && !workingSetPending(writer.location.directory)) {
       clearPending(writer);
       return { started: false, reason: "no-work" };
     }
@@ -255,6 +256,8 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       requeueReadyJobs(writer);
       // Files the hook saw edited get re-parsed.
       queuePendingRefreshes(writer);
+      // Session starts that found their working set missing or behind.
+      queueWorkingSetRequests(writer);
       const outcome = await runOneBatch(writer, self);
       if (outcome === "ran") { lastWork = clock(); continue; }
       const hubOpen = row.hub_until !== null && Date.parse(row.hub_until) > clock();

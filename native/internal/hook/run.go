@@ -267,7 +267,8 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	}
 
 	if ev.Kind == contract.SessionStart {
-		startBackground(h, recordDirectory)
+		// After delivery: the start brief may have asked for a working-set refresh.
+		defer startBackground(h, recordDirectory)
 	}
 	noteEdit(ev, recordDirectory)
 	freeStage(ev, h, recordDirectory)
