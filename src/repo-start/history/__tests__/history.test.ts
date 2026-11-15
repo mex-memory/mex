@@ -6,10 +6,14 @@ import { dirname, join } from "node:path";
 import { openRecord } from "../../../record/index.js";
 import { realPath } from "../../../record/project.js";
 import { buildIndex } from "../../../file-index/build.js";
-import { buildCodeFacts } from "../job.js";
+import { writeFactFile } from "../../facts.js";
+import { setCheckoutEnabled } from "../../../controls/index.js";
+import { queueJob } from "../../../record/background.js";
+import { buildCodeFacts, skippedFacts } from "../job.js";
+import { queueStaleCodeFacts, REMINE_MS } from "../freshness.js";
 import {
-  attributeGenerated, changeTogether, hasGeneratedMarker, heldOutPrecision, historyGenerated, importTarget,
-  layerRules, PARAM_GRID, parseLog, precisionOn, testSplit, unitOf, validationSplit, wilsonLower, type Commit,
+  attributeGenerated, changeTogether, hasGeneratedMarker, heldOutPrecision, historyGenerated, importTarget, isLockfile, isTestPath,
+  layerRules, pairKind, PARAM_GRID, parseLog, precisionOn, testSplit, unitOf, validationSplit, wilsonLower, type Commit,
 } from "../mine.js";
 
 const temps: string[] = [];
@@ -28,8 +32,23 @@ describe("mining history", () => {
       c(1, "schema.ts", "types.ts"), c(2, "schema.ts", "types.ts"), c(3, "schema.ts", "types.ts", "x.ts"), c(8, "schema.ts", "types.ts"),
       c(4, "types.ts"), c(5, "types.ts", "y.ts"), c(6, "a.ts", "b.ts"), c(7, "a.ts", "b.ts"), bulk,
     ];
-    expect(changeTogether(commits)).toEqual([{ a: "schema.ts", b: "types.ts", confidence: 1, support: 4 }]);
+    expect(changeTogether(commits)).toEqual([{ a: "schema.ts", b: "types.ts", confidence: 1, support: 4, kind: "related" }]);
     expect(changeTogether(commits, path => path !== "types.ts")).toEqual([]);
+  });
+
+  it("labels test and mirror pairs, and never pairs lockfiles or generated files", () => {
+    expect(pairKind("src/cookie.test.ts", "src/cookie.ts")).toBe("test");
+    expect(pairKind("tests/test_views.py", "django/views.py")).toBe("test");
+    expect(pairKind("pkg/server_test.go", "pkg/server.go")).toBe("test");
+    expect(pairKind("src/test/java/FooTest.java", "src/main/java/Foo.java")).toBe("test");
+    expect(pairKind("src/middleware/cors/index.ts", "deno_dist/middleware/cors/index.ts")).toBe("mirror");
+    expect(pairKind("src/client/index.ts", "src/server/index.ts")).toBe("related");
+    expect(pairKind("src/latest.ts", "src/contest.ts")).toBe("related");
+    expect(isTestPath("src/latest.ts")).toBe(false);
+    expect(isLockfile("apps/web/pnpm-lock.yaml") && isLockfile("Cargo.lock") && !isLockfile("lock.ts")).toBe(true);
+    const commits = Array.from({ length: 4 }, (_, i) => c(i + 1, "package.json", "pnpm-lock.yaml", "src/api.ts", "gen/api.ts"));
+    const pairs = changeTogether(commits, undefined, undefined, path => path.startsWith("gen/"));
+    expect(pairs.map(pair => `${pair.a}>${pair.b}`).sort()).toEqual(["package.json>src/api.ts", "src/api.ts>package.json"]);
   });
 
   it("measures held-out precision over firings, learning only from older commits", () => {
@@ -108,8 +127,8 @@ describe("the code-facts job on a real repository", () => {
     writer.close();
     await buildIndex({ root, projectId, recordDirectory: location.directory, workers: 0 });
     const facts = await buildCodeFacts(root, projectId, location);
-    expect(facts).toMatchObject({ version: 1, skipped: null, commits_read: 8, head: git(root, "rev-parse", "HEAD") });
-    expect(facts.change_together).toContainEqual({ a: "core/model.ts", b: "app/main.ts", confidence: 1, support: 5 });
+    expect(facts).toMatchObject({ version: 1, skipped: null, commits_read: 8, head: git(root, "rev-parse", "HEAD"), checkout: root });
+    expect(facts.change_together).toContainEqual({ a: "core/model.ts", b: "app/main.ts", confidence: 1, support: 5, kind: "related" });
     expect(facts.change_together.find(pair => pair.a === "app/main.ts" && pair.b === "core/model.ts")).toBeUndefined();
     expect(facts.layer_rules).toEqual([{ from: "core", to: "app", imports: 3 }]);
     expect(facts.generated).toEqual([
@@ -121,5 +140,36 @@ describe("the code-facts job on a real repository", () => {
     const shallow = join(base, "shallow");
     git(base, "clone", "-q", "--depth", "1", `file://${root}`, shallow);
     expect(await buildCodeFacts(shallow, projectId, location)).toMatchObject({ skipped: "shallow clone", commits_read: 0, change_together: [] });
+  });
+
+});
+
+describe("keeping code facts fresh", () => {
+  it("queues a re-read once the mined checkout's HEAD moves, at most every ten minutes", () => {
+    const base = realPath(mkdtempSync(join(tmpdir(), "mex-code-facts-fresh-"))); temps.push(base);
+    const root = join(base, "repo"); mkdirSync(root);
+    const writer = openRecord({ home: join(base, "home"), projectPath: root, isNetwork: () => false });
+    try {
+      const projectId = writer.checkout(root)!.project_id;
+      const now = Date.parse("2026-11-15T12:00:00Z");
+      const facts = (minutesAgo: number, head = "a".repeat(40)) => writeFactFile(writer.location, projectId, "code-facts.json",
+        { ...skippedFacts("no git"), skipped: null, head, checkout: root, built_at: new Date(now - minutesAgo * 60_000).toISOString() });
+      const queued: string[] = [];
+      const queue = (w: typeof writer, options: Parameters<typeof queueJob>[1]) => { queued.push(`${options.kind}:${(options.params as { checkout: string }).checkout}`); return queueJob(w, options); };
+      const moved = () => "b".repeat(40);
+
+      facts(REMINE_MS / 60_000 - 1);
+      expect(queueStaleCodeFacts(writer, queue, now, moved)).toBe(0);
+      facts(REMINE_MS / 60_000 + 1, "b".repeat(40));
+      expect(queueStaleCodeFacts(writer, queue, now, moved)).toBe(0);
+      facts(REMINE_MS / 60_000 + 1);
+      setCheckoutEnabled(writer, root, false);
+      expect(queueStaleCodeFacts(writer, queue, now, moved)).toBe(0);
+      setCheckoutEnabled(writer, root, true);
+      expect(queueStaleCodeFacts(writer, queue, now, moved)).toBe(1);
+      expect(queued).toEqual([`code-facts:${root}`]);
+      // An open job is not queued twice.
+      expect(queueStaleCodeFacts(writer, queue, now, moved)).toBe(0);
+    } finally { writer.close(); }
   });
 });
