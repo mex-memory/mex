@@ -24,7 +24,7 @@ export async function repositoryPolicy(root: string): Promise<RepositoryPolicy> 
   } catch { /* no proved authority */ }
   return { visibility, authorized };
 }
-export function sharingEnabled(writer: RecordWriter, project: string, root: string): boolean {
+export function sharingEnabled(writer: Pick<RecordWriter, "project">, project: string, root: string): boolean {
   try {
     const value = JSON.parse(readSource(root, ".mex/config.json") ?? "null");
     if (value?.knowledge?.shared === false) return false;
