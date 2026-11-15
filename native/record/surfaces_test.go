@@ -357,7 +357,7 @@ func TestSurfaceActedDefinitions(t *testing.T) {
 		{"prompt scope", "prompt", target, open, true},
 		{"prompt needs scope even with another named file", "prompt", SurfaceTarget{Scopes: []string{"other/**"}, Paths: open.Paths}, open, false},
 		{"start scope", "start-brief", target, open, true},
-		{"previous scope", "start-brief-previous", target, open, true},
+		{"previous scope", "start-brief-working-set", target, open, true},
 		{"recovery scope", "recovery", target, open, true},
 		{"history: an edit of the file is not acting on its history", "bug-history", target, edit, false},
 		{"rescue path", "rescue-wrong-path", SurfaceTarget{Paths: open.Paths}, open, true},

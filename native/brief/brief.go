@@ -67,9 +67,9 @@ type Result struct {
 	Coverage Coverage `json:"coverage"`
 	// Lane holds knowledge nobody has accepted yet, rendered apart.
 	Lane []Item `json:"lane,omitempty"`
-	// Previous is what the area selection would have sent instead. It is
-	// recorded for comparison and never rendered.
-	Previous []Item `json:"-"`
+	// Folder is the starting-folder selection, computed beside the
+	// working-set one so a session can be given either.
+	Folder []Item `json:"-"`
 }
 
 // Render restricts a result to the ids accepted by the receipt transaction.
@@ -396,17 +396,7 @@ func Build(opts Options) (Result, error) {
 		w := workingSelection{sc: sc, all: all, usable: usable, verdictOf: verdictOf, addGroup: addGroup, itemFor: itemFor, hintAllowed: opts.HintAllowed}
 		result.Items = w.main(tokens)
 		result.Lane = w.lane()
-		chosen := map[string]bool{}
-		for _, item := range result.Items {
-			chosen[item.ID] = true
-		}
-		// What the area selection would have sent instead, for the ledger's
-		// comparison. It is never rendered.
-		for _, item := range selectArea() {
-			if !chosen[item.ID] {
-				result.Previous = append(result.Previous, item)
-			}
-		}
+		result.Folder = selectArea()
 	}
 	ids := []string{}
 	for _, item := range result.Items {

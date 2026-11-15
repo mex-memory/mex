@@ -85,9 +85,16 @@ func TestSessionStartChoosesByWorkingSetAndAsksForAFreshOne(t *testing.T) {
 		write(t, cache, string(body))
 	}
 	set(time.Now())
+	choice := "on"
 	start := func(session string) string {
 		payload, _ := json.Marshal(map[string]any{"session_id": session, "hook_event_name": "SessionStart", "source": "startup", "cwd": root})
-		code, out := run(t, []string{"claude-code", "SessionStart"}, strings.NewReader(string(payload)), env)
+		forced := func(k string) string {
+			if k == "MEX_DELIVERY_SURFACES" {
+				return `{"start-brief-working-set":"` + choice + `"}`
+			}
+			return env(k)
+		}
+		code, out := run(t, []string{"claude-code", "SessionStart"}, strings.NewReader(string(payload)), forced)
 		if code != 0 {
 			t.Fatal(code)
 		}
@@ -103,9 +110,18 @@ func TestSessionStartChoosesByWorkingSetAndAsksForAFreshOne(t *testing.T) {
 	}
 	defer db.Close()
 	var action, surface string
-	if err = db.QueryRow(`SELECT action,surface FROM deliveries WHERE entry_id='mx_glob03'`).Scan(&action, &surface); err != nil || action != "shadow" || surface != "start-brief-previous" {
-		t.Fatal("the area pick was not kept for comparison", action, surface, err)
+	if err = db.QueryRow(`SELECT action,surface FROM deliveries WHERE entry_id='mx_glob03'`).Scan(&action, &surface); err != nil || action != "shadow" || surface != "start-brief" {
+		t.Fatal("the folder pick was not kept for comparison", action, surface, err)
 	}
+	// The other arm sends the folder choice and keeps the working-set one.
+	choice = "shadow"
+	if out := start("ws-folder"); !strings.Contains(out, "Global three.") || strings.Contains(out, "Retry payments twice.") {
+		t.Fatal(out)
+	}
+	if err = db.QueryRow(`SELECT action,surface FROM deliveries WHERE entry_id='mx_seedrl' AND session_id='ws-folder'`).Scan(&action, &surface); err != nil || action != "shadow" || surface != "start-brief-working-set" {
+		t.Fatal("the working-set pick was not kept for comparison", action, surface, err)
+	}
+	choice = "trial"
 	if _, err = os.Stat(workset.PendingMarker(directory)); !os.IsNotExist(err) {
 		t.Fatal("a fresh working set asked for a refresh")
 	}

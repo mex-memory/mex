@@ -6,8 +6,8 @@
 read-risk rules, edits (including rejected alternatives and file creation),
 command recipes, failure fixes, prompts, start briefs and recovery keep their
 existing `on` default. Recovery includes subagent briefs and corrections.
-New rescue, history and future card surfaces default to `trial`; the
-previous start-brief selection is a comparison that stays `shadow`. Unknown
+New rescue, history, card and working-set start-brief surfaces default to
+`trial`. Unknown
 historical moments migrate to `unknown`.
 
 A `trial` surface is shadow until 30 of its shadow firings have settled, so its
@@ -165,10 +165,16 @@ hint gate allows, and entries proposed but not in force, can only appear in a
 separate "Not yet accepted:" lane of at most 2 lines and 120 bytes, which never
 displaces accepted entries.
 
-With an empty working set the brief keeps knowledge-05's folder selection.
-When the two selections differ, the folder selection's extra items are
-recorded as `start-brief-previous` receipts, which stay shadow, so the ledger
-can compare the two. Compaction and resume keep their own blocks.
+With an empty working set the brief keeps knowledge-05's folder selection and
+nothing is compared. Otherwise both selections are computed and the choice is
+itself a trial: by a stable hash of session, agent and surface, a session is
+sent either the working-set choice (`start-brief-working-set`) or the folder
+choice (`start-brief`), and the items of the choice not sent are recorded in
+shadow under their own surface. Both arms send something real, so there is no
+base-rate period: the ledger compares two randomized arms directly.
+`delivery.surface.start-brief-working-set` `on` or `off` forces one choice;
+`shadow` sends the folder choice and records the working-set one. The lane
+belongs to the working-set choice. Compaction and resume keep their own blocks.
 
 ### Rescues
 

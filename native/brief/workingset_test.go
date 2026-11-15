@@ -56,12 +56,8 @@ func TestWorkingSetScoresFloorsCapsAndOrders(t *testing.T) {
 	if len(r.Items) > MaxItems {
 		t.Fatal(len(r.Items))
 	}
-	for _, item := range r.Previous {
-		for _, chosen := range r.Items {
-			if item.ID == chosen.ID {
-				t.Fatal("previous repeats a chosen item", item.ID)
-			}
-		}
+	if r.Folder == nil {
+		t.Fatal("the folder choice wasn't computed beside the working-set one")
 	}
 	if a, b := build(t, opts), build(t, opts); a.Text != b.Text {
 		t.Fatal("same inputs changed the brief")
@@ -134,7 +130,7 @@ func TestEmptyWorkingSetKeepsTheAreaSelection(t *testing.T) {
 	plain := build(t, opts)
 	opts.WorkingSet = &workset.Set{Version: 1}
 	withEmpty := build(t, opts)
-	if plain.Text != withEmpty.Text || len(withEmpty.Previous) != 0 || !strings.Contains(plain.Text, "Area rule.") {
+	if plain.Text != withEmpty.Text || withEmpty.Folder != nil || !strings.Contains(plain.Text, "Area rule.") {
 		t.Fatal(plain.Text, withEmpty.Text)
 	}
 }

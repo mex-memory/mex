@@ -20,7 +20,7 @@ import (
 // SurfaceIDs is the closed vocabulary used by receipts, controls and reports.
 // New ids must declare a default and an acted definition before they can send.
 func SurfaceIDs() []string {
-	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-previous", "graph-card", "unknown"}
+	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "unknown"}
 }
 func ValidSurface(s string) bool {
 	for _, id := range SurfaceIDs() {
@@ -38,7 +38,7 @@ func SurfaceDefault(s string) string {
 	switch s {
 	case "read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery":
 		return "on"
-	case "unknown", "start-brief-previous":
+	case "unknown":
 		return "shadow"
 	}
 	return "trial"
@@ -49,7 +49,7 @@ func ValidSurfaceMode(m string) bool { return m == "on" || m == "shadow" || m ==
 
 // OncePerSession surfaces fire at most once per session by construction, so
 // the gate's repeat comparison can never collect evidence for them.
-func OncePerSession(s string) bool { return s == "start-brief" || s == "start-brief-previous" }
+func OncePerSession(s string) bool { return s == "start-brief" || s == "start-brief-working-set" }
 
 // Trial needs this many settled shadow firings before any session sends, so
 // the arm that sends is always compared with a measured base rate.
@@ -200,7 +200,7 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 			}
 		}
 		return true
-	case "prompt", "start-brief", "start-brief-previous", "recovery":
+	case "prompt", "start-brief", "start-brief-working-set", "recovery":
 		return (tool.Open || tool.Edit) && scopeTouch()
 	case "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout":
 		if namedTouch() {
