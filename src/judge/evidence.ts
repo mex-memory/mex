@@ -67,7 +67,7 @@ export function readCandidate(item: NativeItem, checkout: string, home: string, 
 }
 
 export function entryFiles(entry: KnowledgeEntry): string[] {
-  return [...new Set(entry.mex.checks.flatMap(c => [...Object.keys(c.files), ...("file" in c.target ? [c.target.file] : [])]))].sort();
+  return [...new Set(entry.mex.checks.flatMap(c => [...Object.keys(c.files), ...("file" in c.target && typeof c.target.file === "string" ? [c.target.file] : [])]))].sort();
 }
 export function readSource(checkout: string, path: string): string | null {
   const safe = repoFile(checkout, path);
@@ -103,7 +103,11 @@ export async function evidence(checkout: string, candidates: Candidate[], at: Po
   const files: FileEvidence[] = [];
   for (const path of paths) {
     const current = readSource(checkout, path);
-    const expected = [...new Set(candidates.flatMap(c => c.entry.mex.checks.flatMap(check => check.files[path] ? [check.files[path]] : [])))];
+    const expected = [...new Set(candidates.flatMap(c => c.entry.mex.checks.flatMap(check => {
+      const floors: Record<string, string> = check.files;
+      const baseline = floors[path];
+      return baseline ? [baseline] : [];
+    })))];
     const baselines: FileEvidence["baselines"] = [];
     const commits = (await git(checkout, ["log", `-${JUDGE_LIMITS.history}`, "--format=%H", "--", path]))?.trim().split("\n").filter(Boolean) ?? [];
     const old = new Map<string, { text: string; commit: string }>();

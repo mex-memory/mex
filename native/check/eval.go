@@ -107,7 +107,9 @@ func (ev *Evaluator) Evaluate(e *Entry) Result {
 	for i, c := range e.Checks {
 		r := ev.run(c)
 		r.Index, r.Kind, r.Role = i, c.Kind, c.Role
-		r.FilesChanged = ev.floor(c, res.Inputs)
+		if c.Kind != "legacy-grounding" {
+			r.FilesChanged = ev.floor(c, res.Inputs)
+		}
 		switch r.Status {
 		case Fail, Gone:
 			if c.Role == Complete {
@@ -119,7 +121,7 @@ func (ev *Evaluator) Evaluate(e *Entry) Result {
 			switch {
 			case len(r.FilesChanged) > 0:
 				raise(Changed)
-			case len(c.Files) == 0:
+			case c.Kind == "legacy-grounding" || len(c.Files) == 0:
 				raise(Unknown)
 			}
 		}
@@ -185,6 +187,8 @@ func (ev *Evaluator) run(c Check) CheckResult {
 		return ev.valueCheck(c)
 	case "symbol":
 		return ev.symbolCheck(c)
+	case "legacy-grounding":
+		return CheckResult{Status: Floor, Reason: "legacy grounding needs review"}
 	case "pattern":
 		return ev.patternCheck(c)
 	}

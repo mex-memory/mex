@@ -1,9 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { recordCheck } from "../check.js";
+import { recordCheck, runNative } from "../check.js";
 import { knowledgeProject } from "../context.js";
 import { serializeEntry, type EntryCheck } from "../entry.js";
 import { rebuildNative } from "../native.js";
@@ -48,6 +48,23 @@ describe.skipIf(!enabled)("current checks before publication", () => {
     expect(rebuildNative(options).selected).toBe(1);
     writeFileSync(file, JSON.stringify({ scripts: {} }));
     expect(rebuildNative(options).removed).toContain(".claude/rules/mex.md");
+  });
+
+  it("keeps imported legacy baselines unknown and out of generated rules in the real binary", () => {
+    const f = fixture();
+    const compatibility: EntryCheck = { kind: "legacy-grounding", role: "supporting", target: { node: "function:12345678abcdefab", file: "src/api.ts" },
+      saw: { fingerprint: "mh2:64:Original_CASE", bodyHash: "old-body" }, files: {} };
+    const original = serializeEntry(entry("mx_checked", { checks: [f.check, compatibility], source: { type: "docs", ref: "package.json" }, evidence: "docs" }, "The original imported rule remains unresolved."));
+    writeFileSync(join(f.root, ".mex/learned/mx_checked.md"), original);
+    for (const source of ["export const api = 1", "export const api = 2"]) {
+      mkdirSync(join(f.root, "src"), { recursive: true }); writeFileSync(join(f.root, "src/api.ts"), source);
+      const report = runNative(binary, { action: "evaluate", checkout: f.root, store: false, team_only: true });
+      expect(report.items?.[0].verdict).toBe("unknown");
+      expect(report.results?.[0].checks.at(-1)).toMatchObject({ kind: "legacy-grounding", status: "floor", reason: "legacy grounding needs review" });
+      expect(rebuildNative(f.options).selected).toBe(0);
+      expect(existsSync(join(f.root, ".claude/rules/mex.md"))).toBe(false);
+      expect(readFileSync(join(f.root, ".mex/learned/mx_checked.md"), "utf8")).toBe(original);
+    }
   });
 
   it("requires current proof for checked entries when the evaluator is unavailable", () => {
