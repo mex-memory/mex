@@ -32,7 +32,8 @@ export interface JudgeDependencies {
 const dependencies: JudgeDependencies = { evaluate, recordChecks, model: runModel };
 function known(writer: RecordWriter, projectId: string, candidate: Candidate, checkout: string, at: Position): boolean {
   const previous = readJudgement(writer, projectId, checkout, candidate.item.id);
-  if (!previous || previous.entry_hash !== hash(candidate.content) || previous.checks_hash !== checkHash(candidate) || !samePosition(previous.position, at)) return false;
+  if (!previous || previous.entry_hash !== hash(candidate.content) || previous.evaluation_hash !== candidate.evaluationHash
+    || previous.checks_hash !== checkHash(candidate) || !samePosition(previous.position, at)) return false;
   try { if (!previous.files.every(file => { const text = readSource(checkout, file.path); return (text === null ? null : hash(text)) === file.hash; })) return false; }
   catch { return false; }
   return !!writer.db.prepare("SELECT 1 FROM judgements WHERE project_id=? AND entry_id=? AND inputs_hash=?").get(projectId, candidate.item.id, previous.inputs_hash);

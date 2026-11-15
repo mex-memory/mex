@@ -23,8 +23,6 @@ export interface ModelRequest extends ModelSelection {
   /** Total wall-clock budget, in addition to the shared inactivity deadline. */
   timeoutMs?: number;
   allowNonGit?: boolean;
-  /** Provider-enforced structured output, currently supported by Claude. */
-  jsonSchema?: Record<string, unknown>;
   /** Automatic work reserves allowance; explicit commands omit this and remain uncapped. */
   automatic?: AutomaticModelBatch;
   /** Tests only; product requests never supply transports. */
@@ -41,10 +39,6 @@ export async function runModel(request: ModelRequest): Promise<ModelResult> {
   if (Buffer.byteLength(request.prompt) > MAX_MODEL_PROMPT_BYTES) throw new ModelRunError("prompt", request.agent);
   if (typeof request.purpose !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(request.purpose)) throw new ModelRunError("arguments", request.agent);
   if (request.timeoutMs !== undefined && (!Number.isFinite(request.timeoutMs) || request.timeoutMs <= 0)) throw new ModelRunError("arguments", request.agent);
-  if (request.jsonSchema !== undefined) {
-    try { if (request.agent !== "claude" || !object(request.jsonSchema) || Buffer.byteLength(JSON.stringify(request.jsonSchema))>32<<10) throw new Error(); }
-    catch { throw new ModelRunError("arguments",request.agent); }
-  }
   let model: string;
   try { model = selectModel(request.agent, request); }
   catch { throw new ModelRunError("arguments", request.agent); }
@@ -56,8 +50,7 @@ export async function runModel(request: ModelRequest): Promise<ModelResult> {
   let outputError: "output" | "protocol" | undefined;
   const decoder = jsonLines(event => {
     const item = object(event.item);
-    const structured = request.jsonSchema && request.agent === "claude" && event.type === "result" ? object(event.structured_output) : undefined;
-    const next = request.jsonSchema ? structured && JSON.stringify(structured) : request.agent === "claude" && event.type === "result" ? event.result
+    const next = request.agent === "claude" && event.type === "result" ? event.result
       : request.agent === "codex" && event.type === "item.completed" && item?.type === "agent_message" ? item.text : undefined;
     if (typeof next !== "string") return;
     if (Buffer.byteLength(next) > MAX_MODEL_RESULT_BYTES) { outputError = "output"; controller.abort(); return; }

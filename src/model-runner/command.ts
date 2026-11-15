@@ -6,7 +6,6 @@ export interface ModelCommandOptions extends ModelSelection {
   access?: "text" | "workspace";
   allowNonGit?: boolean;
   allowedTools?: readonly string[];
-  jsonSchema?: Record<string, unknown>;
 }
 
 /** Per-run flags only: never edits user config or replaces subscription credentials. */
@@ -17,10 +16,8 @@ export function buildModelCommand(agent: ModelAgent, instruction: string, option
     command: agent,
     args: ["-p", ...(instruction ? [instruction] : []), "--safe-mode", "--no-session-persistence", "--model", model,
       "--system-prompt", MODEL_SYSTEM_PROMPT,
-      ...(options.jsonSchema ? ["--json-schema", JSON.stringify(options.jsonSchema)] : []),
       ...(workspace ? ["--permission-mode", "acceptEdits", "--allowedTools", (options.allowedTools ?? []).join(",")] : ["--tools", ""]),
-      "--output-format", options.jsonSchema ? "json" : "stream-json",
-      ...(!options.jsonSchema ? ["--verbose", "--include-partial-messages"] : [])],
+      "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
     env: { MEX_BACKGROUND: "1" },
   };
   return {

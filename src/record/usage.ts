@@ -206,8 +206,7 @@ export function createCallUsage(agent: string, sent: string, maxLineBytes = 1024
       decoder.end();
       const tokens = terminal ?? summed;
       return { ...(tokens ?? { ...ZERO, input: Math.ceil(Buffer.byteLength(sent) / 4), output: Math.ceil(outputBytes / 4) }),
-        model: byModel?.length ? (byModel.length===1 ? byModel[0]!.model : "mixed") : models.size > 1 ? "mixed" : model,
-        estimated: tokens === undefined || (!terminal && incomplete),
+        model: models.size > 1 ? "mixed" : model, estimated: tokens === undefined || (!terminal && incomplete),
         ...(sessionId ? { sessionId } : {}), ...(byModel ? { byModel } : {}) };
     },
   };

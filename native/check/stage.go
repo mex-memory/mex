@@ -129,10 +129,8 @@ func RunStage(opts StageOptions) (StageReport, error) {
 	checkedAt := now.UTC().Format(time.RFC3339)
 	ruleChanges := rulechange.Read(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
 	var judged *judgement.Reader
-	if !opts.TeamOnly && len(loaded) > 0 {
-		judged = judgement.Open(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
-	}
-	defer judged.Close()
+	judgedTried := opts.TeamOnly
+	defer func() { judged.Close() }()
 
 	var fresh []localrecord.Verdict
 	var valid []string
@@ -195,6 +193,10 @@ func RunStage(opts StageOptions) (StageReport, error) {
 			}
 		}
 		if eligible {
+			if !judgedTried {
+				judgedTried = true
+				judged = judgement.Open(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+			}
 			inputs, modelHeld = judged.CacheKey(l.Entry.ID, l.Hash, evaluationHash)
 		}
 		if v, ok := cached[l.Entry.ID]; ok && v.InputsHash == inputs && !opts.Force {

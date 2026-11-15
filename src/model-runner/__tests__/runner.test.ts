@@ -49,22 +49,6 @@ describe("model selection", () => {
 });
 
 describe("one-shot model runner with fake agents", () => {
-  it("uses provider structured output and refuses missing structured results or unsupported providers",async()=>{
-    const root=fixture(),schema={type:"object",properties:{ok:{type:"boolean"}},required:["ok"],additionalProperties:false};
-    const events=done("claude","untrusted free-form answer");
-    Object.assign(events[0],{structured_output:{ok:true},modelUsage:{"structured-model":{inputTokens:10,cacheWriteInputTokens:0,cacheCreationInputTokens:0,cacheReadInputTokens:4,outputTokens:3}}});
-    const spawn=transport(`for(const e of ${JSON.stringify(events)})process.stdout.write(JSON.stringify(e)+'\\n');process.stdin.resume();`);
-    const result=await runModel({agent:"claude",prompt:"Return the result",projectRoot:root,purpose:"structured.test",jsonSchema:schema,__internal:{spawn}});
-    expect(result.text).toBe('{"ok":true}');expect(result.usage.estimated).toBe(false);
-    expect(result.usage.model).toBe("structured-model");
-    expect(buildModelCommand("claude","",{jsonSchema:schema}).args).toContain(JSON.stringify(schema));
-    expect(buildModelCommand("claude","",{jsonSchema:schema}).args).toContain("json");
-    expect(buildModelCommand("claude","",{jsonSchema:schema}).args).not.toContain("--verbose");
-    const plain=transport(`for(const e of ${JSON.stringify(done("claude"))})process.stdout.write(JSON.stringify(e)+'\\n');process.stdin.resume();`);
-    await expect(runModel({agent:"claude",prompt:"task",projectRoot:root,purpose:"structured.test",jsonSchema:schema,__internal:{spawn:plain}})).rejects.toMatchObject({category:"protocol"});
-    await expect(runModel({agent:"codex",prompt:"task",projectRoot:root,purpose:"structured.test",jsonSchema:schema,__internal:{spawn:plain}})).rejects.toMatchObject({category:"arguments"});
-    expect(plain).toHaveBeenCalledTimes(1);
-  });
   it.each(["claude","codex"] as const)("pipes the complete %s prompt, drains the terminal record and accounts once", async agent => {
     const root=fixture(), events=done(agent);
     const spawn=transport(`const fs=require('node:fs');let input='';process.stdin.on('data',b=>input+=b);process.stdin.on('end',()=>{fs.writeFileSync('observed.json',JSON.stringify({input,args:process.argv.slice(1),background:process.env.MEX_BACKGROUND}));for(const e of ${JSON.stringify(events)}){process.stdout.write(JSON.stringify(e));process.stdout.write(String.fromCharCode(10));}});`);

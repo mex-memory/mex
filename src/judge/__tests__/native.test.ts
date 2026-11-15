@@ -49,7 +49,7 @@ it("restores full labelled delivery for a fresh still-true judgment and expires 
     const model=vi.fn(async()=>({selectedModel:"fixture",usage:{input:100,cache_write:0,cache_read:0,output:20,model:"fixture",estimated:false},text:JSON.stringify({results:[{id,result:"still-true"}]})}));
     registerJobKind(createJudgeKind({evaluate,recordChecks,model}));
     const job=await runJudgeSync({home,projectPath:root},{available:()=>true,write:()=>{}});
-    expect(job.state).toBe("done");expect(model).toHaveBeenCalledTimes(1);
+    expect(job?.state).toBe("done");expect(model).toHaveBeenCalledTimes(1);
     const key=resultKey(root,id),raw=writer.setting(projectId,key)!;
     expect(JSON.parse(raw).evaluation_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
     const verdict=async()=>{

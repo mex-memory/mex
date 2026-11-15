@@ -77,15 +77,17 @@ func shape(c candidate, verdict string, env *shapeEnv) shaped {
 	it := c.item
 	s := shaped{candidate: c, verdict: verdict, action: "given", full: it.Full, oneLine: it.OneLine, fullTok: it.FullTokens, lineTok: it.OneLineTokens}
 	if verdict == held && it.Entry.Kind == "fact" && env != nil && env.hooks != nil {
-		if !env.judgedTried {
-			env.judgedTried = true
-			env.judged = judgement.Open(env.recordDirectory, env.project, env.checkout)
-		}
-		if v, ok, err := env.hooks.VerdictOf(env.project, env.checkout, it.Entry.ID); err == nil && ok && env.judged.Label(it.Entry.ID, it.Hash, v.InputsHash) {
-			s.full += "\n(checked by model)"
-			s.oneLine += " (checked by model)"
-			s.fullTok = entries.EstimateTokens(s.full)
-			s.lineTok = entries.EstimateTokens(s.oneLine)
+		if v, ok, err := env.hooks.VerdictOf(env.project, env.checkout, it.Entry.ID); err == nil && ok && judgement.ModelKey(v.InputsHash) {
+			if !env.judgedTried {
+				env.judgedTried = true
+				env.judged = judgement.Open(env.recordDirectory, env.project, env.checkout)
+			}
+			if env.judged.Label(it.Entry.ID, it.Hash, v.InputsHash) {
+				s.full += "\n(checked by model)"
+				s.oneLine += " (checked by model)"
+				s.fullTok = entries.EstimateTokens(s.full)
+				s.lineTok = entries.EstimateTokens(s.oneLine)
+			}
 		}
 	}
 	withhold := func() shaped { s.action, s.full, s.oneLine, s.fullTok, s.lineTok = "withheld", "", "", 0, 0; return s }

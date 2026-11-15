@@ -90,8 +90,8 @@ does not equal billing enforcement. The provider
 [output/retry environment variables](https://code.claude.com/docs/en/env-vars)
 are additional bounds. An unexpected extra call is refused by the ledger.
 
-Writers use the CLI's JSON-schema output and receive the actual indexed
-symbol names. After native recording, each same-file batch gets at most one
+Writers receive exact JSON/schema instructions and the actual indexed
+symbol names. Replies are strictly validated locally. After native recording, each same-file batch gets at most one
 repair call for rejected claims, with bounded validation errors. Initial
 failures stay in `generation_diagnostics`; successful repairs are listed in
 `generation_repaired`. A transport, usage or budget failure stops the run.
