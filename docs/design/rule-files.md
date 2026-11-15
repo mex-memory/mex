@@ -48,3 +48,59 @@ Plain text for now, in `mex rules`:
 `<MEX home>/projects/<project id>/rule-files.json`. It is derived: rebuilt on
 every scan, never edited, never in git. `readRuleFiles` reads it without
 scanning.
+
+# Rule files out
+
+MEX writes the few entries every session in an area needs into the agents'
+own rule files, so the agents load them without MEX and so do teammates who
+only pull.
+
+## Which entries (layer A)
+
+An entry goes into rule files when it is active; a rule, decision, pitfall,
+procedure or recipe; backed by a person, docs, CI or review; scoped to the
+whole repo or a folder (`**` or `dir/**`, not a file pattern); not broken or
+changed; at most 600 characters; and not itself read from a rule file. Team
+entries go into shared files; personal notes into local files.
+Entries with checks need a held result from the current native evaluator;
+cached verdicts do not authorize publication after the source changes. If
+current checks are unavailable, checked entries are left out.
+
+## Which files (who loads what)
+
+Only for agents the repo shows signs of using: Claude Code with `CLAUDE.md`,
+`CLAUDE.local.md` or `.claude/`, or Claude hooks that ran in the checkout;
+Codex with `AGENTS.md` or `.codex/`, or Codex hooks that ran here.
+
+| Agent | File per area | Notes |
+| --- | --- | --- |
+| Codex | `<area>/AGENTS.md` | Only where the folder has no AGENTS.md of a person's |
+| Claude Code | `.claude/rules/mex.md`, `mex-local.md`, or `mex[-local]-area-<slug>-<hash>.md` with `paths:` | Skipped where a generated AGENTS.md covers the area and the folder has no CLAUDE.md, since Claude then reads AGENTS.md |
+
+MEX never creates `CLAUDE.md` or `CLAUDE.local.md` and never writes into a
+file it didn't generate. Every generated file starts with
+`<!-- mex:generated … -->` and lists each entry's text with its id as an HTML
+comment. Caps: 6 KiB for a Claude rules file, 8 KiB for a generated
+AGENTS.md (Codex reads 32 KiB along a path); the weakest entries are left
+out first, and the output says so.
+
+Area filenames include a stable hash so nested folders and punctuation cannot
+collide. Shared area files and personal root files use separate names. Personal
+rules are hidden before publication and are never written into a tracked file.
+Manifest cleanup accepts only native output paths, refuses linked parents and
+files, and keeps edited generated files when their ownership cannot be verified.
+
+## Writing
+
+- Shared files are recorded in `.mex/native.json` with the hash MEX wrote.
+  Local files are recorded in `<MEX home>/projects/<id>/native-local.json` and
+  listed in git's exclude file inside a MEX block, so they stay out of git.
+- A generated file a person edited is kept as it is, never overwritten or
+  deleted. A generated file no longer needed is deleted only if unchanged.
+- Nothing is written while a session runs in the checkout (a heartbeat in the
+  last 10 minutes). The `native-files` background job waits for the session to
+  end. `mex rules --write --now` overrides this.
+- A team entry change (`mex edit`, `mex wrong`, `mex forget` with `--apply`)
+  rebuilds the shared files at once, so the entry, its rule file and the
+  manifest are one working-tree change. Personal note changes queue the
+  background job.

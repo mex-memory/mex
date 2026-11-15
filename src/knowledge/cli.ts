@@ -14,6 +14,7 @@ export function buildKnowledgeCommands(): Command[] {
       await run(opts.json, async () => {
         const { note } = await import("./store.js");
         const saved = note({ text, kind: opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine }, { projectPath: process.cwd() });
+        await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
         else console.log(`Saved personal note ${saved.entry.mex.id} ${saved.label}\n${saved.entry.mex.one_line}`);
       });
@@ -77,6 +78,7 @@ export function buildKnowledgeCommands(): Command[] {
           if (!(error instanceof KnowledgeError) || error.code !== "NOT_FOUND") throw error;
           const { confirmHint } = await import("./hints.js");
           const saved = confirmHint(id, input, options);
+          await queueRuleFiles();
           if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
           else console.log(`Confirmed personal note ${id}\n${saved.entry.mex.one_line}`);
           return;
@@ -87,11 +89,13 @@ export function buildKnowledgeCommands(): Command[] {
           if (!opts.apply) { printPreview(preview, opts.json); return; }
           if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the team change, then pass --apply --expect <revision>.");
           const saved = applyTeamWrite(preview, opts.expect, options, text);
-          if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
-          else console.log(`Updated team entry ${id}`);
+          const native = await sharedRuleFiles(options);
+          if (opts.json) console.log(JSON.stringify({ ok: true, ...saved, native }));
+          else console.log(`Updated team entry ${id}${native.length ? `\nRule files updated in the same change: ${native.join(", ")}` : ""}`);
           return;
         }
         const saved = edit(id, input, options);
+        await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
         else console.log(`Updated personal note ${id}\n${saved.entry.mex.one_line}`);
       });
@@ -127,11 +131,13 @@ export function buildKnowledgeCommands(): Command[] {
           if (!opts.apply) { printPreview(preview, opts.json); return; }
           if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the team change, then pass --apply --expect <revision>.");
           const saved = applyTeamWrite(preview, opts.expect, options);
-          if (opts.json) console.log(JSON.stringify({ ok: true, id, level: "team", status: "retired", retired: saved.entry.mex.retired }));
-          else console.log(`Retired team entry ${id}: ${saved.entry.mex.retired!.reason}`);
+          const native = await sharedRuleFiles(options);
+          if (opts.json) console.log(JSON.stringify({ ok: true, id, level: "team", status: "retired", retired: saved.entry.mex.retired, native }));
+          else console.log(`Retired team entry ${id}: ${saved.entry.mex.retired!.reason}${native.length ? `\nRule files updated in the same change: ${native.join(", ")}` : ""}`);
           return;
         }
         const marker = (action === "wrong" ? wrong : forget)(id, reason, { projectPath: process.cwd() });
+        await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, level: "personal", status: "retired", ...marker }));
         else console.log(`Retired personal note ${id}: ${marker.retired.reason}`);
       });
@@ -166,15 +172,36 @@ export function buildKnowledgeCommands(): Command[] {
     }));
   const rules = new Command("rules")
     .description("Read the repo's rule files (CLAUDE.md, AGENTS.md, Cursor, Copilot, Gemini) into entries and list what needs review")
+    .option("--write", "Also rebuild the agents' rule files from the entries")
+    .option("--now", "With --write: rebuild even while a session is running here")
     .option("--json", "Print the scan as JSON")
     .action(async opts => run(opts.json, async () => {
       const { refreshRuleFiles, formatRules } = await import("./rule-cache.js");
       const cache = refreshRuleFiles({ projectPath: process.cwd() });
-      if (opts.json) console.log(JSON.stringify({ ok: true, ...cache }));
-      else console.log(formatRules(cache));
+      const native = opts.write ? (await import("./native.js")).rebuildNative({ projectPath: process.cwd() }, { force: opts.now }) : undefined;
+      if (opts.json) console.log(JSON.stringify({ ok: true, ...cache, ...(native ? { native } : {}) }));
+      else {
+        console.log(formatRules(cache));
+        if (native) console.log(`\n${(await import("./native.js")).formatRebuild(native)}`);
+      }
     }));
   return [save, search, full, change, ...retire, hints, rules];
 }
+/** Shared rule files change in the same working-tree change as the team entry. */
+async function sharedRuleFiles(options: { projectPath: string }): Promise<string[]> {
+  try {
+    const { rebuildNative } = await import("./native.js");
+    const result = rebuildNative(options, { sharedOnly: true, force: true });
+    return [...result.written ?? [], ...result.removed ?? []];
+  } catch { return []; }
+}
+
+/** Personal note changes reach the hidden local rule files between sessions. */
+async function queueRuleFiles(): Promise<void> {
+  const { queueNativeRebuild } = await import("./native-queue.js");
+  queueNativeRebuild(process.cwd());
+}
+
 function printPreview(preview: { revision: string; diff: string }, json: boolean | undefined): void {
   if (json) console.log(JSON.stringify({ ok: true, applied: false, preview }));
   else console.log(`${preview.diff}\nTo apply this exact change, repeat the command with --apply --expect ${preview.revision}`);
