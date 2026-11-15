@@ -123,6 +123,16 @@ describe("location and identity", () => {
     expect(recordLocation({ ...options, isNetwork: () => { throw Error("cached"); } })).toEqual(fallback);
     expect(queries).toBe(2);
   });
+  it.skipIf(process.platform !== "win32")("treats the system drive as local without the drive query", () => {
+    const home = temp(), drive = home.slice(0, 2);
+    const other = `${drive.toLowerCase() === "z:" ? "Y" : "Z"}:`;
+    let queries = 0;
+    const driveType = (asked: string) => { queries++; expect(asked).toBe(other); return "4"; };
+    expect(windowsNetworkHome(home, { realPath: () => home, driveType, systemDrive: drive.toUpperCase() })).toBe(false);
+    expect(queries).toBe(0);
+    expect(windowsNetworkHome(home.replace(/^[A-Za-z]:/u, other), { realPath: (path) => path, driveType, systemDrive: drive })).toBe(true);
+    expect(queries).toBe(1);
+  });
   it("uses an isolated local cache for a network home and follows the cached pointer on second open", () => {
     const home = temp(); const cache = temp(); let calls = 0;
     const options = { home, cache, isNetwork: () => { calls++; return true; } };

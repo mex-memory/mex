@@ -4,6 +4,7 @@ import { refreshOwnUsage, type OwnUsageOptions } from "./own-usage.js";
 import "../telemetry/reporting.js";
 import "../file-index/job.js";
 import "../knowledge/native-job.js";
+import "../repo-start/history/job.js";
 
 /**
  * Built-in job kinds. Later tickets add theirs (learning, judging, graph builds) the

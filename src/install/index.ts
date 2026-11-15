@@ -12,6 +12,8 @@ import { launcherFile } from "../hooks/shim/launcher.js";
 import { assertUntracked, equalSnapshot, installPath, MAX_RUNTIME_BYTES, MAX_SETTINGS_BYTES, readSnapshot, replaceFile, samePath, snapshotBytes, type Snapshot } from "./files.js";
 import { agentSettings, CODEX_TRUST_NOTICE, installSettings, isLegacyHandler, parseSettings, removeHandlers, type Agent, type HookCommand } from "./settings.js";
 import { decodeSnapshot, restoreSettings } from "./recovery.js";
+import { journaledExcludeFiles, restoreExcludeBlocks } from "../repo-start/exclude.js";
+import { journaledMarkers, restoreFolderMarkers } from "../repo-start/folder.js";
 
 const PREFIX = "file-v1:";
 const MAX_CHANGES = 512;
@@ -188,6 +190,16 @@ export function installationChanges(options: LocationOptions = {}): InstallRow[]
   } finally { reader.close(); }
 }
 
+/** Exclude files in repositories where `mex` hid `.mex/`; uninstall removes MEX's blocks from them. */
+export function excludeChanges(options: LocationOptions = {}): string[] {
+  const reader = openRecordReadOnly(options);
+  if (!reader) return [];
+  try {
+    if (reader.diagnostic) throw new Error(reader.diagnostic);
+    return [...journaledExcludeFiles(reader), ...journaledMarkers(reader)];
+  } finally { reader.close(); }
+}
+
 function installationRunner(options: LocationOptions): string | undefined {
   const reader = openRecordReadOnly(options);
   try { return reader?.setting("global", "install.runner"); }
@@ -217,6 +229,11 @@ export async function uninstallAgents(options: LocationOptions & { purge?: boole
   try {
     await withContainedArtifactLock(location.home, "install", ".install.lock", () => {
       writer.db.prepare("UPDATE background SET request='exit' WHERE id=1 AND owner IS NOT NULL").run();
+      // Repository exclude-file blocks don't depend on the hooks; undo them first.
+      for (const undone of [restoreExcludeBlocks(writer), restoreFolderMarkers(writer)]) {
+        result.restored.push(...undone.restored);
+        result.conflicts.push(...undone.conflicts);
+      }
       const rows = activeRows(writer);
       const settings = rows.filter(row => row.key === `${PREFIX}settings`);
       const runtime = rows.filter(row => row.key !== `${PREFIX}settings`);
@@ -229,7 +246,7 @@ export async function uninstallAgents(options: LocationOptions & { purge?: boole
           result.restored.push(row.path);
         } catch { blockedPaths.add(row.path); result.conflicts.push(row.path); }
       }
-      if (result.conflicts.length) return; // Keep every runner until hooks are safely removed.
+      if (blockedPaths.size) return; // Keep every runner until hooks are safely removed.
       for (const row of runtime) {
         if (blockedPaths.has(row.path)) continue;
         try {

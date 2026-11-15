@@ -8,6 +8,7 @@ import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJo
 import "./job-kinds.js";
 import { sendUsageReports } from "../telemetry/reporting.js";
 import { indexPending, queuePendingRefreshes } from "../file-index/pending.js";
+import { queueStaleCodeFacts } from "../repo-start/history/freshness.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
@@ -148,6 +149,8 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     try {
       const child = spawn(process.execPath, [`--max-old-space-size=${settings.memoryMb}`, entry, ...(options.args ?? ["__background"])], {
         detached: true, windowsHide: true, stdio: ["ignore", log, log],
+        // Never the folder `mex` ran in: on Windows a process's working folder can't be deleted or renamed.
+        cwd: writer.location.home,
         env: { ...(options.env ?? process.env), MEX_BACKGROUND: "1", ...(options.home ? { MEX_RECORD_HOME: options.home } : {}) },
       });
       child.on("error", () => { /* reported through the lease never appearing */ });
@@ -242,6 +245,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     if (recovered) log(`resumed ${recovered} interrupted job${recovered === 1 ? "" : "s"}`);
     let lastWork = clock();
     let lastTelemetry = -Infinity;
+    let lastFreshness = -Infinity;
     for (;;) {
       if (!backgroundEnabled(writer)) return stop("disabled");
       if (!held || !beat()) return stop("lease-lost");
@@ -255,6 +259,11 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       requeueReadyJobs(writer);
       // Files the hook saw edited get re-parsed.
       queuePendingRefreshes(writer);
+      // Code facts follow new commits: re-read a project's history once its HEAD has moved.
+      if (clock() - lastFreshness >= 60_000) {
+        lastFreshness = clock();
+        try { queueStaleCodeFacts(writer, queueJob, clock()); } catch { /* a missed pass waits for the next one */ }
+      }
       const outcome = await runOneBatch(writer, self);
       if (outcome === "ran") { lastWork = clock(); continue; }
       const hubOpen = row.hub_until !== null && Date.parse(row.hub_until) > clock();

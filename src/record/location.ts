@@ -49,21 +49,29 @@ export function isNetworkHome(home: string): boolean {
 }
 
 export const WINDOWS_NETWORK_QUERY_TIMEOUT_MS = 5000;
-/** Native realpath commonly expands a mapped drive to UNC, avoiding PowerShell entirely. */
+/**
+ * Native realpath commonly expands a mapped drive to UNC, avoiding PowerShell entirely.
+ * Windows boots from its system drive, so that drive is local without asking: the PowerShell
+ * query takes most of a second, and the home is on the system drive for nearly everyone.
+ */
 export function windowsNetworkHome(home: string, probe: {
   realPath: (path: string) => string;
   driveType: (drive: string, timeout: number) => string;
+  systemDrive?: string;
 } = {
   realPath,
   driveType: (drive, timeout) => execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
     `(Get-CimInstance Win32_LogicalDisk -Filter \"DeviceID='${drive}'\").DriveType`],
     { encoding: "utf8", timeout, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }),
+  systemDrive: process.env.SystemDrive,
 }): boolean {
   if (home.startsWith("\\\\")) return true;
   let existing = home;
   while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
   try { if (probe.realPath(existing).startsWith("\\\\")) return true; } catch { /* Try the drive query. */ }
-  return probe.driveType(parse(home).root.slice(0, 2), WINDOWS_NETWORK_QUERY_TIMEOUT_MS).trim() === "4";
+  const drive = parse(home).root.slice(0, 2);
+  if (/^[A-Za-z]:$/u.test(drive) && probe.systemDrive?.toLowerCase() === drive.toLowerCase()) return false;
+  return probe.driveType(drive, WINDOWS_NETWORK_QUERY_TIMEOUT_MS).trim() === "4";
 }
 
 /** macOS mount output includes the filesystem name; BSD stat's %T does not. */
