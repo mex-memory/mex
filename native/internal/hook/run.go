@@ -70,6 +70,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return checkRun(stdin, stdout)
 		case "--delivery-probe":
 			return deliveryProbe(stdin, stdout)
+		case "--brief-run":
+			return briefRun(stdin, stdout)
 		}
 	}
 
@@ -157,7 +159,14 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			observe[0](agent, sessionStart, failed)
 		}
 	}()
+	var instruction *adapter.InstructionLoad
 	ev, err := profile.Parse(nativeEvent, payload)
+	if observer, ok := profile.(adapter.InstructionObserver); ok && err != nil {
+		load, handled, loadErr := observer.ParseInstructionLoad(nativeEvent, payload)
+		if handled {
+			ev, err, instruction = load.Event, loadErr, &load
+		}
+	}
 	if err != nil {
 		failed = true
 		return profile.EmptyReply(nativeEvent)
@@ -216,6 +225,10 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		}
 		out, _ := profile.Render(ev, reply)
 		return out
+	}
+	if instruction != nil {
+		observeInstruction(ev, h, recordDirectory, instruction.Path)
+		return profile.EmptyReply(nativeEvent)
 	}
 
 	if ev.Kind == contract.SessionStart {

@@ -48,8 +48,11 @@ type DeliveryRequest struct {
 	Budget        int
 	Now           time.Time
 	Candidates    []DeliveryCandidate
-	Aliases       map[string]string
-	Admit         func(Epoch, DeliveryCandidate) bool
+	// OnceEntry makes the whole batch conditional on its epoch marker being
+	// absent, so a resume cannot send a newly rebuilt start brief.
+	OnceEntry string
+	Aliases   map[string]string
+	Admit     func(Epoch, DeliveryCandidate) bool
 	// KeepSession conservatively protects file-heartbeat sessions whose
 	// no-op calls deliberately do not open SQLite. Called at most 64 times.
 	KeepSession func(agent, sessionID string) bool
@@ -238,6 +241,9 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	block, err := receiptID()
 	if err != nil {
 		return result, err
+	}
+	if req.OnceEntry != "" && present[req.OnceEntry] {
+		req.Candidates = nil
 	}
 	for _, c := range req.Candidates {
 		if c.EntryID == "" || len(c.EntryID) > 128 || strings.ContainsRune(c.EntryID, 0) || len(c.ContentHash) > 256 || strings.ContainsRune(c.ContentHash, 0) || c.Tokens < 0 || c.Tokens > 1000000 {

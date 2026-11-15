@@ -483,3 +483,16 @@ func (reader *Reader) Setting(scope, key string) (string, bool, error) {
 	}
 	return value, err == nil, err
 }
+
+// HasSetting reads a bounded presence bit without materializing an arbitrary
+// settings value. Personal-note tombstones use it on the delivery boundary.
+func (reader *Reader) HasSetting(scope, key string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), reader.budget.reader)
+	defer cancel()
+	var found int
+	err := reader.db.QueryRowContext(ctx, "SELECT 1 FROM settings WHERE scope=? AND key=?", scope, key).Scan(&found)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}

@@ -9,7 +9,7 @@ an entry, so an agent can be given what it doesn't load itself.
 | --- | --- | --- | --- |
 | `CLAUDE.md`, `CLAUDE.local.md` (any folder) | claude | Claude Code | Its folder |
 | `.claude/rules/**/*.md` | claude-rules | Claude Code | `paths:`, else all |
-| `AGENTS.md`, `AGENTS.override.md` (any folder) | agents | Codex, Cursor, Copilot; OpenCode at the root only; Claude Code where the folder has no `CLAUDE.md` | Its folder |
+| `AGENTS.md`, `AGENTS.override.md` (any folder) | agents | Codex, Cursor, Copilot; OpenCode at the root only; Claude Code uses `AGENTS.md` where the folder has no `CLAUDE.md` or `CLAUDE.local.md` | Its folder |
 | `.cursor/rules/**/*.mdc`, `.cursorrules` | cursor | Cursor | `globs:` unless `alwaysApply` |
 | `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md` | copilot | Copilot | `applyTo:` |
 | `GEMINI.md` (any folder) | gemini | Gemini CLI | Its folder |
@@ -17,6 +17,8 @@ an entry, so an agent can be given what it doesn't load itself.
 Files are what git lists, so ignored files are skipped. A file containing
 `<!-- mex:generated` is MEX's own output and is never read back. MEX's managed
 blocks (`<!-- mex-agent:…:start -->` … `end`) inside a file are left out.
+Linked files and redirected parent folders are skipped. Reads have a 256 KiB
+per-file bound; a scan accepts at most 200 rule files.
 
 ## Entries
 
@@ -80,7 +82,7 @@ Codex with `AGENTS.md` or `.codex/`, or Codex hooks that ran here.
 MEX never creates `CLAUDE.md` or `CLAUDE.local.md` and never writes into a
 file it didn't generate. Every generated file starts with
 `<!-- mex:generated … -->` and lists each entry's text with its id as an HTML
-comment. Caps: 6 KiB for a Claude rules file, 8 KiB for a generated
+comment (`<!-- mex:<entry id> -->`). Caps: 6 KiB for a Claude rules file, 8 KiB for a generated
 AGENTS.md (Codex reads 32 KiB along a path); the weakest entries are left
 out first, and the output says so.
 
@@ -97,12 +99,13 @@ files, and keeps edited generated files when their ownership cannot be verified.
   listed in git's exclude file inside a MEX block, so they stay out of git.
 - A generated file a person edited is kept as it is, never overwritten or
   deleted. A generated file no longer needed is deleted only if unchanged.
-- Nothing is written while a session runs in the checkout (a heartbeat in the
-  last 10 minutes). The `native-files` background job waits for the session to
-  end. `mex rules --write --now` overrides this.
+- Background rebuilds wait while a session runs in the checkout (a heartbeat in
+  the last 10 minutes). The `native-files` job waits for the session to end.
+  `mex rules --write --now` explicitly overrides this.
 - A team entry change (`mex edit`, `mex wrong`, `mex forget` with `--apply`)
   rebuilds the shared files at once, so the entry, its rule file and the
-  manifest are one working-tree change. Personal note changes queue the
+  manifest are one working-tree change, including during an active session.
+  This explicit-edit exception is intentional; personal note changes queue the
   background job.
 
 # Sharing
@@ -143,3 +146,55 @@ is created, with its step. A share stopped partway is reported by the next
 
 Cleanup never forces: `git worktree remove` without `--force`, and it stops,
 naming the path, at any link or junction inside the worktree.
+The progress record binds the approved notes and exact written file hashes.
+Recovery refuses changed notes or outputs and preserves extra files, including
+ignored additions. Only the exact share outputs are force-added to the index,
+because setup's excludes are shared between worktrees. Cleanup never uses force.
+
+# Session-start brief and native coverage
+
+`mex brief --agent claude-code|codex [--path apps/api/main.ts] [--json]`
+previews the hook's projection without scanning, rebuilding, registering a
+checkout, creating storage, or writing delivery receipts. It requires the native
+check evaluator. `--path` asks about an area relative to the checkout root.
+
+The brief starts with the priority line, then eligible personal notes, then at
+most three area one-liners. Claims are kept whole or left out. The hard cap is
+300 tokens, enforced using a conservative UTF-8-byte upper bound that includes
+labels, ids, separators, and room for the real delivery block marker. The
+reported `token_bound` is an upper bound, not a tokenizer measurement.
+
+Canonical entries are parsed through the delivery controller's schema-v2 codec
+and evaluated against current files. Broken entries, changed team recipes, hints,
+retired personal notes, and rule-file Review conflicts are withheld. Team area
+claims need strong evidence. Companions travel together or wait together.
+
+The controller records the brief and its priority marker through its existing
+schema-v2 `CheckAndMark` transaction. A repeated startup in the same session
+cannot introduce a new brief, including during concurrent starts. Resume and
+compaction use the controller's correction and recovery paths, rather than
+generating a fresh start brief.
+
+The JSON preview includes the coverage map: actual native file path, exact hash,
+entry ids, agents and scope. Generated files count only while the current bytes
+match their shared or local manifest. Imported rules count only while their
+cached checkout and source hashes still match. Overrides, hand edits, missing
+files and path-scoped Claude rules are rechecked. Claude's `InstructionsLoaded`
+event can add session-local observations for known instruction files; it never
+saves instruction text or changes canonical entries.
+
+Codex runtime coverage follows the actual session working directory and its
+32 KiB cumulative ancestor instruction budget. An API-area session loads the
+API's generated `AGENTS.md`; reading an API file from a root session does not
+prove it loaded that nested file. Delivery therefore remains available in that
+case. Preview coverage describes the requested area; the live hook additionally
+applies the host CWD. Custom host instruction settings can narrow what a host
+loads, so the map assumes the supported default loading behavior.
+
+The opt-in `scripts/acceptance/start-brief.mjs --prepare` creates disposable
+fixtures without model calls. After explicit live-test approval, `--run <manifest>`
+checks native loading and a next-session personal note in both CLIs, verifies
+receipts, and retains local transcripts and footprint bounds. `--resume` keeps
+successful evidence and retries incomplete cases with a combined native/note
+check. It uses existing CLI authentication, fixture-local or invocation-local
+hook settings, and no user settings writes.

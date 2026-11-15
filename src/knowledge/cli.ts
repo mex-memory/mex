@@ -226,7 +226,17 @@ export function buildKnowledgeCommands(): Command[] {
       if (plan.share.length) lines.push("", "Leave one out with --skip <id>. To share exactly this:", `  mex share --apply --expect ${plan.revision}    (add --pr to open a pull request)`);
       console.log(lines.join("\n"));
     }));
-  return [save, search, full, change, ...retire, hints, rules, share];
+  const brief = new Command("brief")
+    .description("Preview the session-start brief and native coverage without recording a delivery")
+    .addOption(new Option("--agent <agent>", "Recipient agent").choices(["claude-code", "codex"]).makeOptionMandatory())
+    .option("--path <path>", "Area or file within this checkout")
+    .option("--json", "Include the coverage map and conservative token bound")
+    .action(async opts => run(opts.json, async () => {
+      const { previewBrief } = await import("./brief.js");
+      const result = previewBrief({ projectPath: process.cwd() }, opts.agent, opts.path);
+      console.log(opts.json ? JSON.stringify(result) : result.text);
+    }));
+  return [save, search, full, change, ...retire, hints, rules, share, brief];
 }
 /** After a share: the pull request, or the push command (MEX doesn't push on its own). */
 function nextStep(done: { branch: string; pr?: string }): string {
