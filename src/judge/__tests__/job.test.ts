@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { openRecord, type RecordWriter } from "../../record/index.js";
 import { enqueueJob, registerJobKind, runOneBatch, requeueReadyJobs, requestJob, type JobRow } from "../../record/jobs.js";
 import { runModel, ModelWaitError, type ModelRequest, type ModelResult } from "../../model-runner/index.js";
@@ -34,9 +35,9 @@ function add(id: string, path = "src/api.ts", verdict: "changed" | "broken" | "h
   report.results!.push({ entry_id: id, verdict, checks: [{ index: 0, kind: "source", role, status: verdict === "broken" ? "fail" : "pass" }] });
   return file;
 }
-function queue(near = ["src/api.ts"]) {
+function queue(near = ["src/api.ts"], sessionId?: string) {
   registerJobKind(createJudgeKind(deps));
-  return enqueueJob(writer, { kind: "judge", projectId, params: { checkout: root, agent: "claude", near } }).job.id;
+  return enqueueJob(writer, { kind: "judge", projectId, params: { checkout: root, agent: "claude", near, ...(sessionId ? { sessionId } : {}) } }).job.id;
 }
 function evaluated(): NativeReport {
   const current = structuredClone(report);
@@ -78,6 +79,23 @@ beforeEach(() => {
 afterEach(() => { writer.close(); vi.unstubAllEnvs(); rmSync(base, { recursive: true, force: true }); });
 
 describe("judge job and queue", () => {
+  it.each(["before", "during"])("honors a session pause %s a model call", async when => {
+    add("mx_paused0");
+    const hooks = new DatabaseSync(writer.location.hooks);
+    try {
+      hooks.exec("CREATE TABLE sessions(session_id TEXT,agent TEXT,paused INTEGER); CREATE TABLE epoch_files(path TEXT,project_id TEXT,checkout TEXT,session_id TEXT,epoch INTEGER); PRAGMA user_version=6");
+      hooks.prepare("INSERT INTO sessions VALUES('editing','claude-code',?)").run(when === "before" ? 1 : 0);
+      if (when === "during") deps.model = vi.fn(async request => { hooks.exec("UPDATE sessions SET paused=1"); return answer(request); });
+      const id = queue(["src/api.ts"], "editing"); await run(id);
+      expect(deps.model).toHaveBeenCalledTimes(when === "before" ? 0 : 1);
+      expect(readJudgement(writer, projectId, root, "mx_paused0")).toBeUndefined();
+      await run(id); expect(row(id).state).toBe("waiting");
+      hooks.exec("UPDATE sessions SET paused=0");
+      deps.model = vi.fn(async request => answer(request)); registerJobKind(createJudgeKind(deps));
+      requestJob(writer, id, "resume");
+      expect((await finish(id)).state).toBe("done"); expect(deps.model).toHaveBeenCalledTimes(1);
+    } finally { hooks.close(); }
+  });
   it("keeps legacy evidence without a file out of the changed source's file baselines", async () => {
     const file = add("mx_legacy01"), value = parseEntry(readFileSync(file, "utf8"));
     value.mex.checks.push({ kind: "legacy-grounding", role: "supporting", target: { node: "function:deadbeef" },
@@ -199,6 +217,14 @@ describe("judge job and queue", () => {
     expect(readJudgement(writer, projectId, root, "mx_rewrite")).toMatchObject({ result: "rewritten", rewrite: { text: "The new behavior includes the caller.", mex: { checks: [{ files: { "src/api.ts": current } }] } } });
     expect(readFileSync(file, "utf8")).toBe(before);
     expect(git("status", "--porcelain")).not.toContain("M .mex");
+    // Upgrade from slice 1: only the judgement existed. Routing it must not
+    // spend again, and still must not touch an unrelated team branch.
+    writer.db.prepare("DELETE FROM settings WHERE key LIKE 'judge.fix.%' OR key LIKE 'judge.routes.%'").run();
+    writer.db.exec("DELETE FROM review");
+    await finish(queue());
+    expect(deps.model).toHaveBeenCalledTimes(1);
+    expect(writer.db.prepare("SELECT count(*) n FROM review").get()!.n).toBe(1);
+    expect(readFileSync(file, "utf8")).toBe(before);
   });
   it("cannot certify a rewrite whose proposed checks cannot be recorded", async () => {
     add("mx_badcheck");

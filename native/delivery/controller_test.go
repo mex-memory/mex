@@ -18,6 +18,10 @@ func TestLifecyclePayloads(t *testing.T) {
 	for _, agent := range []string{"claude-code", "codex"} {
 		t.Run(agent, func(t *testing.T) {
 			dir := t.TempDir()
+			db := fixtureHooksDB(t, dir)
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
 			profile, _ := adapter.Lookup(agent)
 			for _, tc := range []struct {
 				event, source, child string
