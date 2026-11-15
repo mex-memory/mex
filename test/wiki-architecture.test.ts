@@ -342,6 +342,10 @@ const GRAPH_IMPORT_ALLOWANCES: ReadonlyArray<{ file: string | null; allows: stri
   { file: null, allows: "src/graph/grounding" },
   { file: "src/wiki/query/budget.ts", allows: "src/graph/agent-protocol" },
   { file: "src/wiki/grounding/baseline.ts", allows: "src/graph/fingerprint-store" },
+  // Comparing authored bytes is not a Graph read. The upgrade reader must
+  // retain the Markdown decoder without loading the adapter's stores. Its
+  // recursive legacy-boundary test additionally pins this pure codec closure.
+  { file: "src/wiki/markdown/grounding-stores.ts", allows: "src/graph/fingerprint.js" },
 ];
 
 export function findGraphSeamViolations(path: string, source: string): string[] {
@@ -615,6 +619,15 @@ describe("one door onto the code graph", () => {
     ).toHaveLength(1);
     expect(
       findGraphSeamViolations("src/wiki/grounding/resolve.ts", 'import { FingerprintStore } from "../../graph/fingerprint-store.js";'),
+    ).toHaveLength(1);
+    expect(
+      findGraphSeamViolations("src/wiki/markdown/grounding-stores.ts", 'import { sameFingerprint } from "../../graph/fingerprint.js";'),
+    ).toEqual([]);
+    expect(
+      findGraphSeamViolations("src/wiki/markdown/grounding-stores.ts", 'import { GraphStore } from "../../graph/db/store.js";'),
+    ).toHaveLength(1);
+    expect(
+      findGraphSeamViolations("src/wiki/query/for-code.ts", 'import { sameFingerprint } from "../../graph/fingerprint.js";'),
     ).toHaveLength(1);
   });
 
