@@ -2,13 +2,13 @@
 import { createHash } from "node:crypto";
 import { existsSync, opendirSync } from "node:fs";
 import { join } from "node:path";
-import { openRecord } from "../record/index.js";
+import { openRecord, openRecordReadOnly } from "../record/index.js";
 import { EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readEntryFile } from "./files.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { teamEntries, prepareTeamWrite, applyTeamWrite, type TeamPreview } from "./team.js";
 import { replacePersonalFields } from "./mutations.js";
-import { corpusDigest, filterAids, normalizeAid, withAids, nativeAidRanker, type AidKind, type AidRanker, type AidSource, type AidVerdict } from "./aids.js";
+import { corpusDigest, filterAids, normalizeAid, refilterCorpus, withAids, nativeAidRanker, type AidKind, type AidRanker, type AidSource, type AidVerdict } from "./aids.js";
 
 export interface CorpusItem { level: "personal" | "team"; entry: KnowledgeEntry; }
 
@@ -60,7 +60,10 @@ export function recordAidVerdicts(options: KnowledgeOptions, verdicts: readonly 
         upsert.run(projectId, v.entry, v.kind, v.text.slice(0, 120), v.kept ? 1 : 0, v.reason.slice(0, 256), v.score ?? null, v.margin ?? null, v.top ?? null, v.review ? 1 : 0, source, corpus, at);
         if (v.review) {
           const id = `aid-${createHash("sha256").update(`${projectId}\n${v.entry}\n${v.kind}\n${v.text.toLowerCase()}`).digest("hex").slice(0, 24)}`;
-          review.run(id, projectId, v.entry, `The ${v.kind} "${v.text}" is also kept by ${v.top}; keep it on one of them.`.slice(0, 512), at);
+          const why = v.reason.startsWith("no longer passes")
+            ? `The ${v.kind} "${v.text}" ${v.reason}; remove it from the team entry or reword it.`
+            : `The ${v.kind} "${v.text}" is also kept by ${v.top}; keep it on one of them.`;
+          review.run(id, projectId, v.entry, why.slice(0, 512), at);
         }
       }
       writer.db.exec("COMMIT");
@@ -103,4 +106,40 @@ export function changeAid(change: AidChange, options: KnowledgeOptions, apply?: 
   const preview = prepareTeamWrite(changed, options);
   if (!apply) return { level: "team", preview, entry: changed, verdict, changed: false };
   return { level: "team", entry: applyTeamWrite(preview, apply.expect, options).entry, verdict, changed: true };
+}
+
+export interface AidRefresh { checked: number; changed: string[]; review: string[]; }
+/**
+ * Rerun the filter over every entry with aids when what it ranks against
+ * changed since the last verdicts. A personal note whose aid no longer passes
+ * loses it; a team entry is never edited in the background, so its failing aid
+ * goes to Review instead.
+ */
+export function refreshAids(options: KnowledgeOptions, rank: AidRanker = nativeAidRanker): AidRefresh {
+  const { projectId, items } = aidCorpus(options);
+  const corpus = items.map(i => i.entry);
+  const out: AidRefresh = { checked: 0, changed: [], review: [] };
+  if (!corpus.some(e => e.mex.aliases?.length || e.mex.asks?.length)) return out;
+  const digest = corpusDigest(corpus);
+  const reader = openRecordReadOnly(options);
+  let last: string | undefined;
+  try { last = reader?.get<{ corpus: string }>("SELECT corpus FROM aid_verdicts WHERE project_id=? ORDER BY decided_at DESC LIMIT 1", projectId)?.corpus; }
+  finally { reader?.close(); }
+  if (last === digest) return out;
+  const level = new Map(items.map(i => [i.entry.mex.id, i.level]));
+  const verdicts: AidVerdict[] = [];
+  for (const { entry, result, changed } of refilterCorpus(corpus, rank)) {
+    out.checked++;
+    const team = level.get(entry.mex.id) === "team";
+    for (const v of result.verdicts) {
+      if (team && !v.kept && !v.review) Object.assign(v, { review: true, top: v.top ?? entry.mex.id, reason: `no longer passes: ${v.reason}` });
+      verdicts.push(v);
+    }
+    if (!changed) continue;
+    if (team) { out.review.push(entry.mex.id); continue; }
+    replacePersonalFields(entry.mex.id, current => withAids(current, result.aliases, result.asks), options);
+    out.changed.push(entry.mex.id);
+  }
+  recordAidVerdicts(options, verdicts, "filter", digest);
+  return out;
 }

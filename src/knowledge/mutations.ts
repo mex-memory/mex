@@ -87,7 +87,7 @@ export function edit(id: string, input: NoteInput, options: KnowledgeOptions, no
 /** Retire locally in one durable transaction; restored old Markdown stays hidden. */
 export function forget(id: string, reason: string, options: KnowledgeOptions, now = new Date(), action: "forget" | "wrong" = "forget"): Tombstone {
   assertId(id);
-  const before = personalSnapshot(id, options, knowledgeProject(options), undefined, false);
+  const before = personalSnapshot(id, options, knowledgeProject(options), undefined, false, true);
   reason = stripHidden(reason);
   if (hasSecret(reason)) throw new KnowledgeError("SECRET_FOUND", "The retirement reason contains a possible secret.");
   const retired = { reason, by: `mex ${action}`, at: now.toISOString().slice(0, 10) };
@@ -95,7 +95,7 @@ export function forget(id: string, reason: string, options: KnowledgeOptions, no
   const writer = openRecord(options);
   try {
     writer.db.exec("BEGIN IMMEDIATE");
-    const found = current(writer, options, id);
+    const found = current(writer, options, id, ["active", "proposed"]);
     const marker = saveTombstone(writer, found.projectId, found.entry, retired);
     writer.db.exec("COMMIT");
     return marker;

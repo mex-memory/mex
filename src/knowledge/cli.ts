@@ -78,7 +78,7 @@ export function buildKnowledgeCommands(): Command[] {
         if (opts.json) console.log(JSON.stringify({ ok: true, ...item }));
         else {
           const { serializeEntry } = await import("./entry.js");
-          console.log(`${item.label}${item.level === "team" && item.branch !== "default" ? " [not verified on default branch]" : ""}\n${serializeEntry(item.entry)}`);
+          console.log(`${item.label}${item.entry.mex.status === "proposed" ? " [not yet accepted]" : ""}${item.level === "team" && item.branch !== "default" ? " [not verified on default branch]" : ""}\n${serializeEntry(item.entry)}`);
         }
       });
     });

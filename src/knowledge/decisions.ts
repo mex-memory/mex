@@ -8,12 +8,12 @@
  * comes into force.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openRecord, type RecordWriter } from "../record/index.js";
 import type { KnowledgeEntry } from "./entry.js";
 import type { KnowledgeOptions } from "./context.js";
-import { aidCorpus, type CorpusItem } from "./aid-store.js";
+import { aidCorpus, refreshAids, type CorpusItem } from "./aid-store.js";
 
 /** Phrases that mark a commit message as recording a choice. Kept equal to the hook's list. */
 export const DECISION_WORDS = [
@@ -197,6 +197,13 @@ export function noteDecisionCommit(recordDirectory: string, projectId: string, g
 }
 
 const lastSeen = new Map<string, string>();
+const lastEntries = new Map<string, string>();
+/** Folder times of a checkout's entry stores: they change when an entry is added, replaced or removed. */
+function entryStamp(home: string, projectId: string, path: string): string {
+  return [join(home, "projects", projectId, "notes"), join(path, ".mex", "learned")].map(dir => {
+    try { const s = statSync(dir); return `${s.mtimeMs}`; } catch { return "-"; }
+  }).join("|");
+}
 /**
  * The background process's pass, once a minute: for each switched-on checkout
  * whose HEAD or default branch moved, note a decision-like HEAD commit for the
@@ -210,6 +217,12 @@ export function decisionPass(writer: RecordWriter, maxCheckouts = 32, gitFor: (r
     const git = gitFor(path);
     const ref = defaultRef(git);
     const marker = `${git(["rev-parse", "-q", "--verify", "HEAD"])?.trim() ?? ""}|${ref ? git(["rev-parse", "-q", "--verify", ref])?.trim() ?? "" : ""}`;
+    // Aliases and asks are rechecked when the entries or the checkout moved.
+    const entries = `${entryStamp(writer.location.home, projectId, path)}|${marker}`;
+    if (lastEntries.get(path) !== entries) {
+      lastEntries.set(path, entries);
+      try { refreshAids({ projectPath: path, home: writer.location.home }); } catch { /* the next change retries */ }
+    }
     if (lastSeen.get(path) === marker) continue;
     lastSeen.set(path, marker);
     read++;

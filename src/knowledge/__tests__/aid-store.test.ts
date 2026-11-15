@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openRecordReadOnly } from "../../record/index.js";
 import { note } from "../store.js";
-import { changeAid } from "../aid-store.js";
+import { changeAid, refreshAids } from "../aid-store.js";
+import { expand } from "../store.js";
 import { applyEnrich, planEnrich, runEnrich } from "../enrich.js";
 import type { AidRanker } from "../aids.js";
 
@@ -66,5 +67,27 @@ describe("mex entries enrich", () => {
     expect(done).toEqual({ written: [a], stale: [] });
     expect(planEnrich(options()).entries.map(e => e.id)).toEqual([b]);
     expect(() => applyEnrich(options(), preview.revision)).toThrow(/--run first/u);
+  });
+});
+
+describe("rerunning the filter when the corpus changes", () => {
+  it("drops a personal alias that a new entry now owns, once, and leaves an unchanged corpus alone", () => {
+    const id = note({ text: "Webhook retries back off, because providers rate-limit." }, options()).entry.mex.id;
+    expect(changeAid({ id, kind: "alias", op: "add", text: "release storm" }, options(), undefined, byFirstWord).changed).toBe(true);
+    expect(refreshAids(options(), byFirstWord)).toEqual({ checked: 1, changed: [], review: [] });
+    expect(refreshAids(options(), byFirstWord)).toEqual({ checked: 0, changed: [], review: [] });
+    note({ text: "Release builds run nightly, because the registry rate-limits." }, options());
+    expect(refreshAids(options(), byFirstWord)).toEqual({ checked: 1, changed: [id], review: [] });
+    expect(expand(id, options()).entry.mex.aliases).toBeUndefined();
+  });
+});
+
+describe("proposed decisions in the personal store", () => {
+  it("can be expanded and retired, but not edited", async () => {
+    const { edit, forget } = await import("../mutations.js");
+    const id = note({ text: "Dates use date-fns.", kind: "decision", commit: { sha: "a".repeat(40) } }, options()).entry.mex.id;
+    expect(expand(id, options()).entry.mex.status).toBe("proposed");
+    expect(() => edit(id, { text: "Dates use luxon." }, options())).toThrow();
+    expect(forget(id, "wrong commit", options()).id).toBe(id);
   });
 });

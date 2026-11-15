@@ -62,18 +62,19 @@ function load(directory: string, id: string): KnowledgeEntry | undefined {
   if (entry.mex.id !== id) throw new KnowledgeError("INVALID_ENTRY", "Entry id does not match its filename.");
   return entry.mex.status === "active" ? entry : undefined;
 }
-export function personalSnapshot(id: string, options: KnowledgeOptions, project = knowledgeProject(options), source?: References, gated = true) {
+/** proposed: also read a decision that isn't in force yet (to show or retire it, never to edit its claim). */
+export function personalSnapshot(id: string, options: KnowledgeOptions, project = knowledgeProject(options), source?: References, gated = true, proposed = false) {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Expected a stable entry id such as mx_7f3k2a.");
   const directory = readDirectory(project);
   const content = directory && !project.retired.has(id) && readEntryFile(join(directory, `${id}.md`));
   if (!directory || !content) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
   const entry = parseEntry(content);
   if (entry.mex.id !== id) throw new KnowledgeError("INVALID_ENTRY", "Entry id does not match its filename.");
-  if (entry.mex.status !== "active") throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
+  if (entry.mex.status !== "active" && !(proposed && entry.mex.status === "proposed")) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
   return { ...display(gated ? gateEntry(entry, source ?? references(project.root)) : entry), directory, content };
 }
 export function expandPersonal(id: string, options: KnowledgeOptions, project = knowledgeProject(options), source?: References): PersonalEntry {
-  const { level, label, entry } = personalSnapshot(id, options, project, source);
+  const { level, label, entry } = personalSnapshot(id, options, project, source, true, true);
   return { level, label, entry };
 }
 export function expand(id: string, options: KnowledgeOptions): StoredEntry {
