@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openRecord, type RecordWriter } from "../../record/index.js";
-import { shortHash } from "../../record/project.js";
+import { realPath, shortHash } from "../../record/project.js";
 import { enqueueJob, registerJobKind } from "../../record/jobs.js";
 import { judgePending, queuePendingJudgements } from "../pending.js";
 import "../job.js";
@@ -15,7 +15,7 @@ function mark(over = {}) {
   writeFileSync(path, JSON.stringify({ version: 1, project_id: writer.checkout(root)!.project_id, checkout: root, agent: "codex", reason: "start", generation: "1", near: ["src/api.ts"], not_before: 0, ...over }));
 }
 beforeEach(() => {
-  base = realpathSync(mkdtempSync(join(tmpdir(), "mex-judge-pending-")));
+  base = realPath(mkdtempSync(join(tmpdir(), "mex-judge-pending-")));
   root = join(base, "repo"); mkdirSync(root);
   writer = openRecord({ home: join(base, "home"), projectPath: root, isNetwork: () => false });
   path = join(writer.location.directory, "judge-pending", `${shortHash(root)}.json`);

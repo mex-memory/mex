@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { openRecord, type RecordWriter } from "../../record/index.js";
 import { enqueueJob, type JobRow } from "../../record/jobs.js";
-import { shortHash } from "../../record/project.js";
+import { realPath, shortHash } from "../../record/project.js";
 import { entry } from "../../knowledge/__tests__/fixtures.js";
 import { parseEntry, serializeEntry, type EntryCheck } from "../../knowledge/entry.js";
 import type { NativeReport } from "../../knowledge/check.js";
@@ -23,7 +23,7 @@ const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { 
 const write = (path: string, text: string) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); };
 const check = (baseline: string): EntryCheck => ({ kind: "source", role: "complete", target: { file: "api.ts" }, saw: { hash: hash(baseline) }, files: { "api.ts": hash(baseline) } });
 beforeEach(() => {
-  base = realpathSync(mkdtempSync(join(tmpdir(), "mex-fix-routing-"))); root = join(base, "repo"); home = join(base, "home"); mkdirSync(root);
+  base = realPath(mkdtempSync(join(tmpdir(), "mex-fix-routing-"))); root = join(base, "repo"); home = join(base, "home"); mkdirSync(root);
   git("init", "-q", "-b", "work"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
   write(join(root, "api.ts"), oldCode); git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "baseline");
   write(join(root, "api.ts"), newCode);
