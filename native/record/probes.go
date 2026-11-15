@@ -11,6 +11,22 @@ import (
 // the code, command or prompt that produced an observation.
 func observeProbes(ctx context.Context, c *sql.Conn, req DeliveryRequest, epoch int, stamp string) error {
 	for _, o := range req.Probes {
+		if o.Kind == "edit" || o.Kind == "command" {
+			if !validEffect(o.Detail) || o.EntryID == "" || o.ReceiptID == "" || len(o.EntryID) > 128 || len(o.ReceiptID) > 128 {
+				return errors.New("invalid advice effect")
+			}
+			_, err := c.ExecContext(ctx, `INSERT INTO followups(delivery_id,ts,kind,detail)
+ SELECT d.id,?,?,? FROM deliveries d WHERE d.id=? AND d.entry_id=?
+ AND d.session_id=? AND d.agent_id=? AND d.epoch=? AND d.project_id=? AND d.checkout=?
+ AND d.action IN ('given','replaced') AND d.moment<>'correction'
+ AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.session_id=d.session_id AND x.agent_id=d.agent_id AND x.epoch=d.epoch AND x.entry_id=d.entry_id AND x.moment='correction')
+ AND (SELECT count(*) FROM followups f WHERE f.delivery_id=d.id AND f.kind IN ('edit','command'))<64
+ AND NOT EXISTS(SELECT 1 FROM followups f WHERE f.delivery_id=d.id AND f.kind=? AND f.detail=?)`, stamp, o.Kind, o.Detail, o.ReceiptID, o.EntryID, req.Session.SessionID, req.AgentID, epoch, req.Session.ProjectID, req.Session.Checkout, o.Kind, o.Detail)
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		switch o.Kind {
 		case "followed", "missed", "opened", "wrong":
 		default:

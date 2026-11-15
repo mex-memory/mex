@@ -33,7 +33,7 @@ func followKinds(t *testing.T, f *fixture) map[string]int {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query("SELECT d.entry_id||':'||f.kind FROM followups f JOIN deliveries d ON d.id=f.delivery_id")
+	rows, err := db.Query("SELECT d.entry_id||':'||f.kind FROM followups f JOIN deliveries d ON d.id=f.delivery_id WHERE d.action IN ('held-back','withheld')")
 	if err != nil {
 		t.Fatal(err)
 	}

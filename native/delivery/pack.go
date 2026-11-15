@@ -148,6 +148,7 @@ func requestCandidates(plan []planned) []record.DeliveryCandidate {
 		c := record.DeliveryCandidate{EntryID: p.item.Entry.ID, Moment: p.moment, Form: p.form, Tokens: p.tokens, Reserved: p.reserve, Exempt: p.exempt, Resend: p.resend, ContentHash: contentHash(p.item.Hash + "\n" + p.text)}
 		c.Detail, c.Parent = p.detail, p.parent
 		c.Title, c.Kind, c.Level = p.item.Entry.OneLine, p.item.Entry.Kind, p.item.Level
+		c.EntryHash = p.item.Hash
 		switch {
 		case p.correction:
 			c.Correction, c.Moment, c.Form = true, "correction", "one-line"

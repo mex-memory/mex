@@ -13,6 +13,7 @@ import { resultKey, readJudgement, type Judgement } from "./result.js";
 import { stageFixes, hasPendingFixes, needsRouting, routeFixes, fixPreviewReady, PREVIEW_WAIT } from "./routing.js";
 import { sessionWorkEnabled } from "./session.js";
 import { refreshRuleChanges } from "./rule-change.js";
+import { refreshAdvice, modelAdvice } from "./advice.js";
 export { readJudgement, type Judgement } from "./result.js";
 
 const CheckRequest = z.object({ kind: z.enum(["key", "command", "section", "source", "value", "symbol", "pattern", "relation"]),
@@ -132,6 +133,11 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
       if (rules.snapshot.entries.length || report.items?.some(item=>item.rule_evidence?.length)) report = await deps.evaluate(request(params,writer,projectId));
       state.gaps ||= !!report.problems?.length;
       state.gaps ||= !!report.items?.some(item=>item.rule_evidence_pending);
+      const moreAdvice = await refreshAdvice(writer, projectId, params.checkout, report, at, () => {
+        const current = writer.db.prepare("SELECT state,owner,request FROM jobs WHERE id=?").get(job.id);
+        return allowed(writer, params, projectId) && current?.state === "running" && current.owner === job.owner && current.request === null;
+      });
+      if (moreAdvice) return { checkpoint: state, summary: "Preparing the next page of corrections for advice already used" };
       // Recent touched files refine the request's path proximity without any transcript text.
       const latest = pendingJudgeRequest(writer.location.directory, params.checkout);
       let near = latest?.near ?? params.near;
@@ -238,6 +244,17 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
       });
       if (!sameChecks || !allowed(writer, params, projectId) || !await unchanged(params.checkout, writer.location.home, projectId, batch, snapshot)) {
         return { checkpoint: state, tokens, summary: "Judge response discarded: entry, code, checkout or consent changed" };
+      }
+      // Persist the local correction before publishing routable rewrite state.
+      // A restart cannot apply a fix while skipping advice already used.
+      for (const result of saved) if (result.result === "rewritten") {
+        const candidate = batch.find(c => c.item.id === result.id)!;
+        await modelAdvice(writer, projectId, candidate, params.checkout, at, () => {
+          const current = writer.db.prepare("SELECT state,owner,request FROM jobs WHERE id=?").get(job.id);
+          return allowed(writer, params, projectId) && current?.state === "running" && current.owner === job.owner && current.request === null
+            && readCandidate(candidate.item, params.checkout, writer.location.home, projectId)?.content === candidate.content
+            && snapshot.files.every(f => { const text = readSource(params.checkout, f.path); return (text === null ? null : hash(text)) === f.current_hash; });
+        });
       }
       if (!save(writer, projectId, saved, job, batch, params, sessionId)) return { checkpoint: state, tokens, summary: "Judge ownership or entry eligibility changed; response discarded" };
       return { checkpoint: { ...state, gaps: state.gaps || saved.some(r => r.result === "cannot-tell") }, results: saved.length, tokens,

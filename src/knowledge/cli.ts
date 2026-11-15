@@ -2,6 +2,18 @@ import { Command, Option } from "commander";
 import { ENTRY_KINDS, KnowledgeError } from "./contract.js";
 
 export function buildKnowledgeCommands(): Command[] {
+  const adviceReport = new Command("report").description("Read local advisories about advice already used on this branch")
+    .option("--json", "Print local advisories as JSON")
+    .action(async opts => run(opts.json, async () => {
+      const { adviceReport, formatAdvice } = await import("../judge/advice.js");
+      const result = await adviceReport({ projectPath: process.cwd() });
+      if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
+      else {
+        if (!result.advisories.length) console.log("No local advice advisories on this branch.");
+        for (const item of result.advisories) console.log(formatAdvice(item)+"\n");
+        if (result.partial) console.log("More advisories exist; this view reached its limit.");
+      }
+    }));
   const sessionWhat = new Command("what").description("Read what MEX gave or withheld this session")
  .option("--session <id>","Session identifier").option("--json","Print receipt titles and counts as JSON")
  .action(async opts=>run(opts.json,async()=>{const {what,whatLine}=await import("./what.js");const result=what({projectPath:process.cwd()},opts.session);if(opts.json)console.log(JSON.stringify({ok:true,...result}));else {console.log(whatLine(result));for(const it of result.items)console.log(`${it.action} ${it.id} ${it.title}`);if(result.partial)console.log("More receipts exist; this view reached its work limit.");}}));
@@ -111,8 +123,10 @@ export function buildKnowledgeCommands(): Command[] {
     .option("--apply", "Apply the reviewed team-entry retirement")
     .option("--expect <revision>", "The exact revision printed by the team preview")
     .option("--json", "Print the retirement record as JSON")
+    .option("--all-along", "With wrong: explicitly confirm that every past use is suspect")
     .action(async (id, reason, opts) => {
       await run(opts.json, async () => {
+        if (opts.allAlong && action !== "wrong") throw new KnowledgeError("INVALID_ENTRY", "--all-along is only valid with mex wrong.");
         const { forget, wrong } = await import("./mutations.js");
         const { expand } = await import("./store.js");
         const options = { projectPath: process.cwd() };
@@ -135,6 +149,7 @@ export function buildKnowledgeCommands(): Command[] {
           if (!opts.apply) { printPreview(preview, opts.json); return; }
           if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the team change, then pass --apply --expect <revision>.");
           const saved = applyTeamWrite(preview, opts.expect, options);
+          if (opts.allAlong) await (await import("../judge/advice.js")).wrongAllAlong(id, options);
           if (action === "wrong") (await import("./what.js")).noteProbe(id, "wrong", options);
           const native = await sharedRuleFiles(options);
           if (opts.json) console.log(JSON.stringify({ ok: true, id, level: "team", status: "retired", retired: saved.entry.mex.retired, native }));
@@ -142,6 +157,7 @@ export function buildKnowledgeCommands(): Command[] {
           return;
         }
         const marker = (action === "wrong" ? wrong : forget)(id, reason, { projectPath: process.cwd() });
+        if (opts.allAlong) await (await import("../judge/advice.js")).wrongAllAlong(id, options);
         if (action === "wrong") (await import("./what.js")).noteProbe(id, "wrong", options);
         await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, level: "personal", status: "retired", ...marker }));
@@ -242,7 +258,7 @@ export function buildKnowledgeCommands(): Command[] {
       const result = previewBrief({ projectPath: process.cwd() }, opts.agent, opts.path);
       console.log(opts.json ? JSON.stringify(result) : result.text);
     }));
-  return [sessionWhat, save, search, full, change, ...retire, hints, rules, share, brief];
+  return [adviceReport, sessionWhat, save, search, full, change, ...retire, hints, rules, share, brief];
 }
 /** After a share: the pull request, or the push command (MEX doesn't push on its own). */
 function nextStep(done: { branch: string; pr?: string }): string {
