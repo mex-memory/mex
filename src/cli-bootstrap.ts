@@ -31,6 +31,10 @@ if (isMainModule) {
     // background process if it isn't running, then exit.
     const { ensureBackground } = await import("./record/background.js");
     ensureBackground();
+  } else if (process.argv[2] === "__hook-note" && process.argv.length === 3) {
+    // `mex note: ...` typed in a session, saved by the hook shim at once.
+    const { runHookNote } = await import("./knowledge/hook-note.js");
+    await runHookNote();
   } else if (removedCommandMessage(process.argv.slice(2)) !== null) {
     console.error(removedCommandMessage(process.argv.slice(2)));
     process.exitCode = 1;

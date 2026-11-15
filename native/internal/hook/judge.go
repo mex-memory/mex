@@ -4,9 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"io"
+	"math/big"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/mex-memory/mex/native/check"
@@ -43,6 +43,10 @@ func needsJudge(report check.StageReport) bool {
 // A bounded wake-up request, never a model call or a write to Node's tables.
 // Each checkout has one atomically replaced file. New edits replace old hints.
 func requestJudge(ev contract.Event, recordDirectory string, paths []string) bool {
+	return requestJudgeAt(ev, recordDirectory, paths, time.Now())
+}
+
+func requestJudgeAt(ev contract.Event, recordDirectory string, paths []string, now time.Time) bool {
 	if recordDirectory == "" || ev.ProjectID == "" || ev.Checkout == "" || (ev.Agent != "claude-code" && ev.Agent != "codex") {
 		return false
 	}
@@ -69,7 +73,6 @@ func requestJudge(ev contract.Event, recordDirectory string, paths []string) boo
 		}
 		paths = prior.Near
 	}
-	now := time.Now()
 	reason, notBefore := "edit", now.Add(30*time.Second).UnixMilli()
 	if ev.Kind == contract.SessionStart {
 		reason, notBefore = "start", now.UnixMilli()
@@ -85,7 +88,15 @@ func requestJudge(ev contract.Event, recordDirectory string, paths []string) boo
 		near = append(near, path)
 		bytes += len(path)
 	}
-	data, err := json.Marshal(judgeRequest{1, ev.ProjectID, ev.Checkout, ev.Agent, ev.SessionID, reason, strconv.FormatInt(now.UnixNano(), 10), near, notBefore})
+	// Generation is an opaque decimal token in the existing wire contract.
+	// Wall clocks can repeat on Windows; use 79 random bits, at most 24 digits.
+	var token [10]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return false
+	}
+	token[0] &= 0x7f
+	generation := new(big.Int).SetBytes(token[:]).String()
+	data, err := json.Marshal(judgeRequest{1, ev.ProjectID, ev.Checkout, ev.Agent, ev.SessionID, reason, generation, near, notBefore})
 	if err != nil || len(data) > 16<<10 {
 		return false
 	}
