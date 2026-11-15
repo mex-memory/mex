@@ -71,7 +71,6 @@ function checkoutOn(row: CheckoutRow, now = Date.now()): boolean {
   return row.state === "off until" && Number.isFinite(Date.parse(String(row.off_until))) && Date.parse(String(row.off_until)) <= now;
 }
 
-const AGENT_NAMES = { "claude-code": "Claude Code", codex: "Codex" } as const;
 const MEMORY_NAMES = { "claude-code": "Claude", codex: "Codex" } as const;
 function list(names: string[]): string {
   return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
@@ -84,7 +83,7 @@ function message(error: unknown): string {
 interface HookSummary { note?: string; notices: string[]; }
 async function installHooks(): Promise<HookSummary> {
   try {
-    const { installAgents } = await import("../install/index.js");
+    const { installAgents, AGENT_NAMES } = await import("../install/index.js");
     const result = await installAgents();
     if (!result.agents.length) return { note: "No supported agent found. Install Claude Code or Codex, then run `mex install`.", notices: [] };
     const where = result.agents.map(agent => AGENT_NAMES[agent]);
