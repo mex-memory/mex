@@ -578,12 +578,14 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			return result, err
 		}
 	}
+	next("record-surface-eval")
 	if !req.Offline && (len(req.SurfaceTools) > 0 || req.EndEpoch) {
 		result.Notices, err = evaluateSurfaceGates(ctx, conn, req.Session.ProjectID)
 		if err != nil {
 			return result, err
 		}
 	}
+	next("record-surface-gates")
 	if req.Notify && !req.Offline {
 		result.Notices, err = claimSurfaceNotices(ctx, conn, req.Session.ProjectID)
 		if err != nil {
@@ -605,6 +607,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	if err = errors.Join(err, offRows.Err(), offRows.Close()); err != nil {
 		return result, err
 	}
+	next("record-surface-hint")
 	cleanupHint, hintErr := hooks.syncSurfacePending(ctx, conn, req)
 	if hintErr != nil {
 		err = hintErr

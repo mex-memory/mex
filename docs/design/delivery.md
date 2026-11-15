@@ -80,6 +80,18 @@ estimated tokens, false-send estimate (settled windows with no acted evidence),
 and gate state/reason. Daily telemetry receives aggregate counts only.
 The pre-existing probe-based false-send estimate remains available in `mex what`.
 
+A tool call that delivers nothing and only adds evidence to open windows
+doesn't open SQLite: it appends its observations as one JSON line to
+`surface-pending/<session-agent hash>/observed` (one append, no
+read-modify-write). The next transaction that happens anyway (a delivery, a
+lifecycle event, session end) claims the log by renaming it, so two
+transactions can never settle the same calls, and settles the logged calls in
+order before its own. A transaction that fails puts them back; a log over
+512 KiB, or a call it can't be written for, settles in a transaction as
+before. Retiring the hint drops the log, since no window is left to settle.
+Measured on Windows, paired against `next`: calls inside an open window went
+from +13.9 ms to +2.2 ms at p50.
+
 Pending windows and rollups are SQLite state. A per-session directory is only
 an existence hint to avoid opening storage on an ordinary tool miss. Its active
 marker is created while holding the writer lock. Retirement keeps a unique
@@ -91,6 +103,130 @@ historical events. Non-tool no-op events still return before this hint lookup.
 `scripts/delivery-replay/run.mjs --surfaces-shadow` forces every surface to
 shadow and uses the same Go report. Saved sessions without MEX measure
 coincidence, not effect. Historical tool commands are never executed.
+
+### Contention
+
+An epoch records candidate tokens, admitted tokens, its budget and budget-only
+holdbacks. Candidate demand is the largest rendered size offered per canonical
+entry and checkout in that epoch, after identity, verdict, native coverage,
+similarity and dedupe checks. A repeated rejected offer cannot inflate demand.
+Moment-size holdbacks are included in demand, but do not count as epoch-budget
+holdbacks. Companion sizes are included individually; a rejected family counts
+as one held root bundle. Budget-only means capacity failed while the scorer
+would admit it. A scorer rejection, including one also exceeding capacity,
+does not meet that definition.
+
+Admitted tokens include live and virtual shadow selections, reserved corrections
+and existing exemptions. Those lanes can exceed the ordinary budget by policy;
+offered over budget alone does not prove the scorer constrained selection.
+Contention is the share of measured epochs with offered tokens above budget,
+reported with actual budget-only holds. Pre-migration epochs are explicitly
+unmeasured. Epochs belong to the session's primary checkout because its budget
+is shared across checkouts; per-checkout demand is claimed separately within
+it. The view covers retained epochs and does not invent a lifetime denominator.
+
+### The working-set start brief
+
+The background job `working-set` (`src/working-set/`) computes each
+checkout's working set and caches it as
+`projects/<id>/working-set/<checkout key>.json`, the key the file index uses.
+It runs on request: at session start the brief reads the cache and the
+checkout's `.git` files (branch and commit, no git process), and when the set
+is missing, from another commit or branch, or older than ten minutes, it
+writes `working-set-requests/<project>~<key>.json` and touches
+`working-set-pending`. The hook starts the background process after delivery,
+so a request made by the brief is picked up at once. The brief never waits:
+a set from an older commit of the same branch is still used, and one from
+another branch is not.
+
+Seeds, in order, at most 30: uncommitted and staged files (`git status`),
+files the previous session on this checkout edited (`epoch_files`) and files
+committed since it started, then the branch's diff against the default branch
+(`origin/HEAD`, else `main` or `master`). One hop, at most 100 files: relative
+imports in both directions from the file index, then co-change partners from
+the last 2,000 non-merge commits. A co-change pair's weight sums
+`exp(-commits ago / 500)` over commits of at most 200 files; it counts only
+with at most 25 partners per file and at least two shared commits of at most
+30 files. Branch-name words are split on `/ - _ .` and case changes, at least
+three letters, generic words dropped. Git runs without optional locks, so the
+job never rewrites the person's index.
+
+An entry's relevance adds up per link and is capped at 1: a scope naming a
+seed file 0.6, one naming a hop file 0.3, a directory scope at least two
+folders deep half of those, and a branch word in its one-line 0.4. A
+top-level directory scope (`src/**`) links nothing. A repo-wide scope gets
+0.5, and at most two repo-wide team entries go out. The score multiplies in
+confidence by evidence (person 1, CI 0.9, docs 0.85, review 0.8) and
+`1 - 0.6 × staleness`, where staleness is 0 for a held check, 1 for a changed
+one and 0.25 with no usable check. Nothing under 0.20 is sent. The brief keeps
+knowledge-05's bound (300 tokens counted as UTF-8 bytes) and at most 6 lines;
+a group that doesn't fit is skipped and the next tried. Observed hints the
+hint gate allows, and entries proposed but not in force, can only appear in a
+separate "Not yet accepted:" lane of at most 2 lines and 120 bytes, which never
+displaces accepted entries.
+
+With an empty working set the brief keeps knowledge-05's folder selection.
+When the two selections differ, the folder selection's extra items are
+recorded as `start-brief-previous` receipts, which stay shadow, so the ledger
+can compare the two. Compaction and resume keep their own blocks.
+
+### Rescues
+
+Three rescues answer moments where agents get stuck, from the file index only
+(`native/delivery/rescue.go`). Each is pointer-shaped, has its own surface and
+starts in trial.
+
+- `rescue-wrong-path`: a read or edit (or a Codex shell read) of a path that
+  doesn't exist names up to two indexed files with the same name; with more,
+  only those sharing the most trailing folders with the failed path, and
+  silence if still more than two. Silent after an interrupt, when the agent
+  already got "Did you mean", when the file exists, or outside the checkout.
+- `rescue-search`: a search that returns nothing, with at least two words in
+  its pattern (split at non-letters and case changes), names up to two
+  definitions spelled as the pattern, camelCase, PascalCase, snake_case or
+  SCREAMING_SNAKE, in that order; the first spelling that names something
+  decides, and a name defined in more than 5 files says nothing. Only
+  definitions inside what the search covered count: a search that found
+  nothing is rescued by a spelling it missed there, and a definition elsewhere
+  is a guess. Regex-heavy patterns and searches of one non-code file are
+  skipped. A glob that matches nothing names files with its literal file name.
+- `rescue-wide`: a search with 1 to 13 result lines speaks only when the best
+  definition inside what the search covered is in a file the search didn't
+  return (a set difference).
+
+A search with a file filter (Claude Code's Grep `glob` or `type`, carried as
+the tool input's `filter`; `rg -g/-t`, `grep --include` and the like on
+Codex) gets no search rescue: the agent chose which files to look at, and a
+pointer outside them is noise. The saved-session census found every early
+wide firing to be a scoped or filtered search.
+- `rescue-glob-timeout`: a Claude Code glob that timed out is answered from the
+  index, at most 30 paths, without brace expansion, silent on no match.
+
+A rescue is acted on when the agent opens or edits a path it named.
+
+### Freshness per file
+
+The file index readers (Go and Node) check each file they serve: when its
+time on disk matches neither its last parse nor an edit the hook recorded,
+its outline, file info and definitions are left out as "changed since the last
+parse". Freshness is never decided for the whole index, so a change elsewhere
+in the checkout puts no answer in doubt. Knowledge entries already carry
+per-entry verdicts, and graph cards (graph-03) follow the same rule.
+
+### Bug-history notice
+
+When the agent edits a file with at least three fix commits in the last 2,000
+commits, the last within 180 days, one line says "History: <file> was fixed N
+times, the last <age>." with the age in whole days, weeks or months. At most
+once per file and three per session, both checked under the record's write
+lock (`SessionOnce`, `SessionMax` on a candidate). The fix history is written
+beside the working set as `<key>.fixes`: "MXF1", then 16-byte little-endian
+records (FNV-1a 64 path key, fix count u32, last fix Unix seconds u32) sorted
+by key, so an edit looks a file up with one open and a binary search. A commit
+is a fix when its subject starts `fix:`/`fix(...)` or says fix, fixes, fixed,
+bug, regression or crash as a word. The notice starts in trial and counts as
+acted on when the agent runs tests (pass or fail) or reads the file's git
+history.
 
 ## Ranking and observations
 
@@ -467,62 +603,6 @@ once keeps its fingerprint.
 
 ## Demo
 
-## Surface ledger and contention
-
-Every receipt has one closed surface id (`native/record/surfaces.go`). Existing
-surfaces default to `on`; new rescues, history and comparison surfaces default
-to `shadow`. `delivery.surface.<id>` accepts `on`, `shadow` or `off` globally
-or per project. The complete map shares the scorer's small hook mirror.
-`MEX_DELIVERY_SURFACES` overrides the map for deterministic tests. An off
-surface is filtered before opening SQLite. Shadow selects and spends the same
-virtual budget as a live send, commits the same receipt except its action,
-and renders nothing.
-
-Schema 7 stores immutable targets and incremental, forty-tool-call windows.
-The window ends at forty calls or epoch closure. One firing is a surface's
-block, even when it contains several entries; it is acted on if any of those
-entries is used. First versus repeat is claimed atomically per session and
-agent. Commands are exact digests; paths and scopes are checkout-relative.
-The acted definitions are executable Go tables with fixture streams.
-
-Reports show the base kind with its rate: shadow first, then held-back, then
-time-matched suppressed candidates. The latter means an otherwise eligible
-entry suppressed by epoch dedupe, with the actual target it would name. Empty
-matches have no knowable target and create no artificial negative control.
-The false-send estimate counts settled firings with no observed use. None of
-these observations proves a causal effect.
-
-Gate constants are stored before the first firing: thirty settled live
-firings, thirty percent acted, a Wilson 95% lower bound above the available
-base rate, and repeat use at least first use. Evaluations use disjoint batches
-of new live observations. Missing base or repeat evidence keeps a passing
-candidate collecting. Two efficacy failures turn the surface off, preserve
-knowledge, and claim one person-facing notice. Offline playback cannot advance
-a gate. Configuring `on` does not silently erase a stored off decision.
-
-`mex what --surfaces` and the replay use the same Go report. Telemetry accepts
-aggregate counts only. A saved session without MEX measures coincidence,
-not effect.
-
-An epoch records candidate tokens, admitted tokens, its budget and budget-only
-holdbacks. Candidate demand is the largest rendered size offered per canonical
-entry and checkout in that epoch, after identity, verdict, native coverage,
-similarity and dedupe checks. A repeated rejected offer cannot inflate demand.
-Moment-size holdbacks are included in demand, but do not count as epoch-budget
-holdbacks. Companion sizes are included individually; a rejected family counts
-as one held root bundle. Budget-only means capacity failed while the scorer
-would admit it. A scorer rejection, including one also exceeding capacity,
-does not meet that definition.
-
-Admitted tokens include live and virtual shadow selections, reserved corrections
-and existing exemptions. Those lanes can exceed the ordinary budget by policy;
-offered over budget alone does not prove the scorer constrained selection.
-Contention is the share of measured epochs with offered tokens above budget,
-reported with actual budget-only holds. Pre-migration epochs are explicitly
-unmeasured. Epochs belong to the session's primary checkout because its budget
-is shared across checkouts; per-checkout demand is claimed separately within
-it. The view covers retained epochs and does not invent a lifetime denominator.
-
 `node scripts/delivery-demo.mjs` builds the binary, makes a throwaway repo and
 MEX home, and sends Claude Code payloads: a read of a file with a pitfall, a
 command that has a recipe, a failure with a recorded fix's signature, then the
@@ -545,6 +625,22 @@ same three again. It prints three deliveries, each once.
 - Hint mirror file `delivery-hints/<short hash>.json`, written by Node.
 - Hook binary: `mex-hook --delivery-probe` (JSON request on stdin, like
   `--check-run`).
+
+Measured surfaces and the working set:
+
+- Local record: hooks migration 0007 (surface column and the action set with
+  `shadow` and `control`; `surface_firings`, `surface_windows`,
+  `surface_session_first`, `surface_stats`, `surface_gates`, `epoch_offers`;
+  epoch `tool_calls` and contention columns); the `trial` surface state; the
+  `surface-pending/` and `surface-off/` hints; candidate `SessionOnce` and
+  `SessionMax`; the working-set and fix-table files and the request queue.
+- Hook events: `interrupted` on a tool output (Claude Code's `is_interrupt`);
+  `filter` on a search's input (Grep `glob`, or `type:<name>`).
+- Hook binary: `mex-hook --surfaces`; `--delivery-replay` honours
+  `MEX_DELIVERY_SURFACES`.
+- File index: readers leave out a file whose time on disk matches neither its
+  parse nor a recorded edit ("changed since the last parse"); the Go reader
+  gains `PathsMatching`, the Node reader `importEdges`.
 
 ## Left for later tickets
 

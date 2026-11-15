@@ -294,3 +294,58 @@ func TestRescueSkipsDefinitionsInFilesChangedSinceIndexing(t *testing.T) {
 		t.Fatal("pointed into a file that changed since it was indexed", out)
 	}
 }
+
+func TestSearchRescuesHonourFiltersAndScope(t *testing.T) {
+	f := rescueFixture(t)
+	plantIndex(t, f, map[string][]plantedSymbol{"pkg/users.go": {{"getUserById", "function", 3, 9}}, "web/other.ts": nil, "web/more.ts": nil})
+	env := rescueEnv(f, "on")
+	send := func(tool contract.Tool) string {
+		f.session += "x"
+		return sendWith(t, f.event(contract.PostToolBatch, tool), env)
+	}
+	filtered := grep("getUserById", "No matches found")
+	filtered.Input.Filter = "*.ts"
+	if out := send(filtered); out != "" {
+		t.Fatal("a filtered search", out)
+	}
+	other := filepath.ToSlash(filepath.Join(f.root, "web", "other.ts"))
+	scoped := grep("getUserById", "Found 1 file\n"+other)
+	scoped.Input.Path = filepath.ToSlash(filepath.Join(f.root, "web"))
+	if out := send(scoped); out != "" {
+		t.Fatal("a search scoped to web/ pointed into pkg/", out)
+	}
+	scoped.Input.Path = f.root
+	if out := send(scoped); !strings.Contains(out, "pkg/users.go:3") {
+		t.Fatal("a search of the whole checkout", out)
+	}
+	f.agent = "codex"
+	zero := 0
+	one := 1
+	for cmd, want := range map[string]bool{"rg -t ts get_user_by_id": false, "rg --glob '*.ts' get_user_by_id": false, "rg -n get_user_by_id": true} {
+		tool := contract.Tool{Name: contract.ToolShell, RawName: "shell", Input: contract.ToolInput{Command: cmd}, Output: &contract.ToolOutput{Text: "", OK: false, ExitCode: &one}}
+		if out := send(tool); (out != "") != want {
+			t.Fatal(cmd, out)
+		}
+	}
+	webWide := contract.Tool{Name: contract.ToolShell, RawName: "shell", Input: contract.ToolInput{Command: "rg -n getUserById web"}, Output: &contract.ToolOutput{Text: "web/other.ts:1:getUserById()", OK: true, ExitCode: &zero}}
+	if out := send(webWide); out != "" {
+		t.Fatal("codex search scoped to web/", out)
+	}
+}
+
+func TestEmptySearchRescueStaysInsideItsScope(t *testing.T) {
+	f := rescueFixture(t)
+	plantIndex(t, f, map[string][]plantedSymbol{"web/ast.ts": {{"NumericLiteral", "interface", 5, 9}}, "internal/printer/printer.go": {{"numeric_literal", "function", 2, 4}}})
+	scoped := grep("numericLiteral", "No matches found")
+	scoped.Input.Path = filepath.ToSlash(filepath.Join(f.root, "internal"))
+	out := sendWith(t, f.event(contract.PostToolBatch, scoped), rescueEnv(f, "on"))
+	if !strings.Contains(out, "internal/printer/printer.go:2 function numeric_literal") || strings.Contains(out, "web/ast.ts") {
+		t.Fatal(out)
+	}
+	f.session += "x"
+	scoped.Input.Path = filepath.ToSlash(filepath.Join(f.root, "docs"))
+	os.MkdirAll(filepath.Join(f.root, "docs"), 0o700)
+	if out := sendWith(t, f.event(contract.PostToolBatch, scoped), rescueEnv(f, "on")); out != "" {
+		t.Fatal("pointed outside the searched folder", out)
+	}
+}

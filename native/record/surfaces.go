@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -363,6 +364,10 @@ func (h *Hooks) syncSurfacePending(ctx context.Context, c *sql.Conn, req Deliver
 		if _, err := os.Lstat(p); os.IsNotExist(err) {
 			return noop, nil
 		}
+	} else if info, err := os.Lstat(filepath.Join(p, "active")); err == nil && info.Mode().IsRegular() {
+		// The marker is already in place: one stat instead of re-creating the
+		// directories and files on every delivering call (about 2 ms on Windows).
+		return noop, nil
 	}
 	root, err := os.OpenRoot(h.directory)
 	if err != nil {
@@ -413,6 +418,10 @@ func (h *Hooks) syncSurfacePending(ctx context.Context, c *sql.Conn, req Deliver
 		guard = filepath.Join(dir, "retiring-"+id)
 		err = create(guard)
 		if err == nil {
+			// No window is pending, so logged calls can settle nothing.
+			_ = root.Remove(filepath.Join(dir, surfaceLogName))
+		}
+		if err == nil {
 			err = root.Remove(active)
 			if os.IsNotExist(err) {
 				err = nil
@@ -422,6 +431,11 @@ func (h *Hooks) syncSurfacePending(ctx context.Context, c *sql.Conn, req Deliver
 	if err != nil {
 		root.Close()
 		return noop, err
+	}
+	if guard == "" {
+		// Creating the marker needs no cleanup; stale guards go at retirement.
+		root.Close()
+		return noop, nil
 	}
 	// Old guards imply an earlier transaction has released the SQLite lock.
 	// Keep our own guard until COMMIT; a crash can cause only an extra DB read.
@@ -586,4 +600,114 @@ func GateDecision(total, acted, first, firstActed, repeats, repeatActed, baseTot
 		return "fail", "repeats below first firings"
 	}
 	return "pass", "acted and repeat gates passed"
+}
+
+// The observation log keeps the acted evidence of tool calls that deliver
+// nothing, so they don't each open SQLite and commit (about 14 ms on
+// Windows). A call appends one line; the next transaction that happens anyway
+// claims the log by renaming it and settles the calls in order, exactly as if
+// each had settled on its own. Nothing is read-modified-written.
+const (
+	surfaceLogName = "observed"
+	surfaceLogMax  = 512 << 10
+	surfaceLineMax = 96 << 10
+)
+
+// ErrSurfaceLogFull asks the caller to settle in a transaction instead.
+var ErrSurfaceLogFull = errors.New("surface observation log full")
+
+func surfaceHintDir(directory, session, agent string) string {
+	return filepath.Join("surface-pending", place.ShortHash(session+"\x00"+agent))
+}
+
+// AppendSurfaceObservations records one event's tool observations for later
+// settlement. It needs the pending hint to exist and never creates it.
+func AppendSurfaceObservations(directory, session, agent string, tools []SurfaceTool) error {
+	if len(tools) == 0 {
+		return nil
+	}
+	line, err := json.Marshal(tools)
+	if err != nil {
+		return err
+	}
+	line = append(line, '\n')
+	if len(line) > surfaceLineMax {
+		return ErrSurfaceLogFull
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	dir := surfaceHintDir(directory, session, agent)
+	if info, err := root.Lstat(dir); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("no pending surface hint")
+	}
+	name := filepath.Join(dir, surfaceLogName)
+	if info, err := root.Lstat(name); err == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("redirected surface log")
+		}
+		if info.Size()+int64(len(line)) > surfaceLogMax {
+			return ErrSurfaceLogFull
+		}
+	}
+	f, err := root.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(line); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// TakeSurfaceObservations claims the log by renaming it, so two transactions
+// can never settle the same calls, and returns its observations in order.
+// restore puts them back when the transaction that took them fails.
+func TakeSurfaceObservations(directory, session, agent string) (tools []SurfaceTool, restore func()) {
+	restore = func() {}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return nil, restore
+	}
+	defer root.Close()
+	dir := surfaceHintDir(directory, session, agent)
+	id, err := receiptID()
+	if err != nil {
+		return nil, restore
+	}
+	taken := filepath.Join(dir, "taking-"+id)
+	if root.Rename(filepath.Join(dir, surfaceLogName), taken) != nil {
+		return nil, restore
+	}
+	defer root.Remove(taken)
+	info, err := root.Lstat(taken)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > surfaceLogMax+surfaceLineMax {
+		return nil, restore
+	}
+	f, err := root.Open(taken)
+	if err != nil {
+		return nil, restore
+	}
+	data, err := io.ReadAll(io.LimitReader(f, surfaceLogMax+surfaceLineMax))
+	f.Close()
+	if err != nil {
+		return nil, restore
+	}
+	var lines [][]SurfaceTool
+	for _, raw := range strings.Split(string(data), "\n") {
+		var batch []SurfaceTool
+		if raw == "" || json.Unmarshal([]byte(raw), &batch) != nil {
+			continue
+		}
+		lines = append(lines, batch)
+		tools = append(tools, batch...)
+	}
+	return tools, func() {
+		for _, batch := range lines {
+			_ = AppendSurfaceObservations(directory, session, agent, batch)
+		}
+	}
 }

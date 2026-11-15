@@ -138,9 +138,25 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	if !isLifecycle && !isEnd && len(groups) == 0 && !pending && stuck == nil && len(history) == 0 {
 		return contract.Reply{}, nil
 	}
+	// A call that delivers nothing only adds evidence to open acted windows:
+	// log it and leave SQLite closed. The next transaction settles the log.
+	if pending && !isLifecycle && !isEnd && len(groups) == 0 && stuck == nil && len(history) == 0 && !env.Offline {
+		if err := record.AppendSurfaceObservations(env.RecordDirectory, ev.SessionID, ev.AgentID, surfaceTools(ev, env)); err == nil {
+			return contract.Reply{}, nil
+		}
+	}
+	// Any transaction settles logged calls first, in order, before this
+	// event's own, so lifecycle changes and deliveries see them.
+	hintDir := (isMoment && ev.Kind != contract.Prompt) || isLifecycle || isEnd
+	var logged []record.SurfaceTool
+	restoreLog := func() {}
+	if hintDir && record.SurfacePending(env.RecordDirectory, ev.SessionID, ev.AgentID) {
+		logged, restoreLog = record.TakeSurfaceObservations(env.RecordDirectory, ev.SessionID, ev.AgentID)
+	}
 
 	for _, name := range []string{"hooks.db", "hooks.db-wal", "hooks.db-shm"} {
 		if !safefile.Regular(filepath.Join(env.RecordDirectory, name)) {
+			restoreLog()
 			return contract.Reply{}, errors.New("redirected hooks database")
 		}
 	}
@@ -148,17 +164,22 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	h, err := record.OpenHooks(record.Location{Directory: env.RecordDirectory, Hooks: filepath.Join(env.RecordDirectory, "hooks.db")})
 	finish()
 	if err != nil {
+		restoreLog()
 		return contract.Reply{}, fmt.Errorf("record-open: %w", err)
 	}
 	h.Trace = env.Trace
 	defer h.Close()
 	var notices []string
-	if pending {
+	if pending || len(logged) > 0 {
 		req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
-		req.SurfaceTools = surfaceTools(ev, env)
+		req.SurfaceTools = logged
+		if pending {
+			req.SurfaceTools = append(req.SurfaceTools, surfaceTools(ev, env)...)
+		}
 		req.Notify = env.Notices
 		res, observeErr := h.CheckAndMark(req)
 		if observeErr != nil {
+			restoreLog()
 			err = observeErr
 			return contract.Reply{}, err
 		}

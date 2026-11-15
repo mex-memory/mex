@@ -91,6 +91,8 @@ type ToolInput struct {
 	Files   []PatchFile `json:"files,omitempty"`   // patch
 	Command string      `json:"command,omitempty"` // shell
 	Pattern string      `json:"pattern,omitempty"` // search, glob
+	// Filter is a search's file filter (a glob, or "type:<name>"), when it has one.
+	Filter string `json:"filter,omitempty"` // search
 }
 
 type PatchFile struct {

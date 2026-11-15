@@ -163,6 +163,8 @@ type claudeInput struct {
 	Command   string  `json:"command"`
 	Pattern   string  `json:"pattern"`
 	Path      string  `json:"path"`
+	Glob      string  `json:"glob"`
+	Type      string  `json:"type"`
 }
 
 func parseTool(name string, rawInput json.RawMessage, cwd string) contract.Tool {
@@ -186,7 +188,10 @@ func parseTool(name string, rawInput json.RawMessage, cwd string) contract.Tool 
 		t.Input = contract.ToolInput{Command: in.Command}
 	case "Grep":
 		t.Name = contract.ToolSearch
-		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path)}
+		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path), Filter: in.Glob}
+		if t.Input.Filter == "" && in.Type != "" {
+			t.Input.Filter = "type:" + in.Type
+		}
 	case "Glob":
 		t.Name = contract.ToolGlob
 		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path)}

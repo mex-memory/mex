@@ -29,19 +29,45 @@ transaction. Existing databases retain one transaction per numbered upgrade;
 already applied versions do not acquire redundant writer locks. Initialization
 and upgrades keep the existing writer deadline and roll back on failure.
 
-`delivery.surface.<id>` is an `on|shadow|off` setting at global/project scope.
+`delivery.surface.<id>` is an `on|shadow|trial|off` setting at global/project scope.
+`trial`, the default for surfaces added after the ledger, resolves per session
+inside the write transaction: shadow until 30 shadow firings of the surface
+have settled in the project, then a stable hash of session, agent and surface
+picks the sending or the shadow arm, and a passed gate makes it `on`.
 Node publishes the complete `surfaces` map alongside `scorer` in controls.json
 and hook-delivery/<project>.json under its writer lock. The environment override
 `MEX_DELIVERY_SURFACES` is an all-surface state or a JSON object for fixtures.
 
 Two derived hints live beside the record. `surface-pending/<session-agent hash>/`
 contains empty active/retiring markers; presence only enables a SQLite check,
-never authorizes a receipt. Retirement guards survive rollback/crash and are
+never authorizes a receipt. The same directory holds `observed`, the
+append-only log of calls that delivered nothing, claimed by rename at the next
+transaction. Retirement guards survive rollback/crash and are
 removed non-recursively after commit. `surface-off/<project>/<surface>` is an
 empty marker published only after a committed gate-off transition. Missing
 markers cannot bypass the SQLite gate. No authoritative counter or state is
 updated through JSON files. `mex-hook --surfaces` accepts project and checkout
 on stdin and reads the same bounded projection as `mex what --surfaces`.
+
+A delivery candidate may carry `SessionOnce` (one receipt per entry, session
+and agent) and `SessionMax` (receipts per surface, session and agent); both
+count shadow receipts and are checked under the write lock.
+
+## Working set
+
+Node writes, Go reads, all under `projects/<id>/working-set/`:
+
+- `<checkout key>.json`: version 1, `head`, `branch`, `defaultBranch`, `made`
+  (ISO), `seeds`, `hops`, `words`, `fixes` (path → [count, last Unix seconds]).
+  At most 2 MiB; the hook rejects other versions.
+- `<checkout key>.fixes`: "MXF1" then 16-byte little-endian records (FNV-1a 64
+  of the checkout-relative path, fix count u32, last fix u32 Unix seconds),
+  sorted by key.
+
+Requests are `working-set-requests/<project>~<checkout key>.json`
+(`{"project","root"}`), with `working-set-pending` touched in the record
+directory. The background loop turns each into a `working-set` job, one open
+per project; the hook's background start also checks this marker.
 
 ## Delivery additions
 

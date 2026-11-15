@@ -68,7 +68,9 @@ export function workingSetFile(recordDirectory: string, projectId: string, root:
 
 function git(root: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile("git", ["-C", root, "-c", "core.quotepath=off", ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: WORKING_SET_LIMITS.gitTimeoutMs, windowsHide: true },
+    // No optional locks: `git status` must not rewrite the index while the
+    // person (or their agent) is using git in the same checkout.
+    execFile("git", ["-C", root, "-c", "core.quotepath=off", ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: WORKING_SET_LIMITS.gitTimeoutMs, windowsHide: true, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } },
       (error, stdout) => error ? reject(error) : resolve(stdout));
   });
 }

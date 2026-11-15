@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -76,5 +77,50 @@ func TestSurfaceToolCountUsesOriginalBatch(t *testing.T) {
 	}
 	if got := surfaceTools(f.event(contract.PostTool, read(p, "x")), f.env()); len(got) != 0 {
 		t.Fatal("counted per-tool success plus batch", got)
+	}
+}
+
+func TestCallsWithoutDeliveryAreLoggedThenSettledInOrder(t *testing.T) {
+	f := newFixture(t)
+	f.setIntent("working")
+	f.entry(spec{id: "mx_rulelg", kind: "rule", scope: "apps/api/**", oneLine: "Log through src/logger, not console.log.", when: []string{"anti:console.log("}})
+	p := f.file("apps/api/a.ts", "console.log(1)\n")
+	mustHave(t, f.send(f.event(contract.PostToolBatch, read(p, "1\tconsole.log(1)"))), "Log through src/logger")
+	db := func(q string) int {
+		t.Helper()
+		conn, err := sql.Open("sqlite", filepath.Join(f.dir, "hooks.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		var n int
+		if err = conn.QueryRow(q).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// Unrelated reads deliver nothing: they are logged, not settled.
+	for i := 0; i < 3; i++ {
+		mustBeEmpty(t, f.send(f.event(contract.PostToolBatch, read(f.file("docs/x"+string(rune('a'+i))+".md", "x"), "x"))))
+	}
+	if n := db(`SELECT count(*) FROM surface_windows WHERE settled=1`); n != 0 {
+		t.Fatal("calls that delivered nothing opened a transaction", n)
+	}
+	matches, _ := filepath.Glob(filepath.Join(f.dir, "surface-pending", "*", "observed"))
+	if len(matches) != 1 {
+		t.Fatal("no observation log", matches)
+	}
+	// An edit in the rule's scope is a moment of its own: its transaction
+	// settles the logged reads first, then the edit, which avoids the literal.
+	mustBeEmpty(t, f.send(f.event(contract.PostToolBatch, edit(p, "logger.info(1)"))))
+	if matches, _ = filepath.Glob(filepath.Join(f.dir, "surface-pending", "*", "observed")); len(matches) != 0 {
+		t.Fatal("the log wasn't claimed", matches)
+	}
+	f.send(f.event(contract.SessionEnd))
+	if n := db(`SELECT count(*) FROM surface_windows WHERE settled=1 AND acted=1`); n != 1 {
+		t.Fatal("the logged edit wasn't settled as acted", n)
+	}
+	if n := db(`SELECT tool_calls FROM epochs ORDER BY epoch DESC LIMIT 1`); n < 4 {
+		t.Fatal("logged calls weren't counted", n)
 	}
 }

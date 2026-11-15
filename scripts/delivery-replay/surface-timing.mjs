@@ -36,14 +36,45 @@ function lane(root, count, name, exe) {
  writeFileSync(join(mex,"hook-checkouts",hash(root)+".json"),JSON.stringify({version:1,project_id:project,root,state:"on",off_until:"",provisional:false}));
  const stage=spawnSync(exe,["--check-run"],{input:JSON.stringify({action:"evaluate",checkout:root,project_id:project,mex_home:mex,record_directory:mex,store:true}),encoding:"utf8",windowsHide:true,timeout:120000,maxBuffer:1024*1024,env:{...process.env,MEX_HOME:home,MEX_TELEMETRY:"0"}});
  if(stage.status!==0 || !JSON.parse(stage.stdout).ok)throw Error(stage.stderr||stage.stdout||"fixture stage failed");
- return {home,mex,exe};
+ plantBackground(root, mex);
+ return {home,mex,exe,name};
+}
+// The file index, fix table and working set the background job would have
+// written for this lane, in the layout the Node writers use. 2,000 indexed
+// paths and 501 files with fix history, so lookups aren't trivially small.
+function fnv(text) {
+ let h=0xcbf29ce484222325n;
+ for(const b of Buffer.from(text,"utf8")){h^=BigInt(b);h=(h*0x100000001b3n)&0xffffffffffffffffn;}
+ return h;
+}
+function plantBackground(root, mex) {
+ const key=hash(root), index=join(mex,"projects",project,"index"), ws=join(mex,"projects",project,"working-set");
+ mkdirSync(join(index,"checkouts"),{recursive:true});mkdirSync(ws,{recursive:true});mkdirSync(join(root,"src","lib"),{recursive:true});
+ writeFileSync(join(root,"src","lib","pool.ts"),"x\n");
+ const tables="CREATE TABLE records(hash TEXT NOT NULL, lang TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(hash, lang)) WITHOUT ROWID; CREATE TABLE symbols(name TEXT NOT NULL, hash TEXT NOT NULL, lang TEXT NOT NULL, ord INTEGER NOT NULL, kind TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, PRIMARY KEY(name, hash, lang, ord)) WITHOUT ROWID; CREATE TABLE counts(hash TEXT NOT NULL, lang TEXT NOT NULL, pattern TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(hash, lang, pattern)) WITHOUT ROWID; CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;";
+ if(!existsSync(join(index,"c-t.db"))){
+  for(const name of ["base-t.db","c-t.db"]){const db=new DatabaseSync(join(index,name));db.exec(tables);
+   if(name==="c-t.db"){db.exec("CREATE TABLE paths(path TEXT PRIMARY KEY, hash TEXT, lang TEXT, is_test INTEGER NOT NULL, size INTEGER NOT NULL, mtime_ns TEXT NOT NULL, reason TEXT, name TEXT NOT NULL) WITHOUT ROWID");
+    const insert=db.prepare("INSERT INTO paths VALUES(?,?,?,0,1,'0',NULL,?)");
+    for(let i=0;i<2000;i++){const rel=i===0?"src/lib/pool.ts":`src/m${i}/f${i}.ts`;insert.run(rel,"h"+i,"ts",rel.split("/").pop());}}
+   db.close();}
+ }
+ writeFileSync(join(index,"checkouts",key+".json"),JSON.stringify({version:1,root,snapshot:"c-t.db",base:"base-t.db",as_of:"2026-11-15T00:00:00Z"}));
+ const now=Math.floor(Date.now()/1000);
+ const rows=[["src/a.ts",4,now-86400*15],...Array.from({length:500},(_, i)=>[`src/m${i}/f${i}.ts`,3,now-86400])].map(([p,c,l])=>({k:fnv(p),c,l})).sort((a,b)=>a.k<b.k?-1:a.k>b.k?1:0);
+ const table=Buffer.alloc(4+rows.length*16);table.write("MXF1",0,"ascii");
+ rows.forEach((r,i)=>{table.writeBigUInt64LE(r.k,4+i*16);table.writeUInt32LE(r.c,12+i*16);table.writeUInt32LE(r.l,16+i*16);});
+ writeFileSync(join(ws,key+".fixes"),table);
+ writeFileSync(join(ws,key+".json"),JSON.stringify({version:1,head:"",branch:"",defaultBranch:"",made:new Date().toISOString(),seeds:["src/a.ts"],hops:[],words:[],fixes:{}}));
 }
 function invoke(lane,root,kind,session,mode) {
- const event=kind==="noop" ? "PreToolUse" : kind==="tool-miss"||kind.startsWith("read") ? "PostToolBatch" : kind==="failure-shadow" ? "PostToolUseFailure" : "SessionStart";
+ const event=kind==="noop" ? "PreToolUse" : kind==="tool-miss"||kind.startsWith("read")||kind.startsWith("edit") ? "PostToolBatch" : kind==="failure-shadow"||kind==="wrong-path" ? "PostToolUseFailure" : "SessionStart";
  const path=join(root,"src","a.ts");
  const data={session_id:session,cwd:kind==="start" ? join(root,"src") : root,hook_event_name:event,source:"startup",tool_name:"Read",tool_input:{file_path:path}};
  if(event==="PostToolBatch")data.tool_calls=[{tool_name:"Read",tool_input:{file_path:kind==="tool-miss" ? join(root,"elsewhere.ts") : path},tool_response:"1\tconst pool = sharedPool;\n"}];
+ if(kind.startsWith("edit"))data.tool_calls=[{tool_name:"Edit",tool_input:{file_path:kind==="edit-history" ? path : join(root,"elsewhere.ts"),old_string:"a",new_string:"b"},tool_response:{filePath:path}}];
  if(event==="PostToolUseFailure"){data.tool_name="Bash";data.tool_input={command:"npm test"};data.error="Exit code 1\nconnect ELOCAL";}
+ if(kind==="wrong-path"){data.tool_name="Read";data.tool_input={file_path:join(root,"src","old","pool.ts")};data.error="File does not exist.";}
  const begin=performance.now();
  const child=spawnSync(lane.exe,["claude-code",event,"--delivery-trace"],{input:JSON.stringify(data),encoding:"utf8",windowsHide:true,timeout:5000,maxBuffer:64*1024,env:{...process.env,MEX_HOME:lane.home,MEX_TELEMETRY:"0",MEX_BACKGROUND:"0",MEX_DELIVERY_SURFACES:mode,MEX_OFF:""}});
  const elapsed=performance.now()-begin;
@@ -51,15 +82,17 @@ function invoke(lane,root,kind,session,mode) {
  const failed=child.stderr.includes("delivery failed:");
  const reply=JSON.parse(child.stdout),empty=Object.keys(reply).length===0;
  if(failed){if(!empty)throw Error("failed hook returned context");return {elapsed,failed,error:child.stderr};}
- if (["noop","tool-miss"].includes(kind)||mode==="shadow") {if(!empty)throw Error("expected an empty reply");}
- else if(!child.stdout.includes(kind==="failure-shadow" ? "test service" : kind==="start" ? "Priority:" : "shared pool"))throw Error("expected fixture delivery: "+child.stdout);
+ // Lines only this build adds are expected from the current lane only.
+ const added={"edit-history":"History:","wrong-path":"No file at"}[kind];
+ if (["noop","tool-miss","edit"].includes(kind)||mode==="shadow"||(added&&lane.name==="base")) {if(!empty&&!added)throw Error("expected an empty reply");}
+ else if(!child.stdout.includes(added ?? (kind==="failure-shadow" ? "test service" : kind==="start" ? "Priority:" : "shared pool")))throw Error("expected fixture delivery: "+child.stdout);
  return {elapsed,failed:false};
 }
 const results=[];
 for(const count of [50,500]){
  const root=fixture(count),old=lane(root,count,"base",base),current=lane(root,count,"current",binary);
- for(const kind of ["noop","tool-miss","read-live","read-shadow","failure-shadow","start"].filter(kind=>!arg("--cases")||arg("--cases").split(",").includes(kind))){
-  const runs=kind==="noop"||kind==="tool-miss" ? pairs : deliveryPairs;
+ for(const kind of ["noop","tool-miss","read-live","read-shadow","failure-shadow","start","edit","edit-history","wrong-path"].filter(kind=>!arg("--cases")||arg("--cases").split(",").includes(kind))){
+  const runs=kind==="noop"||kind==="tool-miss"||kind==="edit" ? pairs : deliveryPairs;
   const mode=kind.endsWith("shadow") ? "shadow" : "on";
   const warmFailures=[];
   for(let i=0;i<3;i++){for(const [name,active,setting] of [["base",old,"on"],["current",current,mode]]){const row=invoke(active,root,kind,`warm-${kind}-${i}`,setting);if(row.failed)warmFailures.push({lane:name,error:row.error});}}
@@ -73,7 +106,7 @@ for(const count of [50,500]){
   }
   let receipts=[];
   if(existsSync(join(current.mex,"hooks.db"))){const db=new DatabaseSync(join(current.mex,"hooks.db"),{readOnly:true});receipts=db.prepare("SELECT action,count(*) AS count,sum(tokens) AS tokens,min(tokens) AS min,max(tokens) AS max FROM deliveries WHERE session_id LIKE ? GROUP BY action").all(`measure-${kind}-%`);db.close();}
-  if(!["noop","tool-miss"].includes(kind)){
+  if(!["noop","tool-miss","edit"].includes(kind)){
    const emitted=receipts.filter(row=>["given","replaced","shadow"].includes(row.action)).reduce((n,row)=>n+row.count,0);
    const expected=runs-failures.filter(row=>row.lane==="current").length;
    if(emitted<expected || (kind!=="start"&&emitted!==expected))errors.push(`Receipt count ${emitted}, expected ${kind==="start"?"at least ":""}${expected}`);

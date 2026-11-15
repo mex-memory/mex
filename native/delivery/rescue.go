@@ -337,6 +337,9 @@ func searchResult(ev contract.Event, tool contract.Tool) (pattern, scope string,
 		if ev.Agent != "claude-code" || !tool.Output.OK {
 			return
 		}
+		if tool.Input.Filter != "" {
+			return // a filtered search names its own files; a rescue can't honour the filter
+		}
 		pattern, scope = tool.Input.Pattern, tool.Input.Path
 		zero = text == "" || text == "No matches found" || text == "No files found" || strings.HasPrefix(text, "Found 0 ")
 	case contract.ToolShell:
@@ -345,6 +348,10 @@ func searchResult(ev contract.Event, tool contract.Tool) (pattern, scope string,
 		}
 		pattern = shellparse.SearchPattern(tool.Input.Command)
 		cwd = shellparse.SearchCwd(tool.Input.Command, cwd)
+		var filtered bool
+		if scope, filtered = shellSearchScope(tool.Input.Command, pattern, cwd); filtered {
+			return
+		}
 		switch *tool.Output.ExitCode {
 		case 1:
 			zero = text == ""
@@ -440,10 +447,17 @@ func searchRescue(ev contract.Event, env Environment, tool contract.Tool) *rescu
 		if len(distinct) > rescueMaxDefinitions {
 			continue
 		}
+		// Only definitions inside what the search covered: an empty search is
+		// rescued by a spelling it missed there, and a definition elsewhere
+		// is a guess about intent.
 		for _, h := range found {
-			hits = append(hits, hit{name, h})
+			if withinScope(ev.Checkout, scope, h.Path) {
+				hits = append(hits, hit{name, h})
+			}
 		}
-		break // the best spelling that names something decides
+		if len(hits) > 0 {
+			break // the best spelling that names something here decides
+		}
 	}
 	if len(hits) == 0 {
 		return nil
@@ -538,4 +552,44 @@ func firstLine(s string) string {
 		line = line[:200]
 	}
 	return line
+}
+
+var shellSearchFilter = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`^(-g|--glob|--iglob|-t|--type|--type-add|-T|--type-not|--include|--exclude|--include-dir|--exclude-dir)(=.*)?$|^-[A-Za-z]*[gtT]$`)
+})
+
+// shellSearchScope reads a shell search's first path argument (absolute) and
+// whether it filters files by glob or type.
+func shellSearchScope(command, pattern, cwd string) (scope string, filtered bool) {
+	words := shellparse.Words(shellparse.SearchSegment(command))
+	seenPattern := false
+	for _, w := range words[1:] {
+		switch {
+		case shellSearchFilter().MatchString(w):
+			return "", true
+		case strings.HasPrefix(w, "-"):
+		case !seenPattern && w == pattern:
+			seenPattern = true
+		case seenPattern && scope == "":
+			scope = shellparse.Resolve(cwd, w)
+		}
+	}
+	return scope, false
+}
+
+// withinScope reports whether a checkout-relative file lies inside a search's
+// scope: the checkout itself, a folder that contains it, or the file itself.
+func withinScope(checkout, scope, rel string) bool {
+	if scope == "" {
+		return true
+	}
+	real, err := place.RealPath(scope)
+	if err != nil {
+		return false
+	}
+	if filepath.Clean(real) == filepath.Clean(checkout) {
+		return true
+	}
+	scoped, ok := place.RelativeToCheckout(checkout, real)
+	return ok && (rel == scoped || strings.HasPrefix(rel, scoped+"/"))
 }
