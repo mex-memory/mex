@@ -28,6 +28,15 @@ record's `installs` table (`exclude-v1:<name>`) before the file is written.
 earlier bytes, and from a file the person edited since removes only MEX's
 block.
 
+## Folders without git
+
+A folder that isn't a git repo is turned on only after the person answers the
+question on the first screen, or with `mex --folder`; agents and scripts get
+the command instead. MEX then writes `.mex/project.json` (the project id) so a
+later version can offer to reattach a moved folder. The marker is journaled
+(`marker-v1:folder`); `mex uninstall` removes it while it still holds what MEX
+wrote, and removes the `.mex` folder too when MEX created it and it is empty.
+
 ## Destinations and commands
 
 - Claude Code: `~/.claude/settings.json`, respecting an absolute

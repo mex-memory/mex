@@ -28,17 +28,28 @@ describe("setup entry points", () => {
     expect(mocks.setup).toHaveBeenCalledOnce();
     expect(cleanup).not.toHaveBeenCalled();
   });
-  it("routes `mex setup next` to the one-step command, prints its output and keeps its exit code", async () => {
+  it("hands plain `mex setup next` to the agent hand-off, not the 0.8 one-step setup", async () => {
+    mocks.repoStart.mockResolvedValue({ exitCode: 0, place: "git", turnedOn: true });
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const { program } = await import("../src/cli.js");
+    await program.parseAsync(["setup", "next"], { from: "user" });
+    expect(mocks.repoStart).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ interactive: false }));
+    expect(write.mock.calls.map(call => String(call[0]))).toContain("Nothing to ask; MEX is on here.\n");
+    expect(mocks.next).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
+  });
+
+  it("routes `mex setup next --start` to the 0.8 one-step command, prints its output and keeps its exit code", async () => {
     mocks.next.mockResolvedValue({ status: "task", exitCode: 0, progress: { done: 1, total: 5 }, output: "MEX setup 1/5: subsystem src/a/" });
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const { program } = await import("../src/cli.js");
-    await program.parseAsync(["setup", "next"], { from: "user" });
+    await program.parseAsync(["setup", "next", "--start"], { from: "user" });
     expect(mocks.next).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ projectRoot: "/project" }));
     expect(log).toHaveBeenCalledWith("MEX setup 1/5: subsystem src/a/");
     expect(mocks.setup).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(0);
     mocks.next.mockResolvedValue({ status: "blocked", exitCode: 1, progress: null, output: "No Git repository found." });
-    await program.parseAsync(["setup", "next"], { from: "user" });
+    await program.parseAsync(["setup", "next", "--retry", "t1"], { from: "user" });
     expect(process.exitCode).toBe(1);
   });
 
@@ -59,7 +70,7 @@ describe("setup entry points", () => {
     mocks.repoStart.mockResolvedValue({ exitCode: 1, place: "refused" });
     const { program } = await import("../src/cli.js");
     await program.parseAsync([...args], { from: "user" });
-    expect(mocks.repoStart).toHaveBeenCalledExactlyOnceWith();
+    expect(mocks.repoStart).toHaveBeenCalledExactlyOnceWith({});
     expect(process.exitCode).toBe(1);
     expect(mocks.setup).not.toHaveBeenCalled();
     expect(mocks.hub).not.toHaveBeenCalled();

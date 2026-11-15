@@ -187,8 +187,60 @@ describe("bare mex in a repository", () => {
     const plain = join(f.base, "plain"); mkdirSync(plain);
     const folder = f.run([], { cwd: plain });
     expect(folder.status).toBe(0);
-    expect(folder.stdout).toContain("isn't a git repo");
+    expect(folder.stdout).toBe(`${plain} isn't a git repo, so MEX didn't turn it on. To turn it on for this folder, run: mex --folder\n`);
     expect(existsSync(join(f.home, "record.db"))).toBe(false);
+    expect(existsSync(join(plain, ".mex"))).toBe(false);
+  });
+
+  it("turns a folder without git on with --folder, by its real path, and uninstall removes its marker", () => {
+    const f = fixture();
+    const plain = join(f.base, "notes"); mkdirSync(plain);
+    writeFileSync(join(plain, "package.json"), JSON.stringify({ name: "notes", scripts: { test: "node --test" } }));
+    const on = f.run(["--folder"], { cwd: plain });
+    expect(on.status, on.stderr).toBe(0);
+    const lines = on.stdout.trimEnd().split("\n");
+    expect(lines[0]).toMatch(/^MEX - notes - \d+\.\d s - \$0$/u);
+    expect(lines).toContain("ok Test and build commands for this folder");
+    expect(lines).toContain(".. The file index: in the background (`mex jobs`); no git history here");
+    const marker = JSON.parse(readFileSync(join(plain, ".mex", "project.json"), "utf8"));
+    expect(marker.project_id).toMatch(/^f-[a-f0-9]{24}$/u);
+    const facts = JSON.parse(readFileSync(join(f.home, "projects", marker.project_id, "code-facts.json"), "utf8"));
+    expect(facts).toMatchObject({ skipped: "no git" });
+    // Once on, no question and no flag are needed.
+    const again = f.run([], { cwd: plain });
+    expect(again.stdout.split("\n")[0]).toMatch(/^MEX - notes - /u);
+    // A subfolder is not covered yet: it gets its own question.
+    mkdirSync(join(plain, "sub"));
+    expect(f.run([], { cwd: join(plain, "sub") }).stdout).toContain("run: mex --folder");
+    const uninstall = f.run(["uninstall"], { cwd: plain });
+    expect(uninstall.status, uninstall.stderr).toBe(0);
+    expect(uninstall.stdout).toContain(join(plain, ".mex", "project.json"));
+    expect(existsSync(join(plain, ".mex"))).toBe(false);
+  });
+
+  it("hands the folder question to an agent through `mex setup next`", () => {
+    const f = fixture();
+    const plain = join(f.base, "plain"); mkdirSync(plain);
+    const result = f.run(["setup", "next"], { cwd: plain, env: { CLAUDECODE: "1" } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Ask the person: "Not a git repo. MEX can remember notes, rules and recipes for agents here, but can\'t learn from history, index code by git, or share. Turn on here?"');
+    expect(result.stdout).toContain("On yes, run: mex --folder");
+    expect(existsSync(join(f.home, "record.db"))).toBe(false);
+  });
+
+  it("never starts a paid offer for an agent or a script; it prints the command and `setup next` hands it over", () => {
+    const f = fixture();
+    const started = join(f.base, "offer-started");
+    const script = f.run([], { env: { MEX_TEST_FAKE_OFFER: started } });
+    expect(script.status, script.stderr).toBe(0);
+    expect(script.stdout).toContain("Learn this repo more deeply from its history? (about $0.10 (test)). Nothing paid was started; to start it, run: mex test-fake-offer --start");
+    const agent = f.run(["setup", "next"], { env: { MEX_TEST_FAKE_OFFER: started, CLAUDECODE: "1" } });
+    expect(agent.stdout).toContain('Ask the person: "Learn this repo more deeply from its history?" (about $0.10 (test))');
+    expect(agent.stdout).toContain("On yes, run: mex test-fake-offer --start");
+    expect(existsSync(started)).toBe(false);
+    const quiet = f.run(["setup", "next"], { env: { CLAUDECODE: "1" } });
+    expect(quiet.stdout.trimEnd().split("\n").at(-1)).toBe("Nothing to ask; MEX is on here.");
+    expect(f.status()).toBe("");
   });
 
   it.skipIf(process.platform === "win32").each(KILL_POINTS)("an interruption after %s leaves a clean state and the next run finishes", (point) => {

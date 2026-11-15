@@ -29,8 +29,23 @@ export interface RepoStartOptions {
   caller?: Caller;
   /** Defaults to MEX_INSTALL_AUTO; tests and the background process skip hook installation. */
   install?: boolean;
+  /** `--folder`: the yes for a folder that isn't a git repo, without the question. */
+  folder?: boolean;
+  /** Whether questions may be asked; defaults to true only for a person at a terminal. */
+  interactive?: boolean;
+  ask?: (lines: readonly string[]) => Promise<boolean>;
 }
-export interface RepoStartResult { exitCode: number; place: Place["kind"]; projectId?: string; }
+export interface RepoStartResult {
+  exitCode: number;
+  place: Place["kind"];
+  projectId?: string;
+  /** True when MEX is on here after this run. */
+  turnedOn: boolean;
+  /** A folder without git that only a person can turn on. */
+  folderQuestion?: true;
+  /** A paid offer that is due; agents and scripts only print its command. */
+  offer?: { question: string; estimate: string; command: string };
+}
 
 function killAt(point: KillPoint, env: NodeJS.ProcessEnv): void {
   if (env[KILL_AT_VARIABLE] === point) process.kill(process.pid, "SIGKILL");
@@ -93,11 +108,28 @@ async function readRecipes(root: string, projectId: string, env: NodeJS.ProcessE
   } catch { return undefined; }
 }
 
+/** Ask a yes/no question on the terminal; anything but y or yes is no. */
+export async function askYesNo(lines: readonly string[], write: (line: string) => void): Promise<boolean> {
+  const { createInterface } = await import("node:readline");
+  for (const line of lines.slice(0, -1)) write(line);
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string>(resolve => {
+      rl.question(`${lines.at(-1)} `, resolve);
+      rl.once("close", () => resolve(""));
+    });
+    return /^\s*y(es)?\s*$/iu.test(answer);
+  } finally { rl.close(); }
+}
+
 export async function runRepoStart(options: RepoStartOptions = {}): Promise<RepoStartResult> {
   const env = options.env ?? process.env;
   const write = options.write ?? ((line: string) => process.stdout.write(`${line}\n`));
   const elapsed = options.elapsed ?? (() => performance.now());
   const caller = options.caller ?? detectCaller({ env });
+  // Only a person at a terminal is ever asked; agents and scripts get the exact command.
+  const interactive = options.interactive ?? caller === "person";
+  const ask = options.ask ?? ((lines: readonly string[]) => askYesNo(lines, write));
   const mode = screenMode({ env });
   const install = options.install ?? (env.MEX_INSTALL_AUTO !== "0" && env.MEX_BACKGROUND !== "1");
 
@@ -109,34 +141,62 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     write(place.reason === "drive-root"
       ? `MEX doesn't turn on at a drive root (${place.root}). Run \`mex\` inside a project folder.`
       : `MEX doesn't turn on in your home folder or above it (${place.root}); its hooks would cover every session below. Run \`mex\` inside a project folder.`);
-    return { exitCode: 1, place: place.kind };
-  }
-  if (place.kind === "folder") {
-    write(`${place.root} isn't a git repo, so MEX didn't turn on here. Run \`mex\` inside a git repo.`);
-    return { exitCode: 0, place: place.kind };
+    return { exitCode: 1, place: place.kind, turnedOn: false };
   }
 
   const { openRecord } = await import("../record/index.js");
-  const { turnOnRepository } = await import("./turn-on.js");
+  if (place.kind === "folder") {
+    const { FOLDER_COMMAND, FOLDER_QUESTION } = await import("./folder.js");
+    // A folder already turned on needs no question.
+    const { openRecordReadOnly } = await import("../record/index.js");
+    const reader = openRecordReadOnly();
+    let known = false;
+    try { known = !!reader?.get("SELECT 1 AS found FROM checkouts WHERE path=?", place.root); } finally { reader?.close(); }
+    if (!known && !options.folder) {
+      if (!interactive) {
+        write(`${place.root} isn't a git repo, so MEX didn't turn it on. To turn it on for this folder, run: ${FOLDER_COMMAND}`);
+        return { exitCode: 0, place: place.kind, turnedOn: false, folderQuestion: true };
+      }
+      if (!await ask(FOLDER_QUESTION)) {
+        write("MEX stays off here.");
+        return { exitCode: 0, place: place.kind, turnedOn: false };
+      }
+    }
+  }
+
   const findings: Finding[] = [];
   const notes: string[] = [];
   let writer: RecordWriter | undefined = openRecord();
   let projectId: string, checkout: CheckoutRow, hidden = false;
+  const git = place.kind === "git";
+  const shallow = place.kind === "git" && place.shallow;
   try {
-    const turnedOn = turnOnRepository(writer, place.root);
-    projectId = turnedOn.projectId; checkout = turnedOn.checkout;
+    if (place.kind === "git") {
+      const { turnOnRepository } = await import("./turn-on.js");
+      const turnedOn = turnOnRepository(writer, place.root);
+      projectId = turnedOn.projectId; checkout = turnedOn.checkout;
+    } else {
+      const { turnOnFolder } = await import("./folder.js");
+      const turnedOn = turnOnFolder(writer, place.root);
+      projectId = turnedOn.projectId; checkout = turnedOn.checkout;
+    }
     killAt("registered", env);
     if (!checkoutOn(checkout)) {
-      write(`MEX is off for this repo${checkout.state === "off until" ? ` until ${checkout.off_until}` : ""}. Run \`mex on\` to turn it back on.`);
-      return { exitCode: 0, place: place.kind, projectId };
+      write(`MEX is off for this ${git ? "repo" : "folder"}${checkout.state === "off until" ? ` until ${checkout.off_until}` : ""}. Run \`mex on\` to turn it back on.`);
+      return { exitCode: 0, place: place.kind, projectId, turnedOn: false };
     }
 
-    const { ensureExcludeBlock, REPO_START_BLOCK, REPO_START_LINES } = await import("./exclude.js");
-    try {
-      ensureExcludeBlock(writer, place.excludeFile, REPO_START_BLOCK, REPO_START_LINES);
-      hidden = true;
-    } catch (error) {
-      findings.push({ state: "attention", text: `Couldn't hide .mex/ in git's exclude file: ${message(error)}` });
+    if (place.kind === "git") {
+      const { ensureExcludeBlock, REPO_START_BLOCK, REPO_START_LINES } = await import("./exclude.js");
+      try {
+        ensureExcludeBlock(writer, place.excludeFile, REPO_START_BLOCK, REPO_START_LINES);
+        hidden = true;
+      } catch (error) {
+        findings.push({ state: "attention", text: `Couldn't hide .mex/ in git's exclude file: ${message(error)}` });
+      }
+    } else {
+      const { writeFolderMarker } = await import("./folder.js");
+      try { writeFolderMarker(writer, checkout.path, projectId); } catch { /* the marker only helps a later reattach */ }
     }
     killAt("hidden", env);
 
@@ -147,19 +207,19 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       const { queueIndexBuild } = await import("../file-index/command.js");
       queueIndexBuild(writer, projectId, checkout.path);
       // Queued after the index, so layer rules can read its imports.
-      if (!place.shallow) {
+      if (git && !shallow) {
         const { queueJob } = await import("../record/background.js");
         queueJob(writer, { kind: "code-facts", projectId, params: { checkout: checkout.path } });
       }
       killAt("queued", env);
       writer.close(); writer = undefined;
 
-      // The free step: local reads only. Later steps add rule files and history.
+      // The free step: local reads only, no network, no model, no repository command.
       const recipes = await readRecipes(checkout.path, projectId, env);
       if (recipes) {
         const { recipeSummary } = await import("./recipes/index.js");
         const summary = recipeSummary(recipes);
-        findings.push({ state: "ok", text: summary.line });
+        findings.push({ state: "ok", text: git ? summary.line : summary.line.replace("this repo", "this folder") });
         for (const note of summary.notes.slice(0, 3)) findings.push({ state: "attention", text: note });
       }
       const memory = await readAgentMemory(checkout.path);
@@ -167,10 +227,11 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory` });
       }
       killAt("free-step", env);
-      if (place.shallow) {
+      if (shallow) {
         findings.push({ state: "attention", text: "Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)" });
         findings.push({ state: "background", text: "The file index: in the background (`mex jobs`)" });
-      } else findings.push({ state: "background", text: "Git history and the file index: in the background (`mex jobs`)" });
+      } else if (git) findings.push({ state: "background", text: "Git history and the file index: in the background (`mex jobs`)" });
+      else findings.push({ state: "background", text: "The file index: in the background (`mex jobs`); no git history here" });
 
       const { recordLocation } = await import("../record/location.js");
       const { writeFactFile } = await import("./facts.js");
@@ -181,23 +242,36 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
             packages: new Set(recipes?.recipes.map(recipe => recipe.package) ?? []).size, recipes: recipes?.recipes.length ?? 0,
             rule_files: 0, rule_conflicts: 0, hints: memory?.count ?? 0,
           },
-          exclude: { file: place.excludeFile, block: hidden },
+          exclude: { file: place.kind === "git" ? place.excludeFile : null, block: hidden },
         });
       } catch { /* the screen doesn't depend on its record */ }
-      if (place.shallow) {
+      if (!git || shallow) {
         try {
           const { skippedFacts } = await import("./history/job.js");
-          writeFactFile(recordLocation(), projectId, "code-facts.json", skippedFacts("shallow clone"));
+          writeFactFile(recordLocation(), projectId, "code-facts.json", skippedFacts(shallow ? "shallow clone" : "no git"));
         } catch { /* readers treat a missing file as nothing found */ }
       }
       killAt("facts", env);
     }
   } finally { writer?.close(); }
 
-  if (existsSync(join(checkout.path, ".mex", "ROUTER.md"))) notes.push("This repo has MEX 0.8 project files; `mex hub` opens them.");
+  if (git && existsSync(join(checkout.path, ".mex", "ROUTER.md"))) notes.push("This repo has MEX 0.8 project files; `mex hub` opens them.");
   if (hooks.note) notes.push(hooks.note);
   notes.push(...hooks.notices);
   const model: ScreenModel = { name: basename(checkout.path), ms: elapsed(), costUsd: 0, hidden, findings, notes };
   for (const line of renderScreen(model, mode)) write(line);
-  return { exitCode: 0, place: place.kind, projectId };
+
+  // The offer slot: empty in beta.1; learning-03 registers its question.
+  const { dueOffer } = await import("./offers.js");
+  const context = { projectId, root: checkout.path };
+  const offer = dueOffer(context);
+  if (!offer) return { exitCode: 0, place: place.kind, projectId, turnedOn: true };
+  const summary = { question: offer.question, estimate: offer.estimate, command: offer.command };
+  if (!interactive) {
+    write(`${offer.question} (${offer.estimate}). Nothing paid was started; to start it, run: ${offer.command}`);
+    return { exitCode: 0, place: place.kind, projectId, turnedOn: true, offer: summary };
+  }
+  if (await ask([`${offer.question} ${offer.estimate}. [y/n]`])) write(await offer.start(context));
+  else write(`Not started. \`${offer.command}\` starts it later.`);
+  return { exitCode: 0, place: place.kind, projectId, turnedOn: true, offer: summary };
 }

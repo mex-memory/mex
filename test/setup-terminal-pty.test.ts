@@ -85,6 +85,41 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: f.project, encoding: "utf8" }).stdout).toBe("");
   });
 
+  it.each([
+    { answer: "y", on: true },
+    { answer: "n", on: false },
+  ])("a person in a folder without git is asked sheet 59's question once; answering $answer", async ({ answer, on }) => {
+    const f = fixture("incomplete");
+    Object.assign(f.env, { MEX_HOME: f.root, HOME: f.root, MEX_INSTALL_AUTO: "0", MEX_BACKGROUND: "0", MEX_OFFLINE: "1" });
+    delete f.env.CLAUDECODE; delete f.env.CODEX_THREAD_ID;
+    const result = await terminal(f, [], [{ expect: "Turn on here? [y/n]", input: `${answer}\r` }], { columns: 100, rows: 30, command: [], unset: ["CLAUDECODE", "CODEX_THREAD_ID"] });
+    expect(result.exitCode, result.output).toBe(0);
+    expect(result.output).toContain("Not a git repo. MEX can remember notes, rules and recipes for agents here,");
+    expect(result.output.split("Turn on here? [y/n]").length).toBe(2);
+    if (on) {
+      expect(result.output).toMatch(/MEX · project · \d+\.\d s · \$0/u);
+      expect(existsSync(join(f.project, ".mex", "project.json"))).toBe(true);
+    } else {
+      expect(result.output).toContain("MEX stays off here.");
+      expect(readdirSync(f.project)).toEqual([]);
+    }
+  });
+
+  it.each([
+    { answer: "y", started: true },
+    { answer: "n", started: false },
+  ])("a person is asked the paid offer and only yes starts it ($answer)", async ({ answer, started }) => {
+    const f = fixture("incomplete");
+    const marker = join(f.root, "offer-started");
+    Object.assign(f.env, { MEX_HOME: f.root, HOME: f.root, MEX_INSTALL_AUTO: "0", MEX_BACKGROUND: "0", MEX_OFFLINE: "1", MEX_TEST_FAKE_OFFER: marker });
+    delete f.env.CLAUDECODE; delete f.env.CODEX_THREAD_ID;
+    execFileSync("git", ["-c", "init.templateDir=", "init", "--quiet"], { cwd: f.project, stdio: "pipe", env: f.env });
+    const result = await terminal(f, [], [{ expect: "Learn this repo more deeply from its history? about $0.10 (test). [y/n]", input: `${answer}\r` }], { columns: 100, rows: 30, command: [], unset: ["CLAUDECODE", "CODEX_THREAD_ID"] });
+    expect(result.exitCode, result.output).toBe(0);
+    expect(existsSync(marker)).toBe(started);
+    expect(result.output).toContain(started ? "Started the test offer." : "Not started. `mex test-fake-offer --start` starts it later.");
+  });
+
   it("Ctrl+D on the configuration screen cancels without creating files", async () => {
     const f = fixture("incomplete");
     const result = await terminal(f, [], [{ expect: "Choose your AI tools", missing: [".mex"], input: "\u0004" }]);
@@ -425,7 +460,7 @@ function fixture(mode: "incomplete" | "failed" | "complete" | "hold"): Fixture {
   return f;
 }
 
-function terminal(f: Fixture, extra: string[] = [], actions: Action[] = [], options: { columns?: number; rows?: number; defaultTool?: boolean; command?: string[] } = {}): Promise<Result> {
+function terminal(f: Fixture, extra: string[] = [], actions: Action[] = [], options: { columns?: number; rows?: number; defaultTool?: boolean; command?: string[]; unset?: string[] } = {}): Promise<Result> {
   return new Promise((resolve, reject) => {
     const child = execFile(pythonPath!, [harness], { encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) { reject(new Error(`PTY harness failed: ${error.message}\n${stderr}\n${stdout.slice(-4000)}`)); return; }
@@ -435,7 +470,7 @@ function terminal(f: Fixture, extra: string[] = [], actions: Action[] = [], opti
         resolve(result);
       } catch (error) { reject(error); }
     });
-    child.stdin!.end(JSON.stringify({ command: [process.execPath, f.cli ?? cli, ...(options.command ?? args(extra, options.defaultTool !== false))], cwd: f.project, env: f.env, unsetEnv: ["CI", "NO_COLOR", "FORCE_COLOR"], columns: options.columns ?? 140, rows: options.rows ?? 40, actions, timeoutMs: 25_000 }));
+    child.stdin!.end(JSON.stringify({ command: [process.execPath, f.cli ?? cli, ...(options.command ?? args(extra, options.defaultTool !== false))], cwd: f.project, env: f.env, unsetEnv: ["CI", "NO_COLOR", "FORCE_COLOR", ...(options.unset ?? [])], columns: options.columns ?? 140, rows: options.rows ?? 40, actions, timeoutMs: 25_000 }));
   });
 }
 

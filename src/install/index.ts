@@ -13,6 +13,7 @@ import { assertUntracked, equalSnapshot, installPath, MAX_RUNTIME_BYTES, MAX_SET
 import { agentSettings, CODEX_TRUST_NOTICE, installSettings, isLegacyHandler, parseSettings, removeHandlers, type Agent, type HookCommand } from "./settings.js";
 import { decodeSnapshot, restoreSettings } from "./recovery.js";
 import { journaledExcludeFiles, restoreExcludeBlocks } from "../repo-start/exclude.js";
+import { journaledMarkers, restoreFolderMarkers } from "../repo-start/folder.js";
 
 const PREFIX = "file-v1:";
 const MAX_CHANGES = 512;
@@ -195,7 +196,7 @@ export function excludeChanges(options: LocationOptions = {}): string[] {
   if (!reader) return [];
   try {
     if (reader.diagnostic) throw new Error(reader.diagnostic);
-    return journaledExcludeFiles(reader);
+    return [...journaledExcludeFiles(reader), ...journaledMarkers(reader)];
   } finally { reader.close(); }
 }
 
@@ -229,9 +230,10 @@ export async function uninstallAgents(options: LocationOptions & { purge?: boole
     await withContainedArtifactLock(location.home, "install", ".install.lock", () => {
       writer.db.prepare("UPDATE background SET request='exit' WHERE id=1 AND owner IS NOT NULL").run();
       // Repository exclude-file blocks don't depend on the hooks; undo them first.
-      const excluded = restoreExcludeBlocks(writer);
-      result.restored.push(...excluded.restored);
-      result.conflicts.push(...excluded.conflicts);
+      for (const undone of [restoreExcludeBlocks(writer), restoreFolderMarkers(writer)]) {
+        result.restored.push(...undone.restored);
+        result.conflicts.push(...undone.conflicts);
+      }
       const rows = activeRows(writer);
       const settings = rows.filter(row => row.key === `${PREFIX}settings`);
       const runtime = rows.filter(row => row.key !== `${PREFIX}settings`);

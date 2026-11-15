@@ -189,10 +189,10 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   } catch { /* never affects the command */ }
 });
 
-async function runRepoStartCommand(): Promise<void> {
+async function runRepoStartCommand(options: { folder?: boolean } = {}): Promise<void> {
   try {
     const { runRepoStart } = await import("./repo-start/command.js");
-    process.exitCode = (await runRepoStart()).exitCode;
+    process.exitCode = (await runRepoStart(options.folder ? { folder: true } : {})).exitCode;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
@@ -207,11 +207,12 @@ program
   // Kept for `mex hub`, which reads them as global options.
   .option("--port <n>", "Bind a specific loopback port (with `mex hub`)", parsePortArg)
   .option("--no-open", "Print the Hub link without opening a browser (with `mex hub`)")
-  .action(async () => {
+  .option("--folder", "Turn MEX on in a folder that isn't a git repo, without the question")
+  .action(async (options: { folder?: boolean }) => {
     showFirstRunNotice();
     const { showUpdateNotice } = await import("./telemetry/updates.js");
     await showUpdateNotice();
-    await runRepoStartCommand();
+    await runRepoStartCommand(options);
   });
 
 program.command("install")
@@ -331,6 +332,7 @@ const setupCommand = program
   .addOption(new Option("--tool <tool>", "0.8 setup: preselect an AI tool").argParser((value: string, previous: string[] = []) => [...previous, value]).hideHelp())
   .addOption(new Option("--yes", "0.8 setup: never wait on a question").hideHelp())
   .addOption(new Option("--force", "0.8 setup: run the full flow").hideHelp())
+  .option("--folder", "Turn MEX on in a folder that isn't a git repo, without the question")
   .addHelpText(
     "after",
     "\n`mex setup` does what `mex` does: it turns MEX on for this repo and shows what it\n"
@@ -343,34 +345,39 @@ const setupCommand = program
       return;
     }
     showFirstRunNotice();
-    await runRepoStartCommand();
+    await runRepoStartCommand({ folder: (options as { folder?: boolean }).folder });
   });
 
 setupCommand
   .command("next")
-  .option("--start", "Start a new chat: settle earlier tasks, including batches without receipts")
-  .option("--retry <task>", "Hand an abandoned running task out again (use its printed task id)")
-  .description("Continue setup one step at a time from your agent's chat: apply the last step, print the next")
+  .option("--start", "0.8 setup: start a new chat, settling earlier tasks")
+  .option("--retry <task>", "0.8 setup: hand an abandoned running task out again (use its printed task id)")
+  .description("For your agent: turn MEX on here, print what was found, and the question to put to you")
   .addHelpText(
     "after",
-    "\nFor agents MEX cannot launch itself. Each call applies what the previous step wrote\n"
-      + "(or gives that step's fix task), records progress, and prints the next task as a file\n"
-      + "under .mex/local/setup-next/ with the exact next command. The last call finalizes Graph\n"
-      + "and Wiki. Start each new chat with `mex setup next --start`; earlier tasks must be stopped.\n"
-      + "Then follow the printed commands (`mex setup next` without --start).\n",
+    "\nRun by an agent: it does what `mex` does without asking anything, then prints the\n"
+      + "question to put to the person and the exact command to run on yes. Nothing paid starts.\n"
+      + "With nothing to ask it says so. The 0.8 one-step setup continues with --start or --retry,\n"
+      + "or when a 0.8 setup-next session is already in progress here.\n",
   )
   .action(async (options: { retry?: string; start?: boolean }) => {
     try {
       const { findSetupProjectRoot } = await import("./setup/entry.js");
-      const { runSetupNext } = await import("./setup/next.js");
-      const result = await runSetupNext({
-        ...(options.retry === undefined ? {} : { retry: options.retry }),
-        ...(options.start === undefined ? {} : { start: options.start }),
-        projectRoot: findSetupProjectRoot(),
-        onProgress: (line) => console.error(line),
-      });
-      console.log(result.output);
-      process.exitCode = result.exitCode;
+      const projectRoot = findSetupProjectRoot();
+      const { legacySetupNextInProgress, runSetupHandoff } = await import("./repo-start/handoff.js");
+      if (options.start || options.retry !== undefined || legacySetupNextInProgress(projectRoot)) {
+        const { runSetupNext } = await import("./setup/next.js");
+        const result = await runSetupNext({
+          ...(options.retry === undefined ? {} : { retry: options.retry }),
+          ...(options.start === undefined ? {} : { start: options.start }),
+          projectRoot,
+          onProgress: (line) => console.error(line),
+        });
+        console.log(result.output);
+        process.exitCode = result.exitCode;
+        return;
+      }
+      process.exitCode = await runSetupHandoff();
     } catch (error) {
       await reportSetupCommandError(error);
     }

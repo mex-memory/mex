@@ -803,6 +803,8 @@ describe("no unscoped scaffold writes", () => {
       "src/record/job-kinds.ts": "appends only to the trace file a demo job is given (demo and test runs); never a repo file",
       "src/record/location.ts": "publishes only the machine record location pointer and creates machine/project data directories; never Wiki Markdown",
       "src/repo-start/exclude.ts": "writes only MEX's own named, journaled blocks in a repository's git info/exclude file, atomically, and restores them on uninstall; never a tracked file",
+      "src/repo-start/folder.ts": "creates only .mex/project.json (and the .mex folder when absent) in a folder without git that the person turned on, journaled, and removes exactly that on uninstall; never overwrites an existing marker",
+      "src/repo-start/offers.ts": "writes only the file MEX_TEST_FAKE_OFFER names, for the test-only fake offer; never a repo file",
       "src/repo-start/facts.ts": "atomically writes only the derived setup facts files (setup.json, recipes.json, code-facts.json) under the machine record's project folder; never a repo file",
       "src/setup/anchor.ts": "edits root tool configs only, never .mex/, and only inside its own markers",
       "src/setup/global-install.ts": "removes only the private temporary npm working directory after the owned global installation finishes",
