@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	localrecord "github.com/mex-memory/mex/native/record"
+	"github.com/mex-memory/mex/native/record/place"
 )
 
 func promptPayload(session, cwd, text string) *bytes.Reader {
@@ -106,7 +107,10 @@ func TestTypedNoteSavesAtOnceWithoutAI(t *testing.T) {
 			t.Fatalf("%+v", rows)
 		}
 	}
-	real, _ := filepath.EvalSymlinks(root)
+	real, err := place.RealPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 || got[0] != real+"|integration tests need Docker running" {
 		t.Fatal(got)
 	}

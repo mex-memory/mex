@@ -103,6 +103,46 @@ func TestUncommittedDoesNotTreatUninspectedSubmodulesAsClean(t *testing.T) {
 	}
 }
 
+func TestUncommittedChecksWhetherGlobalFiltersAreUsed(t *testing.T) {
+	for _, attributes := range []string{"unused", "tracked", "info"} {
+		t.Run(attributes, func(t *testing.T) {
+			root := captureRepo(t)
+			marker := filepath.Join(root, ".git", "global-filter-ran")
+			script := filepath.Join(root, ".git", "global-filter.sh")
+			if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf called >> "+shellQuote(marker)+"\ncat\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			config := filepath.Join(root, ".git", "global-config")
+			// A dotted driver name must remain intact when parsing keys.
+			captureGit(t, root, "config", "--file", config, "filter.runner.clean.clean", "sh "+shellQuote(script))
+			t.Setenv("GIT_CONFIG_GLOBAL", config)
+			if attributes != "unused" {
+				path := filepath.Join(root, ".gitattributes")
+				if attributes == "info" {
+					path = filepath.Join(root, ".git", "info", "attributes")
+				}
+				if err := os.WriteFile(path, []byte("README.md filter=runner.clean\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("changed\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			names, total, ok := Uncommitted(root, 4)
+			if attributes == "unused" {
+				if !ok || total != 1 || len(names) != 1 || names[0] != "README.md" {
+					t.Fatalf("unused global filter disabled status: %v %d %v", names, total, ok)
+				}
+			} else if ok {
+				t.Fatal("status inspected content with an active global filter")
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatal("configured global filter ran")
+			}
+		})
+	}
+}
+
 func TestGitMetadataIgnoresInheritedRouting(t *testing.T) {
 	root, other := captureRepo(t), captureRepo(t)
 	captureGit(t, other, "config", "user.email", "other@example.test")

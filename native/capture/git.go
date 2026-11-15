@@ -140,6 +140,10 @@ func isSHA(s string) bool {
 // configuration cannot redirect the read. Status also checks for content
 // filters below, since those cannot be disabled with one fixed config key.
 func git(checkout string, args ...string) (string, error) {
+	return gitInput(checkout, "", args...)
+}
+
+func gitInput(checkout, input string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 	prefix := []string{"--no-pager", "--no-replace-objects", "--literal-pathspecs", "-C", checkout,
@@ -147,6 +151,9 @@ func git(checkout string, args ...string) (string, error) {
 		"-c", "log.showSignature=false", "-c", "submodule.recurse=false",
 		"-c", "protocol.allow=never", "-c", "maintenance.auto=false", "-c", "gc.auto=0"}
 	cmd := exec.CommandContext(ctx, "git", append(prefix, args...)...)
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	for _, value := range os.Environ() {
 		key, _, _ := strings.Cut(value, "=")
 		// Keep the user's config locations for author identity and filter
@@ -183,24 +190,32 @@ func (b *gitOutput) Write(p []byte) (int, error) {
 // Uncommitted lists changed and untracked file names, at most limit of them,
 // and how many there are in all. ok is false when git couldn't say.
 func Uncommitted(checkout string, limit int) (names []string, total int, ok bool) {
-	// Status may run clean/process filters while comparing tracked files.
-	// When any are configured, leave this observation unknown rather than
-	// running repository code or mistaking a skipped read for a clean tree.
-	filters, err := git(checkout, "config", "--includes", "--null", "--name-only", "--get-regexp", `^filter\..*\.(clean|process)$`)
-	var exit *exec.ExitError
-	if filters != "" || err == nil || !errors.As(err, &exit) || exit.ExitCode() != 1 {
-		return nil, 0, false
-	}
 	// Inspecting submodule dirtiness would run Git inside another repo with
 	// its own filters. Do not report that uninspected tree as clean either.
 	index, err := git(checkout, "ls-files", "--stage", "-z")
 	if err != nil {
 		return nil, 0, false
 	}
+	var paths strings.Builder
 	for _, entry := range strings.Split(index, "\x00") {
+		if entry == "" {
+			continue
+		}
 		if strings.HasPrefix(entry, "160000 ") {
 			return nil, 0, false
 		}
+		_, path, found := strings.Cut(entry, "\t")
+		if !found {
+			return nil, 0, false
+		}
+		paths.WriteString(path)
+		paths.WriteByte(0)
+	}
+	// Installed tools often register filters globally even in repositories
+	// that never use them. Only active filters on tracked paths can execute
+	// during status. check-attr reads attributes without running the filters.
+	if !statusFiltersSafe(checkout, paths.String()) {
+		return nil, 0, false
 	}
 	out, err := git(checkout, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=all")
 	if err != nil {
@@ -222,6 +237,40 @@ func Uncommitted(checkout string, limit int) (names []string, total int, ok bool
 		}
 	}
 	return names, total, true
+}
+
+func statusFiltersSafe(checkout, paths string) bool {
+	filters, err := git(checkout, "config", "--includes", "--null", "--name-only", "--get-regexp", `^filter\..*\.(clean|process)$`)
+	if err != nil {
+		var exit *exec.ExitError
+		return filters == "" && errors.As(err, &exit) && exit.ExitCode() == 1
+	}
+	drivers := map[string]bool{}
+	for _, key := range strings.Split(filters, "\x00") {
+		if key == "" {
+			continue
+		}
+		name := strings.TrimPrefix(key, "filter.")
+		name = name[:strings.LastIndexByte(name, '.')]
+		drivers[name] = true
+	}
+	if paths == "" {
+		return true
+	}
+	attributes, err := gitInput(checkout, paths, "check-attr", "-z", "--stdin", "filter")
+	if err != nil || !strings.HasSuffix(attributes, "\x00") {
+		return false
+	}
+	fields := strings.Split(strings.TrimSuffix(attributes, "\x00"), "\x00")
+	if len(fields)%3 != 0 {
+		return false
+	}
+	for i := 0; i < len(fields); i += 3 {
+		if fields[i+1] != "filter" || drivers[fields[i+2]] {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultBranch is the remote's default branch, else a local main or master.
