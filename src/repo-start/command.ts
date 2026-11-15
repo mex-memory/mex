@@ -95,6 +95,20 @@ async function readAgentMemory(root: string): Promise<NotesFound | undefined> {
   } catch { return undefined; }
 }
 
+/** Read the repo's rule files (knowledge-05) and save their scan; the line names `mex rules` when some need review. */
+async function readRules(root: string): Promise<{ files: number; conflicts: number; line: string } | undefined> {
+  try {
+    const { refreshRuleFiles } = await import("../knowledge/rule-cache.js");
+    const cache = refreshRuleFiles({ projectPath: root });
+    const conflicts = cache.review.filter(item => item.kind === "conflict").length;
+    const stale = cache.review.filter(item => item.kind === "stale").length;
+    const parts = [`${cache.files.length} rule ${cache.files.length === 1 ? "file" : "files"} read`];
+    if (conflicts) parts.push(`${conflicts} ${conflicts === 1 ? "disagrees" : "disagree"}`);
+    if (stale) parts.push(`${stale} ${stale === 1 ? "mention" : "mentions"} out of date`);
+    return { files: cache.files.length, conflicts, line: `${parts.join("; ")}${conflicts || stale ? ", see `mex rules`" : ""}` };
+  } catch { return undefined; }
+}
+
 /** Read recipes and save recipes.json; a failure leaves the line out rather than stopping the screen. */
 async function readRecipes(root: string, projectId: string, env: NodeJS.ProcessEnv) {
   try {
@@ -222,6 +236,8 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         findings.push({ state: "ok", text: git ? summary.line : summary.line.replace("this repo", "this folder") });
         for (const note of summary.notes.slice(0, 3)) findings.push({ state: "attention", text: note });
       }
+      const rules = await readRules(checkout.path);
+      if (rules && rules.files > 0) findings.push({ state: "ok", text: rules.line });
       const memory = await readAgentMemory(checkout.path);
       if (memory && memory.count > 0) {
         findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory` });
@@ -240,7 +256,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
           version: 1, last_run: new Date().toISOString(), ms: Math.round(elapsed()), caller,
           found: {
             packages: new Set(recipes?.recipes.map(recipe => recipe.package) ?? []).size, recipes: recipes?.recipes.length ?? 0,
-            rule_files: 0, rule_conflicts: 0, hints: memory?.count ?? 0,
+            rule_files: rules?.files ?? 0, rule_conflicts: rules?.conflicts ?? 0, hints: memory?.count ?? 0,
           },
           exclude: { file: place.kind === "git" ? place.excludeFile : null, block: hidden },
         });

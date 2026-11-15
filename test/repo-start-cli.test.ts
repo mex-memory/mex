@@ -137,6 +137,22 @@ describe("bare mex in a repository", () => {
     expect(JSON.parse(readFileSync(join(projects, readdirSync(projects)[0]!, "code-facts.json"), "utf8"))).toMatchObject({ skipped: "shallow clone" });
   });
 
+  it("lists the rule files read and the ones that disagree", () => {
+    const f = fixture();
+    writeFileSync(join(f.root, "package.json"), JSON.stringify({ name: "demo", scripts: { test: "vitest run" } }));
+    writeFileSync(join(f.root, "CLAUDE.md"), "# Project\n\n## Testing\n\nRun `npm test` before every commit.\n");
+    writeFileSync(join(f.root, "AGENTS.md"), "# Project\n\n## Testing\n\nTests are optional; run them in CI only.\n");
+    git(f.root, "add", "."); git(f.root, "commit", "-qm", "rules");
+    const result = f.run();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("ok 2 rule files read; 1 disagrees, see `mex rules`");
+    const projects = join(f.home, "projects");
+    const id = readdirSync(projects)[0]!;
+    expect(existsSync(join(projects, id, "rule-files.json"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(projects, id, "setup.json"), "utf8")).found).toMatchObject({ rule_files: 2, rule_conflicts: 1 });
+    expect(f.status()).toBe("");
+  });
+
   it("covers the repository's other worktrees and keeps them clean", () => {
     const f = fixture();
     const wt = join(f.base, "wt");
