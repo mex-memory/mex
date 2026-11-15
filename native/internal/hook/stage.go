@@ -106,7 +106,7 @@ func freeStage(ev contract.Event, h home, recordDirectory string) {
 		Checkout: ev.Checkout, ProjectID: ev.ProjectID, MexHome: h.mex, RecordDirectory: recordDirectory,
 		Store: hooks, Paths: paths, Deadline: time.Now().Add(budget),
 	})
-	if err == nil {
+	if err == nil && needsJudge(report) {
 		requestJudge(ev, recordDirectory, paths)
 	}
 	if err == nil && report.Unfinished && takeStageLock(recordDirectory, ev.Checkout, time.Now()) && !startDetachedStage(ev.ProjectID, ev.Checkout) {

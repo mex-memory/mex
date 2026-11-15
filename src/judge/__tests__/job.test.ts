@@ -1,18 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openRecord, projectIdentity, type RecordWriter } from "../../record/index.js";
-import { enqueueJob, registerJobKind, runOneBatch, requeueReadyJobs, type JobRow } from "../../record/jobs.js";
-import { runModel, type ModelRequest, type ModelResult } from "../../model-runner/index.js";
+import { openRecord, type RecordWriter } from "../../record/index.js";
+import { enqueueJob, registerJobKind, runOneBatch, requeueReadyJobs, requestJob, type JobRow } from "../../record/jobs.js";
+import { runModel, ModelWaitError, type ModelRequest, type ModelResult } from "../../model-runner/index.js";
 import { enqueueModelBatch, claimModelBatch, settleModelBatch } from "../../model-runner/budget-queue.js";
 import { REFERENCE_BATCH } from "../../model-runner/budget-prices.js";
-import { serializeEntry, type EntryCheck } from "../../knowledge/entry.js";
+import { parseEntry, serializeEntry, type EntryCheck } from "../../knowledge/entry.js";
 import { entry } from "../../knowledge/__tests__/fixtures.js";
 import type { NativeReport } from "../../knowledge/check.js";
 import { createJudgeKind, readJudgement, type JudgeDependencies } from "../job.js";
-import { hash, nextBatch, type Candidate } from "../evidence.js";
+import { entryFiles, hash, nextBatch, type Candidate } from "../evidence.js";
+import { shortHash } from "../../record/project.js";
 
 let base: string, root: string, home: string, writer: RecordWriter, projectId: string;
 let report: NativeReport, calls: ModelRequest[], deps: JudgeDependencies;
@@ -37,6 +38,21 @@ function queue(near = ["src/api.ts"]) {
   registerJobKind(createJudgeKind(deps));
   return enqueueJob(writer, { kind: "judge", projectId, params: { checkout: root, agent: "claude", near } }).job.id;
 }
+function evaluated(): NativeReport {
+  const current = structuredClone(report);
+  for (const item of current.items ?? []) {
+    const text = readFileSync(item.path, "utf8"), entry = parseEntry(text);
+    item.entry_hash = hash(text);
+    const result = current.results!.find(result => result.entry_id === item.id)!;
+    result.inputs = Object.fromEntries(entryFiles(entry).map(path => [path,
+      existsSync(join(root, path)) ? hash(readFileSync(join(root, path), "utf8")) : "missing"]));
+  }
+  return current;
+}
+function markEdit(notBefore = Date.now() + 30_000) {
+  const directory = join(writer.location.directory, "judge-pending"); mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, `${shortHash(root)}.json`), JSON.stringify({ version: 1, project_id: projectId, checkout: root, agent: "claude-code", reason: "edit", generation: "2", near: ["src/api.ts"], not_before: notBefore }));
+}
 async function run(id: string) { await runOneBatch(writer, "test", { only: new Set([id]) }); }
 async function finish(id: string) {
   for (let n = 0; n < 12 && row(id).state === "queued"; n++) await run(id);
@@ -55,13 +71,85 @@ beforeEach(() => {
   report = { ok: true, stored: false, items: [], results: [], problems: [] };
   calls = [];
   deps = {
-    evaluate: vi.fn(async () => report), recordChecks: vi.fn(async () => undefined),
+    evaluate: vi.fn(async () => evaluated()), recordChecks: vi.fn(async () => undefined),
     model: vi.fn(async request => { calls.push(request); return answer(request); }),
   };
 });
 afterEach(() => { writer.close(); vi.unstubAllEnvs(); rmSync(base, { recursive: true, force: true }); });
 
 describe("judge job and queue", () => {
+  it("keeps the original branch binding when the first model batch waits above the cap", async () => {
+    add("mx_first00"); deps.model = vi.fn(async () => { throw new ModelWaitError("cap"); });
+    const id = queue(); await run(id); expect(row(id).state).toBe("waiting");
+    git("switch", "-c", "other-branch");
+    requestJob(writer, id, "resume");
+    deps.model = vi.fn(async request => answer(request)); registerJobKind(createJudgeKind(deps));
+    expect((await finish(id)).state).toBe("done with gaps"); expect(deps.model).not.toHaveBeenCalled();
+  });
+  it("holds an already queued job when a new edit resets idle, then releases it on Stop", async () => {
+    add("mx_idle000"); const id = queue(); markEdit();
+    await run(id);
+    expect(row(id)).toMatchObject({ state: "waiting", results: 0 });
+    expect(deps.model).not.toHaveBeenCalled(); expect(requeueReadyJobs(writer)).toBe(0);
+    markEdit(0); expect(requeueReadyJobs(writer)).toBe(1);
+    await finish(id); expect(deps.model).toHaveBeenCalledTimes(1);
+  });
+  it("rechecks idle after asynchronous evidence collection", async () => {
+    add("mx_idle001");
+    deps.evaluate = vi.fn(async () => { const result = evaluated(); markEdit(); return result; });
+    const id = queue(); await run(id);
+    expect(row(id).state).toBe("waiting"); expect(deps.model).not.toHaveBeenCalled();
+  });
+  it.each(["entry", "source"])("retries when %s changes between evaluation and evidence", async what => {
+    const file = add("mx_eval000");
+    deps.evaluate = vi.fn(async () => {
+      const result = evaluated();
+      if (what === "source") source("src/api.ts", "newer code\n");
+      else writeFileSync(file, readFileSync(file, "utf8").replace("old behavior", "newer behavior"));
+      return result;
+    });
+    const id = queue(); await run(id);
+    expect(deps.model).not.toHaveBeenCalled(); expect(row(id)).toMatchObject({ state: "queued", results: 0 });
+  });
+  it.each(['const password = "example-placeholder-value";\n', '{"password":"example-placeholder-value"}\n'])("withholds raw source credentials before prompt serialization", async secret => {
+    source("src/api.ts", secret); add("mx_secret0"); const id = queue();
+    expect((await finish(id)).state).toBe("done with gaps"); expect(deps.model).not.toHaveBeenCalled();
+  });
+  it("does not let a model certify an entry that complete checks prove broken", async () => {
+    add("mx_proven0", "src/api.ts", "broken", "complete"); const id = queue();
+    await finish(id); expect(readJudgement(writer, projectId, root, "mx_proven0")?.result).toBe("cannot-tell");
+  });
+  it("does not spend on a locally retired entry or an unavailable Git identity", async () => {
+    add("mx_retired"); writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(projectId, "knowledge.retired.mx_retired", "{}");
+    await finish(queue()); expect(deps.model).not.toHaveBeenCalled();
+    writer.db.prepare("DELETE FROM settings WHERE key='knowledge.retired.mx_retired'").run();
+    vi.stubEnv("PATH", ""); const id = queue(); await run(id);
+    expect(row(id).state).toBe("waiting"); expect(deps.model).not.toHaveBeenCalled();
+  });
+  it("hides cached results immediately after retirement and refuses an in-flight retired entry", async () => {
+    add("mx_retired"); await finish(queue());
+    expect(readJudgement(writer, projectId, root, "mx_retired")).toBeDefined();
+    writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(projectId, "knowledge.retired.mx_retired", "{}");
+    expect(readJudgement(writer, projectId, root, "mx_retired")).toBeUndefined();
+    writer.db.prepare("DELETE FROM settings WHERE key='knowledge.retired.mx_retired'").run();
+    source("src/api.ts", "after earlier judgment\n");
+    deps.model = vi.fn(async request => {
+      writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(projectId, "knowledge.retired.mx_retired", "{}");
+      return answer(request);
+    });
+    const id = queue(); await run(id); expect(row(id).results).toBe(0);
+  });
+  it("does not reuse a judgment when evaluator observations change without a new file hash", async () => {
+    add("mx_checks0"); await finish(queue());
+    report.results![0]!.checks[0]!.now = 10;
+    await finish(queue()); expect(deps.model).toHaveBeenCalledTimes(2);
+  });
+  it("discards a reply when an index-backed observation changes during the call", async () => {
+    add("mx_index00");
+    deps.model = vi.fn(async request => { report.results![0]!.checks[0]!.now = 12; return answer(request); });
+    const id = queue(); await run(id);
+    expect(row(id).results).toBe(0); expect(readJudgement(writer, projectId, root, "mx_index00")).toBeUndefined();
+  });
   it("requires one file common to every member of a batch", () => {
     const candidate = (id: string, files: string[]) => ({ item: { id }, files, spare: false }) as Candidate;
     const values = [candidate("first", ["a.ts", "b.ts"]), candidate("second", ["a.ts"]), candidate("third", ["b.ts"])];

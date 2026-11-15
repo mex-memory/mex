@@ -26,7 +26,7 @@ it("queues a host-specific checkout job once and preserves a later request behin
   expect(queuePendingJudgements(writer, enqueueJob)).toBe(1);
   expect(judgePending(writer.location.directory)).toBe(false);
   const job = writer.db.prepare("SELECT * FROM jobs").get()!;
-  expect(JSON.parse(String(job.params))).toEqual({ checkout: root, agent: "codex", near: ["src/api.ts"] });
+  expect(JSON.parse(String(job.params))).toEqual({ checkout: root, agent: "codex", near: ["src/api.ts"], generation: "1" });
   mark({ generation: "2" });
   expect(queuePendingJudgements(writer, enqueueJob)).toBe(0);
   expect(existsSync(path)).toBe(true);
@@ -57,6 +57,21 @@ it("keeps a concurrent edit request and restores a request if queueing fails", (
   writer.db.prepare("UPDATE jobs SET state='done'").run();
   expect(queuePendingJudgements(writer, () => { throw new Error("storage busy"); })).toBe(0);
   expect(existsSync(path)).toBe(true);
+});
+
+it("rotates recovery past claims protected by newer request files", () => {
+  mark();
+  const directory = join(writer.location.directory, "judge-pending"), key = shortHash(root);
+  const content = JSON.stringify({ version: 1, project_id: writer.checkout(root)!.project_id, checkout: root, agent: "codex", reason: "start", generation: "1", near: [], not_before: 0 });
+  rmSync(path);
+  writeFileSync(`${path}.00000000-0000-0000-0000-000000000000.claim`, content);
+  for (let i = 1; i <= 32; i++) {
+    const fake = (BigInt(`0x${key}`) - BigInt(i)).toString(16).padStart(24, "0");
+    writeFileSync(join(directory, `${fake}.json`), "{}");
+    writeFileSync(join(directory, `${fake}.json.00000000-0000-0000-0000-000000000000.claim`), "{}");
+  }
+  expect(queuePendingJudgements(writer, enqueueJob)).toBe(0);
+  expect(queuePendingJudgements(writer, enqueueJob)).toBe(1);
 });
 
 it("discovers hook requests in the foreground fallback without a detached process", async () => {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mex-memory/mex/native/check"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record/place"
 )
@@ -45,7 +46,7 @@ func TestJudgeRequestKeepsTheHostAndWaitsForIdle(t *testing.T) {
 	ev.Kind = contract.Stop
 	requestJudge(ev, directory, nil)
 	stop := judgeRequestAt(t, directory, checkout)
-	if stop["reason"] != "idle" || stop["not_before"].(float64) > float64(time.Now().UnixMilli()) || stop["generation"] == edit["generation"] {
+	if stop["reason"] != "idle" || stop["not_before"].(float64) > float64(time.Now().UnixMilli()) || stop["generation"] == edit["generation"] || stop["near"].([]any)[0] != "src/api.ts" {
 		t.Fatalf("idle did not replace the deferred request: %v", stop)
 	}
 	files, _ := os.ReadDir(filepath.Join(directory, "judge-pending"))
@@ -58,6 +59,8 @@ func TestJudgeWakeupFollowsSessionSetupAndFreeChecks(t *testing.T) {
 	h, env := fakeHome(t, true)
 	root := repo(t, t.TempDir())
 	register(t, h, root, projectID, "on", "")
+	// Only a real unresolved entry requests work; empty checkouts stay quiet.
+	write(t, filepath.Join(root, ".mex", "learned", "mx_missing.md"), "---\nmex:\n  id: mx_missing\n  kind: fact\n  scope: [\"**\"]\n  source: {type: config, ref: missing.txt}\n  evidence: mined\n  one_line: A missing file.\n  checks:\n    - kind: source\n      role: complete\n      target: {file: missing.txt}\n      saw: {hash: \"sha256:"+strings.Repeat("a", 64)+"\"}\n      files: {}\n  status: active\n  created: 2026-11-15\n---\nA missing file.\n")
 	canonical, err := place.RealPath(root)
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +81,36 @@ func TestJudgeWakeupFollowsSessionSetupAndFreeChecks(t *testing.T) {
 	run(t, []string{"claude-code", "SessionStart"}, strings.NewReader(sessionStart(root)), env)
 	if starts != 1 {
 		t.Fatalf("background starts: %d", starts)
+	}
+}
+
+func TestJudgeSkipsEmptyAndUnchangedStages(t *testing.T) {
+	for _, report := range []check.StageReport{{}, {Counts: map[string]int{check.Held: 4}}, {Results: []check.Result{{Checks: []check.CheckResult{{Role: check.Supporting, FilesChanged: []string{"x"}}}}}}} {
+		if needsJudge(report) {
+			t.Fatal("a resolved stage requested a judge")
+		}
+	}
+	for _, report := range []check.StageReport{{Unfinished: true}, {Counts: map[string]int{check.Changed: 1}}, {Counts: map[string]int{check.Broken: 1}}, {Results: []check.Result{{Checks: []check.CheckResult{{Role: check.Complete, FilesChanged: []string{"x"}}}}}}} {
+		if !needsJudge(report) {
+			t.Fatal("unresolved or spare work did not request a judge")
+		}
+	}
+	directory := t.TempDir()
+	if requestJudge(contract.Event{ProjectID: projectID, Checkout: t.TempDir(), Agent: "codex", Kind: contract.Stop}, directory, nil) {
+		t.Fatal("Stop created an empty job")
+	}
+}
+
+func TestJudgeStopDoesNotReleaseAnotherSession(t *testing.T) {
+	directory, checkout := t.TempDir(), t.TempDir()
+	ev := contract.Event{ProjectID: projectID, Checkout: checkout, Agent: "codex", SessionID: "editing", Kind: contract.PostTool}
+	requestJudge(ev, directory, []string{"src/api.ts"})
+	ev.SessionID, ev.Kind = "other", contract.Stop
+	if requestJudge(ev, directory, nil) {
+		t.Fatal("another session released active edits")
+	}
+	if judgeRequestAt(t, directory, checkout)["reason"] != "edit" {
+		t.Fatal("pending edit was overwritten")
 	}
 }
 

@@ -15,6 +15,7 @@ export interface Candidate {
   item: NativeItem; entry: KnowledgeEntry; content: string; files: string[]; checks: CheckResult[];
   /** Held, complete entries are opportunistic work, after the unresolved pile. */
   spare: boolean; distance: number;
+  inputs?: Record<string, string>;
 }
 export interface FileEvidence {
   path: string; current: string | null; current_hash: string | null;
@@ -23,6 +24,16 @@ export interface FileEvidence {
 export interface Evidence {
   checkout: string; position: Position; entries: Array<{ id: string; entry: KnowledgeEntry; checks_now: CheckResult[] }>;
   files: FileEvidence[];
+}
+
+/** Match the evaluator's parsed entry and actual reads, not a later file view. */
+export function coherent(candidates: Candidate[], snapshot: Evidence): boolean {
+  return candidates.every(candidate => candidate.item.entry_hash === hash(candidate.content) && candidate.inputs !== undefined
+    && candidate.files.every(path => {
+      const file = snapshot.files.find(file => file.path === path);
+      const observed = candidate.inputs![path];
+      return !!file && (file.current_hash === null ? observed === "missing" : observed === file.current_hash);
+    }));
 }
 
 export function git(checkout: string, args: string[], bytes = 128 << 10): Promise<string | undefined> {
