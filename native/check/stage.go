@@ -3,12 +3,14 @@ package check
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/rulechange"
 	localrecord "github.com/mex-memory/mex/native/record"
 )
 
@@ -64,7 +66,8 @@ type StageItem struct {
 	Status  string `json:"status"`
 	Verdict string `json:"verdict"`
 	// EntryHash binds a consumer to the exact entry this evaluator parsed.
-	EntryHash string `json:"entry_hash"`
+	EntryHash    string   `json:"entry_hash"`
+	RuleEvidence []string `json:"rule_evidence,omitempty"`
 }
 
 // StageProblem is an entry file that couldn't be read as an entry.
@@ -121,6 +124,7 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		now = time.Now()
 	}
 	checkedAt := now.UTC().Format(time.RFC3339)
+	ruleChanges := rulechange.Read(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
 
 	var fresh []localrecord.Verdict
 	var valid []string
@@ -133,6 +137,13 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		report.Entries++
 		valid = append(valid, l.Entry.ID)
 		item := StageItem{ID: l.Entry.ID, Level: l.Level, Path: l.Path, Kind: l.Entry.Kind, Status: l.Entry.Status, EntryHash: l.Hash}
+		var signal *rulechange.Signal
+		if l.Entry.Kind == "rule" || l.Entry.Kind == "decision" || l.Entry.Kind == "pitfall" {
+			signal = ruleChanges.For(l.Entry.ID, l.Hash)
+			if signal != nil {
+				item.RuleEvidence = signal.Reasons
+			}
+		}
 		keep := func() {
 			if v, ok := cached[l.Entry.ID]; ok {
 				item.Verdict = v.Verdict
@@ -150,12 +161,25 @@ func RunStage(opts StageOptions) (StageReport, error) {
 			continue
 		}
 		inputs := ev.inputsHash(l, asOf)
+		if signal != nil {
+			raw, _ := json.Marshal(signal)
+			sum := sha256.Sum256([]byte(inputs + string(raw)))
+			inputs = "sha256:" + hex.EncodeToString(sum[:])
+		}
 		if v, ok := cached[l.Entry.ID]; ok && v.InputsHash == inputs && !opts.Force {
 			report.Reused++
 			keep()
 			continue
 		}
 		res := ev.Evaluate(l.Entry)
+		if signal != nil {
+			if res.Verdict != Broken {
+				res.Verdict = Changed
+			}
+			for _, input := range signal.Files {
+				res.Inputs[input.Path] = input.Hash
+			}
+		}
 		report.Evaluated++
 		report.Counts[res.Verdict]++
 		report.Results = append(report.Results, res)

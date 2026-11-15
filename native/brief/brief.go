@@ -14,6 +14,7 @@ import (
 	"github.com/mex-memory/mex/native/check"
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/rulechange"
 	"github.com/mex-memory/mex/native/internal/safefile"
 	"github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
@@ -243,6 +244,7 @@ func Build(opts Options) (Result, error) {
 	}
 	seen, lines := map[string]bool{}, map[string]bool{}
 	areaItems, tokens := 0, TokenBound(Priority)+32
+	ruleChanges := rulechange.Read(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
 	var addGroup func(candidate, map[string]bool) ([]Item, bool)
 	addGroup = func(c candidate, visiting map[string]bool) ([]Item, bool) {
 		e := c.entry
@@ -271,6 +273,10 @@ func Build(opts Options) (Result, error) {
 					return nil, false
 				}
 			}
+		}
+		// The brief never repeats a policy currently doubted by the free pass.
+		if (e.Kind == "rule" || e.Kind == "decision" || e.Kind == "pitfall") && ruleChanges.For(e.ID, c.hash) != nil {
+			return nil, false
 		}
 		verdict := evaluator.Evaluate(checkEntry(e)).Verdict
 		if !allowed(e, verdict, c.level) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/rulechange"
 )
 
 // Verdicts as the evaluator stores them; a missing row is unknown.
@@ -43,6 +44,8 @@ type shapeEnv struct {
 	checkout        string
 	index           *index.Reader
 	indexTried      bool
+	rules           *rulechange.Snapshot
+	rulesTried      bool
 }
 
 func (s *shapeEnv) reader() *index.Reader {
@@ -69,6 +72,25 @@ func shape(c candidate, verdict string, env *shapeEnv) shaped {
 	s := shaped{candidate: c, verdict: verdict, action: "given", full: it.Full, oneLine: it.OneLine, fullTok: it.FullTokens, lineTok: it.OneLineTokens}
 	withhold := func() shaped { s.action, s.full, s.oneLine, s.fullTok, s.lineTok = "withheld", "", "", 0, 0; return s }
 	kind := it.Entry.Kind
+	if verdict != broken && env != nil && (kind == "rule" || kind == "decision" || kind == "pitfall") {
+		if !env.rulesTried {
+			env.rulesTried = true
+			env.rules = rulechange.Read(env.recordDirectory, env.project, env.checkout)
+		}
+		if signal := env.rules.For(it.Entry.ID, it.Hash); signal != nil {
+			text, ok := pointer(it.Entry, env)
+			if !ok && len(signal.Files) > 0 {
+				text, ok = fmt.Sprintf("MEX has a note being reviewed. Current code: `%s`.", signal.Files[0].Path), true
+			}
+			if !ok {
+				return withhold()
+			}
+			s.action, s.verdict, s.full, s.oneLine = "replaced", changed, text, text
+			s.fullTok = entries.EstimateTokens(text)
+			s.lineTok = s.fullTok
+			return s
+		}
+	}
 	legacyFact := false
 	if kind == "fact" {
 		for _, c := range it.Entry.Checks {
