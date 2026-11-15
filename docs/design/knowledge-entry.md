@@ -58,7 +58,10 @@ Evidence is person, docs, review, ci, mined or observed.
 required, rejected or creates; match is literal or structural. Optional
 `companions` are entry IDs. Unknown metadata is refused.
 
-Status is active or retired. A retired entry keeps the same ID and file, with
+Status is active, proposed or retired. A proposed entry was written by an agent
+and isn't in force yet: it is never delivered as accepted knowledge, never
+written into a rule file, and can be read, retired or given aliases, but its
+claim can't be edited. A retired entry keeps the same ID and file, with
 `retired: {reason, by, at}`. `created` and `retired.at` are calendar dates, without
 clock times. The body is an authored fact and reason, normally one or two
 sentences. Structural validation does not judge the truth or wording of prose.
@@ -118,6 +121,56 @@ links and non-regular note files are refused.
 
 Headless setup does not pre-approve `note` or `log`: the former event-log
 permission no longer applies now that `log` saves a personal knowledge entry.
+
+## Aliases and asks
+
+`aliases` (at most 8, each at most 40 characters) and `asks` (at most 5 example
+requests, each at most 120 characters) are optional lists of trimmed one-line
+phrases, unique ignoring case. They are the words a person would type when the
+entry matters and who doesn't know it exists: symptoms, error text, task
+phrasing. They are retrieval aids only: never delivered text, never evidence,
+never written into rule files.
+
+Every candidate passes a deterministic filter before it is kept (`src/knowledge/aids.ts`),
+using the delivery ranker and its prompt gate over the project's own entries:
+
+1. Typed alone as a prompt, it must not already make the gate send a different
+   entry. Keeping it would steal that prompt.
+2. Added to its entry, it must rank that entry first, ahead of the next by at
+   least 25% of its score.
+3. An alias another entry already keeps goes to Review instead of being kept
+   twice.
+
+The rule has no parameters learned from any repository. Every verdict, kept or
+dropped, is recorded with its reason in `aid_verdicts`. The background process
+reruns the filter when a checkout's entries or HEAD change: a personal note
+loses an alias that no longer passes, and a team entry's goes to Review.
+
+Writers: `mex alias <id> add|remove <text>` and `mex ask ...` by hand (team entries
+take the usual preview and `--apply --expect`), and `mex entries enrich`, an
+opt-in backfill: the bare command shows what one call would cover at no cost,
+`--run` makes one batched call inside the model cap and saves a filtered
+preview, and `--apply --expect <revision>` writes exactly that preview. Later AI
+writers use `applyCandidateAids`. `mex note` itself makes no model call.
+
+## Decisions that cite a commit
+
+`mex note --decision --commit <rev>` records `commit: {sha, patch_id, subject, files}`
+and saves the decision as proposed. `--quote <text>` adds a line of the commit
+the decision rests on, kept only if grounding finds it in the commit message or
+diff (exact x1.0, fuzzy x0.85, not found x0.6, on a restatement's starting 0.9;
+below 0.6 it is left out). `--supersedes <id>` names a decision it replaces.
+
+The decision comes into force when the commit, or a copy of it, is reachable
+from the default branch (origin's HEAD, else main, else master): the same sha,
+else the same patch id, else the same subject over the same files, among recent
+default-branch commits that touch those files. A revert of the commit, or of
+the merge that brought it in, withdraws it. Acceptance and withdrawal are
+events in the append-only `decision_events` log; the entry file never changes.
+`mex decisions` runs the check and shows each decision's state and history; the
+background process runs it when HEAD or the default branch moves, and mirrors
+the in-force ids to `<home>/projects/<project>/decisions-in-force.json` for the
+hook. Whether a decision is still true in code stays the job of its checks.
 
 ## Bounds and remaining work
 

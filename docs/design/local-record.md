@@ -1,4 +1,4 @@
-# Contract: the local record (record version 4, hooks version 6)
+# Contract: the local record (record version 5, hooks version 6)
 
 ## Delivery additions
 
@@ -127,7 +127,8 @@ and preserves compatible existing rows. Arbitrary historical layouts are not
 a supported migration input; no version-0 schema was shipped. Future structural
 changes need a numbered migration rather than editing migration 1.
 
-Current versions: **record.db = 4; hooks.db = 2**. Record migration 2 adds
+Current versions: **record.db = 5; hooks.db = 2**. Record migration 5 adds
+`aid_verdicts` and the append-only `decision_events` log. Record migration 2 adds
 own-usage reader bookkeeping/windows; migration 3 adds jobs/background
 ownership and control/install records; migration 4 adds model admissions and
 call attribution. Earlier definitions and rows are preserved. Go's read-only
@@ -382,6 +383,8 @@ its logical writer. Go and Node may read every table.
 | `review` | PK `id`; `project_id`, `entry_id`, `reason`, `state` (pending/accepted/dismissed), `created_at` | Review service |
 | `judgements` | PK (`project_id`,`entry_id`,`inputs_hash`); `result` (still-true/rewritten/cannot-tell), `at` | Judge |
 | `counters_node` | PK (`day`,`name`); `value` | Node counter accumulator |
+| `aid_verdicts` (migration 5) | PK (`project_id`,`entry_id`,`kind`,`text`); `kept`, `reason`, nullable `score`, `margin`, `top_entry`, `review`, `source` (hand/enrich/setup/import/filter), `corpus` digest, `decided_at` | Alias filter |
+| `decision_events` (migration 5) | INTEGER PK; `project_id`, `entry_id`, `event` (accepted/withdrawn), `commit_sha`, nullable `landed_sha`, `matched_by` (sha/patch-id/subject-files/revert/missing), `branch`, `actor`, `at`; triggers refuse UPDATE and DELETE | Decision acceptance |
 | `settings` | PK (`scope`,`key`); `value` | Node settings service |
 
 Job states are exactly: **queued, running, paused, waiting, done, done with

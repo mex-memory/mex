@@ -794,6 +794,8 @@ describe("no unscoped scaffold writes", () => {
       "src/knowledge/share.ts": "writes team entries, .mex/config.json, .mex/sources.json and rule files only inside its own temporary share worktree, and on discard deletes only the files it wrote there; never your branch or working tree",
       "src/knowledge/share-state.ts": "writes and removes only the share.json progress record under the MEX project-data home",
       "src/knowledge/rule-cache.ts": "writes only the derived rule-file scan (rule-files.json) under the MEX project-data home; never a repository file",
+      "src/knowledge/enrich.ts": "writes and removes only its own enrich-preview.json under the MEX project-data home; entry changes go through files.ts and the team write path",
+      "src/knowledge/decisions.ts": "writes only the decisions-in-force.json mirror under the MEX home and the decision-commits note under the record directory, atomically; never an entry or repository file",
       "src/knowledge/hints.ts": "removes only disposable hint copies under the MEX project-data home after durable retirement or personal confirmation; refuses overlap with host memory and never writes host or repository files",
       "src/file-index/pending.ts": "removes and restores only the index-pending marker in the machine record directory; never a repo file",
       "src/file-index/shifts.ts": "writes and removes only line-shift files under the machine record's project index folder; never a repo file",
