@@ -26,7 +26,7 @@ export function ownsChanges(directory: string, projectId: string, checkout: stri
       || proof.session_id !== sessionId || !samePosition(proof.position, at) || proof.pending) return false;
     const changed = candidate.files.flatMap(path => {
       const current = files.find(file => file.path === path);
-      const baselines = [...new Set(candidate.entry.mex.checks.flatMap(check => check.files[path] ? [check.files[path]] : []))];
+      const baselines = [...new Set(candidate.entry.mex.checks.flatMap(check => check.kind !== "legacy-grounding" && check.files[path] ? [check.files[path]] : []))];
       // Missing or conflicting baselines cannot establish who changed a rule.
       if (!current || baselines.length !== 1) throw new Error("No unique baseline");
       return baselines[0] === current.hash ? [] : [{ path, before: baselines[0]!, after: current.hash }];
