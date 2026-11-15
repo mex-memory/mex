@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -17,12 +18,17 @@ type Epoch struct {
 	Reason                                             string
 	Budget, TokensSent, ReservedTokens, CompactSignals int
 	SessionTokens                                      int
+	Intent                                             string
+	LastFailure                                        string
+	Closed                                             bool
 }
 
 // DeliveryCandidate is already gated and rendered by the controller. Admit is
 // evaluated under the writer lock so parallel calls see the same budget.
 type DeliveryCandidate struct {
 	EntryID, Moment, Form, Action, ContentHash string
+	Detail, Parent                             string
+	Title, Kind, Level                         string
 	Tokens                                     int
 	Reserved, Exempt                           bool
 	// Correction marks a short note that an entry given earlier in this
@@ -48,6 +54,15 @@ type DeliveryRequest struct {
 	Budget        int
 	Now           time.Time
 	Candidates    []DeliveryCandidate
+	Observations  []FollowupObservation
+	Probes        []FollowupObservation
+	Touches       []string
+	Intent        string
+	Commands      []string // bounded digests of exact commands in this call
+	FailedCommand string   // latest failed command digest, if observed
+	EndEpoch      bool
+	Conflicts     []DeliveryConflict
+	Similar       func(DeliveryCandidate, []GivenRow) string
 	// OnceEntry makes the whole batch conditional on its epoch marker being
 	// absent, so a resume cannot send a newly rebuilt start brief.
 	OnceEntry string
@@ -57,6 +72,7 @@ type DeliveryRequest struct {
 	// no-op calls deliberately do not open SQLite. Called at most 64 times.
 	KeepSession func(agent, sessionID string) bool
 }
+type DeliveryConflict struct{ Winner, Loser, Reason string }
 type DeliveryResult struct {
 	Epoch    Epoch
 	Receipts []Receipt
@@ -65,10 +81,24 @@ type DeliveryResult struct {
 // CheckAndMark commits the lifecycle, aliases, dedupe, admission, receipts and
 // counters together. Nothing may be rendered until this returns successfully.
 func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, err error) {
+	stage := "record-read"
+	var started time.Time
+	if hooks.Trace != nil {
+		started = time.Now()
+	}
+	next := func(name string) {
+		if hooks.Trace != nil {
+			hooks.Trace(stage, time.Since(started))
+			started = time.Now()
+		}
+		stage = name
+	}
 	defer func() {
 		if err != nil {
 			result = DeliveryResult{}
+			err = fmt.Errorf("%s: %w", stage, err)
 		}
+		next("")
 	}()
 	if hooks.counterOnly || req.Session.SessionID == "" || req.Session.Agent == "" || req.Session.ProjectID == "" || req.Session.Checkout == "" {
 		return result, errors.New("invalid delivery session")
@@ -78,7 +108,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			return result, errors.New("invalid delivery identity")
 		}
 	}
-	if len(req.Candidates) > 1000 || len(req.Aliases) > 10000 {
+	if len(req.Commands) > 64 || len(req.Probes) > 1000 || len(req.Touches) > 1000 || len(req.Conflicts) > 1000 || len(req.Observations) > 1000 || len(req.Candidates) > 1000 || len(req.Aliases) > 10000 {
 		return result, errors.New("delivery batch exceeds bound")
 	}
 	if req.Now.IsZero() {
@@ -91,10 +121,19 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		return result, err
 	}
 	defer conn.Close()
+	// A commit must not also checkpoint the WAL inside the delivery deadline.
+	// SQLite still checkpoints on the last connection's close, after this
+	// transaction. This connection-local setting changes neither WAL nor sync
+	// durability and does not add background work or extend the writer budget.
+	if _, err = conn.ExecContext(ctx, "PRAGMA wal_autocheckpoint=0"); err != nil {
+		return result, err
+	}
+	next("record-lock")
 	if err = hooks.retryStatement(ctx, conn, "BEGIN IMMEDIATE"); err != nil {
 		return result, err
 	}
 	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
+	next("record-read")
 	// Match existing record timestamps. Retention uses a conservative age
 	// boundary; no timestamp is included in model-facing text.
 	stamp := req.Now.UTC().Format(time.RFC3339Nano)
@@ -114,9 +153,9 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		return result, err
 	}
 	e := Epoch{}
-	err = conn.QueryRowContext(ctx, `SELECT epoch,reason,budget,tokens_sent,reserved_tokens,compact_signals FROM epochs
+	err = conn.QueryRowContext(ctx, `SELECT epoch,reason,budget,tokens_sent,reserved_tokens,compact_signals,intent,closed,last_failure FROM epochs
  WHERE session_id=? AND agent_id=? ORDER BY epoch DESC LIMIT 1`, req.Session.SessionID, req.AgentID).
-		Scan(&e.Number, &e.Reason, &e.Budget, &e.TokensSent, &e.ReservedTokens, &e.CompactSignals)
+		Scan(&e.Number, &e.Reason, &e.Budget, &e.TokensSent, &e.ReservedTokens, &e.CompactSignals, &e.Intent, &e.Closed, &e.LastFailure)
 	missing := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !missing {
 		return result, err
@@ -138,21 +177,72 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		}
 		advance = !missing && (e.Reason != "compact" || e.CompactSignals&req.CompactSignal != 0)
 	}
+	if advance {
+		if _, err = conn.ExecContext(ctx, `UPDATE epochs SET closed=1 WHERE session_id=? AND agent_id=? AND epoch=?`, req.Session.SessionID, req.AgentID, e.Number); err != nil {
+			return result, err
+		}
+		if err = closeHoldbacks(ctx, conn, req.Session.SessionID, req.AgentID, e.Number, stamp); err != nil {
+			return result, err
+		}
+	}
 	if missing || advance {
 		number := 0
 		if advance {
 			number = e.Number + 1
 		}
-		e = Epoch{Number: number, Reason: reason, Budget: req.Budget}
+		e = Epoch{Number: number, Reason: reason, Budget: req.Budget, Intent: "investigating"}
 		if req.Reason == "compact" {
 			e.CompactSignals = req.CompactSignal
 		}
-		_, err = conn.ExecContext(ctx, `INSERT INTO epochs(session_id,agent_id,epoch,started_at,reason,budget,compact_signals) VALUES(?,?,?,?,?,?,?)`, req.Session.SessionID, req.AgentID, e.Number, stamp, e.Reason, e.Budget, e.CompactSignals)
+		_, err = conn.ExecContext(ctx, `INSERT INTO epochs(session_id,agent_id,epoch,started_at,reason,budget,compact_signals,intent) VALUES(?,?,?,?,?,?,?,?)`, req.Session.SessionID, req.AgentID, e.Number, stamp, e.Reason, e.Budget, e.CompactSignals, e.Intent)
 	} else if req.Reason == "compact" {
 		e.CompactSignals |= req.CompactSignal
 		_, err = conn.ExecContext(ctx, `UPDATE epochs SET compact_signals=? WHERE session_id=? AND agent_id=? AND epoch=?`, e.CompactSignals, req.Session.SessionID, req.AgentID, e.Number)
 	}
 	if err != nil {
+		return result, err
+	}
+	if err = observeHoldbacks(ctx, conn, req, e.Number, stamp); err != nil {
+		return result, err
+	}
+	if req.EndEpoch {
+		if err = closeHoldbacks(ctx, conn, req.Session.SessionID, req.AgentID, e.Number, stamp); err != nil {
+			return result, err
+		}
+	}
+	if req.Intent != "" {
+		switch req.Intent {
+		case "working", "investigating", "changing", "reproducing":
+			e.Intent = req.Intent
+		default:
+			return result, errors.New("invalid intent")
+		}
+	}
+	for _, digest := range append(append([]string{}, req.Commands...), req.FailedCommand) {
+		if digest == "" {
+			continue
+		}
+		if raw, err := hex.DecodeString(digest); err != nil || len(raw) != 32 {
+			return result, errors.New("invalid command digest")
+		}
+	}
+	for _, digest := range req.Commands {
+		if digest == e.LastFailure && e.Intent != "changing" {
+			e.Intent = "reproducing"
+		}
+	}
+	if req.FailedCommand != "" {
+		e.LastFailure = req.FailedCommand
+	}
+	if len(req.Commands) > 0 {
+		_, err = conn.ExecContext(ctx, `UPDATE epochs SET last_failure=? WHERE session_id=? AND agent_id=? AND epoch=?`,
+			e.LastFailure, req.Session.SessionID, req.AgentID, e.Number)
+		if err != nil {
+			return result, err
+		}
+	}
+	e.Closed = req.EndEpoch
+	if err = observeProbes(ctx, conn, req, e.Number, stamp); err != nil {
 		return result, err
 	}
 	// Persist explicit merges. The entry codec has no successor field; callers
@@ -202,6 +292,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		}
 	}
 	present := map[string]bool{}
+	presentHashes := map[string]string{}
 	if len(req.Candidates) > 0 {
 		err = conn.QueryRowContext(ctx, `SELECT coalesce(sum(tokens_sent+reserved_tokens),0) FROM epochs WHERE session_id=? AND agent_id=?`, req.Session.SessionID, req.AgentID).Scan(&e.SessionTokens)
 		if err != nil {
@@ -211,16 +302,18 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	// logged keeps one withheld or held-back row per entry per epoch, and
 	// corrected one correction, so repeated moments don't grow the table.
 	logged := map[string]bool{}
+	blockedIDs := map[string][]string{}
 	corrected := map[string]bool{}
-	rows, err = conn.QueryContext(ctx, `SELECT entry_id,action,moment FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? LIMIT 20000`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout)
+	rows, err = conn.QueryContext(ctx, `SELECT entry_id,action,moment,content_hash FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? LIMIT 20000`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout)
 	if err != nil {
 		return result, err
 	}
 	for rows.Next() {
-		var id, action, moment string
-		if err = rows.Scan(&id, &action, &moment); err != nil {
+		var id, action, moment, hash string
+		if err = rows.Scan(&id, &action, &moment, &hash); err != nil {
 			break
 		}
+		rawID := id
 		id, err = canonical(id)
 		if err != nil {
 			break
@@ -230,8 +323,12 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			corrected[id] = true
 		case action == "given" || action == "replaced":
 			present[id] = true
+			presentHashes[id] = hash
 		default:
 			logged[id+"\x00"+action] = true
+			if action == "held-back" || action == "withheld" {
+				blockedIDs[id] = append(blockedIDs[id], rawID)
+			}
 		}
 	}
 	err = errors.Join(err, rows.Err(), rows.Close())
@@ -245,8 +342,21 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	if req.OnceEntry != "" && present[req.OnceEntry] {
 		req.Candidates = nil
 	}
+	familyCost := map[string]int{}
 	for _, c := range req.Candidates {
-		if c.EntryID == "" || len(c.EntryID) > 128 || strings.ContainsRune(c.EntryID, 0) || len(c.ContentHash) > 256 || strings.ContainsRune(c.ContentHash, 0) || c.Tokens < 0 || c.Tokens > 1000000 {
+		if c.Parent != "" && (c.Action == "" || c.Action == "given" || c.Action == "replaced") {
+			familyCost[c.Parent] += c.Tokens
+		}
+	}
+	next("record-admission-write")
+	approved := map[string]bool{}
+	for _, c := range req.Candidates {
+		if len(c.Title) > 4096 || len(c.Kind) > 32 || len(c.Level) > 16 ||
+			len(c.Detail) > 64 || len(c.Parent) > 128 ||
+			strings.ContainsRune(c.Title+c.Kind+c.Level+c.Detail+c.Parent, 0) ||
+			c.EntryID == "" || len(c.EntryID) > 128 || strings.ContainsRune(c.EntryID, 0) ||
+			len(c.ContentHash) > 256 || strings.ContainsRune(c.ContentHash, 0) ||
+			c.Tokens < 0 || c.Tokens > 1000000 {
 			return result, errors.New("invalid delivery candidate")
 		}
 		id, err := canonical(c.EntryID)
@@ -265,7 +375,29 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			c.Action = "given"
 		}
 		sends := c.Action == "given" || c.Action == "replaced"
-		if sends && !c.Exempt && !c.Reserved && (e.TokensSent+c.Tokens > e.Budget || (req.Admit != nil && !req.Admit(e, c))) {
+		familyApproved := c.Parent != "" && approved[c.Parent]
+		if sends && c.Parent != "" {
+			parent, err := canonical(c.Parent)
+			if err != nil {
+				return result, err
+			}
+			if !present[parent] {
+				c.Action, c.Detail, sends = "withheld", "parent", false
+			}
+		}
+		if sends && req.Similar != nil && !c.Correction {
+			var rows []GivenRow
+			for id := range present {
+				rows = append(rows, GivenRow{EntryID: id, ContentHash: presentHashes[id]})
+			}
+			sort.Slice(rows, func(i, j int) bool { return rows[i].EntryID < rows[j].EntryID })
+			if why := req.Similar(c, rows); why != "" {
+				c.Action, c.Detail, c.Tokens, sends = "withheld", why, 0, false
+			}
+		}
+		cost := c
+		cost.Tokens += familyCost[c.EntryID]
+		if sends && !familyApproved && !c.Exempt && !c.Reserved && (e.TokensSent+cost.Tokens > e.Budget || (req.Admit != nil && !req.Admit(e, cost))) {
 			c.Action = "held-back"
 			sends = false
 		}
@@ -280,7 +412,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		if err != nil {
 			return result, err
 		}
-		_, err = conn.ExecContext(ctx, `INSERT INTO deliveries(id,session_id,agent_id,epoch,ts,moment,entry_id,form,tokens,action,content_hash,block_id,project_id,checkout) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, receipt, req.Session.SessionID, req.AgentID, e.Number, stamp, c.Moment, c.EntryID, c.Form, c.Tokens, c.Action, c.ContentHash, block, req.Session.ProjectID, req.Session.Checkout)
+		_, err = conn.ExecContext(ctx, `INSERT INTO deliveries(id,session_id,agent_id,epoch,ts,moment,entry_id,form,tokens,action,content_hash,block_id,project_id,checkout,detail,title,kind,level) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, receipt, req.Session.SessionID, req.AgentID, e.Number, stamp, c.Moment, c.EntryID, c.Form, c.Tokens, c.Action, c.ContentHash, block, req.Session.ProjectID, req.Session.Checkout, c.Detail, c.Title, c.Kind, c.Level)
 		if err != nil {
 			return result, err
 		}
@@ -292,7 +424,17 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			continue
 		}
 		if sends {
+			approved[c.EntryID] = true
+			if err = probeCounter(ctx, conn, stamp[:10], req.Session.Agent, "delivered"); err != nil {
+				return result, err
+			}
+			for _, oldID := range blockedIDs[id] {
+				if err = deliveredLater(ctx, conn, req, e.Number, oldID, stamp); err != nil {
+					return result, err
+				}
+			}
 			present[id] = true
+			presentHashes[id] = c.ContentHash
 			e.SessionTokens += c.Tokens
 			if c.Reserved {
 				e.ReservedTokens += c.Tokens
@@ -301,7 +443,14 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			}
 		}
 	}
-	_, err = conn.ExecContext(ctx, `UPDATE epochs SET tokens_sent=?,reserved_tokens=? WHERE session_id=? AND agent_id=? AND epoch=?`, e.TokensSent, e.ReservedTokens, req.Session.SessionID, req.AgentID, e.Number)
+	for _, c := range req.Conflicts {
+		if present[c.Winner] {
+			if _, err = conn.ExecContext(ctx, `INSERT OR IGNORE INTO delivery_conflicts VALUES(?,?,?,?,?,?,?,?)`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout, c.Winner, c.Loser, c.Reason); err != nil {
+				return result, err
+			}
+		}
+	}
+	_, err = conn.ExecContext(ctx, `UPDATE epochs SET tokens_sent=?,reserved_tokens=?,intent=?,closed=? WHERE session_id=? AND agent_id=? AND epoch=?`, e.TokensSent, e.ReservedTokens, e.Intent, e.Closed, req.Session.SessionID, req.AgentID, e.Number)
 	if err != nil {
 		return result, err
 	}
@@ -310,6 +459,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			return result, err
 		}
 	}
+	next("record-commit")
 	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return DeliveryResult{}, err
 	}
@@ -353,10 +503,12 @@ func pruneDelivery(ctx context.Context, c *sql.Conn, cutoff string, keep func(st
 	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	args := append(ids, cutoff)
 	for _, q := range []string{
+		`DELETE FROM delivery_conflicts WHERE rowid IN (SELECT c.rowid FROM delivery_conflicts c JOIN epochs e ON e.session_id=c.session_id AND e.agent_id=c.agent_id AND e.epoch=c.epoch WHERE c.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,
+		`DELETE FROM delivery_touches WHERE delivery_id IN (SELECT d.id FROM deliveries d WHERE d.session_id IN (` + marks + `) AND d.ts<? LIMIT 256)`,
 		`DELETE FROM epoch_files WHERE rowid IN (SELECT f.rowid FROM epoch_files f JOIN epochs e ON e.session_id=f.session_id AND e.agent_id=f.agent_id AND e.epoch=f.epoch WHERE f.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,
 		`DELETE FROM followups WHERE id IN (SELECT f.id FROM followups f JOIN deliveries d ON d.id=f.delivery_id WHERE d.session_id IN (` + marks + `) AND d.ts<? LIMIT 256)`,
-		`DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.session_id IN (` + marks + `) AND d.ts<? AND NOT EXISTS(SELECT 1 FROM followups f WHERE f.delivery_id=d.id) LIMIT 256)`,
-		`DELETE FROM epochs WHERE (session_id,agent_id,epoch) IN (SELECT e.session_id,e.agent_id,e.epoch FROM epochs e WHERE e.session_id IN (` + marks + `) AND e.started_at<? AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.session_id=e.session_id AND d.agent_id=e.agent_id AND d.epoch=e.epoch) LIMIT 64)`,
+		`DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.session_id IN (` + marks + `) AND d.ts<? AND NOT EXISTS(SELECT 1 FROM followups f WHERE f.delivery_id=d.id) AND NOT EXISTS(SELECT 1 FROM delivery_touches t WHERE t.delivery_id=d.id) LIMIT 256)`,
+		`DELETE FROM epochs WHERE (session_id,agent_id,epoch) IN (SELECT e.session_id,e.agent_id,e.epoch FROM epochs e WHERE e.session_id IN (` + marks + `) AND e.started_at<? AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.session_id=e.session_id AND d.agent_id=e.agent_id AND d.epoch=e.epoch) AND NOT EXISTS(SELECT 1 FROM delivery_conflicts c WHERE c.session_id=e.session_id AND c.agent_id=e.agent_id AND c.epoch=e.epoch) LIMIT 64)`,
 	} {
 		if _, err := c.ExecContext(ctx, q, args...); err != nil {
 			return fmt.Errorf("prune delivery: %w", err)

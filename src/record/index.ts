@@ -65,7 +65,7 @@ export class RecordReader {
   constructor(protected readonly db: DatabaseSync, file: string) {
     db.exec(`PRAGMA busy_timeout=${READER_TIMEOUT_MS}; PRAGMA query_only=ON`);
     this.version = schemaVersion(db);
-    const supported = file === "hooks.db" ? 2 : RECORD_SCHEMA_VERSION;
+    const supported = file === "hooks.db" ? 6 : RECORD_SCHEMA_VERSION;
     this.diagnostic = this.version > supported ? newer(file, this.version, supported).message : undefined;
   }
   get<T>(sql: string, ...values: SQLInputValue[]): T | undefined { return this.db.prepare(sql).get(...values) as T | undefined; }

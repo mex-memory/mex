@@ -86,9 +86,9 @@ describe("record schema and ownership", () => {
   });
   it("refuses a future hooks version independently of record.db", () => {
     const home = temp(); const db = new DatabaseSync(join(home, "hooks.db"));
-    db.exec("PRAGMA user_version=3"); db.close();
+    db.exec("PRAGMA user_version=7"); db.close();
     const reader = openHooksReadOnly({ home, isNetwork: () => false })!; closes.push(() => reader.close());
-    expect(reader.diagnostic).toContain("hooks.db schema version 3 is newer than supported version 2");
+    expect(reader.diagnostic).toContain("hooks.db schema version 7 is newer than supported version 6");
   });
 });
 

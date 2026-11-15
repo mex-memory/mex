@@ -6,12 +6,15 @@ package delivery
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/mex-memory/mex/native/brief"
 	"github.com/mex-memory/mex/native/delivery/entries"
+	"github.com/mex-memory/mex/native/delivery/rank"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/safefile"
 	"github.com/mex-memory/mex/native/record"
@@ -20,6 +23,8 @@ import (
 type Environment struct {
 	Home, RecordDirectory string
 	Now                   time.Time
+	Scorer                string // environment override, resolved without I/O
+	Trace                 func(string, time.Duration)
 	KeepSession           func(agent, sessionID string) bool
 	// Resolve finds the registered checkout of a touched path; nil means
 	// every tool uses the event's own checkout.
@@ -72,7 +77,7 @@ func momentKind(ev contract.Event) bool {
 	case contract.PostTool:
 		return ev.Agent != "claude-code"
 	case contract.Prompt:
-		return ev.Prompt != nil && ev.Prompt.Typed && strings.TrimSpace(ev.Prompt.Text) != ""
+		return ev.Prompt != nil && ev.Prompt.Typed && strings.TrimSpace(ev.Prompt.Text) != "" && !rank.Machine(ev.Prompt.Text)
 	}
 	return false
 }
@@ -82,16 +87,25 @@ type group struct {
 	snap              *entries.Snapshot
 	cands             []candidate
 	firstRel          string
-	edits             []string // files edited in this call that some entry covers
+	ranked            []rank.Result
+	text              string     // bounded prompt text
+	views             []toolView // references only; scoring text is assembled after hard gates
+	edits             []string   // files edited in this call that some entry covers
 }
 
 // Handle must be called after checkout, consent and pause resolution. Events
-// with no moment return before any file read or SQLite open; events whose
+// with no moment or lifecycle work return before any file read or SQLite open; events whose
 // moments find no candidate return before SQLite.
 func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	reason, signal, isLifecycle := lifecycle(ev)
 	isMoment := momentKind(ev)
-	if !isLifecycle && !isMoment {
+	isEnd := ev.Kind == contract.SessionEnd
+	if isEnd {
+		if _, err := os.Stat(filepath.Join(env.RecordDirectory, "hooks.db")); err != nil {
+			return contract.Reply{}, nil
+		}
+	}
+	if !isLifecycle && !isMoment && !isEnd {
 		return contract.Reply{}, nil
 	}
 	if ev.SessionID == "" || env.RecordDirectory == "" {
@@ -107,7 +121,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	if isMoment {
 		groups = collect(ev, env)
 	}
-	if !isLifecycle && len(groups) == 0 {
+	if !isLifecycle && !isEnd && len(groups) == 0 {
 		return contract.Reply{}, nil
 	}
 
@@ -116,16 +130,20 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			return contract.Reply{}, errors.New("redirected hooks database")
 		}
 	}
+	finish := phase(env.Trace, "record-open")
 	h, err := record.OpenHooks(record.Location{Directory: env.RecordDirectory, Hooks: filepath.Join(env.RecordDirectory, "hooks.db")})
+	finish()
 	if err != nil {
-		return contract.Reply{}, err
+		return contract.Reply{}, fmt.Errorf("record-open: %w", err)
 	}
+	h.Trace = env.Trace
 	defer h.Close()
 
 	var blocks []string
-	if isLifecycle {
+	if isLifecycle || isEnd {
 		req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
 		req.Reason, req.CompactSignal = reason, signal
+		req.EndEpoch = isEnd
 		req.Budget = EpochBudget(ev.Model, ev.AgentID != "")
 		if ev.Model == "" && ev.AgentID == "" {
 			req.Budget = 0 // keep the known window across signals without model metadata
@@ -133,6 +151,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		res, err := h.CheckAndMark(req)
 		if err != nil {
 			return contract.Reply{}, err
+		}
+		if isEnd {
+			return contract.Reply{}, nil
 		}
 		text, err := lifecycleBlock(h, ev, env, reason, signal, res.Epoch)
 		if err != nil {
@@ -144,11 +165,39 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	}
 
 	for _, g := range groups {
+		finish := phase(env.Trace, "record-observations")
+		obs, err := holdbackObservations(h, ev, g)
+		if err != nil {
+			return contract.Reply{}, fmt.Errorf("record-holdbacks: %w", err)
+		}
+		previous, err := h.Intent(ev.SessionID, ev.AgentID)
+		if err != nil {
+			return contract.Reply{}, fmt.Errorf("record-intent: %w", err)
+		}
+		probes, touches, err := deliveredObservations(h, ev, g)
+		if err != nil {
+			return contract.Reply{}, fmt.Errorf("record-probes: %w", err)
+		}
+		commands, failed := commandObservations(g)
+		if len(commands) > 0 || len(obs) > 0 || len(probes) > 0 || len(touches) > 0 || observeIntent(previous, ev, g) != previous {
+			req := baseRequest(ev, env, g.project, g.checkout)
+			req.Observations = obs
+			req.Probes, req.Touches = probes, touches
+			req.Intent = observeIntent(previous, ev, g)
+			req.Commands, req.FailedCommand = commands, failed
+			if _, err = h.CheckAndMark(req); err != nil {
+				return contract.Reply{}, err
+			}
+		}
 		if len(g.edits) > 0 {
 			if err := h.NoteEdits(record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: g.project, Checkout: g.checkout}, ev.AgentID, g.edits); err != nil {
 				return contract.Reply{}, err
 			}
 		}
+		if err := releaseHeldRules(h, ev, g); err != nil {
+			return contract.Reply{}, fmt.Errorf("record-holdbacks: %w", err)
+		}
+		finish()
 		if len(g.cands) == 0 {
 			continue
 		}
@@ -186,16 +235,51 @@ func collect(ev contract.Event, env Environment) []*group {
 			return g
 		}
 		g := &group{project: project, checkout: checkout}
+		finish := phase(env.Trace, "snapshot-load")
 		if snap, err := entries.LoadLight(env.RecordDirectory, env.Home, project, checkout); err == nil && len(snap.Items) > 0 {
 			g.snap = &snap
 		}
+		finish()
 		byCheckout[key] = g
 		order = append(order, g)
 		return g
 	}
 	if ev.Kind == contract.Prompt {
 		if g := get(ev.ProjectID, ev.Checkout); g != nil && g.snap != nil {
-			g.cands = promptMoments(ev.Prompt.Text, g.snap)
+			finish := phase(env.Trace, "prompt-index")
+			ix, snapshot, err := entries.PromptIndex(env.RecordDirectory, env.Home, g.project, g.checkout, *g.snap)
+			finish()
+			if err == nil {
+				g.snap = &snapshot
+				g.cands = promptMoments(ev.Prompt.Text, g.snap)
+				byID := map[string]*entries.Item{}
+				gate := hintGate(env.RecordDirectory, g.project, ev.Agent, env.Now)
+				for i := range g.snap.Items {
+					it := &g.snap.Items[i]
+					if it.NeedsHintGate && !gate(it) {
+						continue
+					}
+					byID[it.Entry.ID] = it
+				}
+				finish = phase(env.Trace, "prompt-rank")
+				g.ranked = ix.Rank(boundedText(ev.Prompt.Text, 65536))
+				finish()
+				possible := false
+				for i := range g.ranked {
+					if len(rank.Select(g.ranked[i:], rank.DefaultGate())) > 0 {
+						possible = true
+						break
+					}
+				}
+				if possible {
+					for _, r := range g.ranked {
+						if it := byID[r.ID]; it != nil {
+							g.cands = append(g.cands, candidate{item: it, moment: momentPrompt, tier: tierPrompt})
+						}
+					}
+				}
+			}
+			g.text = boundedText(ev.Prompt.Text, 64*1024)
 		}
 	} else {
 		hintGates := map[string]func(*entries.Item) bool{}
@@ -209,6 +293,7 @@ func collect(ev contract.Event, env Environment) []*group {
 				gate = hintGate(env.RecordDirectory, g.project, ev.Agent, env.Now)
 				hintGates[g.project] = gate
 			}
+			g.views = append(g.views, v)
 			found := moments(v, g.snap, gate)
 			if len(found) > 0 && g.firstRel == "" {
 				g.firstRel = v.rel
@@ -264,7 +349,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	// bring their correction.
 	present, err := h.Presence(ev.SessionID, ev.AgentID, g.project, g.checkout)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("record-presence: %w", err)
 	}
 	fresh := g.cands[:0:0]
 	var onBranch blockState
@@ -297,7 +382,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	if len(g.cands) == 0 {
 		return "", nil
 	}
-	if g.snap.Light {
+	if g.snap.Light && ev.Kind != contract.Prompt {
 		// A light snapshot found the moment; the text comes from the full one.
 		full, err := entries.Load(env.RecordDirectory, env.Home, g.project, g.checkout)
 		if err != nil {
@@ -341,10 +426,87 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	if len(ids) == 0 {
 		return "", nil
 	}
+	// Rank unseen, natively uncovered items. IDF is over the gated snapshot;
+	// an item already carried never consumes the gate's two available slots.
+	if ev.Kind == contract.Prompt {
+		ranked := g.ranked
+		filtered := make([]rank.Result, 0, len(ranked))
+		for _, r := range ranked {
+			if _, ok := best[r.ID]; ok {
+				filtered = append(filtered, r)
+			}
+		}
+		allowed := map[string]bool{}
+		for _, r := range rank.Select(filtered, rank.DefaultGate()) {
+			allowed[r.ID] = true
+		}
+		var kept []string
+		for _, id := range ids {
+			c := best[id]
+			if c.tier != tierPrompt || allowed[id] {
+				kept = append(kept, id)
+			}
+		}
+		ids = kept
+		if len(ids) == 0 {
+			return "", nil
+		}
+	}
+	if g.snap.Light {
+		finish := phase(env.Trace, "selected-load")
+		wanted := map[string]bool{}
+		for _, id := range ids {
+			wanted[id] = true
+		}
+		for id := range present {
+			if len(wanted) >= 1000 {
+				return "", errors.New("prompt presence bound")
+			}
+			wanted[id] = true
+		}
+		full, err := entries.Selected(env.Home, g.project, g.checkout, *g.snap, wanted)
+		finish()
+		if err != nil {
+			return "", err
+		}
+		byID := map[string]*entries.Item{}
+		for i := range full.Items {
+			byID[full.Items[i].Entry.ID] = &full.Items[i]
+		}
+		var kept []string
+		for _, id := range ids {
+			if it := byID[id]; it != nil {
+				c := best[id]
+				c.item = it
+				best[id] = c
+				kept = append(kept, id)
+			}
+		}
+		ids = kept
+		g.snap = &full
+	}
+	intent, err := h.Intent(ev.SessionID, ev.AgentID)
+	if err != nil {
+		return "", err
+	}
 	var items []shaped
 	var corrections []planned
 	for _, id := range ids {
 		s := shape(best[id], verdictOf(id), senv)
+		if s.action == "given" && s.item.Entry.Kind == "rule" && intent == "investigating" {
+			s.action, s.detail = "held-back", "investigating"
+		}
+		if s.action == "given" && s.item.Entry.Kind == "rule" && intent == "changing" {
+			for _, v := range g.views {
+				if isEdit(v) && inScope(s.item, v.rel) && containsAny(v.removed, triggers(s.item, "anti")) && !containsAny(v.added, triggers(s.item, "anti")) {
+					s.full = "Current convention: " + s.oneLine
+					s.oneLine = s.full
+					s.fullTok = entries.EstimateTokens(s.full)
+					s.lineTok = s.fullTok
+					break
+				}
+			}
+		}
 		items = append(items, s)
 		if s.action == "withheld" && s.verdict == broken {
 			// Sent only if this entry was given earlier in the epoch; the
@@ -364,10 +526,123 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		s := shape(candidate{item: it, moment: "companion", tier: tierFolder}, verdictOf(id), senv)
 		return &s
 	}
-	plan := append(corrections, pack(items, companion)...)
+	name := scorerSetting(env, g.project)
+	var missed map[string]int
+	needsMisses := false
+	for _, s := range items {
+		if len(triggers(s.item, "anti")) > 0 {
+			needsMisses = true
+			break
+		}
+	}
+	if name == "risk" && needsMisses {
+		var err error
+		missed, err = h.MissedCounts(g.project, g.checkout)
+		if err != nil {
+			return "", err
+		}
+	}
+	query := g.text
+	if name == "bm25" || name == "risk" {
+		if name == "risk" {
+			query = ""
+		}
+		for _, v := range g.views {
+			if name == "risk" && (v.name != contract.ToolRead || v.output == nil) {
+				continue
+			}
+			if len(query) >= 65536 {
+				break
+			}
+			text := viewText(v)
+			if name == "risk" {
+				text = boundedText(v.output.Text, 65536)
+			}
+			query += boundedText(" "+text, 65536-len(query))
+		}
+	}
+	var scorer Scorer
+	if name == "bm25" && ev.Kind == contract.Prompt {
+		// The prompt ranker already scored these entries with field-weighted
+		// BM25 over persisted statistics; reuse it instead of loading every
+		// entry's text to rebuild a plain index.
+		scores := make(map[string]float64, len(g.ranked))
+		for _, r := range g.ranked {
+			scores[r.ID] = r.Score
+		}
+		scorer = bm25Scorer{scores}
+	} else {
+		scorer = newScorer(name, query, g.snap, items, missed)
+	}
+	items, conflicts := resolveConflicts(items)
+	var known []record.GivenRow
+	if len(present) > 0 {
+		known, _, err = h.EpochGiven(ev.SessionID, ev.AgentID, g.project, g.checkout, -1)
+		if err != nil {
+			return "", err
+		}
+	}
+	validPrior := func(row record.GivenRow) *entries.Item {
+		it := byID[row.EntryID]
+		if it == nil {
+			return nil
+		}
+		if row.ContentHash != contentHash(it.Hash+"\n"+it.Full) && row.ContentHash != contentHash(it.Hash+"\n"+it.OneLine) {
+			return nil
+		}
+		return it
+	}
+	for i := range items {
+		if items[i].action == "given" && !items[i].resend {
+			duplicate := nativeSimilar(items[i].item.Entry.OneLine+" "+items[i].item.Entry.Text, cov.texts)
+			for _, row := range known {
+				if it := validPrior(row); it != nil && itemSimilar(items[i].item, it) {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				items[i].action, items[i].detail = "withheld", "similar"
+			}
+		}
+	}
+	if scorer.BudgetOnly() {
+		for i := range items {
+			items[i].reserve = false
+			items[i].exempt = false
+		}
+	}
+	plan := append(corrections, pack(items, companion, scorer)...)
 	req := baseRequest(ev, env, g.project, g.checkout)
 	req.Candidates = requestCandidates(plan)
-	req.Admit = admit(plan)
+	req.Conflicts = conflicts
+	comparisons := 0
+	req.Similar = func(c record.DeliveryCandidate, rows []record.GivenRow) string {
+		it := byID[c.EntryID]
+		if it == nil || c.Resend || c.Action == "replaced" {
+			return ""
+		}
+		for _, row := range rows {
+			if row.EntryID == c.EntryID {
+				continue
+			}
+			comparisons++
+			if comparisons > 10000 {
+				return "similar-bound"
+			}
+			if prior := validPrior(row); prior != nil && itemSimilar(it, prior) {
+				return "similar"
+			}
+		}
+		return ""
+	}
+	req.Admit = admit(plan, scorer)
+	if scorer.BudgetOnly() {
+		for i := range req.Candidates {
+			req.Candidates[i].Exempt = false
+			req.Candidates[i].Reserved = false
+		}
+	}
 	res, err := h.CheckAndMark(req)
 	if err != nil {
 		return "", err
@@ -376,4 +651,44 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		return "", nil
 	}
 	return render(res.Receipts[0].BlockID, plan, res.Receipts), nil
+}
+
+// releaseHeldRules offers again, at an edit, the rules this epoch held back
+// while the agent was only investigating: a rule waits for edit risk, and an
+// edit inside its scope is that risk. The rule keeps its exact-match exemption.
+func releaseHeldRules(h *record.Hooks, ev contract.Event, g *group) error {
+	if len(g.edits) == 0 {
+		return nil
+	}
+	rows, err := h.HoldbackEntries(ev.SessionID, ev.AgentID, g.project, g.checkout)
+	if err != nil {
+		return err
+	}
+	held := map[string]bool{}
+	for _, r := range rows {
+		if r.Detail == "investigating" {
+			held[r.EntryID] = true
+		}
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	offered := map[string]bool{}
+	for _, c := range g.cands {
+		offered[c.item.Entry.ID] = true
+	}
+	for i := range g.snap.Items {
+		it := &g.snap.Items[i]
+		if !held[it.Entry.ID] || offered[it.Entry.ID] || it.Entry.Kind != "rule" {
+			continue
+		}
+		for _, rel := range g.edits {
+			if inScope(it, rel) {
+				g.cands = append(g.cands, candidate{item: it, moment: momentEdit, tier: tierPattern, exempt: true, rel: rel})
+				offered[it.Entry.ID] = true
+				break
+			}
+		}
+	}
+	return nil
 }

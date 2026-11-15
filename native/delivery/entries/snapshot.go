@@ -36,6 +36,7 @@ type Item struct {
 }
 type Snapshot struct {
 	// Light snapshots carry no text and only command checks (LoadLight).
+	Stamp          string
 	Light          bool
 	Items          []Item
 	Retired        []string

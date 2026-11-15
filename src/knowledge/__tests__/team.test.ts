@@ -100,7 +100,7 @@ describe("team entry storage", () => {
     const entry = fact("mx_team001", "A synthetic credential ghp_" + "x".repeat(36));
     writeFileSync(join(repo, ".mex/learned/mx_team001.md"), serializeEntry(entry));
     expect(teamEntries(options())).toEqual({ entries: [], withheld: 1 });
-    expect(recall("credential", options())).toEqual({ entries: [], truncated: false, withheld: 1 });
+    expect(recall("credential", options())).toEqual({ entries: [], truncated: false, withheld: 1, ranking: { engine: "legacy", reason: "native-binary-unavailable" } });
     expect(() => expand(entry.mex.id, options())).toThrow(/possible secret/);
     expect(() => prepareTeamWrite(fact(entry.mex.id), options(), fact(entry.mex.id).text)).toThrow(/possible secret/);
   });

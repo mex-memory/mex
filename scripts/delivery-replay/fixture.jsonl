@@ -1,0 +1,3 @@
+{"type":"user","message":{"content":"Inspect the connection pool source."}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":"/repo/src/a.ts"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read-1","content":"export const pool = sharedPool;"}]}}

@@ -36,9 +36,10 @@ describe("shipped knowledge commands", () => {
     for (const leading of [["--no-open"], ["--port", "4321"]]) {
       const result = run([...leading, "recall", "fixtures", "--json"], repo, true);
       expect(result.status, result.stderr).toBe(0); expect(result.stderr).toBe("");
-      expect(result.json()).toEqual({ ok: true, entries: [], truncated: false });
+      expect(result.json()).toEqual({ ok: true, entries: [], truncated: false, ranking: { engine: "legacy", reason: "native-binary-unavailable" } });
       expect(existsSync(mexBase)).toBe(false);
     }
+    const explained=run(["--no-open","what","--json"],repo,true);expect(explained.status,explained.stderr).toBe(0);expect(explained.json()).toMatchObject({ok:true,gave:0,items:[]});expect(existsSync(mexBase)).toBe(false);
     const missing = run(["--no-open", "expand", "mx_absent1", "--json"], repo, true);
     expect(missing.status).toBe(1); expect(missing.stderr).toBe("");
     expect(missing.json()).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
@@ -174,7 +175,7 @@ describe("shipped knowledge commands", () => {
   });
   it("returns empty reads and controlled JSON errors without initializing storage", () => {
     const empty = run(["recall", "fixtures", "--json"]);
-    expect(empty.status, empty.stderr).toBe(0); expect(empty.json()).toEqual({ ok: true, entries: [], truncated: false });
+    expect(empty.status, empty.stderr).toBe(0); expect(empty.json()).toEqual({ ok: true, entries: [], truncated: false, ranking: { engine: "legacy", reason: "native-binary-unavailable" } });
     for (const [args, code] of [
       [["expand", "mx_absent1", "--json"], "NOT_FOUND"],
       [["expand", "../escape", "--json"], "INVALID_ID"],

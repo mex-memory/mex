@@ -115,7 +115,7 @@ func normalizeCommand(segment string) []string {
 			if strings.HasPrefix(a, "-") && len(kept) == 0 {
 				// Options before the script (`--filter api`, `-w`) are kept
 				// apart; a filter names a workspace, not the script.
-				if (a == "--filter" || a == "-F" || a == "--workspace" || a == "-w" || a == "--prefix" || a == "-C") && i+1 < len(rest) {
+				if (a == "--filter" || a == "-F" || a == "--workspace" || a == "-w" || a == "--prefix" || a == "--dir" || a == "-C") && i+1 < len(rest) {
 					i++
 				}
 				continue

@@ -10,6 +10,7 @@ import { gateEntry, sanitizeText } from "./gates.js";
 import { entryLabel, KNOWLEDGE_PRIORITY, type KnowledgeLevel } from "./labels.js";
 import { expandTeam, teamEntries, type TeamEntry } from "./team.js";
 import { readHints, type HintEntry } from "./hints.js";
+import { rankNative } from "./native-rank.js";
 export type { KnowledgeOptions } from "./context.js";
 
 export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
@@ -89,8 +90,10 @@ export interface RecallItem {
   scope: string[]; source: Pick<KnowledgeEntry["mex"]["source"], "type" | "ref">;
   evidence: KnowledgeEntry["mex"]["evidence"]; created: string;
   branch?: TeamEntry["branch"];
+  score?: number;
+  why?: { matched: string[]; exact: boolean };
 }
-export interface RecallResult { entries: RecallItem[]; truncated: boolean; withheld?: number; hintsPartial?: boolean; }
+export interface RecallResult { entries: RecallItem[]; truncated: boolean; withheld?: number; hintsPartial?: boolean; ranking?: { engine: "native" | "legacy"; reason?: string }; }
 export function recallItem(item: { level: KnowledgeLevel; label: string; entry: KnowledgeEntry; branch?: TeamEntry["branch"] }): RecallItem {
   const { id, kind, one_line, scope, source, evidence, created } = item.entry.mex;
   return { id, level: item.level, label: item.label, kind, one_line, scope, source: { type: source.type, ref: source.ref }, evidence, created, ...(item.branch ? { branch: item.branch } : {}) };
@@ -99,7 +102,7 @@ export function matchesQuery(entry: KnowledgeEntry, query: string): boolean {
   const searchable = new Set(words([entry.text, entry.mex.one_line, entry.mex.kind, ...entry.mex.scope].join(" ")));
   return [...new Set(words(query))].every(term => searchable.has(term));
 }
-export function recallPersonal(query: string, options: KnowledgeOptions, limit = 20, project = knowledgeProject(options), source?: References): RecallResult {
+export function recallPersonal(query: string, options: KnowledgeOptions, limit = 20, project = knowledgeProject(options), source?: References, collect?: (entry: KnowledgeEntry) => void): RecallResult {
   if (query.length > KNOWLEDGE_LIMITS.queryCharacters) throw new KnowledgeError("INVALID_QUERY", "Search text exceeds 256 characters.");
   const terms = [...new Set(words(query))];
   if (!terms.length) throw new KnowledgeError("INVALID_QUERY", "Search requires at least one word.");
@@ -130,6 +133,7 @@ export function recallPersonal(query: string, options: KnowledgeOptions, limit =
     if (entry.mex.status !== "active") continue;
     source ??= references(project.root);
     entry = gateEntry(entry, source);
+    collect?.(entry);
     const searchable = new Set(words([entry.text, entry.mex.one_line, entry.mex.kind, ...entry.mex.scope].join(" ")));
     if (terms.every(term => searchable.has(term))) {
       const { kind, one_line, scope, source, evidence, created } = entry.mex;
@@ -142,14 +146,23 @@ export function recallPersonal(query: string, options: KnowledgeOptions, limit =
 
 export function recall(query: string, options: KnowledgeOptions, limit = 20): RecallResult {
   const project = knowledgeProject(options);
-  const personal = recallPersonal(query, options, limit, project);
+  const personalEntries: PersonalEntry[] = [];
+  const personal = recallPersonal(query, options, limit, project, undefined, entry => personalEntries.push(display(entry)));
   const team = teamEntries(options);
   const hints = readHints(options);
+  const candidates = [...personalEntries, ...team.entries, ...hints.entries].filter(item => !project.retired.has(item.entry.mex.id));
+  const byId = new Map<string, StoredEntry>();
+  for (const item of candidates) if (!byId.has(item.entry.mex.id)) byId.set(item.entry.mex.id, item);
+  const ranked = rankNative(query, [...byId.values()].map(item => item.entry));
+  if (ranked.hits) {
+    const found = ranked.hits.map(hit => ({ ...recallItem(byId.get(hit.id)!), score: hit.score, why: { matched: hit.matched, exact: hit.exact } }));
+    return { entries: found.slice(0, limit), truncated: found.length > limit, withheld: team.withheld + hints.withheld, ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "native" } };
+  }
   const items = [...personal.entries, ...[...team.entries, ...hints.entries].filter(item => !project.retired.has(item.entry.mex.id) && matchesQuery(item.entry, query)).map(recallItem)];
   const seen = new Set<string>();
   const entries = items.filter(item => !seen.has(item.id) && !!seen.add(item.id));
   entries.sort((a, b) => KNOWLEDGE_PRIORITY.indexOf(a.level) - KNOWLEDGE_PRIORITY.indexOf(b.level)
     || b.created.localeCompare(a.created) || a.id.localeCompare(b.id));
   const withheld = team.withheld + hints.withheld;
-  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(withheld ? { withheld } : {}), ...(hints.partial ? { hintsPartial: true } : {}) };
+  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(withheld ? { withheld } : {}), ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "legacy", reason: ranked.reason } };
 }

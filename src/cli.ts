@@ -113,6 +113,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "spec"
     || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
     || commandName === "edit" || commandName === "wrong" || commandName === "forget"
+    || commandName === "what"
     || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief"
     || commandName === "skills" || commandName === "install" || commandName === "uninstall"
     || commandName === "off" || commandName === "on" || commandName === "capture";
@@ -1200,14 +1201,23 @@ telemetryCmd
 // ── Config ──
 const configCmd = program
   .command("config")
-  .description("Manage global mex configuration");
+  .description("Manage mex configuration");
 
 configCmd
   .command("set <key> <value>")
-  .description("Set a global config value (e.g. telemetry on|off)")
-  .action((key: string, value: string) => {
+  .description("Set a config value (e.g. delivery.scorer tiers|bm25|fcfs|risk)")
+  .option("--project", "Set delivery.scorer for the registered project")
+  .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
-      if (key === "telemetry") {
+      if (options.project && key !== "delivery.scorer") throw new Error("--project is supported for delivery.scorer.");
+      if (key === "delivery.scorer") {
+        const { openRecord } = await import("./record/index.js");
+        const { setDeliveryScorer } = await import("./controls/index.js");
+        if (!["tiers", "bm25", "fcfs", "risk"].includes(value)) throw new Error("Use tiers, bm25, fcfs or risk for delivery.scorer.");
+        const writer = openRecord();
+        try { setDeliveryScorer(writer, value, options.project ? process.cwd() : undefined); } finally { writer.close(); }
+        console.log("Delivery scorer set to " + value + (options.project ? " for this project." : " for this machine."));
+      } else if (key === "telemetry") {
         if (value !== "on" && value !== "off") {
           console.error(`Invalid value "${value}" for telemetry. Use "on" or "off".`);
           process.exitCode = 1;
@@ -1227,7 +1237,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer`);
         process.exitCode = 1;
         return;
       }
@@ -1447,7 +1457,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 function buildCompletion(shell: string): string {
   const commands = [
     "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget",
-    "doctor", "jobs", "completion", "hints", "rules", "share", "brief",
+    "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief",
     "telemetry", "config", "feedback", "hub",
   ];
   if (shell === "bash") {

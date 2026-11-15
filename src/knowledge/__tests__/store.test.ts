@@ -37,7 +37,7 @@ describe("personal knowledge", () => {
     expect(readdirSync(folder())).toEqual([`${saved.entry.mex.id}.md`]);
   });
   it("keeps empty reads and invalid writes noninitializing", () => {
-    expect(recall("tests", options())).toEqual({ entries: [], truncated: false });
+    expect(recall("tests", options())).toEqual({ entries: [], truncated: false, ranking: { engine: "legacy", reason: "native-binary-unavailable" } });
     expect(() => expand("mx_absent1", options())).toThrow(/No active/);
     expect(() => note({ text: "   " }, options())).toThrow();
     expect(() => note({ text: "A fact.", scope: ["../escape"] }, options())).toThrow();
