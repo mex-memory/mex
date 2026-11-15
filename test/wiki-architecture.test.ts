@@ -809,6 +809,7 @@ describe("no unscoped scaffold writes", () => {
       "src/knowledge/rule-cache.ts": "writes only the derived rule-file scan (rule-files.json) under the MEX project-data home; never a repository file",
       "src/knowledge/hints.ts": "removes only disposable hint copies under the MEX project-data home after durable retirement or personal confirmation; refuses overlap with host memory and never writes host or repository files",
       "src/file-index/pending.ts": "removes and restores only the index-pending marker in the machine record directory; never a repo file",
+      "src/judge/pending.ts": "consumes and restores bounded judge requests inside a checked machine-record directory after verifying checkout ownership; never an entry or repo file",
       "src/file-index/shifts.ts": "writes and removes only line-shift files under the machine record's project index folder; never a repo file",
       "src/file-index/store.ts": "writes only immutable index snapshots, their pointers, patterns.json and checkout locators under the machine record directory, and removes snapshots nothing points at; never a repo file",
       "src/record/background.ts": "writes only the background process's own log, the jobs-pending marker and the lease row in the machine record home; never a repo file",
