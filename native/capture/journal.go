@@ -9,6 +9,7 @@
 package capture
 
 import (
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -298,6 +299,34 @@ func Hook(ev contract.Event, env Env) {
 	}
 	if ev.Kind == contract.SessionStart {
 		_ = SessionStart(ev, env)
+		prunePending(env)
 	}
 	_ = Save(ev, env)
+	_ = track(ev, env, func(session, entryID string) bool {
+		h, err := openHooks(env.RecordDirectory)
+		if err != nil {
+			return true // unknown counts as delivered: never promote on doubt
+		}
+		defer h.Close()
+		given, err := h.Delivered(session, entryID)
+		return err != nil || given
+	})
+}
+
+// prunePending drops strict-rule state left by sessions that ended mid-pair.
+func prunePending(env Env) {
+	dir := filepath.Join(env.RecordDirectory, "capture-pending")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := now(env).Add(-48 * time.Hour)
+	for i, e := range entries {
+		if i >= 1024 {
+			return
+		}
+		if info, err := e.Info(); err == nil && info.Mode().IsRegular() && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
