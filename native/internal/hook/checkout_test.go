@@ -209,6 +209,7 @@ func TestMain(m *testing.M) {
 		_ = os.WriteFile(out, []byte(strings.Join(os.Args[1:], "\n")), 0o600)
 		os.Exit(0)
 	}
+	localrecord.UseBehaviorTestBudget()
 	os.Exit(m.Run())
 }
 
