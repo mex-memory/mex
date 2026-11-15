@@ -405,3 +405,14 @@ INSERT INTO counters_go VALUES('2026-11-13','agent:codex:hook.calls',2147483647)
 		t.Fatalf("saturation changed: %d %v", calls, err)
 	}
 }
+
+func TestUsageAgentsMatchTheHookProfiles(t *testing.T) {
+	for _, agent := range []string{"claude-code", "codex", "copilot", "opencode", "devin", "kiro"} {
+		if _, err := usageNames("2026-11-15", agent, false, false, 1); err != nil {
+			t.Errorf("%s: %v", agent, err)
+		}
+	}
+	if _, err := usageNames("2026-11-15", "someone-else", false, false, 1); err == nil {
+		t.Error("an unknown agent must not be counted")
+	}
+}

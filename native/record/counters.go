@@ -35,6 +35,16 @@ func (hooks *Hooks) recordHookUsage(day, agent string, sessionStart, failed bool
 	return hooks.addCounts(counts, timeout)
 }
 
+// telemetryAgent lists the agents with a hook profile, as named in the usage
+// report's agent catalog (src/telemetry/report-schema.ts).
+func telemetryAgent(agent string) bool {
+	switch agent {
+	case "claude-code", "codex", "copilot", "opencode", "devin", "kiro":
+		return true
+	}
+	return false
+}
+
 // counterKey is one row of counters_go.
 type counterKey struct{ day, name string }
 
@@ -43,7 +53,7 @@ func usageNames(day, agent string, sessionStart, failed bool, elapsedMS int64) (
 	if _, err := time.Parse("2006-01-02", day); err != nil {
 		return nil, err
 	}
-	if agent != "claude-code" && agent != "codex" {
+	if !telemetryAgent(agent) {
 		return nil, fmt.Errorf("unknown telemetry agent")
 	}
 	if elapsedMS < 0 {
