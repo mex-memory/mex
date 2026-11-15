@@ -1,10 +1,11 @@
-# Knowledge judge: jobs and fix routing
+# Knowledge judge: jobs, fix routing and rule changes
 
-OSS-47, slices 1 and 2. The judge resolves entries whose free checks say changed
+OSS-47, slices 1 through 3. The judge resolves entries whose free checks say changed
 or broken, and opportunistically rechecks held entries with complete checks
 whose input bytes changed. It stores judgments locally and routes validated
-rewrites according to who changed the code. Rule-change evidence, corrections
-for delivered advice, and the `sync` command change follow separately.
+rewrites according to who changed the code. Free evidence can also doubt a
+policy itself. Corrections for delivered advice and the `sync` command change
+follow separately.
 
 ## Scheduling and ownership
 
@@ -148,6 +149,73 @@ session, with exact primary-key reads rather than a hook-side queue scan.
 Deleted notice IDs are removed from hints, and required previews take priority
 over old status lines so a full hint list cannot silently block publication.
 No database migration, dependency or public package export is added.
+
+## Free evidence that a rule changed
+
+Before model admission, the background job collects free evidence for active
+team rules, decisions and pitfalls. Personal notes keep their separate delivery
+contract. This pass still runs when the model must wait
+above its cap. Hooks queue it for policy entries even when their conformance
+checks hold. An ordinary failed conformance check alone does not change rule
+delivery.
+
+- A literal anti-pattern count must rise **and** a required-pattern count fall,
+  against recorded counts in the same exact entry scope. Both patterns must
+  have corresponding `when` triggers. A fresh bounded source recount must
+  agree with the evaluator's indexed counts; missing/stale index observations
+  and ignored-file differences supply no migration evidence.
+- The current branch or a recent commit must name a specific subject from
+  the entry's patterns, symbols, file names or backtick identifiers, close to
+  replace, migrate, remove, rename or deprecate. Commit evidence must follow
+  the exact current committed entry revision; creation dates cannot prove
+  assertion order for a rewritten or uncommitted note. Local merge-commit bodies and squash subjects supply available PR
+  titles; this pass does not fetch remote PR metadata.
+- A newer checked docs/review policy must explicitly reverse a literal trigger
+  in the same exact scope. Both its entry bytes and actual source reads bind
+  the evidence. Similar prose or a changed document hash alone cannot prove a
+  contradiction. Same-date sources without provable order supply no evidence.
+- Typed speed-bump overrides must bind this exact entry hash and actual
+  main-agent bump receipts. Distinct stable person hashes count toward two
+  people; otherwise three distinct host/session pairs are required. Repeated
+  receipts, subagents and other projects do not supply extra people/sessions.
+
+Delivery-03 owns the actual speed bump. Its consumer seam is
+`Hooks.RecordRuleOverride`: a deliberate repeat records a typed
+`speed-bump-override` detail on an existing `wrong` followup, without command,
+code or prompt text. It never guesses person identity from agent identity.
+The blocker itself is not implemented by this slice. There is no network
+poller; newer network reviews/docs enter through checked local entries.
+
+Node writes a derived checkout snapshot in the existing project settings at
+`rule-change.<checkout hash>`, plus one pending Review row per checkout and
+entry. Exact proposal IDs bind the position and evidence; new evidence
+supersedes older pending cards while retaining their immutable snapshots.
+Accepted/dismissed exact snapshots stay closed on replay. Reasons say **free
+evidence**, separately from **checked by model**. No schema or canonical entry
+field changes. Go only reads Node's
+record; it remains the sole hooks/verdict writer.
+
+The free stage and delivery independently re-prove named branch/HEAD, exact
+entry bytes, source hashes and directory inventories. Added/deleted files
+invalidate count evidence too. A valid signal makes the policy changed and
+replaces its full claim with a code pointer; no usable location means
+withholding. The session brief omits it. Proven broken entries remain withheld.
+Changed rules with no rule-change evidence retain ordinary full delivery.
+Signals and their inputs enter the judge prompt and judgment fingerprint.
+Proofs share one bounded observed file view within each native invocation.
+If its proof budget runs out, known doubt remains a pointer or withholding;
+the incomplete proof cannot authorize a model call or fix publication.
+
+The free scan pages through 128 policies per batch with a durable cursor bound
+to the checkout position and entry manifest. It retains unvisited evidence,
+resets when the corpus changes, and finishes all pages before model admission.
+Other bounds are 32 recent commits per policy, 128 source files and directories
+per signal, 64 KiB per source, an 8 MiB source/entry scan and a 512 KiB snapshot
+(up to 10,000 signals while it fits). An incomplete proof leaves the job with
+gaps; a snapshot overflow rolls back without replacing prior evidence.
+Unsupported structural counts and unavailable sources are absent
+evidence. Named Git checkout identity is required by the native snapshot
+reader. These limits are implementation parameters, not quality measurements.
 
 ## Verification
 
