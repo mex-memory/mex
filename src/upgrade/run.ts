@@ -160,7 +160,15 @@ function complete(dir: string, state: State, run: UpgradeRun): UpgradeResult {
   if (state.step === "started") { local(plan); checkpoint(dir, state, "local", run); }
   if (plan.tracked.length) {
     if (state.step === "local") {
-      if (!existsSync(state.worktree)) git(plan.root, "-c", `core.hooksPath=${join(state.worktree, ".git", "upgrade-disabled")}`, "worktree", "add", "--quiet", "-b", plan.branch, state.worktree, plan.base);
+      if (!existsSync(state.worktree)) {
+        // A failed checkout can leave its new branch behind. Reuse it only
+        // while it still points at the approved base; anything else is kept.
+        let existing: string | undefined;
+        try { existing = git(plan.root, "rev-parse", "--verify", "--quiet", `refs/heads/${plan.branch}`); } catch { existing = undefined; }
+        if (existing !== undefined && existing !== plan.base) throw new KnowledgeError("UPGRADE_CHANGED", "The upgrade branch changed; it was kept for review.");
+        git(plan.root, "-c", `core.hooksPath=${join(state.worktree, ".git", "upgrade-disabled")}`, "worktree", "add", "--quiet",
+          ...(existing === undefined ? ["-b", plan.branch, state.worktree, plan.base] : [state.worktree, plan.branch]));
+      }
       worktree(state);
       seedOwnedCheckout(state.worktree, plan.base, plan.tracked);
       checkpoint(dir, state, "worktree", run);
