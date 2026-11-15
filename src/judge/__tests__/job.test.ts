@@ -184,6 +184,14 @@ describe("judge job and queue", () => {
     expect(readJudgement(writer, projectId, root, "mx_rewrite")).toMatchObject({ result: "rewritten", rewrite: { text: "The new behavior includes the caller.", mex: { checks: [{ files: { "src/api.ts": current } }] } } });
     expect(readFileSync(file, "utf8")).toBe(before);
     expect(git("status", "--porcelain")).not.toContain("M .mex");
+    // Upgrade from slice 1: only the judgement existed. Routing it must not
+    // spend again, and still must not touch an unrelated team branch.
+    writer.db.prepare("DELETE FROM settings WHERE key LIKE 'judge.fix.%' OR key LIKE 'judge.routes.%'").run();
+    writer.db.exec("DELETE FROM review");
+    await finish(queue());
+    expect(deps.model).toHaveBeenCalledTimes(1);
+    expect(writer.db.prepare("SELECT count(*) n FROM review").get()!.n).toBe(1);
+    expect(readFileSync(file, "utf8")).toBe(before);
   });
   it("cannot certify a rewrite whose proposed checks cannot be recorded", async () => {
     add("mx_badcheck");

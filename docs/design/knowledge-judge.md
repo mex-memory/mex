@@ -1,9 +1,9 @@
-# Knowledge judge: job and queue
+# Knowledge judge: jobs and fix routing
 
-OSS-47, first slice. The judge resolves entries whose free checks say changed
+OSS-47, slices 1 and 2. The judge resolves entries whose free checks say changed
 or broken, and opportunistically rechecks held entries with complete checks
-whose input bytes changed. This slice stores judgments and candidate rewrites
-locally. Applying rewrites, Review routing, rule-change evidence, corrections
+whose input bytes changed. It stores judgments locally and routes validated
+rewrites according to who changed the code. Rule-change evidence, corrections
 for delivered advice, and the `sync` command change follow separately.
 
 ## Scheduling and ownership
@@ -94,19 +94,63 @@ can start a job for the new position.
 Judgments and their structured payload commit together before the generic job
 checkpoint. A killed runner can replay that batch without another call when
 the entry and all judgment inputs still match. Partial model output is never
-stored. Neither entry files nor `hooks.db` verdicts are changed by this slice.
+stored. Node never writes `hooks.db` verdicts.
+
+## Where fixes land
+
+Every fix first checks for an existing local or fetched `mex/fix-<entry id>`
+branch. A matching branch, or unavailable refs, sends the candidate to Review;
+the background job never creates, checks out, stages or commits a branch.
+Personal rewrites otherwise update the local note store atomically. Team
+rewrites caused by pulled changes, uncertain results, or ambiguous ownership
+become Review rows. The row's ID also identifies its immutable proposal in
+project settings, so a later judgment cannot replace its evidence. The Review
+card and branch creation belong to the surface workflow.
+
+For an automatic team update, an explicit tool edit must prove the whole
+change from the note's recorded file baseline to today's bytes. The hook pairs
+pre/post edit events, computes the expected result from the tool input, and
+retains only before/after hashes. Reads and shell commands do not establish
+ownership. Chained edits preserve the original baseline. Failed, unpaired,
+ambiguous, oversized or concurrent edits lose the proof; a Git move clears it.
+Proofs bind the main session, host, checkout, branch and HEAD. Git metadata is
+read directly, including linked-worktree and packed-ref layouts; the hook
+never executes a Git command. One proof file per checkout is limited to
+128 files / 64 KiB, with source files limited to 64 KiB.
+
+An owned team rewrite first queues its exact diff for the originating session's
+person-visible hook channel. It waits until Go has written the complete reply
+and recorded a `notices_shown` receipt. It then rechecks branch, HEAD, original
+entry, all source hashes, evaluator observations, ownership, retirement,
+consent and runner ownership before applying through the existing team writer.
+A visible follow-up says which file changed and that it belongs in the same PR.
+Other sessions and branches cannot display or acknowledge that preview. If the
+originating session never reaches another visible hook, a five-minute wait
+limit moves its team fix to Review; ambiguous provenance also goes there. This
+is an implementation limit, not a measured session-length assumption. A commit before the proof is
+consumed also takes the conservative Review path because HEAD changed.
+
+Routing intents commit with judgments in `settings`, before the job checkpoint.
+Each batch holds at most five intents of at most 256 KiB each. Exact after-bytes
+make a crash after file publication replay safely. Old cached judgments route
+without another model call. Notices use a bounded list of at most 16 IDs per
+session, with exact primary-key reads rather than a hook-side queue scan.
+No database migration, dependency or public package export is added.
 
 ## Verification
 
 `src/judge/__tests__` covers queue order, five-entry batching, whole-file
 context, real shared-cap admission, replay, malformed replies, native check
 recording and in-flight changes to source, entries, branch and consent.
-The native integration test builds the real evaluator and uses a fake model;
-it proves a broken verdict produces a local rewrite with freshly recorded
-checks while both source and entry bytes stay unchanged.
+The native integration tests build the real hook/evaluator and use fake models.
+They cover both a local candidate and the full paired-edit, visible-preview,
+receipt and same-working-tree update path, with one model call. Routing tests
+cover pulled personal/team changes, existing local and fetched fix branches,
+changed previews, cancellation, retirement, replay and unrelated branches.
 
 Go hook tests cover host identity, start/edit/idle timing, bounded atomic
-request replacement, wake-up ordering and redirected-directory refusal.
+request replacement, wake-up ordering, edit provenance, preview isolation,
+failed stdout writes and redirected-directory refusal.
 Real process tests stop the request consumer before enqueue, after enqueue
 and during consumption, then prove recovery leaves exactly one durable job.
 Existing job and background-process tests retain restart and lease coverage.
