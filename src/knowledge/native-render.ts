@@ -8,8 +8,11 @@ import { GENERATED_MARK } from "./rule-files.js";
 
 export const GENERATED_LINE = `${GENERATED_MARK} by MEX from its entries; edit the entries, not this file -->`;
 
-/** Size caps, in bytes. Codex reads at most 32 KiB of AGENTS.md along a path, so one generated file takes a quarter. */
-export const CAPS = { "claude-rules": 6 * 1024, "codex-agents": 8 * 1024 } as const;
+/**
+ * Size caps, in bytes. Codex reads at most 32 KiB of AGENTS.md along a path, so one generated file takes a quarter.
+ * Copilot publishes no cap for path-scoped instructions; they share its context with AGENTS.md, so they take Claude's.
+ */
+export const CAPS = { "claude-rules": 6 * 1024, "codex-agents": 8 * 1024, "copilot-instructions": 6 * 1024 } as const;
 export type NativeFormat = keyof typeof CAPS;
 
 const EVIDENCE_ORDER = ["person", "ci", "docs", "review", "mined", "observed"];
@@ -28,6 +31,10 @@ function frame(format: NativeFormat, area: string): { head: string; tail: string
   const title = area ? `# MEX rules for ${area}` : "# MEX rules";
   if (format === "claude-rules" && area) {
     return { head: `---\npaths:\n  - "${area}/**"\n---\n${GENERATED_LINE}\n${title}\n\n`, tail: "" };
+  }
+  if (format === "copilot-instructions") {
+    // Copilot's path-scoped format: applyTo is a glob from the repository root.
+    return { head: `---\napplyTo: "${area ? `${area}/**` : "**"}"\n---\n${GENERATED_LINE}\n${title}\n\n`, tail: "" };
   }
   return { head: `${GENERATED_LINE}\n${title}\n\n`, tail: "" };
 }
