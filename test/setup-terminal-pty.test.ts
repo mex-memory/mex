@@ -455,7 +455,10 @@ function fixture(mode: "incomplete" | "failed" | "complete" | "hold"): Fixture {
     chmodSync(launcher, 0o755);
   }
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: [bin, dirname(process.execPath), process.env.PATH].join(":"), TERM: "xterm-256color", MEX_TELEMETRY: "0", DO_NOT_TRACK: "1", MEX_PTY_FAKE_MODE: mode, MEX_PTY_RECORD: record, MEX_PTY_BROWSER_RECORD: join(root, "browser-open") };
-  delete env.CI; delete env.NO_COLOR; delete env.FORCE_COLOR;
+  // The harness applies this env after unsetEnv, so a CI variable left here would come back:
+  // on GitHub's runners GITHUB_ACTIONS made the person at this terminal look like a script.
+  for (const name of CI_VARIABLES) delete env[name];
+  delete env.NO_COLOR; delete env.FORCE_COLOR;
   const f = { root, project, record, env };
   fixtures.push(f);
   return f;
