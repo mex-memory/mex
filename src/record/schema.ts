@@ -1,5 +1,5 @@
 /** Node alone owns these numbered, forward-only record.db migrations. */
-export const RECORD_SCHEMA_VERSION = 4;
+export const RECORD_SCHEMA_VERSION = 5;
 export interface Migration { version: number; sql: string; }
 export const recordMigrations: readonly Migration[] = [{ version: 1, sql: `
 CREATE TABLE IF NOT EXISTS projects (
@@ -127,4 +127,28 @@ CREATE INDEX model_batches_spend ON model_batches(automatic,admitted_at);
 CREATE INDEX model_batches_job ON model_batches(job_id,job_batch,id);
 ALTER TABLE model_calls ADD COLUMN batch_id INTEGER REFERENCES model_batches(id);
 CREATE INDEX model_calls_batch ON model_calls(batch_id);
+` }, { version: 5, sql: `
+CREATE TABLE aid_verdicts (
+ project_id TEXT NOT NULL, entry_id TEXT NOT NULL CHECK(length(entry_id)<=67),
+ kind TEXT NOT NULL CHECK(kind IN ('alias','ask')), text TEXT NOT NULL CHECK(length(text)<=120),
+ kept INTEGER NOT NULL CHECK(kept IN (0,1)), reason TEXT NOT NULL CHECK(length(reason)<=256),
+ score REAL, margin REAL, top_entry TEXT CHECK(top_entry IS NULL OR length(top_entry)<=67),
+ review INTEGER NOT NULL DEFAULT 0 CHECK(review IN (0,1)),
+ source TEXT NOT NULL CHECK(source IN ('hand','enrich','setup','import','filter')),
+ corpus TEXT NOT NULL CHECK(length(corpus)<=80), decided_at TEXT NOT NULL,
+ PRIMARY KEY(project_id,entry_id,kind,text)
+);
+CREATE INDEX aid_verdicts_review ON aid_verdicts(project_id,review) WHERE review=1;
+CREATE TABLE decision_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ project_id TEXT NOT NULL, entry_id TEXT NOT NULL CHECK(length(entry_id)<=67),
+ event TEXT NOT NULL CHECK(event IN ('accepted','withdrawn')),
+ commit_sha TEXT NOT NULL CHECK(length(commit_sha) IN (40,64)),
+ landed_sha TEXT CHECK(landed_sha IS NULL OR length(landed_sha) IN (40,64)),
+ matched_by TEXT NOT NULL CHECK(matched_by IN ('sha','patch-id','subject-files','revert','missing')),
+ branch TEXT NOT NULL CHECK(length(branch)<=256), actor TEXT NOT NULL CHECK(length(actor)<=256), at TEXT NOT NULL
+);
+CREATE INDEX decision_events_entry ON decision_events(project_id,entry_id,id);
+CREATE TRIGGER decision_events_no_update BEFORE UPDATE ON decision_events BEGIN SELECT RAISE(ABORT,'decision events are append-only'); END;
+CREATE TRIGGER decision_events_no_delete BEFORE DELETE ON decision_events BEGIN SELECT RAISE(ABORT,'decision events are append-only'); END;
 ` }];

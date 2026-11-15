@@ -7,11 +7,12 @@ import { references } from "./references.js";
 import { gateEntry, sanitizeText, stripHidden, hasSecret } from "./gates.js";
 import { knowledgeProject } from "./context.js";
 import { saveTombstone, tombstone, type Tombstone } from "./state.js";
+import { entryLabel } from "./labels.js";
 
 function assertId(id: string): void {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Expected a stable entry id such as mx_7f3k2a.");
 }
-function current(writer: RecordWriter, options: KnowledgeOptions, id: string) {
+function current(writer: RecordWriter, options: KnowledgeOptions, id: string, statuses: readonly string[] = ["active"]) {
   const projectId = writer.checkout(options.projectPath)?.project_id;
   if (!projectId) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
   if (tombstone(writer, projectId, id)) throw new KnowledgeError("RETIRED_ENTRY", "The entry was retired and cannot be restored by editing.");
@@ -20,8 +21,33 @@ function current(writer: RecordWriter, options: KnowledgeOptions, id: string) {
   if (!directory || !content) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
   const entry = parseEntry(content);
   if (entry.mex.id !== id) throw new KnowledgeError("INVALID_ENTRY", "Entry id does not match its filename.");
-  if (entry.mex.status !== "active") throw new KnowledgeError("RETIRED_ENTRY", "The entry is retired and cannot be edited.");
+  if (!statuses.includes(entry.mex.status)) throw new KnowledgeError("RETIRED_ENTRY", "The entry is retired and cannot be edited.");
   return { projectId, directory, content, entry };
+}
+
+/**
+ * Replace a personal note's retrieval aids or other non-claim fields, keeping
+ * its claim, source and status. Proposed notes can be changed this way too;
+ * an edit of the claim goes through edit() instead.
+ */
+export function replacePersonalFields(id: string, change: (entry: KnowledgeEntry) => KnowledgeEntry, options: KnowledgeOptions, expected?: string): PersonalEntry {
+  assertId(id);
+  const writer = openRecord(options);
+  try {
+    writer.db.exec("BEGIN IMMEDIATE");
+    const found = current(writer, options, id, ["active", "proposed"]);
+    if (expected !== undefined && found.content !== expected) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again before changing it.");
+    const changed = change(found.entry);
+    for (const field of ["id", "kind", "source", "evidence", "one_line", "status", "created"] as const) {
+      if (JSON.stringify(changed.mex[field]) !== JSON.stringify(found.entry.mex[field])) throw new KnowledgeError("INVALID_CHANGE", `This change can't alter the entry's ${field}.`);
+    }
+    if (changed.text !== found.entry.text) throw new KnowledgeError("INVALID_CHANGE", "This change can't alter the entry's text.");
+    replaceEntryFile(found.directory, id, found.content, serializeEntry(changed));
+    return { level: "personal", label: entryLabel(changed, "personal"), entry: changed };
+  } finally {
+    try { writer.db.exec("ROLLBACK"); } catch { /* do not hide the outcome */ }
+    writer.close();
+  }
 }
 
 export function editedEntry(entry: KnowledgeEntry, input: NoteInput, now: Date): KnowledgeEntry {

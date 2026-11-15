@@ -20,7 +20,7 @@ import (
 const SchemaVersion = 6
 
 // Node's additive model-admission migration does not change the tables read here.
-const RecordSchemaVersion = 4
+const RecordSchemaVersion = 5
 const ReaderBusyTimeoutMS = 10
 const WriterBusyTimeoutMS = 200
 const WriterOperationTimeout = 250 * time.Millisecond

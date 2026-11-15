@@ -1,4 +1,4 @@
-import { Command, Option } from "commander";
+import { Argument, Command, Option } from "commander";
 import { ENTRY_KINDS, KnowledgeError } from "./contract.js";
 
 export function buildKnowledgeCommands(): Command[] {
@@ -242,7 +242,70 @@ export function buildKnowledgeCommands(): Command[] {
       const result = previewBrief({ projectPath: process.cwd() }, opts.agent, opts.path);
       console.log(opts.json ? JSON.stringify(result) : result.text);
     }));
-  return [sessionWhat, save, search, full, change, ...retire, hints, rules, share, brief];
+  const aids = (["alias", "ask"] as const).map(kind => new Command(kind)
+    .description(kind === "alias"
+      ? "Add or remove a short name or symptom people use for an entry (kept only if it finds that entry first)"
+      : "Add or remove an example request that should find an entry (kept only if it finds that entry first)")
+    .argument("<id>", "Stable entry id")
+    .addArgument(new Argument("<action>", "add or remove").choices(["add", "remove"]))
+    .argument("<text>", kind === "alias" ? "The alias, at most 40 characters" : "The example request, at most 120 characters")
+    .option("--apply", "Apply the reviewed team-entry change")
+    .option("--expect <revision>", "The exact revision printed by the team preview")
+    .option("--json", "Print the result as JSON")
+    .action(async (id, action, text, opts) => run(opts.json, async () => {
+      const { changeAid } = await import("./aid-store.js");
+      const options = { projectPath: process.cwd() };
+      if (opts.apply && !opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the team change, then pass --apply --expect <revision>.");
+      const result = changeAid({ id, kind, op: action, text }, options, opts.apply ? { expect: opts.expect } : undefined);
+      if (result.verdict && !result.verdict.kept) {
+        if (opts.json) console.log(JSON.stringify({ ok: true, kept: false, verdict: result.verdict }));
+        else console.log(`Not kept: ${result.verdict.reason}.`);
+        return;
+      }
+      if (result.level === "team" && !result.changed && result.preview) { printPreview(result.preview, opts.json); return; }
+      if (result.level === "personal") await queueRuleFiles();
+      if (opts.json) console.log(JSON.stringify({ ok: true, kept: true, level: result.level, id, aliases: result.entry.mex.aliases ?? [], asks: result.entry.mex.asks ?? [], ...(result.verdict ? { verdict: result.verdict } : {}) }));
+      else console.log(`${action === "add" ? "Kept" : "Removed"} ${kind} on ${id}${result.verdict?.margin !== undefined ? ` (leads the next entry by ${Math.round(result.verdict.margin * 100)}%)` : ""}.`);
+    })));
+  const entries = new Command("entries").description("Work on all of this project's entries");
+  entries.command("enrich")
+    .description("Backfill aliases and asks with one AI call (opt-in): shows the plan, --run makes the call and previews, --apply writes")
+    .option("--run", "Make the one batched AI call and save a filtered preview; writes no entry")
+    .option("--apply", "Write the saved preview")
+    .option("--expect <revision>", "The revision printed by --run")
+    .addOption(new Option("--agent <agent>", "Agent CLI that makes the call").choices(["claude", "codex"]).default("claude"))
+    .option("--json", "Print the result as JSON")
+    .action(async opts => run(opts.json, async () => {
+      const enrich = await import("./enrich.js");
+      const options = { projectPath: process.cwd() };
+      const print = (value: object, text: string) => console.log(opts.json ? JSON.stringify({ ok: true, ...value }) : text);
+      if (opts.apply) {
+        if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Pass the revision --run printed: mex entries enrich --apply --expect <revision>.");
+        const done = enrich.applyEnrich(options, opts.expect);
+        print(done, `Wrote aliases and asks on ${done.written.length} entries.${done.stale.length ? ` ${done.stale.length} changed since the preview and were skipped: ${done.stale.join(", ")}` : ""}`);
+        return;
+      }
+      if (!opts.run) {
+        const plan = enrich.planEnrich(options);
+        print(plan, plan.entries.length
+          ? `One AI call would write aliases and asks for ${plan.entries.length} entries${plan.remaining ? ` (${plan.remaining} more need another run)` : ""}, estimated at about ${plan.estimate.input} input and ${plan.estimate.output} output tokens. It runs inside MEX's model cap. Run it with: mex entries enrich --run`
+          : "Every entry already has aliases or asks.");
+        return;
+      }
+      const { runModel } = await import("../model-runner/index.js");
+      const preview = await enrich.runEnrich(options, async (prompt, estimate) => (await runModel({
+        agent: opts.agent, role: "cheap", prompt, projectRoot: process.cwd(), purpose: "knowledge.enrich",
+        automatic: { estimate: { input: estimate.input, cache_write: 0, cache_read: 0, output: estimate.output } },
+      })).text);
+      const dropped = preview.verdicts.filter(v => !v.kept);
+      if (opts.json) { print(preview, ""); return; }
+      const lines = [`Kept ${preview.verdicts.length - dropped.length} of ${preview.verdicts.length} suggestions, on ${preview.changes.length} entries:`];
+      for (const c of preview.changes) lines.push(`  ${c.id}  aliases: ${c.aliases.join("; ") || "none"}  asks: ${c.asks.join("; ") || "none"}`);
+      if (dropped.length) { lines.push("", "Dropped:"); for (const v of dropped.slice(0, 30)) lines.push(`  ${v.entry}  ${v.kind} "${v.text}": ${v.reason}`); }
+      lines.push("", `To write exactly this: mex entries enrich --apply --expect ${preview.revision}`);
+      console.log(lines.join("\n"));
+    }));
+  return [sessionWhat, save, search, full, change, ...retire, ...aids, entries, hints, rules, share, brief];
 }
 /** After a share: the pull request, or the push command (MEX doesn't push on its own). */
 function nextStep(done: { branch: string; pr?: string }): string {
