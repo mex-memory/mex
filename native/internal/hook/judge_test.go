@@ -55,6 +55,27 @@ func TestJudgeRequestKeepsTheHostAndWaitsForIdle(t *testing.T) {
 	}
 }
 
+func TestJudgeGenerationsStayDistinctWhenTheClockRepeats(t *testing.T) {
+	directory, checkout := t.TempDir(), t.TempDir()
+	ev := contract.Event{ProjectID: projectID, Checkout: checkout, Agent: "codex", Kind: contract.SessionStart}
+	frozen := time.Unix(1_800_000_000, 0)
+	seen := map[string]bool{}
+	for i := 0; i < 8; i++ {
+		if !requestJudgeAt(ev, directory, nil, frozen) {
+			t.Fatal("request failed")
+		}
+		request := judgeRequestAt(t, directory, checkout)
+		generation := request["generation"].(string)
+		if generation == "" || len(generation) > 24 || strings.Trim(generation, "0123456789") != "" || seen[generation] {
+			t.Fatalf("reused or incompatible generation: %q", generation)
+		}
+		seen[generation] = true
+		if request["not_before"].(float64) != float64(frozen.UnixMilli()) {
+			t.Fatal("generation changed scheduling time")
+		}
+	}
+}
+
 func TestJudgeWakeupFollowsSessionSetupAndFreeChecks(t *testing.T) {
 	h, env := fakeHome(t, true)
 	root := repo(t, t.TempDir())

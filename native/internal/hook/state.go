@@ -30,6 +30,8 @@ type home struct {
 	// checkout lookup and counters share the validated location.
 	usageLocation func() (place.Location, bool)
 	capture       func(contract.Event, string, controls)
+	// getenv is the hook's environment, for marks such as a scripted prompt.
+	getenv Env
 }
 
 func homeFrom(getenv Env) home {
@@ -39,7 +41,7 @@ func homeFrom(getenv Env) home {
 			user = p
 		}
 	}
-	h := home{user: user, scorer: getenv("MEX_DELIVERY_SCORER")}
+	h := home{user: user, getenv: getenv, scorer: getenv("MEX_DELIVERY_SCORER")}
 	h.claude = strings.TrimSpace(getenv("CLAUDE_CONFIG_DIR"))
 	if h.claude == "" && user != "" {
 		h.claude = filepath.Join(user, ".claude")
