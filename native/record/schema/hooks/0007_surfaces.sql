@@ -24,7 +24,7 @@ INSERT INTO deliveries SELECT id,session_id,agent_id,epoch,ts,moment,entry_id,fo
  WHEN 'edit' THEN 'edit' WHEN 'rejected' THEN 'edit' WHEN 'create' THEN 'edit'
  WHEN 'command' THEN 'command-recipe' WHEN 'failure' THEN 'failure-fix'
  WHEN 'prompt' THEN 'prompt' WHEN 'start-brief' THEN 'start-brief'
- WHEN 'recovery' THEN 'recovery' WHEN 'resume' THEN 'recovery' WHEN 'subagent' THEN 'recovery' WHEN 'brief' THEN 'recovery'
+ WHEN 'recovery' THEN 'recovery' WHEN 'resume' THEN 'recovery' WHEN 'subagent' THEN 'recovery' WHEN 'brief' THEN 'recovery' WHEN 'carry' THEN 'carry'
  ELSE 'unknown' END FROM surface_deliveries ORDER BY ordering;
 CREATE INDEX deliveries_epoch_entry ON deliveries(session_id,agent_id,epoch,entry_id,ts);
 CREATE INDEX deliveries_ts ON deliveries(ts);

@@ -376,13 +376,17 @@ func TestSurfaceActedDefinitions(t *testing.T) {
 }
 
 func TestSurfaceMomentVocabulary(t *testing.T) {
-	for _, moment := range []string{"read", "read-risk", "edit", "rejected", "create", "command", "failure", "prompt", "start-brief", "recovery", "resume", "subagent", "brief", "correction", "companion"} {
+	for _, moment := range []string{"read", "read-risk", "edit", "rejected", "create", "command", "failure", "prompt", "start-brief", "recovery", "resume", "subagent", "brief", "correction", "companion", "carry"} {
 		if id := SurfaceForMoment(moment); id == "unknown" || !ValidSurface(id) {
 			t.Fatal(moment, id)
 		}
 	}
 	if SurfaceForMoment("historical-unmapped") != "unknown" {
 		t.Fatal("missing historical fallback")
+	}
+	// A path added later without a surface must keep sending.
+	if SurfaceDefault("unknown") != "on" || SurfaceDefault("carry") != "on" {
+		t.Fatal("an unmapped delivery path would be silenced")
 	}
 }
 

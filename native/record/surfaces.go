@@ -20,7 +20,7 @@ import (
 // SurfaceIDs is the closed vocabulary used by receipts, controls and reports.
 // New ids must declare a default and an acted definition before they can send.
 func SurfaceIDs() []string {
-	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "unknown"}
+	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "unknown"}
 }
 func ValidSurface(s string) bool {
 	for _, id := range SurfaceIDs() {
@@ -36,10 +36,12 @@ func ValidSurface(s string) bool {
 // share of sessions, until the gate turns them on or off.
 func SurfaceDefault(s string) string {
 	switch s {
-	case "read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery":
+	case "read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery", "carry":
 		return "on"
 	case "unknown":
-		return "shadow"
+		// A delivery path the ledger doesn't know yet keeps sending: the
+		// ledger measures surfaces, it must never silence one by omission.
+		return "on"
 	}
 	return "trial"
 }
@@ -49,7 +51,9 @@ func ValidSurfaceMode(m string) bool { return m == "on" || m == "shadow" || m ==
 
 // OncePerSession surfaces fire at most once per session by construction, so
 // the gate's repeat comparison can never collect evidence for them.
-func OncePerSession(s string) bool { return s == "start-brief" || s == "start-brief-working-set" }
+func OncePerSession(s string) bool {
+	return s == "start-brief" || s == "start-brief-working-set" || s == "carry"
+}
 
 // Trial needs this many settled shadow firings before any session sends, so
 // the arm that sends is always compared with a measured base rate.
@@ -100,6 +104,9 @@ func SurfaceForMoment(s string) string {
 		return "start-brief"
 	case "recovery", "resume", "subagent", "brief", "correction", "companion":
 		return "recovery"
+	case "carry":
+		// A teammate's handoff and "where we left off", once per session start.
+		return "carry"
 	}
 	return "unknown"
 }
@@ -200,7 +207,7 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 			}
 		}
 		return true
-	case "prompt", "start-brief", "start-brief-working-set", "recovery":
+	case "prompt", "start-brief", "start-brief-working-set", "recovery", "carry":
 		return (tool.Open || tool.Edit) && scopeTouch()
 	case "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout":
 		if namedTouch() {

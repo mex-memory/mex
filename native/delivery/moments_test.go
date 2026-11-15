@@ -138,44 +138,22 @@ func (f *fixture) file(rel, content string) string {
 
 func fixtureHooksDB(t *testing.T, directory string) *sql.DB {
 	t.Helper()
-	// Schema preparation is outside hook deadlines. These tests assert delivery
-	// behavior; migration and production lock/deadline tests live in record.
+	// Schema preparation is outside hook deadlines, through the real
+	// migrations so the fixture can't fall behind them. These tests assert
+	// delivery behavior; migration and production lock/deadline tests live in
+	// record.
+	if err := record.PrepareHooks(record.Location{Directory: directory, Hooks: filepath.Join(directory, "hooks.db")}); err != nil {
+		t.Fatal(err)
+	}
 	db, err := sql.Open("sqlite", filepath.Join(directory, "hooks.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok := false
-	defer func() {
-		if !ok {
-			_ = db.Close()
-		}
-	}()
-	if _, err = db.Exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
 	var version int
-	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	for i, name := range []string{
-		"0001_init.sql", "0002_delivery.sql", "0003_followups.sql",
-		"0004_rendering.sql", "0005_probes.sql", "0006_intent.sql",
-	} {
-		if version >= i+1 {
-			continue
-		}
-		schema, err := os.ReadFile(filepath.Join("..", "record", "schema", "hooks", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = db.Exec("BEGIN IMMEDIATE;" + string(schema) + fmt.Sprintf("; PRAGMA user_version=%d; COMMIT;", i+1)); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != record.SchemaVersion {
+		_ = db.Close()
 		t.Fatalf("fixture schema %d: %v", version, err)
 	}
-	ok = true
 	return db
 }
 
