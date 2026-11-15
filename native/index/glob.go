@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// MatchesScope applies the file index's glob dialect without opening an index.
+func MatchesScope(scope, file string) bool {
+	if len(scope) > 512 || len(file) > 4096 {
+		return false
+	}
+	re, err := globRegexp(scope)
+	return err == nil && re.MatchString(file)
+}
+
 // Scope globs, the same dialect as src/file-index/glob.ts: paths are relative
 // to the checkout and '/'-separated; the glob is anchored at the checkout root.
 // A "**" segment matches any number of folders, "*" anything within one

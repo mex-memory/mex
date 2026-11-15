@@ -740,3 +740,20 @@ func TestPathThroughALink(t *testing.T) {
 		t.Fatal(r, ok)
 	}
 }
+
+func TestPathThroughAnInsideLinkCannotEscapeCheckout(t *testing.T) {
+	f := newFixture(t)
+	outside := t.TempDir()
+	link := filepath.Join(filepath.FromSlash(f.root), "outside")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "a.ts"), []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.ts", "new.ts"} {
+		if r, ok := relTo(f.root, filepath.Join(link, name)); ok {
+			t.Fatal("accepted an outside target", r)
+		}
+	}
+}
