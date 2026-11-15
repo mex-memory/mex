@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -523,7 +524,16 @@ func validCheck(v any) bool {
 		}, nil)
 	case "key":
 		target = map[string]rule{"file": file, "pointer": pointer}
+		optional = map[string]rule{"member": func(v any) bool {
+			s, ok := v.(string)
+			return ok && length(s) > 0 && length(s) <= 512 && strings.TrimSpace(s) == s && !strings.ContainsRune(s, '\uFEFF') && strings.IndexFunc(s, unicode.IsControl) < 0
+		}}
 		saw = map[string]rule{"value": bounded}
+		if t, ok := m["target"].(map[string]any); ok {
+			if _, member := t["member"]; member {
+				saw = map[string]rule{"value": func(v any) bool { return v == true }}
+			}
+		}
 	case "command":
 		target = map[string]rule{"run": line, "file": file, "pointer": pointer}
 		saw = map[string]rule{"exists": func(v any) bool { _, ok := v.(bool); return ok }}

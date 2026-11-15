@@ -294,9 +294,6 @@ func Merged(checkout, branch, head string) bool {
 	if ref == "" || name == branch || head == "" {
 		return false
 	}
-	if out, err := git(checkout, "rev-parse", "--verify", "--quiet", ref); err == nil && strings.TrimSpace(out) == head {
-		return false // nothing on the branch yet
-	}
 	// A branch still at the commit it was created on has nothing of its own
 	// to merge, even after the default branch moves on.
 	if out, err := git(checkout, "reflog", "show", "--format=%H", "refs/heads/"+branch, "--"); err == nil {

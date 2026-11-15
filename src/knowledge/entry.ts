@@ -51,7 +51,8 @@ const count = z.object({ count: z.number().int().nonnegative().max(Number.MAX_SA
 const match = z.enum(["literal", "structural"]);
 /** Stored observations only: evaluation belongs to the check evaluator. */
 export const CheckSchema = z.discriminatedUnion("kind", [
-  z.object({ ...checkBase, kind: z.literal("key"), target: z.object({ file, pointer }).strict(), saw: z.object({ value }).strict() }).strict(),
+  z.object({ ...checkBase, kind: z.literal("key"), target: z.object({ file, pointer,
+    member: z.string().min(1).max(512).regex(/^\P{Cc}+$/u).refine(s => s === s.trim() && !s.includes("\uFEFF"), "Expected a member name without surrounding whitespace or hidden marks").optional() }).strict(), saw: z.object({ value }).strict() }).strict(),
   z.object({ ...checkBase, kind: z.literal("command"), target: z.object({ run: line, file, pointer }).strict(), saw: z.object({ exists: z.boolean() }).strict() }).strict(),
   z.object({ ...checkBase, kind: z.literal("section"), target: z.object({ file, heading: line }).strict(), saw: z.object({ hash }).strict() }).strict(),
   z.object({ ...checkBase, kind: z.literal("source"), target: z.union([
@@ -67,7 +68,7 @@ export const CheckSchema = z.discriminatedUnion("kind", [
   }).strict(),
   z.object({ ...checkBase, kind: z.literal("pattern"), target: z.object({ scope, pattern: line, match: match.optional() }).strict(), saw: count }).strict(),
   z.object({ ...checkBase, kind: z.literal("relation"), target: z.object({ query: line, from: scope, to: scope }).strict(), saw: count }).strict(),
-]);
+]).refine(check => check.kind !== "key" || check.target.member === undefined || check.saw.value === true, "Membership checks must record declared presence as true");
 const metadata = z.object({
   id: EntryIdSchema, kind: z.enum(ENTRY_KINDS), scope: z.array(scope).min(1).max(32),
   source: z.object({

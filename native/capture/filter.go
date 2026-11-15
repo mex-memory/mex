@@ -22,6 +22,9 @@ type FilterSession struct {
 	Seen       string `json:"seen_at"`
 	Finished   bool   `json:"finished"`
 	Transcript string `json:"transcript"`
+	Branch     string `json:"branch,omitempty"`
+	Head       string `json:"head,omitempty"`
+	PositionAt string `json:"position_at,omitempty"`
 }
 
 // filterMetadata records activity even on hooks that have no journal row.
@@ -37,12 +40,21 @@ func filterMetadata(ev contract.Event, env Env) error {
 	default:
 		return nil
 	}
-	s := FilterSession{1, ev.ProjectID, ev.Checkout, ev.Agent, ev.SessionID, now(env).UTC().Format(time.RFC3339Nano), ev.Kind == contract.SessionEnd, ev.Transcript}
+	s := FilterSession{Version: 1, Project: ev.ProjectID, Checkout: ev.Checkout, Agent: ev.Agent, Session: ev.SessionID,
+		Seen: now(env).UTC().Format(time.RFC3339Nano), Finished: ev.Kind == contract.SessionEnd, Transcript: ev.Transcript}
+	s.Branch = Branch(ev.Checkout)
+	if s.Branch != "" {
+		s.Head = Head(ev.Checkout, s.Branch)
+		s.PositionAt = s.Seen
+	}
 	name := place.ShortHash(ev.ProjectID + "\x00" + ev.SessionID)
-	if s.Transcript == "" {
-		var prior FilterSession
-		if readJSON(filepath.Join(env.RecordDirectory, "filter-sessions", name+".json"), &prior) == nil && prior.Version == 1 && prior.Project == s.Project && prior.Checkout == s.Checkout && prior.Session == s.Session && prior.Agent == s.Agent {
+	var prior FilterSession
+	if readJSON(filepath.Join(env.RecordDirectory, "filter-sessions", name+".json"), &prior) == nil && prior.Version == 1 && prior.Project == s.Project && prior.Checkout == s.Checkout && prior.Session == s.Session && prior.Agent == s.Agent {
+		if s.Transcript == "" {
 			s.Transcript = prior.Transcript
+		}
+		if prior.Branch == s.Branch && prior.Head == s.Head && prior.PositionAt != "" {
+			s.PositionAt = prior.PositionAt
 		}
 	}
 	if err := filterFile(env.RecordDirectory, "filter-sessions", name, s); err != nil {

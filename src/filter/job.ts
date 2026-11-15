@@ -104,7 +104,7 @@ Privacy question: does this item contain a private fact, a personal preference, 
 For lasting items also return search aids. ${AID_WRITER_RULE}
 Explicit notes need exactly one lasting result each, retaining their supplied id and original quote; classify their kind and generate checks. Multiple claims from a message may produce multiple items. Task items will be discarded.
 Return JSON only, in this exact shape: {"items":[{"source_id":"m123","quote":"exact typed words","label":"lasting","kind":"rule","scope":["**"],"text":"Fact and its stated reason.","one_line":"Short fact.","private":false,"checks":[{"kind":"key","role":"supporting","target":{"file":"package.json","pointer":"/scripts/test"}}],"aliases":["test script"],"asks":["how do I run the tests?"]}]}.
-Allowed check kinds: key, command, section, source, value, symbol, pattern, relation. For next-session and unsure items checks may be empty. Never downgrade an explicit note to a task.
+Allowed check kinds: key, command, section, source, value, symbol, pattern, relation. For a declared dependency use key target {file,pointer,member:"dependency-name"}: pointer selects its array or dependency map, and member tests presence without pinning other dependencies or versions. Ordinary key targets omit member and pin the complete value. For next-session and unsure items checks may be empty. Never downgrade an explicit note to a task.
 Input follows as JSON:\n${JSON.stringify({ ...input, notes: input.notes.map(n => ({ id: n.id, entry: n.entry })) })}`;
 }
 function parse(text: string, input: FilterInput, repairIds?: Set<string>): Answer[] {
