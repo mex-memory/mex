@@ -8,6 +8,7 @@ import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporte
 import { registerRemovedCommands, removedCommandMessage } from "./removed-commands.js";
 import { VERSION } from "./version.js";
 import { buildKnowledgeCommands } from "./knowledge/cli.js";
+import { buildUpgradeCommand } from "./upgrade/cli.js";
 import { unsupportedNodeMessage } from "./node-version.js";
 import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, enableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
 import { mexHomeDir, setGlobalConfigKey } from "./global-config.js";
@@ -114,7 +115,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
     || commandName === "edit" || commandName === "wrong" || commandName === "forget"
     || commandName === "what"
-    || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief"
+    || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief" || commandName === "upgrade"
     || commandName === "skills" || commandName === "install" || commandName === "uninstall"
     || commandName === "off" || commandName === "on" || commandName === "capture";
 }
@@ -175,6 +176,7 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   while (family.parent && family.parent !== program) family = family.parent;
   // Uninstall must not recreate the launcher or restart pending jobs.
   if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture"
+    || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
     || (family.name() === "install" && family.opts().dryRun)) return;
   // Keep the hook shim's launcher pointing at this CLI.
   try {
@@ -946,6 +948,7 @@ program
 
 // ── Knowledge entries ──
 for (const command of buildKnowledgeCommands()) program.addCommand(command);
+program.addCommand(buildUpgradeCommand({ afterUpgrade: showFirstRunNotice }));
 
 // ── File index ──
 const indexCommand = program
@@ -1468,7 +1471,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 function buildCompletion(shell: string): string {
   const commands = [
     "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget",
-    "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief",
+    "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief", "upgrade",
     "telemetry", "config", "feedback", "hub",
   ];
   if (shell === "bash") {

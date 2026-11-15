@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/mex-memory/mex/native/delivery/entries"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -81,6 +82,13 @@ func ParseEntry(data []byte) (*Entry, error) {
 	}
 	for i := range e.Checks {
 		c := &e.Checks[i]
+		// This compatibility kind has stricter semantics than the partial
+		// evaluator projection: supporting only, empty files, original evidence.
+		if c.Kind == "legacy-grounding" {
+			if _, err := entries.Parse(data); err != nil {
+				return nil, fmt.Errorf("%w: malformed legacy grounding", ErrInvalidEntry)
+			}
+		}
 		if c.Role != Complete && c.Role != Supporting {
 			return nil, fmt.Errorf("%w: check %d has role %q", ErrInvalidEntry, i, c.Role)
 		}

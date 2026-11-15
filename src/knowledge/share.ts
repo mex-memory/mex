@@ -60,6 +60,14 @@ function writeSources(worktree: string): void {
   writeMetadata(join(worktree, ".mex", "sources.json"), sources);
 }
 
+/** Shared metadata and native files, also used by upgrade's reviewed worktree. */
+export function writeSharedKnowledgeFiles(options: KnowledgeOptions): string[] {
+  writeConfig(options.projectPath);
+  writeSources(options.projectPath);
+  const native = rebuildNative(options, { sharedOnly: true, force: true });
+  return [".mex/config.json", ".mex/sources.json", ...(existsSync(join(options.projectPath, ".mex/native.json")) ? [".mex/native.json"] : []), ...native.written ?? [], ...native.removed ?? [], ...native.unchanged ?? []];
+}
+
 /** A killed process leaves either the original metadata or its complete
  * replacement, never a partially overwritten config or source inventory. */
 function writeMetadata(path: string, value: unknown): void {
@@ -86,11 +94,7 @@ function writeShare(worktree: string, plan: SharePlan, originalOptions: Knowledg
     applyTeamWrite(preview, preview.revision, options, c.entry.mex.source.quote);
     paths.add(preview.path);
   }
-  writeConfig(worktree);
-  writeSources(worktree);
-  const native = rebuildNative(options, { sharedOnly: true, force: true });
-  for (const path of [...native.written ?? [], ...native.removed ?? [], ...native.unchanged ?? []]) paths.add(path);
-  if (existsSync(join(worktree, ".mex/native.json"))) paths.add(".mex/native.json");
+  for (const path of writeSharedKnowledgeFiles(options)) paths.add(path);
   return Object.fromEntries([...paths].map(path => [path, existsSync(join(worktree, path)) ? digest(readFileSync(join(worktree, path))) : null]));
 }
 
