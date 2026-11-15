@@ -144,6 +144,17 @@ export class IndexReader {
     return now !== parsed && !shifts.some((shift) => shift.mtime_ns === now);
   }
 
+  /** Import sources of every indexed file, at most `limit` files (layer rules read these). */
+  importsByFile(limit = 50_000): Array<{ path: string; from: string[] }> {
+    const rows = this.db.prepare("SELECT path,hash,lang,is_test,mtime_ns,reason FROM paths WHERE reason IS NULL AND hash IS NOT NULL ORDER BY path LIMIT ?").all(limit) as unknown as PathRow[];
+    const out: Array<{ path: string; from: string[] }> = [];
+    for (const row of rows) {
+      const record = this.fileRecord(row);
+      if (record?.imports.length) out.push({ path: row.path, from: record.imports.map(item => item.from) });
+    }
+    return out;
+  }
+
   /** Every path in the checkout with this file name, indexed or not. */
   filesNamed(basename: string): string[] {
     return (this.db.prepare("SELECT path FROM paths WHERE name=? ORDER BY path").all(basename) as Array<{ path: string }>).map((row) => row.path);

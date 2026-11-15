@@ -9,6 +9,9 @@ import "./job-kinds.js";
 import { sendUsageReports } from "../telemetry/reporting.js";
 import { indexPending, queuePendingRefreshes } from "../file-index/pending.js";
 import { queueWorkingSetRequests, workingSetPending } from "../working-set/job.js";
+import { queueStaleCodeFacts } from "../repo-start/history/freshness.js";
+import { judgePending, queuePendingJudgements } from "../judge/pending.js";
+import { filterPending, queuePendingFilters } from "../filter/pending.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
@@ -130,7 +133,7 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     const row = lease(writer);
     const live = leaseLive(row, settings);
     if (live && row.version === VERSION) return { started: false, reason: "running" };
-    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory) && !workingSetPending(writer.location.directory)) {
+    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer) && !workingSetPending(writer.location.directory)) {
       clearPending(writer);
       return { started: false, reason: "no-work" };
     }
@@ -149,6 +152,8 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     try {
       const child = spawn(process.execPath, [`--max-old-space-size=${settings.memoryMb}`, entry, ...(options.args ?? ["__background"])], {
         detached: true, windowsHide: true, stdio: ["ignore", log, log],
+        // Never the folder `mex` ran in: on Windows a process's working folder can't be deleted or renamed.
+        cwd: writer.location.home,
         env: { ...(options.env ?? process.env), MEX_BACKGROUND: "1", ...(options.home ? { MEX_RECORD_HOME: options.home } : {}) },
       });
       child.on("error", () => { /* reported through the lease never appearing */ });
@@ -243,6 +248,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     if (recovered) log(`resumed ${recovered} interrupted job${recovered === 1 ? "" : "s"}`);
     let lastWork = clock();
     let lastTelemetry = -Infinity;
+    let lastFreshness = -Infinity;
     for (;;) {
       if (!backgroundEnabled(writer)) return stop("disabled");
       if (!held || !beat()) return stop("lease-lost");
@@ -256,6 +262,14 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       requeueReadyJobs(writer);
       // Files the hook saw edited get re-parsed.
       queuePendingRefreshes(writer);
+      // Hooks request work with bounded files; only Node owns model jobs.
+      try { queuePendingJudgements(writer, queueJob, clock()); } catch { /* a later pass retries */ }
+      try { queuePendingFilters(writer, queueJob); } catch { /* a later pass retries */ }
+      // Code facts follow new commits: re-read a project's history once its HEAD has moved.
+      if (clock() - lastFreshness >= 60_000) {
+        lastFreshness = clock();
+        try { queueStaleCodeFacts(writer, queueJob, clock()); } catch { /* a missed pass waits for the next one */ }
+      }
       // Session starts that found their working set missing or behind.
       queueWorkingSetRequests(writer);
       const outcome = await runOneBatch(writer, self);
@@ -289,6 +303,9 @@ export async function runPendingInForeground(writer: RecordWriter, budgetMs = 60
   const end = Date.now() + budgetMs;
   let batches = 0;
   while (Date.now() < end) {
+    // The same durable requests work when the detached process cannot start.
+    queuePendingJudgements(writer, queueJob);
+    queuePendingFilters(writer, queueJob);
     requeueReadyJobs(writer);
     if (await runOneBatch(writer, self) === "idle") break;
     batches++;

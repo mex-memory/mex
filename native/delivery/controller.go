@@ -211,6 +211,10 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		if text != "" {
 			blocks = append(blocks, text)
 		}
+		// A new session, not a resume, a fork or a compaction.
+		if reason == "startup" || reason == "clear" {
+			blocks = append(blocks, carryBlocks(h, ev, env)...)
+		}
 	}
 
 	for _, g := range groups {

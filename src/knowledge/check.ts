@@ -14,6 +14,7 @@ import { knowledgeProject, type KnowledgeOptions, type KnowledgeProject } from "
 import { KnowledgeError } from "./contract.js";
 import { parseEntry, type KnowledgeEntry } from "./entry.js";
 import { readEntryFile } from "./files.js";
+import { handoffLeftovers } from "./handoff.js";
 import { hasSecret, sanitizeText, stripHidden } from "./gates.js";
 import { references, type References } from "./references.js";
 import { claimHash } from "./state.js";
@@ -22,10 +23,10 @@ export type Verdict = "held" | "changed" | "broken" | "unknown";
 type Level = "team" | "personal" | "hint";
 
 export interface CheckResult { index: number; kind: string; role: string; status: "pass" | "fail" | "gone" | "floor"; reason?: string; now?: unknown; files_changed?: string[]; }
-interface NativeItem { id: string; level: Level; path: string; kind: string; status: string; verdict: Verdict; }
-interface NativeReport {
+export interface NativeItem { id: string; level: Level; path: string; kind: string; status: string; verdict: Verdict; entry_hash?: string; }
+export interface NativeReport {
   ok: true; stored: boolean; items: NativeItem[] | null;
-  results: Array<{ entry_id: string; verdict: Verdict; checks: CheckResult[] }> | null;
+  results: Array<{ entry_id: string; verdict: Verdict; checks: CheckResult[]; inputs?: Record<string, string> }> | null;
   problems: Array<{ level: Level; path: string; error: string }> | null;
 }
 
@@ -298,6 +299,11 @@ export function runCheck(options: CheckOptions): CheckReport {
   const withEntries = [...parsed.entries()].map(([path, entry]) => ({ path, entry }));
   if (!diff && homeExists) report.findings.push(...conformance(project.location.directory, project.projectId, root, withEntries, files.filter(f => f.level === "team").map(f => f.path)));
   if (diff) report.findings.push(...diffConformance(root, diff, withEntries));
+  // A handoff closes before its branch merges; one left in a pull request to
+  // the default branch would reach everyone.
+  if (diff) for (const left of handoffLeftovers(root, diff)) {
+    report.findings.push({ kind: "diff", path: join(root, left.path), message: `a handoff is still in this branch; run \`mex handoff done\` and commit the deletion before merging`, proven: left.proven });
+  }
 
   report.problems = report.findings.filter(f => f.proven).length;
   report.ok = report.problems === 0;

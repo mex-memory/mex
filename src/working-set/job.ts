@@ -56,7 +56,7 @@ registerJobKind<WorkingSetJobParams, { runs: number }>({
   sideEffects: "idempotent",
   async runBatch({ job, params, checkpoint, writer }) {
     const { writeWorkingSet } = await import("./compute.js");
-    const set = await writeWorkingSet({ root: params.checkout, projectId: job.project_id!, recordDirectory: writer.location.directory, home: writer.location.home });
+    const set = await writeWorkingSet({ root: params.checkout, projectId: job.project_id!, recordDirectory: writer.location.directory, home: writer.location.home, location: writer.location });
     return {
       checkpoint: { runs: (checkpoint?.runs ?? 0) + 1 },
       done: true,

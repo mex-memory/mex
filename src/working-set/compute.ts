@@ -11,27 +11,26 @@ import { checkoutKey, writeAtomic } from "../file-index/store.js";
 import { openIndex } from "../file-index/read.js";
 import { openHooksReadOnly } from "../record/index.js";
 import { realPath } from "../record/project.js";
+import type { RecordLocation } from "../record/location.js";
+import { readFactFile } from "../repo-start/facts.js";
 
 export const WORKING_SET_VERSION = 1;
 
-/** Fixed constants. Changing one changes what a session-start brief can say. */
+/**
+ * Fixed constants. Changing one changes what a session-start brief can say.
+ * Co-change comes from the project's change-together facts (the code-facts
+ * job's one walk over the last 2,000 commits, re-read when HEAD moves), so
+ * the working set reads no history of its own.
+ */
 export const WORKING_SET_LIMITS = {
-  /** Commits read for co-change and fix history. */
-  window: 2000,
-  /** Commits touching more files than this make no pairs (they are moves and bulk edits). */
-  pairFiles: 200,
-  /** Only commits touching at most this many files count as support for a pair. */
-  focusedFiles: 30,
-  /** Pair weights decay by commit order, exp(-commits ago / decay). */
-  decay: 500,
-  /** Shared focused commits a pair needs before it counts. */
-  minSupport: 2,
   /** Co-change partners kept per seed file. */
   partners: 25,
   /** Seed files kept, in priority order. */
   seeds: 30,
   /** One-hop files kept. */
   hops: 100,
+  /** A fix commit touching more files than this is a bulk change and counts for none. */
+  fixCommitFiles: 200,
   /** A file needs this many fix commits to carry history. */
   fixMin: 3,
   /** A fix older than this doesn't make a history notice. */
@@ -55,8 +54,6 @@ export interface WorkingSetFile {
   hops: string[];
   /** Branch-name words, for matching entry text. */
   words: string[];
-  /** path → [fix commits in the window, last fix as Unix seconds]. */
-  fixes: Record<string, [number, number]>;
 }
 
 export function workingSetDirectory(recordDirectory: string, projectId: string): string {
@@ -97,61 +94,14 @@ export function branchWords(branch: string): string[] {
 const FIX_SUBJECT = /^(fix|bugfix|hotfix)(\([^)]*\))?!?:|\b(fix|fixes|fixed|bug|bugs|regression|crash)\b/i;
 export function isFixSubject(subject: string): boolean { return FIX_SUBJECT.test(subject); }
 
-export interface Commit { files: string[]; time: number; fix: boolean }
+/** One commit of the code-facts walk, newest first. */
+export interface HistoryCommit { files: string[]; time: number; subject: string }
 
-/** Parse `git log -z --name-only --format=%x01%ct%x02%s`. */
-export function parseLog(text: string): Commit[] {
-  const commits: Commit[] = [];
-  for (const chunk of text.split("\x01")) {
-    if (!chunk) continue;
-    const head = chunk.indexOf("\x02");
-    const lineEnd = chunk.indexOf("\n", head);
-    if (head < 0 || lineEnd < 0) continue;
-    const time = Number(chunk.slice(0, head));
-    const subject = chunk.slice(head + 1, lineEnd);
-    const files = chunk.slice(lineEnd + 1).split("\0").map((file) => file.replace(/^\n+/, "")).filter(Boolean);
-    commits.push({ files, time: Number.isFinite(time) ? time : 0, fix: isFixSubject(subject) });
-  }
-  return commits;
-}
-
-/**
- * Co-change partners of the seed files. Commits are newest first. A pair's
- * weight sums exp(-ordinal / decay) over commits of at most `pairFiles` files;
- * it counts only with `minSupport` shared commits of at most `focusedFiles`.
- */
-export function coChangePartners(commits: readonly Commit[], seeds: readonly string[], limits = WORKING_SET_LIMITS): Map<string, string[]> {
-  const seedSet = new Set(seeds);
-  const pairs = new Map<string, Map<string, { weight: number; support: number }>>();
-  commits.slice(0, limits.window).forEach((commit, ordinal) => {
-    if (commit.files.length > limits.pairFiles || commit.files.length < 2) return;
-    const focused = commit.files.length <= limits.focusedFiles;
-    const decay = Math.exp(-ordinal / limits.decay);
-    for (const seed of commit.files) {
-      if (!seedSet.has(seed)) continue;
-      let partners = pairs.get(seed);
-      if (!partners) pairs.set(seed, partners = new Map());
-      for (const other of commit.files) {
-        if (other === seed) continue;
-        const pair = partners.get(other) ?? { weight: 0, support: 0 };
-        pair.weight += decay;
-        if (focused) pair.support++;
-        partners.set(other, pair);
-      }
-    }
-  });
-  const out = new Map<string, string[]>();
-  for (const [seed, partners] of pairs) {
-    out.set(seed, [...partners].filter(([, pair]) => pair.support >= limits.minSupport)
-      .sort((a, b) => b[1].weight - a[1].weight || (a[0] < b[0] ? -1 : 1)).slice(0, limits.partners).map(([file]) => file));
-  }
-  return out;
-}
-
-export function fixHistory(commits: readonly Commit[], now: number, limits = WORKING_SET_LIMITS): Record<string, [number, number]> {
+/** Files with enough recent fix commits: path → [fix commits, last fix as Unix seconds]. */
+export function fixHistory(commits: readonly HistoryCommit[], now: number, limits = WORKING_SET_LIMITS): Record<string, [number, number]> {
   const counts = new Map<string, [number, number]>();
-  for (const commit of commits.slice(0, limits.window)) {
-    if (!commit.fix || commit.files.length > limits.pairFiles) continue;
+  for (const commit of commits) {
+    if (!isFixSubject(commit.subject) || commit.files.length > limits.fixCommitFiles) continue;
     for (const file of commit.files) {
       const seen = counts.get(file) ?? [0, 0];
       counts.set(file, [seen[0] + 1, Math.max(seen[1], commit.time)]);
@@ -163,12 +113,33 @@ export function fixHistory(commits: readonly Commit[], now: number, limits = WOR
   return Object.fromEntries(kept);
 }
 
-export interface ComputeOptions { root: string; projectId: string; recordDirectory: string; /** MEX home, to find hooks.db. */ home?: string; now?: number }
+/** Change-together partners of each seed, most supported first, from the project's code facts. */
+export function coChangePartners(pairs: ReadonlyArray<{ a: string; b: string; support: number }>, seeds: readonly string[], limits = WORKING_SET_LIMITS): Map<string, string[]> {
+  const seedSet = new Set(seeds);
+  const found = new Map<string, Array<{ file: string; support: number }>>();
+  for (const pair of pairs) {
+    for (const [seed, other] of [[pair.a, pair.b], [pair.b, pair.a]] as const) {
+      if (!seedSet.has(seed)) continue;
+      const list = found.get(seed) ?? [];
+      if (!list.some((item) => item.file === other)) list.push({ file: other, support: pair.support });
+      found.set(seed, list);
+    }
+  }
+  const out = new Map<string, string[]>();
+  for (const [seed, list] of found) out.set(seed, list.sort((x, y) => y.support - x.support || (x.file < y.file ? -1 : 1)).slice(0, limits.partners).map((item) => item.file));
+  return out;
+}
+
+export interface ComputeOptions { root: string; projectId: string; recordDirectory: string; /** MEX home, to find hooks.db. */ home?: string; /** Where the project's code facts live. */ location?: RecordLocation; now?: number }
 
 /** Paths git reports relative to the repository top, made relative to the checkout. */
 function underPrefix(files: readonly string[], prefix: string): string[] {
   if (!prefix) return [...files];
   return files.filter((file) => file.startsWith(prefix)).map((file) => file.slice(prefix.length));
+}
+
+function underPrefixOne(file: string, prefix: string): string {
+  return !prefix ? file : file.startsWith(prefix) ? file.slice(prefix.length) : "";
 }
 
 function parseStatus(text: string): { branch: string; files: string[] } {
@@ -237,8 +208,6 @@ export async function computeWorkingSet(options: ComputeOptions): Promise<Workin
     committedSince = (await gitOr(root, ["log", "--no-merges", "--name-only", "-z", "--format=", `--since=${previous.since}`, "-n", "200"], ""))
       .split("\0").map((file) => file.replace(/^\n+/, "")).filter(Boolean);
   }
-  const log = head ? parseLog(await gitOr(root, ["log", "--no-merges", "-z", "--name-only", `-n`, String(WORKING_SET_LIMITS.window), "--format=%x01%ct%x02%s"], "")) : [];
-  for (const commit of log) commit.files = underPrefix(commit.files, prefix);
 
   // Seeds in priority order: uncommitted work, the previous session, then the branch.
   const seeds: string[] = [];
@@ -265,12 +234,13 @@ export async function computeWorkingSet(options: ComputeOptions): Promise<Workin
     } catch { /* imports are optional evidence */ }
     finally { index.close(); }
   }
-  const partners = coChangePartners(log, seeds);
+  const facts = options.location ? readFactFile<{ version: number; change_together?: Array<{ a: string; b: string; support: number }> }>(options.location, options.projectId, "code-facts.json") : undefined;
+  const partners = coChangePartners((facts?.change_together ?? []).map((pair) => ({ a: underPrefixOne(pair.a, prefix), b: underPrefixOne(pair.b, prefix), support: pair.support })).filter((pair) => pair.a && pair.b), seeds);
   for (const seed of seeds) for (const partner of partners.get(seed) ?? []) addHop(partner);
 
   return {
     version: WORKING_SET_VERSION, head, branch: status.branch, defaultBranch, made,
-    seeds, hops, words: branchWords(status.branch === shortDefault ? "" : status.branch), fixes: fixHistory(log, now),
+    seeds, hops, words: branchWords(status.branch === shortDefault ? "" : status.branch),
   };
 }
 
@@ -308,12 +278,22 @@ export function fixesFile(recordDirectory: string, projectId: string, root: stri
   return join(workingSetDirectory(recordDirectory, projectId), `${checkoutKey(root)}.fixes`);
 }
 
+/**
+ * Write the fix table for one checkout from the code-facts walk's commits.
+ * Called by the code-facts job, so history is read once.
+ */
+export function writeFixTable(recordDirectory: string, projectId: string, checkout: string, commits: readonly HistoryCommit[], now = Math.floor(Date.now() / 1000)): void {
+  const root = realPath(checkout);
+  const file = fixesFile(recordDirectory, projectId, root);
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  writeAtomic(file, encodeFixes(fixHistory(commits, now)));
+}
+
 export async function writeWorkingSet(options: ComputeOptions): Promise<WorkingSetFile> {
   const set = await computeWorkingSet(options);
   const root = realPath(options.root);
   const file = workingSetFile(options.recordDirectory, options.projectId, root);
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-  writeAtomic(fixesFile(options.recordDirectory, options.projectId, root), encodeFixes(set.fixes));
   writeAtomic(file, JSON.stringify(set));
   return set;
 }

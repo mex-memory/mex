@@ -10,7 +10,9 @@ import (
 	"time"
 )
 
-const orphanCleanupTimeout = 5 * time.Second
+// orphanCleanupTimeout bounds the Node cleanup. A variable only so the test's
+// child process can allow for a cold start on a slow CI machine.
+var orphanCleanupTimeout = 5 * time.Second
 
 // A detached copy owns the bounded Node process. The agent's hook must not
 // wait for a cold Node startup (which can exceed 800 ms on Windows).

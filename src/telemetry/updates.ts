@@ -1,5 +1,6 @@
 /** A bounded daily update check, invoked only by the bare interactive `mex` entry. */
 import { request } from "node:https";
+import { isAgentCaller } from "../repo-start/caller.js";
 import { Resolver } from "node:dns";
 import { isDevRepo, readGlobalConfig, setGlobalConfigKey } from "../global-config.js";
 import { VERSION } from "../version.js";
@@ -58,8 +59,8 @@ function publishedVersion(): Promise<string | undefined> {
 }
 
 export async function showUpdateNotice(options: { now?: number; readVersion?: () => Promise<string | undefined>; write?: (line: string) => void } = {}): Promise<boolean> {
-  if (!process.stderr.isTTY || process.env.MEX_OFFLINE === "1" || process.env.MEX_BACKGROUND === "1" || process.env.CLAUDECODE
-    || process.env.CODEX_THREAD_ID || isCI() || isDevRepo()) return false;
+  if (!process.stderr.isTTY || process.env.MEX_OFFLINE === "1" || process.env.MEX_BACKGROUND === "1" || isAgentCaller()
+    || isCI() || isDevRepo()) return false;
   const day = utcDay(options.now);
   if (readGlobalConfig().updateCheckedDay === day) return false;
   try {

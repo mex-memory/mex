@@ -29,15 +29,14 @@ const (
 )
 
 type Set struct {
-	Version       int                 `json:"version"`
-	Head          string              `json:"head"`
-	Branch        string              `json:"branch"`
-	DefaultBranch string              `json:"defaultBranch"`
-	Made          string              `json:"made"`
-	Seeds         []string            `json:"seeds"`
-	Hops          []string            `json:"hops"`
-	Words         []string            `json:"words"`
-	Fixes         map[string][2]int64 `json:"fixes"`
+	Version       int      `json:"version"`
+	Head          string   `json:"head"`
+	Branch        string   `json:"branch"`
+	DefaultBranch string   `json:"defaultBranch"`
+	Made          string   `json:"made"`
+	Seeds         []string `json:"seeds"`
+	Hops          []string `json:"hops"`
+	Words         []string `json:"words"`
 }
 
 // Path is <record>/projects/<id>/working-set/<checkout key>.json, the same key

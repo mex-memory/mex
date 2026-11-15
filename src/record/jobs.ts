@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { displayPath } from "./project.js";
 import { JOB_STATES, type JobState, type RecordWriter, type RecordReader } from "./index.js";
 import { recordCounterIn } from "../telemetry/store.js";
 import { automaticWorkEnabled } from "../controls/index.js";
@@ -50,6 +51,11 @@ export interface JobRow {
 
 export interface BatchContext<P = unknown, C = unknown> {
   job: JobRow; params: P; checkpoint: C | undefined; writer: RecordWriter;
+  /**
+   * Say what the batch is doing now, in plain words ("4,210 of 12,306 files"). Kept on the
+   * job (at most once a second) so `mex jobs` shows it, and passed to a runner watching live.
+   */
+  progress?: (text: string) => void;
 }
 export interface BatchResult<C = unknown> {
   checkpoint: C;
@@ -78,7 +84,7 @@ export interface JobKind<P = unknown, C = unknown> {
   sideEffects: "none" | "idempotent";
   runBatch(context: BatchContext<P, C>): Promise<BatchResult<C>> | BatchResult<C>;
   /** For a waiting job: true when it can continue. Default: continue on the next pass. */
-  ready?(job: JobRow): boolean;
+  ready?(job: JobRow, writer: RecordWriter): boolean;
 }
 
 const kinds = new Map<string, JobKind<any, any>>();
@@ -136,11 +142,12 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
   });
 }
 
-/** Pause, cancel or resume. A running job is asked, and stops after its current batch. */
-export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume"): JobRow {
+/** Pause, cancel or resume. Automatic replacements can require an unchanged snapshot. */
+export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: Pick<JobRow, "state" | "params">): JobRow {
   return inTransaction(writer.db, () => {
     const job = getJob(writer.db, id);
     if (!job) throw new Error("That job no longer exists.");
+    if (expected && (job.state !== expected.state || job.params !== expected.params)) return job;
     if (action === "resume") {
       if (job.state === "paused" || job.state === "waiting" || job.state === "failed") {
         // Resuming a failed job starts its failure count again; learned results and position stay.
@@ -199,7 +206,7 @@ export function requeueReadyJobs(writer: RecordWriter): number {
   for (const job of waiting) {
     const kind = kinds.get(job.kind);
     let ready = false;
-    try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job) : true) : false; } catch { ready = false; }
+    try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job, writer) : true) : false; } catch { ready = false; }
     if (!ready) continue;
     inTransaction(writer.db, () => {
       const current = getJob(writer.db, job.id);
@@ -213,10 +220,11 @@ export function requeueReadyJobs(writer: RecordWriter): number {
  * Claim the next job this runner may run, honouring the concurrency rules: one running
  * job per project, and one running job per machine for machine-exclusive kinds.
  */
-function claim(writer: RecordWriter, self: string): JobRow | undefined {
+function claim(writer: RecordWriter, self: string, only?: ReadonlySet<string>): JobRow | undefined {
   return inTransaction(writer.db, () => {
     const queued = writer.db.prepare("SELECT * FROM jobs WHERE state='queued' ORDER BY updated_at,created_at").all() as unknown as JobRow[];
     for (const job of queued) {
+      if (only && !only.has(job.id)) continue;
       const kind = kinds.get(job.kind);
       if (!kind) continue; // A kind from a newer MEX: leave it for that version.
       if (self.startsWith("background:") && !automaticWorkEnabled(writer, job.project_id)) continue;
@@ -251,21 +259,46 @@ export function blockedReason(reader: Pick<RecordReader, "all">, job: JobRow): s
 }
 
 export type BatchOutcome = "ran" | "idle";
+export interface RunOptions {
+  /** Run only these jobs (a command finishing its own work). */
+  only?: ReadonlySet<string>;
+  /** Live progress of the batch, as the job reports it. */
+  onProgress?: (job: JobRow, text: string) => void;
+}
+const PROGRESS_WRITE_MS = 1_000;
+
+/** Put a running job back in the queue; for a runner that stops early and hands its jobs on. */
+export function releaseJobs(writer: RecordWriter, self: string): number {
+  return inTransaction(writer.db, () => {
+    const mine = writer.db.prepare("SELECT * FROM jobs WHERE state='running' AND owner=?").all(self) as unknown as JobRow[];
+    for (const job of mine) setState(writer.db, job, "queued", { owner: null, progress: null });
+    return mine.length;
+  });
+}
+
 /**
  * Run one batch of one job. Returns "idle" when nothing could run. Never throws for a
  * job's own failure; storage errors propagate to the runner, which stops safely.
  */
-export async function runOneBatch(writer: RecordWriter, self: string): Promise<BatchOutcome> {
-  const job = claim(writer, self);
+export async function runOneBatch(writer: RecordWriter, self: string, options: RunOptions = {}): Promise<BatchOutcome> {
+  const job = claim(writer, self, options.only);
   if (!job) return "idle";
   const kind = kinds.get(job.kind)!;
+  let written = -Infinity;
+  const progress = (text: string) => {
+    options.onProgress?.(job, text);
+    if (Date.now() - written < PROGRESS_WRITE_MS) return;
+    written = Date.now();
+    try { writer.db.prepare("UPDATE jobs SET progress=? WHERE id=? AND owner=? AND state='running'").run(text.slice(0, 200), job.id, self); }
+    catch { /* progress is only shown, never relied on */ }
+  };
   let result: BatchResult | undefined;
   let failure: string | undefined;
   let modelHold: ModelWaitError | undefined;
   let usage: "jobs.completed" | "jobs.failed" | undefined;
   try {
     result = await withModelJob({ jobId: job.id, batch: job.batch, projectId: job.project_id, recordHome: writer.location.home }, () => kind.runBatch({
-      job, writer,
+      job, writer, progress,
       params: JSON.parse(job.params || "{}"),
       checkpoint: job.checkpoint === null ? undefined : JSON.parse(job.checkpoint),
     }));
@@ -376,7 +409,7 @@ export function listJobs(reader: Pick<RecordReader, "all">, limit = 50): Array<J
       kind: row.kind,
       label: kind?.label ?? "Unknown job (needs a newer MEX)",
       state: row.state,
-      project: row.project_id ? { name: projectName(row.root_path), path: row.root_path ?? "" } : null,
+      project: row.project_id ? { name: projectName(row.root_path ? displayPath(row.root_path) : null), path: row.root_path ? displayPath(row.root_path) : "" } : null,
       reason: row.reason,
       doing: !active ? null : row.state === "running" && runnerGone(row.owner)
         ? "interrupted; resumes from its last batch when the background process starts again" : row.progress,

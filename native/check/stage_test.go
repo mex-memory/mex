@@ -133,6 +133,28 @@ func TestStage(t *testing.T) {
 	}
 }
 
+func TestStageBindsTheEntryAndUnrecordedTargetReads(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "package.json", pkg)
+	c := record(t, root, "key", Complete, map[string]any{"file": "package.json", "pointer": "/scripts/test"})
+	c.Files = map[string]string{}
+	teamEntry(t, root, "mx_proof00", c)
+	report, err := RunStage(StageOptions{Checkout: root, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".mex", "learned", "mx_proof00.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Items) != 1 || report.Items[0].EntryHash != hashBytes(data) {
+		t.Fatal("entry bytes were not bound to the evaluated item")
+	}
+	if len(report.Results) != 1 || report.Results[0].Inputs["package.json"] != hashBytes([]byte(pkg)) {
+		t.Fatal("an actual target read was missing from input provenance")
+	}
+}
+
 // The entry cache: an unchanged, settled entry file is not read again; an
 // edited one is, and so is one modified just before the cache was written.
 func TestEntryCache(t *testing.T) {

@@ -102,11 +102,11 @@ func TestReadAndRequest(t *testing.T) {
 	if err = os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	body, _ := json.Marshal(Set{Version: 1, Branch: "main", Seeds: []string{"a.ts"}, Fixes: map[string][2]int64{"a.ts": {4, 1}}})
+	body, _ := json.Marshal(Set{Version: 1, Branch: "main", Seeds: []string{"a.ts"}})
 	if err = os.WriteFile(p, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if s := Read(record, project, checkout); s == nil || s.Seeds[0] != "a.ts" || s.Fixes["a.ts"][0] != 4 {
+	if s := Read(record, project, checkout); s == nil || s.Seeds[0] != "a.ts" {
 		t.Fatal(s)
 	}
 	if err = os.WriteFile(p, []byte(`{"version":2}`), 0o600); err != nil {

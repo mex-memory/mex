@@ -19,7 +19,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { buildIndex } from "../../src/file-index/build.js";
-import { writeWorkingSet } from "../../src/working-set/compute.js";
+import { writeFixTable, writeWorkingSet } from "../../src/working-set/compute.js";
+import { buildCodeFacts } from "../../src/repo-start/history/job.js";
+import { writeFactFile } from "../../src/repo-start/facts.js";
+import type { RecordLocation } from "../../src/record/location.js";
 // @ts-expect-error plain JavaScript helpers shared with the replay
 import { convert, transcript } from "./convert.mjs";
 
@@ -72,8 +75,15 @@ async function main(): Promise<void> {
     projects[repo] = { project, root: resolve(root) };
     const started = Date.now();
     await buildIndex({ root: projects[repo]!.root, projectId: project, recordDirectory: record, workers: 0 });
-    const set = await writeWorkingSet({ root: projects[repo]!.root, projectId: project, recordDirectory: record, home });
-    console.log(`${repo}: index and working set in ${((Date.now() - started) / 1000).toFixed(1)} s; ${Object.keys(set.fixes).length} files with fix history`);
+    const location: RecordLocation = { home, directory: record, record: join(record, "record.db"), hooks: join(record, "hooks.db") };
+    let fixFiles = 0;
+    const facts = await buildCodeFacts(projects[repo]!.root, project, location, undefined, (commits) => {
+      writeFixTable(record, project, projects[repo]!.root, commits);
+      fixFiles = commits.length;
+    });
+    writeFactFile(location, project, "code-facts.json", facts);
+    const set = await writeWorkingSet({ root: projects[repo]!.root, projectId: project, recordDirectory: record, home, location });
+    console.log(`${repo}: index, code facts and working set in ${((Date.now() - started) / 1000).toFixed(1)} s; ${fixFiles} commits read, ${set.hops.length} hops`);
   }
   const surfaces = JSON.stringify(Object.fromEntries(SURFACES.map((s) => [s, "on"])));
   const hook = spawn(binary, ["--delivery-replay"], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"],

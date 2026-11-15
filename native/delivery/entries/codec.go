@@ -33,6 +33,8 @@ var idRE = lazy(`^mx_[a-z0-9]{6,64}$`)
 var hashRE = lazy(`^sha256:[a-f0-9]{64}$`)
 var driveRE = lazy(`^[A-Za-z]:`)
 var dateRE = lazy(`^\d{4}-\d{2}-\d{2}$`)
+var legacyNodeRE = lazy(`^[A-Za-z_]+:[0-9a-fA-F]{8,}$`)
+var legacyFingerprintRE = lazy(`^(?:[mM][hH]:\d+:(?:[0-9a-fA-F]{2})+|mh2:\d+:[A-Za-z0-9_-]+)$`)
 
 type Source struct {
 	Type  string `json:"type"`
@@ -465,6 +467,17 @@ func validCheck(v any) bool {
 	var target, saw map[string]rule
 	var optional map[string]rule
 	switch m["kind"] {
+	case "legacy-grounding":
+		return object(v, map[string]rule{
+			"kind": choice("legacy-grounding"), "role": choice("supporting"),
+			"target": func(v any) bool {
+				return object(v, map[string]rule{"node": func(v any) bool { return line(v) && legacyNodeRE().MatchString(v.(string)) }}, map[string]rule{"file": file})
+			},
+			"saw": func(v any) bool {
+				return object(v, map[string]rule{"fingerprint": func(v any) bool { return line(v) && legacyFingerprintRE().MatchString(v.(string)) }}, map[string]rule{"bodyHash": line, "codeHash": line})
+			},
+			"files": func(v any) bool { m, ok := v.(map[string]any); return ok && len(m) == 0 },
+		}, nil)
 	case "key":
 		target = map[string]rule{"file": file, "pointer": pointer}
 		saw = map[string]rule{"value": bounded}

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mex-memory/mex/native/capture"
 	"github.com/mex-memory/mex/native/delivery"
 	"github.com/mex-memory/mex/native/internal/adapter"
 	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
@@ -129,12 +130,17 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 	}
 	resolveUsage := sync.OnceValues(func() (place.Location, bool) { return hookUsageLocation(h, getenv) })
 	h.usageLocation = resolveUsage
-	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok, h, time.Now(), func(actual string, sessionStart, failed bool) {
+	var afterOutput func()
+	h.afterOutput = func(done func()) { afterOutput = done }
+	out := handle(agent, nativeEvent, payload, ok, h, time.Now(), func(actual string, sessionStart, failed bool) {
 		usageLocation, usageEnabled := resolveUsage()
 		if usageEnabled {
 			recordHookUsage(usageLocation, actual, sessionStart, failed, time.Since(started))
 		}
-	}))
+	})
+	if n, err := stdout.Write(out); err == nil && n == len(out) && afterOutput != nil {
+		afterOutput()
+	}
 	return 0
 }
 
@@ -266,12 +272,22 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 
-	if ev.Kind == contract.SessionStart {
-		// After delivery: the start brief may have asked for a working-set refresh.
-		defer startBackground(h, recordDirectory)
+	if reply, handled := typedNote(ev, h); handled {
+		out, _ := profile.Render(ev, reply)
+		return out
 	}
+	// Capture runs before delivery: typed text is saved before the reply
+	// starts, whatever delivery does next.
+	if captureEnabled(recordDirectory, ev.ProjectID, global) {
+		capture.Hook(ev, capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env})
+	}
+	noteJudgeEdits(ev, recordDirectory)
 	noteEdit(ev, recordDirectory)
 	freeStage(ev, h, recordDirectory)
+	judgeReady := false
+	if ev.Kind == contract.Stop {
+		judgeReady = requestJudge(ev, recordDirectory, nil)
+	}
 	canNotice := false
 	switch ev.Kind {
 	case contract.SessionStart, contract.SubagentStart, contract.PostCompact, contract.PostToolBatch, contract.PostToolFailure, contract.SessionEnd:
@@ -305,7 +321,36 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		failed = true
 		reply = contract.Reply{}
 	}
-	out, _ := profile.Render(ev, reply)
+	noticeID := ""
+	if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.PersonLine && !failed {
+		if id, text := judgeNotice(ev, h, recordDirectory); id != "" {
+			noticeID = id
+			if reply.PersonLine != "" {
+				reply.PersonLine += "\n"
+			}
+			reply.PersonLine += text
+		}
+	}
+	out, dropped := profile.Render(ev, reply)
+	if noticeID != "" {
+		for _, part := range dropped {
+			if part == "person_line" {
+				noticeID = ""
+			}
+		}
+	}
+	if noticeID != "" && h.afterOutput != nil {
+		h.afterOutput(func() {
+			if markJudgeNotice(ev, h, recordDirectory, noticeID, now) {
+				startBackground(h, recordDirectory)
+			}
+		})
+	}
+	// Session setup and free checks precede discovery. Preview receipts wake it
+	// separately, after the complete reply has reached stdout.
+	if ev.Kind == contract.SessionStart || ev.Kind == contract.PreCompact || judgeReady {
+		startBackground(h, recordDirectory)
+	}
 	return out
 }
 

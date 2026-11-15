@@ -56,7 +56,7 @@ it("converts and replays the same synthetic session byte for byte for every scor
         throw Error(r.stderr || r.error?.message);
       }
       const replies = r.stdout.trim().split("\n").map(s => JSON.parse(s));
-      expect(replies.every(r => !r.failed)).toBe(true);
+      expect(replies.filter(r => r.failed), `${scorer} run ${run}: failed replay events`).toEqual([]);
       runs.push(replies.map(r => r.reply.context?.replace(/\[mex [a-f0-9]+\]/g, "[mex block]") ?? ""));
     }
     expect(JSON.stringify(runs[0])).toBe(JSON.stringify(runs[1]));

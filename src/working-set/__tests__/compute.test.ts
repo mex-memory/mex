@@ -5,37 +5,23 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveImport } from "../../file-index/imports.js";
 import { realPath } from "../../record/project.js";
-import { branchWords, coChangePartners, computeWorkingSet, encodeFixes, fixesFile, fixHistory, isFixSubject, parseLog, pathKey, workingSetFile, writeWorkingSet, WORKING_SET_LIMITS, type Commit } from "../compute.js";
+import { branchWords, coChangePartners, computeWorkingSet, encodeFixes, fixesFile, fixHistory, isFixSubject, pathKey, workingSetFile, writeFixTable, writeWorkingSet, WORKING_SET_LIMITS, type HistoryCommit } from "../compute.js";
+import { buildCodeFacts } from "../../repo-start/history/job.js";
+import { writeFactFile } from "../../repo-start/facts.js";
+import type { RecordLocation } from "../../record/location.js";
 
-const c = (files: string[], fix = false, time = 0): Commit => ({ files, fix, time });
+const c = (files: string[], fix = false, time = 0): HistoryCommit => ({ files, time, subject: fix ? "fix: something" : "feat: something" });
 
-describe("co-change partners", () => {
-  it("needs two focused shared commits and orders by decayed weight", () => {
-    // Newest first. b shares two focused commits with a; c shares one.
-    const commits = [c(["a", "b"]), c(["a", "c"]), c(["a", "b"]), c(["x", "y"])];
-    expect(coChangePartners(commits, ["a"]).get("a")).toEqual(["b"]);
+describe("co-change partners from change-together facts", () => {
+  it("lists each seed's partners in both directions, most supported first", () => {
+    const pairs = [{ a: "a", b: "b", support: 4 }, { a: "c", b: "a", support: 9 }, { a: "x", b: "y", support: 7 }];
+    expect(coChangePartners(pairs, ["a"]).get("a")).toEqual(["c", "b"]);
+    expect(coChangePartners(pairs, ["q"]).size).toBe(0);
   });
 
-  it("decays by commit order, so recent partners rank first", () => {
-    const older = Array.from({ length: 1200 }, () => c(["q"]));
-    const commits = [c(["a", "new"]), c(["a", "new"]), ...older, c(["a", "old"]), c(["a", "old"]), c(["a", "old"])];
-    expect(coChangePartners(commits, ["a"]).get("a")).toEqual(["new", "old"]);
-  });
-
-  it("skips commits over the pair limit and counts only focused ones as support", () => {
-    const wide = Array.from({ length: WORKING_SET_LIMITS.pairFiles + 1 }, (_, i) => `f${i}`);
-    const unfocused = ["a", "b", ...Array.from({ length: WORKING_SET_LIMITS.focusedFiles }, (_, i) => `g${i}`)];
-    expect(coChangePartners([c(["a", ...wide]), c(["a", ...wide])], ["a"]).get("a") ?? []).toEqual([]);
-    // Two shared commits, but only one of them is focused: not enough support.
-    expect(coChangePartners([c(unfocused), c(["a", "b"])], ["a"]).get("a")).toEqual([]);
-  });
-
-  it("keeps at most 25 partners per file and ignores the 2,000-commit tail", () => {
-    const many = Array.from({ length: 28 }, (_, i) => `p${String(i).padStart(2, "0")}`);
-    const commits = [c(["a", ...many]), c(["a", ...many])];
-    expect(coChangePartners(commits, ["a"]).get("a")).toHaveLength(WORKING_SET_LIMITS.partners);
-    const tail = [...Array.from({ length: WORKING_SET_LIMITS.window }, () => c(["q"])), c(["a", "z"]), c(["a", "z"])];
-    expect(coChangePartners(tail, ["a"]).get("a")).toBeUndefined();
+  it("keeps at most 25 partners per file", () => {
+    const pairs = Array.from({ length: 40 }, (_, i) => ({ a: "a", b: `p${String(i).padStart(2, "0")}`, support: 5 }));
+    expect(coChangePartners(pairs, ["a"]).get("a")).toHaveLength(WORKING_SET_LIMITS.partners);
   });
 });
 
@@ -46,9 +32,11 @@ describe("fix history", () => {
     expect(fixHistory(commits, now)).toEqual({ a: [3, now - 100] });
   });
 
-  it("drops histories older than a year", () => {
-    const now = 1_800_000_000, old = now - 400 * 86_400;
+  it("drops histories older than 180 days and bulk commits", () => {
+    const now = 1_800_000_000, old = now - 200 * 86_400;
     expect(fixHistory([c(["a"], true, old), c(["a"], true, old), c(["a"], true, old)], now)).toEqual({});
+    const bulk = Array.from({ length: WORKING_SET_LIMITS.fixCommitFiles + 1 }, (_, i) => `f${i}`);
+    expect(fixHistory([c(bulk, true, now), c(bulk, true, now), c(bulk, true, now)], now)).toEqual({});
   });
 
   it("recognizes fix subjects without matching prefix or fixture", () => {
@@ -90,10 +78,6 @@ describe("branch words and imports", () => {
     expect(resolveImport("react", "src/x.ts", known)).toBeUndefined();
   });
 
-  it("parses git log records", () => {
-    const text = "\x01" + "100\x02fix: one\n" + "\na.ts\0b.ts\0" + "\x01" + "90\x02feat: two\n" + "\nc.ts\0";
-    expect(parseLog(text)).toEqual([{ files: ["a.ts", "b.ts"], time: 100, fix: true }, { files: ["c.ts"], time: 90, fix: false }]);
-  });
 });
 
 function git(dir: string, ...args: string[]): string {
@@ -106,7 +90,7 @@ describe("computeWorkingSet on a repository", () => {
     mkdirSync(join(root, "src"), { recursive: true });
     git(root, "init", "-q", "-b", "main");
     const write = (file: string, text: string) => writeFileSync(join(root, file), text);
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       write("src/core.ts", `core ${i}`); write("src/partner.ts", `partner ${i}`);
       git(root, "add", "."); git(root, "commit", "-q", "-m", `fix: round ${i}`);
     }
@@ -115,8 +99,13 @@ describe("computeWorkingSet on a repository", () => {
     write("src/core.ts", "edited, not committed");
     write("src/staged.ts", "staged"); git(root, "add", "src/staged.ts");
     const record = mkdtempSync(join(tmpdir(), "mex-ws-record-"));
+    const location: RecordLocation = { home: record, directory: record, record: join(record, "record.db"), hooks: join(record, "hooks.db") };
+    const project = "g-0123456789abcdef01234567";
+    // One history walk: the code-facts job's, which also writes the fix table.
+    const facts = await buildCodeFacts(root, project, location, undefined, (commits) => writeFixTable(record, project, root, commits));
+    writeFactFile(location, project, "code-facts.json", facts);
     const now = Math.floor(Date.now() / 1000);
-    const set = await computeWorkingSet({ root, projectId: "g-0123456789abcdef01234567", recordDirectory: record, now });
+    const set = await computeWorkingSet({ root, projectId: project, recordDirectory: record, location, now });
     expect(set.branch).toBe("feat/payments-retry");
     expect(set.defaultBranch).toBe("main");
     expect(set.head).toMatch(/^[0-9a-f]{40}$/);
@@ -124,13 +113,14 @@ describe("computeWorkingSet on a repository", () => {
     expect(set.seeds).toContain("src/branch.ts");
     expect(set.hops).toEqual(["src/partner.ts"]);
     expect(set.words).toEqual(["payments", "retry"]);
-    expect(set.fixes["src/core.ts"]?.[0]).toBe(3);
+    const table = readFileSync(fixesFile(record, project, realPath(root)));
+    expect(table.subarray(0, 4).toString("ascii")).toBe("MXF1");
+    expect(table.length).toBe(4 + 2 * 16); // src/core.ts and src/partner.ts, four fixes each
 
-    await writeWorkingSet({ root, projectId: "g-0123456789abcdef01234567", recordDirectory: record, now });
-    const cached = JSON.parse(readFileSync(workingSetFile(record, "g-0123456789abcdef01234567", realPath(root)), "utf8"));
+    await writeWorkingSet({ root, projectId: project, recordDirectory: record, location, now });
+    const cached = JSON.parse(readFileSync(workingSetFile(record, project, realPath(root)), "utf8"));
     expect(cached.version).toBe(1);
     expect(cached.seeds).toEqual(set.seeds);
-    expect(readFileSync(fixesFile(record, "g-0123456789abcdef01234567", realPath(root))).subarray(0, 4).toString("ascii")).toBe("MXF1");
   });
 
   it("works outside git with an empty set", async () => {

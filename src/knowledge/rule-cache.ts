@@ -18,9 +18,9 @@ const VERSION = 1;
 export interface RuleCache extends RuleScan { version: number; root: string; }
 
 /** Scan the checkout's rule files and save the result for the project. */
-export function refreshRuleFiles(options: KnowledgeOptions, now = new Date()): RuleCache {
+export function refreshRuleFiles(options: KnowledgeOptions, now = new Date(), listed?: readonly string[]): RuleCache {
   const project = knowledgeProject(options);
-  const scan = scanRuleFiles(project.root, now.toISOString().slice(0, 10));
+  const scan = scanRuleFiles(project.root, now.toISOString().slice(0, 10), listed);
   const cache: RuleCache = { version: VERSION, root: project.root, ...scan };
   const writer = openRecord({ ...options, create: true });
   try {

@@ -97,6 +97,7 @@
     "remark-frontmatter": "^5.0.0",
     "remark-parse": "^11.0.0",
     "simple-git": "^3.27.0",
+    "smol-toml": "1.9.1",
     "tsrs": "0.25.0-ts7.1.0-beta",
     "typescript": "5.9.3",
     "typescript-7": "npm:typescript@7.1.0-beta",

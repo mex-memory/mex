@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { absolutePath } from "../record/project.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { KnowledgeError } from "./contract.js";
 import { serializeEntry } from "./entry.js";
@@ -59,6 +60,14 @@ function writeSources(worktree: string): void {
   writeMetadata(join(worktree, ".mex", "sources.json"), sources);
 }
 
+/** Shared metadata and native files, also used by upgrade's reviewed worktree. */
+export function writeSharedKnowledgeFiles(options: KnowledgeOptions): string[] {
+  writeConfig(options.projectPath);
+  writeSources(options.projectPath);
+  const native = rebuildNative(options, { sharedOnly: true, force: true });
+  return [".mex/config.json", ".mex/sources.json", ...(existsSync(join(options.projectPath, ".mex/native.json")) ? [".mex/native.json"] : []), ...native.written ?? [], ...native.removed ?? [], ...native.unchanged ?? []];
+}
+
 /** A killed process leaves either the original metadata or its complete
  * replacement, never a partially overwritten config or source inventory. */
 function writeMetadata(path: string, value: unknown): void {
@@ -85,11 +94,7 @@ function writeShare(worktree: string, plan: SharePlan, originalOptions: Knowledg
     applyTeamWrite(preview, preview.revision, options, c.entry.mex.source.quote);
     paths.add(preview.path);
   }
-  writeConfig(worktree);
-  writeSources(worktree);
-  const native = rebuildNative(options, { sharedOnly: true, force: true });
-  for (const path of [...native.written ?? [], ...native.removed ?? [], ...native.unchanged ?? []]) paths.add(path);
-  if (existsSync(join(worktree, ".mex/native.json"))) paths.add(".mex/native.json");
+  for (const path of writeSharedKnowledgeFiles(options)) paths.add(path);
   return Object.fromEntries([...paths].map(path => [path, existsSync(join(worktree, path)) ? digest(readFileSync(join(worktree, path))) : null]));
 }
 
@@ -218,7 +223,9 @@ function validateWorktree(dir: string, root: string, state: ShareState): void {
   }
   const link = firstLink(state.worktree);
   if (link) throw new KnowledgeError("SHARE_LINK", `The share's worktree holds a link (${link}); check it yourself before continuing.`);
-  const common = (cwd: string) => resolve(cwd, git(cwd, "rev-parse", "--git-common-dir"));
+  // Git prints the main checkout's common dir relative (".git") and a linked worktree's as its own
+  // absolute spelling; compare both in MEX's form, where Windows paths are lowercased.
+  const common = (cwd: string) => absolutePath(resolve(cwd, git(cwd, "rev-parse", "--git-common-dir")));
   if (common(state.worktree) !== common(root) || git(state.worktree, "symbolic-ref", "--quiet", "HEAD") !== `refs/heads/${state.branch}`)
     throw new KnowledgeError("SHARE_CHANGED", "The share's worktree identity changed.");
 }
