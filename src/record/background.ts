@@ -148,6 +148,8 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     try {
       const child = spawn(process.execPath, [`--max-old-space-size=${settings.memoryMb}`, entry, ...(options.args ?? ["__background"])], {
         detached: true, windowsHide: true, stdio: ["ignore", log, log],
+        // Never the folder `mex` ran in: on Windows a process's working folder can't be deleted or renamed.
+        cwd: writer.location.home,
         env: { ...(options.env ?? process.env), MEX_BACKGROUND: "1", ...(options.home ? { MEX_RECORD_HOME: options.home } : {}) },
       });
       child.on("error", () => { /* reported through the lease never appearing */ });
