@@ -62,7 +62,7 @@ export function what(options: KnowledgeOptions, session = ""): SessionSummary {
       }>("SELECT session_id FROM sessions WHERE project_id=? AND checkout=? ORDER BY last_seen_at DESC,session_id LIMIT 1", project.projectId, project.root)?.session_id ?? "";
     }
     const columns = db.version >= 5 ? `d.entry_id AS id,d.title,d.kind,d.level,d.action,d.detail,e.closed,
-      NOT EXISTS(SELECT 1 FROM followups f WHERE f.delivery_id=d.id) AND NOT EXISTS(SELECT 1 FROM delivery_touches t WHERE t.delivery_id=d.id) AS empty` : `d.entry_id AS id,'' AS title,'' AS kind,'' AS level,d.action,'' AS detail,0 AS closed,0 AS empty`;
+      NOT EXISTS(SELECT 1 FROM followups f WHERE f.delivery_id=d.id AND (f.kind NOT IN ('edit','command') OR f.detail IS NULL)) AND NOT EXISTS(SELECT 1 FROM delivery_touches t WHERE t.delivery_id=d.id) AS empty` : `d.entry_id AS id,'' AS title,'' AS kind,'' AS level,d.action,'' AS detail,0 AS closed,0 AS empty`;
     const rows = db.all<Item & {
       closed: number;
       empty: number;
