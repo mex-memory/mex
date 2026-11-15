@@ -37,6 +37,15 @@ describe("exclude blocks", () => {
     expect(hasBlock(other, "repo-start")).toBe(false);
   });
 
+  it("coexists with knowledge-05's local rule-file block in both directions", () => {
+    // knowledge-05 (native-write.ts) fences its block with these exact lines and removes it with a lazy regex.
+    const native = "# mex: local rule files (generated, personal)\n/.claude/rules/mex.md\n# mex: end\n";
+    const both = withBlock(`${DEFAULT}${native}`, REPO_START_BLOCK, REPO_START_LINES);
+    expect(withoutBlock(both, REPO_START_BLOCK)).toBe(`${DEFAULT}${native}`);
+    const nativeRemoval = /\n?# mex: local rule files \(generated, personal\)\n[\s\S]*?# mex: end\n?/u;
+    expect(both.replace(nativeRemoval, "\n")).toContain(blockText(REPO_START_BLOCK, REPO_START_LINES));
+  });
+
   it("finds its block in a file with CRLF line endings", () => {
     const crlf = "a\r\n# mex: repo-start begin\r\n/.mex/*\r\n# mex: repo-start end\r\nb\r\n";
     expect(hasBlock(crlf, "repo-start")).toBe(true);
