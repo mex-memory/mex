@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/mex-memory/mex/native/delivery/entries"
+	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record"
 )
 
@@ -156,7 +158,7 @@ func TestScorerSettingsPrecedenceAndBounds(t *testing.T) {
 	}
 	global := filepath.Join(env.Home, "controls.json")
 	project := filepath.Join(env.RecordDirectory, "hook-delivery", "p.json")
-	if scorerSetting(env, "p") != "tiers" {
+	if scorerSetting(env, "p") != DefaultScorer {
 		t.Fatal("default")
 	}
 	write(global, map[string]any{"version": 1, "scorer": "bm25"})
@@ -172,7 +174,7 @@ func TestScorerSettingsPrecedenceAndBounds(t *testing.T) {
 		t.Fatal("env")
 	}
 	env.Scorer = "invalid"
-	if scorerSetting(env, "p") != "tiers" {
+	if scorerSetting(env, "p") != DefaultScorer {
 		t.Fatal("invalid override")
 	}
 	env.Scorer = ""
@@ -208,5 +210,30 @@ func TestAdmissionUsesChosenScorerAndSessionPressure(t *testing.T) {
 	e.SessionTokens = 6001
 	if tiers(e, c) {
 		t.Fatal("session ceiling did not raise bar")
+	}
+}
+
+// A typed prompt ranks with the shared ranker under every scorer; plain BM25
+// reuses those scores instead of rebuilding its own index from entry text.
+func TestPromptDeliversUnderEachScorer(t *testing.T) {
+	for _, name := range []string{"tiers", "bm25", "fcfs", "risk"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.file("src/a.ts", "export const sharedPool = new Pool()\n")
+			f.entry(spec{id: "mx_shpool", kind: "pitfall", scope: "src/**", oneLine: "sharedPool in src/a.ts must be released after each request, or requests hang."})
+			f.entry(spec{id: "mx_other1", kind: "pitfall", scope: "docs/**", oneLine: "Docs pages are rebuilt by the site generator."})
+			ev := f.event(contract.Prompt)
+			ev.Prompt = &contract.PromptIn{Text: "How should sharedPool from src/a.ts handle requests?", Typed: true}
+			env := f.env()
+			env.Scorer = name
+			reply, err := Handle(ev, env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustHave(t, reply.Context, "must be released")
+			if strings.Contains(reply.Context, "site generator") {
+				t.Fatal("an unrelated entry was sent")
+			}
+		})
 	}
 }

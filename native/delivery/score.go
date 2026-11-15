@@ -266,6 +266,14 @@ func newScorer(name, query string, snap *entries.Snapshot, items []shaped, misse
 		return tiersScorer{}
 	}
 }
+
+// DefaultScorer is the admission scorer when no setting names one. On the
+// session replay plain BM25 tied tiers on the dev sessions and sent two fewer
+// wrong ids on the sealed test sessions, but it holds back a scoped pitfall
+// whose file shares no words with it, which breaks the read-moment promise;
+// tiers stays the default until a replay shows a real difference.
+const DefaultScorer = "tiers"
+
 func validScorer(s string) bool { return s == "tiers" || s == "bm25" || s == "fcfs" || s == "risk" }
 
 // Existing Node settings are mirrored; these reads occur only for a delivery.
@@ -275,7 +283,7 @@ func scorerSetting(env Environment, project string) string {
 		if validScorer(env.Scorer) {
 			return env.Scorer
 		}
-		return "tiers"
+		return DefaultScorer
 	}
 	var projectValue struct {
 		Version int
@@ -295,7 +303,7 @@ func scorerSetting(env Environment, project string) string {
 	if b, err := readScorerFile(filepath.Join(env.Home, "controls.json")); err == nil && json.Unmarshal(b, &global) == nil && global.Version == 1 && validScorer(global.Scorer) {
 		return global.Scorer
 	}
-	return "tiers"
+	return DefaultScorer
 }
 
 func readScorerFile(p string) ([]byte, error) {

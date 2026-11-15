@@ -378,7 +378,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	if len(g.cands) == 0 {
 		return "", nil
 	}
-	if g.snap.Light && (ev.Kind != contract.Prompt || scorerSetting(env, g.project) == "bm25") {
+	if g.snap.Light && ev.Kind != contract.Prompt {
 		// A light snapshot found the moment; the text comes from the full one.
 		full, err := entries.Load(env.RecordDirectory, env.Home, g.project, g.checkout)
 		if err != nil {
@@ -557,7 +557,19 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 			query += boundedText(" "+text, 65536-len(query))
 		}
 	}
-	scorer := newScorer(name, query, g.snap, items, missed)
+	var scorer Scorer
+	if name == "bm25" && ev.Kind == contract.Prompt {
+		// The prompt ranker already scored these entries with field-weighted
+		// BM25 over persisted statistics; reuse it instead of loading every
+		// entry's text to rebuild a plain index.
+		scores := make(map[string]float64, len(g.ranked))
+		for _, r := range g.ranked {
+			scores[r.ID] = r.Score
+		}
+		scorer = bm25Scorer{scores}
+	} else {
+		scorer = newScorer(name, query, g.snap, items, missed)
+	}
 	items, conflicts := resolveConflicts(items)
 	var known []record.GivenRow
 	if len(present) > 0 {
