@@ -136,4 +136,59 @@ describe("legacy conversion candidates", () => {
     expect(result.issues).toHaveLength(100);
     expect(result.issues.at(-1)?.code).toBe("CONVERSION_LIMIT");
   });
+
+  it("keeps 0.8's setup templates and navigation for people instead of importing them as rules", () => {
+    const templates = [
+      document("# Patterns\n\n## How many patterns to generate\nDo not use a fixed number.\n", "pattern", ".mex/patterns/README.md"),
+      document("# Pattern Index\n\n| Pattern | Use when |\n| --- | --- |\n| add-x.md | adding x |\n", "pattern", ".mex/patterns/INDEX.md"),
+      document("# [Project Name]\n\n## What This Is\nLength: 1 sentence maximum.\n", "wiki", ".mex/.tool-configs/CLAUDE.md"),
+    ];
+    const result = convertLegacy(snapshot(...templates), TODAY);
+    expect(result.candidates).toEqual([]);
+    expect(result.issues).toEqual([]);
+    expect(result.preserved).toEqual([".mex/.tool-configs/CLAUDE.md", ".mex/patterns/INDEX.md", ".mex/patterns/README.md"]);
+  });
+
+  it("imports project instructions but not the retired 0.8 workflow sections", () => {
+    const text = "# Hono\n\n## What This Is\nA small web framework on Web Standard APIs.\n\n## Commands\n- Test: `npm test`\n\n"
+      + "## Code Graph\nUse `mex graph query who-calls <symbol>`.\n\n## Scaffold Growth\nAfter meaningful work, run GROW.\n\n"
+      + "## Navigation\nAt the start of every session, read ROUTER.md before doing anything else.\n\n## Agent Logging\nRead `mex logging --json`.\n";
+    const result = convertLegacy(snapshot(document(text, "instructions", ".mex/AGENTS.md")), TODAY);
+    expect(result.candidates.map(c => c.entry.mex.one_line.split(":")[0]).sort()).toEqual(["Commands", "What This Is"]);
+  });
+
+  it("imports a 0.8 pattern as one procedure, without its scaffold-upkeep step", () => {
+    const text = "# Add Route Group\n\n## Context\nRoutes are copied when `app.route()` runs.\n\n## Steps\n1. Build the sub-app as its own `new Hono()`.\n2. Mount it.\n\n"
+      + "## Gotchas\n- Add routes before mounting.\n\n## Update Scaffold\n- [ ] Update `.mex/ROUTER.md`.\n";
+    const result = convertLegacy(snapshot(document(text, "pattern", ".mex/patterns/add-route-group.md")), TODAY);
+    expect(result.candidates).toHaveLength(1);
+    const { entry } = result.candidates[0];
+    expect(entry.mex).toMatchObject({ kind: "procedure", one_line: "Add Route Group: Routes are copied when `app.route()` runs." });
+    expect(entry.mex.checks[0]).toMatchObject({ kind: "section", target: { heading: "Add Route Group" } });
+    expect(entry.text).toContain("## Steps\n1. Build the sub-app as its own `new Hono()`.");
+    expect(entry.text).toContain("## Gotchas");
+    expect(entry.text).not.toContain("Update Scaffold");
+    expect(entry.text).not.toContain("ROUTER.md");
+  });
+
+  it("imports each task of a multi-task pattern as its own procedure", () => {
+    const text = "# Middleware\n\n## Task: Add middleware\nCreate a factory.\n\n### Steps\n1. Export it.\n\n## Task: Order middleware\nRegister in order.\n";
+    const result = convertLegacy(snapshot(document(text, "pattern", ".mex/patterns/middleware.md")), TODAY);
+    expect(result.candidates.map(c => c.entry.mex.one_line)).toEqual(["Add middleware: Create a factory.", "Order middleware: Register in order."]);
+    expect(new Set(result.candidates.map(c => c.entry.mex.id)).size).toBe(2);
+  });
+
+  it("writes LF entry text from a CRLF (Windows autocrlf) checkout", () => {
+    const crlf = wiki("", "First line.\nSecond line.").replace(/\n/gu, "\r\n");
+    const { entry } = convertLegacy(snapshot(document(crlf)), TODAY).candidates[0];
+    expect(entry.text).toBe("First line.\nSecond line.");
+    expect(serializeEntry(entry)).not.toContain("\r");
+  });
+
+  it("writes a one-line summary from the claim, not a heading, list marker or record label", () => {
+    const decision = wiki("", "**Date:** 2023-05-09\n**Status:** Active\n**Decision:** `hono/tiny` uses the pattern router only.\n**Reasoning:** Size.");
+    expect(convertLegacy(snapshot(document(decision)), TODAY).candidates[0].entry.mex.one_line).toBe("`hono/tiny` uses the pattern router only.");
+    const listed = wiki("", "## Overview\n- No runtime dependencies.\n- No database.");
+    expect(convertLegacy(snapshot(document(listed)), TODAY).candidates[0].entry.mex.one_line).toBe("No runtime dependencies.");
+  });
 });
