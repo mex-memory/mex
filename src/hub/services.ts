@@ -1448,7 +1448,7 @@ function wikiDiagnosticMessage(code: string): string {
     WIKI_INDEX_REBUILD_REQUIRED: "The Wiki index requires explicit maintenance.",
     INDEX_REFRESH_REQUIRED: "Canonical Knowledge changed but its disposable index was not refreshed.",
     WIKI_PARSE_ERROR: "A canonical Knowledge file could not be read safely.",
-    GROUNDING_STALE: "Linked code changed; review the Knowledge with mex check or mex sync.",
+    GROUNDING_STALE: "Linked code changed; review the Knowledge with mex check or mex sync --deep.",
     GROUNDING_MISSING: "A Knowledge code link could not be found in the current graph.",
     GROUNDING_UNRESOLVED: "A Knowledge code link could not be resolved confidently.",
     PATH_OUTSIDE_SCAFFOLD: "A Wiki path was rejected at the repository boundary.",

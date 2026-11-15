@@ -51,6 +51,8 @@ export interface JobRow {
 
 export interface BatchContext<P = unknown, C = unknown> {
   job: JobRow; params: P; checkpoint: C | undefined; writer: RecordWriter;
+  /** An explicit command may skip an idle delay, never consent or model admission. Not persisted. */
+  immediate?: boolean;
   /**
    * Say what the batch is doing now, in plain words ("4,210 of 12,306 files"). Kept on the
    * job (at most once a second) so `mex jobs` shows it, and passed to a runner watching live.
@@ -262,6 +264,8 @@ export type BatchOutcome = "ran" | "idle";
 export interface RunOptions {
   /** Run only these jobs (a command finishing its own work). */
   only?: ReadonlySet<string>;
+  /** Run the selected work now rather than waiting for idle. */
+  immediate?: boolean;
   /** Live progress of the batch, as the job reports it. */
   onProgress?: (job: JobRow, text: string) => void;
 }
@@ -298,7 +302,7 @@ export async function runOneBatch(writer: RecordWriter, self: string, options: R
   let usage: "jobs.completed" | "jobs.failed" | undefined;
   try {
     result = await withModelJob({ jobId: job.id, batch: job.batch, projectId: job.project_id, recordHome: writer.location.home }, () => kind.runBatch({
-      job, writer, progress,
+      job, writer, progress, immediate: options.immediate,
       params: JSON.parse(job.params || "{}"),
       checkpoint: job.checkpoint === null ? undefined : JSON.parse(job.checkpoint),
     }));

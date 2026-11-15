@@ -4,7 +4,7 @@ import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import { shortHash } from "../record/project.js";
 
 /** The pause mirror covers the interval before Go commits its session row. */
-export function sessionWorkEnabled(writer: RecordWriter, agent: "claude" | "codex", sessionId?: string): boolean {
+export function sessionWorkEnabled(writer: Pick<RecordWriter, "location">, agent: "claude" | "codex", sessionId?: string): boolean {
   if (!sessionId) return true;
   const host = agent === "claude" ? "claude-code" : agent;
   try { lstatSync(join(writer.location.directory, "hook-paused", shortHash(`${host}\0${sessionId}`))); return false; }
