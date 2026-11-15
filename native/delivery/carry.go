@@ -23,6 +23,7 @@ func carryBlocks(h *record.Hooks, ev contract.Event, env Environment) []string {
 	if c, ok := capture.ContinuityCarry(ev, capture.Env{RecordDirectory: env.RecordDirectory, Now: env.Now}); ok {
 		carries = append(carries, c)
 	}
+	carries = append(carries, capture.LearnedContinuityCarries(ev, capture.Env{RecordDirectory: env.RecordDirectory, Now: env.Now})...)
 	var out []string
 	session := record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: ev.ProjectID, Checkout: ev.Checkout}
 	for _, c := range carries {

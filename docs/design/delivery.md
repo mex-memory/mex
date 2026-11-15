@@ -618,6 +618,46 @@ MEX home, and sends Claude Code payloads: a read of a file with a pitfall, a
 command that has a recipe, a failure with a recorded fix's signature, then the
 same three again. It prints three deliveries, each once.
 
+## Written aliases and asks
+
+The ranker indexes an entry's written `aliases` (x3) and `asks` (x2) as two more
+BM25F fields beside the derived aliases; an entry without them scores exactly
+as before. `delivery.aliases on|off` (machine-wide, mirrored in `controls.json`,
+override `MEX_DELIVERY_ALIASES`) decides whether typed prompts and `mex recall`
+use them. It is **off** by default. The keep rule is at least +5 net (helped
+- 2 x wrong) with no rise in wrong or false sends, on prompts written blind to
+the entries; the only measurement so far isn't blind (below), and wrong sends
+rose by one in it.
+
+Measured on the delivery-02 question set with the shipped learned gate
+(`scripts/delivery-replay/aids-measure.ts`), helped/wrong/false sends. The
+aliases and the prompts were written by the same model family, so every gain is
+likely inflated; dev is in sample and the test split had already been used.
+
+| Variant | Dev (210 prompts) | Test |
+|---|---|---|
+| No aliases | 39/1/1 | 29/6/4 |
+| Aliases in the derived field | 46/2/2 | 40/7/4 |
+| Written aliases field | 46/2/2 | 40/7/4 |
+| Written, through the filter | 43/2/2 | not run |
+
+The filter keeps 135 of the set's 162 hand-written aliases. It drops 15 that
+would already send another entry, 9 that lead by less than the margin and 3
+that rank another entry above their own. On these careful hand-written aliases
+it prevents no wrong send; its job is machine-written ones, which aren't
+measured yet.
+
+## Decision capture line
+
+After a commit whose message has two distinct decision phrases (a fixed list,
+`native/delivery/decision.go`, the same as Node's), the hook offers one line,
+once per session: after a shell `git commit -m`, or at the next session start
+from the commit the background process noted. The hook never runs git. Over
+the newest non-merge commits of five repositories, two phrases occur in 0.0% to
+1.8% of commits (`scripts/measure-decision-trigger.ts`; hono 1.4%, novu 0.1%,
+django 1.8%, flask 0.0%, requests 0.1%), so the line is rare. A proposed
+decision is delivered only once it is in force.
+
 ## Contract changes to copy
 
 - Hook events: optional normalized `model` on session start; a rendered block's

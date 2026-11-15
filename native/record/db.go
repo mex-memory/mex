@@ -20,7 +20,7 @@ import (
 const SchemaVersion = 7
 
 // Node's additive model-admission migration does not change the tables read here.
-const RecordSchemaVersion = 4
+const RecordSchemaVersion = 5
 const ReaderBusyTimeoutMS = 10
 const WriterBusyTimeoutMS = 200
 const WriterOperationTimeout = 250 * time.Millisecond
@@ -567,6 +567,18 @@ func (reader *Reader) Setting(scope, key string) (string, bool, error) {
 	defer cancel()
 	var value string
 	err := reader.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE scope=? AND key=?", scope, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	return value, err == nil, err
+}
+
+// BoundedSetting never materializes an oversized derived snapshot.
+func (reader *Reader) BoundedSetting(scope, key string, limit int) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), reader.budget.reader)
+	defer cancel()
+	var value string
+	err := reader.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE scope=? AND key=? AND length(CAST(value AS BLOB))<=?", scope, key, limit).Scan(&value)
 	if err == sql.ErrNoRows {
 		return "", false, nil
 	}

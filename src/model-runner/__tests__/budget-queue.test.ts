@@ -45,7 +45,7 @@ describe("durable model admissions", () => {
     db.close();
     const upgraded = openRecord({ home: directory, isNetwork: () => false });
     try {
-      expect(schemaVersion(upgraded.db)).toBe(4);
+      expect(schemaVersion(upgraded.db)).toBe(5);
       expect(upgraded.setting("global", "kept")).toBe("yes");
       expect(upgraded.db.prepare("SELECT input,cache_write,cache_read,output,batch_id FROM model_calls").get()).toMatchObject({ input: 1, cache_write: 2, cache_read: 3, output: 4, batch_id: null });
     } finally { upgraded.close(); }

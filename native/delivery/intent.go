@@ -110,8 +110,20 @@ func deliveredObservations(h *record.Hooks, ev contract.Event, g *group) ([]reco
 	}
 	var probes []record.FollowupObservation
 	var touches []string
+	type observedEffect struct{ kind, detail string }
+	var effects []observedEffect
+	for _, v := range g.views {
+		if kind, detail := adviceEffect(v); kind != "" {
+			effects = append(effects, observedEffect{kind, detail})
+		}
+	}
 	work, scan := 0, 0
 	for _, row := range rows {
+		for _, effect := range effects {
+			if len(probes) < 900 {
+				probes = append(probes, record.FollowupObservation{EntryID: row.EntryID, ReceiptID: row.ID, Kind: effect.kind, Detail: effect.detail})
+			}
+		}
 		for i := range g.snap.Items {
 			it := &g.snap.Items[i]
 			if it.Entry.ID != row.EntryID {

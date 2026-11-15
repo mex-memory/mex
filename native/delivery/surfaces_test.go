@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mex-memory/mex/native/internal/contract"
@@ -122,5 +123,30 @@ func TestCallsWithoutDeliveryAreLoggedThenSettledInOrder(t *testing.T) {
 	}
 	if n := db(`SELECT tool_calls FROM epochs ORDER BY epoch DESC LIMIT 1`); n < 4 {
 		t.Fatal("logged calls weren't counted", n)
+	}
+}
+
+// The agent never saw a shadow receipt, so its entry turning broken has
+// nothing to correct: no correction, only the log row.
+func TestShadowReceiptGetsNoCorrection(t *testing.T) {
+	f := newFixture(t)
+	f.entry(spec{id: "mx_pitfal", kind: "pitfall", scope: "src/**", oneLine: "The pool is shared."})
+	p := f.file("src/a.ts", "a")
+	env := f.env()
+	env.Surfaces = "shadow"
+	reply, err := Handle(f.event(contract.PostToolBatch, read(p, "a")), env)
+	if err != nil || !reply.Empty() {
+		t.Fatal(reply, err)
+	}
+	f.verdict("mx_pitfal", broken)
+	q := f.file("src/b.ts", "b")
+	reply, err = Handle(f.event(contract.PostToolBatch, read(q, "b")), f.env())
+	if err != nil || strings.Contains(reply.Context, "Correction:") {
+		t.Fatal(reply, err)
+	}
+	for _, row := range f.rows("") {
+		if strings.Contains(row, ":correction:") {
+			t.Fatal("a shadow receipt drew a correction:", f.rows(""))
+		}
 	}
 }

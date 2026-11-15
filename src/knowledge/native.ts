@@ -9,7 +9,7 @@ import { agentsInUse, liveSessions, type NativeAgent } from "./agents-in-use.js"
 import { currentVerdicts } from "./check.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { parseEntry } from "./entry.js";
-import { containedDirectory, readEntryFile } from "./files.js";
+import { containedDirectory, readEntryFile, personalReadGuard } from "./files.js";
 import { gateEntry } from "./gates.js";
 import { planNative } from "./native-plan.js";
 import { selectNative, type Candidate } from "./native-select.js";
@@ -34,6 +34,7 @@ export interface RebuildOptions {
 
 /** Active personal notes for a project, gated, without retired ones. */
 export function personalNotes(home: string, projectId: string, retired: Set<string>, root: string): Candidate[] {
+  const check = personalReadGuard(join(home, "projects", projectId, "notes"));
   const directory = containedDirectory(home, ["projects", projectId, "notes"]);
   if (!directory) return [];
   const source = references(root);
@@ -46,7 +47,7 @@ export function personalNotes(home: string, projectId: string, retired: Set<stri
       if (entry.mex.status === "active" && !retired.has(entry.mex.id)) out.push({ level: "personal", entry });
     } catch { /* an unreadable note is never written into a rule file */ }
   }
-  return out;
+  check(); return out;
 }
 
 export function rebuildNative(options: KnowledgeOptions, rebuild: RebuildOptions = {}): NativeRebuild {

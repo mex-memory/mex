@@ -14,6 +14,7 @@ import (
 	"github.com/mex-memory/mex/native/check"
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/rulechange"
 	"github.com/mex-memory/mex/native/internal/safefile"
 	"github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
@@ -186,6 +187,7 @@ func Build(opts Options) (Result, error) {
 		defer home.Close()
 	}
 	cache := readRules(root, home, opts)
+	inForce := entries.InForce(opts.MexHome, opts.ProjectID)
 	result.Coverage = readCoverage(root, home, opts, cache)
 	all := []candidate{}
 	retired, sourceIDs := map[string]bool{}, map[string]bool{}
@@ -198,6 +200,12 @@ func Build(opts Options) (Result, error) {
 				return
 			}
 			e, err := entries.Parse(data)
+			if err == nil && e.Status == "proposed" {
+				// Delivered only once in force; the "not yet accepted" lane is separate.
+				if usable := entries.Usable(e, inForce); usable != nil {
+					e = usable
+				}
+			}
 			if err == nil && path.Base(name) == e.ID+".md" {
 				key := level + "/" + e.ID
 				duplicate = duplicate || sourceIDs[key]
@@ -270,6 +278,7 @@ func Build(opts Options) (Result, error) {
 			byID[c.entry.ID] = c
 		}
 	}
+	ruleChanges := rulechange.Read(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
 	// One verdict per entry version, shared by every selection below.
 	verdicts := map[string]string{}
 	verdictOf := func(c candidate) string {
@@ -289,6 +298,10 @@ func Build(opts Options) (Result, error) {
 			return false
 		}
 		if area && !inScope(e, opts.Path) {
+			return false
+		}
+		// The brief never repeats a policy currently doubted by the free pass.
+		if c.level == "team" && (e.Kind == "rule" || e.Kind == "decision" || e.Kind == "pitfall") && ruleChanges.For(e.ID, c.hash) != nil {
 			return false
 		}
 		if c.level == "personal" || c.level == "hint" {

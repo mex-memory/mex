@@ -299,7 +299,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			canNotice = support.PersonLine
 		}
 	}
-	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Notices: canNotice, Trace: h.deliveryTrace, Scorer: h.scorer, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Notices: canNotice, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)
@@ -321,7 +321,15 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		failed = true
 		reply = contract.Reply{}
 	}
+	// One line, once per session, after a commit that reads like a decision.
+	if line := delivery.DecisionPrompt(ev, recordDirectory); line != "" {
+		if reply.Context != "" {
+			reply.Context += "\n\n"
+		}
+		reply.Context += line
+	}
 	noticeID := ""
+	var adviceNoticeIDs []string
 	if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.PersonLine && !failed {
 		if id, text := judgeNotice(ev, h, recordDirectory); id != "" {
 			noticeID = id
@@ -331,18 +339,31 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			reply.PersonLine += text
 		}
 	}
+	if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.PersonLine && !failed {
+		if ids, text := adviceNotice(ev, h, recordDirectory); len(ids) > 0 {
+			adviceNoticeIDs = ids
+			if reply.PersonLine != "" {
+				reply.PersonLine += "\n"
+			}
+			reply.PersonLine += text
+		}
+	}
 	out, dropped := profile.Render(ev, reply)
-	if noticeID != "" {
+	if noticeID != "" || len(adviceNoticeIDs) > 0 {
 		for _, part := range dropped {
 			if part == "person_line" {
 				noticeID = ""
+				adviceNoticeIDs = nil
 			}
 		}
 	}
-	if noticeID != "" && h.afterOutput != nil {
+	if (noticeID != "" || len(adviceNoticeIDs) > 0) && h.afterOutput != nil {
 		h.afterOutput(func() {
-			if markJudgeNotice(ev, h, recordDirectory, noticeID, now) {
+			if noticeID != "" && markJudgeNotice(ev, h, recordDirectory, noticeID, now) {
 				startBackground(h, recordDirectory)
+			}
+			for _, id := range adviceNoticeIDs {
+				markJudgeNotice(ev, h, recordDirectory, id, now)
 			}
 		})
 	}

@@ -55,7 +55,7 @@ func startBlock(h *record.Hooks, ev contract.Event, env Environment) (string, er
 	req.OnceEntry = startMarker
 	req.Candidates = []record.DeliveryCandidate{{EntryID: startMarker, Moment: "start-brief", Form: "one-line", Action: "given", Tokens: brief.TokenBound(brief.Priority) + 32, ContentHash: contentHash(brief.Priority)}}
 	candidate := func(item brief.Item, surface string) record.DeliveryCandidate {
-		return record.DeliveryCandidate{EntryID: item.ID, Moment: "start-brief", Surface: surface, Form: "one-line", Action: "given", Tokens: item.Tokens, ContentHash: contentHash(item.Hash + "\n" + item.Line), Target: record.SurfaceTarget{Scopes: item.Scopes}, Title: item.Line, Level: item.Level}
+		return record.DeliveryCandidate{EntryID: item.ID, EntryHash: item.Hash, Moment: "start-brief", Surface: surface, Form: "one-line", Action: "given", Tokens: item.Tokens, ContentHash: contentHash(item.Hash + "\n" + item.Line), Target: record.SurfaceTarget{Scopes: item.Scopes}, Title: item.Line, Level: item.Level}
 	}
 	// Without a working set there is only the folder choice; it is sent as
 	// before and nothing is compared.

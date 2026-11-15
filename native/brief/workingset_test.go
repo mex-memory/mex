@@ -123,6 +123,36 @@ func TestWorkingSetLaneHoldsOnlyAllowedHintsApart(t *testing.T) {
 	}
 }
 
+func TestWorkingSetLaneHoldsProposedDecisionsUntilInForce(t *testing.T) {
+	opts := setup(t)
+	sha := strings.Repeat("c", 40)
+	proposed := strings.Replace(entry("mx_decide1", "Use date-fns.", "decision", "src/a.ts", "[]"), "  status: active\n", "  status: proposed\n  commit: {sha: \""+sha+"\"}\n", 1)
+	put(t, opts.Checkout, ".mex/learned/mx_decide1.md", proposed)
+	put(t, opts.Checkout, ".mex/learned/mx_accept.md", entry("mx_accept", "Accepted rule.", "rule", "src/a.ts", "[]"))
+	opts.WorkingSet = &workset.Set{Version: 1, Seeds: []string{"src/a.ts"}}
+	r := build(t, opts)
+	if got := strings.Join(ids(r.Items), ","); got != "mx_accept" {
+		t.Fatal("a proposed decision was sent as accepted:", got)
+	}
+	if got := strings.Join(ids(r.Lane), ","); got != "mx_decide1" {
+		t.Fatal("the proposed decision missed the lane:", got, r.Text)
+	}
+	if !strings.Contains(r.Text, LaneHeading+"\n") || !strings.Contains(r.Text, "Use date-fns.") {
+		t.Fatal(r.Text)
+	}
+	for _, item := range r.Folder {
+		if item.ID == "mx_decide1" {
+			t.Fatal("the folder choice sent a proposed decision")
+		}
+	}
+	// Once its commit is in force it is accepted knowledge, sent with the rest.
+	put(t, opts.MexHome, "projects/"+project+"/decisions-in-force.json", `{"version":1,"ids":["mx_decide1"]}`)
+	r = build(t, opts)
+	if got := strings.Join(ids(r.Items), ","); !strings.Contains(got, "mx_decide1") || len(r.Lane) != 0 {
+		t.Fatal("an in-force decision stayed in the lane:", got, ids(r.Lane))
+	}
+}
+
 func TestEmptyWorkingSetKeepsTheAreaSelection(t *testing.T) {
 	opts := setup(t)
 	opts.Path = "apps/api/handler.ts"

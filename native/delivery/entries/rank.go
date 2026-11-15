@@ -5,8 +5,14 @@ import (
 	"strings"
 )
 
-func RankDoc(e *Entry) rank.Doc {
+// RankDoc projects an entry for the ranker. aids adds its written aliases and
+// asks as their own fields; with aids off the document is the same as before
+// those fields existed.
+func RankDoc(e *Entry, aids bool) rank.Doc {
 	d := rank.Doc{ID: e.ID, Kind: e.Kind, Title: e.OneLine, Text: e.Text, Scope: e.Scope}
+	if aids {
+		d.Written, d.Asks = append([]string(nil), e.Aliases...), append([]string(nil), e.Asks...)
+	}
 	for _, c := range e.Checks {
 		for _, k := range []string{"file", "symbol", "run", "pointer", "pattern"} {
 			if s, ok := c.Target[k].(string); ok && s != "" {

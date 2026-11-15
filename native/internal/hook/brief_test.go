@@ -13,6 +13,15 @@ import (
 	"github.com/mex-memory/mex/native/workset"
 )
 
+// prepareBriefStore installs the real migrations outside a hook deadline, so
+// tests exercise delivery from an installed store, not cold DDL latency.
+func prepareBriefStore(t *testing.T, location localrecord.Location) {
+	t.Helper()
+	if err := localrecord.PrepareHooks(location); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionStartDeliversCheckedBriefAndResumeDoesNotResend(t *testing.T) {
 	for _, agent := range []string{"claude-code", "codex"} {
 		t.Run(agent, func(t *testing.T) {
@@ -21,12 +30,6 @@ func TestSessionStartDeliversCheckedBriefAndResumeDoesNotResend(t *testing.T) {
 			register(t, h, root, projectID, "on", "")
 			prepareStore(t, h)
 			write(t, filepath.Join(root, ".mex/learned/mx_rule01.md"), "---\nmex:\n  id: mx_rule01\n  kind: rule\n  scope: ['**']\n  source: {type: docs, ref: README.md}\n  evidence: docs\n  one_line: Small commits review faster.\n  checks: []\n  status: active\n  created: 2026-11-15\n---\nSmall commits review faster.\n")
-			// Warm the store just as machine installation does.
-			hooks, err := localrecord.OpenHooks(hooksLocation(h, h.mex))
-			if err != nil {
-				t.Fatal(err)
-			}
-			hooks.Close()
 			invoke := func(source string) string {
 				payload, _ := json.Marshal(map[string]any{"session_id": "brief-session", "hook_event_name": "SessionStart", "source": source, "cwd": root})
 				code, out := run(t, []string{agent, "SessionStart"}, strings.NewReader(string(payload)), env)

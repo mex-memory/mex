@@ -33,12 +33,26 @@ function boundedJson(value: unknown): value is JsonValue {
   catch { return false; }
 }
 const value = z.custom<JsonValue>(boundedJson, "Expected bounded JSON data");
+const phrase = (max: number) => line.refine(s => s.length <= max && s.trim() === s, `Expected a trimmed phrase of at most ${max} characters`);
+const unique = (list: string[]) => new Set(list.map(s => s.toLowerCase())).size === list.length;
+/** Retrieval aids only: never delivered text and never evidence. */
+const aliases = z.array(phrase(KNOWLEDGE_LIMITS.aliasCharacters)).max(KNOWLEDGE_LIMITS.aliases).refine(unique, "Duplicate alias");
+const asks = z.array(phrase(KNOWLEDGE_LIMITS.askCharacters)).max(KNOWLEDGE_LIMITS.asks).refine(unique, "Duplicate ask");
+const sha = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u);
+/** The commit a decision cites. Patch id, subject and files let a squash or rebase copy match it. */
+const commit = z.object({
+  sha, patch_id: sha.optional(), subject: phrase(512).optional(),
+  files: z.array(file).max(KNOWLEDGE_LIMITS.commitFiles).optional(),
+  /** A line of the commit the decision rests on, kept only if found in the commit. */
+  quote: phrase(512).optional(),
+}).strict();
 const checkBase = { role: z.enum(["complete", "supporting"]), files: z.record(file, hash).refine(v => Object.keys(v).length <= 128, "Too many check files") };
 const count = z.object({ count: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict();
 const match = z.enum(["literal", "structural"]);
 /** Stored observations only: evaluation belongs to the check evaluator. */
 export const CheckSchema = z.discriminatedUnion("kind", [
-  z.object({ ...checkBase, kind: z.literal("key"), target: z.object({ file, pointer }).strict(), saw: z.object({ value }).strict() }).strict(),
+  z.object({ ...checkBase, kind: z.literal("key"), target: z.object({ file, pointer,
+    member: z.string().min(1).max(512).regex(/^\P{Cc}+$/u).refine(s => s === s.trim() && !s.includes("\uFEFF"), "Expected a member name without surrounding whitespace or hidden marks").optional() }).strict(), saw: z.object({ value }).strict() }).strict(),
   z.object({ ...checkBase, kind: z.literal("command"), target: z.object({ run: line, file, pointer }).strict(), saw: z.object({ exists: z.boolean() }).strict() }).strict(),
   z.object({ ...checkBase, kind: z.literal("section"), target: z.object({ file, heading: line }).strict(), saw: z.object({ hash }).strict() }).strict(),
   z.object({ ...checkBase, kind: z.literal("source"), target: z.union([
@@ -54,7 +68,7 @@ export const CheckSchema = z.discriminatedUnion("kind", [
   }).strict(),
   z.object({ ...checkBase, kind: z.literal("pattern"), target: z.object({ scope, pattern: line, match: match.optional() }).strict(), saw: count }).strict(),
   z.object({ ...checkBase, kind: z.literal("relation"), target: z.object({ query: line, from: scope, to: scope }).strict(), saw: count }).strict(),
-]);
+]).refine(check => check.kind !== "key" || check.target.member === undefined || check.saw.value === true, "Membership checks must record declared presence as true");
 const metadata = z.object({
   id: EntryIdSchema, kind: z.enum(ENTRY_KINDS), scope: z.array(scope).min(1).max(32),
   source: z.object({
@@ -65,7 +79,10 @@ const metadata = z.object({
   one_line: line.refine(s => s.length <= KNOWLEDGE_LIMITS.oneLineCharacters, "One-line claim is too long"),
   when: z.array(z.object({ type: z.enum(["anti", "required", "rejected", "creates"]), match, pattern: line }).strict()).max(32).optional(),
   checks: z.array(CheckSchema).max(32), companions: z.array(EntryIdSchema).max(32).optional(),
-  status: z.enum(["active", "retired"]),
+  aliases: aliases.optional(), asks: asks.optional(), commit: commit.optional(),
+  supersedes: z.array(EntryIdSchema).max(KNOWLEDGE_LIMITS.supersedes).optional(),
+  // proposed: written by an agent and not yet in force; never delivered as accepted knowledge.
+  status: z.enum(["active", "proposed", "retired"]),
   retired: z.object({ reason: line, by: line, at: date }).strict().optional(), created: date,
 }).strict().superRefine((m, ctx) => {
   if (m.source.type === "person" && !m.source.quote) ctx.addIssue({ code: "custom", path: ["source", "quote"], message: "A person source requires the exact typed quote" });

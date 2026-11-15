@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -35,6 +36,7 @@ type DeliveryCandidate struct {
 	EntryID, Moment, Form, Action, ContentHash string
 	Detail, Parent                             string
 	Title, Kind, Level                         string
+	EntryHash, CorrectionFor                   string
 	Tokens                                     int
 	Reserved, Exempt                           bool
 	// Correction marks a short note that an entry given earlier in this
@@ -56,8 +58,9 @@ type Receipt struct {
 	ID, BlockID string
 }
 type DeliveryRequest struct {
-	Session Session
-	AgentID string
+	Session      Session
+	AgentID      string
+	Branch, Head string
 	// Empty reason keeps the current epoch. Resume likewise never advances it.
 	Reason string
 	// CompactSignal is 1 for SessionStart and 2 for PostCompact. Different
@@ -347,13 +350,14 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	logged := map[string]bool{}
 	blockedIDs := map[string][]string{}
 	corrected := map[string]bool{}
-	rows, err = conn.QueryContext(ctx, `SELECT entry_id,action,moment,content_hash FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? LIMIT 20000`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout)
+	receiptEntries, sentIDs := map[string]string{}, map[string]bool{}
+	rows, err = conn.QueryContext(ctx, `SELECT id,entry_id,action,moment,content_hash FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? LIMIT 20000`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout)
 	if err != nil {
 		return result, err
 	}
 	for rows.Next() {
-		var id, action, moment, hash string
-		if err = rows.Scan(&id, &action, &moment, &hash); err != nil {
+		var receipt, id, action, moment, hash string
+		if err = rows.Scan(&receipt, &id, &action, &moment, &hash); err != nil {
 			break
 		}
 		rawID := id
@@ -364,7 +368,14 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		switch {
 		case moment == "correction":
 			corrected[id] = true
-		case action == "given" || action == "replaced" || action == "shadow":
+		case action == "given" || action == "replaced":
+			receiptEntries[receipt] = rawID
+			sentIDs[id] = true
+			present[id] = true
+			presentHashes[id] = hash
+		case action == "shadow":
+			// A shadow receipt counts toward once-per-epoch, but the agent never
+			// saw it, so nothing can be corrected.
 			present[id] = true
 			presentHashes[id] = hash
 		default:
@@ -452,7 +463,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			}
 		}
 		if c.Correction {
-			if !present[id] || corrected[id] {
+			if !sentIDs[id] || corrected[id] || (c.CorrectionFor != "" && receiptEntries[c.CorrectionFor] != c.EntryID) {
 				continue
 			}
 			c.Action, c.Reserved = "withheld", true
@@ -523,6 +534,12 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		receipt, err := newID()
 		if err != nil {
 			return result, err
+		}
+		if sends && c.Action != "shadow" && c.EntryHash != "" && len(c.EntryHash) <= 80 && len(req.Branch) <= 512 && len(req.Head) <= 64 {
+			var verdict, inputs string
+			_ = conn.QueryRowContext(ctx, "SELECT verdict,inputs_hash FROM verdicts WHERE project_id=? AND checkout=? AND entry_id=?", req.Session.ProjectID, req.Session.Checkout, c.EntryID).Scan(&verdict, &inputs)
+			data, _ := json.Marshal(AdviceContext{Version: 1, Branch: req.Branch, Head: req.Head, EntryHash: c.EntryHash, Verdict: verdict, InputsHash: inputs})
+			c.Detail = string(data)
 		}
 		_, err = conn.ExecContext(ctx, `INSERT INTO deliveries(id,session_id,agent_id,epoch,ts,moment,entry_id,form,tokens,action,content_hash,block_id,project_id,checkout,detail,title,kind,level,surface) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, receipt, req.Session.SessionID, req.AgentID, e.Number, stamp, c.Moment, c.EntryID, c.Form, c.Tokens, c.Action, c.ContentHash, block, req.Session.ProjectID, req.Session.Checkout, c.Detail, c.Title, c.Kind, c.Level, c.Surface)
 		if err != nil {

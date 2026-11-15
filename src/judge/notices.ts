@@ -6,7 +6,7 @@ import { containedDirectory, readBoundedTextFile } from "../knowledge/files.js";
 import { KnowledgeError } from "../knowledge/entry.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 
-const IDs = z.array(z.string().regex(/^judge\.fix\.[a-f0-9]{24}\.(preview|updated)$/u)).max(16);
+const IDs = z.array(z.string().regex(/^(?:judge\.fix|learning\.team)\.[a-f0-9]{24}\.(preview|updated)$/u)).max(16);
 
 /** An explicit bounded list makes ordinary hooks one stat, with no DB scan. */
 export function wakeNotice(writer: RecordWriter, actor: string, id: string): void {
@@ -15,7 +15,8 @@ export function wakeNotice(writer: RecordWriter, actor: string, id: string): voi
   const path = join(directory, `${actor}.json`);
   let ids: string[] = [];
   try { ids = IDs.parse(JSON.parse(readBoundedTextFile(path, 4096) ?? "[]")); } catch { /* replace invalid hints, never canonical data */ }
-  ids = ids.filter(id => writer.db.prepare("SELECT 1 FROM notices WHERE id=? AND kind IN (?,?)").get(id, `judge-preview.${actor}`, `judge-updated.${actor}`));
+  ids = ids.filter(id => { const kind = id.startsWith("learning.") ? "learning" : "judge";
+    return writer.db.prepare("SELECT 1 FROM notices WHERE id=? AND kind IN (?,?)").get(id, `${kind}-preview.${actor}`, `${kind}-updated.${actor}`); });
   const hooks = openHooksReadOnly({ home: writer.location.home });
   try {
     if (hooks && !hooks.diagnostic) ids = ids.filter(id => !hooks.get("SELECT 1 FROM notices_shown WHERE notice_id=?", id));

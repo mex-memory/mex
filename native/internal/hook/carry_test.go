@@ -114,6 +114,14 @@ func TestWhereWeLeftOffGoesAway(t *testing.T) {
 			g(t, root, "merge", "-q", "--no-ff", "-m", "merge", "feat/billing")
 			g(t, root, "checkout", "-q", "feat/billing")
 		},
+		"when the branch fast-forwards into main": func(t *testing.T, root string) {
+			g(t, root, "add", "-A")
+			g(t, root, "commit", "-q", "-m", "work")
+			write(t, filepath.Join(root, "loose.txt"), "still dirty")
+			g(t, root, "checkout", "-q", "main")
+			g(t, root, "merge", "-q", "--ff-only", "feat/billing")
+			g(t, root, "checkout", "-q", "feat/billing")
+		},
 	}
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {

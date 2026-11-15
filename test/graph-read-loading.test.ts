@@ -52,7 +52,7 @@ Module._load = function(request, ...args) {
 });
 afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }); });
 describe("shipped read module loading", () => {
-  for (const command of ["status", "scope", "get", "where-defined", "who-calls", "impact", "wiki-apply", "wiki-apply-write", "wiki-validate", "wiki-query", "check", "sync", "help", "version"]) {
+  for (const command of ["status", "scope", "get", "where-defined", "who-calls", "impact", "wiki-apply", "wiki-apply-write", "wiki-validate", "wiki-query", "check", "sync", "sync-deep", "help", "version"]) {
     it(`${command} keeps extraction off a valid JSONC read`, () => {
       const args = command === "status" ? ["graph", "status", "--json"]
         : command === "scope" ? ["graph", "scope", "value"]
@@ -64,14 +64,19 @@ describe("shipped read module loading", () => {
         : command === "wiki-query" ? ["wiki", "query", "value", "--json"]
         : command === "check" ? ["check", "--json"]
         : command === "sync" ? ["sync", "--dry-run"]
+        : command === "sync-deep" ? ["sync", "--deep", "--dry-run"]
         : command === "help" ? ["--help"]
         : command === "version" ? ["--version"]
         : ["graph", "query", command, id];
       const result = invoke(args);
       expect(result.error).toBeUndefined();
       expect(result.stderr).not.toContain("COMPILER_LOADED_ON_READ");
-      // Querying a missing Wiki index may refuse, but must never initialize extraction.
-      if (command !== "wiki-query") expect(result.status, result.stdout + result.stderr).toBe(0);
+      // This legacy fixture isn't registered for the judge. Refusal and the
+      // successful deep read must both keep the compiler unloaded.
+      if (command === "sync") {
+        expect(result.status, result.stdout + result.stderr).toBe(1);
+        expect(result.stderr).toContain("MEX is not registered here.");
+      } else if (command !== "wiki-query") expect(result.status, result.stdout + result.stderr).toBe(0);
     });
   }
   it("keeps CLI dispatch working when compilation caching is disabled", () => {

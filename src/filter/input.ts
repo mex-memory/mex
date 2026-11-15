@@ -4,7 +4,7 @@ import { z } from "zod";
 import { automaticWorkEnabled } from "../controls/index.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import { shortHash } from "../record/project.js";
-import { containedDirectory, readBoundedTextFile, readEntryFile } from "../knowledge/files.js";
+import { containedDirectory, readBoundedTextFile, readEntryFile, personalReadGuard } from "../knowledge/files.js";
 import { parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { repoFile } from "../knowledge/references.js";
 import { assertNoSecrets } from "../knowledge/gates.js";
@@ -23,7 +23,8 @@ export interface FilterInput { messages: Message[]; notes: NoteInput[]; files: A
 export interface ScanWindow { after: number; carry?: number[]; deferred?: number[]; through?: number; more?: boolean; }
 interface Journal { id: number; session_id: string; ts: string; text: string; marks: string; last_seen_at: string; paused: number; agent: string; }
 const Metadata = z.object({ version: z.literal(1), project_id: z.string(), checkout: z.string(), agent: z.string(),
-  session_id: z.string(), seen_at: z.string().datetime({ offset: true }), finished: z.boolean(), transcript: z.string().max(4096) }).strict();
+  session_id: z.string(), seen_at: z.string().datetime({ offset: true }), finished: z.boolean(), transcript: z.string().max(4096),
+  branch: z.string().min(1).max(1024).optional(), head: z.string().regex(/^[a-f0-9]{40,64}$/u).optional(), position_at: z.string().datetime({ offset: true }).optional() }).strict();
 export const ackKey = (session: string) => `filter.session.${shortHash(session)}`;
 export function acknowledged(writer: RecordWriter, project: string, session: string): number {
   const n = Number(writer.setting(project, ackKey(session)) ?? 0);
@@ -36,7 +37,7 @@ export function filterAllowed(writer: RecordWriter, project: string, params: Fil
     && automaticWorkEnabled(writer, project) && writer.setting("global", "capture.enabled") !== "false"
     && writer.setting(project, "capture.enabled") !== "false" && sessionWorkEnabled(writer, params.agent, params.sessionId);
 }
-function metadata(writer: RecordWriter, project: string, checkout: string, session: string) {
+export function filterSession(writer: RecordWriter, project: string, checkout: string, session: string) {
   const dir = containedDirectory(writer.location.directory, ["filter-sessions"]);
   if (!dir) return undefined;
   const raw = readBoundedTextFile(join(dir, `${shortHash(project + "\0" + session)}.json`), 16 << 10);
@@ -46,7 +47,7 @@ function metadata(writer: RecordWriter, project: string, checkout: string, sessi
   const parsed = Metadata.safeParse(value);
   return parsed.success && parsed.data.project_id === project && parsed.data.checkout === checkout && parsed.data.session_id === session ? parsed.data : undefined;
 }
-function timestampNs(value: string): bigint | undefined {
+export function timestampNs(value: string): bigint | undefined {
   const milliseconds = Date.parse(value);
   if (!Number.isFinite(milliseconds)) return undefined;
   const fraction = (value.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/u)?.[1] ?? "").padEnd(9, "0").slice(3, 9);
@@ -68,6 +69,7 @@ function heartbeat(writer: RecordWriter, agent: string, session: string): bigint
   } catch { return undefined; }
 }
 function personalNotes(writer: RecordWriter, project: string): NoteInput[] {
+  const check = personalReadGuard(join(writer.location.home, "projects", project, "notes"));
   const dir = containedDirectory(writer.location.home, ["projects", project, "notes"]);
   if (!dir) return [];
   const names: string[] = [], handle = opendirSync(dir);
@@ -90,7 +92,7 @@ function personalNotes(writer: RecordWriter, project: string): NoteInput[] {
     notes.push({ id: entry.mex.id, path, hash: hash(raw), entry });
     if (notes.length === FILTER_LIMITS.notes) break;
   }
-  return notes;
+  check(); return notes;
 }
 /** Bounded repository context helps the same text-only call propose check targets. */
 function contextFiles(checkout: string, messages: Message[], notes: NoteInput[]): FilterInput["files"] {
@@ -127,7 +129,7 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
     }
     const eligible = rows.filter(row => {
       if (row.paused || row.id <= acknowledged(writer, project, row.session_id)) return false;
-      const meta = metadata(writer, project, params.checkout, row.session_id);
+      const meta = filterSession(writer, project, params.checkout, row.session_id);
       const lastSeen = timestampNs(row.last_seen_at), beat = heartbeat(writer, row.agent, row.session_id);
       if (lastSeen === undefined || beat === undefined) return false;
       const activity = lastSeen > beat ? lastSeen : beat, recorded = meta ? timestampNs(meta.seen_at) : undefined;
