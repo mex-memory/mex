@@ -36,6 +36,19 @@ func TestInvestigatingRuleWaitsUntilWorking(t *testing.T) {
 	mustHave(t, f.send(f.event(contract.PostToolBatch, read(file, "console.log(1)"))), "shared logger")
 }
 
+// A rule held while investigating goes out at the first edit in its scope,
+// not at an edit elsewhere, and only once.
+func TestHeldRuleGoesOutAtAnEditInScope(t *testing.T) {
+	f := newFixture(t)
+	f.entry(spec{id: "mx_waitab", kind: "rule", scope: "src/**", oneLine: "Use the shared logger.", when: []string{"anti:console.log("}})
+	file := f.file("src/a.ts", "console.log(1)")
+	other := f.file("docs/notes.md", "x")
+	mustBeEmpty(t, f.send(f.event(contract.PostToolBatch, read(file, "console.log(1)"))))
+	mustBeEmpty(t, f.send(f.event(contract.PostToolBatch, edit(other, "y"))))
+	mustHave(t, f.send(f.event(contract.PostToolBatch, edit(file, "logger.info(1)"))), "shared logger")
+	mustBeEmpty(t, f.send(f.event(contract.PostToolBatch, edit(file, "logger.info(2)"))))
+}
+
 func TestIntentShortcutsRequireWholeWords(t *testing.T) {
 	g := &group{}
 	for _, tc := range []struct{ text, want string }{{"Investigate the migration", "investigating"}, {"Migrate this module", "changing"}, {"reproduce a failure", "reproducing"}, {"show reprojection", "investigating"}} {

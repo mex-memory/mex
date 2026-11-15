@@ -59,12 +59,12 @@ func deliveredLater(ctx context.Context, c *sql.Conn, req DeliveryRequest, epoch
 
 // HoldbackEntries returns at most 1000 distinct ids from the current epoch.
 // It does not initialize an epoch or create a database.
-type HoldbackRow struct{ ID, EntryID string }
+type HoldbackRow struct{ ID, EntryID, Detail string }
 
 func (hooks *Hooks) HoldbackEntries(session, agent, project, checkout string) ([]HoldbackRow, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.reader)
 	defer cancel()
-	rows, err := hooks.db.QueryContext(ctx, `SELECT id,entry_id FROM deliveries WHERE session_id=? AND agent_id=?
+	rows, err := hooks.db.QueryContext(ctx, `SELECT id,entry_id,detail FROM deliveries WHERE session_id=? AND agent_id=?
  AND epoch=(SELECT max(epoch) FROM epochs WHERE session_id=? AND agent_id=?)
  AND project_id=? AND checkout=? AND action IN ('held-back','withheld') AND moment<>'correction'
  ORDER BY entry_id,id LIMIT 1000`, session, agent, session, agent, project, checkout)
@@ -74,7 +74,7 @@ func (hooks *Hooks) HoldbackEntries(session, agent, project, checkout string) ([
 	var ids []HoldbackRow
 	for rows.Next() {
 		var row HoldbackRow
-		if err = rows.Scan(&row.ID, &row.EntryID); err != nil {
+		if err = rows.Scan(&row.ID, &row.EntryID, &row.Detail); err != nil {
 			break
 		}
 		ids = append(ids, row)

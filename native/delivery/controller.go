@@ -193,6 +193,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 				return contract.Reply{}, err
 			}
 		}
+		if err := releaseHeldRules(h, ev, g); err != nil {
+			return contract.Reply{}, fmt.Errorf("record-holdbacks: %w", err)
+		}
 		finish()
 		if len(g.cands) == 0 {
 			continue
@@ -647,4 +650,44 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		return "", nil
 	}
 	return render(res.Receipts[0].BlockID, plan, res.Receipts), nil
+}
+
+// releaseHeldRules offers again, at an edit, the rules this epoch held back
+// while the agent was only investigating: a rule waits for edit risk, and an
+// edit inside its scope is that risk. The rule keeps its exact-match exemption.
+func releaseHeldRules(h *record.Hooks, ev contract.Event, g *group) error {
+	if len(g.edits) == 0 {
+		return nil
+	}
+	rows, err := h.HoldbackEntries(ev.SessionID, ev.AgentID, g.project, g.checkout)
+	if err != nil {
+		return err
+	}
+	held := map[string]bool{}
+	for _, r := range rows {
+		if r.Detail == "investigating" {
+			held[r.EntryID] = true
+		}
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	offered := map[string]bool{}
+	for _, c := range g.cands {
+		offered[c.item.Entry.ID] = true
+	}
+	for i := range g.snap.Items {
+		it := &g.snap.Items[i]
+		if !held[it.Entry.ID] || offered[it.Entry.ID] || it.Entry.Kind != "rule" {
+			continue
+		}
+		for _, rel := range g.edits {
+			if inScope(it, rel) {
+				g.cands = append(g.cands, candidate{item: it, moment: momentEdit, tier: tierPattern, exempt: true, rel: rel})
+				offered[it.Entry.ID] = true
+				break
+			}
+		}
+	}
+	return nil
 }
