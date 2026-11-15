@@ -791,6 +791,8 @@ describe("no unscoped scaffold writes", () => {
       "src/events.ts": "appends to events/decisions.jsonl",
       "src/knowledge/files.ts": "publishes and replaces bounded personal notes and hints through exclusive staging, revision checks and contained local publication under the MEX project-data home; never edits a repository file",
       "src/knowledge/native-write.ts": "writes and removes only MEX-generated agent rule files (marked generated, hash-checked against its manifest, never a person's file or CLAUDE.md), its .mex/native.json manifest, and its own block in git's exclude file",
+      "src/knowledge/share.ts": "writes team entries, .mex/config.json, .mex/sources.json and rule files only inside its own temporary share worktree, and on discard deletes only the files it wrote there; never your branch or working tree",
+      "src/knowledge/share-state.ts": "writes and removes only the share.json progress record under the MEX project-data home",
       "src/knowledge/rule-cache.ts": "writes only the derived rule-file scan (rule-files.json) under the MEX project-data home; never a repository file",
       "src/knowledge/hints.ts": "removes only disposable hint copies under the MEX project-data home after durable retirement or personal confirmation; refuses overlap with host memory and never writes host or repository files",
       "src/file-index/pending.ts": "removes and restores only the index-pending marker in the machine record directory; never a repo file",

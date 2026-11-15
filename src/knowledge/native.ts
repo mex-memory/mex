@@ -32,7 +32,8 @@ export interface RebuildOptions {
   now?: number;
 }
 
-function personalNotes(home: string, projectId: string, retired: Set<string>, root: string): Candidate[] {
+/** Active personal notes for a project, gated, without retired ones. */
+export function personalNotes(home: string, projectId: string, retired: Set<string>, root: string): Candidate[] {
   const directory = containedDirectory(home, ["projects", projectId, "notes"]);
   if (!directory) return [];
   const source = references(root);

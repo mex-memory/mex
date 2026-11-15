@@ -185,15 +185,59 @@ export function buildKnowledgeCommands(): Command[] {
         if (native) console.log(`\n${(await import("./native.js")).formatRebuild(native)}`);
       }
     }));
-  return [save, search, full, change, ...retire, hints, rules];
+  const share = new Command("share")
+    .description("Share your strongest notes with the team: preview, then commit them to a new branch (MEX never pushes unless you pass --pr)")
+    .option("--skip <id>", "Leave this note out (repeatable)", (value: string, previous: string[]) => [...previous, value], [])
+    .option("--apply", "Make the share you previewed")
+    .option("--expect <revision>", "The revision the preview printed")
+    .option("--pr", "With --apply: push the share branch and open a pull request")
+    .option("--finish", "Finish a share that was stopped partway")
+    .option("--discard", "Drop a share that was stopped partway")
+    .option("--json", "Print the result as JSON")
+    .action(async opts => run(opts.json, async () => {
+      const { runShare, finishShare, discardShare, pendingShare } = await import("./share.js");
+      const options = { projectPath: process.cwd() };
+      const print = (value: object, text: string) => console.log(opts.json ? JSON.stringify({ ok: true, ...value }) : text);
+      if (opts.finish) {
+        const done = finishShare(options, { pr: opts.pr });
+        print(done, `Finished the share: ${done.entries.length} entries on ${done.branch}.\n${nextStep(done)}`);
+        return;
+      }
+      if (opts.discard) {
+        const dropped = discardShare(options);
+        print(dropped, `Discarded the share to ${dropped.branch}.${dropped.branchKept ? ` Its branch has a commit, so it was kept; delete it with: git branch -D ${dropped.branch}` : ""}`);
+        return;
+      }
+      const waiting = pendingShare(options);
+      if (waiting) throw new KnowledgeError("SHARE_IN_PROGRESS", `A share to ${waiting.branch} stopped at "${waiting.step}". Run mex share --finish or mex share --discard.`);
+      if (opts.apply) {
+        if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the share with mex share, then pass --apply --expect <revision>.");
+        const done = runShare(options, opts.expect, { pr: opts.pr, skip: opts.skip });
+        print(done, `Shared ${done.entries.length} entries on ${done.branch} (${done.files.length} files). Your branch wasn't touched.\n${nextStep(done)}`);
+        return;
+      }
+      const { prepareShare } = await import("./share-plan.js");
+      const plan = prepareShare(options, { skip: opts.skip });
+      if (opts.json) { const { entries: _entries, ...shown } = plan; console.log(JSON.stringify({ ok: true, applied: false, ...shown })); return; }
+      const lines = [plan.share.length ? `Share ${plan.share.length} with the team, on a new branch ${plan.branch} from ${plan.baseName}:` : "Nothing to share yet."];
+      for (const item of plan.share) lines.push(`  ${item.id}  ${item.one_line}`);
+      if (plan.blocked.length) { lines.push("", "Held back:"); for (const b of plan.blocked) lines.push(`  ${b.id}  ${b.reason}`); }
+      if (plan.skipped.length) { lines.push("", "Not offered:"); for (const s of plan.skipped) lines.push(`  ${s.id}  ${s.reason}`); }
+      if (plan.share.length) lines.push("", "Leave one out with --skip <id>. To share exactly this:", `  mex share --apply --expect ${plan.revision}    (add --pr to open a pull request)`);
+      console.log(lines.join("\n"));
+    }));
+  return [save, search, full, change, ...retire, hints, rules, share];
 }
+/** After a share: the pull request, or the push command (MEX doesn't push on its own). */
+function nextStep(done: { branch: string; pr?: string }): string {
+  return done.pr ? `Pull request: ${done.pr}` : `Push it when you're ready: git push -u origin ${done.branch}`;
+}
+
 /** Shared rule files change in the same working-tree change as the team entry. */
 async function sharedRuleFiles(options: { projectPath: string }): Promise<string[]> {
-  try {
-    const { rebuildNative } = await import("./native.js");
-    const result = rebuildNative(options, { sharedOnly: true, force: true });
-    return [...result.written ?? [], ...result.removed ?? []];
-  } catch { return []; }
+  const { rebuildNative } = await import("./native.js");
+  const result = rebuildNative(options, { sharedOnly: true, force: true });
+  return [...result.written ?? [], ...result.removed ?? []];
 }
 
 /** Personal note changes reach the hidden local rule files between sessions. */

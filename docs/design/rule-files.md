@@ -104,3 +104,42 @@ files, and keeps edited generated files when their ownership cannot be verified.
   rebuilds the shared files at once, so the entry, its rule file and the
   manifest are one working-tree change. Personal note changes queue the
   background job.
+
+# Sharing
+
+`mex share` takes a person from solo to shared in one command.
+
+Notes with checks are evaluated against current files before they are offered,
+then checked again against the default branch in the temporary worktree before
+any entry is written. A cached verdict cannot authorize sharing. Config and
+source inventories are published as complete atomic replacements.
+
+1. **Preview** (`mex share`): your personal notes that are active, backed by
+   strong evidence, not broken or changed, and not already on the default
+   branch, strongest and broadest first. Notes that fail the share checks are
+   held back with the reason: a possible secret, hidden characters, a folder
+   on someone's machine, an email address, a private network address or host.
+   `--skip <id>` leaves one out. The preview prints a revision.
+2. **Apply** (`mex share --apply --expect <revision>`): only if the preview
+   still matches. A branch `mex/share-YYYY-MM-DD` is made from the default
+   branch (origin's HEAD, else `main`/`master`) in a temporary worktree under
+   the project's MEX folder. In it MEX writes the team entries (through the same
+   gates as any team write), merges `{"knowledge": {"version": 1, "shared":
+   true}}` into `.mex/config.json` keeping its other keys, writes
+   `.mex/sources.json` (the rule files read, with hashes, so teammates don't
+   read them again) and the shared rule files, commits once, and removes the
+   worktree. Your branch, your working tree and your HEAD are never touched.
+3. **Push:** MEX never pushes, except with `--pr`, which pushes the share
+   branch and runs `gh pr create` against the default branch.
+
+A share is recorded in `<MEX home>/projects/<id>/share.json` before anything
+is created, with its step. A share stopped partway is reported by the next
+`mex share`:
+
+- `--finish` continues from the recorded step: writes what's missing,
+  commits, cleans up.
+- `--discard` deletes only the files MEX wrote in the temporary worktree,
+  removes the worktree, and deletes the branch only if it has no commit.
+
+Cleanup never forces: `git worktree remove` without `--force`, and it stops,
+naming the path, at any link or junction inside the worktree.

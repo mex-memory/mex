@@ -51,3 +51,24 @@ describe("rule files from the command line", { timeout: 120_000 }, () => {
     expect(readFileSync(join(root, ".claude/rules/mex.md"), "utf8")).toContain("a tag starts publishing");
   });
 });
+
+describe("mex share from the command line", { timeout: 180_000 }, () => {
+  it("previews, then shares exactly what was approved, leaving your branch alone", () => {
+    const { root, env } = repo();
+    git(root, "add", "."); git(root, "commit", "-qm", "base"); git(root, "branch", "-M", "main");
+    git(root, "checkout", "-qb", "feature");
+    let run = mex(root, env, "note", "Prefer small commits, because they review faster.");
+    expect(run.status, run.stderr).toBe(0);
+    run = mex(root, env, "share");
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout).toContain("Prefer small commits");
+    const revision = /--expect ([0-9a-f]+)/u.exec(run.stdout)![1];
+    expect(mex(root, env, "share", "--apply", "--expect", "0000000000000000").stdout + mex(root, env, "share", "--apply", "--expect", "0000000000000000").stderr).toContain("changed");
+    run = mex(root, env, "share", "--apply", "--expect", revision);
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout).toContain("Your branch wasn't touched.");
+    expect(run.stdout).toContain("git push -u origin mex/share-");
+    expect(git(root, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe("feature");
+    expect(git(root, "branch", "--list", "mex/share-*").trim()).toMatch(/mex\/share-\d{4}-\d{2}-\d{2}/u);
+  });
+});
