@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { CI_VARIABLES } from "../src/repo-start/caller.js";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const cli = join(repo, "dist/cli.js");
@@ -470,7 +471,7 @@ function terminal(f: Fixture, extra: string[] = [], actions: Action[] = [], opti
         resolve(result);
       } catch (error) { reject(error); }
     });
-    child.stdin!.end(JSON.stringify({ command: [process.execPath, f.cli ?? cli, ...(options.command ?? args(extra, options.defaultTool !== false))], cwd: f.project, env: f.env, unsetEnv: ["CI", "NO_COLOR", "FORCE_COLOR", ...(options.unset ?? [])], columns: options.columns ?? 140, rows: options.rows ?? 40, actions, timeoutMs: 25_000 }));
+    child.stdin!.end(JSON.stringify({ command: [process.execPath, f.cli ?? cli, ...(options.command ?? args(extra, options.defaultTool !== false))], cwd: f.project, env: f.env, unsetEnv: [...CI_VARIABLES, "NO_COLOR", "FORCE_COLOR", ...(options.unset ?? [])], columns: options.columns ?? 140, rows: options.rows ?? 40, actions, timeoutMs: 25_000 }));
   });
 }
 

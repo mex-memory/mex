@@ -10,11 +10,15 @@ export interface CallerInput {
   stdoutTTY?: boolean;
 }
 
+/** Variables CI services set; any one of them makes the caller a script. */
+export const CI_VARIABLES = ["CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "BUILDKITE", "CIRCLECI", "JENKINS_URL"] as const;
+
 export function isCI(env: NodeJS.ProcessEnv = process.env): boolean {
-  return ["CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "BUILDKITE", "CIRCLECI"].some((key) => {
-    const value = env[key]?.trim().toLowerCase();
-    return value !== undefined && value !== "" && !["0", "false", "no"].includes(value);
-  }) || !!env.JENKINS_URL;
+  return CI_VARIABLES.some((key) => {
+    const value = env[key]?.trim();
+    if (key === "JENKINS_URL") return !!value;
+    return value !== undefined && value !== "" && !["0", "false", "no"].includes(value.toLowerCase());
+  });
 }
 
 export function isAgentCaller(env: NodeJS.ProcessEnv = process.env): boolean {
