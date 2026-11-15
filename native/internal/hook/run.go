@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mex-memory/mex/native/capture"
 	"github.com/mex-memory/mex/native/delivery"
 	"github.com/mex-memory/mex/native/internal/adapter"
 	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
@@ -231,6 +232,15 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 
+	if reply, handled := typedNote(ev, h); handled {
+		out, _ := profile.Render(ev, reply)
+		return out
+	}
+	// Capture runs before delivery: typed text is saved before the reply
+	// starts, whatever delivery does next.
+	if captureEnabled(recordDirectory, ev.ProjectID, global) {
+		capture.Hook(ev, capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env})
+	}
 	if ev.Kind == contract.SessionStart {
 		startBackground(h, recordDirectory)
 	}
