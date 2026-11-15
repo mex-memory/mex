@@ -10,7 +10,7 @@ import { patternId } from "../file-index/classify.js";
 import { indexDirectory, readPatterns, writePatterns } from "../file-index/store.js";
 import { openIndex } from "../file-index/read.js";
 import { openHooksReadOnly } from "../record/index.js";
-import { knowledgeProject, type KnowledgeOptions } from "./context.js";
+import { knowledgeProject, type KnowledgeOptions, type KnowledgeProject } from "./context.js";
 import { KnowledgeError } from "./contract.js";
 import { parseEntry, type KnowledgeEntry } from "./entry.js";
 import { readEntryFile } from "./files.js";
@@ -73,6 +73,25 @@ export function runNative(binary: string, request: Record<string, unknown>): Nat
   catch { throw new KnowledgeError("CHECKS_UNAVAILABLE", "The check evaluator gave no answer."); }
   if (!parsed.ok) throw new KnowledgeError("CHECKS_FAILED", parsed.error ?? "The check evaluator failed.");
   return parsed as NativeReport;
+}
+
+/** Current, read-only checks for publication decisions. A cached held verdict
+ * cannot authorize generating or sharing a claim after its source changed.
+ * Keys include the store level: a personal copy cannot prove a team copy. */
+export function currentVerdicts(options: KnowledgeOptions, project: KnowledgeProject): Map<string, Verdict> | undefined {
+  const binary = nativeBinary(options.env);
+  if (!binary) return undefined;
+  try {
+    const report = runNative(binary, { action: "evaluate", checkout: project.root, project_id: project.projectId,
+      mex_home: project.location.home, record_directory: project.location.directory, store: false });
+    const verdicts = new Map<string, Verdict>();
+    for (const item of report.items ?? []) {
+      const key = `${item.level}/${item.id}`;
+      // Ambiguous duplicate ids within one store never authorize publication.
+      verdicts.set(key, verdicts.has(key) ? "unknown" : item.verdict);
+    }
+    return verdicts;
+  } catch { return undefined; }
 }
 
 /** Record a check against today's code, through the evaluator. Writers use it. */
@@ -303,7 +322,8 @@ function diffConformance(root: string, base: string, entries: Array<{ entry: Kno
   return findings;
 }
 
-function cachedVerdicts(options: KnowledgeOptions, projectId: string, root: string): Map<string, Verdict> | undefined {
+/** Verdicts the evaluator last saved for this checkout, read-only. */
+export function cachedVerdicts(options: KnowledgeOptions, projectId: string, root: string): Map<string, Verdict> | undefined {
   let reader;
   try { reader = openHooksReadOnly(options); } catch { return undefined; }
   if (!reader) return undefined;

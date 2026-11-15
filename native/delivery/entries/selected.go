@@ -109,8 +109,8 @@ func Selected(home, project, checkout string, snap Snapshot, wanted map[string]b
 			it.Scopes = append(it.Scopes, sc)
 		}
 		it.Generated = generatedRE().MatchString(e.OneLine + " " + e.Text)
-		it.Full = label(e, it.Level) + " " + e.Text
-		it.OneLine = label(e, it.Level) + " " + e.OneLine
+		it.Full = Label(e, it.Level) + " " + e.Text
+		it.OneLine = Label(e, it.Level) + " " + e.OneLine
 		it.FullTokens = EstimateTokens(it.Full)
 		it.OneLineTokens = EstimateTokens(it.OneLine)
 		out.Items = append(out.Items, it)

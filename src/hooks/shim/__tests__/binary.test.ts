@@ -223,7 +223,13 @@ describe.skipIf(!realBinary)("with the real Go binary", () => {
     const start = (cwd: string) => execFileSync(built, ["claude-code", "SessionStart"], {
       input: JSON.stringify({ session_id: "s", hook_event_name: "SessionStart", source: "startup", cwd }), encoding: "utf8", env,
     });
-    expect(start(on)).toBe("{}\n");
+    expect(JSON.parse(start(on))).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext: expect.stringMatching(/^\[mex [a-f0-9]{24}\]\nPriority: current request > your notes > repo instructions > team entries > hints\.$/),
+      },
+    });
+    expect(start(on)).toBe("{}\n"); // The start brief is stable: never resent.
     expect(JSON.parse(start(plain))).toEqual({ systemMessage: "MEX is off here. Run `mex` to turn it on." });
     expect(start(plain)).toBe("{}\n");
   });

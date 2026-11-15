@@ -20,6 +20,22 @@ func init() { adapter.Register(Profile{}) }
 
 type Profile struct{}
 
+func (Profile) ParseInstructionLoad(nativeEvent string, raw []byte) (adapter.InstructionLoad, bool, error) {
+	if nativeEvent != "InstructionsLoaded" {
+		return adapter.InstructionLoad{}, false, nil
+	}
+	var p struct {
+		SessionID string `json:"session_id"`
+		AgentID   string `json:"agent_id"`
+		Cwd       string `json:"cwd"`
+		Path      string `json:"file_path"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return adapter.InstructionLoad{}, true, err
+	}
+	return adapter.InstructionLoad{Event: contract.Event{Agent: Agent, SessionID: p.SessionID, AgentID: p.AgentID, Cwd: p.Cwd}, Path: absPath(p.Cwd, p.Path)}, true, nil
+}
+
 var caps = adapter.Capabilities{
 	Agent: Agent,
 	Kinds: []adapter.KindSupport{

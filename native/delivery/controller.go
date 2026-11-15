@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mex-memory/mex/native/brief"
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/delivery/rank"
 	"github.com/mex-memory/mex/native/internal/contract"
@@ -403,7 +404,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 			return "", nil
 		}
 	}
-	cov := loadCoverage(ev.Agent, g.checkout, g.firstRel)
+	cov := loadCoverage(ev.Agent, g.checkout, g.firstRel, brief.Options{Checkout: g.checkout, MexHome: env.Home, ProjectID: g.project, Agent: ev.Agent, RecordDirectory: env.RecordDirectory, SessionID: ev.SessionID, AgentID: ev.AgentID, NativeCwd: ev.Cwd})
 	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: g.project, checkout: g.checkout}
 	defer senv.close()
 	// Strongest moment per entry, then the verdict decides the form.

@@ -117,17 +117,26 @@ describe("shipped knowledge commands", () => {
     const original = serializeEntry({ mex: { id, kind: "rule", scope: ["**"], source: { type: "person", ref: "person typed this fact", quote: text }, evidence: "person", one_line: text, checks: [], status: "active", created: "2026-11-14" }, text });
     writeFileSync(file, original);
     const correction = "Fixtures use recorded data because seeds alone are insufficient.";
+    mkdirSync(join(repo, ".claude"));
+    // Explicit shared edits keep generated rules in the same working-tree
+    // change even when a live heartbeat defers background rebuilds.
+    const beats = join(mexBase, ".mex/heartbeats/claude-code");
+    mkdirSync(beats, { recursive: true });
+    writeFileSync(join(beats, "live-session"), JSON.stringify({ agent: "claude-code", cwd: repo }));
     const preview = run(["edit", id, correction, "--json"], repo, true);
     expect(preview.status, preview.stderr).toBe(0); expect(preview.json().applied).toBe(false);
-    expect(readFileSync(file, "utf8")).toBe(original); expect(existsSync(mexBase)).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(original);
     const changed = run(["edit", id, correction, "--apply", "--expect", preview.json().preview.revision, "--json"]);
     expect(changed.status, changed.stderr).toBe(0); expect(changed.json().entry.text).toBe(correction);
+    const native = join(repo, ".claude/rules/mex.md");
+    expect(readFileSync(native, "utf8")).toContain(correction);
+    expect(changed.json().native).toContain(".claude/rules/mex.md");
     const retirement = run(["forget", id, "No longer current.", "--json"]);
     expect(retirement.json().preview.diff).toContain("retired");
     expect(run(["forget", id, "No longer current.", "--apply", "--expect", retirement.json().preview.revision, "--json"]).status).toBe(0);
     expect(parseEntry(readFileSync(file, "utf8")).mex).toMatchObject({ status: "retired", retired: { reason: "No longer current." } });
+    expect(existsSync(native)).toBe(false);
     expect(run(["recall", "fixtures", "--json"]).json().entries).toEqual([]);
-    expect(existsSync(mexBase)).toBe(false);
   });
   it("imports read-only hints, excludes their host, and supports explicit confirmation and forgetting", () => {
     const directory = join(root, "claude-host/projects/fixture-project/memory"); mkdirSync(directory, { recursive: true });

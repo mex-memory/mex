@@ -63,8 +63,11 @@ type DeliveryRequest struct {
 	EndEpoch      bool
 	Conflicts     []DeliveryConflict
 	Similar       func(DeliveryCandidate, []GivenRow) string
-	Aliases       map[string]string
-	Admit         func(Epoch, DeliveryCandidate) bool
+	// OnceEntry makes the whole batch conditional on its epoch marker being
+	// absent, so a resume cannot send a newly rebuilt start brief.
+	OnceEntry string
+	Aliases   map[string]string
+	Admit     func(Epoch, DeliveryCandidate) bool
 	// KeepSession conservatively protects file-heartbeat sessions whose
 	// no-op calls deliberately do not open SQLite. Called at most 64 times.
 	KeepSession func(agent, sessionID string) bool
@@ -335,6 +338,9 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	block, err := receiptID()
 	if err != nil {
 		return result, err
+	}
+	if req.OnceEntry != "" && present[req.OnceEntry] {
+		req.Candidates = nil
 	}
 	familyCost := map[string]int{}
 	for _, c := range req.Candidates {

@@ -1,14 +1,18 @@
 package delivery
 
 import (
+	"bytes"
 	"encoding/json"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/mex-memory/mex/native/brief"
 	"github.com/mex-memory/mex/native/delivery/entries"
+	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/record/place"
+	"go.yaml.in/yaml/v3"
 )
 
 // Native coverage: an entry the agent already loads for this path through
@@ -74,20 +78,34 @@ func nativeFiles(agent, checkout, rel string, exists func(string) bool) []string
 }
 
 type coverage struct {
-	files map[string]bool // rule files loaded, relative to the checkout
-	ids   map[string]bool // entry ids marked inside them
-	texts []string
+	files      map[string]bool // rule files loaded, relative to the checkout
+	ids        map[string]bool // entry ids marked inside them
+	native     brief.Coverage
+	agent, rel string
+	texts      []string // loaded rule-file text, for the similarity check
 }
 
 var markerRE = lazy(`<!--\s*mex:(mx_[a-z0-9]{6,64})\s*-->`)
 
-func loadCoverage(agent, checkout, rel string) coverage {
-	c := coverage{files: map[string]bool{}, ids: map[string]bool{}}
+func loadCoverage(agent, checkout, rel string, context ...brief.Options) coverage {
+	opts := brief.Options{Checkout: checkout, Agent: agent}
+	if len(context) > 0 {
+		opts = context[0]
+	}
+	c := coverage{files: map[string]bool{}, ids: map[string]bool{}, native: brief.ReadGeneratedCoverage(opts), agent: agent, rel: rel}
 	exists := func(r string) bool {
 		_, err := readBounded(filepath.Join(checkout, filepath.FromSlash(r)), maxRuleFileBytes)
 		return err == nil
 	}
-	files := nativeFiles(agent, checkout, rel, exists)
+	nativeRel := rel
+	if agent == "codex" && opts.NativeCwd != "" {
+		if cwd, err := place.RealPath(opts.NativeCwd); err == nil {
+			if r, ok := relTo(checkout, cwd); ok {
+				nativeRel = path.Join(r, "__mex_current__")
+			}
+		}
+	}
+	files := nativeFiles(agent, checkout, nativeRel, exists)
 	if agent == "claude-code" {
 		if matches, _ := filepath.Glob(filepath.Join(checkout, ".claude", "rules", "*.md")); len(matches) > 0 {
 			for i, m := range matches {
@@ -100,16 +118,41 @@ func loadCoverage(agent, checkout, rel string) coverage {
 			}
 		}
 	}
-	total := 0
+	nativeBytes, textBytes := 0, 0
 	for _, f := range files {
-		c.files[f] = true
 		data, err := readBounded(filepath.Join(checkout, filepath.FromSlash(f)), maxRuleFileBytes)
 		if err != nil {
 			continue
 		}
-		total += len(data)
-		if total <= 1<<20 {
+		if agent == "codex" {
+			nativeBytes += len(data)
+			if nativeBytes > 32<<10 {
+				break
+			}
+		}
+		if strings.HasPrefix(f, ".claude/rules/") && bytes.HasPrefix(data, []byte("---\n")) {
+			header, _, ok := strings.Cut(string(data[4:]), "\n---\n")
+			var meta struct {
+				Paths []string `yaml:"paths"`
+			}
+			if !ok || yaml.Unmarshal([]byte(header), &meta) != nil || len(meta.Paths) > 32 {
+				continue
+			}
+			matches := len(meta.Paths) == 0
+			for _, scope := range meta.Paths {
+				matches = matches || index.MatchesScope(scope, rel)
+			}
+			if !matches {
+				continue
+			}
+		}
+		c.files[f] = true
+		if textBytes += len(data); textBytes <= 1<<20 {
 			c.texts = append(c.texts, string(data))
+		}
+		// Generated text is authenticated by its manifest and exact file hash.
+		if bytes.Contains(data, []byte("<!-- mex:generated")) {
+			continue
 		}
 		for _, m := range markerRE().FindAllSubmatch(data, 512) {
 			c.ids[string(m[1])] = true
@@ -119,6 +162,9 @@ func loadCoverage(agent, checkout, rel string) coverage {
 }
 
 func (c coverage) covers(it *entries.Item) bool {
+	if c.native.Covers(it.Entry.ID, c.agent, c.rel) {
+		return true
+	}
 	if c.ids[it.Entry.ID] {
 		return true
 	}

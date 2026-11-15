@@ -114,7 +114,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
     || commandName === "edit" || commandName === "wrong" || commandName === "forget"
     || commandName === "what"
-    || commandName === "hints"
+    || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief"
     || commandName === "skills" || commandName === "install" || commandName === "uninstall"
     || commandName === "off" || commandName === "on" || commandName === "capture";
 }
@@ -1457,7 +1457,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 function buildCompletion(shell: string): string {
   const commands = [
     "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget",
-    "doctor", "jobs", "completion", "hints", "what",
+    "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief",
     "telemetry", "config", "feedback", "hub",
   ];
   if (shell === "bash") {

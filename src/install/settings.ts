@@ -9,7 +9,7 @@ export function object(value: unknown): value is ObjectValue {
 // Keep these native events aligned with the two shim profiles. Register all
 // supported events now: changing a command definition would require new trust.
 export const EVENTS: Record<Agent, readonly string[]> = {
-  "claude-code": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact", "SubagentStart", "Stop", "SessionEnd"],
+  "claude-code": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact", "SubagentStart", "Stop", "SessionEnd", "InstructionsLoaded"],
   codex: ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "SubagentStart", "Stop", "SessionEnd"],
 };
 export const CODEX_TRUST_NOTICE = "In Codex, open /hooks once to review and trust MEX's hooks.";

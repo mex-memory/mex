@@ -39,7 +39,12 @@ describe("Go hook to background reporter", () => {
       for (let attempt=0; attempt<11; attempt++) {
         const result=spawnSync(binary,["claude-code","SessionStart"],{input:JSON.stringify({session_id:"PRIVATE_SESSION",cwd:checkout}),cwd:fixture,env,encoding:"utf8",timeout:5000});
         expect(result.status).toBe(0);
-        expect(JSON.parse(result.stdout)).toEqual({});
+        expect(JSON.parse(result.stdout)).toEqual(attempt === 0 ? {
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: expect.stringMatching(/^\[mex [a-f0-9]{24}\]\nPriority: current request > your notes > repo instructions > team entries > hints\.$/),
+          },
+        } : {});
         if (!existsSync(hooksPath)) continue;
         const observed = new DatabaseSync(hooksPath, { readOnly: true });
         try {

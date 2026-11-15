@@ -17,6 +17,7 @@ export function buildKnowledgeCommands(): Command[] {
       await run(opts.json, async () => {
         const { note } = await import("./store.js");
         const saved = note({ text, kind: opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine }, { projectPath: process.cwd() });
+        await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
         else console.log(`Saved personal note ${saved.entry.mex.id} ${saved.label}\n${saved.entry.mex.one_line}`);
       });
@@ -81,6 +82,7 @@ export function buildKnowledgeCommands(): Command[] {
           if (!(error instanceof KnowledgeError) || error.code !== "NOT_FOUND") throw error;
           const { confirmHint } = await import("./hints.js");
           const saved = confirmHint(id, input, options);
+          await queueRuleFiles();
           if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
           else console.log(`Confirmed personal note ${id}\n${saved.entry.mex.one_line}`);
           return;
@@ -91,11 +93,13 @@ export function buildKnowledgeCommands(): Command[] {
           if (!opts.apply) { printPreview(preview, opts.json); return; }
           if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the team change, then pass --apply --expect <revision>.");
           const saved = applyTeamWrite(preview, opts.expect, options, text);
-          if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
-          else console.log(`Updated team entry ${id}`);
+          const native = await sharedRuleFiles(options);
+          if (opts.json) console.log(JSON.stringify({ ok: true, ...saved, native }));
+          else console.log(`Updated team entry ${id}${native.length ? `\nRule files updated in the same change: ${native.join(", ")}` : ""}`);
           return;
         }
         const saved = edit(id, input, options);
+        await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
         else console.log(`Updated personal note ${id}\n${saved.entry.mex.one_line}`);
       });
@@ -131,13 +135,15 @@ export function buildKnowledgeCommands(): Command[] {
           if (!opts.apply) { printPreview(preview, opts.json); return; }
           if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the team change, then pass --apply --expect <revision>.");
           const saved = applyTeamWrite(preview, opts.expect, options);
-          if(action==="wrong"){const {noteProbe}=await import("./what.js");noteProbe(id,"wrong",options);}
-          if (opts.json) console.log(JSON.stringify({ ok: true, id, level: "team", status: "retired", retired: saved.entry.mex.retired }));
-          else console.log(`Retired team entry ${id}: ${saved.entry.mex.retired!.reason}`);
+          if (action === "wrong") (await import("./what.js")).noteProbe(id, "wrong", options);
+          const native = await sharedRuleFiles(options);
+          if (opts.json) console.log(JSON.stringify({ ok: true, id, level: "team", status: "retired", retired: saved.entry.mex.retired, native }));
+          else console.log(`Retired team entry ${id}: ${saved.entry.mex.retired!.reason}${native.length ? `\nRule files updated in the same change: ${native.join(", ")}` : ""}`);
           return;
         }
         const marker = (action === "wrong" ? wrong : forget)(id, reason, { projectPath: process.cwd() });
-        if(action==="wrong"){const {noteProbe}=await import("./what.js");noteProbe(id,"wrong",options);}
+        if (action === "wrong") (await import("./what.js")).noteProbe(id, "wrong", options);
+        await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, level: "personal", status: "retired", ...marker }));
         else console.log(`Retired personal note ${id}: ${marker.retired.reason}`);
       });
@@ -170,8 +176,92 @@ export function buildKnowledgeCommands(): Command[] {
       if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
       else console.log(`${result.active} active hints; ${result.confirmed} confirmed; expiry ${result.expiryMonths} calendar months.`);
     }));
-  return [sessionWhat, save, search, full, change, ...retire, hints];
+  const rules = new Command("rules")
+    .description("Read the repo's rule files (CLAUDE.md, AGENTS.md, Cursor, Copilot, Gemini) into entries and list what needs review")
+    .option("--write", "Also rebuild the agents' rule files from the entries")
+    .option("--now", "With --write: rebuild even while a session is running here")
+    .option("--json", "Print the scan as JSON")
+    .action(async opts => run(opts.json, async () => {
+      const { refreshRuleFiles, formatRules } = await import("./rule-cache.js");
+      const cache = refreshRuleFiles({ projectPath: process.cwd() });
+      const native = opts.write ? (await import("./native.js")).rebuildNative({ projectPath: process.cwd() }, { force: opts.now }) : undefined;
+      if (opts.json) console.log(JSON.stringify({ ok: true, ...cache, ...(native ? { native } : {}) }));
+      else {
+        console.log(formatRules(cache));
+        if (native) console.log(`\n${(await import("./native.js")).formatRebuild(native)}`);
+      }
+    }));
+  const share = new Command("share")
+    .description("Share your strongest notes with the team: preview, then commit them to a new branch (MEX never pushes unless you pass --pr)")
+    .option("--skip <id>", "Leave this note out (repeatable)", (value: string, previous: string[]) => [...previous, value], [])
+    .option("--apply", "Make the share you previewed")
+    .option("--expect <revision>", "The revision the preview printed")
+    .option("--pr", "With --apply: push the share branch and open a pull request")
+    .option("--finish", "Finish a share that was stopped partway")
+    .option("--discard", "Drop a share that was stopped partway")
+    .option("--json", "Print the result as JSON")
+    .action(async opts => run(opts.json, async () => {
+      const { runShare, finishShare, discardShare, pendingShare } = await import("./share.js");
+      const options = { projectPath: process.cwd() };
+      const print = (value: object, text: string) => console.log(opts.json ? JSON.stringify({ ok: true, ...value }) : text);
+      if (opts.finish) {
+        const done = finishShare(options, { pr: opts.pr });
+        print(done, `Finished the share: ${done.entries.length} entries on ${done.branch}.\n${nextStep(done)}`);
+        return;
+      }
+      if (opts.discard) {
+        const dropped = discardShare(options);
+        print(dropped, `Discarded the share to ${dropped.branch}.${dropped.branchKept ? ` Its branch has a commit, so it was kept; delete it with: git branch -D ${dropped.branch}` : ""}`);
+        return;
+      }
+      const waiting = pendingShare(options);
+      if (waiting) throw new KnowledgeError("SHARE_IN_PROGRESS", `A share to ${waiting.branch} stopped at "${waiting.step}". Run mex share --finish or mex share --discard.`);
+      if (opts.apply) {
+        if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the share with mex share, then pass --apply --expect <revision>.");
+        const done = runShare(options, opts.expect, { pr: opts.pr, skip: opts.skip });
+        print(done, `Shared ${done.entries.length} entries on ${done.branch} (${done.files.length} files). Your branch wasn't touched.\n${nextStep(done)}`);
+        return;
+      }
+      const { prepareShare } = await import("./share-plan.js");
+      const plan = prepareShare(options, { skip: opts.skip });
+      if (opts.json) { const { entries: _entries, ...shown } = plan; console.log(JSON.stringify({ ok: true, applied: false, ...shown })); return; }
+      const lines = [plan.share.length ? `Share ${plan.share.length} with the team, on a new branch ${plan.branch} from ${plan.baseName}:` : "Nothing to share yet."];
+      for (const item of plan.share) lines.push(`  ${item.id}  ${item.one_line}`);
+      if (plan.blocked.length) { lines.push("", "Held back:"); for (const b of plan.blocked) lines.push(`  ${b.id}  ${b.reason}`); }
+      if (plan.skipped.length) { lines.push("", "Not offered:"); for (const s of plan.skipped) lines.push(`  ${s.id}  ${s.reason}`); }
+      if (plan.share.length) lines.push("", "Leave one out with --skip <id>. To share exactly this:", `  mex share --apply --expect ${plan.revision}    (add --pr to open a pull request)`);
+      console.log(lines.join("\n"));
+    }));
+  const brief = new Command("brief")
+    .description("Preview the session-start brief and native coverage without recording a delivery")
+    .addOption(new Option("--agent <agent>", "Recipient agent").choices(["claude-code", "codex"]).makeOptionMandatory())
+    .option("--path <path>", "Area or file within this checkout")
+    .option("--json", "Include the coverage map and conservative token bound")
+    .action(async opts => run(opts.json, async () => {
+      const { previewBrief } = await import("./brief.js");
+      const result = previewBrief({ projectPath: process.cwd() }, opts.agent, opts.path);
+      console.log(opts.json ? JSON.stringify(result) : result.text);
+    }));
+  return [sessionWhat, save, search, full, change, ...retire, hints, rules, share, brief];
 }
+/** After a share: the pull request, or the push command (MEX doesn't push on its own). */
+function nextStep(done: { branch: string; pr?: string }): string {
+  return done.pr ? `Pull request: ${done.pr}` : `Push it when you're ready: git push -u origin ${done.branch}`;
+}
+
+/** Shared rule files change in the same working-tree change as the team entry. */
+async function sharedRuleFiles(options: { projectPath: string }): Promise<string[]> {
+  const { rebuildNative } = await import("./native.js");
+  const result = rebuildNative(options, { sharedOnly: true, force: true });
+  return [...result.written ?? [], ...result.removed ?? []];
+}
+
+/** Personal note changes reach the hidden local rule files between sessions. */
+async function queueRuleFiles(): Promise<void> {
+  const { queueNativeRebuild } = await import("./native-queue.js");
+  queueNativeRebuild(process.cwd());
+}
+
 function printPreview(preview: { revision: string; diff: string }, json: boolean | undefined): void {
   if (json) console.log(JSON.stringify({ ok: true, applied: false, preview }));
   else console.log(`${preview.diff}\nTo apply this exact change, repeat the command with --apply --expect ${preview.revision}`);

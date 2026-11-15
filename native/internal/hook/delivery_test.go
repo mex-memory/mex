@@ -17,7 +17,9 @@ func TestDeliveryLifecycleBehindConsentAndStatusUnion(t *testing.T) {
 	root := repo(t, t.TempDir())
 	register(t, h, root, projectID, "on", "")
 	_, out := run(t, []string{"claude-code", "SessionStart"}, bytes.NewBufferString(sessionStart(root)), env)
-	assertEmptyReply(t, 0, out)
+	if !strings.Contains(out, "Priority:") {
+		t.Fatal(out)
+	}
 	beats, err := localrecord.HookHeartbeats(localrecord.Location{Hooks: filepath.Join(h.mex, "hooks.db")}, time.Now().Add(-time.Hour))
 	if err != nil || len(beats["claude-code"]) != 1 {
 		t.Fatal(beats, err)

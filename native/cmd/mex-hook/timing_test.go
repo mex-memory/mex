@@ -340,8 +340,7 @@ func measureNoOp(t *testing.T, counters bool) {
 		callOnce(t, shim, mexHome)
 		callOnce(t, floor, mexHome)
 	}
-	before := 0
-	beforePending := 0
+	before, committedBefore := 0, 0
 	var observer *sql.DB
 	if counters {
 		var err error
@@ -354,8 +353,14 @@ func measureNoOp(t *testing.T, counters bool) {
 		// Reuse one read-only observer. Reopening a pager between every call
 		// adds unrelated filesystem/sidecar work. QueryRow.Scan completes each
 		// read transaction before the next hook starts; no read lock is held.
-		before = readHookCount(t, observer)
-		beforePending = pendingHookCalls(t, location)
+		committedBefore = readHookCount(t, observer)
+		// Warmup calls can still be deferred under the production write budget.
+		// Include those calls in the baseline before a measured call flushes
+		// them; otherwise that flush looks like duplicate measured counters.
+		before = committedBefore + pendingHookCalls(t, location)
+		if before != 10 {
+			t.Fatalf("warmup calls: counted=%d pending=%d want=10", committedBefore, before-committedBefore)
+		}
 	}
 	const runs = 200
 	// Measure actual captured calls. A write that misses its production
@@ -369,7 +374,7 @@ func measureNoOp(t *testing.T, counters bool) {
 	}
 	shimRuns := make([]time.Duration, 0, runs)
 	floorRuns := make([]time.Duration, 0, runs)
-	attempts, last := 0, before
+	attempts, last := 0, committedBefore
 	for attempts < limit && len(shimRuns) < runs {
 		attempts++
 		shimTime := callOnce(t, shim, mexHome)
@@ -379,7 +384,7 @@ func measureNoOp(t *testing.T, counters bool) {
 			if count == last {
 				continue // deferred to a later call
 			}
-			if count < last || count-before > attempts+beforePending {
+			if count < last || count-before > attempts {
 				t.Fatalf("counter count changed unexpectedly: before=%d after=%d attempts=%d", last, count, attempts)
 			}
 			last = count
@@ -392,7 +397,7 @@ func measureNoOp(t *testing.T, counters bool) {
 	}
 	if counters {
 		// No call is lost: every attempt is either counted or still pending.
-		if count, pending := readHookCount(t, observer)-before, pendingHookCalls(t, location); count+pending != attempts+beforePending {
+		if count, pending := readHookCount(t, observer)-before, pendingHookCalls(t, location); count+pending != attempts {
 			t.Fatalf("counter calls: counted=%d pending=%d attempts=%d", count, pending, attempts)
 		}
 		t.Logf("counter capture samples: recorded=%d attempted=%d skipped=%d limit=%d", runs, attempts, attempts-runs, limit)
