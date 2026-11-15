@@ -255,3 +255,16 @@ func TestCopilotFailsOpen(t *testing.T) {
 	})
 	assertEmptyReply(t, code, out)
 }
+
+// Kiro adds any stdout to the model's context, so "do nothing" is no output.
+func TestKiroOffIsSilent(t *testing.T) {
+	code, out := run(t, []string{"kiro", "agentSpawn"}, strings.NewReader("{}"), func(k string) string {
+		if k == "MEX_OFF" {
+			return "1"
+		}
+		return ""
+	})
+	if code != 0 || out != "" {
+		t.Fatalf("code %d out %q", code, out)
+	}
+}

@@ -1,0 +1,1 @@
+{"hook_event_name":"preToolUse","session_id":"kr-01","cwd":"/home/dev/shop","tool_name":"fs_write","tool_input":{"command":"str_replace","path":"src/cart.ts","old_str":"a","new_str":"b"}}

@@ -17,9 +17,12 @@ import (
 
 	"github.com/mex-memory/mex/native/delivery"
 	"github.com/mex-memory/mex/native/internal/adapter"
-	_ "github.com/mex-memory/mex/native/internal/adapter/claude"  // registers the profile
-	_ "github.com/mex-memory/mex/native/internal/adapter/codex"   // registers the profile
-	_ "github.com/mex-memory/mex/native/internal/adapter/copilot" // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/claude"   // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/codex"    // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/copilot"  // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/devin"    // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/kiro"     // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/opencode" // registers the profile
 	"github.com/mex-memory/mex/native/internal/contract"
 	localrecord "github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"

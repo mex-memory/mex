@@ -1,0 +1,1 @@
+{"session_id":"dv-01","transcript_path":"/home/dev/.devin/sessions/dv-01.jsonl","cwd":"/home/dev/shop","hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"/home/dev/shop/src/cart.ts","old_string":"a","new_string":"b"}}
