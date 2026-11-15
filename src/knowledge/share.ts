@@ -16,7 +16,7 @@ import { containedDirectory, readBoundedTextFile } from "./files.js";
 import { currentVerdicts } from "./check.js";
 import { rebuildNative } from "./native.js";
 import { scanRuleFiles } from "./rule-files.js";
-import { git, prepareShare, type SharePlan } from "./share-plan.js";
+import { git, prepareShare, requireGitIdentity, type SharePlan } from "./share-plan.js";
 import { clearShareState, firstLink, readShareState, removeWorktree, saveShareState, type ShareState, type ShareStep } from "./share-state.js";
 import { applyTeamWrite, prepareTeamWrite } from "./team.js";
 
@@ -137,6 +137,7 @@ export function runShare(options: KnowledgeOptions, expected: string, run: Share
   const plan = prepareShare(options, { now: run.now, skip: run.skip });
   if (plan.revision !== expected) throw new KnowledgeError("STALE_PREVIEW", "What would be shared changed; run mex share again to see it.");
   if (!plan.entries.length) throw new KnowledgeError("SHARE_NOTHING", "Nothing to share.");
+  requireGitIdentity(plan.root);
   const state: ShareState = {
     version: 1, branch: plan.branch, base: plan.base, step: "started", ids: plan.entries.map(e => e.entry.mex.id),
     worktree: join(dir, `share-${randomBytes(4).toString("hex")}`), started: (run.now ?? new Date()).toISOString().slice(0, 10),
@@ -189,6 +190,7 @@ export function finishShare(options: KnowledgeOptions, run: ShareRun = {}): Shar
     clearShareState(dir);
     throw new KnowledgeError("SHARE_NONE", "That share had created nothing yet; run mex share again.");
   }
+  if (state.step !== "committed") requireGitIdentity(root);
   // Rebuild the plan from the same notes, minus any that changed since.
   let plan: SharePlan | undefined;
   if (ORDER.indexOf(state.step) < ORDER.indexOf("written")) {

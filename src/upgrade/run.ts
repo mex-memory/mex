@@ -8,7 +8,7 @@ import { realPath } from "../record/project.js";
 import { knowledgeProject, type KnowledgeOptions } from "../knowledge/context.js";
 import { containedDirectory, createEntryFile } from "../knowledge/files.js";
 import { KnowledgeError, parseEntry } from "../knowledge/entry.js";
-import { git, defaultBase } from "../knowledge/share-plan.js";
+import { git, defaultBase, requireGitIdentity } from "../knowledge/share-plan.js";
 import { firstLink, removeWorktree } from "../knowledge/share-state.js";
 import { atomicCreateArtifact, atomicReplaceArtifact, withContainedArtifactLock } from "../team/artifacts/filesystem.js";
 import { revisionOf } from "../team/artifacts/revision.js";
@@ -211,6 +211,7 @@ export async function runUpgrade(options: KnowledgeOptions, expected: string, ru
   const plan = prepareUpgrade(options, run.now);
   if (!plan.ready || plan.revision !== expected) throw new KnowledgeError("STALE_PREVIEW", "The upgrade changed or has blockers; run mex upgrade again.");
   if (!plan.tracked.length && !plan.local.length && !plan.personal.length && !plan.assets.caches.length && !plan.assets.hook) throw new KnowledgeError("UPGRADE_NOTHING", "Nothing needs upgrading.");
+  if (plan.tracked.length) requireGitIdentity(plan.root);
   const dir = projectDirectory(options, true)!;
   return withContainedArtifactLock(plan.home, `projects/${plan.projectId}` as RepoRelativePath, "upgrade.lock", () => {
     if (json(dir, STATE)) throw new KnowledgeError("UPGRADE_IN_PROGRESS", "An upgrade is pending; use --finish or --discard.");
@@ -227,7 +228,9 @@ export async function finishUpgrade(options: KnowledgeOptions, run: UpgradeRun =
   return withContainedArtifactLock(p.location.home, `projects/${p.projectId}` as RepoRelativePath, "upgrade.lock", () => {
     const value = json(dir, STATE);
     if (!value) throw new KnowledgeError("UPGRADE_NONE", "No unfinished upgrade.");
-    return complete(dir, assertState(value, options, dir), run);
+    const state = assertState(value, options, dir);
+    if (state.plan.tracked.length && state.step !== "committed") requireGitIdentity(state.plan.root);
+    return complete(dir, state, run);
   });
 }
 /** Discard pending tracked output. Already-applied personal/local changes stay. */

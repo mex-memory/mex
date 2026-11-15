@@ -45,6 +45,16 @@ function tryGit(root: string, ...args: string[]): string | undefined {
   try { return git(root, ...args); } catch { return undefined; }
 }
 
+/**
+ * The commit MEX makes needs a Git author. Asked before anything changes, so a
+ * fresh machine gets a clear instruction instead of a half-finished run.
+ */
+export function requireGitIdentity(root: string): void {
+  if (tryGit(root, "var", "GIT_AUTHOR_IDENT") === undefined || tryGit(root, "var", "GIT_COMMITTER_IDENT") === undefined) {
+    throw new KnowledgeError("GIT_IDENTITY", "Git doesn't know who you are. Set it with git config --global user.name \"Your Name\" and git config --global user.email you@example.com, then run this again.");
+  }
+}
+
 /** The default branch's commit: origin's HEAD, else main or master, else your HEAD. */
 export function defaultBase(root: string): { sha: string; name: string } {
   const origin = tryGit(root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD");
