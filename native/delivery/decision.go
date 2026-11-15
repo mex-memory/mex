@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/shellparse"
@@ -20,14 +21,19 @@ var decisionWords = []string{"adopt", "adopted", "avoid", "chose", "choose", "de
 
 const decisionTrigger = 2
 
-var nonWord = regexp.MustCompile(`[^\p{L}\p{N}]+`)
-var shaPattern = regexp.MustCompile(`^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
-var messageFlag = regexp.MustCompile(`--message=(?:"([^"]*)"|'([^']*)'|(\S+))`)
+func lazyRegexp(pattern string) func() *regexp.Regexp {
+	return sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(pattern) })
+}
+
+// Compiled on first use: package-level compiles would cost every hook call.
+var nonWord = lazyRegexp(`[^\p{L}\p{N}]+`)
+var shaPattern = lazyRegexp(`^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
+var messageFlag = lazyRegexp(`--message=(?:"([^"]*)"|'([^']*)'|(\S+))`)
 
 // DecisionWords returns the distinct decision phrases in a message, matched on
 // word boundaries, ignoring case.
 func DecisionWords(message string) []string {
-	text := " " + strings.TrimSpace(nonWord.ReplaceAllString(strings.ToLower(message), " ")) + " "
+	text := " " + strings.TrimSpace(nonWord().ReplaceAllString(strings.ToLower(message), " ")) + " "
 	var out []string
 	for _, w := range decisionWords {
 		if strings.Contains(text, " "+w+" ") {
@@ -70,7 +76,7 @@ func commitMessage(command string) string {
 				i++
 			case strings.HasPrefix(w, "--message="):
 				// Words splits a quote that starts mid-word, so read it from the segment.
-				if m := messageFlag.FindStringSubmatch(segment); m != nil {
+				if m := messageFlag().FindStringSubmatch(segment); m != nil {
 					parts = append(parts, m[1]+m[2]+m[3])
 				}
 			case strings.HasPrefix(w, "-m") && len(w) > 2 && !strings.HasPrefix(w, "--"):
@@ -143,7 +149,7 @@ func DecisionPrompt(ev contract.Event, recordDirectory string) string {
 			SHA     string
 			Words   []string
 		}
-		if json.Unmarshal(b, &c) != nil || c.Version != 1 || !shaPattern.MatchString(c.SHA) || len(c.Words) < decisionTrigger {
+		if json.Unmarshal(b, &c) != nil || c.Version != 1 || !shaPattern().MatchString(c.SHA) || len(c.Words) < decisionTrigger {
 			return ""
 		}
 		if seen(recordDirectory, "c-"+c.SHA) || seen(recordDirectory, sessionMarker(ev)) || !claim(recordDirectory, "c-"+c.SHA) {
