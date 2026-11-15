@@ -790,6 +790,7 @@ describe("no unscoped scaffold writes", () => {
       "src/global-config.ts": "writes the global config and telemetry id",
       "src/events.ts": "appends to events/decisions.jsonl",
       "src/knowledge/files.ts": "publishes and replaces bounded personal notes and hints through exclusive staging, revision checks and contained local publication under the MEX project-data home; never edits a repository file",
+      "src/knowledge/rule-cache.ts": "writes only the derived rule-file scan (rule-files.json) under the MEX project-data home; never a repository file",
       "src/knowledge/hints.ts": "removes only disposable hint copies under the MEX project-data home after durable retirement or personal confirmation; refuses overlap with host memory and never writes host or repository files",
       "src/file-index/pending.ts": "removes and restores only the index-pending marker in the machine record directory; never a repo file",
       "src/file-index/shifts.ts": "writes and removes only line-shift files under the machine record's project index folder; never a repo file",
