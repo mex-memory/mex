@@ -22,7 +22,7 @@ export interface FileEvidence {
   baselines: Array<{ hash: string; commit: string | null; diff: string | null }>;
 }
 export interface Evidence {
-  checkout: string; position: Position; entries: Array<{ id: string; entry: KnowledgeEntry; checks_now: CheckResult[] }>;
+  checkout: string; position: Position; entries: Array<{ id: string; entry: KnowledgeEntry; checks_now: CheckResult[]; rule_change?: string[] }>;
   files: FileEvidence[];
 }
 
@@ -37,9 +37,11 @@ export function coherent(candidates: Candidate[], snapshot: Evidence): boolean {
 }
 
 export function git(checkout: string, args: string[], bytes = 128 << 10): Promise<string | undefined> {
+  const env={...process.env,GIT_NO_REPLACE_OBJECTS:"1"};
+  for(const key of ["GIT_DIR","GIT_WORK_TREE","GIT_COMMON_DIR","GIT_INDEX_FILE","GIT_NAMESPACE","GIT_PREFIX"]) delete (env as NodeJS.ProcessEnv)[key];
   return new Promise(resolve => {
     execFile("git", ["--literal-pathspecs", "-C", checkout, ...args], {
-      encoding: "utf8", windowsHide: true, timeout: 5_000, maxBuffer: bytes,
+      encoding: "utf8", windowsHide: true, timeout: 5_000, maxBuffer: bytes, env,
     }, (error, stdout) => resolve(error ? undefined : stdout));
   });
 }
@@ -126,7 +128,8 @@ export async function evidence(checkout: string, candidates: Candidate[], at: Po
     }
     files.push({ path, current, current_hash: current === null ? null : hash(current), baselines });
   }
-  return { checkout, position: at, entries: candidates.map(c => ({ id: c.item.id, entry: c.entry, checks_now: c.checks })), files };
+  return { checkout, position: at, entries: candidates.map(c => ({ id: c.item.id, entry: c.entry, checks_now: c.checks,
+    ...(c.item.rule_evidence?.length ? { rule_change: c.item.rule_evidence } : {}) })), files };
 }
 
 /** Exact proof immediately before persisting a response; no result survives a checkout switch. */

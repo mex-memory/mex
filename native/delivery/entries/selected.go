@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"github.com/mex-memory/mex/native/internal/noteguard"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,22 @@ import (
 // Selected loads canonical bytes only for selected prompt candidates, their
 // companions and prior epoch entries needed for similarity. Light-cache paths
 // are leads: containment, regular files, ids and hashes are proved again.
-func Selected(home, project, checkout string, snap Snapshot, wanted map[string]bool) (Snapshot, error) {
+func Selected(home, project, checkout string, snap Snapshot, wanted map[string]bool) (answer Snapshot, failure error) {
+	if !validComponent(project) {
+		return Snapshot{}, ErrInvalid
+	}
+	if home != "" && project != "" {
+		check, err := noteguard.Begin(filepath.Join(home, "projects", project, "notes"))
+		if err != nil {
+			return Snapshot{}, err
+		}
+		defer func() {
+			if err := check(); err != nil {
+				answer, failure = Snapshot{}, err
+			}
+		}()
+	}
+
 	if len(wanted) > 1000 {
 		return Snapshot{}, ErrInvalid
 	}

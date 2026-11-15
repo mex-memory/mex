@@ -89,13 +89,14 @@ describe("where judge fixes land", () => {
     const row = f.reviews()[0]!; expect(row.reason).toContain("checked by model");
     expect(JSON.parse(writer.setting(projectId, row.id as string)!).judgement.rewrite.text).toContain("new behavior");
   });
-  it.each(["branch", "head", "source", "entry", "checks", "ownership", "retired", "consent", "cancelled", "other-receipt", "fix-branch"])("re-proves %s after showing a preview", async what => {
+  it.each(["branch", "head", "source", "entry", "checks", "pending-rule-proof", "ownership", "retired", "consent", "cancelled", "other-receipt", "fix-branch"])("re-proves %s after showing a preview", async what => {
     const f = await staged(); f.proof(); await routeFixes(writer, f.job, f.report); f.acknowledge(what === "other-receipt" ? "other-session" : "session");
     if (what === "branch") git("switch", "-c", "unrelated");
     if (what === "head") git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "new head");
     if (what === "source") write(join(root, "api.ts"), "changed again\n");
     if (what === "entry") write(f.path, f.before+"Someone edited this.\n");
     if (what === "checks") f.report.results![0]!.checks[0]!.now = "new index observation";
+    if (what === "pending-rule-proof") f.report.items![0]!.rule_evidence_pending=true;
     if (what === "ownership") f.proof({ session_id: "other-session" });
     if (what === "retired") writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(projectId, `knowledge.retired.${id}`, "{}");
     if (what === "consent") writer.db.prepare("UPDATE checkouts SET state='off' WHERE path=?").run(root);
