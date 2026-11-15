@@ -30,6 +30,10 @@ type AdviceAdvisory struct {
 	Label    string          `json:"label"`
 	Receipts []AdviceReceipt `json:"receipts"`
 	Partial  bool            `json:"partial"`
+	Origin   struct {
+		Kind           string `json:"kind"`
+		HeldInputsHash string `json:"held_inputs_hash"`
+	} `json:"origin"`
 }
 
 var adviceID = regexp.MustCompile(`^advice\.[a-f0-9]{24}$`)

@@ -249,6 +249,10 @@ unrecognized commands use a generic label. Failed commands and unknown outcomes
 are explicit. Recognized network/publication operations list possible outside
 repository effects as unverified; nothing attempts to undo them. Repeated
 identical observations are deduplicated. Each receipt keeps at most 64 effects.
+Successful edits exclude explicit failure events and paths with control characters.
+Each action retains the branch/HEAD and check-input fingerprint observed in the
+same ledger transaction, so repeating an action across a check transition is
+kept separate from repeating it against the same inputs.
 
 Broken complete checks prepare local advisories before model/cap admission, in
 pages of five entries. A model rewrite can also prepare an advisory, labelled
@@ -262,11 +266,15 @@ them when the bounded hooks ledger is pruned.
 `Outdated since commit C` requires a contiguous broken-to-held transition in at
 most 32 first-parent commits. The real free evaluator checks historical Git
 blobs in memory, without checkout writes, command execution, index substitution
-or filesystem fallback. Omitted/unavailable inputs never masquerade as missing
-files. A receipt is classified as an earlier held use only when its recorded
-input fingerprint matches the proved held snapshot; a HEAD alone cannot prove
-that a working tree was clean. Missing, shallow, unsupported, oversized or
-uncommitted history leaves timing unknown.
+or filesystem fallback. Omitted/unavailable inputs and historical symlink or
+submodule parents never masquerade as missing files. Parent checks do not list
+unrelated siblings. The transition is recomputed when HEAD changes, so recovery
+and a second break cannot inherit an obsolete commit. A delivery's input
+fingerprint is compared with the proved held snapshot; its follow-up actions
+are assessed separately using their own recorded inputs. A valid delivery does
+not certify later actions, and a HEAD alone cannot prove a clean working tree.
+Missing, shallow, unsupported, oversized or uncommitted history leaves timing
+unknown. Older actions without their own provenance remain unverified.
 
 `mex wrong <id> <reason> --all-along` explicitly confirms that every recorded use
 is suspect, after the usual retirement/preview gates succeed. Generic `mex wrong`
@@ -284,6 +292,9 @@ example, a Codex Stop waits for a later supported hook. A generic broken-entry
 correction also names current-epoch follow-ups when no historical advisory is
 ready. Correction text is bounded to the reserved lane; omitted observations
 point to the report.
+Each moment runs one advisory batch, and its actual reserved debit leaves the
+remaining lane for generic corrections and failure recipes. Already-corrected
+and never-delivered entries do not consume that correction allowance.
 
 `mex report [--json]` reads local advisories on the current checkout and named
 branch, including stored observations after ledger retention. It performs no
@@ -297,5 +308,7 @@ The native hint contains at most 32 advisory IDs per branch, with each authorita
 payload bounded to 64 KiB. An advisory retains at most 128 recent receipts, with
 explicit partial flags when evidence is bounded. Reports read at most 200
 advisories and merge available live effects with the durable snapshots. These
+receipt and report limits apply after checkout, branch and version selection,
+so unrelated branches cannot occupy all matching-result slots. These
 are implementation limits, not completeness or quality measurements. All slice-4
 fixtures are deterministic; no model call is needed to test either timeline.

@@ -88,7 +88,7 @@ func TestAdvisoryCorrectsExactCurrentEpochWithoutAnOrdinaryMoment(t *testing.T) 
 				t.Fatal(err)
 			}
 			req := baseRequest(f.event(contract.SessionStart), f.env(), f.project, f.root)
-			req.Candidates = []record.DeliveryCandidate{{EntryID: "mx_advice", Moment: "read", Form: "full", Tokens: 2000, Action: "given", Reserved: true}}
+			req.Candidates = []record.DeliveryCandidate{{EntryID: "mx_advice", Moment: "read", Form: "full", Tokens: 2000, Action: "given"}}
 			res, err := h.CheckAndMark(req)
 			if err != nil {
 				t.Fatal(err)
@@ -132,5 +132,76 @@ func TestAdvisoryCorrectsExactCurrentEpochWithoutAnOrdinaryMoment(t *testing.T) 
 				mustBeEmpty(t, out)
 			}
 		})
+	}
+}
+
+func TestAdviceDoesNotRecordFailedEditsOrTerminalControls(t *testing.T) {
+	for _, v := range []toolView{
+		{name: contract.ToolEdit, rel: "src/a.ts", failed: true, output: &contract.ToolOutput{OK: true}},
+		{name: contract.ToolEdit, rel: "src/\x1b[31m.ts", output: &contract.ToolOutput{OK: true}},
+		{name: contract.ToolEdit, rel: "src/\tname.ts", output: &contract.ToolOutput{OK: true}},
+	} {
+		if kind, detail := adviceEffect(v); kind != "" {
+			t.Fatalf("recorded invalid edit: %s %q", kind, detail)
+		}
+	}
+}
+
+func TestOneAdvisoryBatchPerMomentSharesTheReservedLane(t *testing.T) {
+	f := newFixture(t)
+	path := f.file("src/a.ts", "x")
+	f.entry(spec{id: "mx_advice", kind: "pitfall", scope: "src/a.ts", oneLine: "Old advice."})
+	f.verdict("mx_advice", "held")
+	h, err := record.OpenHooks(record.Location{Hooks: filepath.Join(f.dir, "hooks.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := baseRequest(f.event(contract.SessionStart), f.env(), f.project, f.root)
+	ids := []string{"mx_advice", "mx_othera", "mx_otherb"}
+	for _, id := range ids {
+		req.Candidates = append(req.Candidates, record.DeliveryCandidate{EntryID: id, Moment: "read", Form: "full", Tokens: 1, Action: "given"})
+	}
+	res, err := h.CheckAndMark(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Close()
+	first := seedAdvice(t, f, f.session, f.agentID, 0, res.Receipts[0].ID)
+	db, err := sql.Open("sqlite", filepath.Join(f.dir, "record.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var hints []string
+	for i, id := range ids {
+		key := first
+		if i > 0 {
+			key = "advice." + strings.Repeat(string(rune('c'+i)), 24)
+		}
+		a := record.AdviceAdvisory{Version: 1, ID: key, Checkout: f.root, Branch: "refs/heads/work", Entry: id, Text: "Correction: " + strings.Repeat("word ", 200), Label: "person-confirmed", Receipts: []record.AdviceReceipt{{ID: res.Receipts[i].ID, Session: f.session, Agent: f.agentID, Epoch: 0}}}
+		data, _ := json.Marshal(a)
+		if _, err = db.Exec("INSERT OR REPLACE INTO settings VALUES(?,?,?)", f.project, key, string(data)); err != nil {
+			t.Fatal(err)
+		}
+		hints = append(hints, key)
+	}
+	data, _ := json.Marshal(hints)
+	if err = os.WriteFile(filepath.Join(f.dir, "judge-advice", place.ShortHash(f.root+"\x00refs/heads/work")+".json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for call := 0; call < 3; call++ {
+		mustHave(t, f.send(f.event(contract.PostToolBatch, read(path, "x"))), "Correction:")
+		hooks := fixtureHooksDB(t, f.dir)
+		var tokens, n int
+		if err = hooks.QueryRow("SELECT reserved_tokens FROM epochs WHERE session_id=?", f.session).Scan(&tokens); err != nil {
+			t.Fatal(err)
+		}
+		if err = hooks.QueryRow("SELECT count(*) FROM deliveries WHERE moment='correction'").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		hooks.Close()
+		if tokens > (call+1)*reservedLane || n != call+1 {
+			t.Fatalf("call %d tokens=%d corrections=%d", call, tokens, n)
+		}
 	}
 }

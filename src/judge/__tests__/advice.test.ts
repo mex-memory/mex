@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -124,4 +124,85 @@ it("keeps temporal command associations out of advice-following estimates",()=>{
   expect(summary()).toMatchObject({gave:1,closedDeliveries:1,estimatedFalse:1});
   hooks.prepare("INSERT INTO followups(delivery_id,kind,detail) VALUES('unrelated','followed',NULL)").run();
   expect(summary().estimatedFalse).toBe(0);
+});
+
+it("recomputes the transition after recovery and a second break",async()=>{
+  receipt("before",baseline);
+  writeFileSync(join(root,"package.json"),current); const first=commit("first break");
+  await refreshAdvice(writer,project,root,report(),await position(root),()=>true);
+  expect((await adviceReport({projectPath:root,home})).advisories[0]!.origin).toMatchObject({kind:"outdated-since",commit:first});
+  writeFileSync(join(root,"package.json"),old); commit("recovery");
+  writeFileSync(join(root,"package.json"),current); const second=commit("second break");
+  await refreshAdvice(writer,project,root,report(),await position(root),()=>true);
+  expect((await adviceReport({projectPath:root,home})).advisories[0]!.origin).toMatchObject({kind:"outdated-since",commit:second});
+  // An unsupported new history must not inherit the prior transition either.
+  git("checkout","--orphan","replacement"); git("rm","--cached","package.json"); commit("unrelated history");
+  git("branch","-M","work");
+  await refreshAdvice(writer,project,root,report(),await position(root),()=>true);
+  expect((await adviceReport({projectPath:root,home})).advisories[0]!.origin).toEqual({kind:"unknown"});
+});
+
+it("finds matching receipts before applying the per-entry scan bound",async()=>{
+  receipt("relevant",baseline);
+  for(let n=0;n<130;n++) receipt(`other-${n}`,baseline,"refs/heads/other");
+  writeFileSync(join(root,"package.json"),current); commit("break");
+  await refreshAdvice(writer,project,root,report(),await position(root),()=>true);
+  expect((await adviceReport({projectPath:root,home})).advisories[0]?.receipts.map(r=>r.id)).toEqual(["relevant"]);
+});
+
+it("filters report checkout and branch before its work bound",async()=>{
+  receipt("relevant",baseline); await wrongAllAlong("mx_advice",{projectPath:root,home});
+  const existing=writer.db.prepare("SELECT key,value FROM settings WHERE key GLOB 'advice.*'").get()!;
+  const value=JSON.parse(String(existing.value));
+  const put=writer.db.prepare("INSERT INTO settings VALUES(?,?,?)"), review=writer.db.prepare("INSERT INTO review(id,project_id,entry_id,reason,state,created_at) VALUES(?,?,?,'other','pending','2099-01-01')");
+  for(let n=0;n<201;n++) {
+    const id=`advice.${n.toString(16).padStart(24,"0")}`;
+    put.run(project,id,JSON.stringify({...value,id,branch:"refs/heads/other"})); review.run(id,project,"mx_advice");
+  }
+  const result=await adviceReport({projectPath:root,home});
+  expect(result.advisories).toHaveLength(1); expect(result.partial).toBe(false);
+});
+
+it.skipIf(process.platform==="win32")("never treats a historical symlink parent as a missing target",async()=>{
+  mkdirSync(join(root,"src")); writeFileSync(join(root,"src/config.json"),old);
+  git("add","src"); git("-c","commit.gpgsign=false","commit","-qm","directory baseline");
+  const value=note(); value.mex.checks[0]!.target={file:"src/config.json",pointer:"/packageManager"}; value.mex.checks[0]!.files={"src/config.json":hash(old)};
+  mkdirSync(join(root,"backing")); writeFileSync(join(root,"backing/config.json"),old);
+  rmSync(join(root,"src"),{recursive:true}); symlinkSync("backing",join(root,"src"));
+  git("add","src","backing"); git("-c","commit.gpgsign=false","commit","-qm","same content through a link");
+  unlinkSync(join(root,"src")); mkdirSync(join(root,"src")); writeFileSync(join(root,"src/config.json"),current);
+  git("add","src"); git("-c","commit.gpgsign=false","commit","-qm","actual break");
+  expect(await adviceOrigin(root,value,serializeEntry(value),await position(root))).toEqual({kind:"unknown"});
+});
+
+it("assesses actions independently of an earlier valid delivery",async()=>{
+  receipt("before",baseline);
+  writeFileSync(join(root,"package.json"),current); commit("break");
+  await refreshAdvice(writer,project,root,report(),await position(root),()=>true);
+  const value=(await adviceReport({projectPath:root,home})).advisories[0]!;
+  expect(value.origin.kind).toBe("outdated-since"); if(value.origin.kind!=="outdated-since") throw Error("missing transition");
+  const insert=hooks.prepare("INSERT INTO followups(delivery_id,kind,detail) VALUES('before','command',?)");
+  insert.run(JSON.stringify({version:1,key:"c".repeat(64),summary:"ran before the change",external:false,observed:{branch:"refs/heads/work",head:baseline,verdict:"held",inputs_hash:value.origin.held_inputs_hash}}));
+  insert.run(JSON.stringify({version:1,key:"d".repeat(64),summary:"ran after the change",external:false,observed:{branch:"refs/heads/work",head:git("rev-parse","HEAD"),verdict:"broken",inputs_hash:"sha256:"+"e".repeat(64)}}));
+  const rendered=formatAdvice((await adviceReport({projectPath:root,home})).advisories[0]!);
+  expect(rendered).toContain("ran before the change — checks held at this action");
+  expect(rendered).toContain("ran after the change — review this action (timing unverified)");
+  expect(rendered).not.toContain("inputs held before the change");
+});
+
+it("proves a nested-file transition without enumerating unrelated siblings",async()=>{
+  mkdirSync(join(root,"src")); writeFileSync(join(root,"src/config.json"),old);
+  for(let n=0;n<800;n++) writeFileSync(join(root,"src",`${String(n).padStart(3,"0")}-${"x".repeat(48)}.ts`),"x");
+  git("add","src"); git("-c","commit.gpgsign=false","commit","-qm","nested baseline");
+  const value=note(); value.mex.checks[0]!.target={file:"src/config.json",pointer:"/packageManager"}; value.mex.checks[0]!.files={"src/config.json":hash(old)};
+  writeFileSync(join(root,"src/config.json"),current); git("add","src/config.json"); git("-c","commit.gpgsign=false","commit","-qm","nested break");
+  expect(await adviceOrigin(root,value,serializeEntry(value),await position(root))).toMatchObject({kind:"outdated-since",commit:git("rev-parse","HEAD")});
+});
+
+it("discovers distinct historical branches before the receipt bound",async()=>{
+  receipt("other",baseline,"refs/heads/other");
+  for(let n=0;n<130;n++) receipt(`current-${n}`,baseline);
+  await wrongAllAlong("mx_advice",{projectPath:root,home});
+  git("switch","-c","other");
+  expect((await adviceReport({projectPath:root,home})).advisories[0]?.receipts.map(r=>r.id)).toEqual(["other"]);
 });

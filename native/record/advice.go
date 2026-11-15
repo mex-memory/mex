@@ -3,9 +3,11 @@ package record
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
+	"unicode"
 )
 
 // Structured payloads use existing open detail fields; neither database's
@@ -19,10 +21,27 @@ type AdviceContext struct {
 	InputsHash string `json:"inputs_hash"`
 }
 type AdviceEffect struct {
-	Version  int    `json:"version"`
-	Key      string `json:"key"`
-	Summary  string `json:"summary"`
-	External bool   `json:"external"`
+	Version  int                `json:"version"`
+	Key      string             `json:"key"`
+	Summary  string             `json:"summary"`
+	External bool               `json:"external"`
+	Observed *AdviceObservation `json:"observed,omitempty"`
+}
+type AdviceObservation struct {
+	Branch     string `json:"branch"`
+	Head       string `json:"head"`
+	Verdict    string `json:"verdict"`
+	InputsHash string `json:"inputs_hash"`
+}
+
+func (e AdviceEffect) Assessment(kind, heldHash, branch string) string {
+	if kind == "wrong-all-along" {
+		return "suspect (wrong all along)"
+	}
+	if kind == "outdated-since" && e.Observed != nil && e.Observed.Branch == branch && e.Observed.Verdict == "held" && e.Observed.InputsHash == heldHash {
+		return "checks held at this action (matches historical baseline)"
+	}
+	return "review this action (timing unverified)"
 }
 
 func (h *Hooks) CurrentEpoch(session, agent string) (Epoch, bool, error) {
@@ -55,7 +74,11 @@ func (h *Hooks) CorrectedAdvice(session, agent, project, checkout string, epoch 
 }
 func validEffect(detail string) bool {
 	var effect AdviceEffect
-	return len(detail) <= 2048 && json.Unmarshal([]byte(detail), &effect) == nil && effect.Version == 1 && len(effect.Key) == 64 && effect.Summary != "" && len(effect.Summary) <= 512 && !strings.ContainsAny(effect.Summary, "\x00\r\n")
+	if len(detail) > 2048 || json.Unmarshal([]byte(detail), &effect) != nil {
+		return false
+	}
+	key, err := hex.DecodeString(effect.Key)
+	return err == nil && len(key) == 32 && effect.Version == 1 && effect.Summary != "" && len(effect.Summary) <= 512 && !strings.ContainsFunc(effect.Summary, unicode.IsControl)
 }
 
 // AdviceEffects reads only this actor's current epoch; corrections never

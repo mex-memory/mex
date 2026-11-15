@@ -137,6 +137,7 @@ export function buildKnowledgeCommands(): Command[] {
           if (error.code === "NOT_FOUND") {
             const { forgetHint } = await import("./hints.js");
             const marker = forgetHint(id, reason, options, new Date(), action);
+            if (opts.allAlong) await (await import("../judge/advice.js")).wrongAllAlong(id, options);
             if (opts.json) console.log(JSON.stringify({ ok: true, level: "hint", status: "retired", ...marker }));
             else console.log(`Retired hint ${id}: ${marker.retired.reason}`);
             return;

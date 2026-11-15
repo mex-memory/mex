@@ -92,6 +92,7 @@ type group struct {
 	text              string     // bounded prompt text
 	views             []toolView // references only; scoring text is assembled after hard gates
 	edits             []string   // files edited in this call that some entry covers
+	reservedUsed      int        // correction tokens already sent in this moment
 }
 
 // Handle must be called after checkout, consent and pause resolution. Events
@@ -173,6 +174,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		}
 	}
 
+	adviceHandled := false
 	for _, g := range groups {
 		finish := phase(env.Trace, "record-observations")
 		obs, err := holdbackObservations(h, ev, g)
@@ -207,13 +209,15 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			return contract.Reply{}, fmt.Errorf("record-holdbacks: %w", err)
 		}
 		finish()
-		if len(adviceIDs) > 0 && g.checkout == ev.Checkout {
-			text, err := adviceBlock(h, ev, env, adviceIDs)
+		if len(adviceIDs) > 0 && !adviceHandled && g.checkout == ev.Checkout {
+			adviceHandled = true
+			block, err := adviceBlock(h, ev, env, adviceIDs)
 			if err != nil {
 				return contract.Reply{}, err
 			}
-			if text != "" {
-				blocks = append(blocks, text)
+			g.reservedUsed = block.tokens
+			if block.text != "" {
+				blocks = append(blocks, block.text)
 			}
 		}
 		if len(g.cands) == 0 {
@@ -227,13 +231,13 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			blocks = append(blocks, text)
 		}
 	}
-	if len(adviceIDs) > 0 {
-		text, err := adviceBlock(h, ev, env, adviceIDs)
+	if len(adviceIDs) > 0 && !adviceHandled {
+		block, err := adviceBlock(h, ev, env, adviceIDs)
 		if err != nil {
 			return contract.Reply{}, err
 		}
-		if text != "" {
-			blocks = append(blocks, text)
+		if block.text != "" {
+			blocks = append(blocks, block.text)
 		}
 	}
 	return contract.Reply{Context: strings.Join(blocks, "\n\n")}, nil
@@ -380,6 +384,19 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	present, err := h.Presence(ev.SessionID, ev.AgentID, g.project, g.checkout)
 	if err != nil {
 		return "", fmt.Errorf("record-presence: %w", err)
+	}
+	corrected := map[string]bool{}
+	if len(present) > 0 {
+		epoch, found, err := h.CurrentEpoch(ev.SessionID, ev.AgentID)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			corrected, err = h.CorrectedAdvice(ev.SessionID, ev.AgentID, g.project, g.checkout, epoch.Number)
+			if err != nil {
+				return "", err
+			}
+		}
 	}
 	fresh := g.cands[:0:0]
 	var onBranch blockState
@@ -539,7 +556,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 			}
 		}
 		items = append(items, s)
-		if s.action == "withheld" && s.verdict == broken {
+		if s.action == "withheld" && s.verdict == broken && len(present[id]) > 0 && !corrected[id] {
 			// Sent only if this entry was given earlier in the epoch; the
 			// ledger decides under its lock.
 			text, err := currentCorrection(h, ev, g, id)
@@ -547,7 +564,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 				return "", err
 			}
 			cost := entries.EstimateTokens(text) + 8
-			if correctionTokens+cost <= reservedLane {
+			if correctionTokens+cost <= reservedLane-g.reservedUsed {
 				corrections = append(corrections, planned{shaped: s, text: text, form: "one-line", tokens: cost, correction: true})
 				correctionTokens += cost
 			}
@@ -651,7 +668,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 			items[i].exempt = false
 		}
 	}
-	plan := append(corrections, pack(items, companion, scorer)...)
+	plan := append(corrections, packReserved(items, companion, reservedLane-g.reservedUsed-correctionTokens, scorer)...)
 	req := baseRequest(ev, env, g.project, g.checkout)
 	req.Candidates = requestCandidates(plan)
 	req.Conflicts = conflicts

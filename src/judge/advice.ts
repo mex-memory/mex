@@ -15,7 +15,8 @@ import type { Candidate } from "./evidence.js";
 const Origin = z.discriminatedUnion("kind", [z.object({ kind: z.literal("unknown") }),
   z.object({ kind: z.literal("wrong-all-along"), evidence: z.literal("person-confirmed") }),
   z.object({ kind: z.literal("outdated-since"), commit: z.string().regex(/^[a-f0-9]{40,64}$/u), previous: z.string().regex(/^[a-f0-9]{40,64}$/u), held_inputs_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/u), evidence: z.literal("complete checks on first-parent history") })]);
-const Effect = z.object({ version: z.literal(1), key: z.string().regex(/^[a-f0-9]{64}$/u), summary: z.string().min(1).max(512).refine(s => !/[\x00-\x1f]/u.test(s)), external: z.boolean() }).strict();
+const Observation=z.object({branch:z.string().max(512),head:z.string().max(64),verdict:z.enum(["","held","changed","broken","unknown"]),inputs_hash:z.string().max(80)}).strict();
+const Effect = z.object({ version: z.literal(1), key: z.string().regex(/^[a-f0-9]{64}$/u), summary: z.string().min(1).max(512).refine(s => !/\p{Cc}/u.test(s)), external: z.boolean(), observed:Observation.optional() }).strict();
 const Context = z.object({ version: z.literal(1), branch: z.string().max(512), head: z.string().max(64), entry_hash: z.string(), verdict: z.string(), inputs_hash: z.string() });
 const Advisory = z.object({ version: z.literal(1), id: z.string().regex(/^advice\.[a-f0-9]{24}$/u), checkout: z.string(), branch: z.string(), entry: z.string(), entry_hash: z.string(),
   head: z.string().nullable(),
@@ -26,6 +27,9 @@ export type AdviceAdvisory = z.infer<typeof Advisory>;
 const hintIDs = z.array(z.string().regex(/^advice\.[a-f0-9]{24}$/u)).max(32);
 export const adviceKey = (checkout: string, branch: string) => `advice-index.${shortHash(`${checkout}\0${branch}`)}`;
 interface ReceiptRow { id: string; session_id: string; agent_id: string; epoch: number; detail: string; }
+// Invalid/legacy detail stays out of branch/version-specific scans. Scope the
+// query before LIMIT so unrelated work cannot hide the relevant evidence.
+const field = (column: string, name: string) => `CASE WHEN json_valid(${column}) THEN json_extract(${column}, '$.${name}') END`;
 function effects(hooks: RecordReader, id: string) {
   const rows = hooks.all<{ detail: string }>("SELECT CASE WHEN length(CAST(detail AS BLOB))<=2048 THEN detail ELSE '' END AS detail FROM followups WHERE delivery_id=? AND kind IN ('edit','command') ORDER BY id LIMIT 65", id);
   const values = rows.flatMap(row => { try { return [Effect.parse(JSON.parse(row.detail))]; } catch { return []; } });
@@ -51,7 +55,8 @@ async function stage(writer: RecordWriter, project: string, checkout: string, at
   let partial = false;
   try {
     const rows = hooks.all<ReceiptRow>(`SELECT id,session_id,agent_id,epoch,detail FROM deliveries WHERE project_id=? AND checkout=? AND entry_id=?
-      AND action IN ('given','replaced') AND moment<>'correction' ORDER BY rowid DESC LIMIT 129`, project, checkout, item.id);
+      AND action IN ('given','replaced') AND moment<>'correction' AND ${field("detail","branch") }=?
+      AND (?=1 OR ${field("detail","entry_hash") }=?) ORDER BY rowid DESC LIMIT 129`, project, checkout, item.id, branch, origin.kind==="wrong-all-along"?1:0, item.entry_hash);
     partial = rows.length > 128;
     for (const row of rows.slice(0, 128)) {
       let context: z.infer<typeof Context>;
@@ -73,19 +78,19 @@ async function stage(writer: RecordWriter, project: string, checkout: string, at
   try {
     if (!valid()) { writer.db.exec("ROLLBACK"); return false; }
     const old = parse(writer.setting(project, id));
+    // A previous transition describes that old HEAD, not an intervening
+    // recovery followed by a new break (or replacement history).
+    if (old?.head===at.head && value.origin.kind==="unknown" && old.origin.kind!=="unknown") { value.origin=old.origin; value.text=old.text; }
     if (old) {
       const merged = new Map(value.receipts.map(r => [r.id,r]));
       for (const previous of old.receipts) {
         const live = merged.get(previous.id);
-        if (!live) { merged.set(previous.id,previous); continue; }
+        if (!live) { merged.set(previous.id,{...previous,before_change:previous.before_change && JSON.stringify(old.origin)===JSON.stringify(value.origin)}); continue; }
         const all = new Map([...previous.effects,...live.effects].map(e => [e.key,e]));
         live.effects = [...all.values()].slice(0,64); live.partial ||= previous.partial || all.size>64;
       }
       value.receipts = [...merged.values()].slice(0,128); value.partial ||= old.partial || merged.size>128;
     }
-    // A later model pass or an explicit person statement may improve an
-    // unknown origin, but a subsequent unknown never erases a proved timeline.
-    if (old && value.origin.kind === "unknown" && old.origin.kind !== "unknown") { value.origin = old.origin; value.text = old.text; }
     // Keep bounded durable snapshots even after Go prunes its receipt history.
     while (Buffer.byteLength(JSON.stringify(value)) > 60 << 10) {
       const largest = [...value.receipts].sort((a,b) => b.effects.length-a.effects.length)[0];
@@ -111,7 +116,7 @@ export async function refreshAdvice(writer: RecordWriter, project: string, check
   const hooks = openHooksReadOnly({ home: writer.location.home });
   if (!hooks || hooks.diagnostic || hooks.version < 5 || !hooks.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='deliveries'")) { hooks?.close(); return false; }
   let used: Set<string>;
-  try { used = new Set(hooks.all<{ entry_id: string; detail: string }>("SELECT entry_id,detail FROM deliveries WHERE project_id=? AND checkout=? AND action IN ('given','replaced') AND moment<>'correction' ORDER BY rowid DESC LIMIT 1000", project, checkout).flatMap(r => {
+  try { used = new Set(hooks.all<{ entry_id: string; detail: string }>(`SELECT entry_id,detail FROM deliveries WHERE project_id=? AND checkout=? AND action IN ('given','replaced') AND moment<>'correction' AND ${field("detail","branch") }=? ORDER BY rowid DESC LIMIT 1000`, project, checkout, at.branch).flatMap(r => {
     try { const c = Context.parse(JSON.parse(r.detail)); return c.branch === at.branch ? [`${r.entry_id}\0${c.entry_hash}`] : []; } catch { return []; }
   })); }
   finally { hooks.close(); }
@@ -130,7 +135,7 @@ export async function refreshAdvice(writer: RecordWriter, project: string, check
     if (!current()) continue;
     const key = `advice.${shortHash(`${checkout}\0${at.branch}\0${item.id}\0${hash(found.content)}`)}`;
     const old = parse(writer.setting(project, key));
-    const needsHistory = !old || (old.origin.kind === "unknown" && old.head !== at.head);
+    const needsHistory = !old || old.head !== at.head;
     if (needsHistory && work++ >= 5) { more = true; continue; }
     const origin = needsHistory ? await adviceOrigin(checkout, found.entry, found.content, at) : old!.origin;
     await stage(writer, project, checkout, at, { id: item.id, title: found.entry.mex.one_line, entry_hash: hash(found.content) }, origin, "checked by checks",
@@ -157,9 +162,11 @@ export async function wrongAllAlong(id: string, options: KnowledgeOptions): Prom
     const at = await position(project.root);
     const hooks = openHooksReadOnly(options);
     let branches: string[] = [];
-    try { if (hooks && !hooks.diagnostic && hooks.version>=5 && hooks.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='deliveries'")) branches = [...new Set(hooks.all<{detail:string}>("SELECT detail FROM deliveries WHERE project_id=? AND checkout=? AND entry_id=? AND action IN ('given','replaced') AND moment<>'correction' ORDER BY rowid DESC LIMIT 128",project.projectId,project.root,id).flatMap(r => {
-      try { const c=Context.parse(JSON.parse(r.detail)); return c.branch.startsWith("refs/heads/") ? [c.branch] : []; } catch { return []; }
-    }))]; } finally { hooks?.close(); }
+    try { if (hooks && !hooks.diagnostic && hooks.version>=5 && hooks.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='deliveries'")) branches = hooks.all<{branch:string}>(`SELECT ${field("detail","branch")} AS branch FROM deliveries
+      WHERE project_id=? AND checkout=? AND entry_id=? AND action IN ('given','replaced') AND moment<>'correction'
+      AND ${field("detail","version")}=1 AND ${field("detail","branch")} LIKE 'refs/heads/%'
+      GROUP BY branch ORDER BY max(rowid) DESC LIMIT 32`,project.projectId,project.root,id).map(row=>row.branch); }
+    finally { hooks?.close(); }
     for (const branch of branches.slice(0,32)) await stage(writer, project.projectId, project.root, at, { id, title: id, entry_hash: "person-confirmed-all-versions" },
       { kind: "wrong-all-along", evidence: "person-confirmed" }, "person-confirmed", () => true, branch);
   } finally { writer.close(); }
@@ -172,7 +179,8 @@ export async function adviceReport(options: KnowledgeOptions): Promise<{ advisor
   try {
     if (reader.diagnostic) throw Error(reader.diagnostic);
     const rows = reader.all<{ key: string; value: string }>(`SELECT s.key,s.value FROM review r JOIN settings s ON s.scope=r.project_id AND s.key=r.id
-      WHERE r.project_id=? AND r.id GLOB 'advice.*' ORDER BY r.created_at DESC LIMIT 201`, project.projectId);
+      WHERE r.project_id=? AND r.id GLOB 'advice.*' AND length(CAST(s.value AS BLOB))<=65536
+      AND ${field("s.value","checkout") }=? AND ${field("s.value","branch") }=? ORDER BY r.created_at DESC LIMIT 201`, project.projectId, project.root, at.branch);
     const advisories = rows.slice(0, 200).flatMap(row => {
       const value = parse(row.value);
       return value && value.checkout === project.root && value.branch === at.branch ? [value] : [];
@@ -188,8 +196,12 @@ export async function adviceReport(options: KnowledgeOptions): Promise<{ advisor
 export function formatAdvice(value: AdviceAdvisory): string {
   const lines = [`${value.text} (${value.label})`, value.title];
   for (const receipt of value.receipts) {
-    lines.push(`Delivery ${receipt.id}, session ${receipt.session}, epoch ${receipt.epoch}${receipt.before_change ? " — recorded inputs held before the change" : " — review this use"}:`);
-    for (const effect of receipt.effects) lines.push(`  ${effect.summary}`);
+    lines.push(`Delivery ${receipt.id}, session ${receipt.session}, epoch ${receipt.epoch}${receipt.before_change ? " — delivery inputs match a held baseline" : " — delivery validity unverified"}:`);
+    for (const effect of receipt.effects) {
+      const held=value.origin.kind==="outdated-since" && effect.observed?.branch===value.branch && effect.observed.verdict==="held" && effect.observed.inputs_hash===value.origin.held_inputs_hash;
+      const assessment=value.origin.kind==="wrong-all-along"?"suspect (wrong all along)":held?"checks held at this action (matches historical baseline)":"review this action (timing unverified)";
+      lines.push(`  ${effect.summary} — ${assessment}`);
+    }
     if (!receipt.effects.length) lines.push("  No edits or commands were recorded.");
     if (receipt.partial) lines.push("  Follow-up list reached its limit.");
   }

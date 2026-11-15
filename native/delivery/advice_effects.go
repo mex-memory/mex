@@ -3,6 +3,7 @@ package delivery
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/internal/contract"
@@ -24,7 +25,7 @@ func hasAdviceEffects(views []toolView) bool {
 func adviceEffect(v toolView) (string, string) {
 	kind, summary, external := "", "", false
 	identity := ""
-	if isEdit(v) && v.output != nil && v.output.OK && len(v.rel) <= 384 && !strings.ContainsAny(v.rel, "\x00\r\n") {
+	if isEdit(v) && !v.failed && v.output != nil && v.output.OK && len(v.rel) <= 384 && !strings.ContainsFunc(v.rel, unicode.IsControl) {
 		kind, summary = "edit", "edited "+v.rel
 		identity = v.rel + "\n" + contentHash(v.removed) + "\n" + contentHash(v.added)
 	} else if v.name == contract.ToolShell && v.command != "" && len(v.command) <= 8192 {

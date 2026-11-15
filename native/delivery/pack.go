@@ -55,6 +55,10 @@ type planned struct {
 // that only companions may exceed. Items that don't fit are logged as held
 // back, never cut mid-text.
 func pack(items []shaped, companions func(id string) *shaped, scorers ...Scorer) []planned {
+	return packReserved(items, companions, reservedLane, scorers...)
+}
+
+func packReserved(items []shaped, companions func(id string) *shaped, reserveBudget int, scorers ...Scorer) []planned {
 	var scorer Scorer = tiersScorer{}
 	if len(scorers) > 0 {
 		scorer = scorers[0]
@@ -89,7 +93,7 @@ func pack(items []shaped, companions func(id string) *shaped, scorers ...Scorer)
 		}
 		limit, spent := momentCeiling, &used
 		if s.reserve {
-			limit, spent = reservedLane, &reserved
+			limit, spent = reserveBudget, &reserved
 		}
 		overhead := entries.EstimateTokens(" (" + id + ")")
 		if !markerPaid {

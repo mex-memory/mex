@@ -2,7 +2,10 @@ package record
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 )
@@ -10,10 +13,31 @@ import (
 // Probes contain receipt identities and closed kinds only. They never retain
 // the code, command or prompt that produced an observation.
 func observeProbes(ctx context.Context, c *sql.Conn, req DeliveryRequest, epoch int, stamp string) error {
+	observed := map[string]AdviceObservation{}
 	for _, o := range req.Probes {
 		if o.Kind == "edit" || o.Kind == "command" {
 			if !validEffect(o.Detail) || o.EntryID == "" || o.ReceiptID == "" || len(o.EntryID) > 128 || len(o.ReceiptID) > 128 {
 				return errors.New("invalid advice effect")
+			}
+			observation, found := observed[o.EntryID]
+			if !found {
+				observation = AdviceObservation{Branch: req.Branch, Head: req.Head}
+				err := c.QueryRowContext(ctx, "SELECT verdict,inputs_hash FROM verdicts WHERE project_id=? AND checkout=? AND entry_id=?", req.Session.ProjectID, req.Session.Checkout, o.EntryID).Scan(&observation.Verdict, &observation.InputsHash)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
+				observed[o.EntryID] = observation
+			}
+			var effect AdviceEffect
+			_ = json.Unmarshal([]byte(o.Detail), &effect)
+			proof, _ := json.Marshal(observation)
+			digest := sha256.Sum256([]byte(effect.Key + "\n" + string(proof)))
+			effect.Key = hex.EncodeToString(digest[:])
+			effect.Observed = &observation
+			data, _ := json.Marshal(effect)
+			detail := string(data)
+			if !validEffect(detail) {
+				return errors.New("invalid advice observation")
 			}
 			_, err := c.ExecContext(ctx, `INSERT INTO followups(delivery_id,ts,kind,detail)
  SELECT d.id,?,?,? FROM deliveries d WHERE d.id=? AND d.entry_id=?
@@ -21,7 +45,7 @@ func observeProbes(ctx context.Context, c *sql.Conn, req DeliveryRequest, epoch 
  AND d.action IN ('given','replaced') AND d.moment<>'correction'
  AND NOT EXISTS(SELECT 1 FROM deliveries x WHERE x.session_id=d.session_id AND x.agent_id=d.agent_id AND x.epoch=d.epoch AND x.entry_id=d.entry_id AND x.moment='correction')
  AND (SELECT count(*) FROM followups f WHERE f.delivery_id=d.id AND f.kind IN ('edit','command'))<64
- AND NOT EXISTS(SELECT 1 FROM followups f WHERE f.delivery_id=d.id AND f.kind=? AND f.detail=?)`, stamp, o.Kind, o.Detail, o.ReceiptID, o.EntryID, req.Session.SessionID, req.AgentID, epoch, req.Session.ProjectID, req.Session.Checkout, o.Kind, o.Detail)
+ AND NOT EXISTS(SELECT 1 FROM followups f WHERE f.delivery_id=d.id AND f.kind=? AND f.detail=?)`, stamp, o.Kind, detail, o.ReceiptID, o.EntryID, req.Session.SessionID, req.AgentID, epoch, req.Session.ProjectID, req.Session.Checkout, o.Kind, detail)
 			if err != nil {
 				return err
 			}
