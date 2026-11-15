@@ -34,6 +34,7 @@ var idRE = lazy(`^mx_[a-z0-9]{6,64}$`)
 var hashRE = lazy(`^sha256:[a-f0-9]{64}$`)
 var driveRE = lazy(`^[A-Za-z]:`)
 var dateRE = lazy(`^\d{4}-\d{2}-\d{2}$`)
+var shaRE = lazy(`^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
 var legacyNodeRE = lazy(`^[A-Za-z_]+:[0-9a-fA-F]{8,}$`)
 var legacyFingerprintRE = lazy(`^(?:[mM][hH]:\d+:(?:[0-9a-fA-F]{2})+|mh2:\d+:[A-Za-z0-9_-]+)$`)
 
@@ -54,25 +55,40 @@ type Check struct {
 	Saw    map[string]any    `json:"saw"`
 	Files  map[string]string `json:"files"`
 }
+
+// CommitAnchor is the commit a decision cites. Patch id, subject and files let
+// a squash or rebase copy of it match.
+type CommitAnchor struct {
+	SHA     string   `json:"sha"`
+	PatchID string   `json:"patch_id,omitempty"`
+	Subject string   `json:"subject,omitempty"`
+	Files   []string `json:"files,omitempty"`
+	Quote   string   `json:"quote,omitempty"`
+}
 type Retirement struct {
 	Reason string `json:"reason"`
 	By     string `json:"by"`
 	At     string `json:"at"`
 }
 type Entry struct {
-	ID         string      `json:"id"`
-	Kind       string      `json:"kind"`
-	Scope      []string    `json:"scope"`
-	Source     Source      `json:"source"`
-	Evidence   string      `json:"evidence"`
-	OneLine    string      `json:"one_line"`
-	When       []Trigger   `json:"when,omitempty"`
-	Checks     []Check     `json:"checks"`
-	Companions []string    `json:"companions,omitempty"`
-	Status     string      `json:"status"`
-	Retired    *Retirement `json:"retired,omitempty"`
-	Created    string      `json:"created"`
-	Text       string      `json:"text"`
+	ID         string    `json:"id"`
+	Kind       string    `json:"kind"`
+	Scope      []string  `json:"scope"`
+	Source     Source    `json:"source"`
+	Evidence   string    `json:"evidence"`
+	OneLine    string    `json:"one_line"`
+	When       []Trigger `json:"when,omitempty"`
+	Checks     []Check   `json:"checks"`
+	Companions []string  `json:"companions,omitempty"`
+	// Aliases and asks are retrieval aids only: never delivered, never evidence.
+	Aliases    []string      `json:"aliases,omitempty"`
+	Asks       []string      `json:"asks,omitempty"`
+	Commit     *CommitAnchor `json:"commit,omitempty"`
+	Supersedes []string      `json:"supersedes,omitempty"`
+	Status     string        `json:"status"`
+	Retired    *Retirement   `json:"retired,omitempty"`
+	Created    string        `json:"created"`
+	Text       string        `json:"text"`
 }
 
 var Kinds = []string{"recipe", "rule", "decision", "pitfall", "procedure", "fact", "hint"}
@@ -436,7 +452,7 @@ func metadata(v any) bool {
 			return object(v, map[string]rule{"type": choice("person", "docs", "review", "ci", "config", "rule-file", "mined", "observed", "agent-memory"), "ref": line}, map[string]rule{"quote": func(v any) bool { s, ok := v.(string); return ok && length(s) >= 1 && length(s) <= 8192 }})
 		},
 		"evidence": choice("person", "docs", "review", "ci", "mined", "observed"), "one_line": func(v any) bool { return line(v) && str(v, 1024) },
-		"checks": func(v any) bool { return list(v, 0, 32, validCheck) }, "status": choice("active", "retired"), "created": date,
+		"checks": func(v any) bool { return list(v, 0, 32, validCheck) }, "status": choice("active", "proposed", "retired"), "created": date,
 	}
 	optional := map[string]rule{
 		"when": func(v any) bool {
@@ -445,7 +461,14 @@ func metadata(v any) bool {
 			})
 		},
 		"companions": func(v any) bool { return list(v, 0, 32, ident) },
-		"retired":    func(v any) bool { return object(v, map[string]rule{"reason": line, "by": line, "at": date}, nil) },
+		"aliases":    func(v any) bool { return phrases(v, 8, 40) },
+		"asks":       func(v any) bool { return phrases(v, 5, 120) },
+		"supersedes": func(v any) bool { return list(v, 0, 8, ident) },
+		"commit": func(v any) bool {
+			sha := func(v any) bool { s, ok := v.(string); return ok && shaRE().MatchString(s) }
+			return object(v, map[string]rule{"sha": sha}, map[string]rule{"patch_id": sha, "subject": func(v any) bool { return trimmedLine(v, 512) }, "quote": func(v any) bool { return trimmedLine(v, 512) }, "files": func(v any) bool { return list(v, 0, 64, file) }})
+		},
+		"retired": func(v any) bool { return object(v, map[string]rule{"reason": line, "by": line, "at": date}, nil) },
 	}
 	if !object(v, required, optional) {
 		return false
@@ -459,6 +482,26 @@ func metadata(v any) bool {
 	}
 	_, retired := m["retired"]
 	return retired == (m["status"] == "retired")
+}
+func trimmedLine(v any, max int) bool {
+	s, ok := v.(string)
+	return ok && line(v) && length(s) <= max && strings.TrimSpace(s) == s
+}
+
+// phrases is a bounded list of trimmed one-line phrases, unique ignoring case.
+func phrases(v any, max, chars int) bool {
+	if !list(v, 0, max, func(v any) bool { return trimmedLine(v, chars) }) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, p := range v.([]any) {
+		k := strings.ToLower(p.(string))
+		if seen[k] {
+			return false
+		}
+		seen[k] = true
+	}
+	return true
 }
 func validCheck(v any) bool {
 	m, ok := v.(map[string]any)

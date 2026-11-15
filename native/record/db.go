@@ -20,7 +20,7 @@ import (
 const SchemaVersion = 6
 
 // Node's additive model-admission migration does not change the tables read here.
-const RecordSchemaVersion = 4
+const RecordSchemaVersion = 5
 const ReaderBusyTimeoutMS = 10
 const WriterBusyTimeoutMS = 200
 const WriterOperationTimeout = 250 * time.Millisecond
@@ -32,6 +32,15 @@ const ReaderOperationTimeout = 100 * time.Millisecond
 type budget struct{ writerBusy, writer, reader time.Duration }
 
 var hookBudget = budget{time.Duration(WriterBusyTimeoutMS) * time.Millisecond, WriterOperationTimeout, ReaderOperationTimeout}
+
+// UseBehaviorTestBudget is for test binaries that check what a hook delivers,
+// not how fast: it lifts the per-operation deadline to seconds and keeps the
+// production lock wait, so fail-open tests still mean what they say. A busy
+// machine (other suites, a virus scan) can stall one commit past 250 ms; a
+// behavior test would then measure the machine. Production never calls it.
+func UseBehaviorTestBudget() {
+	hookBudget = budget{hookBudget.writerBusy, 5 * time.Second, 2 * time.Second}
+}
 
 //go:embed schema/hooks/*.sql
 var schemas embed.FS

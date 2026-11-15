@@ -32,6 +32,7 @@ func Selected(home, project, checkout string, snap Snapshot, wanted map[string]b
 	if len(wanted) > 1000 {
 		return Snapshot{}, ErrInvalid
 	}
+	inForce := InForce(home, project)
 	byID := map[string]Item{}
 	for _, it := range snap.Items {
 		byID[it.Entry.ID] = it
@@ -112,7 +113,10 @@ func Selected(home, project, checkout string, snap Snapshot, wanted map[string]b
 			return errors.New("prompt entry changed")
 		}
 		e, err := Parse(b)
-		if err != nil || e.ID != id || e.Status != "active" {
+		if err == nil {
+			e = Usable(e, inForce)
+		}
+		if err != nil || e == nil || e.ID != id {
 			return ErrInvalid
 		}
 		it.Entry = e

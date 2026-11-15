@@ -98,3 +98,26 @@ describe("entry-file v0", () => {
     expect(() => serializeEntry(entry)).toThrow();
   });
 });
+describe("retrieval aids and commit anchors", () => {
+  const sha = "a".repeat(40);
+  it("round-trips aliases, asks, a commit anchor and supersedes, and old entries stay valid", () => {
+    const entry = sample();
+    entry.mex.kind = "decision";
+    entry.mex.status = "proposed";
+    Object.assign(entry.mex, {
+      aliases: ["fixture setup", "flaky tests"], asks: ["why do the tests use fixtures?"],
+      commit: { sha, patch_id: "b".repeat(40), subject: "Use fixtures in tests", files: ["tests/a.test.ts"] },
+      supersedes: ["mx_older1"],
+    });
+    expect(parseEntry(serializeEntry(entry))).toEqual(entry);
+    expect(parseEntry(serializeEntry(sample())).mex.aliases).toBeUndefined();
+  });
+  it("rejects out-of-bound aids cleanly", () => {
+    const bad = (patch: Record<string, unknown>) => () => validateEntry({ ...sample(), mex: { ...sample().mex, ...patch } });
+    expect(bad({ aliases: Array.from({ length: KNOWLEDGE_LIMITS.aliases + 1 }, (_, i) => `alias ${i}`) })).toThrow(/aliases/u);
+    expect(bad({ aliases: ["x".repeat(KNOWLEDGE_LIMITS.aliasCharacters + 1)] })).toThrow(/aliases/u);
+    expect(bad({ asks: ["y".repeat(KNOWLEDGE_LIMITS.askCharacters + 1)] })).toThrow(/asks/u);
+    expect(bad({ aliases: ["Fixture", "fixture"] })).toThrow(/Duplicate alias/u);
+    expect(bad({ commit: { sha: "abc" } })).toThrow(/commit/u);
+  });
+});

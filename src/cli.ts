@@ -1249,7 +1249,7 @@ const configCmd = program
 
 configCmd
   .command("set <key> <value>")
-  .description("Set a config value (e.g. delivery.scorer tiers|bm25|fcfs|risk)")
+  .description("Set a config value (e.g. delivery.scorer tiers|bm25|fcfs|risk, delivery.aliases on|off)")
   .option("--project", "Set delivery.scorer or learning.sharing for the registered project")
   .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
@@ -1262,6 +1262,13 @@ configCmd
         const writer = openRecord();
         try { setLearningSharing(writer, value, process.cwd()); } finally { writer.close(); }
         console.log(value === "manual" ? "Learned notes stay personal until mex share." : "Eligible learned notes can reach this shared repository after their diff is shown.");
+      } else if (key === "delivery.aliases") {
+        const { openRecord } = await import("./record/index.js");
+        const { setDeliveryAliases } = await import("./controls/index.js");
+        if (value !== "on" && value !== "off") throw new Error("Use on or off for delivery.aliases.");
+        const writer = openRecord();
+        try { setDeliveryAliases(writer, value); } finally { writer.close(); }
+        console.log("Typed-prompt ranking " + (value === "on" ? "now uses" : "no longer uses") + " entries' aliases and asks.");
       } else if (key === "delivery.scorer") {
         const { openRecord } = await import("./record/index.js");
         const { setDeliveryScorer } = await import("./controls/index.js");
@@ -1289,7 +1296,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer, learning.sharing`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer, learning.sharing, delivery.aliases`);
         process.exitCode = 1;
         return;
       }
