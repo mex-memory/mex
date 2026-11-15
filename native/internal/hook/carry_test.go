@@ -198,3 +198,38 @@ func TestHandoffDeliveredOnceUntilClosed(t *testing.T) {
 		t.Fatalf("closed handoff delivered: %s", out)
 	}
 }
+
+func TestHandoffDraftDoesNotConsumeCommittedNotice(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		name := "unstaged"
+		if staged {
+			name = "staged"
+		}
+		t.Run(name, func(t *testing.T) {
+			h, env := fakeHome(t, true)
+			root := gitRepo(t)
+			register(t, h, root, projectID, "on", "")
+			rel := capture.HandoffRel("feat/billing")
+			committed := handoffFile("feat/billing", "- Next: finish the committed refund work")
+			write(t, filepath.Join(root, rel), committed)
+			g(t, root, "add", rel)
+			g(t, root, "commit", "-q", "-m", "handoff")
+			gitAs(t, root, "sam@example.test")
+			write(t, filepath.Join(root, rel), handoffFile("feat/billing", "- Next: an uncommitted replacement"))
+			if staged {
+				g(t, root, "add", rel)
+			}
+			if out := startSession(t, env, root, "draft", "startup"); strings.Contains(out, "Handoff for") || strings.Contains(out, "uncommitted replacement") {
+				t.Fatalf("draft delivered under the old commit: %s", out)
+			}
+			// A normal CRLF checkout still matches the committed LF body.
+			write(t, filepath.Join(root, rel), strings.ReplaceAll(committed, "\n", "\r\n"))
+			if out := startSession(t, env, root, "restored", "startup"); !strings.Contains(out, "finish the committed refund work") || !strings.Contains(out, "[mex ") {
+				t.Fatalf("draft consumed the committed notice: %s", out)
+			}
+			if out := startSession(t, env, root, "again", "startup"); strings.Contains(out, "Handoff for") {
+				t.Fatalf("committed handoff delivered twice: %s", out)
+			}
+		})
+	}
+}

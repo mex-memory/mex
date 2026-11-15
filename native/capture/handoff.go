@@ -84,24 +84,24 @@ func ParseHandoff(text string) (Handoff, bool) {
 
 // readHandoff reads the branch's handoff from the working tree. Redirected
 // folders or files are ignored.
-func readHandoff(checkout, branch string) (Handoff, bool) {
+func readHandoff(checkout, branch string) (string, bool) {
 	dir := checkout
 	for _, part := range []string{".mex", "handoffs"} {
 		dir = filepath.Join(dir, part)
 		info, err := os.Lstat(dir)
 		if err != nil || !info.IsDir() {
-			return Handoff{}, false
+			return "", false
 		}
 	}
 	text, err := readSmall(filepath.Join(dir, HandoffSlug(branch)+".md"), maxHandoffFile)
 	if err != nil {
-		return Handoff{}, false
+		return "", false
 	}
 	h, ok := ParseHandoff(text)
 	if !ok || h.Branch != branch {
-		return Handoff{}, false
+		return "", false
 	}
-	return h, true
+	return strings.ReplaceAll(text, "\r\n", "\n"), true
 }
 
 // HandoffCarry builds the handoff block for a new session on its branch.
@@ -113,7 +113,7 @@ func HandoffCarry(ev contract.Event) (Carry, bool) {
 	if branch == "" {
 		return Carry{}, false
 	}
-	h, ok := readHandoff(ev.Checkout, branch)
+	working, ok := readHandoff(ev.Checkout, branch)
 	if !ok {
 		return Carry{}, false
 	}
@@ -123,6 +123,17 @@ func HandoffCarry(ev contract.Event) (Carry, bool) {
 	out, err := git(ev.Checkout, "log", "-1", "--format=%H%x00%ae", "--", rel)
 	commit, author, found := strings.Cut(strings.TrimSpace(out), "\x00")
 	if err != nil || !found || !isSHA(commit) {
+		return Carry{}, false
+	}
+	// Bind the delivered body to the commit used for its author and notice.
+	// A local edit (staged or unstaged) is still a draft and must not consume
+	// the committed handoff's once-only notice. Accept checkout CRLF only.
+	committed, err := git(ev.Checkout, "cat-file", "blob", commit+":"+rel)
+	if err != nil || len(committed) > maxHandoffFile || strings.ReplaceAll(committed, "\r\n", "\n") != working {
+		return Carry{}, false
+	}
+	h, ok := ParseHandoff(committed)
+	if !ok || h.Branch != branch {
 		return Carry{}, false
 	}
 	if HandoffClosed(ev.Checkout, branch, commit, author) {
