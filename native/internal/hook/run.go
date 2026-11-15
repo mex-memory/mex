@@ -335,7 +335,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	}
 	// Session setup and free checks precede discovery. Preview receipts wake it
 	// separately, after the complete reply has reached stdout.
-	if ev.Kind == contract.SessionStart || judgeReady {
+	if ev.Kind == contract.SessionStart || ev.Kind == contract.PreCompact || judgeReady {
 		startBackground(h, recordDirectory)
 	}
 	return out

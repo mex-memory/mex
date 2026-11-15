@@ -3,6 +3,7 @@ package hook
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,6 +84,34 @@ func TestCaptureOffSavesNothing(t *testing.T) {
 	run(t, []string{"claude-code", "SessionStart"}, strings.NewReader(sessionStart(root)), env)
 	if rows := journalOf(t, h, "s1"); len(rows) != 0 {
 		t.Fatalf("%+v", rows)
+	}
+}
+
+func TestPreCompactWakesFilterAfterSavingRequest(t *testing.T) {
+	for _, agent := range []string{"claude-code", "codex"} {
+		t.Run(agent, func(t *testing.T) {
+			h, env := fakeHome(t, true)
+			root := repo(t, t.TempDir())
+			register(t, h, root, projectID, "on", "")
+			real, err := place.RealPath(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			prior := startBackground
+			startBackground = func(_ home, directory string) {
+				calls++
+				if _, err := os.Stat(filepath.Join(directory, "filter-pending", place.ShortHash(real)+".json")); err != nil {
+					t.Errorf("background started before the filter request was saved: %v", err)
+				}
+			}
+			t.Cleanup(func() { startBackground = prior })
+			payload, _ := json.Marshal(map[string]any{"session_id": "compact", "hook_event_name": "PreCompact", "cwd": root, "trigger": "auto"})
+			run(t, []string{agent, "PreCompact"}, bytes.NewReader(payload), env)
+			if calls != 1 {
+				t.Fatalf("pre-compaction background starts = %d, want 1", calls)
+			}
+		})
 	}
 }
 
