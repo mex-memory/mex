@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, opendirSync } from "node:fs";
 import { join } from "node:path";
-import { openRecord, projectIdentity, projectDataDirectory } from "../record/index.js";
+import { openRecord, openRecordReadOnly, projectIdentity, projectDataDirectory } from "../record/index.js";
 import { assertPersonQuote, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type EntryKind, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, createEntryFile, readEntryFile } from "./files.js";
 import { knowledgeProject, type KnowledgeOptions, type KnowledgeProject } from "./context.js";
@@ -10,7 +10,7 @@ import { gateEntry, sanitizeText } from "./gates.js";
 import { entryLabel, KNOWLEDGE_PRIORITY, type KnowledgeLevel } from "./labels.js";
 import { expandTeam, teamEntries, type TeamEntry } from "./team.js";
 import { readHints, type HintEntry } from "./hints.js";
-import { rankNative } from "./native-rank.js";
+import { aidsEnabled, rankNative } from "./native-rank.js";
 export type { KnowledgeOptions } from "./context.js";
 
 export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
@@ -153,7 +153,10 @@ export function recall(query: string, options: KnowledgeOptions, limit = 20): Re
   const candidates = [...personalEntries, ...team.entries, ...hints.entries].filter(item => !project.retired.has(item.entry.mex.id));
   const byId = new Map<string, StoredEntry>();
   for (const item of candidates) if (!byId.has(item.entry.mex.id)) byId.set(item.entry.mex.id, item);
-  const ranked = rankNative(query, [...byId.values()].map(item => item.entry));
+  const reader = openRecordReadOnly(options);
+  let setting: string | undefined;
+  try { setting = reader?.setting("global", "delivery.aliases"); } finally { reader?.close(); }
+  const ranked = rankNative(query, [...byId.values()].map(item => item.entry), aidsEnabled(options.env ?? process.env, setting));
   if (ranked.hits) {
     const found = ranked.hits.map(hit => ({ ...recallItem(byId.get(hit.id)!), score: hit.score, why: { matched: hit.matched, exact: hit.exact } }));
     return { entries: found.slice(0, limit), truncated: found.length > limit, withheld: team.withheld + hints.withheld, ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "native" } };

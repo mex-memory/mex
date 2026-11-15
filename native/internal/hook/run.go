@@ -269,7 +269,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	}
 	noteEdit(ev, recordDirectory)
 	freeStage(ev, h, recordDirectory)
-	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Trace: h.deliveryTrace, Scorer: h.scorer, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)

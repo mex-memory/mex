@@ -24,6 +24,7 @@ type Environment struct {
 	Home, RecordDirectory string
 	Now                   time.Time
 	Scorer                string // environment override, resolved without I/O
+	Aids                  string // MEX_DELIVERY_ALIASES override: on or off, no I/O
 	Trace                 func(string, time.Duration)
 	KeepSession           func(agent, sessionID string) bool
 	// Resolve finds the registered checkout of a touched path; nil means
@@ -247,7 +248,7 @@ func collect(ev contract.Event, env Environment) []*group {
 	if ev.Kind == contract.Prompt {
 		if g := get(ev.ProjectID, ev.Checkout); g != nil && g.snap != nil {
 			finish := phase(env.Trace, "prompt-index")
-			ix, snapshot, err := entries.PromptIndex(env.RecordDirectory, env.Home, g.project, g.checkout, *g.snap)
+			ix, snapshot, err := entries.PromptIndex(env.RecordDirectory, env.Home, g.project, g.checkout, *g.snap, aidsSetting(env))
 			finish()
 			if err == nil {
 				g.snap = &snapshot
