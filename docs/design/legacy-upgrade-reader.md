@@ -23,6 +23,8 @@ redirected paths and safety limits produce bounded code/path diagnostics. Source
 prose and raw filesystem errors do not enter those diagnostics. Readable material
 remains available for inspection, but `complete: false` must block conversion.
 Informational codec diagnostics do not make an otherwise complete read partial.
+Unlike the index reader, upgrade refuses malformed root `grounds_to` values
+instead of silently dropping their evidence from a complete observation.
 
 Every read uses a regular-file descriptor, rejects links/junctions and parent
 redirects, bounds allocation and total retained bytes, and rechecks file and

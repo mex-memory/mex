@@ -5,6 +5,10 @@
  * dependencies; no engine, index/store, operations or migration service runs.
  */
 import { parseWikiMarkdown, type ParsedFile } from "../wiki/markdown/contract.js";
+import { parseDocument } from "../wiki/markdown/parse.js";
+import { validateGrounding } from "../wiki/model/grounding.js";
+import { rootContext } from "../wiki/model/validate.js";
+import YAML from "yaml";
 import { matchesAnyGlob } from "../wiki/index/discover.js";
 import { LegacyFiles, LegacyReadError, LEGACY_LIMITS, type LegacySource } from "./legacy-files.js";
 
@@ -107,6 +111,25 @@ export function readLegacyScaffold(projectRoot: string): LegacySnapshot {
       for (const diagnostic of parsed.diagnostics) {
         // Codes and locations only. Parser messages can contain private prose.
         report(diagnostic.code, source.path, undefined, diagnostic.severity);
+      }
+      // Indexing tolerates malformed root groundings by skipping them. Upgrade
+      // must not advertise a complete conversion input after losing evidence.
+      // Use the existing AST and grounding validator, without assigning a root
+      // grounding to a section or changing the decoder's legacy semantics.
+      const frontmatter = parseDocument(source.text).frontmatter;
+      if (frontmatter) {
+        try {
+          const yaml = YAML.parseDocument(frontmatter.text);
+          if (yaml.errors.length === 0) {
+            const root: unknown = yaml.toJS();
+            if (record(root) && Object.hasOwn(root, "grounds_to")) {
+              if (!Array.isArray(root.grounds_to)
+                || root.grounds_to.some(value => !validateGrounding(value, rootContext({ file: path })).ok)) {
+                report("LEGACY_INVALID_GROUNDING", source.path);
+              }
+            }
+          }
+        } catch { report("LEGACY_INVALID_GROUNDING", source.path); }
       }
       for (const { entity } of parsed.entities) {
         if (ids.has(entity.id)) report("LEGACY_DUPLICATE_ENTITY_ID", source.path);

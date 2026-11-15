@@ -141,6 +141,18 @@ describe("0.8 scaffold upgrade reader", () => {
     expect(result.documents[2].text).toContain("Original prose.");
   });
 
+  it("refuses malformed root groundings that the old index reader tolerates by dropping", () => {
+    for (const grounds of ["not-a-list", "\n  - node: missing-fingerprint", `\n  - node: ${NODE}\n    fingerprint: ${FP}\n    file: ../outside.ts`]) {
+      const repo = root();
+      const text = `---\ngrounds_to: ${grounds}\n---\n# Old claim\nKeep its original evidence.\n`;
+      put(repo, ".mex/context/claim.md", text);
+      const result = readLegacyScaffold(repo);
+      expect(result.complete).toBe(false);
+      expect(result.documents[0].text).toBe(text);
+      expect(result.diagnostics.some(item => item.code === "LEGACY_INVALID_GROUNDING")).toBe(true);
+    }
+  });
+
   it("does not invent entities for metadata examples in code fences", () => {
     const repo = root();
     put(repo, ".mex/patterns/example.md", `# Recipe\n\n\`\`\`md\n<!-- mex:entity\n${metadata()}\n-->\n## Example\nNot a claim.\n\`\`\`\n`);
