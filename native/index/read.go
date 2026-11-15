@@ -226,6 +226,21 @@ func (r *Reader) Outline(path string) (*OutlineAnswer, *Miss) {
 	return &OutlineAnswer{Path: rel, AsOf: r.pointer.AsOf, Symbols: symbols, Dropped: dropped}, nil
 }
 
+// Exact reports whether path's outline holds for the file whose content has
+// this hash: either it is the content the index parsed, or the hook has
+// written line shifts for it since. A file changed some other way (a branch
+// switch, an editor) reads as not exact until the re-parse.
+func (r *Reader) Exact(path, hash string) bool {
+	rel, row, miss := r.row(path)
+	if miss != nil {
+		return false
+	}
+	if row.hash.String == hash {
+		return true
+	}
+	return len(shift.Pending(r.directory, r.key, rel, row.mtime)) > 0
+}
+
 // FileInfo is a file's language, test flag, size in tokens and lines, and hash.
 func (r *Reader) FileInfo(path string) (*FileInfoAnswer, *Miss) {
 	rel, row, miss := r.row(path)

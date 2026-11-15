@@ -13,13 +13,13 @@ package hook
 
 import (
 	"encoding/json"
-	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/outline"
 	"github.com/mex-memory/mex/native/output"
 )
 
@@ -237,11 +237,7 @@ func commandKey(command string) string {
 	return strings.Join(strings.Fields(command), " ")
 }
 
-func wordHash(w string) uint64 {
-	f := fnv.New64a()
-	_, _ = f.Write([]byte(strings.ToLower(w)))
-	return f.Sum64()
-}
+func wordHash(w string) uint64 { return outline.WordHash(w) }
 
 var investigating = []string{"reproduce", "reproducing", "repro", "investigate", "investigating", "debug", "debugging", "bisect", "flaky", "root cause", "full output", "whole output", "raw output"}
 

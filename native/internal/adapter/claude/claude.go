@@ -382,15 +382,45 @@ func replaceInput(support adapter.KindSupport, tool *contract.Tool, in contract.
 }
 
 // replaceOutput builds updatedToolOutput. Its value must match the tool's own
-// output shape, which MEX only knows for the shell tools.
+// output shape, which MEX knows for the shell tools and for Read of a text
+// file, where the replacement becomes the file content the model sees.
 func replaceOutput(support adapter.KindSupport, tool *contract.Tool, out contract.ToolOutput) (json.RawMessage, bool) {
-	if !support.ReplaceOutput || tool == nil || tool.Name != contract.ToolShell {
+	if !support.ReplaceOutput || tool == nil {
 		return nil, false
 	}
-	b, err := json.Marshal(map[string]any{
-		"stdout": out.Text, "stderr": "", "interrupted": false, "isImage": false,
-	})
-	return b, err == nil
+	switch tool.Name {
+	case contract.ToolShell:
+		b, err := json.Marshal(map[string]any{
+			"stdout": out.Text, "stderr": "", "interrupted": false, "isImage": false,
+		})
+		return b, err == nil
+	case contract.ToolRead:
+		if tool.Output == nil {
+			return nil, false
+		}
+		var resp map[string]json.RawMessage
+		if json.Unmarshal([]byte(tool.Output.Text), &resp) != nil {
+			return nil, false
+		}
+		var kind string
+		var file map[string]any
+		if json.Unmarshal(resp["type"], &kind) != nil || kind != "text" || json.Unmarshal(resp["file"], &file) != nil || file == nil {
+			return nil, false
+		}
+		lines := strings.Count(out.Text, "\n")
+		if out.Text != "" && !strings.HasSuffix(out.Text, "\n") {
+			lines++
+		}
+		file["content"], file["numLines"], file["startLine"] = out.Text, lines, 1
+		encoded, err := json.Marshal(file)
+		if err != nil {
+			return nil, false
+		}
+		resp["file"] = encoded
+		b, err := json.Marshal(resp)
+		return b, err == nil
+	}
+	return nil, false
 }
 
 // absPath gives tool paths one form across agents and OSes; "" stays "".
