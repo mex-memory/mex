@@ -1,0 +1,16 @@
+# Replay of saved outputs through the trimmer (go test ./output -run TestReplaySavedOutputs -update)
+# name | command | noisy | lines | chars | trimmed | kept lines | dropped lines | dropped chars (counted) | dropped tokens (estimated, chars/4)
+cargo-build | cargo build | true | 269 | 7768 | false | 269 | 0 | 0 | 0
+eslint-warnings | npm run lint | true | 346 | 22113 | false | 346 | 0 | 0 | 0
+find-listing | find . -name '*.tsx' | true | 700 | 26350 | true | 35 | 665 | 25035 | 6259
+git-log | git log -n 300 | true | 1800 | 55291 | true | 35 | 1765 | 54185 | 13547
+go-test-v | go test -v ./... | true | 641 | 20844 | true | 50 | 591 | 19368 | 4842
+gradle-crlf | ./gradlew build | true | 225 | 9155 | true | 37 | 188 | 7643 | 1911
+jest-pass | npm test | true | 271 | 8947 | true | 65 | 206 | 6930 | 1733
+npm-install | npm install --loglevel http | true | 128 | 10164 | true | 37 | 91 | 7521 | 1881
+pytest-v | python -m pytest -v | true | 372 | 27437 | true | 35 | 337 | 25167 | 6292
+rg-search | rg -n computeTotal | true | 400 | 25594 | false | 400 | 0 | 0 | 0
+short | npm test | true | 1 | 25 | false | 1 | 0 | 0 | 0
+tsc-listfiles | npx tsc --noEmit --listFiles --diagnostics | true | 502 | 29551 | true | 35 | 467 | 27553 | 6889
+vitest-pass | npx vitest run --reporter=verbose | true | 531 | 28275 | true | 95 | 436 | 23537 | 5885
+# total: 196939 of 271514 characters dropped (counted), about 49235 tokens (estimated)

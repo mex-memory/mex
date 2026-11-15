@@ -291,6 +291,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		failed = true
 		reply = contract.Reply{}
 	}
+	reply = mergeReplies(reply, levers(ev, h, recordDirectory, now))
 	out, _ := profile.Render(ev, reply)
 	return out
 }

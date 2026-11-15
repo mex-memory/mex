@@ -990,6 +990,24 @@ indexCommand
     }
   });
 
+// ── Saved output ──
+program
+  .command("out [number]")
+  .description("Show the full output MEX saved when it shortened a command's output; with no number, list them")
+  .option("--grep <pattern>", "Only the lines matching this pattern (a regular expression), with line numbers")
+  .option("-i, --ignore-case", "Match --grep without regard to case")
+  .option("-C, --context <n>", "Lines of context around each --grep match", parseIntArg)
+  .option("--json", "Print as JSON")
+  .action(async (number: string | undefined, options: { grep?: string; ignoreCase?: boolean; context?: number; json?: boolean }) => {
+    try {
+      const { runOut } = await import("./output/command.js");
+      process.exitCode = runOut(number, options);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+
 // ── Background jobs ──
 const jobsCommand = program
   .command("jobs")

@@ -29,6 +29,7 @@ type home struct {
 	// checkout lookup and counters share the validated location.
 	usageLocation func() (place.Location, bool)
 	capture       func(contract.Event, string, controls)
+	levers        leverOptions
 }
 
 func homeFrom(getenv Env) home {
@@ -39,6 +40,7 @@ func homeFrom(getenv Env) home {
 		}
 	}
 	h := home{user: user, scorer: getenv("MEX_DELIVERY_SCORER")}
+	h.levers = leverOptions{raw: getenv("MEX_RAW") == "1", noOutline: getenv("MEX_OUTLINE") == "0"}
 	h.claude = strings.TrimSpace(getenv("CLAUDE_CONFIG_DIR"))
 	if h.claude == "" && user != "" {
 		h.claude = filepath.Join(user, ".claude")
