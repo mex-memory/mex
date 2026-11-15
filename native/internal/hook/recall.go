@@ -25,6 +25,8 @@ type recallRequest struct {
 	Vectors map[string][]float32 `json:"vectors"`
 	Mode    string               `json:"mode"`
 	Recall  bool                 `json:"recall"`
+	// Aids indexes the entries' written aliases and asks.
+	Aids bool `json:"aids"`
 }
 type recallRow struct {
 	ID       string          `json:"id"`
@@ -45,10 +47,10 @@ func recallRank(stdin io.Reader, stdout io.Writer) int {
 		if e == nil || len(e.Text) > 32768 || len(e.OneLine) > 4096 {
 			return fail("invalid rank entry")
 		}
-		docs = append(docs, entries.RankDoc(e))
+		docs = append(docs, entries.RankDoc(e, req.Aids))
 	}
 	for i := range docs {
-		if len(docs[i].Text) > 32768 || len(docs[i].Title) > 4096 || len(docs[i].Aliases) > 64 {
+		if len(docs[i].Text) > 32768 || len(docs[i].Title) > 4096 || len(docs[i].Aliases) > 64 || len(docs[i].Written) > 64 || len(docs[i].Asks) > 64 {
 			return fail("rank document exceeds bound")
 		}
 		if aliases := req.Aliases[docs[i].ID]; len(aliases) > 0 {

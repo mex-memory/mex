@@ -1147,7 +1147,7 @@ The worker drains the durable queue.
     });
     const component = (await services.health()).components.find((item) => item.id === "wiki")!;
     expect(component.diagnostics.map((item) => item.message)).toEqual([
-      "Linked code changed; review the Knowledge with mex check or mex sync.",
+      "Linked code changed; review the Knowledge with mex check or mex sync --deep.",
       "A Knowledge code link could not be found in the current graph.",
       "A Knowledge code link could not be resolved confidently.",
     ]);

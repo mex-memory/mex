@@ -172,6 +172,46 @@ func TestSnapshotTiming(t *testing.T) {
 	t.Logf("500 entries: cold (1 run) %s; unchanged (200 runs) p50 %s p95 %s; full form estimate %d tokens", elapsed, times[99], times[189], s.Items[0].FullTokens)
 }
 
+func TestCodecKeepsRetrievalAidsAndCommitAnchor(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	content := "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope: [\"**\"]\n  source: {type: observed, ref: commit}\n  evidence: observed\n  one_line: Use the logger.\n  checks: []\n  aliases: [log setup]\n  asks: [\"how do I log?\"]\n  commit: {sha: \"" + sha + "\", subject: \"Use the logger\", files: [src/log.ts]}\n  supersedes: [mx_older1]\n  status: proposed\n  created: 2026-11-15\n---\nUse the logger.\n"
+	e, err := Parse([]byte(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(e.Aliases, []string{"log setup"}) || !reflect.DeepEqual(e.Asks, []string{"how do I log?"}) || e.Commit == nil || e.Commit.SHA != sha || e.Commit.Subject != "Use the logger" || !reflect.DeepEqual(e.Commit.Files, []string{"src/log.ts"}) || !reflect.DeepEqual(e.Supersedes, []string{"mx_older1"}) || e.Status != "proposed" {
+		t.Fatalf("fields lost: %+v", e)
+	}
+}
+
+func TestProposedEntriesNeedTheInForceMirror(t *testing.T) {
+	root, home, dir := t.TempDir(), t.TempDir(), t.TempDir()
+	notes := filepath.Join(home, "projects", "project", "notes")
+	if err := os.MkdirAll(notes, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sha := strings.Repeat("b", 40)
+	body := "---\nmex:\n  id: mx_decide1\n  kind: decision\n  scope: [\"**\"]\n  source: {type: observed, ref: commit}\n  evidence: observed\n  one_line: Use date-fns.\n  checks: []\n  commit: {sha: \"" + sha + "\"}\n  status: proposed\n  created: 2026-11-15\n---\nUse date-fns.\n"
+	if err := os.WriteFile(filepath.Join(notes, "mx_decide1.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := Load(dir, home, "project", root)
+	if err != nil || len(snap.Items) != 0 {
+		t.Fatalf("a proposed entry was delivered: %v %+v", err, snap.Items)
+	}
+	stamp, _, _ := listingStamp(home, "project", root)
+	if err := os.WriteFile(InForcePath(home, "project"), []byte(`{"version":1,"ids":["mx_decide1"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if again, _, _ := listingStamp(home, "project", root); again == stamp {
+		t.Fatal("the in-force mirror didn't change the listing stamp")
+	}
+	snap, err = Load(dir, home, "project", root)
+	if err != nil || len(snap.Items) != 1 || snap.Items[0].Entry.Status != "active" {
+		t.Fatalf("an in-force decision wasn't delivered: %v %+v", err, snap.Items)
+	}
+}
+
 func TestReadersWithholdPendingConsolidation(t *testing.T) {
 	root, home, directory := t.TempDir(), t.TempDir(), t.TempDir()
 	notes := filepath.Join(home, "projects", "project", "notes")

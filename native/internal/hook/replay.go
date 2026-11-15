@@ -26,6 +26,7 @@ func deliveryReplay(stdin io.Reader, stdout io.Writer, getenv Env) int {
 		}
 		env := delivery.Environment{Home: h.mex, RecordDirectory: h.recordDirectory(), Now: time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)}
 		env.Scorer = getenv("MEX_DELIVERY_SCORER")
+		env.Aids = getenv("MEX_DELIVERY_ALIASES")
 		var phases map[string]int64
 		if getenv("MEX_DELIVERY_TRACE") == "1" {
 			phases = map[string]int64{}

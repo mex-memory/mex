@@ -100,6 +100,7 @@ func Load(directory, home, project, checkout string) (answer Snapshot, failure e
 		level  string
 		nested bool
 	}
+	inForce := InForce(home, project)
 	stores := []store{{checkout, []string{".mex", "learned"}, "team", true}}
 	if home != "" {
 		stores = append(stores, store{home, []string{"projects", project, "notes"}, "personal", false}, store{home, []string{"projects", project, "hints"}, "hint", false})
@@ -193,10 +194,12 @@ func Load(directory, home, project, checkout string) (answer Snapshot, failure e
 						result.Retired = append(result.Retired, id)
 						continue
 					}
-					if hit.Entry.Status != "active" {
+					// A proposed decision is delivered only once it is in force.
+					usable := Usable(hit.Entry, inForce)
+					if usable == nil {
 						continue
 					}
-					item := Item{Entry: hit.Entry, Level: s.level, Path: full, Hash: hit.Hash, NeedsHintGate: s.level == "hint"}
+					item := Item{Entry: usable, Level: s.level, Path: full, Hash: hit.Hash, NeedsHintGate: s.level == "hint"}
 					label := Label(hit.Entry, s.level)
 					item.Full = label + " " + hit.Entry.Text
 					item.OneLine = label + " " + hit.Entry.OneLine

@@ -16,11 +16,17 @@ type rankCache struct {
 // PromptIndex is a prompt-only read. Tool misses never read or build this
 // cache. It shares the already validated listing stamp with the light index.
 // A miss builds once from current source entries; a hit reads statistics only.
-func PromptIndex(directory, home, project, checkout string, snap Snapshot) (*rank.Index, Snapshot, error) {
+// aids indexes written aliases and asks; the cache records which way it was
+// built, so switching the setting rebuilds it once.
+func PromptIndex(directory, home, project, checkout string, snap Snapshot, aids bool) (*rank.Index, Snapshot, error) {
 	path := strings.TrimSuffix(CachePath(directory, project, checkout), ".json") + ".rank.bin"
+	suffix := ""
+	if aids {
+		suffix = "+aids"
+	}
 	var c rankCache
 	if snap.Stamp != "" {
-		if b, err := readRegular(path, 32<<20); err == nil && decodeRankCache(b, &c) == nil && c.Stamp == snap.Stamp && c.Index != nil && len(c.Hashes) == len(snap.Items) {
+		if b, err := readRegular(path, 32<<20); err == nil && decodeRankCache(b, &c) == nil && c.Stamp == snap.Stamp+suffix && c.Index != nil && len(c.Hashes) == len(snap.Items) {
 			valid := true
 			for _, it := range snap.Items {
 				if c.Hashes[it.Entry.ID] != it.Hash {
@@ -43,7 +49,7 @@ func PromptIndex(directory, home, project, checkout string, snap Snapshot) (*ran
 	}
 	docs := make([]rank.Doc, 0, len(full.Items))
 	for _, it := range full.Items {
-		docs = append(docs, RankDoc(it.Entry))
+		docs = append(docs, RankDoc(it.Entry, aids))
 	}
 	ix := rank.Build(docs)
 	stamp, _, err := listingStamp(home, project, checkout)
@@ -52,7 +58,7 @@ func PromptIndex(directory, home, project, checkout string, snap Snapshot) (*ran
 	}
 	// If metadata changed while loading, do not publish a cache for that listing.
 	if snap.Stamp != "" && stamp == snap.Stamp {
-		b, err := encodeRankCache(stamp, full.Items, ix)
+		b, err := encodeRankCache(stamp+suffix, full.Items, ix)
 		if err == nil && len(b) <= 32<<20 {
 			saveFile(path, b)
 		}

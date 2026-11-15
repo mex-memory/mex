@@ -332,7 +332,7 @@
   {
     "name": "unicode body",
     "accept": true,
-    "content": "---\nmex:\n  id: mx_abcdef\n  kind: rule\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  status: active\n  created: 2026-11-03\n---\nProject text 日本語 😀\n"
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: rule\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  status: active\n  created: 2026-11-03\n---\nProject text \u65e5\u672c\u8a9e \ud83d\ude00\n"
   },
   {
     "name": "CRLF",
@@ -393,6 +393,76 @@
     "content": "---\nmex:\n  id: mx_abcdef\n  kind: rule\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks:\n    - kind: key\n      role: complete\n      target:\n        file: package.json\n        pointer: /value\n      saw:\n        value: <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n      files: {}\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
   },
   {
+    "name": "aliases and asks",
+    "accept": true,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  aliases:\n    - logger setup\n    - structured logs\n  asks:\n    - how do I log an error?\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "commit anchor with copy fields",
+    "accept": true,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  commit:\n    sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    patch_id: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n    subject: Switch to the project logger\n    files:\n      - src/log.ts\n  supersedes:\n    - mx_oldone1\n  status: proposed\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "sha256 commit anchor",
+    "accept": true,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  commit:\n    sha: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n  status: proposed\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "nine aliases",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  aliases:\n    - alias 0\n    - alias 1\n    - alias 2\n    - alias 3\n    - alias 4\n    - alias 5\n    - alias 6\n    - alias 7\n    - alias 8\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "alias over 40 characters",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  aliases:\n    - xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "duplicate alias ignoring case",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  aliases:\n    - Logger\n    - logger\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "untrimmed alias",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  aliases:\n    - ' logger'\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "six asks",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  asks:\n    - ask 0?\n    - ask 1?\n    - ask 2?\n    - ask 3?\n    - ask 4?\n    - ask 5?\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "ask over 120 characters",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  asks:\n    - yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "short commit sha",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  commit:\n    sha: abc123\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "commit with unknown field",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  commit:\n    sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    author: someone\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "commit file outside the repo",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  commit:\n    sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    files:\n      - ../x.ts\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "nine superseded ids",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  supersedes:\n    - mx_super0x\n    - mx_super1x\n    - mx_super2x\n    - mx_super3x\n    - mx_super4x\n    - mx_super5x\n    - mx_super6x\n    - mx_super7x\n    - mx_super8x\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "unknown status",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: decision\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks: []\n  status: pending\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
     "name": "legacy grounding: original baseline",
     "accept": true,
     "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
@@ -445,16 +515,46 @@
   {
     "name": "legacy grounding: Unicode node kind",
     "accept": false,
-    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"Kind:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"\u212aind:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
   },
   {
     "name": "legacy grounding: Unicode fingerprint payload",
     "accept": false,
-    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:K\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+    "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"mh2:64:\u212a\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
   },
   {
     "name": "legacy grounding: invalid compact prefix",
     "accept": false,
     "content": "---\nmex:\n  id: mx_legacy1\n  kind: fact\n  scope: [\"**\"]\n  source: {type: docs, ref: .mex/context/api.md}\n  evidence: docs\n  one_line: The old claim remains unverified.\n  status: active\n  created: 2026-11-15\n  checks:\n    - kind: legacy-grounding\n      role: supporting\n      target: {node: \"function:12345678abcdefab\", file: src/api.ts}\n      saw: {fingerprint: \"MH2:64:Original_CASE\", bodyHash: old-body, codeHash: old-code}\n      files: {}\n---\nThe old claim remains unverified.\n"
+  },
+  {
+    "name": "valid member check",
+    "accept": true,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: recipe\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks:\n    - kind: key\n      role: complete\n      target: {file: pyproject.toml, pointer: /project/dependencies, member: \"colorama\"}\n      saw: {value: true}\n      files: {}\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "reject false member baseline",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: recipe\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks:\n    - kind: key\n      role: complete\n      target: {file: pyproject.toml, pointer: /project/dependencies, member: \"colorama\"}\n      saw: {value: false}\n      files: {}\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "reject list member baseline",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: recipe\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks:\n    - kind: key\n      role: complete\n      target: {file: pyproject.toml, pointer: /project/dependencies, member: \"colorama\"}\n      saw: {value: [colorama]}\n      files: {}\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "reject empty member",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: recipe\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks:\n    - kind: key\n      role: complete\n      target: {file: pyproject.toml, pointer: /project/dependencies, member: \"\"}\n      saw: {value: true}\n      files: {}\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "reject spaced member",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: recipe\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks:\n    - kind: key\n      role: complete\n      target: {file: pyproject.toml, pointer: /project/dependencies, member: \" colorama\"}\n      saw: {value: true}\n      files: {}\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
+  },
+  {
+    "name": "reject hidden member",
+    "accept": false,
+    "content": "---\nmex:\n  id: mx_abcdef\n  kind: recipe\n  scope:\n    - src/**\n  source:\n    type: person\n    ref: typed note\n    quote: Use the project logger.\n  evidence: person\n  one_line: Use the project logger.\n  checks:\n    - kind: key\n      role: complete\n      target: {file: pyproject.toml, pointer: /project/dependencies, member: \"colorama\\ufeffx\"}\n      saw: {value: true}\n      files: {}\n  status: active\n  created: 2026-11-03\n---\nUse the project logger because it records structured events.\n"
   }
 ]

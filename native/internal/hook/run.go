@@ -286,7 +286,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	if ev.Kind == contract.Stop {
 		judgeReady = requestJudge(ev, recordDirectory, nil)
 	}
-	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Trace: h.deliveryTrace, Scorer: h.scorer, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)
@@ -307,6 +307,13 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		}
 		failed = true
 		reply = contract.Reply{}
+	}
+	// One line, once per session, after a commit that reads like a decision.
+	if line := delivery.DecisionPrompt(ev, recordDirectory); line != "" {
+		if reply.Context != "" {
+			reply.Context += "\n\n"
+		}
+		reply.Context += line
 	}
 	noticeID := ""
 	var adviceNoticeIDs []string
