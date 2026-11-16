@@ -5,7 +5,13 @@ import { absolutePath, realPath } from "../record/project.js";
 import { KnowledgeError, KNOWLEDGE_LIMITS } from "./contract.js";
 import { readBoundedTextFile } from "./files.js";
 
-export interface References { root: string; commands: Set<string>; links: Set<string>; }
+export interface References {
+  root: string; commands: Set<string>; links: Set<string>;
+  /** Package-script names from the root package and its workspaces. */
+  scripts: Set<string>;
+  /** A discovery bound was reached; anything not collected stays unverified. */
+  truncated: boolean;
+}
 export function repoFile(root: string, path: string): string | undefined {
   if (!path || /[\\\x00-\x1f]/u.test(path) || /^(?:\/|[A-Za-z]:)/u.test(path)) return undefined;
   const parts = path.replace(/^\.\//u, "").split("/");
@@ -22,83 +28,111 @@ export function repoFile(root: string, path: string): string | undefined {
 }
 
 /** Repository-owned sources only. Learned entries cannot attest to themselves. */
+/** Discovery bounds. Reaching one stops collecting; it never fails the caller. */
+export const REFERENCE_LIMITS = { files: 1024, paths: 4096, commands: 4096, scripts: 4096, links: 4096, depth: 8 } as const;
+/** Package-script runners that a script name may be written with. */
+const RUNNERS = /^(?:npm run|pnpm run|pnpm|yarn|yarn run|bun run|(?:pnpm|yarn)\s+(?:--filter|-F)[ =][\w@./*-]+(?:\s+run)?|yarn workspace [\w@./-]+(?:\s+run)?|npm run -w [\w@./-]+)\s+([^\s;&|<>$`]+)$/u;
+class Full extends Error {}
+
+/**
+ * Repository-owned sources only. Learned entries cannot attest to themselves.
+ *
+ * Every bound is enforced, but a large repository is normal, so reaching one
+ * stops discovery (in priority order: package scripts, CI, docs, root files)
+ * and marks the result `truncated` instead of failing. An unfound command or
+ * link is treated as unverified and removed, so truncation can only make the
+ * gates stricter. Redirected or linked sources still fail.
+ */
 export function references(root: string): References {
-  const result: References = { root, commands: new Set(), links: new Set() };
+  const result: References = { root, commands: new Set(), links: new Set(), scripts: new Set(), truncated: false };
   let entries = 0, visited = 0, bytes = 0;
+  const full = (): never => { result.truncated = true; throw new Full(); };
   const childrenOf = (path: string) => {
     const children: import("node:fs").Dirent[] = [];
     const handle = opendirSync(path);
     try {
       let child;
       while ((child = handle.readSync())) {
-        if (++visited > 4096) throw new KnowledgeError("GATE_LIMIT", "Knowledge reference discovery exceeds its path limit.");
+        if (++visited > REFERENCE_LIMITS.paths) full();
         children.push(child);
       }
     } finally { handle.closeSync(); }
     return children;
   };
   const read = (path: string): string | undefined => {
-    if (++entries > 1024) throw new KnowledgeError("GATE_LIMIT", "Knowledge reference discovery exceeds its file limit.");
+    if (entries >= REFERENCE_LIMITS.files) full();
     const file = repoFile(root, path);
     if (!file) return undefined;
+    entries++;
     const text = readBoundedTextFile(file, 1024 * 1024)!;
+    if (bytes + Buffer.byteLength(text) > KNOWLEDGE_LIMITS.scanBytes) full();
     bytes += Buffer.byteLength(text);
-    if (bytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("GATE_LIMIT", "Knowledge references exceed their byte limit.");
     for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gu)) {
+      if (result.links.size >= REFERENCE_LIMITS.links) full();
       result.links.add(match[0].replace(/[.,;)\]]+$/u, ""));
-      if (result.links.size > 4096) throw new KnowledgeError("GATE_LIMIT", "Knowledge references exceed their link limit.");
     }
     return text;
   };
   const addRuns = (value: unknown): void => {
     if (typeof value !== "string") return;
-    result.commands.add(value.trim());
-    for (const line of value.split(/\r?\n/u)) if (line.trim()) result.commands.add(line.trim());
-    if (result.commands.size > 4096) throw new KnowledgeError("GATE_LIMIT", "Knowledge references exceed their command limit.");
+    for (const line of [value, ...value.split(/\r?\n/u)]) {
+      if (!line.trim()) continue;
+      if (result.commands.size >= REFERENCE_LIMITS.commands) full();
+      result.commands.add(line.trim());
+    }
   };
+  // One malformed manifest or workflow only means its commands stay unverified.
   const packageFile = (path: string): Record<string, unknown> | undefined => {
     const text = read(path);
     if (text === undefined) return undefined;
-    let data: Record<string, unknown>;
-    try { data = JSON.parse(text); } catch { throw new KnowledgeError("INVALID_SOURCE", "A package-script source is not valid JSON."); }
-    if (!data || typeof data !== "object" || Array.isArray(data)) throw new KnowledgeError("INVALID_SOURCE", "A package-script source is invalid.");
-    if (data.scripts && typeof data.scripts === "object" && !Array.isArray(data.scripts)) {
-      for (const [name, command] of Object.entries(data.scripts)) {
+    let data: unknown;
+    try { data = JSON.parse(text); } catch { return undefined; }
+    if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+    const scripts = (data as Record<string, unknown>).scripts;
+    if (scripts && typeof scripts === "object" && !Array.isArray(scripts)) {
+      for (const [name, command] of Object.entries(scripts)) {
+        if (result.scripts.size >= REFERENCE_LIMITS.scripts) full();
+        result.scripts.add(name);
         addRuns(command);
-        for (const runner of ["npm run", "pnpm run", "pnpm", "yarn", "bun run"]) result.commands.add(`${runner} ${name}`);
-        if (["test", "start", "stop", "restart"].includes(name)) result.commands.add(`npm ${name}`);
       }
     }
-    return data;
+    return data as Record<string, unknown>;
   };
-  const pkg = packageFile("package.json");
-  const workspaces = Array.isArray(pkg?.workspaces) ? pkg.workspaces : [];
-  for (const pattern of workspaces) {
-    if (typeof pattern !== "string" || !/^[A-Za-z0-9_./-]+(?:\/\*)?$/u.test(pattern) || pattern.split("/").includes("..")) continue;
-    if (!pattern.endsWith("/*")) { packageFile(`${pattern}/package.json`); continue; }
-    const parent = pattern.slice(0, -2);
-    const directory = join(root, parent);
-    let children;
-    try {
-      if (lstatSync(directory).isSymbolicLink() || realPath(directory) !== absolutePath(directory)) throw new KnowledgeError("UNSAFE_SOURCE", "A workspace source is redirected.");
-      children = childrenOf(directory);
-    } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; throw e; }
-    if (children.length > 1024) throw new KnowledgeError("GATE_LIMIT", "Workspace discovery exceeds its directory limit.");
-    for (const child of children) if (child.isDirectory() && !child.isSymbolicLink()) packageFile(`${parent}/${child.name}/package.json`);
-  }
-  const walk = (path: string, kind: "docs" | "ci", depth = 0): void => {
+  const safeDirectory = (path: string) => {
     const directory = join(root, path);
-    let children;
     try {
       if (lstatSync(directory).isSymbolicLink() || realPath(directory) !== absolutePath(directory)) throw new KnowledgeError("UNSAFE_SOURCE", "A knowledge reference directory is redirected.");
-      children = childrenOf(directory);
-    } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return; throw e; }
-    if (children.length + entries > 1024) throw new KnowledgeError("GATE_LIMIT", "Knowledge reference discovery exceeds its directory limit.");
-    for (const child of children) {
+      return childrenOf(directory);
+    } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT" || (e as NodeJS.ErrnoException).code === "ENOTDIR") return undefined; throw e; }
+  };
+  const workspacePatterns = (pkg: Record<string, unknown> | undefined): string[] => {
+    const declared = pkg?.workspaces;
+    const listed = Array.isArray(declared) ? declared
+      : declared && typeof declared === "object" && Array.isArray((declared as { packages?: unknown }).packages) ? (declared as { packages: unknown[] }).packages : [];
+    const patterns = listed.filter((p): p is string => typeof p === "string");
+    const pnpm = read("pnpm-workspace.yaml");
+    if (pnpm !== undefined) {
+      const doc = parseDocument(pnpm, { uniqueKeys: true });
+      const packages = doc.errors.length ? undefined : (doc.toJS({ maxAliasCount: 0 }) as { packages?: unknown } | null)?.packages;
+      if (Array.isArray(packages)) patterns.push(...packages.filter((p): p is string => typeof p === "string"));
+    }
+    return [...new Set(patterns)];
+  };
+  const workspaces = (pkg: Record<string, unknown> | undefined): void => {
+    for (const pattern of workspacePatterns(pkg)) {
+      // Plain folders and one trailing `*` level; exclusions and deeper globs are not followed.
+      if (!/^[A-Za-z0-9_./-]+(?:\/\*)?$/u.test(pattern) || pattern.split("/").includes("..")) continue;
+      if (!pattern.endsWith("/*")) { packageFile(`${pattern.replace(/^\.\//u, "")}/package.json`); continue; }
+      const parent = pattern.slice(0, -2).replace(/^\.\//u, "");
+      for (const child of safeDirectory(parent) ?? []) if (child.isDirectory() && !child.isSymbolicLink()) packageFile(`${parent}/${child.name}/package.json`);
+    }
+  };
+  const walk = (path: string, kind: "docs" | "ci", depth = 0): void => {
+    const children = safeDirectory(path);
+    for (const child of children ?? []) {
       const name = path ? `${path}/${child.name}` : child.name;
       if (child.isSymbolicLink()) throw new KnowledgeError("UNSAFE_SOURCE", "Knowledge references may not follow links.");
-      if (child.isDirectory() && depth < 8) { walk(name, kind, depth + 1); continue; }
-      if (child.isDirectory()) throw new KnowledgeError("GATE_LIMIT", "Knowledge reference nesting exceeds its limit.");
+      if (child.isDirectory()) { if (depth < REFERENCE_LIMITS.depth) walk(name, kind, depth + 1); continue; }
       if (!(kind === "ci" ? /\.ya?ml$/iu : /\.md$/iu).test(child.name)) continue;
       const text = read(name);
       if (!text) continue;
@@ -107,7 +141,7 @@ export function references(root: string): References {
         for (const match of text.matchAll(/```[^\n]*\n([\s\S]*?)```/gu)) addRuns(match[1]);
       } else {
         const doc = parseDocument(text, { uniqueKeys: true });
-        if (doc.errors.length || doc.warnings.length) throw new KnowledgeError("INVALID_SOURCE", "A CI knowledge reference is invalid YAML.");
+        if (doc.errors.length || doc.warnings.length) continue;
         const data = doc.toJS({ maxAliasCount: 0 });
         for (const job of Object.values(data?.jobs ?? {}) as Array<{ steps?: Array<{ run?: unknown }> }>) {
           for (const step of job?.steps ?? []) addRuns(step?.run);
@@ -115,20 +149,29 @@ export function references(root: string): References {
       }
     }
   };
-  walk(".github/workflows", "ci"); walk("docs", "docs");
-  const rootFiles = childrenOf(root);
-  if (rootFiles.length > 1024) throw new KnowledgeError("GATE_LIMIT", "Knowledge reference discovery exceeds its root limit.");
-  for (const file of rootFiles) if (file.isFile() && /^(?:readme|contributing|agents|claude)(?:[._-][^/]*)?\.md$/iu.test(file.name)) {
-    const text = read(relative(root, join(root, file.name)))!;
-    for (const match of text.matchAll(/`([^`\n]+)`/gu)) addRuns(match[1]);
-    for (const match of text.matchAll(/```[^\n]*\n([\s\S]*?)```/gu)) addRuns(match[1]);
-  }
+  const rootDocs = (): void => {
+    for (const file of childrenOf(root)) if (file.isFile() && /^(?:readme|contributing|agents|claude)(?:[._-][^/]*)?\.md$/iu.test(file.name)) {
+      const text = read(relative(root, join(root, file.name)));
+      if (!text) continue;
+      for (const match of text.matchAll(/`([^`\n]+)`/gu)) addRuns(match[1]);
+      for (const match of text.matchAll(/```[^\n]*\n([\s\S]*?)```/gu)) addRuns(match[1]);
+    }
+  };
+  try {
+    const pkg = packageFile("package.json");
+    workspaces(pkg);
+    walk(".github/workflows", "ci"); walk("docs", "docs");
+    rootDocs();
+  } catch (e) { if (!(e instanceof Full)) throw e; }
   return result;
 }
 
 export function commandExists(command: string, source: References): boolean {
-  if (source.commands.has(command.trim())) return true;
+  const trimmed = command.trim();
+  if (source.commands.has(trimmed)) return true;
   if (/[;&|<>$`\r\n]/u.test(command)) return false;
+  const runner = RUNNERS.exec(trimmed)?.[1] ?? /^npm (test|start|stop|restart)$/u.exec(trimmed)?.[1];
+  if (runner !== undefined && source.scripts.has(runner)) return true;
   const script = /^(?:(?:node|python3?|bash|sh|pwsh)\s+)?((?:\.\/)?(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_.-]+\.(?:[cm]?js|py|sh|ps1))(?:\s+[^;&|<>$`\r\n]*)?$/u.exec(command.trim());
   return !!script && !!repoFile(source.root, script[1]);
 }

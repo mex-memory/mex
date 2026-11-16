@@ -76,6 +76,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return briefRun(stdin, stdout)
 		case "--delivery-replay":
 			return deliveryReplay(stdin, stdout, getenv)
+		case "--surfaces":
+			return surfaceReport(stdin, stdout, getenv)
 		case "--pair-study":
 			return pairStudy(stdin, stdout)
 		case "--probe":
@@ -286,7 +288,18 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	if ev.Kind == contract.Stop {
 		judgeReady = requestJudge(ev, recordDirectory, nil)
 	}
-	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	canNotice := false
+	switch ev.Kind {
+	case contract.SessionStart, contract.SubagentStart, contract.PostCompact, contract.PostToolBatch, contract.PostToolFailure, contract.SessionEnd:
+		support, _ := profile.Capabilities().Support(ev.Kind)
+		canNotice = support.PersonLine
+	case contract.PostTool:
+		if ev.Agent != "claude-code" {
+			support, _ := profile.Capabilities().Support(ev.Kind)
+			canNotice = support.PersonLine
+		}
+	}
+	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Notices: canNotice, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)

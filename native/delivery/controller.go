@@ -22,9 +22,13 @@ import (
 )
 
 type Environment struct {
+	policy                *policyCache
 	Home, RecordDirectory string
 	Now                   time.Time
 	Scorer                string // environment override, resolved without I/O
+	Surfaces              string // all-surface state or JSON map, test override
+	Offline               bool
+	Notices               bool   // adapter supports person-facing output on this event
 	Aids                  string // MEX_DELIVERY_ALIASES override: on or off, no I/O
 	Trace                 func(string, time.Duration)
 	KeepSession           func(agent, sessionID string) bool
@@ -99,6 +103,8 @@ type group struct {
 // Handle must be called after checkout, consent and pause resolution. Events
 // with no moment, lifecycle or correction work return before SQLite. A bounded
 // advisory hint and an existing ledger allow follow-ups without a new candidate.
+// With no candidate, covered edit, pending observation, rescue, history notice
+// or lifecycle work, the event returns before SQLite.
 func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	reason, signal, isLifecycle := lifecycle(ev)
 	isMoment := momentKind(ev)
@@ -124,16 +130,41 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	if isLifecycle && (ev.ProjectID == "" || ev.Checkout == "") {
 		isLifecycle = false
 	}
+	var policies policyCache
+	env.policy = &policies
 	var groups []*group
 	if isMoment {
 		groups = collect(ev, env)
 	}
-	if !isLifecycle && !isEnd && len(groups) == 0 && len(adviceIDs) == 0 {
+	pending := isMoment && ev.Kind != contract.Prompt && record.SurfacePending(env.RecordDirectory, ev.SessionID, ev.AgentID)
+	var stuck *rescue
+	var history []historyNotice
+	if isMoment && ev.Kind != contract.Prompt {
+		stuck = findRescue(ev, env)
+		history = findHistory(ev, env)
+	}
+	if !isLifecycle && !isEnd && len(groups) == 0 && len(adviceIDs) == 0 && !pending && stuck == nil && len(history) == 0 {
 		return contract.Reply{}, nil
+	}
+	// A call that delivers nothing only adds evidence to open acted windows:
+	// log it and leave SQLite closed. The next transaction settles the log.
+	if pending && !isLifecycle && !isEnd && len(groups) == 0 && len(adviceIDs) == 0 && stuck == nil && len(history) == 0 && !env.Offline {
+		if err := record.AppendSurfaceObservations(env.RecordDirectory, ev.SessionID, ev.AgentID, surfaceTools(ev, env)); err == nil {
+			return contract.Reply{}, nil
+		}
+	}
+	// Any transaction settles logged calls first, in order, before this
+	// event's own, so lifecycle changes and deliveries see them.
+	hintDir := (isMoment && ev.Kind != contract.Prompt) || isLifecycle || isEnd
+	var logged []record.SurfaceTool
+	restoreLog := func() {}
+	if hintDir && record.SurfacePending(env.RecordDirectory, ev.SessionID, ev.AgentID) {
+		logged, restoreLog = record.TakeSurfaceObservations(env.RecordDirectory, ev.SessionID, ev.AgentID)
 	}
 
 	for _, name := range []string{"hooks.db", "hooks.db-wal", "hooks.db-shm"} {
 		if !safefile.Regular(filepath.Join(env.RecordDirectory, name)) {
+			restoreLog()
 			return contract.Reply{}, errors.New("redirected hooks database")
 		}
 	}
@@ -141,16 +172,34 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	h, err := record.OpenHooks(record.Location{Directory: env.RecordDirectory, Hooks: filepath.Join(env.RecordDirectory, "hooks.db")})
 	finish()
 	if err != nil {
+		restoreLog()
 		return contract.Reply{}, fmt.Errorf("record-open: %w", err)
 	}
 	h.Trace = env.Trace
 	defer h.Close()
+	var notices []string
+	if pending || len(logged) > 0 {
+		req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
+		req.SurfaceTools = logged
+		if pending {
+			req.SurfaceTools = append(req.SurfaceTools, surfaceTools(ev, env)...)
+		}
+		req.Notify = env.Notices
+		res, observeErr := h.CheckAndMark(req)
+		if observeErr != nil {
+			restoreLog()
+			err = observeErr
+			return contract.Reply{}, err
+		}
+		notices = append(notices, res.Notices...)
+	}
 
 	var blocks []string
 	if isLifecycle || isEnd {
 		req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
 		req.Reason, req.CompactSignal = reason, signal
 		req.EndEpoch = isEnd
+		req.Notify = env.Notices
 		req.Budget = EpochBudget(ev.Model, ev.AgentID != "")
 		if ev.Model == "" && ev.AgentID == "" {
 			req.Budget = 0 // keep the known window across signals without model metadata
@@ -159,8 +208,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		if err != nil {
 			return contract.Reply{}, err
 		}
+		notices = append(notices, res.Notices...)
 		if isEnd {
-			return contract.Reply{}, nil
+			return contract.Reply{PersonLine: strings.Join(res.Notices, " ")}, nil
 		}
 		text, err := lifecycleBlock(h, ev, env, reason, signal, res.Epoch)
 		if err != nil {
@@ -241,7 +291,25 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			blocks = append(blocks, block.text)
 		}
 	}
-	return contract.Reply{Context: strings.Join(blocks, "\n\n")}, nil
+	if stuck != nil {
+		text, err := deliverRescue(h, ev, env, stuck)
+		if err != nil {
+			return contract.Reply{}, err
+		}
+		if text != "" {
+			blocks = append(blocks, text)
+		}
+	}
+	if len(history) > 0 {
+		text, err := deliverHistory(h, ev, env, history)
+		if err != nil {
+			return contract.Reply{}, err
+		}
+		if text != "" {
+			blocks = append(blocks, text)
+		}
+	}
+	return contract.Reply{Context: strings.Join(blocks, "\n\n"), PersonLine: strings.Join(notices, " ")}, nil
 }
 
 func baseRequest(ev contract.Event, env Environment, project, checkout string) record.DeliveryRequest {
@@ -252,6 +320,8 @@ func baseRequest(ev contract.Event, env Environment, project, checkout string) r
 		Branch:  at.Branch, Head: at.Head,
 		Now:         env.Now,
 		KeepSession: env.KeepSession,
+		SurfaceMode: func(surface string) string { return surfaceSetting(env, project, surface) },
+		Offline:     env.Offline,
 	}
 }
 
@@ -341,6 +411,15 @@ func collect(ev contract.Event, env Environment) []*group {
 	var out []*group
 	_, ledgerErr := os.Stat(filepath.Join(env.RecordDirectory, "hooks.db"))
 	for _, g := range order {
+		if len(g.cands) > 0 {
+			kept := g.cands[:0]
+			for _, c := range g.cands {
+				if surfaceSetting(env, g.project, record.SurfaceForMoment(c.moment)) != "off" {
+					kept = append(kept, c)
+				}
+			}
+			g.cands = kept
+		}
 		if len(g.cands) > 0 || len(g.edits) > 0 || (ledgerErr == nil && g.snap != nil && len(g.views) > 0 && hasAdviceEffects(g.views)) {
 			out = append(out, g)
 		}
@@ -423,8 +502,11 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 			if gone {
 				c.resend = true
 				fresh = append(fresh, c)
+				continue
 			}
 		}
+		c.control = true
+		fresh = append(fresh, c)
 	}
 	g.cands = fresh
 	if len(g.cands) == 0 {
@@ -634,7 +716,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	items, conflicts := resolveConflicts(items)
 	var known []record.GivenRow
 	if len(present) > 0 {
-		known, _, err = h.EpochGiven(ev.SessionID, ev.AgentID, g.project, g.checkout, -1)
+		known, _, err = h.EpochSelected(ev.SessionID, ev.AgentID, g.project, g.checkout, -1, true)
 		if err != nil {
 			return "", err
 		}
@@ -672,6 +754,12 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	plan := append(corrections, packReserved(items, companion, reservedLane-g.reservedUsed-correctionTokens, scorer)...)
 	req := baseRequest(ev, env, g.project, g.checkout)
 	req.Candidates = requestCandidates(plan)
+	surfaceTargets(plan, g.views, req.Candidates)
+	for i, p := range plan {
+		if p.control {
+			req.Candidates[i].Action = "control"
+		}
+	}
 	req.Conflicts = conflicts
 	comparisons := 0
 	req.Similar = func(c record.DeliveryCandidate, rows []record.GivenRow) string {

@@ -100,6 +100,7 @@ func commit(h *record.Hooks, ev contract.Event, env Environment, header string, 
 	}
 	req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
 	req.Candidates = requestCandidates(plan)
+	surfaceTargets(plan, nil, req.Candidates)
 	res, err := h.CheckAndMark(req)
 	if err != nil || len(res.Receipts) == 0 {
 		return "", err
@@ -121,7 +122,7 @@ func commit(h *record.Hooks, ev contract.Event, env Environment, header string, 
 // within 400 tokens, plus the ids of the rest. Everything else comes back at
 // its next moment.
 func recovery(h *record.Hooks, ev contract.Event, env Environment, previous int) (string, error) {
-	given, _, err := h.EpochGiven(ev.SessionID, ev.AgentID, ev.ProjectID, ev.Checkout, previous)
+	given, _, err := h.EpochSelected(ev.SessionID, ev.AgentID, ev.ProjectID, ev.Checkout, previous, surfaceSetting(env, ev.ProjectID, "recovery") == "shadow")
 	if err != nil || len(given) == 0 {
 		return "", err
 	}
@@ -187,7 +188,7 @@ func coversAny(it *entries.Item, files []string) bool {
 // is sent again. An entry given in this epoch that is now broken or gone gets
 // a correction; one whose text changed gets its new one-line form.
 func resumeCorrections(h *record.Hooks, ev contract.Event, env Environment) (string, error) {
-	given, _, err := h.EpochGiven(ev.SessionID, ev.AgentID, ev.ProjectID, ev.Checkout, -1)
+	given, _, err := h.EpochSelected(ev.SessionID, ev.AgentID, ev.ProjectID, ev.Checkout, -1, surfaceSetting(env, ev.ProjectID, "recovery") == "shadow")
 	if err != nil || len(given) == 0 {
 		return "", err
 	}
@@ -236,7 +237,7 @@ func resumeCorrections(h *record.Hooks, ev contract.Event, env Environment) (str
 // An editing subagent starts with the parent's priority line and one-liners of what the
 // parent was given this epoch, within its own 600-token budget.
 func subagentStartBrief(h *record.Hooks, ev contract.Event, env Environment) (string, error) {
-	given, _, err := h.EpochGiven(ev.SessionID, "", ev.ProjectID, ev.Checkout, -1)
+	given, _, err := h.EpochSelected(ev.SessionID, "", ev.ProjectID, ev.Checkout, -1, surfaceSetting(env, ev.ProjectID, "recovery") == "shadow")
 	if err != nil || len(given) == 0 {
 		return "", err
 	}

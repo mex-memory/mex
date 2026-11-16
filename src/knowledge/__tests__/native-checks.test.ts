@@ -83,8 +83,10 @@ describe.skipIf(!enabled)("current checks before publication", () => {
 
   function commitBase(f: ReturnType<typeof fixture>) {
     const git = (...args: string[]) => execFileSync("git", ["-C", f.root, ...args], { stdio: "pipe" });
+    // A person sharing has a Git identity; CI runners have none of their own.
+    git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.test");
     git("add", ".");
-    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "base");
+    git("commit", "-qm", "base");
     git("branch", "-M", "main");
     return git;
   }

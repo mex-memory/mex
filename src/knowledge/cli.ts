@@ -16,8 +16,23 @@ export function buildKnowledgeCommands(): Command[] {
       }
     }));
   const sessionWhat = new Command("what").description("Read what MEX gave or withheld this session")
- .option("--session <id>","Session identifier").option("--json","Print receipt titles and counts as JSON")
- .action(async opts=>run(opts.json,async()=>{const {what,whatLine}=await import("./what.js");const result=what({projectPath:process.cwd()},opts.session);if(opts.json)console.log(JSON.stringify({ok:true,...result}));else {console.log(whatLine(result));for(const it of result.items)console.log(`${it.action} ${it.id} ${it.title}`);if(result.partial)console.log("More receipts exist; this view reached its work limit.");}}));
+ .option("--session <id>","Session identifier").option("--surfaces","Read surface efficacy and controls").option("--json","Print receipt titles and counts as JSON")
+ .action(async opts=>run(opts.json,async()=>{
+   const {what,whatLine,surfaces}=await import("./what.js");
+   if (opts.surfaces) {
+     const result=surfaces({projectPath:process.cwd()});
+     if(opts.json)console.log(JSON.stringify({ok:true,...result}));
+     else { if(result.contention) console.log(`Contention: ${JSON.stringify(result.contention)}`); for(const row of result.surfaces) {
+       const live=row.live as {firings:number}, shadow=row.shadow as {firings:number};
+       const percent=(value:unknown)=>typeof value==="number" ? `${(value*100).toFixed(1)}%` : "unsettled";
+       console.log(`${row.surface}: ${live.firings} live, ${shadow.firings} shadow; acted ${percent(row.actedRate)}; base ${row.baseKind} ${percent(row.baseRate)}; gate ${row.gate}: ${row.reason}`);
+       console.log(`  first ${JSON.stringify(row.first)}; repeat ${JSON.stringify(row.repeat)}; false-send estimate ${row.falseSendEstimate}`);
+     }
+     }
+     return;
+   }
+   const result=what({projectPath:process.cwd()},opts.session);if(opts.json)console.log(JSON.stringify({ok:true,...result}));else {console.log(whatLine(result));for(const it of result.items)console.log(`${it.action} ${it.id} ${it.title}`);if(result.partial)console.log("More receipts exist; this view reached its work limit.");}
+ }));
  const save = new Command("note")
     .alias("log")
     .description("Save a personal fact and its reason (log remains an alias for one release)")

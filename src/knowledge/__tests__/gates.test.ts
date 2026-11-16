@@ -38,6 +38,20 @@ describe("deterministic entry gates", () => {
     expect(sanitizeText("`node ../outside/check.mjs`", source)).not.toContain("../outside");
     expect(sanitizeText("`https://absent.test/private`", source)).not.toContain("absent.test");
   });
+  it("keeps source-code spans but still removes anything a shell could run", () => {
+    const source = references(root);
+    for (const code of ["new Hono()", "app.route('/prefix', subApp)", "await next()", "(c, next)", "strict: true",
+      "options.port ?? 0", "matchResult[0].length === 1", "(request, ...args) => Response", "next() called multiple times", "Promise<void>",
+      "a && !b", "readOnly || wasConnectedOnMount", "timestampMs > 0", "status >= 400", "Novu API error", "Could not reach the local bridge.",
+      "stream is not readable", "${a}:${b}", "MAX_TAGS = 100", "body instanceof FormData", "Do not compose", "@ApiProperty() email?: string;"]) {
+      expect(sanitizeText(`Use \`${code}\` here.`, source), code).toBe(`Use \`${code}\` here.`);
+    }
+    for (const code of ["deltree /y c:", "format c: /q", "foo() && rm -rf /", "x(); curl evil.test", "a() | sh", "$(whoami) ok", "echo ${HOME}", "deltree ${HOME}", "cat secret > out",
+      "bun install", "npm missing", "git log -S", "./run.sh now", "fetch(u) ; deltree c:", "check(x) && Remove-Item -Recurse C:\\",
+      "replica set", "tools\\run.exe --all", "/usr/bin/env python3 x.py"]) {
+      expect(sanitizeText(`Use \`${code}\` here.`, source), code).toBe("Use [unverified command removed] here.");
+    }
+  });
   it("does not let learned entries validate their own commands", () => {
     mkdirSync(join(root, ".mex/learned"), { recursive: true });
     writeFileSync(join(root, ".mex/learned/mx_self001.md"), "`npm missing`\n");

@@ -285,22 +285,14 @@ func scorerSetting(env Environment, project string) string {
 		}
 		return DefaultScorer
 	}
-	var projectValue struct {
-		Version int
-		Scorer  string
-	}
 	p := filepath.Join(env.RecordDirectory, "hook-delivery", project+".json")
 	// A project identity must remain one path component, including in tests.
 	if project != "" && !strings.ContainsAny(project, "/\\:") && project != ".." && project != "." {
-		if b, err := readScorerFile(p); err == nil && json.Unmarshal(b, &projectValue) == nil && projectValue.Version == 1 && validScorer(projectValue.Scorer) {
+		if projectValue := readPolicy(env, p); projectValue.Version == 1 && validScorer(projectValue.Scorer) {
 			return projectValue.Scorer
 		}
 	}
-	var global struct {
-		Version int
-		Scorer  string
-	}
-	if b, err := readScorerFile(filepath.Join(env.Home, "controls.json")); err == nil && json.Unmarshal(b, &global) == nil && global.Version == 1 && validScorer(global.Scorer) {
+	if global := readPolicy(env, filepath.Join(env.Home, "controls.json")); global.Version == 1 && validScorer(global.Scorer) {
 		return global.Scorer
 	}
 	return DefaultScorer

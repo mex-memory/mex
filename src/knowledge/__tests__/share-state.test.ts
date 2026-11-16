@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -39,5 +39,29 @@ describe("share state and cleanup", () => {
     expect(firstLink(wt)).toBe(join(wt, "sub", "out"));
     expect(() => removeWorktree(root, wt)).toThrow(/holds a link/u);
     expect(existsSync(target)).toBe(true);
+  });
+
+  it("accepts a symlink the repository itself tracks, unchanged, and still stops at any other", () => {
+    const { root, git } = shareRepo();
+    try { symlinkSync("README.md", join(root, "CLAUDE.md")); } catch { return; }
+    git("config", "core.symlinks", "true");
+    git("add", "CLAUDE.md"); git("commit", "-qm", "tracked link");
+    if (git("ls-files", "-s", "CLAUDE.md").split(" ")[0] !== "120000") return;
+    const wt = join(root, "..", "wt-tracked");
+    git("worktree", "add", "-q", "-b", "tmp4", wt);
+    expect(firstLink(wt)).toBeUndefined();
+    removeWorktree(root, wt);
+    expect(existsSync(wt)).toBe(false);
+    expect(existsSync(join(root, "README.md"))).toBe(true);
+
+    const edited = join(root, "..", "wt-edited");
+    git("worktree", "add", "-q", "-b", "tmp5", edited);
+    unlinkSync(join(edited, "CLAUDE.md")); symlinkSync(tmpdir(), join(edited, "CLAUDE.md"));
+    expect(firstLink(edited)).toBe(join(edited, "CLAUDE.md"));
+
+    const extra = join(root, "..", "wt-extra");
+    git("worktree", "add", "-q", "-b", "tmp6", extra);
+    symlinkSync(tmpdir(), join(extra, "untracked-link"));
+    expect(firstLink(extra)).toBe(join(extra, "untracked-link"));
   });
 });

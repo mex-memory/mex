@@ -8,6 +8,7 @@ import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJo
 import "./job-kinds.js";
 import { sendUsageReports } from "../telemetry/reporting.js";
 import { indexPending, queuePendingRefreshes } from "../file-index/pending.js";
+import { queueWorkingSetRequests, workingSetPending } from "../working-set/job.js";
 import { queueStaleCodeFacts } from "../repo-start/history/freshness.js";
 import { judgePending, queuePendingJudgements } from "../judge/pending.js";
 import { filterPending, queuePendingFilters } from "../filter/pending.js";
@@ -132,7 +133,7 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     const row = lease(writer);
     const live = leaseLive(row, settings);
     if (live && row.version === VERSION) return { started: false, reason: "running" };
-    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer)) {
+    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer) && !workingSetPending(writer.location.directory)) {
       clearPending(writer);
       return { started: false, reason: "no-work" };
     }
@@ -271,6 +272,8 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
         // Decisions that cite a commit come into force when it lands; a decision-like commit is offered at the next start.
         try { (await import("../knowledge/decisions.js")).decisionPass(writer); } catch { /* a missed pass waits for the next one */ }
       }
+      // Session starts that found their working set missing or behind.
+      queueWorkingSetRequests(writer);
       const outcome = await runOneBatch(writer, self);
       if (outcome === "ran") { lastWork = clock(); continue; }
       const hubOpen = row.hub_until !== null && Date.parse(row.hub_until) > clock();

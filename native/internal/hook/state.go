@@ -22,6 +22,7 @@ type home struct {
 	deliveryError func(error)  // explicit diagnostic mode only; never model context
 	deliveryTrace func(string, time.Duration)
 	scorer        string // MEX_DELIVERY_SCORER override; no I/O
+	surfaces      string // MEX_DELIVERY_SURFACES override; no I/O
 	aids          string // MEX_DELIVERY_ALIASES override; no I/O
 	user          string // the person's home folder
 	mex           string // MEX's folder: <MEX_HOME>/.mex, else ~/.mex (the same rule as Node's mexHomeDir)
@@ -43,6 +44,7 @@ func homeFrom(getenv Env) home {
 		}
 	}
 	h := home{user: user, getenv: getenv, scorer: getenv("MEX_DELIVERY_SCORER"), aids: getenv("MEX_DELIVERY_ALIASES")}
+	h.surfaces = getenv("MEX_DELIVERY_SURFACES")
 	h.claude = strings.TrimSpace(getenv("CLAUDE_CONFIG_DIR"))
 	if h.claude == "" && user != "" {
 		h.claude = filepath.Join(user, ".claude")

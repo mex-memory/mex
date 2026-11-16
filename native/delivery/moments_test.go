@@ -138,44 +138,22 @@ func (f *fixture) file(rel, content string) string {
 
 func fixtureHooksDB(t *testing.T, directory string) *sql.DB {
 	t.Helper()
-	// Schema preparation is outside hook deadlines. These tests assert delivery
-	// behavior; migration and production lock/deadline tests live in record.
+	// Schema preparation is outside hook deadlines, through the real
+	// migrations so the fixture can't fall behind them. These tests assert
+	// delivery behavior; migration and production lock/deadline tests live in
+	// record.
+	if err := record.PrepareHooks(record.Location{Directory: directory, Hooks: filepath.Join(directory, "hooks.db")}); err != nil {
+		t.Fatal(err)
+	}
 	db, err := sql.Open("sqlite", filepath.Join(directory, "hooks.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok := false
-	defer func() {
-		if !ok {
-			_ = db.Close()
-		}
-	}()
-	if _, err = db.Exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
 	var version int
-	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	for i, name := range []string{
-		"0001_init.sql", "0002_delivery.sql", "0003_followups.sql",
-		"0004_rendering.sql", "0005_probes.sql", "0006_intent.sql",
-	} {
-		if version >= i+1 {
-			continue
-		}
-		schema, err := os.ReadFile(filepath.Join("..", "record", "schema", "hooks", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = db.Exec("BEGIN IMMEDIATE;" + string(schema) + fmt.Sprintf("; PRAGMA user_version=%d; COMMIT;", i+1)); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != record.SchemaVersion {
+		_ = db.Close()
 		t.Fatalf("fixture schema %d: %v", version, err)
 	}
-	ok = true
 	return db
 }
 
@@ -288,7 +266,7 @@ func TestPitfallOnFirstReadOnce(t *testing.T) {
 	}
 	mustHave(t, ctx, "never close it here", "(mx_pitfal)", "[team, from a person]")
 	mustBeEmpty(t, f.send(f.event(contract.PostToolBatch, read(p, "export const pool = 1"))))
-	if got := f.rows(""); len(got) != 1 || got[0] != "mx_pitfal:given:read:full" {
+	if got := f.rows(""); len(got) != 2 || got[0] != "mx_pitfal:given:read:full" || got[1] != "mx_pitfal:control:read:one-line" {
 		t.Fatal(got)
 	}
 }
@@ -347,7 +325,7 @@ func TestFailureFixExactSignatureOnly(t *testing.T) {
 	hit := shell("pnpm test", "Exit code 1\nError:   connect ECONNREFUSED 127.0.0.1:5432", false)
 	mustHave(t, f.send(f.event(contract.PostToolFailure, hit)), "docker compose up db")
 	mustBeEmpty(t, f.send(f.event(contract.PostToolFailure, hit)))
-	if got := f.rows("entry_id='mx_fixdb1'"); len(got) != 1 {
+	if got := f.rows("entry_id='mx_fixdb1'"); len(got) != 2 || got[0] != "mx_fixdb1:given:failure:full" || got[1] != "mx_fixdb1:control:failure:one-line" {
 		t.Fatal(got)
 	}
 	// A success never brings a fix.

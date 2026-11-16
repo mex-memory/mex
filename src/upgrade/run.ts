@@ -8,7 +8,7 @@ import { realPath } from "../record/project.js";
 import { knowledgeProject, type KnowledgeOptions } from "../knowledge/context.js";
 import { containedDirectory, createEntryFile } from "../knowledge/files.js";
 import { KnowledgeError, parseEntry } from "../knowledge/entry.js";
-import { git, defaultBase } from "../knowledge/share-plan.js";
+import { git, defaultBase, requireGitIdentity } from "../knowledge/share-plan.js";
 import { firstLink, removeWorktree } from "../knowledge/share-state.js";
 import { atomicCreateArtifact, atomicReplaceArtifact, withContainedArtifactLock } from "../team/artifacts/filesystem.js";
 import { revisionOf } from "../team/artifacts/revision.js";
@@ -164,7 +164,15 @@ function complete(dir: string, state: State, run: UpgradeRun): UpgradeResult {
   if (state.step === "started") { local(plan); checkpoint(dir, state, "local", run); }
   if (plan.tracked.length) {
     if (state.step === "local") {
-      if (!existsSync(state.worktree)) git(plan.root, "-c", `core.hooksPath=${join(state.worktree, ".git", "upgrade-disabled")}`, "worktree", "add", "--quiet", "-b", plan.branch, state.worktree, plan.base);
+      if (!existsSync(state.worktree)) {
+        // A failed checkout can leave its new branch behind. Reuse it only
+        // while it still points at the approved base; anything else is kept.
+        let existing: string | undefined;
+        try { existing = git(plan.root, "rev-parse", "--verify", "--quiet", `refs/heads/${plan.branch}`); } catch { existing = undefined; }
+        if (existing !== undefined && existing !== plan.base) throw new KnowledgeError("UPGRADE_CHANGED", "The upgrade branch changed; it was kept for review.");
+        git(plan.root, "-c", `core.hooksPath=${join(state.worktree, ".git", "upgrade-disabled")}`, "worktree", "add", "--quiet",
+          ...(existing === undefined ? ["-b", plan.branch, state.worktree, plan.base] : [state.worktree, plan.branch]));
+      }
       worktree(state);
       seedOwnedCheckout(state.worktree, plan.base, plan.tracked);
       checkpoint(dir, state, "worktree", run);
@@ -207,6 +215,7 @@ export async function runUpgrade(options: KnowledgeOptions, expected: string, ru
   const plan = prepareUpgrade(options, run.now);
   if (!plan.ready || plan.revision !== expected) throw new KnowledgeError("STALE_PREVIEW", "The upgrade changed or has blockers; run mex upgrade again.");
   if (!plan.tracked.length && !plan.local.length && !plan.personal.length && !plan.assets.caches.length && !plan.assets.hook) throw new KnowledgeError("UPGRADE_NOTHING", "Nothing needs upgrading.");
+  if (plan.tracked.length) requireGitIdentity(plan.root);
   const dir = projectDirectory(options, true)!;
   return withContainedArtifactLock(plan.home, `projects/${plan.projectId}` as RepoRelativePath, "upgrade.lock", () => {
     if (json(dir, STATE)) throw new KnowledgeError("UPGRADE_IN_PROGRESS", "An upgrade is pending; use --finish or --discard.");
@@ -223,7 +232,9 @@ export async function finishUpgrade(options: KnowledgeOptions, run: UpgradeRun =
   return withContainedArtifactLock(p.location.home, `projects/${p.projectId}` as RepoRelativePath, "upgrade.lock", () => {
     const value = json(dir, STATE);
     if (!value) throw new KnowledgeError("UPGRADE_NONE", "No unfinished upgrade.");
-    return complete(dir, assertState(value, options, dir), run);
+    const state = assertState(value, options, dir);
+    if (state.plan.tracked.length && state.step !== "committed") requireGitIdentity(state.plan.root);
+    return complete(dir, state, run);
   });
 }
 /** Discard pending tracked output. Already-applied personal/local changes stay. */
