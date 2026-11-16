@@ -1,0 +1,20 @@
+{
+  "session_id": "g-91ab",
+  "transcript_path": "/home/dev/.gemini/tmp/shop/chats/session-g-91ab.json",
+  "cwd": "/home/dev/shop",
+  "timestamp": "2026-11-15T10:00:00.000Z",
+  "hook_event_name": "AfterTool",
+  "tool_name": "run_shell_command",
+  "tool_input": {
+    "command": "npm test"
+  },
+  "tool_response": {
+    "llmContent": "Command: npm test\nExit Code: 1",
+    "returnDisplay": "",
+    "error": {
+      "message": "Command exited with code 1",
+      "type": "shell_execute_error"
+    }
+  },
+  "original_request_name": "run_shell_command"
+}

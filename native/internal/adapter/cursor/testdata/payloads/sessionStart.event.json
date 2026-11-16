@@ -1,0 +1,14 @@
+{
+  "agent": "cursor",
+  "agent_version": "3.2.1",
+  "kind": "session_start",
+  "session_id": "c-7f1e",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "source": "startup",
+  "model": "claude-opus-5-5",
+  "transcript": "/home/dev/.cursor/projects/shop/agent-transcripts/c-7f1e.jsonl",
+  "background": false
+}

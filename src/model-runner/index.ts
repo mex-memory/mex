@@ -8,8 +8,8 @@ import type { AutomaticModelBatch } from "./budget-queue.js";
 
 export { ModelRunError } from "./errors.js";
 export { ModelWaitError } from "./budget-queue.js";
-export { DEFAULT_MODELS, selectModel } from "./models.js";
-export type { ModelAgent, ModelRole, ModelSetup, ModelTable } from "./models.js";
+export { AGENT_MODELS, DEFAULT_MODELS, selectModel } from "./models.js";
+export type { AgentModelTable, ModelAgent, ModelRole, ModelSetup, ModelTable } from "./models.js";
 export const MAX_MODEL_PROMPT_BYTES = 1024 * 1024;
 export const MAX_MODEL_RESULT_BYTES = 1024 * 1024;
 export const MAX_MODEL_STREAM_BYTES = 8 * 1024 * 1024;

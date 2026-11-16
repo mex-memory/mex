@@ -104,6 +104,11 @@ type InstructionObserver interface {
 
 var ErrUnknownEvent = errors.New("unknown event")
 
+// ErrSkip means the payload is well formed but this call carries nothing MEX
+// uses (for example Antigravity's PreInvocation after the first model call of
+// a turn). The shim sends the empty reply and does not count it as a failure.
+var ErrSkip = errors.New("event skipped")
+
 var registry = map[string]Profile{}
 
 // Register adds a profile. Profiles register themselves in init.

@@ -1,0 +1,19 @@
+{
+  "conversation_id": "c-7f1e",
+  "generation_id": "g-01",
+  "model": "claude-opus-5-5",
+  "cursor_version": "3.2.1",
+  "workspace_roots": [
+    "/home/dev/shop"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/shop/agent-transcripts/c-7f1e.jsonl",
+  "hook_event_name": "subagentStart",
+  "subagent_id": "sa-1",
+  "subagent_type": "explore",
+  "task": "find cart code",
+  "parent_conversation_id": "c-7f1e",
+  "tool_call_id": "t6",
+  "subagent_model": "claude-haiku-5-5",
+  "is_parallel_worker": false
+}
