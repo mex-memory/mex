@@ -265,3 +265,43 @@ and runs the ordinary judge/repair/delivery chain at every checkpoint. A
 seed target that no longer records aborts the replay. All 46 cases remain
 in their original denominators. This reduces seed-generation variation;
 a single replay still does not establish a statistically reliable gain.
+
+
+The first fixed-check replay at `1e53edc5` completed with these results:
+
+| Checkpoint | True kept | Stale caught | Stale original full text |
+| --- | --- | --- | --- |
+| C0 | 45/46 | 0/0 | 0 |
+| C1 | 40/43 | 3/3 | 0 |
+| C2 | 39/41 | 5/5 | 0 |
+| C3 | 34/37 | 9/9 | 0 |
+| C4 | 28/32 | 14/14 | 0 |
+| C5 | 27/31 | 14/15 | 0 |
+
+All 45 frozen seed proposals record; generation failures remain zero. C5
+b01/b04 are now accepted rewrites; k08 is an explicit model abstention.
+Diagnostics distinguish b04's initially rejected pattern from its accepted
+check repair. The true-not-kept cases are v04 (abstention), b13 (rewrite of
+a true claim), privacy-withheld b03, and b09 (safe evidence unavailable).
+This misses the prospective true-kept floor of 28/31 and is retained as a
+negative result, despite the higher stale-detection count.
+
+There were 78 calls: 74 judge and four check-target repairs, no seed writers.
+Usage is 156 uncached input + 1,113,749 cache-write + 99,600 cache-read +
+64,534 output = 1,278,039 reported tokens. Reference valuation is
+$0.281631240. Both figures exclude the historical seed-generation calls,
+which remain accounted for in the preceding run. All five complete runs
+therefore total 424 calls / 6,244,498 tokens / $1.424514025 reference
+valuation. Including the separately retained partial attempt gives 425
+calls / 6,261,119 reported tokens and known valuation plus its reservation
+of $1.434587825. These are not invoices or subscription surcharges.
+
+The replay exposed a resolver defect: probing an extensionless import's
+directory as a file, or probing index children beneath an explicit JS file,
+rejected otherwise safe evidence. Directory-index and explicit-JS
+regressions reproduce the problem without model calls. The fix probes only
+plausible source files, keeps all containment/secret/ambiguity checks, checks
+the evidence deadline during resolution, and reports evidence withholding
+separately from a model answer. The first measurement remains attributed to
+`1e53edc5`; testing a corrected candidate is a new experiment, never a
+replacement of that report.

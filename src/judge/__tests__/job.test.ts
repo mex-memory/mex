@@ -399,14 +399,29 @@ describe("one-hop source evidence", () => {
     source("src/helper.ts", "export function build() { return 2; }\n");
     await finish(id); expect(calls).toHaveLength(2);
   });
+  it.each(["directory", "explicit-js"])("resolves %s helpers without probing a directory as a source file", async mode => {
+    helperClaim();
+    rmSync(join(root, "src/helper.ts"));
+    const imported = mode === "directory" ? "./helpers" : "./helper.js";
+    const helper = mode === "directory" ? "src/helpers/index.ts" : "src/helper.js";
+    source("src/api.ts", `import { build as make } from '${imported}';\nexport class Client { run() { return make(); } }\n`);
+    source(helper, "export function build() { return {}; }\n");
+    await finish(queue());
+    expect(calls).toHaveLength(1);
+    const snapshot = JSON.parse(calls[0]!.prompt.split("Evidence follows as JSON:\n")[1]!);
+    expect(snapshot.files.map((f: any) => f.path)).toEqual(["src/api.ts", helper]);
+    expect(readJudgement(writer, projectId, root, "mx_helper00")?.result).toBe("still-true");
+  });
   it("discards a reply when only the added helper changes in flight", async () => {
     helperClaim(); deps.model = vi.fn(async request => { source("src/helper.ts", "export function build() { return 2; }\n"); return answer(request); });
     const id = queue(); await run(id);
     expect(readJudgement(writer, projectId, root, "mx_helper00")).toBeUndefined();
   });
   it.each(["secret", "oversize"])("withholds %s helper evidence before a model call", async mode => {
+    const events: unknown[] = []; deps.diagnostic = e => events.push(e);
     helperClaim(); source("src/helper.ts", mode === "secret" ? 'const password = "example-placeholder-value";\n' : "x".repeat(65 << 10));
     expect((await finish(queue())).state).toBe("done with gaps"); expect(deps.model).not.toHaveBeenCalled();
+    expect(events).toEqual([expect.objectContaining({ phase: "evidence", model_answer: "not-called", reason: "evidence-unavailable" })]);
   });
   it("leaves ambiguous helpers unresolved and excludes uncalled imports", async () => {
     helperClaim(); source("src/helper.js", "export function build() { return 99; }\n");

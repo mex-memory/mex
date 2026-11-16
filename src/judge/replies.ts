@@ -26,9 +26,9 @@ type RewriteAnswer = Extract<JudgeAnswer, { result: "rewritten" }>;
 type CheckRequest = z.infer<typeof CheckRequest>;
 export interface Recording { checks?: EntryCheck[]; errors: Array<{ index: number; reason: string }> }
 export type JudgeReason = "accepted" | "model-abstained" | "complete-check-conflict" | "checks-rejected" | "unsafe-rewrite"
-  | "rewrite-invalid" | "inputs-changed" | "repair-cancelled" | "repair-unavailable" | "repair-invalid" | "repair-rejected" | "repaired" | "reply-invalid" | "response-discarded";
+  | "evidence-unavailable" | "rewrite-invalid" | "inputs-changed" | "repair-cancelled" | "repair-unavailable" | "repair-invalid" | "repair-rejected" | "repaired" | "reply-invalid" | "response-discarded";
 export interface JudgeDiagnostic {
-  id: string; phase: "answer" | "repair" | "publication"; model_answer: JudgeAnswer["result"] | "invalid";
+  id: string; phase: "evidence" | "answer" | "repair" | "publication"; model_answer: JudgeAnswer["result"] | "invalid" | "not-called";
   outcome: JudgeAnswer["result"]; reason: JudgeReason; errors?: Recording["errors"];
 }
 export interface ResolvedAnswer { id: string; result: JudgeAnswer["result"]; rewrite?: KnowledgeEntry; reason: JudgeReason }

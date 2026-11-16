@@ -175,8 +175,9 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
           prompt = judgePrompt(snapshot);
           if (Buffer.byteLength(prompt) > JUDGE_LIMITS.promptBytes || hasSecret(prompt)) throw new Error("Judge evidence is unavailable or exceeds its bound");
           break;
-        } catch {
+        } catch (error) {
           if (batch.length > 1) { batch = batch.slice(0, -1); continue; }
+          emitDiagnostic(deps.diagnostic, { id: batch[0]!.item.id, phase: "evidence", model_answer: "not-called", outcome: "cannot-tell", reason: "evidence-unavailable", errors: [{ index: -1, reason: error instanceof Error ? error.message : "Safe evidence unavailable" }] });
           return { checkpoint: { ...state, skipped: [...state.skipped, batch[0]!.item.id], gaps: true }, summary: "One entry needs review: complete safe evidence was unavailable" };
         }
       }

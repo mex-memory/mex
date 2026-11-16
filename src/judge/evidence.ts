@@ -65,7 +65,7 @@ function localHelpers(checkout: string, files: FileEvidence[], candidates: Candi
     for (const statement of ast.program.body) {
       if (statement.type !== "ImportDeclaration" || statement.importKind === "type") continue;
       const from = (statement.source as { value?: unknown })?.value;
-      if (typeof from !== "string" || !from.startsWith(".")) continue;
+      if (typeof from !== "string" || !(from.startsWith("./") || from.startsWith("../"))) continue;
       for (const specifier of (statement.specifiers ?? []) as Array<{ importKind?: string; local?: { name?: string } }>) {
         if (specifier.importKind !== "type" && specifier.local?.name) bindings.set(specifier.local.name, from);
       }
@@ -86,10 +86,13 @@ function localHelpers(checkout: string, files: FileEvidence[], candidates: Candi
       for (const child of Object.values(node)) if (child && typeof child === "object") stack.push(child);
     }
     for (const from of [...called].sort()) {
+      if (Date.now() > deadline) throw new Error("The judge’s evidence time limit was reached");
       const stem = posix.normalize(posix.join(posix.dirname(file.path), from));
       if (stem.startsWith("../") || stem === "..") continue;
-      const base = stem.replace(/\.[cm]?jsx?$/u, "");
-      const paths = [...new Set([stem, ...[".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"].map(ext => base + ext), ...[".ts", ".tsx", ".js"].map(ext => `${stem}/index${ext}`)])];
+      const extension = /\.[cm]?[jt]sx?$/u, explicit = extension.test(stem), base = stem.replace(extension, "");
+      // A bare module can be a directory. Probe only source-file candidates;
+      // repoFile correctly rejects directories and file-as-parent paths.
+      const paths = [...new Set([...[".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"].map(ext => base + ext), ...(explicit ? [] : [".ts", ".tsx", ".js"].map(ext => `${stem}/index${ext}`))])];
       const found = paths.flatMap(path => { const current = readSource(checkout, path); return current === null ? [] : [{ path, current, current_hash: hash(current), baselines: [] }]; });
       if (found.length !== 1 || files.some(f => f.path === found[0]!.path)) continue;
       const helper = found[0]!;
