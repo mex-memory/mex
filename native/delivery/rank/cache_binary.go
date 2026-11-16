@@ -8,14 +8,17 @@ import (
 	"github.com/mex-memory/mex/native/internal/binenc"
 )
 
+// statsVersion 2 added the written-alias and ask fields.
+const statsVersion = 2
+
 // MarshalBinary persists statistics and exact-match metadata, never source
 // prose. The bounded binary format avoids JSON reflection on each prompt.
 func (ix *Index) MarshalBinary() ([]byte, error) {
-	if ix.mode != DefaultMode || len(ix.fieldAvg) != 5 {
+	if ix.mode != DefaultMode || len(ix.fieldAvg) != fieldCount {
 		return nil, errors.New("unsupported statistics mode")
 	}
 	var w binenc.Writer
-	w.Uint(1)
+	w.Uint(statsVersion)
 	w.String(ix.mode)
 	w.Uint(math.Float64bits(ix.avg))
 	for _, avg := range ix.fieldAvg {
@@ -56,7 +59,7 @@ func (ix *Index) UnmarshalBinary(b []byte) error {
 		return errors.New("rank statistics exceed bound")
 	}
 	r := binenc.NewReader(b)
-	if r.Uint() != 1 || r.String() != DefaultMode {
+	if r.Uint() != statsVersion || r.String() != DefaultMode {
 		return errors.New("invalid rank statistics version")
 	}
 	c := Index{mode: DefaultMode, avg: math.Float64frombits(r.Uint())}
@@ -64,7 +67,7 @@ func (ix *Index) UnmarshalBinary(b []byte) error {
 	if !validFloat(c.avg) {
 		return errors.New("invalid average length")
 	}
-	for i := 0; i < 5; i++ {
+	for i := 0; i < fieldCount; i++ {
 		avg := math.Float64frombits(r.Uint())
 		if !validFloat(avg) {
 			return errors.New("invalid field average")
@@ -92,7 +95,7 @@ func (ix *Index) UnmarshalBinary(b []byte) error {
 		d.doc.Scope, d.doc.Targets, d.doc.Literals = r.Strings(128), r.Strings(128), r.Strings(128)
 		d.length = r.Count(1000000)
 		d.tf = readTerms()
-		for j := 0; j < 5 && work <= 2000000; j++ {
+		for j := 0; j < fieldCount && work <= 2000000; j++ {
 			d.lengths = append(d.lengths, r.Count(1000000))
 			d.fields = append(d.fields, readTerms())
 		}

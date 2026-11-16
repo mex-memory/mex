@@ -92,6 +92,7 @@ type payload struct {
 	ToolInput      json.RawMessage `json:"tool_input"`
 	ToolResponse   json.RawMessage `json:"tool_response"`
 	Error          string          `json:"error"`
+	IsInterrupt    bool            `json:"is_interrupt"`
 	CompactSummary string          `json:"compact_summary"`
 	ToolCalls      []batchCall     `json:"tool_calls"`
 }
@@ -138,7 +139,7 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		ev.Tool = &t
 	case contract.PostToolFailure:
 		t := parseTool(p.ToolName, p.ToolInput, p.Cwd)
-		t.Output = &contract.ToolOutput{Text: p.Error, OK: false, ExitCode: exitCode(p.Error)}
+		t.Output = &contract.ToolOutput{Text: p.Error, OK: false, ExitCode: exitCode(p.Error), Interrupted: p.IsInterrupt}
 		ev.Tool = &t
 	case contract.PostToolBatch:
 		ev.Batch = make([]contract.Tool, 0, len(p.ToolCalls))
@@ -162,6 +163,8 @@ type claudeInput struct {
 	Command   string  `json:"command"`
 	Pattern   string  `json:"pattern"`
 	Path      string  `json:"path"`
+	Glob      string  `json:"glob"`
+	Type      string  `json:"type"`
 }
 
 func parseTool(name string, rawInput json.RawMessage, cwd string) contract.Tool {
@@ -185,7 +188,10 @@ func parseTool(name string, rawInput json.RawMessage, cwd string) contract.Tool 
 		t.Input = contract.ToolInput{Command: in.Command}
 	case "Grep":
 		t.Name = contract.ToolSearch
-		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path)}
+		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path), Filter: in.Glob}
+		if t.Input.Filter == "" && in.Type != "" {
+			t.Input.Filter = "type:" + in.Type
+		}
 	case "Glob":
 		t.Name = contract.ToolGlob
 		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path)}

@@ -8,6 +8,7 @@ import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporte
 import { registerRemovedCommands, removedCommandMessage } from "./removed-commands.js";
 import { VERSION } from "./version.js";
 import { buildKnowledgeCommands } from "./knowledge/cli.js";
+import { buildUpgradeCommand } from "./upgrade/cli.js";
 import { unsupportedNodeMessage } from "./node-version.js";
 import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, enableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
 import { mexHomeDir, setGlobalConfigKey } from "./global-config.js";
@@ -113,10 +114,10 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "spec"
     || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
     || commandName === "edit" || commandName === "wrong" || commandName === "forget"
-    || commandName === "what"
-    || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief"
+    || commandName === "what" || commandName === "report"
+    || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief" || commandName === "upgrade"
     || commandName === "skills" || commandName === "install" || commandName === "uninstall"
-    || commandName === "off" || commandName === "on" || commandName === "capture";
+    || commandName === "off" || commandName === "on" || commandName === "capture" || commandName === "handoff";
 }
 
 async function runBrowserCommand(options: { port?: number; open: boolean; mode?: string; setup?: boolean }): Promise<void> {
@@ -166,6 +167,7 @@ const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command
 program.hook("preAction", (_thisCommand, actionCommand) => {
   let family = actionCommand;
   while (family.parent && family.parent !== program) family = family.parent;
+  if (family.name() === "sync" && family.opts().dryRun) return;
   if (cliStarted && !isFirstRunNoticeExemptCommand(family === program ? undefined : family.name())) showFirstRunNotice();
   cliTelemetry.start(actionCommand);
 });
@@ -175,7 +177,8 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   while (family.parent && family.parent !== program) family = family.parent;
   // Uninstall must not recreate the launcher or restart pending jobs.
   if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture"
-    || (family.name() === "install" && family.opts().dryRun)) return;
+    || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
+    || (["install", "sync"].includes(family.name()) && family.opts().dryRun)) return;
   // Keep the hook shim's launcher pointing at this CLI.
   try {
     const { writeLauncher } = await import("./hooks/shim/launcher.js");
@@ -183,11 +186,21 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   } catch { /* never affects the command */ }
   // Restart the background process when jobs are waiting. The marker check opens no database.
   try {
-    if (existsSync(join(mexHomeDir(), "jobs-pending"))) {
+    // Default sync decides whether its own accepted work may continue. A held
+    // or paused invocation must not wake an unrelated host's queued judge.
+    if (!(family.name() === "sync" && !family.opts().deep) && existsSync(join(mexHomeDir(), "jobs-pending"))) {
       const { restartIfPending } = await import("./record/background.js");
       restartIfPending();
     }
   } catch { /* never affects the command */ }
+  if (process.stderr.isTTY && Number(process.exitCode ?? 0) === 0 && !actionCommand.optsWithGlobals().json
+    && !["review", "completion", "__background", "__hook-note"].includes(family.name()) && !process.argv.includes("--json")) {
+    try {
+      const { dailyReviewLine } = await import("./review/daily.js");
+      const line = dailyReviewLine({ projectPath: process.cwd() });
+      if (line) console.error(line);
+    } catch { /* a reminder never affects the command */ }
+  }
 });
 
 async function runRepoStartCommand(options: { folder?: boolean; wait?: boolean } = {}): Promise<void> {
@@ -386,6 +399,28 @@ setupCommand
       process.exitCode = await runSetupHandoff();
     } catch (error) {
       await reportSetupCommandError(error);
+    }
+  });
+
+// ── Handoff ──
+program
+  .command("handoff [line...]")
+  .description("Hand this branch to a teammate: write .mex/handoffs/<branch>.md with no AI; `mex handoff done` closes it")
+  .option("--to <name>", "Who it is for")
+  .option("--yes", "Write without asking after the preview")
+  .option("--dry-run", "Show the preview only")
+  .option("--branch <name>", "With done: the handoff's branch")
+  .option("--json", "Print the result as JSON")
+  .addHelpText("after", "\nThe handoff holds the branch, uncommitted file names, your last ask, the last failing\ncommand and one optional line of yours. It passes a secret scan and a check for names,\nhosts and emails the repo doesn't already contain. You commit it; MEX never pushes.\nThe next agent session on the branch gets it once. It closes when the branch merges,\nat the receiver's first commit, or with `mex handoff done`.\n")
+  .action(async (words: string[], opts: { to?: string; yes?: boolean; dryRun?: boolean; branch?: string; json?: boolean }) => {
+    try {
+      const { runHandoff } = await import("./knowledge/handoff-cli.js");
+      process.exitCode = await runHandoff(words, opts);
+    } catch (error) {
+      const err = error as { code?: string; message: string };
+      if (opts.json) console.log(JSON.stringify({ ok: false, error: { code: err.code ?? "HANDOFF_FAILED", message: err.message } }));
+      else console.error(err.message);
+      process.exitCode = 1;
     }
   });
 
@@ -759,7 +794,7 @@ wikiCommand
   .option("--apply", "start the explicit agent review, rather than preview only")
   .option("--dry-run", "preview only, even if --apply was given")
   .option("--after <entity-id>", "resume bounded review after an existing entity id")
-  .option("--tool <name>", "optional interactive CLI override; otherwise uses the same agent chooser as mex sync")
+  .option("--tool <name>", "optional interactive CLI override; otherwise uses the same agent chooser as mex sync --deep")
   .action(async (options) => {
     const { runKnowledgeUpgrade } = await import("./sync/knowledge-upgrade.js");
     await runKnowledgeUpgrade(loadConfig(), options);
@@ -946,6 +981,7 @@ program
 
 // ── Knowledge entries ──
 for (const command of buildKnowledgeCommands()) program.addCommand(command);
+program.addCommand(buildUpgradeCommand({ afterUpgrade: showFirstRunNotice }));
 
 // ── File index ──
 const indexCommand = program
@@ -1090,18 +1126,25 @@ program
     }
   });
 
-// ── Layer 3: Targeted Sync ──
+// ── Knowledge freshness ──
 program
   .command("sync")
-  .description("Run drift check, then fix flagged files and review flagged Wiki entities in one interactive AI session")
+  .description("Run the knowledge judge now; use --deep for the interactive AI sync session")
+  .option("--deep", "Run the legacy drift check and interactive AI session")
   .option("--dry-run", "Show what would be synced without executing")
-  .option("--warnings", "Include warning-only files (by default only errors are synced)")
+  .option("--warnings", "With --deep: include warning-only files")
   .action(async (opts) => {
     try {
-      const config = loadConfig();
-      const { runSync } = await import("./sync/index.js");
-      await runSync(config, { dryRun: opts.dryRun, includeWarnings: opts.warnings });
-      maybeShowInvite();
+      if (opts.deep) {
+        const { runSync } = await import("./sync/index.js");
+        await runSync(opts.dryRun ? findConfig() : loadConfig(), { dryRun: opts.dryRun, includeWarnings: opts.warnings });
+      } else {
+        if (opts.warnings) throw new Error("Use `mex sync --deep --warnings` to include legacy warning-only files.");
+        const { runJudgeSync } = await import("./judge/sync.js");
+        const job = await runJudgeSync({ projectPath: process.cwd(), dryRun: opts.dryRun });
+        if (job?.state === "failed") process.exitCode = 1;
+      }
+      if (!opts.dryRun) maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
@@ -1244,12 +1287,33 @@ const configCmd = program
 
 configCmd
   .command("set <key> <value>")
-  .description("Set a config value (e.g. delivery.scorer tiers|bm25|fcfs|risk)")
-  .option("--project", "Set delivery.scorer for the registered project")
+  .description("Set a config value (e.g. delivery.scorer tiers|bm25|fcfs|risk, delivery.aliases on|off, delivery.surface.<id>)")
+  .option("--project", "Set delivery.scorer, delivery.surface.<id> or learning.sharing for the registered project")
   .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
-      if (options.project && key !== "delivery.scorer") throw new Error("--project is supported for delivery.scorer.");
-      if (key === "delivery.scorer") {
+      if (options.project && !["delivery.scorer", "learning.sharing"].includes(key) && !key.startsWith("delivery.surface.")) throw new Error("--project is supported for delivery.scorer, delivery.surface.<id> and learning.sharing.");
+      if (key.startsWith("delivery.surface.")) {
+        const { openRecord } = await import("./record/index.js");
+        const { setDeliverySurface } = await import("./controls/index.js");
+        const writer = openRecord();
+        try { setDeliverySurface(writer, key.slice(17), value, options.project ? process.cwd() : undefined); } finally { writer.close(); }
+        console.log("Delivery surface set to " + value + ".");
+      } else if (key === "learning.sharing") {
+        if (!options.project) throw new Error("Use --project to set learning.sharing for this repository.");
+        if (!["automatic", "manual"].includes(value)) throw new Error("Use automatic or manual for learning.sharing.");
+        const { openRecord } = await import("./record/index.js");
+        const { setLearningSharing } = await import("./controls/index.js");
+        const writer = openRecord();
+        try { setLearningSharing(writer, value, process.cwd()); } finally { writer.close(); }
+        console.log(value === "manual" ? "Learned notes stay personal until mex share." : "Eligible learned notes can reach this shared repository after their diff is shown.");
+      } else if (key === "delivery.aliases") {
+        const { openRecord } = await import("./record/index.js");
+        const { setDeliveryAliases } = await import("./controls/index.js");
+        if (value !== "on" && value !== "off") throw new Error("Use on or off for delivery.aliases.");
+        const writer = openRecord();
+        try { setDeliveryAliases(writer, value); } finally { writer.close(); }
+        console.log("Typed-prompt ranking " + (value === "on" ? "now uses" : "no longer uses") + " entries' aliases and asks.");
+      } else if (key === "delivery.scorer") {
         const { openRecord } = await import("./record/index.js");
         const { setDeliveryScorer } = await import("./controls/index.js");
         if (!["tiers", "bm25", "fcfs", "risk"].includes(value)) throw new Error("Use tiers, bm25, fcfs or risk for delivery.scorer.");
@@ -1276,7 +1340,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases`);
         process.exitCode = 1;
         return;
       }
@@ -1495,8 +1559,8 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 
 function buildCompletion(shell: string): string {
   const commands = [
-    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget",
-    "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief",
+    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget", "report",
+    "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief", "upgrade", "handoff",
     "telemetry", "config", "feedback", "hub",
   ];
   if (shell === "bash") {

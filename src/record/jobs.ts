@@ -51,6 +51,8 @@ export interface JobRow {
 
 export interface BatchContext<P = unknown, C = unknown> {
   job: JobRow; params: P; checkpoint: C | undefined; writer: RecordWriter;
+  /** An explicit command may skip an idle delay, never consent or model admission. Not persisted. */
+  immediate?: boolean;
   /**
    * Say what the batch is doing now, in plain words ("4,210 of 12,306 files"). Kept on the
    * job (at most once a second) so `mex jobs` shows it, and passed to a runner watching live.
@@ -84,7 +86,7 @@ export interface JobKind<P = unknown, C = unknown> {
   sideEffects: "none" | "idempotent";
   runBatch(context: BatchContext<P, C>): Promise<BatchResult<C>> | BatchResult<C>;
   /** For a waiting job: true when it can continue. Default: continue on the next pass. */
-  ready?(job: JobRow): boolean;
+  ready?(job: JobRow, writer: RecordWriter): boolean;
 }
 
 const kinds = new Map<string, JobKind<any, any>>();
@@ -142,11 +144,12 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
   });
 }
 
-/** Pause, cancel or resume. A running job is asked, and stops after its current batch. */
-export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume"): JobRow {
+/** Pause, cancel or resume. Automatic replacements can require an unchanged snapshot. */
+export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: Pick<JobRow, "state" | "params">): JobRow {
   return inTransaction(writer.db, () => {
     const job = getJob(writer.db, id);
     if (!job) throw new Error("That job no longer exists.");
+    if (expected && (job.state !== expected.state || job.params !== expected.params)) return job;
     if (action === "resume") {
       if (job.state === "paused" || job.state === "waiting" || job.state === "failed") {
         // Resuming a failed job starts its failure count again; learned results and position stay.
@@ -205,7 +208,7 @@ export function requeueReadyJobs(writer: RecordWriter): number {
   for (const job of waiting) {
     const kind = kinds.get(job.kind);
     let ready = false;
-    try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job) : true) : false; } catch { ready = false; }
+    try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job, writer) : true) : false; } catch { ready = false; }
     if (!ready) continue;
     inTransaction(writer.db, () => {
       const current = getJob(writer.db, job.id);
@@ -261,6 +264,8 @@ export type BatchOutcome = "ran" | "idle";
 export interface RunOptions {
   /** Run only these jobs (a command finishing its own work). */
   only?: ReadonlySet<string>;
+  /** Run the selected work now rather than waiting for idle. */
+  immediate?: boolean;
   /** Live progress of the batch, as the job reports it. */
   onProgress?: (job: JobRow, text: string) => void;
 }
@@ -297,7 +302,7 @@ export async function runOneBatch(writer: RecordWriter, self: string, options: R
   let usage: "jobs.completed" | "jobs.failed" | undefined;
   try {
     result = await withModelJob({ jobId: job.id, batch: job.batch, projectId: job.project_id, recordHome: writer.location.home }, () => kind.runBatch({
-      job, writer, progress,
+      job, writer, progress, immediate: options.immediate,
       params: JSON.parse(job.params || "{}"),
       checkpoint: job.checkpoint === null ? undefined : JSON.parse(job.checkpoint),
     }));

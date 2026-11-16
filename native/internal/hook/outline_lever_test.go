@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,6 +36,11 @@ func fakeIndex(t *testing.T, recordDirectory, project, root, rel string, content
 	if err := os.MkdirAll(filepath.Join(dir, "checkouts"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The index serves a file only while its time on disk matches the parse.
+	mtime := "1"
+	if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
+		mtime = strconv.FormatInt(info.ModTime().UnixNano(), 10)
+	}
 	sum := sha256.Sum256(content)
 	hash := hex.EncodeToString(sum[:])[:32]
 	data, _ := json.Marshal(map[string]any{"outline": symbols, "tokens": len(content) / 4, "lines": strings.Count(string(content), "\n")})
@@ -58,7 +64,7 @@ func fakeIndex(t *testing.T, recordDirectory, project, root, rel string, content
 			if _, err := db.Exec("INSERT INTO records VALUES(?,?,?)", hash, lang, string(data)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.Exec("INSERT INTO paths VALUES(?,?,?,0,?,?,NULL,?)", rel, hash, lang, len(content), "1", filepath.Base(rel)); err != nil {
+			if _, err := db.Exec("INSERT INTO paths VALUES(?,?,?,0,?,?,NULL,?)", rel, hash, lang, len(content), mtime, filepath.Base(rel)); err != nil {
 				t.Fatal(err)
 			}
 		}

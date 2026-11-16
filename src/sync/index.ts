@@ -280,7 +280,7 @@ export async function runSync(
           mode = "prompts";
           break;
         case "3":
-          console.log(chalk.dim("Exiting. Run mex sync again anytime."));
+          console.log(chalk.dim("Exiting. Run mex sync --deep again anytime."));
           return;
         default:
           console.log(chalk.dim("Exiting."));
@@ -387,7 +387,7 @@ export async function runSync(
     );
 
     if (answer.toLowerCase() === "n") {
-      console.log(chalk.dim("Stopped. Run mex sync again anytime."));
+      console.log(chalk.dim("Stopped. Run mex sync --deep again anytime."));
       return;
     }
   }
@@ -431,7 +431,7 @@ async function offerCommentOnlyReview(
   ));
   const interactive = dependencies.reviewGrounding ?? (process.stdin.isTTY && process.stdout.isTTY);
   if (dryRun || !interactive) {
-    console.log(chalk.dim("Run `mex sync` in a terminal to review and accept the new bodies."));
+    console.log(chalk.dim("Run `mex sync --deep` in a terminal to review and accept the new bodies."));
     return;
   }
   const answer = (await ask("Review and accept them now? [y/N] ")).trim().toLowerCase();

@@ -104,7 +104,8 @@ export function convert(records, {
           name = lower === "grep" ? "search" : "glob";
           normalized = {
             path: mapPath(input.path ?? oldRoot),
-            pattern: clip(input.pattern, 4096)
+            pattern: clip(input.pattern, 4096),
+            ...(lower === "grep" && (input.glob || input.type) ? { filter: input.glob ? String(input.glob) : "type:" + input.type } : {})
           };
         }
         const tool = {
