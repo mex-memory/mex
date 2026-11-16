@@ -64,7 +64,7 @@ function committedNodeIds(text: string): Set<string> {
  * Markdown or the baseline cache vouches for it and the committed file never
  * had it, so it is an authoring mistake that can be repaired or dropped.
  * `drift` is recorded knowledge whose code changed, moved or disappeared. It is
- * a normal consequence of editing code, belongs to `mex sync`, and must never
+ * a normal consequence of editing code, belongs to `mex sync --deep`, and must never
  * be repaired by setup, dropped, or allowed to fail it.
  */
 export type GroundingFailureKind = "new" | "drift";
@@ -160,7 +160,7 @@ export function summarizeGroundingDrift(
   };
 }
 
-/** One bounded sentence for terminal and Hub; the recovery is always `mex sync`. */
+/** One bounded sentence for terminal and Hub; the recovery is always `mex sync --deep`. */
 export function describeGroundingDrift(summary: GroundingDriftSummary | null): string {
   if (!summary) return "";
   const count = summary.entities || summary.references;
@@ -168,5 +168,5 @@ export function describeGroundingDrift(summary: GroundingDriftSummary | null): s
   const bound = summary.atLeast ? "At least " : "";
   const more = summary.fileCount - summary.files.length;
   const where = summary.files.length === 0 ? "" : ` (${summary.files.join(", ")}${more > 0 ? `, and ${more} more file${more === 1 ? "" : "s"}` : ""})`;
-  return `${bound}${count} ${noun} changed since they were recorded${where}. They were left as written; run \`mex sync\` to review them.`;
+  return `${bound}${count} ${noun} changed since they were recorded${where}. They were left as written; run \`mex sync --deep\` to review them.`;
 }

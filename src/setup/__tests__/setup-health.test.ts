@@ -165,7 +165,7 @@ describe("status-first setup rerun (#284)", () => {
     const drift = await rerun(root);
     expect(drift.result).toMatchObject({ outcome: "complete", exitCode: 0 });
     expect(drift.output).toContain("graph behind the code");
-    expect(drift.output).toContain("1 source file has changed since the graph was built. Run `mex sync`");
+    expect(drift.output).toContain("1 source file has changed since the graph was built. Run `mex sync --deep`");
     const health = await assessSetupHealth(root);
     expect(health).toMatchObject({ healthy: true, needsCommitOnly: false, missing: [] });
   }, 60_000);

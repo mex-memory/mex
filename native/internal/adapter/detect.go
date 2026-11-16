@@ -18,6 +18,10 @@ var PayloadSignals = []struct {
 	{Agent: "cursor", Keys: []string{"cursor_version", "generation_id"}},
 	{Agent: "copilot", Keys: []string{"toolName", "toolArgs"}},
 	{Agent: "codex", Keys: []string{"turn_id"}},
+	// Antigravity's payloads are camelCase; these two are on every event.
+	{Agent: "antigravity", Keys: []string{"conversationId", "workspacePaths"}},
+	// Gemini CLI's tool events carry original_request_name; no other agent does.
+	{Agent: "gemini", Keys: []string{"original_request_name"}},
 }
 
 // Detect returns the agent whose payload this is, or "" when no signal matches.

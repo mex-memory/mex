@@ -53,3 +53,39 @@ func TestDenseDoesNotAdmitLexicalMiss(t *testing.T) {
 		t.Fatal(rows)
 	}
 }
+
+func TestWrittenAliasesAndAsksAreOwnFields(t *testing.T) {
+	docs := []Doc{
+		{ID: "mx_webhk1", Kind: "pitfall", Title: "Webhook retries use exponential backoff.", Text: "Providers rate-limit, so retries back off.", Asks: []string{"why do deliveries fail with too many requests"}, Written: []string{"429 storm"}},
+		{ID: "mx_other1", Kind: "rule", Title: "Requests go through the API client.", Text: "The client adds auth headers to requests."},
+		{ID: "mx_other2", Kind: "rule", Title: "Deliveries are logged.", Text: "Every delivery writes one log line."},
+	}
+	ix := Build(docs)
+	for _, q := range []string{"deliveries fail with too many requests", "we hit a 429 storm"} {
+		if got := ix.Rank(q); len(got) == 0 || got[0].ID != "mx_webhk1" {
+			t.Fatalf("%q ranked %+v", q, got)
+		}
+	}
+	// Without the aids the same entry has no match on the symptom words.
+	plain := append([]Doc(nil), docs...)
+	plain[0].Asks, plain[0].Written = nil, nil
+	if got := Build(plain).Rank("we hit a 429 storm"); len(got) != 0 {
+		t.Fatalf("aids leaked into other fields: %+v", got)
+	}
+	// Documents without aids score the same as before the fields existed.
+	a, b := Build(plain[1:]).Rank("requests auth"), Build(docs[1:]).Rank("requests auth")
+	if len(a) != len(b) || a[0].Score != b[0].Score {
+		t.Fatal("empty aid fields changed scores")
+	}
+	bin, err := ix.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Index
+	if err := back.UnmarshalBinary(bin); err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Rank("we hit a 429 storm"); len(got) == 0 || got[0].ID != "mx_webhk1" {
+		t.Fatal("aid statistics lost in the cache", got)
+	}
+}

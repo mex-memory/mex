@@ -3,8 +3,8 @@
  * killed halfway can be finished or discarded. Cleanup never forces and
  * stops at any link or junction.
  */
-import { lstatSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readdirSync, readlinkSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { KnowledgeError } from "./contract.js";
 import { git } from "./share-plan.js";
@@ -52,9 +52,37 @@ export function clearShareState(projectDirectory: string): void {
   try { unlinkSync(join(projectDirectory, SHARE_STATE)); } catch { /* already gone */ }
 }
 
-/** The first link or junction inside a folder, if any. Junctions read as links to Node. */
+/**
+ * Symlinks that Git itself checked out, unchanged, from the worktree's commit:
+ * tracked with mode 120000, not modified, and pointing exactly where the commit
+ * says. `git worktree remove` unlinks these and never follows them, so they are
+ * part of the repository, not a hazard. Any other link is.
+ */
+function checkedOutLinks(folder: string): (relative: string, path: string) => boolean {
+  let tracked: Set<string> | undefined;
+  const load = (): Set<string> => {
+    if (tracked) return tracked;
+    tracked = new Set();
+    try {
+      for (const record of git(folder, "ls-files", "-s", "-z").split("\0")) {
+        const match = /^120000 [0-9a-f]+ 0\t(.+)$/su.exec(record);
+        if (match) tracked.add(match[1]);
+      }
+      if (tracked.size) for (const path of git(folder, "diff", "--name-only", "-z", "HEAD").split("\0")) tracked.delete(path);
+    } catch { tracked = new Set(); }
+    return tracked;
+  };
+  return (relative, path) => {
+    if (!load().has(relative)) return false;
+    try { return readlinkSync(path).replace(/\\/gu, "/") === git(folder, "cat-file", "blob", `HEAD:${relative}`); }
+    catch { return false; }
+  };
+}
+
+/** The first link or junction inside a folder that Git didn't check out, if any. Junctions read as links to Node. */
 export function firstLink(folder: string, limit = 50_000): string | undefined {
   if (lstatSync(folder).isSymbolicLink()) return folder;
+  const fromGit = checkedOutLinks(folder);
   const stack = [folder];
   let seen = 0;
   while (stack.length) {
@@ -64,7 +92,11 @@ export function firstLink(folder: string, limit = 50_000): string | undefined {
     for (const child of children) {
       if (++seen > limit) return join(dir, child.name);
       const path = join(dir, child.name);
-      if (child.isSymbolicLink() || lstatSync(path).isSymbolicLink()) return path;
+      if (child.isSymbolicLink() || lstatSync(path).isSymbolicLink()) {
+        // Never followed either way: an allowed link is skipped, not entered.
+        if (fromGit(relative(folder, path).split(sep).join("/"), path)) continue;
+        return path;
+      }
       if (child.isDirectory() && !(dir === folder && child.name === ".git")) stack.push(path);
     }
   }

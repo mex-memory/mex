@@ -1,4 +1,73 @@
-# Contract: the local record (record version 4, hooks version 6)
+# Contract: the local record (record version 5, hooks version 7)
+
+## Surface ledger
+
+Migration `0007_surfaces.sql` rebuilds the deliveries action constraint with
+`shadow` and `control`, preserving receipt ids, order, followups and touches.
+The copy refuses more than 100,000 receipts or followups. Historical moments
+map to their surface; unrecognized moments become `unknown`.
+
+`surface_windows` holds immutable bounded targets, a 40-call expiry, first/repeat,
+acted and settled bits. Commands are digests; observed tool text is not stored.
+`surface_firings` groups a surface/block/action's windows; pending decreases
+incrementally and the group's maximum acted bit settles once, avoiding repeated
+samples from multi-item replies. Rollups retain both firing and receipt counts.
+`surface_session_first` atomically claims each surface's first block for a
+session/agent/checkout, so first/repeat never scans historical receipts.
+`surface_stats` rolls up firings, settled/acted and estimated tokens by project,
+checkout, surface, action and repeat. `surface_gates` stores fixed minimums
+(30 firings, .30 acted rate, Wilson z 1.959963984540054), evaluation snapshots,
+consecutive failures, state/reason and the once-only notice claim. Windows,
+rollups, gate transitions and receipt admission use the same writer transaction.
+Pruning receipt windows preserves their aggregate counts.
+
+Epochs gain `tool_calls`, `candidate_tokens`, `admitted_tokens` and `budget_held`.
+The last three columns reserve contention accounting in this migration.
+Node recognizes version 7 read-only; Go remains its sole writer.
+Empty hooks databases initialize the same embedded schema atomically in one
+transaction. Existing databases retain one transaction per numbered upgrade;
+already applied versions do not acquire redundant writer locks. Initialization
+and upgrades keep the existing writer deadline and roll back on failure.
+
+`delivery.surface.<id>` is an `on|shadow|trial|off` setting at global/project scope.
+`trial`, the default for surfaces added after the ledger, resolves per session
+inside the write transaction: shadow until 30 shadow firings of the surface
+have settled in the project, then a stable hash of session, agent and surface
+picks the sending or the shadow arm, and a passed gate makes it `on`.
+Node publishes the complete `surfaces` map alongside `scorer` in controls.json
+and hook-delivery/<project>.json under its writer lock. The environment override
+`MEX_DELIVERY_SURFACES` is an all-surface state or a JSON object for fixtures.
+
+Two derived hints live beside the record. `surface-pending/<session-agent hash>/`
+contains empty active/retiring markers; presence only enables a SQLite check,
+never authorizes a receipt. The same directory holds `observed`, the
+append-only log of calls that delivered nothing, claimed by rename at the next
+transaction. Retirement guards survive rollback/crash and are
+removed non-recursively after commit. `surface-off/<project>/<surface>` is an
+empty marker published only after a committed gate-off transition. Missing
+markers cannot bypass the SQLite gate. No authoritative counter or state is
+updated through JSON files. `mex-hook --surfaces` accepts project and checkout
+on stdin and reads the same bounded projection as `mex what --surfaces`.
+
+A delivery candidate may carry `SessionOnce` (one receipt per entry, session
+and agent) and `SessionMax` (receipts per surface, session and agent); both
+count shadow receipts and are checked under the write lock.
+
+## Working set
+
+Node writes, Go reads, all under `projects/<id>/working-set/`:
+
+- `<checkout key>.json`: version 1, `head`, `branch`, `defaultBranch`, `made`
+  (ISO), `seeds`, `hops`, `words`.
+  At most 2 MiB; the hook rejects other versions.
+- `<checkout key>.fixes`: "MXF1" then 16-byte little-endian records (FNV-1a 64
+  of the checkout-relative path, fix count u32, last fix u32 Unix seconds),
+  sorted by key. Written by the code-facts job from its history walk.
+
+Requests are `working-set-requests/<project>~<checkout key>.json`
+(`{"project","root"}`), with `working-set-pending` touched in the record
+directory. The background loop turns each into a `working-set` job, one open
+per project; the hook's background start also checks this marker.
 
 ## Delivery additions
 
@@ -127,7 +196,8 @@ and preserves compatible existing rows. Arbitrary historical layouts are not
 a supported migration input; no version-0 schema was shipped. Future structural
 changes need a numbered migration rather than editing migration 1.
 
-Current versions: **record.db = 4; hooks.db = 2**. Record migration 2 adds
+Current versions: **record.db = 5; hooks.db = 2**. Record migration 5 adds
+`aid_verdicts` and the append-only `decision_events` log. Record migration 2 adds
 own-usage reader bookkeeping/windows; migration 3 adds jobs/background
 ownership and control/install records; migration 4 adds model admissions and
 call attribution. Earlier definitions and rows are preserved. Go's read-only
@@ -382,6 +452,8 @@ its logical writer. Go and Node may read every table.
 | `review` | PK `id`; `project_id`, `entry_id`, `reason`, `state` (pending/accepted/dismissed), `created_at` | Review service |
 | `judgements` | PK (`project_id`,`entry_id`,`inputs_hash`); `result` (still-true/rewritten/cannot-tell), `at` | Judge |
 | `counters_node` | PK (`day`,`name`); `value` | Node counter accumulator |
+| `aid_verdicts` (migration 5) | PK (`project_id`,`entry_id`,`kind`,`text`); `kept`, `reason`, nullable `score`, `margin`, `top_entry`, `review`, `source` (hand/enrich/setup/import/filter), `corpus` digest, `decided_at` | Alias filter |
+| `decision_events` (migration 5) | INTEGER PK; `project_id`, `entry_id`, `event` (accepted/withdrawn), `commit_sha`, nullable `landed_sha`, `matched_by` (sha/patch-id/subject-files/revert/missing), `branch`, `actor`, `at`; triggers refuse UPDATE and DELETE | Decision acceptance |
 | `settings` | PK (`scope`,`key`); `value` | Node settings service |
 
 Job states are exactly: **queued, running, paused, waiting, done, done with

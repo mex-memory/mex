@@ -65,7 +65,9 @@ export function skippedFacts(skipped: NonNullable<CodeFactsFile["skipped"]>, hea
 
 
 /** Build code facts for one checkout. Read-only git commands only. `progress` hears each step in plain words. */
-export async function buildCodeFacts(root: string, projectId: string, location: RecordLocation, progress?: (text: string) => void): Promise<CodeFactsFile> {
+export async function buildCodeFacts(root: string, projectId: string, location: RecordLocation, progress?: (text: string) => void,
+  /** Hears the commits read, so the same walk also gives the working set its fix history. */
+  onCommits?: (commits: Array<{ files: string[]; time: number; subject: string }>) => void): Promise<CodeFactsFile> {
   const mine = await import("./mine.js");
   let head: string;
   try {
@@ -77,8 +79,9 @@ export async function buildCodeFacts(root: string, projectId: string, location: 
   // Separate commits, not merged pull requests as one change: on flask, where pull requests land
   // as merges, pairs learned from the merges' whole diffs held 0.82 against 0.93 from the commits.
   progress?.("reading the last 2,000 commits");
-  const commits = mine.parseLog(await gitAsync(root, ["log", "--no-renames", "--no-merges", "--name-only", "--format=%x1e%H", "-n", String(mine.HISTORY_LIMITS.commits), head]));
+  const commits = mine.parseLog(await gitAsync(root, ["log", "--no-renames", "--no-merges", "--name-only", "--format=%x1e%H%x1f%ct%x1f%s", "-n", String(mine.HISTORY_LIMITS.commits), head]));
   if (!commits.length) return skippedFacts("no commits", head);
+  onCommits?.(commits.map(commit => ({ files: commit.files, time: commit.time ?? 0, subject: commit.subject ?? "" })));
   const tracked = (await gitAsync(root, ["ls-files", "-z"])).split("\0").filter(Boolean).slice(0, MAX_FILES);
   const current = new Set(tracked);
   const keep = (path: string) => current.has(path);
@@ -153,7 +156,9 @@ registerJobKind<CodeFactsParams, { builds: number }>({
         return { checkpoint: { builds: checkpoint?.builds ?? 0 }, done: true, results: 0, summary: `unchanged since ${head.slice(0, 7)}` };
       }
     }
-    const facts = await buildCodeFacts(params.checkout, job.project_id!, writer.location, progress);
+    const { writeFixTable } = await import("../../working-set/compute.js");
+    const facts = await buildCodeFacts(params.checkout, job.project_id!, writer.location, progress,
+      commits => { try { writeFixTable(writer.location.directory, job.project_id!, params.checkout, commits); } catch { /* history notices wait for the next pass */ } });
     // Test-only: prove a run killed mid-batch is redone and leaves no half-written file.
     if (process.env.MEX_REPO_START_KILL_AT === "code-facts") process.kill(process.pid, "SIGKILL");
     writeFactFile(writer.location, job.project_id!, "code-facts.json", facts);

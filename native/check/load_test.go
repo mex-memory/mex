@@ -92,3 +92,20 @@ func TestLoadAll(t *testing.T) {
 		t.Fatalf("empty: %v %v", none, err)
 	}
 }
+
+func TestLoadAllWithholdsPendingPersonalSwap(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	notes, _ := PersonalDirectories(home, "project")
+	if err := os.MkdirAll(notes, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(notes, "mx_7f3k2a.md"), []byte(entryFile), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(notes), "notes.pending"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := LoadAll(root, home, "project"); err == nil || len(entries) != 0 {
+		t.Fatal(entries, err)
+	}
+}

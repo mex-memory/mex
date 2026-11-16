@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/mex-memory/mex/native/internal/noteguard"
 	"io"
 	"os"
 	"path/filepath"
@@ -62,7 +63,22 @@ func CachePath(directory, project, checkout string) string {
 // Load validates source metadata on every call. Directory metadata alone
 // cannot detect an in-place edit. The cache avoids YAML work for unchanged
 // entries, never authorizes delivery or replaces store/verdict gates.
-func Load(directory, home, project, checkout string) (Snapshot, error) {
+func Load(directory, home, project, checkout string) (answer Snapshot, failure error) {
+	if !validComponent(project) {
+		return Snapshot{}, ErrInvalid
+	}
+	if home != "" && project != "" {
+		check, err := noteguard.Begin(filepath.Join(home, "projects", project, "notes"))
+		if err != nil {
+			return Snapshot{}, err
+		}
+		defer func() {
+			if err := check(); err != nil {
+				answer, failure = Snapshot{}, err
+			}
+		}()
+	}
+
 	var result Snapshot
 	if directory == "" || checkout == "" || !validComponent(project) {
 		return result, ErrInvalid
@@ -84,6 +100,7 @@ func Load(directory, home, project, checkout string) (Snapshot, error) {
 		level  string
 		nested bool
 	}
+	inForce := InForce(home, project)
 	stores := []store{{checkout, []string{".mex", "learned"}, "team", true}}
 	if home != "" {
 		stores = append(stores, store{home, []string{"projects", project, "notes"}, "personal", false}, store{home, []string{"projects", project, "hints"}, "hint", false})
@@ -177,10 +194,12 @@ func Load(directory, home, project, checkout string) (Snapshot, error) {
 						result.Retired = append(result.Retired, id)
 						continue
 					}
-					if hit.Entry.Status != "active" {
+					// A proposed decision is delivered only once it is in force.
+					usable := Usable(hit.Entry, inForce)
+					if usable == nil {
 						continue
 					}
-					item := Item{Entry: hit.Entry, Level: s.level, Path: full, Hash: hit.Hash, NeedsHintGate: s.level == "hint"}
+					item := Item{Entry: usable, Level: s.level, Path: full, Hash: hit.Hash, NeedsHintGate: s.level == "hint"}
 					label := Label(hit.Entry, s.level)
 					item.Full = label + " " + hit.Entry.Text
 					item.OneLine = label + " " + hit.Entry.OneLine
@@ -347,7 +366,18 @@ func Label(e *Entry, level string) string {
 		if e.Source.Type != "person" {
 			return "[personal, from " + e.Evidence + "]"
 		}
-		d, _ := time.Parse("2006-01-02", e.Created)
+		date := e.Created
+		fields := strings.Fields(e.Source.Ref)
+		if len(fields) >= 2 && fields[0] == "capture" {
+			date = fields[1]
+		}
+		if len(fields) >= 3 && fields[0] == "mex" && fields[1] == "edit" {
+			date = fields[2]
+		}
+		d, err := time.Parse("2006-01-02", date)
+		if err != nil {
+			d, _ = time.Parse("2006-01-02", e.Created)
+		}
 		return "[you said, " + d.Format("2 Jan") + "]"
 	}
 }

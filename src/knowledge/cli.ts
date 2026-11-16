@@ -1,10 +1,38 @@
-import { Command, Option } from "commander";
+import { Argument, Command, Option } from "commander";
 import { ENTRY_KINDS, KnowledgeError } from "./contract.js";
+import { buildReviewCommand } from "../review/cli.js";
 
 export function buildKnowledgeCommands(): Command[] {
+  const adviceReport = new Command("report").description("Read local advisories about advice already used on this branch")
+    .option("--json", "Print local advisories as JSON")
+    .action(async opts => run(opts.json, async () => {
+      const { adviceReport, formatAdvice } = await import("../judge/advice.js");
+      const result = await adviceReport({ projectPath: process.cwd() });
+      if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
+      else {
+        if (!result.advisories.length) console.log("No local advice advisories on this branch.");
+        for (const item of result.advisories) console.log(formatAdvice(item)+"\n");
+        if (result.partial) console.log("More advisories exist; this view reached its limit.");
+      }
+    }));
   const sessionWhat = new Command("what").description("Read what MEX gave or withheld this session")
- .option("--session <id>","Session identifier").option("--json","Print receipt titles and counts as JSON")
- .action(async opts=>run(opts.json,async()=>{const {what,whatLine}=await import("./what.js");const result=what({projectPath:process.cwd()},opts.session);if(opts.json)console.log(JSON.stringify({ok:true,...result}));else {console.log(whatLine(result));for(const it of result.items)console.log(`${it.action} ${it.id} ${it.title}`);if(result.partial)console.log("More receipts exist; this view reached its work limit.");}}));
+ .option("--session <id>","Session identifier").option("--surfaces","Read surface efficacy and controls").option("--json","Print receipt titles and counts as JSON")
+ .action(async opts=>run(opts.json,async()=>{
+   const {what,whatLine,surfaces}=await import("./what.js");
+   if (opts.surfaces) {
+     const result=surfaces({projectPath:process.cwd()});
+     if(opts.json)console.log(JSON.stringify({ok:true,...result}));
+     else { if(result.contention) console.log(`Contention: ${JSON.stringify(result.contention)}`); for(const row of result.surfaces) {
+       const live=row.live as {firings:number}, shadow=row.shadow as {firings:number};
+       const percent=(value:unknown)=>typeof value==="number" ? `${(value*100).toFixed(1)}%` : "unsettled";
+       console.log(`${row.surface}: ${live.firings} live, ${shadow.firings} shadow; acted ${percent(row.actedRate)}; base ${row.baseKind} ${percent(row.baseRate)}; gate ${row.gate}: ${row.reason}`);
+       console.log(`  first ${JSON.stringify(row.first)}; repeat ${JSON.stringify(row.repeat)}; false-send estimate ${row.falseSendEstimate}`);
+     }
+     }
+     return;
+   }
+   const result=what({projectPath:process.cwd()},opts.session);if(opts.json)console.log(JSON.stringify({ok:true,...result}));else {console.log(whatLine(result));for(const it of result.items)console.log(`${it.action} ${it.id} ${it.title}`);if(result.partial)console.log("More receipts exist; this view reached its work limit.");}
+ }));
  const save = new Command("note")
     .alias("log")
     .description("Save a personal fact and its reason (log remains an alias for one release)")
@@ -12,14 +40,36 @@ export function buildKnowledgeCommands(): Command[] {
     .addOption(new Option("--kind <kind>", "Entry kind").choices([...ENTRY_KINDS]).default("rule"))
     .option("--scope <glob>", "Repository-relative scope (repeatable)", (value: string, previous: string[]) => [...previous, value], [])
     .option("--one-line <text>", "The complete claim in one line")
+    .option("--decision", "Save it as a decision")
+    .option("--commit <rev>", "The commit the decision records; it comes into force when that commit lands on the default branch")
+    .option("--quote <text>", "With --commit: the line of the commit the decision rests on (kept only if found in the commit)")
+    .option("--supersedes <id>", "With --decision: the earlier decision this one replaces (repeatable)", (value: string, previous: string[]) => [...previous, value], [])
     .option("--json", "Print the saved entry as JSON")
     .action(async (text, opts) => {
       await run(opts.json, async () => {
         const { note } = await import("./store.js");
-        const saved = note({ text, kind: opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine }, { projectPath: process.cwd() });
+        if ((opts.commit || opts.supersedes.length) && !opts.decision && opts.kind !== "decision") throw new KnowledgeError("INVALID_OPTION", "--commit and --supersedes go with --decision.");
+        if (opts.quote && !opts.commit) throw new KnowledgeError("INVALID_OPTION", "--quote goes with --commit.");
+        let commit, quoteNote = "";
+        if (opts.commit) {
+          const { commitFacts, runGit } = await import("./decisions.js");
+          const git = runGit(process.cwd());
+          const facts = commitFacts(git, opts.commit);
+          if (!facts) throw new KnowledgeError("COMMIT_NOT_FOUND", `No commit ${opts.commit} in this repository.`);
+          const { subject, ...rest } = facts;
+          commit = { ...rest, ...(subject ? { subject } : {}) } as NonNullable<import("./entry.js").KnowledgeEntry["mex"]["commit"]>;
+          if (opts.quote) {
+            const { ground, RESTATED } = await import("./grounding.js");
+            const source = [git(["log", "-1", "--format=%B", facts.sha]) ?? "", git(["show", "--format=", facts.sha]) ?? ""];
+            const checked = ground(String(opts.quote).trim(), source, RESTATED);
+            if (checked.kept) commit.quote = String(opts.quote).trim().replace(/\s+/gu, " ").slice(0, 512);
+            else quoteNote = `\nThe quote wasn't found in ${facts.sha.slice(0, 7)} (confidence ${checked.confidence}), so it was left out.`;
+          }
+        }
+        const saved = note({ text, kind: opts.decision ? "decision" : opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine, commit, supersedes: opts.supersedes }, { projectPath: process.cwd() });
         await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
-        else console.log(`Saved personal note ${saved.entry.mex.id} ${saved.label}\n${saved.entry.mex.one_line}`);
+        else console.log(`Saved personal note ${saved.entry.mex.id} ${saved.label}\n${saved.entry.mex.one_line}${commit ? `\nNot yet accepted: it comes into force when ${commit.sha.slice(0, 7)} lands on the default branch.` : ""}${quoteNote}`);
       });
     });
   const search = new Command("recall")
@@ -56,7 +106,7 @@ export function buildKnowledgeCommands(): Command[] {
         if (opts.json) console.log(JSON.stringify({ ok: true, ...item }));
         else {
           const { serializeEntry } = await import("./entry.js");
-          console.log(`${item.label}${item.level === "team" && item.branch !== "default" ? " [not verified on default branch]" : ""}\n${serializeEntry(item.entry)}`);
+          console.log(`${item.label}${item.entry.mex.status === "proposed" ? " [not yet accepted]" : ""}${item.level === "team" && item.branch !== "default" ? " [not verified on default branch]" : ""}\n${serializeEntry(item.entry)}`);
         }
       });
     });
@@ -111,8 +161,10 @@ export function buildKnowledgeCommands(): Command[] {
     .option("--apply", "Apply the reviewed team-entry retirement")
     .option("--expect <revision>", "The exact revision printed by the team preview")
     .option("--json", "Print the retirement record as JSON")
+    .option("--all-along", "With wrong: explicitly confirm that every past use is suspect")
     .action(async (id, reason, opts) => {
       await run(opts.json, async () => {
+        if (opts.allAlong && action !== "wrong") throw new KnowledgeError("INVALID_ENTRY", "--all-along is only valid with mex wrong.");
         const { forget, wrong } = await import("./mutations.js");
         const { expand } = await import("./store.js");
         const options = { projectPath: process.cwd() };
@@ -123,6 +175,7 @@ export function buildKnowledgeCommands(): Command[] {
           if (error.code === "NOT_FOUND") {
             const { forgetHint } = await import("./hints.js");
             const marker = forgetHint(id, reason, options, new Date(), action);
+            if (opts.allAlong) await (await import("../judge/advice.js")).wrongAllAlong(id, options);
             if (opts.json) console.log(JSON.stringify({ ok: true, level: "hint", status: "retired", ...marker }));
             else console.log(`Retired hint ${id}: ${marker.retired.reason}`);
             return;
@@ -135,6 +188,7 @@ export function buildKnowledgeCommands(): Command[] {
           if (!opts.apply) { printPreview(preview, opts.json); return; }
           if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the team change, then pass --apply --expect <revision>.");
           const saved = applyTeamWrite(preview, opts.expect, options);
+          if (opts.allAlong) await (await import("../judge/advice.js")).wrongAllAlong(id, options);
           if (action === "wrong") (await import("./what.js")).noteProbe(id, "wrong", options);
           const native = await sharedRuleFiles(options);
           if (opts.json) console.log(JSON.stringify({ ok: true, id, level: "team", status: "retired", retired: saved.entry.mex.retired, native }));
@@ -142,6 +196,7 @@ export function buildKnowledgeCommands(): Command[] {
           return;
         }
         const marker = (action === "wrong" ? wrong : forget)(id, reason, { projectPath: process.cwd() });
+        if (opts.allAlong) await (await import("../judge/advice.js")).wrongAllAlong(id, options);
         if (action === "wrong") (await import("./what.js")).noteProbe(id, "wrong", options);
         await queueRuleFiles();
         if (opts.json) console.log(JSON.stringify({ ok: true, level: "personal", status: "retired", ...marker }));
@@ -242,7 +297,84 @@ export function buildKnowledgeCommands(): Command[] {
       const result = previewBrief({ projectPath: process.cwd() }, opts.agent, opts.path);
       console.log(opts.json ? JSON.stringify(result) : result.text);
     }));
-  return [sessionWhat, save, search, full, change, ...retire, hints, rules, share, brief];
+  const aids = (["alias", "ask"] as const).map(kind => new Command(kind)
+    .description(kind === "alias"
+      ? "Add or remove a short name or symptom people use for an entry (kept only if it finds that entry first)"
+      : "Add or remove an example request that should find an entry (kept only if it finds that entry first)")
+    .argument("<id>", "Stable entry id")
+    .addArgument(new Argument("<action>", "add or remove").choices(["add", "remove"]))
+    .argument("<text>", kind === "alias" ? "The alias, at most 40 characters" : "The example request, at most 120 characters")
+    .option("--apply", "Apply the reviewed team-entry change")
+    .option("--expect <revision>", "The exact revision printed by the team preview")
+    .option("--json", "Print the result as JSON")
+    .action(async (id, action, text, opts) => run(opts.json, async () => {
+      const { changeAid } = await import("./aid-store.js");
+      const options = { projectPath: process.cwd() };
+      if (opts.apply && !opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Preview the team change, then pass --apply --expect <revision>.");
+      const result = changeAid({ id, kind, op: action, text }, options, opts.apply ? { expect: opts.expect } : undefined);
+      if (result.verdict && !result.verdict.kept) {
+        if (opts.json) console.log(JSON.stringify({ ok: true, kept: false, verdict: result.verdict }));
+        else console.log(`Not kept: ${result.verdict.reason}.`);
+        return;
+      }
+      if (result.level === "team" && !result.changed && result.preview) { printPreview(result.preview, opts.json); return; }
+      if (result.level === "personal") await queueRuleFiles();
+      if (opts.json) console.log(JSON.stringify({ ok: true, kept: true, level: result.level, id, aliases: result.entry.mex.aliases ?? [], asks: result.entry.mex.asks ?? [], ...(result.verdict ? { verdict: result.verdict } : {}) }));
+      else console.log(`${action === "add" ? "Kept" : "Removed"} ${kind} on ${id}${result.verdict?.margin !== undefined ? ` (leads the next entry by ${Math.round(result.verdict.margin * 100)}%)` : ""}.`);
+    })));
+  const entries = new Command("entries").description("Work on all of this project's entries");
+  entries.command("enrich")
+    .description("Backfill aliases and asks with one AI call (opt-in): shows the plan, --run makes the call and previews, --apply writes")
+    .option("--run", "Make the one batched AI call and save a filtered preview; writes no entry")
+    .option("--apply", "Write the saved preview")
+    .option("--expect <revision>", "The revision printed by --run")
+    .addOption(new Option("--agent <agent>", "Agent CLI that makes the call").choices(["claude", "codex"]).default("claude"))
+    .option("--json", "Print the result as JSON")
+    .action(async opts => run(opts.json, async () => {
+      const enrich = await import("./enrich.js");
+      const options = { projectPath: process.cwd() };
+      const print = (value: object, text: string) => console.log(opts.json ? JSON.stringify({ ok: true, ...value }) : text);
+      if (opts.apply) {
+        if (!opts.expect) throw new KnowledgeError("PREVIEW_REQUIRED", "Pass the revision --run printed: mex entries enrich --apply --expect <revision>.");
+        const done = enrich.applyEnrich(options, opts.expect);
+        print(done, `Wrote aliases and asks on ${done.written.length} entries.${done.stale.length ? ` ${done.stale.length} changed since the preview and were skipped: ${done.stale.join(", ")}` : ""}`);
+        return;
+      }
+      if (!opts.run) {
+        const plan = enrich.planEnrich(options);
+        print(plan, plan.entries.length
+          ? `One AI call would write aliases and asks for ${plan.entries.length} entries${plan.remaining ? ` (${plan.remaining} more need another run)` : ""}, estimated at about ${plan.estimate.input} input and ${plan.estimate.output} output tokens. It runs inside MEX's model cap. Run it with: mex entries enrich --run`
+          : "Every entry already has aliases or asks.");
+        return;
+      }
+      const { runModel } = await import("../model-runner/index.js");
+      const preview = await enrich.runEnrich(options, async (prompt, estimate) => (await runModel({
+        agent: opts.agent, role: "cheap", prompt, projectRoot: process.cwd(), purpose: "knowledge.enrich",
+        automatic: { estimate: { input: estimate.input, cache_write: 0, cache_read: 0, output: estimate.output } },
+      })).text);
+      const dropped = preview.verdicts.filter(v => !v.kept);
+      if (opts.json) { print(preview, ""); return; }
+      const lines = [`Kept ${preview.verdicts.length - dropped.length} of ${preview.verdicts.length} suggestions, on ${preview.changes.length} entries:`];
+      for (const c of preview.changes) lines.push(`  ${c.id}  aliases: ${c.aliases.join("; ") || "none"}  asks: ${c.asks.join("; ") || "none"}`);
+      if (dropped.length) { lines.push("", "Dropped:"); for (const v of dropped.slice(0, 30)) lines.push(`  ${v.entry}  ${v.kind} "${v.text}": ${v.reason}`); }
+      lines.push("", `To write exactly this: mex entries enrich --apply --expect ${preview.revision}`);
+      console.log(lines.join("\n"));
+    }));
+  const decisions = new Command("decisions")
+    .description("Check which decisions that cite a commit are in force: proposed until the commit lands on the default branch, withdrawn on a revert")
+    .option("--json", "Print every decision and its event log as JSON")
+    .action(async opts => run(opts.json, async () => {
+      const { acceptDecisions } = await import("./decisions.js");
+      const rows = acceptDecisions({ projectPath: process.cwd() });
+      if (opts.json) { console.log(JSON.stringify({ ok: true, decisions: rows })); return; }
+      if (!rows.length) { console.log("No decisions cite a commit here."); return; }
+      const label = { proposed: "not yet accepted", accepted: "in force", withdrawn: "withdrawn" } as const;
+      for (const r of rows) {
+        const last = r.events.at(-1);
+        console.log(`${r.id} [${label[r.state]}] ${r.one_line}\n  cites ${r.commit.slice(0, 7)}${last ? `; ${last.event} ${last.at.slice(0, 10)} via ${last.matched_by}${last.landed_sha ? ` (${last.landed_sha.slice(0, 7)})` : ""}` : ""}`);
+      }
+    }));
+  return [adviceReport, sessionWhat, save, search, full, change, ...retire, ...aids, entries, decisions, hints, rules, share, brief, buildReviewCommand()];
 }
 /** After a share: the pull request, or the push command (MEX doesn't push on its own). */
 function nextStep(done: { branch: string; pr?: string }): string {
