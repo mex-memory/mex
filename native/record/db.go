@@ -17,7 +17,7 @@ import (
 	"modernc.org/sqlite"
 )
 
-const SchemaVersion = 7
+const SchemaVersion = 10
 
 // Node's additive model-admission migration does not change the tables read here.
 const RecordSchemaVersion = 5
@@ -282,7 +282,7 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 	defer cancel()
 	var counterReader *sql.DB
 	if counterOnly {
-		// Keep the small WAL sidecars for the next short-lived counter writer.
+		// Keep sidecars across short-lived counter writers.
 		// Recreating/deleting them on every hook is costly on Windows. SQLite
 		// still checkpoints automatically; journal mode and sync policy do not change.
 		conn, err := db.Conn(ctx)
@@ -315,7 +315,7 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 	}
 	if err == nil && version < SchemaVersion {
 		var steps []migration
-		for i, name := range []string{"0001_init.sql", "0002_delivery.sql", "0003_followups.sql", "0004_rendering.sql", "0005_probes.sql", "0006_intent.sql", "0007_surfaces.sql"} {
+		for i, name := range []string{"0001_init.sql", "0002_delivery.sql", "0003_followups.sql", "0004_rendering.sql", "0005_probes.sql", "0006_intent.sql", "0007_surfaces.sql", "0008_search_answers.sql", "0009_budget_lanes.sql", "0010_false_send_counts.sql"} {
 			var data []byte
 			data, err = schemas.ReadFile("schema/hooks/" + name)
 			if err != nil {

@@ -63,6 +63,11 @@ func packReserved(items []shaped, companions func(id string) *shaped, reserveBud
 	if len(scorers) > 0 {
 		scorer = scorers[0]
 	}
+	return packInto(items, companions, reserveBudget, scorer, 0)
+}
+
+func packInto(items []shaped, companions func(string) *shaped, reserveBudget int, scorer Scorer, budget int) []planned {
+	laneUsed := map[string]int{}
 	sort.SliceStable(items, func(i, j int) bool { return scorer.Less(items[i], items[j]) })
 	var out []planned
 	seen := map[string]bool{}
@@ -99,6 +104,10 @@ func packReserved(items []shaped, companions func(id string) *shaped, reserveBud
 		if !markerPaid {
 			overhead += 8
 		}
+		lane := record.LaneFor(record.DeliveryCandidate{Surface: record.SurfaceForMoment(s.moment), Exempt: s.exempt, Reserved: s.reserve})
+		if budget > 0 && lane != "critical" {
+			limit = min(limit, *spent+max(0, record.LaneLimit(lane, budget)-laneUsed[lane]))
+		}
 		fullCost, lineCost := s.fullTok+overhead, s.lineTok+overhead
 		if s.fullTok > 0 && fullCost <= limit-*spent && (*spent+fullCost <= momentTarget || *spent == 0 || s.reserve || s.action == "replaced") {
 			p.form, p.text, p.tokens = "full", s.full, fullCost
@@ -113,6 +122,7 @@ func packReserved(items []shaped, companions func(id string) *shaped, reserveBud
 			p.form = "pointer"
 		}
 		*spent += p.tokens
+		laneUsed[lane] += p.tokens
 		markerPaid = true
 		out = append(out, p)
 	}
@@ -201,7 +211,7 @@ func admit(plan []planned, scorers ...Scorer) func(record.Epoch, record.Delivery
 		if e.SessionTokens > sessionFactor*e.Budget {
 			z += 0.5
 		}
-		return scorer.BudgetOnly() || scorer.Value(p.shaped, c.Tokens) >= bar(z)
+		return p.anchorRelease || scorer.BudgetOnly() || scorer.Value(p.shaped, c.Tokens) >= bar(z)
 	}
 }
 

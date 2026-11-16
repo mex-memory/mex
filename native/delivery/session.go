@@ -226,7 +226,7 @@ func resumeCorrections(h *record.Hooks, ev contract.Event, env Environment) (str
 			continue
 		}
 		if used+p.tokens > reservedLane {
-			break
+			continue
 		}
 		used += p.tokens
 		plan = append(plan, p)

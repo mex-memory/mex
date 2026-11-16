@@ -1,6 +1,7 @@
 package capture
 
 import (
+	"github.com/mex-memory/mex/native/internal/tokens"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -202,5 +203,5 @@ func ContinuityCarry(ev contract.Event, env Env) (Carry, bool) {
 	return Carry{EntryID: "mex:continuity", NoticeID: "continuity:" + place.ShortHash(c.Session+"\x00"+c.Checkout+"\x00"+branch+"\x00"+c.Updated), Text: text, Tokens: Tokens(text)}, true
 }
 
-// Tokens estimates tokens as one per four bytes, rounded up.
-func Tokens(text string) int { return (len(text) + 3) / 4 }
+// Tokens prices the authored continuity prose.
+func Tokens(text string) int { return tokens.Prose(text) }

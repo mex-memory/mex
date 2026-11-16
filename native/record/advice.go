@@ -48,7 +48,7 @@ func (h *Hooks) CurrentEpoch(session, agent string) (Epoch, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), h.budget.reader)
 	defer cancel()
 	var e Epoch
-	err := h.db.QueryRowContext(ctx, "SELECT epoch,closed FROM epochs WHERE session_id=? AND agent_id=? ORDER BY epoch DESC LIMIT 1", session, agent).Scan(&e.Number, &e.Closed)
+	err := h.db.QueryRowContext(ctx, "SELECT epoch,closed,budget,tokens_sent,reserved_tokens FROM epochs WHERE session_id=? AND agent_id=? ORDER BY epoch DESC LIMIT 1", session, agent).Scan(&e.Number, &e.Closed, &e.Budget, &e.TokensSent, &e.ReservedTokens)
 	if errors.Is(err, sql.ErrNoRows) {
 		return e, false, nil
 	}

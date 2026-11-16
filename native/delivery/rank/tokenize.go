@@ -87,3 +87,31 @@ func Machine(text string) bool {
 	}
 	return strings.HasPrefix(s, "/") && !strings.HasPrefix(s, "//")
 }
+
+// PromptText removes host-owned envelopes before any prompt feature sees text.
+// An incomplete envelope consumes the remainder, never exposes machine text.
+func PromptText(text string) string {
+	if len(text) > 65536 {
+		text = text[:65536]
+	}
+	for _, tag := range []string{"system-reminder", "task-notification", "tool_result", "hook_context"} {
+		for n := 0; n < 16; n++ {
+			lower := strings.ToLower(text)
+			start := strings.Index(lower, "<"+tag)
+			if start < 0 {
+				break
+			}
+			end := strings.Index(lower[start:], "</"+tag+">")
+			if end < 0 {
+				text = text[:start]
+				break
+			}
+			text = text[:start] + " " + text[start+end+len(tag)+3:]
+		}
+		// Keep the bound without exposing an unprocessed machine envelope.
+		if start := strings.Index(strings.ToLower(text), "<"+tag); start >= 0 {
+			text = text[:start]
+		}
+	}
+	return strings.TrimSpace(text)
+}

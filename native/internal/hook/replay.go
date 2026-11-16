@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/mex-memory/mex/native/delivery"
@@ -28,6 +29,7 @@ func deliveryReplay(stdin io.Reader, stdout io.Writer, getenv Env) int {
 		env.Scorer = getenv("MEX_DELIVERY_SCORER")
 		env.Surfaces = getenv("MEX_DELIVERY_SURFACES")
 		env.Offline = true
+		env.BudgetPercent, _ = strconv.Atoi(getenv("MEX_DELIVERY_BUDGET_PERCENT"))
 		env.Aids = getenv("MEX_DELIVERY_ALIASES")
 		var phases map[string]int64
 		if getenv("MEX_DELIVERY_TRACE") == "1" {
