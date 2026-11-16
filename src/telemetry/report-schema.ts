@@ -10,7 +10,7 @@ export const COUNT_RANGES = ["0", "1", "2–5", "6–20", "21–100", "100+"] as
 export type CountRange = typeof COUNT_RANGES[number];
 export const REPORT_AGENTS = ["claude-code", "codex", "copilot", "cursor", "opencode", "antigravity", "gemini", "devin", "kiro"] as const;
 export const COUNTER_NAMES = [
-  "sessions", "hook.calls", "hook.errors", "knowledge.delivered", "knowledge.followed", "knowledge.missed", "knowledge.opened", "knowledge.wrong",
+  "sessions", "hook.calls", "hook.errors", "knowledge.delivered", "knowledge.followed", "knowledge.missed", "knowledge.opened", "knowledge.wrong", "knowledge.closed_deliveries", "knowledge.false_send_estimate",
   "surfaces.live", "surfaces.shadow", "surfaces.control", "surfaces.settled", "surfaces.acted",
   "speed_bumps", "rescues", "graph.builds", "jobs.completed", "jobs.failed", "hub.sessions", "hub.pages", "commands", "setup.started", "setup.finished",
 ] as const;

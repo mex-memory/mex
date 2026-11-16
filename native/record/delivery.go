@@ -30,6 +30,7 @@ type Epoch struct {
 // DeliveryCandidate is already gated and rendered by the controller. Admit is
 // evaluated under the writer lock so parallel calls see the same budget.
 type DeliveryCandidate struct {
+	Lane                                       string
 	Surface                                    string
 	Target                                     SurfaceTarget
 	Mode                                       string // on, shadow or off; resolved before admission
@@ -58,6 +59,7 @@ type Receipt struct {
 	ID, BlockID string
 }
 type DeliveryRequest struct {
+	Lanes        bool // controller opts into partitioned admission; older callers retain pooled admission
 	Session      Session
 	AgentID      string
 	Branch, Head string
@@ -132,6 +134,14 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		return result, errors.New("delivery batch exceeds bound")
 	}
 	for _, tool := range req.SurfaceTools {
+		if len(tool.Reads) > 64 || len(tool.Key) > 128 {
+			return result, errors.New("surface range bound")
+		}
+		for _, read := range tool.Reads {
+			if len(read.Path) > 4096 || read.Start < 1 || read.End < 0 || read.End > 0 && read.End < read.Start {
+				return result, errors.New("surface range bound")
+			}
+		}
 		if len(tool.Paths) > 64 || len(tool.Names) > 64 || len(tool.Command) > 128 || len(tool.Added) > 32768 {
 			return result, errors.New("surface observation bound")
 		}
@@ -144,7 +154,12 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			return result, errors.New("surface checkout observation bound")
 		}
 		for key, scoped := range tool.Scoped {
-			if len(key) > 8192 || strings.ContainsRune(key, 0) || len(scoped.Scoped) > 0 || len(scoped.Paths) > 64 || len(scoped.Names) > 64 || len(scoped.Command) > 128 || len(scoped.Added) > 32768 {
+			for _, read := range scoped.Reads {
+				if len(read.Path) > 4096 || strings.ContainsRune(read.Path, 0) || read.Start < 1 || read.End < 0 || read.End > 0 && read.End < read.Start {
+					return result, errors.New("surface range bound")
+				}
+			}
+			if len(key) > 8192 || strings.ContainsRune(key, 0) || len(scoped.Scoped) > 0 || len(scoped.Reads) > 64 || len(scoped.Key) > 128 || len(scoped.Paths) > 64 || len(scoped.Names) > 64 || len(scoped.Command) > 128 || len(scoped.Added) > 32768 {
 				return result, errors.New("surface scoped observation bound")
 			}
 		}
@@ -223,6 +238,11 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			return result, err
 		}
 		if err = closeHoldbacks(ctx, conn, req.Session.SessionID, req.AgentID, e.Number, stamp); err != nil {
+			return result, err
+		}
+	}
+	if advance {
+		if err = countClosedProbes(ctx, conn, req, e.Number); err != nil {
 			return result, err
 		}
 	}
@@ -407,6 +427,13 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		}
 	}
 	next("record-admission-write")
+	usedLanes := map[string]int{}
+	if req.Lanes && len(req.Candidates) > 0 {
+		usedLanes, err = laneUsage(ctx, conn, req, e.Number)
+		if err != nil {
+			return result, err
+		}
+	}
 	approved := map[string]bool{}
 	for _, c := range req.Candidates {
 		if c.Surface == "" {
@@ -421,7 +448,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		if c.Mode == "" {
 			c.Mode = SurfaceDefault(c.Surface)
 		}
-		if _, err = conn.ExecContext(ctx, `INSERT OR IGNORE INTO surface_gates(project_id,surface) VALUES(?,?)`, req.Session.ProjectID, c.Surface); err != nil {
+		if _, err = conn.ExecContext(ctx, `INSERT OR IGNORE INTO surface_gates(project_id,surface,minimum_avoided_delta,minimum_cost_sessions,no_harm_rise) VALUES(?,?,?,?,?)`, req.Session.ProjectID, c.Surface, SurfaceKeepRule(c.Surface).AvoidedDelta, SurfaceKeepRule(c.Surface).CostSessions, SurfaceKeepRule(c.Surface).NoHarmRise); err != nil {
 			return result, err
 		}
 		var gateState string
@@ -494,18 +521,28 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 				c.Action, c.Detail, c.Tokens, sends = "withheld", why, 0, false
 			}
 		}
+		c.Lane = "legacy"
+		if req.Lanes {
+			c.Lane = LaneFor(c)
+		}
 		cost := c
 		cost.Tokens += familyCost[c.EntryID]
 		offered := sends || c.Detail == "parent" || (c.Action == "held-back" && c.Detail == "moment-budget")
 		budgetOnly := false
 		if sends && !familyApproved && !c.Exempt && !c.Reserved {
 			capacity := e.TokensSent+cost.Tokens <= e.Budget
+			if req.Lanes {
+				capacity = usedLanes[c.Lane]+cost.Tokens <= LaneLimit(c.Lane, e.Budget) && (usedLanes["legacy"] == 0 || e.TokensSent+cost.Tokens <= e.Budget)
+			}
 			score := req.Admit == nil || req.Admit(e, cost)
 			budgetOnly = !capacity && score
 			if !capacity || !score {
 				c.Action = "held-back"
 				if budgetOnly {
 					c.Detail = "epoch-budget"
+					if req.Lanes {
+						c.Detail = "lane-budget"
+					}
 				} else if !score {
 					c.Detail = "admission"
 				}
@@ -513,12 +550,34 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			}
 		}
 		if offered && !c.Correction {
+			if req.Lanes {
+				if err = recordLaneOffer(ctx, conn, req, e.Number, id, c.Lane, c.Tokens, budgetOnly); err != nil {
+					return result, err
+				}
+			}
 			if err = recordEpochOffer(ctx, conn, req, &e, id, c.Tokens, budgetOnly); err != nil {
 				return result, err
 			}
 		}
 		if !sends && !c.Correction {
 			key := id + "\x00" + c.Action
+			if c.Moment == "prompt-arm" {
+				target, targetErr := surfaceTargetJSON(c.Target)
+				if targetErr != nil {
+					return result, targetErr
+				}
+				if logged[key] {
+					var duplicate bool
+					err = conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM deliveries d JOIN surface_windows w ON w.delivery_id=d.id WHERE d.session_id=? AND d.agent_id=? AND d.epoch=? AND d.project_id=? AND d.checkout=? AND d.entry_id=? AND d.moment='prompt-arm' AND d.action='held-back' AND d.content_hash=? AND w.target=?)`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout, id, c.ContentHash, target).Scan(&duplicate)
+					if err != nil {
+						return result, err
+					}
+					if duplicate {
+						continue
+					}
+				}
+				key += "\x00" + c.ContentHash + "\x00" + target
+			}
 			if logged[key] {
 				continue
 			}
@@ -541,7 +600,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			data, _ := json.Marshal(AdviceContext{Version: 1, Branch: req.Branch, Head: req.Head, EntryHash: c.EntryHash, Verdict: verdict, InputsHash: inputs})
 			c.Detail = string(data)
 		}
-		_, err = conn.ExecContext(ctx, `INSERT INTO deliveries(id,session_id,agent_id,epoch,ts,moment,entry_id,form,tokens,action,content_hash,block_id,project_id,checkout,detail,title,kind,level,surface) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, receipt, req.Session.SessionID, req.AgentID, e.Number, stamp, c.Moment, c.EntryID, c.Form, c.Tokens, c.Action, c.ContentHash, block, req.Session.ProjectID, req.Session.Checkout, c.Detail, c.Title, c.Kind, c.Level, c.Surface)
+		_, err = conn.ExecContext(ctx, `INSERT INTO deliveries(id,session_id,agent_id,epoch,ts,moment,entry_id,form,tokens,action,content_hash,block_id,project_id,checkout,detail,title,kind,level,surface,lane) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, receipt, req.Session.SessionID, req.AgentID, e.Number, stamp, c.Moment, c.EntryID, c.Form, c.Tokens, c.Action, c.ContentHash, block, req.Session.ProjectID, req.Session.Checkout, c.Detail, c.Title, c.Kind, c.Level, c.Surface, c.Lane)
 		if err != nil {
 			return result, err
 		}
@@ -556,6 +615,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			continue
 		}
 		if sends {
+			usedLanes[c.Lane] += c.Tokens
 			approved[c.EntryID] = true
 			if c.Action != "shadow" {
 				err = probeCounter(ctx, conn, stamp[:10], req.Session.Agent, "delivered")
@@ -585,6 +645,11 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			}
 		}
 	}
+	if req.EndEpoch {
+		if err = countClosedProbes(ctx, conn, req, e.Number); err != nil {
+			return result, err
+		}
+	}
 	e.AdmittedTokens = e.TokensSent + e.ReservedTokens
 	_, err = conn.ExecContext(ctx, `UPDATE epochs SET tokens_sent=?,reserved_tokens=?,intent=?,closed=?,tool_calls=?,candidate_tokens=?,admitted_tokens=?,budget_held=? WHERE session_id=? AND agent_id=? AND epoch=?`, e.TokensSent, e.ReservedTokens, e.Intent, e.Closed, e.ToolCalls, e.CandidateTokens, e.AdmittedTokens, e.BudgetHeld, req.Session.SessionID, req.AgentID, e.Number)
 	if err != nil {
@@ -610,7 +675,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		}
 	}
 	var offSurfaces []string
-	offRows, offErr := conn.QueryContext(ctx, `SELECT surface FROM surface_gates WHERE project_id=? AND state='off' LIMIT 17`, req.Session.ProjectID)
+	offRows, offErr := conn.QueryContext(ctx, `SELECT surface FROM surface_gates WHERE project_id=? AND state='off' LIMIT 32`, req.Session.ProjectID)
 	if offErr != nil {
 		return result, offErr
 	}
@@ -637,6 +702,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		return DeliveryResult{}, err
 	}
 	committed = true
+	hooks.noteAnchorHints(req, result.Receipts)
 	if len(offSurfaces) > 0 {
 		hooks.publishSurfaceOff(req.Session.ProjectID, offSurfaces)
 	}
@@ -680,6 +746,8 @@ func pruneDelivery(ctx context.Context, c *sql.Conn, cutoff string, keep func(st
 	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	args := append(ids, cutoff)
 	for _, q := range []string{
+		`DELETE FROM lane_offers WHERE rowid IN (SELECT o.rowid FROM lane_offers o JOIN epochs e ON e.session_id=o.session_id AND e.agent_id=o.agent_id AND e.epoch=o.epoch WHERE o.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,
+		`DELETE FROM surface_cost_checks WHERE rowid IN (SELECT o.rowid FROM surface_cost_checks o JOIN sessions s ON s.session_id=o.session_id WHERE o.session_id IN (` + marks + `) AND s.last_seen_at<? LIMIT 256)`,
 		`DELETE FROM epoch_offers WHERE rowid IN (SELECT o.rowid FROM epoch_offers o JOIN epochs e ON e.session_id=o.session_id AND e.agent_id=o.agent_id AND e.epoch=o.epoch WHERE o.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,
 		`DELETE FROM surface_session_first WHERE rowid IN (SELECT f.rowid FROM surface_session_first f JOIN sessions s ON s.session_id=f.session_id WHERE f.session_id IN (` + marks + `) AND s.last_seen_at<? LIMIT 256)`,
 		`DELETE FROM delivery_conflicts WHERE rowid IN (SELECT c.rowid FROM delivery_conflicts c JOIN epochs e ON e.session_id=c.session_id AND e.agent_id=c.agent_id AND e.epoch=c.epoch WHERE c.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,

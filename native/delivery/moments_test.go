@@ -54,6 +54,7 @@ type spec struct {
 	when                                     []string // "type:pattern"
 	checks                                   []string // raw YAML list items
 	companions                               []string
+	aliases                                  []string
 	level                                    string // team (default), personal, hint
 	source                                   string // source type, default person
 	ref                                      string
@@ -95,6 +96,12 @@ func (f *fixture) entry(s spec) {
 		b.WriteString("  checks:\n")
 		for _, c := range s.checks {
 			b.WriteString(c)
+		}
+	}
+	if len(s.aliases) > 0 {
+		b.WriteString("  aliases:\n")
+		for _, a := range s.aliases {
+			fmt.Fprintf(&b, "    - %q\n", a)
 		}
 	}
 	if len(s.companions) > 0 {
@@ -549,11 +556,11 @@ func TestBudgetRisingBarAndExemptions(t *testing.T) {
 	f := newFixture(t)
 	long := strings.Repeat("word ", 300)
 	for i := 0; i < 40; i++ {
-		f.entry(spec{id: fmt.Sprintf("mx_pf%04d", i), kind: "pitfall", scope: fmt.Sprintf("src/f%d.ts", i), evidence: "mined", source: "docs", oneLine: fmt.Sprintf("Pitfall %d short form.", i), text: fmt.Sprintf("Pitfall %d. %s", i, long)})
+		f.entry(spec{id: fmt.Sprintf("mx_pf%04d", i), kind: "procedure", scope: fmt.Sprintf("src/f%d.ts", i), evidence: "mined", source: "docs", oneLine: fmt.Sprintf("Pitfall %d short form.", i), text: fmt.Sprintf("Pitfall %d. %s", i, long)})
 	}
 	sent := 0
 	for i := 0; i < 40; i++ {
-		ctx := f.send(f.event(contract.PostToolBatch, read(f.file(fmt.Sprintf("src/f%d.ts", i), "x"), "x")))
+		ctx := f.send(f.event(contract.PostToolBatch, write(f.file(fmt.Sprintf("src/f%d.ts", i), "x"), "x", `{"type":"create"}`)))
 		if ctx != "" {
 			sent++
 		}

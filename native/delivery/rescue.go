@@ -96,12 +96,42 @@ func rescueAllowed(env Environment, project, surface string) bool {
 	return surfaceSetting(env, project, surface) != "off"
 }
 
+type cachedFileIndex struct{ reader *index.Reader }
+type fileIndexCache struct{ readers map[string]cachedFileIndex }
+
+func (c *fileIndexCache) close() {
+	for _, entry := range c.readers {
+		if entry.reader != nil {
+			entry.reader.Close()
+		}
+	}
+}
 func openRescueIndex(env Environment, ev contract.Event) *index.Reader {
+	key := ev.ProjectID + "\x00" + ev.Checkout
+	if env.fileIndexes != nil {
+		if entry, ok := env.fileIndexes.readers[key]; ok {
+			return entry.reader
+		}
+		if len(env.fileIndexes.readers) >= 4 {
+			return nil
+		}
+	}
 	r, err := index.Open(env.RecordDirectory, ev.ProjectID, ev.Checkout)
 	if err != nil {
-		return nil
+		r = nil
+	}
+	if env.fileIndexes != nil {
+		if env.fileIndexes.readers == nil {
+			env.fileIndexes.readers = map[string]cachedFileIndex{}
+		}
+		env.fileIndexes.readers[key] = cachedFileIndex{r}
 	}
 	return r
+}
+func closeRescueIndex(env Environment, r *index.Reader) {
+	if env.fileIndexes == nil && r != nil {
+		r.Close()
+	}
 }
 
 // missingFile is the absolute path a failed read or edit couldn't find, or "".
@@ -192,7 +222,7 @@ func wrongPathRescue(ev contract.Event, env Environment, file string) *rescue {
 	if idx == nil {
 		return nil
 	}
-	defer idx.Close()
+	defer closeRescueIndex(env, idx)
 	named, err := idx.FilesNamed(path.Base(rel))
 	if err != nil {
 		return nil
@@ -252,7 +282,7 @@ func globTimeoutRescue(ev contract.Event, env Environment, tool contract.Tool) *
 	if idx == nil {
 		return nil
 	}
-	defer idx.Close()
+	defer closeRescueIndex(env, idx)
 	paths, more, err := idx.PathsMatching(glob, globRescueMaxPaths)
 	if err != nil || len(paths) == 0 {
 		return nil
@@ -429,7 +459,7 @@ func searchRescue(ev contract.Event, env Environment, tool contract.Tool) *rescu
 	if idx == nil {
 		return nil
 	}
-	defer idx.Close()
+	defer closeRescueIndex(env, idx)
 	type hit struct {
 		name string
 		index.SymbolHit
@@ -507,7 +537,7 @@ func globZeroRescue(ev contract.Event, env Environment, pattern string) *rescue 
 	if idx == nil {
 		return nil
 	}
-	defer idx.Close()
+	defer closeRescueIndex(env, idx)
 	named, err := idx.FilesNamed(base)
 	if err != nil {
 		return nil
@@ -562,6 +592,9 @@ var shellSearchFilter = sync.OnceValue(func() *regexp.Regexp {
 // whether it filters files by glob or type.
 func shellSearchScope(command, pattern, cwd string) (scope string, filtered bool) {
 	words := shellparse.Words(shellparse.SearchSegment(command))
+	if len(words) < 2 {
+		return "", false
+	}
 	seenPattern := false
 	for _, w := range words[1:] {
 		switch {

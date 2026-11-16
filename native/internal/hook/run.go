@@ -78,6 +78,10 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return deliveryReplay(stdin, stdout, getenv)
 		case "--surfaces":
 			return surfaceReport(stdin, stdout, getenv)
+		case "--span-study":
+			return spanStudy(stdin, stdout)
+		case "--anchor-study":
+			return anchorStudy(stdin, stdout)
 		case "--pair-study":
 			return pairStudy(stdin, stdout)
 		case "--probe":
