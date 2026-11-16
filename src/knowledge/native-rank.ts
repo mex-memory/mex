@@ -14,7 +14,18 @@ export function rankBinary(): string | undefined {
   const installed = join(mexHomeDir(), "bin", binaryFileName());
   return process.env.MEX_HOOK_BINARY || (existsSync(installed) ? installed : findNativeBinary() ?? undefined);
 }
-export function rankNative(query: string, entries: KnowledgeEntry[]): {
+/**
+ * Whether ranking uses entries' written aliases and asks: the MEX_DELIVERY_ALIASES
+ * override, else the machine's delivery.aliases setting. Off by default until a
+ * blind measurement shows they pay.
+ */
+export function aidsEnabled(env: NodeJS.ProcessEnv, setting: string | undefined): boolean {
+  const override = env.MEX_DELIVERY_ALIASES;
+  if (override === "on" || override === "1" || override === "true") return true;
+  if (override === "off" || override === "0" || override === "false") return false;
+  return setting === "on";
+}
+export function rankNative(query: string, entries: KnowledgeEntry[], aids = false): {
   hits?: RankHit[];
   reason?: string;
 } {
@@ -31,7 +42,8 @@ export function rankNative(query: string, entries: KnowledgeEntry[]): {
         ...e.mex,
         text: e.text
       })),
-      recall: true
+      recall: true,
+      aids
     }),
     encoding: "utf8",
     timeout: 2000,

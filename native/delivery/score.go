@@ -285,25 +285,48 @@ func scorerSetting(env Environment, project string) string {
 		}
 		return DefaultScorer
 	}
-	var projectValue struct {
-		Version int
-		Scorer  string
-	}
 	p := filepath.Join(env.RecordDirectory, "hook-delivery", project+".json")
 	// A project identity must remain one path component, including in tests.
 	if project != "" && !strings.ContainsAny(project, "/\\:") && project != ".." && project != "." {
-		if b, err := readScorerFile(p); err == nil && json.Unmarshal(b, &projectValue) == nil && projectValue.Version == 1 && validScorer(projectValue.Scorer) {
+		if projectValue := readPolicy(env, p); projectValue.Version == 1 && validScorer(projectValue.Scorer) {
 			return projectValue.Scorer
 		}
 	}
-	var global struct {
-		Version int
-		Scorer  string
-	}
-	if b, err := readScorerFile(filepath.Join(env.Home, "controls.json")); err == nil && json.Unmarshal(b, &global) == nil && global.Version == 1 && validScorer(global.Scorer) {
+	if global := readPolicy(env, filepath.Join(env.Home, "controls.json")); global.Version == 1 && validScorer(global.Scorer) {
 		return global.Scorer
 	}
 	return DefaultScorer
+}
+
+// DefaultAids keeps written aliases and asks out of the prompt index until a
+// measurement on prompts written blind to the entries shows they pay: at least
+// +5 net (helped - 2*wrong) with no rise in wrong or false sends. The only
+// measurement so far used aliases and prompts from the same model, and wrong
+// sends rose by one, so the fields stay off by default.
+const DefaultAids = false
+
+// aidsSetting reads the override first, then the global delivery.aliases
+// mirror in controls.json. It is read only for a typed prompt.
+func aidsSetting(env Environment) bool {
+	switch env.Aids {
+	case "on", "1", "true":
+		return true
+	case "off", "0", "false":
+		return false
+	}
+	var global struct {
+		Version int
+		Aliases string
+	}
+	if b, err := readScorerFile(filepath.Join(env.Home, "controls.json")); err == nil && json.Unmarshal(b, &global) == nil && global.Version == 1 {
+		switch global.Aliases {
+		case "on":
+			return true
+		case "off":
+			return false
+		}
+	}
+	return DefaultAids
 }
 
 func readScorerFile(p string) ([]byte, error) {

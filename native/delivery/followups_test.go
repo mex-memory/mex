@@ -1,7 +1,9 @@
 package delivery
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -31,7 +33,7 @@ func followKinds(t *testing.T, f *fixture) map[string]int {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query("SELECT d.entry_id||':'||f.kind FROM followups f JOIN deliveries d ON d.id=f.delivery_id")
+	rows, err := db.Query("SELECT d.entry_id||':'||f.kind FROM followups f JOIN deliveries d ON d.id=f.delivery_id WHERE d.action IN ('held-back','withheld')")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +82,17 @@ func TestFCFSUsesBudgetWithoutExactExemptions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
 			f.entry(spec{id: "mx_ruleaa", kind: "rule", scope: "src/**", oneLine: "Use the new function.", when: []string{"anti:oldCall("}})
-			h, err := record.OpenHooks(record.Location{Hooks: filepath.Join(f.dir, "hooks.db")})
+			// This test checks token policy, not cold schema-migration timing.
+			// Retry only deadline-expired fixture setup; actual delivery and
+			// every production open keep their existing time limits.
+			var h *record.Hooks
+			var err error
+			for attempt := 0; attempt < 3; attempt++ {
+				h, err = record.OpenHooks(record.Location{Hooks: filepath.Join(f.dir, "hooks.db")})
+				if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+					break
+				}
+			}
 			if err != nil {
 				t.Fatal(err)
 			}

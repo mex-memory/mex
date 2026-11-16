@@ -91,6 +91,8 @@ type ToolInput struct {
 	Files   []PatchFile `json:"files,omitempty"`   // patch
 	Command string      `json:"command,omitempty"` // shell
 	Pattern string      `json:"pattern,omitempty"` // search, glob
+	// Filter is a search's file filter (a glob, or "type:<name>"), when it has one.
+	Filter string `json:"filter,omitempty"` // search
 }
 
 type PatchFile struct {
@@ -108,6 +110,8 @@ type ToolOutput struct {
 	Text     string `json:"text"`
 	OK       bool   `json:"ok"`
 	ExitCode *int   `json:"exit_code,omitempty"`
+	// Interrupted is set on a failure the person caused by stopping the tool.
+	Interrupted bool `json:"interrupted,omitempty"`
 }
 
 type Decision string

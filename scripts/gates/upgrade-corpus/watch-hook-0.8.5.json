@@ -1,0 +1,3 @@
+{
+ "post-commit": "#!/bin/sh\n# mex-drift-check\n# Auto-installed by mex watch — runs drift check after each commit\nmex_is_agent() {\n  _out=$(\"$1\" --help </dev/null 2>/dev/null) || return 1\n  [ \"$(printf '%s\\n' \"$_out\" | grep -Ec '^  (check|sync)( |$)')\" -eq 2 ]\n}\nMEX_BIN=$(command -v mex 2>/dev/null) || MEX_BIN=\"\"\nif [ -n \"$MEX_BIN\" ] && mex_is_agent \"$MEX_BIN\"; then\n  SCORE=$(\"$MEX_BIN\" check --quiet 2>&1) || true\nelse\n  SCORE=$(npx mex-agent check --quiet 2>&1) || true\nfi\n# Only show output if there are issues (not a perfect score)\ncase \"$SCORE\" in\n  *\"100/100\"*) ;;\n  *) echo \"$SCORE\" ;;\nesac\n# mex-drift-check-end\n"
+}

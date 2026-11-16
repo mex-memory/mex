@@ -24,7 +24,9 @@ type checkRequest struct {
 	Role     string         `json:"role"`
 	Target   map[string]any `json:"target"`
 	// Items are the checks a record-batch writes, each against today's code.
-	Items []recordItem `json:"items"`
+	Items []recordItem       `json:"items"`
+	Entry string             `json:"entry"`
+	Files map[string]*string `json:"files"`
 }
 
 type recordItem struct {
@@ -58,6 +60,24 @@ func checkRun(stdin io.Reader, stdout io.Writer) int {
 		return 2
 	}
 	switch req.Action {
+	case "evaluate-snapshot":
+		e, err := check.ParseEntry([]byte(req.Entry))
+		if err != nil {
+			_ = enc.Encode(checkFailure{Error: "invalid snapshot entry"})
+			return 2
+		}
+		ev, err := check.NewSnapshotEvaluator(req.Files)
+		if err != nil {
+			_ = enc.Encode(checkFailure{Error: err.Error()})
+			return 2
+		}
+		defer ev.Close()
+		_ = enc.Encode(struct {
+			OK         bool         `json:"ok"`
+			Result     check.Result `json:"result"`
+			InputsHash string       `json:"inputs_hash"`
+		}{true, ev.Evaluate(e), ev.SnapshotInputsHash(e, []byte(req.Entry))})
+		return 0
 	case "evaluate":
 		opts := check.StageOptions{
 			Checkout: req.Checkout, ProjectID: req.ProjectID, MexHome: req.MexHome,

@@ -22,7 +22,7 @@ export const HISTORY_LIMITS = Object.freeze({
   layerSupport: 3,
 });
 
-export interface Commit { hash: string; files: string[]; }
+export interface Commit { hash: string; files: string[]; /** Unix seconds, when the log asked for it. */ time?: number; subject?: string; }
 /** The parameters that decide which change-together pairs are kept. */
 export interface PairParams { confidence: number; support: number; bulkFiles: number; }
 export const PAIR_PARAMS: PairParams = { confidence: HISTORY_LIMITS.confidence, support: HISTORY_LIMITS.support, bulkFiles: HISTORY_LIMITS.bulkFiles };
@@ -46,8 +46,13 @@ export function parseLog(text: string): Commit[] {
   const commits: Commit[] = [];
   for (const record of text.split("\x1e")) {
     const lines = record.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
-    const [hash, ...files] = lines;
-    if (hash && /^[0-9a-f]{40,64}$/u.test(hash)) commits.push({ hash, files: [...new Set(files)] });
+    const [header, ...files] = lines;
+    // "%H" alone, or "%H%x1f%ct%x1f%s" when the caller also wants time and subject.
+    const [hash, time, ...subject] = (header ?? "").split("\x1f");
+    if (!hash || !/^[0-9a-f]{40,64}$/u.test(hash)) continue;
+    const commit: Commit = { hash, files: [...new Set(files)] };
+    if (time !== undefined && /^\d+$/u.test(time)) { commit.time = Number(time); commit.subject = subject.join("\x1f"); }
+    commits.push(commit);
   }
   return commits;
 }

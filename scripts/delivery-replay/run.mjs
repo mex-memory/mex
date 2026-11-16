@@ -17,14 +17,15 @@ const distribution = xs => ({
   p95: quantile(xs, .95),
   runs: xs.length
 });
-function driver(binary, home, scorer) {
+function driver(binary, home, scorer, surfaceMode = "") {
   const p = spawn(binary, ["--delivery-replay"], {
     windowsHide: true,
     env: {
       ...process.env,
       MEX_HOME: home,
       MEX_TELEMETRY: "0",
-      MEX_DELIVERY_SCORER: scorer
+      MEX_DELIVERY_SCORER: scorer,
+      MEX_DELIVERY_SURFACES: surfaceMode
     },
     stdio: ["pipe", "pipe", "pipe"]
   });
@@ -91,9 +92,10 @@ function summary(file, labels, events) {
   db.exec("PRAGMA query_only=ON");
   const cols = db.prepare("PRAGMA table_info(deliveries)").all().map(x => x.name);
   const deliveries = db.prepare(`SELECT session_id,agent_id,epoch,entry_id,moment,form,tokens,action,${cols.includes("detail") ? "detail" : "'' AS detail"} FROM deliveries ORDER BY session_id,agent_id,epoch,rowid`).all();
-  const epochs = db.prepare("SELECT session_id,agent_id,epoch,budget,tokens_sent,reserved_tokens FROM epochs ORDER BY session_id,agent_id,epoch").all();
-  const followups = db.prepare("SELECT d.action,f.kind,count(*) AS count FROM followups f JOIN deliveries d ON d.id=f.delivery_id GROUP BY d.action,f.kind ORDER BY d.action,f.kind").all();
   const epochCols = db.prepare("PRAGMA table_info(epochs)").all().map(x => x.name);
+  const measuredColumns = ["candidate_tokens","admitted_tokens","budget_held","contention_measured"].filter(x => epochCols.includes(x));
+  const epochs = db.prepare(`SELECT session_id,agent_id,epoch,budget,tokens_sent,reserved_tokens${measuredColumns.length ? ","+measuredColumns.join(",") : ""} FROM epochs ORDER BY session_id,agent_id,epoch`).all();
+  const followups = db.prepare("SELECT d.action,f.kind,count(*) AS count FROM followups f JOIN deliveries d ON d.id=f.delivery_id GROUP BY d.action,f.kind ORDER BY d.action,f.kind").all();
   const counts = {
     helped: 0,
     wrong: 0,
@@ -298,7 +300,8 @@ export async function replay() {
   stageObservedFiles(fixtures, converted, sources);
   const variants = [],
     timings = [];
-  for (const scorer of ["tiers", "bm25", "fcfs", "risk"]) {
+  const shadow = process.argv.includes("--surfaces-shadow");
+  for (const scorer of (shadow ? ["tiers"] : ["tiers", "bm25", "fcfs", "risk"])) {
     const lanes = [];
     for (const [name, exe] of [["current", binary], ...(base ? [["base", resolve(base)]] : [])]) {
       const home = join(work, scorer, name),
@@ -311,7 +314,7 @@ export async function replay() {
         name,
         home,
         mex,
-        driver: driver(exe, home, scorer),
+        driver: driver(exe, home, scorer, shadow && name === "current" ? "shadow" : ""),
         times: [],
         failed: 0,
         failures: [],
@@ -359,6 +362,18 @@ export async function replay() {
     for (const lane of lanes) {
       await lane.driver.close();
       const s = summary(join(lane.mex, "hooks.db"), labels, n);
+      if (shadow && lane.name === "current") {
+        s.surfaceLedger = {};
+        for (const [repo, fixture] of Object.entries(fixtures)) {
+          const report = spawnSync(binary, ["--surfaces"], {
+            input: JSON.stringify({ project: fixture.project, checkout: fixture.root }),
+            encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 256 * 1024,
+            env: { ...process.env, MEX_HOME: lane.home, MEX_BACKGROUND: "1", MEX_TELEMETRY: "0" },
+          });
+          if (report.status !== 0) throw Error(report.stderr || report.stdout || "Surface report failed");
+          s.surfaceLedger[repo] = JSON.parse(report.stdout);
+        }
+      }
       variants.push({
         scorer,
         lane: lane.name,
@@ -389,6 +404,7 @@ export async function replay() {
   });
   writeFileSync(join(output, "replay.json"), JSON.stringify({
     split,
+    ...(shadow ? { surfaceDefinition: "All surfaces forced to shadow. Saved sessions without MEX measure coincidence, not effect. Offline receipts cannot advance an efficacy gate." } : {}),
     definition: "Session-level useful-at-some-point labels. Helped counts sessions; wrong counts distinct unacceptable ids per session; missed counts required ids. Receipt tokens are estimates. No recorded command executed.",
     fixtures: Object.fromEntries(Object.entries(fixtures).map(([repo, f]) => [repo, {
       entries: f.entries.length,

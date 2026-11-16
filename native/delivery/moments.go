@@ -60,6 +60,7 @@ type candidate struct {
 	reserve bool // failure fixes and corrections use the reserved lane
 	rel     string
 	resend  bool // the ledger has it, but the agent's transcript no longer does
+	control bool // the same eligible moment suppressed by epoch dedupe
 }
 
 // Resolver finds the registered checkout for a path. isFile is false for a

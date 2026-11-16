@@ -1,0 +1,346 @@
+/home/dev/shop/src/module1/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module2/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module3/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module4/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module5/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module6/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module7/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module8/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module9/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module10/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module11/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module12/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module13/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module14/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module15/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module16/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module17/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module18/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module19/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module20/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module21/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module22/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module23/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module24/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module25/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module26/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module27/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module28/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module29/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module30/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module31/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module32/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module33/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module34/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module35/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module36/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module37/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module38/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module39/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module40/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module41/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module42/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module43/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module44/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module45/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module46/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module47/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module48/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module49/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module50/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module51/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module52/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module53/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module54/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module55/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module56/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module57/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module58/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module59/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module60/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module61/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module62/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module63/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module64/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module65/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module66/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module67/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module68/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/dev/shop/src/module69/index.ts
+  10:3  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  17:4  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  24:5  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+✖ 207 problems (0 errors, 207 warnings)

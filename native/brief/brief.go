@@ -14,9 +14,11 @@ import (
 	"github.com/mex-memory/mex/native/check"
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/rulechange"
 	"github.com/mex-memory/mex/native/internal/safefile"
 	"github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
+	"github.com/mex-memory/mex/native/workset"
 )
 
 const MaxTokens = 300
@@ -42,15 +44,21 @@ type Options struct {
 	// Path is relative to Checkout, not the shell's folder in another repo.
 	Path     string    `json:"path"`
 	Deadline time.Time `json:"-"`
+	// WorkingSet, when it names anything, chooses the brief by the files in
+	// progress instead of by the starting folder.
+	WorkingSet *workset.Set `json:"-"`
+	// HintAllowed admits an observed hint to the not-yet-accepted lane.
+	HintAllowed func(id string) bool `json:"-"`
 }
 
 type Item struct {
-	ID      string `json:"id"`
-	Line    string `json:"line"`
-	Level   string `json:"level"`
-	Verdict string `json:"verdict"`
-	Tokens  int    `json:"tokens"`
-	Hash    string `json:"-"`
+	ID      string   `json:"id"`
+	Line    string   `json:"line"`
+	Level   string   `json:"level"`
+	Verdict string   `json:"verdict"`
+	Tokens  int      `json:"tokens"`
+	Hash    string   `json:"-"`
+	Scopes  []string `json:"-"`
 }
 
 type Result struct {
@@ -58,6 +66,11 @@ type Result struct {
 	Tokens   int      `json:"token_bound"`
 	Items    []Item   `json:"items"`
 	Coverage Coverage `json:"coverage"`
+	// Lane holds knowledge nobody has accepted yet, rendered apart.
+	Lane []Item `json:"lane,omitempty"`
+	// Folder is the starting-folder selection, computed beside the
+	// working-set one so a session can be given either.
+	Folder []Item `json:"-"`
 }
 
 // Render restricts a result to the ids accepted by the receipt transaction.
@@ -65,6 +78,16 @@ func (r Result) Render(accepted []string) string {
 	text := "[mex start-preview]\n" + Priority
 	for _, item := range r.Items {
 		if contains(accepted, item.ID) {
+			text += "\n" + item.Line + " (" + item.ID + ")"
+		}
+	}
+	heading := false
+	for _, item := range r.Lane {
+		if contains(accepted, item.ID) {
+			if !heading {
+				text += "\n" + LaneHeading
+				heading = true
+			}
 			text += "\n" + item.Line + " (" + item.ID + ")"
 		}
 	}
@@ -164,6 +187,7 @@ func Build(opts Options) (Result, error) {
 		defer home.Close()
 	}
 	cache := readRules(root, home, opts)
+	inForce := entries.InForce(opts.MexHome, opts.ProjectID)
 	result.Coverage = readCoverage(root, home, opts, cache)
 	all := []candidate{}
 	retired, sourceIDs := map[string]bool{}, map[string]bool{}
@@ -176,6 +200,12 @@ func Build(opts Options) (Result, error) {
 				return
 			}
 			e, err := entries.Parse(data)
+			if err == nil && e.Status == "proposed" {
+				// Delivered only once in force; the "not yet accepted" lane is separate.
+				if usable := entries.Usable(e, inForce); usable != nil {
+					e = usable
+				}
+			}
 			if err == nil && path.Base(name) == e.ID+".md" {
 				key := level + "/" + e.ID
 				duplicate = duplicate || sourceIDs[key]
@@ -192,6 +222,13 @@ func Build(opts Options) (Result, error) {
 	}
 	if err := walkStore(home, "projects/"+opts.ProjectID+"/notes", 0, &remaining, add("personal")); err != nil {
 		return result, err
+	}
+	// Observed hints can only reach the not-yet-accepted lane, which needs a
+	// working set to rank them.
+	if opts.WorkingSet != nil && opts.HintAllowed != nil {
+		if err := walkStore(home, "projects/"+opts.ProjectID+"/hints", 0, &remaining, add("hint")); err != nil {
+			return result, err
+		}
 	}
 	if duplicate {
 		return result, errors.New("duplicate brief entry id")
@@ -241,48 +278,72 @@ func Build(opts Options) (Result, error) {
 			byID[c.entry.ID] = c
 		}
 	}
-	seen, lines := map[string]bool{}, map[string]bool{}
-	areaItems, tokens := 0, TokenBound(Priority)+32
-	var addGroup func(candidate, map[string]bool) ([]Item, bool)
-	addGroup = func(c candidate, visiting map[string]bool) ([]Item, bool) {
-		e := c.entry
-		if retired[e.ID] {
-			return nil, false
+	ruleChanges := rulechange.Read(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+	// One verdict per entry version, shared by every selection below.
+	verdicts := map[string]string{}
+	verdictOf := func(c candidate) string {
+		key := c.level + "/" + c.hash
+		v, ok := verdicts[key]
+		if !ok {
+			v = evaluator.Evaluate(checkEntry(c.entry)).Verdict
+			verdicts[key] = v
 		}
+		return v
+	}
+	// usable applies everything but the verdict rule: retirement, the deadline,
+	// the starting folder (when asked) and personal state.
+	usable := func(c candidate, area bool) bool {
+		e := c.entry
+		if retired[e.ID] || (!opts.Deadline.IsZero() && time.Now().After(opts.Deadline)) {
+			return false
+		}
+		if area && !inScope(e, opts.Path) {
+			return false
+		}
+		// The brief never repeats a policy currently doubted by the free pass.
+		if c.level == "team" && (e.Kind == "rule" || e.Kind == "decision" || e.Kind == "pitfall") && ruleChanges.For(e.ID, c.hash) != nil {
+			return false
+		}
+		if c.level == "personal" || c.level == "hint" {
+			if !personalStateOK {
+				return false
+			}
+			if personalState != nil {
+				retired, err := personalState.HasSetting(opts.ProjectID, "knowledge.retired."+e.ID)
+				if err != nil || retired {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	itemFor := func(c candidate, verdict string) Item {
+		e := c.entry
+		label := entries.Label(e, c.level)
+		if c.level == "rule-file" {
+			label = "[repo]"
+		}
+		line := label + " " + e.OneLine
+		return Item{ID: e.ID, Line: line, Level: c.level, Verdict: verdict, Tokens: TokenBound("\n" + line + " (" + e.ID + ")"), Hash: c.hash, Scopes: append([]string{}, e.Scope...)}
+	}
+	var addGroup groupFunc
+	addGroup = func(c candidate, visiting, seen map[string]bool, area bool) ([]Item, bool) {
+		e := c.entry
 		if len(visiting) >= 32 {
 			return nil, false
 		}
 		if seen[e.ID] || visiting[e.ID] || result.Coverage.Covers(e.ID, opts.Agent, opts.Path) {
 			return nil, true
 		}
-		if !opts.Deadline.IsZero() && time.Now().After(opts.Deadline) {
+		if !usable(c, area) {
 			return nil, false
 		}
-		if !inScope(e, opts.Path) {
-			return nil, false
-		}
-		if c.level == "personal" {
-			if !personalStateOK {
-				return nil, false
-			}
-			if personalState != nil {
-				retired, err := personalState.HasSetting(opts.ProjectID, "knowledge.retired."+e.ID)
-				if err != nil || retired {
-					return nil, false
-				}
-			}
-		}
-		verdict := evaluator.Evaluate(checkEntry(e)).Verdict
+		verdict := verdictOf(c)
 		if !allowed(e, verdict, c.level) {
 			return nil, false
 		}
 		visiting[e.ID] = true
-		label := entries.Label(e, c.level)
-		if c.level == "rule-file" {
-			label = "[repo]"
-		}
-		line := label + " " + e.OneLine
-		items := []Item{{ID: e.ID, Line: line, Level: c.level, Verdict: verdict, Tokens: TokenBound("\n" + line + " (" + e.ID + ")"), Hash: c.hash}}
+		items := []Item{itemFor(c, verdict)}
 		if len(e.Companions) > 32 {
 			return nil, false
 		}
@@ -291,7 +352,7 @@ func Build(opts Options) (Result, error) {
 			if !exists {
 				return nil, false
 			}
-			extra, ok := addGroup(companion, visiting)
+			extra, ok := addGroup(companion, visiting, seen, area)
 			if !ok {
 				return nil, false
 			}
@@ -299,38 +360,62 @@ func Build(opts Options) (Result, error) {
 		}
 		return items, true
 	}
-	for _, c := range all {
-		if seen[c.entry.ID] {
-			continue
-		}
-		group, ok := addGroup(c, map[string]bool{})
-		if !ok {
-			continue
-		}
-		cost, area := 0, 0
-		for _, item := range group {
-			cost += item.Tokens
-			if item.Level != "personal" {
-				area++
-			}
-		}
-		if tokens+cost > MaxTokens || areaItems+area > 3 {
-			continue
-		}
-		for _, item := range group {
-			if lines[item.Line] {
+	tokens := TokenBound(Priority) + 32
+	// The area selection: personal notes first, then at most three entries
+	// whose scope covers the folder the session starts in.
+	selectArea := func() []Item {
+		seen, lines := map[string]bool{}, map[string]bool{}
+		var out []Item
+		areaItems, used := 0, tokens
+		for _, c := range all {
+			if seen[c.entry.ID] || c.level == "hint" {
 				continue
 			}
-			result.Items = append(result.Items, item)
-			seen[item.ID], lines[item.Line] = true, true
-			tokens += item.Tokens
-			if item.Level != "personal" {
-				areaItems++
+			group, ok := addGroup(c, map[string]bool{}, seen, true)
+			if !ok {
+				continue
+			}
+			cost, area := 0, 0
+			for _, item := range group {
+				cost += item.Tokens
+				if item.Level != "personal" {
+					area++
+				}
+			}
+			if used+cost > MaxTokens || areaItems+area > 3 {
+				continue
+			}
+			for _, item := range group {
+				if lines[item.Line] {
+					continue
+				}
+				out = append(out, item)
+				seen[item.ID], lines[item.Line] = true, true
+				used += item.Tokens
+				if item.Level != "personal" {
+					areaItems++
+				}
 			}
 		}
+		return out
+	}
+	var sc *scorer
+	if opts.WorkingSet != nil {
+		sc = newScorer(opts.WorkingSet)
+	}
+	if sc == nil || sc.empty() {
+		result.Items = append(result.Items, selectArea()...)
+	} else {
+		w := workingSelection{sc: sc, all: all, usable: usable, verdictOf: verdictOf, addGroup: addGroup, itemFor: itemFor, hintAllowed: opts.HintAllowed}
+		result.Items = w.main(tokens)
+		result.Lane = w.lane()
+		result.Folder = selectArea()
 	}
 	ids := []string{}
 	for _, item := range result.Items {
+		ids = append(ids, item.ID)
+	}
+	for _, item := range result.Lane {
 		ids = append(ids, item.ID)
 	}
 	result.Text = result.Render(ids)

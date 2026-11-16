@@ -2,6 +2,7 @@ package check
 
 import (
 	"errors"
+	"github.com/mex-memory/mex/native/internal/noteguard"
 	"io"
 	"os"
 	"path/filepath"
@@ -49,7 +50,22 @@ func LoadAll(checkout, mexHome, projectID string) ([]Loaded, error) {
 	return loadAll(checkout, mexHome, projectID, nil)
 }
 
-func loadAll(checkout, mexHome, projectID string, cache *entryCache) ([]Loaded, error) {
+func loadAll(checkout, mexHome, projectID string, cache *entryCache) (answer []Loaded, failure error) {
+	if projectID != "" && (filepath.Base(projectID) != projectID || projectID == "." || projectID == "..") {
+		return nil, errors.New("invalid personal project id")
+	}
+	if mexHome != "" && projectID != "" {
+		check, err := noteguard.Begin(filepath.Join(mexHome, "projects", projectID, "notes"))
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if err := check(); err != nil {
+				answer, failure = nil, err
+			}
+		}()
+	}
+
 	team, err := loadStore(TeamDirectory(checkout), Team, 1, cache)
 	if err != nil {
 		return nil, err
