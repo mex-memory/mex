@@ -1,0 +1,16 @@
+{
+  "session_id": "g-91ab",
+  "transcript_path": "/home/dev/.gemini/tmp/shop/chats/session-g-91ab.json",
+  "cwd": "/home/dev/shop",
+  "timestamp": "2026-11-15T10:00:00.000Z",
+  "hook_event_name": "AfterTool",
+  "tool_name": "read_file",
+  "tool_input": {
+    "absolute_path": "/home/dev/shop/src/cart.ts"
+  },
+  "tool_response": {
+    "llmContent": "export const x = 1;\n",
+    "returnDisplay": ""
+  },
+  "original_request_name": "read_file"
+}

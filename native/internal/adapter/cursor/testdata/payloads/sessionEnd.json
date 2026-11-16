@@ -1,0 +1,17 @@
+{
+  "conversation_id": "c-7f1e",
+  "generation_id": "g-01",
+  "model": "claude-opus-5-5",
+  "cursor_version": "3.2.1",
+  "workspace_roots": [
+    "/home/dev/shop"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/shop/agent-transcripts/c-7f1e.jsonl",
+  "hook_event_name": "sessionEnd",
+  "session_id": "c-7f1e",
+  "reason": "user_close",
+  "duration_ms": 60000,
+  "is_background_agent": false,
+  "final_status": "completed"
+}

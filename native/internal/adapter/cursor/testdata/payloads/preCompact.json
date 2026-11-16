@@ -1,0 +1,19 @@
+{
+  "conversation_id": "c-7f1e",
+  "generation_id": "g-01",
+  "model": "claude-opus-5-5",
+  "cursor_version": "3.2.1",
+  "workspace_roots": [
+    "/home/dev/shop"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/shop/agent-transcripts/c-7f1e.jsonl",
+  "hook_event_name": "preCompact",
+  "trigger": "auto",
+  "context_usage_percent": 91,
+  "context_tokens": 182000,
+  "context_window_size": 200000,
+  "message_count": 140,
+  "messages_to_compact": 100,
+  "is_first_compaction": true
+}

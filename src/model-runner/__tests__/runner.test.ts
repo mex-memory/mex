@@ -130,3 +130,17 @@ describe("one-shot model runner with fake agents", () => {
     expect(saved()[0]?.model).toBe("reported-model");
   });
 });
+
+describe("AGENT_MODELS", () => {
+  it("has a cheap and a best entry for every release-03 agent and reuses the runner table", async () => {
+    const { AGENT_MODELS, DEFAULT_MODELS: defaults } = await import("../models.js");
+    for (const agent of ["claude-code", "codex", "cursor", "antigravity", "gemini"]) {
+      expect(AGENT_MODELS[agent]).toBeDefined();
+      for (const name of [AGENT_MODELS[agent].cheap, AGENT_MODELS[agent].best]) {
+        if (name !== null) expect(name).toMatch(/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$/);
+      }
+    }
+    expect(AGENT_MODELS["claude-code"]).toBe(defaults.claude);
+    expect(AGENT_MODELS.codex).toBe(defaults.codex);
+  });
+});

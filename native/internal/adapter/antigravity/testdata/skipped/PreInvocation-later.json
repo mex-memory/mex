@@ -1,0 +1,12 @@
+{
+  "conversationId": "a-55c2",
+  "workspacePaths": [
+    "/home/dev/shop"
+  ],
+  "transcriptPath": "/home/dev/.gemini/antigravity/brain/a-55c2/transcript.jsonl",
+  "artifactDirectoryPath": "/home/dev/.gemini/antigravity/brain/a-55c2",
+  "modelName": "gemini-3.5-pro",
+  "lastUserInput": "add a discount to the cart",
+  "invocationNum": 3,
+  "initialNumSteps": 4
+}

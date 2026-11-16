@@ -1,0 +1,21 @@
+{
+  "conversation_id": "c-7f1e",
+  "generation_id": "g-01",
+  "model": "claude-opus-5-5",
+  "cursor_version": "3.2.1",
+  "workspace_roots": [
+    "/home/dev/shop"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/shop/agent-transcripts/c-7f1e.jsonl",
+  "hook_event_name": "preToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "/home/dev/shop/src/cart.ts",
+    "old_string": "a",
+    "new_string": "b"
+  },
+  "tool_use_id": "t3",
+  "cwd": "/home/dev/shop",
+  "agent_message": ""
+}

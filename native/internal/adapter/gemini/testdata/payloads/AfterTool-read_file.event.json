@@ -1,0 +1,23 @@
+{
+  "agent": "gemini",
+  "agent_version": "",
+  "kind": "post_tool",
+  "session_id": "g-91ab",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "read",
+    "raw_name": "read_file",
+    "input": {
+      "path": "/home/dev/shop/src/cart.ts"
+    },
+    "output": {
+      "text": "export const x = 1;\n",
+      "ok": true
+    }
+  },
+  "transcript": "/home/dev/.gemini/tmp/shop/chats/session-g-91ab.json",
+  "background": false
+}
