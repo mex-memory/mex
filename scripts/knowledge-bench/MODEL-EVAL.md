@@ -9,7 +9,11 @@ only prepares a plan, costs $0 and never launches a model. Neither CI nor
 with the real evaluator, queue, judge and delivery controller; their results
 say nothing about model quality.
 
-## Fixed sample and scoring
+The current model CLI uses the separately versioned reviewed-v2 protocol and
+measurement at the end of this document. Earlier tables preserve legacy v1
+inputs and labels; they are not measurements of the clarified v2 claims.
+
+## Legacy v1 sample and scoring
 
 Use the existing public Hono corpus, pinned to digest
 `6d693e9985c432356f6f0f1bf5319bc87559bece082cbb40314ce6637c69b687`.
@@ -27,7 +31,7 @@ to the judge; a stale indexed count cannot mint a new baseline.
 The production secret guard blocks the public basic-auth example (`b03`).
 That case remains in every denominator as privacy-withheld; its source is
 not sent. The other 45 claims form 20 check-writing calls. The unchanged
-judge job then runs at C1–C5, with normal admission against an isolated
+ordinary judge job then runs at C1–C5, with normal admission against an isolated
 record containing synthetic allowance. Each checkpoint refreshes the file
 index, evaluates checks, runs the queued judge, publishes the native verdict
 cache and asks the native delivery probe about every original claim.
@@ -60,7 +64,7 @@ Report results beside the historical **41/42 true kept and 16/16 stale caught**,
 explicitly as different samples. Do not infer an improvement from those
 different denominators or add checkpoints as if they were independent claims.
 
-## Accepted measurement checkpoint
+## Accepted legacy measurement checkpoint
 
 The accepted measurement ran on `a1c5dbb8cc73e1fa914b172ea01687551ae43337`.
 The subsequent delivery-expiry fix is committed in
@@ -459,3 +463,74 @@ uncertainty must be reported regardless of that target. Completion and quality
 are distinct. The default plan binds this target along with the reviewed
 inputs, source/candidate hashes, reused targets, regenerated IDs and cost bounds.
 This is one disclosed measurement, not repeated sampling to select a score.
+
+## Reviewed-v2 measurement and review decision
+
+One owner-authorized run on committed candidate
+`41dd76b4c23a7446e5938f1b5878e21afa95334a` met the prospective review target.
+Its prepared fingerprint was
+`3b11333c010ed428958183853bbb7da99204d53a4440261427dde477e0d0efa3`.
+The runtime audit independently agreed with all 276 reviewed labels, and a
+separate case/ledger verification reproduced every score, the 35 unchanged
+proposals and exact usage totals. All historical raw report hashes remain
+unchanged. Raw model reports, replies and account details remain private.
+
+| Checkpoint | True kept | Stale caught | Stale original full text |
+| --- | --- | --- | --- |
+| C0 | 45/46 | 0/0 | 0 |
+| C1 | 42/43 | 3/3 | 0 |
+| C2 | 40/41 | 5/5 | 0 |
+| C3 | 36/37 | 9/9 | 0 |
+| C4 | 29/31 | 15/15 | 0 |
+| C5 | **28/30** | **16/16** | **0** |
+
+All 45 privacy-eligible proposals record successfully, with zero generation
+failures or seed repairs. The six fresh writer calls regenerated only the ten
+changed claims. There were 77 ordinary judge calls and one successful bounded
+check-target repair for b13 at C4: **84 calls total**. All five jobs finished
+with gaps; that state retains observed uncertainty rather than claiming every
+entry received a conclusive model answer. No transport, usage or primary reply
+failure occurred. C5 has no stale misses. Its two true-not-kept cases are
+privacy-withheld b03 and the v04 cannot-tell pointer. The independent runtime
+audit confirms v04 still holds; this remains a limitation in obtaining enough
+collaborator evidence to confirm header propagation, not a stale claim.
+
+C5 operational false rejection is 2/30 (6.67%), including privacy and uncertainty;
+stale miss is 0/16. This is one run on hand-written, source-reviewed claims,
+not a confidence guarantee, independent sampling or a causal improvement claim
+over the older differently worded inputs. Recording a rewrite's targets still
+does not independently prove every replacement sentence. No more sampling is
+needed to complete this review; the remaining v04 abstention is disclosed.
+
+The run reports **168 input + 1,294,348 cache-write + 0 cache-read + 57,983
+output = 1,352,499 tokens**, with no estimated/unmeasured calls. Reference
+API-equivalent valuation including the quote's headroom is **$0.316665690**,
+below its $2.99 conservative quote. The quote plus earlier known valuation and
+partial-call reserve was $4.723610208, below the existing $5 allowance. Seven
+complete runs plus the retained partial attempt now total **592 calls /
+8,944,198 reported tokens / $2.050275898 known valuation plus reservation**.
+These are reference calculations, not invoices or extra subscription charges.
+
+Free label-only audits of old wording yield the following C5 counts. These
+are deliberately separate from the reviewed-v2 measurement above; the ten
+clarified inputs were not retroactively tested.
+
+| Historical source | Label-corrected true kept | Label-corrected stale caught |
+| --- | --- | --- |
+| Initial 8fd41d74 | 12/30 | 10/16 |
+| Patterns 2cec7f83 | 20/30 | 13/16 |
+| Delivery 201ac957 | 26/30 | 15/16 |
+| Roles a1c5dbb8 | 28/30 | 12/16 |
+| First replay 1e53edc5 | 27/30 | 15/16 |
+| Resolver replay dfe5ee93 | 26/30 | 16/16 |
+
+Validation: root/workspace/script typechecks and build pass; Go vet and all Go
+package tests pass. Focused review tests pass (87 tests), including strict
+transition validation, missing/duplicate cases, original-score/plan tampering,
+old-schema failure preservation, and regeneration of changed inputs only. The
+full native-enabled suite passes **6,933 tests / 466 files**, with 16 tests /
+two files skipped, in 278.86s in one local macOS run. Product code in the
+measured candidate is unchanged by this results-only documentation commit.
+Benchmark scope/label review is complete. PR integration and the separately
+pinned release adapters remain outside this measurement; no merge or release
+readiness is implied.
