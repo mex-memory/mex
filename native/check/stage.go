@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/judgement"
 	"github.com/mex-memory/mex/native/internal/rulechange"
 	localrecord "github.com/mex-memory/mex/native/record"
 )
@@ -69,6 +70,7 @@ type StageItem struct {
 	EntryHash           string   `json:"entry_hash"`
 	RuleEvidence        []string `json:"rule_evidence,omitempty"`
 	RuleEvidencePending bool     `json:"rule_evidence_pending,omitempty"`
+	Label               string   `json:"label,omitempty"`
 }
 
 // StageProblem is an entry file that couldn't be read as an entry.
@@ -126,6 +128,9 @@ func RunStage(opts StageOptions) (StageReport, error) {
 	}
 	checkedAt := now.UTC().Format(time.RFC3339)
 	ruleChanges := rulechange.Read(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+	var judged *judgement.Reader
+	judgedTried := opts.TeamOnly
+	defer func() { judged.Close() }()
 
 	var fresh []localrecord.Verdict
 	var valid []string
@@ -145,12 +150,20 @@ func RunStage(opts StageOptions) (StageReport, error) {
 			}
 			report.Items = append(report.Items, item)
 		}
-		if opts.Paths != nil && !touches(l, opts.Checkout, wanted) {
+		if opts.Paths != nil && !touches(l, opts.Checkout, wanted) && !judgement.ModelKey(cached[l.Entry.ID].InputsHash) {
 			keep()
 			continue
 		}
 		if report.Unfinished || (!opts.Deadline.IsZero() && time.Now().After(opts.Deadline)) {
 			report.Unfinished = true
+			// An unverified model hold must not survive a partial/deadline run.
+			if v, ok := cached[l.Entry.ID]; ok && judgement.ModelKey(v.InputsHash) {
+				v.Verdict = Unknown
+				v.InputsHash = "unverified"
+				v.CheckedAt = checkedAt
+				cached[l.Entry.ID] = v
+				fresh = append(fresh, v)
+			}
 			keep()
 			continue
 		}
@@ -171,12 +184,31 @@ func RunStage(opts StageOptions) (StageReport, error) {
 			sum := sha256.Sum256([]byte(inputs + string(raw)))
 			inputs = "sha256:" + hex.EncodeToString(sum[:])
 		}
+		evaluationHash := inputs
+		modelHeld := false
+		eligible := l.Entry.Kind == "fact" && l.Entry.Status == "active"
+		for _, c := range l.Entry.Checks {
+			if c.Kind == "legacy-grounding" {
+				eligible = false
+			}
+		}
+		if eligible {
+			if !judgedTried {
+				judgedTried = true
+				judged = judgement.Open(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+			}
+			inputs, modelHeld = judged.CacheKey(l.Entry.ID, l.Hash, evaluationHash)
+		}
 		if v, ok := cached[l.Entry.ID]; ok && v.InputsHash == inputs && !opts.Force {
+			if modelHeld && v.Verdict == Held {
+				item.Label = "checked by model"
+			}
 			report.Reused++
 			keep()
 			continue
 		}
 		res := ev.Evaluate(l.Entry)
+		res.EvaluationHash = evaluationHash
 		if signal != nil {
 			if res.Verdict != Broken {
 				res.Verdict = Changed
@@ -186,6 +218,17 @@ func RunStage(opts StageOptions) (StageReport, error) {
 					res.Inputs[input.Path] = input.Hash
 				}
 			}
+		}
+		readable := true
+		for _, c := range res.Checks {
+			if c.Status == Floor || c.Status == Gone {
+				readable = false
+			}
+		}
+		if modelHeld && readable && res.Verdict == Changed && !item.RuleEvidencePending {
+			res.Verdict = Held
+			item.Label = "checked by model"
+			res.Label = item.Label
 		}
 		report.Evaluated++
 		report.Counts[res.Verdict]++
@@ -218,6 +261,16 @@ func targetFiles(c Check) []string {
 	}
 	if f := str(c.Target, "file"); f != "" {
 		files = append(files, f)
+	}
+	if c.Kind == "pattern" {
+		if file := exactPatternFile(c.Target); file != "" {
+			for _, known := range files {
+				if known == file {
+					return files
+				}
+			}
+			files = append(files, file)
+		}
 	}
 	return files
 }

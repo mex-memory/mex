@@ -9,7 +9,7 @@ import { runModel, ModelRunError, ModelWaitError, type ModelRequest, type ModelR
 import { JUDGE_LIMITS, hash, readCandidate, entryFiles, readSource, distance, orderCandidates, nextBatch, evidence, position, samePosition, unchanged, coherent, type Candidate, type Evidence, type Position } from "./evidence.js";
 import { evaluate, recordChecks } from "./native.js";
 import { pendingJudgeRequest, type JudgeParams } from "./pending.js";
-import { resultKey, readJudgement, type Judgement } from "./result.js";
+import { resultKey, readJudgement, judgementInputsHash, type Judgement } from "./result.js";
 import { stageFixes, hasPendingFixes, needsRouting, routeFixes, fixPreviewReady, PREVIEW_WAIT } from "./routing.js";
 import { sessionWorkEnabled } from "./session.js";
 import { refreshRuleChanges } from "./rule-change.js";
@@ -32,7 +32,9 @@ export interface JudgeDependencies {
 const dependencies: JudgeDependencies = { evaluate, recordChecks, model: runModel };
 function known(writer: RecordWriter, projectId: string, candidate: Candidate, checkout: string, at: Position): boolean {
   const previous = readJudgement(writer, projectId, checkout, candidate.item.id);
-  if (!previous || previous.entry_hash !== hash(candidate.content) || previous.checks_hash !== checkHash(candidate) || !samePosition(previous.position, at)) return false;
+  if (!previous || previous.entry_hash !== hash(candidate.content) || previous.evaluation_hash !== candidate.evaluationHash
+    || previous.checks_hash !== checkHash(candidate) || !samePosition(previous.position, at)) return false;
+  if (previous.evaluation_hash && judgementInputsHash(previous) !== previous.inputs_hash) return false;
   try { if (!previous.files.every(file => { const text = readSource(checkout, file.path); return (text === null ? null : hash(text)) === file.hash; })) return false; }
   catch { return false; }
   return !!writer.db.prepare("SELECT 1 FROM judgements WHERE project_id=? AND entry_id=? AND inputs_hash=?").get(projectId, candidate.item.id, previous.inputs_hash);
@@ -73,10 +75,13 @@ export function judgeCandidates(report: NativeReport, params: JudgeParams, home:
     const observation = checks.get(item.id);
     const files = [...new Set([...entryFiles(found.entry), ...Object.keys(observation?.inputs ?? {})])].sort();
     const spare = item.verdict === "held";
+    // Native acceptance already re-proved this exact model confirmation. It
+    // needs no second paid check merely because complete checks also passed.
+    if (spare && item.label === "checked by model") continue;
     if (spare && !found.entry.mex.checks.some(c => c.role === "complete" && Object.entries(c.files).some(([file, baseline]) => {
       try { const current = readSource(params.checkout, file); return current === null || hash(current) !== baseline; } catch { return false; }
     }))) continue;
-    out.push({ item, ...found, files, spare, distance: distance(files, params.near), checks: observation?.checks ?? [], inputs: observation?.inputs });
+    out.push({ item, ...found, files, spare, distance: distance(files, params.near), checks: observation?.checks ?? [], inputs: observation?.inputs, evaluationHash: observation?.evaluation_hash });
   }
   return orderCandidates(out.filter(c => !duplicates.has(c.item.id)));
 }
@@ -86,6 +91,7 @@ Use the claim, its checks and observations, current code, and ALL changes in eac
 Return only JSON: {"results":[{"id":"mx_...","result":"still-true"}]}.
 For an uncertain claim use result "cannot-tell". For a false claim use {"id":"mx_...","result":"rewritten","one_line":"current claim","text":"current fact and reason","checks":[{"kind":"value","role":"complete","target":{"file":"src/example.ts","symbol":"defaults"}}]}.
 Return exactly one result per supplied id. Rewrites must supply new check targets; MEX records their baselines against current code. Allowed check kinds: key, command, section, source, value, symbol, pattern, relation. Do not change scope, source, identity, or kind.
+Source/symbol fingerprints and literal occurrence counts support behavioral claims: refactoring can change them without disproving the behavior. Use supporting for those checks in behavior rewrites; use complete only when a key/value observation directly states the whole claim.
 Evidence follows as JSON:\n${JSON.stringify(snapshot)}`;
 }
 function request(params: JudgeParams, writer: RecordWriter, projectId: string): Record<string, unknown> {
@@ -235,10 +241,13 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
           }
           if (!rewrite) outcome = "cannot-tell";
         }
-        saved.push({ version: 1, id: candidate.item.id, inputs_hash: hash(JSON.stringify({ entry: candidate.content, evidence: snapshot })),
+        const value: Judgement = { version: 1, id: candidate.item.id, inputs_hash: "",
           checkout: params.checkout, position: at, entry_hash: hash(candidate.content), checks_hash: checkHash(candidate),
+          ...(candidate.evaluationHash ? { evaluation_hash: candidate.evaluationHash } : {}),
           files: snapshot.files.map(f => ({ path: f.path, hash: f.current_hash })),
-          result: outcome, label: "checked by model", model: result.selectedModel, at: new Date().toISOString(), ...(rewrite ? { rewrite } : {}) });
+          result: outcome, label: "checked by model", model: result.selectedModel, at: new Date().toISOString(), ...(rewrite ? { rewrite } : {}) };
+        value.inputs_hash = value.evaluation_hash ? judgementInputsHash(value) : hash(JSON.stringify({ entry: candidate.content, evidence: snapshot }));
+        saved.push(value);
       }
       const tokens = result.usage.input + result.usage.cache_write + result.usage.cache_read + result.usage.output;
       // Index-backed checks can change without changing one of the entry's
@@ -247,7 +256,7 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
       const sameChecks = batch.every(candidate => {
         const item = fresh.items?.find(item => item.id === candidate.item.id && item.path === candidate.item.path && item.level === candidate.item.level);
         const checks = fresh.results?.find(item => item.entry_id === candidate.item.id);
-        return item?.entry_hash === hash(candidate.content) && checks !== undefined
+        return item?.entry_hash === hash(candidate.content) && checks !== undefined && checks.evaluation_hash === candidate.evaluationHash
           && checkHash({ ...candidate, item, checks: checks.checks, inputs: checks.inputs }) === checkHash(candidate);
       });
       if (!sameChecks || !allowed(writer, params, projectId) || !await unchanged(params.checkout, writer.location.home, projectId, batch, snapshot)) {

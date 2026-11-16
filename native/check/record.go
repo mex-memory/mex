@@ -93,7 +93,12 @@ func (ev *Evaluator) Record(kind, role string, target map[string]any) (Check, er
 			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, res.Reason)
 		}
 		c.Saw["count"] = count
-		// A count covers a whole scope; it records no single file.
+		// Exact scopes retain their observed file, so changed-but-held checks
+		// can be rechecked and the judge receives the full source and diff.
+		// Glob scopes still record no unbounded set of individual files.
+		if file := exactPatternFile(target); file != "" {
+			c.Files[file] = ev.files.read(file).hash
+		}
 		if got := ev.run(c); got.Status != Pass {
 			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, got.Reason)
 		}

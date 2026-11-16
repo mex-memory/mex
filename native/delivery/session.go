@@ -55,7 +55,7 @@ func loadKnown(h *record.Hooks, ev contract.Event, env Environment) (*known, err
 	if err != nil {
 		return nil, err
 	}
-	k := &known{snap: &snap, byID: map[string]*entries.Item{}, senv: &shapeEnv{recordDirectory: env.RecordDirectory, project: ev.ProjectID, checkout: ev.Checkout}, h: h, ev: ev, cache: map[string]string{}}
+	k := &known{snap: &snap, byID: map[string]*entries.Item{}, senv: &shapeEnv{recordDirectory: env.RecordDirectory, project: ev.ProjectID, checkout: ev.Checkout, hooks: h}, h: h, ev: ev, cache: map[string]string{}}
 	for i := range snap.Items {
 		k.byID[snap.Items[i].Entry.ID] = &snap.Items[i]
 	}
