@@ -20,6 +20,20 @@ export interface SessionSummary {
   closedDeliveries: number;
   partial: boolean;
 }
+
+/** The Go projection is shared with offline replay; this command never writes. */
+export function surfaces(options: KnowledgeOptions): { surfaces: Array<Record<string, unknown>>; contention?: Record<string,unknown> } {
+  const binary = rankBinary();
+  if (!binary) throw new Error("The native hook is unavailable. Rebuild MEX.");
+  const project = knowledgeProject(options);
+  const result = spawnSync(binary, ["--surfaces"], {
+    input: JSON.stringify({ project: project.projectId, checkout: project.root }),
+    encoding: "utf8", windowsHide: true, timeout: 2000, maxBuffer: 128 * 1024,
+    env: { ...process.env, MEX_BACKGROUND: "1" },
+  });
+  if (result.error || result.status !== 0) throw new Error("The surface ledger is unavailable.");
+  return JSON.parse(result.stdout) as { surfaces: Array<Record<string, unknown>>; contention?: Record<string,unknown> };
+}
 export function whatLine(s: SessionSummary): string {
   const kinds = new Map<string, number>();
   for (const it of s.items) if (it.action === "given" || it.action === "replaced") {

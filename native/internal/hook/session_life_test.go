@@ -19,6 +19,7 @@ func TestCompactionRecoveryThroughTheHook(t *testing.T) {
 			h, env := fakeHome(t, true)
 			root := repo(t, t.TempDir())
 			register(t, h, root, projectID, "on", "")
+			prepareStore(t, h)
 			learned := filepath.Join(root, ".mex", "learned")
 			os.MkdirAll(learned, 0o700)
 			entry := "---\nmex:\n  id: mx_recovr\n  kind: pitfall\n  scope:\n    - \"src/a.ts\"\n  source:\n    type: docs\n    ref: CONTRIBUTING.md\n  evidence: docs\n  one_line: \"a.ts is shared with the worker build.\"\n  checks: []\n  status: active\n  created: 2026-11-03\n---\na.ts is shared with the worker build, so keep it free of Node imports.\n"

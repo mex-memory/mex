@@ -22,11 +22,17 @@ type Epoch struct {
 	Intent                                             string
 	LastFailure                                        string
 	Closed                                             bool
+	ToolCalls                                          int
+	CandidateTokens, AdmittedTokens, BudgetHeld        int
+	ContentionMeasured                                 bool
 }
 
 // DeliveryCandidate is already gated and rendered by the controller. Admit is
 // evaluated under the writer lock so parallel calls see the same budget.
 type DeliveryCandidate struct {
+	Surface                                    string
+	Target                                     SurfaceTarget
+	Mode                                       string // on, shadow or off; resolved before admission
 	EntryID, Moment, Form, Action, ContentHash string
 	Detail, Parent                             string
 	Title, Kind, Level                         string
@@ -40,6 +46,12 @@ type DeliveryCandidate struct {
 	// Resend gives an entry again although the ledger has it this epoch: the
 	// transcript shows the agent no longer has it (a rewind).
 	Resend bool
+	// SessionOnce gives an entry at most once per session and agent, and
+	// SessionMax caps how many receipts its surface gets in one session.
+	// Both count shadow receipts too and are checked under the write lock,
+	// so racing hook processes can't exceed them.
+	SessionOnce bool
+	SessionMax  int
 }
 type Receipt struct {
 	DeliveryCandidate
@@ -64,6 +76,10 @@ type DeliveryRequest struct {
 	Commands      []string // bounded digests of exact commands in this call
 	FailedCommand string   // latest failed command digest, if observed
 	EndEpoch      bool
+	SurfaceTools  []SurfaceTool
+	SurfaceMode   func(string) string
+	Offline       bool // saved sessions cannot change a gate
+	Notify        bool // only when the adapter can show a person-facing line
 	Conflicts     []DeliveryConflict
 	Similar       func(DeliveryCandidate, []GivenRow) string
 	// OnceEntry makes the whole batch conditional on its epoch marker being
@@ -79,6 +95,7 @@ type DeliveryConflict struct{ Winner, Loser, Reason string }
 type DeliveryResult struct {
 	Epoch    Epoch
 	Receipts []Receipt
+	Notices  []string
 }
 
 // CheckAndMark commits the lifecycle, aliases, dedupe, admission, receipts and
@@ -111,8 +128,26 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			return result, errors.New("invalid delivery identity")
 		}
 	}
-	if len(req.Commands) > 64 || len(req.Probes) > 1000 || len(req.Touches) > 1000 || len(req.Conflicts) > 1000 || len(req.Observations) > 1000 || len(req.Candidates) > 1000 || len(req.Aliases) > 10000 {
+	if len(req.SurfaceTools) > 64 || len(req.Commands) > 64 || len(req.Probes) > 1000 || len(req.Touches) > 1000 || len(req.Conflicts) > 1000 || len(req.Observations) > 1000 || len(req.Candidates) > 1000 || len(req.Aliases) > 10000 {
 		return result, errors.New("delivery batch exceeds bound")
+	}
+	for _, tool := range req.SurfaceTools {
+		if len(tool.Paths) > 64 || len(tool.Names) > 64 || len(tool.Command) > 128 || len(tool.Added) > 32768 {
+			return result, errors.New("surface observation bound")
+		}
+		for _, p := range append(append([]string{}, tool.Paths...), tool.Names...) {
+			if len(p) > 4096 || strings.ContainsRune(p, 0) {
+				return result, errors.New("surface observation field bound")
+			}
+		}
+		if len(tool.Scoped) > 64 {
+			return result, errors.New("surface checkout observation bound")
+		}
+		for key, scoped := range tool.Scoped {
+			if len(key) > 8192 || strings.ContainsRune(key, 0) || len(scoped.Scoped) > 0 || len(scoped.Paths) > 64 || len(scoped.Names) > 64 || len(scoped.Command) > 128 || len(scoped.Added) > 32768 {
+				return result, errors.New("surface scoped observation bound")
+			}
+		}
 	}
 	if req.Now.IsZero() {
 		req.Now = time.Now()
@@ -156,9 +191,9 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		return result, err
 	}
 	e := Epoch{}
-	err = conn.QueryRowContext(ctx, `SELECT epoch,reason,budget,tokens_sent,reserved_tokens,compact_signals,intent,closed,last_failure FROM epochs
+	err = conn.QueryRowContext(ctx, `SELECT epoch,reason,budget,tokens_sent,reserved_tokens,compact_signals,intent,closed,last_failure,tool_calls,candidate_tokens,admitted_tokens,budget_held,contention_measured FROM epochs
  WHERE session_id=? AND agent_id=? ORDER BY epoch DESC LIMIT 1`, req.Session.SessionID, req.AgentID).
-		Scan(&e.Number, &e.Reason, &e.Budget, &e.TokensSent, &e.ReservedTokens, &e.CompactSignals, &e.Intent, &e.Closed, &e.LastFailure)
+		Scan(&e.Number, &e.Reason, &e.Budget, &e.TokensSent, &e.ReservedTokens, &e.CompactSignals, &e.Intent, &e.Closed, &e.LastFailure, &e.ToolCalls, &e.CandidateTokens, &e.AdmittedTokens, &e.BudgetHeld, &e.ContentionMeasured)
 	missing := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !missing {
 		return result, err
@@ -181,6 +216,9 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		advance = !missing && (e.Reason != "compact" || e.CompactSignals&req.CompactSignal != 0)
 	}
 	if advance {
+		if err = settleSurfaceWindows(ctx, conn, req, &e, true); err != nil {
+			return result, err
+		}
 		if _, err = conn.ExecContext(ctx, `UPDATE epochs SET closed=1 WHERE session_id=? AND agent_id=? AND epoch=?`, req.Session.SessionID, req.AgentID, e.Number); err != nil {
 			return result, err
 		}
@@ -193,17 +231,22 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		if advance {
 			number = e.Number + 1
 		}
-		e = Epoch{Number: number, Reason: reason, Budget: req.Budget, Intent: "investigating"}
+		e = Epoch{Number: number, Reason: reason, Budget: req.Budget, Intent: "investigating", ContentionMeasured: true}
 		if req.Reason == "compact" {
 			e.CompactSignals = req.CompactSignal
 		}
-		_, err = conn.ExecContext(ctx, `INSERT INTO epochs(session_id,agent_id,epoch,started_at,reason,budget,compact_signals,intent) VALUES(?,?,?,?,?,?,?,?)`, req.Session.SessionID, req.AgentID, e.Number, stamp, e.Reason, e.Budget, e.CompactSignals, e.Intent)
+		_, err = conn.ExecContext(ctx, `INSERT INTO epochs(session_id,agent_id,epoch,started_at,reason,budget,compact_signals,intent,contention_measured) VALUES(?,?,?,?,?,?,?,?,1)`, req.Session.SessionID, req.AgentID, e.Number, stamp, e.Reason, e.Budget, e.CompactSignals, e.Intent)
 	} else if req.Reason == "compact" {
 		e.CompactSignals |= req.CompactSignal
 		_, err = conn.ExecContext(ctx, `UPDATE epochs SET compact_signals=? WHERE session_id=? AND agent_id=? AND epoch=?`, e.CompactSignals, req.Session.SessionID, req.AgentID, e.Number)
 	}
 	if err != nil {
 		return result, err
+	}
+	if len(req.SurfaceTools) > 0 || req.EndEpoch {
+		if err = settleSurfaceWindows(ctx, conn, req, &e, req.EndEpoch); err != nil {
+			return result, err
+		}
 	}
 	if err = observeHoldbacks(ctx, conn, req, e.Number, stamp); err != nil {
 		return result, err
@@ -307,7 +350,7 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	logged := map[string]bool{}
 	blockedIDs := map[string][]string{}
 	corrected := map[string]bool{}
-	receiptEntries := map[string]string{}
+	receiptEntries, sentIDs := map[string]string{}, map[string]bool{}
 	rows, err = conn.QueryContext(ctx, `SELECT id,entry_id,action,moment,content_hash FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? LIMIT 20000`, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout)
 	if err != nil {
 		return result, err
@@ -327,6 +370,12 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			corrected[id] = true
 		case action == "given" || action == "replaced":
 			receiptEntries[receipt] = rawID
+			sentIDs[id] = true
+			present[id] = true
+			presentHashes[id] = hash
+		case action == "shadow":
+			// A shadow receipt counts toward once-per-epoch, but the agent never
+			// saw it, so nothing can be corrected.
 			present[id] = true
 			presentHashes[id] = hash
 		default:
@@ -340,7 +389,11 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	if err != nil {
 		return result, err
 	}
-	block, err := receiptID()
+	newID := hooks.newID
+	if newID == nil {
+		newID = receiptID
+	}
+	block, err := newID()
 	if err != nil {
 		return result, err
 	}
@@ -356,6 +409,37 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	next("record-admission-write")
 	approved := map[string]bool{}
 	for _, c := range req.Candidates {
+		if c.Surface == "" {
+			c.Surface = SurfaceForMoment(c.Moment)
+		}
+		if !ValidSurface(c.Surface) {
+			return result, errors.New("invalid delivery surface")
+		}
+		if c.Mode == "" && req.SurfaceMode != nil {
+			c.Mode = req.SurfaceMode(c.Surface)
+		}
+		if c.Mode == "" {
+			c.Mode = SurfaceDefault(c.Surface)
+		}
+		if _, err = conn.ExecContext(ctx, `INSERT OR IGNORE INTO surface_gates(project_id,surface) VALUES(?,?)`, req.Session.ProjectID, c.Surface); err != nil {
+			return result, err
+		}
+		var gateState string
+		gateErr := conn.QueryRowContext(ctx, `SELECT state FROM surface_gates WHERE project_id=? AND surface=?`, req.Session.ProjectID, c.Surface).Scan(&gateState)
+		if gateErr != nil && !errors.Is(gateErr, sql.ErrNoRows) {
+			return result, gateErr
+		}
+		if c.Mode == "off" || gateState == "off" {
+			continue
+		}
+		if c.Mode == "trial" {
+			if c.Mode, err = trialMode(ctx, conn, req, c.Surface, gateState); err != nil {
+				return result, err
+			}
+		}
+		if c.Mode != "on" && c.Mode != "shadow" {
+			return result, errors.New("invalid surface mode")
+		}
 		if len(c.Title) > 4096 || len(c.Kind) > 32 || len(c.Level) > 16 ||
 			len(c.Detail) > 64 || len(c.Parent) > 128 ||
 			strings.ContainsRune(c.Title+c.Kind+c.Level+c.Detail+c.Parent, 0) ||
@@ -368,12 +452,22 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		if err != nil {
 			return result, err
 		}
+		if c.SessionOnce || c.SessionMax > 0 {
+			var given, entry int
+			err = conn.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(entry_id=?),0) FROM deliveries WHERE session_id=? AND agent_id=? AND surface=? AND action IN ('given','replaced','shadow')`, c.EntryID, req.Session.SessionID, req.AgentID, c.Surface).Scan(&given, &entry)
+			if err != nil {
+				return result, err
+			}
+			if (c.SessionOnce && entry > 0) || (c.SessionMax > 0 && given >= c.SessionMax) {
+				continue
+			}
+		}
 		if c.Correction {
-			if !present[id] || corrected[id] || (c.CorrectionFor != "" && receiptEntries[c.CorrectionFor] != c.EntryID) {
+			if !sentIDs[id] || corrected[id] || (c.CorrectionFor != "" && receiptEntries[c.CorrectionFor] != c.EntryID) {
 				continue
 			}
 			c.Action, c.Reserved = "withheld", true
-		} else if present[id] && !c.Resend {
+		} else if present[id] && !c.Resend && c.Action != "control" {
 			continue
 		}
 		if c.Action == "" {
@@ -402,9 +496,26 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		}
 		cost := c
 		cost.Tokens += familyCost[c.EntryID]
-		if sends && !familyApproved && !c.Exempt && !c.Reserved && (e.TokensSent+cost.Tokens > e.Budget || (req.Admit != nil && !req.Admit(e, cost))) {
-			c.Action = "held-back"
-			sends = false
+		offered := sends || c.Detail == "parent" || (c.Action == "held-back" && c.Detail == "moment-budget")
+		budgetOnly := false
+		if sends && !familyApproved && !c.Exempt && !c.Reserved {
+			capacity := e.TokensSent+cost.Tokens <= e.Budget
+			score := req.Admit == nil || req.Admit(e, cost)
+			budgetOnly = !capacity && score
+			if !capacity || !score {
+				c.Action = "held-back"
+				if budgetOnly {
+					c.Detail = "epoch-budget"
+				} else if !score {
+					c.Detail = "admission"
+				}
+				sends = false
+			}
+		}
+		if offered && !c.Correction {
+			if err = recordEpochOffer(ctx, conn, req, &e, id, c.Tokens, budgetOnly); err != nil {
+				return result, err
+			}
 		}
 		if !sends && !c.Correction {
 			key := id + "\x00" + c.Action
@@ -413,21 +524,31 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			}
 			logged[key] = true
 		}
-		receipt, err := receiptID()
+		if sends && c.Mode == "shadow" {
+			c.Action = "shadow"
+		}
+		if c.Correction && c.Mode == "shadow" {
+			c.Action = "shadow"
+		}
+		c.Mode = "" // policy is not part of a receipt; only the action differs
+		receipt, err := newID()
 		if err != nil {
 			return result, err
 		}
-		if sends && c.EntryHash != "" && len(c.EntryHash) <= 80 && len(req.Branch) <= 512 && len(req.Head) <= 64 {
+		if sends && c.Action != "shadow" && c.EntryHash != "" && len(c.EntryHash) <= 80 && len(req.Branch) <= 512 && len(req.Head) <= 64 {
 			var verdict, inputs string
 			_ = conn.QueryRowContext(ctx, "SELECT verdict,inputs_hash FROM verdicts WHERE project_id=? AND checkout=? AND entry_id=?", req.Session.ProjectID, req.Session.Checkout, c.EntryID).Scan(&verdict, &inputs)
 			data, _ := json.Marshal(AdviceContext{Version: 1, Branch: req.Branch, Head: req.Head, EntryHash: c.EntryHash, Verdict: verdict, InputsHash: inputs})
 			c.Detail = string(data)
 		}
-		_, err = conn.ExecContext(ctx, `INSERT INTO deliveries(id,session_id,agent_id,epoch,ts,moment,entry_id,form,tokens,action,content_hash,block_id,project_id,checkout,detail,title,kind,level) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, receipt, req.Session.SessionID, req.AgentID, e.Number, stamp, c.Moment, c.EntryID, c.Form, c.Tokens, c.Action, c.ContentHash, block, req.Session.ProjectID, req.Session.Checkout, c.Detail, c.Title, c.Kind, c.Level)
+		_, err = conn.ExecContext(ctx, `INSERT INTO deliveries(id,session_id,agent_id,epoch,ts,moment,entry_id,form,tokens,action,content_hash,block_id,project_id,checkout,detail,title,kind,level,surface) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, receipt, req.Session.SessionID, req.AgentID, e.Number, stamp, c.Moment, c.EntryID, c.Form, c.Tokens, c.Action, c.ContentHash, block, req.Session.ProjectID, req.Session.Checkout, c.Detail, c.Title, c.Kind, c.Level, c.Surface)
 		if err != nil {
 			return result, err
 		}
 		result.Receipts = append(result.Receipts, Receipt{c, receipt, block})
+		if err = addSurfaceWindow(ctx, conn, req, e, Receipt{c, receipt, block}); err != nil {
+			return result, err
+		}
 		if c.Correction {
 			corrected[id] = true
 			e.SessionTokens += c.Tokens
@@ -436,7 +557,10 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 		}
 		if sends {
 			approved[c.EntryID] = true
-			if err = probeCounter(ctx, conn, stamp[:10], req.Session.Agent, "delivered"); err != nil {
+			if c.Action != "shadow" {
+				err = probeCounter(ctx, conn, stamp[:10], req.Session.Agent, "delivered")
+			}
+			if err != nil {
 				return result, err
 			}
 			for _, oldID := range blockedIDs[id] {
@@ -461,7 +585,8 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			}
 		}
 	}
-	_, err = conn.ExecContext(ctx, `UPDATE epochs SET tokens_sent=?,reserved_tokens=?,intent=?,closed=? WHERE session_id=? AND agent_id=? AND epoch=?`, e.TokensSent, e.ReservedTokens, e.Intent, e.Closed, req.Session.SessionID, req.AgentID, e.Number)
+	e.AdmittedTokens = e.TokensSent + e.ReservedTokens
+	_, err = conn.ExecContext(ctx, `UPDATE epochs SET tokens_sent=?,reserved_tokens=?,intent=?,closed=?,tool_calls=?,candidate_tokens=?,admitted_tokens=?,budget_held=? WHERE session_id=? AND agent_id=? AND epoch=?`, e.TokensSent, e.ReservedTokens, e.Intent, e.Closed, e.ToolCalls, e.CandidateTokens, e.AdmittedTokens, e.BudgetHeld, req.Session.SessionID, req.AgentID, e.Number)
 	if err != nil {
 		return result, err
 	}
@@ -470,9 +595,50 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 			return result, err
 		}
 	}
+	next("record-surface-eval")
+	if !req.Offline && (len(req.SurfaceTools) > 0 || req.EndEpoch) {
+		result.Notices, err = evaluateSurfaceGates(ctx, conn, req.Session.ProjectID)
+		if err != nil {
+			return result, err
+		}
+	}
+	next("record-surface-gates")
+	if req.Notify && !req.Offline {
+		result.Notices, err = claimSurfaceNotices(ctx, conn, req.Session.ProjectID)
+		if err != nil {
+			return result, err
+		}
+	}
+	var offSurfaces []string
+	offRows, offErr := conn.QueryContext(ctx, `SELECT surface FROM surface_gates WHERE project_id=? AND state='off' LIMIT 17`, req.Session.ProjectID)
+	if offErr != nil {
+		return result, offErr
+	}
+	for offRows.Next() {
+		var id string
+		if err = offRows.Scan(&id); err != nil {
+			break
+		}
+		offSurfaces = append(offSurfaces, id)
+	}
+	if err = errors.Join(err, offRows.Err(), offRows.Close()); err != nil {
+		return result, err
+	}
+	next("record-surface-hint")
+	cleanupHint, hintErr := hooks.syncSurfacePending(ctx, conn, req)
+	if hintErr != nil {
+		err = hintErr
+		return result, err
+	}
+	committed := false
+	defer func() { cleanupHint(committed) }()
 	next("record-commit")
 	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return DeliveryResult{}, err
+	}
+	committed = true
+	if len(offSurfaces) > 0 {
+		hooks.publishSurfaceOff(req.Session.ProjectID, offSurfaces)
 	}
 	result.Epoch = e
 	return result, nil
@@ -514,12 +680,16 @@ func pruneDelivery(ctx context.Context, c *sql.Conn, cutoff string, keep func(st
 	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	args := append(ids, cutoff)
 	for _, q := range []string{
+		`DELETE FROM epoch_offers WHERE rowid IN (SELECT o.rowid FROM epoch_offers o JOIN epochs e ON e.session_id=o.session_id AND e.agent_id=o.agent_id AND e.epoch=o.epoch WHERE o.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,
+		`DELETE FROM surface_session_first WHERE rowid IN (SELECT f.rowid FROM surface_session_first f JOIN sessions s ON s.session_id=f.session_id WHERE f.session_id IN (` + marks + `) AND s.last_seen_at<? LIMIT 256)`,
 		`DELETE FROM delivery_conflicts WHERE rowid IN (SELECT c.rowid FROM delivery_conflicts c JOIN epochs e ON e.session_id=c.session_id AND e.agent_id=c.agent_id AND e.epoch=c.epoch WHERE c.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,
+		`DELETE FROM surface_windows WHERE delivery_id IN (SELECT d.id FROM deliveries d WHERE d.session_id IN (` + marks + `) AND d.ts<? LIMIT 256)`,
+		`DELETE FROM surface_firings WHERE rowid IN (SELECT f.rowid FROM surface_firings f JOIN epochs e ON e.session_id=f.session_id AND e.agent_id=f.agent_id AND e.epoch=f.epoch WHERE f.session_id IN (` + marks + `) AND e.started_at<? AND NOT EXISTS(SELECT 1 FROM surface_windows w WHERE w.firing_id=f.id) LIMIT 256)`,
 		`DELETE FROM delivery_touches WHERE delivery_id IN (SELECT d.id FROM deliveries d WHERE d.session_id IN (` + marks + `) AND d.ts<? LIMIT 256)`,
 		`DELETE FROM epoch_files WHERE rowid IN (SELECT f.rowid FROM epoch_files f JOIN epochs e ON e.session_id=f.session_id AND e.agent_id=f.agent_id AND e.epoch=f.epoch WHERE f.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,
 		`DELETE FROM followups WHERE id IN (SELECT f.id FROM followups f JOIN deliveries d ON d.id=f.delivery_id WHERE d.session_id IN (` + marks + `) AND d.ts<? LIMIT 256)`,
 		`DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.session_id IN (` + marks + `) AND d.ts<? AND NOT EXISTS(SELECT 1 FROM followups f WHERE f.delivery_id=d.id) AND NOT EXISTS(SELECT 1 FROM delivery_touches t WHERE t.delivery_id=d.id) LIMIT 256)`,
-		`DELETE FROM epochs WHERE (session_id,agent_id,epoch) IN (SELECT e.session_id,e.agent_id,e.epoch FROM epochs e WHERE e.session_id IN (` + marks + `) AND e.started_at<? AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.session_id=e.session_id AND d.agent_id=e.agent_id AND d.epoch=e.epoch) AND NOT EXISTS(SELECT 1 FROM delivery_conflicts c WHERE c.session_id=e.session_id AND c.agent_id=e.agent_id AND c.epoch=e.epoch) LIMIT 64)`,
+		`DELETE FROM epochs WHERE (session_id,agent_id,epoch) IN (SELECT e.session_id,e.agent_id,e.epoch FROM epochs e WHERE e.session_id IN (` + marks + `) AND e.started_at<? AND NOT EXISTS(SELECT 1 FROM epoch_offers o WHERE o.session_id=e.session_id AND o.agent_id=e.agent_id AND o.epoch=e.epoch) AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.session_id=e.session_id AND d.agent_id=e.agent_id AND d.epoch=e.epoch) AND NOT EXISTS(SELECT 1 FROM delivery_conflicts c WHERE c.session_id=e.session_id AND c.agent_id=e.agent_id AND c.epoch=e.epoch) LIMIT 64)`,
 	} {
 		if _, err := c.ExecContext(ctx, q, args...); err != nil {
 			return fmt.Errorf("prune delivery: %w", err)
@@ -560,7 +730,7 @@ func (hooks *Hooks) Presence(sessionID, agentID, projectID, checkout string) (ma
 	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
-	rows, err = hooks.db.QueryContext(ctx, `SELECT entry_id,block_id FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? AND action IN ('given','replaced') AND moment<>'correction' LIMIT 20000`, sessionID, agentID, epoch, projectID, checkout)
+	rows, err = hooks.db.QueryContext(ctx, `SELECT entry_id,block_id FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? AND action IN ('given','replaced','shadow') AND moment<>'correction' LIMIT 20000`, sessionID, agentID, epoch, projectID, checkout)
 	if err != nil {
 		return nil, err
 	}
@@ -595,6 +765,12 @@ func (hooks *Hooks) latestEpoch(ctx context.Context, sessionID, agentID string) 
 // EpochGiven lists what an epoch gave in one checkout, oldest first; epoch -1
 // means the newest. Corrections are not deliveries and are left out.
 func (hooks *Hooks) EpochGiven(sessionID, agentID, projectID, checkout string, epoch int) ([]GivenRow, int, error) {
+	return hooks.EpochSelected(sessionID, agentID, projectID, checkout, epoch, false)
+}
+
+// EpochSelected optionally includes virtual shadow presence. Live recovery must
+// never correct or recover text that the model was never given.
+func (hooks *Hooks) EpochSelected(sessionID, agentID, projectID, checkout string, epoch int, shadow bool) ([]GivenRow, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.reader)
 	defer cancel()
 	if epoch < 0 {
@@ -604,7 +780,7 @@ func (hooks *Hooks) EpochGiven(sessionID, agentID, projectID, checkout string, e
 		}
 		epoch = n
 	}
-	rows, err := hooks.db.QueryContext(ctx, `SELECT entry_id,form,content_hash,moment,block_id FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? AND action IN ('given','replaced') AND moment<>'correction' ORDER BY ts,rowid LIMIT 2000`, sessionID, agentID, epoch, projectID, checkout)
+	rows, err := hooks.db.QueryContext(ctx, `SELECT entry_id,form,content_hash,moment,block_id FROM deliveries WHERE session_id=? AND agent_id=? AND epoch=? AND project_id=? AND checkout=? AND (action IN ('given','replaced') OR (? AND action='shadow')) AND moment<>'correction' ORDER BY ts,rowid LIMIT 2000`, sessionID, agentID, epoch, projectID, checkout, shadow)
 	if err != nil {
 		return nil, epoch, err
 	}

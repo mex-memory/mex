@@ -68,6 +68,15 @@ export function setDeliveryAliases(writer: RecordWriter, value: string): void {
   setPolicy(writer, "global", "delivery.aliases", value);
 }
 
+export function setDeliverySurface(writer: RecordWriter, surface: string, value: string, directory?: string): string {
+  if (!["read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry"].includes(surface)) throw new Error("Unknown delivery surface.");
+  if (!["on", "shadow", "trial", "off"].includes(value)) throw new Error("Use on, shadow, trial or off for a delivery surface.");
+  const scope = directory === undefined ? "global" : writer.checkout(directory)?.project_id;
+  if (!scope) throw new Error("MEX is not registered here. Run mex first.");
+  setPolicy(writer, scope, "delivery.surface." + surface, value);
+  return scope;
+}
+
 function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string): void {
   writer.db.exec("BEGIN IMMEDIATE");
   try {
