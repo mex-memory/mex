@@ -67,3 +67,28 @@ describe("the who-loads-what plan", () => {
     expect(paths.some(p => /CLAUDE(\.local)?\.md$/u.test(p))).toBe(false);
   });
 });
+
+describe("Copilot's path-scoped instructions", () => {
+  it("writes applyTo files only where no generated AGENTS.md already reaches Copilot", () => {
+    const plan = planNative(repo(), ["copilot"], [team("mx_root01"), team("mx_api001", "apps/api/**"), mine("mx_note01")]);
+    expect(plan.files.map(f => [f.path.replace(/-[0-9a-f]{12}\./u, "."), f.sharing, f.agents.join("+")])).toEqual([
+      [".github/instructions/mex.instructions.md", "shared", "copilot"],
+      [".github/instructions/mex-area-apps-api.instructions.md", "shared", "copilot"],
+      [".github/instructions/mex-local.instructions.md", "local", "copilot"],
+    ]);
+    expect(plan.files[1]!.text.startsWith('---\napplyTo: "apps/api/**"\n---\n<!-- mex:generated')).toBe(true);
+    expect(plan.files[0]!.text.startsWith('---\napplyTo: "**"\n---\n')).toBe(true);
+  });
+
+  it("never writes both: Copilot reads the generated AGENTS.md", () => {
+    const plan = planNative(repo(), ["codex", "copilot"], [team("mx_api001", "apps/api/**")]);
+    expect(summary(plan)).toEqual([["apps/api/AGENTS.md", "shared", "codex+copilot", "mx_api001"]]);
+  });
+
+  it("leaves a person's instructions file alone", () => {
+    const root = repo({ ".github/instructions/mex.instructions.md": "---\napplyTo: \"**\"\n---\nmine\n" });
+    const plan = planNative(root, ["copilot"], [team("mx_root01")]);
+    expect(plan.files).toEqual([]);
+    expect(plan.notes[0]).toContain("is yours");
+  });
+});

@@ -1,0 +1,23 @@
+{
+  "agent": "kiro",
+  "agent_version": "",
+  "kind": "post_tool",
+  "session_id": "kr-01",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "shell",
+    "raw_name": "execute_bash",
+    "input": {
+      "command": "npm test"
+    },
+    "output": {
+      "text": "12 passed",
+      "ok": true
+    }
+  },
+  "transcript": "",
+  "background": false
+}

@@ -89,7 +89,7 @@ func observeProbes(ctx context.Context, c *sql.Conn, req DeliveryRequest, epoch 
 }
 
 func probeCounter(ctx context.Context, c *sql.Conn, day, agent, kind string) error {
-	if agent != "claude-code" && agent != "codex" {
+	if !telemetryAgent(agent) {
 		return nil
 	}
 	_, err := c.ExecContext(ctx, `INSERT INTO counters_go(day,name,value) VALUES(?,?,1) ON CONFLICT(day,name) DO UPDATE SET value=min(2147483647,value+1)`, day, "agent:"+agent+":knowledge."+kind)

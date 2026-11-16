@@ -1,0 +1,1 @@
+{"session_id":"dv-01","transcript_path":"/home/dev/.devin/sessions/dv-01.jsonl","cwd":"/home/dev/shop","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test"}}

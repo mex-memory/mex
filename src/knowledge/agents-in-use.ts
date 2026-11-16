@@ -8,8 +8,8 @@ import { join, relative, isAbsolute } from "node:path";
 import { realPath } from "../record/project.js";
 import type { Agent } from "./rule-files.js";
 
-/** Native files are written for these two in this release; the rest come with their adapters. */
-export const NATIVE_AGENTS = ["claude-code", "codex"] as const;
+/** Native files are written for these; the rest come with their adapters. */
+export const NATIVE_AGENTS = ["claude-code", "codex", "copilot"] as const;
 export type NativeAgent = (typeof NATIVE_AGENTS)[number];
 
 /** A heartbeat newer than this means a session is still running. */
@@ -18,6 +18,7 @@ export const LIVE_SESSION_MS = 10 * 60 * 1000;
 const SIGNS: Record<NativeAgent, string[]> = {
   "claude-code": ["CLAUDE.md", "CLAUDE.local.md", ".claude"],
   codex: ["AGENTS.md", ".codex"],
+  copilot: [".github/copilot-instructions.md", ".github/instructions"],
 };
 
 interface Heartbeat { agent: string; cwd: string; mtimeMs: number; }

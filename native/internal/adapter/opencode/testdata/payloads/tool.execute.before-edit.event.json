@@ -1,0 +1,21 @@
+{
+  "agent": "opencode",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "ses_01",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "edit",
+    "raw_name": "edit",
+    "input": {
+      "path": "/home/dev/shop/src/cart.ts",
+      "old": "a",
+      "new": "b"
+    }
+  },
+  "transcript": "",
+  "background": false
+}

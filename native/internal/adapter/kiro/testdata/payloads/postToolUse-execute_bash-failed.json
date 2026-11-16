@@ -1,0 +1,1 @@
+{"hook_event_name":"postToolUse","session_id":"kr-01","cwd":"/home/dev/shop","tool_name":"execute_bash","tool_input":{"command":"npm run build"},"tool_response":{"success":false,"result":"error TS2304"}}

@@ -1,0 +1,19 @@
+{
+  "agent": "kiro",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "kr-01",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "read",
+    "raw_name": "fs_read",
+    "input": {
+      "path": "/home/dev/shop/src/cart.ts"
+    }
+  },
+  "transcript": "",
+  "background": false
+}

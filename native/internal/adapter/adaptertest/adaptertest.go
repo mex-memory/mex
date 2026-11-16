@@ -122,7 +122,8 @@ type ReplyCase struct {
 
 // CheckReplies renders each reply against its fixture and compares the output
 // with testdata/replies/<name>.json. Every output must be valid JSON, or no
-// output at all where that is the profile's empty reply for the event.
+// output at all where that is the profile's empty reply for the event. A
+// profile whose agent reads plain stdout (Kiro) says so with PlainTextReplies.
 func CheckReplies(t *testing.T, p adapter.Profile, cases []ReplyCase) {
 	t.Helper()
 	for _, c := range cases {
@@ -130,7 +131,8 @@ func CheckReplies(t *testing.T, p adapter.Profile, cases []ReplyCase) {
 			ev := ParseFixture(t, p, c.Fixture)
 			out, dropped := p.Render(ev, c.Reply)
 			support, _ := p.Capabilities().Support(ev.Kind)
-			if emptyAllowed := len(p.EmptyReply(support.NativeEvent)) == 0; !(emptyAllowed && len(out) == 0) && !json.Valid(out) {
+			_, text := p.(interface{ PlainTextReplies() })
+			if emptyAllowed := len(p.EmptyReply(support.NativeEvent)) == 0; !text && !(emptyAllowed && len(out) == 0) && !json.Valid(out) {
 				t.Fatalf("invalid JSON: %s", out)
 			}
 			if strings.Join(dropped, ",") != strings.Join(c.Dropped, ",") {

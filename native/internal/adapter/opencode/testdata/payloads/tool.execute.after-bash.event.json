@@ -1,0 +1,24 @@
+{
+  "agent": "opencode",
+  "agent_version": "",
+  "kind": "post_tool",
+  "session_id": "ses_01",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "shell",
+    "raw_name": "bash",
+    "input": {
+      "command": "npm test"
+    },
+    "output": {
+      "text": "12 passed",
+      "ok": true,
+      "exit_code": 0
+    }
+  },
+  "transcript": "",
+  "background": false
+}

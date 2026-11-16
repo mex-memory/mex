@@ -1,0 +1,21 @@
+{
+  "agent": "devin",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "dv-01",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "edit",
+    "raw_name": "Edit",
+    "input": {
+      "path": "/home/dev/shop/src/cart.ts",
+      "old": "a",
+      "new": "b"
+    }
+  },
+  "transcript": "/home/dev/.devin/sessions/dv-01.jsonl",
+  "background": false
+}
