@@ -1,0 +1,1601 @@
+"""Orders service: a generated fixture for outline replay."""
+import datetime
+
+class Order0Service:
+    """Handles order family 0."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order1Service:
+    """Handles order family 1."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order2Service:
+    """Handles order family 2."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order3Service:
+    """Handles order family 3."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order4Service:
+    """Handles order family 4."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order5Service:
+    """Handles order family 5."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order6Service:
+    """Handles order family 6."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order7Service:
+    """Handles order family 7."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order8Service:
+    """Handles order family 8."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order9Service:
+    """Handles order family 9."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order10Service:
+    """Handles order family 10."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+class Order11Service:
+    """Handles order family 11."""
+
+    def compute_total_0(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_1(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_2(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_3(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_4(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_5(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_6(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_7(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_8(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+    def compute_total_9(self, items, discount=0):
+        subtotal_0 = sum(item.price * item.quantity for item in items if item.kind == 0)  # line filler
+        subtotal_1 = sum(item.price * item.quantity for item in items if item.kind == 1)  # line filler
+        subtotal_2 = sum(item.price * item.quantity for item in items if item.kind == 2)  # line filler
+        subtotal_3 = sum(item.price * item.quantity for item in items if item.kind == 3)  # line filler
+        subtotal_4 = sum(item.price * item.quantity for item in items if item.kind == 4)  # line filler
+        subtotal_5 = sum(item.price * item.quantity for item in items if item.kind == 5)  # line filler
+        subtotal_6 = sum(item.price * item.quantity for item in items if item.kind == 6)  # line filler
+        subtotal_7 = sum(item.price * item.quantity for item in items if item.kind == 7)  # line filler
+        subtotal_8 = sum(item.price * item.quantity for item in items if item.kind == 8)  # line filler
+        subtotal_9 = sum(item.price * item.quantity for item in items if item.kind == 9)  # line filler
+        return subtotal_0 - discount
+
+def test_order_service_totals():
+    assert Order0Service().compute_total_0([]) == 0
