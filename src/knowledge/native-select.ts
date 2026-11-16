@@ -27,7 +27,8 @@ export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<stri
   for (const c of candidates) {
     const m = c.entry.mex;
     const verdict = verdicts.get(`${c.level}/${m.id}`);
-    if (m.status !== "active") skip(c, "retired");
+    if (m.status === "proposed") skip(c, "not yet accepted");
+    else if (m.status !== "active") skip(c, "retired");
     else if (m.source.type === "rule-file") skip(c, "already in a rule file");
     else if (!KINDS.has(m.kind)) skip(c, `a ${m.kind} isn't loaded every session`);
     else if (!STRONG.has(m.evidence)) skip(c, "evidence too weak");

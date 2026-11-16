@@ -31,3 +31,15 @@ describe("rendering native rule files", () => {
     expect(out.ids.slice(0, 5)).toEqual(["mx_n00000", "mx_n00001", "mx_n00002", "mx_n00003", "mx_n00004"]);
   });
 });
+
+describe("retrieval aids stay out of rule files", () => {
+  it("never renders aliases or asks, and skips proposed entries", async () => {
+    const { selectNative } = await import("../native-select.js");
+    const c = team("mx_api003", "Retry webhooks with backoff, because providers rate-limit.");
+    Object.assign(c.entry.mex, { aliases: ["webhook storm"], asks: ["why do webhooks fail with 429?"] });
+    const out = renderNative("codex-agents", "", [c]);
+    expect(out.text).not.toMatch(/webhook storm|429/u);
+    const proposed: Candidate = { level: "team", entry: entry("mx_api004", { status: "proposed", scope: ["**"] }, "Use the queue for webhooks.") };
+    expect(selectNative([proposed]).skipped).toEqual([{ id: "mx_api004", reason: "not yet accepted" }]);
+  });
+});

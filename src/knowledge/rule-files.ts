@@ -182,7 +182,7 @@ function oneLine(heading: string, body: string, path: string): string {
   return line.length <= KNOWLEDGE_LIMITS.oneLineCharacters ? line : heading || basename(path);
 }
 
-function stableId(path: string, heading: string, occurrence: number): string {
+export function stableId(path: string, heading: string, occurrence: number): string {
   return `mx_r${createHash("sha256").update(`${path}\n${heading}\n${occurrence}`).digest("hex").slice(0, 20)}`;
 }
 

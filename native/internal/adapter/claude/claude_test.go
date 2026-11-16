@@ -77,3 +77,28 @@ func TestRegistered(t *testing.T) {
 		t.Fatal("claude-code profile not registered")
 	}
 }
+
+func TestFailureCarriesInterrupt(t *testing.T) {
+	raw := []byte(`{"session_id":"s","cwd":"/repo","hook_event_name":"PostToolUseFailure","tool_name":"Read","tool_input":{"file_path":"/repo/a.ts"},"error":"Interrupted by user","is_interrupt":true}`)
+	ev, err := Profile{}.Parse("PostToolUseFailure", raw)
+	if err != nil || ev.Tool == nil || ev.Tool.Output == nil || !ev.Tool.Output.Interrupted || ev.Tool.Output.OK {
+		t.Fatalf("%+v %v", ev.Tool, err)
+	}
+	raw = []byte(`{"session_id":"s","cwd":"/repo","hook_event_name":"PostToolUseFailure","tool_name":"Read","tool_input":{"file_path":"/repo/a.ts"},"error":"File does not exist."}`)
+	if ev, _ = (Profile{}).Parse("PostToolUseFailure", raw); ev.Tool.Output.Interrupted {
+		t.Fatal("not interrupted")
+	}
+}
+
+func TestGrepFilterIsKept(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"tool_name":"Grep","tool_input":{"pattern":"x","glob":"*.ts"}}`: "*.ts",
+		`{"tool_name":"Grep","tool_input":{"pattern":"x","type":"go"}}`:   "type:go",
+		`{"tool_name":"Grep","tool_input":{"pattern":"x","path":"src"}}`:  "",
+	} {
+		ev, err := Profile{}.Parse("PreToolUse", []byte(`{"session_id":"s","cwd":"/repo","hook_event_name":"PreToolUse",`+raw[1:]))
+		if err != nil || ev.Tool == nil || ev.Tool.Input.Filter != want {
+			t.Fatalf("%s: %+v %v", raw, ev.Tool, err)
+		}
+	}
+}

@@ -237,3 +237,20 @@ func TestPromptDeliversUnderEachScorer(t *testing.T) {
 		})
 	}
 }
+
+func TestAidsSetting(t *testing.T) {
+	env := Environment{Home: t.TempDir()}
+	if aidsSetting(env) != DefaultAids {
+		t.Fatal("default")
+	}
+	if err := os.WriteFile(filepath.Join(env.Home, "controls.json"), []byte(`{"version":1,"aliases":"on"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !aidsSetting(env) {
+		t.Fatal("mirror on")
+	}
+	env.Aids = "off"
+	if aidsSetting(env) {
+		t.Fatal("override off")
+	}
+}

@@ -1,21 +1,23 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, opendirSync } from "node:fs";
 import { join } from "node:path";
-import { openRecord, projectIdentity, projectDataDirectory } from "../record/index.js";
+import { openRecord, openRecordReadOnly, projectIdentity, projectDataDirectory } from "../record/index.js";
 import { assertPersonQuote, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type EntryKind, type KnowledgeEntry } from "./entry.js";
-import { containedDirectory, createEntryFile, readEntryFile } from "./files.js";
+import { containedDirectory, createEntryFile, readEntryFile, personalReadGuard } from "./files.js";
 import { knowledgeProject, type KnowledgeOptions, type KnowledgeProject } from "./context.js";
 import { references, type References } from "./references.js";
 import { gateEntry, sanitizeText } from "./gates.js";
 import { entryLabel, KNOWLEDGE_PRIORITY, type KnowledgeLevel } from "./labels.js";
 import { expandTeam, teamEntries, type TeamEntry } from "./team.js";
 import { readHints, type HintEntry } from "./hints.js";
-import { rankNative } from "./native-rank.js";
+import { aidsEnabled, rankNative } from "./native-rank.js";
 export type { KnowledgeOptions } from "./context.js";
 
 export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
 export type StoredEntry = PersonalEntry | TeamEntry | HintEntry;
 export interface NoteInput { text: string; kind?: EntryKind; scope?: string[]; oneLine?: string; }
+/** A decision that cites a commit is proposed until that commit lands on the default branch. */
+export interface DecisionInput { commit?: NonNullable<KnowledgeEntry["mex"]["commit"]>; supersedes?: string[]; }
 function readDirectory(project: KnowledgeProject): string | undefined {
   if (!existsSync(project.location.home)) return undefined;
   return containedDirectory(project.location.home, ["projects", project.projectId, "notes"]);
@@ -24,13 +26,14 @@ function display(entry: KnowledgeEntry): PersonalEntry {
   return { level: "personal", label: entryLabel(entry, "personal"), entry };
 }
 /** Explicit note creation is the only operation here that opens a writer. */
-export function note(input: NoteInput, options: KnowledgeOptions, now = new Date()): PersonalEntry {
+export function note(input: NoteInput & DecisionInput, options: KnowledgeOptions, now = new Date()): PersonalEntry {
   const created = now.toISOString().slice(0, 10);
   const entry: KnowledgeEntry = {
     mex: {
       id: `mx_${randomBytes(12).toString("hex")}`, kind: input.kind ?? "rule", scope: input.scope ?? ["**"],
       source: { type: "person", ref: `mex note ${created}`, quote: input.text }, evidence: "person",
-      one_line: input.oneLine ?? input.text.trim().replace(/\s+/gu, " "), checks: [], status: "active", created,
+      one_line: input.oneLine ?? input.text.trim().replace(/\s+/gu, " "), checks: [], status: input.commit ? "proposed" : "active", created,
+      ...(input.commit ? { commit: input.commit } : {}), ...(input.supersedes?.length ? { supersedes: input.supersedes } : {}),
     }, text: input.text.trim().replace(/\r\n/g, "\n"),
   };
   // Reject bad input before initializing any persistent state.
@@ -40,6 +43,7 @@ export function note(input: NoteInput, options: KnowledgeOptions, now = new Date
   const bytes = serializeEntry(gated);
   assertPersonQuote(gated, sanitizeText(input.text, source));
   const writer = openRecord({ ...options, create: true });
+  writer.db.exec("BEGIN IMMEDIATE");
   try {
     const projectId = writer.checkout(options.projectPath)?.project_id;
     if (!projectId || !/^[gf]-[a-f0-9]{24}$/u.test(projectId)) throw new KnowledgeError("RECORD_UNAVAILABLE", "The project could not be registered.");
@@ -49,7 +53,7 @@ export function note(input: NoteInput, options: KnowledgeOptions, now = new Date
     const directory = containedDirectory(writer.location.home, ["projects", projectId, "notes"], true)!;
     createEntryFile(directory, gated.mex.id, bytes);
     return display(gated);
-  } finally { writer.close(); }
+  } finally { writer.db.exec("ROLLBACK"); writer.close(); }
 }
 function words(text: string): string[] { return text.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []; }
 function load(directory: string, id: string): KnowledgeEntry | undefined {
@@ -59,18 +63,19 @@ function load(directory: string, id: string): KnowledgeEntry | undefined {
   if (entry.mex.id !== id) throw new KnowledgeError("INVALID_ENTRY", "Entry id does not match its filename.");
   return entry.mex.status === "active" ? entry : undefined;
 }
-export function personalSnapshot(id: string, options: KnowledgeOptions, project = knowledgeProject(options), source?: References, gated = true) {
+/** proposed: also read a decision that isn't in force yet (to show or retire it, never to edit its claim). */
+export function personalSnapshot(id: string, options: KnowledgeOptions, project = knowledgeProject(options), source?: References, gated = true, proposed = false) {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Expected a stable entry id such as mx_7f3k2a.");
   const directory = readDirectory(project);
   const content = directory && !project.retired.has(id) && readEntryFile(join(directory, `${id}.md`));
   if (!directory || !content) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
   const entry = parseEntry(content);
   if (entry.mex.id !== id) throw new KnowledgeError("INVALID_ENTRY", "Entry id does not match its filename.");
-  if (entry.mex.status !== "active") throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
+  if (entry.mex.status !== "active" && !(proposed && entry.mex.status === "proposed")) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
   return { ...display(gated ? gateEntry(entry, source ?? references(project.root)) : entry), directory, content };
 }
 export function expandPersonal(id: string, options: KnowledgeOptions, project = knowledgeProject(options), source?: References): PersonalEntry {
-  const { level, label, entry } = personalSnapshot(id, options, project, source);
+  const { level, label, entry } = personalSnapshot(id, options, project, source, true, true);
   return { level, label, entry };
 }
 export function expand(id: string, options: KnowledgeOptions): StoredEntry {
@@ -103,6 +108,7 @@ export function matchesQuery(entry: KnowledgeEntry, query: string): boolean {
   return [...new Set(words(query))].every(term => searchable.has(term));
 }
 export function recallPersonal(query: string, options: KnowledgeOptions, limit = 20, project = knowledgeProject(options), source?: References, collect?: (entry: KnowledgeEntry) => void): RecallResult {
+  const check = personalReadGuard(join(project.location.home, "projects", project.projectId, "notes"));
   if (query.length > KNOWLEDGE_LIMITS.queryCharacters) throw new KnowledgeError("INVALID_QUERY", "Search text exceeds 256 characters.");
   const terms = [...new Set(words(query))];
   if (!terms.length) throw new KnowledgeError("INVALID_QUERY", "Search requires at least one word.");
@@ -141,6 +147,7 @@ export function recallPersonal(query: string, options: KnowledgeOptions, limit =
     }
   }
   matches.sort((a, b) => a.created !== b.created ? (a.created > b.created ? -1 : 1) : a.id < b.id ? -1 : a.id === b.id ? 0 : 1);
+  check();
   return { entries: matches.slice(0, limit), truncated: matches.length > limit };
 }
 
@@ -153,7 +160,10 @@ export function recall(query: string, options: KnowledgeOptions, limit = 20): Re
   const candidates = [...personalEntries, ...team.entries, ...hints.entries].filter(item => !project.retired.has(item.entry.mex.id));
   const byId = new Map<string, StoredEntry>();
   for (const item of candidates) if (!byId.has(item.entry.mex.id)) byId.set(item.entry.mex.id, item);
-  const ranked = rankNative(query, [...byId.values()].map(item => item.entry));
+  const reader = openRecordReadOnly(options);
+  let setting: string | undefined;
+  try { setting = reader?.setting("global", "delivery.aliases"); } finally { reader?.close(); }
+  const ranked = rankNative(query, [...byId.values()].map(item => item.entry), aidsEnabled(options.env ?? process.env, setting));
   if (ranked.hits) {
     const found = ranked.hits.map(hit => ({ ...recallItem(byId.get(hit.id)!), score: hit.score, why: { matched: hit.matched, exact: hit.exact } }));
     return { entries: found.slice(0, limit), truncated: found.length > limit, withheld: team.withheld + hints.withheld, ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "native" } };

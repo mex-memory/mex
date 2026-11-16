@@ -107,7 +107,9 @@ func (ev *Evaluator) Evaluate(e *Entry) Result {
 	for i, c := range e.Checks {
 		r := ev.run(c)
 		r.Index, r.Kind, r.Role = i, c.Kind, c.Role
-		r.FilesChanged = ev.floor(c, res.Inputs)
+		if c.Kind != "legacy-grounding" {
+			r.FilesChanged = ev.floor(c, res.Inputs)
+		}
 		switch r.Status {
 		case Fail, Gone:
 			if c.Role == Complete {
@@ -119,7 +121,7 @@ func (ev *Evaluator) Evaluate(e *Entry) Result {
 			switch {
 			case len(r.FilesChanged) > 0:
 				raise(Changed)
-			case len(c.Files) == 0:
+			case c.Kind == "legacy-grounding" || len(c.Files) == 0:
 				raise(Unknown)
 			}
 		}
@@ -152,6 +154,11 @@ func (ev *Evaluator) floor(c Check, inputs map[string]string) []string {
 			changed = append(changed, path)
 		}
 	}
+	// An authored check may omit a target from its recorded floor. The result
+	// still names every explicit target read, without changing floor semantics.
+	if file := str(c.Target, "file"); file != "" {
+		inputs[file] = inputState(ev.files.read(file))
+	}
 	sort.Strings(changed)
 	return changed
 }
@@ -180,6 +187,8 @@ func (ev *Evaluator) run(c Check) CheckResult {
 		return ev.valueCheck(c)
 	case "symbol":
 		return ev.symbolCheck(c)
+	case "legacy-grounding":
+		return CheckResult{Status: Floor, Reason: "legacy grounding needs review"}
 	case "pattern":
 		return ev.patternCheck(c)
 	}
@@ -216,6 +225,23 @@ func (ev *Evaluator) key(c Check) CheckResult {
 		return CheckResult{Status: Floor, Reason: file + " can't be parsed"}
 	}
 	now, found := resolvePointer(doc, pointer)
+	if raw, member := c.Target["member"]; member {
+		name, valid := memberName(raw)
+		if !valid || c.Saw["value"] != true {
+			return CheckResult{Status: Floor, Reason: "invalid membership check"}
+		}
+		if !found {
+			return CheckResult{Status: Fail, Reason: "declared dependency is absent", Now: false}
+		}
+		present, err := dependencyMember(now, name)
+		if err != nil {
+			return CheckResult{Status: Floor, Reason: "dependency container can't be interpreted"}
+		}
+		if !present {
+			return CheckResult{Status: Fail, Reason: "declared dependency is absent", Now: false}
+		}
+		return CheckResult{Status: Pass, Now: true}
+	}
 	if !found {
 		return CheckResult{Status: Gone, Reason: fmt.Sprintf("%s has no %s", file, pointer)}
 	}
