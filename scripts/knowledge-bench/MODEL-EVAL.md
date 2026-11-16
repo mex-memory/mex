@@ -282,7 +282,7 @@ All 45 frozen seed proposals record; generation failures remain zero. C5
 b01/b04 are now accepted rewrites; k08 is an explicit model abstention.
 Diagnostics distinguish b04's initially rejected pattern from its accepted
 check repair. The true-not-kept cases are v04 (abstention), b13 (rewrite of
-a true claim), privacy-withheld b03, and b09 (safe evidence unavailable).
+a truth-labelled claim; see the oracle defect below), privacy-withheld b03, and b09 (safe evidence unavailable).
 This misses the prospective true-kept floor of 28/31 and is retained as a
 negative result, despite the higher stale-detection count.
 
@@ -305,3 +305,65 @@ the evidence deadline during resolution, and reports evidence withholding
 separately from a model answer. The first measurement remains attributed to
 `1e53edc5`; testing a corrected candidate is a new experiment, never a
 replacement of that report.
+
+
+The corrected resolver replay at `dfe5ee93` is retained separately:
+
+| Checkpoint | True-labelled originals kept | Stale-labelled claims caught | Stale-labelled original full text |
+| --- | --- | --- | --- |
+| C0 | 45/46 | 0/0 | 0 |
+| C1 | 42/43 | 3/3 | 0 |
+| C2 | 40/41 | 5/5 | 0 |
+| C3 | 35/37 | 9/9 | 0 |
+| C4 | 28/32 | 14/14 | 0 |
+| C5 | 26/31 | 15/15 | 0 |
+
+C5 reaches 15/15 stale-labelled catches, including k08/b01/b04, but drops
+to 26/31 true-labelled originals kept, below the accepted 28/31 and the
+prospective floor. b09 is now confirmed still-true and delivered full.
+The five originals not kept are privacy-withheld b03 and rewrites of
+v04/b06/b10/b13. No evidence was skipped. The normal queue recovered from
+one invalid primary reply (four entry diagnostics); all five checkpoint
+jobs finish with gaps. No provider/usage failure or hidden retry is omitted.
+All five bounded check-target repairs record successfully.
+
+The two new true-labelled losses relative to the accepted C5 result are
+b06 and b10. The model invokes an existing-ETag exception and a custom
+onError response respectively; it also rewrites v04 after reasoning about
+the 304 response's headers. These need a review of claim scope, default
+behavior and collaborator behavior. A recorded check is not independent
+proof that a replacement sentence is semantically correct. The follow-up
+stays experimental: the accepted checkpoint remains intact, and the
+retention regression prevents treating this as an overall quality win.
+There is no further unchanged-code sampling.
+
+Exact usage: 166 uncached input + 1,188,256 cache-write + 75,323 cache-read + 66,835 output = 1,330,580 reported tokens, across 83 calls (78 judge + five check-target repairs). No seed-generation calls occur in this replay. Reference valuation: $0.299022383. All six complete runs total **507 calls / 7,575,078 tokens / $1.723536408**. Including the retained partial attempt gives **508 calls / 7,591,699 reported tokens** and known valuation plus its reservation of **$1.733610208**, within the existing $5 allowance. These remain reference amounts, not invoices or additional subscription charges.
+
+
+### Known truth-label defect: b13
+
+The b13 claim says cookie names are checked against validCookieNameRegEx
+while parsing. Its detector in claims.mjs tests only whether that name
+appears anywhere in cookie.ts. A read-only audit of all six pinned source
+snapshots finds parse() using the strict regex through C3, then using
+relaxedCookieNameRegEx at C4/C5. The old regex remains in _serialize(), so
+the detector incorrectly retains a true label. The model's parser rewrite
+agrees with the source; the frozen score still counts it as true-not-kept.
+The accepted run withheld b13 at C4/C5 rather than serving its old original.
+
+Every comparison above preserves the original corpus, truth hash and
+31/15 C5 denominators. No truth label is changed to improve a score. These
+are frozen-label measurements with a known oracle defect, not a fully
+audited semantic gold set. A separately versioned truth correction and
+offline rescore of retained delivery reports should be reviewed before
+using these figures as final error rates; that correction need not spend
+more model calls. OSS-68 remains open for that review and integration.
+
+Final source validation at dfe5ee93: root/workspace/script typechecks and
+build pass; the full native-enabled suite passes 6,915 tests across 465
+files, with 16 tests/two files skipped (264.82s, one local macOS run). Go vet
+and all Go package tests pass; no Go source changed in this follow-up.
+Clean-commit beta.2 gates pass all 283 knowledge checks and both 200-sample
+timing checks. Overall gates exit 1 for the five existing unbuilt adapters
+(graph quality, call graph, replay, overlay and upgrade); no threshold is
+weakened and no release readiness is claimed.
