@@ -8,12 +8,13 @@
 // Scope is source-bearing by default so one response can replace a Grep/Read
 // loop. A hard token budget is enforced while planning and emitting.
 
+import { codeTokens } from "../shared/tokens.js";
 import type { CompactFact, DetailLevel, SourceRange } from "./scope.js";
 
 export const AGENT_PROTOCOL_VERSION = 3;
 /** @deprecated Prefer AGENT_PROTOCOL_VERSION; this is not the DB schema. */
 export const SCHEMA_VERSION = AGENT_PROTOCOL_VERSION;
-const CHARS_PER_TOKEN = 4;
+
 
 /** Tunable retrieval controls shared by every agent command. */
 export interface AgentOptions {
@@ -85,7 +86,7 @@ export function resolveScopeOptions(
 
 /** Deterministic, model-agnostic token estimate. Conservative, labeled "estimated". */
 export function estimateTokens(value: unknown): number {
-  return Math.ceil(JSON.stringify(value).length / CHARS_PER_TOKEN);
+  return codeTokens(JSON.stringify(value));
 }
 
 // ── record shapes (for callers/tests) ──────────────────────────────────────

@@ -54,9 +54,9 @@ export type ReadMiss = NotIndexedReason | "not in the index" | "no index";
 export interface IndexPattern { id: string; match: "literal"; pattern: string }
 
 /** Bump when extraction output changes, so stored records are rebuilt. */
-export const EXTRACTOR_VERSION = 1;
+export const EXTRACTOR_VERSION = 2;
 
 /** Files larger than this are listed as `too big` and not read. */
 export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 
-export const CHARS_PER_TOKEN = 4;
+export { CODE_CHARS_PER_TOKEN as CHARS_PER_TOKEN } from "../shared/tokens.js";

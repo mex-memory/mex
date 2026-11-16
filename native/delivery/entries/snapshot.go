@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/mex-memory/mex/native/internal/noteguard"
+	"github.com/mex-memory/mex/native/internal/tokens"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ import (
 
 const maxScanBytes = 8 * 1024 * 1024
 const maxChildren = 10000
-const cacheVersion = 1
+const cacheVersion = 2
 
 type Item struct {
 	Entry                     *Entry `json:"entry"`
@@ -344,9 +345,8 @@ func saveCache(path string, c cacheFile) {
 	}
 }
 
-// EstimateTokens is an estimate: the larger of UTF-8 bytes/4 and 1.3 pieces
-// per whitespace word. No tokenizer is linked into the short-lived hook.
-func EstimateTokens(s string) int { return max((len(s)+3)/4, (len(strings.Fields(s))*13+9)/10) }
+// EstimateTokens prices authored prose. Code and tool output use tokens.Code.
+func EstimateTokens(s string) int { return tokens.Prose(s) }
 
 // Label is shared by every delivery form, so content hashes agree on resume.
 func Label(e *Entry, level string) string {
