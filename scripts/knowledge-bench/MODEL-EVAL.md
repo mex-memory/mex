@@ -399,3 +399,63 @@ coverage. The earlier live scores remain attributed to their original
 revisions; no new live model calls, changed truth labels or restored-retention
 claim accompany this review. The experimental retention and b13 label/scope
 review remain open, and the pull request stays a draft.
+
+## Reviewed benchmark protocol (v2)
+
+The model CLI now defaults to `reviewed-v2`, dataset
+`b8199a29a86bf9b6b89f31852f232a0b25bf7179cc0b8644ea412330c83294cd`.
+The legacy corpus and all earlier tables above remain historical v1 inputs.
+The existing deterministic release gate retains its separately pinned v1
+protocol; its pass is not a reviewed-v2 model-quality result.
+
+The source review in `reviewed-v2.json` makes ten claim scopes explicit:
+configured npm scripts/engine range, the exact method list and MIME mapping
+strings, weak ETag generation, default body-limit behavior with a declared
+length, and compression with a known Content-Length. These are input changes,
+not improvements in model behavior. The unchanged cookie-parser claim is stale
+at C4/C5: `parse()` uses the relaxed regex; the strict regex survives in the
+serializer. C5 therefore has **30 true and 16 stale** claims, not 31 and 15.
+C4 has 31 true and 15 stale; earlier denominators are unchanged.
+
+The independent free audit bundles each pinned source snapshot and exercises
+middleware with defaults and explicit controls. It verifies all 276 labels
+using actual behavior for behavioral cases and separate plain JSON/declaration
+reads for configuration. It does not invoke the native checker or a model.
+For example, the six headers really survive a conditional 304 at every
+checkpoint; changing a response object alone does not prove header loss.
+Unknown-length body limits differ in early versions, and small responses
+without Content-Length are compressed. Those controls are retained separately.
+MIME helper output may append charset even when the raw mapping does not.
+
+```sh
+node scripts/knowledge-bench/audit-behavior.mjs \
+  --subject /path/to/full-subject-clone --out /path/to/new-private-audit
+node scripts/knowledge-bench/model-eval.mjs \
+  --subject /path/to/full-subject-clone --rescore /path/to/old-report.json \
+  --out /path/to/new-label-audit.json
+```
+
+Rescoring is free and writes a new `legacy-label-audit`. It validates complete
+case/checkpoint coverage, original scores, truth, privacy/generation flags and
+source-plan fingerprint. Only the two cookie labels change; the ten reworded
+claims are marked as requiring fresh measurement. Never present this derived
+artifact as a v2 model run. The first report's older schema has per-case
+failure flags but no top-level list; the audit explicitly derives the seed
+list and requires consistency at all checkpoints. Raw reports are untouched.
+
+For a controlled transition, `--checks-from` validates the accepted v1 report,
+reuses its 35 unchanged eligible proposals verbatim, and regenerates checks
+for only the ten changed claim inputs. Their six writer batches permit at
+most six rejected-claim seed repairs; the existing shared judge/target-repair
+bound remains 113. No answer-key targets, labels or source assertions enter
+model prompts. Invalid frozen targets abort rather than silently regenerate.
+Privacy-withheld b03 remains in every denominator. A fresh replay against
+v2 results can freeze all 45 eligible proposals again.
+
+Before the v2 measurement, the prospective review target is C5 >=28/30 true
+kept, >=15/16 stale caught, no stale original full delivery and zero generation
+failures. All 46 cases at all six commits, exact token counts and residual
+uncertainty must be reported regardless of that target. Completion and quality
+are distinct. The default plan binds this target along with the reviewed
+inputs, source/candidate hashes, reused targets, regenerated IDs and cost bounds.
+This is one disclosed measurement, not repeated sampling to select a score.

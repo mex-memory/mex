@@ -3,10 +3,12 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { MODEL, checkPrompt, loadFixedChecks, makePlan, proposals, runEvaluation, score, type CorpusData } from "../scripts/knowledge-bench/model-runtime.js";
+import { MODEL, checkPrompt, fingerprint, reviewedTransition, rescoreReport, loadFixedChecks, makePlan, proposals, runEvaluation, score, type CorpusData } from "../scripts/knowledge-bench/model-runtime.js";
 import type { ModelRequest, ModelResult } from "../src/model-runner/index.js";
 import { openRecord } from "../src/record/index.js";
 import { buildIndex } from "../src/file-index/build.js";
+
+import REVIEW from "../scripts/knowledge-bench/reviewed-v2.json";
 
 let base: string, subject: string, binary: string, corpus: CorpusData, serial = 0;
 const git = (...args: string[]) => execFileSync("git", ["-C", subject, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
@@ -291,4 +293,64 @@ it("keeps privacy-withheld claims out of fixed proposals and permits an all-with
   const fixed = { source_candidate: "b".repeat(40), source_plan: "c".repeat(64), results: [{ id: "mx_kbxone", checks: [{ kind: "key" as const, role: "complete" as const, target: { file: "package.json", pointer: "/name" } }] }] };
   expect(() => makePlan(blocked, subject, "d".repeat(40), fixed)).toThrow();
   expect(makePlan(blocked, subject, "d".repeat(40), { ...fixed, results: [] })).toMatchObject({ privacy_withheld: ["one", "two"], check_writer_calls: 0 });
+});
+
+function reviewedFixture() {
+  const next=structuredClone(corpus), review={...REVIEW, parent_dataset_sha256:corpus.manifest.dataset_sha256, reviewed_dataset_sha256:"f".repeat(64),
+    claim_changes:[{id:"two",file:"package.json",before:corpus.claims[1]!.one_line,after:"The declared package version is exactly 1.",reason:"Scope"}],
+    label_changes:[{claim:"one",checkpoint:"C2",sha:corpus.checkpoints[2]!.sha,file:"package.json",source_sha256:"a".repeat(64),before:true,after:false,reason:"Fixture correction"}]};
+  next.claims[1]!.one_line=review.claim_changes[0]!.after;
+  next.labels.find(l=>l.claim==="one" && l.checkpoint==="C2")!.truth=false;
+  next.manifest={dataset_sha256:review.reviewed_dataset_sha256,oracle_revision:review.revision,parent_dataset_sha256:review.parent_dataset_sha256,review_sha256:fingerprint(review)};
+  return {next,review};
+}
+it("accepts only the reviewed claim and truth transition without mutating historical inputs",()=>{
+  const {next,review}=reviewedFixture(), original=structuredClone(corpus);
+  expect(reviewedTransition(corpus,next,review)).toEqual(["two"]);
+  expect(corpus).toEqual(original);
+  for(const mutate of [
+    (v:any)=>v.claims[0].one_line+=" unrelated",
+    (v:any)=>v.checkpoints[1].sha="0".repeat(40),
+    (v:any)=>v.labels.find((l:any)=>l.claim==="two" && l.checkpoint==="C1").truth=true,
+    (v:any)=>v.manifest.review_sha256="0".repeat(64),
+  ]) {const invalid=structuredClone(next);mutate(invalid);expect(()=>reviewedTransition(corpus,invalid,review)).toThrow();}
+});
+it("writes a separate free label audit with changed wording marked as unmeasured",async()=>{
+  const opts=options(), {next,review}=reviewedFixture();
+  const report=await runEvaluation({...opts,approvalHash:opts.plan.approval_hash,model:async r=>fakeModel(r)});
+  const file=join(opts.work,"report.json"), original=readFileSync(file,"utf8");
+  const audit=rescoreReport(file,corpus,next,subject,review);
+  expect(audit).toMatchObject({kind:"legacy-label-audit",model_calls:0,source_dataset:corpus.manifest.dataset_sha256});
+  expect(audit.checkpoints[2]).toMatchObject({changed_input_claims:["two"],original_score:{cases:2,true_total:2,true_kept:2},label_corrected_score:{cases:2,true_total:1,stale_total:1,stale_served:1}});
+  expect(readFileSync(file,"utf8")).toBe(original);
+  const oldest=structuredClone(report);delete (oldest as any).generation_failed;const oldPath=join(base,`old-audit-${serial++}.json`);writeFileSync(oldPath,JSON.stringify(oldest));
+  expect(rescoreReport(oldPath,corpus,next,subject,review).failure_list_inferred_from_seed).toBe(true);
+  for(const mutate of [
+    (v:any)=>v.complete=false,
+    (v:any)=>v.checkpoints.pop(),
+    (v:any)=>v.checkpoints[0].results.push(v.checkpoints[0].results[0]),
+    (v:any)=>v.checkpoints[0].results[0].truth=false,
+    (v:any)=>v.checkpoints[0].score.true_kept=0,
+    (v:any)=>v.plan.check_writer_calls++,
+  ]) {const invalid=structuredClone(report);mutate(invalid);const path=join(base,`bad-audit-${serial++}.json`);writeFileSync(path,JSON.stringify(invalid));expect(()=>rescoreReport(path,corpus,next,subject,review)).toThrow();}
+});
+it("keeps generation failures and privacy cases in a label audit",async()=>{
+  const opts=options(),{next,review}=reviewedFixture(), model=vi.fn(async r=>({...fakeModel(r),text:'{"results":[]}'}));
+  await runEvaluation({...opts,approvalHash:opts.plan.approval_hash,model});
+  const audit=rescoreReport(join(opts.work,"report.json"),corpus,next,subject,review);
+  expect(audit.checkpoints.every(c=>c.label_corrected_score.cases===2 && c.label_corrected_score.generation_failed===2)).toBe(true);
+});
+it("generates only changed claims while freezing all other model targets",async()=>{
+  const first=options();await runEvaluation({...first,approvalHash:first.plan.approval_hash,model:async r=>fakeModel(r)});
+  const frozen=loadFixedChecks(join(first.work,"report.json"),corpus,subject);
+  const fixed={...frozen,results:frozen.results.filter(r=>r.id==="mx_kbxone"),regenerate:["two"]};
+  const plan=makePlan(corpus,subject,"c".repeat(40),fixed), model=vi.fn(async r=>fakeModel(r));
+  const result=await runEvaluation({...options(),plan,fixed,approvalHash:plan.approval_hash,model});
+  const writers=model.mock.calls.filter(([r])=>r.purpose.startsWith("judge-bench."));
+  expect(writers).toHaveLength(1);expect(writers[0]![0].prompt).toContain('"id":"mx_kbxtwo"');
+  expect(writers[0]![0].prompt).not.toContain('"id":"mx_kbxone"');
+  expect(result.reused_check_claims).toEqual(["mx_kbxone"]);expect(result.regenerated_check_claims).toEqual(["two"]);
+  expect(result.proposed_checks.find(r=>r.id==="mx_kbxone")).toEqual(fixed.results[0]);
+  expect(result.checkpoints[0]!.score).toMatchObject({cases:2,true_kept:2,generation_failed:0});
+  for(const regenerate of [["two","two"],["missing"]]) expect(()=>makePlan(corpus,subject,"c".repeat(40),{...fixed,regenerate})).toThrow();
 });
