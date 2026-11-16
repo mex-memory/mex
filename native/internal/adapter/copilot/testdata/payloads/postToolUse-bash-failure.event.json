@@ -1,0 +1,23 @@
+{
+  "agent": "copilot",
+  "agent_version": "",
+  "kind": "post_tool_failure",
+  "session_id": "c0p1-5e55",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "shell",
+    "raw_name": "bash",
+    "input": {
+      "command": "npm run build"
+    },
+    "output": {
+      "text": "error TS2304",
+      "ok": false
+    }
+  },
+  "transcript": "",
+  "background": false
+}

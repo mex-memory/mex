@@ -1,0 +1,20 @@
+{
+  "agent": "copilot",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "c0p1-5e55",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "write",
+    "raw_name": "create",
+    "input": {
+      "path": "/home/dev/shop/src/new.ts",
+      "content": "export {}\n"
+    }
+  },
+  "transcript": "",
+  "background": false
+}

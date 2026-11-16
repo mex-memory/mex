@@ -7,6 +7,9 @@
  * - Claude Code reads `.claude/rules/*.md` with `paths:`, and AGENTS.md where
  *   the folder has no CLAUDE.md. So an area already covered by a generated
  *   AGENTS.md needs no Claude file; otherwise one rules file per area.
+ * - Copilot reads AGENTS.md too, and `.github/instructions/*.instructions.md`
+ *   with `applyTo`. An area a generated AGENTS.md covers needs nothing more;
+ *   otherwise one path-scoped instructions file per area, never both.
  * - MEX never creates CLAUDE.md or CLAUDE.local.md, and never writes over a
  *   file it didn't generate.
  * - Team entries go in shared files; personal notes in local files that git
@@ -49,6 +52,10 @@ function claudePath(area: string, sharing: Sharing): string {
   return `.claude/rules/${name}.md`;
 }
 
+function copilotPath(area: string, sharing: Sharing): string {
+  return claudePath(area, sharing).replace(/^\.claude\/rules\//u, ".github/instructions/").replace(/\.md$/u, ".instructions.md");
+}
+
 function byArea(candidates: Candidate[]): Map<string, Candidate[]> {
   const areas = new Map<string, Candidate[]>();
   for (const c of candidates) for (const scope of c.entry.mex.scope) {
@@ -82,9 +89,18 @@ export function planNative(root: string, agents: readonly NativeAgent[], selecte
           codexCovers = out.ids.length > 0;
         }
       }
+      const generatedAgents = codexCovers ? files[files.length - 1] : undefined;
+      if (agents.includes("copilot")) {
+        if (generatedAgents) generatedAgents.agents.push("copilot");
+        else {
+          const path = copilotPath(area, sharing);
+          if (ownedByPerson(root, path)) notes.push(`${path} is yours, so MEX doesn't write into it.`);
+          else add({ path, format: "copilot-instructions", sharing, area, agents: ["copilot"], ...renderNative("copilot-instructions", area, group) });
+        }
+      }
       if (agents.includes("claude-code")) {
         const claudeReadsAgents = codexCovers && !existsSync(join(root, folder, "CLAUDE.md")) && !existsSync(join(root, folder, "CLAUDE.local.md"));
-        if (claudeReadsAgents) { files[files.length - 1].agents.unshift("claude-code"); continue; }
+        if (claudeReadsAgents) { generatedAgents!.agents.unshift("claude-code"); continue; }
         const path = claudePath(area, sharing);
         if (ownedByPerson(root, path)) { notes.push(`${path} is yours, so MEX doesn't write into it.`); continue; }
         add({ path, format: "claude-rules", sharing, area, agents: ["claude-code"], ...renderNative("claude-rules", area, group) });

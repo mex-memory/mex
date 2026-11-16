@@ -135,7 +135,7 @@ func validCounter(key counterKey) bool {
 		return false
 	}
 	agent, name, ok := strings.Cut(rest, ":")
-	if !ok || (agent != "claude-code" && agent != "codex") {
+	if !ok || !telemetryAgent(agent) {
 		return false
 	}
 	switch name {

@@ -40,10 +40,15 @@ export async function runDoctor(config: MexConfig): Promise<void> {
   const hasConfig = existsSync(resolve(config.scaffoldRoot, "config.json"));
   printLine("Config", true, hasConfig ? ".mex/config.json loaded with defaults for missing values" : "using defaults; no .mex/config.json found");
 
+  const { agentStatuses } = await import("./install/agents.js");
+  const agents = agentStatuses();
+  for (const agent of agents) printLine(agent.name, agent.ok, agent.detail);
+
   const graphNeedsAttention = graph.status !== "fresh";
   const graphRecoveryCommand = graphRemediationCommand(graph);
   const unsupportedSources = (coverage?.histogram.total ?? 0) > 0;
-  if (errors || warnings || !heartbeat.ok || graphNeedsAttention || unsupportedSources) {
+  const agentAttention = agents.filter(agent => !agent.ok);
+  if (errors || warnings || !heartbeat.ok || graphNeedsAttention || unsupportedSources || agentAttention.length) {
     console.log();
     console.log(chalk.bold("Next steps"));
     if (errors || warnings) console.log("  Run `mex check` for drift details, then `mex sync --deep` for targeted repair prompts.");
@@ -56,6 +61,7 @@ export async function runDoctor(config: MexConfig): Promise<void> {
       console.log("  Review the graph diagnostics before using graph-grounded results.");
     }
     if (!heartbeat.ok) console.log("  Run `mex heartbeat` to see stale context or memory cleanup details.");
+    if (agentAttention.length) console.log(`  Run \`mex install\` for ${agentAttention.map(agent => agent.name).join(", ")}.`);
   }
 
   if (errors) process.exitCode = 1;

@@ -1,0 +1,1 @@
+{"session_id":"ses_01","cwd":"/home/dev/shop","tool":"bash","args":{"command":"npm test"},"output":"12 passed","metadata":{"exit":0}}

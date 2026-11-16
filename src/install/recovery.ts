@@ -52,7 +52,7 @@ export async function applyOrphanRecovery(home: string): Promise<boolean> {
     const recovery = JSON.parse(bytes.toString("utf8"));
     if (!object(recovery) || recovery.version !== 1 || typeof recovery.home !== "string" || !samePath(recovery.home, home) || !Array.isArray(recovery.rows) || recovery.rows.length > 512) return false;
     for (const row of recovery.rows) {
-      if (!object(row) || !["claude-code", "codex"].includes(String(row.agent)) || typeof row.path !== "string"
+      if (!object(row) || !["claude-code", "codex", "copilot"].includes(String(row.agent)) || typeof row.path !== "string"
         || typeof row.old_value !== "string" || typeof row.new_value !== "string") return false;
     }
     const blocked = new Set<string>();

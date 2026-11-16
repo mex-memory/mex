@@ -27,8 +27,9 @@ function fixture() {
   const claude = join(user, ".claude", "settings.json");
   const codex = join(user, ".codex", "hooks.json");
   const options: InstallOptions = { home, userHome: user, cwd: repo, entry, fallbackFile: fallback,
-    nativeBinary: binary, selfTest: () => ({ ok: true }), available: () => true, env: {} };
-  return { base, user, home, repo, entry, fallback, binary, claude, codex, options };
+    nativeBinary: binary, selfTest: () => ({ ok: true }), available: agent => agent === "claude-code" || agent === "codex", env: {} };
+  const copilot = join(user, ".copilot", "hooks.json");
+  return { base, user, home, repo, entry, fallback, binary, claude, codex, copilot, options };
 }
 function git(root: string, ...args: string[]) { return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); }
 
@@ -332,5 +333,87 @@ describe("agent settings format", () => {
     expect(handler.commandWindows).toBe("& 'C:\\Users\\O''Brien $fixture`\\.mex\\bin\\mex-hook.exe' 'codex' 'SessionStart'");
     expect(Object.keys(result.hooks as object)).toHaveLength(9);
     expect((result.hooks as any).SessionEnd[0].hooks[0].timeout).toBe(3);
+  });
+});
+
+describe("Copilot CLI: registered only after the hook command proves it runs", () => {
+  const withCopilot = (f: ReturnType<typeof fixture>, extra: Partial<InstallOptions> = {}): InstallOptions =>
+    ({ ...f.options, available: () => true, commandTest: () => ({ ok: true }), ...extra });
+
+  it("registers every Copilot event with bash and powershell commands and a short timeout", async () => {
+    const f = fixture();
+    const result = await installAgents(withCopilot(f));
+    expect(result.agents).toContain("copilot");
+    const settings = JSON.parse(readFileSync(f.copilot, "utf8"));
+    expect(settings.version).toBe(1);
+    expect(Object.keys(settings.hooks)).toEqual([...EVENTS.copilot]);
+    const handler = settings.hooks.preToolUse[0];
+    expect(handler.type).toBe("command");
+    expect(handler.bash).toMatch(/'copilot' 'preToolUse'$/);
+    expect(handler.powershell).toMatch(/^& .*'copilot' 'preToolUse'$/);
+    expect(handler.timeoutSec).toBeLessThanOrEqual(10);
+    // A repeated install leaves the file's bytes alone.
+    const bytes = readFileSync(f.copilot);
+    expect((await installAgents(withCopilot(f))).changes).toEqual([]);
+    expect(readFileSync(f.copilot)).toEqual(bytes);
+  });
+
+  it("leaves Copilot without MEX hooks when the hook command can't run, so the agent keeps working", async () => {
+    const f = fixture();
+    const other = { type: "command", bash: "./someone-elses-check.sh", timeoutSec: 30 };
+    write(f.copilot, JSON.stringify({ version: 1, hooks: { preToolUse: [other] } }));
+    const result = await installAgents(withCopilot(f, { nativeBinary: null, commandTest: () => ({ ok: false, error: "node: not found" }) }));
+    expect(result.agents).not.toContain("copilot");
+    expect(result.agents).toEqual(["claude-code", "codex", "opencode"]);
+    expect(result.notices.some(line => line.includes("Copilot CLI") && line.includes("node: not found") && line.includes("mex doctor"))).toBe(true);
+    expect(JSON.parse(readFileSync(f.copilot, "utf8"))).toEqual({ version: 1, hooks: { preToolUse: [other] } });
+  });
+
+  it("removes earlier MEX Copilot hooks when a later self-test fails, and keeps other hooks", async () => {
+    const f = fixture();
+    const other = { type: "command", bash: "./someone-elses-check.sh", timeoutSec: 30 };
+    write(f.copilot, JSON.stringify({ version: 1, hooks: { preToolUse: [other] } }));
+    await installAgents(withCopilot(f));
+    expect(JSON.parse(readFileSync(f.copilot, "utf8")).hooks.preToolUse).toHaveLength(2);
+    await installAgents(withCopilot(f, { commandTest: () => ({ ok: false, error: "blocked by policy" }) }));
+    const settings = JSON.parse(readFileSync(f.copilot, "utf8"));
+    expect(settings.hooks).toEqual({ preToolUse: [other] });
+  });
+
+  it("restores the original Copilot file on uninstall", async () => {
+    const f = fixture();
+    await installAgents(withCopilot(f));
+    expect(existsSync(f.copilot)).toBe(true);
+    const result = await uninstallAgents({ home: f.home });
+    expect(result.conflicts).toEqual([]);
+    expect(existsSync(f.copilot)).toBe(false);
+  });
+
+  it("proves the Node fallback starts from PATH before trusting it", async () => {
+    const { testCommand } = await import("../index.js");
+    const f = fixture();
+    const script = Buffer.from("process.stdout.write('{}\\n')\n");
+    expect(testCommand({ path: process.execPath, args: [join(f.base, "not-yet-written.cjs")] }, process.env, script)).toEqual({ ok: true });
+    const broken = testCommand({ path: process.execPath, args: [join(f.base, "x.cjs")] }, process.env, Buffer.from("process.exit(3)\n"));
+    expect(broken.ok).toBe(false);
+    const missing = testCommand({ path: join(f.base, "no-such-node"), args: [join(f.base, "x.cjs")] }, process.env, script);
+    expect(missing.ok).toBe(false);
+  });
+});
+
+describe("OpenCode: one plugin file, removed on uninstall", () => {
+  it("writes the plugin with the hook command and removes it again", async () => {
+    const f = fixture();
+    const xdg = join(f.user, "xdg");
+    const plugin = join(xdg, "opencode", "plugin", "mex.js");
+    const options: InstallOptions = { ...f.options, env: { XDG_CONFIG_HOME: xdg }, available: agent => agent === "opencode" };
+    const result = await installAgents(options);
+    expect(result.agents).toEqual(["opencode"]);
+    const text = readFileSync(plugin, "utf8");
+    expect(text).toContain("MEX hook plugin for OpenCode");
+    expect(text).toContain(JSON.stringify(join(f.home, "bin", process.platform === "win32" ? "mex-hook.exe" : "mex-hook")));
+    expect((await installAgents(options)).changes).toEqual([]);
+    expect((await uninstallAgents({ home: f.home })).conflicts).toEqual([]);
+    expect(existsSync(plugin)).toBe(false);
   });
 });
