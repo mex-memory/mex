@@ -33,10 +33,39 @@ records p50, p95 and maximum separately; the maximum has no 17 ms guarantee.
 Where present, the counters-active timing test is included too.
 An environment variable cannot raise the budget or enable cached test results.
 
-The knowledge bench (`knowledge.mjs`) is live. The other five benchmark
-adapters are **not built**. Supplied historical reports can describe an older
-release; a current pass requires the live product checks on the release
-commit.
+The knowledge bench (`knowledge.mjs`) and the three-repo upgrade
+(`upgrade.mjs`) are live. The other four benchmark adapters are **not built**.
+Supplied historical reports can describe an older release; a current pass
+requires the live product checks on the release commit.
+
+**Three-repo upgrade.** `upgrade-corpus/` holds preserved MEX 0.8 scaffolds as
+data, one JSON bundle per project, pinned by `manifest.json`, whose digest is
+pinned in `upgrade.mjs`: Hono's (generated at the pinned commit, 60 code
+groundings), novu's (a setup that was never committed and edited the root
+`AGENTS.md` in place) and the exact post-commit hook that 0.8.5 `mex watch`
+wrote. MEX's own scaffold is read from its pinned public commit. The adapter
+shallow-fetches each pinned commit once into its cache (`MEX_GATE_CACHE`, or the
+system temp folder), builds a 0.8 user's checkout behind a local `origin`
+(Hono with `core.autocrlf=true`, as on Windows), and runs the built CLI:
+
+- preview: reads every document, changes no byte and creates no machine state;
+  pinned counts of entries, team and personal entries, tracked and local
+  changes, review items and removed caches; no 0.8 template or workflow text,
+  no heading as a summary, a bounded number of removed unverified commands, and
+  every original grounding kept byte for byte unless its document is reported;
+- apply: exactly the previewed tracked files on one branch with the previewed
+  bytes, nothing pushed without `--pr`, only local changes in the checkout,
+  retained documents unchanged, the old index cache and the generated watch hook
+  removed, personal entries stored, and a second run reporting the upgrade;
+- publication (MEX): `--pr` with a failing stand-in `gh` keeps the pushed
+  branch, and `--finish --pr` opens the pull request against the default branch;
+- refusal (novu as found): an uncommitted, edited `AGENTS.md` blocks the upgrade
+  and nothing changes.
+
+The stand-in `gh` is built from a few lines of Go and never reaches a network
+or account. A changed count is a reviewed change to `manifest.json` and its
+pinned digest. No network means `tool-unavailable`, which blocks a required gate.
+`node scripts/gates/upgrade.mjs` prints each failed check for local diagnosis.
 
 **Knowledge bench.** The adapter clones the public subject (Hono) into the
 system temp folder, rebuilds the deterministic corpus with

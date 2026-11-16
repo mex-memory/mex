@@ -13,6 +13,7 @@ export function sample(): KnowledgeEntry {
 }
 const digest = `sha256:${"a".repeat(64)}`;
 const observations = [
+  { kind: "key", target: { file: "pyproject.toml", pointer: "/project/dependencies", member: "colorama" }, saw: { value: true } },
   { kind: "key", target: { file: "package.json", pointer: "/scripts/test" }, saw: { value: "vitest run" } },
   { kind: "command", target: { run: "npm test", file: "package.json", pointer: "/scripts/test" }, saw: { exists: true } },
   { kind: "section", target: { file: "CONTRIBUTING.md", heading: "Tests" }, saw: { hash: digest } },
@@ -24,6 +25,11 @@ const observations = [
   { kind: "relation", target: { query: "imports", from: "core/**", to: "adapters/**" }, saw: { count: 0 } },
 ];
 describe("entry-file v0", () => {
+  it("rejects membership checks with invalid names or non-presence observations", () => {
+    const base = { kind: "key", role: "complete", target: { file: "pyproject.toml", pointer: "/project/dependencies", member: "colorama" }, saw: { value: true }, files: {} };
+    for (const member of ["", " colorama", "colorama ", "a\n", "a\u0085b", "a\uFEFFb", "a".repeat(513)]) expect(CheckSchema.safeParse({ ...base, target: { ...base.target, member } }).success).toBe(false);
+    for (const value of [false, "colorama", ["colorama"], null]) expect(CheckSchema.safeParse({ ...base, saw: { value } }).success).toBe(false);
+  });
   it("round-trips the metadata and full text, including CRLF files", () => {
     const entry = sample();
     const encoded = serializeEntry(entry);
@@ -90,5 +96,28 @@ describe("entry-file v0", () => {
     expect(() => parseEntry("x".repeat(KNOWLEDGE_LIMITS.entryBytes + 1))).toThrow(/size/);
     const entry = sample(); entry.mex.one_line = "x".repeat(1025);
     expect(() => serializeEntry(entry)).toThrow();
+  });
+});
+describe("retrieval aids and commit anchors", () => {
+  const sha = "a".repeat(40);
+  it("round-trips aliases, asks, a commit anchor and supersedes, and old entries stay valid", () => {
+    const entry = sample();
+    entry.mex.kind = "decision";
+    entry.mex.status = "proposed";
+    Object.assign(entry.mex, {
+      aliases: ["fixture setup", "flaky tests"], asks: ["why do the tests use fixtures?"],
+      commit: { sha, patch_id: "b".repeat(40), subject: "Use fixtures in tests", files: ["tests/a.test.ts"] },
+      supersedes: ["mx_older1"],
+    });
+    expect(parseEntry(serializeEntry(entry))).toEqual(entry);
+    expect(parseEntry(serializeEntry(sample())).mex.aliases).toBeUndefined();
+  });
+  it("rejects out-of-bound aids cleanly", () => {
+    const bad = (patch: Record<string, unknown>) => () => validateEntry({ ...sample(), mex: { ...sample().mex, ...patch } });
+    expect(bad({ aliases: Array.from({ length: KNOWLEDGE_LIMITS.aliases + 1 }, (_, i) => `alias ${i}`) })).toThrow(/aliases/u);
+    expect(bad({ aliases: ["x".repeat(KNOWLEDGE_LIMITS.aliasCharacters + 1)] })).toThrow(/aliases/u);
+    expect(bad({ asks: ["y".repeat(KNOWLEDGE_LIMITS.askCharacters + 1)] })).toThrow(/asks/u);
+    expect(bad({ aliases: ["Fixture", "fixture"] })).toThrow(/Duplicate alias/u);
+    expect(bad({ commit: { sha: "abc" } })).toThrow(/commit/u);
   });
 });

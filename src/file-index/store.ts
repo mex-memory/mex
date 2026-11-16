@@ -92,10 +92,13 @@ export function readPointer(directory: string, key: string): Pointer | undefined
 }
 
 /** Write a small file through a rename. Readers hold the old one for microseconds, so a failed rename is retried briefly. */
-export function writeAtomic(file: string, text: string): void {
+export function writeAtomic(file: string, text: string | Uint8Array): void {
   const temporary = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
   const fd = openSync(temporary, "w", 0o600);
-  try { writeSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
+  try {
+    if (typeof text === "string") writeSync(fd, text); else writeSync(fd, text);
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
   for (let attempt = 0; ; attempt++) {
     try { renameSync(temporary, file); return; } catch (error) {
       if (attempt >= 50) { try { unlinkSync(temporary); } catch { /* leave it */ } throw error; }

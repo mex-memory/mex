@@ -9,7 +9,7 @@ import (
 // FollowupObservation contains no prompt, command or code text. Observations
 // attach to a prior holdback in this same epoch and checkout, at most once
 // per receipt/kind. The controller calls this only on an existing DB path.
-type FollowupObservation struct{ EntryID, Kind, ReceiptID string }
+type FollowupObservation struct{ EntryID, Kind, ReceiptID, Detail string }
 
 func observationKind(s string) bool {
 	switch s {

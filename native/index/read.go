@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -219,7 +220,11 @@ func (r *Reader) Outline(path string) (*OutlineAnswer, *Miss) {
 	if !ok {
 		return nil, &Miss{rel, "not in the index"}
 	}
-	symbols, dropped, ok := shift.Apply(data.Outline, shift.Pending(r.directory, r.key, rel, row.mtime))
+	pending := shift.Pending(r.directory, r.key, rel, row.mtime)
+	if r.changedOnDisk(rel, row.mtime, pending) {
+		return nil, &Miss{rel, "changed since the last parse"}
+	}
+	symbols, dropped, ok := shift.Apply(data.Outline, pending)
 	if !ok {
 		return nil, &Miss{rel, "changed since the last parse"}
 	}
@@ -250,6 +255,9 @@ func (r *Reader) FileInfo(path string) (*FileInfoAnswer, *Miss) {
 	data, ok := r.record(row)
 	if !ok {
 		return nil, &Miss{rel, "not in the index"}
+	}
+	if r.changedOnDisk(rel, row.mtime, shift.Pending(r.directory, r.key, rel, row.mtime)) {
+		return nil, &Miss{rel, "changed since the last parse"}
 	}
 	return &FileInfoAnswer{Path: rel, Lang: row.lang.String, IsTest: row.isTest == 1, Tokens: data.Tokens, Lines: data.Lines, Hash: row.hash.String}, nil
 }
@@ -290,7 +298,7 @@ func (r *Reader) SymbolsNamed(name string) ([]SymbolHit, error) {
 			return nil, err
 		}
 		shifts := shift.Pending(r.directory, r.key, path, mtime)
-		if shift.AnyUnknown(shifts) {
+		if shift.AnyUnknown(shifts) || r.changedOnDisk(path, mtime, shifts) {
 			continue
 		}
 		start, end, ok := shift.MapSpan(start, end, shifts)
@@ -437,4 +445,46 @@ func (r *Reader) Coverage(pathOrGlob string) (*CoverageAnswer, error) {
 		}
 	}
 	return answer, nil
+}
+
+// PathsMatching lists indexed paths a glob matches, in path order, at most
+// limit of them, and whether more matched. Brace expansion is not supported.
+func (r *Reader) PathsMatching(glob string, limit int) ([]string, bool, error) {
+	if strings.ContainsAny(glob, "{}") {
+		return nil, false, errors.New("brace expansion is not supported")
+	}
+	rows, err := r.scoped(glob)
+	if err != nil {
+		return nil, false, err
+	}
+	out := []string{}
+	for _, row := range rows {
+		if len(out) == limit {
+			return out, true, nil
+		}
+		out = append(out, row.path)
+	}
+	return out, false, nil
+}
+
+// changedOnDisk reports a file that changed since it was parsed in a way no
+// recorded edit explains: its time on disk matches neither the parse nor the
+// latest edit the hook saw. Freshness is decided per file served, never for
+// the whole index: a change elsewhere in the checkout says nothing about this
+// file.
+func (r *Reader) changedOnDisk(rel, parsed string, shifts []shift.Shift) bool {
+	info, err := os.Lstat(filepath.Join(r.root, filepath.FromSlash(rel)))
+	if err != nil || !info.Mode().IsRegular() {
+		return true
+	}
+	now := strconv.FormatInt(info.ModTime().UnixNano(), 10)
+	if now == parsed {
+		return false
+	}
+	for _, sh := range shifts {
+		if sh.MtimeNS == now {
+			return false
+		}
+	}
+	return true
 }

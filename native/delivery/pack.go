@@ -55,6 +55,10 @@ type planned struct {
 // that only companions may exceed. Items that don't fit are logged as held
 // back, never cut mid-text.
 func pack(items []shaped, companions func(id string) *shaped, scorers ...Scorer) []planned {
+	return packReserved(items, companions, reservedLane, scorers...)
+}
+
+func packReserved(items []shaped, companions func(id string) *shaped, reserveBudget int, scorers ...Scorer) []planned {
 	var scorer Scorer = tiersScorer{}
 	if len(scorers) > 0 {
 		scorer = scorers[0]
@@ -89,7 +93,7 @@ func pack(items []shaped, companions func(id string) *shaped, scorers ...Scorer)
 		}
 		limit, spent := momentCeiling, &used
 		if s.reserve {
-			limit, spent = reservedLane, &reserved
+			limit, spent = reserveBudget, &reserved
 		}
 		overhead := entries.EstimateTokens(" (" + id + ")")
 		if !markerPaid {
@@ -146,8 +150,18 @@ func requestCandidates(plan []planned) []record.DeliveryCandidate {
 	var out []record.DeliveryCandidate
 	for _, p := range plan {
 		c := record.DeliveryCandidate{EntryID: p.item.Entry.ID, Moment: p.moment, Form: p.form, Tokens: p.tokens, Reserved: p.reserve, Exempt: p.exempt, Resend: p.resend, ContentHash: contentHash(p.item.Hash + "\n" + p.text)}
+		c.Surface = record.SurfaceForMoment(p.moment)
+		if p.parent != "" {
+			for _, parent := range plan {
+				if parent.item.Entry.ID == p.parent {
+					c.Surface = record.SurfaceForMoment(parent.moment)
+					break
+				}
+			}
+		}
 		c.Detail, c.Parent = p.detail, p.parent
 		c.Title, c.Kind, c.Level = p.item.Entry.OneLine, p.item.Entry.Kind, p.item.Level
+		c.EntryHash = p.item.Hash
 		switch {
 		case p.correction:
 			c.Correction, c.Moment, c.Form = true, "correction", "one-line"
@@ -155,6 +169,7 @@ func requestCandidates(plan []planned) []record.DeliveryCandidate {
 			c.Action, c.Form, c.Tokens = "withheld", "one-line", 0
 		case p.heldBack:
 			c.Action = "held-back"
+			c.Detail = "moment-budget"
 		default:
 			c.Action = p.action
 		}
@@ -196,7 +211,7 @@ func render(block string, plan []planned, receipts []record.Receipt) string {
 	corrected := map[string]bool{}
 	for _, r := range receipts {
 		switch {
-		case r.Correction:
+		case r.Correction && r.Action != "shadow":
 			corrected[r.EntryID] = true
 		case r.Action == "given" || r.Action == "replaced":
 			given[r.EntryID] = true

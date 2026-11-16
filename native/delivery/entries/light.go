@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"github.com/mex-memory/mex/native/internal/noteguard"
 	"io"
 	"os"
 	"path/filepath"
@@ -52,6 +53,13 @@ func storeRoots(home, project, checkout string) []storeRoot {
 // and reports the newest modification time. It opens folders only.
 func listingStamp(home, project, checkout string) (string, int64, error) {
 	h := sha256.New()
+	if home != "" {
+		revision, err := noteguard.Token(filepath.Join(home, "projects", project, "notes"))
+		if err != nil {
+			return "", 0, err
+		}
+		_, _ = io.WriteString(h, "revision:"+revision+"\n")
+	}
 	var newest int64
 	files := 0
 	var walk func(dir string, nested bool, depth int) error
@@ -107,6 +115,9 @@ func listingStamp(home, project, checkout string) (string, int64, error) {
 			}
 		}
 	}
+	if home != "" {
+		_, _ = io.WriteString(h, "f:"+inForceStamp(home, project)+"\n")
+	}
 	for _, r := range storeRoots(home, project, checkout) {
 		_, _ = io.WriteString(h, "s:"+r.path+"\n")
 		if err := walk(r.path, r.nested, 0); err != nil {
@@ -119,7 +130,22 @@ func listingStamp(home, project, checkout string) (string, int64, error) {
 // LoadLight returns the light snapshot (Light is true), or the full one when
 // the stores changed since the light file was written. Callers that find a
 // candidate in a light snapshot call Load for the text.
-func LoadLight(directory, home, project, checkout string) (Snapshot, error) {
+func LoadLight(directory, home, project, checkout string) (answer Snapshot, failure error) {
+	if !validComponent(project) {
+		return Snapshot{}, ErrInvalid
+	}
+	if home != "" && project != "" {
+		check, err := noteguard.Begin(filepath.Join(home, "projects", project, "notes"))
+		if err != nil {
+			return Snapshot{}, err
+		}
+		defer func() {
+			if err := check(); err != nil {
+				answer, failure = Snapshot{}, err
+			}
+		}()
+	}
+
 	if directory == "" || checkout == "" || !validComponent(project) {
 		return Snapshot{}, ErrInvalid
 	}

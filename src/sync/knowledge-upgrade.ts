@@ -146,7 +146,7 @@ export async function runKnowledgeUpgrade(
     relative(config.projectRoot, resolve(config.scaffoldRoot, entry.file)).replaceAll("\\", "/")]));
   const blocked = report.issues.filter(issue => issue.code.startsWith("GROUNDING_")
     && issue.severity !== "info" && (issue.entity ? ids.has(issue.entity.id) : files.has(issue.file.replaceAll("\\", "/"))));
-  if (blocked.length) throw new Error("Review flagged or unverified candidate groundings with mex check / mex sync before upgrading. No agent was started.");
+  if (blocked.length) throw new Error("Review flagged or unverified candidate groundings with mex check / mex sync --deep before upgrading. No agent was started.");
   const ok = (dependencies.runAgent ?? runToolInteractive)(tool, buildKnowledgeUpgradeBrief(plan), config.projectRoot);
   if (!ok) throw new Error("Knowledge upgrade session failed; inspect any partial working-tree changes before retrying.");
   const rebuilt = await (dependencies.rebuild ?? rebuildWikiIndexAfterSync)(config);

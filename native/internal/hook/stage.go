@@ -88,7 +88,8 @@ func hooksLocation(h home, recordDirectory string) localrecord.Location {
 
 // freeStage re-checks entries whose inputs changed and stores their
 // verdicts. Every error is ignored; whatever is left when the budget runs
-// out goes to a detached run.
+// out goes to a detached run. A store failure leaves a host-bound request so
+// the background evaluator can retry without spending inside the hook.
 func freeStage(ev contract.Event, h home, recordDirectory string) {
 	if recordDirectory == "" || ev.ProjectID == "" || ev.Checkout == "" {
 		return
@@ -99,6 +100,7 @@ func freeStage(ev contract.Event, h home, recordDirectory string) {
 	}
 	hooks, err := localrecord.OpenHooks(hooksLocation(h, recordDirectory))
 	if err != nil {
+		requestJudge(ev, recordDirectory, paths)
 		return
 	}
 	defer hooks.Close()
@@ -106,6 +108,9 @@ func freeStage(ev contract.Event, h home, recordDirectory string) {
 		Checkout: ev.Checkout, ProjectID: ev.ProjectID, MexHome: h.mex, RecordDirectory: recordDirectory,
 		Store: hooks, Paths: paths, Deadline: time.Now().Add(budget),
 	})
+	if err != nil || needsJudge(report) {
+		requestJudge(ev, recordDirectory, paths)
+	}
 	if err == nil && report.Unfinished && takeStageLock(recordDirectory, ev.Checkout, time.Now()) && !startDetachedStage(ev.ProjectID, ev.Checkout) {
 		_ = os.Remove(stageLockPath(recordDirectory, ev.Checkout))
 	}
@@ -176,9 +181,13 @@ func checkStage(args []string, getenv Env) int {
 		return 0
 	}
 	defer hooks.Close()
-	_, _ = check.RunStage(check.StageOptions{
+	_, stageErr := check.RunStage(check.StageOptions{
 		Checkout: args[1], ProjectID: args[0], MexHome: h.mex, RecordDirectory: recordDirectory,
 		Store: hooks, Deadline: time.Now().Add(stageBudgetDetached),
 	})
+	if stageErr == nil {
+		// The original hook already left the host-specific judge request.
+		startBackground(h, recordDirectory)
+	}
 	return 0
 }
