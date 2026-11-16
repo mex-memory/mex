@@ -53,11 +53,10 @@ function localHelpers(checkout: string, files: FileEvidence[], candidates: Candi
     if (!lang || file.current === null) continue;
     const targets = candidates.flatMap(c => c.entry.mex.checks.flatMap(check => check.kind === "symbol" && check.target.file === file.path ? [check.target.symbol] : []));
     if (!targets.length) continue;
-    const parsed = parseJs(file.path, file.current, lang), parser = loadOxc();
+    const parsed = parseJs(file.path, file.current, lang, { sourceSpans: true }), parser = loadOxc();
     if (!parsed || parsed.error || !parser) continue;
-    const names = symbolNames(parsed.outline), starts = [0];
-    for (let i = 0; i < file.current.length; i++) if (file.current[i] === "\n") starts.push(i + 1);
-    const ranges = parsed.outline.flatMap((item, i) => targets.includes(names[i]!) ? [[starts[item.start - 1]!, starts[item.end] ?? file.current!.length]] : []);
+    const names = symbolNames(parsed.outline);
+    const ranges = (parsed.sourceSpans ?? []).filter((_, i) => targets.includes(names[i]!));
     if (!ranges.length) continue;
     const ast = parser.parseSync(file.path, file.current, { lang: lang === "js" ? "jsx" : lang });
     if (ast.errors.length) continue;
@@ -70,22 +69,48 @@ function localHelpers(checkout: string, files: FileEvidence[], candidates: Candi
         if (specifier.importKind !== "type" && specifier.local?.name) bindings.set(specifier.local.name, from);
       }
     }
-    const called = new Set<string>(), stack: unknown[] = [ast.program];
+    if (!bindings.size) continue;
+    const called = new Set<string>(), shadowed = new Set<string>(), stack: unknown[] = [ast.program];
     let nodes = 0;
+    const bound = (pattern: unknown) => {
+      const pending = [pattern];
+      while (pending.length) {
+        if (++nodes > 50_000 || Date.now() > deadline) throw new Error("The judge's source-context limit was reached");
+        const value = pending.pop();
+        if (!value || typeof value !== "object") continue;
+        const item = value as Record<string, unknown>;
+        if (item.type === "Identifier" && typeof item.name === "string") shadowed.add(item.name);
+        else if (item.type === "RestElement") pending.push(item.argument);
+        else if (item.type === "AssignmentPattern") pending.push(item.left);
+        else if (item.type === "TSParameterProperty") pending.push(item.parameter);
+        else if (item.type === "ArrayPattern" && Array.isArray(item.elements)) pending.push(...item.elements);
+        else if (item.type === "ObjectPattern" && Array.isArray(item.properties)) for (const p of item.properties) {
+          if (p && typeof p === "object") pending.push(p.type === "RestElement" ? p.argument : p.value);
+        }
+      }
+    };
     while (stack.length) {
       if (++nodes > 50_000 || Date.now() > deadline) throw new Error("The judge's source-context limit was reached");
       const value = stack.pop();
       if (!value || typeof value !== "object") continue;
       if (Array.isArray(value)) { stack.push(...value); continue; }
       const node = value as Record<string, unknown>;
-      if (node.type === "CallExpression" && typeof node.start === "number" && ranges.some(([start, end]) => (node.start as number) >= start! && (node.start as number) < end!)) {
+      // Conservatively omit an import if a same-name local binding exists.
+      // This avoids supplying an unrelated file without pretending to perform
+      // full lexical/module resolution or executing the repository.
+      if (["VariableDeclarator", "FunctionDeclaration", "FunctionExpression", "ClassDeclaration", "ClassExpression"].includes(String(node.type))) bound(node.id);
+      if (node.type === "CatchClause") bound(node.param);
+      if (Array.isArray(node.params)) for (const param of node.params) bound(param);
+      if (node.type === "CallExpression" && typeof node.start === "number" && typeof node.end === "number"
+        && ranges.some(({ start, end }) => (node.start as number) >= start && (node.end as number) <= end)) {
         let callee = node.callee as Record<string, unknown> | undefined;
         while (callee?.type === "MemberExpression") callee = callee.object as typeof callee;
-        if (callee?.type === "Identifier" && typeof callee.name === "string" && bindings.has(callee.name)) called.add(bindings.get(callee.name)!);
+        if (callee?.type === "Identifier" && typeof callee.name === "string" && bindings.has(callee.name)) called.add(callee.name);
       }
       for (const child of Object.values(node)) if (child && typeof child === "object") stack.push(child);
     }
-    for (const from of [...called].sort()) {
+    const imports = new Set([...called].filter(name => !shadowed.has(name)).map(name => bindings.get(name)!));
+    for (const from of [...imports].sort()) {
       if (Date.now() > deadline) throw new Error("The judge’s evidence time limit was reached");
       const stem = posix.normalize(posix.join(posix.dirname(file.path), from));
       if (stem.startsWith("../") || stem === "..") continue;
@@ -93,9 +118,13 @@ function localHelpers(checkout: string, files: FileEvidence[], candidates: Candi
       // A bare module can be a directory. Probe only source-file candidates;
       // repoFile correctly rejects directories and file-as-parent paths.
       const paths = [...new Set([...[".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"].map(ext => base + ext), ...(explicit ? [] : [".ts", ".tsx", ".js"].map(ext => `${stem}/index${ext}`))])];
-      const found = paths.flatMap(path => { const current = readSource(checkout, path); return current === null ? [] : [{ path, current, current_hash: hash(current), baselines: [] }]; });
-      if (found.length !== 1 || files.some(f => f.path === found[0]!.path)) continue;
-      const helper = found[0]!;
+      // Discover ambiguity using contained regular-file metadata first. Never
+      // read irrelevant candidate contents or let their size consume evidence.
+      const found = paths.filter(path => repoFile(checkout, path) !== undefined);
+      if (found.length !== 1 || files.some(f => f.path === found[0])) continue;
+      const path = found[0]!, current = readSource(checkout, path);
+      if (current === null) throw new Error("Helper evidence changed during discovery");
+      const helper: FileEvidence = { path, current, current_hash: hash(current), baselines: [] };
       assertNoSecrets(helper.current);
       helpers.set(helper.path, helper);
       if (helpers.size > JUDGE_LIMITS.helpers || files.length + helpers.size > JUDGE_LIMITS.files) throw new Error("The judge's helper-file limit was reached");

@@ -54,6 +54,9 @@ interface Attempt { value: ResolvedAnswer; errors?: Recording["errors"] }
 async function recordRewrite(context: ReplyContext, candidate: Candidate, answer: RewriteAnswer): Promise<Attempt> {
   const rejected = (reason: JudgeReason, errors?: Recording["errors"]): Attempt => ({ value: { id: answer.id, result: "cannot-tell", reason }, errors });
   try { assertNoSecrets(answer); } catch { return rejected("unsafe-rewrite"); }
+  const invalid = answer.checks.flatMap((check, index) => check.role === "complete" && ["source", "symbol", "pattern"].includes(check.kind)
+    ? [{ index, reason: "Use supporting for source, symbol and pattern checks: refactoring does not disprove a behavioral fact" }] : []);
+  if (invalid.length) return rejected("checks-rejected", invalid);
   const recorded = await context.record(answer.checks);
   if (!recorded.checks?.length) return rejected("checks-rejected", recorded.errors);
   const additional: Evidence["files"] = [];

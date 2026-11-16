@@ -216,9 +216,9 @@ describe("judge job and queue", () => {
   });
   it("stores a validated rewrite locally with freshly recorded checks, leaving knowledge bytes alone", async () => {
     const file = add("mx_rewrite", "src/api.ts", "broken", "complete"); const before = readFileSync(file, "utf8");
-    deps.model = vi.fn(async request => ({ ...answer(request), text: JSON.stringify({ results: [{ id: "mx_rewrite", result: "rewritten", text: "The new behavior includes the caller.", one_line: "New behavior.", checks: [{ kind: "source", role: "complete", target: { file: "src/api.ts" } }] }] }) }));
+    deps.model = vi.fn(async request => ({ ...answer(request), text: JSON.stringify({ results: [{ id: "mx_rewrite", result: "rewritten", text: "The new behavior includes the caller.", one_line: "New behavior.", checks: [{ kind: "source", role: "supporting", target: { file: "src/api.ts" } }] }] }) }));
     const current = hash(readFileSync(join(root, "src/api.ts"), "utf8"));
-    deps.recordChecks = vi.fn(async (): Promise<EntryCheck[]> => [{ kind: "source", role: "complete", target: { file: "src/api.ts" }, saw: { hash: current }, files: { "src/api.ts": current } }]);
+    deps.recordChecks = vi.fn(async (): Promise<EntryCheck[]> => [{ kind: "source", role: "supporting", target: { file: "src/api.ts" }, saw: { hash: current }, files: { "src/api.ts": current } }]);
     const id = queue(); await finish(id);
     expect(readJudgement(writer, projectId, root, "mx_rewrite")).toMatchObject({ result: "rewritten", rewrite: { text: "The new behavior includes the caller.", mex: { checks: [{ files: { "src/api.ts": current } }] } } });
     expect(readFileSync(file, "utf8")).toBe(before);
@@ -343,6 +343,27 @@ describe("bounded rewrite check repair", () => {
     ]));
     await finish(id); expect(calls).toHaveLength(2);
   });
+  it.each(["source", "symbol", "pattern"])("repairs an overstrong generated %s role before minting a check", async kind => {
+    const original = add("mx_rolefix0"), before = readFileSync(original, "utf8");
+    const events: unknown[] = []; deps.diagnostic = e => events.push(e);
+    deps.recordChecksDetailed = vi.fn(async (_request, checks) => ({ checks: minted().map(c => ({ ...c, role: (checks[0] as any).role })), errors: [] }));
+    deps.model = vi.fn(async request => {
+      calls.push(request);
+      if (request.purpose === "judge") {
+        const value = rewrite("mx_rolefix0"), target = kind === "pattern" ? { scope: "src/api.ts", pattern: "new", match: "literal" } : kind === "symbol" ? { file: "src/api.ts", symbol: "api" } : { file: "src/api.ts" };
+        return { selectedModel: "test-cheap", usage, text: JSON.stringify({ results: [{ ...value, checks: [{ kind, role: "complete", target }] }] }) };
+      }
+      expect(request.prompt).toContain("supporting");
+      return { selectedModel: "test-cheap", usage, text: JSON.stringify({ results: [{ id: "mx_rolefix0", checks: [{ kind: "source", role: "supporting", target: { file: "src/api.ts" } }] }] }) };
+    });
+    await finish(queue());
+    expect(calls.map(c => c.purpose)).toEqual(["judge", "judge.check-repair"]);
+    expect(deps.recordChecksDetailed).toHaveBeenCalledTimes(1);
+    expect((deps.recordChecksDetailed as any).mock.calls[0][1][0].role).toBe("supporting");
+    expect(readJudgement(writer, projectId, root, "mx_rolefix0")?.rewrite?.mex.checks[0]?.role).toBe("supporting");
+    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ phase: "answer", reason: "checks-rejected" })]));
+    expect(readFileSync(original, "utf8")).toBe(before);
+  });
   it.each(["source", "consent", "owner", "request", "idle", "checks", "retired"])("does not spend repair after %s changes", async what => {
     add("mx_repair02");
     const id = queue();
@@ -411,6 +432,34 @@ describe("one-hop source evidence", () => {
     const snapshot = JSON.parse(calls[0]!.prompt.split("Evidence follows as JSON:\n")[1]!);
     expect(snapshot.files.map((f: any) => f.path)).toEqual(["src/api.ts", helper]);
     expect(readJudgement(writer, projectId, root, "mx_helper00")?.result).toBe("still-true");
+  });
+  it.each([
+    "export class Client { run() { return 1; } } make();",
+    "export class Client { run() { return 1; } other() { return make(); } }",
+  ])("excludes a helper called outside the checked method on the same line: %s", async code => {
+    helperClaim(); source("src/api.ts", `import { build as make } from './helper';\n${code}\n`);
+    await finish(queue());
+    expect(calls).toHaveLength(1);
+    const snapshot = JSON.parse(calls[0]!.prompt.split("Evidence follows as JSON:\n")[1]!);
+    expect(snapshot.files.map((f: any) => f.path)).toEqual(["src/api.ts"]);
+  });
+  it.each([
+    "export class Client { run(make: () => number) { return make(); } }",
+    "export class Client { run() { const { make } = { make: () => 1 }; return make(); } }",
+  ])("excludes a shadowed import from helper evidence: %s", async code => {
+    helperClaim(); source("src/api.ts", `import { build as make } from './helper';\n${code}\n`);
+    await finish(queue());
+    expect(calls).toHaveLength(1);
+    const snapshot = JSON.parse(calls[0]!.prompt.split("Evidence follows as JSON:\n")[1]!);
+    expect(snapshot.files.map((f: any) => f.path)).toEqual(["src/api.ts"]);
+  });
+  it("does not read an oversized candidate when helper resolution is ambiguous", async () => {
+    helperClaim(); source("src/helper.js", "x".repeat(65 << 10));
+    source("src/api.ts", "import { build as make } from './helper';\nexport class Client { run() { return make(); } }\n");
+    await finish(queue());
+    expect(calls).toHaveLength(1);
+    const snapshot = JSON.parse(calls[0]!.prompt.split("Evidence follows as JSON:\n")[1]!);
+    expect(snapshot.files.map((f: any) => f.path)).toEqual(["src/api.ts"]);
   });
   it("discards a reply when only the added helper changes in flight", async () => {
     helperClaim(); deps.model = vi.fn(async request => { source("src/helper.ts", "export function build() { return 2; }\n"); return answer(request); });

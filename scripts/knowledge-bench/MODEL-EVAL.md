@@ -367,3 +367,35 @@ Clean-commit beta.2 gates pass all 283 knowledge checks and both 200-sample
 timing checks. Overall gates exit 1 for the five existing unbuilt adapters
 (graph quality, call graph, replay, overlay and upgrade); no threshold is
 weakened and no release readiness is claimed.
+
+### Review fixes after the measured revisions
+
+Review found reproducible gaps in generated check roles, helper selection and
+fixed-replay input ownership. Automatic source/symbol/pattern rewrites now
+reject `complete` roles before recording and use the same one-attempt check
+repair to request supporting checks. Original entries and manually authored
+checks keep their existing contract; no role is silently downgraded.
+
+Helper discovery uses optional exact source offsets from the existing JS/TS
+parser, so a neighbouring function or call on the same physical line cannot
+pull an unrelated helper into the prompt. Same-name local bindings cause an
+import to be omitted conservatively; this is not a full lexical or module
+resolver. Candidate ambiguity is decided from contained file metadata before
+reading contents. An oversized, unselected candidate therefore cannot consume
+the source budget. Selected files still require the same containment, size,
+secret and final freshness checks. Offsets are checkout-local parser metadata
+and are never written into the file-index record or its native schema.
+
+Fixed proposals are validated at both report loading and plan construction,
+including direct callers: exact eligible IDs, supplied-file scope, role
+policy, privacy exclusions and typed provenance hashes. The run takes its
+own JSON snapshot before any asynchronous callback, so index preparation
+cannot change the targets that the approved fingerprint names. A report's
+`complete` flag must be the boolean true, rather than a truthy string. An
+all-withheld corpus may retain an empty proposal set without writer calls.
+
+These fixes have deterministic fake-call and real-evaluator regression
+coverage. The earlier live scores remain attributed to their original
+revisions; no new live model calls, changed truth labels or restored-retention
+claim accompany this review. The experimental retention and b13 label/scope
+review remain open, and the pull request stays a draft.

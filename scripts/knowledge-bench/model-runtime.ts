@@ -97,6 +97,7 @@ export function makePlan(value: CorpusData, repo: string, candidateCommit: strin
       return { ids: batch.map(c => c.id), bytes: 0, sha256: fingerprint(code), privacy_withheld: true };
     }
   });
+  if (fixed) fixed = checkedFixed(fixed, corpus, batches.filter(b => b.privacy_withheld).flatMap(b => b.ids));
   const files = [...new Set(corpus.claims.map(c => c.file))];
   const checkpoints = corpus.checkpoints.map(cp => ({ ...cp,
     true: corpus.labels.filter(l => l.checkpoint === cp.id && l.truth).length,
@@ -159,6 +160,28 @@ export function proposals(text: string, batch: CheckedCorpus["claims"]) {
   return result.results;
 }
 export interface FixedChecks { source_candidate: string; source_plan: string; results: ReturnType<typeof proposals> }
+const FixedChecksSchema = z.object({
+  source_candidate: z.string().regex(/^[a-f0-9]{40,64}$/u), source_plan: z.string().regex(/^[a-f0-9]{64}$/u),
+  results: z.array(Proposals.shape.results.element).max(100),
+}).strict();
+function snapshotFixed(value: FixedChecks): FixedChecks {
+  // Own the entire JSON snapshot, including nested target data, before any
+  // asynchronous index/model callback. Never run against mutable caller data.
+  const fixed = FixedChecksSchema.parse(JSON.parse(JSON.stringify(value)));
+  assertNoSecrets(fixed);
+  fixed.results.sort((a, b) => a.id.localeCompare(b.id));
+  return fixed;
+}
+function checkedFixed(value: FixedChecks, corpus: CheckedCorpus, withheld: string[]): FixedChecks {
+  const fixed = snapshotFixed(value), results: FixedChecks["results"] = [];
+  for (const batch of groups(corpus.claims)) {
+    if (batch.every(c => withheld.includes(c.id))) continue;
+    results.push(...proposals(JSON.stringify({ results: fixed.results.filter(r => batch.some(c => id(c.id) === r.id)) }), batch));
+  }
+  if (results.length !== fixed.results.length || results.some(r => r.checks.some(c => c.role === "complete" && !["key", "value"].includes(c.kind)))) throw new Error("Invalid fixed model proposals");
+  results.sort((a, b) => a.id.localeCompare(b.id));
+  return { ...fixed, results };
+}
 /** Reuse only validated model-proposed seed targets, never earlier answers or
  * truth labels. Bind their provenance/content into the new zero-writer plan. */
 export function loadFixedChecks(file: string, value: CorpusData, repo: string): FixedChecks {
@@ -166,23 +189,14 @@ export function loadFixedChecks(file: string, value: CorpusData, repo: string): 
   if (text === undefined) throw new Error("Fixed-check report unavailable");
   const report = JSON.parse(text), corpus = checked(value), baseline = makePlan(value, repo, "0".repeat(40));
   const prior = report.plan;
-  if (!report.complete || !Array.isArray(report.generation_failed) || report.generation_failed.length || !prior
+  if (report.complete !== true || !Array.isArray(report.generation_failed) || report.generation_failed.length || !prior
     || prior.model !== MODEL || prior.corpus_sha256 !== baseline.corpus_sha256 || prior.claims_sha256 !== baseline.claims_sha256
     || prior.truth_sha256 !== baseline.truth_sha256 || fingerprint(prior.checkpoints) !== fingerprint(baseline.checkpoints)
     || fingerprint(prior.privacy_withheld) !== fingerprint(baseline.privacy_withheld)
     || !/^[a-f0-9]{40,64}$/u.test(prior.candidate_commit) || !/^[a-f0-9]{64}$/u.test(prior.approval_hash)) throw new Error("Incompatible fixed-check report");
   const { approval_hash, ...approved } = prior;
   if (fingerprint(approved) !== approval_hash) throw new Error("Fixed-check source plan changed");
-  if (!Array.isArray(report.proposed_checks)) throw new Error("Missing fixed model proposals");
-  const results: FixedChecks["results"] = [];
-  for (const batch of groups(corpus.claims)) {
-    if (batch.every(c => baseline.privacy_withheld.includes(c.id))) continue;
-    const entries = report.proposed_checks.filter((r: { id?: unknown }) => batch.some(c => id(c.id) === r.id));
-    results.push(...proposals(JSON.stringify({ results: entries }), batch));
-  }
-  if (results.length !== report.proposed_checks.length || results.some(r => r.checks.some(c => c.role === "complete" && !["key", "value"].includes(c.kind)))) throw new Error("Invalid fixed model proposals");
-  results.sort((a, b) => a.id.localeCompare(b.id));
-  return { source_candidate: prior.candidate_commit, source_plan: approval_hash, results };
+  return checkedFixed({ source_candidate: prior.candidate_commit, source_plan: approval_hash, results: report.proposed_checks }, corpus, baseline.privacy_withheld);
 }
 export interface Observation { claim: string; truth: boolean; verdict: string; judgement?: string; delivery: string; original: boolean; check_generation_failed: boolean; privacy_withheld?: boolean; }
 export function score(rows: Observation[]) {
@@ -213,8 +227,8 @@ function tokenCounts(ledger: CallLedger[]) {
   return totals;
 }
 export async function runEvaluation(options: RunOptions) {
-  const corpus = checked(options.corpus);
-  const fresh = makePlan(options.corpus, options.subject, options.plan.candidate_commit, options.fixed);
+  const corpus = checked(options.corpus), fixed = options.fixed ? snapshotFixed(options.fixed) : undefined;
+  const fresh = makePlan(options.corpus, options.subject, options.plan.candidate_commit, fixed);
   if (options.approvalHash !== fresh.approval_hash || fingerprint(fresh) !== fingerprint(options.plan)) throw new Error("Paid execution requires the exact approved plan hash");
   if (existsSync(options.work)) throw new Error("Use a new work directory; existing data is never removed");
   mkdirSync(options.work, { mode: 0o700 });
@@ -266,8 +280,8 @@ export async function runEvaluation(options: RunOptions) {
     writer.db.prepare("INSERT INTO own_usage VALUES(?, 'claude', 100000000, 0, 0, 0, 1)").run(new Date().toISOString().slice(0, 10));
     const request = { checkout, project_id: projectId, mex_home: home, record_directory: writer.location.directory };
     const learned = join(checkout, ".mex", "learned"); mkdirSync(learned, { recursive: true });
-    if (options.fixed) for (const proposed of options.fixed.results) generated.set(proposed.id, proposed);
-    for (const batch of options.fixed ? [] : groups(corpus.claims)) {
+    if (fixed) for (const proposed of fixed.results) generated.set(proposed.id, proposed);
+    for (const batch of fixed ? [] : groups(corpus.claims)) {
       if (!batch.every(c => fresh.privacy_withheld.includes(c.id))) {
         const prompt = checkPrompt(batch, source(options.subject, corpus.checkpoints[0]!.sha, batch[0]!.file)!);
         const response = await model({ agent: "claude", role: "cheap", projectRoot: checkout, purpose: "judge-bench.checks", prompt });
@@ -296,8 +310,8 @@ export async function runEvaluation(options: RunOptions) {
         else {failed.add(claim.id);diagnostics.push({stage,claims:[claim.id],errors:result.errors});}
     };
     for(const claim of corpus.claims) await record(claim,"initial-recording");
-    if (options.fixed && failed.size) throw new Error("Fixed model targets could not be recorded; no generation or seed repair is allowed");
-    for(const batch of options.fixed ? [] : groups(corpus.claims)) {
+    if (fixed && failed.size) throw new Error("Fixed model targets could not be recorded; no generation or seed repair is allowed");
+    for(const batch of fixed ? [] : groups(corpus.claims)) {
       const rejected=batch.filter(c=>failed.has(c.id));
       if(!rejected.length) continue;
       const feedback=diagnostics.filter(d=>d.claims.some(id=>rejected.some(c=>c.id===id)));

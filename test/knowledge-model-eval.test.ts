@@ -229,6 +229,7 @@ it("replays frozen model targets without writer calls and binds their exact cont
   expect(makePlan(corpus, subject, "c".repeat(40), changed).approval_hash).not.toBe(plan.approval_hash);
   for (const mutate of [
     (r: any) => r.complete = false,
+    (r: any) => r.complete = "false",
     (r: any) => r.generation_failed.push("one"),
     (r: any) => r.plan.truth_sha256 = "0".repeat(64),
     (r: any) => r.proposed_checks.push(r.proposed_checks[0]),
@@ -262,4 +263,32 @@ it.each([false, true])("reports raw rewrite rejection and its one repair, fatal 
   ]));
   expect(model.mock.calls.filter(([r]) => r.purpose === "judge.check-repair")).toHaveLength(1);
   expect(report.ledger.at(-1).state).toBe(fatal ? "failed" : "done");
+});
+
+
+it("rejects invalid direct fixed proposals before workspace mutation", async () => {
+  const fixed = { source_candidate: "b".repeat(40), source_plan: "c".repeat(64), results: corpus.claims.map(c => ({ id: `mx_kbx${c.id}`, checks: [{ kind: "key" as const, role: "complete" as const, target: { file: c.file, pointer: c.id === "one" ? "/name" : "/version" } }] })) };
+  for (const mutate of [
+    (v: any) => v.results.push(v.results[0]),
+    (v: any) => v.results.pop(),
+    (v: any) => v.results[0].checks[0].target.file = "outside.json",
+    (v: any) => v.source_candidate = [v.source_candidate],
+  ]) {
+    const value = structuredClone(fixed); mutate(value);
+    expect(() => makePlan(corpus, subject, "d".repeat(40), value)).toThrow();
+  }
+});
+it("snapshots approved fixed targets before an asynchronous index callback can mutate caller data", async () => {
+  const fixed = { source_candidate: "b".repeat(40), source_plan: "c".repeat(64), results: corpus.claims.map(c => ({ id: `mx_kbx${c.id}`, checks: [{ kind: "key" as const, role: "complete" as const, target: { file: c.file, pointer: c.id === "one" ? "/name" : "/version" } }] })) };
+  const plan = makePlan(corpus, subject, "d".repeat(40), fixed);
+  const result = await runEvaluation({ ...options(), plan, fixed, approvalHash: plan.approval_hash, model: async r => fakeModel(r), refreshIndex: () => { fixed.results[0]!.checks[0]!.target.file = "outside.json"; } });
+  expect(result.complete).toBe(true);
+  expect(result.proposed_checks[0]!.checks[0]!.target.file).toBe("package.json");
+});
+
+it("keeps privacy-withheld claims out of fixed proposals and permits an all-withheld zero-writer plan", () => {
+  const blocked = structuredClone(corpus); blocked.claims[0]!.one_line = 'const password = "example-placeholder-value";';
+  const fixed = { source_candidate: "b".repeat(40), source_plan: "c".repeat(64), results: [{ id: "mx_kbxone", checks: [{ kind: "key" as const, role: "complete" as const, target: { file: "package.json", pointer: "/name" } }] }] };
+  expect(() => makePlan(blocked, subject, "d".repeat(40), fixed)).toThrow();
+  expect(makePlan(blocked, subject, "d".repeat(40), { ...fixed, results: [] })).toMatchObject({ privacy_withheld: ["one", "two"], check_writer_calls: 0 });
 });
