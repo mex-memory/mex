@@ -224,3 +224,44 @@ Free verification:
 node node_modules/typescript/bin/tsc -p scripts/knowledge-bench/tsconfig.model.json
 MEX_TEST_PREBUILT=1 MEX_TEST_REAL_HOOK_BINARY=1 npm test -- test/knowledge-model-eval.test.ts
 ```
+
+
+## Isolated recall follow-up
+
+The accepted checkpoint above stays unchanged. The follow-up records
+`judge_diagnostics` for each raw answer and any later validation, repair or
+publication rejection. A final `cannot-tell` can therefore be distinguished
+from an initial model abstention or an unrecordable rewrite.
+
+When a rewrite's targets cannot be recorded, the ordinary judge may make
+one additional cheap-model call for that batch's rejected entries only.
+It holds the proposed text fixed and asks for recordable targets with the
+real, bounded native errors and currently indexed symbol names. It repeats
+ownership, consent, idle and evidence checks before admission and all source
+and evaluator proofs before publication. The evaluator still mints every
+observation. A denied, malformed or rejected repair stays unresolved; there
+is no semantic retry loop. These calls use purpose `judge.check-repair` and
+share the existing aggregate judge-call and cost bounds.
+
+For TS/JS symbol checks, evidence may include up to four local files imported
+and called inside the checked symbols, one hop only. Each file has the same
+64 KiB, containment and secret checks; all supplied helper hashes participate
+in freshness and result expiry. Missing or ambiguous imports are not
+invented. Additional helper files have no historical baseline unless they
+were already original check inputs. Evidence is split or withheld when a
+bound is exceeded, never silently truncated.
+
+Use `--checks-from /private/path/to/accepted/report.json` in both the free
+plan command and paid command to freeze the preceding model's seed targets.
+The report must be complete, have no generation failures, match the pinned
+model/corpus/claims/truth/checkpoints/privacy policy, and contain exactly
+one valid proposal for every non-withheld claim. Its candidate, source plan
+and exact proposed-target fingerprint are bound into the new quote. Earlier
+judgements and truth labels are never put in a model prompt.
+
+This mode is labeled `fixed-model-check-replay`: it makes zero seed-writing
+or seed-repair calls, records the frozen targets afresh at C0 through Go,
+and runs the ordinary judge/repair/delivery chain at every checkpoint. A
+seed target that no longer records aborts the replay. All 46 cases remain
+in their original denominators. This reduces seed-generation variation;
+a single replay still does not establish a statistically reliable gain.

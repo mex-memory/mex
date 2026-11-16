@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -312,5 +312,112 @@ describe("judge job and queue", () => {
     deps.model = vi.fn(async () => ({ text: '{"results":[],"private":"not for logs"}', selectedModel: "test", usage }));
     const bad = queue(); expect((await finish(bad)).state).toBe("failed");
     expect(row(bad).reason).toBe("The judge did not return one valid answer per entry.");
+  });
+});
+
+
+describe("bounded rewrite check repair", () => {
+  const rewrite = (id: string) => ({ id, result: "rewritten", one_line: "The current behavior is new.", text: "The current behavior is new.",
+    checks: [{ kind: "pattern", role: "supporting", target: { scope: "src/api.ts", pattern: "new", match: "literal" } }] });
+  const minted = (): EntryCheck[] => [{ kind: "source", role: "supporting", target: { file: "src/api.ts" }, saw: { hash: hash(readFileSync(join(root, "src/api.ts"), "utf8")) }, files: { "src/api.ts": hash(readFileSync(join(root, "src/api.ts"), "utf8")) } }];
+  it("repairs only rejected siblings, preserves the semantic rewrite and accounts for both calls", async () => {
+    add("mx_repair00"); add("mx_repair01");
+    const diagnostics: unknown[] = []; deps.diagnostic = e => diagnostics.push(e);
+    deps.recordChecksDetailed = vi.fn(async (_request, checks) => (checks[0] as any).kind === "pattern"
+      ? { errors: [{ index: 0, reason: "The file index does not count this pattern yet" }] } : { checks: minted(), errors: [] });
+    deps.model = vi.fn(async request => {
+      calls.push(request);
+      if (request.purpose === "judge") return { ...answer(request), text: JSON.stringify({ results: [{ id: "mx_repair00", result: "still-true" }, rewrite("mx_repair01")] }) };
+      const data = JSON.parse(request.prompt.split("Evidence follows as JSON:\n")[1]!);
+      expect(data.entries.map((e: any) => e.id)).toEqual(["mx_repair01"]);
+      expect(request.prompt).toContain("does not count this pattern");
+      return { selectedModel: "test-cheap", usage, text: JSON.stringify({ results: [{ id: "mx_repair01", checks: [{ kind: "source", role: "supporting", target: { file: "src/api.ts" } }] }] }) };
+    });
+    const id = queue(); await run(id);
+    expect(row(id).tokens_used).toBe(240); expect(calls.map(c => c.purpose)).toEqual(["judge", "judge.check-repair"]);
+    expect(readJudgement(writer, projectId, root, "mx_repair00")?.result).toBe("still-true");
+    expect(readJudgement(writer, projectId, root, "mx_repair01")?.rewrite?.text).toBe("The current behavior is new.");
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "mx_repair01", phase: "answer", model_answer: "rewritten", outcome: "cannot-tell", reason: "checks-rejected" }),
+      expect.objectContaining({ id: "mx_repair01", phase: "repair", outcome: "rewritten", reason: "repaired" }),
+    ]));
+    await finish(id); expect(calls).toHaveLength(2);
+  });
+  it.each(["source", "consent", "owner", "request", "idle", "checks", "retired"])("does not spend repair after %s changes", async what => {
+    add("mx_repair02");
+    const id = queue();
+    deps.model = vi.fn(async request => { calls.push(request); return { ...answer(request), text: JSON.stringify({ results: [rewrite("mx_repair02")] }) }; });
+    deps.recordChecksDetailed = vi.fn(async () => {
+      if (what === "source") source("src/api.ts", "raced source\n");
+      if (what === "consent") writer.db.prepare("UPDATE checkouts SET state='off' WHERE path=?").run(root);
+      if (what === "owner") writer.db.prepare("UPDATE jobs SET owner='new-owner' WHERE id=?").run(id);
+      if (what === "request") writer.db.prepare("UPDATE jobs SET request='pause' WHERE id=?").run(id);
+      if (what === "idle") markEdit();
+      if (what === "retired") writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(projectId, "knowledge.retired.mx_repair02", "true");
+      if (what === "checks") report.results![0]!.checks[0]!.status = "fail";
+      return { errors: [{ index: 0, reason: "Not indexed" }] };
+    });
+    registerJobKind(createJudgeKind(deps)); await run(id);
+    expect(calls.map(c => c.purpose)).toEqual(["judge"]);
+    if (what !== "idle") expect(readJudgement(writer, projectId, root, "mx_repair02")).toBeUndefined();
+  });
+  it.each(["rejected", "invalid", "denied"])("stops after one %s repair without semantic retries", async mode => {
+    add("mx_repair03");
+    deps.model = vi.fn(async request => {
+      calls.push(request);
+      if (request.purpose === "judge") return { ...answer(request), text: JSON.stringify({ results: [rewrite("mx_repair03")] }) };
+      if (mode === "denied") throw new ModelWaitError("cap");
+      return { selectedModel: "test-cheap", usage, text: JSON.stringify({ results: [{ id: "mx_repair03", ...(mode === "invalid" ? { text: "changed claim" } : {}), checks: [{ kind: "source", role: "supporting", target: { file: "src/api.ts" } }] }] }) };
+    });
+    const id = queue(); expect((await finish(id)).state).toBe("done with gaps");
+    expect(calls).toHaveLength(2); expect(readJudgement(writer, projectId, root, "mx_repair03")?.result).toBe("cannot-tell");
+  });
+  it("keeps model abstention distinct and ignores a failing diagnostic observer", async () => {
+    add("mx_abstain0"); deps.diagnostic = () => { throw new Error("observer"); };
+    deps.model = vi.fn(async request => answer(request, "cannot-tell"));
+    const id = queue(); await finish(id);
+    expect(deps.model).toHaveBeenCalledTimes(1); expect(writer.db.prepare("SELECT summary FROM job_results WHERE job_id=? ORDER BY batch LIMIT 1").get(id)?.summary).toContain("model-abstained");
+  });
+});
+
+
+describe("one-hop source evidence", () => {
+  function helperClaim() {
+    source("src/api.ts", "import { build as make } from './helper.js';\nexport class Client { run() { return make(); } }\n");
+    source("src/helper.ts", "import { deeper } from './deeper';\nexport function build() { return { value: deeper() }; }\n");
+    source("src/deeper.ts", "export function deeper() { return 1; }\n");
+    const file = add("mx_helper00"), value = parseEntry(readFileSync(file, "utf8"));
+    value.mex.checks.push({ kind: "symbol", role: "supporting", target: { file: "src/api.ts", symbol: "Client.run" }, saw: { fingerprint: "mh:1:abcd" }, files: { "src/api.ts": hash("old\n") } });
+    writeFileSync(file, serializeEntry(value));
+  }
+  it("includes called import aliases only one hop, without inventing helper history", async () => {
+    helperClaim(); const id = queue(); await run(id);
+    const snapshot = JSON.parse(calls[0]!.prompt.split("Evidence follows as JSON:\n")[1]!);
+    expect(snapshot.files.map((f: any) => f.path)).toEqual(["src/api.ts", "src/helper.ts"]);
+    expect(snapshot.files[1]).toMatchObject({ baselines: [], current_hash: hash(readFileSync(join(root, "src/helper.ts"), "utf8")) });
+    expect(readJudgement(writer, projectId, root, "mx_helper00")?.files).toHaveLength(2);
+    source("src/helper.ts", "export function build() { return 2; }\n");
+    await finish(id); expect(calls).toHaveLength(2);
+  });
+  it("discards a reply when only the added helper changes in flight", async () => {
+    helperClaim(); deps.model = vi.fn(async request => { source("src/helper.ts", "export function build() { return 2; }\n"); return answer(request); });
+    const id = queue(); await run(id);
+    expect(readJudgement(writer, projectId, root, "mx_helper00")).toBeUndefined();
+  });
+  it.each(["secret", "oversize"])("withholds %s helper evidence before a model call", async mode => {
+    helperClaim(); source("src/helper.ts", mode === "secret" ? 'const password = "example-placeholder-value";\n' : "x".repeat(65 << 10));
+    expect((await finish(queue())).state).toBe("done with gaps"); expect(deps.model).not.toHaveBeenCalled();
+  });
+  it("leaves ambiguous helpers unresolved and excludes uncalled imports", async () => {
+    helperClaim(); source("src/helper.js", "export function build() { return 99; }\n");
+    source("src/api.ts", "import { build } from './helper';\nimport { deeper } from './deeper';\nexport class Client { run() { return build(); } }\n");
+    await run(queue());
+    const snapshot = JSON.parse(calls[0]!.prompt.split("Evidence follows as JSON:\n")[1]!);
+    expect(snapshot.files.map((f: any) => f.path)).toEqual(["src/api.ts"]);
+  });
+  it.skipIf(process.platform === "win32")("never follows a helper symlink outside the checkout", async () => {
+    helperClaim(); rmSync(join(root, "src/helper.ts")); source("../outside.ts", "private outside marker\n");
+    symlinkSync(join(base, "outside.ts"), join(root, "src/helper.ts"));
+    await finish(queue()); expect(calls).toHaveLength(0);
   });
 });

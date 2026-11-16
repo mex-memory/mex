@@ -1,13 +1,12 @@
-import { z } from "zod";
 import { registerJobKind, type BatchContext, type JobKind, type JobRow } from "../record/jobs.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import { automaticWorkEnabled } from "../controls/index.js";
 import { nativeBinary, type NativeReport } from "../knowledge/check.js";
-import { serializeEntry, validateEntry, type EntryCheck, type KnowledgeEntry } from "../knowledge/entry.js";
 import { assertNoSecrets, hasSecret } from "../knowledge/gates.js";
 import { runModel, ModelRunError, ModelWaitError, type ModelRequest, type ModelResult } from "../model-runner/index.js";
 import { JUDGE_LIMITS, hash, readCandidate, entryFiles, readSource, distance, orderCandidates, nextBatch, evidence, position, samePosition, unchanged, coherent, type Candidate, type Evidence, type Position } from "./evidence.js";
-import { evaluate, recordChecks } from "./native.js";
+import { evaluate, recordChecks, recordChecksDetailed } from "./native.js";
+import { emitDiagnostic, parseAnswers, resolveAnswers, type JudgeDiagnostic } from "./replies.js";
 import { pendingJudgeRequest, type JudgeParams } from "./pending.js";
 import { resultKey, readJudgement, judgementInputsHash, type Judgement } from "./result.js";
 import { stageFixes, hasPendingFixes, needsRouting, routeFixes, fixPreviewReady, PREVIEW_WAIT } from "./routing.js";
@@ -16,20 +15,12 @@ import { refreshRuleChanges } from "./rule-change.js";
 import { refreshAdvice, modelAdvice } from "./advice.js";
 export { readJudgement, type Judgement } from "./result.js";
 
-const CheckRequest = z.object({ kind: z.enum(["key", "command", "section", "source", "value", "symbol", "pattern", "relation"]),
-  role: z.enum(["complete", "supporting"]), target: z.record(z.unknown()) }).strict();
-const Answer = z.discriminatedUnion("result", [
-  z.object({ id: z.string(), result: z.literal("still-true") }).strict(),
-  z.object({ id: z.string(), result: z.literal("cannot-tell") }).strict(),
-  z.object({ id: z.string(), result: z.literal("rewritten"), text: z.string().min(1).max(8192), one_line: z.string().min(1).max(1024),
-    checks: z.array(CheckRequest).min(1).max(32) }).strict(),
-]);
-const Response = z.object({ results: z.array(Answer).min(1).max(5) }).strict();
 export interface JudgeCheckpoint { position: Position; skipped: string[]; gaps: boolean; }
 export interface JudgeDependencies {
-  evaluate: typeof evaluate; recordChecks: typeof recordChecks; model: (request: ModelRequest) => Promise<ModelResult>;
+  evaluate: typeof evaluate; recordChecks: typeof recordChecks; recordChecksDetailed?: typeof recordChecksDetailed;
+  diagnostic?: (event: JudgeDiagnostic) => void; model: (request: ModelRequest) => Promise<ModelResult>;
 }
-const dependencies: JudgeDependencies = { evaluate, recordChecks, model: runModel };
+const dependencies: JudgeDependencies = { evaluate, recordChecks, recordChecksDetailed, model: runModel };
 function known(writer: RecordWriter, projectId: string, candidate: Candidate, checkout: string, at: Position): boolean {
   const previous = readJudgement(writer, projectId, checkout, candidate.item.id);
   if (!previous || previous.entry_hash !== hash(candidate.content) || previous.evaluation_hash !== candidate.evaluationHash
@@ -91,6 +82,8 @@ Use the claim, its checks and observations, current code, and ALL changes in eac
 Return only JSON: {"results":[{"id":"mx_...","result":"still-true"}]}.
 For an uncertain claim use result "cannot-tell". For a false claim use {"id":"mx_...","result":"rewritten","one_line":"current claim","text":"current fact and reason","checks":[{"kind":"value","role":"complete","target":{"file":"src/example.ts","symbol":"defaults"}}]}.
 Return exactly one result per supplied id. Rewrites must supply new check targets; MEX records their baselines against current code. Allowed check kinds: key, command, section, source, value, symbol, pattern, relation. Do not change scope, source, identity, or kind.
+Evaluate every clause and qualifier in the claim. A single supported counterexample disproves an "only", "always", or "no option" assertion; inspect nondefault options too. A claim explicitly about the default is not disproved just because a nondefault option differs. For caching/identity claims, distinguish cached input from the object actually returned; follow the supplied local helper code. Missing helper history is not evidence of old behavior.
+Use exact indexed symbol names from symbols when supplied. Key targets are {file,pointer}; value/symbol targets are {file,symbol}; source targets are {file}; literal pattern targets are {scope,pattern,match:"literal"}. A new pattern may not be recordable until indexed; prefer an available symbol or source target.
 Source/symbol fingerprints and literal occurrence counts support behavioral claims: refactoring can change them without disproving the behavior. Use supporting for those checks in behavior rewrites; use complete only when a key/value observation directly states the whole claim.
 Evidence follows as JSON:\n${JSON.stringify(snapshot)}`;
 }
@@ -176,7 +169,7 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
       // Split a group when its complete evidence won't fit; never truncate evidence silently.
       for (;;) {
         try {
-          snapshot = await evidence(params.checkout, batch, at);
+          snapshot = await evidence(params.checkout, batch, at, { checkout: params.checkout, recordDirectory: writer.location.directory, projectId });
           // Scan raw strings and structured values before JSON escapes hide them.
           assertNoSecrets(snapshot);
           prompt = judgePrompt(snapshot);
@@ -206,41 +199,47 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
         if (error instanceof ModelRunError && (error.category === "authentication" || error.category === "usage_limit")) return { checkpoint: state, wait: error.message };
         throw error;
       }
-      let answers: z.infer<typeof Response>;
-      try {
-        answers = Response.parse(JSON.parse(result.text));
-        const ids = new Set(answers.results.map(a => a.id));
-        if (ids.size !== batch.length || answers.results.length !== batch.length || batch.some(c => !ids.has(c.item.id))) throw new Error();
-      } catch { throw new Error("The judge did not return one valid answer per entry."); }
+      let answers;
+      try { answers = parseAnswers(result.text, batch.map(c => c.item.id)); }
+      catch {
+        for (const candidate of batch) emitDiagnostic(deps.diagnostic, { id: candidate.item.id, phase: "answer", model_answer: "invalid", outcome: "cannot-tell", reason: "reply-invalid" });
+        throw new Error("The judge did not return one valid answer per entry.");
+      }
+      const owned = () => {
+        const current = writer.db.prepare("SELECT state,owner,request FROM jobs WHERE id=?").get(job.id);
+        return current?.state === "running" && current.owner === job.owner && current.request === null;
+      };
+      const sameChecks = async () => {
+        const fresh = await deps.evaluate(request(params, writer, projectId));
+        return batch.every(candidate => {
+          const item = fresh.items?.find(item => item.id === candidate.item.id && item.path === candidate.item.path && item.level === candidate.item.level);
+          const checks = fresh.results?.find(item => item.entry_id === candidate.item.id);
+          return item?.entry_hash === hash(candidate.content) && checks !== undefined && checks.evaluation_hash === candidate.evaluationHash
+            && checkHash({ ...candidate, item, checks: checks.checks, inputs: checks.inputs }) === checkHash(candidate);
+        });
+      };
+      const resolved = await resolveAnswers(answers, {
+        checkout: params.checkout, batch, snapshot, diagnostic: deps.diagnostic,
+        record: async checks => {
+          const input = request(params, writer, projectId);
+          if (deps.recordChecksDetailed) return deps.recordChecksDetailed(input, checks);
+          const recorded = await deps.recordChecks(input, checks);
+          return recorded?.length ? { checks: recorded, errors: [] } : { errors: [{ index: -1, reason: "The evaluator could not record the proposed checks" }] };
+        },
+        repair: async prompt => {
+          // A second call needs its own normal admission and fresh proof. Never
+          // spend a repair after the owner, consent, idle state or evidence moved.
+          if (batch.some(c => writer.setting(projectId, `knowledge.retired.${c.item.id}`)) || !owned() || !allowed(writer, params, projectId) || !idle(writer, params, immediate) || !await sameChecks()
+            || !await unchanged(params.checkout, writer.location.home, projectId, batch, snapshot)
+            || batch.some(c => writer.setting(projectId, `knowledge.retired.${c.item.id}`)) || !owned() || !allowed(writer, params, projectId) || !idle(writer, params, immediate)) return undefined;
+          return deps.model({ agent: params.agent, role: "cheap", projectRoot: params.checkout, purpose: "judge.check-repair",
+            prompt, automatic: { estimate: { input: Buffer.byteLength(prompt), cache_write: 0, cache_read: 0, output: batch.length * 4096 } } });
+        },
+      });
       const saved: Judgement[] = [];
       for (const candidate of batch) {
-        const answer = answers.results.find(a => a.id === candidate.item.id)!;
-        let outcome: Judgement["result"] = answer.result, rewrite: KnowledgeEntry | undefined;
-        if (outcome === "still-true" && candidate.item.verdict === "broken") outcome = "cannot-tell";
-        if (answer.result === "rewritten") {
-          const checks: EntryCheck[] | undefined = await deps.recordChecks(request(params, writer, projectId), answer.checks);
-          if (checks?.length && !hasSecret(answer.text) && !hasSecret(answer.one_line)) {
-            try {
-              // New targets may name files absent from the old checks. Prove their
-              // evaluator-minted hashes too, rather than saving a racing baseline.
-              for (const check of checks) for (const [path, baseline] of Object.entries(check.files)) {
-                const current = readSource(params.checkout, path);
-                if (current === null || hash(current) !== baseline) throw new Error("New check inputs changed");
-                const present = snapshot.files.find(f => f.path === path);
-                if (present && present.current_hash !== baseline) throw new Error("Judge inputs changed");
-                if (!present) {
-                  if (snapshot.files.length >= JUDGE_LIMITS.files) throw new Error("New check inputs exceed the source limit");
-                  snapshot.files.push({ path, current, current_hash: baseline, baselines: [] });
-                }
-              }
-              rewrite = validateEntry({ ...candidate.entry, text: answer.text, mex: { ...candidate.entry.mex, one_line: answer.one_line, checks } });
-              assertNoSecrets(rewrite);
-              if (hasSecret(serializeEntry(rewrite))) rewrite = undefined;
-            }
-            catch { rewrite = undefined; /* Invalid rewrites stay unresolved. */ }
-          }
-          if (!rewrite) outcome = "cannot-tell";
-        }
+        const answer = resolved.results.find(a => a.id === candidate.item.id)!;
+        const outcome = answer.result, rewrite = answer.rewrite;
         const value: Judgement = { version: 1, id: candidate.item.id, inputs_hash: "",
           checkout: params.checkout, position: at, entry_hash: hash(candidate.content), checks_hash: checkHash(candidate),
           ...(candidate.evaluationHash ? { evaluation_hash: candidate.evaluationHash } : {}),
@@ -249,17 +248,10 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
         value.inputs_hash = value.evaluation_hash ? judgementInputsHash(value) : hash(JSON.stringify({ entry: candidate.content, evidence: snapshot }));
         saved.push(value);
       }
-      const tokens = result.usage.input + result.usage.cache_write + result.usage.cache_read + result.usage.output;
-      // Index-backed checks can change without changing one of the entry's
-      // explicit file hashes. Re-read their observations before accepting a reply.
-      const fresh = await deps.evaluate(request(params, writer, projectId));
-      const sameChecks = batch.every(candidate => {
-        const item = fresh.items?.find(item => item.id === candidate.item.id && item.path === candidate.item.path && item.level === candidate.item.level);
-        const checks = fresh.results?.find(item => item.entry_id === candidate.item.id);
-        return item?.entry_hash === hash(candidate.content) && checks !== undefined && checks.evaluation_hash === candidate.evaluationHash
-          && checkHash({ ...candidate, item, checks: checks.checks, inputs: checks.inputs }) === checkHash(candidate);
-      });
-      if (!sameChecks || !allowed(writer, params, projectId) || !await unchanged(params.checkout, writer.location.home, projectId, batch, snapshot)) {
+      const tokens = result.usage.input + result.usage.cache_write + result.usage.cache_read + result.usage.output + resolved.tokens;
+      // Re-prove index-backed observations as well as every source/helper hash.
+      if (!await sameChecks() || !owned() || !allowed(writer, params, projectId) || !await unchanged(params.checkout, writer.location.home, projectId, batch, snapshot)) {
+        for (const answer of answers) emitDiagnostic(deps.diagnostic, { id: answer.id, phase: "publication", model_answer: answer.result, outcome: "cannot-tell", reason: "response-discarded" });
         return { checkpoint: state, tokens, summary: "Judge response discarded: entry, code, checkout or consent changed" };
       }
       // Persist the local correction before publishing routable rewrite state.
@@ -273,9 +265,12 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
             && snapshot.files.every(f => { const text = readSource(params.checkout, f.path); return (text === null ? null : hash(text)) === f.current_hash; });
         });
       }
-      if (!save(writer, projectId, saved, job, batch, params, sessionId)) return { checkpoint: state, tokens, summary: "Judge ownership or entry eligibility changed; response discarded" };
+      if (!save(writer, projectId, saved, job, batch, params, sessionId)) {
+        for (const answer of answers) emitDiagnostic(deps.diagnostic, { id: answer.id, phase: "publication", model_answer: answer.result, outcome: "cannot-tell", reason: "response-discarded" });
+        return { checkpoint: state, tokens, summary: "Judge ownership or entry eligibility changed; response discarded" };
+      }
       return { checkpoint: { ...state, gaps: state.gaps || saved.some(r => r.result === "cannot-tell") }, results: saved.length, tokens,
-        summary: `${saved.length} checked by model: ${saved.map(r => `${r.id} ${r.result}`).join(", ")}` };
+        summary: `${saved.length} checked by model: ${saved.map(r => `${r.id} ${r.result}${r.result === "cannot-tell" ? ` (${resolved.results.find(a => a.id === r.id)!.reason})` : ""}`).join(", ")}` };
     },
     ready(job, writer) {
       if (job.reason === PREVIEW_WAIT) return fixPreviewReady(writer, job) || Date.now() - Date.parse(job.updated_at) >= 60_000;

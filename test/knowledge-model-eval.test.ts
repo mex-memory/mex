@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { MODEL, checkPrompt, makePlan, proposals, runEvaluation, score, type CorpusData } from "../scripts/knowledge-bench/model-runtime.js";
+import { MODEL, checkPrompt, loadFixedChecks, makePlan, proposals, runEvaluation, score, type CorpusData } from "../scripts/knowledge-bench/model-runtime.js";
 import type { ModelRequest, ModelResult } from "../src/model-runner/index.js";
 import { openRecord } from "../src/record/index.js";
 import { buildIndex } from "../src/file-index/build.js";
@@ -212,4 +212,54 @@ it("records model-proposed literal patterns and supplies their current source to
     const evidence = JSON.parse(r.prompt.split("Evidence follows as JSON:\n")[1]!);
     expect(evidence.files).toEqual(expect.arrayContaining([expect.objectContaining({ path: "package.json" })]));
   }
+});
+
+
+it("replays frozen model targets without writer calls and binds their exact content", async () => {
+  const first = options();
+  const baseline = await runEvaluation({ ...first, approvalHash: first.plan.approval_hash, model: async r => fakeModel(r) });
+  const file = join(first.work, "report.json"), fixed = loadFixedChecks(file, corpus, subject);
+  const plan = makePlan(corpus, subject, "c".repeat(40), fixed), model = vi.fn(async r => fakeModel(r));
+  expect(plan).toMatchObject({ mode: "fixed-model-check-replay", check_writer_calls: 0, check_repair_calls_max: 0, max_calls: plan.judge_calls_max });
+  const replay = await runEvaluation({ ...options(), plan, fixed, approvalHash: plan.approval_hash, model });
+  expect(model.mock.calls.every(([r]) => !r.purpose.startsWith("judge-bench."))).toBe(true);
+  expect(replay.proposed_checks).toEqual(fixed.results);
+  expect(replay.checkpoints.map(c => c.score)).toEqual(baseline.checkpoints.map(c => c.score));
+  const changed = structuredClone(fixed); changed.results[0]!.checks[0]!.target.pointer = "/version";
+  expect(makePlan(corpus, subject, "c".repeat(40), changed).approval_hash).not.toBe(plan.approval_hash);
+  for (const mutate of [
+    (r: any) => r.complete = false,
+    (r: any) => r.generation_failed.push("one"),
+    (r: any) => r.plan.truth_sha256 = "0".repeat(64),
+    (r: any) => r.proposed_checks.push(r.proposed_checks[0]),
+    (r: any) => r.proposed_checks[0].checks[0].target.file = "outside.json",
+  ]) {
+    const changed = structuredClone(baseline); mutate(changed);
+    const invalid = join(base, `invalid-fixed-${serial++}.json`); writeFileSync(invalid, JSON.stringify(changed));
+    expect(() => loadFixedChecks(invalid, corpus, subject)).toThrow();
+  }
+});
+it.each([false, true])("reports raw rewrite rejection and its one repair, fatal transport=%s", async fatal => {
+  const opts = options();
+  const model = vi.fn(async (request: ModelRequest) => {
+    if (request.purpose === "judge.check-repair") {
+      if (fatal) throw new Error("Transport failed during repair");
+      return { ...fakeModel({ ...request, purpose: "judge-bench.repair", prompt: 'Evidence follows as JSON:\n{"claims":[{"id":"mx_kbxtwo"}]}' }), text: JSON.stringify({ results: [{ id: "mx_kbxtwo", checks: [{ kind: "key", role: "complete", target: { file: "package.json", pointer: "/version" } }] }] }) };
+    }
+    const response = fakeModel(request);
+    if (request.purpose === "judge") {
+      const value = JSON.parse(response.text), rewrite = value.results.find((r: any) => r.result === "rewritten"); if (rewrite) rewrite.checks[0].target.pointer = "/not-a-key"; response.text = JSON.stringify(value);
+    }
+    return response;
+  });
+  if (fatal) await expect(runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model })).rejects.toThrow("did not finish");
+  else await runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model });
+  const report = JSON.parse(readFileSync(join(opts.work, "report.json"), "utf8"));
+  expect(report.complete).toBe(!fatal);
+  expect(report.judge_diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ checkpoint: "C1", phase: "answer", model_answer: "rewritten", outcome: "cannot-tell", reason: "checks-rejected" }),
+    expect.objectContaining({ checkpoint: "C1", phase: "repair", reason: fatal ? "repair-unavailable" : "repaired" }),
+  ]));
+  expect(model.mock.calls.filter(([r]) => r.purpose === "judge.check-repair")).toHaveLength(1);
+  expect(report.ledger.at(-1).state).toBe(fatal ? "failed" : "done");
 });

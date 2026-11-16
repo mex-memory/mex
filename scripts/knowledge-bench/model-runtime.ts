@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { z } from "zod";
 import { openRecord } from "../../src/record/index.js";
 import { enqueueJob, ownerId, registerJobKind, runOneBatch, type JobRow } from "../../src/record/jobs.js";
+import type { JudgeDiagnostic } from "../../src/judge/replies.js";
+import { readBoundedTextFile } from "../../src/knowledge/files.js";
 import { createJudgeKind } from "../../src/judge/job.js";
 import { evaluate, nativeRequest, recordChecks, recordChecksDetailed } from "../../src/judge/native.js";
 import { readJudgement } from "../../src/judge/result.js";
@@ -82,7 +84,7 @@ function checked(value: CorpusData): CheckedCorpus {
   if (corpus.labels.some(l => l.checkpoint === corpus.checkpoints[0]!.id && !l.truth)) throw new Error("Every seed claim must be true at C0");
   return corpus;
 }
-export function makePlan(value: CorpusData, repo: string, candidateCommit: string) {
+export function makePlan(value: CorpusData, repo: string, candidateCommit: string, fixed?: FixedChecks) {
   const corpus = checked(value), first = corpus.checkpoints[0]!;
   const batches = groups(corpus.claims).map(batch => {
     const code = source(repo, first.sha, batch[0]!.file);
@@ -107,11 +109,12 @@ export function makePlan(value: CorpusData, repo: string, candidateCommit: strin
       return total + Math.ceil(n / 5) + (n > 1 ? 1 : 0);
     }, 2),
   }));
-  const writerCalls = batches.filter(b => !b.privacy_withheld).length;
+  const writerCalls = fixed ? 0 : batches.filter(b => !b.privacy_withheld).length;
   const judgeCalls = checkpoints.reduce((n, cp) => n + cp.judge_call_bound, 0);
   const maxCalls = writerCalls * 2 + judgeCalls;
   const reservePerCall = ((PROMPT_BYTES + 8192) * PRICES.cache_write + OUTPUT_TOKENS * PRICES.output) / 1e6 * 1.1;
-  const plan = { schema_version: 1, candidate_commit: candidateCommit, corpus_sha256: corpus.manifest.dataset_sha256,
+  const plan = { schema_version: 1, mode: fixed ? "fixed-model-check-replay" : "fresh-model-checks",
+    ...(fixed ? { fixed_checks: { source_candidate: fixed.source_candidate, source_plan: fixed.source_plan, proposals_sha256: fingerprint(fixed.results) } } : {}), candidate_commit: candidateCommit, corpus_sha256: corpus.manifest.dataset_sha256,
     claims_sha256: fingerprint(corpus.claims), truth_sha256: fingerprint(corpus.labels),
     model: MODEL, price_source: PRICE_SOURCE, prices_usd_per_million: PRICES, approval_usd: APPROVAL_USD,
     prompt_bytes_max: PROMPT_BYTES, output_tokens_max: OUTPUT_TOKENS, check_writer_calls: writerCalls,
@@ -155,6 +158,32 @@ export function proposals(text: string, batch: CheckedCorpus["claims"]) {
   }
   return result.results;
 }
+export interface FixedChecks { source_candidate: string; source_plan: string; results: ReturnType<typeof proposals> }
+/** Reuse only validated model-proposed seed targets, never earlier answers or
+ * truth labels. Bind their provenance/content into the new zero-writer plan. */
+export function loadFixedChecks(file: string, value: CorpusData, repo: string): FixedChecks {
+  const text = readBoundedTextFile(file, 1 << 20);
+  if (text === undefined) throw new Error("Fixed-check report unavailable");
+  const report = JSON.parse(text), corpus = checked(value), baseline = makePlan(value, repo, "0".repeat(40));
+  const prior = report.plan;
+  if (!report.complete || !Array.isArray(report.generation_failed) || report.generation_failed.length || !prior
+    || prior.model !== MODEL || prior.corpus_sha256 !== baseline.corpus_sha256 || prior.claims_sha256 !== baseline.claims_sha256
+    || prior.truth_sha256 !== baseline.truth_sha256 || fingerprint(prior.checkpoints) !== fingerprint(baseline.checkpoints)
+    || fingerprint(prior.privacy_withheld) !== fingerprint(baseline.privacy_withheld)
+    || !/^[a-f0-9]{40,64}$/u.test(prior.candidate_commit) || !/^[a-f0-9]{64}$/u.test(prior.approval_hash)) throw new Error("Incompatible fixed-check report");
+  const { approval_hash, ...approved } = prior;
+  if (fingerprint(approved) !== approval_hash) throw new Error("Fixed-check source plan changed");
+  if (!Array.isArray(report.proposed_checks)) throw new Error("Missing fixed model proposals");
+  const results: FixedChecks["results"] = [];
+  for (const batch of groups(corpus.claims)) {
+    if (batch.every(c => baseline.privacy_withheld.includes(c.id))) continue;
+    const entries = report.proposed_checks.filter((r: { id?: unknown }) => batch.some(c => id(c.id) === r.id));
+    results.push(...proposals(JSON.stringify({ results: entries }), batch));
+  }
+  if (results.length !== report.proposed_checks.length || results.some(r => r.checks.some(c => c.role === "complete" && !["key", "value"].includes(c.kind)))) throw new Error("Invalid fixed model proposals");
+  results.sort((a, b) => a.id.localeCompare(b.id));
+  return { source_candidate: prior.candidate_commit, source_plan: approval_hash, results };
+}
 export interface Observation { claim: string; truth: boolean; verdict: string; judgement?: string; delivery: string; original: boolean; check_generation_failed: boolean; privacy_withheld?: boolean; }
 export function score(rows: Observation[]) {
   const trueTotal = rows.filter(r => r.truth).length, staleTotal = rows.length - trueTotal;
@@ -171,7 +200,7 @@ export function score(rows: Observation[]) {
 }
 
 export interface RunOptions { plan: Plan; approvalHash: string; corpus: CorpusData; subject: string; work: string; binary: string;
-  model: (request: ModelRequest) => Promise<ModelResult>; refreshIndex: (checkout: string) => void | Promise<void>;
+  model: (request: ModelRequest) => Promise<ModelResult>; fixed?: FixedChecks; refreshIndex: (checkout: string) => void | Promise<void>;
 }
 interface CallLedger { purpose: string; prompt_bytes: number; reserve_usd: number; state: "reserved" | "done" | "failed"; usage?: ModelResult["usage"]; api_equivalent_usd?: number; }
 function tokenCounts(ledger: CallLedger[]) {
@@ -185,7 +214,7 @@ function tokenCounts(ledger: CallLedger[]) {
 }
 export async function runEvaluation(options: RunOptions) {
   const corpus = checked(options.corpus);
-  const fresh = makePlan(options.corpus, options.subject, options.plan.candidate_commit);
+  const fresh = makePlan(options.corpus, options.subject, options.plan.candidate_commit, options.fixed);
   if (options.approvalHash !== fresh.approval_hash || fingerprint(fresh) !== fingerprint(options.plan)) throw new Error("Paid execution requires the exact approved plan hash");
   if (existsSync(options.work)) throw new Error("Use a new work directory; existing data is never removed");
   mkdirSync(options.work, { mode: 0o700 });
@@ -198,17 +227,19 @@ export async function runEvaluation(options: RunOptions) {
   const generated = new Map<string, ReturnType<typeof proposals>[number]>();
   const diagnostics:Array<{stage:string;claims:string[];errors?:unknown}>=[];
   const repaired=new Set<string>();
+  const judgeDiagnostics: Array<JudgeDiagnostic & { checkpoint: string }> = [];
   const provenance = { platform: process.platform, node: process.version, binary_sha256: createHash("sha256").update(readFileSync(options.binary)).digest("hex") };
   let charged = 0, fatal = false, stopReason:string|undefined;
   const reportFor = (complete: boolean) => ({ plan: options.plan, provenance, ledger, token_counts: tokenCounts(ledger),
-    proposed_checks: [...generated.values()], generation_failed: [...failed], generation_diagnostics:diagnostics, generation_repaired:[...repaired], checkpoints: observations, charged_api_equivalent_usd: charged, complete, ...(stopReason ? {stop_reason:stopReason} : {}) });
+    judge_diagnostics: judgeDiagnostics, proposed_checks: [...generated.values()], generation_failed: [...failed], generation_diagnostics:diagnostics, generation_repaired:[...repaired], checkpoints: observations, charged_api_equivalent_usd: charged, complete, ...(stopReason ? {stop_reason:stopReason} : {}) });
   const persist = () => writeFileSync(join(options.work, "report.json"), JSON.stringify(reportFor(false), null, 2) + "\n", { mode: 0o600 });
   const model = async (request: ModelRequest) => {
     const bytes = Buffer.byteLength(request.prompt);
     const reserve = ((bytes + 8192) * PRICES.cache_write + OUTPUT_TOKENS * PRICES.output) / 1e6 * 1.1;
     const limits:Record<string,number>={"judge-bench.checks":fresh.check_writer_calls,"judge-bench.repair":fresh.check_repair_calls_max,judge:fresh.judge_calls_max};
-    const allowed=limits[request.purpose];
-    if (fatal || allowed===undefined || ledger.filter(r=>r.purpose===request.purpose).length>=allowed || bytes > PROMPT_BYTES || ledger.length >= fresh.max_calls || charged + reserve > fresh.approval_usd) {
+    const purpose = request.purpose === "judge.check-repair" ? "judge" : request.purpose;
+    const allowed=limits[purpose];
+    if (fatal || allowed===undefined || ledger.filter(r=>(r.purpose === "judge.check-repair" ? "judge" : r.purpose)===purpose).length>=allowed || bytes > PROMPT_BYTES || ledger.length >= fresh.max_calls || charged + reserve > fresh.approval_usd) {
       fatal=true;stopReason="approved-bound";persist();throw new Error("The approved model-call or cost bound was reached");
     }
     const row: CallLedger = { purpose: request.purpose, prompt_bytes: bytes, reserve_usd: reserve, state: "reserved" };
@@ -235,7 +266,8 @@ export async function runEvaluation(options: RunOptions) {
     writer.db.prepare("INSERT INTO own_usage VALUES(?, 'claude', 100000000, 0, 0, 0, 1)").run(new Date().toISOString().slice(0, 10));
     const request = { checkout, project_id: projectId, mex_home: home, record_directory: writer.location.directory };
     const learned = join(checkout, ".mex", "learned"); mkdirSync(learned, { recursive: true });
-    for (const batch of groups(corpus.claims)) {
+    if (options.fixed) for (const proposed of options.fixed.results) generated.set(proposed.id, proposed);
+    for (const batch of options.fixed ? [] : groups(corpus.claims)) {
       if (!batch.every(c => fresh.privacy_withheld.includes(c.id))) {
         const prompt = checkPrompt(batch, source(options.subject, corpus.checkpoints[0]!.sha, batch[0]!.file)!);
         const response = await model({ agent: "claude", role: "cheap", projectRoot: checkout, purpose: "judge-bench.checks", prompt });
@@ -264,7 +296,8 @@ export async function runEvaluation(options: RunOptions) {
         else {failed.add(claim.id);diagnostics.push({stage,claims:[claim.id],errors:result.errors});}
     };
     for(const claim of corpus.claims) await record(claim,"initial-recording");
-    for(const batch of groups(corpus.claims)) {
+    if (options.fixed && failed.size) throw new Error("Fixed model targets could not be recorded; no generation or seed repair is allowed");
+    for(const batch of options.fixed ? [] : groups(corpus.claims)) {
       const rejected=batch.filter(c=>failed.has(c.id));
       if(!rejected.length) continue;
       const feedback=diagnostics.filter(d=>d.claims.some(id=>rejected.some(c=>c.id===id)));
@@ -293,7 +326,7 @@ export async function runEvaluation(options: RunOptions) {
       const before = await evaluate(request);
       let job: JobRow | undefined;
       if (index > 0) {
-        registerJobKind(createJudgeKind({ evaluate, recordChecks, model }));
+        registerJobKind(createJudgeKind({ evaluate, recordChecks, recordChecksDetailed, model, diagnostic: event => { judgeDiagnostics.push({ checkpoint: cp.id, ...event }); persist(); } }));
         const queued = enqueueJob(writer, { kind: "judge", projectId, params: { checkout, agent: "claude", near: [] } }).job;
         const row = () => writer!.db.prepare("SELECT * FROM jobs WHERE id=?").get(queued.id) as unknown as JobRow;
         for (let n = 0; n < 1000 && row().state === "queued" && !fatal; n++) await runOneBatch(writer, ownerId("foreground"), { only: new Set([queued.id]), immediate: true });
