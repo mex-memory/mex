@@ -1,6 +1,3 @@
-// Preserve the byte pressure of fixtures authored at four bytes per token.
-const calibratedFixtureBudget=(oldTokens:number)=>codeTokens("x".repeat(oldTokens*4));
-import { codeTokens } from "../../shared/tokens.js";
 // Integration test for the agent-facing JSONL commands. Builds a real graph over
 // a tiny project and drives runGraphScope / runGraphQuery / runGraphGet / runImpact
 // through injected session + capturing writer, asserting the protocol contract:
@@ -499,7 +496,7 @@ describe("runGraphScope", () => {
     };
     try {
       const records = capture(() => runGraphScope("TargetSymbol", isolated, priorityDeps, {
-        maxOutputTokens: calibratedFixtureBudget(1200), maxSourceLines: 200,
+        maxOutputTokens: 1200, maxSourceLines: 200,
       }));
       const sources = records.filter((record) => record.type === "source");
       expect(sources.length, JSON.stringify(records)).toBeGreaterThan(0);
@@ -514,7 +511,7 @@ describe("runGraphScope", () => {
       expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(summary.maxOutputTokens as number);
 
       const roomy = capture(() => runGraphScope("TargetSymbol", isolated, priorityDeps, {
-        maxOutputTokens: calibratedFixtureBudget(2400), maxSourceLines: 200,
+        maxOutputTokens: 2400, maxSourceLines: 200,
       }));
       const flowRanges = roomy.filter((record) => record.type === "source" && record.filePath === "flow.ts")
         .flatMap((record) => record.ranges as Array<{
@@ -658,7 +655,7 @@ describe("runGraphScope", () => {
     };
     try {
       const records = capture(() => runGraphScope(query, isolated, directDeps, {
-        maxFiles: 2, maxSourceLines: 200, maxOutputTokens: calibratedFixtureBudget(3000),
+        maxFiles: 2, maxSourceLines: 200, maxOutputTokens: 3000,
       }));
       const primaryRanges = records.filter((record) => record.type === "source"
         && record.filePath === primary.filePath)
@@ -678,7 +675,7 @@ describe("runGraphScope", () => {
         && (record.steps as GraphEdge[]).some((edge) => edge.source === primary.id
           && edge.target === primaryHelper.id))).toBe(true);
       expect(records.at(-1)).toMatchObject({ type: "summary", status: "ok" });
-      expect(records.at(-1)!.estimatedOutputTokens as number).toBeLessThanOrEqual(calibratedFixtureBudget(3000));
+      expect(records.at(-1)!.estimatedOutputTokens as number).toBeLessThanOrEqual(3000);
     } finally {
       rmSync(isolated, { recursive: true, force: true });
     }
@@ -871,7 +868,7 @@ describe("runGraphScope", () => {
         "How does Framework assemble pipeline stages with handlers?",
         isolated,
         cohesiveDeps,
-        { maxOutputTokens: calibratedFixtureBudget(1800), maxSourceLines: 200, maxFiles: 3 },
+        { maxOutputTokens: 1800, maxSourceLines: 200, maxFiles: 3 },
       ));
       const sources = records.filter((record) => record.type === "source");
       expect(sources[0]).toMatchObject({ filePath: target.filePath });
@@ -889,7 +886,7 @@ describe("runGraphScope", () => {
         cohesiveDeps,
         // Below the whole cohesive file, now that the summary reserve is no
         // larger than the summary (#305); at 1200 the file fits.
-        { maxOutputTokens: calibratedFixtureBudget(900), maxSourceLines: 200, maxFiles: 3 },
+        { maxOutputTokens: 900, maxSourceLines: 200, maxFiles: 3 },
       ));
       expect(constrained.at(-1)).toMatchObject({
         type: "summary", status: "partial", truncated: true,
@@ -1296,7 +1293,7 @@ describe("runGraphScope", () => {
     try {
       const records = capture(() => runGraphScope(
         "locate the pipeline declaration", isolated, callsiteDeps,
-        { maxOutputTokens: calibratedFixtureBudget(6000), maxSourceLines: 200, maxFiles: 4 },
+        { maxOutputTokens: 6000, maxSourceLines: 200, maxFiles: 4 },
       ));
       const sourceRecords = records.filter((record) => record.type === "source");
       const semanticIndex = sourceRecords.findIndex((record) => (
@@ -1354,7 +1351,7 @@ describe("runGraphScope", () => {
       expect(records.at(-1)).toMatchObject({
         type: "summary", returnedFiles: expect.arrayContaining(["pipeline.ts"]),
       });
-      expect(records.at(-1)!.estimatedOutputTokens as number).toBeLessThanOrEqual(calibratedFixtureBudget(6000));
+      expect(records.at(-1)!.estimatedOutputTokens as number).toBeLessThanOrEqual(6000);
     } finally {
       rmSync(isolated, { recursive: true, force: true });
     }
@@ -1923,7 +1920,7 @@ describe("test-file call results (#289)", () => {
   });
 
   it("--include-tests returns test callers after the real caller", () => {
-    const records = capture(() => runGraphQuery("who-calls", "compose", project, projectDeps, { includeTests: true, maxOutputTokens: calibratedFixtureBudget(1500) }));
+    const records = capture(() => runGraphQuery("who-calls", "compose", project, projectDeps, { includeTests: true }));
     const results = names(records, "result");
     expect(results[0]).toBe("run");
     expect(results).toHaveLength(7);
@@ -1948,7 +1945,7 @@ describe("test-file call results (#289)", () => {
     expect(records.at(-1)).toMatchObject({ type: "summary", omittedTestNodes: 6 });
     expect(records.at(-1)!.suggestedNextCommands).toContain("mex impact compose --include-tests");
 
-    const all = capture(() => runImpact("compose", project, projectDeps, { includeTests: true, maxOutputTokens: calibratedFixtureBudget(1500) }));
+    const all = capture(() => runImpact("compose", project, projectDeps, { includeTests: true }));
     const callers = names(all, "caller");
     expect(callers[0]).toBe("run");
     expect(callers).toHaveLength(7);
@@ -2023,7 +2020,7 @@ describe("budget accounting honesty", () => {
     for (const maxOutputTokens of [1500, 3500]) {
       const records = capture(() => runGraphScope("run", root, deps, { detail: "source", maxOutputTokens }));
       const summary = records.at(-1)!;
-      const actual = records.reduce((sum, r) => sum + codeTokens(JSON.stringify(r)), 0);
+      const actual = records.reduce((sum, r) => sum + Math.ceil(JSON.stringify(r).length / 4), 0);
       expect(summary.estimatedOutputTokens as number).toBeGreaterThanOrEqual(actual);
       expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(summary.maxOutputTokens as number);
     }
@@ -2132,8 +2129,8 @@ describe("runGraphScope --fingerprint", () => {
     rmSync(fpRoot, { recursive: true, force: true });
   });
 
-  it("returns a fingerprinted fact for every source-backed node at source detail with a sufficient calibrated budget", () => {
-    const records = capture(() => runGraphScope(task, fpRoot, fpDeps, { fingerprint: true, maxOutputTokens: calibratedFixtureBudget(3500) }));
+  it("returns a fingerprinted fact for every source-backed node in the default source detail", () => {
+    const records = capture(() => runGraphScope(task, fpRoot, fpDeps, { fingerprint: true }));
     const sourced = sourcedIds(records);
     expect(sourced.length).toBeGreaterThan(0);
     for (const id of sourced) {
@@ -2142,7 +2139,7 @@ describe("runGraphScope --fingerprint", () => {
     }
     const summary = records.at(-1)!;
     expect(summary).toMatchObject({ type: "summary", status: "ok" });
-    expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(calibratedFixtureBudget(3500));
+    expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(3500);
   });
 
   it("counts source-backed nodes in returnedNodes, not only fact records", () => {
@@ -2196,12 +2193,12 @@ describe("runGraphScope --fingerprint", () => {
   it.each(["minimal", "standard"] as const)(
     "reports partial with a warning, not no-match, when no fingerprint fits at %s detail",
     (detail) => {
-      const records = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, maxOutputTokens: calibratedFixtureBudget(500), fingerprint: true }));
+      const records = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, maxOutputTokens: 500, fingerprint: true }));
       const summary = records.at(-1)!;
       expect(summary.status).toBe("partial");
       expect(summary.warnings).toContainEqual(expect.stringMatching(/^Fingerprints omitted: \d+ fact\(s\)/));
-      expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(calibratedFixtureBudget(500));
-      const off = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, maxOutputTokens: calibratedFixtureBudget(500) }));
+      expect(summary.estimatedOutputTokens as number).toBeLessThanOrEqual(500);
+      const off = capture(() => runGraphScope(task, fpRoot, fpDeps, { detail, maxOutputTokens: 500 }));
       expect(off.at(-1)!.warnings).not.toContainEqual(expect.stringMatching(/^Fingerprints omitted/));
     },
   );

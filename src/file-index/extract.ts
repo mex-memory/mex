@@ -1,8 +1,7 @@
-import { codeTokens } from "../shared/tokens.js";
 import { contentHash, countLiteral, langOf, lineStarts, looksBinary } from "./classify.js";
 import { parseJs, type ParsedFile } from "./parse-js.js";
 import { parseTreeSitter } from "./parse-tree-sitter.js";
-import { MAX_FILE_BYTES, type FileRecord, type IndexPattern, type NotIndexedReason } from "./types.js";
+import { CHARS_PER_TOKEN, MAX_FILE_BYTES, type FileRecord, type IndexPattern, type NotIndexedReason } from "./types.js";
 
 export type Extracted = { record: FileRecord } | { reason: NotIndexedReason };
 
@@ -47,7 +46,7 @@ export function buildRecord(bytes: Uint8Array, text: string, lang: FileRecord["l
     exports,
     names: [...names].sort(),
     patterns: counts,
-    tokens: codeTokens(text),
+    tokens: Math.ceil(text.length / CHARS_PER_TOKEN),
     lines: text.length === 0 ? 0 : lineStarts(text).length - (text.endsWith("\n") ? 1 : 0),
   };
   if (parsed?.error) record.parse_error = parsed.error;
