@@ -149,6 +149,41 @@ describe("reviewed legacy upgrade", () => {
     expect(f.git("worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
   });
 
+  it("asks for a Git identity before changing anything", async () => {
+    const f = fixture(), p = prepareUpgrade(f.options, now), before = f.git("status", "--porcelain=v1");
+    const isolated = join(f.root, "..", "no-identity");
+    mkdirSync(isolated, { recursive: true });
+    vi.stubEnv("GIT_CONFIG_GLOBAL", join(isolated, "gitconfig"));
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+    vi.stubEnv("HOME", isolated); vi.stubEnv("USERPROFILE", isolated); vi.stubEnv("XDG_CONFIG_HOME", isolated);
+    vi.stubEnv("GIT_AUTHOR_NAME", ""); vi.stubEnv("GIT_COMMITTER_NAME", ""); vi.stubEnv("EMAIL", "");
+    f.git("config", "--unset-all", "user.name"); f.git("config", "--unset-all", "user.email");
+    await expect(runUpgrade(f.options, p.revision, { now })).rejects.toMatchObject({ code: "GIT_IDENTITY" });
+    expect(pendingUpgrade(f.options)).toBeUndefined();
+    expect(f.git("status", "--porcelain=v1")).toBe(before);
+  });
+
+  it("finishes after a checkout that failed once it had created the branch", async () => {
+    const f = fixture(), p = prepareUpgrade(f.options, now);
+    await expect(runUpgrade(f.options, p.revision, { now, stopAfter: "local" })).rejects.toMatchObject({ code: "UPGRADE_STOPPED" });
+    // What `git worktree add -b` leaves when the checkout itself fails (for
+    // example a path too long for Windows): the branch, but no worktree.
+    f.git("branch", p.branch, p.base);
+    const result = await finishUpgrade(f.options);
+    expect(result.files).toEqual(p.tracked.map(c => c.path));
+    expect(f.git("rev-parse", `${result.branch}^`)).toBe(p.base);
+  });
+
+  it("keeps a leftover upgrade branch that no longer points at the base", async () => {
+    const f = fixture(), p = prepareUpgrade(f.options, now);
+    await expect(runUpgrade(f.options, p.revision, { now, stopAfter: "local" })).rejects.toMatchObject({ code: "UPGRADE_STOPPED" });
+    const moved = f.git("commit-tree", `${p.base}^{tree}`, "-p", p.base, "-m", "someone else's work");
+    f.git("branch", p.branch, moved);
+    await expect(finishUpgrade(f.options)).rejects.toMatchObject({ code: "UPGRADE_CHANGED" });
+    expect(f.git("rev-parse", `refs/heads/${p.branch}`)).toBe(moved);
+    expect(pendingUpgrade(f.options)?.step).toBe("local");
+  });
+
   it("keeps edited recovery output and refuses links or unrelated work during discard", async () => {
     const f = fixture(), p = prepareUpgrade(f.options, now);
     await expect(runUpgrade(f.options, p.revision, { now, stopAfter: "written" })).rejects.toMatchObject({ code: "UPGRADE_STOPPED" });

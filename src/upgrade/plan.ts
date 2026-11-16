@@ -143,6 +143,8 @@ export function prepareUpgrade(options: KnowledgeOptions, now = new Date()): Upg
     }
   }
   if (plan.issues.some(i => i.blocking)) plan.ready = false;
+  // A source can fail the base check as an input and again as an output; report it once.
+  plan.issues = plan.issues.filter((issue, index, all) => all.findIndex(other => JSON.stringify(other) === JSON.stringify(issue)) === index);
   for (const change of [...plan.tracked, ...plan.local]) plan.diff += upgradeDiff(change.path, change.before, change.after);
   for (const change of plan.personal) plan.diff += upgradeDiff(`personal/${change.path}`, null, change.after);
   for (const cache of assets.caches) plan.diff += `Remove local disposable cache ${cache.path} (${cache.bytes} bytes, sha256:${cache.hash})\n`;
