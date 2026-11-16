@@ -6,14 +6,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
 import { build } from 'tsup';
-import { buildCorpus } from './build-corpus.mjs';
+import { buildCorpus, REVIEW } from './build-corpus.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 function argumentsFor(args) {
   const result = {};
   for (let n = 0; n < args.length; n++) {
     const key = args[n];
-    if (!['--subject', '--out', '--run', '--approve-plan', '--work', '--binary'].includes(key) || key in result) throw new Error('Unknown or duplicate argument');
+    if (!['--subject', '--out', '--run', '--approve-plan', '--work', '--binary', '--checks-from', '--rescore'].includes(key) || key in result) throw new Error('Unknown or duplicate argument');
     result[key] = key === '--run' ? true : args[++n];
     if (!result[key]) throw new Error(`Missing value for ${key}`);
   }
@@ -31,20 +31,29 @@ try {
   const runtime = await import(pathToFileURL(join(out, 'oss68-evaluation.js')).href);
   const subject = resolve(args['--subject']);
   for (const key of ['GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR','GIT_INDEX_FILE','GIT_NAMESPACE','GIT_PREFIX']) delete process.env[key];
-  const built = buildCorpus(subject);
-  if (built.manifest.dataset_sha256 !== '6d693e9985c432356f6f0f1bf5319bc87559bece082cbb40314ce6637c69b687') throw new Error('The approved corpus changed');
+  const legacy = buildCorpus(subject), built = buildCorpus(subject, { revision: REVIEW.revision });
+  if (legacy.manifest.dataset_sha256 !== REVIEW.parent_dataset_sha256 || built.manifest.dataset_sha256 !== REVIEW.reviewed_dataset_sha256) throw new Error('The reviewed corpus changed');
+  if (args['--rescore']) {
+    if (!args['--out'] || ['--run','--approve-plan','--work','--binary','--checks-from'].some(k => args[k])) throw new Error('Rescoring requires --out and forbids execution/check-replay flags');
+    const audit = runtime.rescoreReport(resolve(args['--rescore']), legacy.corpus, built.corpus, subject);
+    const file = resolve(args['--out']); mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(audit, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    console.log(JSON.stringify({ kind: audit.kind, model_calls: 0, checkpoints: audit.checkpoints.map(cp => ({ id: cp.id, score: cp.label_corrected_score })) }));
+    process.exit(0);
+  }
   const candidate = runtime.git(root, 'rev-parse', 'HEAD').trim();
-  const plan = runtime.makePlan(built.corpus, subject, candidate);
+  const fixed = args['--checks-from'] ? runtime.loadFixedChecks(resolve(args['--checks-from']), built.corpus, subject, legacy.corpus) : undefined;
+  const plan = runtime.makePlan(built.corpus, subject, candidate, fixed);
   if (!args['--run']) {
     if (args['--approve-plan'] || args['--work'] || args['--binary']) throw new Error('Paid-only flags require --run');
     if (args['--out']) {
       const file = resolve(args['--out']); mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, JSON.stringify(plan, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     }
-    console.log(JSON.stringify({ paid_calls: 0, model: plan.model, claims: built.corpus.claims.length,
+    console.log(JSON.stringify({ paid_calls: 0, mode: plan.mode, model: plan.model, claims: built.corpus.claims.length,
       checkpoints: plan.checkpoints.map(({ id, true: kept, stale }) => ({ id, true: kept, stale })),
       check_writer_calls: plan.check_writer_calls, check_repair_calls_max: plan.check_repair_calls_max, judge_calls_max: plan.judge_calls_max, max_calls: plan.max_calls,
-      privacy_withheld: plan.privacy_withheld,
+      privacy_withheld: plan.privacy_withheld, regenerated_check_claims: fixed?.regenerate ?? [], reused_checks: fixed?.results.length ?? 0,
       conservative_api_equivalent_usd: plan.conservative_api_equivalent_usd,
       approval_usd: plan.approval_usd, approval_hash: plan.approval_hash, price_source: plan.price_source }, null, 2));
   } else {
@@ -62,7 +71,7 @@ try {
       } },
     });
     const report = await runtime.runEvaluation({ plan, approvalHash: args['--approve-plan'], corpus: built.corpus, subject,
-      work: resolve(args['--work']), binary: resolve(args['--binary']), model,
+      fixed, work: resolve(args['--work']), binary: resolve(args['--binary']), model,
       refreshIndex: cwd => execFileSync(process.execPath, [join(root, 'dist/cli.js'), 'index', '--json'], { cwd, env: { ...process.env, MEX_BACKGROUND: '0' }, timeout: 120_000, stdio: ['ignore','pipe','pipe'], maxBuffer: 2 << 20 }),
     });
     console.log(JSON.stringify({ complete: report.complete, calls: report.ledger.length, checkpoints: report.checkpoints,

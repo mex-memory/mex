@@ -4,8 +4,11 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import REVIEW from "./reviewed-v2.json";
 import { openRecord } from "../../src/record/index.js";
 import { enqueueJob, ownerId, registerJobKind, runOneBatch, type JobRow } from "../../src/record/jobs.js";
+import type { JudgeDiagnostic } from "../../src/judge/replies.js";
+import { readBoundedTextFile } from "../../src/knowledge/files.js";
 import { createJudgeKind } from "../../src/judge/job.js";
 import { evaluate, nativeRequest, recordChecks, recordChecksDetailed } from "../../src/judge/native.js";
 import { readJudgement } from "../../src/judge/result.js";
@@ -26,7 +29,7 @@ const path = z.string().max(512).regex(/^[A-Za-z0-9_./-]+$/).refine(s => !s.star
 const Claim = z.object({ id: z.string().regex(/^[a-z0-9]{1,32}$/), file: path, one_line: z.string().min(1).max(4096) });
 const Checkpoint = z.object({ id: z.string().regex(/^C\d+$/), sha: z.string().regex(/^[a-f0-9]{40,64}$/) });
 const Corpus = z.object({
-  manifest: z.object({ dataset_sha256: z.string().regex(/^[a-f0-9]{64}$/) }),
+  manifest: z.object({ dataset_sha256: z.string().regex(/^[a-f0-9]{64}$/), oracle_revision: z.string().optional(), parent_dataset_sha256: z.string().optional(), review_sha256: z.string().optional() }),
   claims: z.array(Claim).min(1).max(100), checkpoints: z.array(Checkpoint).min(2).max(6),
   labels: z.array(z.object({ claim: z.string(), checkpoint: z.string(), truth: z.boolean() })).max(600),
 });
@@ -82,9 +85,9 @@ function checked(value: CorpusData): CheckedCorpus {
   if (corpus.labels.some(l => l.checkpoint === corpus.checkpoints[0]!.id && !l.truth)) throw new Error("Every seed claim must be true at C0");
   return corpus;
 }
-export function makePlan(value: CorpusData, repo: string, candidateCommit: string) {
+export function makePlan(value: CorpusData, repo: string, candidateCommit: string, fixed?: FixedChecks) {
   const corpus = checked(value), first = corpus.checkpoints[0]!;
-  const batches = groups(corpus.claims).map(batch => {
+  const batchPlan = (batch: CheckedCorpus["claims"]) => {
     const code = source(repo, first.sha, batch[0]!.file);
     if (code === null || Buffer.byteLength(code) > 64 << 10) throw new Error("Seed source unavailable or too large");
     try {
@@ -94,7 +97,11 @@ export function makePlan(value: CorpusData, repo: string, candidateCommit: strin
       if ((error as { code?: string }).code !== "SECRET_FOUND") throw error;
       return { ids: batch.map(c => c.id), bytes: 0, sha256: fingerprint(code), privacy_withheld: true };
     }
-  });
+  };
+  const allBatches = groups(corpus.claims).map(batchPlan);
+  const withheld = allBatches.filter(b => b.privacy_withheld).flatMap(b => b.ids);
+  if (fixed) fixed = checkedFixed(fixed, corpus, withheld);
+  const batches = fixed ? groups(corpus.claims.filter(c => fixed!.regenerate?.includes(c.id))).map(batchPlan) : allBatches;
   const files = [...new Set(corpus.claims.map(c => c.file))];
   const checkpoints = corpus.checkpoints.map(cp => ({ ...cp,
     true: corpus.labels.filter(l => l.checkpoint === cp.id && l.truth).length,
@@ -111,17 +118,20 @@ export function makePlan(value: CorpusData, repo: string, candidateCommit: strin
   const judgeCalls = checkpoints.reduce((n, cp) => n + cp.judge_call_bound, 0);
   const maxCalls = writerCalls * 2 + judgeCalls;
   const reservePerCall = ((PROMPT_BYTES + 8192) * PRICES.cache_write + OUTPUT_TOKENS * PRICES.output) / 1e6 * 1.1;
-  const plan = { schema_version: 1, candidate_commit: candidateCommit, corpus_sha256: corpus.manifest.dataset_sha256,
+  const plan = { schema_version: 1, mode: fixed?.review_revision ? "reviewed-model-check-replay" : fixed ? "fixed-model-check-replay" : "fresh-model-checks",
+    ...(fixed ? { fixed_checks: { source_candidate: fixed.source_candidate, source_plan: fixed.source_plan, proposals_sha256: fingerprint(fixed.results), ...(fixed.regenerate ? { regenerate: fixed.regenerate } : {}), ...(fixed.review_revision ? { review_revision: fixed.review_revision, source_dataset_sha256: fixed.source_dataset_sha256, source_proposals_sha256: fixed.source_proposals_sha256 } : {}) } } : {}), candidate_commit: candidateCommit, corpus_sha256: corpus.manifest.dataset_sha256,
     claims_sha256: fingerprint(corpus.claims), truth_sha256: fingerprint(corpus.labels),
+    ...(corpus.manifest.oracle_revision ? { corpus_revision: corpus.manifest.oracle_revision, review_sha256: corpus.manifest.review_sha256 } : {}),
     model: MODEL, price_source: PRICE_SOURCE, prices_usd_per_million: PRICES, approval_usd: APPROVAL_USD,
     prompt_bytes_max: PROMPT_BYTES, output_tokens_max: OUTPUT_TOKENS, check_writer_calls: writerCalls,
     check_repair_calls_max:writerCalls, repair_rounds_max:1, judge_calls_max:judgeCalls,
-    privacy_withheld: batches.filter(b => b.privacy_withheld).flatMap(b => b.ids),
+    privacy_withheld: withheld,
     max_calls: maxCalls, conservative_api_equivalent_usd: Math.ceil(maxCalls * reservePerCall * 100) / 100,
     estimate_note: "UTF-8-byte upper estimate plus 8192 CLI/system tokens per call, 1h cache-write prices and 10% routing headroom; not an invoice guarantee. Actual usage and estimated flags are reported. CLI estimated budget can overshoot.",
     synthetic_allowance: "Private fixture record only; ample synthetic own usage exercises normal model admission, without reading or changing the person's usage record.",
     historical: { true_kept: 41, true_total: 42, stale_caught: 16, stale_total: 16, comparable_sample: false },
     pass_rule: "Report every case at every checkpoint, true original entries kept, proven stale entries caught, uncertainty/failures and token counts against the historical result. No improvement claim across different samples.",
+    ...(corpus.manifest.oracle_revision === REVIEW.revision ? { prospective_review_target: { checkpoint: "C5", true_kept_min: 28, true_total: 30, stale_caught_min: 15, stale_total: 16, stale_served_max: 0, generation_failed_max: 0 } } : {}),
     batches, checkpoints };
   return { ...plan, approval_hash: fingerprint(plan) };
 }
@@ -155,6 +165,79 @@ export function proposals(text: string, batch: CheckedCorpus["claims"]) {
   }
   return result.results;
 }
+export interface FixedChecks { source_candidate: string; source_plan: string; results: ReturnType<typeof proposals>; regenerate?: string[]; review_revision?: string; source_dataset_sha256?: string; source_proposals_sha256?: string; }
+const FixedChecksSchema = z.object({
+  source_candidate: z.string().regex(/^[a-f0-9]{40,64}$/u), source_plan: z.string().regex(/^[a-f0-9]{64}$/u),
+  results: z.array(Proposals.shape.results.element).max(100),
+  regenerate: z.array(z.string()).max(100).optional(), review_revision: z.string().optional(), source_dataset_sha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(), source_proposals_sha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+}).strict();
+function snapshotFixed(value: FixedChecks): FixedChecks {
+  // Own the entire JSON snapshot, including nested target data, before any
+  // asynchronous index/model callback. Never run against mutable caller data.
+  const fixed = FixedChecksSchema.parse(JSON.parse(JSON.stringify(value)));
+  assertNoSecrets(fixed);
+  fixed.results.sort((a, b) => a.id.localeCompare(b.id));
+  return fixed;
+}
+function checkedFixed(value: FixedChecks, corpus: CheckedCorpus, withheld: string[]): FixedChecks {
+  const fixed = snapshotFixed(value), results: FixedChecks["results"] = [], regenerate = new Set(fixed.regenerate ?? []);
+  if (regenerate.size !== (fixed.regenerate?.length ?? 0) || [...regenerate].some(id => !corpus.claims.some(c => c.id === id) || withheld.includes(id))) throw new Error("Invalid regeneration IDs");
+  for (const batch of groups(corpus.claims.filter(c => !regenerate.has(c.id)))) {
+    if (batch.every(c => withheld.includes(c.id))) continue;
+    results.push(...proposals(JSON.stringify({ results: fixed.results.filter(r => batch.some(c => id(c.id) === r.id)) }), batch));
+  }
+  if (results.length !== fixed.results.length || results.some(r => r.checks.some(c => c.role === "complete" && !["key", "value"].includes(c.kind)))) throw new Error("Invalid fixed model proposals");
+  results.sort((a, b) => a.id.localeCompare(b.id));
+  return { ...fixed, results };
+}
+/** Only this source-reviewed transition can reuse targets across revisions.
+ * Changed claim inputs must receive fresh model-written checks. */
+export function reviewedTransition(before: CorpusData, after: CorpusData, review = REVIEW): string[] {
+  const old = checked(before), next = checked(after);
+  if (old.manifest.dataset_sha256 !== review.parent_dataset_sha256 || next.manifest.dataset_sha256 !== review.reviewed_dataset_sha256
+    || next.manifest.oracle_revision !== review.revision || next.manifest.parent_dataset_sha256 !== old.manifest.dataset_sha256
+    || next.manifest.review_sha256 !== fingerprint(review) || fingerprint(old.checkpoints) !== fingerprint(next.checkpoints)
+    || old.claims.length !== next.claims.length) throw new Error("Unsupported reviewed corpus transition");
+  const changes = new Map(review.claim_changes.map(c => [c.id, c]));
+  for (const claim of old.claims) {
+    const now = next.claims.find(c => c.id === claim.id), change = changes.get(claim.id);
+    if (!now || now.file !== claim.file || (change ? claim.file !== change.file || claim.one_line !== change.before || now.one_line !== change.after : now.one_line !== claim.one_line)) throw new Error("Unreviewed claim change");
+  }
+  if (review.claim_changes.some(c => !old.claims.some(claim => claim.id === c.id))) throw new Error("Missing reviewed claim");
+  const patches = new Map(review.label_changes.map(c => [`${c.claim}/${c.checkpoint}`, c]));
+  for (const label of old.labels) {
+    const now = next.labels.find(l => l.claim === label.claim && l.checkpoint === label.checkpoint), patch = patches.get(`${label.claim}/${label.checkpoint}`);
+    if (!now || (patch ? label.truth !== patch.before || now.truth !== patch.after || old.checkpoints.find(c => c.id === patch.checkpoint)?.sha !== patch.sha : now.truth !== label.truth)) throw new Error("Unreviewed label change");
+  }
+  if (review.label_changes.some(p => !old.labels.some(l => l.claim === p.claim && l.checkpoint === p.checkpoint))) throw new Error("Missing reviewed label");
+  return review.claim_changes.map(c => c.id).sort();
+}
+function readReport(file: string, value: CorpusData, repo: string) {
+  const text = readBoundedTextFile(file, 1 << 20);
+  if (text === undefined) throw new Error("Source report unavailable");
+  const report = JSON.parse(text), corpus = checked(value), baseline = makePlan(value, repo, "0".repeat(40)), prior = report.plan;
+  if (report.complete !== true || !prior || prior.model !== MODEL || prior.corpus_sha256 !== baseline.corpus_sha256 || prior.claims_sha256 !== baseline.claims_sha256
+    || prior.truth_sha256 !== baseline.truth_sha256 || fingerprint(prior.checkpoints) !== fingerprint(baseline.checkpoints)
+    || fingerprint(prior.privacy_withheld) !== fingerprint(baseline.privacy_withheld) || typeof prior.candidate_commit !== "string" || !/^[a-f0-9]{40,64}$/u.test(prior.candidate_commit)
+    || typeof prior.approval_hash !== "string" || !/^[a-f0-9]{64}$/u.test(prior.approval_hash)) throw new Error("Incompatible source report");
+  const { approval_hash, ...approved } = prior;
+  if (fingerprint(approved) !== approval_hash) throw new Error("Source plan changed");
+  return { report, corpus, baseline, text };
+}
+/** Reuse validated model seed targets. Changed reviewed claims are regenerated. */
+export function loadFixedChecks(file: string, value: CorpusData, repo: string, legacy?: CorpusData): FixedChecks {
+  const raw = readBoundedTextFile(file, 1 << 20);
+  if (raw === undefined) throw new Error("Fixed-check report unavailable");
+  const same = JSON.parse(raw)?.plan?.corpus_sha256 === value.manifest.dataset_sha256;
+  if (!same && !legacy) throw new Error("Incompatible fixed-check report");
+  const origin = same ? value : legacy!, { report, corpus, baseline } = readReport(file, origin, repo), prior = report.plan;
+  if (!Array.isArray(report.generation_failed) || report.generation_failed.length) throw new Error("Incomplete model seed generation");
+  const original = checkedFixed({ source_candidate: prior.candidate_commit, source_plan: prior.approval_hash, results: report.proposed_checks }, corpus, baseline.privacy_withheld);
+  if (same) return original;
+  const regenerate = reviewedTransition(origin, value), next = checked(value), newPlan = makePlan(value, repo, "0".repeat(40));
+  return checkedFixed({ ...original, results: original.results.filter(r => !regenerate.some(c => id(c) === r.id)), regenerate,
+    review_revision: REVIEW.revision, source_dataset_sha256: prior.corpus_sha256, source_proposals_sha256: fingerprint(original.results) }, next, newPlan.privacy_withheld);
+}
 export interface Observation { claim: string; truth: boolean; verdict: string; judgement?: string; delivery: string; original: boolean; check_generation_failed: boolean; privacy_withheld?: boolean; }
 export function score(rows: Observation[]) {
   const trueTotal = rows.filter(r => r.truth).length, staleTotal = rows.length - trueTotal;
@@ -170,8 +253,45 @@ export function score(rows: Observation[]) {
     privacy_withheld: rows.filter(r => r.privacy_withheld).length };
 }
 
+const ReportRow = z.object({ claim: z.string(), truth: z.boolean(), verdict: z.enum(["held", "changed", "broken", "unknown"]),
+  judgement: z.enum(["still-true", "rewritten", "cannot-tell"]).optional(), delivery: z.enum(["full", "pointer", "withheld", "absent", "missing"]),
+  original: z.boolean(), check_generation_failed: z.boolean(), privacy_withheld: z.boolean().optional() });
+/** Free label audit only. Changed claim wording is explicitly NOT re-measured. */
+export function rescoreReport(file: string, legacy: CorpusData, reviewed: CorpusData, repo: string, review = REVIEW) {
+  const inputChanged = reviewedTransition(legacy, reviewed, review);
+  const { report, corpus, text } = readReport(file, legacy, repo);
+  // The first historical schema stored failure flags only in per-case rows.
+  // Infer its seed list explicitly, then require the same flags at every CP.
+  const failureListInferred = report.generation_failed === undefined;
+  const failed = failureListInferred ? z.array(ReportRow).parse(report.checkpoints?.[0]?.results).filter(r => r.check_generation_failed).map(r => r.claim) : report.generation_failed;
+  if (!Array.isArray(report.checkpoints) || report.checkpoints.length !== corpus.checkpoints.length
+    || !Array.isArray(failed) || new Set(failed).size !== failed.length
+    || failed.some((id: string) => !corpus.claims.some(c => c.id === id))) throw new Error("Incomplete source observations");
+  const checkpoints = corpus.checkpoints.map(cp => {
+    const matches = report.checkpoints.filter((c: { id: string }) => c.id === cp.id), observed = matches[0];
+    if (matches.length !== 1 || observed.sha !== cp.sha) throw new Error("Invalid source checkpoint");
+    const rows = z.array(ReportRow).parse(observed.results);
+    if (rows.length !== corpus.claims.length || new Set(rows.map(r => r.claim)).size !== rows.length) throw new Error("Incomplete source cases");
+    for (const row of rows) {
+      const truth = corpus.labels.find(l => l.claim === row.claim && l.checkpoint === cp.id);
+      if (!truth || row.truth !== truth.truth || row.check_generation_failed !== failed.includes(row.claim)
+        || !!row.privacy_withheld !== report.plan.privacy_withheld.includes(row.claim)) throw new Error("Source case metadata changed");
+    }
+    const original = score(rows);
+    if (fingerprint(original) !== fingerprint(observed.score)) throw new Error("Source score changed");
+    const corrected = rows.map(row => ({ ...row, truth: reviewed.labels.find(l => l.claim === row.claim && l.checkpoint === cp.id)!.truth }));
+    return { id: cp.id, sha: cp.sha, original_score: original, label_corrected_score: score(corrected),
+      changed_input_claims: inputChanged, label_corrections: review.label_changes.filter(l => l.checkpoint === cp.id) };
+  });
+  return { schema_version: 1, kind: "legacy-label-audit", model_calls: 0, failure_list_inferred_from_seed: failureListInferred, source_report_sha256: createHash("sha256").update(text).digest("hex"),
+    source_candidate: report.plan.candidate_commit, source_plan: report.plan.approval_hash, source_dataset: corpus.manifest.dataset_sha256,
+    source_claims_sha256: fingerprint(corpus.claims), corrected_truth_sha256: fingerprint(reviewed.labels),
+    review_revision: review.revision, review_sha256: fingerprint(review), reviewed_dataset: reviewed.manifest.dataset_sha256,
+    interpretation: "Only truth labels are corrected here. The original wording and outcomes remain historical; changed inputs require fresh model-written checks and a new measurement. These scores are not reviewed-v2 results.", checkpoints };
+}
+
 export interface RunOptions { plan: Plan; approvalHash: string; corpus: CorpusData; subject: string; work: string; binary: string;
-  model: (request: ModelRequest) => Promise<ModelResult>; refreshIndex: (checkout: string) => void | Promise<void>;
+  model: (request: ModelRequest) => Promise<ModelResult>; fixed?: FixedChecks; refreshIndex: (checkout: string) => void | Promise<void>;
 }
 interface CallLedger { purpose: string; prompt_bytes: number; reserve_usd: number; state: "reserved" | "done" | "failed"; usage?: ModelResult["usage"]; api_equivalent_usd?: number; }
 function tokenCounts(ledger: CallLedger[]) {
@@ -184,8 +304,8 @@ function tokenCounts(ledger: CallLedger[]) {
   return totals;
 }
 export async function runEvaluation(options: RunOptions) {
-  const corpus = checked(options.corpus);
-  const fresh = makePlan(options.corpus, options.subject, options.plan.candidate_commit);
+  const corpus = checked(options.corpus), fixed = options.fixed ? snapshotFixed(options.fixed) : undefined;
+  const fresh = makePlan(options.corpus, options.subject, options.plan.candidate_commit, fixed);
   if (options.approvalHash !== fresh.approval_hash || fingerprint(fresh) !== fingerprint(options.plan)) throw new Error("Paid execution requires the exact approved plan hash");
   if (existsSync(options.work)) throw new Error("Use a new work directory; existing data is never removed");
   mkdirSync(options.work, { mode: 0o700 });
@@ -198,17 +318,20 @@ export async function runEvaluation(options: RunOptions) {
   const generated = new Map<string, ReturnType<typeof proposals>[number]>();
   const diagnostics:Array<{stage:string;claims:string[];errors?:unknown}>=[];
   const repaired=new Set<string>();
+  const judgeDiagnostics: Array<JudgeDiagnostic & { checkpoint: string }> = [];
   const provenance = { platform: process.platform, node: process.version, binary_sha256: createHash("sha256").update(readFileSync(options.binary)).digest("hex") };
   let charged = 0, fatal = false, stopReason:string|undefined;
   const reportFor = (complete: boolean) => ({ plan: options.plan, provenance, ledger, token_counts: tokenCounts(ledger),
-    proposed_checks: [...generated.values()], generation_failed: [...failed], generation_diagnostics:diagnostics, generation_repaired:[...repaired], checkpoints: observations, charged_api_equivalent_usd: charged, complete, ...(stopReason ? {stop_reason:stopReason} : {}) });
+    reused_check_claims: fixed?.results.map(r => r.id) ?? [], regenerated_check_claims: fixed?.regenerate ?? [],
+    judge_diagnostics: judgeDiagnostics, proposed_checks: [...generated.values()], generation_failed: [...failed], generation_diagnostics:diagnostics, generation_repaired:[...repaired], checkpoints: observations, charged_api_equivalent_usd: charged, complete, ...(stopReason ? {stop_reason:stopReason} : {}) });
   const persist = () => writeFileSync(join(options.work, "report.json"), JSON.stringify(reportFor(false), null, 2) + "\n", { mode: 0o600 });
   const model = async (request: ModelRequest) => {
     const bytes = Buffer.byteLength(request.prompt);
     const reserve = ((bytes + 8192) * PRICES.cache_write + OUTPUT_TOKENS * PRICES.output) / 1e6 * 1.1;
     const limits:Record<string,number>={"judge-bench.checks":fresh.check_writer_calls,"judge-bench.repair":fresh.check_repair_calls_max,judge:fresh.judge_calls_max};
-    const allowed=limits[request.purpose];
-    if (fatal || allowed===undefined || ledger.filter(r=>r.purpose===request.purpose).length>=allowed || bytes > PROMPT_BYTES || ledger.length >= fresh.max_calls || charged + reserve > fresh.approval_usd) {
+    const purpose = request.purpose === "judge.check-repair" ? "judge" : request.purpose;
+    const allowed=limits[purpose];
+    if (fatal || allowed===undefined || ledger.filter(r=>(r.purpose === "judge.check-repair" ? "judge" : r.purpose)===purpose).length>=allowed || bytes > PROMPT_BYTES || ledger.length >= fresh.max_calls || charged + reserve > fresh.approval_usd) {
       fatal=true;stopReason="approved-bound";persist();throw new Error("The approved model-call or cost bound was reached");
     }
     const row: CallLedger = { purpose: request.purpose, prompt_bytes: bytes, reserve_usd: reserve, state: "reserved" };
@@ -235,7 +358,8 @@ export async function runEvaluation(options: RunOptions) {
     writer.db.prepare("INSERT INTO own_usage VALUES(?, 'claude', 100000000, 0, 0, 0, 1)").run(new Date().toISOString().slice(0, 10));
     const request = { checkout, project_id: projectId, mex_home: home, record_directory: writer.location.directory };
     const learned = join(checkout, ".mex", "learned"); mkdirSync(learned, { recursive: true });
-    for (const batch of groups(corpus.claims)) {
+    if (fixed) for (const proposed of fixed.results) generated.set(proposed.id, proposed);
+    for (const batch of groups(fixed ? corpus.claims.filter(c => fixed.regenerate?.includes(c.id)) : corpus.claims)) {
       if (!batch.every(c => fresh.privacy_withheld.includes(c.id))) {
         const prompt = checkPrompt(batch, source(options.subject, corpus.checkpoints[0]!.sha, batch[0]!.file)!);
         const response = await model({ agent: "claude", role: "cheap", projectRoot: checkout, purpose: "judge-bench.checks", prompt });
@@ -264,7 +388,8 @@ export async function runEvaluation(options: RunOptions) {
         else {failed.add(claim.id);diagnostics.push({stage,claims:[claim.id],errors:result.errors});}
     };
     for(const claim of corpus.claims) await record(claim,"initial-recording");
-    for(const batch of groups(corpus.claims)) {
+    if (fixed && [...failed].some(id => !fixed.regenerate?.includes(id))) throw new Error("Fixed model targets could not be recorded; no generation or seed repair is allowed");
+    for(const batch of groups(fixed ? corpus.claims.filter(c => fixed.regenerate?.includes(c.id)) : corpus.claims)) {
       const rejected=batch.filter(c=>failed.has(c.id));
       if(!rejected.length) continue;
       const feedback=diagnostics.filter(d=>d.claims.some(id=>rejected.some(c=>c.id===id)));
@@ -293,7 +418,7 @@ export async function runEvaluation(options: RunOptions) {
       const before = await evaluate(request);
       let job: JobRow | undefined;
       if (index > 0) {
-        registerJobKind(createJudgeKind({ evaluate, recordChecks, model }));
+        registerJobKind(createJudgeKind({ evaluate, recordChecks, recordChecksDetailed, model, diagnostic: event => { judgeDiagnostics.push({ checkpoint: cp.id, ...event }); persist(); } }));
         const queued = enqueueJob(writer, { kind: "judge", projectId, params: { checkout, agent: "claude", near: [] } }).job;
         const row = () => writer!.db.prepare("SELECT * FROM jobs WHERE id=?").get(queued.id) as unknown as JobRow;
         for (let n = 0; n < 1000 && row().state === "queued" && !fatal; n++) await runOneBatch(writer, ownerId("foreground"), { only: new Set([queued.id]), immediate: true });

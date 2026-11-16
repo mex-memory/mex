@@ -73,7 +73,7 @@ function writeFiles(root, files) {
  * line-ending setting. Throwaway caches are labelled and never claimed as
  * historical databases.
  */
-function project(work, base, subject, bundles, { scaffold, autocrlf, hook }) {
+export function project(work, base, subject, bundles, { scaffold, autocrlf, hook }) {
   rmSync(work, { recursive: true, force: true });
   mkdirSync(work, { recursive: true });
   const origin = join(work, 'origin.git'), checkout = join(work, 'repo');
@@ -91,7 +91,7 @@ function project(work, base, subject, bundles, { scaffold, autocrlf, hook }) {
     const tree = git(origin, ['write-tree'], { env });
     git(origin, ['update-ref', 'refs/heads/main', git(origin, ['commit-tree', tree, '-p', 'main', '-m', '0.8 scaffold (preserved input)'], { env })]);
   }
-  git(work, ['-c', `core.autocrlf=${autocrlf}`, 'clone', '--quiet', `file://${origin.replace(/\\/g, '/')}`, checkout]);
+  git(work, ['-c', `core.autocrlf=${autocrlf}`, 'clone', '--quiet', '--branch', 'main', `file://${origin.replace(/\\/g, '/')}`, checkout]);
   git(checkout, ['config', 'core.autocrlf', String(autocrlf)]);
   if (scaffold === 'uncommitted') writeFiles(checkout, files);
   mkdirSync(join(checkout, '.mex'), { recursive: true });

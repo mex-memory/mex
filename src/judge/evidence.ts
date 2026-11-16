@@ -1,14 +1,19 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { relative, sep } from "node:path";
+import { posix, relative, sep } from "node:path";
 import { containedDirectory, readBoundedTextFile, readEntryFile } from "../knowledge/files.js";
 import { parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { repoFile } from "../knowledge/references.js";
 import type { NativeItem, CheckResult } from "../knowledge/check.js";
 import { canonicalFileDiff } from "../team/artifacts/unified-diff.js";
 import type { RepoRelativePath } from "../team/contracts/shared.js";
+import { assertNoSecrets } from "../knowledge/gates.js";
+import { loadOxc, parseJs } from "../file-index/parse-js.js";
+import { contentHash } from "../file-index/classify.js";
+import { openIndex, type OpenOptions } from "../file-index/read.js";
+import type { OutlineItem } from "../file-index/types.js";
 
-export const JUDGE_LIMITS = Object.freeze({ entries: 10_000, scanBytes: 8 << 20, batch: 5, files: 16, fileBytes: 64 << 10, promptBytes: 256 << 10, history: 32 });
+export const JUDGE_LIMITS = Object.freeze({ entries: 10_000, scanBytes: 8 << 20, batch: 5, files: 16, helpers: 4, fileBytes: 64 << 10, promptBytes: 256 << 10, history: 32 });
 export const hash = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 export interface Position { branch: string | null; head: string | null; }
 export interface Candidate {
@@ -25,6 +30,125 @@ export interface FileEvidence {
 export interface Evidence {
   checkout: string; position: Position; entries: Array<{ id: string; entry: KnowledgeEntry; checks_now: CheckResult[]; rule_change?: string[] }>;
   files: FileEvidence[];
+  /** Only current, fully indexed symbol names; a read never refreshes the index. */
+  symbols?: Record<string, string[]>;
+}
+
+function symbolNames(outline: OutlineItem[]): string[] {
+  const names: string[] = [];
+  for (const [i, item] of outline.entries()) {
+    if (item.parent !== undefined && (item.parent < 0 || item.parent >= i)) throw new Error("Invalid symbol outline");
+    names.push(item.parent === undefined ? item.name : `${names[item.parent]}.${item.name}`);
+  }
+  return names;
+}
+
+/** Include only one hop of relative imports actually called by checked symbols.
+ * Missing/ambiguous dependencies remain missing evidence; never invent an old
+ * helper baseline from the checked file's history. */
+function localHelpers(checkout: string, files: FileEvidence[], candidates: Candidate[], deadline: number): FileEvidence[] {
+  const helpers = new Map<string, FileEvidence>();
+  for (const file of files) {
+    const lang = /\.[cm]?tsx?$/u.test(file.path) ? (file.path.endsWith("tsx") ? "tsx" : "ts") : /\.[cm]?jsx?$/u.test(file.path) ? "js" : undefined;
+    if (!lang || file.current === null) continue;
+    const targets = candidates.flatMap(c => c.entry.mex.checks.flatMap(check => check.kind === "symbol" && check.target.file === file.path ? [check.target.symbol] : []));
+    if (!targets.length) continue;
+    const parsed = parseJs(file.path, file.current, lang, { sourceSpans: true }), parser = loadOxc();
+    if (!parsed || parsed.error || !parser) continue;
+    const names = symbolNames(parsed.outline);
+    const ranges = (parsed.sourceSpans ?? []).filter((_, i) => targets.includes(names[i]!));
+    if (!ranges.length) continue;
+    const ast = parser.parseSync(file.path, file.current, { lang: lang === "js" ? "jsx" : lang });
+    if (ast.errors.length) continue;
+    const bindings = new Map<string, string>();
+    for (const statement of ast.program.body) {
+      if (statement.type !== "ImportDeclaration" || statement.importKind === "type") continue;
+      const from = (statement.source as { value?: unknown })?.value;
+      if (typeof from !== "string" || !(from.startsWith("./") || from.startsWith("../"))) continue;
+      for (const specifier of (statement.specifiers ?? []) as Array<{ importKind?: string; local?: { name?: string } }>) {
+        if (specifier.importKind !== "type" && specifier.local?.name) bindings.set(specifier.local.name, from);
+      }
+    }
+    if (!bindings.size) continue;
+    const called = new Set<string>(), shadowed = new Set<string>(), stack: unknown[] = [ast.program];
+    let nodes = 0;
+    const bound = (pattern: unknown) => {
+      const pending = [pattern];
+      while (pending.length) {
+        if (++nodes > 50_000 || Date.now() > deadline) throw new Error("The judge's source-context limit was reached");
+        const value = pending.pop();
+        if (!value || typeof value !== "object") continue;
+        const item = value as Record<string, unknown>;
+        if (item.type === "Identifier" && typeof item.name === "string") shadowed.add(item.name);
+        else if (item.type === "RestElement") pending.push(item.argument);
+        else if (item.type === "AssignmentPattern") pending.push(item.left);
+        else if (item.type === "TSParameterProperty") pending.push(item.parameter);
+        else if (item.type === "ArrayPattern" && Array.isArray(item.elements)) pending.push(...item.elements);
+        else if (item.type === "ObjectPattern" && Array.isArray(item.properties)) for (const p of item.properties) {
+          if (p && typeof p === "object") pending.push(p.type === "RestElement" ? p.argument : p.value);
+        }
+      }
+    };
+    while (stack.length) {
+      if (++nodes > 50_000 || Date.now() > deadline) throw new Error("The judge's source-context limit was reached");
+      const value = stack.pop();
+      if (!value || typeof value !== "object") continue;
+      if (Array.isArray(value)) { stack.push(...value); continue; }
+      const node = value as Record<string, unknown>;
+      // Conservatively omit an import if a same-name local binding exists.
+      // This avoids supplying an unrelated file without pretending to perform
+      // full lexical/module resolution or executing the repository.
+      if (["VariableDeclarator", "FunctionDeclaration", "FunctionExpression", "ClassDeclaration", "ClassExpression"].includes(String(node.type))) bound(node.id);
+      if (node.type === "CatchClause") bound(node.param);
+      if (Array.isArray(node.params)) for (const param of node.params) bound(param);
+      if (node.type === "CallExpression" && typeof node.start === "number" && typeof node.end === "number"
+        && ranges.some(({ start, end }) => (node.start as number) >= start && (node.end as number) <= end)) {
+        let callee = node.callee as Record<string, unknown> | undefined;
+        while (callee?.type === "MemberExpression") callee = callee.object as typeof callee;
+        if (callee?.type === "Identifier" && typeof callee.name === "string" && bindings.has(callee.name)) called.add(callee.name);
+      }
+      for (const child of Object.values(node)) if (child && typeof child === "object") stack.push(child);
+    }
+    const imports = new Set([...called].filter(name => !shadowed.has(name)).map(name => bindings.get(name)!));
+    for (const from of [...imports].sort()) {
+      if (Date.now() > deadline) throw new Error("The judge’s evidence time limit was reached");
+      const stem = posix.normalize(posix.join(posix.dirname(file.path), from));
+      if (stem.startsWith("../") || stem === "..") continue;
+      const extension = /\.[cm]?[jt]sx?$/u, explicit = extension.test(stem), base = stem.replace(extension, "");
+      // A bare module can be a directory. Probe only source-file candidates;
+      // repoFile correctly rejects directories and file-as-parent paths.
+      const paths = [...new Set([...[".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"].map(ext => base + ext), ...(explicit ? [] : [".ts", ".tsx", ".js"].map(ext => `${stem}/index${ext}`))])];
+      // Discover ambiguity using contained regular-file metadata first. Never
+      // read irrelevant candidate contents or let their size consume evidence.
+      const found = paths.filter(path => repoFile(checkout, path) !== undefined);
+      if (found.length !== 1 || files.some(f => f.path === found[0])) continue;
+      const path = found[0]!, current = readSource(checkout, path);
+      if (current === null) throw new Error("Helper evidence changed during discovery");
+      const helper: FileEvidence = { path, current, current_hash: hash(current), baselines: [] };
+      assertNoSecrets(helper.current);
+      helpers.set(helper.path, helper);
+      if (helpers.size > JUDGE_LIMITS.helpers || files.length + helpers.size > JUDGE_LIMITS.files) throw new Error("The judge's helper-file limit was reached");
+    }
+  }
+  return [...helpers.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function indexedSymbols(files: FileEvidence[], options?: OpenOptions): Record<string, string[]> | undefined {
+  if (!options) return undefined;
+  const reader = openIndex(options);
+  if (!reader) return undefined;
+  const out: Record<string, string[]> = {};
+  try {
+    for (const file of files) {
+      if (file.current === null) continue;
+      const info = reader.fileInfo(file.path), outline = reader.outline(file.path);
+      if ("not_indexed" in info || "not_indexed" in outline || outline.dropped || info.hash !== contentHash(Buffer.from(file.current))) continue;
+      // Omit an overlarge name list, rather than advertise a silently partial one.
+      const names = symbolNames(outline.symbols);
+      if (names.length <= 512 && Buffer.byteLength(JSON.stringify(names)) <= 16 << 10) out[file.path] = names;
+    }
+    return out;
+  } finally { reader.close(); }
 }
 
 /** Match the evaluator's parsed entry and actual reads, not a later file view. */
@@ -99,7 +223,7 @@ export function nextBatch(candidates: Candidate[]): Candidate[] {
 }
 
 /** Full-file changes matter: a caller in this file can invalidate its helper's note. */
-export async function evidence(checkout: string, candidates: Candidate[], at: Position): Promise<Evidence> {
+export async function evidence(checkout: string, candidates: Candidate[], at: Position, index?: OpenOptions): Promise<Evidence> {
   const deadline = Date.now() + 30_000;
   const paths = [...new Set(candidates.flatMap(c => c.files))].sort();
   if (paths.length > JUDGE_LIMITS.files) throw new Error("The judge's source-file limit was reached.");
@@ -129,8 +253,11 @@ export async function evidence(checkout: string, candidates: Candidate[], at: Po
     }
     files.push({ path, current, current_hash: current === null ? null : hash(current), baselines });
   }
+  assertNoSecrets(files);
+  files.push(...localHelpers(checkout, files, candidates, deadline));
+  const symbols = indexedSymbols(files, index);
   return { checkout, position: at, entries: candidates.map(c => ({ id: c.item.id, entry: c.entry, checks_now: c.checks,
-    ...(c.item.rule_evidence?.length ? { rule_change: c.item.rule_evidence } : {}) })), files };
+    ...(c.item.rule_evidence?.length ? { rule_change: c.item.rule_evidence } : {}) })), files, ...(symbols ? { symbols } : {}) };
 }
 
 /** Exact proof immediately before persisting a response; no result survives a checkout switch. */
