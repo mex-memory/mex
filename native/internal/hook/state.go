@@ -18,9 +18,12 @@ import (
 // home is where the shim looks for the person's files. Tests point it at a
 // temp folder through the environment.
 type home struct {
-	deliveryError func(error) // explicit diagnostic mode only; never model context
+	afterOutput   func(func()) // receipt callbacks run only after a complete stdout write
+	deliveryError func(error)  // explicit diagnostic mode only; never model context
 	deliveryTrace func(string, time.Duration)
 	scorer        string // MEX_DELIVERY_SCORER override; no I/O
+	surfaces      string // MEX_DELIVERY_SURFACES override; no I/O
+	aids          string // MEX_DELIVERY_ALIASES override; no I/O
 	user          string // the person's home folder
 	mex           string // MEX's folder: <MEX_HOME>/.mex, else ~/.mex (the same rule as Node's mexHomeDir)
 	codex         string // Codex's folder: CODEX_HOME, else ~/.codex
@@ -29,6 +32,9 @@ type home struct {
 	// checkout lookup and counters share the validated location.
 	usageLocation func() (place.Location, bool)
 	capture       func(contract.Event, string, controls)
+	levers        leverOptions
+	// getenv is the hook's environment, for marks such as a scripted prompt.
+	getenv Env
 }
 
 func homeFrom(getenv Env) home {
@@ -38,7 +44,9 @@ func homeFrom(getenv Env) home {
 			user = p
 		}
 	}
-	h := home{user: user, scorer: getenv("MEX_DELIVERY_SCORER")}
+	h := home{user: user, getenv: getenv, scorer: getenv("MEX_DELIVERY_SCORER"), aids: getenv("MEX_DELIVERY_ALIASES")}
+	h.surfaces = getenv("MEX_DELIVERY_SURFACES")
+	h.levers = leverOptions{raw: getenv("MEX_RAW") == "1", noOutline: getenv("MEX_OUTLINE") == "0", shell: getenv("SHELL")}
 	h.claude = strings.TrimSpace(getenv("CLAUDE_CONFIG_DIR"))
 	if h.claude == "" && user != "" {
 		h.claude = filepath.Join(user, ".claude")
@@ -287,6 +295,10 @@ func (h home) ownHookFiles(agent string) []string {
 		return []string{filepath.Join(h.user, ".cursor", "hooks.json")}
 	case "copilot":
 		return []string{filepath.Join(h.user, ".copilot", "hooks.json")}
+	case "antigravity":
+		return []string{filepath.Join(h.user, ".gemini", "config", "hooks.json")}
+	case "gemini":
+		return []string{filepath.Join(h.user, ".gemini", "settings.json")}
 	}
 	return nil
 }

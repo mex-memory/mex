@@ -1,0 +1,117 @@
+{
+ "schema_version": 1,
+ "about": "Preserved MEX 0.8 scaffolds for the three-repo upgrade gate. Hono: the knowledge-benchmark scaffold generated at the pinned commit (25 files, 60 groundings). novu: a 0.8 setup at the pinned commit whose .mex was never committed and whose root AGENTS.md was modified in place (31 files). MEX: its own committed 0.8 scaffold at the pinned commit. Groundings were checked against their commits with mex-agent 0.8.5 before being pinned here. watch-hook-0.8.5.json holds the post-commit hook written by mex-agent 0.8.5 `mex watch`.",
+ "bundles": {
+  "hono.json": "0912910b75ba1ac85769bd7b0f5ea84ed8bb5c111261e0cea4923167e99e9c82",
+  "novu.json": "359707ba00d7d904ded98f57e6c0952712d1fae04b1e48c6a69cb60432ec9296",
+  "watch-hook-0.8.5.json": "e73b95349a1ae3a333fb4778313f4dd8f5bdfd6091fed6ca5d500cff5443f66f"
+ },
+ "subjects": [
+  {
+   "id": "hono",
+   "repository": "https://github.com/honojs/hono.git",
+   "commit": "e3bf8c8913a707e49f374575bdf6c88f0ec7e3f6",
+   "bundle": "hono.json"
+  },
+  {
+   "id": "novu",
+   "repository": "https://github.com/novuhq/novu.git",
+   "commit": "5f9f2d7f2360462642a58ecceb1c0051bd5af80f",
+   "bundle": "novu.json"
+  },
+  {
+   "id": "mex",
+   "repository": "https://github.com/mex-memory/mex.git",
+   "commit": "de8f03aacaf8f584632d648c5762220e9ae71bc0",
+   "bundle": null
+  }
+ ],
+ "scenarios": [
+  {
+   "id": "hono-committed-crlf",
+   "subject": "hono",
+   "scaffold": "committed",
+   "autocrlf": true,
+   "hook": false,
+   "publish": "branch",
+   "expect": {
+    "ready": true,
+    "blocking": [],
+    "counts": {
+     "entries": 31,
+     "team": 31,
+     "personal": 0,
+     "tracked": 36,
+     "local": 0,
+     "review": 1,
+     "caches": 1,
+     "hook": false
+    },
+    "removedCommandsMax": 20,
+    "groundingsKept": 53
+   }
+  },
+  {
+   "id": "mex-in-tree-pr",
+   "subject": "mex",
+   "scaffold": "in-tree",
+   "autocrlf": false,
+   "hook": true,
+   "publish": "pr",
+   "expect": {
+    "ready": true,
+    "blocking": [],
+    "counts": {
+     "entries": 30,
+     "team": 28,
+     "personal": 2,
+     "tracked": 51,
+     "local": 0,
+     "review": 7,
+     "caches": 1,
+     "hook": true
+    },
+    "removedCommandsMax": 15,
+    "groundingsKept": 0
+   }
+  },
+  {
+   "id": "novu-as-found",
+   "subject": "novu",
+   "scaffold": "uncommitted",
+   "autocrlf": false,
+   "hook": false,
+   "publish": "branch",
+   "expect": {
+    "ready": false,
+    "blocking": [
+     "SOURCE_NOT_ON_BASE AGENTS.md"
+    ]
+   }
+  },
+  {
+   "id": "novu-committed",
+   "subject": "novu",
+   "scaffold": "committed",
+   "autocrlf": false,
+   "hook": false,
+   "publish": "branch",
+   "expect": {
+    "ready": true,
+    "blocking": [],
+    "counts": {
+     "entries": 166,
+     "team": 166,
+     "personal": 0,
+     "tracked": 172,
+     "local": 0,
+     "review": 2,
+     "caches": 1,
+     "hook": false
+    },
+    "removedCommandsMax": 6,
+    "groundingsKept": 200
+   }
+  }
+ ]
+}

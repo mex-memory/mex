@@ -407,7 +407,7 @@ INSERT INTO counters_go VALUES('2026-11-13','agent:codex:hook.calls',2147483647)
 }
 
 func TestUsageAgentsMatchTheHookProfiles(t *testing.T) {
-	for _, agent := range []string{"claude-code", "codex", "copilot", "opencode", "devin", "kiro"} {
+	for _, agent := range []string{"claude-code", "codex", "copilot", "cursor", "opencode", "antigravity", "gemini", "devin", "kiro"} {
 		if _, err := usageNames("2026-11-15", agent, false, false, 1); err != nil {
 			t.Errorf("%s: %v", agent, err)
 		}

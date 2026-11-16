@@ -1,0 +1,641 @@
+=== RUN   TestPackage1Case1
+--- PASS: TestPackage1Case1 (0.01s)
+=== RUN   TestPackage1Case2
+--- PASS: TestPackage1Case2 (0.02s)
+=== RUN   TestPackage1Case3
+--- PASS: TestPackage1Case3 (0.03s)
+=== RUN   TestPackage1Case4
+--- PASS: TestPackage1Case4 (0.04s)
+=== RUN   TestPackage1Case5
+--- PASS: TestPackage1Case5 (0.05s)
+=== RUN   TestPackage1Case6
+--- PASS: TestPackage1Case6 (0.06s)
+=== RUN   TestPackage1Case7
+--- PASS: TestPackage1Case7 (0.07s)
+=== RUN   TestPackage1Case8
+--- PASS: TestPackage1Case8 (0.08s)
+=== RUN   TestPackage1Case9
+--- PASS: TestPackage1Case9 (0.09s)
+=== RUN   TestPackage1Case10
+--- PASS: TestPackage1Case10 (0.00s)
+=== RUN   TestPackage1Case11
+--- PASS: TestPackage1Case11 (0.01s)
+=== RUN   TestPackage1Case12
+--- PASS: TestPackage1Case12 (0.02s)
+=== RUN   TestPackage1Case13
+--- PASS: TestPackage1Case13 (0.03s)
+=== RUN   TestPackage1Case14
+--- PASS: TestPackage1Case14 (0.04s)
+=== RUN   TestPackage1Case15
+--- PASS: TestPackage1Case15 (0.05s)
+=== RUN   TestPackage1Case16
+--- PASS: TestPackage1Case16 (0.06s)
+=== RUN   TestPackage1Case17
+--- PASS: TestPackage1Case17 (0.07s)
+=== RUN   TestPackage1Case18
+--- PASS: TestPackage1Case18 (0.08s)
+=== RUN   TestPackage1Case19
+--- PASS: TestPackage1Case19 (0.09s)
+=== RUN   TestPackage1Case20
+--- PASS: TestPackage1Case20 (0.00s)
+=== RUN   TestPackage1Case21
+--- PASS: TestPackage1Case21 (0.01s)
+=== RUN   TestPackage1Case22
+--- PASS: TestPackage1Case22 (0.02s)
+=== RUN   TestPackage1Case23
+--- PASS: TestPackage1Case23 (0.03s)
+=== RUN   TestPackage1Case24
+--- PASS: TestPackage1Case24 (0.04s)
+=== RUN   TestPackage1Case25
+--- PASS: TestPackage1Case25 (0.05s)
+=== RUN   TestPackage1Case26
+--- PASS: TestPackage1Case26 (0.06s)
+=== RUN   TestPackage1Case27
+--- PASS: TestPackage1Case27 (0.07s)
+=== RUN   TestPackage1Case28
+--- PASS: TestPackage1Case28 (0.08s)
+=== RUN   TestPackage1Case29
+--- PASS: TestPackage1Case29 (0.09s)
+=== RUN   TestPackage1Case30
+--- PASS: TestPackage1Case30 (0.00s)
+=== RUN   TestPackage1Case31
+--- PASS: TestPackage1Case31 (0.01s)
+=== RUN   TestPackage1Case32
+--- PASS: TestPackage1Case32 (0.02s)
+=== RUN   TestPackage1Case33
+--- PASS: TestPackage1Case33 (0.03s)
+=== RUN   TestPackage1Case34
+--- PASS: TestPackage1Case34 (0.04s)
+=== RUN   TestPackage1Case35
+--- PASS: TestPackage1Case35 (0.05s)
+=== RUN   TestPackage1Case36
+--- PASS: TestPackage1Case36 (0.06s)
+=== RUN   TestPackage1Case37
+--- PASS: TestPackage1Case37 (0.07s)
+=== RUN   TestPackage1Case38
+--- PASS: TestPackage1Case38 (0.08s)
+=== RUN   TestPackage1Case39
+--- PASS: TestPackage1Case39 (0.09s)
+PASS
+ok  	github.com/acme/shop/pkg1	0.112s
+=== RUN   TestPackage2Case1
+--- PASS: TestPackage2Case1 (0.01s)
+=== RUN   TestPackage2Case2
+--- PASS: TestPackage2Case2 (0.02s)
+=== RUN   TestPackage2Case3
+--- PASS: TestPackage2Case3 (0.03s)
+=== RUN   TestPackage2Case4
+--- PASS: TestPackage2Case4 (0.04s)
+=== RUN   TestPackage2Case5
+--- PASS: TestPackage2Case5 (0.05s)
+    store_test.go:88: warning: slow query took 1.2s
+=== RUN   TestPackage2Case6
+--- PASS: TestPackage2Case6 (0.06s)
+=== RUN   TestPackage2Case7
+--- PASS: TestPackage2Case7 (0.07s)
+=== RUN   TestPackage2Case8
+--- PASS: TestPackage2Case8 (0.08s)
+=== RUN   TestPackage2Case9
+--- PASS: TestPackage2Case9 (0.09s)
+=== RUN   TestPackage2Case10
+--- PASS: TestPackage2Case10 (0.00s)
+=== RUN   TestPackage2Case11
+--- PASS: TestPackage2Case11 (0.01s)
+=== RUN   TestPackage2Case12
+--- PASS: TestPackage2Case12 (0.02s)
+=== RUN   TestPackage2Case13
+--- PASS: TestPackage2Case13 (0.03s)
+=== RUN   TestPackage2Case14
+--- PASS: TestPackage2Case14 (0.04s)
+=== RUN   TestPackage2Case15
+--- PASS: TestPackage2Case15 (0.05s)
+=== RUN   TestPackage2Case16
+--- PASS: TestPackage2Case16 (0.06s)
+=== RUN   TestPackage2Case17
+--- PASS: TestPackage2Case17 (0.07s)
+=== RUN   TestPackage2Case18
+--- PASS: TestPackage2Case18 (0.08s)
+=== RUN   TestPackage2Case19
+--- PASS: TestPackage2Case19 (0.09s)
+=== RUN   TestPackage2Case20
+--- PASS: TestPackage2Case20 (0.00s)
+=== RUN   TestPackage2Case21
+--- PASS: TestPackage2Case21 (0.01s)
+=== RUN   TestPackage2Case22
+--- PASS: TestPackage2Case22 (0.02s)
+=== RUN   TestPackage2Case23
+--- PASS: TestPackage2Case23 (0.03s)
+=== RUN   TestPackage2Case24
+--- PASS: TestPackage2Case24 (0.04s)
+=== RUN   TestPackage2Case25
+--- PASS: TestPackage2Case25 (0.05s)
+=== RUN   TestPackage2Case26
+--- PASS: TestPackage2Case26 (0.06s)
+=== RUN   TestPackage2Case27
+--- PASS: TestPackage2Case27 (0.07s)
+=== RUN   TestPackage2Case28
+--- PASS: TestPackage2Case28 (0.08s)
+=== RUN   TestPackage2Case29
+--- PASS: TestPackage2Case29 (0.09s)
+=== RUN   TestPackage2Case30
+--- PASS: TestPackage2Case30 (0.00s)
+=== RUN   TestPackage2Case31
+--- PASS: TestPackage2Case31 (0.01s)
+=== RUN   TestPackage2Case32
+--- PASS: TestPackage2Case32 (0.02s)
+=== RUN   TestPackage2Case33
+--- PASS: TestPackage2Case33 (0.03s)
+=== RUN   TestPackage2Case34
+--- PASS: TestPackage2Case34 (0.04s)
+=== RUN   TestPackage2Case35
+--- PASS: TestPackage2Case35 (0.05s)
+=== RUN   TestPackage2Case36
+--- PASS: TestPackage2Case36 (0.06s)
+=== RUN   TestPackage2Case37
+--- PASS: TestPackage2Case37 (0.07s)
+=== RUN   TestPackage2Case38
+--- PASS: TestPackage2Case38 (0.08s)
+=== RUN   TestPackage2Case39
+--- PASS: TestPackage2Case39 (0.09s)
+PASS
+ok  	github.com/acme/shop/pkg2	0.212s
+=== RUN   TestPackage3Case1
+--- PASS: TestPackage3Case1 (0.01s)
+=== RUN   TestPackage3Case2
+--- PASS: TestPackage3Case2 (0.02s)
+=== RUN   TestPackage3Case3
+--- PASS: TestPackage3Case3 (0.03s)
+=== RUN   TestPackage3Case4
+--- PASS: TestPackage3Case4 (0.04s)
+=== RUN   TestPackage3Case5
+--- PASS: TestPackage3Case5 (0.05s)
+=== RUN   TestPackage3Case6
+--- PASS: TestPackage3Case6 (0.06s)
+=== RUN   TestPackage3Case7
+--- PASS: TestPackage3Case7 (0.07s)
+=== RUN   TestPackage3Case8
+--- PASS: TestPackage3Case8 (0.08s)
+=== RUN   TestPackage3Case9
+--- PASS: TestPackage3Case9 (0.09s)
+=== RUN   TestPackage3Case10
+--- PASS: TestPackage3Case10 (0.00s)
+=== RUN   TestPackage3Case11
+--- PASS: TestPackage3Case11 (0.01s)
+=== RUN   TestPackage3Case12
+--- PASS: TestPackage3Case12 (0.02s)
+=== RUN   TestPackage3Case13
+--- PASS: TestPackage3Case13 (0.03s)
+=== RUN   TestPackage3Case14
+--- PASS: TestPackage3Case14 (0.04s)
+=== RUN   TestPackage3Case15
+--- PASS: TestPackage3Case15 (0.05s)
+=== RUN   TestPackage3Case16
+--- PASS: TestPackage3Case16 (0.06s)
+=== RUN   TestPackage3Case17
+--- PASS: TestPackage3Case17 (0.07s)
+=== RUN   TestPackage3Case18
+--- PASS: TestPackage3Case18 (0.08s)
+=== RUN   TestPackage3Case19
+--- PASS: TestPackage3Case19 (0.09s)
+=== RUN   TestPackage3Case20
+--- PASS: TestPackage3Case20 (0.00s)
+=== RUN   TestPackage3Case21
+--- PASS: TestPackage3Case21 (0.01s)
+=== RUN   TestPackage3Case22
+--- PASS: TestPackage3Case22 (0.02s)
+=== RUN   TestPackage3Case23
+--- PASS: TestPackage3Case23 (0.03s)
+=== RUN   TestPackage3Case24
+--- PASS: TestPackage3Case24 (0.04s)
+=== RUN   TestPackage3Case25
+--- PASS: TestPackage3Case25 (0.05s)
+=== RUN   TestPackage3Case26
+--- PASS: TestPackage3Case26 (0.06s)
+=== RUN   TestPackage3Case27
+--- PASS: TestPackage3Case27 (0.07s)
+=== RUN   TestPackage3Case28
+--- PASS: TestPackage3Case28 (0.08s)
+=== RUN   TestPackage3Case29
+--- PASS: TestPackage3Case29 (0.09s)
+=== RUN   TestPackage3Case30
+--- PASS: TestPackage3Case30 (0.00s)
+=== RUN   TestPackage3Case31
+--- PASS: TestPackage3Case31 (0.01s)
+=== RUN   TestPackage3Case32
+--- PASS: TestPackage3Case32 (0.02s)
+=== RUN   TestPackage3Case33
+--- PASS: TestPackage3Case33 (0.03s)
+=== RUN   TestPackage3Case34
+--- PASS: TestPackage3Case34 (0.04s)
+=== RUN   TestPackage3Case35
+--- PASS: TestPackage3Case35 (0.05s)
+=== RUN   TestPackage3Case36
+--- PASS: TestPackage3Case36 (0.06s)
+=== RUN   TestPackage3Case37
+--- PASS: TestPackage3Case37 (0.07s)
+=== RUN   TestPackage3Case38
+--- PASS: TestPackage3Case38 (0.08s)
+=== RUN   TestPackage3Case39
+--- PASS: TestPackage3Case39 (0.09s)
+PASS
+ok  	github.com/acme/shop/pkg3	0.312s
+=== RUN   TestPackage4Case1
+--- PASS: TestPackage4Case1 (0.01s)
+=== RUN   TestPackage4Case2
+--- PASS: TestPackage4Case2 (0.02s)
+=== RUN   TestPackage4Case3
+--- PASS: TestPackage4Case3 (0.03s)
+=== RUN   TestPackage4Case4
+--- PASS: TestPackage4Case4 (0.04s)
+=== RUN   TestPackage4Case5
+--- PASS: TestPackage4Case5 (0.05s)
+=== RUN   TestPackage4Case6
+--- PASS: TestPackage4Case6 (0.06s)
+=== RUN   TestPackage4Case7
+--- PASS: TestPackage4Case7 (0.07s)
+=== RUN   TestPackage4Case8
+--- PASS: TestPackage4Case8 (0.08s)
+=== RUN   TestPackage4Case9
+--- PASS: TestPackage4Case9 (0.09s)
+=== RUN   TestPackage4Case10
+--- PASS: TestPackage4Case10 (0.00s)
+=== RUN   TestPackage4Case11
+--- PASS: TestPackage4Case11 (0.01s)
+=== RUN   TestPackage4Case12
+--- PASS: TestPackage4Case12 (0.02s)
+=== RUN   TestPackage4Case13
+--- PASS: TestPackage4Case13 (0.03s)
+=== RUN   TestPackage4Case14
+--- PASS: TestPackage4Case14 (0.04s)
+=== RUN   TestPackage4Case15
+--- PASS: TestPackage4Case15 (0.05s)
+=== RUN   TestPackage4Case16
+--- PASS: TestPackage4Case16 (0.06s)
+=== RUN   TestPackage4Case17
+--- PASS: TestPackage4Case17 (0.07s)
+=== RUN   TestPackage4Case18
+--- PASS: TestPackage4Case18 (0.08s)
+=== RUN   TestPackage4Case19
+--- PASS: TestPackage4Case19 (0.09s)
+=== RUN   TestPackage4Case20
+--- PASS: TestPackage4Case20 (0.00s)
+=== RUN   TestPackage4Case21
+--- PASS: TestPackage4Case21 (0.01s)
+=== RUN   TestPackage4Case22
+--- PASS: TestPackage4Case22 (0.02s)
+=== RUN   TestPackage4Case23
+--- PASS: TestPackage4Case23 (0.03s)
+=== RUN   TestPackage4Case24
+--- PASS: TestPackage4Case24 (0.04s)
+=== RUN   TestPackage4Case25
+--- PASS: TestPackage4Case25 (0.05s)
+=== RUN   TestPackage4Case26
+--- PASS: TestPackage4Case26 (0.06s)
+=== RUN   TestPackage4Case27
+--- PASS: TestPackage4Case27 (0.07s)
+=== RUN   TestPackage4Case28
+--- PASS: TestPackage4Case28 (0.08s)
+=== RUN   TestPackage4Case29
+--- PASS: TestPackage4Case29 (0.09s)
+=== RUN   TestPackage4Case30
+--- PASS: TestPackage4Case30 (0.00s)
+=== RUN   TestPackage4Case31
+--- PASS: TestPackage4Case31 (0.01s)
+=== RUN   TestPackage4Case32
+--- PASS: TestPackage4Case32 (0.02s)
+=== RUN   TestPackage4Case33
+--- PASS: TestPackage4Case33 (0.03s)
+=== RUN   TestPackage4Case34
+--- PASS: TestPackage4Case34 (0.04s)
+=== RUN   TestPackage4Case35
+--- PASS: TestPackage4Case35 (0.05s)
+=== RUN   TestPackage4Case36
+--- PASS: TestPackage4Case36 (0.06s)
+=== RUN   TestPackage4Case37
+--- PASS: TestPackage4Case37 (0.07s)
+=== RUN   TestPackage4Case38
+--- PASS: TestPackage4Case38 (0.08s)
+=== RUN   TestPackage4Case39
+--- PASS: TestPackage4Case39 (0.09s)
+PASS
+ok  	github.com/acme/shop/pkg4	0.412s
+=== RUN   TestPackage5Case1
+--- PASS: TestPackage5Case1 (0.01s)
+=== RUN   TestPackage5Case2
+--- PASS: TestPackage5Case2 (0.02s)
+=== RUN   TestPackage5Case3
+--- PASS: TestPackage5Case3 (0.03s)
+=== RUN   TestPackage5Case4
+--- PASS: TestPackage5Case4 (0.04s)
+=== RUN   TestPackage5Case5
+--- PASS: TestPackage5Case5 (0.05s)
+=== RUN   TestPackage5Case6
+--- PASS: TestPackage5Case6 (0.06s)
+=== RUN   TestPackage5Case7
+--- PASS: TestPackage5Case7 (0.07s)
+=== RUN   TestPackage5Case8
+--- PASS: TestPackage5Case8 (0.08s)
+=== RUN   TestPackage5Case9
+--- PASS: TestPackage5Case9 (0.09s)
+=== RUN   TestPackage5Case10
+--- PASS: TestPackage5Case10 (0.00s)
+=== RUN   TestPackage5Case11
+--- PASS: TestPackage5Case11 (0.01s)
+=== RUN   TestPackage5Case12
+--- PASS: TestPackage5Case12 (0.02s)
+=== RUN   TestPackage5Case13
+--- PASS: TestPackage5Case13 (0.03s)
+=== RUN   TestPackage5Case14
+--- PASS: TestPackage5Case14 (0.04s)
+=== RUN   TestPackage5Case15
+--- PASS: TestPackage5Case15 (0.05s)
+=== RUN   TestPackage5Case16
+--- PASS: TestPackage5Case16 (0.06s)
+=== RUN   TestPackage5Case17
+--- PASS: TestPackage5Case17 (0.07s)
+=== RUN   TestPackage5Case18
+--- PASS: TestPackage5Case18 (0.08s)
+=== RUN   TestPackage5Case19
+--- PASS: TestPackage5Case19 (0.09s)
+=== RUN   TestPackage5Case20
+--- PASS: TestPackage5Case20 (0.00s)
+=== RUN   TestPackage5Case21
+--- PASS: TestPackage5Case21 (0.01s)
+=== RUN   TestPackage5Case22
+--- PASS: TestPackage5Case22 (0.02s)
+=== RUN   TestPackage5Case23
+--- PASS: TestPackage5Case23 (0.03s)
+=== RUN   TestPackage5Case24
+--- PASS: TestPackage5Case24 (0.04s)
+=== RUN   TestPackage5Case25
+--- PASS: TestPackage5Case25 (0.05s)
+=== RUN   TestPackage5Case26
+--- PASS: TestPackage5Case26 (0.06s)
+=== RUN   TestPackage5Case27
+--- PASS: TestPackage5Case27 (0.07s)
+=== RUN   TestPackage5Case28
+--- PASS: TestPackage5Case28 (0.08s)
+=== RUN   TestPackage5Case29
+--- PASS: TestPackage5Case29 (0.09s)
+=== RUN   TestPackage5Case30
+--- PASS: TestPackage5Case30 (0.00s)
+=== RUN   TestPackage5Case31
+--- PASS: TestPackage5Case31 (0.01s)
+=== RUN   TestPackage5Case32
+--- PASS: TestPackage5Case32 (0.02s)
+=== RUN   TestPackage5Case33
+--- PASS: TestPackage5Case33 (0.03s)
+=== RUN   TestPackage5Case34
+--- PASS: TestPackage5Case34 (0.04s)
+=== RUN   TestPackage5Case35
+--- PASS: TestPackage5Case35 (0.05s)
+=== RUN   TestPackage5Case36
+--- PASS: TestPackage5Case36 (0.06s)
+=== RUN   TestPackage5Case37
+--- PASS: TestPackage5Case37 (0.07s)
+=== RUN   TestPackage5Case38
+--- PASS: TestPackage5Case38 (0.08s)
+=== RUN   TestPackage5Case39
+--- PASS: TestPackage5Case39 (0.09s)
+PASS
+ok  	github.com/acme/shop/pkg5	0.512s
+=== RUN   TestPackage6Case1
+--- PASS: TestPackage6Case1 (0.01s)
+=== RUN   TestPackage6Case2
+--- PASS: TestPackage6Case2 (0.02s)
+=== RUN   TestPackage6Case3
+--- PASS: TestPackage6Case3 (0.03s)
+=== RUN   TestPackage6Case4
+--- PASS: TestPackage6Case4 (0.04s)
+=== RUN   TestPackage6Case5
+--- PASS: TestPackage6Case5 (0.05s)
+=== RUN   TestPackage6Case6
+--- PASS: TestPackage6Case6 (0.06s)
+=== RUN   TestPackage6Case7
+--- PASS: TestPackage6Case7 (0.07s)
+=== RUN   TestPackage6Case8
+--- PASS: TestPackage6Case8 (0.08s)
+=== RUN   TestPackage6Case9
+--- PASS: TestPackage6Case9 (0.09s)
+=== RUN   TestPackage6Case10
+--- PASS: TestPackage6Case10 (0.00s)
+=== RUN   TestPackage6Case11
+--- PASS: TestPackage6Case11 (0.01s)
+=== RUN   TestPackage6Case12
+--- PASS: TestPackage6Case12 (0.02s)
+=== RUN   TestPackage6Case13
+--- PASS: TestPackage6Case13 (0.03s)
+=== RUN   TestPackage6Case14
+--- PASS: TestPackage6Case14 (0.04s)
+=== RUN   TestPackage6Case15
+--- PASS: TestPackage6Case15 (0.05s)
+=== RUN   TestPackage6Case16
+--- PASS: TestPackage6Case16 (0.06s)
+=== RUN   TestPackage6Case17
+--- PASS: TestPackage6Case17 (0.07s)
+=== RUN   TestPackage6Case18
+--- PASS: TestPackage6Case18 (0.08s)
+=== RUN   TestPackage6Case19
+--- PASS: TestPackage6Case19 (0.09s)
+=== RUN   TestPackage6Case20
+--- PASS: TestPackage6Case20 (0.00s)
+=== RUN   TestPackage6Case21
+--- PASS: TestPackage6Case21 (0.01s)
+=== RUN   TestPackage6Case22
+--- PASS: TestPackage6Case22 (0.02s)
+=== RUN   TestPackage6Case23
+--- PASS: TestPackage6Case23 (0.03s)
+=== RUN   TestPackage6Case24
+--- PASS: TestPackage6Case24 (0.04s)
+=== RUN   TestPackage6Case25
+--- PASS: TestPackage6Case25 (0.05s)
+=== RUN   TestPackage6Case26
+--- PASS: TestPackage6Case26 (0.06s)
+=== RUN   TestPackage6Case27
+--- PASS: TestPackage6Case27 (0.07s)
+=== RUN   TestPackage6Case28
+--- PASS: TestPackage6Case28 (0.08s)
+=== RUN   TestPackage6Case29
+--- PASS: TestPackage6Case29 (0.09s)
+=== RUN   TestPackage6Case30
+--- PASS: TestPackage6Case30 (0.00s)
+=== RUN   TestPackage6Case31
+--- PASS: TestPackage6Case31 (0.01s)
+=== RUN   TestPackage6Case32
+--- PASS: TestPackage6Case32 (0.02s)
+=== RUN   TestPackage6Case33
+--- PASS: TestPackage6Case33 (0.03s)
+=== RUN   TestPackage6Case34
+--- PASS: TestPackage6Case34 (0.04s)
+=== RUN   TestPackage6Case35
+--- PASS: TestPackage6Case35 (0.05s)
+=== RUN   TestPackage6Case36
+--- PASS: TestPackage6Case36 (0.06s)
+=== RUN   TestPackage6Case37
+--- PASS: TestPackage6Case37 (0.07s)
+=== RUN   TestPackage6Case38
+--- PASS: TestPackage6Case38 (0.08s)
+=== RUN   TestPackage6Case39
+--- PASS: TestPackage6Case39 (0.09s)
+PASS
+ok  	github.com/acme/shop/pkg6	0.612s
+=== RUN   TestPackage7Case1
+--- PASS: TestPackage7Case1 (0.01s)
+=== RUN   TestPackage7Case2
+--- PASS: TestPackage7Case2 (0.02s)
+=== RUN   TestPackage7Case3
+--- PASS: TestPackage7Case3 (0.03s)
+=== RUN   TestPackage7Case4
+--- PASS: TestPackage7Case4 (0.04s)
+=== RUN   TestPackage7Case5
+--- PASS: TestPackage7Case5 (0.05s)
+=== RUN   TestPackage7Case6
+--- PASS: TestPackage7Case6 (0.06s)
+=== RUN   TestPackage7Case7
+--- PASS: TestPackage7Case7 (0.07s)
+=== RUN   TestPackage7Case8
+--- PASS: TestPackage7Case8 (0.08s)
+=== RUN   TestPackage7Case9
+--- PASS: TestPackage7Case9 (0.09s)
+=== RUN   TestPackage7Case10
+--- PASS: TestPackage7Case10 (0.00s)
+=== RUN   TestPackage7Case11
+--- PASS: TestPackage7Case11 (0.01s)
+=== RUN   TestPackage7Case12
+--- PASS: TestPackage7Case12 (0.02s)
+=== RUN   TestPackage7Case13
+--- PASS: TestPackage7Case13 (0.03s)
+=== RUN   TestPackage7Case14
+--- PASS: TestPackage7Case14 (0.04s)
+=== RUN   TestPackage7Case15
+--- PASS: TestPackage7Case15 (0.05s)
+=== RUN   TestPackage7Case16
+--- PASS: TestPackage7Case16 (0.06s)
+=== RUN   TestPackage7Case17
+--- PASS: TestPackage7Case17 (0.07s)
+=== RUN   TestPackage7Case18
+--- PASS: TestPackage7Case18 (0.08s)
+=== RUN   TestPackage7Case19
+--- PASS: TestPackage7Case19 (0.09s)
+=== RUN   TestPackage7Case20
+--- PASS: TestPackage7Case20 (0.00s)
+=== RUN   TestPackage7Case21
+--- PASS: TestPackage7Case21 (0.01s)
+=== RUN   TestPackage7Case22
+--- PASS: TestPackage7Case22 (0.02s)
+=== RUN   TestPackage7Case23
+--- PASS: TestPackage7Case23 (0.03s)
+=== RUN   TestPackage7Case24
+--- PASS: TestPackage7Case24 (0.04s)
+=== RUN   TestPackage7Case25
+--- PASS: TestPackage7Case25 (0.05s)
+=== RUN   TestPackage7Case26
+--- PASS: TestPackage7Case26 (0.06s)
+=== RUN   TestPackage7Case27
+--- PASS: TestPackage7Case27 (0.07s)
+=== RUN   TestPackage7Case28
+--- PASS: TestPackage7Case28 (0.08s)
+=== RUN   TestPackage7Case29
+--- PASS: TestPackage7Case29 (0.09s)
+=== RUN   TestPackage7Case30
+--- PASS: TestPackage7Case30 (0.00s)
+=== RUN   TestPackage7Case31
+--- PASS: TestPackage7Case31 (0.01s)
+=== RUN   TestPackage7Case32
+--- PASS: TestPackage7Case32 (0.02s)
+=== RUN   TestPackage7Case33
+--- PASS: TestPackage7Case33 (0.03s)
+=== RUN   TestPackage7Case34
+--- PASS: TestPackage7Case34 (0.04s)
+=== RUN   TestPackage7Case35
+--- PASS: TestPackage7Case35 (0.05s)
+=== RUN   TestPackage7Case36
+--- PASS: TestPackage7Case36 (0.06s)
+=== RUN   TestPackage7Case37
+--- PASS: TestPackage7Case37 (0.07s)
+=== RUN   TestPackage7Case38
+--- PASS: TestPackage7Case38 (0.08s)
+=== RUN   TestPackage7Case39
+--- PASS: TestPackage7Case39 (0.09s)
+PASS
+ok  	github.com/acme/shop/pkg7	0.712s
+=== RUN   TestPackage8Case1
+--- PASS: TestPackage8Case1 (0.01s)
+=== RUN   TestPackage8Case2
+--- PASS: TestPackage8Case2 (0.02s)
+=== RUN   TestPackage8Case3
+--- PASS: TestPackage8Case3 (0.03s)
+=== RUN   TestPackage8Case4
+--- PASS: TestPackage8Case4 (0.04s)
+=== RUN   TestPackage8Case5
+--- PASS: TestPackage8Case5 (0.05s)
+=== RUN   TestPackage8Case6
+--- PASS: TestPackage8Case6 (0.06s)
+=== RUN   TestPackage8Case7
+--- PASS: TestPackage8Case7 (0.07s)
+=== RUN   TestPackage8Case8
+--- PASS: TestPackage8Case8 (0.08s)
+=== RUN   TestPackage8Case9
+--- PASS: TestPackage8Case9 (0.09s)
+=== RUN   TestPackage8Case10
+--- PASS: TestPackage8Case10 (0.00s)
+=== RUN   TestPackage8Case11
+--- PASS: TestPackage8Case11 (0.01s)
+=== RUN   TestPackage8Case12
+--- PASS: TestPackage8Case12 (0.02s)
+=== RUN   TestPackage8Case13
+--- PASS: TestPackage8Case13 (0.03s)
+=== RUN   TestPackage8Case14
+--- PASS: TestPackage8Case14 (0.04s)
+=== RUN   TestPackage8Case15
+--- PASS: TestPackage8Case15 (0.05s)
+=== RUN   TestPackage8Case16
+--- PASS: TestPackage8Case16 (0.06s)
+=== RUN   TestPackage8Case17
+--- PASS: TestPackage8Case17 (0.07s)
+=== RUN   TestPackage8Case18
+--- PASS: TestPackage8Case18 (0.08s)
+=== RUN   TestPackage8Case19
+--- PASS: TestPackage8Case19 (0.09s)
+=== RUN   TestPackage8Case20
+--- PASS: TestPackage8Case20 (0.00s)
+=== RUN   TestPackage8Case21
+--- PASS: TestPackage8Case21 (0.01s)
+=== RUN   TestPackage8Case22
+--- PASS: TestPackage8Case22 (0.02s)
+=== RUN   TestPackage8Case23
+--- PASS: TestPackage8Case23 (0.03s)
+=== RUN   TestPackage8Case24
+--- PASS: TestPackage8Case24 (0.04s)
+=== RUN   TestPackage8Case25
+--- PASS: TestPackage8Case25 (0.05s)
+=== RUN   TestPackage8Case26
+--- PASS: TestPackage8Case26 (0.06s)
+=== RUN   TestPackage8Case27
+--- PASS: TestPackage8Case27 (0.07s)
+=== RUN   TestPackage8Case28
+--- PASS: TestPackage8Case28 (0.08s)
+=== RUN   TestPackage8Case29
+--- PASS: TestPackage8Case29 (0.09s)
+=== RUN   TestPackage8Case30
+--- PASS: TestPackage8Case30 (0.00s)
+=== RUN   TestPackage8Case31
+--- PASS: TestPackage8Case31 (0.01s)
+=== RUN   TestPackage8Case32
+--- PASS: TestPackage8Case32 (0.02s)
+=== RUN   TestPackage8Case33
+--- PASS: TestPackage8Case33 (0.03s)
+=== RUN   TestPackage8Case34
+--- PASS: TestPackage8Case34 (0.04s)
+=== RUN   TestPackage8Case35
+--- PASS: TestPackage8Case35 (0.05s)
+=== RUN   TestPackage8Case36
+--- PASS: TestPackage8Case36 (0.06s)
+=== RUN   TestPackage8Case37
+--- PASS: TestPackage8Case37 (0.07s)
+=== RUN   TestPackage8Case38
+--- PASS: TestPackage8Case38 (0.08s)
+=== RUN   TestPackage8Case39
+--- PASS: TestPackage8Case39 (0.09s)
+PASS
+ok  	github.com/acme/shop/pkg8	0.812s

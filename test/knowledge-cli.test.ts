@@ -1,8 +1,10 @@
+import { DatabaseSync } from "node:sqlite";
+import { openRecord } from "../src/record/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serializeEntry, parseEntry } from "../src/knowledge/entry.js";
 
@@ -187,4 +189,32 @@ describe("shipped knowledge commands", () => {
     }
     expect(existsSync(mexBase)).toBe(false); expect(readdirSync(repo)).toEqual([]);
   });
+});
+
+
+it.each(["temporary path", "path with dot"])("honors wrong --all-along for a delivered hint after retiring it (%s)",spelling=>{
+  if(spelling==="path with dot") repo+=`${sep}.`;
+  execFileSync("git",["-C",repo,"init","-q","-b","work"],{stdio:"pipe"});
+  execFileSync("git",["-C",repo,"-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","--allow-empty","-qm","baseline"],{stdio:"pipe"});
+  const memory=join(root,"claude-host/projects/fixture-project/memory"); mkdirSync(memory,{recursive:true}); writeFileSync(join(memory,"fixtures.md"),"Fixtures use fixed input because failures must reproduce.\n");
+  expect(run(["hints","refresh","--json"]).status).toBe(0);
+  const id=run(["recall","fixtures","--agent","codex","--json"]).json().entries[0].id;
+  const writer=openRecord({home:join(mexBase,".mex"),projectPath:repo,isNetwork:()=>false}), checkout=writer.checkout(repo)!, projectId=checkout.project_id;
+  const hooks=new DatabaseSync(writer.location.hooks);
+  try {
+    // Fixture construction only; product Node code never writes hooks.db.
+    if(!hooks.prepare("SELECT 1 FROM sqlite_master WHERE name='deliveries'").get()) {
+      const schemas=join(dirname(cli),"../native/record/schema/hooks");
+      for(const file of ["0001_init.sql","0002_delivery.sql","0003_followups.sql","0004_rendering.sql","0005_probes.sql","0006_intent.sql"]) hooks.exec(readFileSync(join(schemas,file),"utf8"));
+      hooks.exec("PRAGMA user_version=6");
+    }
+    // Receipts use the registry's real path, including Windows case folding.
+    hooks.prepare("INSERT INTO sessions VALUES('hint-session','codex',?,?,'now','now',0)").run(projectId,checkout.path);
+    hooks.prepare("INSERT INTO epochs(session_id,epoch,started_at) VALUES('hint-session',0,'now')").run();
+    hooks.prepare("INSERT INTO deliveries(id,session_id,epoch,ts,moment,entry_id,form,tokens,action,project_id,checkout,detail) VALUES('hint-receipt','hint-session',0,'now','read',?,'full',10,'given',?,?,?)")
+      .run(id,projectId,checkout.path,JSON.stringify({version:1,branch:"refs/heads/work",head:"a".repeat(40),entry_hash:"old hint",verdict:"unknown",inputs_hash:""}));
+  } finally { hooks.close();writer.close(); }
+  const retired=run(["wrong",id,"The assertion was always wrong.","--all-along","--json"]);
+  expect(retired.status,retired.stdout+retired.stderr).toBe(0);expect(retired.json()).toMatchObject({level:"hint",status:"retired"});
+  expect(run(["report","--json"]).json().advisories).toEqual([expect.objectContaining({entry:id,origin:{kind:"wrong-all-along",evidence:"person-confirmed"}})]);
 });

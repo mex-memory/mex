@@ -10,7 +10,7 @@ import { describeUnfinishedSetup } from "./unfinished.js";
  * up and does no work, a checkout missing only its commit goes straight to
  * the commit step, and anything else names what is missing before the
  * (already incremental) flow runs. Changed code is drift, not a setup
- * failure: it is reported with a pointer to `mex sync`.
+ * failure: it is reported with a pointer to `mex sync --deep`.
  */
 export interface SetupHealth {
   readonly mode: "code-repo" | "agent-memory";
@@ -84,7 +84,7 @@ export function describeSetupHealth(health: SetupHealth): string {
   return [
     health.summary,
     ...health.notes,
-    "Nothing to do. Check memory health with `mex check`, repair knowledge drift with `mex sync`, or open the Hub with `mex hub`.",
+    "Nothing to do. Check memory health with `mex check`, repair knowledge drift with `mex sync --deep`, or open the Hub with `mex hub`.",
     "Run `mex setup --force` to run the full setup again; authored files are always preserved.",
   ].filter(Boolean).join("\n");
 }
@@ -98,7 +98,7 @@ async function observeGraph(root: string): Promise<{ label: string; missing?: st
       const changed = graph.changes.total;
       return {
         label: "graph behind the code",
-        note: `${changed} source ${changed === 1 ? "file has" : "files have"} changed since the graph was built. Run \`mex sync\` to review knowledge the change may affect.`,
+        note: `${changed} source ${changed === 1 ? "file has" : "files have"} changed since the graph was built. Run \`mex sync --deep\` to review knowledge the change may affect.`,
       };
     }
     if (graph.status === "degraded") {

@@ -39,7 +39,7 @@ func (hooks *Hooks) recordHookUsage(day, agent string, sessionStart, failed bool
 // report's agent catalog (src/telemetry/report-schema.ts).
 func telemetryAgent(agent string) bool {
 	switch agent {
-	case "claude-code", "codex", "copilot", "opencode", "devin", "kiro":
+	case "claude-code", "codex", "copilot", "cursor", "opencode", "antigravity", "gemini", "devin", "kiro":
 		return true
 	}
 	return false

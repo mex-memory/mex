@@ -9,6 +9,29 @@ export const DEFAULT_MODELS: ModelTable = Object.freeze({
   codex: Object.freeze({ cheap: "gpt-6-luna", best: "gpt-6.1-sol" }),
 });
 
+/**
+ * A cheap and a best model for every agent MEX supports (plan sheet 16).
+ * null means "the agent's own default": the agent has no model flag, or the
+ * name is not confirmed yet. Only Claude Code and Codex run MEX's own
+ * background calls; the rest are recorded so setup can show the cost and a
+ * later runner can use them. Names never live in logic.
+ *
+ * Read 15 Nov 2026 (OSS-49):
+ * - Gemini CLI: `gemini -p --model <name>` accepts the aliases `flash` and `pro`.
+ * - Cursor: `agent -p --model <slug>`; slugs depend on the account
+ *   (`agent models`), so both stay null until release-03-T1 lists them.
+ * - Antigravity: `agy -p` documents no model flag; the app's choice is used.
+ * Copilot, OpenCode, Devin and Kiro are added by OSS-48.
+ */
+export type AgentModelTable = Readonly<Record<string, Readonly<{ cheap: string | null; best: string | null }>>>;
+export const AGENT_MODELS: AgentModelTable = Object.freeze({
+  "claude-code": DEFAULT_MODELS.claude,
+  codex: DEFAULT_MODELS.codex,
+  cursor: Object.freeze({ cheap: null, best: null }),
+  antigravity: Object.freeze({ cheap: null, best: null }),
+  gemini: Object.freeze({ cheap: "flash", best: "pro" }),
+});
+
 export interface ModelSelection { role?: ModelRole; setup?: ModelSetup; models?: ModelTable; }
 export function selectModel(agent: ModelAgent, selection: ModelSelection = {}): string {
   const { role = "best", setup = "mixed", models = DEFAULT_MODELS } = selection;

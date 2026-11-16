@@ -7,11 +7,16 @@ import (
 )
 
 type Doc struct {
-	ID       string   `json:"id"`
-	Kind     string   `json:"kind,omitempty"`
-	Title    string   `json:"title"`
-	Text     string   `json:"text"`
-	Aliases  []string `json:"aliases,omitempty"`
+	ID      string   `json:"id"`
+	Kind    string   `json:"kind,omitempty"`
+	Title   string   `json:"title"`
+	Text    string   `json:"text"`
+	Aliases []string `json:"aliases,omitempty"`
+	// Written aliases and asks come from the entry file, filtered at capture.
+	// They are their own fields so they can be weighed and switched off apart
+	// from the aliases derived from checks and literals.
+	Written  []string `json:"written,omitempty"`
+	Asks     []string `json:"asks,omitempty"`
 	Targets  []string `json:"targets,omitempty"`
 	Scope    []string `json:"scope,omitempty"`
 	Literals []string `json:"literals,omitempty"`
@@ -33,18 +38,26 @@ type Index struct {
 	fieldAvg []float64
 }
 
+// BM25F fields, in order: title, derived aliases, text, scope, targets,
+// written aliases, asks. Written aliases start at the derived aliases' weight
+// and asks lower, because a whole question carries more common words.
+var fieldWeights = []float64{3, 3, 1, 1, 1, 3, 2}
+
+const fieldCount = 7
+
 func Build(docs []Doc) *Index { return BuildMode(docs, DefaultMode) }
 func BuildMode(docs []Doc, mode string) *Index {
 	if mode == "" {
 		mode = DefaultMode
 	}
-	ix := &Index{df: map[string]int{}, mode: mode, fieldAvg: make([]float64, 5)}
+	ix := &Index{df: map[string]int{}, mode: mode, fieldAvg: make([]float64, fieldCount)}
 	for _, d := range docs {
-		fields := []string{d.Title, d.Title, d.Title, d.Text, strings.Join(d.Scope, " "), strings.Join(d.Targets, " "), strings.Join(d.Aliases, " "), strings.Join(d.Aliases, " "), strings.Join(d.Aliases, " ")}
+		written, asks := strings.Join(d.Written, " "), strings.Join(d.Asks, " ")
+		fields := []string{d.Title, d.Title, d.Title, d.Text, strings.Join(d.Scope, " "), strings.Join(d.Targets, " "), strings.Join(d.Aliases, " "), strings.Join(d.Aliases, " "), strings.Join(d.Aliases, " "), written, written, written, asks, asks}
 		terms := Tokens(strings.Join(fields, " "))
 		r := indexed{doc: d, tf: map[string]int{}, length: len(terms)}
 		if strings.HasPrefix(mode, "bm25f") {
-			for j, field := range []string{d.Title, strings.Join(d.Aliases, " "), d.Text, strings.Join(d.Scope, " "), strings.Join(d.Targets, " ")} {
+			for j, field := range []string{d.Title, strings.Join(d.Aliases, " "), d.Text, strings.Join(d.Scope, " "), strings.Join(d.Targets, " "), written, asks} {
 				ws := Tokens(field)
 				tf := map[string]int{}
 				for _, w := range ws {
@@ -130,7 +143,7 @@ func (ix *Index) Rank(query string) []Result {
 					lengthNorm := .25 + .75*float64(d.length)/math.Max(ix.avg, 1)
 					if strings.HasPrefix(ix.mode, "bm25f") {
 						tf = 0
-						for j, weight := range []float64{3, 3, 1, 1, 1} {
+						for j, weight := range fieldWeights {
 							tf += weight * float64(d.fields[j][w]) / (.25 + .75*float64(d.lengths[j])/math.Max(ix.fieldAvg[j], 1))
 						}
 						lengthNorm = 1

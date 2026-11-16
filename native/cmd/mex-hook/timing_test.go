@@ -174,6 +174,11 @@ func prepareTimingHooks(t *testing.T, location localrecord.Location) *sql.DB {
 		t.Fatal(err)
 	}
 	schema = append(schema, sixth...)
+	seventh, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0007_surfaces.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema = append(schema, seventh...)
 	// Fixture preparation is outside the real hook's timed interval and limits.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

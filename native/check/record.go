@@ -34,6 +34,17 @@ func (ev *Evaluator) Record(kind, role string, target map[string]any) (Check, er
 		if !found {
 			return Check{}, fmt.Errorf("%w: %s has no %s", ErrNotRecordable, file, str(target, "pointer"))
 		}
+		if raw, member := target["member"]; member {
+			name, valid := memberName(raw)
+			if !valid {
+				return Check{}, fmt.Errorf("%w: invalid member name", ErrNotRecordable)
+			}
+			present, err := dependencyMember(value, name)
+			if err != nil || !present {
+				return Check{}, fmt.Errorf("%w: declared dependency is absent or unsupported", ErrNotRecordable)
+			}
+			value = true
+		}
 		c.Saw["value"] = value
 	case "command":
 		file = str(target, "file")

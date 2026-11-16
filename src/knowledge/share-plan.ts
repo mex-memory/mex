@@ -35,11 +35,24 @@ export interface SharePlan {
   entries: Candidate[];
 }
 
+// Scratch worktrees live under the MEX home, deeper than the user's checkout:
+// without long paths, Git for Windows can't check out a large repository there.
+const LONG_PATHS = process.platform === "win32" ? ["-c", "core.longpaths=true"] : [];
 export function git(root: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true, maxBuffer: 16 * 1024 * 1024 }).trim();
+  return execFileSync("git", ["-C", root, ...LONG_PATHS, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true, maxBuffer: 16 * 1024 * 1024 }).trim();
 }
 function tryGit(root: string, ...args: string[]): string | undefined {
   try { return git(root, ...args); } catch { return undefined; }
+}
+
+/**
+ * The commit MEX makes needs a Git author. Asked before anything changes, so a
+ * fresh machine gets a clear instruction instead of a half-finished run.
+ */
+export function requireGitIdentity(root: string): void {
+  if (tryGit(root, "var", "GIT_AUTHOR_IDENT") === undefined || tryGit(root, "var", "GIT_COMMITTER_IDENT") === undefined) {
+    throw new KnowledgeError("GIT_IDENTITY", "Git doesn't know who you are. Set it with git config --global user.name \"Your Name\" and git config --global user.email you@example.com, then run this again.");
+  }
 }
 
 /** The default branch's commit: origin's HEAD, else main or master, else your HEAD. */
