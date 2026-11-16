@@ -55,7 +55,7 @@ it("restores full labelled delivery for a fresh still-true judgment and expires 
     registerJobKind(createJudgeKind({evaluate,recordChecks,model}));
     const job=await runJudgeSync({home,projectPath:root},{available:()=>true,write:()=>{}});
     expect(job?.state).toBe("done");expect(model).toHaveBeenCalledTimes(1);
-    const key=resultKey(root,id),raw=writer.setting(projectId,key)!;
+    const key=resultKey(root,id);let raw=writer.setting(projectId,key)!;
     expect(JSON.parse(raw).evaluation_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
     const verdict=async()=>{
       const report=await nativeRequest({...request,action:"evaluate",store:true}) as {items:Array<{verdict:string;label?:string}>};
@@ -89,7 +89,16 @@ it("restores full labelled delivery for a fresh still-true judgment and expires 
     }
     set("x".repeat(129<<10));expect((await verdict()).verdict).toBe("changed");set(raw);
     writeFileSync(source,"export const timeout = 60;\n");expect(directProbe().form).toBe("pointer");expect((await verdict()).verdict).toBe("broken");
-    writeFileSync(source,judgedCode);expect((await verdict()).verdict).toBe("held");
+    writeFileSync(source,judgedCode);
+    // Restoring bytes is still an unindexed edit. The per-file freshness guard
+    // must refuse the old symbol/value observation until the index catches up.
+    expect(directProbe().form).toBe("withheld");expect((await verdict()).verdict).toBe("changed");
+    expect(directProbe().form).toBe("pointer");
+    await refreshIndex();
+    expect((await verdict()).verdict).toBe("changed");
+    expect((await runJudgeSync({home,projectPath:root},{available:()=>true,write:()=>{}}))?.state).toBe("done");
+    expect(model).toHaveBeenCalledTimes(2);raw=writer.setting(projectId,key)!;
+    expect((await verdict()).verdict).toBe("held");
     writeFileSync(path,original.replace("30 seconds","60 seconds"));expect(directProbe().form).toBe("pointer");expect((await verdict()).verdict).toBe("changed");
     writeFileSync(path,original);expect((await verdict()).verdict).toBe("held");
     git("checkout","-b","other");expect(directProbe().form).toBe("pointer");expect((await verdict()).verdict).toBe("changed");
