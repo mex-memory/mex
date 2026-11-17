@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as settingsModule from "../settings.js";
 import { withContainedArtifactLock } from "../../team/artifacts/filesystem.js";
-import { installAgents, installationChanges, recoveryFile, uninstallAgents, type InstallOptions } from "../index.js";
+import { fromNpxCache, installAgents, installationChanges, recoveryFile, uninstallAgents, type InstallOptions } from "../index.js";
 import { applyOrphanRecovery } from "../recovery.js";
 import { readSnapshot } from "../files.js";
 import { EVENTS, installSettings, parseSettings } from "../settings.js";
@@ -332,5 +332,18 @@ describe("agent settings format", () => {
     expect(handler.commandWindows).toBe("& 'C:\\Users\\O''Brien $fixture`\\.mex\\bin\\mex-hook.exe' 'codex' 'SessionStart'");
     expect(Object.keys(result.hooks as object)).toHaveLength(9);
     expect((result.hooks as any).SessionEnd[0].hooks[0].timeout).toBe(3);
+  });
+});
+
+describe("installing from npx", () => {
+  it("refuses to point hooks into npm's temporary npx cache, with the one-line fix", async () => {
+    expect(fromNpxCache("/home/a/.npm/_npx/1f2e/node_modules/mex-agent/dist/cli.js")).toBe(true);
+    expect(fromNpxCache(String.raw`C:\Users\a\AppData\Local\npm-cache\_npx\1f2e\node_modules\mex-agent\dist\cli.js`)).toBe(true);
+    expect(fromNpxCache("/usr/lib/node_modules/mex-agent/dist/cli.js")).toBe(false);
+    const saved = process.argv[1];
+    process.argv[1] = join(tmpdir(), "_npx", "1f2e", "node_modules", "mex-agent", "dist", "cli.js");
+    try {
+      await expect(installAgents({ dryRun: true })).rejects.toThrow("npm i -g mex-agent@next");
+    } finally { process.argv[1] = saved; }
   });
 });

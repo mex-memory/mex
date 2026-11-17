@@ -162,3 +162,24 @@ func TestLaterPromptArmsAnotherFileWithoutRewritingTheEarlierTarget(t *testing.T
 		t.Fatal("repeat", reply, err)
 	}
 }
+
+// A prompt that names a file must not swallow the pitfall its first read
+// sends: while prompt-anchor is in trial its own arming is silent, and the
+// read moment still delivers.
+func TestPromptNamingAFileKeepsThePitfallAtFirstRead(t *testing.T) {
+	f := rescueFixture(t)
+	f.entry(spec{id: "mx_genpit", kind: "pitfall", scope: "src/**", oneLine: "Files in src are generated; edit the schema instead."})
+	plantIndex(t, f, map[string][]plantedSymbol{"src/pool.ts": {{"makeWidget", "function", 1, 1}}})
+	file := indexedSource(t, f, "src/pool.ts", "function makeWidget() {}\n")
+	env := f.env()
+	ev := f.event(contract.Prompt)
+	ev.Prompt = &contract.PromptIn{Typed: true, Text: "Read src/pool.ts and change makeWidget"}
+	if _, err := Handle(ev, env); err != nil {
+		t.Fatal(err)
+	}
+	ev = f.event(contract.PostToolBatch, read(file, "function makeWidget() {}"))
+	reply, err := Handle(ev, env)
+	if err != nil || !strings.Contains(reply.Context, "edit the schema instead") {
+		t.Fatal("pitfall swallowed by the prompt anchor:", reply, err)
+	}
+}

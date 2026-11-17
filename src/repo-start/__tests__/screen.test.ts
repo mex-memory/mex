@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatSeconds, LiveLine, progressLine, renderDone, renderScreen, screenMode, wrap, type ScreenModel } from "../screen.js";
+import { formatSeconds, LiveLine, progressLine, renderDone, renderScreen, renderNext, noteExample, screenMode, wrap, type ScreenModel } from "../screen.js";
 import { resultFindings } from "../finish.js";
 import type { JobRow } from "../../record/jobs.js";
 import { detectCaller, isAgentCaller } from "../caller.js";
@@ -7,7 +7,7 @@ import { detectCaller, isAgentCaller } from "../caller.js";
 const model: ScreenModel = {
   name: "novu", ms: 2412, costUsd: 0, hidden: true,
   findings: [
-    { state: "ok", text: "Test and build commands for 12 packages (build @novu/dal first)" },
+    { state: "ok", text: "Test and build commands for 12 packages (build @novu/dal first) · your agents get these from now on" },
     { state: "ok", text: "21 notes from your Claude and Codex memory" },
     { state: "background", text: "The file index: in the background (`mex jobs`)" },
   ],
@@ -40,7 +40,7 @@ describe("the first screen", () => {
     expect(lines.map(line => line.replace(/\x1b\[[0-9;]*m/gu, ""))).toEqual([
       "MEX · novu · 2.4 s · $0 · nothing added to git",
       "",
-      "  ✓ Test and build commands for 12 packages (build @novu/dal first)",
+      "  ✓ Test and build commands for 12 packages (build @novu/dal first) · your agents get these from now on",
       "  ✓ 21 notes from your Claude and Codex memory",
       "  ◌ The file index: in the background (`mex jobs`)",
       "  Hooks: Claude Code and Codex, in your user settings.",
@@ -51,7 +51,7 @@ describe("the first screen", () => {
   it("renders plain ASCII lines with no colour when there is no terminal", () => {
     expect(renderScreen(model, screenMode({ stdoutTTY: false, env: {}, platform: "darwin" }))).toEqual([
       "MEX - novu - 2.4 s - $0 - nothing added to git",
-      "ok Test and build commands for 12 packages (build @novu/dal first)",
+      "ok Test and build commands for 12 packages (build @novu/dal first) · your agents get these from now on",
       "ok 21 notes from your Claude and Codex memory",
       ".. The file index: in the background (`mex jobs`)",
       "Hooks: Claude Code and Codex, in your user settings.",
@@ -140,5 +140,35 @@ describe("caller", () => {
     expect(detectCaller({ env: { TERM: "dumb" }, stdinTTY: true, stdoutTTY: true })).toBe("script");
     expect(detectCaller({ env: {}, stdinTTY: true, stdoutTTY: true })).toBe("person");
     expect(isAgentCaller({ CLAUDECODE: "0" })).toBe(false);
+  });
+});
+
+describe("what happens next", () => {
+  const plain = screenMode({ stdoutTTY: false, env: {} });
+  it("keeps agent and piped output short", () => {
+    expect(renderNext({ short: true }, plain)).toEqual(['Saved notes reach new sessions; mex note "<fact>" adds one.']);
+  });
+  it("defaults learning to off and explains how to turn it on and how to undo", () => {
+    const text = renderNext({ short: false }, plain).join("\n");
+    expect(text).toContain("Learning from everything you type is off until you turn it on: mex config set learning.statements on");
+    expect(text).toContain("Undo: mex off (this repo) - mex uninstall (everything)");
+    expect(renderNext({ short: false, learning: "off" }, plain).join("\n")).toBe(text);
+  });
+  it("discloses the background model and its cap once learning is on", () => {
+    expect(renderNext({ short: false, learning: "on" }, plain).join("\n")).toContain("at most 3% of your usage. Off: mex config set learning.statements off");
+  });
+  it.each([40, 80])("wraps instructions and inline details at %i columns", columns => {
+    const mode = screenMode({ stdoutTTY: true, columns, env: {}, platform: "darwin" });
+    const lines = [...renderScreen({ ...model, findings: [{ state: "attention", text: "4 lines need review", details: ["CLAUDE.md:14  Names a command the repo doesn't define.", "… and 1 more: mex rules"] }] }, mode), ...renderNext({ short: false }, mode)];
+    for (const line of lines) expect(line.replace(/\x1b\[[0-9;]*m/gu, "").length).toBeLessThanOrEqual(columns);
+  });
+  it("preserves a test command as a literal shell argument", () => {
+    expect(noteExample("pnpm test", "", { SHELL: "/bin/bash" })).toBe("mex note 'Run the tests with pnpm test from the repo root'");
+    expect(noteExample("npm test -- --grep 'one'", "packages/api", { PSModulePath: "fixture" })).toBe("mex note 'Run the tests with npm test -- --grep ''one'' from packages/api'");
+    expect(noteExample("echo $(whoami)", "", { SHELL: "/bin/bash" })).toContain("'Run the tests with echo $(whoami)");
+    // A workspace command runs from the root even though it names a package.
+    expect(noteExample("npm run test --workspace packages/code-graph", "packages/code-graph", { SHELL: "/bin/bash" })).toBe("mex note 'Run the tests with npm run test --workspace packages/code-graph from the repo root'");
+    expect(noteExample("pnpm --filter @a/api test", "apps/api", { SHELL: "/bin/bash" })).toBe("mex note 'Run the tests with pnpm --filter @a/api test from the repo root'");
+    expect(noteExample("npm test -- --grep 'one'", "", { SHELL: "/bin/bash", PSModulePath: "inherited" })).toBe("mex note 'Run the tests with npm test -- --grep '\\''one'\\'' from the repo root'");
   });
 });

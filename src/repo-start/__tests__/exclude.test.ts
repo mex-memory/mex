@@ -53,7 +53,7 @@ describe("exclude blocks", () => {
   });
 
   it("hides /.mex/* and un-hides only what `mex share` commits", () => {
-    expect(REPO_START_LINES).toEqual(["/.mex/*", "!/.mex/learned/", "!/.mex/config.json", "!/.mex/sources.json", "!/.mex/native.json"]);
+    expect(REPO_START_LINES).toEqual(["/.mex/*", "!/.mex/learned/", "!/.mex/handoffs/", "!/.mex/config.json", "!/.mex/sources.json", "!/.mex/native.json"]);
   });
 
   it("rejects names and lines that could break the fence", () => {

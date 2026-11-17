@@ -52,6 +52,21 @@ describe("deterministic entry gates", () => {
       expect(sanitizeText(`Use \`${code}\` here.`, source), code).toBe("Use [unverified command removed] here.");
     }
   });
+  it("keeps a person's sentence around a real command and still checks what follows", () => {
+    const source = references(root);
+    expect(sanitizeText("Use npm run test before pushing.", source)).toBe("Use npm run test before pushing.");
+    expect(sanitizeText("Run npm test when CI fails, then read the log.", source)).toBe("Run npm test when CI fails, then read the log.");
+    expect(sanitizeText("Run npm missing before pushing.", source)).toBe("Run [unverified command removed] before pushing.");
+    expect(sanitizeText("Run npm test before rm -rf build", source)).toBe("Run npm test before [unverified command removed]");
+    expect(sanitizeText("Run npm test && rm -rf / before pushing", source)).not.toContain("rm -rf");
+    // Prose after a plain word is not a command.
+    expect(sanitizeText("Reading all JavaScript before Python changes root Python version precedence.", source)).toBe("Reading all JavaScript before Python changes root Python version precedence.");
+    // A sentence about a tool is not a command: its next word is prose or a version.
+    for (const prose of ["We always use pnpm in this repo, never npm or yarn.", "Use node 22 for builds.", "Use git with signed commits only.", "Prefer bun over node for scripts."]) {
+      expect(sanitizeText(prose, source), prose).toBe(prose);
+    }
+    expect(sanitizeText("Run npm frobnicate before pushing.", source)).toBe("Run [unverified command removed] before pushing.");
+  });
   it("does not let learned entries validate their own commands", () => {
     mkdirSync(join(root, ".mex/learned"), { recursive: true });
     writeFileSync(join(root, ".mex/learned/mx_self001.md"), "`npm missing`\n");

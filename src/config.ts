@@ -80,7 +80,7 @@ export function findConfig(startDir?: string): MexConfig {
     }
 
     throw new Error(
-      "No .mex/ scaffold found. Run: mex setup"
+      "No .mex/ scaffold found. Run mex to turn MEX on here; mex status shows its state."
     );
   }
 

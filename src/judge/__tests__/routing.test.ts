@@ -74,9 +74,10 @@ describe("where judge fixes land", () => {
     expect(writer.db.prepare("SELECT text FROM notices WHERE kind LIKE 'judge-updated.%'").get()!.text).toContain("same PR");
     await routeFixes(writer, f.job, f.report); expect(f.reviews()).toHaveLength(0);
   });
-  it("updates pulled personal entries only in local storage", async () => {
+  it("never rewrites a person's personal note; the judge's wording waits in Review", async () => {
     const f = await staged("personal"); expect(await routeFixes(writer, f.job, f.report)).toEqual({ waiting: false, gaps: false });
-    expect(readFileSync(f.path, "utf8")).toBe(f.after); expect(git("status", "--porcelain")).toBe("M api.ts"); expect(f.preview()).toBeUndefined();
+    expect(readFileSync(f.path, "utf8")).toBe(f.before); expect(git("status", "--porcelain")).toBe("M api.ts"); expect(f.preview()).toBeUndefined();
+    expect(f.reviews()).toHaveLength(1);
   });
   it.each(["missing", "other-session", "other-checkout", "other-host", "unpaired", "wrong-before", "wrong-after", "wrong-head"])("keeps a team fix in Review with %s ownership", async what => {
     const f = await staged();

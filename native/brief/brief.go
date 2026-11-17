@@ -25,6 +25,10 @@ const MaxTokens = 300
 
 const Priority = "Priority: current request > your notes > repo instructions > team entries > hints."
 
+// SaveLine tells the agent how something the person wants kept reaches later
+// sessions and the other agents. Notes it saves are labelled as the agent's.
+const SaveLine = `Keep what later sessions need with mex note "<one sentence>": a lasting fact, rule or decision the person states or asks you to remember (in their words), or something non-obvious you verified about this repo, such as how to run something or a trap you hit. Not one-off requests or task details.`
+
 // TokenBound uses UTF-8 bytes as a conservative token upper bound. Unlike a
 // characters/4 estimate this also holds for punctuation and non-Latin text.
 // We drop whole authored one-line claims, never truncate their meaning.
@@ -71,11 +75,30 @@ type Result struct {
 	// Folder is the starting-folder selection, computed beside the
 	// working-set one so a session can be given either.
 	Folder []Item `json:"-"`
+	// Corrections set aside notes the agent already loaded from MEX's own
+	// rule files whose checks now fail. They are retractions, not knowledge,
+	// so they need no receipt and always lead the brief.
+	Corrections []Item `json:"corrections,omitempty"`
+	// NativeStale says MEX's rule files carry a note the code has changed or
+	// broken, so they should be rebuilt before the next session.
+	NativeStale bool `json:"native_stale,omitempty"`
+}
+
+// maxCorrections bounds the retractions in one brief; the rule files are
+// rebuilt before the next session, so a few lines cover the gap.
+const maxCorrections = 2
+
+// correctionLine names the note without repeating its stale claim.
+func correctionLine(id string) string {
+	return "Correction: the MEX note " + id + " in your rule files no longer matches the code; set it aside."
 }
 
 // Render restricts a result to the ids accepted by the receipt transaction.
 func (r Result) Render(accepted []string) string {
 	text := "[mex start-preview]\n" + Priority
+	for _, item := range r.Corrections {
+		text += "\n" + item.Line
+	}
 	for _, item := range r.Items {
 		if contains(accepted, item.ID) {
 			text += "\n" + item.Line + " (" + item.ID + ")"
@@ -140,12 +163,23 @@ func inScope(e *entries.Entry, file string) bool {
 
 // allowed deliberately leaves changed code facts and recipes out. Their pointer
 // and re-derivation forms belong to the moment controller, not a start digest.
+func setupRecipe(e *entries.Entry) bool {
+	return e.Kind == "recipe" && e.Source.Type == "config" && strings.HasPrefix(e.ID, "mx_setup")
+}
+
 func allowed(e *entries.Entry, verdict, level string) bool {
+	// Setup recipes reach native rule files and command moments. Keep the
+	// start brief's room for the person's notes, including companion groups.
+	if setupRecipe(e) {
+		return false
+	}
 	if e.Status != "active" || verdict == check.Broken || !validLine(e.OneLine) || strength(e) == 4 {
 		return false
 	}
 	if level == "personal" && e.Kind != "hint" {
-		return true
+		// A personal fact whose checks say the code changed is not restated;
+		// the moment it matters, delivery points at today's code instead.
+		return !(e.Kind == "fact" && verdict == check.Changed && len(e.Checks) > 0)
 	}
 	switch e.Kind {
 	case "rule", "decision", "pitfall", "procedure":
@@ -361,6 +395,36 @@ func Build(opts Options) (Result, error) {
 		return items, true
 	}
 	tokens := TokenBound(Priority) + 32
+	// MEX's own rule files are rebuilt between sessions, from verdicts. If
+	// the code moved since (a pull, an edit in another session), a note the
+	// agent just loaded from them may no longer hold: retract it here and ask
+	// for a rebuild. Imported rule files are the person's own and untouched.
+	for _, c := range all {
+		if len(result.Corrections) >= maxCorrections || (!opts.Deadline.IsZero() && time.Now().After(opts.Deadline)) {
+			break
+		}
+		e := c.entry
+		if (c.level != "personal" && c.level != "team") || len(e.Checks) == 0 || retired[e.ID] || !result.Coverage.Covers(e.ID, opts.Agent, opts.Path) {
+			continue
+		}
+		verdict := verdictOf(c)
+		if verdict != check.Changed && verdict != check.Broken {
+			continue
+		}
+		result.NativeStale = true
+		if setupRecipe(e) {
+			// Still request the rebuild, without spending the person's brief room.
+			continue
+		}
+		if verdict == check.Broken || e.Kind == "fact" {
+			line := correctionLine(e.ID)
+			if tokens+TokenBound("\n"+line) > MaxTokens {
+				break
+			}
+			result.Corrections = append(result.Corrections, Item{ID: e.ID, Line: line, Level: c.level, Verdict: verdict, Tokens: TokenBound("\n" + line), Hash: c.hash})
+			tokens += TokenBound("\n" + line)
+		}
+	}
 	// The area selection: personal notes first, then at most three entries
 	// whose scope covers the folder the session starts in.
 	selectArea := func() []Item {
@@ -410,6 +474,44 @@ func Build(opts Options) (Result, error) {
 		result.Items = w.main(tokens)
 		result.Lane = w.lane()
 		result.Folder = selectArea()
+	}
+	// Setup's repo-wide commands reach an agent that has no MEX rule file
+	// carrying them (the person's own AGENTS.md sits where MEX would write):
+	// after the person's notes, only while room is left. A command whose
+	// script is gone (not held) never goes out.
+	fillCommands := func(items []Item) []Item {
+		used := tokens
+		for _, item := range items {
+			used += item.Tokens
+		}
+		for _, c := range all {
+			e := c.entry
+			if !setupRecipe(e) || retired[e.ID] || e.Status != "active" || !validLine(e.OneLine) || result.Coverage.Covers(e.ID, opts.Agent, opts.Path) {
+				continue
+			}
+			root := len(e.Scope) > 0
+			for _, s := range e.Scope {
+				root = root && s == "**"
+			}
+			if !root || (!opts.Deadline.IsZero() && time.Now().After(opts.Deadline)) {
+				continue
+			}
+			verdict := verdictOf(c)
+			if verdict != check.Held {
+				continue
+			}
+			item := itemFor(c, verdict)
+			if used+item.Tokens > MaxTokens {
+				continue
+			}
+			items = append(items, item)
+			used += item.Tokens
+		}
+		return items
+	}
+	result.Items = fillCommands(result.Items)
+	if result.Folder != nil {
+		result.Folder = fillCommands(result.Folder)
 	}
 	ids := []string{}
 	for _, item := range result.Items {

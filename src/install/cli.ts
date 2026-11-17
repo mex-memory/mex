@@ -1,4 +1,5 @@
 import { excludeChanges, installAgents, installationChanges, uninstallAgents, type InstallResult } from "./index.js";
+import { recordLocation } from "../record/location.js";
 
 function summary(result: InstallResult) {
   return { agents: result.agents, changes: result.changes.map(change => ({ path: change.path, kind: change.kind,
@@ -14,6 +15,7 @@ export async function runInstall(options: { dryRun?: boolean; json?: boolean } =
   for (const change of view.changes) console.log(`  ${change.action} ${change.path}`);
   if (!view.changes.length) console.log("  Agent hooks are up to date.");
   for (const notice of view.notices) console.log(notice);
+  if (!options.dryRun && process.stdout.isTTY) console.log("Next: run mex in a repo to turn MEX on there. Undo any time: mex uninstall");
 }
 
 export async function runUninstall(options: { dryRun?: boolean; json?: boolean; purge?: boolean } = {}): Promise<void> {
@@ -33,6 +35,7 @@ export async function runUninstall(options: { dryRun?: boolean; json?: boolean; 
   else if (result.conflicts.length) {
     console.error("Some changed files need review. Their installation records and required runtime files were kept:");
     for (const path of result.conflicts) console.error(`  ${path}`);
-  } else console.log(result.purged ? "MEX hooks, runtime and data removed." : "MEX hooks and runtime removed; data kept.");
+  } else console.log(result.purged ? "MEX is off on this machine. Hooks, runtime and data removed. Run mex install to install again."
+    : `MEX is off on this machine. Your notes are kept in ${recordLocation().home}; mex uninstall --purge removes them.`);
   if (result.conflicts.length) process.exitCode = 1;
 }

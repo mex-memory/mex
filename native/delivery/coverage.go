@@ -53,17 +53,19 @@ func nativeFiles(agent, checkout, rel string, exists func(string) bool) []string
 		return d + "/" + f
 	}
 	var out []string
+	// Claude Code reads AGENTS.md only while no CLAUDE.md file sits in the root
+	// or any folder on the way down (its default "CLAUDE.md or AGENTS.md").
+	claudeAbove := false
 	for _, d := range dirs {
 		switch agent {
 		case "claude-code":
-			claude := false
 			for _, f := range []string{"CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"} {
 				if exists(join(d, f)) {
 					out = append(out, join(d, f))
-					claude = true
+					claudeAbove = true
 				}
 			}
-			if !claude && exists(join(d, "AGENTS.md")) {
+			if !claudeAbove && exists(join(d, "AGENTS.md")) {
 				out = append(out, join(d, "AGENTS.md"))
 			}
 		case "codex":

@@ -892,6 +892,12 @@ func releaseHeldRules(h *record.Hooks, ev contract.Event, g *group) error {
 	for i := range g.snap.Items {
 		it := &g.snap.Items[i]
 		for _, v := range g.views {
+			// A note this call already offers through its own moment (a pitfall at
+			// first read) goes out there; the prompt anchor's arming only adds a
+			// moment for notes nothing else would send.
+			if offered[it.Entry.ID] {
+				break
+			}
 			if (v.name == contract.ToolRead || isEdit(v)) && v.output != nil && v.output.OK && contains(armed[it.Entry.ID], v.rel) && armedHashes[it.Entry.ID] == contentHash(it.Hash+"\n") {
 				g.cands = append(g.cands, candidate{item: it, moment: "anchor-touch", tier: tierFile, rel: v.rel, anchorRelease: true, anchorPaths: []string{v.rel}})
 				break

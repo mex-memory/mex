@@ -16,6 +16,8 @@ import { selectNative, type Candidate } from "./native-select.js";
 import { writeNative, type NativeWrite } from "./native-write.js";
 import { references } from "./references.js";
 import { teamEntries } from "./team.js";
+import { openRecordReadOnly } from "../record/index.js";
+import { automaticWorkEnabled } from "../controls/index.js";
 
 export interface NativeRebuild extends Partial<NativeWrite> {
   /** Set when a session is running: nothing was written. */
@@ -25,6 +27,8 @@ export interface NativeRebuild extends Partial<NativeWrite> {
 }
 
 export interface RebuildOptions {
+  /** Agents found during setup, before their first session in this checkout. */
+  agents?: NativeAgent[];
   /** Write even though a session is running (the person asked for it). */
   force?: boolean;
   /** Only the shared files: the same working-tree change as a team entry. */
@@ -50,16 +54,27 @@ export function personalNotes(home: string, projectId: string, retired: Set<stri
   check(); return out;
 }
 
+/** MEX is on for this project on this machine: not off globally, and some checkout is on. */
+function mexOnHere(home: string, projectId: string): boolean {
+  try {
+    const reader = openRecordReadOnly({ home });
+    if (!reader) return true;
+    try { return automaticWorkEnabled(reader as never, projectId); } finally { reader.close(); }
+  } catch { return true; }
+}
+
 export function rebuildNative(options: KnowledgeOptions, rebuild: RebuildOptions = {}): NativeRebuild {
   const project = knowledgeProject(options);
   const home = existsSync(project.location.home) ? project.location.home : undefined;
-  const agents = agentsInUse(project.root, home);
+  const agents = [...new Set([...agentsInUse(project.root, home), ...(rebuild.agents ?? [])])];
   if (home && !rebuild.force) {
     const live = liveSessions(project.root, home, rebuild.now);
     if (live.length) return { deferred: { agents: live }, agents, selected: 0 };
   }
   const candidates: Candidate[] = teamEntries(options).entries.map(e => ({ level: "team" as const, entry: e.entry }));
-  if (home && !rebuild.sharedOnly) candidates.push(...personalNotes(home, project.projectId, project.retired, project.root));
+  // While MEX is off here, its personal rule files are removed: off means the
+  // agent stops hearing from MEX. Shared files live in git and stay.
+  if (home && !rebuild.sharedOnly && mexOnHere(home, project.projectId)) candidates.push(...personalNotes(home, project.projectId, project.retired, project.root));
   const verdicts = candidates.some(c => c.entry.mex.checks.length) ? currentVerdicts(options, project) ?? new Map() : new Map();
   const { selected } = selectNative(candidates, verdicts);
   const plan = planNative(project.root, agents, selected);

@@ -11,7 +11,7 @@ import { runModel, ModelWaitError, ModelRunError, selectModel, DEFAULT_MODELS, t
 import { hash, position, samePosition, readSource, type Position } from "../judge/evidence.js";
 import { recordChecks } from "../judge/native.js";
 import { nativeBinary } from "../knowledge/check.js";
-import { filterInput, advanceConsumed, ackKey, acknowledged, filterAllowed, FILTER_LIMITS, type FilterParams, type FilterInput, type ScanWindow } from "./input.js";
+import { filterInput, advanceConsumed, ackKey, acknowledged, acknowledgeTyped, filterAllowed, statementsOn, FILTER_LIMITS, type FilterParams, type FilterInput, type ScanWindow } from "./input.js";
 import { finishRequest } from "./pending.js";
 import { AID_WRITER_RULE, applyCandidateAids, nativeAidRanker, type AidRanker } from "../knowledge/aids.js";
 import { aidCorpus } from "../knowledge/aid-store.js";
@@ -151,6 +151,8 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
       try {
         if (!filterAllowed(writer, project, params)) return { checkpoint: state, wait: "Waiting: capture or MEX is off here" };
         if (project.startsWith("g-") && !at.head) return { checkpoint: state, wait: "Waiting: Git checkout identity is unavailable" };
+        // Statement learning off: typed text is handled by not reading it.
+        if (!statementsOn(writer)) acknowledgeTyped(writer, project, params.checkout);
         if (!samePosition(state.position, at)) { finishRequest(writer, params); return { checkpoint: state, done: true, gaps: true, summary: "Checkout changed; filter candidates remain local" }; }
         const publication = await publishNext(writer, project, params, job, deps.publication);
         if (publication) return { checkpoint: state, ...publication };

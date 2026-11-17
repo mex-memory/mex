@@ -14,7 +14,7 @@ import { enqueueModelBatch, claimModelBatch, settleModelBatch } from "../../mode
 import { REFERENCE_BATCH } from "../../model-runner/budget-prices.js";
 import { note } from "../../knowledge/store.js";
 import { createFilterKind, readFilterBatch, type FilterDependencies } from "../job.js";
-import { filterInput, type FilterInput, type FilterParams } from "../input.js";
+import { acknowledgeTyped, filterInput, type FilterInput, type FilterParams } from "../input.js";
 import { filterPending, queuePendingFilters } from "../pending.js";
 import { replyContexts } from "../transcript.js";
 
@@ -60,6 +60,8 @@ beforeEach(() => {
   writeFileSync(join(root, "package.json"), '{"scripts":{"test":"vitest"}}\n');
   vi.stubEnv("MEX_HOME", home); vi.stubEnv("MEX_HOOK_BINARY", binary);
   writer = openRecord({ home, projectPath: root, isNetwork: () => false }); project = writer.checkout(root)!.project_id;
+  // These cases exercise learning from typed statements, which is opt-in.
+  writer.db.prepare("INSERT OR REPLACE INTO settings(scope,key,value) VALUES('global','learning.statements','on')").run();
   hooks = new DatabaseSync(join(writer.location.directory, "hooks.db"));
   const schema = resolve("native/record/schema/hooks");
   for (const file of readdirSync(schema).filter(f => f.endsWith(".sql")).sort()) hooks.exec(readFileSync(join(schema, file), "utf8"));
@@ -75,6 +77,17 @@ describe("filter batches and provenance", () => {
     add("s", "message 20"); expect(filterInput(writer, project, params(), false, now)?.messages).toHaveLength(20);
     hooks.exec("DELETE FROM journal"); add("old", "one day old", { at: new Date(now - 24 * 60 * 60_000).toISOString() });
     expect(filterInput(writer, project, params(), false, now)?.messages).toHaveLength(1);
+  });
+  it("never reads typed text while statement learning is off, and counts it as handled", () => {
+    writer.db.prepare("DELETE FROM settings WHERE scope='global' AND key='learning.statements'").run();
+    add("ended", "Tests use vitest because the project chose it.", { finished: true });
+    expect(filterInput(writer, project, params(), true, now)).toBeUndefined();
+    acknowledgeTyped(writer, project, root);
+    writer.db.prepare("INSERT OR REPLACE INTO settings(scope,key,value) VALUES('global','learning.statements','on')").run();
+    // Turning learning on later starts from new text, not from what was typed while it was off.
+    expect(filterInput(writer, project, params(), true, now)).toBeUndefined();
+    add("later", "Builds use tsup because it bundles fast.", { finished: true });
+    expect(filterInput(writer, project, params(), true, now)?.messages.map(m => m.text)).toEqual(["Builds use tsup because it bundles fast."]);
   });
   it("skips recently active sessions but admits an explicit SessionEnd", () => {
     add("active", "active ask", { seen: new Date(now).toISOString() });

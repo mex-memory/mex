@@ -13,6 +13,10 @@ import type { CheckoutRow, RecordWriter } from "../record/index.js";
 import { detectCaller, type Caller } from "./caller.js";
 import { classifyPlace, displayPath, type Place } from "./place.js";
 import { renderDone, renderFindings, renderHeader, renderNotes, screenMode, type Finding } from "./screen.js";
+import { noteExample, renderNext } from "./screen.js";
+import { Rich, RichStep, RICH_MIN_COLUMNS } from "./rich.js";
+import { readBoundedTextFile } from "../knowledge/files.js";
+import type { RuleScan } from "../knowledge/rule-files.js";
 import type { FinishJob } from "./finish.js";
 
 /** Test-only: kill the process at a step boundary to prove each one leaves a clean state. */
@@ -72,7 +76,7 @@ function checkoutOn(row: CheckoutRow, now = Date.now()): boolean {
 }
 
 const AGENT_NAMES = { "claude-code": "Claude Code", codex: "Codex" } as const;
-const MEMORY_NAMES = { "claude-code": "Claude", codex: "Codex" } as const;
+const MEMORY_NAMES = AGENT_NAMES;
 function list(names: string[]): string {
   return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
@@ -81,7 +85,7 @@ function message(error: unknown): string {
   return text.split(/\r?\n/u)[0]!.slice(0, 200);
 }
 
-interface HookSummary { note?: string; notices: string[]; }
+interface HookSummary { note?: string; notices: string[]; agents?: Array<"claude-code" | "codex">; }
 async function installHooks(): Promise<HookSummary> {
   try {
     const { installAgents } = await import("../install/index.js");
@@ -89,6 +93,7 @@ async function installHooks(): Promise<HookSummary> {
     if (!result.agents.length) return { note: "No supported agent found. Install Claude Code or Codex, then run `mex install`.", notices: [] };
     const where = result.agents.map(agent => AGENT_NAMES[agent]);
     return {
+      agents: result.agents,
       note: `Hooks: ${list(where)}, in your user settings.`,
       // The trust and timing notices matter when hooks first change; repeat runs stay quiet.
       notices: result.changes.length ? result.notices : [],
@@ -99,7 +104,7 @@ async function installHooks(): Promise<HookSummary> {
 }
 
 interface NotesFound { count: number; agents: string[]; }
-async function readAgentMemory(root: string): Promise<NotesFound | undefined> {
+export async function readAgentMemory(root: string): Promise<NotesFound | undefined> {
   try {
     const { refreshHints, hintStatus } = await import("../knowledge/hints.js");
     const refreshed = refreshHints({ projectPath: root });
@@ -111,21 +116,43 @@ async function readAgentMemory(root: string): Promise<NotesFound | undefined> {
 }
 
 /** Read the repo's rule files (knowledge-05) and save their scan; the line names `mex rules` when some need review. */
-async function readRules(root: string, listing?: Promise<string[] | undefined>): Promise<{ files: number; conflicts: number; line: string } | undefined> {
+export function ruleFindings(cache: RuleScan, root: string): Finding[] {
+  const review = cache.review.filter(item => item.kind === "conflict" || item.kind === "stale");
+  const stale = review.filter(item => item.kind === "stale").length;
+  const details = review.slice(0, 3).map(item => {
+    const locations = item.paths.map(path => {
+      try {
+        const lines = readBoundedTextFile(join(root, path), 1024 * 1024)?.split(/\r?\n/u) ?? [];
+        // Review owns the diagnosis; this lookup only locates its existing message in the file.
+        const command = /Names the command "([^"]+)"/u.exec(item.message)?.[1];
+        const ref = /Mentions (.+), which doesn't exist/u.exec(item.message)?.[1];
+        const index = lines.findIndex(line => command ? line.includes(command) : ref ? line.includes(ref) : item.heading ? line.replace(/^#+\s*/u, "").trim() === item.heading : line.trim() !== "");
+        return index >= 0 ? `${path}:${index + 1}` : path;
+      } catch { return path; }
+    });
+    const reason = item.message.replace(/^Names the command "([^"]+)", which the repo doesn't define\.$/u, "`$1`: command is not defined")
+      .replace(/^Mentions (.+), which doesn't exist\.$/u, "`$1`: file not found");
+    return `${locations.join(", ")}  ${reason}`;
+  });
+  if (review.length > 3) details.push(`… and ${review.length - 3} more: mex rules`);
+  return [
+    ...(review.length ? [{ state: "attention" as const, text: `${review.length} ${review.length === 1 ? "line in your rule files" : "lines in your rule files"} ${stale === review.length ? review.length === 1 ? "is out of date" : "are out of date" : stale ? "are out of date or disagree" : review.length === 1 ? "disagrees" : "disagree"}`, details }] : []),
+    // Name a few files, not all of them: a repo with 25 rule files is a wall of paths.
+    { state: "ok", text: `${cache.files.length} rule ${cache.files.length === 1 ? "file" : "files"} read (${[...cache.files].sort((a, b) => a.path.split("/").length - b.path.split("/").length || a.path.localeCompare(b.path)).slice(0, 3).map(file => file.path).join(", ")}${cache.files.length > 3 ? `, and ${cache.files.length - 3} more` : ""})${review.length ? "" : "; they agree"}` },
+  ];
+}
+
+export async function readRules(root: string, listing?: Promise<string[] | undefined>): Promise<{ files: number; conflicts: number; findings: Finding[] } | undefined> {
   try {
     const { refreshRuleFiles } = await import("../knowledge/rule-cache.js");
     const cache = refreshRuleFiles({ projectPath: root }, new Date(), await listing);
     const conflicts = cache.review.filter(item => item.kind === "conflict").length;
-    const stale = cache.review.filter(item => item.kind === "stale").length;
-    const parts = [`${cache.files.length} rule ${cache.files.length === 1 ? "file" : "files"} read`];
-    if (conflicts) parts.push(`${conflicts} ${conflicts === 1 ? "disagrees" : "disagree"}`);
-    if (stale) parts.push(`${stale} ${stale === 1 ? "mention" : "mentions"} out of date`);
-    return { files: cache.files.length, conflicts, line: `${parts.join("; ")}${conflicts || stale ? ", see `mex rules`" : ""}` };
+    return { files: cache.files.length, conflicts, findings: ruleFindings(cache, root) };
   } catch { return undefined; }
 }
 
 /** Read recipes and save recipes.json; a failure leaves the line out rather than stopping the screen. */
-async function readRecipes(root: string, projectId: string, env: NodeJS.ProcessEnv) {
+export async function readRecipes(root: string, projectId: string, env: NodeJS.ProcessEnv) {
   try {
     const [{ scanRecipes }, { nativeBinary }, { recordLocation }, { writeFactFile }] = await Promise.all([
       import("./recipes/index.js"), import("../knowledge/check.js"), import("../record/location.js"), import("./facts.js"),
@@ -160,6 +187,11 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   const interactive = options.interactive ?? caller === "person";
   const ask = options.ask ?? ((lines: readonly string[]) => askYesNo(lines, write));
   const mode = screenMode({ env });
+  // A person at a colour terminal wide enough gets the live, rich screen; everyone else the plain one.
+  const rich = mode.color && !mode.ascii && caller === "person" && !options.write && process.stdout.isTTY === true
+    && (mode.width ?? 0) >= RICH_MIN_COLUMNS ? new Rich(env, Math.min(mode.width ?? 100, 110)) : undefined;
+  const step = rich ? new RichStep(rich) : undefined;
+  const live = <T>(label: string, work: () => Promise<T> | T): Promise<T> => step ? step.run(label, work) : Promise.resolve().then(work);
   const install = options.install ?? (env.MEX_INSTALL_AUTO !== "0" && env.MEX_BACKGROUND !== "1");
 
   const hooks: HookSummary = install ? await installHooks() : { notices: [] };
@@ -194,9 +226,15 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   }
 
   const findings: Finding[] = [];
+  let shown = 0, commandsSaved = false;
+  /** Rich: print the findings added since the last step, as the run goes. */
+  const showNew = () => { if (!rich) return; for (const line of rich.rows(findings.slice(shown))) write(line); shown = findings.length; };
   const notes: string[] = [];
   const finishJobs: FinishJob[] = [];
   const waiting = options.wait !== false;
+  let example: string | undefined;
+  let learning: string | undefined;
+  let rebuildRules = false;
   let writer: RecordWriter | undefined = openRecord();
   let projectId: string, checkout: CheckoutRow, hidden = false;
   const git = place.kind === "git";
@@ -212,6 +250,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       projectId = turnedOn.projectId; checkout = turnedOn.checkout;
     }
     killAt("registered", env);
+    learning = writer.setting("global", "learning.statements");
     if (!checkoutOn(checkout)) {
       write(`MEX is off for this ${git ? "repo" : "folder"}${checkout.state === "off until" ? ` until ${checkout.off_until}` : ""}. Run \`mex on\` to turn it back on.`);
       return { exitCode: 0, place: place.kind, projectId, turnedOn: false };
@@ -235,6 +274,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     if (!automaticWorkEnabled(writer, projectId)) {
       findings.push({ state: "attention", text: "MEX is off everywhere, so nothing was read or queued. `mex on --all` turns it back on." });
     } else {
+      rebuildRules = true;
       // The rule-file scan's file list walks the whole tree for untracked files; start it now so
       // it runs while recipes are read.
       const { listRepositoryFilesAsync } = await import("../knowledge/rule-files.js");
@@ -248,22 +288,59 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       }
       killAt("queued", env);
       writer.close(); writer = undefined;
+      if (rich) {
+        for (const line of rich.header(basename(displayPath(checkout.path)), hidden)) write(line);
+        // The hooks went in first, so they lead the list.
+        if (hooks.note) for (const line of rich.rows([{ state: hooks.agents?.length ? "ok" : "attention", text: hooks.note }])) write(line);
+        showNew();
+      }
 
       // The free step: local reads only, no network, no model, no repository command.
-      const recipes = await readRecipes(checkout.path, projectId, env);
+      const recipes = await live("Reading package files", () => readRecipes(checkout.path, projectId, env));
+      // The example a person tries first: the root package's test command when there is one.
+      // A command a person can run as is: from a manifest, not a CI step, with no variables to fill in.
+      const fromManifest = (recipe: { origin: Array<{ file: string }> }) => recipe.origin.some(o => !/^\.(?:github|gitlab|circleci)\/|\.gitlab-ci\.ya?ml$|azure-pipelines/u.test(o.file));
+      const tests = (recipes?.recipes ?? []).filter(recipe => recipe.purpose === "test" && fromManifest(recipe) && recipe.local === "yes" && !/[$%]/u.test(recipe.command));
+      const test = tests.find(recipe => !recipe.package) ?? tests[0];
+      example = noteExample(test?.command, test?.package, env);
+      let recipeFinding: Finding | undefined;
       if (recipes) {
         const { recipeSummary } = await import("./recipes/index.js");
         const summary = recipeSummary(recipes);
-        findings.push({ state: "ok", text: git ? summary.line : summary.line.replace("this repo", "this folder") });
+        recipeFinding = { state: "ok", text: git ? summary.line : summary.line.replace("this repo", "this folder") };
+        findings.push(recipeFinding);
         for (const note of summary.notes.slice(0, 3)) findings.push({ state: "attention", text: note });
       }
-      const rules = await readRules(checkout.path, listing);
-      if (rules && rules.files > 0) findings.push({ state: "ok", text: rules.line });
-      const memory = await readAgentMemory(checkout.path);
+      // The commands are saved as soon as they are read. No model or repo command runs.
+      if (recipes) {
+        await live("Saving commands for your agents", async () => {
+          try {
+            const { saveSetupRecipes } = await import("./recipe-entries.js");
+            const saved = saveSetupRecipes(recipes, { projectPath: checkout.path, env });
+            if (saved.saved && saved.saved === saved.selected && !saved.incomplete && recipeFinding) {
+              commandsSaved = true;
+              recipeFinding.text += saved.capped ? ` · your agents get the first ${saved.saved} from now on` : " · your agents get these from now on";
+            }
+            if (saved.incomplete) findings.push({ state: "attention", text: "Some commands could not be saved for your agents. Run mex again to retry." });
+          } catch {
+            findings.push({ state: "attention", text: "Commands could not be saved for your agents. Run mex again to retry." });
+          }
+        });
+      }
+      showNew();
+      const rules = await live("Reading rule files", () => readRules(checkout.path, listing));
+      if (rules && rules.files > 0) findings.push(...rules.findings);
+      showNew();
+      const memory = await live("Reading your agents' memory", () => readAgentMemory(checkout.path));
       if (memory && memory.count > 0) {
-        findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory` });
+        findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory, offered to your agents as hints` });
       }
       killAt("free-step", env);
+      // These reads just ran: a session starting now need not ask for them again.
+      try {
+        const [{ stampSetupRefresh }, { recordLocation }] = await Promise.all([import("./refresh.js"), import("../record/location.js")]);
+        stampSetupRefresh(recordLocation().directory, checkout.path);
+      } catch { /* without the stamp the next session start asks once more */ }
       if (shallow) findings.push({ state: "attention", text: "Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)" });
       // Waiting, the results take these lines' place once the work is done.
       if (!waiting) {
@@ -271,6 +348,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         else if (git) findings.push({ state: "background", text: "Git history and the file index: in the background (`mex jobs`)" });
         else findings.push({ state: "background", text: "The file index: in the background (`mex jobs`); no git history here" });
       }
+      showNew();
 
       const { recordLocation } = await import("../record/location.js");
       const { writeFactFile } = await import("./facts.js");
@@ -294,15 +372,23 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     }
   } finally { writer?.close(); }
 
-  if (git && existsSync(join(checkout.path, ".mex", "ROUTER.md"))) notes.push("This repo has MEX 0.8 project files; `mex hub` opens them.");
-  if (hooks.note) notes.push(hooks.note);
+  if (git && existsSync(join(checkout.path, ".mex", "ROUTER.md"))) notes.push("This repo has MEX 0.8 files. Run mex upgrade to bring them into 0.9 (preview first, nothing changes until you apply).");
+  if (hooks.note && !rich) notes.push(hooks.note);
   notes.push(...hooks.notices);
   const name = basename(displayPath(checkout.path));
   // Waiting, the time goes on the closing "Done in" line; a header time would only be the first part.
   const finishing = waiting && finishJobs.length > 0;
-  for (const line of renderHeader({ name, ...(finishing ? {} : { ms: elapsed() }), costUsd: 0, hidden }, mode)) write(line);
-  if (mode.color) write("");
-  for (const line of renderFindings(findings, mode)) write(line);
+  if (rich) {
+    // The header and hooks row went out before the free step; print anything a turned-off checkout found.
+    if (!shown && !rebuildRules) for (const line of rich.header(name, hidden)) write(line);
+    showNew();
+  } else {
+    for (const line of renderHeader({ name, ...(finishing ? {} : { ms: elapsed() }), costUsd: 0, hidden }, mode)) write(line);
+    if (mode.color) write("");
+    if (caller === "person" && process.stdout.isTTY) for (const line of renderNotes(["Found"], mode)) write(line);
+    for (const line of renderFindings(findings, mode)) write(line);
+  }
+  const later: Finding[] = [];
 
   let exitNow = false, exitCode = 0;
   if (waiting && finishJobs.length) {
@@ -319,7 +405,8 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         capMs: options.waitCapMs ?? testWaitCap(env) ?? (caller === "person" ? WAIT_CAP_MS.person : WAIT_CAP_MS.other),
         interrupt, onFirstProgress: () => killAt("waiting", env),
       });
-      for (const line of renderFindings(finished.findings, mode)) write(line);
+      later.push(...finished.findings);
+      for (const line of rich ? rich.rows(finished.findings) : renderFindings(finished.findings, mode)) write(line);
       exitNow = finished.handedOff;
       if (finished.interrupted) exitCode = 130;
     } finally {
@@ -327,8 +414,28 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       finishWriter.close();
     }
   }
-  for (const line of renderNotes(notes, mode)) write(line);
-  if (waiting && finishJobs.length && !exitNow) for (const line of renderDone(elapsed(), mode)) write(line);
+  if (rebuildRules) {
+    try {
+      const { rebuildNative } = await import("../knowledge/native.js");
+      const rebuilt = rebuildNative({ projectPath: checkout.path, env }, { agents: hooks.agents });
+      if (rebuilt.deferred) {
+        const { queueNativeRebuild } = await import("../knowledge/native-queue.js");
+        if (!queueNativeRebuild(checkout.path)) throw new Error("rebuild was not queued");
+        notes.push("A session is running here. Your agents get the commands after it ends.");
+      }
+    } catch {
+      notes.push("Rule files could not be rebuilt. Run mex again to retry.");
+    }
+  }
+  for (const line of rich ? rich.notes(notes) : renderNotes(notes, mode)) write(line);
+  if (rich) {
+    for (const line of rich.next({ learning, example })) write(line);
+    // The mascot closes the run with what it found.
+    if (!exitNow) for (const line of rich.end(rich.summary({ name, ms: elapsed(), commandsSaved, findings: [...findings, ...later] }))) write(line);
+  } else {
+    for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning, example }, mode)) write(line);
+    if (waiting && finishJobs.length && !exitNow) for (const line of renderDone(elapsed(), mode)) write(line);
+  }
   const ended = exitNow ? { exitNow: true as const } : {};
 
   // The offer slot: empty in beta.1; learning-03 registers its question.

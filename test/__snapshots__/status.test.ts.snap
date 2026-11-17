@@ -1,0 +1,20 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`reads installed agents, cached verdicts and last hook call without writing 1`] = `
+"MEX 0.9.0-beta.1 · on in this repo · capture on
+
+Agents
+  ✓ Claude Code: hooks installed (12 events) · last call 3 min ago
+  ✓ Codex: hooks installed (9 events) · open /hooks once in Codex to trust them
+  ✓ Hook binary 0.9.0-beta.1 (native)
+
+Knowledge here
+  1 personal notes · 0 team entries · 0 hints from agent memory
+  Checks (cached): 0 hold · 0 changed (sent as a pointer) · 1 broken (held back) · 0 not checked yet
+
+Background
+  No jobs waiting · last run: memory-filter, 2 h ago
+  Model use for MEX this week: 0 runs, share of your usage unknown (cap 3%)
+
+Next: mex note "<fact>" adds a note · mex off turns MEX off here"
+`;

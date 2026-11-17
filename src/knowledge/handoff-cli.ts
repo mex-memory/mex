@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { closeHandoff, draftHandoff, writeHandoff, type HandoffDraft } from "./handoff.js";
 
@@ -45,7 +46,9 @@ export async function runHandoff(words: string[], opts: HandoffOptions): Promise
   if (opts.json) console.log(JSON.stringify({ ok: true, written: true, branch: draft.branch, path: draft.path, content: draft.content, held: draft.held, uncommitted: draft.uncommitted.length }));
   else {
     if (opts.yes) console.log(preview(draft));
-    console.log(`\nWrote ${draft.path}. Commit it with the branch, for example:\n  git add ${draft.path} && git commit -m "Hand off ${draft.branch}"\nMEX never pushes. The next agent session on ${draft.branch} gets it once.`);
+    // A person's own ignore rules may hide .mex/; then a plain git add refuses the file.
+    const ignored = spawnSync("git", ["-C", draft.root, "check-ignore", "-q", "--", draft.path], { stdio: "ignore", windowsHide: true }).status === 0;
+    console.log(`\nWrote ${draft.path}. Commit it with the branch, for example:\n  git add ${ignored ? "-f " : ""}${draft.path} && git commit -m "Hand off ${draft.branch}"\nMEX never pushes. The next agent session on ${draft.branch} gets it once.`);
   }
   return 0;
 }

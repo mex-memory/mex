@@ -20,7 +20,7 @@ test.describe("built Hub code-repository setup", () => {
       const fixture = createFixture();
       let hub: ChildProcess | undefined;
       try {
-        hub = spawn(process.execPath, [cli, "hub", "--no-open"], {
+        hub = spawn(process.execPath, [cli, "setup", "--browser", "--no-open"], {
           cwd: fixture.project, env: fixture.env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
         });
         await page.goto(await readBootstrapUrl(hub));

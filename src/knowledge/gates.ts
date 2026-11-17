@@ -77,14 +77,35 @@ export function sanitizeText(value: string, source: References): string {
   }).join("\n")));
   text = text.replace(/`([^`\n]+)`/gu, (_all, code: string) => save(looksLikeCommand(code) && !commandExists(code, source) ? "[unverified command removed]" : `\`${code}\``));
   // Bare shell commands are checked as a whole, including chained suffixes.
-  text = text.replace(/(^|\n|\b(?:run|runs|running|execute|executes|using|with|use)\s+)((?:npm|pnpm|yarn|npx|bun|node|python3?|pip3?|git|go|cargo|make|cmake|curl|wget|bash|sh|sudo|rm|chmod|powershell|pwsh|cmd)\s+[^\n\0]+)/giu, (_all, prefix: string, value: string) => {
-    const split = value.search(/(?:[.!?](?=\s|$)|\s+(?:because|for which|so that)\b)/u);
+  // A command ends where the sentence goes on in plain words ("before
+  // pushing", "when CI fails"); whatever follows is checked again, so a
+  // command after such a word is never let through unchecked.
+  const words = "because|for which|so that|before|after|when|whenever|while|if|unless|until|then|otherwise|instead|since|once";
+  const programs = "npm|pnpm|yarn|npx|bun|node|python3?|pip3?|git|go|cargo|make|cmake|curl|wget|bash|sh|sudo|rm|chmod|powershell|pwsh|cmd";
+  const end = new RegExp(`(?:[.!?](?=\\s|$)|,\\s|\\s+(?:${words})\\b)`, "u");
+  const check = (prefix: string, value: string): string => {
+    const split = value.search(end);
     const command = (split < 0 ? value : value.slice(0, split)).trim();
     const rest = split < 0 ? "" : value.slice(split);
-    return prefix + (commandExists(command, source) ? command : "[unverified command removed]") + rest;
-  });
+    // "use pnpm in this repo", "npm or yarn", "node 22 for builds": a sentence about a
+    // tool, not a command. Its next word is prose or a version, never an argument.
+    const next = command.split(/\s+/u)[1]?.toLowerCase().replace(/[^a-z0-9.-]/gu, "") ?? "";
+    if (!next || PROSE_AFTER_PROGRAM.has(next) || /^\d/u.test(next)) return prefix + value;
+    return prefix + (commandExists(command, source) ? command : "[unverified command removed]") + gateRest(rest);
+  };
+  // After a command, a plain word may lead to another one ("npm test before
+  // rm -rf build"): that is checked too, but only a lowercase program name,
+  // so prose such as "before Python changes" is left alone.
+  const gateRest = (input: string): string => input.replace(new RegExp(`(\\b(?:${words})\\s+)((?:${programs})\\s+[^\\n\\0]+)`, "gu"), (_all, prefix: string, value: string) => check(prefix, value));
+  text = text.replace(new RegExp(`(^|\\n|\\b(?:run|runs|running|execute|executes|using|with|use)\\s+)((?:${programs})\\s+[^\\n\\0]+)`, "giu"), (_all, prefix: string, value: string) => check(prefix, value));
   return text.replace(/\0(\d+)\0/gu, (_all, index: string) => codes[Number(index)]);
 }
+
+/** Words that follow a program name in prose ("use pnpm in this repo") but never start its arguments. */
+const PROSE_AFTER_PROGRAM = new Set(["in", "on", "at", "for", "to", "from", "with", "without", "and", "or", "nor", "but", "as", "by", "of",
+  "the", "a", "an", "instead", "over", "here", "there", "everywhere", "only", "not", "never", "always", "is", "are", "was", "were", "be",
+  "it", "this", "that", "these", "those", "we", "you", "our", "your", "its", "so", "also", "too", "rather", "than", "like", "unless",
+  "when", "before", "after", "because", "if", "version", "versions", "anymore", "any", "all", "everything"]);
 
 /** Gates apply on writes and reads; editing learned files by hand cannot bypass them. */
 export function gateEntry(input: KnowledgeEntry, source: References): KnowledgeEntry {
