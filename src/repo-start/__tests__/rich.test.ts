@@ -12,7 +12,10 @@ describe("the rich first screen", () => {
     expect(labelled("Indexed 507 files")).toEqual({ label: "Your code", text: "507 files indexed" });
     expect(labelled("Git history (52 commits): no files change together often enough yet, 8 layer rules")).toEqual({ label: "Git history", text: "52 commits read" });
     expect(labelled("Hooks: Claude Code and Codex, in your user settings.")).toEqual({ label: "Hooks", text: "Claude Code and Codex" });
-    expect(labelled("Something new")).toEqual({ label: "", text: "Something new" });
+    expect(labelled("No test or build commands found in config")).toEqual({ label: "Commands", text: "none found in package files" });
+    expect(labelled("Git history and the file index: in the background (`mex jobs`)").label).toBe("Your code");
+    expect(labelled("MEX is off everywhere, so nothing was read or queued. `mex on --all` turns it back on.").label).toBe("MEX");
+    expect(labelled("Something new")).toEqual({ label: "Note", text: "Something new" });
   });
 
   it("names the file once and lists the stale lines under it, after the rule files row", () => {
@@ -41,6 +44,9 @@ describe("the rich first screen", () => {
     expect(plain(rich.mascot()).every(line => line.length <= 16)).toBe(true);
     const calm = plain(rich.end(rich.summary({ name: "shop", ms: 900, commandsSaved: false, findings: [] }))).join("\n");
     expect(calm).toContain("Nothing needs a look. You're set.");
+    const off = plain(rich.end(rich.summary({ name: "shop", ms: 900, commandsSaved: false, findings: [{ state: "attention", text: "MEX is off everywhere, so nothing was read or queued." }] }))).join("\n");
+    expect(off).toContain("MEX is off everywhere, so I read nothing.");
+    expect(off).not.toContain("Read shop");
   });
 
   it("uses 256 colours unless the terminal says it has truecolor", () => {

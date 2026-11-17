@@ -146,6 +146,9 @@ export class Rich {
 
   /** What the mascot says: the time and cost, what the agents get, what needs a look. */
   summary(input: { name: string; ms: number; commandsSaved: boolean; findings: readonly Finding[] }): string[] {
+    if (input.findings.some(f => /^MEX is off everywhere/u.test(f.text))) {
+      return [this.bold("MEX is off everywhere, so I read nothing."), `${this.cmd("mex on --all")} turns it back on.`];
+    }
     const lines = [this.bold(`Read ${input.name} in ${formatSeconds(input.ms)}, for $0.`)];
     lines.push(input.commandsSaved ? "Your agents now get its test and build commands." : "Notes you save reach your agents from the next session.");
     const stale = input.findings.map(f => /^(\d+) lines? in your rule files (?:is|are) out of date/u.exec(f.text)).find(Boolean);
@@ -207,7 +210,17 @@ export function labelled(text: string): { label: string; text: string } {
   if ((m = /^Git history \((.+?)\):/u.exec(text))) return { label: "Git history", text: `${m[1]} read` };
   if ((m = /^Git history: (.+)$/u.exec(text))) return { label: "Git history", text: m[1]! };
   if ((m = /^Hooks: (.+?), in your user settings\.$/u.exec(text))) return { label: "Hooks", text: m[1]! };
-  return { label: "", text };
+  if (/^No test or build commands found/u.test(text)) return { label: "Commands", text: "none found in package files" };
+  if ((m = /^(?:Git history and the file index|The file index): in the background \(`mex jobs`\)(.*)$/u.exec(text))) {
+    return { label: "Your code", text: `indexing in the background · mex jobs${m[1] ? ` ·${m[1].replace(/^;/u, "")}` : ""}` };
+  }
+  if (/^The rest finishes in the background/u.test(text)) return { label: "Your code", text: "the rest finishes in the background · mex jobs" };
+  if ((m = /^(.+?) didn't finish(.*)$/u.exec(text))) return { label: /history/iu.test(m[1]!) ? "Git history" : "Your code", text: `didn't finish${m[2]}` };
+  if (/^MEX is off everywhere/u.test(text)) return { label: "MEX", text: "off everywhere, so nothing was read · mex on --all turns it back on" };
+  if (/^Couldn't hide \.mex/u.test(text)) return { label: "Git", text: text.replace(/^Couldn't hide \.mex\/ in git's exclude file: /u, "couldn't hide .mex/: ") };
+  if (/commands could not be saved|could not be saved for your agents/iu.test(text)) return { label: "Commands", text };
+  if (/test commands for|CI step/iu.test(text)) return { label: "Commands", text };
+  return { label: "Note", text };
 }
 
 function wrapText(text: string, width: number): string[] {
