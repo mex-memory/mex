@@ -16,7 +16,8 @@ export type { KnowledgeOptions } from "./context.js";
 
 export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
 export type StoredEntry = PersonalEntry | TeamEntry | HintEntry;
-export interface NoteInput { text: string; kind?: EntryKind; scope?: string[]; oneLine?: string; }
+/** savedBy: the agent that ran `mex note` for the person; its notes are labelled as the agent's, never "you said". */
+export interface NoteInput { text: string; kind?: EntryKind; scope?: string[]; oneLine?: string; savedBy?: "claude-code" | "codex"; }
 /** A decision that cites a commit is proposed until that commit lands on the default branch. */
 export interface DecisionInput { commit?: NonNullable<KnowledgeEntry["mex"]["commit"]>; supersedes?: string[]; }
 function readDirectory(project: KnowledgeProject): string | undefined {
@@ -103,7 +104,7 @@ export function note(input: NoteInput & DecisionInput, options: KnowledgeOptions
   const entry: KnowledgeEntry = {
     mex: {
       id: `mx_${randomBytes(12).toString("hex")}`, kind: input.kind ?? "rule", scope: input.scope ?? ["**"],
-      source: { type: "person", ref: `mex note ${created}`, quote: input.text }, evidence: "person",
+      source: { type: "person", ref: input.savedBy ? `mex note by ${input.savedBy} ${created}` : `mex note ${created}`, quote: input.text }, evidence: "person",
       one_line: input.oneLine ?? input.text.trim().replace(/\s+/gu, " "), checks: [], status: input.commit ? "proposed" : "active", created,
       ...(input.commit ? { commit: input.commit } : {}), ...(input.supersedes?.length ? { supersedes: input.supersedes } : {}),
     }, text: input.text.trim().replace(/\r\n/g, "\n"),

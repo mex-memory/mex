@@ -25,6 +25,10 @@ const MaxTokens = 300
 
 const Priority = "Priority: current request > your notes > repo instructions > team entries > hints."
 
+// SaveLine tells the agent how something the person wants kept reaches later
+// sessions and the other agents. Notes it saves are labelled as the agent's.
+const SaveLine = `When the person states a lasting fact, rule or decision about this repo, or asks you to remember something, save it in their words: mex note "<one sentence>". Not one-off requests.`
+
 // TokenBound uses UTF-8 bytes as a conservative token upper bound. Unlike a
 // characters/4 estimate this also holds for punctuation and non-Latin text.
 // We drop whole authored one-line claims, never truncate their meaning.

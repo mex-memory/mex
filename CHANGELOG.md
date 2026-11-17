@@ -53,6 +53,7 @@ Pre-release on npm's `next` tag; 0.8.5 stays on `latest`.
 - A `mex handoff` can be committed: MEX's ignore block no longer hides `.mex/handoffs/`.
 - Run through `npx`, MEX no longer installs hooks into npm's temporary cache; it asks for `npm i -g mex-agent@next` instead.
 - New commands, rule-file sections and agent memory reach the agents without running `mex` again: a session start asks for a background re-read (at most every 30 minutes per repo, no model).
+- Agents save what you ask them to keep: each session starts with one line telling the agent to save a lasting fact, rule or decision you state, or anything you ask it to remember, with `mex note` in your words. Such notes read `[Claude Code noted, …]` or `[Codex noted, …]`, never `[you said]`, until you `mex edit` them. Typing `mex note:` yourself still saves your own words.
 
 ## [0.8.5] - 2026-10-29
 

@@ -66,10 +66,15 @@ export function buildKnowledgeCommands(): Command[] {
             else quoteNote = `\nThe quote wasn't found in ${facts.sha.slice(0, 7)} (confidence ${checked.confidence}), so it was left out.`;
           }
         }
-        const saved = note({ text, kind: opts.decision ? "decision" : opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine, commit, supersedes: opts.supersedes }, { projectPath: process.cwd() });
+        // Run inside an agent's shell, the note is the agent's record of what the person said:
+        // labelled as the agent's, never "you said". (A typed `mex note:` goes through __hook-note.)
+        const savedBy = process.env.CLAUDECODE?.trim() && process.env.CLAUDECODE.trim() !== "0" ? "claude-code" as const
+          : process.env.CODEX_THREAD_ID?.trim() ? "codex" as const : undefined;
+        const saved = note({ text, kind: opts.decision ? "decision" : opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine, commit, supersedes: opts.supersedes, ...(savedBy ? { savedBy } : {}) }, { projectPath: process.cwd() });
         await queueRuleFiles();
+        const forAgent = savedBy ? `\nTell the person it is saved for new sessions in every agent. \`mex forget ${saved.entry.mex.id}\` removes it; \`mex edit ${saved.entry.mex.id} "<text>"\` makes it their own words.` : "";
         if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
-        else console.log(`Saved personal note ${saved.entry.mex.id} ${saved.label}\n${saved.entry.mex.one_line}${commit ? `\nNot yet accepted: it comes into force when ${commit.sha.slice(0, 7)} lands on the default branch.` : ""}${quoteNote}`);
+        else console.log(`Saved personal note ${saved.entry.mex.id} ${saved.label}\n${saved.entry.mex.one_line}${commit ? `\nNot yet accepted: it comes into force when ${commit.sha.slice(0, 7)} lands on the default branch.` : ""}${quoteNote}${forAgent}`);
       });
     });
   const search = new Command("recall")

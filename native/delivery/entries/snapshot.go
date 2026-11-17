@@ -371,6 +371,16 @@ func Label(e *Entry, level string) string {
 		}
 		date := e.Created
 		fields := strings.Fields(e.Source.Ref)
+		// A note an agent saved with `mex note` for the person says so.
+		if len(fields) == 5 && fields[0] == "mex" && fields[1] == "note" && fields[2] == "by" {
+			if d, err := time.Parse("2006-01-02", fields[4]); err == nil {
+				name := map[string]string{"claude-code": "Claude Code", "codex": "Codex"}[fields[3]]
+				if name == "" {
+					name = fields[3]
+				}
+				return "[" + name + " noted, " + d.Format("2 Jan") + "]"
+			}
+		}
 		if len(fields) >= 2 && fields[0] == "capture" {
 			date = fields[1]
 		}

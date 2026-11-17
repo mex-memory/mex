@@ -133,7 +133,9 @@ func startBlock(h *record.Hooks, ev contract.Event, env Environment) (string, er
 	shown.Items, shown.Lane = sent, lane
 	text := shown.Render(ids)
 	_, body, _ := strings.Cut(text, "\n")
-	return "[mex " + block + "]\n" + body, nil
+	// A fixed line, outside the knowledge budget: how something the person
+	// wants kept reaches later sessions and the other agents.
+	return "[mex " + block + "]\n" + body + "\n" + brief.SaveLine, nil
 }
 
 // workingSetSurface is the start brief chosen by the working set; plain
