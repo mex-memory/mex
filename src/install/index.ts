@@ -8,7 +8,7 @@ import { openRecord, openRecordReadOnly, type RecordWriter } from "../record/ind
 import { recordLocation, type LocationOptions } from "../record/location.js";
 import { withContainedArtifactLock } from "../team/artifacts/filesystem.js";
 import { binaryFileName, findNativeBinary, selfTestBinary, type SelfTestResult } from "../hooks/shim/binary.js";
-import { launcherFile } from "../hooks/shim/launcher.js";
+import { cliEntryPath, launcherFile } from "../hooks/shim/launcher.js";
 import { assertUntracked, equalSnapshot, installPath, MAX_RUNTIME_BYTES, MAX_SETTINGS_BYTES, readSnapshot, replaceFile, samePath, snapshotBytes, type Snapshot } from "./files.js";
 import { agentSettings, CODEX_TRUST_NOTICE, installSettings, isLegacyHandler, parseSettings, removeHandlers, type Agent, type HookCommand } from "./settings.js";
 import { decodeSnapshot, restoreSettings } from "./recovery.js";
@@ -107,7 +107,8 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
       const fallback = join(bin, "mex-hook.cjs");
       const source = options.fallbackFile ?? fileURLToPath(new URL("./hook-fallback.cjs", import.meta.url));
       const fallbackBytes = readFileSync(source);
-      const entry = resolve(options.entry ?? process.argv[1] ?? "");
+      // A global npm install runs MEX through a `bin/mex` symlink: use the real file.
+      const entry = resolve(options.entry ?? cliEntryPath() ?? "");
       if (!entry.endsWith(".js") || !existsSync(entry)) throw new Error("Build MEX before installing hooks; a valid CLI entry is required.");
       const node = options.node ?? process.execPath;
       const binary = options.nativeBinary === undefined ? findNativeBinary() : options.nativeBinary;
