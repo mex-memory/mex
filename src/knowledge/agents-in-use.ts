@@ -6,6 +6,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, isAbsolute } from "node:path";
 import { realPath } from "../record/project.js";
+import { installationChanges } from "../install/index.js";
 import type { Agent } from "./rule-files.js";
 
 /** Native files are written for these two in this release; the rest come with their adapters. */
@@ -59,8 +60,20 @@ export function agentsInUse(root: string, mexHome?: string): NativeAgent[] {
     for (const beat of heartbeats(mexHome)) {
       if ((NATIVE_AGENTS as readonly string[]).includes(beat.agent) && inside(realRoot, beat.cwd)) seen.add(beat.agent as NativeAgent);
     }
+    // A fresh repo shows no sign yet: the agents MEX installed hooks for on
+    // this machine are the ones its sessions will use, so a note written
+    // before the first session is already in their rule files.
+    if (!seen.size) for (const agent of installedAgents(mexHome)) seen.add(agent);
   }
   return NATIVE_AGENTS.filter(agent => seen.has(agent));
+}
+
+/** Agents with MEX hooks installed on this machine, from the install record. Never throws. */
+function installedAgents(mexHome: string): NativeAgent[] {
+  try {
+    const rows = installationChanges({ home: mexHome });
+    return NATIVE_AGENTS.filter(agent => rows.some(row => row.agent === agent));
+  } catch { return []; }
 }
 
 /** Agents with a session running in this checkout now. */
