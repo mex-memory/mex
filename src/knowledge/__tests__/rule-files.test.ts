@@ -85,6 +85,28 @@ describe("rule files", () => {
     expect(again.entries[1].entry.mex.id).toBe(testing.mex.id);
   });
 
+  it("never takes a code block's language tag for the claim", () => {
+    const rules = [
+      "# Safe tests", "", "Run tests only with NODE_ENV=test.", "",
+      "## Forbidden", "", "```bash", "# never: drops the dev database", "npx mocha 'src/**/*.spec.ts'", "```", "",
+      "## Notes", "", "```", "pnpm i", "```", "", "Install first, then build.", "",
+    ].join("\n");
+    const lines = scanRuleFiles(repo({ "CLAUDE.md": rules }), "2026-11-17").entries.map(e => e.entry.mex.one_line);
+    expect(lines).toContain("Forbidden: `npx mocha 'src/**/*.spec.ts'`");
+    expect(lines).toContain("Notes: Install first, then build.");
+    expect(lines.join(" ")).not.toMatch(/: bash\b/u);
+  });
+
+  it("keeps identifiers with underscores while dropping emphasis", () => {
+    const rules = [
+      "# Tests", "", "Never run tests without `NODE_ENV=test` **set**; it drops my_db.", "",
+      "## Style", "", "Use _plain_ names and __never__ snake_case_ids in URLs.", "",
+    ].join("\n");
+    const lines = scanRuleFiles(repo({ "CLAUDE.md": rules }), "2026-11-17").entries.map(e => e.entry.mex.one_line);
+    expect(lines).toContain("Tests: Never run tests without NODE_ENV=test set; it drops my_db.");
+    expect(lines).toContain("Style: Use plain names and never snake_case_ids in URLs.");
+  });
+
   it("tags who loads each file, so an agent only gets what it doesn't load", () => {
     const root = repo({
       "CLAUDE.md": "# Claude\n\nClaude only.\n",

@@ -169,16 +169,36 @@ function kindOf(body: string): "recipe" | "rule" {
   return fenced || (lines.length > 0 && commands * 2 >= lines.length) ? "recipe" : "rule";
 }
 
+/**
+ * Markdown markers off, identifiers intact: an underscore is emphasis only
+ * when it wraps words at a word edge, so NODE_ENV and snake_case survive.
+ */
 function plain(line: string): string {
-  return line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/u, "").replace(/[*_`]/gu, "").trim();
+  return line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/u, "").replace(/[*`]/gu, "")
+    .replace(/(^|[^\p{L}\p{N}_])_{1,2}(?=[^\s_])(.+?)(?<=[^\s_])_{1,2}(?![\p{L}\p{N}_])/gu, "$1$2").trim();
 }
 
-/** The claim in one line: the first sentence of the body when it is short, else the heading. */
+/**
+ * The claim in one line: the first sentence of the body's prose when it is
+ * short; for a section that is only a code block, its first command; else the
+ * heading. A fenced block is never prose (its language tag is not a claim).
+ */
 function oneLine(heading: string, body: string, path: string): string {
-  const first = body.split("\n").map(plain).find(l => l && !l.startsWith("```") && !l.startsWith("<!--")) ?? "";
+  let fenced = false, first = "", code = "";
+  for (const raw of body.split("\n")) {
+    if (/^\s*(?:```|~~~)/u.test(raw)) { fenced = !fenced; continue; }
+    const text = raw.trim();
+    if (fenced) {
+      if (!code && text && !/^(?:#|\/\/)/u.test(text)) code = text.replace(/^\$\s+/u, "");
+      continue;
+    }
+    const prose = plain(raw);
+    if (!first && prose && !prose.startsWith("<!--")) first = prose;
+  }
   const sentence = /^(.{8,280}?[.!?])(?:\s|$)/u.exec(first)?.[1] ?? (first.length <= 280 ? first : "");
   const title = heading ? `${heading}: ` : "";
-  const line = sentence ? `${title}${sentence}` : heading || basename(path);
+  const line = sentence ? `${title}${sentence}`
+    : code && !code.includes("`") && code.length <= 160 ? `${title}\`${code}\`` : heading || basename(path);
   return line.length <= KNOWLEDGE_LIMITS.oneLineCharacters ? line : heading || basename(path);
 }
 
