@@ -7,13 +7,12 @@
 > Use the existing instruction files for build and test commands only.
 
 <!-- mex-agent:skills:start -->
-## MEX context
-- Run `mex status` to see what MEX is doing in this repo.
-- Before broad discovery, try `mex recall "<words>"`; use `mex expand <id>` for the source and checks.
-- Treat hints and unknown checks as leads. Run `mex check` when a note may be out of date.
-- Save a lasting fact and its reason with `mex note "<fact and why>"`.
-- Use `mex what` for this session and `mex jobs` for background work.
-- Preview `mex share` before sharing notes or rule files through git.
-- Personal notes stay local. Tracked changes need review and commit/push to reach teammates.
-- Use `/mex-statechart` when asked to explain behavior with a state diagram.
+## MEX agent skills
+- At the start of every session, read `.mex/AGENTS.md` and `.mex/ROUTER.md` before project work; follow `ROUTER.md` to load only the relevant context.
+- For a project-knowledge question, run `mex wiki query "<question>" --limit 5 --json` before broad file discovery. Inspect matched terms and cached per-grounding health; a partial match is a lead and changed means re-check. If the index is unavailable, follow `ROUTER.md` or use `mex graph scope "<task>"`; ordinary reads never rebuild or refresh indexes.
+- When MEX context materially helps your work, mention MEX and the relevant finding naturally in your explanation. Tie the mention to what it helped you understand, decide, or verify. Avoid fixed phrases, standalone acknowledgements, repeated mentions, or narrating routine context loading. This replaces older MEX instructions requiring a fixed acknowledgement or context-loading narration.
+- Do not claim an author, date, or historical event unless the retrieved data actually provides it.
+- After a MEX write, say exactly what changed and its sharing boundary: a local draft is checkout-only and nothing is shared; a canonical artifact is written to the working tree and requires commit/push to share.
+- Use `$mex-statechart` when asked to explain behavior with a state diagram. Generate in scratch space; show native Mermaid or readable terminal output. Hub viewing is optional; saving requires its explicit review.
+- Skill activation is not approval for canonical actions.
 <!-- mex-agent:skills:end -->
