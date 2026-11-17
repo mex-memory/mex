@@ -1,0 +1,113 @@
+name: Release gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Features required for this release
+        type: choice
+        required: true
+        default: beta.1
+        options: [beta.1, beta.2, final]
+  workflow_call:
+    inputs:
+      release:
+        description: Features required for this release
+        type: string
+        required: true
+    outputs:
+      commit:
+        description: Commit with a passing three-OS release-gates verdict
+        value: ${{ jobs.release-gates.outputs.commit }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gates-${{ github.ref }}-${{ inputs.release || 'tag' }}
+  cancel-in-progress: false
+
+jobs:
+  gates:
+    name: gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # The upgrade gate checks out novu (about 7,000 files) several times; on
+    # Windows that alone takes about 15 minutes.
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    env:
+      MEX_GATE_RELEASE: ${{ inputs.release || '' }}
+      MEX_OFFLINE: '1'
+      MEX_TELEMETRY: '0'
+      DO_NOT_TRACK: '1'
+    steps:
+      - name: Keep temporary files on the fast disk
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $temp = Join-Path $env:RUNNER_TEMP 'tmp'
+          New-Item -ItemType Directory -Force $temp | Out-Null
+          "TEMP=$temp" >> $env:GITHUB_ENV
+          "TMP=$temp" >> $env:GITHUB_ENV
+          "npm_config_cache=$(Join-Path $env:RUNNER_TEMP 'npm-cache')" >> $env:GITHUB_ENV
+          "GOCACHE=$(Join-Path $env:RUNNER_TEMP 'go-build')" >> $env:GITHUB_ENV
+          "GOMODCACHE=$(Join-Path $env:RUNNER_TEMP 'go-mod')" >> $env:GITHUB_ENV
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - run: npm ci
+      - run: npm run gates:test
+      # Pinned public commits for the upgrade gate; the key changes with the corpus.
+      - name: Restore upgrade subjects
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mex-gate-cache/upgrade/*.git
+          key: upgrade-subjects-${{ runner.os }}-${{ hashFiles('scripts/gates/upgrade-corpus/manifest.json') }}
+      - name: Run seven free gates
+        env:
+          MEX_GATE_CACHE: ${{ runner.temp }}/mex-gate-cache
+        run: npm run gates -- --report test-results/gates/${{ runner.os }}.json
+      - name: Upload sanitized gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gates-${{ runner.os }}-${{ github.run_attempt }}
+          path: test-results/gates/${{ runner.os }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  release-gates:
+    # This stable check belongs to the tagged commit. It is not a PR merge check.
+    outputs:
+      commit: ${{ steps.verdict.outputs.commit }}
+    needs: gates
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      MEX_GATE_RELEASE: ${{ inputs.release || '' }}
+      MEX_GATE_JOB_RESULT: ${{ needs.gates.result }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gates-*-${{ github.run_attempt }}
+          path: test-results/gates/matrix
+          merge-multiple: true
+      - name: Require passing evidence from every OS at this commit
+        id: verdict
+        run: |
+          node scripts/gates/matrix.mjs test-results/gates/matrix
+          echo "commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"

@@ -1,4 +1,4 @@
-/** The entire telemetry vocabulary. No caller data is spread into an event. */
+/** Internal producer categories and the old outbox decoder. V3 sends only report-schema.ts reports. */
 import { platform } from "node:os";
 import { randomUUID } from "node:crypto";
 import { VERSION } from "../version.js";
@@ -16,6 +16,7 @@ export const TELEMETRY_COMMANDS = [
   "wiki.graph", "wiki.rebuild-index", "wiki.regenerate-views", "wiki.migrate", "wiki.apply",
   "wiki.build", "wiki.prepare", "wiki.propose", "wiki.for-code", "impact", "log", "heartbeat",
   "doctor", "sync", "pattern.add", "watch", "completion", "feedback", "commands", "tui",
+  "note", "recall", "expand", "edit", "wrong", "forget", "share", "upgrade", "jobs",
   "member.add", "member.update", "member.deactivate", "member.reactivate", "member.select",
   "activity.record", "workstream.create", "workstream.update", "workstream.archive",
   "inbox.draft.save", "inbox.draft.delete", "inbox.publish", "inbox.proposal.approve",

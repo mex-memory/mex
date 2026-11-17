@@ -1,0 +1,23 @@
+{
+  "agent": "codex",
+  "agent_version": "",
+  "kind": "post_tool",
+  "session_id": "01a1823f-9a65-7501-8207-3535ae7f6654",
+  "agent_id": "",
+  "cwd": "/probe/repo",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "shell",
+    "raw_name": "Bash",
+    "input": {
+      "command": "rg -n add math.js"
+    },
+    "output": {
+      "text": "rg : The term 'rg' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the \r\nspelling of the name, or if a path was included, verify that the path is correct and try again.\r\nAt line:2 char:1\r\n+ rg -n add math.js\r\n+ ~~\r\n    + CategoryInfo          : ObjectNotFound: (rg:String) [], CommandNotFoundException\r\n    + FullyQualifiedErrorId : CommandNotFoundException\r\n \r\n",
+      "ok": true
+    }
+  },
+  "transcript": "/probe/session.jsonl",
+  "background": false
+}

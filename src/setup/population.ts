@@ -54,7 +54,7 @@ export function launchSetupPopulation(
   const session = createPopulationSession(prompt, projectRoot);
   try {
     const completed = (dependencies.run ?? runToolInteractive)(
-      tool, session.instruction, session.root, { timeoutMs: null },
+      tool, session.instruction, session.root, { timeoutMs: null, usagePurpose: "setup.interactive" },
     );
     return { tool, completed };
   } finally {

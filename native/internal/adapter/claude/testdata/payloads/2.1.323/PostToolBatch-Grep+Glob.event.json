@@ -1,0 +1,38 @@
+{
+  "agent": "claude-code",
+  "agent_version": "",
+  "kind": "post_tool_batch",
+  "session_id": "3786cc60-44f2-452f-a595-f9db31303cdf",
+  "agent_id": "",
+  "cwd": "C:\\mex-test-tmp\\f03\\live\\repo",
+  "project_id": "",
+  "checkout": "",
+  "batch": [
+    {
+      "name": "search",
+      "raw_name": "Grep",
+      "input": {
+        "path": "C:/mex-test-tmp/f03/live/repo",
+        "pattern": "add"
+      },
+      "output": {
+        "text": "math.ts:1:export function add(a: number, b: number) {",
+        "ok": true
+      }
+    },
+    {
+      "name": "glob",
+      "raw_name": "Glob",
+      "input": {
+        "path": "C:/mex-test-tmp/f03/live/repo",
+        "pattern": "*.ts"
+      },
+      "output": {
+        "text": "math.ts",
+        "ok": true
+      }
+    }
+  ],
+  "transcript": "C:\\Users\\person\\.claude\\projects\\C--mex-test-tmp-f03-live-repo\\3786cc60-44f2-452f-a595-f9db31303cdf.jsonl",
+  "background": false
+}

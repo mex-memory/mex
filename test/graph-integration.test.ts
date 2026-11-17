@@ -37,7 +37,6 @@ import {
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "../src/graph/snapshot.js";
 import type { GraphStatus, GraphStatusKind } from "../src/team/contracts/graph.js";
 import { runDoctor } from "../src/doctor.js";
-import { loadDashboard } from "../src/tui.js";
 
 const roots: string[] = [];
 
@@ -703,7 +702,8 @@ describe("code-graph grounding integration", () => {
     }));
   });
 
-  it("rejects an atomically replaced database whose public status fields still match", async () => {
+  // Windows denies rename of an open file; the bound-file Windows test covers that protection.
+  it.skipIf(process.platform === "win32")("rejects an atomically replaced database whose public status fields still match", async () => {
     const { root, config, source } = fixture();
     writeFileSync(source, "export const service = 1;\n");
     const graphPath = join(root, ".mex", "graph.db");
@@ -860,7 +860,7 @@ describe("code-graph grounding integration", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps doctor and dashboard graph inspection filesystem-read-only", async () => {
+  it("keeps doctor graph inspection filesystem-read-only", async () => {
     const { root, source, config } = fixture();
     writeFileSync(source, "export function service(): string { return 'v1'; }\n");
     const engine = createGraphEngine({ rootDir: root });
@@ -879,12 +879,6 @@ describe("code-graph grounding integration", () => {
       expect(log.mock.calls.flat().join("\n")).toContain("stale; 1 source change");
       expect(warning).not.toHaveBeenCalled();
 
-      const beforeDashboard = filesystemSnapshot(join(root, ".mex"));
-      const dashboard = await loadDashboard(config);
-      expect(dashboard.report.graphStatus.status).toBe("stale");
-      expect(dashboard.report.graphStatus.changes.total).toBe(1);
-      expect(filesystemSnapshot(join(root, ".mex"))).toEqual(beforeDashboard);
-      expect(warning).not.toHaveBeenCalled();
     } finally {
       process.exitCode = previousExitCode;
     }

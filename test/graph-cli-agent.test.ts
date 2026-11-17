@@ -1,13 +1,19 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runGraphQuery, runGraphScope, runImpact, type AgentCommandDeps } from "../src/graph/cli-agent.js";
 import type { GraphEngine } from "../src/graph/engine.js";
 import type { GraphEdge, GraphNode } from "../src/graph/types.js";
 import { __resetTelemetryForTest, __setTelemetryEndpointForTest, __setTransport, captureCommand, flush, getTelemetryInspection } from "../src/telemetry/index.js";
+import { dailyCounters } from "../src/telemetry/store.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createServer } from "node:http";
+
+beforeEach(() => {
+  for (const key of ["CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "BUILDKITE", "CIRCLECI", "JENKINS_URL", "MEX_OFFLINE"]) vi.stubEnv(key, "");
+});
+afterEach(() => vi.unstubAllEnvs());
 
 function node(id: string, name: string, file = "src/a.ts", line = 1): GraphNode {
   return { id, name, kind: "function", qualifiedName: name, filePath: file, language: "typescript", startLine: line, endLine: line + 1, startColumn: 0, endColumn: 1, updatedAt: 1 };
@@ -271,7 +277,7 @@ describe("agent graph commands", () => {
     expect(JSON.parse(fixture.output[0])).toMatchObject({ type: "error", code: "GRAPH_UNAVAILABLE", message: "sqlite unavailable" });
   });
 
-  it("keeps JSONL and stderr clean when telemetry delivery fails", async () => {
+  it("keeps JSONL and stderr clean while foreground telemetry only counts locally", async () => {
     const fixture = deps();
     const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
     const cwd = process.cwd();
@@ -289,7 +295,10 @@ describe("agent graph commands", () => {
       captureCommand("graph query");
       runGraphQuery("where-defined", "leaf", "/repo", fixture.deps);
       await flush();
-      expect(attempted).toHaveBeenCalledOnce();
+      expect(attempted).not.toHaveBeenCalled();
+      expect(dailyCounters(Date.now() + 86_400_000)).toEqual([
+        expect.objectContaining({ name: "commands", value: 1 }),
+      ]);
       expect(stderr).not.toHaveBeenCalled();
       const results = fixture.output.map((line) => JSON.parse(line)).filter((row) => row.type === "result");
       expect(results).toHaveLength(1);
@@ -308,7 +317,8 @@ describe("agent graph commands", () => {
 
   it("bounds offline telemetry for a machine-facing graph command", async () => {
     const fixture = deps();
-    const server = createServer(() => { /* Deliberately never respond. */ });
+    const requested = vi.fn();
+    const server = createServer(requested); // Deliberately never respond.
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address() as { port: number };
     const cwd = process.cwd();
@@ -329,10 +339,14 @@ describe("agent graph commands", () => {
       runGraphScope("leaf", "/repo", fixture.deps, { detail: "minimal" });
       await flush();
 
-      // Allow scheduler headroom in CI while requiring the request to be cancelled
-      // and its event retained. Whole-process timing is measured by the benchmark.
+      // A command never waits for a network request. Its usage remains a local
+      // counter for the background rollup, including before the first notice.
       expect(Date.now() - started).toBeLessThan(2_000);
-      expect(getTelemetryInspection().queue).toMatchObject({ state: "available", events: 1 });
+      expect(requested).not.toHaveBeenCalled();
+      expect(getTelemetryInspection()).toMatchObject({ pending: [], sent: [], installation_id: null });
+      expect(dailyCounters(Date.now() + 86_400_000)).toEqual([
+        expect.objectContaining({ name: "commands", value: 1 }),
+      ]);
       expect(fixture.output.some((line) => JSON.parse(line).type === "summary")).toBe(true);
     } finally {
       __resetTelemetryForTest();

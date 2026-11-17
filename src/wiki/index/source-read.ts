@@ -53,12 +53,14 @@ export function readContainedSource(
   try {
     const rootLexical = lstatSync(root, { bigint: true });
     if (!rootLexical.isDirectory() || rootLexical.isSymbolicLink()) throw new WikiSourceReadError(label);
-    const realRoot = realpathSync(root);
+    // Native resolution avoids repeated ancestor walks while the descriptor and
+    // before/after directory identities still enforce the same containment.
+    const realRoot = realpathSync.native(root);
     const rootStats = lstatSync(realRoot, { bigint: true });
     const parent = dirname(target);
     const parentLexical = lstatSync(parent, { bigint: true });
     if (!parentLexical.isDirectory() || parentLexical.isSymbolicLink()) throw new WikiSourceReadError(label);
-    const realParent = realpathSync(parent);
+    const realParent = realpathSync.native(parent);
     const parentRel = relative(realRoot, realParent);
     if (parentRel === ".." || parentRel.startsWith(`..${sep}`)) throw new WikiSourceReadError(label);
     const parentStats = lstatSync(realParent, { bigint: true });
@@ -72,10 +74,10 @@ export function readContainedSource(
     options.afterOpen?.();
 
     const rootNowLexical = lstatSync(root, { bigint: true });
-    const realRootNow = realpathSync(root);
+    const realRootNow = realpathSync.native(root);
     const rootNow = lstatSync(realRootNow, { bigint: true });
     const parentNowLexical = lstatSync(parent, { bigint: true });
-    const realParentNow = realpathSync(parent);
+    const realParentNow = realpathSync.native(parent);
     const parentNow = lstatSync(realParentNow, { bigint: true });
     const leafNow = lstatSync(target, { bigint: true });
     if (
@@ -120,10 +122,10 @@ export function readContainedSource(
     // corpus observation.
     const afterRead = fstatSync(fd, { bigint: true });
     const rootAfterLexical = lstatSync(root, { bigint: true });
-    const realRootAfter = realpathSync(root);
+    const realRootAfter = realpathSync.native(root);
     const rootAfter = lstatSync(realRootAfter, { bigint: true });
     const parentAfterLexical = lstatSync(parent, { bigint: true });
-    const realParentAfter = realpathSync(parent);
+    const realParentAfter = realpathSync.native(parent);
     const parentAfter = lstatSync(realParentAfter, { bigint: true });
     const leafAfter = lstatSync(target, { bigint: true });
     if (

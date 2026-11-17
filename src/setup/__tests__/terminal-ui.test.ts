@@ -26,8 +26,14 @@ async function show(changes: Partial<TerminalSetupView> = {}, columns = 80, rows
   Object.defineProperty(app.stdout, "columns", { configurable: true, value: columns });
   Object.defineProperty(app.stdout, "rows", { configurable: true, value: rows });
   await settle();
+  const before = app.lastFrame();
   app.stdout.emit("resize");
   await settle();
+  // A loaded machine can take longer than one tick to re-render after the
+  // resize; wait for the new frame instead of asserting on the old one.
+  if (columns !== 80 || rows !== 24) {
+    for (let waited = 0; app.lastFrame() === before && waited < 2_000; waited += 25) await settle();
+  }
   return { ...app, view, onAction };
 }
 

@@ -4,7 +4,6 @@ import {
   GitPullRequestArrow,
   HeartPulse,
   House,
-  Inbox,
   Network,
   Search,
   Send,
@@ -17,7 +16,7 @@ import type { CapabilityName } from "../api/types";
 
 export type NavigationGroupId = "project-memory" | "teamwork" | "system";
 export type NavigationPlacement = "launcher" | "primary" | "footer";
-export type NavigationCountSource = "inbox" | "relays" | "active-jobs";
+export type NavigationCountSource = "relays" | "active-jobs";
 
 export type NavigationAvailability =
   | { kind: "always" }
@@ -84,16 +83,6 @@ export const navigationItems: readonly NavigationItem[] = [
     availability: { kind: "runtime", capability: "graph" },
   },
   { id: "diagrams", label: "Diagrams", path: "/diagrams", icon: Workflow, group: "project-memory", placement: "primary", availability: { kind: "always" } },
-  {
-    id: "inbox",
-    label: "Inbox",
-    path: "/inbox",
-    icon: Inbox,
-    group: "project-memory",
-    placement: "primary",
-    availability: { kind: "runtime", capability: "inbox" },
-    countSource: "inbox",
-  },
   {
     id: "relays",
     label: "Relays",

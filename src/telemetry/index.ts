@@ -1,218 +1,139 @@
-/** Pseudonymous, opt-out usage analytics. No content, names or raw arguments. */
-import { getMachineId, readMachineId, readGlobalConfig, readTelemetryPreference, setGlobalConfigKey, isDevRepo, mexHomeDir } from "../global-config.js";
-import { claimBatch, closeOutbox, enqueue, finishBatch, inspectOutbox, OUTBOX_LIMITS, purgeOutbox } from "./outbox.js";
-import { eventAttributes, makeEvent, previewEvent, TELEMETRY_ACTIONS, TELEMETRY_COMMANDS, TELEMETRY_EVENTS,
-  TELEMETRY_JOB_KINDS, TELEMETRY_PAGES, TELEMETRY_AI_TOOLS, type TelemetryAttributes,
-  type TelemetryEventName, type TelemetryProjectContext } from "./schema.js";
-import { readTelemetryProjectContext } from "./project-context.js";
-import { sendBatch, setEndpointForTest, TELEMETRY_ENDPOINT, type BatchRequest } from "./transport.js";
+/** Telemetry v3: local producers, background reports, identity-free CI. */
+import { readMachineId, readGlobalConfig, setGlobalConfigKey } from "../global-config.js";
+import { platform } from "node:os";
+import { VERSION } from "../version.js";
+import { enqueueJob } from "../record/jobs.js";
+import { ensureBackground, markPending } from "../record/background.js";
+import { eventAttributes, type TelemetryAttributes, type TelemetryEventName, type TelemetryProjectContext } from "./schema.js";
+import { purgeOutbox, closeOutbox } from "./outbox.js";
+import { readSharedProjectTelemetryContext, setupTelemetryKey } from "./project-context.js";
+import { telemetryEnabled, reportingAllowed, isCI, TELEMETRY_NOTICE_VERSION } from "./policy.js";
+import { REPORT_EVENTS, COUNTER_NAMES, COUNT_RANGES, REPORT_COMMANDS, REPORT_AGENTS, countRange } from "./report-schema.js";
+import { recordCounter, recordLifecycle, withTelemetryRecord, pendingReports, dailyCounters, inspectReports, clearPendingReports, REPORT_QUEUE_LIMIT, REPORT_HISTORY_LIMIT } from "./store.js";
+import { abortReporting, flushCiReport, queueCiReport, noteCiDisclosure, ciDisclosureShown, resetReporting, setReportingSink } from "./reporting.js";
+import { setEndpointForTest, TELEMETRY_ENDPOINT } from "./transport.js";
 export type { TelemetryAttributes, TelemetryEventName, TelemetryEvent } from "./schema.js";
 export { TELEMETRY_ACTIONS, TELEMETRY_COMMANDS, TELEMETRY_EVENTS, TELEMETRY_JOB_KINDS, TELEMETRY_PAGES } from "./schema.js";
-
+export { recordCounter, recordLifecycle } from "./store.js";
+export { sendUsageReports } from "./reporting.js";
+export { isCI } from "./policy.js";
 export const TELEMETRY_FLUSH_GRACE_MS = 25;
-export const HUB_TELEMETRY_INTERVAL_MS = 15_000;
-export interface EnabledResult { enabled: boolean; reason?: string; }
-export function isEnabled(): EnabledResult {
-  if (process.env.DO_NOT_TRACK === "1") return { enabled: false, reason: "DO_NOT_TRACK" };
-  if (process.env.MEX_TELEMETRY === "0") return { enabled: false, reason: "MEX_TELEMETRY" };
-  if (isDevRepo()) return { enabled: false, reason: "dev" };
-  const preference = readTelemetryPreference();
-  if (preference === "off") return { enabled: false, reason: "config" };
-  if (preference === "unavailable") return { enabled: false, reason: "config_unavailable" };
-  return { enabled: true };
-}
+export const HUB_TELEMETRY_INTERVAL_MS = 60_000;
+export const isEnabled = telemetryEnabled;
+export type EnabledResult = ReturnType<typeof telemetryEnabled>;
+let customSink = false;
+const projectSelection = Symbol("local telemetry project selection");
+type LocalProjectContext = TelemetryProjectContext & { [projectSelection]?: string };
 
-type TransportFn = (event: string, properties: Record<string, unknown>) => void;
-let customTransport: TransportFn | null = null;
-let active: BatchRequest | undefined;
-let activeDone: Promise<void> | undefined;
-let scheduled: ReturnType<typeof setImmediate> | undefined;
-let cliBatchAttempted = false;
-let stateHome: string | undefined;
-let hubUsers = 0;
-let hubTimer: ReturnType<typeof setInterval> | undefined;
-
-function abortActive(): void { active?.abort(); }
-function checkEnabled(): boolean {
-  if (isEnabled().enabled) return true;
-  abortActive();
-  return false;
-}
-function synchronizeHome(): void {
-  const home = mexHomeDir();
-  if (stateHome !== home) {
-    abortActive();
-    closeOutbox();
-    cliBatchAttempted = false;
-    stateHome = home;
-  }
-}
-
-/** Projected and validated before identity, disk, or network work. */
+/** Legacy producer shapes stay local. Removed features are deliberately ignored. */
 export function captureEvent(name: TelemetryEventName, attributes: TelemetryAttributes = {}): void {
   try {
-    if (!eventAttributes(name, attributes) || !checkEnabled()) return;
-    synchronizeHome();
-    const event = makeEvent(name, attributes, getMachineId());
-    if (!event) return;
-    if (customTransport) { customTransport(event.event, event.properties); return; }
-    // Recheck immediately before enqueue, then again at the actual send boundary.
-    if (!checkEnabled() || !enqueue(event)) return;
-    if (!hubUsers && !cliBatchAttempted && !scheduled) {
-      scheduled = setImmediate(() => { scheduled = undefined; dispatch(); });
-      scheduled.unref();
+    if (!eventAttributes(name, attributes) || !telemetryEnabled().enabled) return;
+    if (isCI()) {
+      if (name === "cli.command_started" && (REPORT_COMMANDS as readonly string[]).includes(attributes.command ?? "")) showFirstRunNotice();
+      if (name === "cli.command_completed" && (REPORT_COMMANDS as readonly string[]).includes(attributes.command ?? "")) {
+        const selected = (attributes as TelemetryAttributes & { [projectSelection]?: string })[projectSelection];
+        const context = readSharedProjectTelemetryContext(selected ?? process.cwd(), selected ? "exact" : "git-root");
+        queueCiReport({ command: attributes.command as typeof REPORT_COMMANDS[number], outcome: attributes.outcome,
+          duration: countRange(Math.floor(attributes.duration_ms ?? 0)), ...(context.scaffold_id ? { project_id: context.scaffold_id } : {}) });
+      }
+      return;
     }
-  } catch { /* Analytics never changes command results or writes to stdout/stderr. */ }
+    if (name === "cli.command_started" && (REPORT_COMMANDS as readonly string[]).includes(attributes.command ?? "")) {
+      recordCounter("commands");
+      if (attributes.command === "setup") recordCounter("setup.started");
+    } else if (name === "cli.command_completed" && ["setup", "init"].includes(attributes.command ?? "") && attributes.outcome === "success" && attributes.stage !== "preview") {
+      recordCounter("setup.finished");
+      const selected = (attributes as TelemetryAttributes & { [projectSelection]?: string })[projectSelection];
+      const dedup = setupTelemetryKey(selected ?? process.cwd());
+      if (dedup) recordLifecycle("setup.finished", { outcome: "success", duration: countRange(Math.floor(attributes.duration_ms ?? 0)) }, Date.now(), dedup);
+    } else if (name === "hub.session_started") recordCounter("hub.sessions");
+    else if (name === "hub.page_viewed" && !["workstreams", "specs", "spec_detail", "playbooks", "catch_up", "inbox"].includes(attributes.page ?? "")) recordCounter("hub.pages");
+    else if (name === "hub.job_completed") {
+      recordCounter(attributes.outcome === "success" ? "jobs.completed" : "jobs.failed");
+      if (attributes.outcome === "success" && ["graph_refresh", "graph_rebuild"].includes(attributes.job_kind ?? "")) recordCounter("graph.builds");
+    }
+  } catch { /* Measurement never changes the product result. */ }
 }
-
-/** Opt-outs never trigger project discovery for ordinary telemetry captures. */
-export function getProjectTelemetryContext(startDir: string, discovery: "git-root" | "exact" = "git-root"): TelemetryProjectContext {
-  try { return checkEnabled() ? readTelemetryProjectContext(startDir, discovery) : {}; }
-  catch { return {}; }
+export function getProjectTelemetryContext(startDir: string, discovery: "git-root" | "exact" = "git-root"): LocalProjectContext {
+  try {
+    if (!telemetryEnabled().enabled) return {};
+    return { ...readSharedProjectTelemetryContext(startDir, discovery), [projectSelection]: startDir };
+  } catch { return {}; }
 }
-
-/** Each Hub binds one lazy context snapshot to its own project, not process cwd. */
 export function createProjectTelemetryCapture(startDir: string): typeof captureEvent {
   let context: TelemetryProjectContext | undefined;
   return (name, attributes = {}) => {
-    try {
-      if (!eventAttributes(name, attributes) || !checkEnabled()) return;
-      context ??= readTelemetryProjectContext(startDir, "exact");
-      captureEvent(name, { ...attributes, ...context });
-    } catch { /* Metadata must never change the result of a Hub operation. */ }
+    if (!eventAttributes(name, attributes) || !telemetryEnabled().enabled) return;
+    context ??= getProjectTelemetryContext(startDir, "exact");
+    captureEvent(name, { ...attributes, ...context });
   };
 }
 
-function dispatch(): void {
-  try {
-    if (active || customTransport || !checkEnabled()) return;
-    synchronizeHome();
-    if (!hubUsers && cliBatchAttempted) return;
-    const batch = claimBatch();
-    if (!batch) return;
-    if (!checkEnabled()) { finishBatch(batch, false); return; }
-    cliBatchAttempted = true;
-    const request = sendBatch(batch.events);
-    active = request;
-    activeDone = request.done.then((delivered) => {
-      finishBatch(batch, delivered);
-    }).catch(() => undefined).finally(() => {
-      if (active === request) { active = undefined; activeDone = undefined; }
-    });
-  } catch { /* Busy/malformed stores or failed sends simply drop/defer telemetry. */ }
+/** Queue finite work only when there is actually a report to send. */
+export function wakeTelemetry(): void {
+  if (customSink || isCI() || !reportingAllowed()) return;
+  withTelemetryRecord((writer) => {
+    if (!pendingReports(writer).length && !dailyCounters().length) return;
+    enqueueJob(writer, { kind: "telemetry" });
+    markPending(writer);
+  });
 }
-
-/** Relative grace, capped at 50ms. Abort cancels socket AND DNS work at its end. */
+/** Personal commands never do network I/O. CI has one bounded send. */
 export async function flush(options: { deadlineMs?: number } = {}): Promise<void> {
-  const value = options.deadlineMs;
-  const grace = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(50, value)) : TELEMETRY_FLUSH_GRACE_MS;
-  const deadline = performance.now() + grace;
   try {
-    if (scheduled) { clearImmediate(scheduled); scheduled = undefined; }
-    if (!checkEnabled()) return;
-    dispatch();
-    if (activeDone) await settleByDeadline(activeDone, deadline);
+    if (!telemetryEnabled().enabled) { abortReporting(); return; }
+    if (isCI()) await flushCiReport(options.deadlineMs);
+    else wakeTelemetry();
   } catch { /* best effort */ }
-  finally {
-    abortActive();
-    // Abort settles the request immediately; finish local acknowledgement cleanup
-    // without opening another request or extending the network deadline.
-    await Promise.resolve();
-    if (!hubUsers) closeOutbox();
-  }
 }
-
-async function settleByDeadline(work: Promise<unknown>, deadline: number): Promise<void> {
-  const safe = work.then(() => undefined, () => undefined);
-  const remaining = deadline - performance.now();
-  if (remaining <= 0) { void safe; return; }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try { await Promise.race([safe, new Promise<void>((resolve) => { timer = setTimeout(resolve, remaining); })]); }
-  finally { if (timer) clearTimeout(timer); }
-}
-
-/** A long-running Hub amortizes sending. Idle sessions do not manufacture events. */
 export function startHubTelemetry(): () => Promise<void> {
-  hubUsers++;
-  if (!hubTimer) {
-    hubTimer = setInterval(() => { dispatch(); }, HUB_TELEMETRY_INTERVAL_MS);
-    hubTimer.unref();
-  }
-  let stopped = false;
-  return async () => {
-    if (stopped) return;
-    stopped = true;
-    if (--hubUsers === 0) {
-      if (hubTimer) clearInterval(hubTimer);
-      hubTimer = undefined;
-      // A final Hub batch is permitted even if an earlier batch was delivered.
-      cliBatchAttempted = false;
-      await flush();
-    }
-  };
+  const timer = telemetryEnabled().enabled && !isCI() ? setInterval(() => { wakeTelemetry(); if (!customSink) ensureBackground(); }, HUB_TELEMETRY_INTERVAL_MS) : undefined;
+  timer?.unref();
+  return async () => { if (timer) clearInterval(timer); await flush(); };
 }
-
-/** Called by explicit disable/config-off actions, not by ordinary opt-out reads. */
 export function disableTelemetry(): { purged: boolean } {
-  abortActive();
-  if (scheduled) { clearImmediate(scheduled); scheduled = undefined; }
-  // Preference errors reach the explicit config command; never silently report
-  // that a failed opt-out worked. Sending has already been aborted.
+  abortReporting();
   setGlobalConfigKey("telemetry", "off");
-  return { purged: purgeOutbox() };
+  return { purged: clearPendingReports() && purgeOutbox() };
 }
-
-/** No captures, identity creation, database repair, configuration writes, or sends. */
+export function enableTelemetry(): void {
+  setGlobalConfigKey("telemetry", "on");
+  showFirstRunNotice();
+  recordLifecycle("on");
+  wakeTelemetry();
+}
+/** Inspection never records usage, creates an ID, repairs storage, or sends. */
 export function getTelemetryInspection(): Record<string, unknown> {
-  const id = readMachineId();
-  const context = readTelemetryProjectContext(process.cwd());
-  return {
-    schema_version: 2, ...isEnabled(), endpoint: TELEMETRY_ENDPOINT,
-    installation_id: id ?? null, project_context: context, queue: inspectOutbox(), limits: OUTBOX_LIMITS,
-    catalog: { events: TELEMETRY_EVENTS, commands: TELEMETRY_COMMANDS, pages: TELEMETRY_PAGES,
-      actions: TELEMETRY_ACTIONS, job_kinds: TELEMETRY_JOB_KINDS, configured_ai_tools: TELEMETRY_AI_TOOLS },
-    batch_example: { api_key: "<public MEX project token>", batch: [
-      previewEvent("cli.command_started", { ...context, command: "wiki.query", stage: "direct" }, id),
-      previewEvent("cli.command_completed", { ...context, command: "wiki.query", stage: "direct", outcome: "success", duration_ms: 12 }, id),
-      previewEvent("hub.page_viewed", { ...context, page: "knowledge" }, id),
-    ] },
+  return { schema_version: 3, ...telemetryEnabled(), notice_shown: readGlobalConfig().telemetryNoticeVersion === TELEMETRY_NOTICE_VERSION,
+    endpoint: TELEMETRY_ENDPOINT, installation_id: isCI() ? null : readMachineId() ?? null, ci: isCI(),
+    ...inspectReports(), limits: { queue: REPORT_QUEUE_LIMIT, history: REPORT_HISTORY_LIMIT, retention_days: 7 },
+    catalog: { events: REPORT_EVENTS, counters: COUNTER_NAMES, count_ranges: COUNT_RANGES, agents: REPORT_AGENTS },
   };
 }
-
-/** Compatibility for old hooks; context comes from the bounded config reader. */
-export function captureCommand(command: string, _scaffoldId?: string): void {
-  captureEvent("cli.command_started", { command: command.replaceAll(" ", ".") });
-}
-export function capture(_event: string, command: string, _scaffoldId?: string): void { captureCommand(command); }
-export function buildPayload(command: string, _scaffoldId?: string): Record<string, unknown> {
-  return previewEvent("cli.command_started", { command: command.replaceAll(" ", ".") }).properties as Record<string, unknown>;
-}
-export function getPayloadPreview(command: string, _scaffoldId?: string, machineId?: string): Record<string, unknown> {
-  return previewEvent("cli.command_started", { command: TELEMETRY_COMMANDS.includes(command as typeof TELEMETRY_COMMANDS[number]) ? command : "wiki.query" }, machineId).properties as Record<string, unknown>;
-}
-
 export function showFirstRunNotice(): boolean {
   try {
-    if (!isEnabled().enabled || readGlobalConfig().firstRunNoticeShown || !process.stderr.isTTY) return false;
-    process.stderr.write("\n  MEX collects pseudonymous feature usage and outcomes using a random\n"
-      + "  installation ID shared by this CLI and local Hub. Events may include\n"
-      + "  an existing random scaffold UUID and configured AI-tool names. No\n"
-      + "  content, paths, queries, member identities or contact details. Events are\n"
-      + "  queued locally; entries older than 7 days are dropped on next use.\n"
-      + "  Inspect: mex telemetry inspect\n"
-      + "  Opt out: mex telemetry disable, DO_NOT_TRACK=1 or MEX_TELEMETRY=0.\n\n");
+    if (!telemetryEnabled().enabled) return false;
+    if (isCI()) {
+      if (ciDisclosureShown()) return false;
+      process.stderr.write("mex: anonymous usage counts on · set MEX_TELEMETRY=0 to turn off\n");
+      noteCiDisclosure(); return true;
+    }
+    if (!process.stderr.isTTY || readGlobalConfig().telemetryNoticeVersion === TELEMETRY_NOTICE_VERSION) return false;
+    process.stderr.write("\nMEX sends anonymous usage counts to help improve it: never code, file paths,\nprompts or repo names. Turn off any time: mex telemetry off (or DO_NOT_TRACK=1)\nInspect: mex telemetry inspect\n\n");
+    setGlobalConfigKey("telemetryNoticeVersion", TELEMETRY_NOTICE_VERSION);
     setGlobalConfigKey("firstRunNoticeShown", true);
-    return true;
+    recordLifecycle("install.first_run", {}, Date.now(), "install");
+    wakeTelemetry(); return true;
   } catch { return false; }
 }
-
-/** Offline seams are internal, never configurable by product input. */
-export function __setTransport(next: TransportFn | null): void { customTransport = next; }
-export function __setTelemetryEndpointForTest(endpoint: string | null): void { setEndpointForTest(endpoint); }
-export function __resetTelemetryForTest(): void {
-  abortActive(); active = undefined; activeDone = undefined;
-  if (scheduled) clearImmediate(scheduled);
-  if (hubTimer) clearInterval(hubTimer);
-  scheduled = undefined; hubTimer = undefined; hubUsers = 0; cliBatchAttempted = false; stateHome = undefined;
-  customTransport = null; closeOutbox(); setEndpointForTest(null);
+export function captureCommand(command: string, _scaffoldId?: string): void { captureEvent("cli.command_started", { command: command.replaceAll(" ", ".") }); }
+export function capture(_event: string, command: string, _scaffoldId?: string): void { captureCommand(command); }
+export function buildPayload(_command: string, _scaffoldId?: string): Record<string, unknown> {
+  return { schema_version: 3, source: "person", installation_id: readMachineId() ?? "<installation UUID; not created by preview>",
+    mex_version: VERSION, os: platform(), $process_person_profile: false, $geoip_disable: true, counts: { commands: "1" } };
 }
+export function getPayloadPreview(command: string, _scaffoldId?: string, _machineId?: string): Record<string, unknown> { return buildPayload(command); }
+export function __setTransport(next: ((event: string, properties: Record<string, unknown>) => void) | null): void { customSink = next !== null; setReportingSink(next); }
+export function __setTelemetryEndpointForTest(endpoint: string | null): void { setEndpointForTest(endpoint); }
+export function __resetTelemetryForTest(): void { resetReporting(); customSink = false; closeOutbox(); setEndpointForTest(null); }

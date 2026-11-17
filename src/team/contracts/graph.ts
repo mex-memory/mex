@@ -108,6 +108,15 @@ export interface GraphRefreshResult extends IndexJobResult {
   skipped?: readonly GraphSkippedSource[];
   /** Compiler config inputs outside the project corpus that were declined. */
   declinedInputs?: readonly GraphDeclinedInput[];
+  /**
+   * Which compiler built the TypeScript graph, and why any project was built
+   * by another or had its tsconfig translated. Optional and additive.
+   */
+  typescript?: {
+    compiler: string;
+    projects: Readonly<Record<string, string>>;
+    notes: ReadonlyArray<{ project: string; note: string }>;
+  };
   /** How a refresh did its work. Optional and additive; absent from a rebuild. */
   refresh?: GraphRefreshWork;
 }

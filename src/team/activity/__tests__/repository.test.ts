@@ -277,7 +277,8 @@ describe("ActivityRepository", () => {
   });
 
   // Each operation scans the whole corpus; keep their hang guards independent.
-  it.each(["read", "get", "preview"] as const)("counts malformed canonical candidates toward the 2,048-record ceiling (%s)", async (operation) => {
+  // All 2,048 real candidates are retained; serial Windows scans take ~17.5s.
+  it.each(["read", "get", "preview"] as const)("counts malformed canonical candidates toward the 2,048-record ceiling (%s)", { timeout: 60_000 }, async (operation) => {
     const root = temporaryRoot();
     const month = join(root, ".mex/events/activity", timestamp.slice(0, 7));
     mkdirSync(month, { recursive: true });

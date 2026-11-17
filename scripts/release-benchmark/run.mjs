@@ -151,10 +151,6 @@ try {
         auth,
         budgets.samples.timing,
         {
-          inboxDraftId: baseFixture.firstInboxDraftId,
-          inboxDraftTitle: baseFixture.inboxDraftTitle,
-          inboxProposalId: baseFixture.firstInboxProposalId,
-          inboxProposalTitle: baseFixture.inboxProposalTitle,
           relayDraftId: baseFixture.firstRelayDraftId,
           relayDraftSummary: baseFixture.relayDraftSummary,
           relayId: baseFixture.firstRelayId,
@@ -167,12 +163,7 @@ try {
         auth,
         samples: budgets.samples.idleMemory,
         knowledgeEntityId: baseFixture.firstWikiEntityId,
-        specEntityId: baseFixture.firstSpecId,
         codeSymbolId: commonReads.codeSymbolId,
-        inboxDraftId: baseFixture.firstInboxDraftId,
-        inboxDraftTitle: baseFixture.inboxDraftTitle,
-        inboxProposalId: baseFixture.firstInboxProposalId,
-        inboxProposalTitle: baseFixture.inboxProposalTitle,
         relayDraftId: baseFixture.firstRelayDraftId,
         relayDraftSummary: baseFixture.relayDraftSummary,
         relayId: baseFixture.firstRelayId,
@@ -180,7 +171,7 @@ try {
       });
       const afterOrdinaryReads = snapshotReleaseReadState(workingRoot, benchmarkEnvironment);
       if (JSON.stringify(afterOrdinaryReads) !== JSON.stringify(beforeOrdinaryReads)) {
-        throw new Error(`${profileName} ordinary Hub/Inbox/Relay reads mutated protected repository state.`);
+        throw new Error(`${profileName} ordinary Hub/Relay reads mutated protected repository state.`);
       }
       const maintenance = await measureMaintenance({
         server: activeServer,

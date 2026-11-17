@@ -1,0 +1,26 @@
+{
+  "tiers": [
+    "",
+    "",
+    "[mex block]\n[team, from docs] Keep the shared pool open because later requests reuse it. (mx_poolaa)",
+    ""
+  ],
+  "bm25": [
+    "",
+    "",
+    "[mex block]\n[team, from docs] Keep the shared pool open because later requests reuse it. (mx_poolaa)",
+    ""
+  ],
+  "fcfs": [
+    "",
+    "",
+    "[mex block]\n[team, from docs] Keep the shared pool open because later requests reuse it. (mx_poolaa)",
+    ""
+  ],
+  "risk": [
+    "",
+    "",
+    "[mex block]\n[team, from docs] Keep the shared pool open because later requests reuse it. (mx_poolaa)",
+    ""
+  ]
+}

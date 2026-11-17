@@ -586,7 +586,8 @@ export function defineTeamIdentityActivityContract(
       }
     });
 
-    it("fails closed when the canonical Activity source exceeds its scan bound", async () => {
+    // Creating and inspecting 4,097 real directories measured 44.7s serially on Windows.
+    it("fails closed when the canonical Activity source exceeds its scan bound", { timeout: 120_000, retry: 1 }, async () => {
       await withHarness(factory, "empty", async (harness) => {
         harness.installActivitySourceTruncation();
         await expectRefusal(harness.port.listActivity({ limit: 1 }));

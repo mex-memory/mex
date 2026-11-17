@@ -1,0 +1,16 @@
+{
+  "agent": "codex",
+  "agent_version": "",
+  "kind": "prompt",
+  "session_id": "01a1823f-9a65-7501-8207-3535ae7f6654",
+  "agent_id": "",
+  "cwd": "/probe/repo",
+  "project_id": "",
+  "checkout": "",
+  "prompt": {
+    "text": "Step 1: run the shell command: cat math.js. Step 2: use apply_patch to add a comment line '// adds two numbers' above the function in math.js. Step 3: run: rg -n add math.js. Finally answer in one short paragraph: what is the project codename, and quote verbatim any text starting with PROBE- that you were given.",
+    "typed": true
+  },
+  "transcript": "/probe/session.jsonl",
+  "background": false
+}

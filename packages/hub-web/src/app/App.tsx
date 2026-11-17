@@ -18,10 +18,7 @@ const RoadmapPage = lazy(async () => ({ default: (await import("../pages/Capabil
 const NotFoundPage = lazy(async () => ({ default: (await import("../pages/CapabilityPage")).NotFoundPage }));
 const ActivityPage = lazy(async () => ({ default: (await import("../pages/ActivityPage")).ActivityPage }));
 const MembersPage = lazy(async () => ({ default: (await import("../pages/MembersPage")).MembersPage }));
-const WorkstreamsPage = lazy(async () => ({ default: (await import("../pages/WorkstreamsPage")).WorkstreamsPage }));
 const DiagramsPage = lazy(async () => ({ default: (await import("../pages/DiagramsPage")).DiagramsPage }));
-const SpecsPage = lazy(async () => ({ default: (await import("../pages/SpecsPage")).SpecsPage }));
-const InboxPage = lazy(async () => ({ default: (await import("../pages/InboxPage")).InboxPage }));
 const RelayPage = lazy(async () => ({ default: (await import("../pages/RelayPage")).RelayPage }));
 const JobsPage = lazy(async () => ({ default: (await import("../pages/JobsPage")).JobsPage }));
 const HealthPage = lazy(async () => ({ default: (await import("../pages/HealthPage")).HealthPage }));
@@ -155,14 +152,10 @@ export function AppRoutes() {
         <Route path="knowledge/:id" element={<KnowledgeDetailPage />} />
         <Route path="code" element={<CodePage />} />
         <Route path="code/symbols/:id" element={<SymbolPage />} />
-        <Route path="workstreams" element={<WorkstreamsPage />} />
         <Route path="diagrams" element={<DiagramsPage />} />
         <Route path="diagrams/:kind/:id" element={<DiagramsPage />} />
-        <Route path="specs" element={<SpecsPage />} />
-        <Route path="specs/:id" element={<SpecsPage />} />
         <Route path="playbooks" element={<RoadmapPage page="playbooks" />} />
         <Route path="catch-up" element={<RoadmapPage page="catch-up" />} />
-        <Route path="inbox" element={<InboxPage />} />
         <Route path="relays" element={<RelayPage />} />
         <Route path="members" element={<MembersPage />} />
         <Route path="activity" element={<ActivityPage />} />

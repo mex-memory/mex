@@ -1,0 +1,270 @@
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { posix, relative, sep } from "node:path";
+import { containedDirectory, readBoundedTextFile, readEntryFile } from "../knowledge/files.js";
+import { parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
+import { repoFile } from "../knowledge/references.js";
+import type { NativeItem, CheckResult } from "../knowledge/check.js";
+import { canonicalFileDiff } from "../team/artifacts/unified-diff.js";
+import type { RepoRelativePath } from "../team/contracts/shared.js";
+import { assertNoSecrets } from "../knowledge/gates.js";
+import { loadOxc, parseJs } from "../file-index/parse-js.js";
+import { contentHash } from "../file-index/classify.js";
+import { openIndex, type OpenOptions } from "../file-index/read.js";
+import type { OutlineItem } from "../file-index/types.js";
+
+export const JUDGE_LIMITS = Object.freeze({ entries: 10_000, scanBytes: 8 << 20, batch: 5, files: 16, helpers: 4, fileBytes: 64 << 10, promptBytes: 256 << 10, history: 32 });
+export const hash = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
+export interface Position { branch: string | null; head: string | null; }
+export interface Candidate {
+  item: NativeItem; entry: KnowledgeEntry; content: string; files: string[]; checks: CheckResult[];
+  /** Held, complete entries are opportunistic work, after the unresolved pile. */
+  spare: boolean; distance: number;
+  inputs?: Record<string, string>;
+  evaluationHash?: string;
+}
+export interface FileEvidence {
+  path: string; current: string | null; current_hash: string | null;
+  baselines: Array<{ hash: string; commit: string | null; diff: string | null }>;
+}
+export interface Evidence {
+  checkout: string; position: Position; entries: Array<{ id: string; entry: KnowledgeEntry; checks_now: CheckResult[]; rule_change?: string[] }>;
+  files: FileEvidence[];
+  /** Only current, fully indexed symbol names; a read never refreshes the index. */
+  symbols?: Record<string, string[]>;
+}
+
+function symbolNames(outline: OutlineItem[]): string[] {
+  const names: string[] = [];
+  for (const [i, item] of outline.entries()) {
+    if (item.parent !== undefined && (item.parent < 0 || item.parent >= i)) throw new Error("Invalid symbol outline");
+    names.push(item.parent === undefined ? item.name : `${names[item.parent]}.${item.name}`);
+  }
+  return names;
+}
+
+/** Include only one hop of relative imports actually called by checked symbols.
+ * Missing/ambiguous dependencies remain missing evidence; never invent an old
+ * helper baseline from the checked file's history. */
+function localHelpers(checkout: string, files: FileEvidence[], candidates: Candidate[], deadline: number): FileEvidence[] {
+  const helpers = new Map<string, FileEvidence>();
+  for (const file of files) {
+    const lang = /\.[cm]?tsx?$/u.test(file.path) ? (file.path.endsWith("tsx") ? "tsx" : "ts") : /\.[cm]?jsx?$/u.test(file.path) ? "js" : undefined;
+    if (!lang || file.current === null) continue;
+    const targets = candidates.flatMap(c => c.entry.mex.checks.flatMap(check => check.kind === "symbol" && check.target.file === file.path ? [check.target.symbol] : []));
+    if (!targets.length) continue;
+    const parsed = parseJs(file.path, file.current, lang, { sourceSpans: true }), parser = loadOxc();
+    if (!parsed || parsed.error || !parser) continue;
+    const names = symbolNames(parsed.outline);
+    const ranges = (parsed.sourceSpans ?? []).filter((_, i) => targets.includes(names[i]!));
+    if (!ranges.length) continue;
+    const ast = parser.parseSync(file.path, file.current, { lang: lang === "js" ? "jsx" : lang });
+    if (ast.errors.length) continue;
+    const bindings = new Map<string, string>();
+    for (const statement of ast.program.body) {
+      if (statement.type !== "ImportDeclaration" || statement.importKind === "type") continue;
+      const from = (statement.source as { value?: unknown })?.value;
+      if (typeof from !== "string" || !(from.startsWith("./") || from.startsWith("../"))) continue;
+      for (const specifier of (statement.specifiers ?? []) as Array<{ importKind?: string; local?: { name?: string } }>) {
+        if (specifier.importKind !== "type" && specifier.local?.name) bindings.set(specifier.local.name, from);
+      }
+    }
+    if (!bindings.size) continue;
+    const called = new Set<string>(), shadowed = new Set<string>(), stack: unknown[] = [ast.program];
+    let nodes = 0;
+    const bound = (pattern: unknown) => {
+      const pending = [pattern];
+      while (pending.length) {
+        if (++nodes > 50_000 || Date.now() > deadline) throw new Error("The judge's source-context limit was reached");
+        const value = pending.pop();
+        if (!value || typeof value !== "object") continue;
+        const item = value as Record<string, unknown>;
+        if (item.type === "Identifier" && typeof item.name === "string") shadowed.add(item.name);
+        else if (item.type === "RestElement") pending.push(item.argument);
+        else if (item.type === "AssignmentPattern") pending.push(item.left);
+        else if (item.type === "TSParameterProperty") pending.push(item.parameter);
+        else if (item.type === "ArrayPattern" && Array.isArray(item.elements)) pending.push(...item.elements);
+        else if (item.type === "ObjectPattern" && Array.isArray(item.properties)) for (const p of item.properties) {
+          if (p && typeof p === "object") pending.push(p.type === "RestElement" ? p.argument : p.value);
+        }
+      }
+    };
+    while (stack.length) {
+      if (++nodes > 50_000 || Date.now() > deadline) throw new Error("The judge's source-context limit was reached");
+      const value = stack.pop();
+      if (!value || typeof value !== "object") continue;
+      if (Array.isArray(value)) { stack.push(...value); continue; }
+      const node = value as Record<string, unknown>;
+      // Conservatively omit an import if a same-name local binding exists.
+      // This avoids supplying an unrelated file without pretending to perform
+      // full lexical/module resolution or executing the repository.
+      if (["VariableDeclarator", "FunctionDeclaration", "FunctionExpression", "ClassDeclaration", "ClassExpression"].includes(String(node.type))) bound(node.id);
+      if (node.type === "CatchClause") bound(node.param);
+      if (Array.isArray(node.params)) for (const param of node.params) bound(param);
+      if (node.type === "CallExpression" && typeof node.start === "number" && typeof node.end === "number"
+        && ranges.some(({ start, end }) => (node.start as number) >= start && (node.end as number) <= end)) {
+        let callee = node.callee as Record<string, unknown> | undefined;
+        while (callee?.type === "MemberExpression") callee = callee.object as typeof callee;
+        if (callee?.type === "Identifier" && typeof callee.name === "string" && bindings.has(callee.name)) called.add(callee.name);
+      }
+      for (const child of Object.values(node)) if (child && typeof child === "object") stack.push(child);
+    }
+    const imports = new Set([...called].filter(name => !shadowed.has(name)).map(name => bindings.get(name)!));
+    for (const from of [...imports].sort()) {
+      if (Date.now() > deadline) throw new Error("The judge’s evidence time limit was reached");
+      const stem = posix.normalize(posix.join(posix.dirname(file.path), from));
+      if (stem.startsWith("../") || stem === "..") continue;
+      const extension = /\.[cm]?[jt]sx?$/u, explicit = extension.test(stem), base = stem.replace(extension, "");
+      // A bare module can be a directory. Probe only source-file candidates;
+      // repoFile correctly rejects directories and file-as-parent paths.
+      const paths = [...new Set([...[".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"].map(ext => base + ext), ...(explicit ? [] : [".ts", ".tsx", ".js"].map(ext => `${stem}/index${ext}`))])];
+      // Discover ambiguity using contained regular-file metadata first. Never
+      // read irrelevant candidate contents or let their size consume evidence.
+      const found = paths.filter(path => repoFile(checkout, path) !== undefined);
+      if (found.length !== 1 || files.some(f => f.path === found[0])) continue;
+      const path = found[0]!, current = readSource(checkout, path);
+      if (current === null) throw new Error("Helper evidence changed during discovery");
+      const helper: FileEvidence = { path, current, current_hash: hash(current), baselines: [] };
+      assertNoSecrets(helper.current);
+      helpers.set(helper.path, helper);
+      if (helpers.size > JUDGE_LIMITS.helpers || files.length + helpers.size > JUDGE_LIMITS.files) throw new Error("The judge's helper-file limit was reached");
+    }
+  }
+  return [...helpers.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function indexedSymbols(files: FileEvidence[], options?: OpenOptions): Record<string, string[]> | undefined {
+  if (!options) return undefined;
+  const reader = openIndex(options);
+  if (!reader) return undefined;
+  const out: Record<string, string[]> = {};
+  try {
+    for (const file of files) {
+      if (file.current === null) continue;
+      const info = reader.fileInfo(file.path), outline = reader.outline(file.path);
+      if ("not_indexed" in info || "not_indexed" in outline || outline.dropped || info.hash !== contentHash(Buffer.from(file.current))) continue;
+      // Omit an overlarge name list, rather than advertise a silently partial one.
+      const names = symbolNames(outline.symbols);
+      if (names.length <= 512 && Buffer.byteLength(JSON.stringify(names)) <= 16 << 10) out[file.path] = names;
+    }
+    return out;
+  } finally { reader.close(); }
+}
+
+/** Match the evaluator's parsed entry and actual reads, not a later file view. */
+export function coherent(candidates: Candidate[], snapshot: Evidence): boolean {
+  return candidates.every(candidate => candidate.item.entry_hash === hash(candidate.content) && candidate.inputs !== undefined
+    && candidate.files.every(path => {
+      const file = snapshot.files.find(file => file.path === path);
+      const observed = candidate.inputs![path];
+      return !!file && (file.current_hash === null ? observed === "missing" : observed === file.current_hash);
+    }));
+}
+
+export function git(checkout: string, args: string[], bytes = 128 << 10): Promise<string | undefined> {
+  const env={...process.env,GIT_NO_REPLACE_OBJECTS:"1"};
+  for(const key of ["GIT_DIR","GIT_WORK_TREE","GIT_COMMON_DIR","GIT_INDEX_FILE","GIT_NAMESPACE","GIT_PREFIX"]) delete (env as NodeJS.ProcessEnv)[key];
+  return new Promise(resolve => {
+    execFile("git", ["--literal-pathspecs", "-C", checkout, ...args], {
+      encoding: "utf8", windowsHide: true, timeout: 5_000, maxBuffer: bytes, env,
+    }, (error, stdout) => resolve(error ? undefined : stdout));
+  });
+}
+export async function position(checkout: string): Promise<Position> {
+  const [branch, head] = await Promise.all([
+    git(checkout, ["symbolic-ref", "--quiet", "HEAD"]), git(checkout, ["rev-parse", "--verify", "HEAD"]),
+  ]);
+  return { branch: branch?.trim() || null, head: head?.trim() || null };
+}
+export function samePosition(a: Position, b: Position): boolean { return a.branch === b.branch && a.head === b.head; }
+
+/** Check every parent of native-supplied paths, including personal storage. */
+export function readCandidate(item: NativeItem, checkout: string, home: string, projectId: string): { content: string; entry: KnowledgeEntry } | undefined {
+  const base = item.level === "team" ? containedDirectory(checkout, [".mex", "learned"])
+    : item.level === "personal" ? containedDirectory(home, ["projects", projectId, "notes"]) : undefined;
+  if (!base) return undefined;
+  const path = relative(base, item.path).split(sep).join("/");
+  if (path.startsWith("../") || path === "..") return undefined;
+  const safe = repoFile(base, path);
+  const content = safe && readEntryFile(safe);
+  if (content === undefined) return undefined;
+  const entry = parseEntry(content);
+  if (entry.mex.id !== item.id || entry.mex.status !== "active") return undefined;
+  return { content, entry };
+}
+
+export function entryFiles(entry: KnowledgeEntry): string[] {
+  return [...new Set(entry.mex.checks.flatMap(c => [...Object.keys(c.files), ...("file" in c.target && typeof c.target.file === "string" ? [c.target.file] : [])]))].sort();
+}
+export function readSource(checkout: string, path: string): string | null {
+  const safe = repoFile(checkout, path);
+  return safe ? readBoundedTextFile(safe, JUDGE_LIMITS.fileBytes) ?? null : null;
+}
+export function distance(files: string[], near: string[]): number {
+  let closest = 10_000;
+  for (const file of files) for (const touched of near) {
+    const a = file.split("/"), b = touched.split("/");
+    let common = 0;
+    while (common < a.length && common < b.length && a[common] === b[common]) common++;
+    closest = Math.min(closest, a.length + b.length - 2 * common);
+  }
+  return closest;
+}
+export function orderCandidates(candidates: Candidate[]): Candidate[] {
+  return candidates.sort((a, b) => Number(a.spare) - Number(b.spare) || a.distance - b.distance || a.item.id.localeCompare(b.item.id));
+}
+/** A batch shares a file with its first entry and never promotes spare work. */
+export function nextBatch(candidates: Candidate[]): Candidate[] {
+  const first = candidates[0];
+  if (!first) return [];
+  const rest = candidates.slice(1).filter(c => c.spare === first.spare);
+  const shared = first.files.find(file => rest.some(c => c.files.includes(file)));
+  return [first, ...rest.filter(c => shared && c.files.includes(shared)).slice(0, JUDGE_LIMITS.batch - 1)];
+}
+
+/** Full-file changes matter: a caller in this file can invalidate its helper's note. */
+export async function evidence(checkout: string, candidates: Candidate[], at: Position, index?: OpenOptions): Promise<Evidence> {
+  const deadline = Date.now() + 30_000;
+  const paths = [...new Set(candidates.flatMap(c => c.files))].sort();
+  if (paths.length > JUDGE_LIMITS.files) throw new Error("The judge's source-file limit was reached.");
+  const files: FileEvidence[] = [];
+  for (const path of paths) {
+    const current = readSource(checkout, path);
+    const expected = [...new Set(candidates.flatMap(c => c.entry.mex.checks.flatMap(check => {
+      const floors: Record<string, string> = check.files;
+      const baseline = floors[path];
+      return baseline ? [baseline] : [];
+    })))];
+    const baselines: FileEvidence["baselines"] = [];
+    const commits = (await git(checkout, ["log", `-${JUDGE_LIMITS.history}`, "--format=%H", "--", path]))?.trim().split("\n").filter(Boolean) ?? [];
+    const old = new Map<string, { text: string; commit: string }>();
+    for (const commit of commits) {
+      if (Date.now() > deadline) throw new Error("The judge's evidence time limit was reached.");
+      if (!/^[a-f0-9]{40,64}$/u.test(commit)) continue;
+      const text = await git(checkout, ["show", `${commit}:${path}`], JUDGE_LIMITS.fileBytes);
+      if (text !== undefined) old.set(hash(text), { text, commit });
+      if (expected.every(h => old.has(h) || (current !== null && h === hash(current)))) break;
+    }
+    for (const baseline of expected) {
+      const found = old.get(baseline);
+      const before = current !== null && hash(current) === baseline ? current : found?.text;
+      baselines.push({ hash: baseline, commit: found?.commit ?? null,
+        diff: before === undefined ? null : canonicalFileDiff(path as RepoRelativePath, before, current ?? "") });
+    }
+    files.push({ path, current, current_hash: current === null ? null : hash(current), baselines });
+  }
+  assertNoSecrets(files);
+  files.push(...localHelpers(checkout, files, candidates, deadline));
+  const symbols = indexedSymbols(files, index);
+  return { checkout, position: at, entries: candidates.map(c => ({ id: c.item.id, entry: c.entry, checks_now: c.checks,
+    ...(c.item.rule_evidence?.length ? { rule_change: c.item.rule_evidence } : {}) })), files, ...(symbols ? { symbols } : {}) };
+}
+
+/** Exact proof immediately before persisting a response; no result survives a checkout switch. */
+export async function unchanged(checkout: string, home: string, projectId: string, candidates: Candidate[], snapshot: Evidence): Promise<boolean> {
+  if (!samePosition(snapshot.position, await position(checkout))) return false;
+  try {
+    if (candidates.some(c => readCandidate(c.item, checkout, home, projectId)?.content !== c.content)) return false;
+    return snapshot.files.every(f => { const now = readSource(checkout, f.path); return (now === null ? null : hash(now)) === f.current_hash; });
+  } catch { return false; }
+}

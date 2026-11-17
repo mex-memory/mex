@@ -6,7 +6,7 @@ import type { MexConfig } from "../src/types.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
 import { openSqlite } from "../src/graph/db/sqlite.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
-import { generateCanonicalCompilerNodeId } from "../src/graph/extraction/compiler.js";
+import { canonicalCompilerIdentity, generateCanonicalCompilerNodeId } from "../src/graph/extraction/compiler.js";
 import { deserializeFingerprint, serializeFingerprint } from "../src/graph/fingerprint.js";
 import { rebuildGraph } from "../src/graph/maintenance.js";
 import { loadGroundingRuntime, persistMovedGroundings } from "../src/graph/runtime.js";
@@ -118,6 +118,8 @@ interface NodeRow {
   id: string;
   kind: CompilerNodeKind;
   name: string;
+  qualified_name: string;
+  file_path: string;
   identity_key: string;
   signature: string | null;
   body_hash: string | null;
@@ -126,7 +128,7 @@ interface NodeRow {
 function nodeNamed(root: string, name: string): NodeRow {
   const [row] = query<NodeRow>(
     root,
-    `SELECT id, kind, name, identity_key, signature, body_hash FROM nodes WHERE name = '${name}'`,
+    `SELECT id, kind, name, qualified_name, file_path, identity_key, signature, body_hash FROM nodes WHERE name = '${name}'`,
   );
   if (!row) throw new Error(`fixture node ${name} missing`);
   return row;
@@ -135,11 +137,23 @@ function nodeNamed(root: string, name: string): NodeRow {
 /** The identity a v2 extractor produced for this node in a checkout at OLD_CHECKOUT. */
 function v2Identity(node: NodeRow): { id: string; identityKey: string; signature: string | null } {
   const withPath = (value: string) => value.replaceAll("JSX.Element", `import("${OLD_CHECKOUT}/src/jsx/base").JSX.Element`);
-  const identityKey = withPath(node.identity_key);
+  const signature = node.signature === null ? null : withPath(node.signature);
+  // A v2 key was today's key plus the printed signature, path and all. Built
+  // from the node's fields, not read back: one SQLite driver returns
+  // identity_key only up to its first NUL.
+  const identityKey = [
+    canonicalCompilerIdentity({
+      filePath: node.file_path,
+      kind: node.kind,
+      qualifiedName: node.qualified_name,
+      declarationRole: "function",
+    }),
+    signature ?? "",
+  ].join("\u0000");
   return {
     id: generateCanonicalCompilerNodeId(node.kind, identityKey),
     identityKey,
-    signature: node.signature === null ? null : withPath(node.signature),
+    signature,
   };
 }
 
@@ -181,7 +195,7 @@ describe("path-independent TypeScript node ids (#240)", () => {
     expect(nodes(second.root)).toEqual(nodes(first.root));
     expect(edges(second.root)).toEqual(edges(first.root));
     expect(nodeNamed(first.root, "renderPage").signature)
-      .toBe("(title: string, items: string[]): JSX.Element");
+      .toBe("(title: string, items: string[]) => JSX.Element");
 
     for (const { root } of [first, second]) {
       const posixRoot = root.replaceAll("\\", "/");

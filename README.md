@@ -362,31 +362,30 @@ Run `mex <command> --help` for the complete interface.
 
 | Goal | Commands |
 | --- | --- |
-| Set up or inspect compatibility | `mex setup`, `mex setup --browser`, `mex capabilities`, `mex skills sync` |
-| Use persistent-agent mode | `mex setup --mode agent-memory`, `mex heartbeat` |
-| Open a local interface | `mex hub`, `mex tui` |
+| Set up or inspect compatibility | `mex setup`, `mex setup --browser`, `mex capabilities` |
+| Use persistent-agent mode | `mex setup --mode agent-memory` |
+| Open a local interface | `mex hub` |
 | Build and retrieve code context | `mex graph status`, `mex graph refresh`, `mex graph rebuild`, `mex graph scope <task>`, `mex graph query <relation> <target>`, `mex graph get <node-id>`, `mex impact <target>` |
 | Index and retrieve knowledge | `mex wiki rebuild-index`, `mex wiki query <text>`, `mex wiki show <id>`, `mex wiki related <id>`, `mex wiki backlinks <id>`, `mex wiki for-code <node-id>` |
 | Synthesize or maintain the Wiki | `mex wiki build`, `mex wiki prepare --stage <stage> [--cluster <name>]`, `mex wiki validate` (structure only); `mex wiki propose <response-file>`, `mex wiki apply <operation-file>` and `mex wiki reground <id>` preview by default and write only with `--apply` |
-| Review team memory | `mex member --help`, `mex activity --help`, `mex workstream --help`, `mex spec --help` |
-| Propose knowledge additions or corrections | `mex inbox draft --help`, `mex inbox publish --help`, `mex inbox proposal --help` |
+| Review team memory | `mex member --help`, `mex activity --help` |
 | Prepare and receive handoffs | `mex relay draft --help`, `mex relay publish --help`, `mex relay acknowledge --help`, `mex relay close --help` |
-| Record and retrieve project notes | `mex log <message>`, `mex logging --help`, `mex timeline --format md`, `mex pattern --help` |
-| Export scaffold Markdown | `mex export`, `mex export --out <path>` |
-| Check and maintain the project | `mex check`, `mex sync`, `mex doctor`, `mex watch` |
+| Record and retrieve project notes | `mex log <message>` |
+| Check and maintain the project | `mex check`, `mex sync`, `mex doctor` |
 
 ### Keeping knowledge true to the code
 
-Two commands cover it:
+Use these commands to check and maintain knowledge:
 
 - `mex check` runs every deterministic check, with no AI and no writes: scaffold files, paths and commands, and every code link in the scaffold and the Wiki. Each link gets one verdict, the same one `wiki query`, `wiki for-code` and the Hub show: `fresh`, `changed-nearby` (the change is away from everything the fact names), `moved`, `changed`, `missing` or `ambiguous`. Comment-only and formatting-only edits stay fresh. A finding on a Wiki entity names its id and title.
-- `mex sync` fixes what check found in one interactive agent session. For each flagged Wiki entity the agent compares the fact with the code as recorded and as it is now, then re-records it with `mex wiki reground <id> --apply` (still true), fixes the text and re-records (changed), or leaves the flag (unsure). Missing and ambiguous links are relinked by hand or left flagged. Sync then rebuilds the Wiki index and checks again.
+- `mex sync` runs the knowledge judge now on the cheap model, inside the usual cap. It uses registered 0.9 repositories without requiring a legacy scaffold. `--dry-run` previews current eligible entries without queuing work or calling a model. Paused jobs stay paused; cap or preview waits remain visible in `mex jobs`. Fixes use the same session previews and Review routing as the background judge.
+- `mex sync --deep` retains the interactive agent session for legacy scaffolds and Wiki groundings. The agent compares each flagged fact with the recorded and current code, re-records it with `mex wiki reground <id> --apply` if still true, fixes and re-records it if changed, or leaves it flagged if unsure. Sync rebuilds the Wiki index and checks again. Add `--dry-run` to see its prompt, or `--warnings` to include warning-only files.
 - `mex wiki link-sections` previews missing connections from existing section entities to their enclosing document or section. Add `--apply` to record those `refines` relationships without changing facts or code groundings. It works on existing scaffolds without setup or an AI session. Semantic dependencies still need evidence. The Hub graph remains bounded to 100 entities and 500 relationships and keeps a limited number of linked parents visible; use List for the complete knowledge collection.
-- `mex wiki upgrade` previews a bounded review of existing broad code-linked entities for one fact per entity. `--apply` starts an interactive review using the same agent chooser as `mex sync`; `--tool` optionally overrides it. Without an installed CLI, copy the preview prompt into your coding agent. Review requires a fresh code graph and refuses flagged candidate groundings until check/sync has reviewed them. It preserves existing ids as overviews and does not rerun setup. Opening Hub or updating MEX never rewrites project knowledge automatically.
+- `mex wiki upgrade` previews a bounded review of existing broad code-linked entities for one fact per entity. `--apply` starts an interactive review using the same agent chooser as `mex sync --deep`; `--tool` optionally overrides it. Without an installed CLI, copy the preview prompt into your coding agent. Review requires a fresh code graph and refuses flagged candidate groundings until check/sync has reviewed them. It preserves existing ids as overviews and does not rerun setup. Opening Hub or updating MEX never rewrites project knowledge automatically.
 
 `mex wiki query` and `mex wiki for-code` are how agents find that knowledge; `--health changed` lists what check flags.
 
-Use `mex capabilities --json` for machine-readable capability discovery and `mex commands` for the concise CLI map.
+Use `mex capabilities --json` for machine-readable capability discovery and `mex --help` for the concise CLI map.
 
 ## Upgrade and compatibility
 
@@ -436,17 +435,17 @@ Existing Markdown scaffolds remain valid, and Graph reads never migrate a store 
 
 MEX does not upload its canonical records, Graph, Wiki index, drafts, identity selection, or Hub sessions to a MEX service. It provides no automatic team transport: sharing happens through normal Git actions you perform. The Hub binds to loopback, and MEX's local retrieval layer requires no model credentials.
 
-MEX has **pseudonymous CLI and Hub usage telemetry**, enabled by default unless you opt out. Namespaced commands, outcomes, explicit Hub actions, page categories, and job results help measure feature use and returning installations. Both surfaces reuse one random installation UUID. When available, events also include the existing scaffold UUID to estimate shared-project use and configured AI-tool names from project setup; these do not identify the currently invoking agent or prove team size. Someone with access to project configuration can associate its scaffold UUID with that project. Names, repository remotes, argument values, paths, content, search text, and contact details stay excluded. The ingestion service can observe ordinary transport metadata. Delivery uses a bounded local queue and short CLI cleanup grace; offline telemetry does not change command results.
+MEX sends usage counts to help improve it. Hooks, jobs and the Hub count locally; the background process sends daily summaries with numbers in ranges. Telemetry is on by default, with this explanation before sending: **MEX sends anonymous usage counts to help improve it: never code, file paths, prompts or repo names. Turn off any time: `mex telemetry off` (or `DO_NOT_TRACK=1`).** Personal reports use a random installation UUID; CI reports are counted separately and never create one. Only explicitly shared projects can include a share-created random project ID. Existing opt-outs survive an upgrade.
 
 Check or disable telemetry with:
 
 ```bash
 mex telemetry inspect
 mex telemetry status
-mex telemetry disable
+mex telemetry off
 ```
 
-It can also be disabled with `MEX_TELEMETRY=0` or `DO_NOT_TRACK=1`. See the [telemetry policy](TELEMETRY.md) for the controls, event catalog, privacy boundary, and delivery limits. Coding agents connected to MEX may have their own network and telemetry behavior; that is governed by those tools, not by MEX.
+`mex telemetry on` enables it again; `disable` and `enable` remain aliases. `MEX_TELEMETRY=0` and `DO_NOT_TRACK=1` disable telemetry; `MEX_OFFLINE=1` also stops update fetching. See the [telemetry policy](TELEMETRY.md) for the event catalog, random-ID privacy boundary, inspection and delivery limits. Coding agents connected to MEX may have their own network and telemetry behavior, governed by those tools.
 
 ## What MEX is not
 
@@ -473,7 +472,7 @@ MEX keeps team memory in repository files and provides local retrieval and revie
 - Review the [Code Graph support matrix](https://github.com/mex-memory/mex/blob/v0.8.5/docs/code-graph-support.md).
 - See the [extractor model and supported relationships](https://github.com/mex-memory/mex/blob/v0.8.5/docs/extractors.md).
 - Read the [graph retrieval benchmark results](https://github.com/mex-memory/mex/blob/v0.8.5/evaluate/RESULTS.md), including the blind-graded comparison against an ordinary file-search baseline.
-- Inspect the CLI locally with `mex capabilities --json` and `mex commands`.
+- Inspect the CLI locally with `mex capabilities --json` and `mex --help`.
 - Join the [MEX community on Discord](https://discord.gg/FEdNsQ4Qt4) or visit [mexmemory.com](https://mexmemory.com).
 - Contact the team at [info@mexmemory.com](mailto:info@mexmemory.com).
 

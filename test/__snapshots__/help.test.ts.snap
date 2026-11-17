@@ -1,0 +1,78 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`shows the 0.9 manual in command order 1`] = `
+"Usage: mex [options] [command]
+
+Project memory for your agents — run it in a repo to turn MEX on there
+
+Options:
+  -V, --version                         output the version number
+  --folder                              Turn MEX on in a folder that isn't a git
+                                        repo, without the question
+  --no-wait                             Show the first screen and leave the file
+                                        index and git history to the background
+  -h, --help                            display help for command
+
+Commands:
+  install [options]                     Install hooks for Claude Code and Codex
+                                        on this machine
+  uninstall [options]                   Restore agent settings; keep notes
+                                        unless --purge is given
+  doctor [options]                      Show MEX status and fixes for recorded
+                                        problems
+  off [options]                         Turn MEX off for this registered repo
+  on [options]                          Turn MEX back on for this registered
+                                        repo
+  capture [options] <state>             Turn capture off or on without changing
+                                        delivery
+  setup [options]                       Turn MEX on for this repo (the same as
+                                        \`mex\`)
+  note|log [options] <text>             Save a personal note and why it matters
+  recall [options] <words>              Find a note by words, without a model
+                                        call
+  expand [options] <id>                 Read a note, its source and its checks
+  edit [options] <id> <text>            Correct a note; preview changes to team
+                                        entries
+  wrong [options] <id> <reason>         Retire an incorrect note and keep the
+                                        reason
+  forget [options] <id> <reason>        Remove a note from future sessions
+  check [options]                       Check which notes still hold against the
+                                        code
+  review [options]                      Review learned notes before sharing them
+  share [options]                       Share notes and rule files through a
+                                        reviewed git branch
+  rules [options]                       Read agent rule files and show lines
+                                        that need review
+  handoff [options] [line...]           Leave a branch handoff for a teammate
+  upgrade [options]                     Preview the upgrade from 0.8; apply
+                                        after review
+  what [options]                        Show what MEX gave or held back this
+                                        session
+  brief [options]                       Preview what a new session will receive
+  jobs [options]                        List MEX's background jobs on this
+                                        machine; pause, resume or cancel one
+  config                                Change MEX settings
+  telemetry                             Inspect anonymous usage counts or turn
+                                        them off
+  feedback                              Open the feedback form
+  sync [options]                        Run the knowledge judge now; use --deep
+                                        for the interactive AI sync session
+  hints                                 Explicitly refresh or expire read-only
+                                        agent-memory hints
+  report [options]                      Read local advisories about advice
+                                        already used on this branch
+  alias [options] <id> <action> <text>  Add or remove a short name or symptom
+                                        people use for an entry (kept only if it
+                                        finds that entry first)
+  ask [options] <id> <action> <text>    Add or remove an example request that
+                                        should find an entry (kept only if it
+                                        finds that entry first)
+  entries                               Work on all of this project's entries
+  decisions [options]                   Check which decisions that cite a commit
+                                        are in force: proposed until the commit
+                                        lands on the default branch, withdrawn
+                                        on a revert
+  hub [options]                         Show the 0.9 Hub notice; open the Hub in
+                                        a 0.8 repo
+"
+`;

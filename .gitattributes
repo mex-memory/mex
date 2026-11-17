@@ -4,6 +4,9 @@
 # and the CRLF fixture would pass everywhere by becoming an LF fixture.
 test/fixtures/wiki/** -text
 
+# The upgrade gate pins these files by sha256; a CRLF checkout must not change them.
+scripts/gates/upgrade-corpus/** -text
+
 # These two fixtures intentionally look invalid to Git's patch checker: one
 # carries CRLF bytes and the other carries literal conflict markers. Suppress
 # textual diff inspection only for those exact files; the rest of the fixture
@@ -23,3 +26,15 @@ test/fixtures/capabilities/*.json text eol=lf
 
 # The vendored statechart workflow is pinned byte-for-byte, including its EOF.
 skills/mex-statechart/upstream/** -text whitespace=-blank-at-eof
+
+# Vite strips hashbangs before loading scripts; CRLF leaves a stray CR in that transform.
+scripts/*.mjs text eol=lf
+scripts/release-benchmark/*.mjs text eol=lf
+
+# Go sources stay LF so gofmt agrees on every OS.
+native/**/*.go text eol=lf
+native/go.mod text eol=lf
+native/**/testdata/** text eol=lf
+
+# The delivery replay golden pins the exact LF JSON produced by its writer.
+scripts/delivery-replay/golden.json text eol=lf

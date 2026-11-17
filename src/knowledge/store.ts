@@ -1,0 +1,254 @@
+import { randomBytes } from "node:crypto";
+import { existsSync, opendirSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { openRecord, openRecordReadOnly, projectIdentity, projectDataDirectory } from "../record/index.js";
+import { assertPersonQuote, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type EntryKind, type KnowledgeEntry } from "./entry.js";
+import { containedDirectory, createEntryFile, readEntryFile, personalReadGuard, replaceEntryFile } from "./files.js";
+import { knowledgeProject, type KnowledgeOptions, type KnowledgeProject } from "./context.js";
+import { references, type References } from "./references.js";
+import { gateEntry, sanitizeText } from "./gates.js";
+import { entryLabel, KNOWLEDGE_PRIORITY, type KnowledgeLevel } from "./labels.js";
+import { expandTeam, teamEntries, type TeamEntry } from "./team.js";
+import { readHints, type HintEntry } from "./hints.js";
+import { aidsEnabled, rankNative } from "./native-rank.js";
+import { deriveNoteChecks } from "./note-checks.js";
+export type { KnowledgeOptions } from "./context.js";
+
+export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
+export type StoredEntry = PersonalEntry | TeamEntry | HintEntry;
+/** savedBy: the agent that ran `mex note` for the person; its notes are labelled as the agent's, never "you said". */
+export interface NoteInput { text: string; kind?: EntryKind; scope?: string[]; oneLine?: string; savedBy?: "claude-code" | "codex"; }
+/** A decision that cites a commit is proposed until that commit lands on the default branch. */
+export interface DecisionInput { commit?: NonNullable<KnowledgeEntry["mex"]["commit"]>; supersedes?: string[]; }
+function readDirectory(project: KnowledgeProject): string | undefined {
+  if (!existsSync(project.location.home)) return undefined;
+  return containedDirectory(project.location.home, ["projects", project.projectId, "notes"]);
+}
+function display(entry: KnowledgeEntry): PersonalEntry {
+  return { level: "personal", label: entryLabel(entry, "personal"), entry };
+}
+/** A reserved id namespace marks setup's entries without changing manifest provenance. */
+export function isSetupRecipe(entry: KnowledgeEntry): boolean {
+  return /^mx_setup[a-f0-9]{24}$/u.test(entry.mex.id) && entry.mex.kind === "recipe" && entry.mex.source.type === "config";
+}
+
+/**
+ * Every package's test and build, within a bound. A package's commands sit in
+ * a rule file that loads only for that package, so they cost nothing until the
+ * agent works there; the bound keeps a very large monorepo's setup quick.
+ */
+export const MAX_SETUP_RECIPES = 120;
+
+/** Refresh only setup-owned personal entries, through the note store's gates and publication locks. */
+export function refreshSetupRecipes(entries: KnowledgeEntry[], options: KnowledgeOptions, retireMissing = true, now = new Date()): number {
+  if (entries.length > MAX_SETUP_RECIPES || entries.some(entry => !isSetupRecipe(entry) || entry.mex.status !== "active"
+    || entry.mex.checks.length !== 1 || entry.mex.checks[0]?.kind !== "command" || entry.mex.checks[0]?.role !== "complete")) {
+    throw new KnowledgeError("INVALID_ENTRY", `Setup requires at most ${MAX_SETUP_RECIPES} recipes with complete command checks.`);
+  }
+  const source = references(projectIdentity(options.projectPath).rootPath);
+  const gated = entries.map(entry => {
+    const clean = gateEntry(entry, source);
+    if (clean.text !== entry.text || clean.mex.one_line !== entry.mex.one_line || clean.mex.checks.length !== 1) {
+      throw new KnowledgeError("UNVERIFIED_SOURCE", "A setup command could not be verified.");
+    }
+    serializeEntry(clean);
+    return clean;
+  });
+  const writer = openRecord({ ...options, create: true });
+  try {
+    writer.db.exec("BEGIN IMMEDIATE");
+    const projectId = writer.checkout(options.projectPath)?.project_id;
+    if (!projectId || !/^[gf]-[a-f0-9]{24}$/u.test(projectId)) throw new KnowledgeError("RECORD_UNAVAILABLE", "The project could not be registered.");
+    containedDirectory(writer.location.home, ["projects", projectId]);
+    projectDataDirectory(writer.location, projectId);
+    const directory = containedDirectory(writer.location.home, ["projects", projectId, "notes"], true)!;
+    const project = knowledgeProject(options);
+    const wanted = new Map(gated.map(entry => [entry.mex.id, entry]));
+    const names = readdirSync(directory);
+    if (names.length > KNOWLEDGE_LIMITS.entries) throw new KnowledgeError("STORE_LIMIT", "Personal note directory exceeds the scan limit.");
+    let bytes = 0, saved = 0;
+    for (const name of names.filter(name => /^mx_setup[a-f0-9]{24}\.md$/u.test(name))) {
+      const content = readEntryFile(join(directory, name));
+      if (!content) continue;
+      bytes += Buffer.byteLength(content);
+      if (bytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", "Setup recipes exceed the byte scan limit.");
+      const before = parseEntry(content), id = name.slice(0, -3), next = wanted.get(id);
+      wanted.delete(id);
+      // A person can edit or forget a setup entry. Setup never takes it back.
+      if (before.mex.id !== id || !isSetupRecipe(before) || project.retired.has(id)
+        || (before.mex.status !== "active" && before.mex.retired?.by !== "mex setup")) continue;
+      if (next) {
+        next.mex.created = before.mex.created;
+        const updated = serializeEntry(next);
+        if (updated !== content) replaceEntryFile(directory, id, content, updated);
+        saved++;
+      } else if (retireMissing && before.mex.status === "active") {
+        before.mex.status = "retired";
+        before.mex.retired = { by: "mex setup", at: now.toISOString().slice(0, 10), reason: "This command is no longer in the setup recipes." };
+        replaceEntryFile(directory, id, content, serializeEntry(before));
+      }
+    }
+    for (const entry of wanted.values()) {
+      if (project.retired.has(entry.mex.id)) continue;
+      createEntryFile(directory, entry.mex.id, serializeEntry(entry));
+      saved++;
+    }
+    return saved;
+  } finally {
+    try { writer.db.exec("ROLLBACK"); } finally { writer.close(); }
+  }
+}
+/** Explicit note creation uses the same gates and personal store as setup. */
+export function note(input: NoteInput & DecisionInput, options: KnowledgeOptions, now = new Date()): PersonalEntry {
+  const created = now.toISOString().slice(0, 10);
+  const entry: KnowledgeEntry = {
+    mex: {
+      id: `mx_${randomBytes(12).toString("hex")}`, kind: input.kind ?? "rule", scope: input.scope ?? ["**"],
+      source: { type: "person", ref: input.savedBy ? `mex note by ${input.savedBy} ${created}` : `mex note ${created}`, quote: input.text }, evidence: "person",
+      one_line: input.oneLine ?? input.text.trim().replace(/\s+/gu, " "), checks: [], status: input.commit ? "proposed" : "active", created,
+      ...(input.commit ? { commit: input.commit } : {}), ...(input.supersedes?.length ? { supersedes: input.supersedes } : {}),
+    }, text: input.text.trim().replace(/\r\n/g, "\n"),
+  };
+  // Reject bad input before initializing any persistent state.
+  serializeEntry(entry);
+  const rootPath = projectIdentity(options.projectPath).rootPath;
+  const source = references(rootPath);
+  // Free checks from what the note names; none found leaves it to the background filter.
+  if (!input.commit) entry.mex.checks = deriveNoteChecks(entry.text, rootPath);
+  const gated = gateEntry(entry, source);
+  const bytes = serializeEntry(gated);
+  assertPersonQuote(gated, sanitizeText(input.text, source));
+  const writer = openRecord({ ...options, create: true });
+  writer.db.exec("BEGIN IMMEDIATE");
+  try {
+    const projectId = writer.checkout(options.projectPath)?.project_id;
+    if (!projectId || !/^[gf]-[a-f0-9]{24}$/u.test(projectId)) throw new KnowledgeError("RECORD_UNAVAILABLE", "The project could not be registered.");
+    // Check existing components before asking the record owner to create its project folder.
+    containedDirectory(writer.location.home, ["projects", projectId]);
+    projectDataDirectory(writer.location, projectId);
+    const directory = containedDirectory(writer.location.home, ["projects", projectId, "notes"], true)!;
+    createEntryFile(directory, gated.mex.id, bytes);
+    return display(gated);
+  } finally { writer.db.exec("ROLLBACK"); writer.close(); }
+}
+function words(text: string): string[] { return text.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []; }
+function load(directory: string, id: string): KnowledgeEntry | undefined {
+  const content = readEntryFile(join(directory, `${id}.md`));
+  if (content === undefined) return undefined;
+  const entry = parseEntry(content);
+  if (entry.mex.id !== id) throw new KnowledgeError("INVALID_ENTRY", "Entry id does not match its filename.");
+  return entry.mex.status === "active" ? entry : undefined;
+}
+/** proposed: also read a decision that isn't in force yet (to show or retire it, never to edit its claim). */
+export function personalSnapshot(id: string, options: KnowledgeOptions, project = knowledgeProject(options), source?: References, gated = true, proposed = false) {
+  if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Expected a stable entry id such as mx_7f3k2a.");
+  const directory = readDirectory(project);
+  const content = directory && !project.retired.has(id) && readEntryFile(join(directory, `${id}.md`));
+  if (!directory || !content) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
+  const entry = parseEntry(content);
+  if (entry.mex.id !== id) throw new KnowledgeError("INVALID_ENTRY", "Entry id does not match its filename.");
+  if (entry.mex.status !== "active" && !(proposed && entry.mex.status === "proposed")) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
+  return { ...display(gated ? gateEntry(entry, source ?? references(project.root)) : entry), directory, content };
+}
+export function expandPersonal(id: string, options: KnowledgeOptions, project = knowledgeProject(options), source?: References): PersonalEntry {
+  const { level, label, entry } = personalSnapshot(id, options, project, source, true, true);
+  return { level, label, entry };
+}
+export function expand(id: string, options: KnowledgeOptions): StoredEntry {
+  if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Expected a stable entry id such as mx_7f3k2a.");
+  const project = knowledgeProject(options);
+  if (project.retired.has(id)) throw new KnowledgeError("NOT_FOUND", "No active entry has that id in this project.");
+  try { return expandPersonal(id, options, project); }
+  catch (error) { if (!(error instanceof KnowledgeError) || error.code !== "NOT_FOUND") throw error; }
+  const team = expandTeam(id, options);
+  if (team) return team;
+  const hint = readHints(options).entries.find(item => item.entry.mex.id === id);
+  if (hint) return hint;
+  throw new KnowledgeError("NOT_FOUND", "No active entry has that id in this project.");
+}
+export interface RecallItem {
+  id: string; level: KnowledgeLevel; label: string; kind: EntryKind; one_line: string;
+  scope: string[]; source: Pick<KnowledgeEntry["mex"]["source"], "type" | "ref">;
+  evidence: KnowledgeEntry["mex"]["evidence"]; created: string;
+  branch?: TeamEntry["branch"];
+  score?: number;
+  why?: { matched: string[]; exact: boolean };
+}
+export interface RecallResult { entries: RecallItem[]; truncated: boolean; withheld?: number; hintsPartial?: boolean; ranking?: { engine: "native" | "legacy"; reason?: string }; }
+export function recallItem(item: { level: KnowledgeLevel; label: string; entry: KnowledgeEntry; branch?: TeamEntry["branch"] }): RecallItem {
+  const { id, kind, one_line, scope, source, evidence, created } = item.entry.mex;
+  return { id, level: item.level, label: item.label, kind, one_line, scope, source: { type: source.type, ref: source.ref }, evidence, created, ...(item.branch ? { branch: item.branch } : {}) };
+}
+export function matchesQuery(entry: KnowledgeEntry, query: string): boolean {
+  const searchable = new Set(words([entry.text, entry.mex.one_line, entry.mex.kind, ...entry.mex.scope].join(" ")));
+  return [...new Set(words(query))].every(term => searchable.has(term));
+}
+export function recallPersonal(query: string, options: KnowledgeOptions, limit = 20, project = knowledgeProject(options), source?: References, collect?: (entry: KnowledgeEntry) => void): RecallResult {
+  const check = personalReadGuard(join(project.location.home, "projects", project.projectId, "notes"));
+  if (query.length > KNOWLEDGE_LIMITS.queryCharacters) throw new KnowledgeError("INVALID_QUERY", "Search text exceeds 256 characters.");
+  const terms = [...new Set(words(query))];
+  if (!terms.length) throw new KnowledgeError("INVALID_QUERY", "Search requires at least one word.");
+  if (!Number.isInteger(limit) || limit < 1 || limit > KNOWLEDGE_LIMITS.results) throw new KnowledgeError("INVALID_LIMIT", "Search limit must be between 1 and 100.");
+  const directory = readDirectory(project);
+  if (!directory) return { entries: [], truncated: false };
+  const { retired } = project;
+  const names: string[] = [];
+  const handle = opendirSync(directory);
+  try {
+    let child, seen = 0;
+    while ((child = handle.readSync())) {
+      if (++seen > KNOWLEDGE_LIMITS.entries) throw new KnowledgeError("STORE_LIMIT", "Personal note directory exceeds the scan limit.");
+      if (/^mx_[a-z0-9]{6,64}\.md$/u.test(child.name)) names.push(child.name.slice(0, -3));
+    }
+  } finally { handle.closeSync(); }
+  names.sort();
+  const matches: RecallItem[] = [];
+  let totalBytes = 0;
+  for (const id of names) {
+    const content = readEntryFile(join(directory, `${id}.md`));
+    if (content === undefined) continue;
+    totalBytes += Buffer.byteLength(content, "utf8");
+    if (totalBytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", "Personal notes exceed the byte scan limit.");
+    if (retired.has(id)) continue;
+    let entry = parseEntry(content);
+    if (entry.mex.id !== id) throw new KnowledgeError("INVALID_ENTRY", "Entry id does not match its filename.");
+    if (entry.mex.status !== "active") continue;
+    source ??= references(project.root);
+    entry = gateEntry(entry, source);
+    collect?.(entry);
+    const searchable = new Set(words([entry.text, entry.mex.one_line, entry.mex.kind, ...entry.mex.scope].join(" ")));
+    if (terms.every(term => searchable.has(term))) {
+      const { kind, one_line, scope, source, evidence, created } = entry.mex;
+      matches.push({ id, level: "personal", label: display(entry).label, kind, one_line, scope, source: { type: source.type, ref: source.ref }, evidence, created });
+    }
+  }
+  matches.sort((a, b) => a.created !== b.created ? (a.created > b.created ? -1 : 1) : a.id < b.id ? -1 : a.id === b.id ? 0 : 1);
+  check();
+  return { entries: matches.slice(0, limit), truncated: matches.length > limit };
+}
+
+export function recall(query: string, options: KnowledgeOptions, limit = 20): RecallResult {
+  const project = knowledgeProject(options);
+  const personalEntries: PersonalEntry[] = [];
+  const personal = recallPersonal(query, options, limit, project, undefined, entry => personalEntries.push(display(entry)));
+  const team = teamEntries(options);
+  const hints = readHints(options);
+  const candidates = [...personalEntries, ...team.entries, ...hints.entries].filter(item => !project.retired.has(item.entry.mex.id));
+  const byId = new Map<string, StoredEntry>();
+  for (const item of candidates) if (!byId.has(item.entry.mex.id)) byId.set(item.entry.mex.id, item);
+  const reader = openRecordReadOnly(options);
+  let setting: string | undefined;
+  try { setting = reader?.setting("global", "delivery.aliases"); } finally { reader?.close(); }
+  const ranked = rankNative(query, [...byId.values()].map(item => item.entry), aidsEnabled(options.env ?? process.env, setting));
+  if (ranked.hits) {
+    const found = ranked.hits.map(hit => ({ ...recallItem(byId.get(hit.id)!), score: hit.score, why: { matched: hit.matched, exact: hit.exact } }));
+    return { entries: found.slice(0, limit), truncated: found.length > limit, withheld: team.withheld + hints.withheld, ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "native" } };
+  }
+  const items = [...personal.entries, ...[...team.entries, ...hints.entries].filter(item => !project.retired.has(item.entry.mex.id) && matchesQuery(item.entry, query)).map(recallItem)];
+  const seen = new Set<string>();
+  const entries = items.filter(item => !seen.has(item.id) && !!seen.add(item.id));
+  entries.sort((a, b) => KNOWLEDGE_PRIORITY.indexOf(a.level) - KNOWLEDGE_PRIORITY.indexOf(b.level)
+    || b.created.localeCompare(a.created) || a.id.localeCompare(b.id));
+  const withheld = team.withheld + hints.withheld;
+  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(withheld ? { withheld } : {}), ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "legacy", reason: ranked.reason } };
+}

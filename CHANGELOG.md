@@ -2,7 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.9.0-beta.1] - 2026-11-18
+
+Pre-release on npm's `next` tag; 0.8.5 stays on `latest`.
+
+### Added
+
+- Machine-wide Claude Code and Codex hooks, native binaries, a Node fallback and recorded uninstall restoration (#336-#339, #357, #366).
+- Personal notes, source-backed checks, local recall and edits, tombstones and branch checks (#349-#352, #355).
+- A free first screen with recipes, rule-file review, agent-memory hints, a file index and git-history findings (#346, #370).
+- Native rule files, the session-start brief and reviewed git sharing (#363-#365, #369).
+- Local records, resumable jobs, usage accounting and automatic model budgets (#340, #360, #362).
+- Previewed upgrades from 0.8 and interrupted-upgrade recovery (#372, #390).
+- Session capture, the knowledge judge, review, aliases, commit-linked decisions and hook delivery (#368, #371, #374, #375, #383, #391, #392, #395, #396).
+- Anonymous usage counts with inspection and an off switch (#342).
+- Beta.1 CLI polish: inline findings, next steps, undo instructions, status, doctor and the 0.9 help view (#397).
+- Setup's test and build commands become checked personal recipe entries, delivered through each agent's rule files (#397).
+- `mex note` checks a note when it is saved, without a model, when the note names a file and symbol with its value or a package script (#397).
+
+### Changed
+
+- Bare `mex` and `mex setup` turn MEX on here and show free local findings, without opening the old wizard or Hub.
+- `mex doctor` shows local status and fixes. `--legacy` keeps the 0.8 doctor.
+- The Hub in a 0.9 checkout prints a rebuild notice; the rebuilt Hub arrives in 0.9.0. Existing 0.8 pages remain readable before upgrading.
+- Legacy graph and team surfaces are hidden from top-level help. Old setup flags remain runnable but hidden.
+- Learning from typed statements is opt-in (`mex config set learning.statements on`); explicit notes still get their checks (#397).
+- `mex off` also removes MEX's own rule files in that repo; `mex on` writes them back (#397).
+- `mex upgrade` previews a summary and the changed files; `--diff` shows every line (#397).
+
+### Removed
+
+- The old Inbox, Workstream, Spec, terminal dashboard, watch, heartbeat, logging, timeline, pattern, init, export and skill-sync command entry points (#335). Removed commands print a replacement or state that none exists in 0.9.
+
+### Fixed
+
+- Hooks and the background launcher install through npm's `bin/mex` symlink on Linux and macOS.
+- A note the code has made false no longer reaches the agent through MEX's rule files; a changed personal fact is pointed at the current code.
+- Rule-file "out of date" findings no longer count workspace scripts, `pnpm --filter` commands, scoped paths, installed dependencies, outputs or ignored folders.
+- The command gate keeps a person's sentence around a real command.
+- The memory filter keeps a written note's words; the judge sends a proposed rewrite of a person's note to `mex review`.
+- A prompt that names a file no longer hides that file's pitfall at first read.
+- In a fresh repo, MEX's rule files are written before the first session.
+- Root-only groundings and an unreadable document no longer block `mex upgrade`.
+- `mex check` retries once when the record is busy; `mex what` no longer lists internal markers.
+- `mex install` finds Claude Code and Codex on PATH directly; a slow `where.exe` on Windows could skip an agent's hooks.
+- Setup keeps every package's test and build commands (up to 120), not the first 20.
+- When the repo has its own root `AGENTS.md` or `CLAUDE.md`, setup's root commands reach that agent in the start brief.
+- Imported rule lines keep identifiers such as `NODE_ENV`, and a code block's language tag is never taken for the rule.
+- In a repo with a `CLAUDE.md`, Claude Code gets folder-scoped notes and commands. MEX had assumed Claude reads a folder's `AGENTS.md`, which Claude Code skips while any `CLAUDE.md` is at the root or on the way.
+- A `mex handoff` can be committed: MEX's ignore block no longer hides `.mex/handoffs/`.
+- Run through `npx`, MEX no longer installs hooks into npm's temporary cache; it asks for `npm i -g mex-agent@next` instead.
+- New commands, rule-file sections and agent memory reach the agents without running `mex` again: a session start asks for a background re-read (at most every 30 minutes per repo, no model).
+- Agents save what you ask them to keep: each session starts with one line telling the agent to save a lasting fact, rule or decision you state, or anything you ask it to remember, with `mex note` in your words. Such notes read `[Claude Code noted, …]` or `[Codex noted, …]`, never `[you said]`, until you `mex edit` them. Typing `mex note:` yourself still saves your own words.
+- A rule stated in passing ("we always use pnpm here") is quoted back to the agent for that turn, so it can keep it with `mex note`. Agents also keep non-obvious things they verify, such as how to run something.
+- The command check no longer removes a tool named in a sentence ("use pnpm in this repo", "node 22 for builds"); it still removes commands the repo doesn't define.
 
 ## [0.8.5] - 2026-10-29
 

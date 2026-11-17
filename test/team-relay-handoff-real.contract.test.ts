@@ -1783,8 +1783,8 @@ async function createRelayGitClones(): Promise<{
   runGit(fixture, ["init", "--bare", origin]);
   runGit(seed, ["remote", "add", "origin", origin]);
   runGit(seed, ["push", "--set-upstream", "origin", "main"]);
-  runGit(fixture, ["clone", "--branch", "main", origin, left]);
-  runGit(fixture, ["clone", "--branch", "main", origin, right]);
+  runGit(fixture, ["clone", "--config", "core.autocrlf=false", "--branch", "main", origin, left]);
+  runGit(fixture, ["clone", "--config", "core.autocrlf=false", "--branch", "main", origin, right]);
   configureGitIdentity(left);
   configureGitIdentity(right);
   return {

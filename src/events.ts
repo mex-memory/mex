@@ -7,7 +7,7 @@ import {
   readSync,
   statSync,
 } from "node:fs";
-import { dirname, resolve, relative, isAbsolute } from "node:path";
+import { dirname, resolve, relative } from "node:path";
 import chalk from "chalk";
 import { toPosix } from "./paths.js";
 import type { MexConfig } from "./types.js";
@@ -56,29 +56,10 @@ export interface LogOpts {
   status?: string;
 }
 
-export interface TimelineOpts {
-  json?: boolean;
-  /** `"md"` renders a Markdown table instead of the terminal output (#55). */
-  format?: string;
-  since?: string;
-  kind?: string;
-  limit?: number;
-  /** Case-insensitive literal text in an event's message. */
-  query?: string;
-  /** Exact recorded paths; any path may match, combined with other filters. */
-  files?: string[];
-}
-
 const VALID_KINDS = new Set<EventKind>(EVENT_KINDS);
 const EVENT_FILE = "events/decisions.jsonl";
 const MAX_EVENT_LOG_READ_BYTES = 8 * 1024 * 1024;
 const MAX_EVENT_LOG_ENTRIES = 10_000;
-const DEFAULT_TIMELINE_LIMIT = 20;
-const MAX_TIMELINE_LIMIT = 200;
-const MAX_TIMELINE_OUTPUT_BYTES = 64 * 1024;
-const MAX_TIMELINE_QUERY_BYTES = 256;
-const MAX_TIMELINE_FILES = 16;
-const MAX_TIMELINE_FILE_BYTES = 1024;
 
 export function eventLogPath(config: MexConfig): string {
   return resolve(config.scaffoldRoot, EVENT_FILE);
@@ -106,121 +87,6 @@ export function appendEvent(config: MexConfig, message: string, opts: LogOpts = 
   mkdirSync(dirname(file), { recursive: true });
   appendFileSync(file, JSON.stringify(entry) + "\n");
   return entry;
-}
-
-export async function runTimeline(config: MexConfig, opts: TimelineOpts = {}): Promise<void> {
-  const since = parseSince(opts.since);
-  const kind = opts.kind === undefined ? null : normalizeKind(opts.kind);
-  const limit = opts.limit ?? DEFAULT_TIMELINE_LIMIT;
-  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_TIMELINE_LIMIT) {
-    throw new Error(`Timeline limit must be an integer from 1 to ${MAX_TIMELINE_LIMIT}.`);
-  }
-  const query = normalizeTimelineQuery(opts.query);
-  const files = normalizeTimelineFiles(config, opts.files);
-  const { entries, sourceTruncated } = readEventLog(config);
-  const filtered = entries.filter((e) => {
-    if (kind && e.kind !== kind) return false;
-    if (since && !(Date.parse(e.timestamp) >= since.getTime())) return false;
-    if (query !== null && !e.message.toLowerCase().includes(query)) return false;
-    if (files.size > 0 && !e.files.some((file) => files.has(normalizeRecordedFile(config, file)))) return false;
-    return true;
-  });
-  // Stable ties prefer the later appended record, without locale-dependent ordering.
-  filtered.reverse().sort((a, b) => a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0);
-  const selected: EventEntry[] = [];
-  let outputBytes = 0;
-  for (const entry of filtered) {
-    if (selected.length === limit) break;
-    // Reserve envelope/notice space. Keep complete entries; never shorten a claim.
-    const serialized = JSON.stringify(entry, null, 2);
-    const entryBytes = Buffer.byteLength(serialized, "utf8") + 4 * serialized.split("\n").length + 4;
-    if (outputBytes + entryBytes > MAX_TIMELINE_OUTPUT_BYTES - 512) continue;
-    selected.push(entry);
-    outputBytes += entryBytes;
-  }
-  const truncated = selected.length < filtered.length;
-
-  if (opts.json) {
-    console.log(JSON.stringify({ events: selected, truncated, sourceTruncated }, null, 2));
-    return;
-  }
-
-  if (opts.format === "md") {
-    printTimelineMarkdown(selected, truncated, sourceTruncated);
-    return;
-  }
-
-  if (selected.length === 0 && !truncated) {
-    console.log(chalk.dim("No events found."));
-  }
-
-  for (const e of selected) {
-    const files = e.files.length ? chalk.dim(` (${e.files.join(", ")})`) : "";
-    console.log(`${chalk.bold(e.timestamp.slice(0, 10))} ${chalk.cyan(e.kind)} ${e.message}${files}`);
-  }
-  if (truncated) console.log(chalk.dim("Some matching events were omitted by the entry or output limit; narrow the filters."));
-  if (sourceTruncated) console.log(chalk.dim("Searched only the latest 8 MiB / 10,000 non-empty log lines; older history was not scanned."));
-}
-
-/**
- * Markdown rendering for `timeline --format md` — valid inside reports and
- * standup notes. Pipes and line breaks are escaped so a message cannot break
- * the table; omission notes mirror the terminal output in italics. The default
- * terminal rendering is untouched (#55).
- */
-function printTimelineMarkdown(
-  selected: EventEntry[],
-  truncated: boolean,
-  sourceTruncated: boolean,
-): void {
-  const header = ["| Date | Type | Event | Files |", "|---|---|---|---|"];
-  const omitted = "_Some matching events were omitted by the entry or output limit; narrow the filters._";
-  const incomplete = "_Searched only the latest 8 MiB / 10,000 non-empty log lines; older history was not scanned._";
-  // The shared selection keeps its existing budget for terminal/JSON compatibility.
-  // Markdown can expand further: reserve exact header, separator and notice bytes,
-  // including every console.log newline, before accepting any complete row.
-  let outputBytes = Buffer.byteLength([...header, "", omitted, ...(sourceTruncated ? [incomplete] : [])].join("\n") + "\n", "utf8");
-  const rows: string[] = [];
-  for (const e of selected) {
-    const message = markdownTextCell(e.message);
-    const files = e.files.length ? e.files.map(markdownCodeCell).join(", ") : "—";
-    const row = `| ${markdownTextCell(e.timestamp.slice(0, 10))} | ${e.kind} | ${message} | ${files} |`;
-    const rowBytes = Buffer.byteLength(row + "\n", "utf8");
-    if (outputBytes + rowBytes > MAX_TIMELINE_OUTPUT_BYTES) {
-      truncated = true;
-      continue;
-    }
-    rows.push(row);
-    outputBytes += rowBytes;
-  }
-  if (rows.length) {
-    for (const line of [...header, ...rows]) console.log(line);
-    // A blank line prevents GFM from interpreting notices as another table row.
-    if (truncated || sourceTruncated) console.log("");
-  } else if (!truncated) {
-    console.log("_No events found._");
-  }
-  if (truncated) console.log(omitted);
-  if (sourceTruncated) console.log(incomplete);
-}
-
-function markdownTextCell(value: string): string {
-  // Escape backslashes first, then Markdown punctuation (including table pipes).
-  return value.replace(/\r\n|[\r\n]/g, " ").replace(/[\\`*_{}\[\]<>&|~]/g, "\\$&");
-}
-
-function markdownCodeCell(value: string): string {
-  const normalized = value.replace(/\r\n|[\r\n]/g, " ");
-  // Keep pipes outside code spans: GFM's table tokenizer otherwise treats an
-  // original backslash plus an escaped pipe as an unescaped cell separator.
-  return normalized.split("|").map((part) => {
-    if (part === "") return "";
-    const longestRun = (part.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
-    const delimiter = "`".repeat(longestRun + 1);
-    const padding = part.startsWith("`") || part.endsWith("`") ||
-      (part.startsWith(" ") && part.endsWith(" ") && part.trim() !== "") ? " " : "";
-    return `${delimiter}${padding}${part}${padding}${delimiter}`;
-  }).join("\\|");
 }
 
 export function readEvents(config: MexConfig): EventEntry[] {
@@ -292,35 +158,6 @@ function readBoundedEventLog(file: string): { text: string; truncated: boolean }
   }
 }
 
-function normalizeTimelineQuery(raw: string | undefined): string | null {
-  if (raw === undefined) return null;
-  if (Buffer.byteLength(raw, "utf8") > MAX_TIMELINE_QUERY_BYTES || raw.trim() === "") {
-    throw new Error(`Timeline query must be non-empty and at most ${MAX_TIMELINE_QUERY_BYTES} UTF-8 bytes.`);
-  }
-  return raw.trim().toLowerCase();
-}
-
-function normalizeTimelineFiles(config: MexConfig, raw: string[] | undefined): Set<string> {
-  if (raw === undefined) return new Set();
-  if (raw.length > MAX_TIMELINE_FILES) {
-    throw new Error(`Timeline accepts at most ${MAX_TIMELINE_FILES} file filters.`);
-  }
-  return new Set(raw.map((file) => {
-    if (file === "" || file.includes("\0") || Buffer.byteLength(file, "utf8") > MAX_TIMELINE_FILE_BYTES) {
-      throw new Error(`Timeline file filters must be non-empty and at most ${MAX_TIMELINE_FILE_BYTES} UTF-8 bytes.`);
-    }
-    const normalized = normalizeRecordedFile(config, file);
-    if (normalized === "" || normalized === ".." || normalized.startsWith("../") || isAbsolute(normalized)) {
-      throw new Error("Timeline file filters must name a file inside the repository.");
-    }
-    return normalized;
-  }));
-}
-
-function normalizeRecordedFile(config: MexConfig, file: string): string {
-  return toPosix(relative(config.projectRoot, resolve(config.projectRoot, file)));
-}
-
 function normalizeKind(raw: string | undefined): EventKind {
   if (raw !== undefined && raw.length > 16) throw new Error("Unknown event type. Use decision, note, risk, or todo.");
   const kind = (raw ?? "note").toLowerCase();
@@ -328,21 +165,4 @@ function normalizeKind(raw: string | undefined): EventKind {
     throw new Error(`Unknown event type "${raw}". Use decision, note, risk, or todo.`);
   }
   return kind as EventKind;
-}
-
-function parseSince(raw: string | undefined): Date | null {
-  if (raw === undefined) return null;
-  if (raw.length > 32) throw new Error("Invalid --since value. Use YYYY-MM-DD or Nd, e.g. 30d.");
-  const days = raw.match(/^(\d+)d$/);
-  if (days) {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - Number(days[1]));
-    if (Number.isNaN(d.getTime())) throw new Error("Invalid --since day count.");
-    return d;
-  }
-  const parsed = new Date(`${raw}T00:00:00.000Z`);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== raw) {
-    throw new Error(`Invalid --since value "${raw}". Use YYYY-MM-DD or Nd, e.g. 30d.`);
-  }
-  return parsed;
 }

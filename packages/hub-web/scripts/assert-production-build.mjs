@@ -19,9 +19,6 @@ const lazyWorkbenchSources = [
   "src/pages/KnowledgePage.tsx",
   "src/pages/SymbolPage.tsx",
   "src/pages/CapabilityPage.tsx",
-  "src/pages/WorkstreamsPage.tsx",
-  "src/pages/SpecsPage.tsx",
-  "src/pages/InboxPage.tsx",
   "src/pages/RelayPage.tsx",
   "src/pages/MembersPage.tsx",
   "src/pages/ActivityPage.tsx",
@@ -56,20 +53,8 @@ if (!homeEntry || workbenchEntries.some((entry) => entry !== homeEntry && entry.
   throw new Error("The production Hub Home workbench is not isolated in its own lazy chunk.");
 }
 const homeChunks = staticImportClosure(homeEntry.key);
-const teamAccessDialogKey = Object.keys(manifest).find((candidate) => (
-  candidate === "src/pages/TeamAccessDialog.tsx"
-  || manifest[candidate].src === "src/pages/TeamAccessDialog.tsx"
-));
-// The card is shared with Setup and Relays, so its dialog import may live in a
-// shared chunk that Home loads statically; it must still be loaded only on demand.
-if (
-  !teamAccessDialogKey
-  || !manifest[teamAccessDialogKey].isDynamicEntry
-  || ![...homeChunks].some((key) => (manifest[key]?.dynamicImports ?? []).includes(teamAccessDialogKey))
-  || homeChunks.has(teamAccessDialogKey)
-  || initialChunks.has(teamAccessDialogKey)
-) {
-  throw new Error("The team-access dialog is not isolated behind its explicit open-on-demand boundary.");
+if (/src\/pages\/(?:InboxPage|WorkstreamsPage|SpecsPage|OnboardingTour|TeamAccessCard|TeamAccessDialog)\.tsx/u.test(manifestText)) {
+  throw new Error("The production Hub manifest contains a removed workbench.");
 }
 for (const entry of workbenchEntries) {
   if (entry !== homeEntry && homeChunks.has(entry.key)) {

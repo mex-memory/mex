@@ -1,5 +1,8 @@
 ﻿import { AI_TOOLS, type AiTool } from "./types.js";
 
+import { buildModelCommand } from "./model-runner/command.js";
+import type { ModelSelection } from "./model-runner/models.js";
+
 export interface AgentCommand {
   readonly command: string;
   readonly args: string[];
@@ -117,14 +120,16 @@ export function opencodeSessionConfig(existing: string | undefined = process.env
 /**
  * Headless Claude has no one to answer approval prompts, so every shell command
  * the population prompt relies on must be pre-approved or it is denied. The
- * read-only graph helpers and the event log are allowed, plus the Wiki commands
+ * read-only graph helpers are allowed, plus the Wiki commands
  * the prompt tells the agent to run itself: `mex wiki apply` (a batch of
  * create-entry operations, which also covers `mex wiki apply --help`) and the
  * `mex wiki validate` self-check, with the `--help` forms for discovery.
  * Without them the agent can stage operation files but nothing applies them.
  * `mex setup next` is allowed so the one-paste setup loop works in a headless
  * session too; bare `mex setup` and its other forms are not.
- * Maintenance and Team commands still require a person. The host matches these
+ * Maintenance, Team commands and personal-note writes still require a person.
+ * In 0.9, `mex log` aliases to `mex note`, so neither is pre-approved here.
+ * The host matches these
  * as prefixes of a single command, so the prompt tells the agent to run one
  * `mex` command per shell call.
  * Claude already auto-approves read-only Git history commands such as `git log`.
@@ -141,7 +146,6 @@ export const HEADLESS_CLAUDE_MEX_COMMANDS = [
   "mex --help",
   "mex impact",
   "mex logging",
-  "mex log",
   "mex timeline",
   "mex capabilities",
   // The one-paste setup loop: applies the last step and prints the next task.
@@ -166,7 +170,7 @@ export function buildAgentCommand(
   tool: AiTool,
   instruction: string,
   mode: "interactive" | "headless",
-  options: { allowNonGit?: boolean; opencodeConfig?: string | null } = {},
+  options: ModelSelection & { allowNonGit?: boolean; opencodeConfig?: string | null } = {},
 ): AgentCommand | null {
   // Background CLIs are listed separately: AI_TOOLS.cli is the interactive command.
   if (mode === "headless") return isBackgroundAgentTool(tool) ? buildBackgroundCommand(tool, instruction, options) : null;
@@ -178,18 +182,11 @@ export function buildAgentCommand(
 function buildBackgroundCommand(
   tool: BackgroundAgentTool,
   instruction: string,
-  options: { allowNonGit?: boolean; opencodeConfig?: string | null },
+  options: ModelSelection & { allowNonGit?: boolean; opencodeConfig?: string | null },
 ): AgentCommand | null {
-  if (tool === "claude") {
-    return {
-      command: BACKGROUND_AGENT_CLIS.claude,
-      args: [
-        "-p", instruction, "--permission-mode", "acceptEdits",
-        "--allowedTools", HEADLESS_CLAUDE_ALLOWED_TOOLS.join(","),
-        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-      ],
-    };
-  }
+  if (tool === "claude" || tool === "codex") return buildModelCommand(tool, instruction, {
+    ...options, access: "workspace", allowedTools: HEADLESS_CLAUDE_ALLOWED_TOOLS,
+  });
   if (tool === "cursor") {
     // Print mode, documented NDJSON events, and workspace trust without a
     // prompt (headless only). Permissions come from the session's project file.
@@ -215,10 +212,5 @@ function buildBackgroundCommand(
       env: { OPENCODE_CONFIG_CONTENT: config },
     };
   }
-  // `exec` is non-interactive and defaults to never asking for approval.
-  // Keep workspace confinement without the removed `--full-auto` shorthand.
-  return {
-    command: BACKGROUND_AGENT_CLIS.codex,
-    args: ["exec", "--json", "--sandbox", "workspace-write", ...(options.allowNonGit ? ["--skip-git-repo-check"] : []), instruction],
-  };
+  return null;
 }

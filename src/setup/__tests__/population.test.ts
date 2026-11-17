@@ -53,7 +53,7 @@ describe("setup population launcher", () => {
       "codex",
       expect.stringMatching(/^Read the full setup population prompt from `\.mex\/local\/setup-population-[^/]+\/prompt\.md`/u),
       project,
-      { timeoutMs: null },
+      { timeoutMs: null, usagePurpose: "setup.interactive" },
     );
     expect(readdirSync(join(project, ".mex", "local"))).toEqual([]);
   });

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  scaffold: vi.fn(() => true),
   events: vi.fn(),
   createCapture: vi.fn(),
   startTelemetry: vi.fn(),
@@ -20,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   openBrowser: vi.fn(),
   order: [] as string[],
 }));
+
+vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>(), existsSync: mocks.scaffold }));
 
 vi.mock("../../telemetry/index.js", () => ({
   createProjectTelemetryCapture: mocks.createCapture,
@@ -54,12 +57,12 @@ vi.mock("../../wiki/application-adapter.js", () => ({ createRepositoryWikiPort: 
 vi.mock("../../team/workflow/repository-team-workflow-port.js", () => ({
   createRepositoryTeamWorkflowPort: mocks.createTeam,
 }));
-vi.mock("../../team/specs/index.js", () => ({ createSpecReadService: () => ({}) }));
 
 import { launchHub, runSetupHubCommand } from "../command.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.scaffold.mockReturnValue(true);
   mocks.order.length = 0;
   mocks.committedIdentity.mockResolvedValue(false);
   mocks.wikiStatus.mockResolvedValue({ state: "missing" });
@@ -137,6 +140,32 @@ describe("Hub setup process", () => {
     expect(removeAbortListener).toHaveBeenCalledWith("abort", expect.any(Function));
   });
 
+  it("shuts down cleanly when termination arrives in onListening", async () => {
+    const priorListeners = new Set(process.listeners("SIGTERM"));
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    await runSetupHubCommand({
+      projectRoot: "/private/project", openBrowser: false,
+      onListening: () => {
+        const stop = process.listeners("SIGTERM").find(listener => !priorListeners.has(listener));
+        if (!stop) throw new Error("Readiness was announced without a shutdown handler.");
+        stop("SIGTERM");
+      },
+    });
+    expect(mocks.order).toEqual(["http", "setup", "telemetry"]);
+    expect(process.listeners("SIGTERM").filter(listener => !priorListeners.has(listener))).toEqual([]);
+  });
+
+  it("releases shutdown listeners when onListening throws", async () => {
+    const priorListeners = process.listeners("SIGTERM");
+    mocks.startServer.mockResolvedValue({ origin: "http://127.0.0.1:48123", close: mocks.closeServer, replaceApp: vi.fn() });
+    await expect(runSetupHubCommand({
+      projectRoot: "/private/project", openBrowser: false,
+      onListening: () => { throw new Error("callback failed"); },
+    })).rejects.toThrow("callback failed");
+    expect(process.listeners("SIGTERM")).toEqual(priorListeners);
+    expect(mocks.order).toEqual(["http", "setup", "telemetry"]);
+  });
+
   it("handles cancellation from onListening before browser launch or shutdown wait", async () => {
     const controller = new AbortController();
     const priorInterrupt = process.listeners("SIGINT");
@@ -199,6 +228,7 @@ describe("Hub setup process", () => {
   });
 
   it("opens the setup wizard from launchHub when setup is incomplete", async () => {
+    const notice = vi.spyOn(console, "error").mockImplementation(() => {});
     let ready!: (server: { origin: string; close: typeof mocks.closeServer; replaceApp: () => void }) => void;
     mocks.startServer.mockReturnValue(new Promise((resolve) => { ready = resolve; }));
     const priorListeners = new Set(process.listeners("SIGTERM"));
@@ -215,6 +245,7 @@ describe("Hub setup process", () => {
     if (!stop) throw new Error("Hub did not install its shutdown handler.");
     stop("SIGTERM");
     await running;
+    expect(notice).toHaveBeenCalledWith("This is the 0.8 Hub. mex upgrade brings this repo into 0.9.");
   });
 
   it.each([
@@ -374,3 +405,18 @@ function stopHub(priorListeners: Set<(...args: any[]) => void>): void {
   if (!stop) throw new Error("Hub did not install its shutdown handler.");
   stop("SIGTERM");
 }
+
+
+it("leaves a 0.9 checkout without starting any Hub resources", async () => {
+  mocks.scaffold.mockReturnValue(false);
+  const out = vi.spyOn(console, "log").mockImplementation(() => {});
+  await launchHub({ openBrowser: true });
+  expect(out.mock.calls.flat()).toEqual([
+    "The MEX Hub is being rebuilt for 0.9 and arrives in 0.9.0.",
+    "For now: mex status (what MEX is doing here) · mex what (this session) · mex recall <words> (find a note) · mex check (what still holds)",
+  ]);
+  expect(mocks.inspect).not.toHaveBeenCalled();
+  expect(mocks.startServer).not.toHaveBeenCalled();
+  expect(mocks.openBrowser).not.toHaveBeenCalled();
+  expect(mocks.startTelemetry).not.toHaveBeenCalled();
+});

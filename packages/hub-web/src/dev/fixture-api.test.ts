@@ -44,7 +44,7 @@ import { createFixtureApi } from "./fixture-api";
 describe("development-only populated fixture", () => {
   it("stays inside every shared wire contract", async () => {
     const api = createFixtureApi();
-    const [session, capabilities, home, overview, activity, search, code, health, jobs, entities, detail, relations, backlinks, codeKnowledge, workstreams, specs, drafts, proposals] = await Promise.all([
+    const [session, capabilities, home, overview, activity, search, code, health, jobs, entities, detail, relations, backlinks, codeKnowledge] = await Promise.all([
       api.getSession(),
       api.getCapabilities(),
       api.getHome(),
@@ -59,10 +59,6 @@ describe("development-only populated fixture", () => {
       api.getWikiRelations("mx_01K36WVM6H7JK8M9NPQRSTVVWX", { direction: "both", limit: 25 }),
       api.getWikiBacklinks("mx_01K36WVM6H7JK8M9NPQRSTVVWX", { limit: 25 }),
       api.getCodeKnowledge("sym.createHubServer", { limit: 25 }),
-      api.getWorkstreams({ limit: 25 }),
-      api.listSpecs({ limit: 25 }),
-      api.getInboxDrafts({ limit: 25 }),
-      api.getInboxProposals({ states: ["pending", "stale"], limit: 25 }),
     ]);
 
     expect(SessionResponseSchema.safeParse(session).success).toBe(true);
@@ -147,21 +143,6 @@ describe("development-only populated fixture", () => {
     expect(WikiRelationsResponseSchema.safeParse(relations).success).toBe(true);
     expect(WikiBacklinksResponseSchema.safeParse(backlinks).success).toBe(true);
     expect(CodeKnowledgeResponseSchema.safeParse(codeKnowledge).success).toBe(true);
-    expect(TeamWorkstreamListResponseSchema.safeParse(workstreams).success).toBe(true);
-    expect(TeamWorkstreamSchema.safeParse(workstreams.items[0]).success).toBe(true);
-    expect(SpecListResponseSchema.safeParse(specs).success).toBe(true);
-    expect(specs.availability).toBe("ready");
-    if (specs.availability !== "ready") throw new Error("Fixture Spec list must be ready.");
-    const specDetail = await api.getSpec(specs.page.items[0]!.id);
-    expect(SpecDetailResponseSchema.safeParse(specDetail).success).toBe(true);
-    expect(specDetail.availability).toBe("ready");
-    expect(InboxDraftListResponseSchema.safeParse(drafts).success).toBe(true);
-    expect(InboxProposalListResponseSchema.safeParse(proposals).success).toBe(true);
-    expect(Object.hasOwn(drafts.items[0]!, "input")).toBe(false);
-    expect(Object.hasOwn(proposals.items[0]!, "change")).toBe(false);
-    expect(InboxDraftDetailSchema.safeParse(await api.getInboxDraft(drafts.items[0]!.id)).success).toBe(true);
-    expect(InboxProposalDetailSchema.safeParse(await api.getInboxProposal(proposals.items[0]!.ref.id)).success).toBe(true);
-
     const [relayDrafts, relays] = await Promise.all([
       api.getRelayDrafts({ limit: 25 }),
       api.getRelays({ perspective: "mine", states: ["published", "acknowledged"], limit: 25 }),
@@ -588,27 +569,17 @@ describe("development-only populated fixture", () => {
 
     const actor = await api.getCurrentActor();
     const homeResult = await api.getHome();
-    const [inboxDrafts, relayDrafts] = await Promise.all([
-      api.getInboxDrafts({ limit: 25 }),
+    const [relayDrafts] = await Promise.all([
       api.getRelayDrafts({ limit: 25 }),
     ]);
-    const inboxDraft = inboxDrafts.items[0]!;
     const relayDraft = relayDrafts.items[0]!;
-    const [teamPreview, inboxPreview, relayPreview] = await Promise.all([
+    const [teamPreview, relayPreview] = await Promise.all([
       api.previewTeamOperation({
         operationId: "fixture_member_clear_alias_team_receipt",
         action: { kind: "member.clear" },
         expectedRevisions: [{
           target: { kind: "local", namespace: "member-selection", id: "current" },
           revision: null,
-        }],
-      }),
-      api.previewInboxOperation({
-        operationId: "fixture_member_clear_alias_inbox_receipt",
-        action: { kind: "inbox.draft.delete", draftId: inboxDraft.id },
-        expectedRevisions: [{
-          target: { kind: "local", namespace: "inbox-draft", id: inboxDraft.id },
-          revision: inboxDraft.revision,
         }],
       }),
       api.previewRelayOperation({
@@ -636,9 +607,8 @@ describe("development-only populated fixture", () => {
     })).resolves.toMatchObject({ items: expect.any(Array) });
     expect([
       teamPreview.receipt.authority.actor,
-      inboxPreview.receipt.authority.actor,
       relayPreview.receipt.authority.actor,
-    ]).toEqual([actor.actor, actor.actor, actor.actor]);
+    ]).toEqual([actor.actor, actor.actor]);
   });
 
   it("paginates Members by the actual bounded offset for every page size", async () => {
@@ -768,9 +738,6 @@ describe("development-only populated fixture", () => {
     )))
       .toMatchObject({ summary: "Finish the keyboard and screen-reader pass for the Hub review surfaces." });
 
-    expect(RelayDraftListResponseSchema.safeParse(drafts).success).toBe(true);
-    expect(drafts.items).toHaveLength(2);
-    expect(drafts.items.every((draft) => !Object.hasOwn(draft, "input"))).toBe(true);
     const richSummary = drafts.items.find((draft) => (
       draft.summary === "Carry the release evidence through the final cross-platform gate."
     ));
@@ -872,349 +839,6 @@ describe("development-only populated fixture", () => {
     await expect(api.getRelayDraft(draft.id)).rejects.toThrow("Fixture Relay draft not found.");
   });
 
-  it("models the complete Inbox review desk in stable server order", async () => {
-    const api = createFixtureApi();
-    const firstPage = await api.getInboxProposals({ states: ["pending", "stale"], limit: 2 });
-    const secondPage = await api.getInboxProposals({
-      states: ["pending", "stale"],
-      limit: 2,
-      cursor: firstPage.nextCursor ?? undefined,
-    });
-    const proposals = [...firstPage.items, ...secondPage.items];
-
-    expect(proposals.map((proposal) => proposal.ref.id)).toEqual([
-      "proposal_01000000000000000000001720",
-      "proposal_01000000000000000000001721",
-      "proposal_01000000000000000000001722",
-    ]);
-    expect(proposals.map((proposal) => proposal.state)).toEqual(["pending", "pending", "stale"]);
-    expect(proposals.map((proposal) => proposal.author)).toEqual([
-      {
-        kind: "member",
-        memberId: "member_01K36R3X4A5BC6DE7FGHJKMNPQ",
-        displayName: "Grace Hopper",
-      },
-      {
-        kind: "member",
-        memberId: "member_01K36WVM6H7JK8M9NPQRSTVVWX",
-        displayName: "Ada Lovelace",
-      },
-      {
-        kind: "member",
-        memberId: "member_01K36R3X4A5BC6DE7FGHJKMNPQ",
-        displayName: "Grace Hopper",
-      },
-    ]);
-    expect(firstPage.nextCursor).toBe("fixture_inbox_proposals_2");
-    expect(firstPage.truncated).toBe(true);
-    expect(secondPage.nextCursor).toBeNull();
-    expect(secondPage.truncated).toBe(false);
-
-    const details = await Promise.all(proposals.map((proposal) => api.getInboxProposal(proposal.ref.id)));
-    expect(details.every((proposal) => InboxProposalDetailSchema.safeParse(proposal).success)).toBe(true);
-
-    const teammateUpdate = details[0]!;
-    if (teammateUpdate.change.kind !== "spec.update") throw new Error("Expected the teammate fixture to update a Spec.");
-    const target = await api.getWikiEntity(teammateUpdate.change.target.id);
-    expect(target.entity).toMatchObject({
-      id: teammateUpdate.change.target.id,
-      kind: teammateUpdate.change.target.kind,
-      title: teammateUpdate.change.target.title,
-      version: {
-        semanticRevision: teammateUpdate.targetRevisions[0]!.semanticRevision,
-        contentHash: teammateUpdate.targetRevisions[0]!.revision,
-      },
-    });
-    expect(target.body.content).toContain("The release gate records bounded evidence");
-
-    const knowledgeFirstPage = await api.listWikiEntities({ limit: 25 });
-    const knowledgeSecondPage = await api.listWikiEntities({
-      limit: 25,
-      cursor: knowledgeFirstPage.nextCursor ?? undefined,
-    });
-    const browsableKnowledge = [...knowledgeFirstPage.items, ...knowledgeSecondPage.items];
-    expect(browsableKnowledge).toHaveLength(3);
-    expect(browsableKnowledge.map((entity) => entity.id)).not.toContain(teammateUpdate.change.target.id);
-    expect(knowledgeSecondPage.nextCursor).toBeNull();
-
-    await expect(api.getWikiEntity("mx_07000000000000000000000000"))
-      .rejects.toThrow("Fixture Wiki entity not found.");
-  });
-
-  it("provides one rich checkout-local draft without leaking detail through its summary", async () => {
-    const api = createFixtureApi();
-    const page = await api.getInboxDrafts({ limit: 25 });
-    expect(page.items).toHaveLength(1);
-    expect(Object.hasOwn(page.items[0]!, "input")).toBe(false);
-
-    const draft = await api.getInboxDraft(page.items[0]!.id);
-    expect(InboxDraftDetailSchema.safeParse(draft).success).toBe(true);
-    expect(draft.input.change).toMatchObject({
-      kind: "spec.create",
-      entityKind: "requirement",
-      topics: ["mx_01000000000000000000000001"],
-      relation: {
-        type: "derived_from",
-        target: {
-          id: "mx_01000000000000000000000001",
-          kind: "spec",
-          title: "Human-team memory release",
-        },
-      },
-    });
-    expect(draft.input.evidence.map((evidence) => evidence.kind)).toEqual([
-      "entity",
-      "code",
-      "file",
-      "commit",
-      "external",
-      "manual",
-    ]);
-    expect(draft.input.targetRevisions).toEqual([{
-      target: { kind: "entity", id: "mx_01000000000000000000000001" },
-      revision: "3".repeat(64),
-      semanticRevision: 4,
-    }]);
-  });
-
-  it("mirrors canonical purpose IDs, exact approval files, and Activity results", async () => {
-    const api = createFixtureApi();
-    const proposal = await api.getInboxProposal("proposal_01000000000000000000001720");
-    const preview = await api.previewInboxOperation({
-      operationId: "fixture_inbox_approve_contract",
-      action: { kind: "inbox.approve", proposalId: proposal.ref.id },
-      expectedRevisions: [{
-        target: { kind: "artifact", path: proposal.sourcePath },
-        revision: proposal.revision,
-      }],
-    });
-    expect(InboxOperationPreviewResponseSchema.safeParse(preview).success).toBe(true);
-    expect(preview.receipt.purposeIds.map((item) => item.purpose)).toEqual(["activity"]);
-    expect(preview.preview.changes.map((change) => change.path)).toEqual([
-      ".mex/specs/mx_01000000000000000000000001.md",
-      ".mex/events/operations.jsonl",
-      proposal.sourcePath,
-      expect.stringMatching(/^\.mex\/events\/activity\/2026-08\/event_/u),
-    ]);
-    const applied = await api.applyInboxOperation(preview);
-    expect(InboxOperationApplyResponseSchema.safeParse(applied).success).toBe(true);
-    expect(applied.events).toHaveLength(1);
-    expect(applied.events[0]).toMatchObject({
-      schemaVersion: 2,
-      id: preview.receipt.purposeIds[0]!.id,
-      action: "inbox.approved",
-      origin: { kind: "workflow", operation: "inbox.approve" },
-      label: proposal.title,
-      actor: preview.receipt.authority.actor,
-      repoState: preview.receipt.authority.repoState,
-    });
-    expect(applied.events[0]!.subjects).toEqual([
-      { kind: "entity", entity: { id: proposal.ref.id, kind: "proposal" } },
-      { kind: "entity", entity: proposal.change.kind === "spec.update" ? proposal.change.target : undefined },
-    ]);
-  });
-
-  it("keeps local purpose sets empty after creation and publishes with one matching Activity", async () => {
-    const api = createFixtureApi();
-    const draft = await api.getInboxDraft("inbox_00000000000000000000000000000001");
-    const save = await api.previewInboxOperation({
-      operationId: "fixture_inbox_existing_save_contract",
-      action: { kind: "inbox.draft.save", draftId: draft.id, draft: draft.input },
-      expectedRevisions: [{
-        target: { kind: "local", namespace: "inbox-draft", id: draft.id },
-        revision: draft.revision,
-      }],
-    });
-    expect(save.receipt.purposeIds).toEqual([]);
-    expect((await api.applyInboxOperation(save)).events).toEqual([]);
-
-    const refreshed = await api.getInboxDraft(draft.id);
-    const publish = await api.previewInboxOperation({
-      operationId: "fixture_inbox_publish_contract",
-      action: { kind: "inbox.publish", draftId: refreshed.id },
-      expectedRevisions: [{
-        target: { kind: "local", namespace: "inbox-draft", id: refreshed.id },
-        revision: refreshed.revision,
-      }],
-    });
-    expect(InboxOperationPreviewResponseSchema.safeParse(publish).success).toBe(true);
-    expect(publish.receipt.purposeIds.map((item) => item.purpose)).toEqual(["activity", "proposal"]);
-    expect(publish.preview.changes.map((change) => change.path)).toEqual([
-      expect.stringMatching(/^\.mex\/inbox\/proposal_/u),
-      expect.stringMatching(/^\.mex\/events\/activity\/2026-08\/event_/u),
-    ]);
-    const applied = await api.applyInboxOperation(publish);
-    expect(InboxOperationApplyResponseSchema.safeParse(applied).success).toBe(true);
-    expect(applied.events).toHaveLength(1);
-    expect(applied.events[0]!.action).toBe("inbox.published");
-  });
-
-  it("rejects stale withdrawal and supports fresh repair followed by approval", async () => {
-    const api = createFixtureApi();
-    const proposal = await api.getInboxProposal("proposal_01000000000000000000001720");
-    const stalePreview = await api.previewInboxOperation({
-      operationId: "fixture_inbox_stale_contract",
-      action: {
-        kind: "inbox.mark-stale",
-        proposalId: proposal.ref.id,
-        rationale: "The attested Spec revision changed.",
-      },
-      expectedRevisions: [{
-        target: { kind: "artifact", path: proposal.sourcePath },
-        revision: proposal.revision,
-      }],
-    });
-    expect(stalePreview.receipt.purposeIds.map((item) => item.purpose)).toEqual(["activity"]);
-    const staleResult = await api.applyInboxOperation(stalePreview);
-    expect(staleResult.events[0]!.action).toBe("inbox.marked-stale");
-    expect(staleResult.proposals[0]).toMatchObject({ state: "stale" });
-    expect(staleResult.proposals[0]).not.toHaveProperty("reviewer");
-    expect(staleResult.proposals[0]).not.toHaveProperty("reviewedAt");
-    expect(staleResult.proposals[0]).not.toHaveProperty("reviewRationale");
-
-    const stale = staleResult.proposals[0]!;
-    await expect(api.previewInboxOperation({
-      operationId: "fixture_inbox_stale_withdraw_refused",
-      action: { kind: "inbox.withdraw", proposalId: stale.ref.id },
-      expectedRevisions: [{
-        target: { kind: "artifact", path: stale.sourcePath },
-        revision: stale.revision,
-      }],
-    })).rejects.toThrow("requires a pending proposal");
-    const freshTargetRevisions = stale.targetRevisions.map((expectation) => ({
-      ...expectation,
-      revision: "a".repeat(64),
-      semanticRevision: expectation.semanticRevision + 1,
-    }));
-    const repair = await api.previewInboxOperation({
-      operationId: "fixture_inbox_repair_contract",
-      action: {
-        kind: "inbox.repair",
-        proposalId: stale.ref.id,
-        replacement: {
-          change: stale.change,
-          rationale: "Re-attested after the exact dependency change.",
-          evidence: stale.evidence,
-          targetRevisions: freshTargetRevisions,
-        },
-      },
-      expectedRevisions: [{
-        target: { kind: "artifact", path: stale.sourcePath },
-        revision: stale.revision,
-      }],
-    });
-    const repaired = await api.applyInboxOperation(repair);
-    expect(InboxOperationApplyResponseSchema.safeParse(repaired).success).toBe(true);
-    expect(repaired.events[0]!.action).toBe("inbox.repaired");
-    expect(repaired.proposals[0]).toMatchObject({ state: "pending" });
-    expect(repaired.proposals[0]).not.toHaveProperty("reviewer");
-    expect(repaired.proposals[0]).not.toHaveProperty("reviewedAt");
-    expect(repaired.proposals[0]).not.toHaveProperty("reviewRationale");
-    expect(repaired.proposals[0]!.targetRevisions).toEqual(freshTargetRevisions);
-
-    const pending = repaired.proposals[0]!;
-    const approval = await api.previewInboxOperation({
-      operationId: "fixture_inbox_repaired_approval",
-      action: { kind: "inbox.approve", proposalId: pending.ref.id },
-      expectedRevisions: [{
-        target: { kind: "artifact", path: pending.sourcePath },
-        revision: pending.revision,
-      }],
-    });
-    const approved = await api.applyInboxOperation(approval);
-    expect(approved.proposals[0]).toMatchObject({ state: "approved" });
-    expect(approved.events[0]!.action).toBe("inbox.approved");
-  });
-
-  it("projects an exact empty Inbox without changing its read capability", async () => {
-    const api = createFixtureApi({ inboxFixture: "empty" });
-    const [capability, homeResult, drafts, proposals, actor] = await Promise.all([
-      api.getCapabilities(),
-      api.getHome(),
-      api.getInboxDrafts({ limit: 25 }),
-      api.getInboxProposals({ states: ["pending", "stale"], limit: 25 }),
-      api.getCurrentActor(),
-    ]);
-
-    expect(HubCapabilitiesSchema.safeParse(capability).success).toBe(true);
-    expect(HomeResponseSchema.safeParse(homeResult).success).toBe(true);
-    expect(InboxDraftListResponseSchema.safeParse(drafts).success).toBe(true);
-    expect(InboxProposalListResponseSchema.safeParse(proposals).success).toBe(true);
-    expect(TeamCurrentActorResponseSchema.safeParse(actor).success).toBe(true);
-    expect(capability.inbox).toEqual({
-      read: { availability: "available" },
-      draftMutation: { availability: "available" },
-      proposalMutation: { availability: "available" },
-      specApproval: { availability: "available" },
-    });
-    expect(homeResult.attention.inbox).toEqual({ availability: "available", teamReviewCount: 0 });
-    expect(drafts).toMatchObject({ items: [], nextCursor: null, truncated: false });
-    expect(proposals).toMatchObject({ items: [], nextCursor: null, truncated: false });
-    expect(actor.actor).toMatchObject({ kind: "member", displayName: "Ada Lovelace" });
-    await expect(api.getInboxDraft("inbox_00000000000000000000000000000001"))
-      .rejects.toThrow("Fixture Inbox draft not found.");
-    await expect(api.getInboxProposal("proposal_01000000000000000000001720"))
-      .rejects.toThrow("Fixture Inbox proposal not found.");
-  });
-
-  it("projects an unknown current actor while retaining the populated review queue", async () => {
-    const api = createFixtureApi({ inboxFixture: "unknown" });
-    const [actor, homeResult, drafts, proposals] = await Promise.all([
-      api.getCurrentActor(),
-      api.getHome(),
-      api.getInboxDrafts({ limit: 25 }),
-      api.getInboxProposals({ states: ["pending", "stale"], limit: 25 }),
-    ]);
-
-    expect(TeamCurrentActorResponseSchema.safeParse(actor).success).toBe(true);
-    expect(HomeResponseSchema.safeParse(homeResult).success).toBe(true);
-    expect(actor).toEqual({
-      actor: { kind: "unknown" },
-      source: "unknown",
-      selection: null,
-      diagnostics: [{
-        code: "GIT_IDENTITY_UNAVAILABLE",
-        severity: "warning",
-        message: "Git identity could not be inspected safely.",
-      }],
-      diagnosticsTruncated: false,
-    });
-    expect(homeResult.actor).toEqual({ kind: "unknown" });
-    expect(homeResult.attention.inbox).toEqual({ availability: "available", teamReviewCount: 3 });
-    expect(drafts.items).toHaveLength(1);
-    expect(proposals.items).toHaveLength(3);
-  });
-
-  it("projects partial Inbox mutation capability without suppressing reads or local drafts", async () => {
-    const api = createFixtureApi({ inboxFixture: "partial" });
-    const [capability, homeResult, drafts, proposals, wiki] = await Promise.all([
-      api.getCapabilities(),
-      api.getHome(),
-      api.getInboxDrafts({ limit: 25 }),
-      api.getInboxProposals({ states: ["pending", "stale"], limit: 25 }),
-      api.listWikiEntities({ limit: 25 }),
-    ]);
-
-    expect(HubCapabilitiesSchema.safeParse(capability).success).toBe(true);
-    expect(capability.inbox).toEqual({
-      read: { availability: "available" },
-      draftMutation: { availability: "available" },
-      proposalMutation: {
-        availability: "unavailable",
-        reason: "Inbox proposal writes are not connected in this Hub process.",
-      },
-      specApproval: {
-        availability: "unavailable",
-        reason: "Inbox Spec approval requires exact Wiki planning and apply.",
-      },
-    });
-    expect(capability.wiki.read).toEqual({ availability: "available" });
-    expect(homeResult.attention.inbox).toEqual({ availability: "available", teamReviewCount: 3 });
-    expect(drafts.items).toHaveLength(1);
-    expect(proposals.items).toHaveLength(3);
-    expect(WikiEntityListResponseSchema.safeParse(wiki).success).toBe(true);
-  });
-
   it("projects an exact empty Activity timeline without suppressing read or record capability", async () => {
     const api = createFixtureApi({ activityFixture: "empty" });
     const [capability, homeResult, page] = await Promise.all([
@@ -1291,7 +915,6 @@ describe("development-only populated fixture", () => {
 
     expect(HubCapabilitiesSchema.safeParse(capability).success).toBe(true);
     expect(HomeResponseSchema.safeParse(homeResult).success).toBe(true);
-    expect(RelayDraftListResponseSchema.safeParse(drafts).success).toBe(true);
     expect(RelayListResponseSchema.safeParse(open).success).toBe(true);
     expect(RelayListResponseSchema.safeParse(closed).success).toBe(true);
     expect(capability.relays).toEqual({
@@ -1352,7 +975,6 @@ describe("development-only populated fixture", () => {
     });
     expect(homeResult.attention.relays).toEqual({ availability: "available", readyToTakeCount: 1, inYourHandsCount: 1 });
     expect(team.items).toHaveLength(4);
-    expect(drafts.items).toHaveLength(2);
     await expect(api.getRelays({
       perspective: "mine",
       states: ["published", "acknowledged"],
@@ -1383,7 +1005,6 @@ describe("development-only populated fixture", () => {
       },
     });
     expect(homeResult.attention.relays).toEqual({ availability: "available", readyToTakeCount: 1, inYourHandsCount: 1 });
-    expect(drafts.items).toHaveLength(2);
     expect(relays.items).toHaveLength(2);
   });
 
@@ -1436,25 +1057,13 @@ describe("development-only populated fixture", () => {
       const [
         baselineKnowledge,
         variantKnowledge,
-        baselineInboxDrafts,
-        variantInboxDrafts,
-        baselineInboxProposals,
-        variantInboxProposals,
         baselineActivity,
         variantActivity,
-        baselineWorkstreams,
-        variantWorkstreams,
-      ] = await Promise.all([
+        ] = await Promise.all([
         baseline.listWikiEntities(request),
         variant.listWikiEntities(request),
-        baseline.getInboxDrafts(request),
-        variant.getInboxDrafts(request),
-        baseline.getInboxProposals({ states: ["pending", "stale"], limit: 25 }),
-        variant.getInboxProposals({ states: ["pending", "stale"], limit: 25 }),
         baseline.getActivity(request),
         variant.getActivity(request),
-        baseline.getWorkstreams(request),
-        variant.getWorkstreams(request),
       ]);
 
       expect(variantKnowledge).toEqual(baselineKnowledge);
@@ -1470,10 +1079,7 @@ describe("development-only populated fixture", () => {
       ]);
       expect(variantKnowledgeNext).toEqual(baselineKnowledgeNext);
       expect([...variantKnowledge.items, ...variantKnowledgeNext.items]).toHaveLength(3);
-      expect(variantInboxDrafts).toEqual(baselineInboxDrafts);
-      expect(variantInboxProposals).toEqual(baselineInboxProposals);
       expect(variantActivity).toEqual(baselineActivity);
-      expect(variantWorkstreams).toEqual(baselineWorkstreams);
     },
   );
 
@@ -1483,18 +1089,15 @@ describe("development-only populated fixture", () => {
       const baseline = createFixtureApi();
       const variant = createFixtureApi({ inboxFixture });
       const request = { limit: 25 } as const;
-      const [baselineActivity, variantActivity, baselineRelays, variantRelays, baselineWorkstreams, variantWorkstreams] = await Promise.all([
+      const [baselineActivity, variantActivity, baselineRelays, variantRelays, ] = await Promise.all([
         baseline.getActivity(request),
         variant.getActivity(request),
         baseline.getRelays({ perspective: "all", states: ["published", "acknowledged"], limit: 25 }),
         variant.getRelays({ perspective: "all", states: ["published", "acknowledged"], limit: 25 }),
-        baseline.getWorkstreams(request),
-        variant.getWorkstreams(request),
       ]);
 
       expect(variantActivity).toEqual(baselineActivity);
       expect(variantRelays).toEqual(baselineRelays);
-      expect(variantWorkstreams).toEqual(baselineWorkstreams);
     },
   );
 
@@ -1507,32 +1110,17 @@ describe("development-only populated fixture", () => {
       const [
         baselineKnowledge,
         variantKnowledge,
-        baselineInboxDrafts,
-        variantInboxDrafts,
-        baselineInboxProposals,
-        variantInboxProposals,
         baselineRelays,
         variantRelays,
-        baselineWorkstreams,
-        variantWorkstreams,
-      ] = await Promise.all([
+        ] = await Promise.all([
         baseline.listWikiEntities(request),
         variant.listWikiEntities(request),
-        baseline.getInboxDrafts(request),
-        variant.getInboxDrafts(request),
-        baseline.getInboxProposals({ states: ["pending", "stale"], limit: 25 }),
-        variant.getInboxProposals({ states: ["pending", "stale"], limit: 25 }),
         baseline.getRelays({ perspective: "mine", states: ["published", "acknowledged"], limit: 25 }),
         variant.getRelays({ perspective: "mine", states: ["published", "acknowledged"], limit: 25 }),
-        baseline.getWorkstreams(request),
-        variant.getWorkstreams(request),
       ]);
 
       expect(variantKnowledge).toEqual(baselineKnowledge);
-      expect(variantInboxDrafts).toEqual(baselineInboxDrafts);
-      expect(variantInboxProposals).toEqual(baselineInboxProposals);
       expect(variantRelays).toEqual(baselineRelays);
-      expect(variantWorkstreams).toEqual(baselineWorkstreams);
     },
   );
 });
