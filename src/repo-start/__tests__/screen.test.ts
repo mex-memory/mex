@@ -7,7 +7,7 @@ import { detectCaller, isAgentCaller } from "../caller.js";
 const model: ScreenModel = {
   name: "novu", ms: 2412, costUsd: 0, hidden: true,
   findings: [
-    { state: "ok", text: "Test and build commands for 12 packages (build @novu/dal first)" },
+    { state: "ok", text: "Test and build commands for 12 packages (build @novu/dal first) · your agents get these from now on" },
     { state: "ok", text: "21 notes from your Claude and Codex memory" },
     { state: "background", text: "The file index: in the background (`mex jobs`)" },
   ],
@@ -40,7 +40,7 @@ describe("the first screen", () => {
     expect(lines.map(line => line.replace(/\x1b\[[0-9;]*m/gu, ""))).toEqual([
       "MEX · novu · 2.4 s · $0 · nothing added to git",
       "",
-      "  ✓ Test and build commands for 12 packages (build @novu/dal first)",
+      "  ✓ Test and build commands for 12 packages (build @novu/dal first) · your agents get these from now on",
       "  ✓ 21 notes from your Claude and Codex memory",
       "  ◌ The file index: in the background (`mex jobs`)",
       "  Hooks: Claude Code and Codex, in your user settings.",
@@ -51,7 +51,7 @@ describe("the first screen", () => {
   it("renders plain ASCII lines with no colour when there is no terminal", () => {
     expect(renderScreen(model, screenMode({ stdoutTTY: false, env: {}, platform: "darwin" }))).toEqual([
       "MEX - novu - 2.4 s - $0 - nothing added to git",
-      "ok Test and build commands for 12 packages (build @novu/dal first)",
+      "ok Test and build commands for 12 packages (build @novu/dal first) · your agents get these from now on",
       "ok 21 notes from your Claude and Codex memory",
       ".. The file index: in the background (`mex jobs`)",
       "Hooks: Claude Code and Codex, in your user settings.",

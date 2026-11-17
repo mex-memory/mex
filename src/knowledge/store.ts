@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, opendirSync } from "node:fs";
+import { existsSync, opendirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { openRecord, openRecordReadOnly, projectIdentity, projectDataDirectory } from "../record/index.js";
 import { assertPersonQuote, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type EntryKind, type KnowledgeEntry } from "./entry.js";
-import { containedDirectory, createEntryFile, readEntryFile, personalReadGuard } from "./files.js";
+import { containedDirectory, createEntryFile, readEntryFile, personalReadGuard, replaceEntryFile } from "./files.js";
 import { knowledgeProject, type KnowledgeOptions, type KnowledgeProject } from "./context.js";
 import { references, type References } from "./references.js";
 import { gateEntry, sanitizeText } from "./gates.js";
@@ -26,7 +26,71 @@ function readDirectory(project: KnowledgeProject): string | undefined {
 function display(entry: KnowledgeEntry): PersonalEntry {
   return { level: "personal", label: entryLabel(entry, "personal"), entry };
 }
-/** Explicit note creation is the only operation here that opens a writer. */
+/** A reserved id namespace marks setup's entries without changing manifest provenance. */
+export function isSetupRecipe(entry: KnowledgeEntry): boolean {
+  return /^mx_setup[a-f0-9]{24}$/u.test(entry.mex.id) && entry.mex.kind === "recipe" && entry.mex.source.type === "config";
+}
+
+/** Refresh only setup-owned personal entries, through the note store's gates and publication locks. */
+export function refreshSetupRecipes(entries: KnowledgeEntry[], options: KnowledgeOptions, retireMissing = true, now = new Date()): number {
+  if (entries.length > 20 || entries.some(entry => !isSetupRecipe(entry) || entry.mex.status !== "active"
+    || entry.mex.checks.length !== 1 || entry.mex.checks[0]?.kind !== "command" || entry.mex.checks[0]?.role !== "complete")) {
+    throw new KnowledgeError("INVALID_ENTRY", "Setup requires at most 20 recipes with complete command checks.");
+  }
+  const source = references(projectIdentity(options.projectPath).rootPath);
+  const gated = entries.map(entry => {
+    const clean = gateEntry(entry, source);
+    if (clean.text !== entry.text || clean.mex.one_line !== entry.mex.one_line || clean.mex.checks.length !== 1) {
+      throw new KnowledgeError("UNVERIFIED_SOURCE", "A setup command could not be verified.");
+    }
+    serializeEntry(clean);
+    return clean;
+  });
+  const writer = openRecord({ ...options, create: true });
+  try {
+    writer.db.exec("BEGIN IMMEDIATE");
+    const projectId = writer.checkout(options.projectPath)?.project_id;
+    if (!projectId || !/^[gf]-[a-f0-9]{24}$/u.test(projectId)) throw new KnowledgeError("RECORD_UNAVAILABLE", "The project could not be registered.");
+    containedDirectory(writer.location.home, ["projects", projectId]);
+    projectDataDirectory(writer.location, projectId);
+    const directory = containedDirectory(writer.location.home, ["projects", projectId, "notes"], true)!;
+    const project = knowledgeProject(options);
+    const wanted = new Map(gated.map(entry => [entry.mex.id, entry]));
+    const names = readdirSync(directory);
+    if (names.length > KNOWLEDGE_LIMITS.entries) throw new KnowledgeError("STORE_LIMIT", "Personal note directory exceeds the scan limit.");
+    let bytes = 0, saved = 0;
+    for (const name of names.filter(name => /^mx_setup[a-f0-9]{24}\.md$/u.test(name))) {
+      const content = readEntryFile(join(directory, name));
+      if (!content) continue;
+      bytes += Buffer.byteLength(content);
+      if (bytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", "Setup recipes exceed the byte scan limit.");
+      const before = parseEntry(content), id = name.slice(0, -3), next = wanted.get(id);
+      wanted.delete(id);
+      // A person can edit or forget a setup entry. Setup never takes it back.
+      if (before.mex.id !== id || !isSetupRecipe(before) || project.retired.has(id)
+        || (before.mex.status !== "active" && before.mex.retired?.by !== "mex setup")) continue;
+      if (next) {
+        next.mex.created = before.mex.created;
+        const updated = serializeEntry(next);
+        if (updated !== content) replaceEntryFile(directory, id, content, updated);
+        saved++;
+      } else if (retireMissing && before.mex.status === "active") {
+        before.mex.status = "retired";
+        before.mex.retired = { by: "mex setup", at: now.toISOString().slice(0, 10), reason: "This command is no longer in the setup recipes." };
+        replaceEntryFile(directory, id, content, serializeEntry(before));
+      }
+    }
+    for (const entry of wanted.values()) {
+      if (project.retired.has(entry.mex.id)) continue;
+      createEntryFile(directory, entry.mex.id, serializeEntry(entry));
+      saved++;
+    }
+    return saved;
+  } finally {
+    try { writer.db.exec("ROLLBACK"); } finally { writer.close(); }
+  }
+}
+/** Explicit note creation uses the same gates and personal store as setup. */
 export function note(input: NoteInput & DecisionInput, options: KnowledgeOptions, now = new Date()): PersonalEntry {
   const created = now.toISOString().slice(0, 10);
   const entry: KnowledgeEntry = {

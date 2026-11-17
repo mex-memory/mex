@@ -84,7 +84,7 @@ function message(error: unknown): string {
   return text.split(/\r?\n/u)[0]!.slice(0, 200);
 }
 
-interface HookSummary { note?: string; notices: string[]; }
+interface HookSummary { note?: string; notices: string[]; agents?: Array<"claude-code" | "codex">; }
 async function installHooks(): Promise<HookSummary> {
   try {
     const { installAgents } = await import("../install/index.js");
@@ -92,6 +92,7 @@ async function installHooks(): Promise<HookSummary> {
     if (!result.agents.length) return { note: "No supported agent found. Install Claude Code or Codex, then run `mex install`.", notices: [] };
     const where = result.agents.map(agent => AGENT_NAMES[agent]);
     return {
+      agents: result.agents,
       note: `Hooks: ${list(where)}, in your user settings.`,
       // The trust and timing notices matter when hooks first change; repeat runs stay quiet.
       notices: result.changes.length ? result.notices : [],
@@ -223,6 +224,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   const waiting = options.wait !== false;
   let example: string | undefined;
   let learning: string | undefined;
+  let rebuildRules = false;
   let writer: RecordWriter | undefined = openRecord();
   let projectId: string, checkout: CheckoutRow, hidden = false;
   const git = place.kind === "git";
@@ -262,6 +264,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     if (!automaticWorkEnabled(writer, projectId)) {
       findings.push({ state: "attention", text: "MEX is off everywhere, so nothing was read or queued. `mex on --all` turns it back on." });
     } else {
+      rebuildRules = true;
       // The rule-file scan's file list walks the whole tree for untracked files; start it now so
       // it runs while recipes are read.
       const { listRepositoryFilesAsync } = await import("../knowledge/rule-files.js");
@@ -280,10 +283,12 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       const recipes = await readRecipes(checkout.path, projectId, env);
       const test = recipes?.recipes.find(recipe => recipe.purpose === "test" && recipe.local === "yes") ?? recipes?.recipes.find(recipe => recipe.purpose === "test");
       example = noteExample(test?.command, test?.package, env);
+      let recipeFinding: Finding | undefined;
       if (recipes) {
         const { recipeSummary } = await import("./recipes/index.js");
         const summary = recipeSummary(recipes);
-        findings.push({ state: "ok", text: git ? summary.line : summary.line.replace("this repo", "this folder") });
+        recipeFinding = { state: "ok", text: git ? summary.line : summary.line.replace("this repo", "this folder") };
+        findings.push(recipeFinding);
         for (const note of summary.notes.slice(0, 3)) findings.push({ state: "attention", text: note });
       }
       const rules = await readRules(checkout.path, listing);
@@ -291,6 +296,17 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       const memory = await readAgentMemory(checkout.path);
       if (memory && memory.count > 0) {
         findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory, offered to your agents as hints` });
+      }
+      // Findings are known before setup writes entries. No model or repo command runs.
+      if (recipes) {
+        try {
+          const { saveSetupRecipes } = await import("./recipe-entries.js");
+          const saved = saveSetupRecipes(recipes, { projectPath: checkout.path, env });
+          if (saved.saved && saved.saved === saved.selected && !saved.incomplete && recipeFinding) recipeFinding.text += " · your agents get these from now on";
+          if (saved.incomplete) findings.push({ state: "attention", text: "Some commands could not be saved for your agents. Run mex again to retry." });
+        } catch {
+          findings.push({ state: "attention", text: "Commands could not be saved for your agents. Run mex again to retry." });
+        }
       }
       killAt("free-step", env);
       if (shallow) findings.push({ state: "attention", text: "Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)" });
@@ -355,6 +371,19 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     } finally {
       process.removeListener("SIGINT", handler);
       finishWriter.close();
+    }
+  }
+  if (rebuildRules) {
+    try {
+      const { rebuildNative } = await import("../knowledge/native.js");
+      const rebuilt = rebuildNative({ projectPath: checkout.path, env }, { agents: hooks.agents });
+      if (rebuilt.deferred) {
+        const { queueNativeRebuild } = await import("../knowledge/native-queue.js");
+        if (!queueNativeRebuild(checkout.path)) throw new Error("rebuild was not queued");
+        notes.push("A session is running here. Your agents get the commands after it ends.");
+      }
+    } catch {
+      notes.push("Rule files could not be rebuilt. Run mex again to retry.");
     }
   }
   for (const line of renderNotes(notes, mode)) write(line);

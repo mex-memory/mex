@@ -363,6 +363,9 @@ func Label(e *Entry, level string) string {
 		}
 		return "[team, from " + source + "]"
 	default:
+		if e.Source.Type == "config" {
+			return "[repo, from " + e.Source.Ref + "]"
+		}
 		if e.Source.Type != "person" {
 			return "[personal, from " + e.Evidence + "]"
 		}

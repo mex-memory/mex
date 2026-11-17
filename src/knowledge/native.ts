@@ -25,6 +25,8 @@ export interface NativeRebuild extends Partial<NativeWrite> {
 }
 
 export interface RebuildOptions {
+  /** Agents found during setup, before their first session in this checkout. */
+  agents?: NativeAgent[];
   /** Write even though a session is running (the person asked for it). */
   force?: boolean;
   /** Only the shared files: the same working-tree change as a team entry. */
@@ -53,7 +55,7 @@ export function personalNotes(home: string, projectId: string, retired: Set<stri
 export function rebuildNative(options: KnowledgeOptions, rebuild: RebuildOptions = {}): NativeRebuild {
   const project = knowledgeProject(options);
   const home = existsSync(project.location.home) ? project.location.home : undefined;
-  const agents = agentsInUse(project.root, home);
+  const agents = [...new Set([...agentsInUse(project.root, home), ...(rebuild.agents ?? [])])];
   if (home && !rebuild.force) {
     const live = liveSessions(project.root, home, rebuild.now);
     if (live.length) return { deferred: { agents: live }, agents, selected: 0 };

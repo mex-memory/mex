@@ -9,6 +9,7 @@ export function statementDate(entry: KnowledgeEntry): string {
 export function entryLabel(entry: KnowledgeEntry, level: KnowledgeLevel, observations = 1): string {
   if (level === "hint") return observations === 1 ? "[hint, seen once]" : `[hint, seen ${observations} times]`;
   if (level === "team") return `[team, from ${entry.mex.evidence === "ci" ? "CI" : entry.mex.evidence === "person" ? "a person" : entry.mex.evidence}]`;
+  if (entry.mex.source.type === "config") return `[repo, from ${entry.mex.source.ref}]`;
   if (entry.mex.source.type !== "person") return `[personal, from ${entry.mex.evidence}]`;
   const date = statementDate(entry);
   const day = Number(date.slice(8, 10));

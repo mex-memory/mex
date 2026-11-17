@@ -103,6 +103,32 @@ func TestBrokenAndChangedRecipesNeverEnterTheBrief(t *testing.T) {
 	}
 }
 
+func TestSetupRecipesLeaveRoomForPersonalNotes(t *testing.T) {
+	opts := setup(t)
+	for _, id := range []string{"mx_setup0123456789abcdef01234567", "mx_setup1123456789abcdef01234567"} {
+		body := strings.Replace(entry(id, "Build command.", "recipe", "**", "[]"), "type: docs, ref: README.md", "type: config, ref: package.json", 1)
+		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", body)
+	}
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_person.md", entry("mx_person", "My tests.", "recipe", "**", "[]"))
+	r := build(t, opts)
+	if len(r.Items) != 1 || r.Items[0].ID != "mx_person" || strings.Contains(r.Text, "Build command") {
+		t.Fatal(r.Text)
+	}
+	// A stale setup recipe already in native files still asks for a rebuild,
+	// but its correction must not displace the person's note from the brief.
+	id := "mx_setup0123456789abcdef01234567"
+	checks := "\n    - kind: command\n      role: complete\n      target: {file: package.json, pointer: /scripts/build, run: npm run build}\n      saw: {exists: true}\n      files: {}"
+	body := strings.Replace(entry(id, "Build command.", "recipe", "**", checks), "type: docs, ref: README.md", "type: config, ref: package.json", 1)
+	put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", body)
+	text := "<!-- mex:generated -->\n- Build command. <!-- mex:" + id + " -->\n"
+	put(t, opts.Checkout, "AGENTS.md", text)
+	manifest(t, opts.MexHome, "projects/"+project+"/native-local.json", "AGENTS.md", text)
+	r = build(t, opts)
+	if !r.NativeStale || len(r.Corrections) != 0 || len(r.Items) != 1 || r.Items[0].ID != "mx_person" {
+		t.Fatalf("setup recipe consumed brief room: %+v", r)
+	}
+}
+
 func manifest(t *testing.T, root, file, name, text string) {
 	t.Helper()
 	data, _ := json.Marshal(map[string]any{"version": 1, "files": map[string]string{name: hash([]byte(text))}})
