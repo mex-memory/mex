@@ -159,7 +159,16 @@ func inScope(e *entries.Entry, file string) bool {
 
 // allowed deliberately leaves changed code facts and recipes out. Their pointer
 // and re-derivation forms belong to the moment controller, not a start digest.
+func setupRecipe(e *entries.Entry) bool {
+	return e.Kind == "recipe" && e.Source.Type == "config" && strings.HasPrefix(e.ID, "mx_setup")
+}
+
 func allowed(e *entries.Entry, verdict, level string) bool {
+	// Setup recipes reach native rule files and command moments. Keep the
+	// start brief's room for the person's notes, including companion groups.
+	if setupRecipe(e) {
+		return false
+	}
 	if e.Status != "active" || verdict == check.Broken || !validLine(e.OneLine) || strength(e) == 4 {
 		return false
 	}
@@ -399,6 +408,10 @@ func Build(opts Options) (Result, error) {
 			continue
 		}
 		result.NativeStale = true
+		if setupRecipe(e) {
+			// Still request the rebuild, without spending the person's brief room.
+			continue
+		}
 		if verdict == check.Broken || e.Kind == "fact" {
 			line := correctionLine(e.ID)
 			if tokens+TokenBound("\n"+line) > MaxTokens {

@@ -12,6 +12,15 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 const write = (path: string, text: string) => { mkdirSync(join(root, path, ".."), { recursive: true }); writeFileSync(join(root, path), text); };
 
 describe("knowledge references", () => {
+  it("verifies exact config recipes for workspaces and other manifests", () => {
+    write("package.json", JSON.stringify({ workspaces: ["packages/*"] }));
+    write("packages/api/package.json", JSON.stringify({ name: "api", scripts: { test: "node test.mjs" } }));
+    write("Makefile", "build:\n\techo build\n");
+    write("pyproject.toml", "[tool.pytest.ini_options]\ntestpaths = ['tests']\n");
+    const source = references(root);
+    for (const command of ["npm run test --workspace packages/api", "make build", "pytest"]) expect(commandExists(command, source), command).toBe(true);
+    for (const command of ["npm run missing --workspace packages/api", "make missing"]) expect(commandExists(command, source), command).toBe(false);
+  });
   it("verifies package scripts by name with every runner spelling", () => {
     write("package.json", JSON.stringify({ scripts: { test: "vitest run", "test:watch": "vitest" } }));
     const source = references(root);

@@ -248,3 +248,26 @@ func TestCorrectionLabelUsesStatementDate(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestConfigLabelsGolden(t *testing.T) {
+	data, err := os.ReadFile("testdata/labels.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		SourceType string `json:"source_type"`
+		Ref        string `json:"ref"`
+		Evidence   string `json:"evidence"`
+		Level      string `json:"level"`
+		Expected   string `json:"expected"`
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		e := &Entry{Created: "2026-11-15", Source: Source{Type: tc.SourceType, Ref: tc.Ref}, Evidence: tc.Evidence}
+		if got := Label(e, tc.Level); got != tc.Expected {
+			t.Fatalf("%s %s: got %q, want %q", tc.Level, tc.Ref, got, tc.Expected)
+		}
+	}
+}

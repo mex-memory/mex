@@ -1,10 +1,10 @@
 import { beforeAll, afterAll, beforeEach, afterEach, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openRecord, openHooksReadOnly, type RecordWriter } from "../../record/index.js";
-import { shortHash } from "../../record/project.js";
+import { realPath, shortHash } from "../../record/project.js";
 import { hash, position } from "../../judge/evidence.js";
 import { stageContinuity, readContinuityItems, continuityKey, CONTINUITY_TTL } from "../continuity.js";
 import { filterSession } from "../input.js";
@@ -32,12 +32,12 @@ function candidate(): FilterCandidate {
   } finally { reader.close(); }
 }
 beforeAll(() => {
-  suite = realpathSync(mkdtempSync(join(tmpdir(), "mex-filter-continuity-"))); binary = join(suite, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
+  suite = realPath(mkdtempSync(join(tmpdir(), "mex-filter-continuity-"))); binary = join(suite, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
   execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
 }, 300_000);
 afterAll(() => rmSync(suite, { recursive: true, force: true }));
 beforeEach(() => {
-  base = realpathSync(mkdtempSync(join(suite, "case-"))); root = join(base, "repo"); user = join(base, "user"); home = join(user, ".mex"); mkdirSync(root);
+  base = realPath(mkdtempSync(join(suite, "case-"))); root = join(base, "repo"); user = join(base, "user"); home = join(user, ".mex"); mkdirSync(root);
   git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
   writeFileSync(join(root, "README.md"), words + "\n"); git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture"); git("switch", "-qc", "work");
   writer = openRecord(options()); project = writer.checkout(root)!.project_id;
