@@ -57,6 +57,7 @@ describe.skipIf(!enabled)("file index in Go and Node", () => {
     writeFileSync(join(checkout, "src", "Shapes.ts"), SHAPES);
     writeFileSync(join(checkout, "src", "Deep", "store.py"), "import os\n\nclass Store:\n    def get(self, key):\n        return key\n\ndef makeCircle():\n    pass\n");
     writeFileSync(join(checkout, "src", "Deep", "Shapes.ts"), "export const other = 1; // moment\n");
+    writeFileSync(join(checkout, "src", "use.ts"), "import { makeCircle } from \"./Shapes\";\nimport { other } from \"./Deep/Shapes.js\";\nimport { readFileSync } from \"node:fs\";\nexport const both = [makeCircle, other, readFileSync];\n");
     writeFileSync(join(checkout, "README.md"), "moment and moment\n");
     writeFileSync(join(checkout, "logo.bin"), Buffer.from([1, 0, 2]));
     const writer = openRecord({ projectPath: checkout });
@@ -144,6 +145,18 @@ describe.skipIf(!enabled)("file index in Go and Node", () => {
     expect((node[0] as OutlineAnswer).symbols.find((item) => item.name === "makeCircle")).toMatchObject({ start: 14, end: 16 });
     // These shifts were only for this test; the next ones come from the hook.
     rmSync(join(directory, "shifts"), { recursive: true, force: true });
+  });
+
+  it("resolves the same imports, and never claims none for a file it can't read", () => {
+    const index = reader();
+    let edges: Map<string, string[]>;
+    try { edges = index.importEdges(); } finally { index.close(); }
+    const [one, all] = goAnswers([{ op: "importsFrom", arg: "src/use.ts" }, { op: "importsFrom", arg: "**" }]) as Array<{ edges: Array<{ from: string; to: string }>; unread: Record<string, number> }>;
+    expect(one.edges.map((edge) => edge.to)).toEqual(edges.get("src/use.ts"));
+    expect(one.unread).toEqual({});
+    expect(all.edges).toEqual([...edges].flatMap(([from, tos]) => tos.map((to) => ({ from, to }))).sort((a, b) => a.from.localeCompare(b.from)));
+    // README.md and logo.bin aren't code; store.py's imports name modules.
+    expect(all.unread).toEqual({ "imports not resolved for py": 1 });
   });
 
   function runHook(payload: unknown): void {
