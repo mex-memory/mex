@@ -1,5 +1,4 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,11 +76,26 @@ function recordChange(writer: RecordWriter, change: InstallChange, options: Inst
   }
 }
 
+/**
+ * Whether the agent's command is on PATH. Read from the PATH directories
+ * directly: a `where.exe` child under a 1.5 s timeout missed Claude Code on
+ * a busy Windows machine, so its hooks were silently not installed.
+ */
 function available(agent: Agent, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): boolean {
-  const result = spawnSync(platform === "win32" ? "where.exe" : "which", [agent === "claude-code" ? "claude" : "codex"], {
-    env, timeout: 1500, windowsHide: true, stdio: "ignore",
-  });
-  return result.status === 0;
+  const name = agent === "claude-code" ? "claude" : "codex";
+  const key = Object.keys(env).find(k => k.toUpperCase() === "PATH");
+  const dirs = (key ? env[key] ?? "" : "").split(platform === "win32" ? ";" : ":").map(d => d.trim().replace(/^"(.*)"$/u, "$1")).filter(Boolean);
+  const extKey = Object.keys(env).find(k => k.toUpperCase() === "PATHEXT");
+  const exts = platform === "win32" ? ["", ...((extKey ? env[extKey] : undefined) ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)] : [""];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      try {
+        const stat = statSync(join(dir, name + ext));
+        if (stat.isFile() && (platform === "win32" || (stat.mode & 0o111) !== 0)) return true;
+      } catch { /* not in this folder */ }
+    }
+  }
+  return false;
 }
 
 /** Global installation only. Project registration and the first screen belong to setup. */
