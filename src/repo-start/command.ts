@@ -136,7 +136,8 @@ export function ruleFindings(cache: RuleScan, root: string): Finding[] {
   if (review.length > 3) details.push(`… and ${review.length - 3} more: mex rules`);
   return [
     ...(review.length ? [{ state: "attention" as const, text: `${review.length} ${review.length === 1 ? "line in your rule files" : "lines in your rule files"} ${stale === review.length ? review.length === 1 ? "is out of date" : "are out of date" : stale ? "are out of date or disagree" : review.length === 1 ? "disagrees" : "disagree"}`, details }] : []),
-    { state: "ok", text: `${cache.files.length} rule ${cache.files.length === 1 ? "file" : "files"} read (${cache.files.map(file => file.path).join(", ")})${review.length ? "" : "; they agree"}` },
+    // Name a few files, not all of them: a repo with 25 rule files is a wall of paths.
+    { state: "ok", text: `${cache.files.length} rule ${cache.files.length === 1 ? "file" : "files"} read (${[...cache.files].sort((a, b) => a.path.split("/").length - b.path.split("/").length || a.path.localeCompare(b.path)).slice(0, 3).map(file => file.path).join(", ")}${cache.files.length > 3 ? `, and ${cache.files.length - 3} more` : ""})${review.length ? "" : "; they agree"}` },
   ];
 }
 
@@ -281,7 +282,11 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
 
       // The free step: local reads only, no network, no model, no repository command.
       const recipes = await readRecipes(checkout.path, projectId, env);
-      const test = recipes?.recipes.find(recipe => recipe.purpose === "test" && recipe.local === "yes") ?? recipes?.recipes.find(recipe => recipe.purpose === "test");
+      // The example a person tries first: the root package's test command when there is one.
+      // A command a person can run as is: from a manifest, not a CI step, with no variables to fill in.
+      const fromManifest = (recipe: { origin: Array<{ file: string }> }) => recipe.origin.some(o => !/^\.(?:github|gitlab|circleci)\/|\.gitlab-ci\.ya?ml$|azure-pipelines/u.test(o.file));
+      const tests = (recipes?.recipes ?? []).filter(recipe => recipe.purpose === "test" && fromManifest(recipe) && recipe.local === "yes" && !/[$%]/u.test(recipe.command));
+      const test = tests.find(recipe => !recipe.package) ?? tests[0];
       example = noteExample(test?.command, test?.package, env);
       let recipeFinding: Finding | undefined;
       if (recipes) {
