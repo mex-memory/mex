@@ -18,8 +18,6 @@ Commands:
                                         on this machine
   uninstall [options]                   Restore agent settings; keep notes
                                         unless --purge is given
-  status [options]                      Show agents, notes, background work and
-                                        model use
   doctor [options]                      Show MEX status and fixes for recorded
                                         problems
   off [options]                         Turn MEX off for this registered repo
