@@ -52,6 +52,7 @@ Pre-release on npm's `next` tag; 0.8.5 stays on `latest`.
 - In a repo with a `CLAUDE.md`, Claude Code gets folder-scoped notes and commands. MEX had assumed Claude reads a folder's `AGENTS.md`, which Claude Code skips while any `CLAUDE.md` is at the root or on the way.
 - A `mex handoff` can be committed: MEX's ignore block no longer hides `.mex/handoffs/`.
 - Run through `npx`, MEX no longer installs hooks into npm's temporary cache; it asks for `npm i -g mex-agent@next` instead.
+- New commands, rule-file sections and agent memory reach the agents without running `mex` again: a session start asks for a background re-read (at most every 30 minutes per repo, no model).
 
 ## [0.8.5] - 2026-10-29
 

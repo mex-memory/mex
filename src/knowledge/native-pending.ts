@@ -5,7 +5,7 @@
  * only writer of the job table, turns each into a `native-files` job, which
  * runs between sessions and writes the files from current verdicts.
  */
-import { lstatSync, readdirSync, unlinkSync } from "node:fs";
+import { lstatSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { queueJob } from "../record/background.js";
@@ -44,6 +44,8 @@ export function queuePendingNative(writer: RecordWriter): number {
     queueRebuild(writer, request.project_id, request.checkout);
     queued++;
   }
+  // An empty folder would wake the background process at every session start.
+  try { rmdirSync(directory); } catch { /* a request arrived meanwhile */ }
   return queued;
 }
 

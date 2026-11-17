@@ -56,6 +56,9 @@ func startBlock(h *record.Hooks, ev contract.Event, env Environment) (string, er
 		// before the next session. The corrections cover this one.
 		_ = RequestNativeRebuild(env.RecordDirectory, ev.ProjectID, ev.Checkout)
 	}
+	// Best effort: new commands, rule-file sections and agent memory reach
+	// the agents from the next session, without anyone running mex again.
+	_ = RequestSetupRefresh(env.RecordDirectory, ev.ProjectID, ev.Checkout, env.Now)
 	req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
 	req.OnceEntry = startMarker
 	req.Candidates = []record.DeliveryCandidate{{EntryID: startMarker, Moment: "start-brief", Form: "one-line", Action: "given", Tokens: brief.TokenBound(brief.Priority) + 32, ContentHash: contentHash(brief.Priority)}}

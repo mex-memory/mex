@@ -13,6 +13,7 @@ import { queueStaleCodeFacts } from "../repo-start/history/freshness.js";
 import { judgePending, queuePendingJudgements } from "../judge/pending.js";
 import { filterPending, queuePendingFilters } from "../filter/pending.js";
 import { nativePending, queuePendingNative } from "../knowledge/native-pending.js";
+import { queuePendingSetupRefresh, setupRefreshPending } from "../repo-start/refresh.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
@@ -134,7 +135,7 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     const row = lease(writer);
     const live = leaseLive(row, settings);
     if (live && row.version === VERSION) return { started: false, reason: "running" };
-    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer) && !workingSetPending(writer.location.directory) && !nativePending(writer.location.directory)) {
+    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer) && !workingSetPending(writer.location.directory) && !nativePending(writer.location.directory) && !setupRefreshPending(writer.location.directory)) {
       clearPending(writer);
       return { started: false, reason: "no-work" };
     }
@@ -268,6 +269,8 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       try { queuePendingFilters(writer, queueJob); } catch { /* a later pass retries */ }
       // MEX's rule files carry a note the code changed: rebuild them between sessions.
       try { queuePendingNative(writer); } catch { /* a later pass retries */ }
+      // A session started: re-read package files, rule files and agent memory for additions.
+      try { queuePendingSetupRefresh(writer); } catch { /* a later start asks again */ }
       // Code facts follow new commits: re-read a project's history once its HEAD has moved.
       if (clock() - lastFreshness >= 60_000) {
         lastFreshness = clock();
@@ -312,6 +315,7 @@ export async function runPendingInForeground(writer: RecordWriter, budgetMs = 60
     queuePendingJudgements(writer, queueJob);
     queuePendingFilters(writer, queueJob);
     queuePendingNative(writer);
+    queuePendingSetupRefresh(writer);
     requeueReadyJobs(writer);
     if (await runOneBatch(writer, self) === "idle") break;
     batches++;

@@ -104,7 +104,7 @@ async function installHooks(): Promise<HookSummary> {
 }
 
 interface NotesFound { count: number; agents: string[]; }
-async function readAgentMemory(root: string): Promise<NotesFound | undefined> {
+export async function readAgentMemory(root: string): Promise<NotesFound | undefined> {
   try {
     const { refreshHints, hintStatus } = await import("../knowledge/hints.js");
     const refreshed = refreshHints({ projectPath: root });
@@ -142,7 +142,7 @@ export function ruleFindings(cache: RuleScan, root: string): Finding[] {
   ];
 }
 
-async function readRules(root: string, listing?: Promise<string[] | undefined>): Promise<{ files: number; conflicts: number; findings: Finding[] } | undefined> {
+export async function readRules(root: string, listing?: Promise<string[] | undefined>): Promise<{ files: number; conflicts: number; findings: Finding[] } | undefined> {
   try {
     const { refreshRuleFiles } = await import("../knowledge/rule-cache.js");
     const cache = refreshRuleFiles({ projectPath: root }, new Date(), await listing);
@@ -152,7 +152,7 @@ async function readRules(root: string, listing?: Promise<string[] | undefined>):
 }
 
 /** Read recipes and save recipes.json; a failure leaves the line out rather than stopping the screen. */
-async function readRecipes(root: string, projectId: string, env: NodeJS.ProcessEnv) {
+export async function readRecipes(root: string, projectId: string, env: NodeJS.ProcessEnv) {
   try {
     const [{ scanRecipes }, { nativeBinary }, { recordLocation }, { writeFactFile }] = await Promise.all([
       import("./recipes/index.js"), import("../knowledge/check.js"), import("../record/location.js"), import("./facts.js"),
