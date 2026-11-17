@@ -11,6 +11,7 @@ import { entryLabel, KNOWLEDGE_PRIORITY, type KnowledgeLevel } from "./labels.js
 import { expandTeam, teamEntries, type TeamEntry } from "./team.js";
 import { readHints, type HintEntry } from "./hints.js";
 import { aidsEnabled, rankNative } from "./native-rank.js";
+import { deriveNoteChecks } from "./note-checks.js";
 export type { KnowledgeOptions } from "./context.js";
 
 export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
@@ -38,7 +39,10 @@ export function note(input: NoteInput & DecisionInput, options: KnowledgeOptions
   };
   // Reject bad input before initializing any persistent state.
   serializeEntry(entry);
-  const source = references(projectIdentity(options.projectPath).rootPath);
+  const rootPath = projectIdentity(options.projectPath).rootPath;
+  const source = references(rootPath);
+  // Free checks from what the note names; none found leaves it to the background filter.
+  if (!input.commit) entry.mex.checks = deriveNoteChecks(entry.text, rootPath);
   const gated = gateEntry(entry, source);
   const bytes = serializeEntry(gated);
   assertPersonQuote(gated, sanitizeText(input.text, source));
