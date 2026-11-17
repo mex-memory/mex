@@ -135,10 +135,11 @@ describe("0.8 scaffold upgrade reader", () => {
     put(repo, ".mex/context/c.md", "---\nmex: [secret private malformed text\n---\n# Broken\nOriginal prose.\n");
     const result = readLegacyScaffold(repo);
     expect(result.complete).toBe(false);
-    expect(result.documents).toHaveLength(3);
-    expect(result.diagnostics.map(d => d.code)).toEqual(["LEGACY_DUPLICATE_ENTITY_ID", "WIKI_PARSE_ERROR"]);
+    // The unreadable document stays in place for people instead of holding up the others.
+    expect(result.documents).toHaveLength(2);
+    expect(result.diagnostics.map(d => d.code)).toEqual(["LEGACY_DUPLICATE_ENTITY_ID", "LEGACY_DOCUMENT_UNREADABLE"]);
     expect(JSON.stringify(result.diagnostics)).not.toContain("secret private");
-    expect(result.documents[2].text).toContain("Original prose.");
+    expect(result.retained.find(r => r.path.endsWith("context/c.md"))?.text).toContain("Original prose.");
   });
 
   it("refuses malformed root groundings that the old index reader tolerates by dropping", () => {
@@ -193,8 +194,10 @@ describe("0.8 scaffold upgrade reader", () => {
     const repo = root();
     for (let i = 0; i < LEGACY_LIMITS.diagnostics + 10; i++) put(repo, `.mex/context/${i}.md`, "---\nmex: [broken\n---\n# Original\n");
     const result = readLegacyScaffold(repo);
-    expect(result.complete).toBe(false);
-    expect(result.documents).toHaveLength(LEGACY_LIMITS.diagnostics + 10);
+    // Every unreadable document is kept in place for people; nothing is lost.
+    expect(result.complete).toBe(true);
+    expect(result.documents).toHaveLength(0);
+    expect(result.retained).toHaveLength(LEGACY_LIMITS.diagnostics + 10);
     expect(result.diagnostics).toHaveLength(LEGACY_LIMITS.diagnostics);
     expect(result.diagnostics.at(-1)?.code).toBe("LEGACY_DIAGNOSTICS_OMITTED");
   });

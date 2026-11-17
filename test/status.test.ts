@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -34,7 +34,9 @@ it("reads installed agents, cached verdicts and last hook call without writing",
   const db = new DatabaseSync(f.location.hooks);
   db.exec("CREATE TABLE sessions(agent TEXT,last_seen_at TEXT); CREATE TABLE verdicts(entry_id TEXT,verdict TEXT,checkout TEXT,project_id TEXT)");
   db.prepare("INSERT INTO sessions VALUES('claude-code',?)").run("2026-11-17T09:57:00Z");
-  db.prepare("INSERT INTO verdicts VALUES('mx_fixture1','broken',?,?)").run(f.root.toLowerCase(), f.projectId);
+  // Go keys checkouts by their real path, folded to lower case only on Windows.
+  const key = realpathSync(f.root);
+  db.prepare("INSERT INTO verdicts VALUES('mx_fixture1','broken',?,?)").run(process.platform === "win32" ? key.toLowerCase() : key, f.projectId);
   db.close();
   const before = readFileSync(f.location.record);
   const view = readStatus(f.options);
