@@ -57,6 +57,14 @@ function leftovers(f: ReturnType<typeof fixture>): string[] {
 }
 
 describe("bare mex in a repository", () => {
+  it("gives agent callers the short next step", () => {
+    const f = fixture();
+    const result = f.run([], { env: { CLAUDECODE: "1" } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Saved notes reach new sessions; mex note "<fact>" adds one.');
+    expect(result.stdout).not.toContain("Try it");
+    expect(result.stdout).not.toContain("Undo:");
+  });
   it("turns the repo on, shows the first screen and leaves nothing in git status", () => {
     const f = fixture();
     const before = readFileSync(f.exclude);
@@ -182,7 +190,7 @@ describe("bare mex in a repository", () => {
     git(f.root, "add", "."); git(f.root, "commit", "-qm", "rules");
     const result = f.run();
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("ok 2 rule files read; 1 disagrees, see `mex rules`");
+    expect(result.stdout).toContain("ok 2 rule files read (AGENTS.md, CLAUDE.md)");
     const projects = join(f.home, "projects");
     const id = readdirSync(projects)[0]!;
     expect(existsSync(join(projects, id, "rule-files.json"))).toBe(true);
@@ -203,7 +211,7 @@ describe("bare mex in a repository", () => {
     expect(off.status, off.stderr).toBe(0);
   });
 
-  it("keeps a 0.8 scaffold's tracked files and hides its local ones, and points to the Hub", () => {
+  it("keeps a 0.8 scaffold's tracked files and hides its local ones, and points to the upgrade preview", () => {
     const f = fixture();
     mkdirSync(join(f.root, ".mex", "context"), { recursive: true });
     writeFileSync(join(f.root, ".mex", "ROUTER.md"), "# Router\n");
@@ -212,7 +220,7 @@ describe("bare mex in a repository", () => {
     git(f.root, "add", "."); git(f.root, "commit", "-qm", "0.8 scaffold");
     const result = f.run();
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("This repo has MEX 0.8 project files; `mex hub` opens them.");
+    expect(result.stdout).toContain("This repo has MEX 0.8 files. Run mex upgrade to bring them into 0.9 (preview first, nothing changes until you apply).");
     localState(f.root);
     expect(f.status()).toBe("");
     writeFileSync(join(f.root, ".mex", "ROUTER.md"), "# Router, edited\n");

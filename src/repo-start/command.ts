@@ -13,6 +13,9 @@ import type { CheckoutRow, RecordWriter } from "../record/index.js";
 import { detectCaller, type Caller } from "./caller.js";
 import { classifyPlace, displayPath, type Place } from "./place.js";
 import { renderDone, renderFindings, renderHeader, renderNotes, screenMode, type Finding } from "./screen.js";
+import { noteExample, renderNext } from "./screen.js";
+import { readBoundedTextFile } from "../knowledge/files.js";
+import type { RuleScan } from "../knowledge/rule-files.js";
 import type { FinishJob } from "./finish.js";
 
 /** Test-only: kill the process at a step boundary to prove each one leaves a clean state. */
@@ -72,7 +75,7 @@ function checkoutOn(row: CheckoutRow, now = Date.now()): boolean {
 }
 
 const AGENT_NAMES = { "claude-code": "Claude Code", codex: "Codex" } as const;
-const MEMORY_NAMES = { "claude-code": "Claude", codex: "Codex" } as const;
+const MEMORY_NAMES = AGENT_NAMES;
 function list(names: string[]): string {
   return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
@@ -111,16 +114,37 @@ async function readAgentMemory(root: string): Promise<NotesFound | undefined> {
 }
 
 /** Read the repo's rule files (knowledge-05) and save their scan; the line names `mex rules` when some need review. */
-async function readRules(root: string, listing?: Promise<string[] | undefined>): Promise<{ files: number; conflicts: number; line: string } | undefined> {
+export function ruleFindings(cache: RuleScan, root: string): Finding[] {
+  const review = cache.review.filter(item => item.kind === "conflict" || item.kind === "stale");
+  const stale = review.filter(item => item.kind === "stale").length;
+  const details = review.slice(0, 3).map(item => {
+    const locations = item.paths.map(path => {
+      try {
+        const lines = readBoundedTextFile(join(root, path), 1024 * 1024)?.split(/\r?\n/u) ?? [];
+        // Review owns the diagnosis; this lookup only locates its existing message in the file.
+        const command = /Names the command "([^"]+)"/u.exec(item.message)?.[1];
+        const ref = /Mentions (.+), which doesn't exist/u.exec(item.message)?.[1];
+        const index = lines.findIndex(line => command ? line.includes(command) : ref ? line.includes(ref) : item.heading ? line.replace(/^#+\s*/u, "").trim() === item.heading : line.trim() !== "");
+        return index >= 0 ? `${path}:${index + 1}` : path;
+      } catch { return path; }
+    });
+    const reason = item.message.replace(/^Names the command "([^"]+)", which the repo doesn't define\.$/u, "`$1`: command is not defined")
+      .replace(/^Mentions (.+), which doesn't exist\.$/u, "`$1`: file not found");
+    return `${locations.join(", ")}  ${reason}`;
+  });
+  if (review.length > 3) details.push(`… and ${review.length - 3} more: mex rules`);
+  return [
+    ...(review.length ? [{ state: "attention" as const, text: `${review.length} ${review.length === 1 ? "line in your rule files" : "lines in your rule files"} ${stale === review.length ? review.length === 1 ? "is out of date" : "are out of date" : stale ? "are out of date or disagree" : review.length === 1 ? "disagrees" : "disagree"}`, details }] : []),
+    { state: "ok", text: `${cache.files.length} rule ${cache.files.length === 1 ? "file" : "files"} read (${cache.files.map(file => file.path).join(", ")})${review.length ? "" : "; they agree"}` },
+  ];
+}
+
+async function readRules(root: string, listing?: Promise<string[] | undefined>): Promise<{ files: number; conflicts: number; findings: Finding[] } | undefined> {
   try {
     const { refreshRuleFiles } = await import("../knowledge/rule-cache.js");
     const cache = refreshRuleFiles({ projectPath: root }, new Date(), await listing);
     const conflicts = cache.review.filter(item => item.kind === "conflict").length;
-    const stale = cache.review.filter(item => item.kind === "stale").length;
-    const parts = [`${cache.files.length} rule ${cache.files.length === 1 ? "file" : "files"} read`];
-    if (conflicts) parts.push(`${conflicts} ${conflicts === 1 ? "disagrees" : "disagree"}`);
-    if (stale) parts.push(`${stale} ${stale === 1 ? "mention" : "mentions"} out of date`);
-    return { files: cache.files.length, conflicts, line: `${parts.join("; ")}${conflicts || stale ? ", see `mex rules`" : ""}` };
+    return { files: cache.files.length, conflicts, findings: ruleFindings(cache, root) };
   } catch { return undefined; }
 }
 
@@ -197,6 +221,8 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   const notes: string[] = [];
   const finishJobs: FinishJob[] = [];
   const waiting = options.wait !== false;
+  let example: string | undefined;
+  let learning: string | undefined;
   let writer: RecordWriter | undefined = openRecord();
   let projectId: string, checkout: CheckoutRow, hidden = false;
   const git = place.kind === "git";
@@ -212,6 +238,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       projectId = turnedOn.projectId; checkout = turnedOn.checkout;
     }
     killAt("registered", env);
+    learning = writer.setting("global", "learning.statements");
     if (!checkoutOn(checkout)) {
       write(`MEX is off for this ${git ? "repo" : "folder"}${checkout.state === "off until" ? ` until ${checkout.off_until}` : ""}. Run \`mex on\` to turn it back on.`);
       return { exitCode: 0, place: place.kind, projectId, turnedOn: false };
@@ -251,6 +278,8 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
 
       // The free step: local reads only, no network, no model, no repository command.
       const recipes = await readRecipes(checkout.path, projectId, env);
+      const test = recipes?.recipes.find(recipe => recipe.purpose === "test" && recipe.local === "yes") ?? recipes?.recipes.find(recipe => recipe.purpose === "test");
+      example = noteExample(test?.command, test?.package, env);
       if (recipes) {
         const { recipeSummary } = await import("./recipes/index.js");
         const summary = recipeSummary(recipes);
@@ -258,10 +287,10 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         for (const note of summary.notes.slice(0, 3)) findings.push({ state: "attention", text: note });
       }
       const rules = await readRules(checkout.path, listing);
-      if (rules && rules.files > 0) findings.push({ state: "ok", text: rules.line });
+      if (rules && rules.files > 0) findings.push(...rules.findings);
       const memory = await readAgentMemory(checkout.path);
       if (memory && memory.count > 0) {
-        findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory` });
+        findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory, offered to your agents as hints` });
       }
       killAt("free-step", env);
       if (shallow) findings.push({ state: "attention", text: "Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)" });
@@ -294,7 +323,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     }
   } finally { writer?.close(); }
 
-  if (git && existsSync(join(checkout.path, ".mex", "ROUTER.md"))) notes.push("This repo has MEX 0.8 project files; `mex hub` opens them.");
+  if (git && existsSync(join(checkout.path, ".mex", "ROUTER.md"))) notes.push("This repo has MEX 0.8 files. Run mex upgrade to bring them into 0.9 (preview first, nothing changes until you apply).");
   if (hooks.note) notes.push(hooks.note);
   notes.push(...hooks.notices);
   const name = basename(displayPath(checkout.path));
@@ -302,6 +331,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   const finishing = waiting && finishJobs.length > 0;
   for (const line of renderHeader({ name, ...(finishing ? {} : { ms: elapsed() }), costUsd: 0, hidden }, mode)) write(line);
   if (mode.color) write("");
+  if (caller === "person" && process.stdout.isTTY) for (const line of renderNotes(["Found"], mode)) write(line);
   for (const line of renderFindings(findings, mode)) write(line);
 
   let exitNow = false, exitCode = 0;
@@ -328,6 +358,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     }
   }
   for (const line of renderNotes(notes, mode)) write(line);
+  for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning, example }, mode)) write(line);
   if (waiting && finishJobs.length && !exitNow) for (const line of renderDone(elapsed(), mode)) write(line);
   const ended = exitNow ? { exitNow: true as const } : {};
 
