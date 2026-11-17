@@ -54,6 +54,8 @@ Pre-release on npm's `next` tag; 0.8.5 stays on `latest`.
 - Run through `npx`, MEX no longer installs hooks into npm's temporary cache; it asks for `npm i -g mex-agent@next` instead.
 - New commands, rule-file sections and agent memory reach the agents without running `mex` again: a session start asks for a background re-read (at most every 30 minutes per repo, no model).
 - Agents save what you ask them to keep: each session starts with one line telling the agent to save a lasting fact, rule or decision you state, or anything you ask it to remember, with `mex note` in your words. Such notes read `[Claude Code noted, …]` or `[Codex noted, …]`, never `[you said]`, until you `mex edit` them. Typing `mex note:` yourself still saves your own words.
+- A rule stated in passing ("we always use pnpm here") is quoted back to the agent for that turn, so it can keep it with `mex note`. Agents also keep non-obvious things they verify, such as how to run something.
+- The command check no longer removes a tool named in a sentence ("use pnpm in this repo", "node 22 for builds"); it still removes commands the repo doesn't define.
 
 ## [0.8.5] - 2026-10-29
 

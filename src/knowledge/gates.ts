@@ -87,6 +87,10 @@ export function sanitizeText(value: string, source: References): string {
     const split = value.search(end);
     const command = (split < 0 ? value : value.slice(0, split)).trim();
     const rest = split < 0 ? "" : value.slice(split);
+    // "use pnpm in this repo", "npm or yarn", "node 22 for builds": a sentence about a
+    // tool, not a command. Its next word is prose or a version, never an argument.
+    const next = command.split(/\s+/u)[1]?.toLowerCase().replace(/[^a-z0-9.-]/gu, "") ?? "";
+    if (!next || PROSE_AFTER_PROGRAM.has(next) || /^\d/u.test(next)) return prefix + value;
     return prefix + (commandExists(command, source) ? command : "[unverified command removed]") + gateRest(rest);
   };
   // After a command, a plain word may lead to another one ("npm test before
@@ -96,6 +100,12 @@ export function sanitizeText(value: string, source: References): string {
   text = text.replace(new RegExp(`(^|\\n|\\b(?:run|runs|running|execute|executes|using|with|use)\\s+)((?:${programs})\\s+[^\\n\\0]+)`, "giu"), (_all, prefix: string, value: string) => check(prefix, value));
   return text.replace(/\0(\d+)\0/gu, (_all, index: string) => codes[Number(index)]);
 }
+
+/** Words that follow a program name in prose ("use pnpm in this repo") but never start its arguments. */
+const PROSE_AFTER_PROGRAM = new Set(["in", "on", "at", "for", "to", "from", "with", "without", "and", "or", "nor", "but", "as", "by", "of",
+  "the", "a", "an", "instead", "over", "here", "there", "everywhere", "only", "not", "never", "always", "is", "are", "was", "were", "be",
+  "it", "this", "that", "these", "those", "we", "you", "our", "your", "its", "so", "also", "too", "rather", "than", "like", "unless",
+  "when", "before", "after", "because", "if", "version", "versions", "anymore", "any", "all", "everything"]);
 
 /** Gates apply on writes and reads; editing learned files by hand cannot bypass them. */
 export function gateEntry(input: KnowledgeEntry, source: References): KnowledgeEntry {

@@ -61,6 +61,11 @@ describe("deterministic entry gates", () => {
     expect(sanitizeText("Run npm test && rm -rf / before pushing", source)).not.toContain("rm -rf");
     // Prose after a plain word is not a command.
     expect(sanitizeText("Reading all JavaScript before Python changes root Python version precedence.", source)).toBe("Reading all JavaScript before Python changes root Python version precedence.");
+    // A sentence about a tool is not a command: its next word is prose or a version.
+    for (const prose of ["We always use pnpm in this repo, never npm or yarn.", "Use node 22 for builds.", "Use git with signed commits only.", "Prefer bun over node for scripts."]) {
+      expect(sanitizeText(prose, source), prose).toBe(prose);
+    }
+    expect(sanitizeText("Run npm frobnicate before pushing.", source)).toBe("Run [unverified command removed] before pushing.");
   });
   it("does not let learned entries validate their own commands", () => {
     mkdirSync(join(root, ".mex/learned"), { recursive: true });

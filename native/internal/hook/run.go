@@ -332,6 +332,13 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		}
 		reply.Context += line
 	}
+	// A rule stated in passing, quoted back so the agent can keep it.
+	if line := delivery.RulePrompt(ev); line != "" && !failed {
+		if reply.Context != "" {
+			reply.Context += "\n\n"
+		}
+		reply.Context += line
+	}
 	noticeID := ""
 	var adviceNoticeIDs []string
 	if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.PersonLine && !failed {

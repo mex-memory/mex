@@ -27,7 +27,7 @@ const Priority = "Priority: current request > your notes > repo instructions > t
 
 // SaveLine tells the agent how something the person wants kept reaches later
 // sessions and the other agents. Notes it saves are labelled as the agent's.
-const SaveLine = `When the person states a lasting fact, rule or decision about this repo, or asks you to remember something, save it in their words: mex note "<one sentence>". Not one-off requests.`
+const SaveLine = `Keep what later sessions need with mex note "<one sentence>": a lasting fact, rule or decision the person states or asks you to remember (in their words), or something non-obvious you verified about this repo, such as how to run something or a trap you hit. Not one-off requests or task details.`
 
 // TokenBound uses UTF-8 bytes as a conservative token upper bound. Unlike a
 // characters/4 estimate this also holds for punctuation and non-Latin text.
