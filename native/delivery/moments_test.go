@@ -413,6 +413,9 @@ func TestVerdictTable(t *testing.T) {
 		cell{"recipe", "team", held, "full"}, cell{"recipe", "team", changed, "full"}, cell{"recipe", "team", broken, "rederived"}, cell{"recipe", "team", unknown, "full"},
 		cell{"hint", "hint", held, "full"}, cell{"hint", "hint", changed, "withheld"}, cell{"hint", "hint", broken, "withheld"}, cell{"hint", "hint", unknown, "full"},
 		cell{"rule", "personal", held, "full"}, cell{"rule", "personal", changed, "full"}, cell{"rule", "personal", broken, "withheld"}, cell{"rule", "personal", unknown, "full"},
+		// A personal fact follows the code-fact row once its checks say the
+		// code changed; not yet evaluated, it is the user's own words.
+		cell{"fact", "personal", held, "full"}, cell{"fact", "personal", changed, "pointer"}, cell{"fact", "personal", broken, "withheld"}, cell{"fact", "personal", unknown, "full"},
 	)
 	for _, c := range cells {
 		t.Run(c.kind+"/"+c.level+"/"+c.verdict, func(t *testing.T) {
