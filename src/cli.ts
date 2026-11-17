@@ -1278,6 +1278,16 @@ configCmd
         const writer = openRecord();
         try { setLearningSharing(writer, value, process.cwd()); } finally { writer.close(); }
         console.log(value === "manual" ? "Learned notes stay personal until mex share." : "Eligible learned notes can reach this shared repository after their diff is shown.");
+      } else if (key === "learning.statements") {
+        if (value !== "on" && value !== "off") throw new Error("Use on or off for learning.statements.");
+        const { openRecord } = await import("./record/index.js");
+        const writer = openRecord({ create: true });
+        try {
+          writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES('global','learning.statements',?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(value);
+        } finally { writer.close(); }
+        console.log(value === "on"
+          ? "MEX now learns lasting statements from what you type, in the background with your agent's smallest model, at most 3% of your usage. Turn off: mex config set learning.statements off"
+          : "MEX no longer learns from what you type. Notes you save with mex note still get their checks.");
       } else if (key === "delivery.aliases") {
         const { openRecord } = await import("./record/index.js");
         const { setDeliveryAliases } = await import("./controls/index.js");

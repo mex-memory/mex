@@ -139,6 +139,9 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
       if (meta?.transcript) transcripts.set(row.session_id, { path: meta.transcript, agent: meta.agent === "claude-code" ? "claude" : "codex" });
       return true;
     });
+    // Learning from typed statements is opt-in: while it is off the filter
+    // only gives explicit notes their checks, and typed text never reaches it.
+    if (!statementsOn(writer)) eligible.length = 0;
     if (scan) scan.deferred = !cheap && eligible.length < 20 ? eligible.map(r => r.id).slice(0, 19) : [];
     const notes = personalNotes(writer, project);
     if (!notes.length && (!eligible.length || (!cheap && eligible.length < 20 && Date.parse(eligible[0]!.ts) > now - FILTER_LIMITS.ageMs))) return undefined;
@@ -183,6 +186,28 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
     return input;
   } finally { hooks?.close(); }
 }
+/** Learning from what people type runs only when they turn it on (`mex config set learning.statements on`). */
+export function statementsOn(writer: Pick<RecordWriter, "setting">): boolean {
+  return writer.setting("global", "learning.statements") === "on";
+}
+
+/**
+ * With statement learning off, typed rows are never read by the filter, so
+ * they count as handled: the journal prefix can still be pruned, and turning
+ * learning on later starts from new text rather than old sessions.
+ */
+export function acknowledgeTyped(writer: RecordWriter, project: string, checkout: string): void {
+  const hooks = openHooksReadOnly({ home: writer.location.home });
+  try {
+    if (!hooks || hooks.diagnostic) return;
+    const rows = hooks.all<{ session_id: string; last: number }>(`SELECT j.session_id, MAX(j.id) AS last FROM journal j JOIN sessions s ON s.session_id=j.session_id
+      WHERE s.project_id=? AND s.checkout=? AND j.kind='typed' GROUP BY j.session_id LIMIT 4096`, project, checkout);
+    for (const row of rows) if (row.last > acknowledged(writer, project, row.session_id))
+      writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(project, ackKey(row.session_id), String(row.last));
+  } finally { hooks?.close(); }
+  advanceConsumed(writer, project);
+}
+
 /** Only a fully acknowledged prefix may be pruned by Go, including other worktrees. */
 export function advanceConsumed(writer: RecordWriter, project: string): void {
   const hooks = openHooksReadOnly({ home: writer.location.home });
