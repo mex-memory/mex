@@ -107,10 +107,20 @@ export function readLegacyScaffold(projectRoot: string): LegacySnapshot {
     const ids = new Set<string>();
     const document = (source: LegacySource, path: string, type = kind(path)): void => {
       const parsed = parseWikiMarkdown({ path, text: source.text });
+      // A document the parser can't read stays where it is for people and
+      // yields no entries; it doesn't hold up every other document's upgrade.
+      if (parsed.diagnostics.some(d => d.code === "WIKI_PARSE_ERROR")) {
+        snapshot.retained.push(source);
+        report("LEGACY_DOCUMENT_UNREADABLE", source.path, undefined, "info");
+        return;
+      }
       snapshot.documents.push({ ...source, kind: type, parsed });
       for (const diagnostic of parsed.diagnostics) {
+        // Root-only groundings are the older 0.8 shape; the decoder already
+        // reads them as the file entity's own, so they need no person.
+        const severity = diagnostic.code === "GROUNDING_MIXED_SHAPE" && diagnostic.severity !== "warning" ? "info" : diagnostic.severity;
         // Codes and locations only. Parser messages can contain private prose.
-        report(diagnostic.code, source.path, undefined, diagnostic.severity);
+        report(diagnostic.code, source.path, undefined, severity);
       }
       // Indexing tolerates malformed root groundings by skipping them. Upgrade
       // must not advertise a complete conversion input after losing evidence.
