@@ -23,6 +23,11 @@ function hook(event: string, id: string, extra: object = {}, agent = "claude-cod
   return execFileSync(binary, [agent, event], { input: JSON.stringify({ session_id: id, hook_event_name: event, cwd: root, ...extra }),
     cwd: root, encoding: "utf8", env: { ...process.env, MEX_HOME: user, MEX_BACKGROUND: "0", MEX_OFF: "0", MEX_TELEMETRY: "0" } });
 }
+function typedRow(): boolean {
+  const reader = openHooksReadOnly(options());
+  try { return !!reader?.get("SELECT 1 FROM journal WHERE session_id=? AND kind='typed' LIMIT 1", session); }
+  catch { return false; } finally { reader?.close(); }
+}
 function candidate(): FilterCandidate {
   const reader = openHooksReadOnly(options())!;
   try {
@@ -43,7 +48,11 @@ beforeEach(() => {
   writer = openRecord(options()); project = writer.checkout(root)!.project_id;
   // These cases exercise learning from typed statements, which is opt-in.
   writer.db.prepare("INSERT OR REPLACE INTO settings(scope,key,value) VALUES('global','learning.statements','on')").run();
-  hook("UserPromptSubmit", session, { prompt: words });
+  // The first hook call also creates hooks.db inside the hook's 250 ms write
+  // budget. On a slow runner it can run out and fail open, as designed; the
+  // next prompt completes it. Retry until the typed row is there.
+  for (let tries = 0; tries < 5 && !typedRow(); tries++) hook("UserPromptSubmit", session, { prompt: words });
+  expect(typedRow()).toBe(true);
 });
 afterEach(() => { writer.close(); vi.unstubAllEnvs(); rmSync(base, { recursive: true, force: true }); });
 
