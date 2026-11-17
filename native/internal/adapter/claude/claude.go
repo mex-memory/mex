@@ -20,6 +20,22 @@ func init() { adapter.Register(Profile{}) }
 
 type Profile struct{}
 
+func (Profile) ParseInstructionLoad(nativeEvent string, raw []byte) (adapter.InstructionLoad, bool, error) {
+	if nativeEvent != "InstructionsLoaded" {
+		return adapter.InstructionLoad{}, false, nil
+	}
+	var p struct {
+		SessionID string `json:"session_id"`
+		AgentID   string `json:"agent_id"`
+		Cwd       string `json:"cwd"`
+		Path      string `json:"file_path"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return adapter.InstructionLoad{}, true, err
+	}
+	return adapter.InstructionLoad{Event: contract.Event{Agent: Agent, SessionID: p.SessionID, AgentID: p.AgentID, Cwd: p.Cwd}, Path: absPath(p.Cwd, p.Path)}, true, nil
+}
+
 var caps = adapter.Capabilities{
 	Agent: Agent,
 	Kinds: []adapter.KindSupport{
@@ -69,11 +85,14 @@ type payload struct {
 	HookEventName  string          `json:"hook_event_name"`
 	AgentID        string          `json:"agent_id"`
 	Source         string          `json:"source"`
+	Model          string          `json:"model"`
+	AgentType      string          `json:"agent_type"`
 	Prompt         string          `json:"prompt"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
 	ToolResponse   json.RawMessage `json:"tool_response"`
 	Error          string          `json:"error"`
+	IsInterrupt    bool            `json:"is_interrupt"`
 	CompactSummary string          `json:"compact_summary"`
 	ToolCalls      []batchCall     `json:"tool_calls"`
 }
@@ -100,6 +119,8 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		AgentID:    p.AgentID,
 		Cwd:        p.Cwd,
 		Transcript: p.TranscriptPath,
+		Model:      p.Model,
+		AgentType:  p.AgentType,
 	}
 	switch kind {
 	case contract.PostCompact:
@@ -118,7 +139,7 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		ev.Tool = &t
 	case contract.PostToolFailure:
 		t := parseTool(p.ToolName, p.ToolInput, p.Cwd)
-		t.Output = &contract.ToolOutput{Text: p.Error, OK: false, ExitCode: exitCode(p.Error)}
+		t.Output = &contract.ToolOutput{Text: p.Error, OK: false, ExitCode: exitCode(p.Error), Interrupted: p.IsInterrupt}
 		ev.Tool = &t
 	case contract.PostToolBatch:
 		ev.Batch = make([]contract.Tool, 0, len(p.ToolCalls))
@@ -142,6 +163,8 @@ type claudeInput struct {
 	Command   string  `json:"command"`
 	Pattern   string  `json:"pattern"`
 	Path      string  `json:"path"`
+	Glob      string  `json:"glob"`
+	Type      string  `json:"type"`
 }
 
 func parseTool(name string, rawInput json.RawMessage, cwd string) contract.Tool {
@@ -165,7 +188,10 @@ func parseTool(name string, rawInput json.RawMessage, cwd string) contract.Tool 
 		t.Input = contract.ToolInput{Command: in.Command}
 	case "Grep":
 		t.Name = contract.ToolSearch
-		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path)}
+		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path), Filter: in.Glob}
+		if t.Input.Filter == "" && in.Type != "" {
+			t.Input.Filter = "type:" + in.Type
+		}
 	case "Glob":
 		t.Name = contract.ToolGlob
 		t.Input = contract.ToolInput{Pattern: in.Pattern, Path: absPath(cwd, in.Path)}
@@ -362,15 +388,45 @@ func replaceInput(support adapter.KindSupport, tool *contract.Tool, in contract.
 }
 
 // replaceOutput builds updatedToolOutput. Its value must match the tool's own
-// output shape, which MEX only knows for the shell tools.
+// output shape, which MEX knows for the shell tools and for Read of a text
+// file, where the replacement becomes the file content the model sees.
 func replaceOutput(support adapter.KindSupport, tool *contract.Tool, out contract.ToolOutput) (json.RawMessage, bool) {
-	if !support.ReplaceOutput || tool == nil || tool.Name != contract.ToolShell {
+	if !support.ReplaceOutput || tool == nil {
 		return nil, false
 	}
-	b, err := json.Marshal(map[string]any{
-		"stdout": out.Text, "stderr": "", "interrupted": false, "isImage": false,
-	})
-	return b, err == nil
+	switch tool.Name {
+	case contract.ToolShell:
+		b, err := json.Marshal(map[string]any{
+			"stdout": out.Text, "stderr": "", "interrupted": false, "isImage": false,
+		})
+		return b, err == nil
+	case contract.ToolRead:
+		if tool.Output == nil {
+			return nil, false
+		}
+		var resp map[string]json.RawMessage
+		if json.Unmarshal([]byte(tool.Output.Text), &resp) != nil {
+			return nil, false
+		}
+		var kind string
+		var file map[string]any
+		if json.Unmarshal(resp["type"], &kind) != nil || kind != "text" || json.Unmarshal(resp["file"], &file) != nil || file == nil {
+			return nil, false
+		}
+		lines := strings.Count(out.Text, "\n")
+		if out.Text != "" && !strings.HasSuffix(out.Text, "\n") {
+			lines++
+		}
+		file["content"], file["numLines"], file["startLine"] = out.Text, lines, 1
+		encoded, err := json.Marshal(file)
+		if err != nil {
+			return nil, false
+		}
+		resp["file"] = encoded
+		b, err := json.Marshal(resp)
+		return b, err == nil
+	}
+	return nil, false
 }
 
 // absPath gives tool paths one form across agents and OSes; "" stays "".

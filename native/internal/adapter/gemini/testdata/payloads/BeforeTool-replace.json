@@ -1,0 +1,14 @@
+{
+  "session_id": "g-91ab",
+  "transcript_path": "/home/dev/.gemini/tmp/shop/chats/session-g-91ab.json",
+  "cwd": "/home/dev/shop",
+  "timestamp": "2026-11-15T10:00:00.000Z",
+  "hook_event_name": "BeforeTool",
+  "tool_name": "replace",
+  "tool_input": {
+    "file_path": "/home/dev/shop/src/cart.ts",
+    "old_string": "a",
+    "new_string": "b"
+  },
+  "original_request_name": "replace"
+}

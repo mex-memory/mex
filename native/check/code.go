@@ -112,7 +112,25 @@ func (ev *Evaluator) fingerprint(file, symbol string) (string, CheckResult, bool
 	if !ev.spanTrusted(file, data, s.Start, s.Name) {
 		return "", CheckResult{Status: Floor, Reason: file + " changed since the last parse"}, false
 	}
-	return fingerprintSpan(data, languageOf(file), s.Start, s.End, s.Kind, s.Name), CheckResult{}, true
+	start, end := overloadSpan(outline.Symbols, at)
+	return fingerprintSpan(data, languageOf(file), start, end, s.Kind, s.Name), CheckResult{}, true
+}
+
+// overloadSpan widens a symbol's span over every declaration with the same
+// name and parent: TypeScript overload signatures come before the body, and
+// fingerprinting only the first signature would never see the body change.
+// A symbol declared once keeps its own span, so its fingerprint is unchanged.
+func overloadSpan(symbols []index.Symbol, at int) (start, end int) {
+	s := symbols[at]
+	start, end = s.Start, s.End
+	sameParent := func(a, b *int) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
+	for i, o := range symbols {
+		if i == at || o.Name != s.Name || o.Kind != s.Kind || !sameParent(o.Parent, s.Parent) {
+			continue
+		}
+		start, end = min(start, o.Start), max(end, o.End)
+	}
+	return start, end
 }
 
 // spanTrusted guards against an index older than the file: when the hashes

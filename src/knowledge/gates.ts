@@ -8,7 +8,7 @@ const SECRETS = [
   /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/u,
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u,
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/u,
-  /\b(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|authorization)\s*[:=]\s*["']?(?:Bearer\s+)?[A-Za-z0-9_+\/.=-]{8,}/iu,
+  /\b(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|authorization)["']?\s*[:=]\s*["']?(?:Bearer\s+)?[A-Za-z0-9_+\/.=-]{8,}/iu,
   /https?:\/\/[^\s/@:]+:[^\s/@]+@/iu,
 ];
 export function hasSecret(text: string): boolean { return SECRETS.some(pattern => pattern.test(text)); }
@@ -22,6 +22,44 @@ export function assertNoSecrets(value: unknown): void {
 }
 
 const commandStart = /\b(?:npm|pnpm|yarn|npx|bun|node|python3?|pip3?|git|go|cargo|make|cmake|curl|wget|bash|sh|sudo|rm|chmod|powershell|pwsh|cmd)\s+/u;
+/** Command substitution, or piping into an interpreter: always something to run. */
+const runsSomething = /\$\(|`|\|\s*(?:sh|bash|zsh|dash|pwsh|powershell|iex|cmd|python3?|node|perl|ruby)\b/iu;
+/**
+ * Syntax a shell line does not contain but source code does: calls and
+ * literals, arrows, strict or relational comparisons, optional chaining,
+ * nullish coalescing, assignment, negation, `instanceof` and object keys.
+ * For example `new Hono()`, `a && !b`, `x >= 0`, `strict: true`, `count = 5`.
+ */
+const codeOnly = /[(){}[\]]|=>|[=!]==?|[<>]=|\?\.|\?\?|\binstanceof\b|\s=\s|^!|\s!\w|^[\w$'"]+\??:\s/u;
+/** A program name or a path to one: `make`, `deltree`, `Remove-Item`, `tools\run.exe`, `/usr/bin/env`. */
+const program = /^(?:[A-Za-z][\w+-]*(?:\.(?:exe|cmd|bat|com|ps1|sh|py))?|[\w.~-]*[\\/][\w.\\/-]+)$/u;
+/** An argument that targets a flag, path, file or drive. */
+const target = /^(?:--?\w|[\\/~]|[A-Za-z]:)|[\\/.]\w/u;
+/**
+ * An inline code span that could be pasted into a shell. Every one of these
+ * must match a repository-owned command or it is removed. Source code and
+ * prose pass through: a shell never runs `a && !b` or "Could not connect".
+ */
+export function looksLikeCommand(code: string): boolean {
+  const text = code.trim();
+  if (commandStart.test(text) || /^(?:\.\/|\.\.\/)/u.test(text) || runsSomething.test(text)) return true;
+  // Each part of a chain is judged alone: `check(x); deltree c:` still runs deltree.
+  return text.split(/\s*(?:;|&&|\|\||\|)\s*/u).some(part => runnable(part));
+}
+function runnable(part: string): boolean {
+  if (/^(?:\.\/|\.\.\/)/u.test(part)) return true;
+  // `${NAME}` is a placeholder word in both a shell and a template string.
+  const text = part.replace(/\$\{[^{}]*\}/gu, "X");
+  if (!/\s/u.test(text) || codeOnly.test(text)) return false;
+  const [first, ...rest] = text.split(/\s+/u);
+  // camelCase or dotted names are identifiers; a program name is not.
+  if (!program.test(first) || /^[a-z]+[A-Z]/u.test(first)) return false;
+  const targets = rest.some(arg => target.test(arg));
+  // A sentence: capitalised without targets, or three or more plain words.
+  if (!targets && /^[A-Z]/u.test(first) && !first.includes("-")) return false;
+  if (!targets && rest.length >= 2 && rest.every(word => /^[a-z]+[.,]?$/u.test(word))) return false;
+  return true;
+}
 export function sanitizeText(value: string, source: References): string {
   let text = stripHidden(value);
   // Check links before shielding code spans: backticks are not a trust boundary.
@@ -37,10 +75,7 @@ export function sanitizeText(value: string, source: References): string {
     const command = line.trim().replace(/^\$\s+/u, "");
     return !command || commandExists(command, source) ? line : "[unverified command removed]";
   }).join("\n")));
-  text = text.replace(/`([^`\n]+)`/gu, (_all, code: string) => {
-    const looksLikeCommand = /\s/u.test(code) || commandStart.test(code) || /^(?:\.\/|\.\.\/)/u.test(code);
-    return save(looksLikeCommand && !commandExists(code, source) ? "[unverified command removed]" : `\`${code}\``);
-  });
+  text = text.replace(/`([^`\n]+)`/gu, (_all, code: string) => save(looksLikeCommand(code) && !commandExists(code, source) ? "[unverified command removed]" : `\`${code}\``));
   // Bare shell commands are checked as a whole, including chained suffixes.
   text = text.replace(/(^|\n|\b(?:run|runs|running|execute|executes|using|with|use)\s+)((?:npm|pnpm|yarn|npx|bun|node|python3?|pip3?|git|go|cargo|make|cmake|curl|wget|bash|sh|sudo|rm|chmod|powershell|pwsh|cmd)\s+[^\n\0]+)/giu, (_all, prefix: string, value: string) => {
     const split = value.search(/(?:[.!?](?=\s|$)|\s+(?:because|for which|so that)\b)/u);

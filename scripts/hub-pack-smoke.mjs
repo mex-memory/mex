@@ -312,7 +312,7 @@ try {
   run("git", ["commit", "--quiet", "-m", "add packed wiki fixture"], project);
   run(process.execPath, [cli, "graph", "rebuild", "--root", project, "--json"], project);
   run(process.execPath, [cli, "wiki", "rebuild-index", "--json"], project);
-  child = spawn(process.execPath, [cli, "--no-open"], {
+  child = spawn(process.execPath, [cli, "hub", "--no-open"], {
     cwd: project,
     env: { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" },
     stdio: ["ignore", "pipe", "pipe"],

@@ -4,12 +4,13 @@
  * or waits: with no index, or no row for a path, the answer says so and the
  * caller stays silent.
  */
-import { realpathSync } from "node:fs";
-import { isAbsolute, sep } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { isAbsolute, join, sep } from "node:path";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { absolutePath, realPath, shortHash } from "../record/project.js";
 import { globPrefix, globToRegExp, normalizeGlob } from "./glob.js";
-import { applyShifts, pendingShifts, shiftSpan, shiftedPathKeys } from "./shifts.js";
+import { resolveImport } from "./imports.js";
+import { applyShifts, pendingShifts, shiftSpan, shiftedPathKeys, type Shift } from "./shifts.js";
 import { checkoutKey, indexDirectory, openSnapshot, parseRecord, readPointer, type Pointer } from "./store.js";
 import type { FileRecord, Lang, NotIndexedReason, OutlineItem, ReadMiss, SymbolKind } from "./types.js";
 
@@ -79,12 +80,42 @@ export class IndexReader {
     return found ? parseRecord(row.hash!, row.lang!, found.data) : undefined;
   }
 
+  /**
+   * Relative imports between indexed files: importer → imported paths. Bounded
+   * by the index itself; read in the background only, never by a hook.
+   */
+  importEdges(limit = 50_000): Map<string, string[]> {
+    const rows = this.db.prepare(`SELECT p.path, r.data FROM paths p JOIN (SELECT hash,lang,data FROM main.records UNION ALL SELECT hash,lang,data FROM base.records) r
+      ON r.hash=p.hash AND r.lang=p.lang WHERE p.reason IS NULL`).iterate() as Iterable<{ path: string; data: string }>;
+    const known = new Set((this.db.prepare("SELECT path FROM paths WHERE reason IS NULL").all() as Array<{ path: string }>).map((row) => row.path));
+    const out = new Map<string, string[]>();
+    let edges = 0;
+    for (const row of rows) {
+      if (out.has(row.path)) continue;
+      let imports: Array<{ from: string }> = [];
+      try { imports = (JSON.parse(row.data) as { imports?: Array<{ from: string }> }).imports ?? []; } catch { continue; }
+      const targets: string[] = [];
+      for (const item of imports) {
+        const target = resolveImport(item.from, row.path, known);
+        if (target && target !== row.path && !targets.includes(target)) targets.push(target);
+      }
+      if (targets.length) {
+        out.set(row.path, targets);
+        edges += targets.length;
+        if (edges >= limit) break;
+      }
+    }
+    return out;
+  }
+
   outline(path: string): OutlineAnswer | Miss {
     const found = this.row(path);
     if ("not_indexed" in found) return found;
     const record = this.fileRecord(found.row);
     if (!record) return { path: found.rel, not_indexed: "not in the index" };
-    const shifted = applyShifts(record.outline, pendingShifts(this.directory, this.key, found.rel, found.row.mtime_ns));
+    const shifts = pendingShifts(this.directory, this.key, found.rel, found.row.mtime_ns);
+    if (this.changedOnDisk(found.rel, found.row.mtime_ns, shifts)) return { path: found.rel, not_indexed: "changed since the last parse" };
+    const shifted = applyShifts(record.outline, shifts);
     if (!shifted) return { path: found.rel, not_indexed: "changed since the last parse" };
     return { path: found.rel, as_of: this.asOf, symbols: shifted.outline, dropped: shifted.dropped };
   }
@@ -94,7 +125,34 @@ export class IndexReader {
     if ("not_indexed" in found) return found;
     const record = this.fileRecord(found.row);
     if (!record) return { path: found.rel, not_indexed: "not in the index" };
+    if (this.changedOnDisk(found.rel, found.row.mtime_ns, pendingShifts(this.directory, this.key, found.rel, found.row.mtime_ns))) return { path: found.rel, not_indexed: "changed since the last parse" };
     return { path: found.rel, lang: record.lang, is_test: found.row.is_test === 1, tokens: record.tokens, lines: record.lines, hash: record.hash };
+  }
+
+  /**
+   * A file changed since it was parsed in a way no recorded edit explains:
+   * its time on disk matches neither the parse nor an edit the hook saw.
+   * Freshness is decided per file served, never for the whole index.
+   */
+  private changedOnDisk(rel: string, parsed: string, shifts: readonly Shift[]): boolean {
+    let now: string;
+    try {
+      const stat = lstatSync(join(this.root, ...rel.split("/")), { bigint: true });
+      if (!stat.isFile()) return true;
+      now = stat.mtimeNs.toString();
+    } catch { return true; }
+    return now !== parsed && !shifts.some((shift) => shift.mtime_ns === now);
+  }
+
+  /** Import sources of every indexed file, at most `limit` files (layer rules read these). */
+  importsByFile(limit = 50_000): Array<{ path: string; from: string[] }> {
+    const rows = this.db.prepare("SELECT path,hash,lang,is_test,mtime_ns,reason FROM paths WHERE reason IS NULL AND hash IS NOT NULL ORDER BY path LIMIT ?").all(limit) as unknown as PathRow[];
+    const out: Array<{ path: string; from: string[] }> = [];
+    for (const row of rows) {
+      const record = this.fileRecord(row);
+      if (record?.imports.length) out.push({ path: row.path, from: record.imports.map(item => item.from) });
+    }
+    return out;
   }
 
   /** Every path in the checkout with this file name, indexed or not. */
@@ -111,7 +169,7 @@ export class IndexReader {
     const seen = new Set<string>();
     for (const row of rows) {
       const shifts = pendingShifts(this.directory, this.key, row.path, row.mtime_ns);
-      if (shifts.some((shift) => shift.unknown)) continue;
+      if (shifts.some((shift) => shift.unknown) || this.changedOnDisk(row.path, row.mtime_ns, shifts)) continue;
       const span = shiftSpan(row.start, row.end, shifts);
       if (!span) continue;
       const [start, end] = span;

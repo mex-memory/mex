@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { lstatSync, unlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import { openRecord, openRecordReadOnly, RecordReader, type RecordWriter } from "../record/index.js";
-import { absolutePath } from "../record/project.js";
+import { absolutePath, shortHash } from "../record/project.js";
 import { EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
 import { knowledgeProject } from "./context.js";
 import { containedDirectory, createEntryFile, readEntryFile, replaceEntryFile } from "./files.js";
@@ -135,6 +135,47 @@ export function readHints(options: MemoryOptions, now = new Date()): HintRead {
   } finally { reader.close(); }
 }
 
+/**
+ * The hook delivers an observed hint only when this mirror lists it for the
+ * agent, unexpired: `<record dir>/delivery-hints/<shortHash(project id)>.json`,
+ * `{"version":1,"agents":{"<agent>":[{"id","expires"}]}}`. It is written from
+ * readHints, so a listed hint passed the same checks a read does (its source
+ * still holds the claim, it isn't the agent's own memory, it isn't forgotten
+ * or retired). Observed hints carry no checks; the mirror stands in for their
+ * verdict. When it can't be written, it is removed: no mirror means no hints.
+ */
+export const HINT_MIRROR_AGENTS: readonly MemoryAgent[] = ["claude-code", "codex"];
+export function hintMirrorPath(recordDirectory: string, projectId: string): string {
+  return join(recordDirectory, "delivery-hints", `${shortHash(projectId)}.json`);
+}
+export function writeHintMirror(options: MemoryOptions, now = new Date()): void {
+  const project = knowledgeProject(options);
+  const path = hintMirrorPath(project.location.directory, project.projectId);
+  try {
+    const reader = openRecordReadOnly(options);
+    if (!reader) { removeMirror(path); return; }
+    let lastSeen: Map<string, number>, months: number;
+    try { lastSeen = new Map(states(reader, project.projectId).map(state => [state.id, state.lastSeen])); months = expiryMonths(reader, project.projectId); }
+    finally { reader.close(); }
+    const agents: Record<string, Array<{ id: string; expires: string }>> = {};
+    for (const agent of HINT_MIRROR_AGENTS) {
+      agents[agent] = readHints({ ...options, consumerAgent: agent }, now).entries.flatMap(hint => {
+        const seen = lastSeen.get(hint.entry.mex.id);
+        return seen === undefined ? [] : [{ id: hint.entry.mex.id, expires: new Date(hintExpiresAt(seen, months)).toISOString() }];
+      });
+    }
+    mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+    const temp = `${path}.${process.pid}.tmp`;
+    writeFileSync(temp, JSON.stringify({ version: 1, agents }), { mode: 0o600 });
+    renameSync(temp, path);
+  } catch {
+    removeMirror(path);
+  }
+}
+function removeMirror(path: string): void {
+  try { unlinkSync(path); } catch { /* absent already, or the hook reads nothing it can't parse */ }
+}
+
 function expireWithWriter(writer: RecordWriter, projectId: string, now: Date, roots: ReturnType<typeof memoryRoots>): { expired: number; retainedFiles: number } {
   const directory = hintDirectory(writer, projectId);
   if (!directory) return { expired: 0, retainedFiles: 0 };
@@ -178,14 +219,20 @@ export function expireHints(options: MemoryOptions, now = new Date()): { expired
     separateStorage(project.location.home, project.projectId, [...roots, ...all.map(state => ({ root: state.sourceRoot }))]);
   } finally { reader.close(); }
   const writer = openRecord(options);
-  try { return expireWithWriter(writer, writer.checkout(options.projectPath)!.project_id, now, roots); }
+  let result: { expired: number; retainedFiles: number };
+  try { result = expireWithWriter(writer, writer.checkout(options.projectPath)!.project_id, now, roots); }
   finally { writer.close(); }
+  writeHintMirror(options, now);
+  return result;
 }
 
 export function refreshHints(options: MemoryOptions, now = new Date(), setting?: number) {
   if (setting !== undefined && (!Number.isSafeInteger(setting) || setting < 1 || setting > 120)) throw new KnowledgeError("INVALID_SETTING", "Hint expiry must be between 1 and 120 calendar months.");
   const discovery = discoverMemory(options, now), project = knowledgeProject(options);
-  const context = references(project.root), prepared: Array<{ candidate: typeof discovery.candidates[number]; entry: KnowledgeEntry }> = [];
+  // The repository walk is only needed to check notes; most refreshes find none.
+  let walked: ReturnType<typeof references> | undefined;
+  const context = () => walked ??= references(project.root);
+  const prepared: Array<{ candidate: typeof discovery.candidates[number]; entry: KnowledgeEntry }> = [];
   const sourceChecks = new Map<string, boolean>();
   const allowedRoots = memoryRoots(options);
   separateStorage(project.location.home, project.projectId, allowedRoots);
@@ -194,10 +241,10 @@ export function refreshHints(options: MemoryOptions, now = new Date(), setting?:
       const sourceKey = `${candidate.agent}\n${candidate.sourceRoot}\n${candidate.sourcePath}\n${candidate.sourceHash}`;
       if (!sourceChecks.has(sourceKey)) sourceChecks.set(sourceKey, checkMemorySource(candidate, options, allowedRoots));
       if (!sourceChecks.get(sourceKey)) { discovery.skipped++; discovery.partial = true; continue; }
-      const text = sanitizeText(candidate.text, context);
+      const text = sanitizeText(candidate.text, context());
       const id = `mx_${createHash("sha256").update(`${candidate.agent}\n${claimHash(text)}`).digest("hex").slice(0, 32)}`;
       const entry = gateEntry({ mex: { id, kind: "hint", scope: ["**"], source: { type: "agent-memory", ref: candidate.ref }, evidence: "observed", one_line: text,
-        checks: [], status: "active", created: new Date(candidate.observedAt).toISOString().slice(0, 10) }, text }, context);
+        checks: [], status: "active", created: new Date(candidate.observedAt).toISOString().slice(0, 10) }, text }, context());
       prepared.push({ candidate, entry });
     } catch (error) {
       if (!(error instanceof KnowledgeError) || !["SECRET_FOUND", "INVALID_ENTRY"].includes(error.code)) throw error;
@@ -240,8 +287,11 @@ export function refreshHints(options: MemoryOptions, now = new Date(), setting?:
       put(writer, projectId, "knowledge.hints_status", { at: now.toISOString(), partial: discovery.partial, skipped: discovery.skipped, agents: discovery.agents });
       writer.db.exec("COMMIT");
     } finally { try { writer.db.exec("ROLLBACK"); } catch { /* already committed */ } }
-    return { imported, ...expireWithWriter(writer, projectId, now, allowedRoots), skipped: discovery.skipped, partial: discovery.partial, agents: discovery.agents };
-  } finally { writer.close(); }
+    const result = { imported, ...expireWithWriter(writer, projectId, now, allowedRoots), skipped: discovery.skipped, partial: discovery.partial, agents: discovery.agents };
+    writer.close();
+    writeHintMirror(options, now);
+    return result;
+  } finally { if (writer.db.isOpen) writer.close(); }
 }
 
 export function hintStatus(options: MemoryOptions) {
@@ -256,6 +306,9 @@ export function hintStatus(options: MemoryOptions) {
 }
 
 export function confirmHint(id: string, input: NoteInput, options: MemoryOptions, now = new Date()): PersonalEntry {
+  try { return confirmHintNow(id, input, options, now); } finally { writeHintMirror(options, now); }
+}
+function confirmHintNow(id: string, input: NoteInput, options: MemoryOptions, now: Date): PersonalEntry {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Invalid entry id.");
   const project = knowledgeProject(options), context = references(project.root);
   const text = sanitizeText(input.text, context);
@@ -284,6 +337,9 @@ export function confirmHint(id: string, input: NoteInput, options: MemoryOptions
 }
 
 export function forgetHint(id: string, reason: string, options: MemoryOptions, now = new Date(), action: "forget" | "wrong" = "forget"): Tombstone {
+  try { return forgetHintNow(id, reason, options, now, action); } finally { writeHintMirror(options, now); }
+}
+function forgetHintNow(id: string, reason: string, options: MemoryOptions, now: Date, action: "forget" | "wrong"): Tombstone {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Invalid entry id.");
   reason = stripHidden(reason);
   if (hasSecret(reason)) throw new KnowledgeError("SECRET_FOUND", "The retirement reason contains a possible secret.");

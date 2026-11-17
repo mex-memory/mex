@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { CI_VARIABLES } from "../src/repo-start/caller.js";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const cli = join(repo, "dist/cli.js");
@@ -40,8 +41,8 @@ afterEach(() => {
 
 describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReason ? ` (${skipReason})` : ""}`, { timeout: 35_000 }, () => {
   it.each([
-    { entry: "mex setup", command: ["setup"] },
-    { entry: "bare mex", command: [] },
+    { entry: "mex setup --legacy", command: ["setup", "--legacy"] },
+    { entry: "mex setup --cli", command: ["setup", "--cli"] },
   ])("$entry shows the ASCII banner and choices at 80x24 before any setup writes, then cancels cleanly", async ({ command }) => {
     const f = fixture("incomplete");
     // Without --mode both entries set up a code repository, which needs Git.
@@ -57,8 +58,8 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
   });
 
   it.each([
-    { entry: "mex setup", command: ["setup"] },
-    { entry: "bare mex", command: [] },
+    { entry: "mex setup --legacy", command: ["setup", "--legacy"] },
+    { entry: "mex setup --cli", command: ["setup", "--cli"] },
   ])("$entry in a folder without Git stops before the tool picker and writes nothing (#287)", async ({ command }) => {
     const f = fixture("incomplete");
     const result = await terminal(f, [], [], { columns: 80, rows: 24, command });
@@ -67,6 +68,61 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(result.output).not.toContain("Choose your AI tools");
     expect(readdirSync(f.project)).toEqual([]);
     expect(existsSync(f.record)).toBe(false);
+  });
+
+  it.each([
+    { entry: "bare mex", command: [] as string[] },
+    { entry: "mex setup", command: ["setup"] },
+  ])("$entry in a terminal draws the rich first screen at 80x24 and adds nothing to git", async ({ command }) => {
+    const f = fixture("incomplete");
+    Object.assign(f.env, { MEX_HOME: f.root, HOME: f.root, MEX_INSTALL_AUTO: "0", MEX_BACKGROUND: "0", MEX_OFFLINE: "1" });
+    delete f.env.CLAUDECODE; delete f.env.CODEX_THREAD_ID;
+    execFileSync("git", ["-c", "init.templateDir=", "init", "--quiet"], { cwd: f.project, stdio: "pipe", env: f.env });
+    const result = await terminal(f, [], [], { columns: 80, rows: 24, command });
+    expect(result.exitCode, result.output).toBe(0);
+    expect(result.output).toContain("MEX · project · $0 · nothing added to git");
+    // It waits for the file index and git history with a live line, then shows what they found.
+    expect(result.output).toMatch(/✓ Indexed \d+ files?/u);
+    expect(result.output).toContain("✓ Git history: no commits yet");
+    expect(result.output).toMatch(/Done in \d+\.\d s · \$0/u);
+    expect(result.raw).toMatch(/\x1b\[/u);
+    expect(result.output).not.toContain("Choose your AI tools");
+    expect(spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: f.project, encoding: "utf8" }).stdout).toBe("");
+  });
+
+  it.each([
+    { answer: "y", on: true },
+    { answer: "n", on: false },
+  ])("a person in a folder without git is asked sheet 59's question once; answering $answer", async ({ answer, on }) => {
+    const f = fixture("incomplete");
+    Object.assign(f.env, { MEX_HOME: f.root, HOME: f.root, MEX_INSTALL_AUTO: "0", MEX_BACKGROUND: "0", MEX_OFFLINE: "1" });
+    delete f.env.CLAUDECODE; delete f.env.CODEX_THREAD_ID;
+    const result = await terminal(f, [], [{ expect: "Turn on here? [y/n]", input: `${answer}\r` }], { columns: 100, rows: 30, command: [], unset: ["CLAUDECODE", "CODEX_THREAD_ID"] });
+    expect(result.exitCode, result.output).toBe(0);
+    expect(result.output).toContain("Not a git repo. MEX can remember notes, rules and recipes for agents here,");
+    expect(result.output.split("Turn on here? [y/n]").length).toBe(2);
+    if (on) {
+      expect(result.output).toContain("MEX · project · $0");
+      expect(existsSync(join(f.project, ".mex", "project.json"))).toBe(true);
+    } else {
+      expect(result.output).toContain("MEX stays off here.");
+      expect(readdirSync(f.project)).toEqual([]);
+    }
+  });
+
+  it.each([
+    { answer: "y", started: true },
+    { answer: "n", started: false },
+  ])("a person is asked the paid offer and only yes starts it ($answer)", async ({ answer, started }) => {
+    const f = fixture("incomplete");
+    const marker = join(f.root, "offer-started");
+    Object.assign(f.env, { MEX_HOME: f.root, HOME: f.root, MEX_INSTALL_AUTO: "0", MEX_BACKGROUND: "0", MEX_OFFLINE: "1", MEX_TEST_FAKE_OFFER: marker });
+    delete f.env.CLAUDECODE; delete f.env.CODEX_THREAD_ID;
+    execFileSync("git", ["-c", "init.templateDir=", "init", "--quiet"], { cwd: f.project, stdio: "pipe", env: f.env });
+    const result = await terminal(f, [], [{ expect: "Learn this repo more deeply from its history? about $0.10 (test). [y/n]", input: `${answer}\r` }], { columns: 100, rows: 30, command: [], unset: ["CLAUDECODE", "CODEX_THREAD_ID"] });
+    expect(result.exitCode, result.output).toBe(0);
+    expect(existsSync(marker)).toBe(started);
+    expect(result.output).toContain(started ? "Started the test offer." : "Not started. `mex test-fake-offer --start` starts it later.");
   });
 
   it("Ctrl+D on the configuration screen cancels without creating files", async () => {
@@ -403,13 +459,16 @@ function fixture(mode: "incomplete" | "failed" | "complete" | "hold"): Fixture {
     chmodSync(launcher, 0o755);
   }
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: [bin, dirname(process.execPath), process.env.PATH].join(":"), TERM: "xterm-256color", MEX_TELEMETRY: "0", DO_NOT_TRACK: "1", MEX_PTY_FAKE_MODE: mode, MEX_PTY_RECORD: record, MEX_PTY_BROWSER_RECORD: join(root, "browser-open") };
-  delete env.CI; delete env.NO_COLOR; delete env.FORCE_COLOR;
+  // The harness applies this env after unsetEnv, so a CI variable left here would come back:
+  // on GitHub's runners GITHUB_ACTIONS made the person at this terminal look like a script.
+  for (const name of CI_VARIABLES) delete env[name];
+  delete env.NO_COLOR; delete env.FORCE_COLOR;
   const f = { root, project, record, env };
   fixtures.push(f);
   return f;
 }
 
-function terminal(f: Fixture, extra: string[] = [], actions: Action[] = [], options: { columns?: number; rows?: number; defaultTool?: boolean; command?: string[] } = {}): Promise<Result> {
+function terminal(f: Fixture, extra: string[] = [], actions: Action[] = [], options: { columns?: number; rows?: number; defaultTool?: boolean; command?: string[]; unset?: string[] } = {}): Promise<Result> {
   return new Promise((resolve, reject) => {
     const child = execFile(pythonPath!, [harness], { encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) { reject(new Error(`PTY harness failed: ${error.message}\n${stderr}\n${stdout.slice(-4000)}`)); return; }
@@ -419,7 +478,7 @@ function terminal(f: Fixture, extra: string[] = [], actions: Action[] = [], opti
         resolve(result);
       } catch (error) { reject(error); }
     });
-    child.stdin!.end(JSON.stringify({ command: [process.execPath, f.cli ?? cli, ...(options.command ?? args(extra, options.defaultTool !== false))], cwd: f.project, env: f.env, unsetEnv: ["CI", "NO_COLOR", "FORCE_COLOR"], columns: options.columns ?? 140, rows: options.rows ?? 40, actions, timeoutMs: 25_000 }));
+    child.stdin!.end(JSON.stringify({ command: [process.execPath, f.cli ?? cli, ...(options.command ?? args(extra, options.defaultTool !== false))], cwd: f.project, env: f.env, unsetEnv: [...CI_VARIABLES, "NO_COLOR", "FORCE_COLOR", ...(options.unset ?? [])], columns: options.columns ?? 140, rows: options.rows ?? 40, actions, timeoutMs: 25_000 }));
   });
 }
 

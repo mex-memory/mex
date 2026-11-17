@@ -1,0 +1,16 @@
+{
+  "agent": "copilot",
+  "agent_version": "",
+  "kind": "prompt",
+  "session_id": "c0p1-5e55",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "prompt": {
+    "text": "fix the cart total",
+    "typed": true
+  },
+  "transcript": "",
+  "background": false
+}

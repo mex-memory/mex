@@ -53,6 +53,8 @@ type Event struct {
 	ProjectID    string    `json:"project_id"`
 	Checkout     string    `json:"checkout"`
 	Source       string    `json:"source,omitempty"`
+	Model        string    `json:"model,omitempty"`
+	AgentType    string    `json:"agent_type,omitempty"` // subagent_start: the subagent's type, where the agent says
 	Prompt       *PromptIn `json:"prompt,omitempty"`
 	Tool         *Tool     `json:"tool,omitempty"`
 	Batch        []Tool    `json:"batch,omitempty"`
@@ -89,10 +91,13 @@ type ToolInput struct {
 	Files   []PatchFile `json:"files,omitempty"`   // patch
 	Command string      `json:"command,omitempty"` // shell
 	Pattern string      `json:"pattern,omitempty"` // search, glob
+	// Filter is a search's file filter (a glob, or "type:<name>"), when it has one.
+	Filter string `json:"filter,omitempty"` // search
 }
 
 type PatchFile struct {
 	Path  string `json:"path"`
+	Kind  string `json:"kind,omitempty"` // "add", "update" or "delete"; empty when unknown
 	Hunks []Hunk `json:"hunks"`
 }
 
@@ -105,6 +110,8 @@ type ToolOutput struct {
 	Text     string `json:"text"`
 	OK       bool   `json:"ok"`
 	ExitCode *int   `json:"exit_code,omitempty"`
+	// Interrupted is set on a failure the person caused by stopping the tool.
+	Interrupted bool `json:"interrupted,omitempty"`
 }
 
 type Decision string

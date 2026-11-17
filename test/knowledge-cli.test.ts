@@ -1,8 +1,10 @@
+import { DatabaseSync } from "node:sqlite";
+import { openRecord } from "../src/record/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serializeEntry, parseEntry } from "../src/knowledge/entry.js";
 
@@ -36,9 +38,10 @@ describe("shipped knowledge commands", () => {
     for (const leading of [["--no-open"], ["--port", "4321"]]) {
       const result = run([...leading, "recall", "fixtures", "--json"], repo, true);
       expect(result.status, result.stderr).toBe(0); expect(result.stderr).toBe("");
-      expect(result.json()).toEqual({ ok: true, entries: [], truncated: false });
+      expect(result.json()).toEqual({ ok: true, entries: [], truncated: false, ranking: { engine: "legacy", reason: "native-binary-unavailable" } });
       expect(existsSync(mexBase)).toBe(false);
     }
+    const explained=run(["--no-open","what","--json"],repo,true);expect(explained.status,explained.stderr).toBe(0);expect(explained.json()).toMatchObject({ok:true,gave:0,items:[]});expect(existsSync(mexBase)).toBe(false);
     const missing = run(["--no-open", "expand", "mx_absent1", "--json"], repo, true);
     expect(missing.status).toBe(1); expect(missing.stderr).toBe("");
     expect(missing.json()).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
@@ -116,17 +119,26 @@ describe("shipped knowledge commands", () => {
     const original = serializeEntry({ mex: { id, kind: "rule", scope: ["**"], source: { type: "person", ref: "person typed this fact", quote: text }, evidence: "person", one_line: text, checks: [], status: "active", created: "2026-11-14" }, text });
     writeFileSync(file, original);
     const correction = "Fixtures use recorded data because seeds alone are insufficient.";
+    mkdirSync(join(repo, ".claude"));
+    // Explicit shared edits keep generated rules in the same working-tree
+    // change even when a live heartbeat defers background rebuilds.
+    const beats = join(mexBase, ".mex/heartbeats/claude-code");
+    mkdirSync(beats, { recursive: true });
+    writeFileSync(join(beats, "live-session"), JSON.stringify({ agent: "claude-code", cwd: repo }));
     const preview = run(["edit", id, correction, "--json"], repo, true);
     expect(preview.status, preview.stderr).toBe(0); expect(preview.json().applied).toBe(false);
-    expect(readFileSync(file, "utf8")).toBe(original); expect(existsSync(mexBase)).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(original);
     const changed = run(["edit", id, correction, "--apply", "--expect", preview.json().preview.revision, "--json"]);
     expect(changed.status, changed.stderr).toBe(0); expect(changed.json().entry.text).toBe(correction);
+    const native = join(repo, ".claude/rules/mex.md");
+    expect(readFileSync(native, "utf8")).toContain(correction);
+    expect(changed.json().native).toContain(".claude/rules/mex.md");
     const retirement = run(["forget", id, "No longer current.", "--json"]);
     expect(retirement.json().preview.diff).toContain("retired");
     expect(run(["forget", id, "No longer current.", "--apply", "--expect", retirement.json().preview.revision, "--json"]).status).toBe(0);
     expect(parseEntry(readFileSync(file, "utf8")).mex).toMatchObject({ status: "retired", retired: { reason: "No longer current." } });
+    expect(existsSync(native)).toBe(false);
     expect(run(["recall", "fixtures", "--json"]).json().entries).toEqual([]);
-    expect(existsSync(mexBase)).toBe(false);
   });
   it("imports read-only hints, excludes their host, and supports explicit confirmation and forgetting", () => {
     const directory = join(root, "claude-host/projects/fixture-project/memory"); mkdirSync(directory, { recursive: true });
@@ -165,7 +177,7 @@ describe("shipped knowledge commands", () => {
   });
   it("returns empty reads and controlled JSON errors without initializing storage", () => {
     const empty = run(["recall", "fixtures", "--json"]);
-    expect(empty.status, empty.stderr).toBe(0); expect(empty.json()).toEqual({ ok: true, entries: [], truncated: false });
+    expect(empty.status, empty.stderr).toBe(0); expect(empty.json()).toEqual({ ok: true, entries: [], truncated: false, ranking: { engine: "legacy", reason: "native-binary-unavailable" } });
     for (const [args, code] of [
       [["expand", "mx_absent1", "--json"], "NOT_FOUND"],
       [["expand", "../escape", "--json"], "INVALID_ID"],
@@ -177,4 +189,32 @@ describe("shipped knowledge commands", () => {
     }
     expect(existsSync(mexBase)).toBe(false); expect(readdirSync(repo)).toEqual([]);
   });
+});
+
+
+it.each(["temporary path", "path with dot"])("honors wrong --all-along for a delivered hint after retiring it (%s)",spelling=>{
+  if(spelling==="path with dot") repo+=`${sep}.`;
+  execFileSync("git",["-C",repo,"init","-q","-b","work"],{stdio:"pipe"});
+  execFileSync("git",["-C",repo,"-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","--allow-empty","-qm","baseline"],{stdio:"pipe"});
+  const memory=join(root,"claude-host/projects/fixture-project/memory"); mkdirSync(memory,{recursive:true}); writeFileSync(join(memory,"fixtures.md"),"Fixtures use fixed input because failures must reproduce.\n");
+  expect(run(["hints","refresh","--json"]).status).toBe(0);
+  const id=run(["recall","fixtures","--agent","codex","--json"]).json().entries[0].id;
+  const writer=openRecord({home:join(mexBase,".mex"),projectPath:repo,isNetwork:()=>false}), checkout=writer.checkout(repo)!, projectId=checkout.project_id;
+  const hooks=new DatabaseSync(writer.location.hooks);
+  try {
+    // Fixture construction only; product Node code never writes hooks.db.
+    if(!hooks.prepare("SELECT 1 FROM sqlite_master WHERE name='deliveries'").get()) {
+      const schemas=join(dirname(cli),"../native/record/schema/hooks");
+      for(const file of ["0001_init.sql","0002_delivery.sql","0003_followups.sql","0004_rendering.sql","0005_probes.sql","0006_intent.sql"]) hooks.exec(readFileSync(join(schemas,file),"utf8"));
+      hooks.exec("PRAGMA user_version=6");
+    }
+    // Receipts use the registry's real path, including Windows case folding.
+    hooks.prepare("INSERT INTO sessions VALUES('hint-session','codex',?,?,'now','now',0)").run(projectId,checkout.path);
+    hooks.prepare("INSERT INTO epochs(session_id,epoch,started_at) VALUES('hint-session',0,'now')").run();
+    hooks.prepare("INSERT INTO deliveries(id,session_id,epoch,ts,moment,entry_id,form,tokens,action,project_id,checkout,detail) VALUES('hint-receipt','hint-session',0,'now','read',?,'full',10,'given',?,?,?)")
+      .run(id,projectId,checkout.path,JSON.stringify({version:1,branch:"refs/heads/work",head:"a".repeat(40),entry_hash:"old hint",verdict:"unknown",inputs_hash:""}));
+  } finally { hooks.close();writer.close(); }
+  const retired=run(["wrong",id,"The assertion was always wrong.","--all-along","--json"]);
+  expect(retired.status,retired.stdout+retired.stderr).toBe(0);expect(retired.json()).toMatchObject({level:"hint",status:"retired"});
+  expect(run(["report","--json"]).json().advisories).toEqual([expect.objectContaining({entry:id,origin:{kind:"wrong-all-along",evidence:"person-confirmed"}})]);
 });

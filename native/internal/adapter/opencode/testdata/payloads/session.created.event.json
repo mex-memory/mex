@@ -1,0 +1,12 @@
+{
+  "agent": "opencode",
+  "agent_version": "",
+  "kind": "session_start",
+  "session_id": "ses_01",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "transcript": "",
+  "background": false
+}

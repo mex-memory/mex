@@ -92,7 +92,22 @@ type Profile interface {
 	Command(binary, nativeEvent string) Command
 }
 
+// InstructionObserver is an optional, native-only observability callback. It
+// does not introduce a delivery event or change the normalized hook contract.
+type InstructionLoad struct {
+	Event contract.Event
+	Path  string
+}
+type InstructionObserver interface {
+	ParseInstructionLoad(nativeEvent string, payload []byte) (InstructionLoad, bool, error)
+}
+
 var ErrUnknownEvent = errors.New("unknown event")
+
+// ErrSkip means the payload is well formed but this call carries nothing MEX
+// uses (for example Antigravity's PreInvocation after the first model call of
+// a turn). The shim sends the empty reply and does not count it as a failure.
+var ErrSkip = errors.New("event skipped")
 
 var registry = map[string]Profile{}
 

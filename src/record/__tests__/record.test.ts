@@ -24,11 +24,11 @@ describe("record schema and ownership", () => {
     const directory = temp(); const project = temp();
     const writer = openRecord({ home: directory, projectPath: project, isNetwork: () => false }); closes.push(() => writer.close());
     writer.register(projectIdentity(project));
-    expect(schemaVersion(writer.db)).toBe(4);
+    expect(schemaVersion(writer.db)).toBe(5);
     expect(writer.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("wal");
     expect(writer.db.prepare("PRAGMA busy_timeout").get()!.timeout).toBe(5000);
     expect(writer.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all().map((row) => row.name))
-      .toEqual(["background", "checkouts", "counters_node", "installs", "job_results", "jobs", "judgements", "model_batches", "model_calls", "notices", "own_usage", "projects", "review", "settings", "sqlite_sequence", "usage_events", "usage_files", "usage_snapshots", "usage_windows"]);
+      .toEqual(["aid_verdicts", "background", "checkouts", "counters_node", "decision_events", "installs", "job_results", "jobs", "judgements", "model_batches", "model_calls", "notices", "own_usage", "projects", "review", "settings", "sqlite_sequence", "usage_events", "usage_files", "usage_snapshots", "usage_windows"]);
     expect(writer.db.prepare("SELECT count(*) n FROM checkouts").get()!.n).toBe(1);
     expect(writer.project(projectIdentity(project).id)?.kind).toBe("folder");
     expect(existsSync(join(directory, "projects"))).toBe(false);
@@ -49,7 +49,7 @@ describe("record schema and ownership", () => {
       const home = temp(); const file = join(home, "record.db"); const db = new DatabaseSync(file);
       if (synthetic) db.exec("CREATE TABLE settings(scope TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(scope,key)); INSERT INTO settings VALUES('global','kept','yes')");
       db.close(); const writer = open(home);
-      expect(schemaVersion(writer.db)).toBe(4);
+      expect(schemaVersion(writer.db)).toBe(5);
       if (synthetic) expect(writer.setting("global", "kept")).toBe("yes");
     }
   });
@@ -58,7 +58,7 @@ describe("record schema and ownership", () => {
     expect(() => migrateRecord(db, [{ version: 1, sql: "CREATE TABLE partial(n); INSERT INTO no_such_table VALUES(1)" }])).toThrow();
     expect(schemaVersion(db)).toBe(0);
     expect(db.prepare("SELECT name FROM sqlite_schema WHERE name='partial'").get()).toBeUndefined();
-    migrateRecord(db); expect(schemaVersion(db)).toBe(4);
+    migrateRecord(db); expect(schemaVersion(db)).toBe(5);
   });
   it("refuses to write a newer schema, reports it to readers, and reads older tables without migrating", () => {
     const writer = open(); const home = writer.location.home;
@@ -84,11 +84,11 @@ describe("record schema and ownership", () => {
     expect(() => reader.all("PRAGMA query_only=OFF")).not.toThrow();
     expect(() => reader.all("DELETE FROM sessions RETURNING *")).toThrow(/readonly/i);
   });
-  it("keeps the supported hooks version at 1 when record.db advances to 2", () => {
+  it("refuses a future hooks version independently of record.db", () => {
     const home = temp(); const db = new DatabaseSync(join(home, "hooks.db"));
-    db.exec("PRAGMA user_version=2"); db.close();
+    db.exec("PRAGMA user_version=8"); db.close();
     const reader = openHooksReadOnly({ home, isNetwork: () => false })!; closes.push(() => reader.close());
-    expect(reader.diagnostic).toContain("hooks.db schema version 2 is newer than supported version 1");
+    expect(reader.diagnostic).toContain("hooks.db schema version 8 is newer than supported version 7");
   });
 });
 
@@ -122,6 +122,16 @@ describe("location and identity", () => {
     expect(readFileSync(join(home, "location"), "utf8")).toBe(`${fallback.home}\n`);
     expect(recordLocation({ ...options, isNetwork: () => { throw Error("cached"); } })).toEqual(fallback);
     expect(queries).toBe(2);
+  });
+  it.skipIf(process.platform !== "win32")("treats the system drive as local without the drive query", () => {
+    const home = temp(), drive = home.slice(0, 2);
+    const other = `${drive.toLowerCase() === "z:" ? "Y" : "Z"}:`;
+    let queries = 0;
+    const driveType = (asked: string) => { queries++; expect(asked).toBe(other); return "4"; };
+    expect(windowsNetworkHome(home, { realPath: () => home, driveType, systemDrive: drive.toUpperCase() })).toBe(false);
+    expect(queries).toBe(0);
+    expect(windowsNetworkHome(home.replace(/^[A-Za-z]:/u, other), { realPath: (path) => path, driveType, systemDrive: drive })).toBe(true);
+    expect(queries).toBe(1);
   });
   it("uses an isolated local cache for a network home and follows the cached pointer on second open", () => {
     const home = temp(); const cache = temp(); let calls = 0;

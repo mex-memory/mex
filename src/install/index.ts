@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mexHomeDir } from "../global-config.js";
 import { openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
@@ -10,8 +10,11 @@ import { withContainedArtifactLock } from "../team/artifacts/filesystem.js";
 import { binaryFileName, findNativeBinary, selfTestBinary, type SelfTestResult } from "../hooks/shim/binary.js";
 import { launcherFile } from "../hooks/shim/launcher.js";
 import { assertUntracked, equalSnapshot, installPath, MAX_RUNTIME_BYTES, MAX_SETTINGS_BYTES, readSnapshot, replaceFile, samePath, snapshotBytes, type Snapshot } from "./files.js";
-import { agentSettings, CODEX_TRUST_NOTICE, installSettings, isLegacyHandler, parseSettings, removeHandlers, type Agent, type HookCommand } from "./settings.js";
+import { agentSettings, AGENT_COMMANDS, CODEX_TRUST_NOTICE, FAILURE_BLOCKS, installSettings, withoutSettings, isLegacyHandler, parseSettings, removeHandlers, type Agent, type HookCommand } from "./settings.js";
 import { decodeSnapshot, restoreSettings } from "./recovery.js";
+import { opencodePlugin } from "./opencode-plugin.js";
+import { journaledExcludeFiles, restoreExcludeBlocks } from "../repo-start/exclude.js";
+import { journaledMarkers, restoreFolderMarkers } from "../repo-start/folder.js";
 
 const PREFIX = "file-v1:";
 const MAX_CHANGES = 512;
@@ -29,11 +32,15 @@ export interface InstallOptions {
   fallbackFile?: string;
   dryRun?: boolean;
   selfTest?: (path: string) => SelfTestResult;
-  available?: (agent: Agent) => boolean;
+  available?: (agent: Agent | PluginAgent) => boolean;
+  /** Runs the exact registered command once, for agents where a failing hook blocks the agent. */
+  commandTest?: (command: HookCommand) => SelfTestResult;
   /** Failure injection for crash/recovery tests, after the durable intent. */
   beforeWrite?: (change: InstallChange) => void;
 }
-export interface InstallResult { agents: Agent[]; changes: InstallChange[]; notices: string[]; legacyTracked: string[]; }
+/** Agents MEX reaches through a plugin file instead of hook settings. */
+export type PluginAgent = "opencode";
+export interface InstallResult { agents: (Agent | PluginAgent)[]; changes: InstallChange[]; notices: string[]; legacyTracked: string[]; }
 
 export function activeRows(writer: RecordWriter): InstallRow[] {
   const rows = writer.db.prepare("SELECT * FROM installs WHERE key LIKE 'file-v1:%' ORDER BY id DESC LIMIT ?").all(MAX_CHANGES + 1) as unknown as InstallRow[];
@@ -75,11 +82,48 @@ function recordChange(writer: RecordWriter, change: InstallChange, options: Inst
   }
 }
 
-function available(agent: Agent, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): boolean {
-  const result = spawnSync(platform === "win32" ? "where.exe" : "which", [agent === "claude-code" ? "claude" : "codex"], {
+/** OpenCode loads every file in its global plugin folder. */
+export function opencodePluginPath(user: string, env: NodeJS.ProcessEnv): string {
+  const xdg = env.XDG_CONFIG_HOME?.trim();
+  if (xdg && !isAbsolute(xdg)) throw new Error("XDG_CONFIG_HOME must name an absolute directory.");
+  return join(xdg || join(user, ".config"), "opencode", "plugin", "mex.js");
+}
+
+function available(agent: Agent | PluginAgent, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): boolean {
+  const result = spawnSync(platform === "win32" ? "where.exe" : "which", [agent === "opencode" ? "opencode" : AGENT_COMMANDS[agent]], {
     env, timeout: 1500, windowsHide: true, stdio: "ignore",
   });
   return result.status === 0;
+}
+
+export const AGENT_NAMES: Record<Agent | PluginAgent, string> = { "claude-code": "Claude Code", codex: "Codex", copilot: "Copilot CLI", opencode: "OpenCode" };
+
+/**
+ * Runs the registered command the way the agent will, from PATH, with an empty
+ * payload, and requires the empty reply. A Node fallback that isn't written yet
+ * is tested from a temporary copy of its bytes.
+ */
+export function testCommand(command: HookCommand, env: NodeJS.ProcessEnv, fallbackBytes?: Buffer): SelfTestResult {
+  let args = command.args;
+  let temporary: string | undefined;
+  try {
+    if (fallbackBytes && args[0] && !existsSync(args[0])) {
+      temporary = mkdtempSync(join(tmpdir(), "mex-hook-test-"));
+      const copy = join(temporary, "mex-hook.cjs");
+      writeFileSync(copy, fallbackBytes);
+      args = [copy, ...args.slice(1)];
+    }
+    const run = spawnSync(command.path, [...args, "copilot", "preToolUse"], {
+      input: "{}", encoding: "utf8", timeout: 5000, windowsHide: true, shell: false,
+      env: { ...env, MEX_OFF: "1" },
+    });
+    if (run.error) return { ok: false, error: run.error.message };
+    if (run.status !== 0) return { ok: false, error: `exit code ${run.status ?? run.signal}` };
+    try { return JSON.stringify(JSON.parse(run.stdout)) === "{}" ? { ok: true } : { ok: false, error: "reply was not {}" }; }
+    catch { return { ok: false, error: "reply is not JSON" }; }
+  } finally {
+    if (temporary) rmSync(temporary, { recursive: true, force: true });
+  }
 }
 
 /** Global installation only. Project registration and the first screen belong to setup. */
@@ -90,8 +134,10 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
   const platform = options.platform ?? process.platform;
   const paths = agentSettings(user, env);
   const agents = (Object.keys(paths) as Agent[]).filter(agent => options.available?.(agent) ?? available(agent, platform, env));
-  const result: InstallResult = { agents, changes: [], notices: [], legacyTracked: [] };
-  if (!agents.length) return result;
+  const opencode = options.available?.("opencode") ?? available("opencode", platform, env);
+  const pluginPath = opencode ? installPath(opencodePluginPath(user, env)) : null;
+  const result: InstallResult = { agents: [...agents, ...(opencode ? ["opencode" as const] : [])], changes: [], notices: [], legacyTracked: [] };
+  if (!result.agents.length) return result;
   // Validate every destination before changing any of them.
   for (const agent of agents) {
     const path = installPath(paths[agent]);
@@ -135,10 +181,28 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
       if (native && command.path === target) put(target, readFileSync(native), "mex", "runtime", 0o700);
       put(fallback, fallbackBytes);
       put(launcherFile(mexHome), Buffer.from(`${JSON.stringify({ version: 1, node, entry })}\n`));
-      for (const agent of agents) {
+      let commandWorks: SelfTestResult | undefined;
+      for (const agent of [...agents]) {
         const before = readSnapshot(paths[agent], MAX_SETTINGS_BYTES);
+        if (FAILURE_BLOCKS.has(agent)) {
+          // In Copilot a hook that can't start denies every tool call. Register
+          // only a command proven to run here; otherwise remove ours.
+          // The native binary passed its self-test above; the Node command must
+          // also prove that "node" on PATH starts the fallback.
+          commandWorks ??= options.commandTest?.(command)
+            ?? (command === nativeCommand ? { ok: true } : testCommand(command, env, fallbackBytes));
+          if (!commandWorks.ok) {
+            const without = withoutSettings(snapshotBytes(before), [nativeCommand, nodeCommand]);
+            if (without) put(paths[agent], without, agent, "settings", undefined, before);
+            result.agents.splice(result.agents.indexOf(agent), 1);
+            result.notices.push(`${AGENT_NAMES[agent]} found, but MEX's hook failed its self-test here (${commandWorks.error ?? "unknown"}); MEX left ${AGENT_NAMES[agent]} hooks off so the agent keeps working. \`mex doctor\` retests.`);
+            continue;
+          }
+        }
         put(paths[agent], installSettings(snapshotBytes(before), agent, command, platform, [nativeCommand, nodeCommand]), agent, "settings", undefined, before);
       }
+      // The plugin is a runtime file: uninstall deletes it only while it is unchanged.
+      if (pluginPath) put(pluginPath, Buffer.from(opencodePlugin(command)), "opencode", "runtime", 0o644);
       if (agents.includes("codex")) {
         result.notices.push(CODEX_TRUST_NOTICE);
         if (platform === "win32") result.notices.push("Codex starts every Windows hook through PowerShell (about 0.45 s per call on the measured Windows 11 machine). All supported events are registered.");
@@ -188,6 +252,16 @@ export function installationChanges(options: LocationOptions = {}): InstallRow[]
   } finally { reader.close(); }
 }
 
+/** Exclude files in repositories where `mex` hid `.mex/`; uninstall removes MEX's blocks from them. */
+export function excludeChanges(options: LocationOptions = {}): string[] {
+  const reader = openRecordReadOnly(options);
+  if (!reader) return [];
+  try {
+    if (reader.diagnostic) throw new Error(reader.diagnostic);
+    return [...journaledExcludeFiles(reader), ...journaledMarkers(reader)];
+  } finally { reader.close(); }
+}
+
 function installationRunner(options: LocationOptions): string | undefined {
   const reader = openRecordReadOnly(options);
   try { return reader?.setting("global", "install.runner"); }
@@ -217,6 +291,11 @@ export async function uninstallAgents(options: LocationOptions & { purge?: boole
   try {
     await withContainedArtifactLock(location.home, "install", ".install.lock", () => {
       writer.db.prepare("UPDATE background SET request='exit' WHERE id=1 AND owner IS NOT NULL").run();
+      // Repository exclude-file blocks don't depend on the hooks; undo them first.
+      for (const undone of [restoreExcludeBlocks(writer), restoreFolderMarkers(writer)]) {
+        result.restored.push(...undone.restored);
+        result.conflicts.push(...undone.conflicts);
+      }
       const rows = activeRows(writer);
       const settings = rows.filter(row => row.key === `${PREFIX}settings`);
       const runtime = rows.filter(row => row.key !== `${PREFIX}settings`);
@@ -229,7 +308,7 @@ export async function uninstallAgents(options: LocationOptions & { purge?: boole
           result.restored.push(row.path);
         } catch { blockedPaths.add(row.path); result.conflicts.push(row.path); }
       }
-      if (result.conflicts.length) return; // Keep every runner until hooks are safely removed.
+      if (blockedPaths.size) return; // Keep every runner until hooks are safely removed.
       for (const row of runtime) {
         if (blockedPaths.has(row.path)) continue;
         try {

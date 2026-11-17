@@ -12,10 +12,13 @@ registerJobKind<IndexJobParams, { builds: number }>({
   scope: "project",
   // A build writes new snapshot files and swaps a pointer; running it twice is harmless.
   sideEffects: "idempotent",
-  async runBatch({ job, params, checkpoint, writer }) {
+  async runBatch({ job, params, checkpoint, writer, progress }) {
     // Loaded here so listing jobs doesn't load the parsers.
     const { buildIndex } = await import("./build.js");
-    const result = await buildIndex({ root: params.checkout, projectId: job.project_id!, recordDirectory: writer.location.directory, full: params.full });
+    const result = await buildIndex({
+      root: params.checkout, projectId: job.project_id!, recordDirectory: writer.location.directory, full: params.full,
+      onProgress: progress ? (done, total) => progress(`${done.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} files`) : undefined,
+    });
     const gaps = Object.values(result.notIndexed).reduce((sum, count) => sum + (count ?? 0), 0);
     return {
       checkpoint: { builds: (checkpoint?.builds ?? 0) + 1 },

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	localrecord "github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
@@ -208,6 +209,7 @@ func TestMain(m *testing.M) {
 		_ = os.WriteFile(out, []byte(strings.Join(os.Args[1:], "\n")), 0o600)
 		os.Exit(0)
 	}
+	localrecord.UseBehaviorTestBudget()
 	os.Exit(m.Run())
 }
 
@@ -259,5 +261,14 @@ func TestStartBackgroundSkipsAMissingCli(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("ran a launcher whose CLI is gone")
+	}
+}
+
+// prepareStore creates hooks.db outside a hook call, as an installed MEX has
+// it, so a test's first event doesn't race the machine's load on the schema.
+func prepareStore(t *testing.T, h home) {
+	t.Helper()
+	if err := localrecord.PrepareHooks(hooksLocation(h, h.recordDirectory())); err != nil {
+		t.Fatal(err)
 	}
 }

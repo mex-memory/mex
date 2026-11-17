@@ -6,6 +6,7 @@
 package hook
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,10 +16,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mex-memory/mex/native/capture"
+	"github.com/mex-memory/mex/native/delivery"
 	"github.com/mex-memory/mex/native/internal/adapter"
-	_ "github.com/mex-memory/mex/native/internal/adapter/claude" // registers the profile
-	_ "github.com/mex-memory/mex/native/internal/adapter/codex"  // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/antigravity" // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/claude"      // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/codex"       // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/copilot"     // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/cursor"      // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/devin"       // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/gemini"      // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/kiro"        // registers the profile
+	_ "github.com/mex-memory/mex/native/internal/adapter/opencode"    // registers the profile
 	"github.com/mex-memory/mex/native/internal/contract"
+	localrecord "github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
@@ -67,6 +78,23 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return checkStage(args[1:], getenv)
 		case "--check-run":
 			return checkRun(stdin, stdout)
+		case "--delivery-probe":
+			return deliveryProbe(stdin, stdout)
+		case "--brief-run":
+			return briefRun(stdin, stdout)
+		case "--delivery-replay":
+			return deliveryReplay(stdin, stdout, getenv)
+		case "--surfaces":
+			return surfaceReport(stdin, stdout, getenv)
+		case "--pair-study":
+			return pairStudy(stdin, stdout)
+		case "--probe":
+			return explicitProbe(stdin, stdout, getenv)
+		case "--recall":
+			return recallRank(stdin, stdout)
+		case "run":
+			// The Codex wrapper: the command always runs, whatever MEX's state.
+			return runWrapped(args, stdin, stdout, stderr, getenv)
 		}
 	}
 
@@ -98,6 +126,12 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 	}
 	agent, nativeEvent := args[0], args[1]
 	h := homeFrom(getenv)
+	if len(args) > 2 && args[2] == "--delivery-trace" {
+		h.deliveryError = func(err error) { _, _ = fmt.Fprintln(stderr, "delivery failed:", err) }
+		h.deliveryTrace = func(name string, elapsed time.Duration) {
+			_, _ = fmt.Fprintf(stderr, "delivery phase %s %d\n", name, elapsed.Nanoseconds())
+		}
+	}
 	if dir := getenv("MEX_HOOK_RECORD"); dir != "" && ok {
 		h.capture = func(ev contract.Event, directory string, global controls) {
 			if captureEnabled(directory, ev.ProjectID, global) {
@@ -107,12 +141,17 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 	}
 	resolveUsage := sync.OnceValues(func() (place.Location, bool) { return hookUsageLocation(h, getenv) })
 	h.usageLocation = resolveUsage
-	_, _ = stdout.Write(handle(agent, nativeEvent, payload, ok, h, time.Now(), func(actual string, sessionStart, failed bool) {
+	var afterOutput func()
+	h.afterOutput = func(done func()) { afterOutput = done }
+	out := handle(agent, nativeEvent, payload, ok, h, time.Now(), func(actual string, sessionStart, failed bool) {
 		usageLocation, usageEnabled := resolveUsage()
 		if usageEnabled {
 			recordHookUsage(usageLocation, actual, sessionStart, failed, time.Since(started))
 		}
-	}))
+	})
+	if n, err := stdout.Write(out); err == nil && n == len(out) && afterOutput != nil {
+		afterOutput()
+	}
 	return 0
 }
 
@@ -120,9 +159,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 // Empty output with exit 0 means "do nothing" to every agent.
 var silent = []byte{}
 
-// handle turns one payload into the agent's reply. Nothing behind the shim
-// produces replies yet, so the reply is empty apart from the "MEX is off
-// here" notice.
+// handle turns one payload into the agent's reply after consent and checkout
+// resolution. Delivery errors are ignored so every agent call can continue.
 func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time.Time, observe ...func(string, bool, bool)) []byte {
 	if !ok {
 		if p, found := adapter.Lookup(agent); found {
@@ -155,13 +193,23 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			observe[0](agent, sessionStart, failed)
 		}
 	}()
+	var instruction *adapter.InstructionLoad
 	ev, err := profile.Parse(nativeEvent, payload)
+	if observer, ok := profile.(adapter.InstructionObserver); ok && err != nil {
+		load, handled, loadErr := observer.ParseInstructionLoad(nativeEvent, payload)
+		if handled {
+			ev, err, instruction = load.Event, loadErr, &load
+		}
+	}
+	if errors.Is(err, adapter.ErrSkip) {
+		return profile.EmptyReply(nativeEvent)
+	}
 	if err != nil {
 		failed = true
 		return profile.EmptyReply(nativeEvent)
 	}
 	sessionStart = ev.Kind == contract.SessionStart
-	if _, control := sessionControl(ev); global.Off && !control {
+	if _, control := sessionControl(ev); global.Off && !control && !whatPrompt(ev) {
 		return profile.EmptyReply(nativeEvent)
 	}
 	if h.orphaned(sessionStart) {
@@ -181,6 +229,24 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	path, isFile := eventPath(ev)
 	checkout, state := findCheckout(recordDirectory, path, isFile, now)
 	ev.ProjectID, ev.Checkout = checkout.ProjectID, checkout.Root
+	if whatPrompt(ev) && state != unregistered {
+		observeAllowed = false
+		support, _ := profile.Capabilities().Support(contract.Prompt)
+		if !support.ConsumePrompt {
+			return profile.EmptyReply(nativeEvent)
+		}
+		for _, name := range []string{"hooks.db", "hooks.db-wal", "hooks.db-shm"} {
+			if !safeTelemetryFile(filepath.Join(recordDirectory, name)) {
+				return profile.EmptyReply(nativeEvent)
+			}
+		}
+		summary, err := localrecord.ReadWhat(filepath.Join(recordDirectory, "hooks.db"), ev.SessionID, ev.ProjectID, ev.Checkout)
+		if err != nil {
+			return profile.EmptyReply(nativeEvent)
+		}
+		out, _ := profile.Render(ev, contract.Reply{ConsumePrompt: true, PersonLine: summary.Line()})
+		return out
+	}
 	if paused, recognized := sessionControl(ev); recognized && state != unregistered {
 		observeAllowed = false
 		support, _ := profile.Capabilities().Support(contract.Prompt)
@@ -215,13 +281,112 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		out, _ := profile.Render(ev, reply)
 		return out
 	}
-
-	if ev.Kind == contract.SessionStart {
-		startBackground(h, recordDirectory)
+	if instruction != nil {
+		observeInstruction(ev, h, recordDirectory, instruction.Path)
+		return profile.EmptyReply(nativeEvent)
 	}
+
+	if reply, handled := typedNote(ev, h); handled {
+		out, _ := profile.Render(ev, reply)
+		return out
+	}
+	// Capture runs before delivery: typed text is saved before the reply
+	// starts, whatever delivery does next.
+	if captureEnabled(recordDirectory, ev.ProjectID, global) {
+		capture.Hook(ev, capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env})
+	}
+	noteJudgeEdits(ev, recordDirectory)
 	noteEdit(ev, recordDirectory)
 	freeStage(ev, h, recordDirectory)
-	out, _ := profile.Render(ev, contract.Reply{})
+	judgeReady := false
+	if ev.Kind == contract.Stop {
+		judgeReady = requestJudge(ev, recordDirectory, nil)
+	}
+	canNotice := false
+	switch ev.Kind {
+	case contract.SessionStart, contract.SubagentStart, contract.PostCompact, contract.PostToolBatch, contract.PostToolFailure, contract.SessionEnd:
+		support, _ := profile.Capabilities().Support(ev.Kind)
+		canNotice = support.PersonLine
+	case contract.PostTool:
+		if ev.Agent != "claude-code" {
+			support, _ := profile.Capabilities().Support(ev.Kind)
+			canNotice = support.PersonLine
+		}
+	}
+	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Notices: canNotice, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
+		if err != nil {
+			return !os.IsNotExist(err)
+		}
+		return now.Sub(info.ModTime()) <= 30*24*time.Hour
+	}, Resolve: func(path string, isFile bool) (string, string) {
+		// Each touched path picks its own repo; one that is off or not
+		// registered gets nothing.
+		c, st := findCheckout(recordDirectory, path, isFile, now)
+		if st != switchedOn {
+			return "", ""
+		}
+		return c.ProjectID, c.Root
+	}})
+	if deliveryErr != nil {
+		if h.deliveryError != nil {
+			h.deliveryError(deliveryErr)
+		}
+		failed = true
+		reply = contract.Reply{}
+	}
+	reply = mergeReplies(reply, levers(ev, h, recordDirectory, now))
+	// One line, once per session, after a commit that reads like a decision.
+	if line := delivery.DecisionPrompt(ev, recordDirectory); line != "" {
+		if reply.Context != "" {
+			reply.Context += "\n\n"
+		}
+		reply.Context += line
+	}
+	noticeID := ""
+	var adviceNoticeIDs []string
+	if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.PersonLine && !failed {
+		if id, text := judgeNotice(ev, h, recordDirectory); id != "" {
+			noticeID = id
+			if reply.PersonLine != "" {
+				reply.PersonLine += "\n"
+			}
+			reply.PersonLine += text
+		}
+	}
+	if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.PersonLine && !failed {
+		if ids, text := adviceNotice(ev, h, recordDirectory); len(ids) > 0 {
+			adviceNoticeIDs = ids
+			if reply.PersonLine != "" {
+				reply.PersonLine += "\n"
+			}
+			reply.PersonLine += text
+		}
+	}
+	out, dropped := profile.Render(ev, reply)
+	if noticeID != "" || len(adviceNoticeIDs) > 0 {
+		for _, part := range dropped {
+			if part == "person_line" {
+				noticeID = ""
+				adviceNoticeIDs = nil
+			}
+		}
+	}
+	if (noticeID != "" || len(adviceNoticeIDs) > 0) && h.afterOutput != nil {
+		h.afterOutput(func() {
+			if noticeID != "" && markJudgeNotice(ev, h, recordDirectory, noticeID, now) {
+				startBackground(h, recordDirectory)
+			}
+			for _, id := range adviceNoticeIDs {
+				markJudgeNotice(ev, h, recordDirectory, id, now)
+			}
+		})
+	}
+	// Session setup and free checks precede discovery. Preview receipts wake it
+	// separately, after the complete reply has reached stdout.
+	if ev.Kind == contract.SessionStart || ev.Kind == contract.PreCompact || judgeReady {
+		startBackground(h, recordDirectory)
+	}
 	return out
 }
 

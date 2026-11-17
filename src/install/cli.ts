@@ -1,4 +1,4 @@
-import { installAgents, installationChanges, uninstallAgents, type InstallResult } from "./index.js";
+import { excludeChanges, installAgents, installationChanges, uninstallAgents, type InstallResult } from "./index.js";
 
 function summary(result: InstallResult) {
   return { agents: result.agents, changes: result.changes.map(change => ({ path: change.path, kind: change.kind,
@@ -9,7 +9,7 @@ export async function runInstall(options: { dryRun?: boolean; json?: boolean } =
   const result = await installAgents(options);
   const view = summary(result);
   if (options.json) { console.log(JSON.stringify({ dryRun: !!options.dryRun, ...view })); return; }
-  if (!result.agents.length) { console.log("No supported agent found. Install Claude Code or Codex, then run mex install."); return; }
+  if (!result.agents.length) { console.log("No supported agent found. Install Claude Code, Codex, Copilot CLI or OpenCode, then run mex install."); return; }
   console.log(options.dryRun ? "MEX would change:" : "MEX installation:");
   for (const change of view.changes) console.log(`  ${change.action} ${change.path}`);
   if (!view.changes.length) console.log("  Agent hooks are up to date.");
@@ -18,7 +18,7 @@ export async function runInstall(options: { dryRun?: boolean; json?: boolean } =
 
 export async function runUninstall(options: { dryRun?: boolean; json?: boolean; purge?: boolean } = {}): Promise<void> {
   const changes = installationChanges();
-  const paths = [...new Set(changes.map(change => change.path))];
+  const paths = [...new Set([...changes.map(change => change.path), ...excludeChanges()])];
   if (!options.json) {
     console.log(paths.length ? "MEX will restore (hooks first, shim last):" : "No recorded installation changes.");
     for (const path of paths) console.log(`  ${path}`);

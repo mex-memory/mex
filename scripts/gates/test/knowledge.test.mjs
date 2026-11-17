@@ -76,3 +76,18 @@ test('historical reports and old warning-only observations are not release evide
   f.observed.format = 'legacy-wiki-health';
   assert.deepEqual(knowledgeEvidence(f.corpus, f.observed, f.expected), { status: 'fail', reason: 'invalid-evidence' });
 });
+
+test('the corpus states its size; fewer than 40 claims is invalid evidence', () => {
+  for (const [size, ok] of [[46, true], [39, false]]) {
+    const f = fixture();
+    const keep = new Set(f.corpus.claims.slice(0, size).map(c => c.id));
+    f.corpus.claims = f.corpus.claims.filter(c => keep.has(c.id));
+    f.corpus.labels = f.corpus.labels.filter(l => keep.has(l.claim));
+    Object.assign(f.corpus.manifest, { claims: size, labels: size * 6 });
+    f.observed.seeded_claims = f.observed.seeded_claims.filter(id => keep.has(id));
+    for (const cp of f.observed.checkpoints) cp.results = cp.results.filter(r => keep.has(r.claim));
+    const evidence = knowledgeEvidence(f.corpus, f.observed, f.expected);
+    assert.equal(evidence.status, ok ? 'pass' : 'fail', `size ${size}`);
+    if (!ok) assert.equal(evidence.reason, 'invalid-evidence');
+  }
+});

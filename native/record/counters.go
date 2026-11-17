@@ -35,6 +35,16 @@ func (hooks *Hooks) recordHookUsage(day, agent string, sessionStart, failed bool
 	return hooks.addCounts(counts, timeout)
 }
 
+// telemetryAgent lists the agents with a hook profile, as named in the usage
+// report's agent catalog (src/telemetry/report-schema.ts).
+func telemetryAgent(agent string) bool {
+	switch agent {
+	case "claude-code", "codex", "copilot", "cursor", "opencode", "antigravity", "gemini", "devin", "kiro":
+		return true
+	}
+	return false
+}
+
 // counterKey is one row of counters_go.
 type counterKey struct{ day, name string }
 
@@ -43,7 +53,7 @@ func usageNames(day, agent string, sessionStart, failed bool, elapsedMS int64) (
 	if _, err := time.Parse("2006-01-02", day); err != nil {
 		return nil, err
 	}
-	if agent != "claude-code" && agent != "codex" {
+	if !telemetryAgent(agent) {
 		return nil, fmt.Errorf("unknown telemetry agent")
 	}
 	if elapsedMS < 0 {
@@ -70,7 +80,7 @@ func usageNames(day, agent string, sessionStart, failed bool, elapsedMS int64) (
 	return names, nil
 }
 
-// addCounts adds every count in one statement, within the deadline.
+// addCounts adds every count in one transaction, within the deadline.
 func (hooks *Hooks) addCounts(counts map[counterKey]int, timeout time.Duration) error {
 	if len(counts) == 0 {
 		return nil
@@ -105,9 +115,19 @@ func (hooks *Hooks) addCounts(counts map[counterKey]int, timeout time.Duration) 
 		values = append(values, "(?,?,?)")
 		args = append(args, key.day, key.name, counts[key])
 	}
-	// One SQLite statement is atomic, including a constraint/trigger failure.
-	// Avoid a separate BEGIN, statement per counter, and COMMIT for every hook.
-	_, err = conn.ExecContext(ctx, "INSERT INTO main.counters_go(day,name,value) VALUES"+strings.Join(values, ",")+
+	// ExecContext on an autocommit statement can report cancellation after
+	// SQLite committed. Deferring that batch would count it twice. An explicit
+	// transaction rolls a cancelled statement back; database/sql's Commit owns
+	// the commit/cancellation boundary and returns the actual commit result.
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, "INSERT INTO main.counters_go(day,name,value) VALUES"+strings.Join(values, ",")+
 		" ON CONFLICT(day,name) DO UPDATE SET value=min(2147483647,value+excluded.value)", args...)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }

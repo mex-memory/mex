@@ -1,6 +1,6 @@
 import { isAbsolute, join } from "node:path";
 
-export type Agent = "claude-code" | "codex";
+export type Agent = "claude-code" | "codex" | "copilot";
 type ObjectValue = Record<string, unknown>;
 export function object(value: unknown): value is ObjectValue {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -9,18 +9,26 @@ export function object(value: unknown): value is ObjectValue {
 // Keep these native events aligned with the two shim profiles. Register all
 // supported events now: changing a command definition would require new trust.
 export const EVENTS: Record<Agent, readonly string[]> = {
-  "claude-code": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact", "SubagentStart", "Stop", "SessionEnd"],
+  "claude-code": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact", "SubagentStart", "Stop", "SessionEnd", "InstructionsLoaded"],
   codex: ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "SubagentStart", "Stop", "SessionEnd"],
+  // Keep aligned with native/internal/adapter/copilot. Copilot denies a tool
+  // call whose hook crashes, so these are registered only after a self-test.
+  copilot: ["sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse", "postToolUseFailure", "preCompact", "subagentStart", "agentStop", "sessionEnd"],
 };
+/** The program each agent installs on PATH. */
+export const AGENT_COMMANDS: Record<Agent, string> = { "claude-code": "claude", codex: "codex", copilot: "copilot" };
+/** Agents where a failing hook stops the agent, so MEX self-tests before registering. */
+export const FAILURE_BLOCKS: ReadonlySet<Agent> = new Set(["copilot"]);
 export const CODEX_TRUST_NOTICE = "In Codex, open /hooks once to review and trust MEX's hooks.";
 
 export function agentSettings(user: string, env: NodeJS.ProcessEnv): Record<Agent, string> {
-  for (const key of ["CLAUDE_CONFIG_DIR", "CODEX_HOME"]) {
+  for (const key of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME"]) {
     if (env[key]?.trim() && !isAbsolute(env[key]!.trim())) throw new Error(`${key} must name an absolute user configuration directory.`);
   }
   return {
     "claude-code": join(env.CLAUDE_CONFIG_DIR?.trim() || join(user, ".claude"), "settings.json"),
     codex: join(env.CODEX_HOME?.trim() || join(user, ".codex"), "hooks.json"),
+    copilot: join(env.COPILOT_HOME?.trim() || join(user, ".copilot"), "hooks.json"),
   };
 }
 
@@ -43,6 +51,8 @@ export function removeHandlers(settings: ObjectValue, owned: (handler: unknown) 
   for (const [event, groups] of Object.entries(settings.hooks)) {
     const remaining: unknown[] = [];
     for (const group of groups as unknown[]) {
+      // Copilot lists handlers directly under each event, without groups.
+      if (object(group) && !Array.isArray(group.hooks) && owned(group)) { changed = true; continue; }
       if (!object(group) || !Array.isArray(group.hooks)) { remaining.push(group); continue; }
       const handlers = group.hooks.filter(handler => !owned(handler));
       if (handlers.length === group.hooks.length) remaining.push(group);
@@ -59,27 +69,50 @@ export interface HookCommand { path: string; args: string[]; }
 const quoteSh = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 const quotePowerShell = (value: string) => `'${value.replace(/'/g, "''")}'`;
 
-export function installSettings(bytes: Buffer | null, agent: Agent, command: HookCommand, platform: NodeJS.Platform, ownedCommands: readonly HookCommand[] = [command]): Buffer {
-  const settings = parseSettings(bytes);
-  const before = JSON.stringify(settings);
-  // Only replace handlers targeting this install's fixed command, or carrying
-  // the old explicit ownership flag. Mixed matcher groups retain other hooks.
-  removeHandlers(settings, handler => isLegacyHandler(handler) || (object(handler) && ownedCommands.some(owned => {
+function ownedHandler(ownedCommands: readonly HookCommand[]): (handler: unknown) => boolean {
+  return handler => isLegacyHandler(handler) || (object(handler) && ownedCommands.some(owned => {
     const args = handler.args;
     const shellPrefix = [owned.path, ...owned.args].map(quoteSh).join(" ");
     const windowsPrefix = `& ${[owned.path, ...owned.args].map(quotePowerShell).join(" ")}`;
     return (handler.command === owned.path && (owned.args.length === 0 || (Array.isArray(args) && owned.args.every((arg, i) => args[i] === arg))))
       || (typeof handler.command === "string" && handler.command.startsWith(`${shellPrefix} `))
-      || (typeof handler.commandWindows === "string" && handler.commandWindows.startsWith(`${windowsPrefix} `));
-  })));
+      || (typeof handler.commandWindows === "string" && handler.commandWindows.startsWith(`${windowsPrefix} `))
+      || (typeof handler.bash === "string" && handler.bash.startsWith(`${shellPrefix} `))
+      || (typeof handler.powershell === "string" && handler.powershell.startsWith(`${windowsPrefix} `));
+  }));
+}
+
+/** Removes MEX's handlers only, e.g. when a Copilot self-test fails after an earlier install. */
+export function withoutSettings(bytes: Buffer | null, ownedCommands: readonly HookCommand[]): Buffer | null {
+  if (bytes === null) return null;
+  const settings = parseSettings(bytes);
+  return removeHandlers(settings, ownedHandler(ownedCommands)) ? Buffer.from(`${JSON.stringify(settings, null, 2)}\n`) : bytes;
+}
+
+export function installSettings(bytes: Buffer | null, agent: Agent, command: HookCommand, platform: NodeJS.Platform, ownedCommands: readonly HookCommand[] = [command]): Buffer {
+  const parsed = parseSettings(bytes);
+  // Copilot's hook file names its format version first.
+  const settings = agent === "copilot" && parsed.version === undefined ? { version: 1, ...parsed } : parsed;
+  const before = JSON.stringify(parsed);
+  // Only replace handlers targeting this install's fixed command, or carrying
+  // the old explicit ownership flag. Mixed matcher groups retain other hooks.
+  removeHandlers(settings, ownedHandler(ownedCommands));
   const hooks = object(settings.hooks) ? settings.hooks : {};
   settings.hooks = hooks;
   for (const event of EVENTS[agent]) {
     const args = [...command.args, agent, event];
+    const shell = [command.path, ...args].map(quoteSh).join(" ");
+    const powershell = `& ${[command.path, ...args].map(quotePowerShell).join(" ")}`;
+    if (agent === "copilot") {
+      // Flat handlers; bash and powershell are both given so one file works on every OS.
+      hooks[event] = [...(hooks[event] as unknown[] | undefined ?? []),
+        { type: "command", bash: shell, powershell, timeoutSec: event === "sessionEnd" ? 5 : 10 }];
+      continue;
+    }
     const handler = agent === "claude-code"
       ? { type: "command", command: command.path, args, timeout: event === "SessionEnd" ? 1 : 10, onFailure: "continue" }
-      : { type: "command", command: [command.path, ...args].map(quoteSh).join(" "),
-        ...(platform === "win32" ? { commandWindows: `& ${[command.path, ...args].map(quotePowerShell).join(" ")}` } : {}),
+      : { type: "command", command: shell,
+        ...(platform === "win32" ? { commandWindows: powershell } : {}),
         timeout: event === "SessionEnd" ? 3 : 10 };
     hooks[event] = [...(hooks[event] as unknown[] | undefined ?? []), { hooks: [handler] }];
   }

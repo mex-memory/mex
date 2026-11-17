@@ -12,7 +12,7 @@ import (
 // checkRequest is what `mex check` and MEX's writers send to
 // `mex-hook --check-run` on stdin.
 type checkRequest struct {
-	Action          string `json:"action"` // "evaluate" or "record"
+	Action          string `json:"action"` // "evaluate", "record" or "record-batch"
 	Checkout        string `json:"checkout"`
 	ProjectID       string `json:"project_id"`
 	MexHome         string `json:"mex_home"`
@@ -23,7 +23,27 @@ type checkRequest struct {
 	Kind     string         `json:"kind"`
 	Role     string         `json:"role"`
 	Target   map[string]any `json:"target"`
+	// Items are the checks a record-batch writes, each against today's code.
+	Items []recordItem       `json:"items"`
+	Entry string             `json:"entry"`
+	Files map[string]*string `json:"files"`
 }
+
+type recordItem struct {
+	Kind   string         `json:"kind"`
+	Role   string         `json:"role"`
+	Target map[string]any `json:"target"`
+}
+
+// recordOutcome is one item's answer: its check, or why it couldn't be recorded.
+type recordOutcome struct {
+	OK    bool         `json:"ok"`
+	Check *check.Check `json:"check,omitempty"`
+	Error string       `json:"error,omitempty"`
+}
+
+// maxRecordItems bounds one batch; a writer with more sends several.
+const maxRecordItems = 4096
 
 type checkFailure struct {
 	OK    bool   `json:"ok"`
@@ -40,6 +60,24 @@ func checkRun(stdin io.Reader, stdout io.Writer) int {
 		return 2
 	}
 	switch req.Action {
+	case "evaluate-snapshot":
+		e, err := check.ParseEntry([]byte(req.Entry))
+		if err != nil {
+			_ = enc.Encode(checkFailure{Error: "invalid snapshot entry"})
+			return 2
+		}
+		ev, err := check.NewSnapshotEvaluator(req.Files)
+		if err != nil {
+			_ = enc.Encode(checkFailure{Error: err.Error()})
+			return 2
+		}
+		defer ev.Close()
+		_ = enc.Encode(struct {
+			OK         bool         `json:"ok"`
+			Result     check.Result `json:"result"`
+			InputsHash string       `json:"inputs_hash"`
+		}{true, ev.Evaluate(e), ev.SnapshotInputsHash(e, []byte(req.Entry))})
+		return 0
 	case "evaluate":
 		opts := check.StageOptions{
 			Checkout: req.Checkout, ProjectID: req.ProjectID, MexHome: req.MexHome,
@@ -62,7 +100,11 @@ func checkRun(stdin io.Reader, stdout io.Writer) int {
 			check.StageReport
 		}{true, opts.Store != nil, report})
 		return 0
-	case "record":
+	case "record", "record-batch":
+		if req.Action == "record-batch" && len(req.Items) > maxRecordItems {
+			_ = enc.Encode(checkFailure{Error: "too many items"})
+			return 2
+		}
 		ev, err := check.NewEvaluator(req.Checkout)
 		if err != nil {
 			_ = enc.Encode(checkFailure{Error: err.Error()})
@@ -74,6 +116,23 @@ func checkRun(stdin io.Reader, stdout io.Writer) int {
 				defer ix.Close()
 				ev.UseIndex(ix)
 			}
+		}
+		if req.Action == "record-batch" {
+			// One process for many checks: files read once are cached by the evaluator.
+			results := make([]recordOutcome, len(req.Items))
+			for i, item := range req.Items {
+				c, err := ev.Record(item.Kind, item.Role, item.Target)
+				if err != nil {
+					results[i] = recordOutcome{Error: err.Error()}
+					continue
+				}
+				results[i] = recordOutcome{OK: true, Check: &c}
+			}
+			_ = enc.Encode(struct {
+				OK      bool            `json:"ok"`
+				Results []recordOutcome `json:"results"`
+			}{true, results})
+			return 0
 		}
 		c, err := ev.Record(req.Kind, req.Role, req.Target)
 		if err != nil {

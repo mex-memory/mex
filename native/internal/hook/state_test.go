@@ -48,6 +48,8 @@ func TestDetect(t *testing.T) {
 		`{"conversation_id":"c","generation_id":"g","hook_event_name":"beforeReadFile"}`: "cursor",
 		`{"cursor_version":"2.1","hook_event_name":"preToolUse"}`:                        "cursor",
 		`{"timestamp":1,"cwd":"/x","toolName":"bash","toolArgs":"{}"}`:                   "copilot",
+		`{"conversationId":"a","workspacePaths":["/w"],"toolCall":{"name":"view_file"}}`: "antigravity",
+		`{"session_id":"s","hook_event_name":"BeforeTool","original_request_name":"x"}`:  "gemini",
 		`not json`: "",
 	}
 	for payload, want := range cases {
@@ -59,7 +61,9 @@ func TestDetect(t *testing.T) {
 
 const cursorPayload = `{"conversation_id":"c","generation_id":"g","hook_event_name":"preToolUse","tool_name":"Read"}`
 
-func TestCursorRunningClaudeHooksStaysSilent(t *testing.T) {
+// Sheet 53: a borrowed hook stays silent when the real agent has its own MEX
+// hooks, and otherwise answers in the real agent's format.
+func TestCursorRunningClaudeHooks(t *testing.T) {
 	for _, own := range []bool{false, true} {
 		h, env := fakeHome(t, true)
 		if own {
@@ -67,9 +71,12 @@ func TestCursorRunningClaudeHooksStaysSilent(t *testing.T) {
 		}
 		var out bytes.Buffer
 		code := Run([]string{"claude-code", "PreToolUse"}, strings.NewReader(cursorPayload), &out, &bytes.Buffer{}, env)
-		// No Cursor profile yet, so the borrowed hook says nothing either way.
-		if code != 0 || out.Len() != 0 {
-			t.Errorf("own=%v: code %d, output %q, want silent", own, code, out.String())
+		want := "{}\n" // Cursor's own empty reply: valid JSON, so the tool isn't blocked
+		if own {
+			want = ""
+		}
+		if code != 0 || out.String() != want {
+			t.Errorf("own=%v: code %d, output %q, want %q", own, code, out.String(), want)
 		}
 	}
 }
@@ -242,5 +249,22 @@ func TestClaudeManagedSettingsDropIns(t *testing.T) {
 	off := h.hooksOff("claude-code", "linux")
 	if len(off) != 1 || !strings.Contains(off[0], "20-hooks.json") {
 		t.Errorf("drop-in folder: %v", off)
+	}
+}
+
+func TestCopilotDisableAllHooks(t *testing.T) {
+	user := t.TempDir()
+	h := homeFrom(func(k string) string {
+		if k == "HOME" || k == "USERPROFILE" {
+			return user
+		}
+		return ""
+	})
+	if off := h.hooksOff("copilot", "linux"); len(off) != 0 {
+		t.Fatalf("no config: %v", off)
+	}
+	write(t, filepath.Join(user, ".copilot", "config.json"), `{"disableAllHooks": true}`)
+	if off := h.hooksOff("copilot", "linux"); len(off) != 1 || !strings.Contains(off[0], "disableAllHooks") {
+		t.Errorf("got %v", off)
 	}
 }

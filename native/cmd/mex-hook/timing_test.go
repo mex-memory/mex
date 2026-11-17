@@ -149,6 +149,36 @@ func prepareTimingHooks(t *testing.T, location localrecord.Location) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	second, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0002_delivery.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema = append(schema, second...)
+	third, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0003_followups.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema = append(schema, third...)
+	fourth, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0004_rendering.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema = append(schema, fourth...)
+	fifth, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0005_probes.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema = append(schema, fifth...)
+	sixth, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0006_intent.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema = append(schema, sixth...)
+	seventh, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0007_surfaces.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema = append(schema, seventh...)
 	// Fixture preparation is outside the real hook's timed interval and limits.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -315,7 +345,7 @@ func measureNoOp(t *testing.T, counters bool) {
 		callOnce(t, shim, mexHome)
 		callOnce(t, floor, mexHome)
 	}
-	before := 0
+	before, committedBefore := 0, 0
 	var observer *sql.DB
 	if counters {
 		var err error
@@ -328,7 +358,14 @@ func measureNoOp(t *testing.T, counters bool) {
 		// Reuse one read-only observer. Reopening a pager between every call
 		// adds unrelated filesystem/sidecar work. QueryRow.Scan completes each
 		// read transaction before the next hook starts; no read lock is held.
-		before = readHookCount(t, observer)
+		committedBefore = readHookCount(t, observer)
+		// Warmup calls can still be deferred under the production write budget.
+		// Include those calls in the baseline before a measured call flushes
+		// them; otherwise that flush looks like duplicate measured counters.
+		before = committedBefore + pendingHookCalls(t, location)
+		if before != 10 {
+			t.Fatalf("warmup calls: counted=%d pending=%d want=10", committedBefore, before-committedBefore)
+		}
 	}
 	const runs = 200
 	// Measure actual captured calls. A write that misses its production
@@ -342,7 +379,7 @@ func measureNoOp(t *testing.T, counters bool) {
 	}
 	shimRuns := make([]time.Duration, 0, runs)
 	floorRuns := make([]time.Duration, 0, runs)
-	attempts, last := 0, before
+	attempts, last := 0, committedBefore
 	for attempts < limit && len(shimRuns) < runs {
 		attempts++
 		shimTime := callOnce(t, shim, mexHome)

@@ -1,0 +1,19 @@
+{
+  "agent": "devin",
+  "agent_version": "",
+  "kind": "pre_tool",
+  "session_id": "dv-01",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "shell",
+    "raw_name": "Bash",
+    "input": {
+      "command": "npm test"
+    }
+  },
+  "transcript": "/home/dev/.devin/sessions/dv-01.jsonl",
+  "background": false
+}
