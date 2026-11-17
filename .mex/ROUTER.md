@@ -18,7 +18,7 @@ edges:
     condition: when refreshing the release README, badges, community links, or architecture illustrations
   - target: patterns/hub-first-run-onboarding.md
     condition: when adding or changing the Hub first-run tour or its checkout-local completion state
-last_updated: 2026-10-29
+last_updated: 2026-11-18
 ---
 
 # Session Bootstrap
@@ -30,6 +30,15 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
+- 0.9.0-beta.1 is published from `a3a536b` (merge of PR #400): npm `next` for
+  `mex-agent` and all six `mex-agent-hook-*` packages, with provenance from the
+  GitHub trusted publisher, and a GitHub pre-release with tarballs and
+  `SHA256SUMS`. `latest` stays on 0.8.5 until 0.9.0. Tag run `44166562992` and
+  main CI `44164226489` pass. A clean macOS install passed install, first screen,
+  note and new-session recall. npm trusted publishers expire; all seven were
+  renewed before publishing. Known follow-up: `mex uninstall` alone leaves
+  generated rule files and their exclude block (`mex off` removes them). See
+  `docs/design/0.9.0-release-plan.md`.
 - 0.8.5 is tagged and published as the stable/latest GitHub release at
   `v0.8.5`, commit `8c43930`, dated October 29. Preparation went directly to
   main without a PR, as authorized. Exact-release CI `40826775278` passes all
