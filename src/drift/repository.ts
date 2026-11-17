@@ -27,7 +27,12 @@ export class RepositoryInventory {
 
   private listFiles(): string[] | null {
     try {
-      const output = execFileSync("git", ["ls-files", "-z", "--cached"], {
+      // `--recurse-submodules` lists tracked files inside checked-out
+      // submodules. Without it, a superproject that has any of its own
+      // files returns here and never sees `sub/script.sh`, so a scaffold
+      // reference to that file is MISSING_PATH. An uninitialized submodule
+      // contributes nothing, which matches the empty checkout.
+      const output = execFileSync("git", ["ls-files", "-z", "--cached", "--recurse-submodules"], {
         cwd: this.root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"],
       });
       const files = [...new Set(output.split("\0").filter(Boolean))];
