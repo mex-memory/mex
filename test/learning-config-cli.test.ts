@@ -11,7 +11,7 @@ it("accepts the learning command printed by the first screen in global scope", (
   for (const value of ["off", "on"]) {
     const result = spawnSync(process.execPath, [resolve("dist/cli.js"), "config", "set", "learning.statements", value], { env, cwd: base, encoding: "utf8", timeout: 15_000 });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe(`Learning from what you type is ${value}.`);
+    expect(result.stdout.trim()).toContain(value === "on" ? "at most 3% of your usage. Turn off: mex config set learning.statements off" : "MEX no longer learns from what you type.");
     const reader = openRecordReadOnly({ home: join(env.MEX_HOME, ".mex") });
     try { expect(reader?.setting("global", "learning.statements")).toBe(value); } finally { reader?.close(); }
   }
