@@ -14,6 +14,7 @@ import { detectCaller, type Caller } from "./caller.js";
 import { classifyPlace, displayPath, type Place } from "./place.js";
 import { renderDone, renderFindings, renderHeader, renderNotes, screenMode, type Finding } from "./screen.js";
 import { noteExample, renderNext } from "./screen.js";
+import { Rich, RichStep, RICH_MIN_COLUMNS } from "./rich.js";
 import { readBoundedTextFile } from "../knowledge/files.js";
 import type { RuleScan } from "../knowledge/rule-files.js";
 import type { FinishJob } from "./finish.js";
@@ -186,6 +187,11 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   const interactive = options.interactive ?? caller === "person";
   const ask = options.ask ?? ((lines: readonly string[]) => askYesNo(lines, write));
   const mode = screenMode({ env });
+  // A person at a colour terminal wide enough gets the live, rich screen; everyone else the plain one.
+  const rich = mode.color && !mode.ascii && caller === "person" && !options.write && process.stdout.isTTY === true
+    && (mode.width ?? 0) >= RICH_MIN_COLUMNS ? new Rich(env, Math.min(mode.width ?? 100, 110)) : undefined;
+  const step = rich ? new RichStep(rich) : undefined;
+  const live = <T>(label: string, work: () => Promise<T> | T): Promise<T> => step ? step.run(label, work) : Promise.resolve().then(work);
   const install = options.install ?? (env.MEX_INSTALL_AUTO !== "0" && env.MEX_BACKGROUND !== "1");
 
   const hooks: HookSummary = install ? await installHooks() : { notices: [] };
@@ -220,6 +226,9 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   }
 
   const findings: Finding[] = [];
+  let shown = 0, commandsSaved = false;
+  /** Rich: print the findings added since the last step, as the run goes. */
+  const showNew = () => { if (!rich) return; for (const line of rich.rows(findings.slice(shown))) write(line); shown = findings.length; };
   const notes: string[] = [];
   const finishJobs: FinishJob[] = [];
   const waiting = options.wait !== false;
@@ -279,9 +288,15 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       }
       killAt("queued", env);
       writer.close(); writer = undefined;
+      if (rich) {
+        for (const line of rich.header(basename(displayPath(checkout.path)), hidden)) write(line);
+        // The hooks went in first, so they lead the list.
+        if (hooks.note) for (const line of rich.rows([{ state: hooks.agents?.length ? "ok" : "attention", text: hooks.note }])) write(line);
+        showNew();
+      }
 
       // The free step: local reads only, no network, no model, no repository command.
-      const recipes = await readRecipes(checkout.path, projectId, env);
+      const recipes = await live("Reading package files", () => readRecipes(checkout.path, projectId, env));
       // The example a person tries first: the root package's test command when there is one.
       // A command a person can run as is: from a manifest, not a CI step, with no variables to fill in.
       const fromManifest = (recipe: { origin: Array<{ file: string }> }) => recipe.origin.some(o => !/^\.(?:github|gitlab|circleci)\/|\.gitlab-ci\.ya?ml$|azure-pipelines/u.test(o.file));
@@ -296,24 +311,29 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         findings.push(recipeFinding);
         for (const note of summary.notes.slice(0, 3)) findings.push({ state: "attention", text: note });
       }
-      const rules = await readRules(checkout.path, listing);
+      // The commands are saved as soon as they are read. No model or repo command runs.
+      if (recipes) {
+        await live("Saving commands for your agents", async () => {
+          try {
+            const { saveSetupRecipes } = await import("./recipe-entries.js");
+            const saved = saveSetupRecipes(recipes, { projectPath: checkout.path, env });
+            if (saved.saved && saved.saved === saved.selected && !saved.incomplete && recipeFinding) {
+              commandsSaved = true;
+              recipeFinding.text += saved.capped ? ` · your agents get the first ${saved.saved} from now on` : " · your agents get these from now on";
+            }
+            if (saved.incomplete) findings.push({ state: "attention", text: "Some commands could not be saved for your agents. Run mex again to retry." });
+          } catch {
+            findings.push({ state: "attention", text: "Commands could not be saved for your agents. Run mex again to retry." });
+          }
+        });
+      }
+      showNew();
+      const rules = await live("Reading rule files", () => readRules(checkout.path, listing));
       if (rules && rules.files > 0) findings.push(...rules.findings);
-      const memory = await readAgentMemory(checkout.path);
+      showNew();
+      const memory = await live("Reading your agents' memory", () => readAgentMemory(checkout.path));
       if (memory && memory.count > 0) {
         findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory, offered to your agents as hints` });
-      }
-      // Findings are known before setup writes entries. No model or repo command runs.
-      if (recipes) {
-        try {
-          const { saveSetupRecipes } = await import("./recipe-entries.js");
-          const saved = saveSetupRecipes(recipes, { projectPath: checkout.path, env });
-          if (saved.saved && saved.saved === saved.selected && !saved.incomplete && recipeFinding) {
-            recipeFinding.text += saved.capped ? ` · your agents get the first ${saved.saved} from now on` : " · your agents get these from now on";
-          }
-          if (saved.incomplete) findings.push({ state: "attention", text: "Some commands could not be saved for your agents. Run mex again to retry." });
-        } catch {
-          findings.push({ state: "attention", text: "Commands could not be saved for your agents. Run mex again to retry." });
-        }
       }
       killAt("free-step", env);
       if (shallow) findings.push({ state: "attention", text: "Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)" });
@@ -323,6 +343,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         else if (git) findings.push({ state: "background", text: "Git history and the file index: in the background (`mex jobs`)" });
         else findings.push({ state: "background", text: "The file index: in the background (`mex jobs`); no git history here" });
       }
+      showNew();
 
       const { recordLocation } = await import("../record/location.js");
       const { writeFactFile } = await import("./facts.js");
@@ -347,15 +368,22 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   } finally { writer?.close(); }
 
   if (git && existsSync(join(checkout.path, ".mex", "ROUTER.md"))) notes.push("This repo has MEX 0.8 files. Run mex upgrade to bring them into 0.9 (preview first, nothing changes until you apply).");
-  if (hooks.note) notes.push(hooks.note);
+  if (hooks.note && !rich) notes.push(hooks.note);
   notes.push(...hooks.notices);
   const name = basename(displayPath(checkout.path));
   // Waiting, the time goes on the closing "Done in" line; a header time would only be the first part.
   const finishing = waiting && finishJobs.length > 0;
-  for (const line of renderHeader({ name, ...(finishing ? {} : { ms: elapsed() }), costUsd: 0, hidden }, mode)) write(line);
-  if (mode.color) write("");
-  if (caller === "person" && process.stdout.isTTY) for (const line of renderNotes(["Found"], mode)) write(line);
-  for (const line of renderFindings(findings, mode)) write(line);
+  if (rich) {
+    // The header and hooks row went out before the free step; print anything a turned-off checkout found.
+    if (!shown && !rebuildRules) for (const line of rich.header(name, hidden)) write(line);
+    showNew();
+  } else {
+    for (const line of renderHeader({ name, ...(finishing ? {} : { ms: elapsed() }), costUsd: 0, hidden }, mode)) write(line);
+    if (mode.color) write("");
+    if (caller === "person" && process.stdout.isTTY) for (const line of renderNotes(["Found"], mode)) write(line);
+    for (const line of renderFindings(findings, mode)) write(line);
+  }
+  const later: Finding[] = [];
 
   let exitNow = false, exitCode = 0;
   if (waiting && finishJobs.length) {
@@ -372,7 +400,8 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         capMs: options.waitCapMs ?? testWaitCap(env) ?? (caller === "person" ? WAIT_CAP_MS.person : WAIT_CAP_MS.other),
         interrupt, onFirstProgress: () => killAt("waiting", env),
       });
-      for (const line of renderFindings(finished.findings, mode)) write(line);
+      later.push(...finished.findings);
+      for (const line of rich ? rich.rows(finished.findings) : renderFindings(finished.findings, mode)) write(line);
       exitNow = finished.handedOff;
       if (finished.interrupted) exitCode = 130;
     } finally {
@@ -393,9 +422,15 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       notes.push("Rule files could not be rebuilt. Run mex again to retry.");
     }
   }
-  for (const line of renderNotes(notes, mode)) write(line);
-  for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning, example }, mode)) write(line);
-  if (waiting && finishJobs.length && !exitNow) for (const line of renderDone(elapsed(), mode)) write(line);
+  for (const line of rich ? rich.notes(notes) : renderNotes(notes, mode)) write(line);
+  if (rich) {
+    for (const line of rich.next({ learning, example })) write(line);
+    // The mascot closes the run with what it found.
+    if (!exitNow) for (const line of rich.end(rich.summary({ name, ms: elapsed(), commandsSaved, findings: [...findings, ...later] }))) write(line);
+  } else {
+    for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning, example }, mode)) write(line);
+    if (waiting && finishJobs.length && !exitNow) for (const line of renderDone(elapsed(), mode)) write(line);
+  }
   const ended = exitNow ? { exitNow: true as const } : {};
 
   // The offer slot: empty in beta.1; learning-03 registers its question.
