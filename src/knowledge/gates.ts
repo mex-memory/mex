@@ -81,16 +81,19 @@ export function sanitizeText(value: string, source: References): string {
   // pushing", "when CI fails"); whatever follows is checked again, so a
   // command after such a word is never let through unchecked.
   const words = "because|for which|so that|before|after|when|whenever|while|if|unless|until|then|otherwise|instead|since|once";
+  const programs = "npm|pnpm|yarn|npx|bun|node|python3?|pip3?|git|go|cargo|make|cmake|curl|wget|bash|sh|sudo|rm|chmod|powershell|pwsh|cmd";
   const end = new RegExp(`(?:[.!?](?=\\s|$)|,\\s|\\s+(?:${words})\\b)`, "u");
-  const gateBare = (input: string): string => input.replace(
-    new RegExp(`(^|\\n|\\b(?:run|runs|running|execute|executes|using|with|use|${words})\\s+)((?:npm|pnpm|yarn|npx|bun|node|python3?|pip3?|git|go|cargo|make|cmake|curl|wget|bash|sh|sudo|rm|chmod|powershell|pwsh|cmd)\\s+[^\\n\\0]+)`, "giu"),
-    (_all, prefix: string, value: string) => {
-      const split = value.search(end);
-      const command = (split < 0 ? value : value.slice(0, split)).trim();
-      const rest = split < 0 ? "" : value.slice(split);
-      return prefix + (commandExists(command, source) ? command : "[unverified command removed]") + gateBare(rest);
-    });
-  text = gateBare(text);
+  const check = (prefix: string, value: string): string => {
+    const split = value.search(end);
+    const command = (split < 0 ? value : value.slice(0, split)).trim();
+    const rest = split < 0 ? "" : value.slice(split);
+    return prefix + (commandExists(command, source) ? command : "[unverified command removed]") + gateRest(rest);
+  };
+  // After a command, a plain word may lead to another one ("npm test before
+  // rm -rf build"): that is checked too, but only a lowercase program name,
+  // so prose such as "before Python changes" is left alone.
+  const gateRest = (input: string): string => input.replace(new RegExp(`(\\b(?:${words})\\s+)((?:${programs})\\s+[^\\n\\0]+)`, "gu"), (_all, prefix: string, value: string) => check(prefix, value));
+  text = text.replace(new RegExp(`(^|\\n|\\b(?:run|runs|running|execute|executes|using|with|use)\\s+)((?:${programs})\\s+[^\\n\\0]+)`, "giu"), (_all, prefix: string, value: string) => check(prefix, value));
   return text.replace(/\0(\d+)\0/gu, (_all, index: string) => codes[Number(index)]);
 }
 

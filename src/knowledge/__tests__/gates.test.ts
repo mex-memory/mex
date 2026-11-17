@@ -59,6 +59,8 @@ describe("deterministic entry gates", () => {
     expect(sanitizeText("Run npm missing before pushing.", source)).toBe("Run [unverified command removed] before pushing.");
     expect(sanitizeText("Run npm test before rm -rf build", source)).toBe("Run npm test before [unverified command removed]");
     expect(sanitizeText("Run npm test && rm -rf / before pushing", source)).not.toContain("rm -rf");
+    // Prose after a plain word is not a command.
+    expect(sanitizeText("Reading all JavaScript before Python changes root Python version precedence.", source)).toBe("Reading all JavaScript before Python changes root Python version precedence.");
   });
   it("does not let learned entries validate their own commands", () => {
     mkdirSync(join(root, ".mex/learned"), { recursive: true });
