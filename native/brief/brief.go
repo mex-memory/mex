@@ -71,11 +71,30 @@ type Result struct {
 	// Folder is the starting-folder selection, computed beside the
 	// working-set one so a session can be given either.
 	Folder []Item `json:"-"`
+	// Corrections set aside notes the agent already loaded from MEX's own
+	// rule files whose checks now fail. They are retractions, not knowledge,
+	// so they need no receipt and always lead the brief.
+	Corrections []Item `json:"corrections,omitempty"`
+	// NativeStale says MEX's rule files carry a note the code has changed or
+	// broken, so they should be rebuilt before the next session.
+	NativeStale bool `json:"native_stale,omitempty"`
+}
+
+// maxCorrections bounds the retractions in one brief; the rule files are
+// rebuilt before the next session, so a few lines cover the gap.
+const maxCorrections = 2
+
+// correctionLine names the note without repeating its stale claim.
+func correctionLine(id string) string {
+	return "Correction: the MEX note " + id + " in your rule files no longer matches the code; set it aside."
 }
 
 // Render restricts a result to the ids accepted by the receipt transaction.
 func (r Result) Render(accepted []string) string {
 	text := "[mex start-preview]\n" + Priority
+	for _, item := range r.Corrections {
+		text += "\n" + item.Line
+	}
 	for _, item := range r.Items {
 		if contains(accepted, item.ID) {
 			text += "\n" + item.Line + " (" + item.ID + ")"
@@ -145,7 +164,9 @@ func allowed(e *entries.Entry, verdict, level string) bool {
 		return false
 	}
 	if level == "personal" && e.Kind != "hint" {
-		return true
+		// A personal fact whose checks say the code changed is not restated;
+		// the moment it matters, delivery points at today's code instead.
+		return !(e.Kind == "fact" && verdict == check.Changed && len(e.Checks) > 0)
 	}
 	switch e.Kind {
 	case "rule", "decision", "pitfall", "procedure":
@@ -361,6 +382,32 @@ func Build(opts Options) (Result, error) {
 		return items, true
 	}
 	tokens := TokenBound(Priority) + 32
+	// MEX's own rule files are rebuilt between sessions, from verdicts. If
+	// the code moved since (a pull, an edit in another session), a note the
+	// agent just loaded from them may no longer hold: retract it here and ask
+	// for a rebuild. Imported rule files are the person's own and untouched.
+	for _, c := range all {
+		if len(result.Corrections) >= maxCorrections || (!opts.Deadline.IsZero() && time.Now().After(opts.Deadline)) {
+			break
+		}
+		e := c.entry
+		if (c.level != "personal" && c.level != "team") || len(e.Checks) == 0 || retired[e.ID] || !result.Coverage.Covers(e.ID, opts.Agent, opts.Path) {
+			continue
+		}
+		verdict := verdictOf(c)
+		if verdict != check.Changed && verdict != check.Broken {
+			continue
+		}
+		result.NativeStale = true
+		if verdict == check.Broken || e.Kind == "fact" {
+			line := correctionLine(e.ID)
+			if tokens+TokenBound("\n"+line) > MaxTokens {
+				break
+			}
+			result.Corrections = append(result.Corrections, Item{ID: e.ID, Line: line, Level: c.level, Verdict: verdict, Tokens: TokenBound("\n" + line), Hash: c.hash})
+			tokens += TokenBound("\n" + line)
+		}
+	}
 	// The area selection: personal notes first, then at most three entries
 	// whose scope covers the folder the session starts in.
 	selectArea := func() []Item {

@@ -77,12 +77,20 @@ export function sanitizeText(value: string, source: References): string {
   }).join("\n")));
   text = text.replace(/`([^`\n]+)`/gu, (_all, code: string) => save(looksLikeCommand(code) && !commandExists(code, source) ? "[unverified command removed]" : `\`${code}\``));
   // Bare shell commands are checked as a whole, including chained suffixes.
-  text = text.replace(/(^|\n|\b(?:run|runs|running|execute|executes|using|with|use)\s+)((?:npm|pnpm|yarn|npx|bun|node|python3?|pip3?|git|go|cargo|make|cmake|curl|wget|bash|sh|sudo|rm|chmod|powershell|pwsh|cmd)\s+[^\n\0]+)/giu, (_all, prefix: string, value: string) => {
-    const split = value.search(/(?:[.!?](?=\s|$)|\s+(?:because|for which|so that)\b)/u);
-    const command = (split < 0 ? value : value.slice(0, split)).trim();
-    const rest = split < 0 ? "" : value.slice(split);
-    return prefix + (commandExists(command, source) ? command : "[unverified command removed]") + rest;
-  });
+  // A command ends where the sentence goes on in plain words ("before
+  // pushing", "when CI fails"); whatever follows is checked again, so a
+  // command after such a word is never let through unchecked.
+  const words = "because|for which|so that|before|after|when|whenever|while|if|unless|until|then|otherwise|instead|since|once";
+  const end = new RegExp(`(?:[.!?](?=\\s|$)|,\\s|\\s+(?:${words})\\b)`, "u");
+  const gateBare = (input: string): string => input.replace(
+    new RegExp(`(^|\\n|\\b(?:run|runs|running|execute|executes|using|with|use|${words})\\s+)((?:npm|pnpm|yarn|npx|bun|node|python3?|pip3?|git|go|cargo|make|cmake|curl|wget|bash|sh|sudo|rm|chmod|powershell|pwsh|cmd)\\s+[^\\n\\0]+)`, "giu"),
+    (_all, prefix: string, value: string) => {
+      const split = value.search(end);
+      const command = (split < 0 ? value : value.slice(0, split)).trim();
+      const rest = split < 0 ? "" : value.slice(split);
+      return prefix + (commandExists(command, source) ? command : "[unverified command removed]") + gateBare(rest);
+    });
+  text = gateBare(text);
   return text.replace(/\0(\d+)\0/gu, (_all, index: string) => codes[Number(index)]);
 }
 

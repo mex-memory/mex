@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 /**
@@ -12,8 +12,18 @@ export const LAUNCHER_VERSION = 1;
 
 export function launcherFile(home: string): string { return join(home, "bin", "launcher.json"); }
 
+/**
+ * The built CLI file behind `process.argv[1]`. A global npm install on Linux
+ * and macOS runs MEX through a `bin/mex` symlink, so the path as typed has no
+ * `.js`; the real file does. Unresolvable paths are returned as given.
+ */
+export function cliEntryPath(entry: string | undefined = process.argv[1]): string | undefined {
+  if (!entry) return entry;
+  try { return realpathSync(resolve(entry)); } catch { return resolve(entry); }
+}
+
 /** Writes the launcher when it changed. Never creates MEX's home and never throws. */
-export function writeLauncher(home: string, entry: string | undefined = process.argv[1], node: string = process.execPath): boolean {
+export function writeLauncher(home: string, entry: string | undefined = cliEntryPath(), node: string = process.execPath): boolean {
   try {
     // Only a built CLI can be started by the shim; a source run (tsx, tests) leaves the file alone.
     if (!entry || !entry.endsWith(".js") || !existsSync(home)) return false;

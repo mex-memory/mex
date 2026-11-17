@@ -140,6 +140,20 @@ func shape(c candidate, verdict string, env *shapeEnv) shaped {
 		if verdict == broken {
 			return withhold()
 		}
+		// A personal fact the code has changed is the user's own claim about
+		// code that no longer reads the same: point at today's code, as for a
+		// team fact, never restate it. Without checks there is no verdict to
+		// act on, so the note goes out as written.
+		if kind == "fact" && verdict == changed && len(it.Entry.Checks) > 0 {
+			text, ok := pointer(it.Entry, env)
+			if !ok {
+				return withhold()
+			}
+			s.action, s.full, s.oneLine = "replaced", text, text
+			s.fullTok = entries.EstimateTokens(text)
+			s.lineTok = s.fullTok
+			return s
+		}
 		return s
 	}
 	if it.Level == "hint" || kind == "hint" {

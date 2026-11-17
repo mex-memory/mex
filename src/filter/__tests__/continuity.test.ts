@@ -41,6 +41,8 @@ beforeEach(() => {
   git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
   writeFileSync(join(root, "README.md"), words + "\n"); git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture"); git("switch", "-qc", "work");
   writer = openRecord(options()); project = writer.checkout(root)!.project_id;
+  // These cases exercise learning from typed statements, which is opt-in.
+  writer.db.prepare("INSERT OR REPLACE INTO settings(scope,key,value) VALUES('global','learning.statements','on')").run();
   hook("UserPromptSubmit", session, { prompt: words });
 });
 afterEach(() => { writer.close(); vi.unstubAllEnvs(); rmSync(base, { recursive: true, force: true }); });

@@ -205,6 +205,14 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
         if (fixBranchNow(checkout, fix.item.id) || !samePosition(result.position, syncPosition(checkout)) || !filesMatch(fix)) {
           review(writer, job, key, fix, "The checkout or fix branch changed before the personal update"); gaps = true; continue;
         }
+        // A note the person wrote is never rewritten for them: it stays held
+        // back by its own checks, and the proposed wording waits in Review.
+        if (parseEntry(fix.before).mex.source.type === "person") {
+          review(writer, job, key, fix, `Your note ${fix.item.id} no longer matches the code. MEX holds it back; accept this wording, edit it with mex edit, or remove it with mex forget`);
+          notice(writer, key, fix, "updated", `Your note ${fix.item.id} no longer matches the code, so MEX holds it back. A proposed update is in mex review.`);
+          fix.state = "review"; set(writer, job.project_id!, key, fix);
+          continue;
+        }
         replaceEntryFile(directory, fix.item.id, fix.before, after);
         notice(writer, key, fix, "updated", `MEX updated personal entry ${fix.item.id} locally (checked by model).`);
       }

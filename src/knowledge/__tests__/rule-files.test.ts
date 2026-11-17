@@ -118,6 +118,23 @@ describe("rule files", () => {
     expect(review).toContainEqual(expect.objectContaining({ kind: "stale", message: "Mentions src/routes/index.ts, which doesn't exist." }));
   });
 
+  it("reports only confident misses in a workspace: package scripts, scoped paths, installs and outputs", () => {
+    const root = repo({
+      "package.json": JSON.stringify({ scripts: { build: "turbo build" } }),
+      "apps/api/package.json": JSON.stringify({ name: "@acme/api", scripts: { "lint:openapi": "x", "build:generate": "y" } }),
+      "apps/api/e2e/setup.ts": "export {}\n",
+      ".cursor/rules/api.mdc": [
+        "---", "globs: apps/api/**/*", "---",
+        "## Commands", "", "Run `npm run lint:openapi` and `pnpm --filter @acme/api build:generate`.", "",
+        "## Setup", "", "Tests share `e2e/setup.ts`. Types come from `node_modules/next/dist/types.d.ts`.", "",
+        "## Report", "", "Read `.cursor/report.json`; if missing, run `tool scan --write-report .cursor/report.json`.", "",
+        "## Gone", "", "Use `pnpm tools:missing`. See `docs/removed/page.mdx`.", "",
+      ].join("\n"),
+    });
+    const stale = scanRuleFiles(root).review.filter(r => r.kind === "stale").map(r => r.message);
+    expect(stale).toEqual(['Names the command "pnpm tools:missing", which the repo doesn\'t define.', "Mentions docs/removed/page.mdx, which doesn't exist."]);
+  });
+
   it("never reads back files MEX generated", () => {
     const root = repo({ ".claude/rules/mex-api.md": "<!-- mex:generated from .mex/learned -->\n# API\n\nGenerated.\n" });
     expect(scanRuleFiles(root).files).toEqual([]);

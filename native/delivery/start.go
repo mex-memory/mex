@@ -51,6 +51,11 @@ func startBlock(h *record.Hooks, ev contract.Event, env Environment) (string, er
 	if err != nil {
 		return "", nil
 	}
+	if result.NativeStale {
+		// Best effort: the background process rebuilds MEX's rule files
+		// before the next session. The corrections cover this one.
+		_ = RequestNativeRebuild(env.RecordDirectory, ev.ProjectID, ev.Checkout)
+	}
 	req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
 	req.OnceEntry = startMarker
 	req.Candidates = []record.DeliveryCandidate{{EntryID: startMarker, Moment: "start-brief", Form: "one-line", Action: "given", Tokens: brief.TokenBound(brief.Priority) + 32, ContentHash: contentHash(brief.Priority)}}

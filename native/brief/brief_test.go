@@ -248,3 +248,40 @@ func TestRuleCacheIsBoundToCurrentCheckoutAndRuleBytes(t *testing.T) {
 		t.Fatal(r)
 	}
 }
+
+func TestStaleNoteInMexRuleFilesIsRetractedAndRebuildAsked(t *testing.T) {
+	opts := setup(t)
+	opts.Agent = "claude-code"
+	checks := "\n    - kind: key\n      role: complete\n      target: {file: package.json, pointer: /scripts/test}\n      saw: {value: vitest}\n      files: {}"
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_note02.md", entry("mx_note02", "Tests run with vitest.", "fact", "**", checks))
+	text := "<!-- mex:generated -->\n- Tests run with vitest. <!-- mx_note02 -->\n"
+	put(t, opts.Checkout, ".claude/rules/mex-local.md", text)
+	manifest(t, opts.MexHome, "projects/"+project+"/native-local.json", ".claude/rules/mex-local.md", text)
+	put(t, opts.Checkout, "package.json", `{"scripts":{"test":"vitest"}}`)
+	if r := build(t, opts); len(r.Corrections) != 0 || r.NativeStale || len(r.Items) != 0 {
+		t.Fatalf("a held note the agent already loads needs nothing: %+v", r)
+	}
+	// The code moved on: the agent loaded a note that no longer holds.
+	put(t, opts.Checkout, "package.json", `{"scripts":{"test":"jest"}}`)
+	r := build(t, opts)
+	if !r.NativeStale || len(r.Corrections) != 1 || r.Corrections[0].ID != "mx_note02" || len(r.Items) != 0 {
+		t.Fatalf("stale loaded note not retracted: %+v", r)
+	}
+	if !strings.Contains(r.Text, "Correction: the MEX note mx_note02") || strings.Contains(r.Text, "vitest") {
+		t.Fatalf("correction must name the note without repeating it: %q", r.Text)
+	}
+}
+
+func TestChangedPersonalFactIsNotRestatedInTheBrief(t *testing.T) {
+	opts := setup(t)
+	checks := "\n    - kind: key\n      role: supporting\n      target: {file: package.json, pointer: /scripts/test}\n      saw: {value: vitest}\n      files: {}"
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_note03.md", entry("mx_note03", "Tests run with vitest.", "fact", "**", checks))
+	put(t, opts.Checkout, "package.json", `{"scripts":{"test":"vitest"}}`)
+	if r := build(t, opts); len(r.Items) != 1 {
+		t.Fatalf("a held personal fact is given: %+v", r)
+	}
+	put(t, opts.Checkout, "package.json", `{"scripts":{"test":"jest"}}`)
+	if r := build(t, opts); len(r.Items) != 0 {
+		t.Fatalf("a changed personal fact was restated: %+v", r)
+	}
+}
