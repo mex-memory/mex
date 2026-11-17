@@ -198,6 +198,8 @@ func (ev *Evaluator) run(c Check) CheckResult {
 		return CheckResult{Status: Floor, Reason: "legacy grounding needs review"}
 	case "pattern":
 		return ev.patternCheck(c)
+	case "relation":
+		return ev.relationCheck(c)
 	}
 	return CheckResult{Status: Floor, Reason: fmt.Sprintf("%s checks are not evaluated yet", c.Kind)}
 }

@@ -16,6 +16,21 @@ type fakeIndex struct {
 	dropped  map[string]int
 	counts   map[string]int // pattern id -> count, for any scope
 	infos    map[string]*index.FileInfoAnswer
+	edges    []index.ImportEdge
+	unread   map[string]int // reason -> files, for any scope
+}
+
+func (f *fakeIndex) ImportsFrom(glob string) (*index.ImportsAnswer, error) {
+	answer := &index.ImportsAnswer{Edges: []index.ImportEdge{}, Unread: map[string]int{}}
+	for _, edge := range f.edges {
+		if index.MatchesScope(glob, edge.From) {
+			answer.Edges = append(answer.Edges, edge)
+		}
+	}
+	for reason, n := range f.unread {
+		answer.Unread[reason] = n
+	}
+	return answer, nil
 }
 
 func (f *fakeIndex) Outline(path string) (*index.OutlineAnswer, *index.Miss) {
