@@ -27,14 +27,24 @@ describe("the who-loads-what plan", () => {
     expect(new Set(plan.files.map(file => file.path)).size).toBe(4);
     expect(plan.files.find(file => file.sharing === "local")?.ids).toEqual(["mx_note01"]);
   });
-  it("Codex gets one AGENTS.md per area; Claude reads it where the folder has no CLAUDE.md", () => {
+  it("Codex gets one AGENTS.md per area; Claude reads it only with no CLAUDE.md at the root or on the way", () => {
+    const bare = repo();
+    expect(summary(planNative(bare, ["claude-code", "codex"], [team("mx_root01"), team("mx_api001", "apps/api/**")]))).toEqual([
+      ["AGENTS.md", "shared", "claude-code+codex", "mx_root01"],
+      ["apps/api/AGENTS.md", "shared", "claude-code+codex", "mx_api001"],
+    ]);
+    // A root CLAUDE.md: Claude Code reads no AGENTS.md at all, so it gets its own rule files.
     const root = repo({ "CLAUDE.md": "# Mine\n" });
     const plan = planNative(root, ["claude-code", "codex"], [team("mx_root01"), team("mx_api001", "apps/api/**")]);
     expect(summary(plan)).toEqual([
       ["AGENTS.md", "shared", "codex", "mx_root01"],
       [".claude/rules/mex.md", "shared", "claude-code", "mx_root01"],
-      ["apps/api/AGENTS.md", "shared", "claude-code+codex", "mx_api001"],
+      ["apps/api/AGENTS.md", "shared", "codex", "mx_api001"],
+      [expect.stringMatching(/^\.claude\/rules\/mex-area-apps-api-[0-9a-f]{12}\.md$/u), "shared", "claude-code", "mx_api001"],
     ]);
+    // A CLAUDE.md on the way down counts the same.
+    const nested = repo({ "apps/CLAUDE.md": "# Apps\n" });
+    expect(summary(planNative(nested, ["claude-code", "codex"], [team("mx_api001", "apps/api/**")]))[1]?.[2]).toBe("claude-code");
   });
 
   it("only for agents in use, and never into a file a person wrote", () => {

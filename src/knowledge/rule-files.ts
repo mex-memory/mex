@@ -6,7 +6,7 @@
  */
 import { createHash } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { KNOWLEDGE_LIMITS } from "./contract.js";
@@ -116,16 +116,34 @@ function scopeOf(path: string, format: RuleFile["format"], data: Record<string, 
   }
 }
 
-/** Who loads a file. Claude reads AGENTS.md only where its folder has no CLAUDE.md. OpenCode reads only the root AGENTS.md. */
-function agentsFor(path: string, format: RuleFile["format"], present: Set<string>): Agent[] {
+const CLAUDE_FILES = ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"];
+
+/**
+ * Whether Claude Code reads the AGENTS.md files of this folder ("" is the
+ * root). By default it reads AGENTS.md only when no CLAUDE.md, CLAUDE.local.md
+ * or .claude/CLAUDE.md is in the working directory or above it, and a
+ * subfolder's only when that subfolder has none of its own. Every folder from
+ * the root down is checked, so a repo with a root CLAUDE.md gets MEX's own
+ * Claude rule files instead of an AGENTS.md that Claude never reads.
+ */
+export function claudeReadsAgentsIn(root: string, folder: string): boolean {
+  const parts = folder && folder !== "." ? folder.split("/") : [];
+  for (let i = 0; i <= parts.length; i++) {
+    const dir = parts.slice(0, i).join("/");
+    if (CLAUDE_FILES.some(name => existsSync(join(root, dir, name)))) return false;
+  }
+  return true;
+}
+
+/** Who loads a file. Claude reads AGENTS.md only with no CLAUDE.md at the root or on the way. OpenCode reads only the root AGENTS.md. */
+function agentsFor(root: string, path: string, format: RuleFile["format"]): Agent[] {
   const folder = posix.dirname(path);
-  const sibling = (name: string) => present.has(folder === "." ? name : `${folder}/${name}`);
   switch (format) {
     case "claude": case "claude-rules": return ["claude-code"];
     case "agents": {
       const agents: Agent[] = ["codex", "cursor", "copilot"];
       if (folder === ".") agents.push("opencode");
-      if (basename(path) === "AGENTS.md" && !sibling("CLAUDE.md") && !sibling("CLAUDE.local.md")) agents.unshift("claude-code");
+      if (basename(path) === "AGENTS.md" && claudeReadsAgentsIn(root, folder === "." ? "" : folder)) agents.unshift("claude-code");
       return agents;
     }
     case "cursor-rules": case "cursorrules": return ["cursor"];
@@ -155,7 +173,7 @@ export function discoverRuleFiles(root: string, listed?: readonly string[]): Arr
     } catch { continue; }
     if (text.includes(GENERATED_MARK)) continue; // MEX wrote it; the entries are the source.
     const { data } = frontmatter(text);
-    out.push({ path, format, agents: agentsFor(path, format, present), scope: scopeOf(path, format, data), hash: fileHash(Buffer.from(text)), text, data });
+    out.push({ path, format, agents: agentsFor(root, path, format), scope: scopeOf(path, format, data), hash: fileHash(Buffer.from(text)), text, data });
   }
   return out;
 }

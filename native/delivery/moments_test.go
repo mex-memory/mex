@@ -805,3 +805,16 @@ func TestPathThroughAnInsideLinkCannotEscapeCheckout(t *testing.T) {
 		}
 	}
 }
+
+// Claude Code reads no AGENTS.md while a CLAUDE.md sits at the root (its
+// default), so a generated area AGENTS.md does not cover Claude there.
+func TestRootClaudeFileMeansClaudeReadsNoAgentsFile(t *testing.T) {
+	f := newFixture(t)
+	f.file("src/gen/AGENTS.md", "# Gen\n- Edit schema.graphql, not this folder. <!-- mex:mx_genpit -->\n")
+	f.entry(spec{id: "mx_genpit", kind: "pitfall", scope: "src/gen/**", oneLine: "Edit schema.graphql, not this folder."})
+	// No CLAUDE.md anywhere: Claude reads src/gen/AGENTS.md itself.
+	mustBeEmpty(t, f.send(f.event(contract.PostToolBatch, read(f.file("src/gen/a.ts", "a"), "a"))))
+	f.file("CLAUDE.md", "# Ours\n")
+	f.session = "s2"
+	mustHave(t, f.send(f.event(contract.PostToolBatch, read(f.file("src/gen/b.ts", "b"), "b"))), "Edit schema.graphql")
+}

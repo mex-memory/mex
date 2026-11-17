@@ -232,6 +232,27 @@ func readCoverage(root, home *os.Root, opts Options, cache ruleCache) Coverage {
 	return c
 }
 
+// claudeFileOnPath reports a CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md
+// in the root or any folder down to this one. Claude Code then reads no
+// AGENTS.md there (its default "CLAUDE.md or AGENTS.md" rule).
+func claudeFileOnPath(root *os.Root, folder string) bool {
+	dirs := []string{"."}
+	if folder != "." && folder != "" {
+		parts := strings.Split(folder, "/")
+		for i := range parts {
+			dirs = append(dirs, strings.Join(parts[:i+1], "/"))
+		}
+	}
+	for _, d := range dirs {
+		for _, f := range []string{"CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"} {
+			if _, err := root.Lstat(path.Join(d, f)); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Recheck sibling precedence now, rather than relying on a previous scan.
 func nativeAgents(root *os.Root, name string, agents []string) []string {
 	result := []string{}
@@ -241,10 +262,7 @@ func nativeAgents(root *os.Root, name string, agents []string) []string {
 			if base == "AGENTS.override.md" {
 				continue
 			}
-			if _, err := root.Lstat(path.Join(folder, "CLAUDE.md")); err == nil {
-				continue
-			}
-			if _, err := root.Lstat(path.Join(folder, "CLAUDE.local.md")); err == nil {
+			if claudeFileOnPath(root, folder) {
 				continue
 			}
 		}
