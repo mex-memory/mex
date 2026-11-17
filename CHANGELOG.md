@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.9.0-beta.1]
+## [0.9.0-beta.1] - 2026-11-18
 
 Pre-release on npm's `next` tag; 0.8.5 stays on `latest`.
 

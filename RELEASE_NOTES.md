@@ -31,6 +31,20 @@ at the current code instead.
 - Anonymous usage counts with local inspection and an off switch. (#342)
 - Beta.1 CLI polish: inline rule findings, next steps and undo instructions,
   `mex status`, the new doctor view and help ordered around the 0.9 commands.
+- A live first screen in a colour terminal. Each step ticks as it runs and settles
+  into one list. Out-of-date rule lines show as a small table under their file. At
+  the end, the MEX mascot sums up the run. Agents, pipes and `NO_COLOR` keep the
+  plain screen.
+- Agents keep what you ask them to. Each session tells the agent to save a lasting
+  fact, rule or decision you state, or anything you ask it to remember, with
+  `mex note` in your words. A rule stated in passing ("we always use pnpm here") is
+  quoted back to the agent for that turn. Such notes read `[Claude Code noted, …]`
+  or `[Codex noted, …]` until you `mex edit` them. Typing `mex note:` yourself
+  saves your own words.
+- MEX picks up additions on its own. New package scripts, rule-file sections and
+  agent memory reach the agents from the next session, without running `mex`
+  again. A session start asks for a background re-read, at most every 30 minutes
+  per repo, with no model call.
 
 ## Changed
 
@@ -80,6 +94,12 @@ saved tokens or task success.
   up to 15 of them existed. At the last checkpoint 20 of 31 still-true claims went
   out in full; the rest went out as a pointer to the current code or were held.
 - The upgrade from 0.8 reached a ready preview on four real 0.8 projects.
+- With MEX off, the same six questions got "unknown" for five of them.
+- Claude Code (Sonnet) was told "we always use pnpm in this repo" in passing,
+  inside another question. It saved the rule with `mex note`, and a new Codex
+  session then answered "pnpm" with no tools.
+- In a repo with a `CLAUDE.md`, Claude was asked to add a field to a generated
+  type. It changed the schema, citing MEX's note that the folder is generated.
 
 ## Fixed during beta testing
 
@@ -98,10 +118,33 @@ saved tokens or task success.
   preview lists files instead of printing the whole diff.
 - Learning from what you type is off until you turn it on:
   `mex config set learning.statements on`.
+- In a repo with a `CLAUDE.md`, Claude Code gets folder notes and commands. Claude
+  reads no `AGENTS.md` there, so MEX writes Claude its own rule files.
+- Every package's test and build commands are kept, up to 120, not the first 20.
+  A repo's own root `AGENTS.md` no longer keeps the root commands from that agent.
+- Imported rule lines keep identifiers such as `NODE_ENV`, and a code block's
+  language tag is never taken for a rule.
+- The command check no longer cuts a tool named in a sentence ("use pnpm in this
+  repo"). Commands the repo doesn't define are still removed.
+- Notes saved in one agent reach the other agent's rule files as soon as the
+  session ends, not up to 10 minutes later.
+- A `mex handoff` can be committed: MEX's ignore block no longer hides
+  `.mex/handoffs/`.
+- `mex install` finds Claude Code and Codex on PATH directly. A slow `where.exe`
+  on Windows could skip an agent's hooks.
+- Run through `npx`, MEX no longer installs hooks pointing into npm's temporary
+  cache. It asks for `npm i -g mex-agent@next` instead.
 
 ## Known limits
 
 - The session-start brief holds about 300 bytes; more notes reach the agent
   through MEX's rule files.
 - A note scoped to some paths is corrected at its next delivery, not at session start.
+- Agents keep what you state. Something an agent works out on its own, such as an
+  environment variable the tests need, isn't saved yet. On smaller models, Claude
+  may save a rule to its own memory instead; MEX offers that to Codex as a hint.
+- On Windows, Codex starts each hook through PowerShell, which adds about 0.45 s
+  per hook call.
+- Learning from pull requests, review comments, CI and commit history comes in a
+  later beta.
 - The 0.9 Hub arrives in 0.9.0. More agents arrive in 0.9.0.
