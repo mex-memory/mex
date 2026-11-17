@@ -1282,14 +1282,6 @@ configCmd
         const writer = openRecord();
         try { setDeliverySurface(writer, key.slice(17), value, options.project ? process.cwd() : undefined); } finally { writer.close(); }
         console.log("Delivery surface set to " + value + ".");
-      } else if (key === "learning.statements") {
-        if (value !== "on" && value !== "off") throw new Error("Use on or off for learning.statements.");
-        const { openRecord } = await import("./record/index.js");
-        const writer = openRecord();
-        try {
-          writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES('global','learning.statements',?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(value);
-        } finally { writer.close(); }
-        console.log(`Learning from what you type is ${value}.`);
       } else if (key === "learning.sharing") {
         if (!options.project) throw new Error("Use --project to set learning.sharing for this repository.");
         if (!["automatic", "manual"].includes(value)) throw new Error("Use automatic or manual for learning.sharing.");
