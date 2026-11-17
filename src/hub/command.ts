@@ -22,6 +22,7 @@ import { emitHubTelemetry } from "./telemetry.js";
 import { dirname, join } from "node:path";
 import { assertSetupAvailable } from "../setup/setup-lock.js";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 
 export interface RunHubCommandOptions {
   readonly projectRoot: string;
@@ -60,6 +61,12 @@ export interface RunSetupHubCommandOptions {
 export async function launchHub(options: LaunchHubOptions): Promise<void> {
   const initialMode = options.mode === undefined ? undefined : normalizeSetupMode(options.mode);
   const projectRoot = findSetupProjectRoot();
+  if (!options.setup && !existsSync(join(projectRoot, ".mex", "ROUTER.md"))) {
+    console.log("The MEX Hub is being rebuilt for 0.9 and arrives in 0.9.0.");
+    console.log("For now: mex status (what MEX is doing here) · mex what (this session) · mex recall <words> (find a note) · mex check (what still holds)");
+    return;
+  }
+  if (!options.setup) console.error("This is the 0.8 Hub. mex upgrade brings this repo into 0.9.");
   const status = inspectSetupStatus(projectRoot);
   let finalizeOnly = false;
   if (!options.setup && initialMode === undefined && status.mode === "code-repo" && status.hasScaffold && await hasCommittedHubIdentity(projectRoot)) {

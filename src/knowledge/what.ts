@@ -44,7 +44,7 @@ export function whatLine(s: SessionSummary): string {
   }
   const detail = [...kinds].sort(([a], [b]) => a.localeCompare(b)).map(([name, n]) => `${n} ${name}${n === 1 ? "" : "s"}`).join(", ");
   const qualifier = s.partial ? "at least " : "";
-  return `MEX · this session: gave ${qualifier}${s.gave} items${detail ? ` (${detail})` : ""} · withheld ${qualifier}${s.withheld} out of date · replaced ${qualifier}${s.replaced} long outputs · details: mex hub`;
+  return `MEX · this session: gave ${qualifier}${s.gave} items${detail ? ` (${detail})` : ""} · withheld ${qualifier}${s.withheld} out of date · replaced ${qualifier}${s.replaced} long outputs · details: mex status`;
 }
 /** Read only: no migrations, registration or snapshot work. Old receipts have no title. */
 export function what(options: KnowledgeOptions, session = ""): SessionSummary {
