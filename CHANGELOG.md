@@ -50,6 +50,8 @@ Pre-release on npm's `next` tag; 0.8.5 stays on `latest`.
 - When the repo has its own root `AGENTS.md` or `CLAUDE.md`, setup's root commands reach that agent in the start brief.
 - Imported rule lines keep identifiers such as `NODE_ENV`, and a code block's language tag is never taken for the rule.
 - In a repo with a `CLAUDE.md`, Claude Code gets folder-scoped notes and commands. MEX had assumed Claude reads a folder's `AGENTS.md`, which Claude Code skips while any `CLAUDE.md` is at the root or on the way.
+- A `mex handoff` can be committed: MEX's ignore block no longer hides `.mex/handoffs/`.
+- Run through `npx`, MEX no longer installs hooks into npm's temporary cache; it asks for `npm i -g mex-agent@next` instead.
 
 ## [0.8.5] - 2026-10-29
 

@@ -98,8 +98,16 @@ function available(agent: Agent, platform: NodeJS.Platform, env: NodeJS.ProcessE
   return false;
 }
 
+/** npx runs a package from npm's temporary cache; hooks pointing there break when npm clears it. */
+export function fromNpxCache(entry: string | undefined): boolean {
+  return !!entry && /[\\/]_npx[\\/]/u.test(entry);
+}
+
 /** Global installation only. Project registration and the first screen belong to setup. */
 export async function installAgents(options: InstallOptions = {}): Promise<InstallResult> {
+  if (!options.entry && fromNpxCache(cliEntryPath())) {
+    throw new Error("MEX is running through npx, from npm's temporary cache; hooks installed from there stop working when npm clears it. Install MEX once with `npm i -g mex-agent@next`, then run `mex install`.");
+  }
   const env = options.env ?? process.env;
   const user = options.userHome ?? homedir();
   const location = recordLocation({ home: options.home ?? mexHomeDir(), create: false });
