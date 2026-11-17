@@ -307,7 +307,9 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         try {
           const { saveSetupRecipes } = await import("./recipe-entries.js");
           const saved = saveSetupRecipes(recipes, { projectPath: checkout.path, env });
-          if (saved.saved && saved.saved === saved.selected && !saved.incomplete && recipeFinding) recipeFinding.text += " · your agents get these from now on";
+          if (saved.saved && saved.saved === saved.selected && !saved.incomplete && recipeFinding) {
+            recipeFinding.text += saved.capped ? ` · your agents get the first ${saved.saved} from now on` : " · your agents get these from now on";
+          }
           if (saved.incomplete) findings.push({ state: "attention", text: "Some commands could not be saved for your agents. Run mex again to retry." });
         } catch {
           findings.push({ state: "attention", text: "Commands could not be saved for your agents. Run mex again to retry." });

@@ -11,7 +11,7 @@ import { runNative } from "../../knowledge/check.js";
 import { previewBrief } from "../../knowledge/brief.js";
 import { expand, note, recall } from "../../knowledge/store.js";
 import { openRecordReadOnly } from "../../record/index.js";
-import { saveSetupRecipes, selectSetupRecipes, setupRecipeId } from "../recipe-entries.js";
+import { MAX_SETUP_RECIPES, saveSetupRecipes, selectSetupRecipes, setupRecipeId } from "../recipe-entries.js";
 import { scanRecipes } from "../recipes/index.js";
 
 let binary: string;
@@ -43,7 +43,7 @@ function fixture(scripts: Record<string, string> = { test: "node test.mjs", buil
 describe("setup recipe entries", () => {
   it("writes checked personal recipes with exact commands and labels; reruns keep files and ids", () => {
     const f = fixture({ test: "node test.mjs", build: "node build.mjs", lint: "node lint.mjs", typecheck: "node types.mjs", format: "node fmt.mjs" });
-    expect(f.save()).toEqual({ saved: 4, selected: 4, incomplete: false });
+    expect(f.save()).toEqual({ saved: 4, selected: 4, incomplete: false, capped: false });
     const first = f.stored();
     for (const role of ["test", "build", "lint", "typecheck"]) {
       const found = expand(setupRecipeId("", role), f.options);
@@ -88,21 +88,30 @@ describe("setup recipe entries", () => {
     expect(f.stored()).toEqual(before);
   });
 
-  it("caps entries at 20, prefers root and build order, and scopes packages", () => {
+  it("keeps every package's test and build, prefers root and build order, and scopes packages", () => {
     const f = fixture({ test: "node test.mjs", build: "node build.mjs", lint: "node lint.mjs", typecheck: "node types.mjs" });
     f.write("package.json", { name: "demo", workspaces: ["packages/*"], scripts: { test: "node test.mjs", build: "node build.mjs", lint: "node lint.mjs", typecheck: "node types.mjs" } });
     for (let i = 0; i < 15; i++) f.write(`packages/p${String(i).padStart(2, "0")}/package.json`, { name: `p${i}`, scripts: { test: "node test.mjs", build: "node build.mjs", lint: "node lint.mjs" } });
     const file = f.scan(); file.build_order = ["packages/p14", "packages/p00"];
     const selected = selectSetupRecipes(file);
-    expect(selected).toHaveLength(20);
+    expect(selected).toHaveLength(4 + 15 * 2);
     expect(selected.slice(0, 4).map(recipe => recipe.package)).toEqual(["", "", "", ""]);
     expect(selected.slice(4, 6).map(recipe => recipe.package)).toEqual(["packages/p14", "packages/p14"]);
-    expect(saveSetupRecipes(file, f.options).saved).toBe(20);
+    expect(saveSetupRecipes(file, f.options)).toMatchObject({ saved: 34, selected: 34, incomplete: false, capped: false });
     const entry = expand(setupRecipeId("packages/p14", "test"), f.options).entry;
     expect(entry.mex.scope).toEqual(["packages/p14/**"]);
     expect(entry.mex.source.ref).toBe("packages/p14/package.json");
     expect(entry.text).toBe("Tests in packages/p14: `npm run test --workspace packages/p14`");
     expect(expand(setupRecipeId("", "build"), f.options).entry.text).toBe("Build: `npm run build` (build p14 first)");
+  });
+
+  it("bounds a very large monorepo and says so", () => {
+    const f = fixture({ test: "node test.mjs", build: "node build.mjs" });
+    f.write("package.json", { name: "demo", workspaces: ["packages/*"], scripts: { test: "node test.mjs", build: "node build.mjs" } });
+    for (let i = 0; i < 65; i++) f.write(`packages/p${String(i).padStart(2, "0")}/package.json`, { name: `p${i}`, scripts: { test: "node test.mjs", build: "node build.mjs" } });
+    const selected = selectSetupRecipes(f.scan());
+    expect(selected).toHaveLength(MAX_SETUP_RECIPES);
+    expect(selected.slice(0, 2).map(recipe => recipe.package)).toEqual(["", ""]);
   });
 
   it("keeps existing recipes when a scan is partial or the evaluator is unavailable", () => {
@@ -120,8 +129,11 @@ describe("setup recipe entries", () => {
     const f = fixture(); f.save();
     const own = note({ text: "My tests.", kind: "recipe" }, f.options).entry;
     const brief = previewBrief(f.options, "codex");
-    expect(brief.items.map(item => item.id)).toEqual([own.mex.id]);
-    expect(brief.text).toContain("[you said,"); expect(brief.text).not.toContain("npm run");
+    // The person's note first; with no rule file carrying them yet, root
+    // commands may follow in whatever room is left.
+    expect(brief.items[0]?.id).toBe(own.mex.id);
+    expect(brief.items.slice(1).every(item => item.id.startsWith("mx_setup"))).toBe(true);
+    expect(brief.text).toContain("[you said,");
     expect(brief.token_bound).toBeLessThanOrEqual(300);
   });
 

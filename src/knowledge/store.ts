@@ -31,11 +31,18 @@ export function isSetupRecipe(entry: KnowledgeEntry): boolean {
   return /^mx_setup[a-f0-9]{24}$/u.test(entry.mex.id) && entry.mex.kind === "recipe" && entry.mex.source.type === "config";
 }
 
+/**
+ * Every package's test and build, within a bound. A package's commands sit in
+ * a rule file that loads only for that package, so they cost nothing until the
+ * agent works there; the bound keeps a very large monorepo's setup quick.
+ */
+export const MAX_SETUP_RECIPES = 120;
+
 /** Refresh only setup-owned personal entries, through the note store's gates and publication locks. */
 export function refreshSetupRecipes(entries: KnowledgeEntry[], options: KnowledgeOptions, retireMissing = true, now = new Date()): number {
-  if (entries.length > 20 || entries.some(entry => !isSetupRecipe(entry) || entry.mex.status !== "active"
+  if (entries.length > MAX_SETUP_RECIPES || entries.some(entry => !isSetupRecipe(entry) || entry.mex.status !== "active"
     || entry.mex.checks.length !== 1 || entry.mex.checks[0]?.kind !== "command" || entry.mex.checks[0]?.role !== "complete")) {
-    throw new KnowledgeError("INVALID_ENTRY", "Setup requires at most 20 recipes with complete command checks.");
+    throw new KnowledgeError("INVALID_ENTRY", `Setup requires at most ${MAX_SETUP_RECIPES} recipes with complete command checks.`);
   }
   const source = references(projectIdentity(options.projectPath).rootPath);
   const gated = entries.map(entry => {

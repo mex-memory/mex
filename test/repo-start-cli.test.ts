@@ -262,7 +262,8 @@ describe("bare mex in a repository", () => {
     expect(on.status, on.stderr).toBe(0);
     const lines = on.stdout.trimEnd().split("\n");
     expect(lines[0]).toBe("MEX - notes - $0");
-    expect(lines).toContain("ok Test and build commands for this folder");
+    // Saved for the agents only where the native evaluator is installed.
+    expect(lines).toContainEqual(expect.stringMatching(/^ok Test and build commands for this folder( · your agents get these from now on)?$/u));
     expect(lines).toContainEqual(expect.stringMatching(/^ok Indexed \d+ files?$/u));
     expect(lines.join("\n")).not.toContain("Git history");
     const marker = JSON.parse(readFileSync(join(plain, ".mex", "project.json"), "utf8"));
