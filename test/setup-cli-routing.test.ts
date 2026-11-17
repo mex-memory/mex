@@ -106,8 +106,8 @@ describe("setup entry points", () => {
     command.configureOutput({ writeOut: (text) => { help += text; } });
     command.outputHelp();
     expect(help).toContain("Turn MEX on for this repo (the same as `mex`)");
-    expect(help).toContain("--browser");
-    expect(help).toContain("--no-open");
+    expect(help).not.toContain("--browser");
+    expect(help).not.toContain("--no-open");
     for (const hidden of ["--legacy", "--cli", "--tool", "--yes", "--force", "--dry-run", "--mode"]) expect(help).not.toContain(hidden);
   });
 
