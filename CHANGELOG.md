@@ -45,6 +45,10 @@ Pre-release on npm's `next` tag; 0.8.5 stays on `latest`.
 - In a fresh repo, MEX's rule files are written before the first session.
 - Root-only groundings and an unreadable document no longer block `mex upgrade`.
 - `mex check` retries once when the record is busy; `mex what` no longer lists internal markers.
+- `mex install` finds Claude Code and Codex on PATH directly; a slow `where.exe` on Windows could skip an agent's hooks.
+- Setup keeps every package's test and build commands (up to 120), not the first 20.
+- When the repo has its own root `AGENTS.md` or `CLAUDE.md`, setup's root commands reach that agent in the start brief.
+- Imported rule lines keep identifiers such as `NODE_ENV`, and a code block's language tag is never taken for the rule.
 
 ## [0.8.5] - 2026-10-29
 
