@@ -64,23 +64,43 @@ export function queuePendingSetupRefresh(writer: RecordWriter): number {
   return queued;
 }
 
-/** Re-read package files, rule files and agent memory, as bare `mex` does; then rebuild the rule files between sessions. */
-export async function refreshSetup(checkout: string, projectId: string, env: NodeJS.ProcessEnv = process.env): Promise<{ commands: number; ruleFiles: number; hints: number }> {
-  const { readRecipes, readRules, readAgentMemory } = await import("./command.js");
+/**
+ * Re-read package files, rule files and agent memory, as bare `mex` does. The
+ * rule files rebuild between sessions, and only when a read changed something.
+ */
+export async function refreshSetup(checkout: string, projectId: string, env: NodeJS.ProcessEnv = process.env): Promise<{ commands: number; ruleFiles: boolean; hints: number; rebuilt: boolean }> {
+  const { readRecipes, readRules } = await import("./command.js");
+  const { readRuleFiles } = await import("../knowledge/rule-cache.js");
   const recipes = await readRecipes(checkout, projectId, env);
   let commands = 0;
   if (recipes) {
     const { saveSetupRecipes } = await import("./recipe-entries.js");
     try { commands = saveSetupRecipes(recipes, { projectPath: checkout, env }).saved; } catch { /* the next refresh retries */ }
   }
-  const rules = await readRules(checkout);
-  const memory = await readAgentMemory(checkout);
+  const signature = (cache?: { files: ReadonlyArray<{ path: string; hash: string }> }) => (cache?.files ?? []).map(file => `${file.path}:${file.hash}`).sort().join("\n");
+  let before = "";
+  try { before = signature(readRuleFiles({ projectPath: checkout })); } catch { /* no earlier scan */ }
+  await readRules(checkout);
+  let ruleFiles = false;
+  try { ruleFiles = signature(readRuleFiles({ projectPath: checkout })) !== before; } catch { ruleFiles = true; }
+  let hints = 0;
   try {
-    const { queueNativeRebuild } = await import("../knowledge/native-queue.js");
-    queueNativeRebuild(checkout);
-  } catch { /* the next refresh or mex run rebuilds them */ }
-  return { commands, ruleFiles: rules?.files ?? 0, hints: memory?.count ?? 0 };
+    const { refreshHints } = await import("../knowledge/hints.js");
+    const refreshed = refreshHints({ projectPath: checkout });
+    hints = (refreshed.imported ?? 0) + (refreshed.expired ?? 0);
+  } catch { /* the next refresh retries */ }
+  const rebuilt = commands > 0 || ruleFiles || hints > 0;
+  if (rebuilt) {
+    try {
+      const { queueNativeRebuild } = await import("../knowledge/native-queue.js");
+      queueNativeRebuild(checkout);
+    } catch { /* the next refresh or mex run rebuilds them */ }
+  }
+  return { commands, ruleFiles, hints, rebuilt };
 }
+
+/** Bare `mex` just did these reads: a session starting now need not ask again. */
+export function stampSetupRefresh(recordDirectory: string, checkout: string): void { stamp(recordDirectory, checkout); }
 
 registerJobKind<RefreshParams, Record<string, never>>({
   name: "setup-refresh",
@@ -91,7 +111,10 @@ registerJobKind<RefreshParams, Record<string, never>>({
   async runBatch({ params, writer, job }) {
     const { automaticWorkEnabled } = await import("../controls/index.js");
     if (!job.project_id || !existsSync(params.checkout) || !automaticWorkEnabled(writer, job.project_id)) return { checkpoint: {}, done: true, results: 0, summary: "Nothing to refresh" };
+    // Only what setup read is refreshed: a checkout bare mex never ran in has nothing to refresh.
+    const { readFactFile } = await import("./facts.js");
+    if (!readFactFile(writer.location, job.project_id, "setup.json")) return { checkpoint: {}, done: true, results: 0, summary: "Setup hasn't run here; nothing to refresh" };
     const done = await refreshSetup(params.checkout, job.project_id);
-    return { checkpoint: {}, done: true, results: done.commands, summary: `${done.commands} commands, ${done.ruleFiles} rule files, ${done.hints} hints read` };
+    return { checkpoint: {}, done: true, results: done.commands, summary: done.rebuilt ? `${done.commands} commands, ${done.ruleFiles ? "rule files" : "no rule-file"} changes, ${done.hints} hints changed` : "Nothing new since the last read" };
   },
 });

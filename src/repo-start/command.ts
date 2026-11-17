@@ -336,6 +336,11 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory, offered to your agents as hints` });
       }
       killAt("free-step", env);
+      // These reads just ran: a session starting now need not ask for them again.
+      try {
+        const [{ stampSetupRefresh }, { recordLocation }] = await Promise.all([import("./refresh.js"), import("../record/location.js")]);
+        stampSetupRefresh(recordLocation().directory, checkout.path);
+      } catch { /* without the stamp the next session start asks once more */ }
       if (shallow) findings.push({ state: "attention", text: "Git history: skipped, this is a shallow clone (`git fetch --unshallow` to add it)" });
       // Waiting, the results take these lines' place once the work is done.
       if (!waiting) {
