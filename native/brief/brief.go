@@ -471,6 +471,44 @@ func Build(opts Options) (Result, error) {
 		result.Lane = w.lane()
 		result.Folder = selectArea()
 	}
+	// Setup's repo-wide commands reach an agent that has no MEX rule file
+	// carrying them (the person's own AGENTS.md sits where MEX would write):
+	// after the person's notes, only while room is left. A command whose
+	// script is gone (not held) never goes out.
+	fillCommands := func(items []Item) []Item {
+		used := tokens
+		for _, item := range items {
+			used += item.Tokens
+		}
+		for _, c := range all {
+			e := c.entry
+			if !setupRecipe(e) || retired[e.ID] || e.Status != "active" || !validLine(e.OneLine) || result.Coverage.Covers(e.ID, opts.Agent, opts.Path) {
+				continue
+			}
+			root := len(e.Scope) > 0
+			for _, s := range e.Scope {
+				root = root && s == "**"
+			}
+			if !root || (!opts.Deadline.IsZero() && time.Now().After(opts.Deadline)) {
+				continue
+			}
+			verdict := verdictOf(c)
+			if verdict != check.Held {
+				continue
+			}
+			item := itemFor(c, verdict)
+			if used+item.Tokens > MaxTokens {
+				continue
+			}
+			items = append(items, item)
+			used += item.Tokens
+		}
+		return items
+	}
+	result.Items = fillCommands(result.Items)
+	if result.Folder != nil {
+		result.Folder = fillCommands(result.Folder)
+	}
 	ids := []string{}
 	for _, item := range result.Items {
 		ids = append(ids, item.ID)

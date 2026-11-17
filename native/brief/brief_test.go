@@ -311,3 +311,26 @@ func TestChangedPersonalFactIsNotRestatedInTheBrief(t *testing.T) {
 		t.Fatalf("a changed personal fact was restated: %+v", r)
 	}
 }
+
+// A repo with its own AGENTS.md: MEX writes no rule file there, so the root
+// command reaches Codex in the brief, after the person's note, while it holds.
+func TestRootCommandReachesAnAgentWithNoRuleFileForIt(t *testing.T) {
+	opts := setup(t)
+	opts.Agent = "codex"
+	put(t, opts.Checkout, "package.json", `{"scripts":{"lint":"eslint ."}}`)
+	put(t, opts.Checkout, "AGENTS.md", "# Our own rules\n")
+	id := "mx_setup2123456789abcdef01234567"
+	checks := "\n    - kind: command\n      role: complete\n      target: {file: package.json, pointer: /scripts/lint, run: npm run lint}\n      saw: {exists: true}\n      files: {}"
+	body := strings.Replace(entry(id, "Lint: `npm run lint`", "recipe", "**", checks), "type: docs, ref: README.md", "type: config, ref: package.json", 1)
+	put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", body)
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_person.md", entry("mx_person", "My tests.", "rule", "**", "[]"))
+	r := build(t, opts)
+	if len(r.Items) != 2 || r.Items[0].ID != "mx_person" || r.Items[1].ID != id {
+		t.Fatalf("root command missing or ahead of the person's note: %+v", r.Items)
+	}
+	// Gone from package.json: never sent.
+	put(t, opts.Checkout, "package.json", `{"scripts":{}}`)
+	if r := build(t, opts); len(r.Items) != 1 {
+		t.Fatalf("a command whose script is gone was sent: %+v", r.Items)
+	}
+}
