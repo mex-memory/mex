@@ -90,6 +90,8 @@ export function what(options: KnowledgeOptions, session = ""): SessionSummary {
       empty,
       ...it
     } of rows.slice(0, 400)) {
+      // Internal markers (the start brief's slot) are bookkeeping, not knowledge given.
+      if (it.id.startsWith("mex:")) continue;
       it.title = it.title.replace(/\s+/gu, " ").slice(0, 1024);
       out.items.push(it);
       if (["given", "replaced"].includes(it.action)) {
