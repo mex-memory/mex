@@ -21,7 +21,7 @@ const SIGNS: Record<NativeAgent, string[]> = {
   codex: ["AGENTS.md", ".codex"],
 };
 
-interface Heartbeat { agent: string; cwd: string; mtimeMs: number; }
+interface Heartbeat { agent: string; cwd: string; mtimeMs: number; ended?: boolean; }
 
 function heartbeats(mexHome: string): Heartbeat[] {
   const root = join(mexHome, "heartbeats");
@@ -36,8 +36,8 @@ function heartbeats(mexHome: string): Heartbeat[] {
       try {
         const stat = statSync(path);
         if (!stat.isFile() || stat.size > 64 * 1024) continue;
-        const body = JSON.parse(readFileSync(path, "utf8")) as { agent?: unknown; cwd?: unknown };
-        if (typeof body.cwd === "string") out.push({ agent: typeof body.agent === "string" ? body.agent : agent, cwd: body.cwd, mtimeMs: stat.mtimeMs });
+        const body = JSON.parse(readFileSync(path, "utf8")) as { agent?: unknown; cwd?: unknown; ended?: unknown };
+        if (typeof body.cwd === "string") out.push({ agent: typeof body.agent === "string" ? body.agent : agent, cwd: body.cwd, mtimeMs: stat.mtimeMs, ended: typeof body.ended === "string" && body.ended !== "" });
       } catch { /* a half-written heartbeat is skipped */ }
     }
   }
@@ -81,7 +81,8 @@ export function liveSessions(root: string, mexHome: string, now = Date.now()): A
   const realRoot = realPath(root);
   const live = new Set<Agent>();
   for (const beat of heartbeats(mexHome)) {
-    if (now - beat.mtimeMs < LIVE_SESSION_MS && inside(realRoot, beat.cwd)) live.add(beat.agent as Agent);
+    // A session the agent reported ended is not live, so rule files can be rebuilt at once.
+    if (!beat.ended && now - beat.mtimeMs < LIVE_SESSION_MS && inside(realRoot, beat.cwd)) live.add(beat.agent as Agent);
   }
   return [...live];
 }
