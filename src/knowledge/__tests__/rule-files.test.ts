@@ -123,10 +123,7 @@ describe("rule files", () => {
     // The root CLAUDE.md means Claude Code reads no AGENTS.md, so their rules are passed to Claude.
     expect(by("apps/web/AGENTS.md")).toMatchObject({ agents: ["codex", "cursor", "copilot"], scope: ["apps/web/**"] });
     expect(entriesFor(scan, "claude-code").map(e => e.path)).toContain("apps/web/AGENTS.md");
-    expect(scanRuleFiles(repo({ "apps/web/AGENTS.md": "# Web
-
-Web rules.
-" })).files[0]?.agents).toEqual(["claude-code", "codex", "cursor", "copilot"]);
+    expect(scanRuleFiles(repo({ "apps/web/AGENTS.md": "# Web\n\nWeb rules.\n" })).files[0]?.agents).toEqual(["claude-code", "codex", "cursor", "copilot"]);
     expect(by(".cursor/rules/ts.mdc").scope).toEqual(["src/**/*.ts", "test/**/*.ts"]);
     expect(by(".github/instructions/db.instructions.md").scope).toEqual(["db/**"]);
     expect(by(".claude/rules/api.md").scope).toEqual(["apps/api/**"]);

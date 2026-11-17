@@ -19,6 +19,7 @@ export const REPO_START_BLOCK = "repo-start";
 export const REPO_START_LINES: readonly string[] = [
   "/.mex/*",
   "!/.mex/learned/",
+  "!/.mex/handoffs/",
   "!/.mex/config.json",
   "!/.mex/sources.json",
   "!/.mex/native.json",
