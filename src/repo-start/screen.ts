@@ -162,7 +162,9 @@ export function renderDone(ms: number, mode: ScreenMode): string[] {
 
 /** Quote one literal argument without executing command substitutions in the user's shell. */
 export function noteExample(command?: string, pkg = "", env: NodeJS.ProcessEnv = process.env): string {
-  const text = command ? `Run the tests with ${command} from ${pkg || "the repo root"}` : "<a fact about this repo and why>";
+  // A workspace command already names its package and runs from the root.
+  const fromRoot = !pkg || /\s(?:--workspace|--filter|-w|--prefix|-C|--cwd|--dir)(?:[\s=]|$)/u.test(` ${command ?? ""}`);
+  const text = command ? `Run the tests with ${command} from ${fromRoot ? "the repo root" : pkg}` : "<a fact about this repo and why>";
   const shell = env.SHELL ?? "";
   if (/powershell|pwsh/iu.test(shell) || (!shell && env.PSModulePath)) return `mex note '${text.replace(/'/gu, "''")}'`;
   if (process.platform !== "win32" || /bash|zsh|fish|sh$/iu.test(shell)) return `mex note '${text.replace(/'/gu, "'\\''")}'`;

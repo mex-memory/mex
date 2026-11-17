@@ -166,6 +166,9 @@ describe("what happens next", () => {
     expect(noteExample("pnpm test", "", { SHELL: "/bin/bash" })).toBe("mex note 'Run the tests with pnpm test from the repo root'");
     expect(noteExample("npm test -- --grep 'one'", "packages/api", { PSModulePath: "fixture" })).toBe("mex note 'Run the tests with npm test -- --grep ''one'' from packages/api'");
     expect(noteExample("echo $(whoami)", "", { SHELL: "/bin/bash" })).toContain("'Run the tests with echo $(whoami)");
+    // A workspace command runs from the root even though it names a package.
+    expect(noteExample("npm run test --workspace packages/code-graph", "packages/code-graph", { SHELL: "/bin/bash" })).toBe("mex note 'Run the tests with npm run test --workspace packages/code-graph from the repo root'");
+    expect(noteExample("pnpm --filter @a/api test", "apps/api", { SHELL: "/bin/bash" })).toBe("mex note 'Run the tests with pnpm --filter @a/api test from the repo root'");
     expect(noteExample("npm test -- --grep 'one'", "", { SHELL: "/bin/bash", PSModulePath: "inherited" })).toBe("mex note 'Run the tests with npm test -- --grep '\\''one'\\'' from the repo root'");
   });
 });
