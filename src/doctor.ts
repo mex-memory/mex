@@ -2,6 +2,12 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import chalk from "chalk";
 import type { MexConfig } from "./types.js";
+import { runStatus } from "./status.js";
+
+/** The 0.9 doctor reads the same snapshot as status and adds fixes. */
+export function runStatusDoctor(options: { json?: boolean } = {}): void {
+  runStatus({ ...options, doctor: true });
+}
 import {
   runDriftCheckWithGraphStatus,
   type GraphAwareDriftReport,
