@@ -240,7 +240,9 @@ export function recall(query: string, options: KnowledgeOptions, limit = 20): Re
   let setting: string | undefined;
   try { setting = reader?.setting("global", "delivery.aliases"); } finally { reader?.close(); }
   const ranked = rankNative(query, [...byId.values()].map(item => item.entry), aidsEnabled(options.env ?? process.env, setting));
-  if (ranked.hits) {
+  // The ranker leaves out words most entries share, so with a few notes a word
+  // they all use ("staging") finds nothing; the literal match then answers.
+  if (ranked.hits?.length) {
     const found = ranked.hits.map(hit => ({ ...recallItem(byId.get(hit.id)!), score: hit.score, why: { matched: hit.matched, exact: hit.exact } }));
     return { entries: found.slice(0, limit), truncated: found.length > limit, withheld: team.withheld + hints.withheld, ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "native" } };
   }
@@ -250,5 +252,5 @@ export function recall(query: string, options: KnowledgeOptions, limit = 20): Re
   entries.sort((a, b) => KNOWLEDGE_PRIORITY.indexOf(a.level) - KNOWLEDGE_PRIORITY.indexOf(b.level)
     || b.created.localeCompare(a.created) || a.id.localeCompare(b.id));
   const withheld = team.withheld + hints.withheld;
-  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(withheld ? { withheld } : {}), ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "legacy", reason: ranked.reason } };
+  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(withheld ? { withheld } : {}), ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "legacy", reason: ranked.reason ?? "no-native-hits" } };
 }
