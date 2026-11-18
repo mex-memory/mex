@@ -173,6 +173,16 @@ most three area one-liners. Claims are kept whole or left out. The hard cap is
 labels, ids, separators, and room for the real delivery block marker. The
 reported `token_bound` is an upper bound, not a tokenizer measurement.
 
+The person's own notes may run past that cap, up to 1,000 tokens counted the
+same way. A note reaches the brief only when no rule file the agent loads
+carries it: one saved since the files were last written, or any note for Codex
+in a repository whose `AGENTS.md` is the person's own, which MEX never writes
+into. Team entries and commands still stop at 300. Delivery sends these notes
+outside the start lane's budget, which the carry block shares; the brief's own
+cap bounds them. The hook's 100 ms deadline bounds the optional part only:
+once it passes, team entries and commands wait for the moments, but up to
+eight of the person's notes are still checked and sent.
+
 Canonical entries are parsed through the delivery controller's schema-v2 codec
 and evaluated against current files. Broken entries, changed team recipes, hints,
 retired personal notes, and rule-file Review conflicts are withheld. Team area
