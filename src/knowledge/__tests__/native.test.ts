@@ -110,6 +110,25 @@ describe("the background rebuild", () => {
     expect(existsSync(join(root, ".claude/rules/mex.md"))).toBe(false);
   }, 60_000);
 
+  it("rewrites the person's local files in every worktree of the project", async () => {
+    const { root } = setup();
+    writeFileSync(join(root, "CLAUDE.md"), "# Demo\n");
+    execFileSync("git", ["-C", root, "add", "."]);
+    execFileSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
+    const other = join(root, "..", "other");
+    execFileSync("git", ["-C", root, "worktree", "add", "-q", other, "-b", "other"]);
+    await import("../../record/job-kinds.js");
+    const { openRecord } = await import("../../record/index.js");
+    const { runPendingInForeground } = await import("../../record/background.js");
+    const { queueNativeRebuild } = await import("../native-queue.js");
+    openRecord({ create: true, projectPath: other }).close();
+    note({ text: "Staging deploys need DEPLOY_REGION set first, because the default region is wrong." }, { projectPath: root });
+    expect(queueNativeRebuild(root, { local: true })).toBe(true);
+    const writer = openRecord({ create: true, projectPath: root });
+    try { await runPendingInForeground(writer, 20_000); } finally { writer.close(); }
+    for (const checkout of [root, other]) expect(readFileSync(join(checkout, ".claude/rules/mex-local.md"), "utf8")).toContain("DEPLOY_REGION");
+  }, 60_000);
+
   it("keeps one rebuild per checkout and purpose; a rebuild that must run now is never held behind one that waits", async () => {
     const { root } = setup();
     await import("../../record/job-kinds.js");
