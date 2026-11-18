@@ -58,6 +58,15 @@ export interface SqliteDatabase {
   readonly open: boolean;
 }
 
+const MAX_SAFE_ROWID = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_ROWID = BigInt(Number.MIN_SAFE_INTEGER);
+
+/** A rowid as a number when exactly representable, otherwise as the exact bigint. */
+function safeRowid(value: number | bigint): number | bigint {
+  if (typeof value === "number") return value;
+  return value <= MAX_SAFE_ROWID && value >= MIN_SAFE_ROWID ? Number(value) : value;
+}
+
 class NodeSqliteAdapter implements SqliteDatabase {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
@@ -78,8 +87,18 @@ class NodeSqliteAdapter implements SqliteDatabase {
     const stmt = this.db.prepare(sql);
     return {
       run(...params: Params) {
-        const r = stmt.run(...params);
-        return { changes: Number(r?.changes ?? 0), lastInsertRowid: r?.lastInsertRowid ?? 0 };
+        // SQLite can report a last insert rowid above 2^53 for statements that insert
+        // nothing: a DELETE from an FTS5 `contentless_delete` table writes a tombstone
+        // page whose shadow-table rowid is that large (issue #320). Node 26's
+        // node:sqlite throws converting it to a number, so read it as a bigint here
+        // and narrow it back when it is safe. Row reads keep their number mode.
+        stmt.setReadBigInts(true);
+        try {
+          const r = stmt.run(...params);
+          return { changes: Number(r?.changes ?? 0), lastInsertRowid: safeRowid(r?.lastInsertRowid ?? 0) };
+        } finally {
+          stmt.setReadBigInts(false);
+        }
       },
       get: (...params: Params) => stmt.get(...params),
       all: (...params: Params) => stmt.all(...params),
