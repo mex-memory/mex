@@ -16,6 +16,7 @@ A fix release on the `next` tag; 0.8.5 stays on `latest`.
 - In a repository whose `AGENTS.md` is the team's own, Codex got one of your notes at session start: MEX never writes into that file, and the start brief let one note through. Your notes that no rule file carries now have their own room (up to 1,000 bytes) and are not held back by the start lane's budget.
 - `mex forget <id>`, the command MEX prints after an agent saves a note, failed with "missing required argument 'reason'". The reason is optional now.
 - A note change rewrote the local rule files of the current checkout only; every worktree of the project that is on is rewritten now.
+- Running `mex install` again (setup does it too) rewrote `~/.claude/settings.json` with the `hooks` block moved to the end, though nothing had changed. A reinstall now leaves the file alone, and a real change keeps your key order and your own hooks.
 - `mex install` and the first run found Claude Code and Codex only through their command on PATH, so people using only the desktop app or an editor extension got "No supported agent found". An agent's user settings folder (`~/.claude`, `~/.codex`, or `CLAUDE_CONFIG_DIR` / `CODEX_HOME`) now counts too.
 
 ### Changed
