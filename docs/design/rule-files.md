@@ -102,6 +102,15 @@ files, and keeps edited generated files when their ownership cannot be verified.
 - Background rebuilds wait while a session runs in the checkout (a heartbeat in
   the last 10 minutes). The `native-files` job waits for the session to end.
   `mex rules --write --now` explicitly overrides this.
+- A personal note change (`mex note`, `mex edit`, `mex forget`, `mex wrong`, a
+  confirmed hint, `mex note:` typed in a session) queues a `native-files` job
+  marked `local`: it rewrites only the hidden local files and runs at once,
+  even during a session. The session that saved the note has it already; a new
+  session would otherwise not load it until every session here has ended.
+  Shared files keep waiting.
+- Rebuild jobs are kept apart by checkout and purpose: a request joins an
+  unfinished job only for the same checkout, never a running one, and one that
+  must run at once (`stale` or `local`) never joins one that waits.
 - A team entry change (`mex edit`, `mex wrong`, `mex forget` with `--apply`)
   rebuilds the shared files at once, so the entry, its rule file and the
   manifest are one working-tree change, including during an active session.

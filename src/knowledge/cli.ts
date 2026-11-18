@@ -393,10 +393,10 @@ async function sharedRuleFiles(options: { projectPath: string }): Promise<string
   return [...result.written ?? [], ...result.removed ?? []];
 }
 
-/** Personal note changes reach the hidden local rule files between sessions. */
+/** Personal note changes reach the hidden local rule files at once, even with a session open. */
 async function queueRuleFiles(): Promise<void> {
   const { queueNativeRebuild } = await import("./native-queue.js");
-  queueNativeRebuild(process.cwd());
+  queueNativeRebuild(process.cwd(), { local: true });
 }
 
 function printPreview(preview: { revision: string; diff: string }, json: boolean | undefined): void {

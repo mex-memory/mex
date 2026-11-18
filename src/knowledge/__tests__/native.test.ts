@@ -50,6 +50,18 @@ describe("rebuilding native files", () => {
     expect(rebuildNative({ projectPath: root }, { force: true }).written).toEqual([".claude/rules/mex.md"]);
   });
 
+  it("local only: the person's own files, leaving the shared ones and their manifest alone", () => {
+    const { root } = setup();
+    note({ text: "My own note, because reasons." }, { projectPath: root });
+    expect(rebuildNative({ projectPath: root }, { force: true, localOnly: true }).written).toEqual([".claude/rules/mex-local.md"]);
+    expect(existsSync(join(root, ".claude/rules/mex.md"))).toBe(false);
+    expect(existsSync(join(root, ".mex/native.json"))).toBe(false);
+    // A shared file already written stays when only the local files are rebuilt.
+    rebuildNative({ projectPath: root }, { force: true });
+    expect(rebuildNative({ projectPath: root }, { force: true, localOnly: true }).removed).toEqual([]);
+    expect(existsSync(join(root, ".claude/rules/mex.md"))).toBe(true);
+  });
+
   it("shared only: the files that ride the same change as a team entry", () => {
     const { root } = setup();
     note({ text: "My own note, because reasons." }, { projectPath: root });
@@ -73,4 +85,50 @@ describe("the background rebuild", () => {
     } finally { writer.close(); }
     expect(readFileSync(join(root, ".claude/rules/mex.md"), "utf8")).toContain("mx_team01");
   }, 60_000);
+
+  it("writes a note the person saves at once, even with a session open; the shared files wait", async () => {
+    const { root, home } = setup();
+    await import("../../record/job-kinds.js");
+    const { openRecord } = await import("../../record/index.js");
+    const { runPendingInForeground } = await import("../../record/background.js");
+    const { queueNativeRebuild } = await import("../native-queue.js");
+    mkdirSync(join(home, "heartbeats", "claude-code"), { recursive: true });
+    const beat = join(home, "heartbeats", "claude-code", "s1");
+    writeFileSync(beat, JSON.stringify({ agent: "claude-code", session_id: "s1", cwd: root }));
+    const now = new Date(); utimesSync(beat, now, now);
+    // A rebuild from earlier waits for the session; the note must not join it.
+    expect(queueNativeRebuild(root)).toBe(true);
+    note({ text: "Staging deploys need DEPLOY_REGION set first, because the default region is wrong." }, { projectPath: root });
+    expect(queueNativeRebuild(root, { local: true })).toBe(true);
+    const writer = openRecord({ create: true, projectPath: root });
+    try {
+      await runPendingInForeground(writer, 20_000);
+      const rows = writer.db.prepare("SELECT state, params FROM jobs WHERE kind='native-files' ORDER BY created_at").all() as { state: string; params: string }[];
+      expect(rows.map(r => [r.state, JSON.parse(r.params).local === true])).toEqual([["waiting", false], ["done", true]]);
+    } finally { writer.close(); }
+    expect(readFileSync(join(root, ".claude/rules/mex-local.md"), "utf8")).toContain("DEPLOY_REGION");
+    expect(existsSync(join(root, ".claude/rules/mex.md"))).toBe(false);
+  }, 60_000);
+
+  it("keeps one rebuild per checkout and purpose; a rebuild that must run now is never held behind one that waits", async () => {
+    const { root } = setup();
+    await import("../../record/job-kinds.js");
+    const { openRecord } = await import("../../record/index.js");
+    const { queueJob } = await import("../../record/background.js");
+    const writer = openRecord({ create: true, projectPath: root });
+    try {
+      const projectId = writer.checkout(root)!.project_id;
+      const q = (params: object) => queueJob(writer, { kind: "native-files", projectId, params });
+      const first = q({ checkout: root });
+      expect(q({ checkout: root }).job.id).toBe(first.job.id);
+      const local = q({ checkout: root, local: true });
+      expect(local.existing).toBe(false);
+      expect(q({ checkout: root, local: true }).job.id).toBe(local.job.id);
+      const stale = q({ checkout: root, stale: true });
+      expect(stale.existing).toBe(false);
+      // A rebuild of everything at once serves any later request for that checkout.
+      expect(q({ checkout: root, stale: true }).job.id).toBe(stale.job.id);
+      expect(q({ checkout: join(root, "..", "other") }).existing).toBe(false);
+    } finally { writer.close(); }
+  });
 });
