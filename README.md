@@ -8,9 +8,21 @@
 
 Agents forget between sessions, and the notes you leave them go stale when the code moves. MEX delivers your notes to every new Claude Code and Codex session and holds back the ones the code has made false.
 
-[![npm next](https://img.shields.io/npm/v/mex-agent/next.svg?label=npm%40next)](https://www.npmjs.com/package/mex-agent)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+**English** | [简体中文](README.zh-CN.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md)
+
+[![npm next](https://img.shields.io/npm/v/mex-agent/next.svg?label=npm%40next)](https://www.npmjs.com/package/mex-agent?activeTab=versions)
+[![npm latest](https://img.shields.io/npm/v/mex-agent.svg?label=npm%40latest)](https://www.npmjs.com/package/mex-agent)
+[![GitHub stars](https://img.shields.io/github/stars/mex-memory/mex?style=flat)](https://github.com/mex-memory/mex/stargazers)
+[![Website](https://img.shields.io/badge/website-mexmemory.com-4f7cff)](https://mexmemory.com)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/FEdNsQ4Qt4)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/mex-memory/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/mex-memory/mex/actions/workflows/ci.yml)
+[![Node.js >=22.5](https://img.shields.io/badge/Node.js-%3E%3D22.5-339933?logo=node.js&logoColor=white)](package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](package.json)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-hooks-d97757)](#install)
+[![Codex](https://img.shields.io/badge/Codex-hooks-10a37f)](#install)
+
+[Install](#install) · [What you get](#what-you-get) · [See it work](#see-it-work) · [How it works](#how-it-works) · [Commands](#everyday-commands) · [Teams](#working-with-a-team) · [FAQ](#faq) · [Upgrading from 0.8](#upgrading-from-08)
 
 </div>
 
