@@ -27,8 +27,8 @@ export function required(gate, release) {
 }
 
 export function releaseForTag(tag) {
-  if (/^v?0\.9\.0-beta\.1$/.test(tag)) return 'beta.1';
-  if (/^v?0\.9\.0-beta\.2$/.test(tag)) return 'beta.2';
+  if (/^v?0\.9\.0-beta\.1(?:\.[1-9]\d*)?$/.test(tag)) return 'beta.1';
+  if (/^v?0\.9\.0-beta\.2(?:\.[1-9]\d*)?$/.test(tag)) return 'beta.2';
   if (/^v?0\.9\.0(?:-rc\.\d+)?$/.test(tag)) return 'final';
   throw new Error('Unsupported release tag');
 }
