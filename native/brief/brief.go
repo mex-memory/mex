@@ -379,7 +379,9 @@ func Build(opts Options) (Result, error) {
 		if retired[e.ID] {
 			return false
 		}
-		if area && !inScope(e, opts.Path) {
+		// The person's own notes reach every new session, whatever their
+		// scope; a scope narrows team entries to the folder, not their notes.
+		if area && c.level != "personal" && !inScope(e, opts.Path) {
 			return false
 		}
 		// The brief never repeats a policy currently doubted by the free pass.

@@ -249,6 +249,11 @@ func (w workingSelection) main(used int) []Item {
 			continue
 		}
 		rel, isGlobal := w.sc.relevance(c.entry)
+		// A scope only ranks the person's own notes: one scoped to a file
+		// nobody touches yet still reaches the session, after the linked ones.
+		if c.level == "personal" && rel < GlobalRelevance {
+			rel = GlobalRelevance
+		}
 		if rel < Floor || !w.usable(c, false) {
 			continue
 		}
