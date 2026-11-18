@@ -2,10 +2,12 @@ package brief
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mex-memory/mex/native/check"
 )
@@ -67,6 +69,33 @@ func TestBriefPriorityPersonalThenAtMostThreeAreaClaims(t *testing.T) {
 	}
 	if again := build(t, opts); again.Text != r.Text {
 		t.Fatal("same inputs changed the brief")
+	}
+}
+
+// A session that starts on a busy machine can pass the deadline before the
+// first entry is looked at. The person's own notes still go out; team
+// entries are what waits for the moments.
+func TestBriefKeepsThePersonsNotesPastTheDeadline(t *testing.T) {
+	opts := setup(t)
+	put(t, opts.Checkout, ".mex/learned/mx_rule01.md", entry("mx_rule01", "Team claim.", "rule", "**", "[]"))
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_note01.md", entry("mx_note01", "Small commits.", "rule", "**", "[]"))
+	opts.Deadline = time.Now().Add(-time.Second)
+	r := build(t, opts)
+	if len(r.Items) != 1 || r.Items[0].ID != "mx_note01" || strings.Contains(r.Text, "Team claim") {
+		t.Fatal(r.Text)
+	}
+	// Bounded: past the deadline at most maxLateNotes notes are checked. Notes
+	// too long to fit use those checks up, so the short one after them waits.
+	for i := 0; i < maxLateNotes+2; i++ {
+		id := fmt.Sprintf("mx_long%02d", i)
+		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", entry(id, strings.Repeat("x", 250), "rule", "**", "[]"))
+	}
+	if r = build(t, opts); len(r.Items) != 0 {
+		t.Fatal(r.Text)
+	}
+	opts.Deadline = time.Time{}
+	if r = build(t, opts); len(r.Items) == 0 || r.Items[0].ID != "mx_note01" {
+		t.Fatal(r.Text)
 	}
 }
 
