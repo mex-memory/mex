@@ -13,7 +13,7 @@ import type { CheckoutRow, RecordWriter } from "../record/index.js";
 import { detectCaller, type Caller } from "./caller.js";
 import { classifyPlace, displayPath, type Place } from "./place.js";
 import { renderDone, renderFindings, renderHeader, renderNotes, screenMode, type Finding } from "./screen.js";
-import { noteExample, renderNext } from "./screen.js";
+import { renderNext } from "./screen.js";
 import { Rich, RichStep, RICH_MIN_COLUMNS } from "./rich.js";
 import { readBoundedTextFile } from "../knowledge/files.js";
 import type { RuleScan } from "../knowledge/rule-files.js";
@@ -232,7 +232,6 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   const notes: string[] = [];
   const finishJobs: FinishJob[] = [];
   const waiting = options.wait !== false;
-  let example: string | undefined;
   let learning: string | undefined;
   let rebuildRules = false;
   let writer: RecordWriter | undefined = openRecord();
@@ -297,12 +296,6 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
 
       // The free step: local reads only, no network, no model, no repository command.
       const recipes = await live("Reading package files", () => readRecipes(checkout.path, projectId, env));
-      // The example a person tries first: the root package's test command when there is one.
-      // A command a person can run as is: from a manifest, not a CI step, with no variables to fill in.
-      const fromManifest = (recipe: { origin: Array<{ file: string }> }) => recipe.origin.some(o => !/^\.(?:github|gitlab|circleci)\/|\.gitlab-ci\.ya?ml$|azure-pipelines/u.test(o.file));
-      const tests = (recipes?.recipes ?? []).filter(recipe => recipe.purpose === "test" && fromManifest(recipe) && recipe.local === "yes" && !/[$%]/u.test(recipe.command));
-      const test = tests.find(recipe => !recipe.package) ?? tests[0];
-      example = noteExample(test?.command, test?.package, env);
       let recipeFinding: Finding | undefined;
       if (recipes) {
         const { recipeSummary } = await import("./recipes/index.js");
@@ -429,11 +422,11 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   }
   for (const line of rich ? rich.notes(notes) : renderNotes(notes, mode)) write(line);
   if (rich) {
-    for (const line of rich.next({ learning, example })) write(line);
+    for (const line of rich.next({ learning })) write(line);
     // The mascot closes the run with what it found.
     if (!exitNow) for (const line of rich.end(rich.summary({ name, ms: elapsed(), commandsSaved, findings: [...findings, ...later] }))) write(line);
   } else {
-    for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning, example }, mode)) write(line);
+    for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning }, mode)) write(line);
     if (waiting && finishJobs.length && !exitNow) for (const line of renderDone(elapsed(), mode)) write(line);
   }
   const ended = exitNow ? { exitNow: true as const } : {};
