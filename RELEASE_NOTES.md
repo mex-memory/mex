@@ -1,3 +1,14 @@
+# MEX 0.9.0-beta.1.1
+
+A fix release for 0.9.0-beta.1, on npm's `next` tag. MEX 0.8.5 remains on `latest`.
+
+- A note that names a real command and goes on ("Run the tests with npm run test from the repo root") is saved whole, not as `[unverified command removed]`.
+- `mex upgrade` keeps entries whose 0.8 fingerprints were too long for one line.
+- The first screen suggests a note only you can write; the install screen drops the Codex-on-Windows timing line.
+- The `mex upgrade` preview is shorter and says that applying pushes nothing unless you add `--pr`.
+
+Update with `npm i -g mex-agent@next`.
+
 # MEX 0.9.0-beta.1
 
 Pre-release on npm's `next` tag. MEX 0.8.5 remains on `latest`.

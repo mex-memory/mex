@@ -1,12 +1,12 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`reads installed agents, cached verdicts and last hook call without writing 1`] = `
-"MEX 0.9.0-beta.1 · on in this repo · capture on
+"MEX 0.9.0-beta.1.1 · on in this repo · capture on
 
 Agents
   ✓ Claude Code: hooks installed (12 events) · last call 3 min ago
   ✓ Codex: hooks installed (9 events) · open /hooks once in Codex to trust them
-  ✓ Hook binary 0.9.0-beta.1 (native)
+  ✓ Hook binary 0.9.0-beta.1.1 (native)
 
 Knowledge here
   1 personal notes · 0 team entries · 0 hints from agent memory
