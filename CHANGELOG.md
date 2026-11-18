@@ -26,6 +26,7 @@ A fix release on the `next` tag; 0.8.5 stays on `latest`.
 - The first screen's "Try it" suggests a note only you can write, instead of repeating the test command setup already gave your agents.
 - The install screen no longer prints the Codex-on-Windows hook timing line.
 - The `mex upgrade` preview lists kept files as a short list, explains files with parts that could not become notes, and says that applying pushes nothing unless `--pr` is given.
+- The README is rewritten for the 0.9 beta: install, what you get, a recorded first run and a stale-note session, everyday commands, team sharing, privacy and known limits.
 - Release scripts accept a fix release on a beta (`0.9.0-beta.1.1`), which passes that beta's gates.
 
 ## [0.9.0-beta.1] - 2026-11-18
