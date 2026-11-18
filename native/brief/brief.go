@@ -23,6 +23,25 @@ import (
 
 const MaxTokens = 300
 
+// MaxNoteTokens lets the person's own notes run past MaxTokens. A note reaches
+// the brief only when no rule file this agent loads carries it: one saved since
+// the files were last written, or any note for Codex in a repository whose
+// AGENTS.md is the person's own, which MEX never writes into. Without the
+// extra room only one or two notes would ever reach that agent. Team entries
+// and commands still stop at MaxTokens.
+const MaxNoteTokens = 1000
+
+// capFor is the budget a group may fill: the notes' own when every line in it
+// is the person's.
+func capFor(group []Item) int {
+	for _, item := range group {
+		if item.Level != "personal" {
+			return MaxTokens
+		}
+	}
+	return MaxNoteTokens
+}
+
 const Priority = "Priority: current request > your notes > repo instructions > team entries > hints."
 
 // SaveLine tells the agent how something the person wants kept reaches later
@@ -475,7 +494,7 @@ func Build(opts Options) (Result, error) {
 					area++
 				}
 			}
-			if used+cost > MaxTokens || areaItems+area > 3 {
+			if used+cost > capFor(group) || areaItems+area > 3 {
 				continue
 			}
 			for _, item := range group {

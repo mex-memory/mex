@@ -3,6 +3,7 @@ package hook
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,34 @@ func TestSessionStartDeliversCheckedBriefAndResumeDoesNotResend(t *testing.T) {
 			write(t, filepath.Join(root, ".mex/learned/mx_rule01.md"), "bad entry")
 			if out := invoke("resume"); strings.Contains(out, "Priority:") || !strings.Contains(out, "Correction:") {
 				t.Fatal(out)
+			}
+		})
+	}
+}
+
+// Notes no rule file carries (just saved, or Codex where AGENTS.md is the
+// person's own) all reach a new session: the start lane, shared with the
+// carry block, used to let one through.
+func TestSessionStartDeliversEveryNoteNoRuleFileCarries(t *testing.T) {
+	for _, agent := range []string{"claude-code", "codex"} {
+		t.Run(agent, func(t *testing.T) {
+			h, env := fakeHome(t, true)
+			root := repo(t, t.TempDir())
+			register(t, h, root, projectID, "on", "")
+			prepareStore(t, h)
+			for i := 0; i < 5; i++ {
+				id := fmt.Sprintf("mx_note%02d", i)
+				write(t, filepath.Join(h.mex, "projects", projectID, "notes", id+".md"), "---\nmex:\n  id: "+id+"\n  kind: rule\n  scope:\n    - \"**\"\n  source:\n    type: person\n    ref: mex note 2026-11-18\n    quote: Note "+id+" says deploys go from the release branch, after QA.\n  evidence: person\n  one_line: Note "+id+" says deploys go from the release branch, after QA.\n  checks: []\n  status: active\n  created: 2026-11-18\n---\nNote "+id+" says deploys go from the release branch, after QA.\n")
+			}
+			payload, _ := json.Marshal(map[string]any{"session_id": "notes-session", "hook_event_name": "SessionStart", "source": "startup", "cwd": root})
+			code, out := run(t, []string{agent, "SessionStart"}, strings.NewReader(string(payload)), env)
+			if code != 0 {
+				t.Fatal(code)
+			}
+			for i := 0; i < 5; i++ {
+				if !strings.Contains(out, fmt.Sprintf("mx_note%02d", i)) {
+					t.Fatal(out)
+				}
 			}
 		})
 	}

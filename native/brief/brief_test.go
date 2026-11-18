@@ -40,7 +40,7 @@ func build(t *testing.T, opts Options) Result {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Tokens != TokenBound(r.Text) || r.Tokens > MaxTokens {
+	if r.Tokens != TokenBound(r.Text) || r.Tokens > MaxNoteTokens {
 		t.Fatalf("budget: %+v", r)
 	}
 	return r
@@ -88,13 +88,42 @@ func TestBriefKeepsThePersonsNotesPastTheDeadline(t *testing.T) {
 	// too long to fit use those checks up, so the short one after them waits.
 	for i := 0; i < maxLateNotes+2; i++ {
 		id := fmt.Sprintf("mx_long%02d", i)
-		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", entry(id, strings.Repeat("x", 250), "rule", "**", "[]"))
+		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", entry(id, strings.Repeat("x", 950), "rule", "**", "[]"))
 	}
 	if r = build(t, opts); len(r.Items) != 0 {
 		t.Fatal(r.Text)
 	}
 	opts.Deadline = time.Time{}
 	if r = build(t, opts); len(r.Items) == 0 || r.Items[0].ID != "mx_note01" {
+		t.Fatal(r.Text)
+	}
+}
+
+// Notes no rule file carries for this agent (just saved, or Codex in a repo
+// whose AGENTS.md is the person's) get room beyond MaxTokens; team entries
+// still stop at MaxTokens.
+func TestBriefGivesThePersonsNotesTheirOwnRoom(t *testing.T) {
+	opts := setup(t)
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("mx_note%02d", i)
+		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", entry(id, fmt.Sprintf("Note %d: deploys from the release branch only, after the QA sign-off.", i), "rule", "**", "[]"))
+	}
+	put(t, opts.Checkout, ".mex/learned/mx_team01.md", entry("mx_team01", "Team claim.", "rule", "**", "[]"))
+	r := build(t, opts)
+	notes := 0
+	for _, item := range r.Items {
+		if item.Level == "personal" {
+			notes++
+		}
+	}
+	if notes != 6 || strings.Contains(r.Text, "Team claim") || r.Tokens <= MaxTokens {
+		t.Fatal(r.Text)
+	}
+	// With room left under MaxTokens a team entry still follows the notes.
+	opts2 := setup(t)
+	put(t, opts2.MexHome, "projects/"+project+"/notes/mx_note01.md", entry("mx_note01", "Small commits.", "rule", "**", "[]"))
+	put(t, opts2.Checkout, ".mex/learned/mx_team01.md", entry("mx_team01", "Team claim.", "rule", "**", "[]"))
+	if r := build(t, opts2); !strings.Contains(r.Text, "Team claim") || r.Tokens > MaxTokens {
 		t.Fatal(r.Text)
 	}
 }
