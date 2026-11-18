@@ -29,7 +29,9 @@ import { flushGraphPhaseTimings, phaseTimingsEnabled, recordGraphMemory, recordG
 // v6: property-assigned function values retain their authored target name.
 // v7 (#281): out-of-scope aliases render by name, and calls carry no rendered
 // signature evidence.
-export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-5.9-v7";
+// v8: TypeScript 7.1's API builds the graph by default; node signatures are
+// display text with ordinary truncation, and return types are as written.
+export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-api-v8";
 export const TYPESCRIPT_COMPILER_VERSION = ts.version;
 
 export type CompilerSourceLanguage =
@@ -210,6 +212,13 @@ export interface CompilerExtractionResult {
   projectStates: Record<string, string>;
   /** Per project: the inputs its program read; see {@link CompilerProjectInputs}. */
   projectInputs: Record<string, CompilerProjectInputs>;
+  /** Per project whose program was built in this run: the compiler that built it. */
+  projectCompilers: Record<string, string>;
+  /**
+   * Per project: why it was not built by the compiler first chosen for it,
+   * or how its options were translated. Shown under Health.
+   */
+  projectCompilerNotes: Record<string, string[]>;
   /** Files captured from a live program in this run. */
   recaptured: number;
   /** Repository-relative paths whose previous capture was reused unchanged. */
@@ -291,6 +300,22 @@ export interface CompilerProjectInputs {
    * root, otherwise absolute.
    */
   state: string[];
+  /** The compiler that built its program, kept so a reused project reports the same. */
+  compiler?: string;
+  /** Its notes for Health (see `projectCompilerNotes`), kept for the same reason. */
+  notes?: string[];
+}
+
+/**
+ * A compiler declines a project it cannot extract as 5.9 would; the project
+ * is extracted by the in-process 5.9 compiler instead, and the reason is
+ * reported in {@link CompilerExtractionResult.projectCompilerNotes}.
+ */
+export class CompilerFallback extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "CompilerFallback";
+  }
 }
 
 /** A condition only a full extraction can honour; the caller extracts in full. */
@@ -340,6 +365,12 @@ export interface CompilerExtractionOptions {
   /** Reuse unaffected files' previous captures (issue #209). */
   incremental?: CompilerIncrementalInput;
   /**
+   * Choose the compiler that builds one project's program. Returning
+   * undefined keeps the in-process TypeScript 5.9 compiler.
+   * @internal
+   */
+  selectCompiler?: (project: ProjectCompilerChoice) => ProjectCompiler | undefined;
+  /**
    * Test seam: the order the checker visits one project's files in. Output
    * must not depend on it (issue #209); the order-independence property test
    * permutes it. Must return a permutation of its input.
@@ -347,7 +378,8 @@ export interface CompilerExtractionOptions {
   visitOrder?: (files: readonly string[]) => readonly string[];
 }
 
-interface ParsedProject {
+/** One tsconfig project (or the inferred one), as the 5.9 config parser read it. @internal */
+export interface ParsedProject {
   id: string;
   configPath: string;
   parsed: ts.ParsedCommandLine;
@@ -359,6 +391,92 @@ interface RuntimeProject extends ParsedProject {
   checker: ts.TypeChecker;
   /** Project root that checker-rendered module paths are made relative to. */
   root: string;
+}
+
+/**
+ * What the extraction pass asks of one project's live program, whichever
+ * compiler built it. Everything a session hands back is plain data: nothing
+ * returned here may keep the program, a checker or a syntax tree alive.
+ * @internal
+ */
+export interface ProjectSession {
+  /** The compiler serving this project, for example `typescript-5.9.3`. */
+  readonly compiler: string;
+  /**
+   * Whether an incremental refresh may reuse this project's previous captures.
+   * A session that cannot prove a file independent of a change says no, and
+   * the refresh extracts in full.
+   */
+  readonly supportsReuse: boolean;
+  hasSourceFile(absoluteFile: string): boolean;
+  /** Undefined when the program does not hold the file. */
+  fileDependencies(absoluteFile: string): FileDependencies | undefined;
+  inputState(dependencies: ReadonlyMap<string, FileDependencies>): { state: string; inputs: string[] };
+  packageManifests(): string[];
+  /** See `fileDeclarationSignature`; undefined when the file cannot be emitted. */
+  declarationSignature(filePath: string): string | undefined;
+  /** Capture `files` (absolute, in visit order) into the sink. */
+  capture(files: readonly string[], sink: CaptureSink): void;
+  /** Repeat the module-resolution probes a reused capture made. */
+  replayResolution(absoluteFile: string, specifier: string): void;
+  release(): void;
+  /** Notes for Health, such as how the project's options were translated. */
+  readonly notes?: readonly string[];
+}
+
+/** Where a session puts what it captures. @internal */
+export interface CaptureSink {
+  /** A declaration location (see `declarationLocation`) and the node it declares. */
+  location(location: string, id: string): void;
+  node(node: CompilerExtractedNode): void;
+  /** Called once per file, before its references are captured. */
+  dependencySignatures(absoluteFile: string): void;
+  file(absoluteFile: string, captured: CapturedFile): void;
+}
+
+/** @internal */
+export interface ProjectOpenRequest {
+  root: string;
+  project: ParsedProject;
+  rootNames: readonly string[];
+  /** The project's options with `skipLibCheck` and `noEmit` forced on. */
+  options: ts.CompilerOptions;
+  /** Absolute paths of every compiler file in the corpus. */
+  candidates: ReadonlySet<string>;
+  inputs: CompilerInputLedger;
+}
+
+/**
+ * A compiler that can build a project's program. When `open` throws, the
+ * project moves to the compiler's `fallback`, and finally to the in-process
+ * 5.9 compiler; only a failure there leaves its files to tree-sitter.
+ * @internal
+ */
+export interface ProjectCompiler {
+  /** Where a project goes when this compiler fails on it; the 5.9 compiler when absent. */
+  readonly fallback?: ProjectCompiler;
+  /** A short name for Health, such as `tsrs-0.25.0`. */
+  readonly name?: string;
+  /**
+   * Build every project's program up front, in one compiler session, before
+   * any is opened. Each request roots the project's own compiler files; a
+   * compiler that prepares may ignore `rootNames` when the project is opened.
+   * A failure here only means each project is built when it is opened.
+   */
+  prepare?(requests: readonly ProjectOpenRequest[]): void;
+  open(request: ProjectOpenRequest): ProjectSession;
+  /** False when its sessions cannot reuse captures; an incremental refresh then extracts in full. */
+  readonly supportsReuse?: boolean;
+  /** Called once the extraction no longer needs the compiler. */
+  close?(): void;
+}
+
+/** The project a compiler is being chosen for. @internal */
+export interface ProjectCompilerChoice {
+  id: string;
+  /** Repository-relative; null for the inferred project. */
+  configPath: string | null;
+  options: ts.CompilerOptions;
 }
 
 interface ErrorRange {
@@ -456,8 +574,8 @@ export type CapturedReference =
       wiringSite: string; argumentText: string;
     };
 
-/** Everything retained for a file once its project's program is released. */
-interface CapturedFile {
+/** Everything retained for a file once its project's program is released. @internal */
+export interface CapturedFile {
   filePath: string;
   language: CompilerSourceLanguage;
   projectId: string;
@@ -569,8 +687,63 @@ export function buildTypeScriptExtraction(
   inputs.setCandidateFiles(candidates);
   const candidateSet = new Set(candidates);
   const parsedProjects = parseProjects(root, candidateSet, inputs);
-  const createProgram = options.programFactory ?? ts.createProgram;
-  const semanticDiagnostics = options.semanticDiagnostics ?? false;
+  const legacy = legacyProjectCompiler(options);
+  const projectCompilers: Record<string, string> = {};
+  const projectCompilerNotes: Record<string, string[]> = {};
+  const note = (projectId: string, text: string): void => {
+    (projectCompilerNotes[projectId] ??= []).push(text);
+  };
+  const openedCompilers = new Set<ProjectCompiler>();
+  const selectedCompilers = new Map<string, ProjectCompiler>();
+  const compilerFor = (project: ParsedProject, compilerOptions: ts.CompilerOptions): ProjectCompiler => {
+    let compiler = selectedCompilers.get(project.id);
+    if (!compiler) {
+      compiler = options.selectCompiler?.({
+        id: project.id,
+        configPath: project.configPath ? relativePath(root, project.configPath) : null,
+        options: compilerOptions,
+      }) ?? legacy;
+      selectedCompilers.set(project.id, compiler);
+    }
+    return compiler;
+  };
+  const extractionOptions = (project: ParsedProject): ts.CompilerOptions =>
+    // Never type-check library .d.ts or emit: extraction only needs the
+    // checker's lazy symbol/type queries, not a full compile.
+    ({ ...project.parsed.options, skipLibCheck: true, noEmit: true });
+  const openSession = (
+    project: ParsedProject,
+    rootNames: readonly string[],
+    compilerOptions: ts.CompilerOptions,
+  ): ProjectSession => {
+    const compiler = compilerFor(project, compilerOptions);
+    if (incremental && compiler.supportsReuse === false) {
+      throw new CompilerIncrementalFallback(`project ${project.id} is built by a compiler that extracts in full`);
+    }
+    const request: ProjectOpenRequest = { root, project, rootNames, options: compilerOptions, candidates: candidateSet, inputs };
+    // Each failure moves the project down its compiler's fallback chain, with
+    // the reason recorded; the 5.9 compiler ends every chain. A translation
+    // that loses imports goes straight to 5.9: every 7.1 server sees the same.
+    for (let current: ProjectCompiler | undefined = compiler; current && current !== legacy; current = current.fallback) {
+      try {
+        openedCompilers.add(current);
+        const session = current.open(request);
+        for (const text of session.notes ?? []) note(project.id, text);
+        selectedCompilers.set(project.id, current);
+        return session;
+      } catch (error) {
+        if (error instanceof CompilerIncrementalFallback) throw error;
+        const next = error instanceof CompilerFallback ? legacy : current.fallback ?? legacy;
+        note(project.id, error instanceof CompilerFallback
+          ? error.reason
+          : `${describeCompiler(current)} failed (${firstLine(error)}); ${describeCompiler(next)} used`);
+        if (error instanceof CompilerFallback) break;
+      }
+    }
+    selectedCompilers.set(project.id, legacy);
+    return legacy.open(request);
+  };
+  let inferredProject: ParsedProject | undefined;
 
   // Ownership priority: most specific config directory first, then path order —
   // the identical comparator the previous probe-every-program-then-sort
@@ -634,7 +807,14 @@ export function buildTypeScriptExtraction(
     });
     const observed = new Set(inputs.takeProjectReads().filter((path) => !PACKAGE_JSON.test(path)));
     for (const path of recorded.observed) if (PACKAGE_JSON.test(path)) observed.add(path);
-    projectInputs[project.id] = { observed: [...observed].sort(compareCodePoints), state: recorded.state };
+    projectInputs[project.id] = {
+      observed: [...observed].sort(compareCodePoints),
+      state: recorded.state,
+      ...(recorded.compiler ? { compiler: recorded.compiler } : {}),
+      ...(recorded.notes?.length ? { notes: recorded.notes } : {}),
+    };
+    if (recorded.compiler) projectCompilers[project.id] = recorded.compiler;
+    if (recorded.notes?.length) projectCompilerNotes[project.id] = [...recorded.notes];
     projectStates[project.id] = incremental.projectStates[project.id]!;
     timeGraphPhase("compiler.reuseProject.restore", () => {
       for (const path of owned) {
@@ -660,33 +840,20 @@ export function buildTypeScriptExtraction(
 
   // Stage one project's owned files while its program is alive; retain only
   // plain data. Nothing stored here references the program, checker, or AST.
-  const processProject = (project: ParsedProject, program: ts.Program, owned: readonly string[]): void => {
-    const runtime: RuntimeProject = {
-      ...project, program, checker: program.getTypeChecker(), root,
-    };
+  const processProject = (project: ParsedProject, session: ProjectSession, owned: readonly string[]): void => {
     const replayedResolutions = new Set<string>();
-    // Files importing the same specifier from one directory share a resolution.
-    const relevantFailedLookups = new WeakMap<readonly string[], string[]>();
     for (const absoluteFile of owned) {
-      const sourceFile = program.getSourceFile(absoluteFile);
-      if (sourceFile) {
-        dependenciesByFile.set(
-          absoluteFile,
-          fileDependencies(program, sourceFile, root, candidateSet, relevantFailedLookups),
-        );
-      }
+      const dependencies = session.fileDependencies(absoluteFile);
+      if (dependencies) dependenciesByFile.set(absoluteFile, dependencies);
     }
-    const { state, inputs: stateInputs } = projectInputState(program, root, candidateSet, dependenciesByFile);
+    const { state, inputs: stateInputs } = session.inputState(dependenciesByFile);
     projectStates[project.id] = state;
     projectStateInputs.set(project.id, stateInputs);
-    projectManifests.set(project.id, programPackageManifests(program, root));
+    projectManifests.set(project.id, session.packageManifests());
     const signatures = new Map<string, string | undefined>();
     const signatureOf = (filePath: string): string | undefined => {
       if (signatures.has(filePath)) return signatures.get(filePath);
-      const sourceFile = program.getSourceFile(absoluteCandidate(root, filePath));
-      const signature = sourceFile
-        ? timeGraphPhase("compiler.signatures", () => fileDeclarationSignature(program, sourceFile))
-        : undefined;
+      const signature = session.declarationSignature(filePath);
       signatures.set(filePath, signature);
       return signature;
     };
@@ -697,6 +864,9 @@ export function buildTypeScriptExtraction(
     // external inputs are compared here, and any change extracts in full.
     const reused = new Map<string, CapturedFile>();
     if (incremental) {
+      if (!session.supportsReuse) {
+        throw new CompilerIncrementalFallback(`${session.compiler} captures every file of the projects it builds`);
+      }
       if (incremental.projectStates[project.id] !== state) {
         throw new CompilerIncrementalFallback("a global declaration or an external compiler input changed");
       }
@@ -705,7 +875,7 @@ export function buildTypeScriptExtraction(
       // signature every importer here recorded, nothing that imports it can
       // resolve differently, and none of them is captured again.
       for (const gatedPath of incremental.gated) {
-        if (!program.getSourceFile(absoluteCandidate(root, gatedPath))) continue;
+        if (!session.hasSourceFile(absoluteCandidate(root, gatedPath))) continue;
         const signature = signatureOf(gatedPath);
         const recorded = (incremental.importers.get(gatedPath) ?? [])
           .map((path) => incremental.previous.get(path))
@@ -747,256 +917,198 @@ export function buildTypeScriptExtraction(
         }
       }
     }
-    const contexts: FileContext[] = [];
     const visitOrder = options.visitOrder ? options.visitOrder(owned) : owned;
     if (visitOrder.length !== owned.length || !owned.every((file) => visitOrder.includes(file))) {
       throw new Error("A compiler visit order must be a permutation of the owned files.");
     }
-    for (const absoluteFile of visitOrder) {
-      if (reused.has(absoluteFile)) continue;
-      const sourceFile = program.getSourceFile(absoluteFile);
-      if (!sourceFile) continue;
-      const filePath = relativePath(root, absoluteFile);
-      const { health, ranges } = timeGraphPhase(
-        "compiler.diagnostics",
-        () => sourceHealth(program, sourceFile, semanticDiagnostics),
-      );
-      const context: FileContext = {
-        filePath,
-        sourceFile,
-        project: runtime,
-        language: languageForFile(filePath),
-        health,
-        errorRanges: ranges,
-        excludedDeclarationRanges: [],
-        drafts: [],
-        declarationDrafts: new Map(),
-        symbolDrafts: new Map(),
-        nodes: [],
-      };
-      if (health.status !== "failed") {
-        collectDrafts(context);
-        if (health.status === "partial" && context.drafts.length <= 1) {
-          health.status = "failed";
-          context.drafts = [];
-          context.fileDraft = undefined;
-          context.declarationDrafts.clear();
-          context.symbolDrafts.clear();
+    session.capture(visitOrder.filter((file) => !reused.has(file)), {
+      location: (location, id) => { locationIds.set(location, id); },
+      node: (node) => { nodeById.set(node.id, node); },
+      dependencySignatures: (capturedFile) => {
+        const dependencySignatures: Array<[string, string]> = [];
+        for (const dependency of dependenciesByFile.get(capturedFile)?.dependencies ?? []) {
+          const signature = signatureOf(dependency);
+          if (signature !== undefined) dependencySignatures.push([dependency, signature]);
         }
-      }
-      contexts.push(context);
-    }
-
-    assignCanonicalIdentities(contexts);
-    const contextLocations = new Map<FileContext, Array<[string, string]>>();
-    for (const context of contexts) {
-      const locations: Array<[string, string]> = [];
-      for (const draft of context.drafts) {
-        if (!draft.id) continue;
-        for (const declaration of draft.declarations) {
-          const location = declarationLocation(declaration);
-          locationIds.set(location, draft.id);
-          locations.push([location, draft.id]);
-          // The checker declares a JS expando property at its assignment
-          // target (`app.init`), while its implementation/body spans the whole
-          // assignment. Retain both locations so calls resolve to this node.
-          if (draft.declarationRole === "function-assignment" && ts.isBinaryExpression(declaration)) {
-            const targetLocation = declarationLocation(declaration.left);
-            locationIds.set(targetLocation, draft.id);
-            locations.push([targetLocation, draft.id]);
-            const implementationLocation = declarationLocation(declaration.right);
-            locationIds.set(implementationLocation, draft.id);
-            locations.push([implementationLocation, draft.id]);
-          }
-        }
-      }
-      contextLocations.set(context, locations);
-      context.nodes = materializeNodes(context);
-      for (const node of context.nodes) nodeById.set(node.id, node);
-    }
+        signaturesByFile.set(capturedFile, dependencySignatures);
+      },
+      file: (capturedFile, captured) => {
+        capturedByFile.set(capturedFile, captured);
+        recaptured++;
+        onFileCaptured?.(capturedByFile.size);
+      },
+    });
     for (const captured of reused.values()) {
       for (const [location, id] of captured.locations) locationIds.set(location, id);
       for (const node of captured.nodes) nodeById.set(node.id, node);
-    }
-    for (const context of contexts) {
-      const resolvedSpecifiers: string[] = [];
-      const bindings = captureImportBindings(root, context, inputs, resolvedSpecifiers);
-      const capturedFile = normalizedAbsolute(context.sourceFile.fileName);
-      const dependencySignatures: Array<[string, string]> = [];
-      for (const dependency of dependenciesByFile.get(capturedFile)?.dependencies ?? []) {
-        const signature = signatureOf(dependency);
-        if (signature !== undefined) dependencySignatures.push([dependency, signature]);
-      }
-      signaturesByFile.set(capturedFile, dependencySignatures);
-      capturedByFile.set(capturedFile, {
-        filePath: context.filePath,
-        language: context.language,
-        projectId: runtime.id,
-        health: context.health,
-        nodes: context.nodes,
-        fileDraftId: context.fileDraft?.id,
-        bindings,
-        captured: captureReferences(context, bindings),
-        locations: contextLocations.get(context)!,
-        resolvedSpecifiers,
-      });
-      context.drafts.length = 0;
-      context.declarationDrafts.clear();
-      context.symbolDrafts.clear();
-      context.fileDraft = undefined;
-      contextLocations.delete(context);
-      recaptured++;
-      onFileCaptured?.(capturedByFile.size);
     }
     for (const [absoluteFile, captured] of reused) {
       // Import capture resolves each specifier through the input ledger; the
       // same probes keep the recorded semantic inputs identical to a capture.
       // Resolution depends only on the importing directory and file kind, so
       // one probe per (directory, extension, specifier) records the same inputs.
-      const options = program.getCompilerOptions();
       const directory = dirname(absoluteFile);
       const extension = extname(absoluteFile);
       for (const specifier of captured.resolvedSpecifiers) {
         const key = `${directory}|${extension}|${specifier}`;
         if (replayedResolutions.has(key)) continue;
         replayedResolutions.add(key);
-        ts.resolveModuleName(specifier, absoluteFile, options, inputs.moduleResolutionHost());
+        session.replayResolution(absoluteFile, specifier);
       }
       capturedByFile.set(absoluteFile, captured);
       onFileCaptured?.(capturedByFile.size);
     }
   };
 
-  for (const project of processingOrder) {
-    // Later projects cannot contribute facts once every candidate has an owner.
-    // Avoid constructing another program and checker for those empty projects.
-    if (candidates.length > 0 && claimed.size === candidates.length) break;
-    if (timeGraphPhase("compiler.reuseProject", () => reuseUnchangedProject(project))) continue;
-    // Root only what this project can still own: candidates no more specific
-    // project claimed, plus declaration files for ambient types. Files those
-    // roots import still load. A broad config (a repository-root tsconfig
-    // that matches every file) otherwise rebuilds a whole-repository program
-    // to extract a handful of leftovers, and a project with nothing left to
-    // own is skipped without a program.
-    const rootNames = project.parsed.fileNames.filter((file) => {
-      if (DECLARATION_FILE.test(file)) return true;
-      const absolute = normalizedAbsolute(file);
-      return candidateSet.has(absolute) && !claimed.has(absolute) && !poisonedFiles.has(absolute);
-    });
-    if (!rootNames.some((file) => !DECLARATION_FILE.test(file))) continue;
-    // Program creation parses every root file; a single malformed source (e.g.
-    // a hostile test fixture) can hit a TS-internal assertion. Isolate the
-    // failure to this project so its files fall back to tree-sitter extraction
-    // instead of aborting the whole corpus (issue #140 follow-up finding).
-    let program: ts.Program | undefined;
-    inputs.trackProjectReads();
-    const programStarted = performance.now();
-    recordGraphMemory("compiler.beforeProgram");
-    try {
-      program = createProgram({
-        rootNames,
-        // Never type-check library .d.ts or emit: extraction only needs the
-        // checker's lazy symbol/type queries, not a full compile.
-        options: { ...project.parsed.options, skipLibCheck: true, noEmit: true },
-        projectReferences: project.parsed.projectReferences,
-        host: inputs.compilerHost({ ...project.parsed.options, skipLibCheck: true, noEmit: true }),
-      });
-    } catch {
-      inputs.takeProjectReads();
-      inputs.releaseProjectSources();
-      crashedProjects.add(project);
-      // Poison only files no healthier, more specific project has already
-      // extracted — a crash cannot retroactively un-stage a good extraction.
-      for (const file of project.parsed.fileNames) {
-        const absolute = normalizedAbsolute(file);
-        if (!claimed.has(absolute)) poisonedFiles.add(absolute);
+  try {
+    // Compilers that can build several programs in one session do so first:
+    // files shared by several projects are then parsed once.
+    const preparing = new Map<ProjectCompiler, ProjectOpenRequest[]>();
+    for (const project of processingOrder) {
+      const compilerOptions = extractionOptions(project);
+      const compiler = compilerFor(project, compilerOptions);
+      if (!compiler.prepare) continue;
+      const rootNames = project.parsed.fileNames.filter((file) =>
+        DECLARATION_FILE.test(file) || candidateSet.has(normalizedAbsolute(file)));
+      if (!rootNames.some((file) => !DECLARATION_FILE.test(file))) continue;
+      const requests = preparing.get(compiler) ?? [];
+      requests.push({ root, project, rootNames, options: compilerOptions, candidates: candidateSet, inputs });
+      preparing.set(compiler, requests);
+    }
+    for (const [compiler, requests] of preparing) {
+      if (incremental && compiler.supportsReuse === false) {
+        throw new CompilerIncrementalFallback("a project is built by a compiler that extracts in full");
       }
-      continue;
-    } finally {
-      recordGraphPhase("compiler.program", performance.now() - programStarted);
+      openedCompilers.add(compiler);
+      timeGraphPhase("compiler.prepare", () => compiler.prepare!(requests));
     }
-    const owned = candidates.filter((file) => {
-      if (claimed.has(file) || poisonedFiles.has(file)) return false;
-      try { return program!.getSourceFile(file) !== undefined; }
-      catch { return false; }
-    });
-    recordGraphMemory("compiler.afterProgram");
-    for (const file of owned) claimed.add(file);
-    if (unchangedProjects?.enabled) {
-      // A project that owns other files than before can move ownership for
-      // every later project, so none of those is reused unbuilt.
-      const before = unchangedProjects.ownedByProject.get(project.id) ?? [];
-      const now = owned.map((file) => relativePath(root, file)).sort(compareCodePoints);
-      if (before.join("\n") !== now.join("\n")) unchangedProjects.enabled = false;
+    for (const project of processingOrder) {
+      // Later projects cannot contribute facts once every candidate has an owner.
+      // Avoid constructing another program and checker for those empty projects.
+      if (candidates.length > 0 && claimed.size === candidates.length) break;
+      if (timeGraphPhase("compiler.reuseProject", () => reuseUnchangedProject(project))) continue;
+      // Root only what this project can still own: candidates no more specific
+      // project claimed, plus declaration files for ambient types. Files those
+      // roots import still load. A broad config (a repository-root tsconfig
+      // that matches every file) otherwise rebuilds a whole-repository program
+      // to extract a handful of leftovers, and a project with nothing left to
+      // own is skipped without a program.
+      const rootNames = project.parsed.fileNames.filter((file) => {
+        if (DECLARATION_FILE.test(file)) return true;
+        const absolute = normalizedAbsolute(file);
+        return candidateSet.has(absolute) && !claimed.has(absolute) && !poisonedFiles.has(absolute);
+      });
+      if (!rootNames.some((file) => !DECLARATION_FILE.test(file))) continue;
+      // Program creation parses every root file; a single malformed source (e.g.
+      // a hostile test fixture) can hit a TS-internal assertion. Isolate the
+      // failure to this project so its files fall back to tree-sitter extraction
+      // instead of aborting the whole corpus (issue #140 follow-up finding).
+      let session: ProjectSession | undefined;
+      inputs.trackProjectReads();
+      const programStarted = performance.now();
+      recordGraphMemory("compiler.beforeProgram");
+      try {
+        session = openSession(project, rootNames, extractionOptions(project));
+      } catch (error) {
+        if (error instanceof CompilerIncrementalFallback) throw error;
+        inputs.takeProjectReads();
+        inputs.releaseProjectSources();
+        crashedProjects.add(project);
+        // Poison only files no healthier, more specific project has already
+        // extracted — a crash cannot retroactively un-stage a good extraction.
+        for (const file of project.parsed.fileNames) {
+          const absolute = normalizedAbsolute(file);
+          if (!claimed.has(absolute)) poisonedFiles.add(absolute);
+        }
+        continue;
+      } finally {
+        recordGraphPhase("compiler.program", performance.now() - programStarted);
+      }
+      const owned = candidates.filter((file) =>
+        !claimed.has(file) && !poisonedFiles.has(file) && session!.hasSourceFile(file));
+      recordGraphMemory("compiler.afterProgram");
+      for (const file of owned) claimed.add(file);
+      projectCompilers[project.id] = session.compiler;
+      if (unchangedProjects?.enabled) {
+        // A project that owns other files than before can move ownership for
+        // every later project, so none of those is reused unbuilt.
+        const before = unchangedProjects.ownedByProject.get(project.id) ?? [];
+        const now = owned.map((file) => relativePath(root, file)).sort(compareCodePoints);
+        if (before.join("\n") !== now.join("\n")) unchangedProjects.enabled = false;
+      }
+      try {
+        timeGraphPhase("compiler.capture", () => processProject(project, session!, owned));
+        recordGraphMemory("compiler.afterCapture");
+        // Manifests come from the program itself; a tracked manifest read is
+        // whichever program happened to read it first.
+        const observed = new Set(inputs.takeProjectReads().filter((path) => !PACKAGE_JSON.test(path)));
+        for (const manifest of projectManifests.get(project.id) ?? []) observed.add(manifest);
+        projectInputs[project.id] = {
+          observed: [...observed].sort(compareCodePoints),
+          state: projectStateInputs.get(project.id) ?? [],
+          compiler: projectCompilers[project.id]!,
+          ...(projectCompilerNotes[project.id]?.length ? { notes: [...projectCompilerNotes[project.id]!] } : {}),
+        };
+      } finally {
+        // V8 can keep the loop's captured context on the stack through the
+        // inferred and finishing passes. Scope exit alone does not release it.
+        session.release();
+        session = undefined;
+        declarationLocationCache = new WeakMap();
+        inputs.releaseProjectSources();
+        collectReleasedProgram();
+        recordGraphMemory("compiler.afterRelease");
+      }
     }
-    try {
-      timeGraphPhase("compiler.capture", () => processProject(project, program!, owned));
-      recordGraphMemory("compiler.afterCapture");
-      // Manifests come from the program itself; a tracked manifest read is
-      // whichever program happened to read it first.
-      const observed = new Set(inputs.takeProjectReads().filter((path) => !PACKAGE_JSON.test(path)));
-      for (const manifest of projectManifests.get(project.id) ?? []) observed.add(manifest);
-      projectInputs[project.id] = {
-        observed: [...observed].sort(compareCodePoints),
-        state: projectStateInputs.get(project.id) ?? [],
-      };
-    } finally {
-      // V8 can keep the loop's captured context on the stack through the
-      // inferred and finishing passes. Scope exit alone does not release it.
-      program = undefined;
-      declarationLocationCache = new WeakMap();
-      inputs.releaseProjectSources();
-      collectReleasedProgram();
-      recordGraphMemory("compiler.afterRelease");
-    }
-  }
 
-  // Files from a crashed project stay out of the inferred program too — the
-  // poison root file would crash it as well. They fall back to tree-sitter.
-  const uncovered = candidates.filter((file) => !claimed.has(file) && !poisonedFiles.has(file));
-  let inferredProject: ParsedProject | undefined;
-  let inferredProgram: ts.Program | undefined;
-  if (uncovered.length > 0) {
-    const inferredOptions: ts.CompilerOptions = {
-      allowJs: true,
-      checkJs: false,
-      jsx: ts.JsxEmit.Preserve,
-      module: ts.ModuleKind.ESNext,
-      moduleResolution: ts.ModuleResolutionKind.Bundler,
-      noEmit: true,
-      skipLibCheck: true,
-      target: ts.ScriptTarget.ES2022,
-      ...options.inferredCompilerOptions,
-    };
-    try {
-      inferredProgram = timeGraphPhase("compiler.program", () => createProgram({
-        rootNames: uncovered,
-        options: inferredOptions,
-        host: inputs.compilerHost(inferredOptions),
-      }));
-      inferredProject = {
-        id: "inferred",
-        configPath: "",
-        parsed: {
-          options: inferredOptions,
-          fileNames: uncovered,
-          errors: [],
-        },
-        diagnostics: [],
+    // Files from a crashed project stay out of the inferred program too — the
+    // poison root file would crash it as well. They fall back to tree-sitter.
+    const uncovered = candidates.filter((file) => !claimed.has(file) && !poisonedFiles.has(file));
+    if (uncovered.length > 0) {
+      const inferredOptions: ts.CompilerOptions = {
+        allowJs: true,
+        checkJs: false,
+        jsx: ts.JsxEmit.Preserve,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        noEmit: true,
+        skipLibCheck: true,
+        target: ts.ScriptTarget.ES2022,
+        ...options.inferredCompilerOptions,
       };
-      timeGraphPhase("compiler.capture", () => processProject(inferredProject!, inferredProgram!, uncovered));
-    } catch (error) {
-      // An incremental refresh that must extract in full says so; it is not
-      // a poisoned root, and extracting these files with tree-sitter would
-      // publish a graph a full extraction never produces.
-      if (error instanceof CompilerIncrementalFallback) throw error;
-      // Poison among the uncovered roots: leave them all to tree-sitter.
-    } finally {
-      inferredProgram = undefined;
-      declarationLocationCache = new WeakMap();
-      inputs.releaseProjectSources();
-      collectReleasedProgram();
+      let inferredSession: ProjectSession | undefined;
+      try {
+        const inferred: ParsedProject = {
+          id: "inferred",
+          configPath: "",
+          parsed: {
+            options: inferredOptions,
+            fileNames: uncovered,
+            errors: [],
+          },
+          diagnostics: [],
+        };
+        inferredSession = timeGraphPhase("compiler.program", () => openSession(inferred, uncovered, inferredOptions));
+        inferredProject = inferred;
+        projectCompilers[inferred.id] = inferredSession.compiler;
+        timeGraphPhase("compiler.capture", () => processProject(inferred, inferredSession!, uncovered));
+      } catch (error) {
+        // An incremental refresh that must extract in full says so; it is not
+        // a poisoned root, and extracting these files with tree-sitter would
+        // publish a graph a full extraction never produces.
+        if (error instanceof CompilerIncrementalFallback) throw error;
+        // Poison among the uncovered roots: leave them all to tree-sitter.
+      } finally {
+        inferredSession?.release();
+        inferredSession = undefined;
+        declarationLocationCache = new WeakMap();
+        inputs.releaseProjectSources();
+        collectReleasedProgram();
+      }
     }
+
+  } finally {
+    for (const compiler of openedCompilers) compiler.close?.();
   }
 
   if (incremental) {
@@ -1065,8 +1177,10 @@ export function buildTypeScriptExtraction(
     diagnostics: project.diagnostics.map(summarizeDiagnostic),
   }));
 
+  // The compilers that built the projects, for provenance: one name, or several joined.
+  const builtBy = [...new Set(Object.values(projectCompilers))].sort(compareCodePoints);
   return {
-    compilerVersion: ts.version,
+    compilerVersion: builtBy.length > 0 ? builtBy.join("+") : `typescript-${ts.version}`,
     extractorVersion: TYPESCRIPT_COMPILER_EXTRACTOR_VERSION,
     projects: projectSummaries,
     files,
@@ -1075,9 +1189,179 @@ export function buildTypeScriptExtraction(
     captures,
     projectStates,
     projectInputs,
+    projectCompilers,
+    projectCompilerNotes,
     recaptured,
     reused: reusedFiles.sort(compareCodePoints),
   };
+}
+
+/** The in-process TypeScript 5.9 compiler. */
+function legacyProjectCompiler(options: CompilerExtractionOptions): ProjectCompiler {
+  const createProgram = options.programFactory ?? ts.createProgram;
+  return {
+    name: `typescript-${ts.version}`,
+    open: (request) => new LegacyProjectSession(
+      request,
+      createProgram({
+        rootNames: request.rootNames,
+        options: request.options,
+        projectReferences: request.project.parsed.projectReferences,
+        host: request.inputs.compilerHost(request.options),
+      }),
+      options.semanticDiagnostics ?? false,
+    ),
+  };
+}
+
+class LegacyProjectSession implements ProjectSession {
+  readonly compiler = `typescript-${ts.version}`;
+  readonly supportsReuse = true;
+  private runtime: RuntimeProject | undefined;
+  // Files importing the same specifier from one directory share a resolution.
+  private readonly relevantFailedLookups = new WeakMap<readonly string[], string[]>();
+
+  constructor(
+    private readonly request: ProjectOpenRequest,
+    program: ts.Program,
+    private readonly semanticDiagnostics: boolean,
+  ) {
+    this.runtime = { ...request.project, program, checker: program.getTypeChecker(), root: request.root };
+  }
+
+  private get program(): ts.Program {
+    if (!this.runtime) throw new Error("The compiler project was already released.");
+    return this.runtime.program;
+  }
+
+  hasSourceFile(absoluteFile: string): boolean {
+    try { return this.program.getSourceFile(absoluteFile) !== undefined; }
+    catch { return false; }
+  }
+
+  fileDependencies(absoluteFile: string): FileDependencies | undefined {
+    const sourceFile = this.program.getSourceFile(absoluteFile);
+    return sourceFile
+      ? fileDependencies(this.program, sourceFile, this.request.root, this.request.candidates, this.relevantFailedLookups)
+      : undefined;
+  }
+
+  inputState(dependencies: ReadonlyMap<string, FileDependencies>): { state: string; inputs: string[] } {
+    return projectInputState(this.program, this.request.root, this.request.candidates, dependencies);
+  }
+
+  packageManifests(): string[] {
+    return programPackageManifests(this.program, this.request.root);
+  }
+
+  declarationSignature(filePath: string): string | undefined {
+    const program = this.program;
+    const sourceFile = program.getSourceFile(absoluteCandidate(this.request.root, filePath));
+    return sourceFile
+      ? timeGraphPhase("compiler.signatures", () => fileDeclarationSignature(program, sourceFile))
+      : undefined;
+  }
+
+  capture(files: readonly string[], sink: CaptureSink): void {
+    const { root, inputs } = this.request;
+    const runtime = this.runtime!;
+    const program = runtime.program;
+    const contexts: FileContext[] = [];
+    for (const absoluteFile of files) {
+      const sourceFile = program.getSourceFile(absoluteFile);
+      if (!sourceFile) continue;
+      const filePath = relativePath(root, absoluteFile);
+      const { health, ranges } = timeGraphPhase(
+        "compiler.diagnostics",
+        () => sourceHealth(program, sourceFile, this.semanticDiagnostics),
+      );
+      const context: FileContext = {
+        filePath,
+        sourceFile,
+        project: runtime,
+        language: languageForFile(filePath),
+        health,
+        errorRanges: ranges,
+        excludedDeclarationRanges: [],
+        drafts: [],
+        declarationDrafts: new Map(),
+        symbolDrafts: new Map(),
+        nodes: [],
+      };
+      if (health.status !== "failed") {
+        collectDrafts(context);
+        if (health.status === "partial" && context.drafts.length <= 1) {
+          health.status = "failed";
+          context.drafts = [];
+          context.fileDraft = undefined;
+          context.declarationDrafts.clear();
+          context.symbolDrafts.clear();
+        }
+      }
+      contexts.push(context);
+    }
+
+    assignCanonicalIdentities(contexts);
+    const contextLocations = new Map<FileContext, Array<[string, string]>>();
+    for (const context of contexts) {
+      const locations: Array<[string, string]> = [];
+      for (const draft of context.drafts) {
+        if (!draft.id) continue;
+        for (const declaration of draft.declarations) {
+          const location = declarationLocation(declaration);
+          sink.location(location, draft.id);
+          locations.push([location, draft.id]);
+          // The checker declares a JS expando property at its assignment
+          // target (`app.init`), while its implementation/body spans the whole
+          // assignment. Retain both locations so calls resolve to this node.
+          if (draft.declarationRole === "function-assignment" && ts.isBinaryExpression(declaration)) {
+            const targetLocation = declarationLocation(declaration.left);
+            sink.location(targetLocation, draft.id);
+            locations.push([targetLocation, draft.id]);
+            const implementationLocation = declarationLocation(declaration.right);
+            sink.location(implementationLocation, draft.id);
+            locations.push([implementationLocation, draft.id]);
+          }
+        }
+      }
+      contextLocations.set(context, locations);
+      context.nodes = materializeNodes(context);
+      for (const node of context.nodes) sink.node(node);
+    }
+    for (const context of contexts) {
+      const resolvedSpecifiers: string[] = [];
+      const bindings = captureImportBindings(root, context, inputs, resolvedSpecifiers);
+      const capturedFile = normalizedAbsolute(context.sourceFile.fileName);
+      sink.dependencySignatures(capturedFile);
+      sink.file(capturedFile, {
+        filePath: context.filePath,
+        language: context.language,
+        projectId: runtime.id,
+        health: context.health,
+        nodes: context.nodes,
+        fileDraftId: context.fileDraft?.id,
+        bindings,
+        captured: captureReferences(context, bindings),
+        locations: contextLocations.get(context)!,
+        resolvedSpecifiers,
+      });
+      context.drafts.length = 0;
+      context.declarationDrafts.clear();
+      context.symbolDrafts.clear();
+      context.fileDraft = undefined;
+      contextLocations.delete(context);
+    }
+  }
+
+  replayResolution(absoluteFile: string, specifier: string): void {
+    ts.resolveModuleName(
+      specifier, absoluteFile, this.program.getCompilerOptions(), this.request.inputs.moduleResolutionHost(),
+    );
+  }
+
+  release(): void {
+    this.runtime = undefined;
+  }
 }
 
 /**
@@ -1120,7 +1404,8 @@ function sameDependencies(current: FileDependencies, previous: FileDependencies)
     && current.failedLookups.join("\n") === previous.failedLookups.join("\n");
 }
 
-interface FileDependencies {
+/** @internal */
+export interface FileDependencies {
   dependencies: string[];
   failedLookups: string[];
   globalScope: boolean;
@@ -1542,13 +1827,17 @@ function reportableDeclinedPath(root: string, fileName: string): string {
   return normalizeRelative(relative(root, absolute)) || absolute;
 }
 
-/** Stable identity input shared with migration/invariant tests. */
+/**
+ * A compiler node's identity: its file, kind, qualified name and declaration
+ * role, plus its position among namesakes when several share all four (an
+ * overload set is one node). Never a printed type: compilers print types
+ * differently, and switching compiler must keep every id.
+ */
 export function canonicalCompilerIdentity(input: {
   filePath: string;
   kind: CompilerNodeKind;
   qualifiedName: string;
   declarationRole: string;
-  signature?: string;
   ordinal?: number;
 }): string {
   const base = [
@@ -1556,7 +1845,6 @@ export function canonicalCompilerIdentity(input: {
     input.kind,
     normalizeQualifiedName(input.qualifiedName),
     normalizeSignature(input.declarationRole),
-    normalizeSignature(input.signature ?? ""),
   ].join("\u0000");
   return input.ordinal === undefined ? base : `${base}\u0000ordinal:${input.ordinal}`;
 }
@@ -1628,7 +1916,7 @@ type LibraryResolver = (
  * TypeScript libraries and ignored dependency/build directories retain the
  * compiler's normal filesystem behavior and do not become graph provenance.
  */
-class CompilerInputLedger {
+export class CompilerInputLedger {
   private readonly root: string;
   private readonly staged = new Map<string, string>();
   private readonly cache = new Map<string, string | undefined>();
@@ -1678,6 +1966,21 @@ class CompilerInputLedger {
       this.indexKnownFile(absolute);
     }
     this.knownDirectories.add(normalizedAbsolute(this.root));
+  }
+
+  /** Inside the root and outside every ignored directory: the ledger, not the filesystem, answers for it. */
+  isProjectInputPath(absolute: string): boolean {
+    return this.isProjectInput(normalizedAbsolute(absolute));
+  }
+
+  /** Every staged input: the exact bytes the compiler must see, by absolute path. */
+  stagedInputs(): ReadonlyMap<string, string> {
+    return this.staged;
+  }
+
+  /** A directory listing built from the candidate files, as the compiler's matcher sees it. */
+  directoryEntries(directory: string): { files: string[]; directories: string[] } {
+    return this.virtualDirectoryEntries(directory);
   }
 
   hasStagedInput(fileName: string): boolean {
@@ -2463,7 +2766,6 @@ function assignCanonicalIdentities(contexts: readonly FileContext[]): void {
         kind: draft.kind,
         qualifiedName: draft.qualifiedName,
         declarationRole: draft.declarationRole,
-        signature: draft.signature,
       });
       draft.identityBase = base;
       const entries = groups.get(base) ?? [];
@@ -3115,9 +3417,12 @@ function sourceHealth(
   };
 }
 
-function diagnosticRanges(source: string, diagnostics: readonly ts.Diagnostic[]): ErrorRange[] {
+function diagnosticRanges(
+  source: string,
+  diagnostics: ReadonlyArray<{ start?: number; length?: number }>,
+): ErrorRange[] {
   const ranges = diagnostics
-    .filter((diagnostic): diagnostic is ts.Diagnostic & { start: number } => diagnostic.start !== undefined)
+    .filter((diagnostic): diagnostic is { start: number; length?: number } => diagnostic.start !== undefined)
     .map((diagnostic) => ({
       start: Math.max(0, Math.min(source.length, diagnostic.start)),
       end: Math.max(0, Math.min(source.length, diagnostic.start + Math.max(1, diagnostic.length ?? 1))),
@@ -3811,4 +4116,35 @@ function negativeProbeCoveredByCorpusPolicy(absolutePath: string): boolean {
   return name === "package.json"
     || /^tsconfig(?:\.[^.]+)?\.json$/u.test(name)
     || /^jsconfig(?:\.[^.]+)?\.json$/u.test(name);
+}
+
+/**
+ * Helpers shared with the TypeScript 7.1 API session (`compiler-api.ts`), so
+ * both sessions name paths, languages and evidence the same way.
+ * @internal
+ */
+export const internalCompilerHelpers = {
+  absoluteCandidate,
+  isCompilerSourceFile,
+  projectStateDigest,
+  sha256Base64: (value: string): string => createHash("sha256").update(value).digest("base64"),
+  compareCodePoints,
+  diagnosticRanges,
+  isAllowedCompilerDependency,
+  languageForFile,
+  normalizeSignature,
+  normalizedAbsolute,
+  portableInputPath,
+  relativePath,
+  sha256,
+  sourceEvidenceText,
+  withinRoot,
+};
+
+function describeCompiler(compiler: ProjectCompiler): string {
+  return compiler.name ?? `typescript-${ts.version}`;
+}
+
+function firstLine(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).split(/\r?\n/u)[0]!.slice(0, 300);
 }

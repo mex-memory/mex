@@ -2,6 +2,12 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import chalk from "chalk";
 import type { MexConfig } from "./types.js";
+import { runStatus } from "./status.js";
+
+/** The 0.9 doctor reads the same snapshot as status and adds fixes. */
+export function runStatusDoctor(options: { json?: boolean } = {}): void {
+  runStatus({ ...options, doctor: true });
+}
 import {
   runDriftCheckWithGraphStatus,
   type GraphAwareDriftReport,
@@ -46,7 +52,7 @@ export async function runDoctor(config: MexConfig): Promise<void> {
   if (errors || warnings || !heartbeat.ok || graphNeedsAttention || unsupportedSources) {
     console.log();
     console.log(chalk.bold("Next steps"));
-    if (errors || warnings) console.log("  Run `mex check` for drift details, then `mex sync` for targeted repair prompts.");
+    if (errors || warnings) console.log("  Run `mex check` for drift details, then `mex sync --deep` for targeted repair prompts.");
     if (unsupportedSources) {
       console.log("  The listed extensions have no extractor; use source search for these languages or `mex graph --json` for the build coverage breakdown.");
     }

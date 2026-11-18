@@ -58,6 +58,7 @@ export async function finalizeWithRepair(
   if (hasRepairWork && options.selectedTools?.some(tool => tool === "claude" || tool === "codex")) {
     throwIfSetupAborted(options.signal);
     try { await (options.populate ?? launchHeadlessSetupPopulation)({
+      usagePurpose: "setup.finalize-repair",
       // The repair turn runs `mex` commands, so only Claude Code or Codex may take it.
       projectRoot, selectedTools: options.selectedTools, requireCommands: true,
       prompt: buildSetupRepairPrompt(failure.groundingFailures ?? [], failure.wikiDiagnostics ?? []),

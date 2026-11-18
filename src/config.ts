@@ -1,3 +1,4 @@
+import { gitDiscoveryCeilingReached } from "./repository-discovery.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { resolve, dirname, isAbsolute, basename } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -79,7 +80,7 @@ export function findConfig(startDir?: string): MexConfig {
     }
 
     throw new Error(
-      "No .mex/ scaffold found. Run: mex setup"
+      "No .mex/ scaffold found. Run mex to turn MEX on here; mex status shows its state."
     );
   }
 
@@ -100,7 +101,7 @@ function findProjectRoot(dir: string): string | null {
       return current;
     }
     const parent = dirname(current);
-    if (parent === current) return null;
+    if (parent === current || gitDiscoveryCeilingReached(parent)) return null;
     current = parent;
   }
 }

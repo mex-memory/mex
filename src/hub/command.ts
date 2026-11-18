@@ -12,7 +12,6 @@ import { TeamLocalState } from "../team/local-state/index.js";
 import { createRepositoryGraphPort } from "../graph/application-adapter.js";
 import { createRepositoryWikiPort } from "../wiki/application-adapter.js";
 import { createRepositoryTeamWorkflowPort } from "../team/workflow/repository-team-workflow-port.js";
-import { createSpecReadService } from "../team/specs/index.js";
 import { findConfig, readScaffoldId } from "../config.js";
 import { hasCommittedHubIdentity } from "./setup/readiness.js";
 import { inspectSetupStatus } from "../setup/headless.js";
@@ -23,6 +22,7 @@ import { emitHubTelemetry } from "./telemetry.js";
 import { dirname, join } from "node:path";
 import { assertSetupAvailable } from "../setup/setup-lock.js";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 
 export interface RunHubCommandOptions {
   readonly projectRoot: string;
@@ -61,6 +61,12 @@ export interface RunSetupHubCommandOptions {
 export async function launchHub(options: LaunchHubOptions): Promise<void> {
   const initialMode = options.mode === undefined ? undefined : normalizeSetupMode(options.mode);
   const projectRoot = findSetupProjectRoot();
+  if (!options.setup && !existsSync(join(projectRoot, ".mex", "ROUTER.md"))) {
+    console.log("The MEX Hub is being rebuilt for 0.9 and arrives in 0.9.0.");
+    console.log("For now: mex status (what MEX is doing here) · mex what (this session) · mex recall <words> (find a note) · mex check (what still holds)");
+    return;
+  }
+  if (!options.setup) console.error("This is the 0.8 Hub. mex upgrade brings this repo into 0.9.");
   const status = inspectSetupStatus(projectRoot);
   let finalizeOnly = false;
   if (!options.setup && initialMode === undefined && status.mode === "code-repo" && status.hasScaffold && await hasCommittedHubIdentity(projectRoot)) {
@@ -102,6 +108,7 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
   let jobs: HubJobManager | undefined;
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
   let stopTelemetry: (() => Promise<void>) | undefined;
+  let shutdown: ReturnType<typeof listenForShutdown> | undefined;
   try {
     const bootstrapToken = createBootstrapToken();
     let expectedOrigin: string | null = null;
@@ -126,14 +133,16 @@ export async function runHubCommand(options: RunHubCommandOptions): Promise<void
     expectedOrigin = server.origin;
     stopTelemetry = startHubTelemetry();
     emitHubTelemetry(captureEvent, "hub.session_started", {});
+    shutdown = listenForShutdown();
     const bootstrapUrl = `${server.origin}/#token=${encodeURIComponent(bootstrapToken)}`;
 
     process.stdout.write(`\nProject Hub running at ${server.origin}\n`);
     process.stdout.write(`One-time bootstrap link (valid for 5 minutes):\n${bootstrapUrl}\n`);
     process.stdout.write("Press Ctrl+C to stop.\n\n");
     if (options.openBrowser) openHubBrowser(bootstrapUrl);
-    await waitForShutdownSignal();
+    await shutdown.done;
   } finally {
+    shutdown?.cancel();
     // Stop accepting requests before aborting or reconciling any executors.
     try {
       await server?.close();
@@ -154,6 +163,7 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
   const captureEvent = createProjectTelemetryCapture(options.projectRoot);
   let server: Awaited<ReturnType<typeof startHubNodeServer>> | undefined;
   let stopTelemetry: (() => Promise<void>) | undefined;
+  let shutdown: ReturnType<typeof listenForShutdown> | undefined;
   let jobs: HubJobManager | undefined;
   let security: HubSessionManager | undefined;
   let assets: HubAssetManifest | undefined;
@@ -229,6 +239,7 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
     expectedOrigin = server.origin;
     stopTelemetry = startHubTelemetry();
     emitHubTelemetry(captureEvent, "hub.session_started", {});
+    shutdown = listenForShutdown(options.signal);
     const bootstrapUrl = `${server.origin}/#token=${encodeURIComponent(bootstrapToken)}`;
 
     options.onListening?.({ origin: server.origin, bootstrapUrl });
@@ -236,9 +247,10 @@ export async function runSetupHubCommand(options: RunSetupHubCommandOptions): Pr
       reportMessage(`Project Hub setup wizard running at ${server.origin}\nOne-time bootstrap link (valid for 5 minutes):\n${bootstrapUrl}\nPress Ctrl+C to stop.\n`);
     }
     if (options.openBrowser && !options.signal?.aborted) openHubBrowser(bootstrapUrl);
-    await waitForShutdownSignal(options.signal);
+    await shutdown.done;
   } finally {
     closing = true;
+    shutdown?.cancel();
     try {
       await server?.close();
     } finally {
@@ -301,10 +313,7 @@ async function composeProductionHub(
       scaffoldId: options.scaffoldId,
       jobs,
       team,
-      workstreams: team,
-      inbox: team,
       relays: team,
-      specs: createSpecReadService(wiki),
       graph,
       wiki,
       migration,
@@ -325,17 +334,22 @@ async function composeProductionHub(
   }
 }
 
-function waitForShutdownSignal(signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) { resolve(); return; }
-    const complete = () => {
-      process.off("SIGINT", complete);
-      process.off("SIGTERM", complete);
-      signal?.removeEventListener("abort", complete);
+function listenForShutdown(signal?: AbortSignal): { done: Promise<void>; cancel: () => void } {
+  let cancel!: () => void;
+  let completed = false;
+  const done = new Promise<void>((resolve) => {
+    cancel = () => {
+      if (completed) return;
+      completed = true;
+      process.off("SIGINT", cancel);
+      process.off("SIGTERM", cancel);
+      signal?.removeEventListener("abort", cancel);
       resolve();
     };
-    process.once("SIGINT", complete);
-    process.once("SIGTERM", complete);
-    signal?.addEventListener("abort", complete, { once: true });
+    if (signal?.aborted) { cancel(); return; }
+    process.once("SIGINT", cancel);
+    process.once("SIGTERM", cancel);
+    signal?.addEventListener("abort", cancel, { once: true });
   });
+  return { done, cancel };
 }

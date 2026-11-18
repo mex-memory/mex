@@ -5,7 +5,6 @@ import type { HubApi } from "../api/client";
 import { Button } from "../components/primitives/button";
 import { Input } from "../components/primitives/input";
 import styles from "../styles/setup.module.css";
-import { TeamAccessCard } from "./TeamAccessCard";
 
 export function SetupCompletion({ api, agentMemory, pending, onOpen }: {
   api: HubApi; agentMemory: boolean; pending: boolean; onOpen(): void;
@@ -85,10 +84,6 @@ export function SetupCompletion({ api, agentMemory, pending, onOpen }: {
           </div>
         </form>}
       </section> : null}
-      <section aria-label="What’s next">
-        <h4>What’s next</h4>
-        <TeamAccessCard api={api} preference={api.getContactPreference ? contact.data ?? null : undefined} onContactSent={contactSubmitted} />
-      </section>
     </div>
     {skip.isError ? <p role="status">Your choice could not be saved on this computer. You can continue; the invitation may appear again.</p> : null}
     {agentMemory ? <p className={styles.notice}>You can close this tab and continue with your agent.</p> : <div className={styles.footer}>

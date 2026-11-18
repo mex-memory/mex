@@ -1,12 +1,13 @@
 {
   "name": "mex-agent",
-  "version": "0.8.5",
+  "version": "0.9.0-beta.1",
   "description": "Persistent project memory and deterministic local code graphs for AI coding agents",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "workspaces": [
-    "packages/*"
+    "packages/hub-contracts",
+    "packages/hub-web"
   ],
   "exports": {
     ".": {
@@ -23,6 +24,7 @@
     "skills",
     "templates",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "README.md",
     "TELEMETRY.md",
     "COMPATIBILITY.md"
@@ -58,6 +60,8 @@
     "build:hub": "npm run build --workspace @mex/hub-web",
     "dev": "tsup --watch",
     "test": "vitest run",
+    "gates": "node scripts/gates/cli.mjs",
+    "gates:test": "node --test scripts/gates/test/*.test.mjs",
     "test:hub:web": "npm run test --workspace @mex/hub-web",
     "test:hub:e2e": "npm run build && playwright test",
     "test:hub:package": "node scripts/hub-pack-smoke.mjs",
@@ -72,7 +76,7 @@
     "eval:compare:test": "node --test evaluate/compare/test/*.test.mjs",
     "benchmark:graph-status": "npm run build && node scripts/benchmark-graph-status.mjs",
     "benchmark:release": "npm run build && node scripts/release-benchmark/enforce.mjs --output test-results/release-benchmark/report.json",
-    "typecheck": "npm run typecheck --workspace @mex/hub-contracts && tsc --noEmit && npm run typecheck --workspace @mex/hub-web",
+    "typecheck": "npm run typecheck --workspace @mex/hub-contracts && node node_modules/typescript/bin/tsc --noEmit && npm run typecheck --workspace @mex/hub-web",
     "prepare": "npm run build",
     "benchmark:telemetry": "npm run build && node scripts/benchmark-telemetry.mjs",
     "benchmark:telemetry:test": "node --test scripts/benchmark-telemetry.test.js",
@@ -86,12 +90,17 @@
     "cross-spawn": "^7.0.6",
     "glob": "^13.0.6",
     "hono": "^4.13.3",
+    "ignore": "7.0.5",
     "ink": "^7.0.3",
+    "oxc-parser": "0.156.0",
     "react": "^19.2.6",
     "remark-frontmatter": "^5.0.0",
     "remark-parse": "^11.0.0",
     "simple-git": "^3.27.0",
+    "smol-toml": "1.9.1",
+    "tsrs": "0.25.0-ts7.1.0-beta",
     "typescript": "5.9.3",
+    "typescript-7": "npm:typescript@7.1.0-beta",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.0.0",
     "web-tree-sitter": "^0.25.10",
@@ -104,6 +113,8 @@
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.14",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "ink-testing-library": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "tree-sitter-wasms": "^0.1.12",

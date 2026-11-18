@@ -1,17 +1,20 @@
 import chalk from "chalk";
 import { Command, InvalidArgumentError, Option } from "commander";
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
+import { registerRemovedCommands, removedCommandMessage } from "./removed-commands.js";
 import { VERSION } from "./version.js";
+import { PUBLIC_COMMAND_ORDER } from "./cli-tools.js";
+import { buildKnowledgeCommands } from "./knowledge/cli.js";
+import { buildUpgradeCommand } from "./upgrade/cli.js";
 import { unsupportedNodeMessage } from "./node-version.js";
-import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
-import { setGlobalConfigKey } from "./global-config.js";
+import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, enableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
+import { mexHomeDir, setGlobalConfigKey } from "./global-config.js";
 import { createCliTelemetry, telemetryProjectLocation } from "./cli-telemetry.js";
 export { isTelemetryExemptCommand } from "./cli-telemetry.js";
-import { buildLoggingCommand } from "./logging/cli.js";
 import { runFeedback, maybeShowInvite, dismissInvite, enableInvite } from "./feedback/index.js";
 import type { MexConfig } from "./types.js";
 import type { RunHubCommandOptions } from "./hub/command.js";
@@ -19,7 +22,6 @@ import { capabilitiesInvalidRequestEnvelope, readWikiExclude } from "./capabilit
 import { WIKI_APPLY_HELP } from "./wiki/cli/apply-help.js";
 import {
   buildTeamIdentityActivityCommands,
-  buildWorkstreamCommand,
   exitCodeForTeamEnvelope,
   locateTeamRepositoryRoot,
   processTeamCommandIo,
@@ -29,25 +31,11 @@ import {
   type TeamCliCommandName,
   type TeamCliMode,
   type TeamIdentityActivityCliServiceFactory,
-  type TeamWorkstreamCliServiceFactory,
 } from "./team/cli/index.js";
-import {
-  buildSpecCommand,
-  type SpecCliServiceFactory,
-} from "./team/specs/cli/index.js";
-import {
-  buildInboxCommand,
-  type TeamInboxSpecCliServiceFactory,
-} from "./team/inbox/cli/index.js";
 import {
   buildRelayCommand,
   type TeamRelayCliServiceFactory,
 } from "./team/relay/cli/index.js";
-import {
-  renderInstructionChangePreview,
-  type AgentAssetsReport,
-  type AgentSkillClient,
-} from "./agent-skills/index.js";
 
 /**
  * Load config for a CLI command and backfill scaffold identity on the way.
@@ -91,47 +79,6 @@ export function parsePortArg(raw: string): number {
   return port;
 }
 
-function isAgentSkillClient(value: string): value is AgentSkillClient {
-  return value === "claude" || value === "codex";
-}
-
-function collectAgentSkillClient(
-  raw: string,
-  previous: AgentSkillClient[],
-): AgentSkillClient[] {
-  const normalized = raw.trim().toLowerCase();
-  if (!isAgentSkillClient(normalized)) {
-    throw new InvalidArgumentError(
-      `Unknown agent tool "${raw}". Use claude or codex.`,
-    );
-  }
-  return [...previous, normalized];
-}
-
-function renderAgentSkillSyncReport(report: AgentAssetsReport): void {
-  for (const action of report.actions) {
-    if (action.action === "conflict") continue;
-    const prefix = action.action === "noop" ? "→" : "✓";
-    console.log(`${prefix} ${action.message}`);
-    if (report.dryRun) {
-      const preview = renderInstructionChangePreview(action);
-      if (preview !== null) console.log(preview);
-    }
-  }
-  for (const warning of report.warnings) {
-    console.warn(`! ${warning.message}`);
-    if (warning.resolution) console.warn(`  ${warning.resolution}`);
-  }
-  const clients = report.clients.map((client) => client === "claude" ? "Claude Code" : "Codex");
-  const clientList = clients.length === 2 ? `${clients[0]} and ${clients[1]}` : clients[0]!;
-  const newSession = `a new ${clientList} session to guarantee the synced skills and project instructions are loaded.`;
-  if (report.conflicted) {
-    console.warn(`Resolve the reported conflicts and rerun mex skills sync. Then start ${newSession}`);
-  } else {
-    console.log(`Start ${newSession}`);
-  }
-}
-
 /** Pure Hub bootstrap projection so CLI and production wiring share Wiki scope. */
 export function createHubRunOptions(
   config: Pick<MexConfig, "projectRoot" | "wiki">,
@@ -149,6 +96,8 @@ export function createHubRunOptions(
 }
 
 export const program = new Command();
+let cliStarted = false;
+registerRemovedCommands(program);
 
 /** Commands whose machine/read-only contract must precede any global notice. */
 export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
@@ -164,12 +113,13 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "inbox"
     || commandName === "relay"
     || commandName === "spec"
-    || commandName === "skills";
-}
-
-async function runTuiCommand(): Promise<void> {
-  const { launchTui } = await import("./tui.js");
-  launchTui();
+    || commandName === "note" || commandName === "log" || commandName === "recall" || commandName === "expand"
+    || commandName === "edit" || commandName === "wrong" || commandName === "forget"
+    || commandName === "what" || commandName === "report"
+    || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief" || commandName === "upgrade"
+    || commandName === "skills" || commandName === "install" || commandName === "uninstall"
+    || commandName === "off" || commandName === "on" || commandName === "capture" || commandName === "handoff"
+    || commandName === "status" || commandName === "doctor";
 }
 
 async function runBrowserCommand(options: { port?: number; open: boolean; mode?: string; setup?: boolean }): Promise<void> {
@@ -189,6 +139,7 @@ async function runSetupCommand(options: {
   force?: boolean;
 }): Promise<void> {
   try {
+    if (!options.dryRun) showFirstRunNotice();
     if (options.browser) {
       await runBrowserCommand({ ...options, setup: true });
       return;
@@ -215,41 +166,131 @@ const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command
   const { root, discovery } = telemetryProjectLocation(command);
   return getProjectTelemetryContext(root, discovery);
 });
-program.hook("preAction", (_thisCommand, actionCommand) => cliTelemetry.start(actionCommand));
-program.hook("postAction", () => cliTelemetry.finish(process.exitCode));
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  let family = actionCommand;
+  while (family.parent && family.parent !== program) family = family.parent;
+  if (family.name() === "sync" && family.opts().dryRun) return;
+  if (cliStarted && !isFirstRunNoticeExemptCommand(family === program ? undefined : family.name())) showFirstRunNotice();
+  cliTelemetry.start(actionCommand);
+});
+program.hook("postAction", async (_thisCommand, actionCommand) => {
+  await cliTelemetry.finish(process.exitCode);
+  let family = actionCommand;
+  while (family.parent && family.parent !== program) family = family.parent;
+  // Uninstall must not recreate the launcher or restart pending jobs.
+  if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture" || family.name() === "status" || family.name() === "doctor"
+    || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
+    || (["install", "sync"].includes(family.name()) && family.opts().dryRun)) return;
+  // Keep the hook shim's launcher pointing at this CLI.
+  try {
+    const { writeLauncher } = await import("./hooks/shim/launcher.js");
+    writeLauncher(mexHomeDir());
+  } catch { /* never affects the command */ }
+  // Restart the background process when jobs are waiting. The marker check opens no database.
+  try {
+    // Default sync decides whether its own accepted work may continue. A held
+    // or paused invocation must not wake an unrelated host's queued judge.
+    if (!(family.name() === "sync" && !family.opts().deep) && existsSync(join(mexHomeDir(), "jobs-pending"))) {
+      const { restartIfPending } = await import("./record/background.js");
+      restartIfPending();
+    }
+  } catch { /* never affects the command */ }
+  if (process.stderr.isTTY && Number(process.exitCode ?? 0) === 0 && !actionCommand.optsWithGlobals().json
+    && !["review", "completion", "__background", "__hook-note"].includes(family.name()) && !process.argv.includes("--json")) {
+    try {
+      const { dailyReviewLine } = await import("./review/daily.js");
+      const line = dailyReviewLine({ projectPath: process.cwd() });
+      if (line) console.error(line);
+    } catch { /* a reminder never affects the command */ }
+  }
+});
+
+async function runRepoStartCommand(options: { folder?: boolean; wait?: boolean } = {}): Promise<void> {
+  try {
+    const { runRepoStart } = await import("./repo-start/command.js");
+    const result = await runRepoStart({ ...(options.folder ? { folder: true } : {}), ...(options.wait === false ? { wait: false } : {}) });
+    process.exitCode = result.exitCode;
+    // Stopped waiting with work still running here: the background process has taken it over.
+    if (result.exitNow) process.exit(result.exitCode);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
 
 program
   .name("mex")
-  .description("Project memory for your agents — open the Hub or use a CLI command")
+  .description("Project memory for your agents — run it in a repo to turn MEX on there")
   .version(VERSION)
   .showHelpAfterError()
-  .option("--port <n>", "Bind a specific loopback port", parsePortArg)
-  .option("--no-open", "Print the Hub link without opening a browser")
-  .action(async (opts: { port?: number; open: boolean }) => {
-    try {
-      const { resolveDefaultEntry } = await import("./setup/entry.js");
-      if (await resolveDefaultEntry() === "hub") await runBrowserCommand(opts);
-      else await runSetupCommand(opts);
-    } catch (error) {
-      await reportSetupCommandError(error);
-    }
+  // Kept for `mex hub`, which reads them as global options.
+  .addOption(new Option("--port <n>", "Bind a specific loopback port (with `mex hub`)").argParser(parsePortArg).hideHelp())
+  .addOption(new Option("--no-open", "Print the Hub link without opening a browser (with `mex hub`)").hideHelp())
+  .option("--folder", "Turn MEX on in a folder that isn't a git repo, without the question")
+  .option("--no-wait", "Show the first screen and leave the file index and git history to the background")
+  .action(async (options: { folder?: boolean; wait?: boolean }) => {
+    showFirstRunNotice();
+    const { showUpdateNotice } = await import("./telemetry/updates.js");
+    await showUpdateNotice();
+    await runRepoStartCommand(options);
   });
 
-program
-  .command("tui")
-  .description("Open the interactive mex dashboard")
-  .action(async () => {
-    await runTuiCommand();
+program.command("install")
+  .description("Install or update machine-wide agent hooks; no tracked files are edited")
+  .option("--dry-run", "List installation changes without writing")
+  .option("--json", "Print a machine-readable summary without settings contents")
+  .action(async (options: { dryRun?: boolean; json?: boolean }) => {
+    try { const { runInstall } = await import("./install/cli.js"); await runInstall(options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+
+program.command("uninstall")
+  .description("Restore changes made by MEX, keeping data unless --purge is given")
+  .option("--dry-run", "List the recorded changes without writing")
+  .option("--purge", "Also delete MEX data after hooks are safely removed")
+  .option("--json", "Print a machine-readable restoration summary")
+  .action(async (options: { dryRun?: boolean; purge?: boolean; json?: boolean }) => {
+    try { const { runUninstall } = await import("./install/cli.js"); await runUninstall(options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+
+program.command("off")
+  .description("Turn MEX off for this registered repo")
+  .option("--all", "Turn MEX off everywhere")
+  .option("--for <duration>", "Turn back on automatically after a duration such as 2h")
+  .option("--json", "Print the saved switch state")
+  .action(async (options: { for?: string; all?: boolean; json?: boolean }) => {
+    try { const { runCheckoutSwitch } = await import("./controls/cli.js"); runCheckoutSwitch(false, options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+
+program.command("on")
+  .description("Turn MEX back on for this registered repo")
+  .option("--all", "Clear global off; repo and session switches still apply")
+  .option("--json", "Print the saved switch state")
+  .action(async (options: { all?: boolean; json?: boolean }) => {
+    try { const { runCheckoutSwitch } = await import("./controls/cli.js"); runCheckoutSwitch(true, options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+
+program.command("capture <state>")
+  .description("Turn capture off or on without changing delivery")
+  .option("--all", "Change capture everywhere")
+  .option("--json", "Print the saved capture state")
+  .action(async (state: string, options: { all?: boolean; json?: boolean }) => {
+    try { const { runCaptureSwitch } = await import("./controls/cli.js"); runCaptureSwitch(state, options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
   });
 
 program
   .command("hub")
-  .description("Launch the local Project Hub")
+  .description("Show the 0.9 Hub notice; open the Hub in a 0.8 repo")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
   .option("--no-open", "Do not open the browser automatically")
   .action(async (_opts: { port?: number; open: boolean }, command: Command) => {
     const opts = command.optsWithGlobals();
     try {
+      showFirstRunNotice();
       const { launchHub } = await import("./hub/command.js");
       await launchHub({ port: opts.port, openBrowser: opts.open });
     } catch (err) {
@@ -259,7 +300,7 @@ program
   });
 
 program
-  .command("capabilities")
+  .command("capabilities", { hidden: true })
   .description("Inspect installed and currently available machine capabilities")
   .option("--json", "Emit the versioned machine-readable capability manifest")
   .action(async (options: { json?: boolean }) => {
@@ -283,273 +324,177 @@ const teamWorkflowCliService = async () => {
   return createRepositoryTeamWorkflowPort(projectRoot);
 };
 const teamIdentityActivityService: TeamIdentityActivityCliServiceFactory = teamWorkflowCliService;
-const teamWorkstreamService: TeamWorkstreamCliServiceFactory = teamWorkflowCliService;
-const teamInboxSpecService: TeamInboxSpecCliServiceFactory = teamWorkflowCliService;
 const teamRelayService: TeamRelayCliServiceFactory = teamWorkflowCliService;
-const specReadService: SpecCliServiceFactory = async () => {
-  const projectRoot = locateTeamRepositoryRoot();
-  // Specs are a read-only Wiki projection and do not depend on Team's tracked
-  // scaffold identity or receipt signer. Capability discovery gates this
-  // command on the same immutable Wiki index state used here.
-  const [
-    { createRepositoryGraphPort },
-    { createRepositoryWikiPort },
-    { createSpecReadService },
-  ] = await Promise.all([
-    import("./graph/application-adapter.js"),
-    import("./wiki/application-adapter.js"),
-    import("./team/specs/index.js"),
-  ]);
-  const graph = createRepositoryGraphPort(projectRoot, { candidateExecution: "process" });
-  const wiki = createRepositoryWikiPort(projectRoot, {
-    groundingBridge: graph,
-    exclude: readWikiExclude(resolve(projectRoot, ".mex")),
-  });
-  return createSpecReadService(wiki);
-};
-
-program.addCommand(buildLoggingCommand());
 
 for (const command of buildTeamIdentityActivityCommands({
   service: teamIdentityActivityService,
   io: processTeamCommandIo(),
 })) {
-  program.addCommand(command);
+  program.addCommand(command, { hidden: true });
 }
-program.addCommand(buildWorkstreamCommand({
-  service: teamWorkstreamService,
-  io: processTeamCommandIo(),
-}));
-program.addCommand(buildInboxCommand({
-  service: teamInboxSpecService,
-  targetService: async () => {
-    const projectRoot = locateTeamRepositoryRoot();
-    const { createRepositoryWikiPort } = await import("./wiki/application-adapter.js");
-    // Target text and revision need no code-health resolution or Team signer.
-    return createRepositoryWikiPort(projectRoot, {
-      exclude: readWikiExclude(resolve(projectRoot, ".mex")),
-    });
-  },
-  io: processTeamCommandIo(),
-}));
 program.addCommand(buildRelayCommand({
   service: teamRelayService,
   io: processTeamCommandIo(),
-}));
-program.addCommand(buildSpecCommand({
-  service: specReadService,
-  io: processTeamCommandIo(),
-}));
+}), { hidden: true });
 
-// ── Setup (terminal by default; explicit browser and read-only paths) ──
+// ── Setup: an alias of bare `mex`; the 0.8 flows stay reachable until they are removed ──
+const LEGACY_SETUP_FLAGS = ["legacy", "cli", "mode", "dryRun", "tool", "yes", "force"] as const;
 const setupCommand = program
   .command("setup")
-  .description("Set up MEX in the terminal; use --browser for browser setup")
-  .option("--cli", "Run setup in the terminal (the default)")
-  .addOption(new Option("--browser", "Run setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force"]))
-  .option("--mode <mode>", "Template mode: code-repo or agent-memory (preserves saved mode)")
-  .option("--dry-run", "Show what would happen without making changes")
-  .option("--port <n>", "Bind a specific loopback port", parsePortArg)
-  .option("--no-open", "Show the Hub link without opening a browser")
-  .option("--tool <tool>", "Terminal setup: preselect an AI tool (repeatable; none for no tool; --yes skips review)", (value: string, previous: string[] = []) => [...previous, value])
-  .option("--yes", "Terminal setup: never wait on a question (for scripts and CI)")
-  .option("--force", "Terminal setup: run the full flow even when MEX is already set up here")
+  .description("Turn MEX on for this repo (the same as `mex`)")
+  .addOption(new Option("--legacy", "Run the 0.8 terminal setup").hideHelp())
+  .addOption(new Option("--cli", "0.8 terminal setup").hideHelp())
+  .addOption(new Option("--browser", "Run the 0.8 setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force", "legacy"]).hideHelp())
+  .addOption(new Option("--mode <mode>", "0.8 setup: template mode, code-repo or agent-memory").hideHelp())
+  .addOption(new Option("--dry-run", "0.8 setup: show what would happen without making changes").hideHelp())
+  .addOption(new Option("--port <n>", "With --browser: bind a specific loopback port").argParser(parsePortArg).hideHelp())
+  .addOption(new Option("--no-open", "With --browser: show the Hub link without opening a browser").hideHelp())
+  .addOption(new Option("--tool <tool>", "0.8 setup: preselect an AI tool").argParser((value: string, previous: string[] = []) => [...previous, value]).hideHelp())
+  .addOption(new Option("--yes", "0.8 setup: never wait on a question").hideHelp())
+  .addOption(new Option("--force", "0.8 setup: run the full flow").hideHelp())
+  .option("--folder", "Turn MEX on in a folder that isn't a git repo, without the question")
+  .option("--no-wait", "Show the first screen and leave the file index and git history to the background")
   .addHelpText(
     "after",
-    "\nSetup modes:\n"
-      + "  Terminal (default, or --cli)  Runs setup in this terminal. --tool, --yes, --force and\n"
-      + "                                --dry-run apply only here.\n"
-      + "  Browser (--browser)           Runs setup in the local browser Hub. It cannot be combined\n"
-      + "                                with --cli, --tool, --yes, --force or --dry-run.\n"
-      + "\nOn a checkout that is already set up, setup reports its status and does no work;\n"
-      + "it finishes only what is missing otherwise. --force runs the full flow; authored\n"
-      + "files are always preserved.\n"
-      + "\n--no-open prints the Hub link instead of opening it in a browser. In the terminal\n"
-      + "mode this is the link to the finishing Hub page; in the browser mode it is the setup link.\n"
-      + "\nNo agent CLI MEX can launch? Paste one prompt into your agent instead: it runs\n"
-      + "`mex setup next --start` first, then does what it prints, until setup is complete.\n",
+    "\n`mex setup` does what `mex` does: it turns MEX on for this repo and shows what it\n"
+      + "found. Next: mex note \"<fact>\" adds a note. Undo: mex off.\n",
   )
   .action(async (_opts, command: Command) => {
-    await runSetupCommand(command.optsWithGlobals());
+    const options = command.optsWithGlobals<Parameters<typeof runSetupCommand>[0] & { legacy?: boolean; cli?: boolean }>();
+    if (options.browser || LEGACY_SETUP_FLAGS.some(flag => (options as Record<string, unknown>)[flag] !== undefined)) {
+      await runSetupCommand(options);
+      return;
+    }
+    showFirstRunNotice();
+    await runRepoStartCommand({ folder: (options as { folder?: boolean }).folder, wait: (options as { wait?: boolean }).wait });
   });
 
 setupCommand
   .command("next")
-  .option("--start", "Start a new chat: settle earlier tasks, including batches without receipts")
-  .option("--retry <task>", "Hand an abandoned running task out again (use its printed task id)")
-  .description("Continue setup one step at a time from your agent's chat: apply the last step, print the next")
+  .addOption(new Option("--start", "0.8 setup: start a new chat, settling earlier tasks").hideHelp())
+  .addOption(new Option("--retry <task>", "0.8 setup: hand an abandoned running task out again (use its printed task id)").hideHelp())
+  .description("For your agent: turn MEX on here, print what was found, and the question to put to you")
   .addHelpText(
     "after",
-    "\nFor agents MEX cannot launch itself. Each call applies what the previous step wrote\n"
-      + "(or gives that step's fix task), records progress, and prints the next task as a file\n"
-      + "under .mex/local/setup-next/ with the exact next command. The last call finalizes Graph\n"
-      + "and Wiki. Start each new chat with `mex setup next --start`; earlier tasks must be stopped.\n"
-      + "Then follow the printed commands (`mex setup next` without --start).\n",
+    "\nRun by an agent: it does what `mex` does without asking anything, then prints the\n"
+      + "question to put to the person and the exact command to run on yes. Nothing paid starts.\n"
+      + "With nothing to ask it says so. The 0.8 one-step setup continues with --start or --retry,\n"
+      + "or when a 0.8 setup-next session is already in progress here.\n",
   )
   .action(async (options: { retry?: string; start?: boolean }) => {
     try {
       const { findSetupProjectRoot } = await import("./setup/entry.js");
-      const { runSetupNext } = await import("./setup/next.js");
-      const result = await runSetupNext({
-        ...(options.retry === undefined ? {} : { retry: options.retry }),
-        ...(options.start === undefined ? {} : { start: options.start }),
-        projectRoot: findSetupProjectRoot(),
-        onProgress: (line) => console.error(line),
-      });
-      console.log(result.output);
-      process.exitCode = result.exitCode;
+      const projectRoot = findSetupProjectRoot();
+      const { legacySetupNextInProgress, runSetupHandoff } = await import("./repo-start/handoff.js");
+      if (options.start || options.retry !== undefined || legacySetupNextInProgress(projectRoot)) {
+        const { runSetupNext } = await import("./setup/next.js");
+        const result = await runSetupNext({
+          ...(options.retry === undefined ? {} : { retry: options.retry }),
+          ...(options.start === undefined ? {} : { start: options.start }),
+          projectRoot,
+          onProgress: (line) => console.error(line),
+        });
+        console.log(result.output);
+        process.exitCode = result.exitCode;
+        return;
+      }
+      process.exitCode = await runSetupHandoff();
     } catch (error) {
       await reportSetupCommandError(error);
     }
   });
 
-// ── Official agent skills ──
-const skillsCommand = program
-  .command("skills")
-  .description("Install or safely update official MEX project skills");
-
-skillsCommand
-  .command("sync")
-  .description("Sync packaged MEX skills for the agents selected during setup")
-  .option("--dry-run", "Show the exact actions and warnings without writing")
-  .option("--json", "Emit one machine-readable sync report")
-  .option(
-    "--tool <tool>",
-    "Sync one supported client (claude or codex); repeat to select both",
-    collectAgentSkillClient,
-    [],
-  )
-  .action(async (opts: { dryRun?: boolean; json?: boolean; tool: AgentSkillClient[] }) => {
+// ── Handoff ──
+program
+  .command("handoff [line...]")
+  .description("Hand this branch to a teammate: write .mex/handoffs/<branch>.md with no AI; `mex handoff done` closes it")
+  .option("--to <name>", "Who it is for")
+  .option("--yes", "Write without asking after the preview")
+  .option("--dry-run", "Show the preview only")
+  .option("--branch <name>", "With done: the handoff's branch")
+  .option("--json", "Print the result as JSON")
+  .addHelpText("after", "\nThe handoff holds the branch, uncommitted file names, your last ask, the last failing\ncommand and one optional line of yours. It passes a secret scan and a check for names,\nhosts and emails the repo doesn't already contain. You commit it; MEX never pushes.\nThe next agent session on the branch gets it once. It closes when the branch merges,\nat the receiver's first commit, or with `mex handoff done`.\n")
+  .action(async (words: string[], opts: { to?: string; yes?: boolean; dryRun?: boolean; branch?: string; json?: boolean }) => {
     try {
-      // Deliberately use the read-only resolver. In particular, --dry-run must
-      // not backfill scaffold identity or mutate config.json.
-      const config = findConfig();
-      const configured = config.aiTools.filter(isAgentSkillClient);
-      const clients = [...new Set(opts.tool.length > 0 ? opts.tool : configured)];
-      if (clients.length === 0) {
-        throw new Error(
-          "No supported agent is selected. Run mex setup or pass --tool claude and/or --tool codex.",
-        );
-      }
-      const { syncAgentAssets } = await import("./agent-skills/index.js");
-      const report = syncAgentAssets({
-        projectRoot: config.projectRoot,
-        packageVersion: VERSION,
-        clients,
-        dryRun: opts.dryRun,
-      });
-      if (opts.json) console.log(JSON.stringify(report));
-      else renderAgentSkillSyncReport(report);
-      if (report.conflicted) process.exitCode = 1;
-    } catch (err) {
-      const message = (err as Error).message;
-      if (opts.json) {
-        console.log(JSON.stringify({
-          schemaVersion: 1,
-          ok: false,
-          error: { code: "SKILL_SYNC_FAILED", message },
-        }));
-      } else {
-        console.error(message);
-      }
+      const { runHandoff } = await import("./knowledge/handoff-cli.js");
+      process.exitCode = await runHandoff(words, opts);
+    } catch (error) {
+      const err = error as { code?: string; message: string };
+      if (opts.json) console.log(JSON.stringify({ ok: false, error: { code: err.code ?? "HANDOFF_FAILED", message: err.message } }));
+      else console.error(err.message);
       process.exitCode = 1;
     }
   });
 
-// ── Layer 2: Drift Detection ──
+// ── Knowledge checks ──
 program
   .command("check")
-  .description("Run every deterministic drift check, including scaffold and Wiki code links; read-only, no AI")
-  .option("--json", "Output full drift report as JSON")
-  .option("--quiet", "Single-line summary only")
-  .option("--fix", "Run sync to fix any issues found")
-  .option("--verbose", "Show detailed diagnostic output")
-  .option("--stale-warn-days <n>", "Warn when a file hasn't changed in N days (default 30)", parseIntArg)
-  .option("--stale-error-days <n>", "Error when a file hasn't changed in N days (default 90)", parseIntArg)
-  .option("--stale-warn-commits <n>", "Warn when a file has N commits since its last change (default 50)", parseIntArg)
-  .option("--stale-error-commits <n>", "Error when a file has N commits since its last change (default 200)", parseIntArg)
+  .description("Check every knowledge entry against the code, plus store gates and conformance; read-only, no AI")
+  .option("--json", "Output the report as JSON")
+  .option("--diff <base>", "Check this branch against <base> for pre-push and CI; needs no graph and stores nothing")
+  .option("--legacy", "Run the 0.8 prose checkers on an old scaffold, without the file-age checks")
+  .option("--quiet", "With --legacy: single-line summary only")
+  .option("--fix", "With --legacy: run sync to fix any issues found")
+  .option("--verbose", "With --legacy: show detailed diagnostic output")
   .action(async (opts) => {
     try {
-      const config = loadConfig();
-      const { runDriftCheckWithGraphStatus } = await import("./drift/index.js");
-      const { DEFAULT_STALENESS_THRESHOLDS } = await import("./drift/checkers/staleness.js");
-
-      const stalenessThresholds = {
-        warnDays: opts.staleWarnDays ?? config.stalenessThresholds?.warnDays ?? DEFAULT_STALENESS_THRESHOLDS.warnDays,
-        errorDays: opts.staleErrorDays ?? config.stalenessThresholds?.errorDays ?? DEFAULT_STALENESS_THRESHOLDS.errorDays,
-        warnCommits: opts.staleWarnCommits ?? config.stalenessThresholds?.warnCommits ?? DEFAULT_STALENESS_THRESHOLDS.warnCommits,
-        errorCommits: opts.staleErrorCommits ?? config.stalenessThresholds?.errorCommits ?? DEFAULT_STALENESS_THRESHOLDS.errorCommits,
-      };
-
-      const report = await runDriftCheckWithGraphStatus(
-        { ...config, stalenessThresholds },
-        { verbose: opts.verbose },
-      );
-
-      // An unfinished setup is said first, with the one line that continues it.
-      const { describeUnfinishedSetup } = await import("./setup/unfinished.js");
-      const unfinished = describeUnfinishedSetup(config.projectRoot);
-      if (opts.json) {
-        const setup = unfinished === null ? {} : { setup: { done: unfinished.done, total: unfinished.total, finished: false, message: unfinished.line } };
-        reportJSON({ ...report, ...setup } as typeof report, { verbose: opts.verbose });
-      } else if (opts.quiet) {
-        if (unfinished) console.log(unfinished.line);
-        reportQuiet(report);
-      } else {
-        if (unfinished) console.log(`${unfinished.line}\n`);
-        if (opts.verbose) reportVerbose(report);
-        reportConsole(report);
-      }
-
-      // If --fix and there are issues, jump to sync
-      const hasErrors = report.issues.some((i) => i.severity === "error");
-      if (opts.fix && hasErrors) {
-        const { runSync } = await import("./sync/index.js");
-        await runSync(config, {});
+      if (opts.legacy) {
+        await runLegacyCheck(opts);
         return;
       }
-
-      if (hasErrors) {
-        process.exitCode = 1;
-        return;
+      const { runCheck, formatCheck, hasLegacyScaffold } = await import("./knowledge/check.js");
+      const report = runCheck({ projectPath: process.cwd(), diff: opts.diff });
+      if (opts.json) console.log(JSON.stringify(report));
+      else {
+        const { realPath } = await import("./record/project.js");
+        console.log(formatCheck(report, realPath(process.cwd())));
+        if (!report.entries.length && hasLegacyScaffold(process.cwd())) console.log("This repo has a 0.8 scaffold: mex check --legacy checks it.");
       }
-
-      // Warm moment — a clean check just gave the user value. Quietly invite
-      // feedback (only on success, never right before an error exit).
-      maybeShowInvite();
+      if (!report.ok) process.exitCode = 1;
     } catch (err) {
-      console.error((err as Error).message);
+      if (opts.json) console.log(JSON.stringify({ ok: false, error: { code: (err as { code?: string }).code ?? "CHECK_FAILED", message: (err as Error).message } }));
+      else console.error((err as Error).message);
       process.exitCode = 1;
-      return;
     }
   });
 
-// ── Layer 1: Pre-analysis Scanner ──
-program
-  .command("init")
-  .description("Scan codebase and generate pre-analysis brief for AI")
-  .option("--json", "Output scanner brief as JSON")
-  .action(async (opts) => {
-    try {
-      const config = loadConfig();
-      const { runScan } = await import("./scanner/index.js");
-      const result = await runScan(config, { jsonOnly: opts.json });
+async function runLegacyCheck(opts: { json?: boolean; quiet?: boolean; fix?: boolean; verbose?: boolean }): Promise<void> {
+  const config = loadConfig();
+  const { runDriftCheckWithGraphStatus } = await import("./drift/index.js");
+  const report = await runDriftCheckWithGraphStatus(config, { verbose: opts.verbose, ageChecks: false });
 
-      if (opts.json) {
-        console.log(JSON.stringify(result, null, 2));
-      } else {
-        console.log(result);
-      }
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
-  });
+  // An unfinished setup is said first, with the one line that continues it.
+  const { describeUnfinishedSetup } = await import("./setup/unfinished.js");
+  const unfinished = describeUnfinishedSetup(config.projectRoot);
+  if (opts.json) {
+    const setup = unfinished === null ? {} : { setup: { done: unfinished.done, total: unfinished.total, finished: false, message: unfinished.line } };
+    reportJSON({ ...report, ...setup } as typeof report, { verbose: opts.verbose });
+  } else if (opts.quiet) {
+    if (unfinished) console.log(unfinished.line);
+    reportQuiet(report);
+  } else {
+    if (unfinished) console.log(`${unfinished.line}
+`);
+    if (opts.verbose) reportVerbose(report);
+    reportConsole(report);
+  }
+
+  const hasErrors = report.issues.some((i) => i.severity === "error");
+  if (opts.fix && hasErrors) {
+    const { runSync } = await import("./sync/index.js");
+    await runSync(config, {});
+    return;
+  }
+  if (hasErrors) {
+    process.exitCode = 1;
+    return;
+  }
+  maybeShowInvite();
+}
 
 // ── Code Graph ──
 const graphCommand = program
-  .command("graph")
+  .command("graph", { hidden: true })
   .description("Ensure a current code graph: reuse fresh, refresh changed, rebuild missing or unusable")
   .option("--force", "Force a full build (also available as mex graph rebuild)")
   .option("--json", "Output the build summary as JSON")
@@ -671,7 +616,7 @@ graphCommand
 // library function does not demonstrate it. It is a thin shell over
 // `wiki/query/for-code.ts`.
 const wikiCommand = program
-  .command("wiki")
+  .command("wiki", { hidden: true })
   .description("Knowledge-graph commands over the .mex wiki");
 
 /**
@@ -851,7 +796,7 @@ wikiCommand
   .option("--apply", "start the explicit agent review, rather than preview only")
   .option("--dry-run", "preview only, even if --apply was given")
   .option("--after <entity-id>", "resume bounded review after an existing entity id")
-  .option("--tool <name>", "optional interactive CLI override; otherwise uses the same agent chooser as mex sync")
+  .option("--tool <name>", "optional interactive CLI override; otherwise uses the same agent chooser as mex sync --deep")
   .action(async (options) => {
     const { runKnowledgeUpgrade } = await import("./sync/knowledge-upgrade.js");
     await runKnowledgeUpgrade(loadConfig(), options);
@@ -1022,7 +967,7 @@ graphCommand
   });
 
 program
-  .command("impact <target>")
+  .command("impact <target>", { hidden: true })
   .description("Show transitive code and scaffold blast radius for a symbol, node id, file, or indexed file:line")
   .addOption(new Option("--direction <direction>", "proven call edges: callers (default), callees, or both").choices(["callers", "callees", "both"]))
   .option("--detail <level>", "minimal | standard | source", "minimal")
@@ -1036,100 +981,128 @@ program
     return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), { write: createGraphCliWriter() }, options));
   });
 
-// ── Agent Memory Events ──
-program
-  .command("log <message>")
-  .description("Append a decision, note, risk, or todo to the mex event log")
-  .option("--type <type>", "Event type: decision, note, risk, todo", "note")
-  .option("--file <path>", "Related file path (repeatable)", (value, prev: string[]) => [...prev, value], [])
-  .option("--source <source>", "Where the event came from (e.g. meeting, manual, agent)")
-  .option("--status <status>", "Lifecycle status (e.g. decided, implemented)")
-  .action(async (message, opts) => {
+// ── Knowledge entries ──
+for (const command of buildKnowledgeCommands()) program.addCommand(command);
+program.addCommand(buildUpgradeCommand({ afterUpgrade: showFirstRunNotice }));
+
+// ── File index ──
+const indexCommand = program
+  .command("index", { hidden: true })
+  .description("Build or refresh this checkout's file index now (outlines, names and pattern counts per file)")
+  .option("--full", "Read every file again instead of only the changed ones")
+  .option("--workers <n>", "Worker threads (0 runs in this process)", (value) => Number(value))
+  .option("--json", "Print the build summary as JSON")
+  .action(async (options: { full?: boolean; workers?: number; json?: boolean }) => {
     try {
-      const config = loadConfig();
-      const { runLog } = await import("./events.js");
-      await runLog(config, message, { kind: opts.type, files: opts.file, source: opts.source, status: opts.status });
+      const { runIndexBuild } = await import("./file-index/command.js");
+      await runIndexBuild(options);
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
-      return;
     }
   });
-
-program
-  .command("export")
-  .description("Bundle the whole scaffold into a single Markdown document")
-  .option("--out <path>", "Write to a file instead of stdout")
-  .action(async (opts) => {
+indexCommand
+  .command("status")
+  .description("When this checkout's index was built and how many files it covers")
+  .option("--json", "Print as JSON")
+  .action(async (options: { json?: boolean }) => {
     try {
-      const config = loadConfig();
-      const { runExport } = await import("./export.js");
-      await runExport(config, opts);
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exit(1);
-    }
-  });
-
-program
-  .command("timeline")
-  .description("Read bounded recent project notes (latest 8 MiB / 10,000 log lines)")
-  .option("--json", "Output events as JSON")
-  .option("--format <format>", "Output format: md for a Markdown table (piped into reports)")
-  .option("--since <date>", "Filter from YYYY-MM-DD or relative Nd, e.g. 30d")
-  .option("--type <type>", "Filter by event type: decision, note, risk, todo")
-  .option("--query <text>", "Case-insensitive literal text in the message (max 256 UTF-8 bytes)")
-  .option("--file <path>", "Exact recorded file path; any may match (repeatable, max 16)", (value, prev: string[]) => [...prev, value], [])
-  .option("--limit <n>", "Maximum entries, 1–200 (default 20; output capped at 64 KiB)", (raw: string) => {
-    if (!/^[0-9]+$/.test(raw) || Number(raw) < 1 || Number(raw) > 200) {
-      throw new InvalidArgumentError("Expected an integer from 1 to 200.");
-    }
-    return Number(raw);
-  })
-  .action(async (opts) => {
-    try {
-      const config = findConfig();
-      const { runTimeline } = await import("./events.js");
-      await runTimeline(config, {
-        json: opts.json,
-        format: opts.format,
-        since: opts.since,
-        kind: opts.type,
-        query: opts.query,
-        files: opts.file,
-        limit: opts.limit,
-      });
+      const { runIndexStatus } = await import("./file-index/command.js");
+      await runIndexStatus(options);
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
-      return;
     }
   });
-
-program
-  .command("heartbeat")
-  .description("Run lightweight agent-memory health checks once")
-  .option("--json", "Output heartbeat report as JSON")
-  .action(async (opts) => {
+indexCommand
+  .command("outline <file>")
+  .description("Show a file's symbols with their current line numbers")
+  .option("--json", "Print as JSON")
+  .action(async (file: string, options: { json?: boolean }) => {
     try {
-      const config = loadConfig();
-      const { runHeartbeat } = await import("./heartbeat.js");
-      await runHeartbeat(config, { json: opts.json });
+      const { runIndexOutline } = await import("./file-index/command.js");
+      await runIndexOutline(file, options);
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
-      return;
     }
+  });
+
+// ── Background jobs ──
+const jobsCommand = program
+  .command("jobs")
+  .description("List MEX's background jobs on this machine; pause, resume or cancel one")
+  .option("--json", "Print the jobs as JSON")
+  .option("--all", "Include older jobs")
+  .action(async (options: { json?: boolean; all?: boolean }) => {
+    try {
+      const { runJobsList } = await import("./record/jobs-command.js");
+      runJobsList(options);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+for (const action of ["pause", "resume", "cancel"] as const) {
+  jobsCommand
+    .command(`${action} <number>`)
+    .description(`${action[0]!.toUpperCase()}${action.slice(1)} a job, by its number in \`mex jobs\``)
+    .action(async (position: string) => {
+      try {
+        const { runJobsAction } = await import("./record/jobs-command.js");
+        runJobsAction(action, position);
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exitCode = 1;
+      }
+    });
+}
+jobsCommand
+  .command("run")
+  .description("Run waiting jobs in this terminal (when the background process is off)")
+  .option("--minutes <n>", "Stop after this many minutes", (value) => Number(value))
+  .action(async (options: { minutes?: number }) => {
+    try {
+      const { runJobsHere } = await import("./record/jobs-command.js");
+      await runJobsHere(options);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+if (process.env.MEX_JOBS_DEMO === "1") {
+  jobsCommand
+    .command("demo", { hidden: true })
+    .description("Queue a demo job for this folder (demos and tests only)")
+    .option("--batches <n>", "Number of batches", (value) => Number(value))
+    .option("--delay <ms>", "Delay per batch", (value) => Number(value))
+    .option("--fail-at <n>", "Fail at this batch (0-based)", (value) => Number(value))
+    .option("--wait-file <path>", "Wait while this file exists")
+    .option("--trace-file <path>", "Append each batch start here")
+    .action(async (options: { batches?: number; delay?: number; failAt?: number; waitFile?: string; traceFile?: string }) => {
+      const { runJobsDemo } = await import("./record/jobs-command.js");
+      runJobsDemo(options);
+    });
+}
+
+program.command("status", { hidden: true })
+  .description("Show agents, notes, background work and model use")
+  .option("--json", "Print the same status as an object")
+  .action(async (options: { json?: boolean }) => {
+    const { runStatus } = await import("./status.js");
+    runStatus(options);
   });
 
 program
   .command("doctor")
-  .description("Run a friendly scaffold health diagnostic")
-  .action(async () => {
+  .description("Show MEX status and fixes for recorded problems")
+  .option("--json", "Print status and problems as an object")
+  .option("--legacy", "Run the 0.8 scaffold diagnostic")
+  .action(async (options: { json?: boolean; legacy?: boolean }) => {
     try {
-      const config = loadConfig();
-      const { runDoctor } = await import("./doctor.js");
-      await runDoctor(config);
+      const { runDoctor, runStatusDoctor } = await import("./doctor.js");
+      if (options.legacy) await runDoctor(loadConfig());
+      else runStatusDoctor(options);
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
@@ -1137,61 +1110,25 @@ program
     }
   });
 
-// ── Layer 3: Targeted Sync ──
+// ── Knowledge freshness ──
 program
   .command("sync")
-  .description("Run drift check, then fix flagged files and review flagged Wiki entities in one interactive AI session")
+  .description("Run the knowledge judge now; use --deep for the interactive AI sync session")
+  .option("--deep", "Run the legacy drift check and interactive AI session")
   .option("--dry-run", "Show what would be synced without executing")
-  .option("--warnings", "Include warning-only files (by default only errors are synced)")
+  .option("--warnings", "With --deep: include warning-only files")
   .action(async (opts) => {
     try {
-      const config = loadConfig();
-      const { runSync } = await import("./sync/index.js");
-      await runSync(config, { dryRun: opts.dryRun, includeWarnings: opts.warnings });
-      maybeShowInvite();
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
-  });
-
-// ── Layer 4: Patterns ──
-const patternCmd = program
-  .command("pattern")
-  .description("Manage pattern files");
-
-patternCmd
-  .command("add <name>")
-  .description("Create a new pattern file and add it to the index")
-  .action(async (name) => {
-    try {
-      const config = loadConfig();
-      const { runPatternAdd } = await import("./pattern/index.js");
-      await runPatternAdd(config, name);
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exitCode = 1;
-      return;
-    }
-  });
-
-// ── Git Hook ──
-program
-  .command("watch")
-  .description("Install/uninstall post-commit hook, or run heartbeat on an interval")
-  .option("--uninstall", "Remove the post-commit hook")
-  .option("--interval [minutes]", "Run mex heartbeat repeatedly instead of installing a hook", (v) => v === undefined ? true : parsePositiveIntArg(v))
-  .action(async (opts) => {
-    try {
-      const config = loadConfig();
-      const { manageHook } = await import("./watch.js");
-      const intervalMinutes = opts.interval === true
-        ? config.watch?.intervalMinutes ?? 30
-        : typeof opts.interval === "number"
-          ? opts.interval
-          : undefined;
-      await manageHook(config, { uninstall: opts.uninstall, intervalMinutes });
+      if (opts.deep) {
+        const { runSync } = await import("./sync/index.js");
+        await runSync(opts.dryRun ? findConfig() : loadConfig(), { dryRun: opts.dryRun, includeWarnings: opts.warnings });
+      } else {
+        if (opts.warnings) throw new Error("Use `mex sync --deep --warnings` to include legacy warning-only files.");
+        const { runJudgeSync } = await import("./judge/sync.js");
+        const job = await runJudgeSync({ projectPath: process.cwd(), dryRun: opts.dryRun });
+        if (job?.state === "failed") process.exitCode = 1;
+      }
+      if (!opts.dryRun) maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
@@ -1200,7 +1137,7 @@ program
   });
 
 program
-  .command("completion <shell>")
+  .command("completion <shell>", { hidden: true })
   .description("Print shell completion script for bash, zsh, or fish")
   .action((shell) => {
     try {
@@ -1220,8 +1157,10 @@ const telemetryCmd = program
     "after",
     "\nOpting out:\n"
       + "  mex telemetry disable   Turn telemetry off for every project (~/.mex/config.json)\n"
+      + "  mex telemetry off       The same opt-out, with a shorter name\n"
       + "  DO_NOT_TRACK=1          Standard cross-tool opt-out, honoured per invocation\n"
       + "  MEX_TELEMETRY=0         mex-specific env opt-out, honoured per invocation\n"
+      + "  MEX_OFFLINE=1           Stop telemetry and update fetching\n"
       + "\nEnvironment variables win over the stored setting. `mex telemetry status`\n"
       + "reports which one is in effect.\n",
   );
@@ -1233,6 +1172,8 @@ function describeTelemetryReason(reason: string | undefined): string {
       return "The DO_NOT_TRACK environment variable is set to 1.";
     case "MEX_TELEMETRY":
       return "The MEX_TELEMETRY environment variable is set to 0.";
+    case "MEX_OFFLINE":
+      return "MEX_OFFLINE=1 stops telemetry and update fetching.";
     case "dev":
       return "This is a mex development checkout; telemetry never runs from one.";
     case "config":
@@ -1261,7 +1202,7 @@ function disableTelemetryWithNotice(): void {
 
 function setTelemetryEnabled(enabled: boolean): void {
   try {
-    if (enabled) setGlobalConfigKey("telemetry", "on");
+    if (enabled) enableTelemetry();
     else disableTelemetryWithNotice();
   } catch (err) {
     console.error((err as Error).message);
@@ -1285,17 +1226,19 @@ function setTelemetryEnabled(enabled: boolean): void {
 
 telemetryCmd
   .command("disable")
+  .alias("off")
   .description("Turn telemetry off for every project (writes ~/.mex/config.json)")
   .action(() => setTelemetryEnabled(false));
 
 telemetryCmd
   .command("enable")
+  .alias("on")
   .description("Turn telemetry back on for every project")
   .action(() => setTelemetryEnabled(true));
 
 telemetryCmd
   .command("inspect")
-  .description("Inspect event examples, privacy fields, and local queue limits (without sending)")
+  .description("Inspect pending and sent usage reports, privacy fields, and limits without sending")
   .action(() => {
     try {
       console.log(JSON.stringify(getTelemetryInspection(), null, 2));
@@ -1313,7 +1256,7 @@ telemetryCmd
     const result = isEnabled();
     if (result.enabled) {
       console.log("Telemetry: enabled");
-      console.log("Turn it off with `mex telemetry disable`, DO_NOT_TRACK=1, or MEX_TELEMETRY=0.");
+      console.log("Turn it off with `mex telemetry off`, DO_NOT_TRACK=1, MEX_TELEMETRY=0, or MEX_OFFLINE=1.");
       return;
     }
     console.log(`Telemetry: disabled (reason: ${result.reason})`);
@@ -1324,21 +1267,61 @@ telemetryCmd
 // ── Config ──
 const configCmd = program
   .command("config")
-  .description("Manage global mex configuration");
+  .description("Manage mex configuration");
 
 configCmd
   .command("set <key> <value>")
-  .description("Set a global config value (e.g. telemetry on|off)")
-  .action((key: string, value: string) => {
+  .description("Set a config value (e.g. learning.statements on|off, telemetry on|off)")
+  .option("--project", "Set delivery.scorer, delivery.surface.<id> or learning.sharing for the registered project")
+  .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
-      if (key === "telemetry") {
+      if (options.project && !["delivery.scorer", "learning.sharing"].includes(key) && !key.startsWith("delivery.surface.")) throw new Error("--project is supported for delivery.scorer, delivery.surface.<id> and learning.sharing.");
+      if (key.startsWith("delivery.surface.")) {
+        const { openRecord } = await import("./record/index.js");
+        const { setDeliverySurface } = await import("./controls/index.js");
+        const writer = openRecord();
+        try { setDeliverySurface(writer, key.slice(17), value, options.project ? process.cwd() : undefined); } finally { writer.close(); }
+        console.log("Delivery surface set to " + value + ".");
+      } else if (key === "learning.sharing") {
+        if (!options.project) throw new Error("Use --project to set learning.sharing for this repository.");
+        if (!["automatic", "manual"].includes(value)) throw new Error("Use automatic or manual for learning.sharing.");
+        const { openRecord } = await import("./record/index.js");
+        const { setLearningSharing } = await import("./controls/index.js");
+        const writer = openRecord();
+        try { setLearningSharing(writer, value, process.cwd()); } finally { writer.close(); }
+        console.log(value === "manual" ? "Learned notes stay personal until mex share." : "Eligible learned notes can reach this shared repository after their diff is shown.");
+      } else if (key === "learning.statements") {
+        if (value !== "on" && value !== "off") throw new Error("Use on or off for learning.statements.");
+        const { openRecord } = await import("./record/index.js");
+        const writer = openRecord({ create: true });
+        try {
+          writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES('global','learning.statements',?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(value);
+        } finally { writer.close(); }
+        console.log(value === "on"
+          ? "MEX now learns lasting statements from what you type, in the background with your agent's smallest model, at most 3% of your usage. Turn off: mex config set learning.statements off"
+          : "MEX no longer learns from what you type. Notes you save with mex note still get their checks.");
+      } else if (key === "delivery.aliases") {
+        const { openRecord } = await import("./record/index.js");
+        const { setDeliveryAliases } = await import("./controls/index.js");
+        if (value !== "on" && value !== "off") throw new Error("Use on or off for delivery.aliases.");
+        const writer = openRecord();
+        try { setDeliveryAliases(writer, value); } finally { writer.close(); }
+        console.log("Typed-prompt ranking " + (value === "on" ? "now uses" : "no longer uses") + " entries' aliases and asks.");
+      } else if (key === "delivery.scorer") {
+        const { openRecord } = await import("./record/index.js");
+        const { setDeliveryScorer } = await import("./controls/index.js");
+        if (!["tiers", "bm25", "fcfs", "risk"].includes(value)) throw new Error("Use tiers, bm25, fcfs or risk for delivery.scorer.");
+        const writer = openRecord();
+        try { setDeliveryScorer(writer, value, options.project ? process.cwd() : undefined); } finally { writer.close(); }
+        console.log("Delivery scorer set to " + value + (options.project ? " for this project." : " for this machine."));
+      } else if (key === "telemetry") {
         if (value !== "on" && value !== "off") {
           console.error(`Invalid value "${value}" for telemetry. Use "on" or "off".`);
           process.exitCode = 1;
           return;
         }
         if (value === "off") disableTelemetryWithNotice();
-        else setGlobalConfigKey("telemetry", "on");
+        else enableTelemetry();
         console.log(`Telemetry set to "${value}" in ~/.mex/config.json`);
       } else if (key === "feedback") {
         if (value !== "on" && value !== "off") {
@@ -1351,7 +1334,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases`);
         process.exitCode = 1;
         return;
       }
@@ -1370,71 +1353,40 @@ program
     runFeedback();
   });
 
-// ── Quick Reference ──
-program
-  .command("commands")
-  .description("List all available commands and scripts")
-  .action(() => {
-    console.log(chalk.bold("\nCLI Commands") + chalk.dim("  (run from project root)\n"));
-    console.log("  mex                    Open the Hub, or terminal setup for a new project");
-    console.log("  mex setup              Set up MEX in the terminal HUD");
-    console.log("  mex setup --browser    Use the browser setup flow");
-    console.log("  mex setup --dry-run    Preview setup without making changes");
-    console.log("  mex skills sync        Install/update official skills for configured agents");
-    console.log("  mex skills sync --dry-run --json  Preview skill and instruction changes as JSON");
-    console.log("  mex capabilities --json  Discover structured agent capabilities");
-    console.log("  mex member list --json  List canonical team members");
-    console.log("  mex member current --json  Show the effective local/Git actor");
-    console.log("  mex member <add|update|deactivate|select> <request.json> --json  Preview an identity change");
-    console.log("  mex activity list --json  Read canonical Activity events");
-    console.log("  mex activity record <request.json> --json  Preview canonical Activity recording");
-    console.log("  mex workstream list --json  List canonical team Workstreams");
-    console.log("  mex workstream <create|update|archive> <request.json> --json  Preview a Workstream change");
-    console.log("  mex inbox contract --action <command-id> --json  Resolve one bounded Inbox action contract");
-    console.log("  mex relay contract --action <command-id> --json  Resolve one bounded Relay action contract");
-    console.log("  mex relay contract --json  Resolve the complete static Relay agent contract");
-    console.log("  mex relay draft <list|show|save|delete> ... --json  Read or preview local Relay drafts");
-    console.log("  mex relay list --json  List canonical team handoffs");
-    console.log("  mex relay <publish|acknowledge|close> <request.json> --json  Preview a Relay transition");
-    console.log("  mex spec list --json  List read-only Wiki-owned Specs");
-    console.log("  mex check              Drift score — are scaffold files still accurate?");
-    console.log("  mex check --quiet      One-liner drift score");
-    console.log("  mex check --json       Full drift report as JSON");
-    console.log("  mex check --fix        Check and fix any errors found");
-    console.log("  mex sync               Fix drift — AI updates only what's broken");
-    console.log("  mex sync --dry-run     Preview fix prompts without running them");
-    console.log("  mex sync --warnings    Include warning-only files in sync");
-    console.log("  mex init               Pre-scan codebase, build brief for AI");
-    console.log("  mex init --json        Scanner brief as JSON");
-    console.log("  mex graph              Build the code knowledge graph into .mex/graph.db");
-    console.log("  mex graph --json       Graph build summary as JSON");
-    console.log("  mex graph scope <task>               Compact task neighborhood as JSONL");
-    console.log("  mex graph get <id...>                Expand source for node ids as JSONL");
-    console.log("  mex graph ground                     Ground an existing pre-0.7 scaffold");
-    console.log("  mex graph compact-fingerprints       Re-encode committed fingerprints as mh2:");
-    console.log("  mex graph query <relation> <target>  Structural lookup as JSONL");
-    console.log("  mex graph repair                     Checkpoint a stranded WAL, verify integrity");
-    console.log("  mex impact <symbol|file>              Blast radius as JSONL");
-    console.log("  mex log <message>      Append a note/decision/risk/todo to the event log");
-    console.log("  mex timeline           Show recent event log entries");
-    console.log("  mex heartbeat          Run lightweight agent-memory health checks");
-    console.log("  mex doctor             Friendly scaffold health summary");
-    console.log("  mex tui                Open the interactive mex dashboard");
-    console.log("  mex hub                Launch the local Project Hub");
-    console.log("  mex hub --no-open      Launch without opening a browser");
-    console.log("  mex pattern add <name> Create a new pattern file");
-    console.log("  mex watch              Install post-commit hook for auto drift score");
-    console.log("  mex watch --interval   Run heartbeat every 30 minutes (or config value)");
-    console.log("  mex watch --uninstall  Remove the post-commit hook");
-    console.log("  mex telemetry disable  Turn telemetry off (or DO_NOT_TRACK=1 / MEX_TELEMETRY=0)");
-    console.log("  mex telemetry inspect  Inspect telemetry events and queue (without sending)");
-    console.log("  mex telemetry status   Show telemetry enabled/disabled and reason");
-    console.log("  mex config set <k> <v> Set a global config value (e.g. telemetry off)");
-    console.log("  mex feedback           Open the feedback form (the maintainer does user calls)");
-    console.log();
-    console.log(chalk.dim("Not installed globally? Replace 'mex' with 'npx mex-agent'."));
-    console.log();
-  });
+// Commander 13 has no help groups. Order its visible command projection as a short manual.
+const publicRank = (name: string) => {
+  const rank = (PUBLIC_COMMAND_ORDER as readonly string[]).indexOf(name);
+  return rank < 0 ? PUBLIC_COMMAND_ORDER.length : rank;
+};
+const visibleCommands = program.createHelp().visibleCommands;
+program.configureHelp({
+  visibleCommands(command) {
+    const commands = visibleCommands.call(this, command);
+    return command === program ? commands.sort((a, b) => publicRank(a.name()) - publicRank(b.name())) : commands;
+  },
+});
+const publicDescriptions: Record<string, string> = {
+  install: "Install hooks for Claude Code and Codex on this machine",
+  uninstall: "Restore agent settings; keep notes unless --purge is given",
+  note: "Save a personal note and why it matters",
+  recall: "Find a note by words, without a model call",
+  expand: "Read a note, its source and its checks",
+  edit: "Correct a note; preview changes to team entries",
+  wrong: "Retire an incorrect note and keep the reason",
+  forget: "Remove a note from future sessions",
+  check: "Check which notes still hold against the code",
+  review: "Review learned notes before sharing them",
+  share: "Share notes and rule files through a reviewed git branch",
+  rules: "Read agent rule files and show lines that need review",
+  handoff: "Leave a branch handoff for a teammate",
+  upgrade: "Preview the upgrade from 0.8; apply after review",
+  what: "Show what MEX gave or held back this session",
+  brief: "Preview what a new session will receive",
+  config: "Change MEX settings",
+  telemetry: "Inspect anonymous usage counts or turn them off",
+  feedback: "Open the feedback form",
+};
+for (const command of program.commands) if (publicDescriptions[command.name()]) command.description(publicDescriptions[command.name()]);
 
 // Skip auto-parse when imported (e.g. by tests). The bin entry is built by
 // tsup as ./dist/cli.js with a shebang banner; only run program.parseAsync()
@@ -1455,31 +1407,32 @@ if (process.argv[1]) {
 }
 // Refuse unsupported Node before any command runs, so it cannot fail halfway.
 export function runCli(): void {
+  cliStarted = true;
   const unsupportedNode = unsupportedNodeMessage(process.versions.node);
   if (unsupportedNode !== null) {
     console.error(unsupportedNode);
     process.exitCode = 1;
   } else {
-    if (!isFirstRunNoticeExemptCommand(process.argv[2])) showFirstRunNotice();
+    const removed = removedCommandMessage(process.argv.slice(2));
+    if (removed !== null) {
+      console.error(removed);
+      process.exitCode = 1;
+      return;
+    }
     const commandArgv = process.argv.slice(2);
     const teamJsonContext = inspectTeamJsonInvocation(commandArgv);
-    const skillsSyncJsonInvocation = isSkillsSyncJsonInvocation(commandArgv);
     if (teamJsonContext !== null && hasMissingTeamApplyValue(commandArgv)) {
       emitTeamJsonParseProblem(teamJsonContext);
     } else if (isInvalidCapabilitiesJsonInvocation(commandArgv)) {
       console.log(JSON.stringify(capabilitiesInvalidRequestEnvelope()));
       process.exitCode = 2;
     } else {
-      if (teamJsonContext !== null || skillsSyncJsonInvocation) {
+      if (teamJsonContext !== null) {
         configureTeamJsonParseErrors(program);
       }
       program.parseAsync().catch((err: Error) => {
         if (teamJsonContext !== null) {
           emitTeamJsonParseProblem(teamJsonContext);
-          return;
-        }
-        if (skillsSyncJsonInvocation) {
-          emitSkillsSyncJsonParseProblem();
           return;
         }
         console.error(err.message);
@@ -1608,26 +1561,6 @@ function configureTeamJsonParseErrors(root: Command): void {
   visit(root);
 }
 
-function isSkillsSyncJsonInvocation(argv: readonly string[]): boolean {
-  return argv[0] === "skills"
-    && argv[1] === "sync"
-    && argv.includes("--json")
-    && !argv.includes("--help")
-    && !argv.includes("-h");
-}
-
-function emitSkillsSyncJsonParseProblem(): void {
-  console.log(JSON.stringify({
-    schemaVersion: 1,
-    ok: false,
-    error: {
-      code: "SKILL_SYNC_FAILED",
-      message: "The skills sync arguments are invalid. Review mex skills sync --help and retry.",
-    },
-  }));
-  process.exitCode = 2;
-}
-
 function hasMissingTeamApplyValue(argv: readonly string[]): boolean {
   return argv.some((value, index) => (
     value === "--apply"
@@ -1654,11 +1587,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 }
 
 function buildCompletion(shell: string): string {
-  const commands = [
-    "setup", "skills", "capabilities", "member", "activity", "workstream", "inbox", "relay", "spec", "check", "init", "graph", "wiki", "impact", "sync", "pattern", "log", "timeline",
-    "heartbeat", "doctor", "watch", "tui", "commands", "completion",
-    "telemetry", "config", "feedback", "hub",
-  ];
+  const commands = [...PUBLIC_COMMAND_ORDER];
   if (shell === "bash") {
     return `_mex_completion() {
   COMPREPLY=($(compgen -W "${commands.join(" ")}" -- "\${COMP_WORDS[COMP_CWORD]}"))

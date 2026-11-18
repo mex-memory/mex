@@ -92,73 +92,57 @@ describe("CLI smoke test against a fixture scaffold", { timeout: testTimeoutMs }
     expect(result.stdout.trim()).toBe(pkg.version);
   });
 
-  it("timeline renders a logged event end to end", () => {
+  it("check --legacy reports a healthy scaffold with exit code 0", () => {
     const root = project();
     scaffold(root);
 
-    const logged = mex(root, ["log", "smoke: chose the bounded resolver", "--type", "decision"]);
-    expect(logged.status).toBe(0);
-    expect(logged.stdout).toContain("Logged decision: smoke: chose the bounded resolver");
-
-    const timeline = mex(root, ["timeline"]);
-    expect(timeline.status).toBe(0);
-    expect(timeline.stdout).toContain("smoke: chose the bounded resolver");
-
-    const jsonTimeline = mex(root, ["timeline", "--json"]);
-    expect(jsonTimeline.status).toBe(0);
-    const asJson = JSON.parse(jsonTimeline.stdout) as {
-      events: Array<{ kind: string; message: string }>;
-    };
-    expect(asJson.events).toEqual([
-      expect.objectContaining({ kind: "decision", message: "smoke: chose the bounded resolver" }),
-    ]);
-  });
-
-  it("check reports a healthy scaffold with exit code 0", () => {
-    const root = project();
-    scaffold(root);
-
-    const result = mex(root, ["check"]);
+    const result = mex(root, ["check", "--legacy"]);
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("100/100");
   });
 
-  it("check --json emits a parseable report with the expected shape", () => {
+  it("check with no entries says so and points an old scaffold at --legacy", () => {
     const root = project();
     scaffold(root);
 
-    const result = mex(root, ["check", "--json"]);
+    const result = mex(root, ["check"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("No knowledge entries here yet.");
+    expect(result.stdout).toContain("mex check --legacy");
+  });
+
+  it("check --legacy --json emits a parseable report with the expected shape", () => {
+    const root = project();
+    scaffold(root);
+
+    const result = mex(root, ["check", "--legacy", "--json"]);
     expect(result.status).toBe(0);
     const report = JSON.parse(result.stdout) as { score?: number; issues?: unknown[] };
     expect(report.score).toBe(100);
     expect(Array.isArray(report.issues)).toBe(true);
   });
 
-  it("heartbeat runs clean on the fixture", () => {
-    const root = project();
-    scaffold(root);
-
-    const result = mex(root, ["heartbeat"]);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("HEARTBEAT_OK");
-  });
 
   it("doctor summarizes scaffold health without crashing", () => {
     const root = project();
     scaffold(root);
 
-    const result = mex(root, ["doctor"]);
+    // The 0.8 scaffold check lives behind --legacy; plain doctor shows 0.9 health.
+    const result = mex(root, ["doctor", "--legacy"]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("mex doctor");
     expect(result.stdout).toContain("Drift");
+    const current = mex(root, ["doctor"]);
+    expect(current.stdout).toContain("Agents");
+    expect(current.stderr).not.toMatch(/Error|heartbeat/u);
   });
 
   it("help lists the top-level commands the docs promise", () => {
     const root = project();
     const result = mex(root, ["--help"]);
     expect(result.status).toBe(0);
-    for (const command of ["check", "doctor", "timeline", "log", "heartbeat", "graph"]) {
+    for (const command of ["check", "doctor", "note", "recall", "share"]) {
       expect(result.stdout).toContain(command);
     }
   });

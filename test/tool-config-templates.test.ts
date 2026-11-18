@@ -91,8 +91,8 @@ describe("shipped code-graph agent guidance", () => {
 
     const claude = readText("templates/.tool-configs/CLAUDE.md");
     expect(claude).toContain(renderManagedInstructionBlock("claude"));
-    expect(claude).toContain("/mex-inbox");
-    expect(claude).not.toContain("$mex-inbox");
+    expect(claude).toContain("/mex-statechart");
+    expect(claude).not.toContain("$mex-statechart");
     expect(claude).not.toContain(supersededBlanketApprovalGuidance);
   });
 
@@ -127,11 +127,26 @@ describe("shipped code-graph agent guidance", () => {
     }
   });
 
-  it("keeps root dogfood instructions minimal and client-specific", () => {
+  it("keeps identical build notes and client-specific managed instructions", () => {
+    const buildNote = [
+      "> **0.9 build (`next`)**",
+      "> This branch is the 0.9 rebuild; `main` stays on 0.8 for fixes.",
+      "> Tickets, plan and procedure are in the private mex-design repo:",
+      "> oss/0.9/, starting from AGENT.md.",
+      "> During this build, skip 0.8 ROUTER/GROW knowledge upkeep, `mex wiki query`,",
+      "> `mex logging`, `mex timeline`, and the Inbox and Relay skills.",
+      "> Use the existing instruction files for build and test commands only.",
+      "",
+      "",
+    ].join("\n");
     expect(readText("CLAUDE.md"))
-      .toBe(`${renderManagedInstructionBlock("claude")}\n`);
+      .toBe(`${buildNote}${renderManagedInstructionBlock("claude")}\n`);
     expect(readText("AGENTS.md"))
-      .toBe(`${renderManagedInstructionBlock("codex")}\n`);
+      .toBe(`${buildNote}${renderManagedInstructionBlock("codex")}\n`);
+    expect(readText(".mex/AGENTS.md"))
+      .toMatch(/^---\n[\s\S]*?\n---\n\n/u);
+    const body = readText(".mex/AGENTS.md").replace(/^---\n[\s\S]*?\n---\n\n/u, "");
+    expect(body.slice(0, buildNote.length)).toBe(buildNote);
   });
 
   it("passes tool-config-sync after installation", () => {

@@ -21,6 +21,7 @@ import {
 
 let root: string;
 let engine: GraphEngine;
+let db: ReturnType<typeof openSqlite>;
 let deps: AgentCommandDeps;
 let lines: string[];
 
@@ -89,11 +90,12 @@ beforeAll(async () => {
   );
   engine = createGraphEngine({ rootDir: root });
   await engine.build(root);
-  const db = openSqlite(join(root, ".mex", "graph.db"));
+  db = openSqlite(join(root, ".mex", "graph.db"));
   deps = { open: () => ({ graph: engine, db, close: () => {} }), write: (line) => lines.push(line) };
 });
 
 afterAll(() => {
+  db.close();
   engine.close();
   rmSync(root, { recursive: true, force: true });
 });

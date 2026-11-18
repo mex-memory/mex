@@ -1,4 +1,5 @@
 import { defineConfig, configDefaults } from "vitest/config";
+import CISequencer from "./scripts/ci/sequencer.mjs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +14,9 @@ export default defineConfig({
     },
   },
   test: {
+    globalSetup: ["./test/harness/temp-root.ts"],
+    setupFiles: ["./test/harness/runner-yield.ts"],
+    runner: "./test/harness/acknowledged-runner.ts",
     // `.demo/` is a reference clone of the grad-capital demo (code-graph port
     // source, spec §0). It is gitignored and its own tests depend on packages we
     // don't install (`mex-engine-cg`), so exclude it from our suite — we port
@@ -25,6 +29,12 @@ export default defineConfig({
       "evaluate/compare/test/**",
       "evaluate/graph/test/**",
       "scripts/benchmark-telemetry.test.js",
+      // Gate harness tests use node:test and run separately via gates:test.
+      "scripts/gates/test/**",
+      "scripts/ci/*.test.mjs",
+      "scripts/release/*.test.mjs",
+      // These run through node:test in the package CI job and Windows workflow.
+      "scripts/acceptance/*.test.mjs",
       // The Hub web workspace supplies its own jsdom/CSS configuration and the
       // browser suite is collected by Playwright, not the root Node test run.
       "packages/hub-web/**",
@@ -43,11 +53,13 @@ export default defineConfig({
     env: {
       MEX_TELEMETRY: "0",
       MEX_SETUP_BACKGROUND_AGENTS: "0",
+      MEX_INSTALL_AUTO: "0",
     },
     // The root suite opens many independent immutable SQLite snapshots. Keep
     // cross-file concurrency below the platform resource cliff so a busy test
     // runner cannot turn a valid index into a transient CANTOPEN/corrupt read.
     maxWorkers: 4,
+    sequence: { sequencer: CISequencer },
     // Real Graph/Wiki/Hub integration scenarios build bounded repositories and
     // databases. This is a hang guard, not a performance budget; numeric timing
     // enforcement belongs to benchmark:release on the pinned runner.

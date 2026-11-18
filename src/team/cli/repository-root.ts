@@ -1,3 +1,4 @@
+import { gitDiscoveryCeilingReached } from "../../repository-discovery.js";
 import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { MexPortError } from "../contracts/shared.js";
@@ -38,7 +39,7 @@ export function locateTeamRepositoryRoot(startDir = process.cwd()): string {
     }
 
     const parent = dirname(current);
-    if (parent === current) break;
+    if (parent === current || gitDiscoveryCeilingReached(parent)) break;
     current = parent;
   }
 

@@ -48,7 +48,7 @@
         "routes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "workstreams", "specs", "specsDetail", "playbooks", "catchUp", "inbox", "relays", "members", "activity", "jobs", "health", "notFound"],
+          "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "playbooks", "catchUp", "relays", "members", "activity", "jobs", "health", "notFound"],
           "properties": {
             "home": { "$ref": "#/$defs/assetGroup" },
             "search": { "$ref": "#/$defs/assetGroup" },
@@ -56,14 +56,10 @@
             "knowledgeDetail": { "$ref": "#/$defs/assetGroup" },
             "code": { "$ref": "#/$defs/assetGroup" },
             "codeSymbol": { "$ref": "#/$defs/assetGroup" },
-            "workstreams": { "$ref": "#/$defs/assetGroup" },
             "diagrams": { "$ref": "#/$defs/assetGroup" },
             "diagramDetail": { "$ref": "#/$defs/assetGroup" },
-            "specs": { "$ref": "#/$defs/assetGroup" },
-            "specsDetail": { "$ref": "#/$defs/assetGroup" },
             "playbooks": { "$ref": "#/$defs/assetGroup" },
             "catchUp": { "$ref": "#/$defs/assetGroup" },
-            "inbox": { "$ref": "#/$defs/assetGroup" },
             "relays": { "$ref": "#/$defs/assetGroup" },
             "members": { "$ref": "#/$defs/assetGroup" },
             "activity": { "$ref": "#/$defs/assetGroup" },
@@ -123,8 +119,6 @@
         "code": { "$ref": "#/$defs/nonNegativeNumber" },
         "knowledge": { "$ref": "#/$defs/nonNegativeNumber" },
         "activity": { "$ref": "#/$defs/nonNegativeNumber" },
-        "inboxDrafts": { "$ref": "#/$defs/nonNegativeNumber" },
-        "inboxProposals": { "$ref": "#/$defs/nonNegativeNumber" },
         "relayDrafts": { "$ref": "#/$defs/nonNegativeNumber" },
         "relays": { "$ref": "#/$defs/nonNegativeNumber" }
       }
@@ -163,7 +157,7 @@
     "routeBudgets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "workstreams", "specs", "specsDetail", "playbooks", "catchUp", "inbox", "relays", "members", "activity", "jobs", "health", "notFound"],
+      "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "playbooks", "catchUp", "relays", "members", "activity", "jobs", "health", "notFound"],
       "properties": {
         "home": { "$ref": "#/$defs/nonNegativeNumber" },
         "search": { "$ref": "#/$defs/nonNegativeNumber" },
@@ -171,14 +165,10 @@
         "knowledgeDetail": { "$ref": "#/$defs/nonNegativeNumber" },
         "code": { "$ref": "#/$defs/nonNegativeNumber" },
         "codeSymbol": { "$ref": "#/$defs/nonNegativeNumber" },
-        "workstreams": { "$ref": "#/$defs/nonNegativeNumber" },
         "diagrams": { "$ref": "#/$defs/nonNegativeNumber" },
         "diagramDetail": { "$ref": "#/$defs/nonNegativeNumber" },
-        "specs": { "$ref": "#/$defs/nonNegativeNumber" },
-        "specsDetail": { "$ref": "#/$defs/nonNegativeNumber" },
         "playbooks": { "$ref": "#/$defs/nonNegativeNumber" },
         "catchUp": { "$ref": "#/$defs/nonNegativeNumber" },
-        "inbox": { "$ref": "#/$defs/nonNegativeNumber" },
         "relays": { "$ref": "#/$defs/nonNegativeNumber" },
         "members": { "$ref": "#/$defs/nonNegativeNumber" },
         "activity": { "$ref": "#/$defs/nonNegativeNumber" },

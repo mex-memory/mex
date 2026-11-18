@@ -30,11 +30,8 @@ describe("Project Hub routes", () => {
     ["/search", "Search"],
     ["/knowledge", "Context"],
     ["/code", "Code"],
-    ["/workstreams", "Workstreams"],
-    ["/specs", "Specs"],
     ["/playbooks", "Playbooks"],
     ["/catch-up", "Catch Up"],
-    ["/inbox", "Inbox"],
     ["/relays", "Relays"],
     ["/members", "Members"],
     ["/activity", "Activity"],
@@ -71,7 +68,6 @@ describe("Project Hub routes", () => {
       "Context",
       "Code",
       "Diagrams",
-      "Inbox",
       "Relays",
       "Activity",
       "Team",
@@ -451,7 +447,7 @@ describe("Project Hub routes", () => {
 
     expect(screen.getByRole("link", { name: "Activity" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Team" })).toHaveAttribute("href", "/members");
-    expect(screen.getByRole("link", { name: /^Inbox/u })).toHaveAttribute("href", "/inbox");
+    expect(screen.queryByRole("link", { name: /^Inbox/u })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /^Relays/u })).toHaveAttribute("href", "/relays");
     expect(screen.queryByRole("region", { name: "Project sections" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Recent jobs" })).not.toBeInTheDocument();

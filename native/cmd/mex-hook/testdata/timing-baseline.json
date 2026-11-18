@@ -1,0 +1,55 @@
+{
+  "source": "https://github.com/mex-memory/mex/actions/runs/43538122415",
+  "rule": "Report mode fails when the shim's p50 overhead over a bare process (p50 minus bare p50) exceeds max(2 x the overhead recorded here, the overhead recorded here + 3 ms, 5 ms). The strict 17 ms p95 rule is always logged, and the release gate enforces it unchanged.",
+  "update": "Re-record from a green push to next when the shim's work changes on purpose, and say why in the commit.",
+  "platforms": {
+    "linux": {
+      "false": {
+        "p50_ms": 1.82,
+        "p95_ms": 1.92,
+        "max_ms": 2.09,
+        "bare_p50_ms": 0.8,
+        "bare_p95_ms": 0.87
+      },
+      "true": {
+        "p50_ms": 2.76,
+        "p95_ms": 2.98,
+        "max_ms": 3.07,
+        "bare_p50_ms": 0.82,
+        "bare_p95_ms": 0.89
+      }
+    },
+    "windows": {
+      "false": {
+        "p50_ms": 10.47,
+        "p95_ms": 13.03,
+        "max_ms": 17.42,
+        "bare_p50_ms": 7.49,
+        "bare_p95_ms": 8.23
+      },
+      "true": {
+        "p50_ms": 15.69,
+        "p95_ms": 18.9,
+        "max_ms": 20.64,
+        "bare_p50_ms": 7.38,
+        "bare_p95_ms": 9.02
+      }
+    },
+    "darwin": {
+      "false": {
+        "p50_ms": 7.16,
+        "p95_ms": 12.39,
+        "max_ms": 49.1,
+        "bare_p50_ms": 5.24,
+        "bare_p95_ms": 11.16
+      },
+      "true": {
+        "p50_ms": 6.53,
+        "p95_ms": 10.65,
+        "max_ms": 34.47,
+        "bare_p50_ms": 3.49,
+        "bare_p95_ms": 5.65
+      }
+    }
+  }
+}

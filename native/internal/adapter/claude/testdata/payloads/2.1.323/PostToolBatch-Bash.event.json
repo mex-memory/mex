@@ -1,0 +1,25 @@
+{
+  "agent": "claude-code",
+  "agent_version": "",
+  "kind": "post_tool_batch",
+  "session_id": "3786cc60-44f2-452f-a595-f9db31303cdf",
+  "agent_id": "",
+  "cwd": "C:\\mex-test-tmp\\f03\\live\\repo",
+  "project_id": "",
+  "checkout": "",
+  "batch": [
+    {
+      "name": "shell",
+      "raw_name": "Bash",
+      "input": {
+        "command": "ls -la \"/c/Program Files/Git/compact\" 2\u003e\u00261; echo \"---\"; ls -la \"/c/Program Files/Git\" 2\u003e\u00261 | head -30"
+      },
+      "output": {
+        "text": "This Bash command contains multiple operations. The following part requires approval: ls -la \"/c/Program Files/Git/compact\" 2\u003e\u00261; echo \"---\"; ls -la \"/c/Program Files/Git\" 2\u003e\u00261",
+        "ok": true
+      }
+    }
+  ],
+  "transcript": "C:\\Users\\person\\.claude\\projects\\C--mex-test-tmp-f03-live-repo\\3786cc60-44f2-452f-a595-f9db31303cdf.jsonl",
+  "background": false
+}

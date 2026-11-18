@@ -1,4 +1,0 @@
-interface:
-  display_name: "MEX Relay"
-  short_description: "Prepare durable MEX team handoffs"
-  default_prompt: "Use $mex-relay to prepare a durable handoff for the next engineer."

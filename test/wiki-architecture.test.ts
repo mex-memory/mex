@@ -342,6 +342,10 @@ const GRAPH_IMPORT_ALLOWANCES: ReadonlyArray<{ file: string | null; allows: stri
   { file: null, allows: "src/graph/grounding" },
   { file: "src/wiki/query/budget.ts", allows: "src/graph/agent-protocol" },
   { file: "src/wiki/grounding/baseline.ts", allows: "src/graph/fingerprint-store" },
+  // Comparing authored bytes is not a Graph read. The upgrade reader must
+  // retain the Markdown decoder without loading the adapter's stores. Its
+  // recursive legacy-boundary test additionally pins this pure codec closure.
+  { file: "src/wiki/markdown/grounding-stores.ts", allows: "src/graph/fingerprint.js" },
 ];
 
 export function findGraphSeamViolations(path: string, source: string): string[] {
@@ -423,6 +427,14 @@ function allTypeScriptFiles(): string[] {
  * and no event accepts query text, paths, artifact IDs, or arbitrary properties.
  */
 const TELEMETRY_COMPOSITION_ROOTS = ["src/cli.ts", "src/hub/command.ts"];
+// The machine worker and its existing writer use the counter/reporting layers;
+// neither accepts Wiki arguments. The update notice is a separate bounded
+// network operation at the bare interactive CLI entry point.
+const TELEMETRY_INFRASTRUCTURE_IMPORTS: Readonly<Record<string, string>> = {
+  "src/cli.ts": "src/telemetry/updates.js",
+  "src/record/background.ts": "src/telemetry/reporting.js",
+  "src/record/jobs.ts": "src/telemetry/store.js",
+};
 
 function findTelemetryLeaks(path: string, source: string): string[] {
   if (path.startsWith("src/telemetry/")) return [];
@@ -431,6 +443,7 @@ function findTelemetryLeaks(path: string, source: string): string[] {
   for (const specifier of importSpecifiers(code)) {
     const resolved = resolveSpecifier(path, specifier);
     if (!resolved.startsWith("src/telemetry/") || resolved === "src/telemetry/schema.js") continue;
+    if (TELEMETRY_INFRASTRUCTURE_IMPORTS[path] === resolved) continue;
     if (resolved !== "src/telemetry/index.js" || !TELEMETRY_COMPOSITION_ROOTS.includes(path)) {
       violations.push(`${path} imports ${resolved}; telemetry must use the CLI/Hub projection`);
     }
@@ -462,6 +475,10 @@ describe("telemetry keeps Wiki arguments behind the shared projection", () => {
       'import { captureEvent as send } from "../../telemetry/index.js";')).toHaveLength(1);
     expect(findTelemetryLeaks("src/cli.ts",
       'import { sendBatch } from "./telemetry/transport.js";')).toHaveLength(1);
+    expect(findTelemetryLeaks("src/wiki/cli/query.ts",
+      'import { recordCounterIn } from "../../telemetry/store.js";')).toHaveLength(1);
+    expect(findTelemetryLeaks("src/record/jobs.ts",
+      'import { sendBatch } from "../telemetry/transport.js";')).toHaveLength(1);
     expect(findTelemetryLeaks("src/wiki/query/query.ts",
       'export { captureEvent } from "../../telemetry/index.js";')).toHaveLength(1);
     expect(findTelemetryLeaks("src/cli.ts",
@@ -602,6 +619,15 @@ describe("one door onto the code graph", () => {
     ).toHaveLength(1);
     expect(
       findGraphSeamViolations("src/wiki/grounding/resolve.ts", 'import { FingerprintStore } from "../../graph/fingerprint-store.js";'),
+    ).toHaveLength(1);
+    expect(
+      findGraphSeamViolations("src/wiki/markdown/grounding-stores.ts", 'import { sameFingerprint } from "../../graph/fingerprint.js";'),
+    ).toEqual([]);
+    expect(
+      findGraphSeamViolations("src/wiki/markdown/grounding-stores.ts", 'import { GraphStore } from "../../graph/db/store.js";'),
+    ).toHaveLength(1);
+    expect(
+      findGraphSeamViolations("src/wiki/query/for-code.ts", 'import { sameFingerprint } from "../../graph/fingerprint.js";'),
     ).toHaveLength(1);
   });
 
@@ -755,13 +781,8 @@ describe("no unscoped scaffold writes", () => {
     // Every other rule in this file is scoped to `src/wiki/`, so before this
     // one nothing in `src/` was watching at all.
     //
-    // The inventory detector is deliberately broader than the call-shape ban
-    // above: `src/export.ts` writes through file descriptors (`wx`-exclusive
-    // create, marker-verified overwrite) precisely so no `writeFileSync` call
-    // shape exists to match. A writer the inventory cannot see is worse than
-    // a longer pattern, so fd-based mutations are pinned here. The guarded
-    // rules keep the narrow shape on purpose: broadening them would demand
-    // textual guard counts the wiki modules do not have.
+    // Include fd-based mutations as well as path-based writes, so changing
+    // the I/O API cannot make a writer disappear from this inventory.
     const FD_WRITE_CALLS = /\b(writeSync|ftruncateSync)\s*\(/g;
     const KNOWN: Readonly<Record<string, string>> = {
       "src/agent-prompt.ts": "writes and removes one private prompt file for an oversized agent brief (interactive setup, sync)",
@@ -774,12 +795,41 @@ describe("no unscoped scaffold writes", () => {
       "src/graph/phase-timing.ts": "appends diagnostic phase timings only to the MEX_GRAPH_PHASE_TIMINGS target: the operator-named file, or the checkout-local .mex/local default for bare flag values",
       "src/graph/maintenance.ts": "publishes and recovers the disposable graph index under its maintenance lease",
       "src/graph/runtime.ts": "edits existing .mex Markdown; bypasses the pipeline (recorded D9 exception)",
+      "src/hooks/shim/launcher.ts": "writes only the hook launcher file under the machine MEX home bin folder, and only when that home exists; never a repo file",
+      "src/install/files.ts": "atomically restores or installs only recorded, byte-rechecked regular settings/runtime files; tracked settings and redirected paths are refused",
+      "src/install/index.ts": "purges only the resolved machine record/home trees after settings restoration, stopped-background checks and a complete link/junction inspection; never Wiki content",
       "src/hub/setup/commit.ts": "manages temporary and preserved Git indexes for explicit revision-reviewed setup commits; never edits Wiki content",
       "src/config.ts": "writes config.json",
       "src/global-config.ts": "writes the global config and telemetry id",
       "src/events.ts": "appends to events/decisions.jsonl",
-      "src/export.ts": "writes one export bundle to a user-specified path — a brand-new file (wx-exclusive) or a marker-verified previous bundle, never scaffold bytes",
-      "src/pattern/index.ts": "creates a new pattern file from a template",
+      "src/knowledge/files.ts": "publishes and replaces bounded personal notes and hints through exclusive staging, revision checks and contained local publication under the MEX project-data home; never edits a repository file",
+      "src/knowledge/personal-store.ts": "copies and swaps only the bounded personal notes directory under the contained MEX project-data home; recovers through a writer-locked receipt and removes only proved flat saved copies; never a repository file",
+      "src/review/daily-receipt.ts": "claims one private UTC-day receipt per project in existing local record storage; prunes only bounded, proved regular receipts; never writes repository files or opens a record writer",
+      "src/knowledge/native-write.ts": "writes and removes only MEX-generated agent rule files (marked generated, hash-checked against its manifest, never a person's file or CLAUDE.md), its .mex/native.json manifest, and its own block in git's exclude file",
+      "src/knowledge/native-pending.ts": "removes only the hook's bounded rule-file rebuild requests under the record directory's native-pending folder after queueing them; never a repository file",
+      "src/repo-start/refresh.ts": "removes only the hook's bounded refresh requests under the record directory's refresh-pending folder and writes empty per-checkout stamp files under refresh-stamps; never a repository file",
+      "src/knowledge/share.ts": "writes team entries, .mex/config.json, .mex/sources.json and rule files only inside its own temporary share worktree, and on discard deletes only the files it wrote there; never your branch or working tree",
+      "src/knowledge/share-state.ts": "writes and removes only the share.json progress record under the MEX project-data home",
+      "src/knowledge/rule-cache.ts": "writes only the derived rule-file scan (rule-files.json) under the MEX project-data home; never a repository file",
+      "src/knowledge/enrich.ts": "writes and removes only its own enrich-preview.json under the MEX project-data home; entry changes go through files.ts and the team write path",
+      "src/knowledge/decisions.ts": "writes only the decisions-in-force.json mirror under the MEX home and the decision-commits note under the record directory, atomically; never an entry or repository file",
+      "src/knowledge/handoff.ts": "writes or deletes only .mex/handoffs/<branch>.md in the working tree, after a shown preview (mex handoff) or an explicit mex handoff done; refuses redirected folders and files, stages through an exclusive temporary file, and never commits or pushes",
+      "src/knowledge/hints.ts": "removes only disposable hint copies under the MEX project-data home after durable retirement or personal confirmation; refuses overlap with host memory and never writes host or repository files",
+      "src/file-index/pending.ts": "removes and restores only the index-pending marker in the machine record directory; never a repo file",
+      "src/judge/pending.ts": "consumes and restores bounded judge requests inside a checked machine-record directory after verifying checkout ownership; never an entry or repo file",
+      "src/judge/notices.ts": "atomically publishes only bounded notice-ID hints inside the contained machine-record judge-notices directory; never entry text or a repository file",
+      "src/judge/advice.ts": "atomically publishes only bounded advisory-ID hints inside the contained machine-record judge-advice directory; stores advisory text in record.db and never changes repository files",
+      "src/file-index/shifts.ts": "writes and removes only line-shift files under the machine record's project index folder; never a repo file",
+      "src/working-set/job.ts": "removes and restores only the working-set-pending marker and request files in the machine record directory; never a repo file",
+      "src/file-index/store.ts": "writes only immutable index snapshots, their pointers, patterns.json and checkout locators under the machine record directory, and removes snapshots nothing points at; never a repo file",
+      "src/record/background.ts": "writes only the background process's own log, the jobs-pending marker and the lease row in the machine record home; never a repo file",
+      "src/record/hook-checkouts.ts": "writes and removes only the hook checkout mirrors under the machine record directory; never a repo file",
+      "src/record/job-kinds.ts": "appends only to the trace file a demo job is given (demo and test runs); never a repo file",
+      "src/record/location.ts": "publishes only the machine record location pointer and creates machine/project data directories; never Wiki Markdown",
+      "src/repo-start/exclude.ts": "writes only MEX's own named, journaled blocks in a repository's git info/exclude file, atomically, and restores them on uninstall; never a tracked file",
+      "src/repo-start/folder.ts": "creates only .mex/project.json (and the .mex folder when absent) in a folder without git that the person turned on, journaled, and removes exactly that on uninstall; never overwrites an existing marker",
+      "src/repo-start/offers.ts": "writes only the file MEX_TEST_FAKE_OFFER names, for the test-only fake offer; never a repo file",
+      "src/repo-start/facts.ts": "atomically writes only the derived setup facts files (setup.json, recipes.json, code-facts.json) under the machine record's project folder; never a repo file",
       "src/setup/anchor.ts": "edits root tool configs only, never .mex/, and only inside its own markers",
       "src/setup/global-install.ts": "removes only the private temporary npm working directory after the owned global installation finishes",
       "src/setup/headless-population.ts": "creates and removes only its own byte-exact Cursor permission file while background sessions run; never a user's file",
@@ -798,7 +848,9 @@ describe("no unscoped scaffold writes", () => {
       "src/team/artifacts/filesystem.ts": "atomically publishes bounded team-owned canonical artifacts",
       "src/team/local-state/receipt-signer.ts": "atomically provisions the bounded local-only C preview signing credential",
       "src/team/relay/cli/local-preview.ts": "removes only the exact contained checkout-local Relay receipt after successful apply",
-      "src/watch.ts": "installs and removes git hooks",
+      "src/telemetry/store.ts": "writes only the empty jobs-pending marker in the machine record home; never a project file",
+      "src/upgrade/run.ts": "writes its exact approved upgrade journal/receipt and personal imports in machine state; unlinks only previewed disposable Wiki caches after hash checks; tracked publication stays in its owned temporary worktree",
+      "src/upgrade/safe-files.ts": "applies only byte-rechecked preview outputs through contained atomic publication; deletes only exact approved obsolete files, with no recursive removal",
     };
 
     const outside = FILES.filter((path) => !path.startsWith("src/wiki/"));
@@ -823,6 +875,29 @@ describe("no unscoped scaffold writes", () => {
     expect([...candidateEntry.matchAll(WRITE_CALLS)]).toHaveLength(0);
     expect([...candidateEntry.matchAll(FD_WRITE_CALLS)]).toHaveLength(1);
     expect(candidateEntry).toMatch(/\bwriteSync\s*\(\s*2\s*,/);
+
+    // This global metadata writer has one exclusive pointer publication and
+    // one contained project-directory rename, not
+    // an exemption to edit scaffold content or add other filesystem writers.
+    const recordLocation = withoutComments(read("src/record/location.ts"));
+    expect([...recordLocation.matchAll(WRITE_CALLS)]).toHaveLength(2);
+    expect(recordLocation).toMatch(/\bwriteFileSync\s*\(\s*pointer\s*,/);
+    expect(recordLocation).toContain('join(home, "location")');
+    expect(recordLocation).toContain('flag: "wx"');
+    expect([...recordLocation.matchAll(/\brenameSync\s*\(/g)]).toHaveLength(1);
+    expect(recordLocation).toContain("renameSync(source, target)");
+    expect(recordLocation).toContain("source = projectDataPath(location, oldId)");
+    expect(recordLocation).toContain("target = projectDataPath(location, newId)");
+    expect(recordLocation).toContain("realPath(parent) !== absolutePath(parent)");
+    expect(recordLocation).not.toMatch(/["'`][^"'`\r\n]*\.md(?:["'`/])/);
+
+    const judgeNotices = withoutComments(read("src/judge/notices.ts"));
+    expect([...judgeNotices.matchAll(WRITE_CALLS)]).toHaveLength(3);
+    expect([...judgeNotices.matchAll(/\bwriteFileSync\s*\(/g)]).toHaveLength(1);
+    expect([...judgeNotices.matchAll(FD_WRITE_CALLS)]).toHaveLength(0);
+    expect(judgeNotices).toContain('containedDirectory(writer.location.directory, ["judge-notices"], true)');
+    expect(judgeNotices).toContain('flag: "wx"');
+    expect([...judgeNotices.matchAll(/\brenameSync\s*\(/g)]).toHaveLength(1);
   });
 
   it("does not constrain code outside the wiki engine", () => {

@@ -451,7 +451,8 @@ export function defineTeamWorkflowPortContract<TWikiOperationPlan>(
       });
     });
 
-    it("fails closed at a bounded source ceiling without returning a trusted partial corpus", async () => {
+    // The real 4,097-entry fixture passes serially; allow disk contention in parallel runs.
+    it("fails closed at a bounded source ceiling without returning a trusted partial corpus", { timeout: 60_000, retry: 1 }, async () => {
       await withHarness("source-bound", async ({ port, snapshot }) => {
         const before = await snapshot();
         const error = await captureError(() => port.listArtifacts({

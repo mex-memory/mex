@@ -809,7 +809,7 @@ class RepositoryContractHarness implements TeamWorkflowPortContractHarness<JsonV
   async peerPort(): Promise<TeamWorkflowPort<JsonValue>> {
     if (this.peerWorkflowPort !== null) return this.peerWorkflowPort;
     this.peerRoot = join(this.container, "peer");
-    git(this.container, ["clone", "-q", "--no-hardlinks", this.gitRoot, this.peerRoot]);
+    git(this.container, ["clone", "--config", "core.autocrlf=false", "-q", "--no-hardlinks", this.gitRoot, this.peerRoot]);
     git(this.peerRoot, ["config", "user.name", "Ada Lovelace"]);
     git(this.peerRoot, ["config", "user.email", "ada@example.test"]);
     this.peerWiki = new MockWikiPort({ now: () => NOW });

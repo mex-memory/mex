@@ -14,7 +14,7 @@ let running = false;
 export async function boundedProcess(file: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number; capMs?: number; watch?: string; maxWatchBytes?: number }): Promise<{ output: string; code: number | null; stopped: "cancelled" | "resource-limited" | null }> {
   return new Promise((done) => {
     let output = "", size = 0, stopped: "cancelled" | "resource-limited" | null = null;
-    const child = spawn(file, args, { cwd: options.cwd, env: options.env ?? process.env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(file, args, { cwd: options.cwd, env: options.env ?? process.env, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     const stop = (reason: "cancelled" | "resource-limited") => {
       stopped ??= reason;
       if (!child.pid) return;
@@ -64,15 +64,15 @@ export async function checkArtifact(input: unknown, options: { signal?: AbortSig
   const started = Date.now();
   const scratch = mkdtempSync(join(tmpdir(), "mex-statechart-check-")); running = true;
   try {
-    const javaVersion = await boundedProcess(tool.java, ["-version"], { cwd: scratch, signal: options.signal, timeoutMs: Math.min(5000, options.timeoutMs ?? L.checkerMs) });
-    if (javaVersion.stopped) return incomplete(javaVersion.stopped, "Java runtime inspection did not complete.");
-    if (javaVersion.code !== 0) return incomplete("unavailable", "The configured Java runtime could not start.");
-    const javaDescription = javaVersion.output.split("\n").find(line => /^(?:openjdk|java) (?:version|[0-9])/u.test(line))?.slice(0, 500) ?? "Java version unavailable";
     for (const f of a.files) writeFileSync(join(scratch, f.name), f.content);
     const dot = join(scratch, "states.dot");
-    const r = await boundedProcess(tool.java, ["-Xmx512m", "-XX:ActiveProcessorCount=2", "-Djava.io.tmpdir=" + scratch, "-cp", tool.jar, "tlc2.TLC", "-workers", "1", "-metadir", join(scratch, "tlc"), "-dump", "dot,actionlabels", dot, "-config", config.name, spec.name], { cwd: scratch, signal: options.signal, timeoutMs: Math.max(1, Math.min(options.timeoutMs ?? L.checkerMs, L.checkerMs) - (Date.now() - started)), watch: dot });
+    // -showversion records the runtime while continuing into TLC. A separate
+    // JVM launch made cold Windows startup consume the check budget twice.
+    const r = await boundedProcess(tool.java, ["-showversion", "-Xmx512m", "-XX:ActiveProcessorCount=2", "-Djava.io.tmpdir=" + scratch, "-cp", tool.jar, "tlc2.TLC", "-workers", "1", "-metadir", join(scratch, "tlc"), "-dump", "dot,actionlabels", dot, "-config", config.name, spec.name], { cwd: scratch, signal: options.signal, timeoutMs: Math.max(1, Math.min(options.timeoutMs ?? L.checkerMs, L.checkerMs) - (Date.now() - started)), watch: dot });
     options.diagnostics?.(r.output);
     if (r.stopped) return incomplete(r.stopped, r.stopped === "cancelled" ? "Checking cancelled; no success is inferred from partial output." : "Checker exceeded its time, memory, or output budget.");
+    if (r.code === null || r.code < 0) return incomplete("unavailable", "The configured Java runtime could not start.");
+    const javaDescription = r.output.split("\n").find(line => /^(?:openjdk|java) (?:version|[0-9])/u.test(line))?.slice(0, 500) ?? "Java version unavailable";
     const count = /([\d,]+) states generated, ([\d,]+) distinct states found/.exec(r.output);
     const modelStates = count ? Number(count[2]!.replaceAll(",", "")) : null;
     if (modelStates && modelStates > L.modelStates) return incomplete("resource-limited", "State exploration exceeded the artifact limit.");

@@ -181,6 +181,11 @@ describe("headless Claude allowlist against the prompts it serves", () => {
     expect(buildAgentCommand("claude", "p", "headless")!.args).toContain(HEADLESS_CLAUDE_ALLOWED_TOOLS.join(","));
   });
 
+  it("does not pre-approve personal note writes through note or its log alias", () => {
+    expect(isHeadlessClaudeMexCommandAllowed("mex note a personal fact")).toBe(false);
+    expect(isHeadlessClaudeMexCommandAllowed("mex log a personal fact")).toBe(false);
+  });
+
   it("is told about any new caller of headless mode, whose prompts this test must then cover", () => {
     const root = join(__dirname, "..", "..");
     const callers = sourceFiles(root)

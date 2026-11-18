@@ -3,7 +3,8 @@ import { request as httpsRequest } from "node:https";
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from "node:http";
 import { Resolver } from "node:dns";
 import type { LookupFunction } from "node:net";
-import type { TelemetryEvent } from "./schema.js";
+import { validateReport, type UsageReport } from "./report-schema.js";
+import { isCI, reportingAllowed, telemetryEnabled } from "./policy.js";
 
 const PROJECT_TOKEN = "phc_wdwbBPQMrM6vKWMzz5yqWT357i2hSjMhnAvCuofJdMpg";
 export const TELEMETRY_ENDPOINT = "https://us.i.posthog.com/batch/";
@@ -22,7 +23,14 @@ export function setEndpointForTest(value: string | null): void {
 }
 
 export interface BatchRequest { done: Promise<boolean>; abort(): void; }
-export function sendBatch(events: readonly TelemetryEvent[]): BatchRequest {
+export function sendBatch(events: readonly UsageReport[]): BatchRequest {
+  let payload: string;
+  try {
+    if (!telemetryEnabled().enabled || !events.length || events.length > 8 || !events.every(validateReport)
+      || events.some((event) => event.event === "ci.run" ? !isCI() : !reportingAllowed())) return { done: Promise.resolve(false), abort() {} };
+    payload = JSON.stringify({ api_key: PROJECT_TOKEN, batch: events });
+    if (Buffer.byteLength(payload) > 8 * 16384 + 4096) return { done: Promise.resolve(false), abort() {} };
+  } catch { return { done: Promise.resolve(false), abort() {} }; }
   let request: ClientRequest | undefined;
   let response: IncomingMessage | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -41,7 +49,6 @@ export function sendBatch(events: readonly TelemetryEvent[]): BatchRequest {
   };
   try {
     const endpoint = testEndpoint ?? new URL(TELEMETRY_ENDPOINT);
-    const payload = JSON.stringify({ api_key: PROJECT_TOKEN, batch: events });
     // A dedicated cancellable resolver avoids an outstanding OS getaddrinfo job
     // keeping a short-lived CLI alive after its HTTP request has been destroyed.
     // Failure to resolve IPv4 simply retains the batch for a later invocation.

@@ -1,0 +1,1 @@
+{"session_id":"5f0c2a1e-1b7d-4c55-9a43-2e0f1c7d9b10","transcript_path":"C:\\Users\\dev\\.claude\\projects\\C--shop\\5f0c2a1e-1b7d-4c55-9a43-2e0f1c7d9b10.jsonl","cwd":"C:\\shop","permission_mode":"acceptEdits","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"C:\\shop\\src\\index.ts","content":"export {};\n"},"tool_use_id":"toolu_01C"}

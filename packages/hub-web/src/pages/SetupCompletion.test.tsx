@@ -4,7 +4,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { createFixtureApi } from "../dev/fixture-api";
 import { SetupCompletion } from "./SetupCompletion";
-import { TeamAccessCard } from "./TeamAccessCard";
 
 function fixture(status: "unasked" | "submitted" | "skipped" = "unasked") {
   const installation = { state: "idle" as const, version: "0.8.2", command: "npm install -g mex-agent@0.8.2", message: "Optional installation." };
@@ -22,16 +21,6 @@ function fixture(status: "unasked" | "submitted" | "skipped" = "unasked") {
 }
 
 describe("setup completion", () => {
-  it("ends with the team-access card as the what's-next step", async () => {
-    const harness = fixture();
-    harness.api.recordTeamAccess = vi.fn(async () => {});
-    harness.render();
-    const next = await screen.findByRole("region", { name: "What’s next" });
-    expect(within(next).getByRole("heading", { name: "Share this memory with your team" })).toBeVisible();
-    expect(await within(next).findByRole("button", { name: "Join the hosted beta" })).toBeVisible();
-    expect(screen.getByRole("region", { name: "Optional contact details" })).toBeVisible();
-    expect(harness.api.recordTeamAccess).toHaveBeenCalledExactlyOnceWith("card_viewed");
-  });
 
   it("shows the fresh-session guide and versioned commands without installing or submitting automatically", async () => {
     const user = userEvent.setup(); const harness = fixture(); harness.render();
@@ -56,44 +45,9 @@ describe("setup completion", () => {
     expect(await screen.findByText("Thanks — details sent.")).toBeVisible();
     expect(harness.api.submitSetupContact).toHaveBeenLastCalledWith({ email: "person@example.com", name: "" });
     expect(screen.queryByLabelText("Email")).toBeNull();
-    const next = screen.getByRole("region", { name: "What’s next" });
-    expect(within(next).getByText("Thanks for sharing your details. Keep using this Hub with your team.")).toBeVisible();
-    expect(within(next).queryByRole("button", { name: "Join the hosted beta" })).toBeNull();
     expect(harness.api.getContactPreference).toHaveBeenCalledOnce();
     await user.click(screen.getByRole("button", { name: "Open Hub" }));
     expect(harness.api.rememberContactPreference).not.toHaveBeenCalled();
-  });
-
-  it("shares a skipped setup preference with the beta card immediately", async () => {
-    const user = userEvent.setup(); const harness = fixture(); harness.render();
-    const contact = await screen.findByRole("region", { name: "Optional contact details" });
-    await user.click(within(contact).getByRole("button", { name: "Skip" }));
-    const next = screen.getByRole("region", { name: "What’s next" });
-    await waitFor(() => expect(within(next).queryByRole("button", { name: "Join the hosted beta" })).toBeNull());
-    expect(harness.api.getContactPreference).toHaveBeenCalledOnce();
-  });
-
-  it("shares a beta submission with the setup form before opening the Hub", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) }));
-    try {
-      const user = userEvent.setup(); const harness = fixture(); harness.render();
-      const contact = await screen.findByRole("region", { name: "Optional contact details" });
-      await user.type(within(contact).getByLabelText("Email"), "unsent@example.com");
-      const next = screen.getByRole("region", { name: "What’s next" });
-      await user.click(await within(next).findByRole("button", { name: "Join the hosted beta" }));
-      const dialog = await screen.findByRole("dialog");
-      await user.type(within(dialog).getByLabelText("Email"), "beta@example.com");
-      await user.click(within(dialog).getByRole("button", { name: "Join the hosted beta" }));
-      await screen.findByRole("heading", { name: "You’re on the list" });
-      expect(within(contact).queryByRole("button", { name: "Send details" })).toBeNull();
-      expect(within(contact).queryByLabelText("Email")).toBeNull();
-      expect(within(next).getByText("Thanks for sharing your details. Keep using this Hub with your team.")).toBeVisible();
-      await user.click(within(dialog).getByRole("button", { name: "Skip" }));
-      await user.click(screen.getByRole("button", { name: "Open Hub" }));
-      await waitFor(() => expect(harness.onOpen).toHaveBeenCalledOnce());
-      expect(harness.api.rememberContactPreference).not.toHaveBeenCalledWith({ status: "skipped" });
-      expect(harness.api.submitSetupContact).not.toHaveBeenCalled();
-    } finally { vi.unstubAllGlobals(); }
   });
 
   it("lets a failed global install be retried, copied, or skipped while setup stays complete", async () => {
@@ -115,8 +69,6 @@ describe("setup completion", () => {
     expect(screen.queryByLabelText("Email")).toBeNull();
     expect(screen.queryByRole("button", { name: "Open Hub" })).toBeNull();
     rendered.unmount();
-    render(<TeamAccessCard api={harness.api} />);
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Join the hosted beta" })).toBeNull());
     expect(harness.api.submitSetupContact).not.toHaveBeenCalled();
   });
 });

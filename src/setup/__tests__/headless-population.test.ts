@@ -1,10 +1,11 @@
 import crossSpawn from "cross-spawn";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildAgentCommand, HEADLESS_CLAUDE_ALLOWED_TOOLS } from "../../agent-command.js";
+import { MODEL_SYSTEM_PROMPT } from "../../model-runner/command.js";
 import {
   HeadlessPopulationError,
   launchHeadlessSetupPopulation,
@@ -15,8 +16,11 @@ import {
 
 const roots: string[] = [];
 const children: number[] = [];
+const watchers: FSWatcher[] = [];
+const codexFlags = ["exec", "--json", "--ephemeral", "--disable", "hooks", "-c", "project_doc_max_bytes=0", "-c", "memories.generate_memories=false", "-c", "memories.use_memories=false", "--sandbox", "workspace-write", "--model", "gpt-6.1-sol"];
 
 afterEach(() => {
+  for (const watcher of watchers.splice(0)) watcher.close();
   for (const pid of children.splice(0)) {
     try { process.kill(pid, "SIGKILL"); } catch { /* already closed */ }
   }
@@ -26,10 +30,12 @@ afterEach(() => {
 describe("headless population process", () => {
   it.each(["claude", "codex"] as const)("runs %s without a terminal and retains its complete private prompt until close", async (tool) => {
     const fixture = agentFixture(`
-      setTimeout(() => {
+      const waiting = setInterval(() => {
+        if (!fs.existsSync('release-initial.txt')) return;
+        clearInterval(waiting);
         fs.writeFileSync('still-readable.txt', fs.readFileSync(pointer, 'utf8'));
-      }, 80);
-      setTimeout(emitSuccess, 180);
+        emitSuccess();
+      }, 10);
     `);
     const prompt = `private prompt: ${"x".repeat(32 * 1024)}`;
     let heartbeat = 0;
@@ -37,18 +43,19 @@ describe("headless population process", () => {
     const run = launchHeadlessSetupPopulation({ ...fixture.options, selectedTools: [tool], prompt });
     void run.catch(() => {});
     try {
-      const observed = await fixture.observation();
+      const observed = await Promise.race([fixture.observation(), run.then(() => { throw new Error("Fixture closed before its prompt was inspected."); })]);
       expect(observed.cwd).toBe(fixture.root);
       expect(observed.prompt).toBe(prompt);
       expect(existsSync(join(fixture.root, observed.pointer))).toBe(true);
       expect(observed.args.join(" ")).not.toContain(prompt);
       expect(observed.args).toContainEqual(expect.stringMatching(/^Read the full setup population prompt from/));
-      if (tool === "codex") expect(observed.args.slice(0, -1)).toEqual(["exec", "--json", "--sandbox", "workspace-write"]);
+      if (tool === "codex") expect(observed.args.slice(0, -1)).toEqual(codexFlags);
       else expect(observed.args).toEqual([
-        "-p", expect.any(String), "--permission-mode", "acceptEdits",
+        "-p", expect.any(String), "--safe-mode", "--no-session-persistence", "--model", "opus", "--system-prompt", MODEL_SYSTEM_PROMPT, "--permission-mode", "acceptEdits",
         "--allowedTools", HEADLESS_CLAUDE_ALLOWED_TOOLS.join(","),
         "--output-format", "stream-json", "--verbose", "--include-partial-messages",
       ]);
+      writeFileSync(join(fixture.root, "release-initial.txt"), "continue");
       await expect(run).resolves.toEqual({ tool, completed: true });
       expect(heartbeat).toBeGreaterThan(0);
       expect(readFileSync(join(fixture.root, "still-readable.txt"), "utf8")).toBe(prompt);
@@ -57,7 +64,11 @@ describe("headless population process", () => {
         detached: process.platform !== "win32",
       }));
       expect(fixture.remainingPrompts()).toEqual([]);
-    } finally { clearInterval(timer); await run.catch(() => {}); }
+    } finally {
+      writeFileSync(join(fixture.root, "release-initial.txt"), "continue");
+      clearInterval(timer);
+      await run.catch(() => {});
+    }
   });
 
   it("retains interactive commands and conditionally supports Codex outside Git", () => {
@@ -67,12 +78,12 @@ describe("headless population process", () => {
     expect(buildAgentCommand("windsurf", "prompt", "headless")).toBeNull();
     expect(buildAgentCommand("cursor", "prompt", "interactive")).toBeNull();
     expect(buildAgentCommand("codex", "prompt", "headless", { allowNonGit: true })?.args)
-      .toEqual(["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "prompt"]);
+      .toEqual([...codexFlags, "--skip-git-repo-check", "prompt"]);
   });
 
   it("pre-approves only the mex commands headless Claude population needs", () => {
     for (const shell of ["Bash", "PowerShell"]) {
-      for (const command of ["mex graph scope", "mex graph get", "mex graph query", "mex wiki query", "mex wiki apply", "mex wiki validate", "mex wiki --help", "mex --help", "mex impact", "mex logging", "mex log"]) {
+      for (const command of ["mex graph scope", "mex graph get", "mex graph query", "mex wiki query", "mex wiki apply", "mex wiki validate", "mex wiki --help", "mex --help", "mex impact", "mex logging"]) {
         expect(HEADLESS_CLAUDE_ALLOWED_TOOLS).toContain(`${shell}(${command}:*)`);
       }
     }
@@ -514,8 +525,21 @@ function agentFixture(body: string) {
   return {
     root, options, spawn,
     observation: async (): Promise<{ args: string[]; cwd: string; prompt: string; pointer: string }> => {
-      await waitFor(() => existsSync(join(root, "observation.json")));
-      return JSON.parse(readFileSync(join(root, "observation.json"), "utf8"));
+      // The child atomically publishes this acknowledgement. Keep its lifetime
+      // under the test's existing timeout, rather than racing cold Windows
+      // startup against an unrelated 5-second poll and fixed child lifetime.
+      return new Promise((resolve, reject) => {
+        const inspect = () => {
+          if (!existsSync(join(root, "observation.json"))) return;
+          watcher.close();
+          try { resolve(JSON.parse(readFileSync(join(root, "observation.json"), "utf8"))); }
+          catch (error) { reject(error); }
+        };
+        const watcher = watch(root, inspect);
+        watchers.push(watcher);
+        watcher.once("error", reject);
+        inspect();
+      });
     },
     remainingPrompts: () => readdirSync(join(root, ".mex/local")),
   };

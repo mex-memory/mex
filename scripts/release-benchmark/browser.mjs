@@ -1,5 +1,5 @@
 import { releaseWorkbenchPaths } from "./routes.mjs";
-import { assertInboxFixturePage, assertRelayFixturePage } from "./hub.mjs";
+import { assertRelayFixturePage } from "./hub.mjs";
 
 const PAGE_READY_TIMEOUT_MS = 30_000;
 
@@ -14,12 +14,7 @@ export async function measureWorkbenchHeap({
   auth,
   samples,
   knowledgeEntityId,
-  specEntityId,
   codeSymbolId,
-  inboxDraftId,
-  inboxDraftTitle,
-  inboxProposalId,
-  inboxProposalTitle,
   relayDraftId,
   relayDraftSummary,
   relayId,
@@ -29,7 +24,6 @@ export async function measureWorkbenchHeap({
   const browser = await chromium.launch({ headless: true });
   const workbenchPaths = releaseWorkbenchPaths({
     knowledgeEntityId,
-    specEntityId,
     codeSymbolId,
   });
   const measurements = Object.fromEntries(
@@ -61,10 +55,6 @@ export async function measureWorkbenchHeap({
             throw new Error(`${route} returned HTTP ${String(response?.status() ?? "none")}.`);
           }
           await assertReleaseRouteReady(page, route, {
-            inboxDraftId,
-            inboxDraftTitle,
-            inboxProposalId,
-            inboxProposalTitle,
             relayDraftId,
             relayDraftSummary,
             relayId,
@@ -116,57 +106,6 @@ export async function assertReleaseRouteReady(page, route, teamFixture) {
     await graph.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
     await graph.getByRole("button", { name: /^Release benchmark knowledge 0000 · /u })
       .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-  }
-  if (route === "workstreams") {
-    await page.getByRole("heading", { name: "Release benchmark Workstream", exact: true })
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-  }
-  if (route === "specs" || route === "specsDetail") {
-    await page.getByRole("heading", { name: "Release benchmark knowledge 0000", exact: true })
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await page.getByText("Release benchmark knowledge 0001", { exact: true })
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-  }
-  if (route === "inbox") {
-    const draft = page.locator(`[data-inbox-draft-id="${teamFixture.inboxDraftId}"]`);
-    const proposal = page.locator(`[data-inbox-proposal-id="${teamFixture.inboxProposalId}"]`);
-    await page.locator('[data-inbox-workbench="ready"]')
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await proposal.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await proposal.getByText(teamFixture.inboxProposalTitle, { exact: true })
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await page.getByRole("tab", { name: "Drafts on this device", exact: true }).click();
-    await draft.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await draft.getByText(teamFixture.inboxDraftTitle, { exact: true })
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    // Restore the primary review surface before measuring the route heap. This
-    // still proves the secondary checkout-local fixture through the real UI.
-    await page.getByRole("tab", { name: /^For review\b/u }).click();
-    await proposal.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    const [draftResponse, proposalResponse] = await page.evaluate(async () => Promise.all([
-      "/api/v1/inbox/drafts?limit=25",
-      "/api/v1/inbox/proposals?state=pending,stale&limit=25",
-    ].map(async (path) => {
-      const response = await fetch(path, {
-        headers: { accept: "application/json, application/problem+json" },
-      });
-      return { status: response.status, body: await response.json() };
-    })));
-    if (draftResponse.status !== 200 || proposalResponse.status !== 200) {
-      throw new Error("The Inbox route fixture APIs did not both return HTTP 200.");
-    }
-    const draftPage = draftResponse.body;
-    const proposalPage = proposalResponse.body;
-    assertInboxFixturePage(draftPage, {
-      kind: "draft",
-      id: teamFixture.inboxDraftId,
-      title: teamFixture.inboxDraftTitle,
-    });
-    assertInboxFixturePage(proposalPage, {
-      kind: "proposal",
-      id: teamFixture.inboxProposalId,
-      title: teamFixture.inboxProposalTitle,
-    });
   }
   if (route === "relays") {
     const draft = page.locator(`[data-relay-draft-id="${teamFixture.relayDraftId}"]`);

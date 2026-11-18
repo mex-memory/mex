@@ -1,3 +1,4 @@
+import { gitDiscoveryCeilingReached } from "../repository-discovery.js";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { loadConfiguredSetupMode } from "../config.js";
@@ -8,7 +9,7 @@ export function findSetupProjectRoot(startDir: string = process.cwd()): string {
   while (true) {
     if (existsSync(resolve(current, ".git"))) return current;
     const parent = dirname(current);
-    if (parent === current) return resolve(startDir);
+    if (parent === current || gitDiscoveryCeilingReached(parent)) return resolve(startDir);
     current = parent;
   }
 }

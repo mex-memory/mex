@@ -1,0 +1,24 @@
+{
+  "agent": "claude-code",
+  "agent_version": "",
+  "kind": "post_tool_failure",
+  "session_id": "3786cc60-44f2-452f-a595-f9db31303cdf",
+  "agent_id": "",
+  "cwd": "C:\\mex-test-tmp\\f03\\live\\repo",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "shell",
+    "raw_name": "Bash",
+    "input": {
+      "command": "git definitely-not-a-command"
+    },
+    "output": {
+      "text": "Exit code 1\ngit: 'definitely-not-a-command' is not a git command. See 'git --help'.",
+      "ok": false,
+      "exit_code": 1
+    }
+  },
+  "transcript": "C:\\Users\\person\\.claude\\projects\\C--mex-test-tmp-f03-live-repo\\3786cc60-44f2-452f-a595-f9db31303cdf.jsonl",
+  "background": false
+}

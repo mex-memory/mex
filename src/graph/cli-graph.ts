@@ -78,6 +78,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
       ...(result.declinedInputs && result.declinedInputs.length > 0
         ? { declinedInputs: result.declinedInputs }
         : {}),
+      ...(result.typescript ? { typescript: result.typescript } : {}),
     }, null, 2));
     return;
   }
@@ -93,6 +94,21 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
   printUnindexedSources(coverage);
   printSkippedSources(result.skipped);
   printDeclinedInputs(result.declinedInputs);
+  printTypeScriptReport(result.typescript);
+}
+
+/**
+ * Say which compiler built the TypeScript graph, and every project that was
+ * built by another compiler or had its tsconfig translated, with why.
+ */
+function printTypeScriptReport(report: GraphRefreshResult["typescript"]): void {
+  if (!report || report.notes.length === 0) return;
+  console.log(`TypeScript graph built with ${report.compiler}; notes for ${new Set(report.notes.map((entry) => entry.project)).size} project(s):`);
+  for (const entry of report.notes.slice(0, MAX_SKIPPED_PATHS_SHOWN)) {
+    console.log(`  ${entry.project.replace(/^config:/u, "")}: ${entry.note}`);
+  }
+  const omitted = report.notes.length - Math.min(report.notes.length, MAX_SKIPPED_PATHS_SHOWN);
+  if (omitted > 0) console.log(`  …and ${omitted} more (use --json for the full list)`);
 }
 
 /**
@@ -197,6 +213,7 @@ function printMaintenance(verb: "refreshed" | "rebuilt", result: GraphMaintenanc
   );
   printSkippedSources(result.skipped);
   printDeclinedInputs(result.declinedInputs);
+  printTypeScriptReport(result.typescript);
   if (result.recoveryPath) {
     console.log(`Previous index retained for local recovery: ${result.recoveryPath}`);
   }

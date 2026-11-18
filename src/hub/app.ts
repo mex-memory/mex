@@ -497,95 +497,6 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     return resourceResponse(TeamMemberSchema, member);
   });
 
-  app.get("/api/v1/workstreams", async (context) => {
-    const request = parseInput(
-      TeamWorkstreamListRequestSchema,
-      readStrictQuery(context.req.raw, ["state", "includeArchived", "cursor", "limit"]),
-    );
-    const workstreams = options.services.workstreams;
-    if (workstreams === undefined) {
-      throw unavailable("Workstream reads are not connected in this build.");
-    }
-    return resourceResponse(TeamWorkstreamListResponseSchema, await workstreams(request));
-  });
-
-  app.get("/api/v1/workstreams/:id", async (context) => {
-    readStrictQuery(context.req.raw, []);
-    const workstreamId = parseInput(TeamWorkstreamIdSchema, context.req.param("id"));
-    const readWorkstream = options.services.workstream;
-    if (readWorkstream === undefined) {
-      throw unavailable("Workstream reads are not connected in this build.");
-    }
-    const workstream = await readWorkstream(workstreamId);
-    if (workstream === null) throw notFound("The requested Workstream does not exist.");
-    return resourceResponse(TeamWorkstreamSchema, workstream);
-  });
-
-  app.get("/api/v1/inbox/drafts", async (context) => {
-    const request = parseInput(
-      InboxDraftListRequestSchema,
-      readStrictQuery(context.req.raw, ["cursor", "limit"]),
-    );
-    const drafts = options.services.inboxDrafts;
-    if (drafts === undefined) throw unavailable("Inbox draft reads are not connected in this build.");
-    return resourceResponse(InboxDraftListResponseSchema, await drafts(request));
-  });
-
-  app.get("/api/v1/inbox/drafts/:id", async (context) => {
-    readStrictQuery(context.req.raw, []);
-    const draftId = parseInput(InboxDraftIdSchema, context.req.param("id"));
-    const readDraft = options.services.inboxDraft;
-    if (readDraft === undefined) throw unavailable("Inbox draft reads are not connected in this build.");
-    const draft = await readDraft(draftId);
-    if (draft === null) throw notFound("The requested Inbox draft does not exist.");
-    return resourceResponse(InboxDraftDetailSchema, draft);
-  });
-
-  app.get("/api/v1/inbox/proposals", async (context) => {
-    const request = parseInput(
-      InboxProposalListRequestSchema,
-      readInboxProposalListQuery(context.req.raw),
-    );
-    const proposals = options.services.inboxProposals;
-    if (proposals === undefined) throw unavailable("Inbox proposal reads are not connected in this build.");
-    return resourceResponse(InboxProposalListResponseSchema, await proposals(request));
-  });
-
-  app.get("/api/v1/inbox/proposals/:id", async (context) => {
-    readStrictQuery(context.req.raw, []);
-    const proposalId = parseInput(InboxProposalIdSchema, context.req.param("id"));
-    const readProposal = options.services.inboxProposal;
-    if (readProposal === undefined) throw unavailable("Inbox proposal reads are not connected in this build.");
-    const proposal = await readProposal(proposalId);
-    if (proposal === null) throw notFound("The requested Inbox proposal does not exist.");
-    return resourceResponse(InboxProposalDetailSchema, proposal);
-  });
-
-  app.post("/api/v1/inbox/operations/preview", async (context) => {
-    const request = parseInput(
-      InboxOperationPreviewRequestSchema,
-      await readBoundedJson(context.req.raw),
-    );
-    const preview = options.services.previewInboxOperation;
-    if (preview === undefined) throw unavailable("Inbox mutations are not connected in this build.");
-    return telemetry.action(request.action.kind, "preview", async () =>
-      resourceResponse(InboxOperationPreviewResponseSchema, await preview(request)));
-  });
-
-  app.post("/api/v1/inbox/operations/apply", async (context) => {
-    const request = parseInput(
-      InboxOperationApplyRequestSchema,
-      await readBoundedJson(context.req.raw),
-    );
-    const apply = options.services.applyInboxOperation;
-    if (apply === undefined) throw unavailable("Inbox mutations are not connected in this build.");
-    const completed = await telemetry.action(request.request.action.kind, "apply", async () => {
-      const result = await apply(request);
-      return { result, response: resourceResponse(InboxOperationApplyResponseSchema, result) };
-    }, ({ result }) => result.idempotentReplay);
-    return completed.response;
-  });
-
   app.get("/api/v1/relays/drafts", async (context) => {
     const request = parseInput(
       RelayDraftListRequestSchema,
@@ -648,24 +559,6 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     return completed.response;
   });
 
-  app.get("/api/v1/specs", async (context) => {
-    const request = parseInput(
-      SpecListRequestSchema,
-      readSpecListQuery(context.req.raw),
-    );
-    const specs = options.services.specs;
-    if (specs === undefined) throw unavailable("Spec reads are not connected in this build.");
-    return resourceResponse(SpecListResponseSchema, await specs(request));
-  });
-
-  app.get("/api/v1/specs/:id", async (context) => {
-    readStrictQuery(context.req.raw, []);
-    const specId = parseInput(WikiEntityIdSchema, context.req.param("id"));
-    const spec = options.services.spec;
-    if (spec === undefined) throw unavailable("Spec reads are not connected in this build.");
-    return resourceResponse(SpecDetailResponseSchema, await spec(specId));
-  });
-
   app.get("/api/v1/actor/current", async (context) => {
     readStrictQuery(context.req.raw, []);
     const currentActor = options.services.currentActor;
@@ -680,6 +573,7 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       TeamOperationPreviewRequestSchema,
       await readBoundedJson(context.req.raw),
     );
+    if (request.action.kind.startsWith("workstream.")) throw notFound("Workstreams were removed in 0.9.");
     const preview = options.services.previewTeamOperation;
     if (preview === undefined) {
       throw unavailable("Member and Activity mutations are not connected in this build.");
@@ -693,6 +587,7 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
       TeamOperationApplyRequestSchema,
       await readBoundedJson(context.req.raw),
     );
+    if (request.request.action.kind.startsWith("workstream.")) throw notFound("Workstreams were removed in 0.9.");
     const apply = options.services.applyTeamOperation;
     if (apply === undefined) {
       throw unavailable("Member and Activity mutations are not connected in this build.");
@@ -831,19 +726,6 @@ export function createHubApp(options: CreateHubAppOptions): Hono<HubEnvironment>
     const request = parseInput(AgentLoggingUpdateRequestSchema, await readBoundedJson(context.req.raw));
     return telemetry.action("settings.logging.update", "direct", async () =>
       resourceResponse(AgentLoggingPolicySchema, await options.services.setLoggingPolicy!(request)));
-  });
-
-  app.get("/api/v1/settings/onboarding", async (context) => {
-    readStrictQuery(context.req.raw, []);
-    if (!options.services.onboardingState) throw unavailable("The Hub tour state is unavailable in this build.");
-    return resourceResponse(HubOnboardingStateSchema, await options.services.onboardingState());
-  });
-
-  app.post("/api/v1/settings/onboarding", async (context) => {
-    readStrictQuery(context.req.raw, []);
-    if (!options.services.completeOnboarding) throw unavailable("The Hub tour state is unavailable in this build.");
-    parseInput(HubOnboardingCompleteRequestSchema, await readBoundedJson(context.req.raw));
-    return resourceResponse(HubOnboardingStateSchema, await options.services.completeOnboarding());
   });
 
   app.get("/api/v1/repository/contributors", async (context) => {

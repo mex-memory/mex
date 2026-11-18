@@ -133,9 +133,9 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
       })),
     };
     let pending: ((action: TerminalSetupAction) => void) | undefined;
-    const update = (changes: Partial<TerminalSetupView>) => {
+    const update = (changes: Partial<TerminalSetupView>, event = changes.detail) => {
       view = { ...view, ...changes,
-        events: changes.detail ? appendTerminalSetupEvent(view.events ?? [], changes.detail) : view.events };
+        events: event ? appendTerminalSetupEvent(view.events ?? [], event) : view.events };
       ui.update(view);
     };
     const ui = createTerminalSetupUI(view, action => {
@@ -224,7 +224,7 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
               onMessage: detail => update({ detail, lastActivityAt: Date.now() }),
               onGraphProgress: progress => {
                 const activity = setupGraphActivity(progress);
-                update({ detail: activity.detail, progress: activity.progress, lastActivityAt: Date.now() });
+                update({ detail: activity.detail, progress: activity.progress, lastActivityAt: Date.now() }, formatSetupGraphActivity(progress));
               },
                 onPopulationCoverage: coverage => update({ concurrentPopulation: `${coverage.done}/${coverage.total} subsystems done, ${coverage.skipped} skipped`, lastActivityAt: Date.now() }),
                 onAnchorNotes: notes => { anchorNotes = notes; },

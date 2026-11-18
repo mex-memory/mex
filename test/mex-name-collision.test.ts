@@ -3,7 +3,6 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { manageHook } from "../src/watch.js";
 import type { MexConfig } from "../src/types.js";
 
 const REPO = resolve(__dirname, "..");
@@ -72,86 +71,6 @@ beforeEach(() => {
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
-
-async function installHook(withLocalBuild = false): Promise<string> {
-  const root = join(dir, "repo");
-  mkdirSync(join(root, ".git", "hooks"), { recursive: true });
-  mkdirSync(join(root, ".mex"));
-  if (withLocalBuild) {
-    mkdirSync(join(root, ".mex", "dist"));
-    writeFileSync(join(root, ".mex", "dist", "cli.js"), "");
-  }
-  const config = { projectRoot: root, scaffoldRoot: join(root, ".mex") } as MexConfig;
-  await manageHook(config, {});
-  return join(root, ".git", "hooks", "post-commit");
-}
-
-function runHook(hook: string): { out: string; status: number | null } {
-  const r = spawnSync("sh", [hook], {
-    env: { PATH: `${fakeBin}:${SYSTEM_PATH}` },
-    encoding: "utf8",
-    timeout: 30_000,
-  });
-  return { out: `${r.stdout}${r.stderr}`, status: r.status };
-}
-
-describe.skipIf(process.platform === "win32")("post-commit hook", () => {
-  it("falls back to the explicit npm package, never the ambiguous npx mex", async () => {
-    const hook = readFileSync(await installHook(), "utf8");
-    expect(hook).toContain("npx mex-agent check --quiet");
-    expect(hook).not.toMatch(/npx mex check/);
-  });
-
-  it("ignores a foreign mex and falls back to npx mex-agent", async () => {
-    installFakeMex("tex");
-    installFakeNpx("ok");
-    runHook(await installHook());
-    expect(calls()).toContain("npx mex-agent check --quiet");
-    expect(calls()).not.toContain("check --quiet");
-  });
-
-  it("uses a verified global mex without touching npm (works offline)", async () => {
-    installFakeMex("mex");
-    installFakeNpx("offline");
-    const { status } = runHook(await installHook());
-    expect(status).toBe(0);
-    expect(calls()).toContain("check --quiet");
-    expect(calls().some((c) => c.startsWith("npx"))).toBe(false);
-  });
-
-  it("uses the local build without probing PATH", async () => {
-    installFakeMex("tex");
-    installFakeNpx("offline");
-    const content = readFileSync(await installHook(true), "utf8");
-    expect(content).toContain('node "');
-    expect(content).not.toContain("mex_is_agent");
-  });
-
-  it("never fails the commit when nothing works", async () => {
-    installFakeNpx("offline");
-    const { status } = runHook(await installHook());
-    expect(status).toBe(0);
-  });
-
-  it("uninstall removes exactly the mex block and keeps other hook content", async () => {
-    const hook = await installHook();
-    writeFileSync(hook, `#!/bin/sh\necho before\n\n${readFileSync(hook, "utf8").replace("#!/bin/sh\n", "")}\necho after\n`);
-    const root = resolve(hook, "..", "..", "..");
-    await manageHook({ projectRoot: root, scaffoldRoot: join(root, ".mex") } as MexConfig, { uninstall: true });
-    const left = readFileSync(hook, "utf8");
-    expect(left).toContain("echo before");
-    expect(left).toContain("echo after");
-    expect(left).not.toMatch(/mex|SCORE|esac|MEX_BIN/);
-  });
-
-  it("still uninstalls a hook written by an earlier version (no end marker)", async () => {
-    const hook = await installHook();
-    writeFileSync(hook, `#!/bin/sh\n# mex-drift-check\n# Auto-installed by mex watch — runs drift check after each commit\nSCORE=$(npx mex check --quiet 2>&1) || true\n# Only show output if there are issues (not a perfect score)\ncase "$SCORE" in\n  *"100/100"*) ;;\n  *) echo "$SCORE" ;;\nesac\n`);
-    const root = resolve(hook, "..", "..", "..");
-    await manageHook({ projectRoot: root, scaffoldRoot: join(root, ".mex") } as MexConfig, { uninstall: true });
-    expect(existsSync(hook)).toBe(false);
-  });
-});
 
 describe.skipIf(process.platform === "win32")("setup.sh and sync.sh identity check", () => {
   function run(script: string): string {

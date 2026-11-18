@@ -28,7 +28,9 @@
  * one rule.
  */
 
-import { sameFingerprint } from "../grounding/adapter.js";
+// The comparison codec is pure. Importing its adapter re-export also loaded
+// the Graph stores, preventing the legacy reader from outliving the engine.
+import { sameFingerprint } from "../../graph/fingerprint.js";
 
 interface GroundingLike {
   node: string;
