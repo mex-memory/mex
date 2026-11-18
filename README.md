@@ -51,7 +51,7 @@ Undo: `mex off` (this repo) · `mex uninstall` (everything, keeps notes)
 
 `mex` installs MEX's hooks in your Claude Code and Codex user settings, reads the repo, and shows what your agents get from now on. The first screen makes no model calls and adds nothing to git.
 
-**Codex:** open `/hooks` once in Codex to review and trust MEX's hooks.
+**Codex:** review and trust MEX's hooks once: `/hooks` in the Codex CLI, or **Review hooks** beside the message box in the Codex app. Until then Codex skips them, and MEX does nothing there.
 
 Then tell your agents something they keep getting wrong:
 

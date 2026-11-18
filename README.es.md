@@ -51,7 +51,7 @@ Deshacer: `mex off` (este repo) · `mex uninstall` (todo, conserva las notas)
 
 `mex` instala los hooks de MEX en la configuración de usuario de Claude Code y Codex, lee el repo y muestra lo que tus agentes reciben a partir de ahora. La primera pantalla no hace llamadas a modelos y no añade nada a git.
 
-**Codex:** abre `/hooks` una vez en Codex para revisar y confiar en los hooks de MEX.
+**Codex:** revisa y confía en los hooks de MEX una vez: `/hooks` en la CLI de Codex, o **Review hooks** junto al cuadro de mensaje en la app de Codex. Hasta entonces Codex los omite y MEX no hace nada allí.
 
 Después, cuéntales a tus agentes algo que siempre hacen mal:
 

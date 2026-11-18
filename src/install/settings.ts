@@ -12,7 +12,7 @@ export const EVENTS: Record<Agent, readonly string[]> = {
   "claude-code": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact", "SubagentStart", "Stop", "SessionEnd", "InstructionsLoaded"],
   codex: ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "SubagentStart", "Stop", "SessionEnd"],
 };
-export const CODEX_TRUST_NOTICE = "In Codex, open /hooks once to review and trust MEX's hooks.";
+export const CODEX_TRUST_NOTICE = "In Codex, review and trust MEX's hooks once: /hooks in the CLI, or Review hooks beside the message box in the app. Until then Codex skips them.";
 
 export function agentSettings(user: string, env: NodeJS.ProcessEnv): Record<Agent, string> {
   for (const key of ["CLAUDE_CONFIG_DIR", "CODEX_HOME"]) {

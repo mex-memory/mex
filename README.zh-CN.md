@@ -51,7 +51,7 @@ mex
 
 `mex` 会在你的 Claude Code 和 Codex 用户设置中安装 MEX 的钩子，读取仓库，并显示从现在起智能体会得到什么。首屏不调用任何模型，也不向 git 添加任何内容。
 
-**Codex：** 在 Codex 中打开一次 `/hooks`，查看并信任 MEX 的钩子。
+**Codex：** 需要查看并信任一次 MEX 的钩子：在 Codex CLI 中用 `/hooks`，在 Codex 应用中点输入框旁的 **Review hooks**。在此之前 Codex 会跳过它们，MEX 在那里不起作用。
 
 然后告诉智能体一件它们总是弄错的事：
 
