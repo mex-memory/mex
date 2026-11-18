@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CORPUS = join(HERE, 'upgrade-corpus');
 // A corpus change is a reviewed code change: update this digest with it.
-export const UPGRADE_CORPUS_SHA256 = '7c41fc96088c585fbf864d8b782f04a4f778d5637e54875e77bbfc88ebbe2505';
+export const UPGRADE_CORPUS_SHA256 = '631233362bb9763fee309774781891c5dbfde7316da01e21b5c8c34fbe487485';
 const unavailable = { status: 'unavailable', reason: 'tool-unavailable' };
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const IDENTITY = ['-c', 'user.name=mex upgrade gate', '-c', 'user.email=gate@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=.git/hooks'];
@@ -138,6 +138,9 @@ export function groundings(files) {
   return byPath;
 }
 
+/** An entry field holds one line of at most this many characters (src/upgrade/convert-legacy.ts). */
+export const ENTRY_LINE_MAX = 2048;
+
 function fakeGh(cache) {
   const dir = join(cache, 'fake-gh');
   const binary = join(dir, process.platform === 'win32' ? 'gh.exe' : 'gh');
@@ -232,16 +235,21 @@ export function runUpgradeScenarios({ root, cache, corpus = loadCorpus(), log = 
     check(removed <= expect.removedCommandsMax, `${name}: ${removed} unverified commands removed (at most ${expect.removedCommandsMax})`);
     const reviewed = new Set(review.map((i) => i.path));
     const sources = subject.bundle ? bundles[subject.bundle].files : {};
-    let kept = 0, owed = 0;
+    // A grounding is kept byte-for-byte. Only one already in the compact form
+    // and still too long for an entry line may be left out, and then its
+    // document's entry must still come across without it.
+    let kept = 0, owed = 0, leftOut = 0;
     for (const [path, pairs] of Object.entries(groundings(sources))) {
       if (reviewed.has(path)) continue;
       for (const pair of pairs) {
         owed++;
         const [node, fingerprint] = pair.split(' ');
         if (texts.some((t) => t.includes(`node: ${node}`) && t.includes(`fingerprint: ${fingerprint}`))) kept++;
+        else if (fingerprint.startsWith('mh2:') && fingerprint.length > ENTRY_LINE_MAX && texts.some((t) => t.includes(`ref: ${path}`))) leftOut++;
       }
     }
-    check(kept === owed && owed === expect.groundingsKept, `${name}: ${kept}/${owed} original groundings kept byte-for-byte (expected ${expect.groundingsKept})`);
+    check(kept + leftOut === owed && kept === expect.groundingsKept, `${name}: ${kept}/${owed} original groundings kept byte-for-byte (expected ${expect.groundingsKept})`);
+    check(leftOut === expect.groundingsLeftOut, `${name}: ${leftOut} groundings too long for an entry line left out, their entries kept (expected ${expect.groundingsLeftOut})`);
 
     // Apply exactly the preview, optionally through a failed and retried PR.
     const pr = scenario.publish === 'pr';

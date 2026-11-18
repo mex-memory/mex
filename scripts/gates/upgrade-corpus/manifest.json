@@ -38,17 +38,18 @@
     "ready": true,
     "blocking": [],
     "counts": {
-     "entries": 31,
-     "team": 31,
+     "entries": 32,
+     "team": 32,
      "personal": 0,
-     "tracked": 36,
+     "tracked": 37,
      "local": 0,
-     "review": 1,
+     "review": 0,
      "caches": 1,
      "hook": false
     },
     "removedCommandsMax": 20,
-    "groundingsKept": 53
+    "groundingsKept": 57,
+    "groundingsLeftOut": 1
    }
   },
   {
@@ -62,17 +63,18 @@
     "ready": true,
     "blocking": [],
     "counts": {
-     "entries": 30,
-     "team": 28,
+     "entries": 31,
+     "team": 29,
      "personal": 2,
-     "tracked": 51,
+     "tracked": 52,
      "local": 0,
-     "review": 7,
+     "review": 6,
      "caches": 1,
      "hook": true
     },
-    "removedCommandsMax": 15,
-    "groundingsKept": 0
+    "removedCommandsMax": 18,
+    "groundingsKept": 0,
+    "groundingsLeftOut": 0
    }
   },
   {
@@ -100,17 +102,18 @@
     "ready": true,
     "blocking": [],
     "counts": {
-     "entries": 166,
-     "team": 166,
+     "entries": 168,
+     "team": 168,
      "personal": 0,
-     "tracked": 172,
+     "tracked": 174,
      "local": 0,
-     "review": 2,
+     "review": 0,
      "caches": 1,
      "hook": false
     },
     "removedCommandsMax": 6,
-    "groundingsKept": 200
+    "groundingsKept": 234,
+    "groundingsLeftOut": 2
    }
   }
  ]
