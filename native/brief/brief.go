@@ -23,6 +23,25 @@ import (
 
 const MaxTokens = 300
 
+// MaxNoteTokens lets the person's own notes run past MaxTokens. A note reaches
+// the brief only when no rule file this agent loads carries it: one saved since
+// the files were last written, or any note for Codex in a repository whose
+// AGENTS.md is the person's own, which MEX never writes into. Without the
+// extra room only one or two notes would ever reach that agent. Team entries
+// and commands still stop at MaxTokens.
+const MaxNoteTokens = 1000
+
+// capFor is the budget a group may fill: the notes' own when every line in it
+// is the person's.
+func capFor(group []Item) int {
+	for _, item := range group {
+		if item.Level != "personal" {
+			return MaxTokens
+		}
+	}
+	return MaxNoteTokens
+}
+
 const Priority = "Priority: current request > your notes > repo instructions > team entries > hints."
 
 // SaveLine tells the agent how something the person wants kept reaches later
@@ -87,6 +106,11 @@ type Result struct {
 // maxCorrections bounds the retractions in one brief; the rule files are
 // rebuilt before the next session, so a few lines cover the gap.
 const maxCorrections = 2
+
+// maxLateNotes bounds the person's notes still checked once the deadline has
+// passed. Only two or three fit in the brief; this covers retired or
+// out-of-area ones ahead of them without letting a large store run long.
+const maxLateNotes = 8
 
 // correctionLine names the note without repeating its stale claim.
 func correctionLine(id string) string {
@@ -324,14 +348,40 @@ func Build(opts Options) (Result, error) {
 		}
 		return v
 	}
-	// usable applies everything but the verdict rule: retirement, the deadline,
-	// the starting folder (when asked) and personal state.
-	usable := func(c candidate, area bool) bool {
-		e := c.entry
-		if retired[e.ID] || (!opts.Deadline.IsZero() && time.Now().After(opts.Deadline)) {
+	// The deadline bounds the optional part of the brief, not the person's own
+	// notes. By the time it is checked the slow part, reading the stores, is
+	// already paid for, and on a machine busy starting the agent it often
+	// passes before the first entry: the session then got no notes at all.
+	// Once it passes, team entries, commands and hints are left to the
+	// moments, but up to maxLateNotes of the person's notes are still checked.
+	overdue := func() bool { return !opts.Deadline.IsZero() && time.Now().After(opts.Deadline) }
+	late := 0
+	inTime := func(c candidate) bool {
+		if !overdue() {
+			return true
+		}
+		if c.level != "personal" {
 			return false
 		}
-		if area && !inScope(e, opts.Path) {
+		if _, checked := verdicts[c.level+"/"+c.hash]; checked {
+			return true
+		}
+		if late >= maxLateNotes {
+			return false
+		}
+		late++
+		return true
+	}
+	// usable applies everything but the verdict rule: retirement, the
+	// starting folder (when asked), personal state and the deadline.
+	usable := func(c candidate, area bool) bool {
+		e := c.entry
+		if retired[e.ID] {
+			return false
+		}
+		// The person's own notes reach every new session, whatever their
+		// scope; a scope narrows team entries to the folder, not their notes.
+		if area && c.level != "personal" && !inScope(e, opts.Path) {
 			return false
 		}
 		// The brief never repeats a policy currently doubted by the free pass.
@@ -349,7 +399,7 @@ func Build(opts Options) (Result, error) {
 				}
 			}
 		}
-		return true
+		return inTime(c)
 	}
 	itemFor := func(c candidate, verdict string) Item {
 		e := c.entry
@@ -400,11 +450,11 @@ func Build(opts Options) (Result, error) {
 	// agent just loaded from them may no longer hold: retract it here and ask
 	// for a rebuild. Imported rule files are the person's own and untouched.
 	for _, c := range all {
-		if len(result.Corrections) >= maxCorrections || (!opts.Deadline.IsZero() && time.Now().After(opts.Deadline)) {
+		if len(result.Corrections) >= maxCorrections {
 			break
 		}
 		e := c.entry
-		if (c.level != "personal" && c.level != "team") || len(e.Checks) == 0 || retired[e.ID] || !result.Coverage.Covers(e.ID, opts.Agent, opts.Path) {
+		if (c.level != "personal" && c.level != "team") || len(e.Checks) == 0 || retired[e.ID] || !result.Coverage.Covers(e.ID, opts.Agent, opts.Path) || !inTime(c) {
 			continue
 		}
 		verdict := verdictOf(c)
@@ -446,7 +496,7 @@ func Build(opts Options) (Result, error) {
 					area++
 				}
 			}
-			if used+cost > MaxTokens || areaItems+area > 3 {
+			if used+cost > capFor(group) || areaItems+area > 3 {
 				continue
 			}
 			for _, item := range group {
@@ -493,7 +543,7 @@ func Build(opts Options) (Result, error) {
 			for _, s := range e.Scope {
 				root = root && s == "**"
 			}
-			if !root || (!opts.Deadline.IsZero() && time.Now().After(opts.Deadline)) {
+			if !root || overdue() {
 				continue
 			}
 			verdict := verdictOf(c)

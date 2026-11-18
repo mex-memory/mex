@@ -12,7 +12,7 @@ export const EVENTS: Record<Agent, readonly string[]> = {
   "claude-code": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact", "SubagentStart", "Stop", "SessionEnd", "InstructionsLoaded"],
   codex: ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "SubagentStart", "Stop", "SessionEnd"],
 };
-export const CODEX_TRUST_NOTICE = "In Codex, open /hooks once to review and trust MEX's hooks.";
+export const CODEX_TRUST_NOTICE = "In Codex, review and trust MEX's hooks once: /hooks in the CLI, or Review hooks beside the message box in the app. Until then Codex skips them.";
 
 export function agentSettings(user: string, env: NodeJS.ProcessEnv): Record<Agent, string> {
   for (const key of ["CLAUDE_CONFIG_DIR", "CODEX_HOME"]) {
@@ -59,9 +59,33 @@ export interface HookCommand { path: string; args: string[]; }
 const quoteSh = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 const quotePowerShell = (value: string) => `'${value.replace(/'/g, "''")}'`;
 
+/** The same keys first, in their old order; new ones after. */
+function inOrder(value: ObjectValue, keys: readonly string[]): ObjectValue {
+  const out: ObjectValue = {};
+  for (const key of keys) if (Object.hasOwn(value, key)) out[key] = value[key];
+  for (const [key, item] of Object.entries(value)) if (!Object.hasOwn(out, key)) out[key] = item;
+  return out;
+}
+
+/** Settings compared as Claude Code and Codex read them: key order and the order of groups under one event don't matter. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (object(value)) return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+function sameSettings(a: ObjectValue, b: ObjectValue): boolean {
+  const { hooks: aHooks, ...aRest } = a, { hooks: bHooks, ...bRest } = b;
+  const events = (hooks: unknown) => object(hooks)
+    ? `{${Object.keys(hooks).sort().map(event => `${JSON.stringify(event)}:${Array.isArray(hooks[event]) ? (hooks[event] as unknown[]).map(canonical).sort().join(",") : canonical(hooks[event])}`).join(",")}}`
+    : canonical(hooks);
+  return canonical(aRest) === canonical(bRest) && events(aHooks) === events(bHooks);
+}
+
 export function installSettings(bytes: Buffer | null, agent: Agent, command: HookCommand, platform: NodeJS.Platform, ownedCommands: readonly HookCommand[] = [command]): Buffer {
-  const settings = parseSettings(bytes);
-  const before = JSON.stringify(settings);
+  let settings = parseSettings(bytes);
+  const original = parseSettings(bytes);
+  const keys = Object.keys(settings);
+  const events = object(settings.hooks) ? Object.keys(settings.hooks) : [];
   // Only replace handlers targeting this install's fixed command, or carrying
   // the old explicit ownership flag. Mixed matcher groups retain other hooks.
   removeHandlers(settings, handler => isLegacyHandler(handler) || (object(handler) && ownedCommands.some(owned => {
@@ -83,8 +107,12 @@ export function installSettings(bytes: Buffer | null, agent: Agent, command: Hoo
         timeout: event === "SessionEnd" ? 3 : 10 };
     hooks[event] = [...(hooks[event] as unknown[] | undefined ?? []), { hooks: [handler] }];
   }
-  // No rewrite on a repeated install, including whitespace, BOM and CRLF.
-  return bytes !== null && JSON.stringify(settings) === before ? bytes : Buffer.from(`${JSON.stringify(settings, null, 2)}\n`);
+  // A repeated install doesn't touch the file, whitespace, BOM and CRLF
+  // included; a real change keeps the person's key and event order.
+  if (bytes !== null && sameSettings(settings, original)) return bytes;
+  settings = inOrder(settings, keys);
+  settings.hooks = inOrder(hooks, events);
+  return Buffer.from(`${JSON.stringify(settings, null, 2)}\n`);
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);

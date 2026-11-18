@@ -35,7 +35,7 @@ Commands:
                                         entries
   wrong [options] <id> <reason>         Retire an incorrect note and keep the
                                         reason
-  forget [options] <id> <reason>        Remove a note from future sessions
+  forget [options] <id> [reason]        Remove a note from future sessions
   check [options]                       Check which notes still hold against the
                                         code
   review [options]                      Review learned notes before sharing them

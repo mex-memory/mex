@@ -190,7 +190,7 @@ export function formatStatus(view: StatusView, options: { doctor?: boolean; now?
   const now = options.now ?? Date.now(), lines: string[] = [];
   if (view.repository) lines.push(`MEX ${view.version} · ${view.repository.state} in this repo · capture ${view.repository.capture}`, "");
   lines.push("Agents");
-  for (const agent of view.agents) lines.push(`  ${agent.installed ? "✓" : "!"} ${NAMES[agent.agent]}: ${agent.installed === null ? "unknown" : agent.installed ? `hooks installed (${agent.events} events)` : `hooks not installed or incomplete (${agent.events} events)`}${agent.lastCall ? ` · last call ${ago(agent.lastCall, now)}` : ""}${agent.agent === "codex" && agent.installed ? " · open /hooks once in Codex to trust them" : ""}`);
+  for (const agent of view.agents) lines.push(`  ${agent.installed ? "✓" : "!"} ${NAMES[agent.agent]}: ${agent.installed === null ? "unknown" : agent.installed ? `hooks installed (${agent.events} events)` : `hooks not installed or incomplete (${agent.events} events)`}${agent.lastCall ? ` · last call ${ago(agent.lastCall, now)}` : ""}${agent.agent === "codex" && agent.installed ? " · trust them once in Codex (/hooks, or Review hooks in the app)" : ""}`);
   lines.push(`  ${view.binary.state === "native" ? "✓" : "!"} Hook binary ${view.binary.state === "native" ? `${view.binary.version || "unknown version"} (native)` : view.binary.state}`);
   if (view.repository) {
     lines.push("", "Knowledge here");

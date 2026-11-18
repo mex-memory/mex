@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 vi.mock("../index.js", () => ({
-  installAgents: vi.fn(async () => ({ agents: ["codex"], changes: [], notices: ["In Codex, open /hooks once to review and trust MEX's hooks."], legacyTracked: [] })),
+  installAgents: vi.fn(async () => ({ agents: ["codex"], changes: [], notices: ["In Codex, review and trust MEX's hooks once: /hooks in the CLI, or Review hooks beside the message box in the app. Until then Codex skips them."], legacyTracked: [] })),
   installationChanges: () => [], excludeChanges: () => [],
   uninstallAgents: vi.fn(async () => ({ conflicts: [], purged: false })),
 }));
@@ -13,7 +13,7 @@ it("ends a terminal install with next and undo, keeping trust instructions", asy
   const out = vi.spyOn(console, "log").mockImplementation(() => {});
   await runInstall();
   expect(out.mock.calls.map(call => call[0])).toEqual([
-    "MEX installation:", "  Agent hooks are up to date.", "In Codex, open /hooks once to review and trust MEX's hooks.",
+    "MEX installation:", "  Agent hooks are up to date.", "In Codex, review and trust MEX's hooks once: /hooks in the CLI, or Review hooks beside the message box in the app. Until then Codex skips them.",
     "Next: run mex in a repo to turn MEX on there. Undo any time: mex uninstall",
   ]);
 });

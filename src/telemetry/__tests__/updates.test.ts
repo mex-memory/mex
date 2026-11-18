@@ -41,6 +41,8 @@ describe("the daily front-door update notice", () => {
     expect(newerVersion("0.9.0-beta.10","0.9.0-beta.2")).toBe(true);
     expect(newerVersion("0.9.0","0.9.0-beta.10")).toBe(true);
     expect(newerVersion("0.8.5","0.9.0-beta.1")).toBe(false);
+    expect(newerVersion("0.9.0-beta.1.1","0.9.0-beta.1")).toBe(true);
+    expect(newerVersion("0.9.0-beta.2","0.9.0-beta.1.1")).toBe(true);
     expect(newerVersion("0.9.0-beta.2","0.9.0")).toBe(false);
     expect(newerVersion("0.10.0","0.9.99")).toBe(true);
   });

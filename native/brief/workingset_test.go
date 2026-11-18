@@ -153,6 +153,37 @@ func TestWorkingSetLaneHoldsProposedDecisionsUntilInForce(t *testing.T) {
 	}
 }
 
+// The filter may give a note the smallest scope its words name, such as
+// ".env" for "never cache it in .env files". The note still reaches every new
+// session: with a working set elsewhere, with none, and from another folder.
+// A team entry with the same scope still waits for its files.
+func TestThePersonsScopedNotesReachEveryNewSession(t *testing.T) {
+	opts := setup(t)
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_envnote.md", entry("mx_envnote", "Staging password rotates on Mondays.", "rule", ".env", "[]"))
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_srcnote.md", entry("mx_srcnote", "Keep handlers small.", "rule", "src/a.ts", "[]"))
+	put(t, opts.Checkout, ".mex/learned/mx_teamenv.md", entry("mx_teamenv", "Team env rule.", "rule", ".env", "[]"))
+	for _, c := range []struct {
+		name string
+		ws   *workset.Set
+		path string
+	}{
+		{"working set elsewhere", &workset.Set{Version: 1, Seeds: []string{"src/a.ts"}}, ""},
+		{"no working set", nil, ""},
+		{"empty working set, another folder", &workset.Set{Version: 1}, "apps/api/handler.ts"},
+	} {
+		opts.WorkingSet, opts.Path = c.ws, c.path
+		r := build(t, opts)
+		if !strings.Contains(r.Text, "Staging password rotates on Mondays.") || !strings.Contains(r.Text, "Keep handlers small.") || strings.Contains(r.Text, "Team env rule.") {
+			t.Fatal(c.name, "\n", r.Text)
+		}
+	}
+	// A note linked to the work in progress still ranks first.
+	opts.WorkingSet, opts.Path = &workset.Set{Version: 1, Seeds: []string{"src/a.ts"}}, ""
+	if got := ids(build(t, opts).Items); len(got) < 2 || got[0] != "mx_srcnote" {
+		t.Fatal(got)
+	}
+}
+
 func TestEmptyWorkingSetKeepsTheAreaSelection(t *testing.T) {
 	opts := setup(t)
 	opts.Path = "apps/api/handler.ts"

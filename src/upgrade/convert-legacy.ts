@@ -1,5 +1,6 @@
 /** Pure conversion candidates. Publication owns evidence gates and exact diffs. */
 import { createHash } from "node:crypto";
+import { canonicalFingerprint } from "../graph/fingerprint.js";
 import { KNOWLEDGE_LIMITS, serializeEntry, validateEntry, type KnowledgeEntry, type EntryKind } from "../knowledge/entry.js";
 import { fileEntries, stableId } from "../knowledge/rule-files.js";
 import { headings, lines, sections, textHash } from "../knowledge/sections.js";
@@ -92,11 +93,21 @@ function patternUnits(document: LegacyDocument): Array<{ heading: string; line: 
   });
 }
 
+/** An entry field holds one line of at most this many characters. */
+const MAX_LINE = 2048;
 function legacyChecks(groundings: LegacyGrounding[]): KnowledgeEntry["mex"]["checks"] {
-  return groundings.map(g => ({ kind: "legacy-grounding", role: "supporting",
-    target: { node: g.node, ...(g.file === undefined ? {} : { file: g.file }) },
-    saw: { fingerprint: g.fingerprint, ...(g.bodyHash === undefined ? {} : { bodyHash: g.bodyHash }), ...(g.codeHash === undefined ? {} : { codeHash: g.codeHash }) }, files: {},
-  }));
+  return groundings.flatMap((g): KnowledgeEntry["mex"]["checks"] => {
+    // 0.8 scaffolds from before #233 hold `mh:` hex, which can pass the line
+    // limit. `mh2:` is the same fingerprint, losslessly, in less space.
+    const fingerprint = g.fingerprint.length > MAX_LINE ? canonicalFingerprint(g.fingerprint) : g.fingerprint;
+    // The baseline is kept as evidence and never re-evaluated, so one that is
+    // still too long is left out rather than losing the whole entry.
+    if (fingerprint.length > MAX_LINE) return [];
+    return [{ kind: "legacy-grounding", role: "supporting",
+      target: { node: g.node, ...(g.file === undefined ? {} : { file: g.file }) },
+      saw: { fingerprint, ...(g.bodyHash === undefined ? {} : { bodyHash: g.bodyHash }), ...(g.codeHash === undefined ? {} : { codeHash: g.codeHash }) }, files: {},
+    }];
+  });
 }
 
 /** The source text is evidence about the documented claim, not its live code. */

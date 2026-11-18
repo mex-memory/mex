@@ -249,6 +249,11 @@ func (w workingSelection) main(used int) []Item {
 			continue
 		}
 		rel, isGlobal := w.sc.relevance(c.entry)
+		// A scope only ranks the person's own notes: one scoped to a file
+		// nobody touches yet still reaches the session, after the linked ones.
+		if c.level == "personal" && rel < GlobalRelevance {
+			rel = GlobalRelevance
+		}
 		if rel < Floor || !w.usable(c, false) {
 			continue
 		}
@@ -264,10 +269,17 @@ func (w workingSelection) main(used int) []Item {
 	seen, lines := map[string]bool{}, map[string]bool{}
 	var out []Item
 	globals := 0
-	for _, r := range ranked {
-		if len(out) >= MaxItems {
-			break
+	// The person's notes don't count toward MaxItems; their budget is MaxNoteTokens.
+	counted := func(items []Item) int {
+		n := 0
+		for _, item := range items {
+			if item.Level != "personal" {
+				n++
+			}
 		}
+		return n
+	}
+	for _, r := range ranked {
 		if seen[r.c.entry.ID] {
 			continue
 		}
@@ -283,7 +295,7 @@ func (w workingSelection) main(used int) []Item {
 		for _, item := range group {
 			cost += item.Tokens
 		}
-		if used+cost > MaxTokens || len(out)+len(group) > MaxItems {
+		if used+cost > capFor(group) || (counted(group) > 0 && counted(out)+counted(group) > MaxItems) {
 			continue
 		}
 		for _, item := range group {
