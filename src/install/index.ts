@@ -164,10 +164,7 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
         const before = readSnapshot(paths[agent], MAX_SETTINGS_BYTES);
         put(paths[agent], installSettings(snapshotBytes(before), agent, command, platform, [nativeCommand, nodeCommand]), agent, "settings", undefined, before);
       }
-      if (agents.includes("codex")) {
-        result.notices.push(CODEX_TRUST_NOTICE);
-        if (platform === "win32") result.notices.push("On Windows, Codex starts each hook through PowerShell, which adds about 0.45 s per hook call (measured on one Windows 11 machine).");
-      }
+      if (agents.includes("codex")) result.notices.push(CODEX_TRUST_NOTICE);
       cleanLegacyProjectSettings(options.cwd ?? process.cwd(), result, writer, options);
       return result;
   };
