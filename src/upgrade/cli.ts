@@ -59,9 +59,19 @@ export function buildUpgradeCommand(effects: { afterUpgrade?: () => void } = {})
             if (files.length > 15) console.log(`  … and ${files.length - 15} more`);
             console.log("Every line of it: mex upgrade --diff");
           }
-          if (plan.retained.length) console.log(`Kept in place: ${[...new Set(plan.retained)].join(", ")}`);
-          for (const issue of plan.issues) console.log(`${issue.blocking ? "Blocked" : "Review; source kept"}: ${issue.code} ${issue.path}`);
-          if (plan.ready && (plan.diff || plan.personal.length)) console.log(`To apply exactly this: mex upgrade --apply --expect ${plan.revision}\nAdd --pr to push and open the pull request.`);
+          const list = (title: string, paths: string[], limit = 5) => {
+            if (!paths.length) return;
+            console.log(`${title} (${paths.length}):`);
+            for (const path of paths.slice(0, limit)) console.log(`  ${path}`);
+            if (paths.length > limit) console.log(`  … and ${paths.length - limit} more`);
+          };
+          list("Left as they are, unchanged", [...new Set(plan.retained)]);
+          for (const issue of plan.issues.filter(issue => issue.blocking)) console.log(`Blocked: ${issue.code} ${issue.path}`);
+          const open = plan.issues.filter(issue => !issue.blocking);
+          const review = [...new Set(open.filter(issue => issue.code === "ENTRY_NEEDS_REVIEW").map(issue => issue.path))];
+          list("Part of these could not become notes; the files stay as they are. Save what still matters with mex note", review);
+          for (const issue of open.filter(issue => issue.code !== "ENTRY_NEEDS_REVIEW")) console.log(`Review; source kept: ${issue.code} ${issue.path}`);
+          if (plan.ready && (plan.diff || plan.personal.length)) console.log(`To apply exactly this: mex upgrade --apply --expect ${plan.revision}\nApplying commits to a new local branch and pushes nothing. Add --pr only if you want it pushed with a pull request.`);
         }
       } catch (error) {
         const code = error instanceof KnowledgeError ? error.code : "UPGRADE_UNAVAILABLE";
