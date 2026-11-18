@@ -10,6 +10,10 @@ A fix release on the `next` tag; 0.8.5 stays on `latest`.
 
 - `mex note` kept only `[unverified command removed]` when a real repository command was followed by more words, as in "Run the tests with npm run test from the repo root". The command is kept now; shell syntax or another program after it is still removed.
 - `mex upgrade` dropped whole entries whose 0.8 grounding fingerprints were longer than an entry line. They are re-encoded in the compact format with nothing lost.
+- A new session often got none of your notes. The session-start brief had 100 ms to put them together; on a machine busy starting the agent it ran out before the first note and sent an almost empty brief. Your own notes are now always considered (at most 8 are checked after the time runs out); team entries and commands still wait for the moments.
+- A note you saved while a session was open reached the rule files only after every session in that repo had been closed for 10 minutes. Your hidden local rule files are now rewritten within seconds of `mex note`, `mex edit`, `mex forget` or `mex wrong`; the shared files still wait for sessions to end.
+- A request to drop a note the code had made false was folded into a rule-file rebuild already waiting for a session, so it waited too. Rebuilds are now kept apart by checkout and by whether they must run at once; a second worktree of the same repo no longer loses its rebuild.
+- `mex install` and the first run found Claude Code and Codex only through their command on PATH, so people using only the desktop app or an editor extension got "No supported agent found". An agent's user settings folder (`~/.claude`, `~/.codex`, or `CLAUDE_CONFIG_DIR` / `CODEX_HOME`) now counts too.
 
 ### Changed
 

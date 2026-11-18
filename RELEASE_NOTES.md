@@ -6,6 +6,9 @@ A fix release for 0.9.0-beta.1, on npm's `next` tag. MEX 0.8.5 remains on `lates
 - `mex upgrade` keeps entries whose 0.8 fingerprints were too long for one line.
 - The first screen suggests a note only you can write; the install screen drops the Codex-on-Windows timing line.
 - The `mex upgrade` preview is shorter and says that applying pushes nothing unless you add `--pr`.
+- New sessions get your notes again. On a busy machine the session-start brief ran out of time before reading any note and sent almost nothing; your own notes are now always considered.
+- A note you save reaches your hidden rule files within seconds, even with a session open, instead of after every session in the repo has been closed for 10 minutes.
+- `mex install` finds Claude Code and Codex when you use only the desktop app or an editor extension.
 
 Update with `npm i -g mex-agent@next`.
 
