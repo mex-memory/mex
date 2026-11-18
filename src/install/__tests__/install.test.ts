@@ -210,6 +210,17 @@ describe("machine-wide hook installation", () => {
     expect(result.notices.some(line => line.includes("Codex"))).toBe(false);
   });
 
+  it("finds an agent used only through its desktop app or editor: its settings folder, no command on PATH", async () => {
+    const f = fixture();
+    const { available: _available, ...options } = f.options;
+    const bare = { ...options, env: { PATH: join(f.base, "empty-path") } };
+    expect((await installAgents({ ...bare, dryRun: true })).agents).toEqual([]);
+    mkdirSync(join(f.user, ".claude"), { recursive: true });
+    expect((await installAgents({ ...bare, dryRun: true })).agents).toEqual(["claude-code"]);
+    mkdirSync(join(f.user, ".codex"));
+    expect((await installAgents({ ...bare, dryRun: true })).agents).toEqual(["claude-code", "codex"]);
+  });
+
   it("does not create storage when neither agent is installed", async () => {
     const f = fixture();
     expect((await installAgents({ ...f.options, available: () => false })).changes).toEqual([]);
