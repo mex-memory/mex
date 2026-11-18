@@ -105,6 +105,10 @@ describe("shipped knowledge commands", () => {
     expect(run(["expand", id, "--json"]).json()).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
     const second = run(["note", "A disposable note.", "--json"]).json().entry.mex.id;
     expect(run(["forget", second, "No longer useful.", "--json"]).json()).toMatchObject({ ok: true, status: "retired" });
+    // The command MEX prints after an agent saves a note has no reason.
+    const third = run(["note", "Another disposable note.", "--json"]).json().entry.mex.id;
+    expect(run(["forget", third, "--json"]).json()).toMatchObject({ ok: true, status: "retired", retired: { reason: "Removed with mex forget" } });
+    expect(run(["wrong", third]).status).not.toBe(0);
     expect(readdirSync(repo)).toEqual([]);
     expect(existsSync(join(mexBase, ".mex", "config.json"))).toBe(false);
   });
