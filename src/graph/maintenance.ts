@@ -2,8 +2,8 @@ import { materializeOverlay } from "./overlay-materialize.js";
 import { openRecord } from "../record/index.js";
 import { recordBuildUsage } from "../record/build-usage.js";
 import type { GraphCandidateUsage } from "./candidate-protocol.js";
-import { acquireGraphWriter, adoptSiblingBase, assertGraphDirectory, cloneGraph, collectGraphGarbage, currentGraphPath, discardGraphTemporary, enforceIndexCap, finalizeGraph, graphLocation, graphStoragePathAllowed, verifiedGraphLocation, graphTemporary, publishGraph, publishGraphOverlay, publishGraphPointer, readGraphPointer, siblingBase, withGraphStorageContext, type GraphLocation } from "./storage.js";
-import { overlayTooLarge, planOverlay, writeOverlay } from "./overlay-write.js";
+import { acquireGraphWriter, adoptSiblingBase, assertGraphDirectory, cloneGraph, collectGraphGarbage, currentGraphPath, discardGraphTemporary, enforceIndexCap, finalizeGraph, graphLocation, graphStoragePathAllowed, verifiedGraphLocation, graphTemporary, publishGraph, publishGraphOverlay, publishGraphPointer, readGraphPointer, siblingBase, siblingBases, withGraphStorageContext, type GraphLocation } from "./storage.js";
+import { overlayTooLarge, planOverlay, writeOverlay, type OverlayPlan } from "./overlay-write.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -712,14 +712,24 @@ async function publishCandidate(input: CandidatePublicationInput): Promise<Candi
  */
 async function publishOverlay(input: CandidatePublicationInput, base: string): Promise<CandidatePublicationResult | undefined> {
   const { paths, options, candidate } = input;
-  const basePath = join(paths.location.directory, base);
   assertMaintenanceDirectoryUnchanged(paths);
   assertNotAborted(options.signal);
   await options.__internal?.beforeLiveRevalidation?.();
   revalidateLiveDatabase(paths.database, input.priorIdentity);
   assertCandidateUnchanged(input.candidatePath, candidate);
-  const plan = timeGraphPhase("overlay.plan", () => planOverlay(basePath, input.candidatePath));
-  if ("reason" in plan || overlayTooLarge(plan)) return undefined;
+  // The overlay goes over whichever base needs the fewest files: a worktree
+  // that switches back to a branch near a sibling's base returns to sharing it
+  // in place of keeping a base of its own.
+  let chosen: { base: string; plan: OverlayPlan } | undefined;
+  for (const option of [base, ...siblingBases(paths.location, base)]) {
+    const plan = timeGraphPhase("overlay.plan", () => planOverlay(join(paths.location.directory, option), input.candidatePath));
+    if ("reason" in plan || overlayTooLarge(plan)) continue;
+    if (!chosen || plan.files.length < chosen.plan.files.length) chosen = { base: option, plan };
+  }
+  if (!chosen) return undefined;
+  ({ base } = chosen);
+  const { plan } = chosen;
+  const basePath = join(paths.location.directory, base);
   assertMaintenanceDirectoryUnchanged(paths);
   assertNotAborted(options.signal);
   revalidateLiveDatabase(paths.database, input.priorIdentity);

@@ -356,6 +356,14 @@ export function siblingBase(location: GraphLocation): GraphPointer | undefined {
     .filter(pointer => pointer.root !== location.root && regular(join(location.directory, pointer.base)))
     .sort((left, right) => Date.parse(right.as_of) - Date.parse(left.as_of))[0];
 }
+/** The other bases this project's checkouts point at, newest first. */
+export function siblingBases(location: GraphLocation, own: string): string[] {
+  const bases = pointers(location.directory)
+    .filter(pointer => pointer.root !== location.root && pointer.base !== own && regular(join(location.directory, pointer.base)))
+    .sort((left, right) => Date.parse(right.as_of) - Date.parse(left.as_of))
+    .map(pointer => pointer.base);
+  return [...new Set(bases)];
+}
 /** Point a checkout with no graph at a sibling's base; its next refresh writes the overlay. */
 export function adoptSiblingBase(location: GraphLocation): boolean {
   if (readGraphPointer(location)) return false;
