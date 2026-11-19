@@ -89,7 +89,7 @@ func (s *Structural) Match(code string) bool {
 		if first.meta == "" && !sameToken(first.text, toks[start]) {
 			continue
 		}
-		if m.at(0, start, map[string]string{}) {
+		if m.at(0, start, map[string][2]int{}) {
 			return true
 		}
 		if m.budget <= 0 {
@@ -105,7 +105,7 @@ type matcher struct {
 	budget int
 }
 
-func (m *matcher) at(pi, ti int, bound map[string]string) bool {
+func (m *matcher) at(pi, ti int, bound map[string][2]int) bool {
 	m.budget--
 	if m.budget <= 0 {
 		return false
@@ -137,17 +137,14 @@ func (m *matcher) at(pi, ti int, bound map[string]string) bool {
 				return false
 			}
 			end = next
-			text := strings.Join(m.toks[ti:end], " ")
 			if seen {
-				if text == prev && m.at(pi+1, end, bound) {
-					return true
-				}
-				if len(text) >= len(prev) {
-					return false
+				// The same name again: the same tokens, so the same length.
+				if n := prev[1] - prev[0]; end-ti >= n {
+					return end-ti == n && m.same(prev[0], ti, n) && m.at(pi+1, end, bound)
 				}
 				continue
 			}
-			bound[p.meta] = text
+			bound[p.meta] = [2]int{ti, end}
 			if m.at(pi+1, end, bound) {
 				return true
 			}
@@ -159,6 +156,16 @@ func (m *matcher) at(pi, ti int, bound map[string]string) bool {
 	default:
 		return ti < len(m.toks) && sameToken(p.text, m.toks[ti]) && m.at(pi+1, ti+1, bound)
 	}
+}
+
+// same reports whether the n tokens at a and at b are the same.
+func (m *matcher) same(a, b, n int) bool {
+	for i := 0; i < n; i++ {
+		if !sameToken(m.toks[a+i], m.toks[b+i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // unit returns the end of the token or bracketed group starting at i; a
