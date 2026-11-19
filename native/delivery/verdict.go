@@ -77,6 +77,9 @@ func (s *shapeEnv) close() {
 func shape(c candidate, verdict string, env *shapeEnv) shaped {
 	it := c.item
 	s := shaped{candidate: c, verdict: verdict, action: "given", full: it.Full, oneLine: it.OneLine, fullTok: it.FullTokens, lineTok: it.OneLineTokens}
+	if c.lineOnly && s.oneLine != "" {
+		s.full, s.fullTok = s.oneLine, s.lineTok
+	}
 	if verdict == held && it.Entry.Kind == "fact" && env != nil && env.hooks != nil {
 		v, ok, err := env.hooks.VerdictOf(env.project, env.checkout, it.Entry.ID)
 		if err != nil || !ok {

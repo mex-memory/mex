@@ -64,6 +64,7 @@ type candidate struct {
 	rel           string
 	resend        bool // the ledger has it, but the agent's transcript no longer does
 	control       bool // the same eligible moment suppressed by epoch dedupe
+	lineOnly      bool // always the one-line form: a moment recipe (~40 tokens)
 }
 
 // Resolver finds the registered checkout for a path. isFile is false for a
@@ -371,6 +372,10 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 			case "procedure":
 				if v.created && createsMatch(it, v.rel) {
 					add(momentCreate, tierFile, false, false)
+				} else if momentRecipe(it, v.rel) {
+					// A co-change or generator rule, at the first edit in its
+					// area: "after changes in internal/ls, run ...".
+					out = append(out, candidate{item: it, moment: momentEdit, tier: scopeTier(it, v.rel), rel: v.rel, lineOnly: true})
 				}
 			}
 		case contract.ToolShell:
@@ -488,6 +493,22 @@ func isManifest(rel string) bool { return manifests[path.Base(rel)] }
 
 // createsMatch uses `when: creates` globs when the procedure has them, else
 // its scope.
+// momentRecipe: a procedure tied to an area, not to new files, fires at an
+// edit inside that area. Repo-wide procedures belong to the start brief.
+func momentRecipe(it *entries.Item, rel string) bool {
+	for _, w := range it.Entry.When {
+		if w.Type == "creates" {
+			return false
+		}
+	}
+	for _, s := range it.Entry.Scope {
+		if s == "**" || s == "**/*" || s == "*" {
+			return false
+		}
+	}
+	return inScope(it, rel)
+}
+
 func createsMatch(it *entries.Item, rel string) bool {
 	ts := triggers(it, "creates")
 	if len(ts) == 0 {
