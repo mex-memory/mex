@@ -351,7 +351,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 			case "pitfall":
 				add(momentRead, scopeTier(it, v.rel), true, false)
 			case "rule":
-				if snap.Literals().Has(readText, it, "anti") {
+				if snap.Patterns().Has(readText, it, "anti") {
 					add(momentReadRisk, tierPattern, true, false)
 				}
 			}
@@ -365,7 +365,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 					add(momentEdit, scopeTier(it, v.rel), false, false)
 				}
 			case "decision":
-				if snap.Literals().Has(v.added, it, "rejected") && (inScope(it, v.rel) || isManifest(v.rel)) {
+				if snap.Patterns().InEdit(v.added, it, "rejected") && (inScope(it, v.rel) || isManifest(v.rel)) {
 					add(momentRejected, tierPattern, true, false)
 				}
 			case "procedure":
