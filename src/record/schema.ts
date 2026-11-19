@@ -1,5 +1,5 @@
 /** Node alone owns these numbered, forward-only record.db migrations. */
-export const RECORD_SCHEMA_VERSION = 5;
+export const RECORD_SCHEMA_VERSION = 6;
 /** The hooks.db migrations are owned by Go. */
 export const HOOKS_SCHEMA_VERSION = 13;
 export const LEDGER_REPORT_SCHEMA_VERSION = 13;
@@ -154,4 +154,18 @@ CREATE TABLE decision_events (
 CREATE INDEX decision_events_entry ON decision_events(project_id,entry_id,id);
 CREATE TRIGGER decision_events_no_update BEFORE UPDATE ON decision_events BEGIN SELECT RAISE(ABORT,'decision events are append-only'); END;
 CREATE TRIGGER decision_events_no_delete BEFORE DELETE ON decision_events BEGIN SELECT RAISE(ABORT,'decision events are append-only'); END;
+` }, { version: 6, sql: `
+CREATE TABLE build_usage (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ ts TEXT NOT NULL, project_id TEXT NOT NULL CHECK(length(project_id)<=80), checkout TEXT NOT NULL CHECK(length(checkout)<=4096),
+ kind TEXT NOT NULL CHECK(kind IN ('build','refresh','verify','warm')),
+ files INTEGER NOT NULL DEFAULT 0 CHECK(files>=0),
+ wall_ms INTEGER NOT NULL CHECK(wall_ms>=0), cpu_ms INTEGER NOT NULL CHECK(cpu_ms>=0),
+ peak_rss_mb INTEGER NOT NULL CHECK(peak_rss_mb>=0), server_rss_mb INTEGER CHECK(server_rss_mb IS NULL OR server_rss_mb>=0),
+ result TEXT NOT NULL CHECK(result IN ('ok','unchanged','failed')),
+ runs INTEGER NOT NULL DEFAULT 1 CHECK(runs>=1)
+);
+CREATE INDEX build_usage_project ON build_usage(project_id,kind,ts);
+CREATE INDEX build_usage_ts ON build_usage(ts);
+CREATE UNIQUE INDEX build_usage_warm_minute ON build_usage(project_id,checkout,ts) WHERE kind='warm';
 ` }];

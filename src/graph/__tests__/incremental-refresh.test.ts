@@ -80,7 +80,7 @@ const EXACT_TABLES = undefined;
  * and file mtimes and path-dependent metadata belong to its own directory.
  */
 const CROSS_TREE_TABLES: (keyof GraphDump)[] = [
-  "fileContents", "nodes", "edges", "importBindings", "unresolvedRefs", "fingerprints",
+  "fileContents", "coverage", "nodes", "edges", "importBindings", "unresolvedRefs", "fingerprints",
   "lshBuckets", "sourceChunks", "rowDigests", "extractionCache", "sourceChunksFts", "nodesFts",
 ];
 

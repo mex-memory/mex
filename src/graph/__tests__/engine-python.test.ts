@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../storage.js";
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -41,7 +42,7 @@ describe("Python graph resolution", () => {
     expect(widget).toBeDefined();
     expect(exported).toBeDefined();
 
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       const serviceFile = db.prepare(
         "SELECT id FROM nodes WHERE kind = 'file' AND file_path = 'pkg/service.py'",

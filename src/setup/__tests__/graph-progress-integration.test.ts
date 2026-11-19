@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { GraphMaintenanceProgress } from "../../team/contracts/graph.js";
 import { runHeadlessSetup, type SetupProgressStep } from "../headless.js";
 import { buildSetupGraph } from "../phases.js";
+import { currentGraphPath } from "../../graph/storage.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -20,7 +21,7 @@ describe("real setup graph progress", () => {
     await buildSetupGraph(root, options);
     expect(updates.some(update => update.phase === "stage")).toBe(true);
     if (background) expect(updates.some(update => update.phase === "parse")).toBe(true);
-    const database = join(root, ".mex/graph.db");
+    const database = currentGraphPath(root);
     const bytes = readFileSync(database);
     const stats = statSync(database);
     updates.length = 0;
@@ -39,7 +40,7 @@ describe("real setup graph progress", () => {
   it("cancels reuse when the freshness progress observer aborts", async () => {
     const root = fixture();
     await buildSetupGraph(root);
-    const database = join(root, ".mex/graph.db");
+    const database = currentGraphPath(root);
     const bytes = readFileSync(database);
     const controller = new AbortController();
     await expect(buildSetupGraph(root, {
@@ -80,7 +81,7 @@ describe("real setup graph progress", () => {
     expect(beatsDuringParsing).toBeGreaterThan(0);
     expect(JSON.stringify(updates)).not.toContain(root);
     expect(JSON.stringify(updates)).not.toContain("private-calculation.ts");
-    expect(existsSync(join(root, ".mex/graph.db"))).toBe(true);
+    expect(existsSync(currentGraphPath(root))).toBe(true);
     // A paused setup keeps a provisional Wiki index over the unmigrated scaffold, so the Wiki
     // reads as valid rather than `migration_required` (#268); finalize migrates and rebuilds it.
     expect(existsSync(join(root, ".mex/wiki.db"))).toBe(true);
@@ -94,7 +95,7 @@ describe("real setup graph progress", () => {
     await runHeadlessSetup({ projectRoot: root, mode: "agent-memory", tools: [], confirmPopulation: true,
       onGraphProgress: update => updates.push(update) });
     expect(updates).toEqual([]);
-    expect(existsSync(join(root, ".mex/graph.db"))).toBe(false);
+    expect(existsSync(currentGraphPath(root))).toBe(false);
   });
 });
 

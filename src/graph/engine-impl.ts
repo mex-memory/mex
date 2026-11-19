@@ -1,3 +1,9 @@
+import { processGraphSizing } from "./sizing.js";
+import { assertTextSource, unavailableFileReason } from "./source-errors.js";
+import { discoverGraphReadPaths } from "./read-discovery.js";
+import { skippedByRule } from "../file-index/discover.js";
+import { graphCoverage } from "./read-coverage.js";
+import { currentGraphPath, graphStoragePathAllowed } from "./storage.js";
 import { graphManifest, configHashForSources, discoverGraphConfigSources, CORPUS_EXTRACTOR_VERSION, RESOLVER_VERSION, type GraphManifest } from "./manifest.js";
 export { graphManifest, graphManifestHash, graphManifestDiffersOnlyByConfig, type GraphManifest, type GraphManifestInputs } from "./manifest.js";
 import { GraphSourceStagingError, type GraphSourceStagingFailure } from "./source-errors.js";
@@ -64,6 +70,7 @@ import {
   type CompilerExtractedNode,
   type CompilerExtractionOptions,
   type CompilerIncrementalInput,
+  type CompilerFileCapture,
   type CompilerProjectInputs,
   type CompilerExtractionResult,
   type CompilerFileExtraction,
@@ -103,6 +110,7 @@ import {
   createGraphSnapshot,
   parseGraphSnapshot,
   readGraphGitProvenance,
+  gitProvenanceChanged,
   serializeGraphSnapshot,
   type GraphGitProvenance,
   type GraphSnapshot,
@@ -416,9 +424,10 @@ function decodeProjectInputs(root: string, encoded: string | null): Record<strin
 
 class GraphEngineImpl implements GraphEngine {
   private readonly rootDir: string;
-  private readonly dbPath: string;
+  private dbPath: string;
   private readonly readOnly: boolean;
   private readonly immutable: boolean;
+  private readonly managed: boolean;
   private readonly sourceFileAccess: GraphSourceFileAccess;
   private readonly internal: GraphEngineInternalHooks;
   private readonly compilerExtraction?: CompilerExtractionOptions;
@@ -434,7 +443,9 @@ class GraphEngineImpl implements GraphEngine {
       throw new TypeError("An adopted graph database must be an immutable read-only connection.");
     }
     this.rootDir = resolve(options.rootDir);
-    this.dbPath = options.dbPath ?? resolve(this.rootDir, ".mex", "graph.db");
+    this.dbPath = options.dbPath ?? currentGraphPath(this.rootDir);
+    if (options.dbPath !== undefined && options.readOnly !== true && /^graph-base-[a-z0-9-]+\.db$/.test(basename(this.dbPath)) && graphStoragePathAllowed(this.rootDir, this.dbPath)) throw new Error("Published graphs are immutable");
+    this.managed = options.dbPath === undefined;
     this.readOnly = options.readOnly ?? false;
     this.immutable = options.immutable ?? false;
     this.sourceFileAccess = options.sourceFileAccess
@@ -455,8 +466,8 @@ class GraphEngineImpl implements GraphEngine {
       this.internal.beforeDatabaseOpen?.();
       this.db = timeGraphPhase("engine.openDatabase", () => openGraphDatabase(this.dbPath, {
         allowRebuild,
-        readOnly: this.readOnly,
-        immutable: this.immutable,
+        readOnly: this.readOnly || this.managed,
+        immutable: this.immutable || this.managed,
       }));
       this.store = new GraphStore(this.db);
     }
@@ -464,6 +475,13 @@ class GraphEngineImpl implements GraphEngine {
   }
 
   async build(rootDir?: string): Promise<BuildResult> {
+    if (this.managed && !this.readOnly) {
+      this.close();
+      const { rebuildGraph } = await import("./maintenance.js");
+      const result = await rebuildGraph(rootDir ?? this.rootDir);
+      this.dbPath = currentGraphPath(this.rootDir);
+      return { ...result, skipped: result.skipped ? [...result.skipped] : undefined, declinedInputs: result.declinedInputs ? [...result.declinedInputs] : undefined, typescript: result.typescript ? { ...result.typescript, projects: { ...result.typescript.projects }, notes: [...result.typescript.notes] } : undefined };
+    }
     if (this.readOnly) throw new Error("A read-only graph engine cannot build an index.");
     const started = Date.now();
     const root = rootDir ? resolve(rootDir) : this.rootDir;
@@ -478,7 +496,7 @@ class GraphEngineImpl implements GraphEngine {
       { reason: "a rebuild extracts in full" },
     );
     try {
-      timeGraphPhase("stage.parseRegressionCheck", () => this.assertNoNewParseFailures(staged));
+
       const { publication: _publication, ...result } = await this.publish(staged, root, gitBeforeStaging, false);
       return { ...result, durationMs: Date.now() - started };
     } finally {
@@ -487,6 +505,13 @@ class GraphEngineImpl implements GraphEngine {
   }
 
   async sync(changedFiles: string[]): Promise<BuildResult> {
+    if (this.managed && !this.readOnly) {
+      this.close();
+      const { refreshGraph } = await import("./maintenance.js");
+      const result = await refreshGraph(this.rootDir);
+      this.dbPath = currentGraphPath(this.rootDir);
+      return { ...result, skipped: result.skipped ? [...result.skipped] : undefined, declinedInputs: result.declinedInputs ? [...result.declinedInputs] : undefined, typescript: result.typescript ? { ...result.typescript, projects: { ...result.typescript.projects }, notes: [...result.typescript.notes] } : undefined };
+    }
     if (this.readOnly) throw new Error("A read-only graph engine cannot synchronize an index.");
     const started = Date.now();
     const changed = [...new Set(changedFiles.map((file) =>
@@ -550,7 +575,7 @@ class GraphEngineImpl implements GraphEngine {
           message: "The changed source still exists but was absent from the staged corpus.",
         })));
       }
-      timeGraphPhase("stage.parseRegressionCheck", () => this.assertNoNewParseFailures(staged));
+
       const previousFiles = new Map(this.getStore(true).getAllFileRecords()
         .map((file) => [file.path, file.contentHash]));
       const filesChanged = staged.files.filter((file) => previousFiles.get(file.record.path) !== file.record.contentHash)
@@ -599,23 +624,6 @@ class GraphEngineImpl implements GraphEngine {
       store.setMetadata(GRAPH_SNAPSHOT_METADATA_KEY, serialized);
       if (incrementalStateCurrent) store.setMetadata(INCREMENTAL_STATE_METADATA_KEY, incrementalStateMarker(serialized));
     });
-  }
-
-  private assertNoNewParseFailures(staged: StagedCorpus): void {
-    const store = this.getStore(true);
-    const previousFiles = store.getAllFileRecords();
-    if (previousFiles.length === 0) return;
-    const previous = new Map(previousFiles.map((file) => [file.path, file.parseStatus ?? "ok"]));
-    const newlyFailed = staged.files.filter((file) => (
-      file.record.parseStatus === "failed" && previous.get(file.record.path) !== "failed"
-    ));
-    if (newlyFailed.length === 0) return;
-    throw new GraphSourceStagingError(newlyFailed.map((file) => ({
-      filePath: file.record.path,
-      operation: "parse",
-      code: "GRAPH_SOURCE_PARSE_FAILED",
-      message: "The source no longer parses; the last trustworthy graph snapshot was preserved.",
-    })));
   }
 
   private async publish(
@@ -717,6 +725,14 @@ class GraphEngineImpl implements GraphEngine {
           }
         });
       }
+      timeGraphPhase("publish.coverage", () => {
+        // Rows only for files the corpus considered and did not index; every
+        // other path's coverage follows from `files` (see coverageFor).
+        this.db!.exec("CREATE TABLE IF NOT EXISTS coverage(path TEXT PRIMARY KEY, reason TEXT NOT NULL) WITHOUT ROWID; DELETE FROM coverage;");
+        const cover = this.db!.prepare("INSERT OR REPLACE INTO coverage(path,reason) VALUES(?,?)");
+        for (const file of staged.files) if (file.record.parseStatus === "failed") cover.run(file.record.path, "parse failed");
+        for (const file of staged.skipped) cover.run(file.filePath, file.reason === "corpus-limit" ? "too big" : file.reason);
+      });
       timeGraphPhase("publish.invariants", () => store.validateInvariants(expectedNodes));
       store.setMetadata("compiler_version", staged.compiler.compilerVersion);
       if (staged.typescript) store.setMetadata(TYPESCRIPT_REPORT_METADATA_KEY, JSON.stringify(staged.typescript));
@@ -809,7 +825,7 @@ class GraphEngineImpl implements GraphEngine {
   }
 
   searchNodes(query: string, options?: NodeSearchOptions): GraphNode[] {
-    return this.getStore().search(query, options);
+    return this.getStore().search(query, options).filter(node => this.fileVisible(node.filePath));
   }
 
   searchSource(query: string, limit = 40) {
@@ -827,11 +843,30 @@ class GraphEngineImpl implements GraphEngine {
     }));
   }
 
-  getNode(id: string): GraphNode | null { return this.getStore().getNodeById(id); }
-  getCallers(id: string): GraphNode[] { return getCallers(this.getStore(), id); }
-  getCallees(id: string): GraphNode[] { return getCallees(this.getStore(), id); }
+  getNode(id: string): GraphNode | null { const node = this.getStore().getNodeById(id); return node && this.fileVisible(node.filePath) ? node : null; }
+  getCallers(id: string): GraphNode[] { return getCallers(this.getStore(), id).filter(node => this.fileVisible(node.filePath)); }
+  getCallees(id: string): GraphNode[] { return getCallees(this.getStore(), id).filter(node => this.fileVisible(node.filePath)); }
   getIncoming(id: string, kinds?: GraphEdge["kind"][]) { return getIncoming(this.getStore(), id, kinds); }
   getOutgoing(id: string, kinds?: GraphEdge["kind"][]) { return getOutgoing(this.getStore(), id, kinds); }
+
+  private coverageStatement?: { db: SqliteDatabase; statement: ReturnType<SqliteDatabase["prepare"]> | null };
+  /** The coverage row of one path, or undefined when it has none (or the graph predates coverage). */
+  private coverageRow(path: string): string | undefined {
+    this.getStore();
+    if (this.coverageStatement?.db !== this.db) {
+      const has = !!this.db!.prepare("SELECT 1 FROM sqlite_master WHERE name='coverage' AND type='table'").get();
+      this.coverageStatement = { db: this.db!, statement: has ? this.db!.prepare("SELECT reason FROM coverage WHERE path=?") : null };
+    }
+    const row = this.coverageStatement.statement?.get(path) as { reason: string } | undefined;
+    return row?.reason;
+  }
+
+  private fileVisible(path: string): boolean { return this.coverageRow(path) === undefined; }
+
+  coverageFor(path: string): { indexed: true } | { indexed: false; reason: string } {
+    const relativePath = toPosix(relative(this.rootDir, resolve(this.rootDir, path)));
+    return graphCoverage(relativePath, this.coverageRow(relativePath), this.getStore().getFileRecord(relativePath) !== null, this.rootDir);
+  }
 
   close(): void {
     if (this.db) this.db.close();
@@ -972,6 +1007,17 @@ function loadExtractionReuse(store: GraphStore, root: string): ExtractionReuse |
   };
 }
 
+/**
+ * Large builds keep captures on disk until the finishing pass (see
+ * capture-spool). MEX_GRAPH_SPOOL_CAPTURES=always|never overrides the size rule.
+ */
+function spoolCaptures(compilerFiles: number): boolean {
+  const forced = process.env.MEX_GRAPH_SPOOL_CAPTURES;
+  if (forced === "always") return true;
+  if (forced === "never") return false;
+  return compilerFiles >= processGraphSizing().spoolCapturesFrom;
+}
+
 async function stageCorpus(
   root: string,
   manifest = graphManifest(root),
@@ -1052,6 +1098,28 @@ async function stageCorpus(
         (path) => sourceSpool.read(discoveredByPath.get(path)!),
       ));
 
+    // Cache entries for the next refresh. Compiler captures arrive as the
+    // finishing pass makes them, so the whole corpus's captures are never
+    // held next to its encoded entries.
+    const storedExtraction = "reason" in reuse ? new Map<string, StoredExtraction>() : reuse.stored;
+    const cacheEntries = new Map<string, ExtractionCacheState["entries"][number]>();
+    const setCacheEntry = (path: string, contentHash: string, payload: Uint8Array): void => {
+      const previous = storedExtraction.get(path);
+      const changed = !previous || previous.contentHash !== contentHash
+        || !Buffer.from(previous.payload).equals(Buffer.from(payload));
+      cacheEntries.set(path, { path, contentHash, payload, changed });
+    };
+    const takeCapture = (capture: CompilerFileCapture, reused: boolean): void => {
+      const contentHash = discoveredByPath.get(capture.filePath)?.contentHash;
+      if (!contentHash) return;
+      if (reused) {
+        cacheEntries.set(capture.filePath, {
+          path: capture.filePath, contentHash, payload: storedExtraction.get(capture.filePath)!.payload, changed: false,
+        });
+      } else {
+        setCacheEntry(capture.filePath, contentHash, encodeCachedExtraction({ kind: "compiler", capture }));
+      }
+    };
     let compiler: CompilerExtractionResult;
     // A full extraction reuses nothing, so it must not carry the previous
     // payloads either: that would peak above a plain build. Emptying the map
@@ -1062,13 +1130,16 @@ async function stageCorpus(
     };
     const extractCompilerFiles = (incremental?: CompilerIncrementalInput): CompilerExtractionResult => {
       const semanticInputLedger = createGraphSemanticInputLedger();
+      cacheEntries.clear();
       return timeGraphPhase("compiler.total", () => buildTypeScriptExtraction(root, compilerPaths, {
         ...compilers?.options,
         ...compilerExtraction,
         ...(incremental ? { incremental } : {}),
+        onCapture: takeCapture,
+        ...(spoolCaptures(compilerPaths.length) ? { captureSpoolDirectory: internal.sourceSpoolDirectory ?? tmpdir() } : {}),
         stagedInputs: compilerInputs,
         readProjectFile: (absolutePath) => {
-          const source = readSecureCompilerInput(root, absolutePath);
+          const source = readCompilerProjectFile(root, absolutePath);
           const relPath = toPosix(relative(resolve(root), resolve(absolutePath)));
           try {
             addGraphSemanticInput(
@@ -1133,31 +1204,8 @@ async function stageCorpus(
       .map((file) => detectLanguage(file.relPath)))];
     await timeGraphPhaseAsync("stage.loadGrammars", () => loadGrammars([...treeLanguages, ...fallbackLanguages]));
 
-    // Cache entries for the next refresh, encoded before resolution adds
-    // framework nodes and hydrates bindings in place.
-    const storedExtraction = "reason" in reuse ? new Map<string, StoredExtraction>() : reuse.stored;
-    const cacheEntries = new Map<string, ExtractionCacheState["entries"][number]>();
-    const setCacheEntry = (path: string, contentHash: string, payload: Uint8Array): void => {
-      const previous = storedExtraction.get(path);
-      const changed = !previous || previous.contentHash !== contentHash
-        || !Buffer.from(previous.payload).equals(Buffer.from(payload));
-      cacheEntries.set(path, { path, contentHash, payload, changed });
-    };
-    const reusedCaptures = new Set(compiler.reused);
-    timeGraphPhase("stage.cacheCompiler", () => {
-      for (const capture of compiler.captures) {
-        const contentHash = discoveredByPath.get(capture.filePath)?.contentHash;
-        if (!contentHash) continue;
-        if (reusedCaptures.has(capture.filePath)) {
-          cacheEntries.set(capture.filePath, {
-            path: capture.filePath, contentHash, payload: storedExtraction.get(capture.filePath)!.payload, changed: false,
-          });
-        } else {
-          setCacheEntry(capture.filePath, contentHash, encodeCachedExtraction({ kind: "compiler", capture }));
-        }
-      }
-    });
-    compiler.captures.length = 0;
+    // Compiler cache entries were encoded as captures arrived, before
+    // resolution adds framework nodes and hydrates bindings in place.
     if (!("reason" in plan)) {
       plan.captures.clear();
       plan.affected.clear();
@@ -1169,9 +1217,12 @@ async function stageCorpus(
 
     let parsed = compiler.files.length;
     let treesExtracted = 0;
+    // Each compiler file is released as soon as its staged shape exists.
+    compiler.files.length = 0;
     const files = discovered.map((file) => {
       const compilerFile = compilerByPath.get(file.relPath);
       if (compilerFile) {
+        compilerByPath.delete(file.relPath);
         const source = sourceSpool.read(file);
         return timeGraphPhase("stage.compilerFiles", () => stageCompilerFile(file, source, compilerFile));
       }
@@ -1321,14 +1372,20 @@ function stageFrameworkAndFallbackResolution(
   files: StagedFile[],
   configSources: ReadonlyMap<string, string>,
   sourceSpool: GraphSourceSpool,
+  /**
+   * The warm path stages a few files against the stored graph: `corpus` holds
+   * every other file's nodes (in corpus order) and reads its sources.
+   */
+  corpus?: WarmResolutionCorpus,
 ): void {
-  const initialNodes = files.flatMap((file) => file.nodes);
+  const ordered = (staged: readonly GraphNode[]): GraphNode[] => corpus ? corpus.merge(staged) : [...staged];
+  const initialNodes = ordered(files.flatMap((file) => file.nodes));
   const fileByPath = new Map(files.map((file) => [file.record.path, file]));
   const sourceAccess = {
-    paths: [...fileByPath.keys()],
+    paths: corpus ? corpus.paths : [...fileByPath.keys()],
     readFile: (path: string) => {
       const file = fileByPath.get(path);
-      return file ? sourceSpool.read(file.discovered) : null;
+      return file ? sourceSpool.read(file.discovered) : corpus?.readFile(path) ?? null;
     },
   };
   const detectionContext = createStagedResolutionContext(
@@ -1414,7 +1471,7 @@ function stageFrameworkAndFallbackResolution(
     file.record.nodeCount = file.nodes.length;
   }
 
-  const nodes = files.flatMap((file) => file.nodes);
+  const nodes = ordered(files.flatMap((file) => file.nodes));
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const context = createStagedResolutionContext(nodes, root, configSources, sourceAccess);
   const refs = files.flatMap((file) => file.references).filter((ref) =>
@@ -2078,7 +2135,6 @@ function inspectChangedSources(
  * and the freshness inspector all agree about which files exist.
  */
 /** Source files read at once by {@link discoverSourceFilesConcurrently}. */
-const DISCOVERY_READ_CONCURRENCY = 16;
 const DISCOVERY_READ_WINDOW = 512;
 
 /**
@@ -2098,7 +2154,7 @@ async function discoverSourceFilesConcurrently(
   let canonicalRoot: string;
   try {
     canonicalRoot = realpathSync(root);
-    matches = discoverBoundedGraphPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
+    matches = discoverGraphReadPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
       ...GRAPH_CORPUS_GLOB_OPTIONS,
       cwd: root,
       ignore: graphCorpusIgnoreGlobs(root),
@@ -2138,7 +2194,7 @@ async function discoverSourceFilesConcurrently(
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(DISCOVERY_READ_CONCURRENCY, window.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(processGraphSizing().readConcurrency, window.length) }, worker));
     for (const [index, entry] of window.entries()) {
       if (entry.canonical === undefined) {
         failures.push(sourceStagingFailure(entry.relPath, "discover", entry.containment));
@@ -2149,11 +2205,13 @@ async function discoverSourceFilesConcurrently(
         if (read.error !== undefined) throw read.error;
         const file = read.file!;
         sourceBytes = addGraphCorpusBytes(sourceBytes, Buffer.byteLength(file.source, "utf8"), "source");
-        const contentHash = sha256(file.source);
+        assertTextSource(file.source);
+          const contentHash = sha256(file.source);
         sourceSpool?.stage(entry.relPath, file.source);
         files.push({ relPath: entry.relPath, contentHash, size: file.size, modifiedAt: file.modifiedAt });
       } catch (error) {
-        if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(entry.relPath, error));
+        if (unavailableFileReason(error)) skipped.push(unavailableSourceFile(entry.relPath, error));
+          else if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(entry.relPath, error));
         else {
           failures.push(sourceStagingFailure(entry.relPath, "read", error));
           // The corpus limit stops discovery, as the sequential loop does.
@@ -2178,7 +2236,7 @@ function discoverSourceFiles(
   let canonicalRoot: string;
   try {
     canonicalRoot = realpathSync(root);
-    matches = discoverBoundedGraphPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
+    matches = discoverGraphReadPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
       ...GRAPH_CORPUS_GLOB_OPTIONS,
       cwd: root,
       ignore: graphCorpusIgnoreGlobs(root),
@@ -2210,11 +2268,13 @@ function discoverSourceFiles(
           Buffer.byteLength(file.source, "utf8"),
           "source",
         );
-        const contentHash = sha256(file.source);
+        assertTextSource(file.source);
+          const contentHash = sha256(file.source);
         sourceSpool?.stage(relPath, file.source);
         files.push({ relPath, contentHash, size: file.size, modifiedAt: file.modifiedAt });
       } catch (error) {
-        if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(relPath, error));
+        if (unavailableFileReason(error)) skipped.push(unavailableSourceFile(relPath, error));
+        else if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(relPath, error));
         else {
           failures.push(sourceStagingFailure(relPath, "read", error));
           if (error instanceof GraphCorpusLimitError) break;
@@ -2238,6 +2298,7 @@ function discoverSourceFiles(
     }
     try {
       const source = sourceFileAccess.read(callbackPath);
+      assertTextSource(source);
       const actualBytes = Buffer.byteLength(source, "utf8");
       sourceBytes = addGraphCorpusBytes(sourceBytes, actualBytes, "source");
       const identityAfter = lstatSync(canonicalPath);
@@ -2253,7 +2314,8 @@ function discoverSourceFiles(
       });
       sourceSpool?.stage(relPath, source);
     } catch (error) {
-      if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(relPath, error));
+      if (unavailableFileReason(error)) skipped.push(unavailableSourceFile(relPath, error));
+        else if (isPerFileCorpusLimitError(error)) skipped.push(skippedSourceFile(relPath, error));
       else {
         failures.push(sourceStagingFailure(relPath, "read", error));
         if (error instanceof GraphCorpusLimitError) break;
@@ -2262,6 +2324,10 @@ function discoverSourceFiles(
   }
   if (failures.length > 0) throw new GraphSourceStagingError(failures);
   return { files, skipped };
+}
+
+function unavailableSourceFile(filePath: string, error: unknown): GraphSkippedSourceFile {
+  return { filePath, reason: unavailableFileReason(error)!, limit: "per-file", limitBytes: 0, message: error instanceof Error ? error.message : String(error) };
 }
 
 function skippedSourceFile(
@@ -2476,7 +2542,19 @@ function sourceContainmentError(message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code: "GRAPH_SOURCE_PATH_ESCAPE" });
 }
 
-function readSecureCompilerInput(root: string, absolutePath: string): string | undefined {
+/**
+ * A project file as the compiler reads it. A source file over the per-file
+ * bound is skipped by the corpus, and the compiler sees it as absent too: its
+ * importers' references to it stay unresolved, and every other file keeps its
+ * compiler extraction. (Reading it failed the whole project before, on every
+ * compiler.) An absent source file the corpus covers is no recorded input, so
+ * readers check it through the corpus, as they check every skipped file.
+ */
+function readCompilerProjectFile(root: string, absolutePath: string): string | undefined {
+  return readSecureCompilerInput(root, absolutePath, true);
+}
+
+function readSecureCompilerInput(root: string, absolutePath: string, oversizedSourceAbsent = false): string | undefined {
   const lexicalRoot = resolve(root);
   const resolvedPath = resolve(absolutePath);
   const relPath = toPosix(relative(lexicalRoot, resolvedPath));
@@ -2492,6 +2570,9 @@ function readSecureCompilerInput(root: string, absolutePath: string): string | u
     const canonicalPath = resolveContainedRepoFile(lexicalRoot, canonicalRoot, relPath);
     return readStableUtf8File(canonicalPath, resolvedPath).source;
   } catch (error) {
+    if (oversizedSourceAbsent && error instanceof GraphCorpusLimitError && error.limit === "maxSourceFileBytes" && isSupportedSourceFile(relPath)) {
+      return undefined;
+    }
     if (isMissingPathError(error)) {
       try {
         assertContainedMissingCompilerInput(lexicalRoot, relPath);
@@ -2658,7 +2739,7 @@ async function verifyPublicationInputs(
   // source, manifest, or indirect semantic-input verification is therefore
   // caught before snapshot construction and the publication transaction.
   const currentGit = readGraphGitProvenance(root);
-  if (gitBeforeStaging.branch !== currentGit.branch || gitBeforeStaging.head !== currentGit.head) {
+  if (gitProvenanceChanged(gitBeforeStaging, currentGit)) {
     failures.push({
       filePath: ".git/HEAD",
       operation: "discover",
@@ -2667,7 +2748,9 @@ async function verifyPublicationInputs(
   }
 
   if (failures.length > 0) throw new GraphSourceStagingError(failures);
-  return currentGit;
+  // An unreadable final read records what staging began with.
+  if (!currentGit.unreadable) return currentGit;
+  return { branch: gitBeforeStaging.branch, head: gitBeforeStaging.head };
 }
 
 function sourceStagingFailure(
@@ -2711,3 +2794,30 @@ function compareCodePoints(left: string, right: string): number {
 function bodyHash(sourceLines: string[], startLine: number, endLine: number): string {
   return sha256(sourceLines.slice(startLine - 1, endLine).join("\n").replace(/\s+/g, " ").trim());
 }
+
+/** Every stored file but the ones being staged, for the warm path's resolution. @internal */
+export interface WarmResolutionCorpus {
+  /** Every corpus path, staged ones included, in corpus order. */
+  paths: string[];
+  /** The other files' nodes merged with the staged ones, in corpus order. */
+  merge(staged: readonly GraphNode[]): GraphNode[];
+  readFile(path: string): string | null;
+}
+
+/**
+ * The staging steps the warm path (warm.ts) runs on a few files, exactly as
+ * a build runs them on every file. @internal
+ */
+export const warmStaging = {
+  stageCompilerFile: (discovered: DiscoveredFile, source: string, compilerFile: CompilerFileExtraction): StagedFile =>
+    stageCompilerFile(discovered, source, compilerFile),
+  resolve: (root: string, files: StagedFile[], configSources: ReadonlyMap<string, string>, spool: GraphSourceSpool, corpus: WarmResolutionCorpus): void =>
+    stageFrameworkAndFallbackResolution(root, files, configSources, spool, corpus),
+  fingerprints: (files: readonly StagedFile[], spool: GraphSourceSpool, stored?: Pick<ExtractionReuse, "fingerprints" | "records">) =>
+    stageFingerprints(files, spool, stored),
+  spool: (directory?: string): GraphSourceSpool => new GraphSourceSpool(directory),
+  isCompilerPath: (path: string): boolean => COMPILER_LANGUAGES.has(detectLanguage(path)),
+  /** Project files as a build's compiler reads them: contained, and absent over the per-file bound. */
+  readProjectFile: (root: string, absolutePath: string): string | undefined => readCompilerProjectFile(root, absolutePath),
+};
+export type { StagedFile as WarmStagedFile, DiscoveredFile as WarmDiscoveredFile };

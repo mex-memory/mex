@@ -34,7 +34,7 @@ const buildResult = z.object({
   health: z.object({ ok: count, partial: count, failed: count }).strict().optional(),
   skipped: z.array(z.object({
     filePath: text,
-    reason: z.literal("corpus-limit"),
+    reason: z.enum(["corpus-limit", "binary", "unreadable", "missing"]),
     limit: text,
     limitBytes: count,
     observedBytes: count.optional(),
@@ -62,10 +62,19 @@ const buildResult = z.object({
   }).strict().optional(),
 }).strict() satisfies z.ZodType<BuildResult>;
 
+/** CPU time and peak memory of the candidate process and its compiler servers, for the usage log. */
+const candidateUsage = z.object({
+  cpuMs: count,
+  peakRssMb: count,
+  serverCpuMs: count.optional(),
+  serverPeakRssMb: count.optional(),
+}).strict();
+export type GraphCandidateUsage = z.infer<typeof candidateUsage>;
+
 export const graphCandidateMessage = z.discriminatedUnion("type", [
   z.object({ type: z.literal("ready") }).strict(),
   z.object({ type: z.literal("progress"), progress: graphCandidateProgress }).strict(),
-  z.object({ type: z.literal("complete"), result: buildResult }).strict(),
+  z.object({ type: z.literal("complete"), result: buildResult, usage: candidateUsage.optional() }).strict(),
   z.object({ type: z.literal("failed"), category: z.enum(["compatibility", "staging", "failed"]) }).strict(),
 ]);
 export type GraphCandidateMessage = z.infer<typeof graphCandidateMessage>;

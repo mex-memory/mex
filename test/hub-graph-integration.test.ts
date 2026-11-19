@@ -1,3 +1,5 @@
+import { currentGraphPath } from "../src/graph/storage.js";
+import { plantGraph } from "../src/graph/__tests__/plant-graph.js";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -139,7 +141,7 @@ describe("real Project Hub graph integration", () => {
       expect(refreshed.state).toBe("succeeded");
       expect((await harness.graph.inspectStatus()).status).toBe("fresh");
 
-      writeFileSync(join(harness.root, ".mex", "graph.db"), "intentionally corrupt graph\n");
+      plantGraph(harness.root, "intentionally corrupt graph\n");
       expect((await harness.graph.inspectStatus()).status).toBe("corrupt");
 
       const rebuild = await harness.postJob("graph_rebuild");
@@ -312,7 +314,6 @@ async function waitForTerminal(jobs: HubJobManager, id: string) {
 function snapshotProtectedState(root: string): Record<string, unknown> {
   const paths = [
     "src/service.ts",
-    ".mex/graph.db",
     ".mex/wiki.db",
     ".mex/events/decisions.jsonl",
     ".mex/local/team.db",
@@ -321,6 +322,8 @@ function snapshotProtectedState(root: string): Record<string, unknown> {
   ];
   return {
     files: Object.fromEntries(paths.map((path) => [path, snapshotFile(join(root, path))])),
+    graph: snapshotFile(currentGraphPath(root)),
+    graphDirectory: directoryEntries(dirname(currentGraphPath(root))),
     graphEntries: directoryEntries(join(root, ".mex")),
     localEntries: directoryEntries(join(root, ".mex", "local")),
     gitStatus: execFileSync("git", ["status", "--porcelain=v2", "-z"], {

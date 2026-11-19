@@ -1,3 +1,4 @@
+import { currentGraphPath } from "./storage.js";
 import fs from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { SqliteDatabase } from "./db/sqlite.js";
@@ -194,7 +195,7 @@ export async function readStoredGraphCoverage(
 ): Promise<GraphCoverageObservation | null> {
   try {
     const { openImmutableGraphReadSessionSync } = await import("./read-session.js");
-    const session = openImmutableGraphReadSessionSync(root, resolve(root, ".mex", "graph.db"));
+    const session = openImmutableGraphReadSessionSync(root, currentGraphPath(root));
     try {
       const coverage = readGraphCoverageObservation(session.db, root, { graphCurrent, verify: "always" });
       return session.validate().valid ? coverage : null;

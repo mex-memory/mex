@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { currentGraphPath } from "../dist/graph-storage.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -116,7 +117,7 @@ try {
       samplesMs.push(elapsedMs);
     }
 
-    const databasePath = join(fixture.root, ".mex", "graph.db");
+    const databasePath = currentGraphPath(fixture.root, { home: join(mexHome, ".mex") });
     const databaseBytes = statSync(databasePath).size;
     results.push({
       files: fileCount,

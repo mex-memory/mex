@@ -1,60 +1,58 @@
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { collectGraphGarbage, graphLocation, whatMexStores } from "./storage.js";
 import type { GraphStatus, GraphSourceChanges } from "../team/contracts/graph.js";
 import type { Diagnostic } from "../team/contracts/shared.js";
 import type { GraphCommandOptions } from "./cli-graph.js";
 import { inspectGraphStatus } from "./status.js";
-/** Strictly read-only graph health/freshness command. */
+import { openRecordReadOnly } from "../record/index.js";
+import { latestBuildUsage } from "../record/build-usage.js";
+import { readGraphState } from "./jobs.js";
+/** Graph health and freshness. Reads only, apart from collecting unreferenced graph files. */
 export async function runGraphStatus(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
-  const inspected = await inspectGraphStatus({ projectRoot: rootDir });
-  const leftovers = await orphanGraphFileDiagnostics(rootDir, inspected);
-  const status = leftovers.length > 0
-    ? { ...inspected, diagnostics: [...inspected.diagnostics, ...leftovers] }
-    : inspected;
-  if (options.json) console.log(JSON.stringify(status, null, 2));
-  else printStatus(status);
+  const location = graphLocation(rootDir);
+  collectGraphGarbage(location);
+  const stores = whatMexStores(location.recordDirectory);
+  const status = await inspectGraphStatus({ projectRoot: rootDir });
+  const usage = lastUsage(location.projectId, location.root);
+  const warm = readGraphState(location.directory);
+  if (options.json) console.log(JSON.stringify({ ...status, stores, ...(usage ? { usage } : {}), ...(warm ? { warm } : {}) }, null, 2));
+  else {
+    printStatus(status);
+    if (warm?.warm === "off") {
+      console.log(`WARNING GRAPH_WARM_PATH_OFF: on ${warm.checkedAt.slice(0, 10)} a full rebuild differed from the graph in ${warm.differing?.length ?? 0} file(s); edits refresh cold until a weekly check matches.`);
+    } else if (warm) console.log(`Full-rebuild check: matched on ${warm.checkedAt.slice(0, 10)}`);
+    printStores(stores, location.projectId);
+  }
 }
 
-/**
- * Name owned graph files left under `.mex/` (issue #205). Read-only: an
- * interrupted maintenance run leaves a full-size candidate that otherwise
- * stays invisible unless someone lists the directory. The store's own status
- * is unchanged; these are reported alongside it.
- */
-async function orphanGraphFileDiagnostics(rootDir: string, status: GraphStatus): Promise<Diagnostic[]> {
-  let names: string[];
-  try { names = readdirSync(join(rootDir, ".mex")); } catch { return []; }
-  if (!names.some(name => ["graph.db.candidate-", "graph.db.rollback-", "graph.db.recovery-"].some(prefix => name.startsWith(prefix)))) return [];
-  const { inspectOrphanGraphFiles } = await import("./maintenance.js");
-  const files = inspectOrphanGraphFiles(rootDir);
-  // A live maintenance run legitimately owns its in-progress candidate.
-  if (files.maintenanceActive) return [];
-  const diagnostics: Diagnostic[] = [];
-  if (files.candidates.length > 0) {
-    // Refresh and repair sweep as soon as they hold the lease, even when they
-    // then decline the store; only a missing index is refused before that.
-    const command = status.status === "missing" ? "mex graph rebuild" : "mex graph refresh";
-    diagnostics.push({
-      code: "GRAPH_INDEX_ORPHAN_CANDIDATE",
-      severity: "warning",
-      message: `${files.candidates.length} leftover graph build candidate file(s) from an interrupted `
-        + "maintenance run are using disk space; the next `mex graph refresh`, `repair`, or `rebuild` "
-        + "removes them when no open handle prevents deletion; locked files are retried later.",
-      detail: { paths: files.candidates },
-      remediation: [{ label: "Remove leftover candidates", command }],
-    });
+/** The last build and refresh in the usage log, when the record has them. */
+function lastUsage(projectId: string, checkout: string): ReturnType<typeof latestBuildUsage> | undefined {
+  try {
+    const reader = openRecordReadOnly();
+    if (!reader) return undefined;
+    try {
+      if (reader.version < 6) return undefined;
+      return latestBuildUsage(reader, projectId, checkout);
+    } finally {
+      reader.close();
+    }
+  } catch {
+    return undefined;
   }
-  if (files.retained.length > 0) {
-    diagnostics.push({
-      code: "GRAPH_INDEX_RECOVERY_DATA_PRESENT",
-      severity: "info",
-      message: `${files.retained.length} retained graph recovery file(s) are present under .mex/; `
-        + "delete them by hand once you no longer need the prior graph bytes.",
-      detail: { paths: files.retained },
-    });
+}
+
+function megabytes(bytes: number): string {
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+}
+
+/** "What MEX stores": every project's index folder, against the shared cap. */
+function printStores(stores: ReturnType<typeof whatMexStores>, current: string): void {
+  console.log(`What MEX stores: ${megabytes(stores.bytes)} of ${megabytes(stores.cap)} (least recently used projects are removed first)`);
+  for (const project of [...stores.projects].sort((left, right) => right.lastUse - left.lastUse)) {
+    const used = project.lastUse ? new Date(project.lastUse).toISOString().slice(0, 10) : "not recorded";
+    console.log(`  ${project.projectId === current ? "* " : "  "}${project.folder}: graph ${megabytes(project.graphBytes)}, file index ${megabytes(project.fileIndexBytes)}, `
+      + `${project.checkouts.length} checkout${project.checkouts.length === 1 ? "" : "s"}, last used ${used}`);
   }
-  return diagnostics;
 }
 
 function printStatus(status: GraphStatus): void {

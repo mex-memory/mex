@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../storage.js";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
@@ -35,7 +36,7 @@ function sha256(source: string): string {
 }
 
 function semanticInputs(root: string): GraphSnapshotSemanticInput[] {
-  const db = openSqlite(join(root, ".mex", "graph.db"));
+  const db = openSqlite(currentGraphPath(root));
   try {
     const row = db.prepare("SELECT value FROM project_metadata WHERE key = ?")
       .get(GRAPH_SNAPSHOT_METADATA_KEY) as { value?: unknown } | undefined;

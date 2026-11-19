@@ -1,3 +1,5 @@
+import { processGraphSizing } from "../sizing.js";
+import { installGraphViews, OVERLAY_NAME } from "../overlay.js";
 // ============================================================================
 // mex code-graph — database open / schema init  (A3)
 // ============================================================================
@@ -14,7 +16,7 @@
 //   * journal_mode=WAL persists in the file header; re-asserting is harmless.
 
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { schemaPath } from "../assets.js";
 import { GRAPH_CORPUS_LIMITS } from "../corpus-policy.js";
 import { GraphRebuildRequiredError } from "../errors.js";
@@ -54,11 +56,13 @@ function configureConnection(db: SqliteDatabase): void {
   db.pragma("foreign_keys = ON"); // per-connection; required for ON DELETE CASCADE
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL"); // safe under WAL
-  db.pragma("temp_store = MEMORY");
   // A rebuild inserts millions of index entries (LSH buckets, edges); the
   // 2 MiB default page cache turns those into repeated page reads. Pages are
-  // only allocated as they are used, so small graphs keep a small cache.
-  db.pragma("cache_size = -131072");
+  // only allocated as they are used, so small graphs keep a small cache. The
+  // machine sizing sets both (up to 128 MiB, in memory on a large machine).
+  const sizing = processGraphSizing();
+  db.pragma(`temp_store = ${sizing.sqliteTempStore}`);
+  db.pragma(`cache_size = -${sizing.sqliteCacheMb * 1024}`);
 }
 
 function configureReadOnlyConnection(db: SqliteDatabase): void {
@@ -92,9 +96,13 @@ export function openGraphDatabase(
   assertFts5Available();
 
   if (options.readOnly) {
-    return options.immutable
+    const db = options.immutable || OVERLAY_NAME.test(basename(dbPath))
       ? openImmutableGraphDatabase(dbPath)
       : openReadOnlyGraphDatabase(dbPath);
+    if (OVERLAY_NAME.test(basename(dbPath))) {
+      try { installGraphViews(db, dbPath); } catch (error) { db.close(); throw error; }
+    }
+    return db;
   }
   const db = openSqlite(dbPath);
   configureConnection(db);

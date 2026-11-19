@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../storage.js";
 // Integration test for the agent-facing JSONL commands. Builds a real graph over
 // a tiny project and drives runGraphScope / runGraphQuery / runGraphGet / runImpact
 // through injected session + capturing writer, asserting the protocol contract:
@@ -50,6 +51,7 @@ function syntheticScopeGraph(options: {
   const edges = options.edges ?? [];
   const nodeById = new Map(options.nodes.map((node) => [node.id, node]));
   return {
+    coverageFor: () => ({ indexed: false, reason: "excluded" }),
     build: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
     sync: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
     close: () => {},
@@ -90,7 +92,7 @@ beforeAll(async () => {
   );
   engine = createGraphEngine({ rootDir: root });
   await engine.build(root);
-  db = openSqlite(join(root, ".mex", "graph.db"));
+  db = openSqlite(currentGraphPath(root));
   deps = { open: () => ({ graph: engine, db, close: () => {} }), write: (line) => lines.push(line) };
 });
 
@@ -257,7 +259,7 @@ describe("runGraphScope", () => {
     )).join("\n"));
     const isolatedEngine = createGraphEngine({ rootDir: isolated });
     await isolatedEngine.build(isolated);
-    const db = openSqlite(join(isolated, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(isolated));
     const isolatedDeps: AgentCommandDeps = {
       open: () => ({ graph: isolatedEngine, db, close: () => {} }), write: (line) => lines.push(line),
     };
@@ -289,7 +291,7 @@ describe("runGraphScope", () => {
     ].join("\r\n"));
     const isolatedEngine = createGraphEngine({ rootDir: isolated });
     await isolatedEngine.build(isolated);
-    const db = openSqlite(join(isolated, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(isolated));
     const isolatedDeps: AgentCommandDeps = {
       open: () => ({ graph: isolatedEngine, db, close: () => {} }), write: (line) => lines.push(line),
     };
@@ -362,6 +364,7 @@ describe("runGraphScope", () => {
     const graphNodes = [target, sourceDecoy, queryPlanner];
     const query = "plan bounded source windows";
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       sync: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       close: () => {},
@@ -464,6 +467,7 @@ describe("runGraphScope", () => {
       { source: second.id, target: target.id, kind: "calls", line: 91, column: 2, confidence: 1 },
     ];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, parseErrors: [], durationMs: 0 }),
       sync: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, parseErrors: [], durationMs: 0 }),
       close: () => {},
@@ -546,6 +550,7 @@ describe("runGraphScope", () => {
       source: exact.id, target: flowTarget.id, kind: "calls", line: 2, column: 2, confidence: 1,
     };
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       sync: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       close: () => {}, searchNodes: () => [exact], searchSource: () => [],
@@ -826,6 +831,7 @@ describe("runGraphScope", () => {
     };
     const graphNodes = [framework, target, optional];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       sync: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       close: () => {}, searchNodes: () => graphNodes,
@@ -963,6 +969,7 @@ describe("runGraphScope", () => {
       ["first.ts", firstSource], ["second.ts", secondSource], ["third.ts", thirdSource],
     ]);
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       sync: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       close: () => {}, searchNodes: () => graphNodes,
@@ -1102,6 +1109,7 @@ describe("runGraphScope", () => {
     };
     const graphNodes = [lead, decoy, target];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       sync: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       close: () => {}, searchNodes: () => graphNodes,
@@ -1245,6 +1253,7 @@ describe("runGraphScope", () => {
       { source: directNodes[2]!.id, target: finalSemanticTarget.id, kind: "calls", line: 180, column: 2, confidence: 1 },
     ];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       sync: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
       close: () => {}, searchNodes: () => graphNodes,
@@ -1371,6 +1380,7 @@ describe("runGraphScope", () => {
       startLine: 1, endLine: 1, startColumn: 0, endColumn: 1, updatedAt: 1,
     };
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, parseErrors: [], durationMs: 0 }),
       sync: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, parseErrors: [], durationMs: 0 }),
       close: () => {}, searchNodes: () => [termNode],
@@ -1599,7 +1609,7 @@ describe("runGraphQuery", () => {
       writeFileSync(join(mixedRoot, "main.go"), "package main\n");
       mixedEngine = createGraphEngine({ rootDir: mixedRoot });
       await mixedEngine.build(mixedRoot);
-      db = openSqlite(join(mixedRoot, ".mex", "graph.db"));
+      db = openSqlite(currentGraphPath(mixedRoot));
       const mixedDeps: AgentCommandDeps = {
         open: () => ({ graph: mixedEngine!, db: db!, close: () => {} }),
         write: (line) => lines.push(line),
@@ -1897,7 +1907,7 @@ describe("test-file call results (#289)", () => {
     ].join("\n"));
     projectEngine = createGraphEngine({ rootDir: project });
     await projectEngine.build(project);
-    projectDb = openSqlite(join(project, ".mex", "graph.db"));
+    projectDb = openSqlite(currentGraphPath(project));
     projectDeps = { open: () => ({ graph: projectEngine, db: projectDb, close: () => {} }), write: (line) => lines.push(line) };
   });
 
@@ -2118,7 +2128,7 @@ describe("runGraphScope --fingerprint", () => {
     ].join("\n"));
     fpEngine = createGraphEngine({ rootDir: fpRoot });
     await fpEngine.build(fpRoot);
-    fpDb = openSqlite(join(fpRoot, ".mex", "graph.db"));
+    fpDb = openSqlite(currentGraphPath(fpRoot));
     fpDeps = { open: () => ({ graph: fpEngine, db: fpDb, close: () => {} }), write: (line) => lines.push(line) };
     // A real graph build; the default hook timeout is too tight on a loaded runner.
   }, 30_000);

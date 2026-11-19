@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../storage.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,7 +61,7 @@ describe("FastAPI resolver integration", () => {
     const result = await rebuildGraph(root);
     expect(result.status.status).toBe("fresh");
 
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       const routes = db.prepare(
         "SELECT id, name, signature FROM nodes WHERE kind = 'route' ORDER BY name",
@@ -124,7 +125,7 @@ describe("FastAPI resolver integration", () => {
     const result = await rebuildGraph(root);
     expect(result.status.status).toBe("fresh");
 
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       const routes = db.prepare(
         "SELECT id, signature FROM nodes WHERE kind = 'route'",

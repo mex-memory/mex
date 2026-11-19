@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../src/graph/storage.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,7 +42,7 @@ async function parseDegradedFixture(): Promise<string> {
   const engine = createGraphEngine({ rootDir: root });
   await engine.build();
   engine.close();
-  const db = openSqlite(join(root, ".mex", "graph.db"));
+  const db = openSqlite(currentGraphPath(root));
   try {
     db.prepare("UPDATE files SET parse_status = 'partial' WHERE path = ?").run("src/b.ts");
     // The snapshot records parse health too, and a snapshot that disagrees
@@ -126,7 +127,7 @@ describe("graph reads from a parse-degraded store", () => {
 
   it("still refuses when the store is degraded for a reason it cannot bound", async () => {
     const root = await parseDegradedFixture();
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       const row = db.prepare("SELECT value FROM project_metadata WHERE key = ?")
         .get(GRAPH_SNAPSHOT_METADATA_KEY) as { value: string };

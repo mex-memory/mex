@@ -21,3 +21,12 @@ export class GraphSourceStagingError extends Error {
   }
 }
 
+
+/** A stable per-file read failure; races and containment failures remain fatal. */
+export function unavailableFileReason(error: unknown): "binary" | "unreadable" | "missing" | undefined {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return code === "GRAPH_SOURCE_BINARY" ? "binary" : code === "ENOENT" ? "missing" : code === "EACCES" || code === "EPERM" ? "unreadable" : undefined;
+}
+export function assertTextSource(source: string): void {
+  if (source.includes("\0")) throw Object.assign(new Error("Binary source is not indexed"), { code: "GRAPH_SOURCE_BINARY" });
+}

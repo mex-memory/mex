@@ -1,3 +1,6 @@
+import { installGraphViews } from "./overlay.js";
+import { currentGraphPath, isPublishedGraph, withGraphStorageContext } from "./storage.js";
+import { absolutePath } from "../record/project.js";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -143,7 +146,7 @@ class GraphReadSessionError extends Error {
 /** Synchronous form used by the existing synchronous Scope command surface. */
 export function openImmutableGraphReadSessionSync(
   projectRoot: string,
-  dbPath = resolve(projectRoot, ".mex", "graph.db"),
+  dbPath = currentGraphPath(projectRoot),
   options: OpenImmutableGraphReadSessionSyncOptions = {},
 ): InternalGraphReadSession {
   const canonicalDbPath = resolveContainedGraphDatabasePath(projectRoot, dbPath);
@@ -177,8 +180,9 @@ export function openImmutableGraphReadSessionSync(
       );
     }
     pendingDb = openGraphDatabase(boundFile.databasePath, { readOnly: true, immutable: true });
+    installGraphViews(pendingDb, canonicalDbPath);
     const sharedDb = pendingDb;
-    graph = createGraphReadEngine(sharedDb);
+    graph = createGraphReadEngine(sharedDb, projectRoot);
     pendingDb = null;
     const validation = validateReadPath(
       projectRoot,
@@ -250,7 +254,7 @@ export function openImmutableGraphReadSessionSync(
  */
 export async function openImmutableGraphReadSession(
   projectRoot: string,
-  dbPath = resolve(projectRoot, ".mex", "graph.db"),
+  dbPath = currentGraphPath(projectRoot),
   options: OpenImmutableGraphReadSessionOptions = {},
 ): Promise<InternalGraphReadSession> {
   const expected = options.expectedObservation;
@@ -293,9 +297,10 @@ export async function openImmutableGraphReadSession(
       );
     }
     pendingDb = openGraphDatabase(boundFile.databasePath, { readOnly: true, immutable: true });
+    installGraphViews(pendingDb, canonicalDbPath);
     await options.afterDatabaseOpen?.(pendingDb);
     const sharedDb = pendingDb;
-    graph = createGraphReadEngine(sharedDb);
+    graph = createGraphReadEngine(sharedDb, projectRoot);
     pendingDb = null;
 
     if (!options.deferPostOpenValidation) {
@@ -372,7 +377,10 @@ export async function loadFreshGraphReadSession(
   projectRoot: string,
   options: LoadFreshGraphReadSessionOptions = {},
 ): Promise<InternalFreshGraphReadResult> {
-  const dbPath = options.dbPath ?? resolve(projectRoot, ".mex", "graph.db");
+  return withGraphStorageContext(() => loadFreshGraphReadSessionInContext(projectRoot, options));
+}
+async function loadFreshGraphReadSessionInContext(projectRoot: string, options: LoadFreshGraphReadSessionOptions): Promise<InternalFreshGraphReadResult> {
+  const dbPath = options.dbPath ?? currentGraphPath(projectRoot);
   const inspectObservation = options.inspectObservation ?? inspectGraphStatusWithFreshObservation;
   const audit = {
     ...(options.structuralAudit ? { structuralAudit: options.structuralAudit } : {}),
@@ -381,9 +389,13 @@ export async function loadFreshGraphReadSession(
   const inspection = await inspectObservation({ projectRoot, dbPath, ...audit });
   await options.afterStatusInspection?.(inspection);
   const { graphStatus } = inspection;
+  // Files that failed to parse are reported as not covered and every other
+  // file still answers, for every reader. Reading past source drift is a
+  // choice the caller makes (`allowDegradedReads`).
   const degraded = graphStatus.status !== "fresh"
-    && options.allowDegradedReads === true
     && (inspection.degradedObservation ?? null) !== null
+    && (options.allowDegradedReads === true
+      || inspection.degradedObservation!.degradations.every(degradation => degradation === "parse-degraded"))
       ? inspection.degradedObservation!
       : null;
   const degradations: readonly GraphReadDegradation[] = degraded?.degradations ?? [];
@@ -438,6 +450,8 @@ export async function loadFreshGraphReadSession(
       ));
     }
 
+    // Drifted files stay visible: drift-aware readers (graph get, grounding)
+    // check them against the source themselves and report the drift.
     const guardedStatus: GraphStatus = { ...graphStatus, diagnostics: [...graphStatus.diagnostics] };
     const ownedBase = base;
     base = null;
@@ -449,6 +463,8 @@ export async function loadFreshGraphReadSession(
       validate: () => ownedBase.validate(),
       revalidateFreshness: async () => {
         const before = session.validate();
+        // A newer published graph revokes the read before any re-inspection.
+        if (!before.valid && before.code === "GRAPH_INDEX_READER_DATABASE_CHANGED") return { ...before, graphStatus: guardedStatus };
         // A production observation owns its original source/config identities.
         // Reuse that baseline for one complete final proof rather than starting
         // a second two-pass inspection. Injected inspectors keep their contract.
@@ -652,6 +668,15 @@ function validateReadPath(
         valid: false,
         code: "GRAPH_INDEX_READER_DATABASE_CHANGED",
         message: "The graph database changed while graph-derived output was being prepared.",
+      };
+    }
+    // A published graph never changes; a newer one replaces it by pointer.
+    if (isPublishedGraph(projectRoot, canonicalDbPath)
+      && absolutePath(currentGraphPath(projectRoot)) !== absolutePath(canonicalDbPath)) {
+      return {
+        valid: false,
+        code: "GRAPH_INDEX_READER_DATABASE_CHANGED",
+        message: "A newer graph was published while graph-derived output was being prepared.",
       };
     }
     return { valid: true };

@@ -101,7 +101,7 @@ describe("graph snapshot provenance", () => {
     expect(snapshot!.grammarHash).toBe(metadata(dbPath, "grammar_hash"));
   }, 15_000);
 
-  it("leaves the successful snapshot unchanged after staging and changed-parse failures", async () => {
+  it("publishes per-file read and parse gaps in snapshot provenance", async () => {
     const root = temporaryRoot("mex-graph-snapshot-failure-");
     const sourcePath = join(root, "src", "stable.ts");
     const dbPath = join(root, "graph.db");
@@ -129,20 +129,15 @@ describe("graph snapshot provenance", () => {
 
     writeFileSync(sourcePath, "export function stableSnapshot(): number { return 8; }\n");
     failRead = true;
-    await expect(engine.sync(["src/stable.ts"])).rejects.toBeInstanceOf(GraphSourceStagingError);
-    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).toBe(successfulSnapshot);
+    await engine.sync(["src/stable.ts"]);
+    expect(engine.coverageFor("src/stable.ts")).toEqual({indexed:false,reason:"unreadable"});
+    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).not.toBe(successfulSnapshot);
 
     failRead = false;
     writeFileSync(sourcePath, "}\n");
-    await expect(engine.sync(["src/stable.ts"])).rejects.toMatchObject({
-      name: "GraphSourceStagingError",
-      failures: [expect.objectContaining({
-        filePath: "src/stable.ts",
-        operation: "parse",
-        code: "GRAPH_SOURCE_PARSE_FAILED",
-      })],
-    });
-    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).toBe(successfulSnapshot);
+    await engine.sync(["src/stable.ts"]);
+    expect(engine.coverageFor("src/stable.ts")).toEqual({indexed:false,reason:"parse failed"});
+    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).not.toBe(successfulSnapshot);
     engine.close();
   });
 
@@ -319,7 +314,7 @@ describe("graph snapshot provenance", () => {
     engine.close();
   });
 
-  it("rejects a failed full rebuild and preserves the last trustworthy facts", async () => {
+  it("records a failed parse on a full rebuild without exposing its old facts", async () => {
     const root = temporaryRoot("mex-graph-full-build-parse-failure-");
     const sourcePath = join(root, "src", "stable.ts");
     const dbPath = join(root, "graph.db");
@@ -331,20 +326,14 @@ describe("graph snapshot provenance", () => {
     const priorNode = engine.searchNodes("fullBuildFact").find((node) => node.name === "fullBuildFact")!;
 
     writeFileSync(sourcePath, "}\n");
-    await expect(engine.build()).rejects.toMatchObject({
-      name: "GraphSourceStagingError",
-      failures: [expect.objectContaining({
-        filePath: "src/stable.ts",
-        operation: "parse",
-        code: "GRAPH_SOURCE_PARSE_FAILED",
-      })],
-    });
-    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).toBe(successfulSnapshot);
-    expect(engine.getNode(priorNode.id)).toMatchObject({ id: priorNode.id, bodyHash: priorNode.bodyHash });
+    await engine.build();
+    expect(engine.coverageFor("src/stable.ts")).toEqual({indexed:false,reason:"parse failed"});
+    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).not.toBe(successfulSnapshot);
+    expect(engine.getNode(priorNode.id)).toBeNull();
     engine.close();
   });
 
-  it("preserves trustworthy legacy facts on a failed rebuild without snapshot metadata", async () => {
+  it("publishes parse coverage when rebuilding a legacy graph without a snapshot", async () => {
     const root = temporaryRoot("mex-graph-legacy-full-build-parse-failure-");
     const sourcePath = join(root, "src", "stable.ts");
     const dbPath = join(root, "graph.db");
@@ -360,12 +349,10 @@ describe("graph snapshot provenance", () => {
 
     writeFileSync(sourcePath, "}\n");
     const engine = createGraphEngine({ rootDir: root, dbPath });
-    await expect(engine.build()).rejects.toMatchObject({
-      name: "GraphSourceStagingError",
-      failures: [expect.objectContaining({ operation: "parse" })],
-    });
-    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).toBeNull();
-    expect(engine.getNode(priorNode.id)).toMatchObject({ id: priorNode.id, bodyHash: priorNode.bodyHash });
+    await engine.build();
+    expect(engine.coverageFor("src/stable.ts")).toEqual({indexed:false,reason:"parse failed"});
+    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).not.toBeNull();
+    expect(engine.getNode(priorNode.id)).toBeNull();
     engine.close();
   });
 

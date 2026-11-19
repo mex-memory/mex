@@ -34,6 +34,7 @@
  * nothing about the one that did.
  */
 
+import { currentGraphPath } from "../../graph/storage.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -108,10 +109,12 @@ async function buildGraph(project: Project): Promise<void> {
   }
 }
 
-function withGraph<T>(project: Project, body: (graph: GroundingGraph, db: ReturnType<typeof openGraphDatabase>) => T): T {
-  const dbPath = join(project.root, ".mex", "graph.db");
-  const engine = createGraphEngine({ rootDir: project.root, dbPath });
-  const db = openGraphDatabase(dbPath);
+function withGraph<T>(project: Project, body: (graph: GroundingGraph, db: ReturnType<typeof openGraphDatabase>) => T, writable = false): T {
+  const dbPath = currentGraphPath(project.root);
+  const engine = createGraphEngine({ rootDir: project.root });
+  // A published graph is immutable, so reads open it that way; only the test that
+  // saves baselines needs to write.
+  const db = openGraphDatabase(dbPath, writable ? {} : { readOnly: true, immutable: true });
   try {
     return body(createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db), db);
   } finally {
@@ -121,9 +124,9 @@ function withGraph<T>(project: Project, body: (graph: GroundingGraph, db: Return
 }
 
 function nodeIdOf(project: Project, name: string): string {
-  const dbPath = join(project.root, ".mex", "graph.db");
-  const engine = createGraphEngine({ rootDir: project.root, dbPath });
-  const db = openGraphDatabase(dbPath);
+  const dbPath = currentGraphPath(project.root);
+  const engine = createGraphEngine({ rootDir: project.root });
+  const db = openGraphDatabase(dbPath, { readOnly: true, immutable: true });
   try {
     const graph = createSynthesisGraph(engine, db);
     const found = graph.nodesInFile("src/text.ts").find((node) => graph.describeNode(node.id)?.name === name);
@@ -260,7 +263,7 @@ describe("a read never mutates what it reads", () => {
   it("does not mutate the code graph by reading knowledge out of it", async () => {
     const project = createProject();
     await buildGraph(project);
-    const graphPath = join(project.root, ".mex", "graph.db");
+    const graphPath = currentGraphPath(project.root);
     const before = createHash("sha256").update(readFileSync(graphPath)).digest("hex");
 
     const nodeId = nodeIdOf(project, "limitLength");
@@ -334,7 +337,7 @@ describe("grounding integrity", () => {
         });
       }
       expect(store.listBaselines(subject)).toHaveLength(1);
-    });
+    }, true);
   }, GRAPH_TEST_TIMEOUT);
 });
 

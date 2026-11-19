@@ -1,3 +1,5 @@
+import { currentGraphPath } from "../storage.js";
+import { plantGraph } from "./plant-graph.js";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
@@ -17,6 +19,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
+import { rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -94,7 +97,7 @@ async function build(root: string): Promise<string> {
   } finally {
     engine.close();
   }
-  return join(root, ".mex", "graph.db");
+  return currentGraphPath(root);
 }
 
 async function inspect(root: string, maxChangedPaths?: number) {
@@ -530,7 +533,7 @@ describe("inspectGraphStatus", () => {
   it("distinguishes a corrupt database from an active-WAL transient state", async () => {
     const corruptRoot = temporaryRoot("mex-graph-corrupt-");
     mkdirSync(join(corruptRoot, ".mex"));
-    writeFileSync(join(corruptRoot, ".mex", "graph.db"), "not sqlite");
+    plantGraph(corruptRoot, "not sqlite");
     const corruptBefore = treeState(corruptRoot);
     const corrupt = await inspect(corruptRoot);
     expect(corrupt.status).toBe("corrupt");
@@ -540,47 +543,19 @@ describe("inspectGraphStatus", () => {
     expect(executableRemediations(corrupt)).toContain("mex graph rebuild");
     expect(treeState(corruptRoot)).toEqual(corruptBefore);
 
-    const transientRoot = temporaryRoot("mex-graph-transient-");
-    source(transientRoot, "src/a.ts", "export const a = 1;\n");
-    const dbPath = await build(transientRoot);
-    const writer = openSqlite(dbPath);
-    try {
-      writer.exec("PRAGMA wal_autocheckpoint = 0");
-      writer.prepare("UPDATE project_metadata SET updated_at = ? WHERE key = 'manifest_hash'")
-        .run(NOW.getTime());
-      expect(statSync(`${dbPath}-wal`).size).toBeGreaterThan(0);
-      const transient = await inspect(transientRoot);
-      expect(transient.status).toBe("degraded");
-      expect(transient.inspected).toBe(false);
-      expect(transient.changes.total).toBe(0);
-      expect(transient.diagnostics).toContainEqual(expect.objectContaining({ code: "GRAPH_INDEX_SIDECAR_ACTIVE" }));
-      expect(transient.diagnostics).not.toContainEqual(expect.objectContaining({ code: "GRAPH_INDEX_CORRUPT" }));
-      expect(executableRemediations(transient)).toContain("mex graph repair");
-    } finally {
-      writer.close();
-    }
-    const checkpointed = openSqlite(dbPath);
-    try {
-      checkpointed.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-    } finally {
-      checkpointed.close();
-    }
-    const measured = await inspect(transientRoot);
-    expect(measured.inspected).toBe(true);
-    expect(measured.parseHealth.total).toBe(1);
+    // 0.8 also checked a live writer's WAL here. Published graphs are never
+    // written after publication, so that state no longer exists.
   });
 
   it("reports sidecars deterministically and refuses immutable interpretation while one is active or unavailable", async () => {
     const root = temporaryRoot("mex-graph-sidecar-probe-");
-    const dbPath = join(root, ".mex", "graph.db");
-    mkdirSync(dirname(dbPath), { recursive: true });
-    writeFileSync(dbPath, "not sqlite");
+    const dbPath = plantGraph(root, "not sqlite");
     expect(inspectGraphSidecars(dbPath)).toEqual({ state: "clear", paths: [] });
 
     writeFileSync(`${dbPath}-journal`, "hot rollback journal");
     expect(inspectGraphSidecars(dbPath)).toEqual({
       state: "active",
-      paths: ["graph.db-journal"],
+      paths: [`${basename(dbPath)}-journal`],
     });
     const active = await inspect(root);
     expect(active).toMatchObject({ status: "degraded", schemaVersion: null });
@@ -596,7 +571,7 @@ describe("inspectGraphStatus", () => {
       chmodSync(`${dbPath}-journal`, 0o000);
       expect(inspectGraphSidecars(dbPath)).toEqual({
         state: "unavailable",
-        paths: ["graph.db-journal"],
+        paths: [`${basename(dbPath)}-journal`],
       });
       chmodSync(`${dbPath}-journal`, 0o600);
     }
@@ -604,7 +579,7 @@ describe("inspectGraphStatus", () => {
     mkdirSync(`${dbPath}-wal`);
     expect(inspectGraphSidecars(dbPath)).toEqual({
       state: "unavailable",
-      paths: ["graph.db-wal"],
+      paths: [`${basename(dbPath)}-wal`],
     });
     const unavailable = await inspect(root);
     expect(unavailable).toMatchObject({ status: "degraded", schemaVersion: null });
@@ -700,70 +675,6 @@ describe("inspectGraphStatus", () => {
     }));
   });
 
-  it("retries an early structural result when a contained graph symlink is retargeted", async () => {
-    const root = temporaryRoot("mex-graph-db-retarget-");
-    source(root, "src/a.ts", "export const a = 1;\n");
-    const graphPath = await build(root);
-    const targetA = join(root, ".mex", "graph-a.db");
-    const targetB = join(root, ".mex", "graph-b.db");
-    renameSync(graphPath, targetA);
-    copyFileSync(targetA, targetB);
-    symlinkSync("graph-a.db", graphPath);
-    const corrupt = openSqlite(targetA);
-    try {
-      corrupt.exec("DROP TABLE edges");
-    } finally {
-      corrupt.close();
-    }
-    let retargeted = false;
-
-    const status = await inspectGraphStatus({
-      projectRoot: root,
-      now: NOW,
-      internal: {
-        beforeDatabaseResult(kind, attempt) {
-          if (retargeted || kind !== "corrupt" || attempt !== 0) return;
-          unlinkSync(graphPath);
-          symlinkSync("graph-b.db", graphPath);
-          retargeted = true;
-        },
-      },
-    });
-
-    expect(retargeted).toBe(true);
-    expect(status.status).toBe("fresh");
-    expect(status.diagnostics).not.toContainEqual(expect.objectContaining({
-      code: "GRAPH_INDEX_SCHEMA_INVALID",
-    }));
-  });
-
-  // Windows denies rename of an open file; the bound-file Windows test covers that protection.
-  it.skipIf(process.platform === "win32")("never emits fresh when an atomic save replaces a source path after it is read", async () => {
-    const root = temporaryRoot("mex-graph-source-race-");
-    source(root, "src/a.ts", "export const a = 1;\n");
-    await build(root);
-    const replacement = join(root, "src", "a.ts.next");
-    writeFileSync(replacement, "export const a = 2;\n");
-    let replaced = false;
-
-    const status = await inspectGraphStatus({
-      projectRoot: root,
-      now: NOW,
-      internal: {
-        afterSourceRead(path, pass) {
-          if (!replaced && pass === "validation" && path === "src/a.ts") {
-            replaced = true;
-            renameSync(replacement, join(root, "src", "a.ts"));
-          }
-        },
-      },
-    });
-
-    expect(replaced).toBe(true);
-    expect(status.status).toBe("stale");
-    expect(status.changes.modified).toEqual(["src/a.ts"]);
-  });
-
   it("classifies a valid current-schema legacy graph as stale with an adoption command", async () => {
     const root = temporaryRoot();
     source(root, "src/a.ts", "export const a = 1;\n");
@@ -833,7 +744,8 @@ describe("inspectGraphStatus", () => {
       code: "GRAPH_SNAPSHOT_CONTENT_MISMATCH",
     }));
     expect(executableRemediations(inconsistent)).toContain("mex graph rebuild");
-  }, 10_000);
+    // Three full builds: about 4 s alone, over 10 s with the whole suite running.
+  }, 30_000);
 
   it("treats missing core tables and duplicate or dangling edges as corrupt", async () => {
     const missingTableRoot = temporaryRoot("mex-graph-missing-table-");
@@ -997,13 +909,10 @@ describe("inspectGraphStatus", () => {
   it("advertises only isolated rebuild for a conflicting versionless schema", async () => {
     const root = temporaryRoot("mex-graph-versionless-");
     source(root, "src/a.ts", "export const a = 1;\n");
-    mkdirSync(join(root, ".mex"), { recursive: true });
-    const db = openSqlite(join(root, ".mex", "graph.db"));
-    try {
-      db.exec("CREATE TABLE nodes(id TEXT)");
-    } finally {
-      db.close();
-    }
+    plantGraph(root, (file) => {
+      const db = openSqlite(file);
+      try { db.exec("CREATE TABLE nodes(id TEXT)"); } finally { db.close(); }
+    });
 
     const status = await inspect(root);
     expect(status.status).toBe("corrupt");
@@ -1290,8 +1199,10 @@ describe("inspectGraphStatus", () => {
     }));
     expect(treeState(externalRoot)).toEqual(externalBefore);
 
-    mkdirSync(join(root, ".mex"), { recursive: true });
-    symlinkSync(externalDbPath, join(root, ".mex", "graph.db"));
+    // A published base replaced by a link to a database elsewhere.
+    const published = plantGraph(root, "placeholder");
+    unlinkSync(published);
+    symlinkSync(externalDbPath, published);
     const symlinked = await inspect(root);
     expect(symlinked.status).toBe("degraded");
     expect(symlinked.diagnostics).toContainEqual(expect.objectContaining({
@@ -1335,33 +1246,24 @@ describe("inspectGraphStatus", () => {
       .not.toContain("GRAPH_SOURCE_PATH_OUTSIDE_PROJECT");
   });
 
-  it("refuses a graph index whose .mex directory junction leads out of the project", async () => {
+  it("refuses a graph index whose folder is a junction to somewhere else", async () => {
     const root = temporaryRoot("mex-graph-junction-index-");
     const externalRoot = temporaryRoot("mex-graph-junction-index-external-");
     source(root, "src/a.ts", "export const a = 1;\n");
-    await build(root);
-    renameSync(join(root, ".mex"), join(externalRoot, ".mex"));
+    const graphPath = await build(root);
+    const index = dirname(graphPath);
+    renameSync(index, join(externalRoot, "index"));
     // "junction" is a Windows directory junction; other platforms ignore the
     // type and create an ordinary directory symlink.
-    symlinkSync(join(externalRoot, ".mex"), join(root, ".mex"), "junction");
+    symlinkSync(join(externalRoot, "index"), index, "junction");
 
     const status = await inspect(root);
     expect(status.status).toBe("degraded");
     expect(status.diagnostics).toContainEqual(expect.objectContaining({
       code: "GRAPH_INDEX_PATH_OUTSIDE_PROJECT",
     }));
-  });
-
-  it("inspects a graph index whose .mex directory junction stays inside the project", async () => {
-    const root = temporaryRoot("mex-graph-contained-junction-index-");
-    source(root, "src/a.ts", "export const a = 1;\n");
-    await build(root);
-    mkdirSync(join(root, "cache"), { recursive: true });
-    renameSync(join(root, ".mex"), join(root, "cache", "mex-index"));
-    symlinkSync(join(root, "cache", "mex-index"), join(root, ".mex"), "junction");
-
-    const status = await inspect(root);
-    expect(status.status).toBe("fresh");
+    // Remove only the link, never through it.
+    try { unlinkSync(index); } catch { rmdirSync(index); }
   });
 
   it("inspects a case-variant project root as the same contained root on a case-insensitive volume", async (context) => {

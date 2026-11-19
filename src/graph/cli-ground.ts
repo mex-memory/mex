@@ -1,3 +1,4 @@
+import { currentGraphPath } from "./storage.js";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -91,7 +92,7 @@ export async function runGraphGround(
   options: GroundMigrationOptions = {},
   deps: GroundMigrationDeps = {},
 ): Promise<"ran" | "prompted"> {
-  if (!existsSync(resolve(config.projectRoot, ".mex", "graph.db"))) {
+  if (!existsSync(currentGraphPath(config.projectRoot))) {
     throw new Error("Code graph unavailable. Run `mex graph` before `mex graph ground`.");
   }
   const prompt = buildGroundMigrationPrompt();

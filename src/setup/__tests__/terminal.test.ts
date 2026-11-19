@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { currentGraphPath } from "../../graph/storage.js";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -50,7 +51,7 @@ describe("terminal setup outcomes", () => {
     const before = readFileSync(join(root, ".mex/ROUTER.md"), "utf8");
     expect(await runSetup({ yes: true, openBrowser: true })).toMatchObject({ outcome: "complete", exitCode: 0 });
     expect(readFileSync(join(root, ".mex/ROUTER.md"), "utf8")).toBe(before);
-    expect(readdirSync(join(root, ".mex"))).not.toContain("graph.db");
+    expect(existsSync(currentGraphPath(root))).toBe(false);
   });
 
   it("fresh dry-run has no prompts, agent launch, config or local writes", async () => {

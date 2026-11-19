@@ -2,6 +2,7 @@
  * Setup's batch applies prove each batch's freshness, hold nothing between
  * applies, and report when the graph database or HEAD changed mid-phase.
  */
+import { currentGraphPath } from "../src/graph/storage.js";
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,7 +89,7 @@ describe("setup batch applies and graph freshness", () => {
     expect(freshness.changed).toBe(false);
     // Another writer touches the database (here: a no-op write transaction that still rewrites the file).
     const { openGraphDatabase } = await import("../src/graph/db/database.js");
-    const db = openGraphDatabase(join(root, ".mex", "graph.db"));
+    const db = openGraphDatabase(currentGraphPath(root));
     db.exec("CREATE TABLE IF NOT EXISTS setup_probe (x); DROP TABLE setup_probe;");
     db.close();
     expect(await applier.apply(batch(root, "beta"), { opIdPrefix: "setup_beta_", files: ["context/beta.md"] })).toMatchObject({ kind: "applied" });

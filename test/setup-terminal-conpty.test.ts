@@ -13,6 +13,7 @@
  * native module; the Windows CI job installs it for this run. Without it the
  * suite is skipped locally and fails in CI, so it cannot vanish silently.
  */
+import { currentGraphPath } from "../src/graph/storage.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -179,7 +180,7 @@ describe.skipIf(Boolean(skipReason) && !requireCoverage)(`built terminal setup i
     const address = new URL(result.events[2]!.match);
     expect(await canConnect(Number(address.port))).toBe(false);
     expect(readFileSync(join(f.project, ".mex", "AGENTS.md"), "utf8")).not.toContain("[YYYY-MM-DD]");
-    expect(existsSync(join(f.project, ".mex", "graph.db"))).toBe(mode === "code-repo");
+    expect(existsSync(currentGraphPath(f.project, { home: join(f.env.MEX_HOME!, ".mex") }))).toBe(mode === "code-repo");
     expect(existsSync(join(f.project, ".mex", "wiki.db"))).toBe(mode === "code-repo");
     expectPromptCleaned(f);
   });

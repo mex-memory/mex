@@ -22,6 +22,7 @@
  *    reordered, edited or dropped.
  */
 
+import { currentGraphPath } from "../../../graph/storage.js";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,7 +47,7 @@ beforeAll(async () => {
   );
   engine = createGraphEngine({ rootDir: root });
   await engine.build(root);
-  db = openSqlite(join(root, ".mex", "graph.db"));
+  db = openSqlite(currentGraphPath(root));
 }, 120000);
 
 afterAll(() => {

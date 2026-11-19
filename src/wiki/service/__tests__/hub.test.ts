@@ -16,6 +16,7 @@
  * hops, because a stub would prove the walk and not the join.
  */
 
+import { currentGraphPath } from "../../../graph/storage.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -213,8 +214,8 @@ async function buildGraph(project: Project): Promise<void> {
 }
 
 function withSynthesisGraph<T>(project: Project, body: (graph: ReturnType<typeof createSynthesisGraph>) => T): T {
-  const dbPath = join(project.root, ".mex", "graph.db");
-  const engine = createGraphEngine({ rootDir: project.root, dbPath });
+  const dbPath = currentGraphPath(project.root);
+  const engine = createGraphEngine({ rootDir: project.root });
   const db = openGraphDatabase(dbPath);
   try {
     return body(createSynthesisGraph(engine, db));
@@ -495,7 +496,7 @@ describe("§17 old-versus-new drift panel", () => {
     const project = createProject();
     await buildGraph(project);
 
-    const dbPath = join(project.root, ".mex", "graph.db");
+    const dbPath = currentGraphPath(project.root);
     const db = openGraphDatabase(dbPath);
     try {
       const baselines = new WikiBaselineStore(db);
@@ -522,7 +523,7 @@ describe("§17 old-versus-new drift panel", () => {
   it("does not call an unchanged node drifted", async () => {
     const project = createProject();
     await buildGraph(project);
-    const db = openGraphDatabase(join(project.root, ".mex", "graph.db"));
+    const db = openGraphDatabase(currentGraphPath(project.root));
     try {
       const baselines = new WikiBaselineStore(db);
       baselines.capture(COMPONENT, { node: "function:rotateRefreshToken", fingerprint: "mh:64:abcd" }, SOURCE, "hash");

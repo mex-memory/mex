@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { plantGraph } from "../../../graph/__tests__/plant-graph.js";
 import { hasCommittedHubIdentity, projectSetupStatus } from "../readiness.js";
 
 const roots: string[] = [];
@@ -60,7 +61,7 @@ function fixture(mode: "code-repo" | "agent-memory", indexes = true): string {
   writeFileSync(join(root, ".mex/config.json"), JSON.stringify({ scaffold_id: randomUUID(), scaffold_name: "Test project", setupMode: mode, aiTools: [] }));
   if (indexes) {
     // This boundary observes readiness only; it never opens or maintains indexes.
-    writeFileSync(join(root, ".mex/graph.db"), "");
+    plantGraph(root, "");
     writeFileSync(join(root, ".mex/wiki.db"), "");
   }
   return root;

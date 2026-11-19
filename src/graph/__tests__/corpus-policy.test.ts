@@ -109,15 +109,13 @@ describe("per-file corpus limits", () => {
   });
 
   it("names the observed size and the limit on the first line", () => {
-    // The source and config per-file ceilings are numerically identical, so
-    // the limit cannot be recovered by comparing byte values.
-    expect(GRAPH_CORPUS_LIMITS.maxSourceFileBytes)
-      .toBe(GRAPH_CORPUS_LIMITS.maxConfigFileBytes);
+    // The limit is named, not recovered from byte values: per-file ceilings
+    // can be numerically identical.
     expect(new GraphCorpusLimitError("maxSourceFileBytes", 34_380_944).message)
       .toBe("The graph corpus exceeded the configured maxSourceFileBytes safety bound: "
-        + "34380944 bytes against a 2097152-byte limit.");
+        + "34380944 bytes against a 4194304-byte limit.");
     expect(() => addGraphCorpusBytes(0, GRAPH_CORPUS_LIMITS.maxSourceFileBytes + 1, "source"))
-      .toThrow(/maxSourceFileBytes safety bound: 2097153 bytes/u);
+      .toThrow(/maxSourceFileBytes safety bound: 4194305 bytes/u);
   });
 });
 

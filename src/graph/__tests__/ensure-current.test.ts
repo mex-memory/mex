@@ -1,6 +1,9 @@
+import { currentGraphPath } from "../storage.js";
+import { plantGraph } from "./plant-graph.js";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { dirname } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ensureGraphCurrent } from "../maintenance.js";
 import { openSqlite } from "../db/sqlite.js";
@@ -22,8 +25,8 @@ describe("ensure current graph", () => {
   it("builds cold, writes nothing when fresh, refreshes edits, and honors force", async () => {
     const root = fixture();
     expect(await ensureGraphCurrent(root)).toMatchObject({ operation: "rebuild", filesIndexed: 1 });
-    const directory = join(root, ".mex");
-    const database = join(directory, "graph.db");
+    const database = currentGraphPath(root);
+    const directory = dirname(database);
     const bytes = readFileSync(database);
     const stats = statSync(database);
     const names = readdirSync(directory);
@@ -39,11 +42,14 @@ describe("ensure current graph", () => {
   it.each(["incompatible", "corrupt"])("rebuilds an %s store", async (kind) => {
     const root = fixture();
     await ensureGraphCurrent(root);
-    const database = join(root, ".mex/graph.db");
-    if (kind === "corrupt") writeFileSync(database, "invalid database");
+    if (kind === "corrupt") plantGraph(root, "invalid database");
     else {
-      const db = openSqlite(database);
-      try { db.exec("UPDATE schema_versions SET version = 999"); } finally { db.close(); }
+      const built = readFileSync(currentGraphPath(root));
+      plantGraph(root, (file) => {
+        writeFileSync(file, built);
+        const db = openSqlite(file);
+        try { db.exec("UPDATE schema_versions SET version = 999"); } finally { db.close(); }
+      });
     }
     expect(await ensureGraphCurrent(root)).toMatchObject({ operation: "rebuild", filesIndexed: 1 });
   });

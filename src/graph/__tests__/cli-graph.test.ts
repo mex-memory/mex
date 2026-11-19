@@ -1,6 +1,8 @@
+import { currentGraphPath } from "../storage.js";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { dirname } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { GraphSourceChanges } from "../../team/contracts/graph.js";
 import { runGraphScope } from "../cli-agent.js";
@@ -55,7 +57,7 @@ describe("graph CLI status formatting", () => {
     try {
       writeFileSync(join(root, "api.ts"), "export const api = true;");
       await runGraph({ root, json: true });
-      writeFileSync(join(root, ".mex", "graph.db-wal"), "stranded");
+      writeFileSync(`${currentGraphPath(root)}-wal`, "stranded");
 
       output.length = 0;
       await runGraphStatus({ root });
@@ -81,7 +83,7 @@ describe("graph CLI status formatting", () => {
     try {
       writeFileSync(join(root, "api.ts"), "export const api = true;");
       await runGraph({ root, json: true });
-      const db = openSqlite(join(root, ".mex", "graph.db"));
+      const db = openSqlite(currentGraphPath(root));
       try {
         const row = db.prepare("SELECT value FROM project_metadata WHERE key = ?")
           .get(GRAPH_SNAPSHOT_METADATA_KEY) as { value: string };
@@ -156,46 +158,23 @@ describe("graph CLI cached coverage", () => {
 });
 
 describe("graph CLI status reports orphan owned files (issue #205)", () => {
-  it("warns about a leftover candidate without removing it", async () => {
+  it("removes a dead writer's temporary graph on the next status read", async () => {
     const root = mkdtempSync(join(tmpdir(), "mex-status-orphan-cli-"));
     const output: string[] = [];
     const log = vi.spyOn(console, "log").mockImplementation((line) => output.push(String(line)));
     try {
       writeFileSync(join(root, "api.ts"), "export const api = true;");
       await runGraph({ root, json: true });
-      const candidateName = `graph.db.candidate-${"d".repeat(48)}`;
-      const candidate = join(root, ".mex", candidateName);
-      const recovery = join(root, ".mex", `graph.db.recovery-${"e".repeat(48)}`);
-      writeFileSync(candidate, "leftover");
-      writeFileSync(recovery, "retained");
+      const index = dirname(currentGraphPath(root));
+      // pid 2147483647 is never a live process.
+      const leftovers = ["", "-journal"].map(suffix => join(index, `graph-tmp-2147483647-interrupted.db${suffix}`));
+      for (const file of leftovers) writeFileSync(file, "interrupted build");
 
       output.length = 0;
       await runGraphStatus({ root });
       expect(output).toContain("Graph status: fresh");
-      expect(output.some((line) => line.startsWith("WARNING GRAPH_INDEX_ORPHAN_CANDIDATE"))).toBe(true);
-      expect(output.some((line) => line.startsWith("INFO GRAPH_INDEX_RECOVERY_DATA_PRESENT"))).toBe(true);
-      expect(output).toContain("Next: mex graph refresh");
-
-      output.length = 0;
-      await runGraphStatus({ root, json: true });
-      const status = JSON.parse(output.join(""));
-      expect(status.status).toBe("fresh");
-      expect(status.diagnostics).toContainEqual(expect.objectContaining({
-        code: "GRAPH_INDEX_ORPHAN_CANDIDATE",
-        severity: "warning",
-        detail: { paths: [`.mex/${candidateName}`] },
-      }));
-      expect(existsSync(candidate)).toBe(true);
-      expect(existsSync(recovery)).toBe(true);
-
-      output.length = 0;
-      await runGraphRefresh({ root, json: true });
-      expect(existsSync(candidate)).toBe(false);
-      expect(existsSync(recovery)).toBe(true);
-
-      output.length = 0;
-      await runGraphStatus({ root });
-      expect(output.some((line) => line.includes("GRAPH_INDEX_ORPHAN_CANDIDATE"))).toBe(false);
+      expect(output.some((line) => line.includes("ORPHAN"))).toBe(false);
+      for (const file of leftovers) expect(existsSync(file)).toBe(false);
     } finally {
       log.mockRestore();
       rmSync(root, { recursive: true, force: true });

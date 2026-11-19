@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../storage.js";
 import { mkdtempSync, rmSync, writeFileSync, statSync, utimesSync, renameSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,7 +82,7 @@ describe("apply-scoped grounding freshness", () => {
       writeFileSync(join(root, "linked.py"), "def value():\n    return 9\n");
     }, { sourceScope: new Set() })).rejects.toBeDefined();
     writeFileSync(join(root, "linked.py"), "def value():\n    return 1\n");
-    const db = join(root, ".mex", "graph.db");
+    const db = currentGraphPath(root);
     const bytes = readFileSync(db);
     await expect(port.withFreshGroundingSnapshot(graph => {
       graph.getNode(id);

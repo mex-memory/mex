@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../dist/graph-storage.js";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -659,7 +660,7 @@ try {
 
   for (const kind of ["graph_refresh", "graph_rebuild"]) {
     if (kind === "graph_rebuild") {
-      writeFileSync(join(project, ".mex", "graph.db"), "intentionally corrupt graph for rebuild coverage\n");
+      writeFileSync(currentGraphPath(project), "intentionally corrupt graph for rebuild coverage\n");
       const corruptHealth = await fetch(`${url.origin}/api/v1/health`, {
         headers: { cookie },
         redirect: "error",
@@ -1037,11 +1038,7 @@ async function verifyFreshCodeRepoSetup(tarball, workRoot, cache, version) {
       throw new Error(`Manual fixture population left a required placeholder in ${file}.`);
     }
   }
-  for (const database of ["graph.db", "wiki.db"]) {
-    if (!existsSync(join(project, ".mex", database))) {
-      throw new Error(`Fresh packed setup omitted .mex/${database}.`);
-    }
-  }
+  if (!existsSync(currentGraphPath(project)) || !existsSync(join(project, ".mex", "wiki.db"))) throw new Error("Fresh packed setup omitted a derived index.");
   verifySetupIgnoreProtection(project);
   const wiki = JSON.parse(run(process.execPath, [cli, "wiki", "list", "--json"], project));
   if (wiki?.ok !== true || !Array.isArray(wiki?.data?.entities) || wiki.data.entities.length === 0) {

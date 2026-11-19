@@ -20,6 +20,7 @@
  * closed by evidence and the handoff records which is which.
  */
 
+import { currentGraphPath } from "../../graph/storage.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -165,8 +166,8 @@ async function buildGraph(project: Project): Promise<void> {
 }
 
 function withGraph<T>(project: Project, body: (graph: GroundingGraph, db: ReturnType<typeof openGraphDatabase>) => T): T {
-  const dbPath = join(project.root, ".mex", "graph.db");
-  const engine = createGraphEngine({ rootDir: project.root, dbPath });
+  const dbPath = currentGraphPath(project.root);
+  const engine = createGraphEngine({ rootDir: project.root });
   const db = openGraphDatabase(dbPath);
   try {
     return body(createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db), db);
@@ -177,8 +178,8 @@ function withGraph<T>(project: Project, body: (graph: GroundingGraph, db: Return
 }
 
 function nodeIdOf(project: Project, name: string): string {
-  const dbPath = join(project.root, ".mex", "graph.db");
-  const engine = createGraphEngine({ rootDir: project.root, dbPath });
+  const dbPath = currentGraphPath(project.root);
+  const engine = createGraphEngine({ rootDir: project.root });
   const db = openGraphDatabase(dbPath);
   try {
     const graph = createSynthesisGraph(engine, db);

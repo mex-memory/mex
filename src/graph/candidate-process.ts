@@ -8,6 +8,7 @@ import type { BuildResult } from "./engine.js";
 import {
   boundedCandidateMessage,
   type GraphCandidateProgress,
+  type GraphCandidateUsage,
   type GraphCandidateRequest,
 } from "./candidate-protocol.js";
 import { phaseTimingsWorkerEnv } from "./phase-timing.js";
@@ -92,6 +93,8 @@ export interface GraphCandidateProcessOptions {
   operation: "refresh" | "rebuild";
   signal?: AbortSignal;
   onProgress?: (progress: GraphCandidateProgress) => void;
+  /** CPU time and peak memory of the candidate and its compiler servers. */
+  onUsage?: (usage: GraphCandidateUsage) => void;
   /** Deterministic subprocess fault seams; never exposed by the GraphPort. */
   __internal?: {
     entrypoint?: string;
@@ -238,6 +241,9 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
         }
       } else if (message.type === "complete") {
         result = message.result;
+        if (message.usage) {
+          try { options.onUsage?.(message.usage); } catch { /* the usage log never fails a build */ }
+        }
       } else {
         stop(fail("worker-error", message.category));
       }

@@ -1,3 +1,5 @@
+import { currentGraphPath } from "../src/graph/storage.js";
+import { plantGraph } from "../src/graph/__tests__/plant-graph.js";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -11,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import {
   ActivityResponseSchema,
   HomeResponseSchema,
@@ -361,7 +363,7 @@ function prepareProject(): string {
   git(root, "config", "user.email", "hub-identity@example.invalid");
   git(root, "add", ".gitignore", "README.md", ".mex/config.json");
   git(root, "commit", "-qm", "fixture: tracked Hub Team identity");
-  write(root, ".mex/graph.db", "graph-index-sentinel\n");
+  plantGraph(root, "graph-index-sentinel\n");
   write(root, ".mex/wiki.db", "wiki-index-sentinel\n");
   return root;
 }
@@ -386,7 +388,7 @@ function snapshotReadProtectedState(root: string): readonly FileSnapshot[] {
     ".mex/team",
     ".mex/events",
     ".mex/local",
-    ".mex/graph.db",
+    currentGraphPath(root),
     ".mex/wiki.db",
     ".git/HEAD",
     ".git/index",
@@ -396,7 +398,7 @@ function snapshotReadProtectedState(root: string): readonly FileSnapshot[] {
 
 function snapshotIndexAndGitInternals(root: string): readonly FileSnapshot[] {
   return snapshotFiles(root, [
-    ".mex/graph.db",
+    currentGraphPath(root),
     ".mex/wiki.db",
     ".git/HEAD",
     ".git/index",
@@ -413,7 +415,7 @@ interface FileSnapshot {
 
 function snapshotFiles(root: string, paths: readonly string[]): readonly FileSnapshot[] {
   const snapshots: FileSnapshot[] = [];
-  for (const path of paths) collect(root, join(root, ...path.split("/")), snapshots);
+  for (const path of paths) collect(root, isAbsolute(path) ? path : join(root, ...path.split("/")), snapshots);
   return snapshots.sort((left, right) => left.path.localeCompare(right.path));
 }
 

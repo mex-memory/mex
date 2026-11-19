@@ -22,6 +22,7 @@ import {
 } from "node:path";
 import { getHeapStatistics } from "node:v8";
 import ts from "typescript";
+import { SpooledCaptures, type CaptureMap } from "./capture-spool.js";
 import { flushGraphPhaseTimings, phaseTimingsEnabled, recordGraphMemory, recordGraphPhase, timeGraphPhase } from "../phase-timing.js";
 
 // v3 (#240): checker-rendered signatures no longer embed absolute module paths.
@@ -365,6 +366,18 @@ export interface CompilerExtractionOptions {
   /** Reuse unaffected files' previous captures (issue #209). */
   incremental?: CompilerIncrementalInput;
   /**
+   * Write each file's capture under this directory until the finishing pass
+   * reads it back, instead of holding them all in memory. For large builds.
+   * @internal
+   */
+  captureSpoolDirectory?: string;
+  /**
+   * Take each file's capture as the finishing pass makes it (and whether it is
+   * a reused one) instead of collecting them all in `captures`.
+   * @internal
+   */
+  onCapture?: (capture: CompilerFileCapture, reused: boolean) => void;
+  /**
    * Choose the compiler that builds one project's program. Returning
    * undefined keeps the in-process TypeScript 5.9 compiler.
    * @internal
@@ -589,6 +602,9 @@ export interface CapturedFile {
   resolvedSpecifiers: string[];
 }
 
+/** What the finishing pass reads of a node in another file. */
+interface NodeNames { name: string; qualifiedName: string }
+
 /** Capture-time half of the old `idsForSymbol`: symbol → declaration locations. */
 function declarationLocationsForSymbol(
   symbol: ts.Symbol | undefined,
@@ -759,8 +775,20 @@ export function buildTypeScriptExtraction(
   const poisonedFiles = new Set<string>();
   const crashedProjects = new Set<ParsedProject>();
   const locationIds = new Map<string, string>();
-  const nodeById = new Map<string, CompilerExtractedNode>();
-  const capturedByFile = new Map<string, CapturedFile>();
+  // The finishing pass reads only these two fields of another file's node.
+  const nodeById = new Map<string, NodeNames>();
+  const capturedByFile: CaptureMap<CapturedFile> = options.captureSpoolDirectory
+    ? new SpooledCaptures<CapturedFile>(options.captureSpoolDirectory)
+    : new Map<string, CapturedFile>();
+  const fileDraftIdByPath = new Map<string, string>();
+  const keepCapture = (absoluteFile: string, captured: CapturedFile): void => {
+    capturedByFile.set(absoluteFile, captured);
+    if (captured.fileDraftId) fileDraftIdByPath.set(captured.filePath, captured.fileDraftId);
+    else fileDraftIdByPath.delete(captured.filePath);
+  };
+  const nameNode = (node: CompilerExtractedNode): void => {
+    nodeById.set(node.id, { name: node.name, qualifiedName: node.qualifiedName });
+  };
   const dependenciesByFile = new Map<string, FileDependencies>();
   const reusedCaptures = new Map<string, CompilerFileCapture>();
   const projectStates: Record<string, string> = {};
@@ -828,8 +856,8 @@ export function buildTypeScriptExtraction(
           globalScope: previous.globalScope,
         });
         for (const [location, id] of captured.locations) locationIds.set(location, id);
-        for (const node of captured.nodes) nodeById.set(node.id, node);
-        capturedByFile.set(absoluteFile, captured);
+        for (const node of captured.nodes) nameNode(node);
+        keepCapture(absoluteFile, captured);
         reusedCaptures.set(absoluteFile, previous);
         reusedFiles.push(path);
         onFileCaptured?.(capturedByFile.size);
@@ -923,7 +951,7 @@ export function buildTypeScriptExtraction(
     }
     session.capture(visitOrder.filter((file) => !reused.has(file)), {
       location: (location, id) => { locationIds.set(location, id); },
-      node: (node) => { nodeById.set(node.id, node); },
+      node: nameNode,
       dependencySignatures: (capturedFile) => {
         const dependencySignatures: Array<[string, string]> = [];
         for (const dependency of dependenciesByFile.get(capturedFile)?.dependencies ?? []) {
@@ -933,14 +961,14 @@ export function buildTypeScriptExtraction(
         signaturesByFile.set(capturedFile, dependencySignatures);
       },
       file: (capturedFile, captured) => {
-        capturedByFile.set(capturedFile, captured);
+        keepCapture(capturedFile, captured);
         recaptured++;
         onFileCaptured?.(capturedByFile.size);
       },
     });
     for (const captured of reused.values()) {
       for (const [location, id] of captured.locations) locationIds.set(location, id);
-      for (const node of captured.nodes) nodeById.set(node.id, node);
+      for (const node of captured.nodes) nameNode(node);
     }
     for (const [absoluteFile, captured] of reused) {
       // Import capture resolves each specifier through the input ledger; the
@@ -955,7 +983,7 @@ export function buildTypeScriptExtraction(
         replayedResolutions.add(key);
         session.replayResolution(absoluteFile, specifier);
       }
-      capturedByFile.set(absoluteFile, captured);
+      keepCapture(absoluteFile, captured);
       onFileCaptured?.(capturedByFile.size);
     }
   };
@@ -1123,12 +1151,8 @@ export function buildTypeScriptExtraction(
   // ── Finishing pass: compiler-free. Resolve deferred declaration locations
   // against the now-complete corpus-wide location→id map, replaying exactly
   // the id/status/candidate logic the old concurrent implementation applied.
-  const fileDraftIdByPath = new Map<string, string>();
-  for (const captured of capturedByFile.values()) {
-    if (captured.fileDraftId) fileDraftIdByPath.set(captured.filePath, captured.fileDraftId);
-  }
-
   const finishStarted = performance.now();
+  const reusedPaths = new Set(reusedFiles);
   const files: CompilerFileExtraction[] = [];
   const captures: CompilerFileCapture[] = [];
   for (const absoluteFile of candidates) {
@@ -1137,10 +1161,14 @@ export function buildTypeScriptExtraction(
     const dependencies = dependenciesByFile.get(absoluteFile)
       ?? { dependencies: [], failedLookups: [], globalScope: true };
     // A reused capture is stored exactly as it was read.
-    captures.push(reusedCaptures.get(absoluteFile) ?? {
+    const reusedCapture = reusedCaptures.get(absoluteFile);
+    const capture = reusedCapture ?? {
       ...portableCapture(captured, dependencies, rootPrefix),
       dependencySignatures: signaturesByFile.get(absoluteFile) ?? [],
-    });
+    };
+    // A remapped capture stays in reusedCaptures but is no longer the stored one.
+    if (options.onCapture) options.onCapture(capture, reusedPaths.has(captured.filePath));
+    else captures.push(capture);
     const importBindings: CompilerImportBinding[] = captured.bindings.map(({ binding, targetLocations }) => ({
       ...binding,
       targetId: idsForLocations(targetLocations, locationIds)[0],
@@ -1156,6 +1184,7 @@ export function buildTypeScriptExtraction(
     } satisfies CompilerFileExtraction);
     capturedByFile.delete(absoluteFile);
   }
+  capturedByFile.dispose?.();
 
   recordGraphPhase("compiler.finish", performance.now() - finishStarted);
   flushGraphPhaseTimings("compiler.extract", root);
@@ -1194,6 +1223,91 @@ export function buildTypeScriptExtraction(
     recaptured,
     reused: reusedFiles.sort(compareCodePoints),
   };
+}
+
+/**
+ * The warm path (graph-02): what every project's program request shares, built
+ * once as an extraction builds it: one input ledger, the corpus, the parsed
+ * projects. @internal
+ */
+export interface WarmCompilerContext {
+  root: string;
+  inputs: CompilerInputLedger;
+  candidates: ReadonlySet<string>;
+  projects: readonly ParsedProject[];
+}
+
+/** @internal */
+export function warmCompilerContext(rootDir: string, compilerPaths: readonly string[], options: CompilerExtractionOptions = {}): WarmCompilerContext {
+  const root = resolve(rootDir);
+  const inputs = new CompilerInputLedger(root, options);
+  const candidates = collectCandidates(root, compilerPaths, inputs);
+  inputs.setCandidateFiles(candidates);
+  const candidateSet = new Set(candidates);
+  return { root, inputs, candidates: candidateSet, projects: parseProjects(root, candidateSet, inputs) };
+}
+
+/**
+ * One project's program request, rooted as an extraction roots it.
+ * `ownedElsewhere` are the corpus files other projects own. @internal
+ */
+export function warmProjectRequest(context: WarmCompilerContext, projectId: string, ownedElsewhere: ReadonlySet<string>): ProjectOpenRequest | undefined {
+  const project = context.projects.find((candidate) => candidate.id === projectId);
+  if (!project) return undefined;
+  const rootNames = project.parsed.fileNames.filter((file) => {
+    if (DECLARATION_FILE.test(file)) return true;
+    const absolute = normalizedAbsolute(file);
+    return context.candidates.has(absolute) && !ownedElsewhere.has(absolute);
+  });
+  return {
+    root: context.root, project, rootNames, options: { ...project.parsed.options, skipLibCheck: true, noEmit: true },
+    candidates: context.candidates, inputs: context.inputs,
+  };
+}
+
+/** What finishing one warm capture needs from the rest of the corpus. @internal */
+export interface WarmFinishLookups {
+  /** Declaration location (absolute) → node id, for every file. */
+  locationIds: ReadonlyMap<string, string>;
+  nodeNames: ReadonlyMap<string, { name: string; qualifiedName: string }>;
+  /** Repository-relative path → its file node's id. */
+  fileDraftIds: ReadonlyMap<string, string>;
+}
+
+/**
+ * Finish one freshly captured file as the finishing pass would, and make its
+ * portable capture for the extraction cache. @internal
+ */
+export function finishWarmCapture(
+  rootDir: string,
+  captured: CapturedFile,
+  dependencies: FileDependencies,
+  dependencySignatures: Array<[string, string]>,
+  lookups: WarmFinishLookups,
+): { file: CompilerFileExtraction; capture: CompilerFileCapture } {
+  const rootPrefix = `${normalizedAbsolute(resolve(rootDir))}/`;
+  const capture: CompilerFileCapture = { ...portableCapture(captured, dependencies, rootPrefix), dependencySignatures };
+  const importBindings: CompilerImportBinding[] = captured.bindings.map(({ binding, targetLocations }) => ({
+    ...binding,
+    targetId: idsForLocations(targetLocations, lookups.locationIds)[0],
+  }));
+  return {
+    capture,
+    file: {
+      filePath: captured.filePath,
+      language: captured.language,
+      projectId: captured.projectId,
+      health: captured.health,
+      nodes: captured.nodes,
+      importBindings,
+      references: finishReferences(captured, importBindings, lookups.locationIds, lookups.nodeNames, lookups.fileDraftIds),
+    },
+  };
+}
+
+/** A stored capture as the finishing pass sees it, with absolute locations. @internal */
+export function restoreWarmCapture(capture: CompilerFileCapture, rootDir: string): CapturedFile {
+  return restoreCapture(capture, `${normalizedAbsolute(resolve(rootDir))}/`);
 }
 
 /** The in-process TypeScript 5.9 compiler. */
@@ -1736,11 +1850,40 @@ export function locationFile(location: string): string | null {
  */
 function remapReusedLocations(
   incremental: CompilerIncrementalInput,
-  capturedByFile: Map<string, CapturedFile>,
+  capturedByFile: CaptureMap<CapturedFile>,
   reusedCaptures: Map<string, CompilerFileCapture>,
   rootPrefix: string,
 ): Set<string> {
   const remappedFiles = new Set<string>();
+  const moved = new Map<string, string | null>();
+  for (const path of incremental.modified) {
+    const previous = incremental.previous.get(path);
+    if (!previous) continue;
+    for (const [from, to] of movedLocations(previous, capturedByFile.get(`${rootPrefix}${path}`), rootPrefix)) moved.set(from, to);
+  }
+  if (moved.size === 0) return remappedFiles;
+  const remappedCaptures = new Map<string, CompilerFileCapture>();
+  for (const [absoluteFile, capture] of reusedCaptures) {
+    const remapped = remapCapture(capture, moved);
+    if (remapped === null) {
+      throw new CompilerIncrementalFallback("a changed file no longer declares a node another file refers to");
+    }
+    if (!remapped) continue;
+    reusedCaptures.delete(absoluteFile);
+    capturedByFile.set(absoluteFile, restoreCapture(remapped, rootPrefix));
+    remappedCaptures.set(absoluteFile, remapped);
+    remappedFiles.add(absoluteFile);
+  }
+  for (const [absoluteFile, remapped] of remappedCaptures) reusedCaptures.set(absoluteFile, remapped);
+  return remappedFiles;
+}
+
+/**
+ * Where each declaration location of a changed file's previous capture went
+ * in its new capture (portable locations), or null where the declaration is
+ * gone. Declarations are matched by node id, in offset order. @internal
+ */
+export function movedLocations(previous: CompilerFileCapture, current: CapturedFile | undefined, rootPrefix: string): Map<string, string | null> {
   const portable = (location: string): string =>
     location.startsWith(rootPrefix) ? `./${location.slice(rootPrefix.length)}` : location;
   const byId = (locations: Array<[string, string]>, map: (location: string) => string): Map<string, string[]> => {
@@ -1754,43 +1897,34 @@ function remapReusedLocations(
     return grouped;
   };
   const moved = new Map<string, string | null>();
-  for (const path of incremental.modified) {
-    const previous = incremental.previous.get(path);
-    if (!previous) continue;
-    const current = capturedByFile.get(`${rootPrefix}${path}`);
-    const after = current ? byId(current.locations, portable) : new Map<string, string[]>();
-    for (const [id, locations] of byId(previous.locations, (location) => location)) {
-      const next = after.get(id);
-      locations.forEach((location, index) => {
-        const target = next?.length === locations.length ? next[index] : undefined;
-        moved.set(location, target !== undefined && locationKind(target) === locationKind(location) ? target : null);
-      });
-    }
+  const after = current ? byId(current.locations, portable) : new Map<string, string[]>();
+  for (const [id, locations] of byId(previous.locations, (location) => location)) {
+    const next = after.get(id);
+    locations.forEach((location, index) => {
+      const target = next?.length === locations.length ? next[index] : undefined;
+      moved.set(location, target !== undefined && locationKind(target) === locationKind(location) ? target : null);
+    });
   }
-  if (moved.size === 0) return remappedFiles;
-  const remappedCaptures = new Map<string, CompilerFileCapture>();
-  for (const [absoluteFile, capture] of reusedCaptures) {
-    let changed = false;
-    for (const location of captureLocations(capture)) {
-      if (!moved.has(location)) continue;
-      const target = moved.get(location);
-      if (target === null) {
-        throw new CompilerIncrementalFallback("a changed file no longer declares a node another file refers to");
-      }
-      if (target !== location) changed = true;
-    }
-    if (!changed) continue;
-    const remapped: CompilerFileCapture = {
-      ...capture,
-      ...mapCaptureLocations(capture.captured, capture.bindings, capture.locations, (location) => moved.get(location) ?? location),
-    };
-    reusedCaptures.delete(absoluteFile);
-    capturedByFile.set(absoluteFile, restoreCapture(remapped, rootPrefix));
-    remappedCaptures.set(absoluteFile, remapped);
-    remappedFiles.add(absoluteFile);
+  return moved;
+}
+
+/**
+ * A stored capture with its references moved through `moved`: undefined when
+ * nothing it refers to moved, null when something it refers to is gone. @internal
+ */
+export function remapCapture(capture: CompilerFileCapture, moved: ReadonlyMap<string, string | null>): CompilerFileCapture | null | undefined {
+  let changed = false;
+  for (const location of captureLocations(capture)) {
+    if (!moved.has(location)) continue;
+    const target = moved.get(location);
+    if (target === null) return null;
+    if (target !== location) changed = true;
   }
-  for (const [absoluteFile, remapped] of remappedCaptures) reusedCaptures.set(absoluteFile, remapped);
-  return remappedFiles;
+  if (!changed) return undefined;
+  return {
+    ...capture,
+    ...mapCaptureLocations(capture.captured, capture.bindings, capture.locations, (location) => moved.get(location) ?? location),
+  };
 }
 
 function locationOffset(location: string): number {
@@ -1974,6 +2108,19 @@ export class CompilerInputLedger {
   }
 
   /** Every staged input: the exact bytes the compiler must see, by absolute path. */
+  /**
+   * Replace a file's staged bytes after an edit (the warm path). Earlier reads
+   * of the file are forgotten, so the next read sees the new text.
+   */
+  restage(fileName: string, source: string): void {
+    const absolute = absoluteCandidate(this.root, fileName);
+    if (!withinRoot(this.root, absolute)) throw new Error(`Compiler staged input escapes the project root: ${fileName}`);
+    this.staged.set(absolute, source);
+    this.cache.delete(absolute);
+    this.observed.delete(absolute);
+    this.indexKnownFile(absolute);
+  }
+
   stagedInputs(): ReadonlyMap<string, string> {
     return this.staged;
   }
@@ -2978,7 +3125,7 @@ function finishReferences(
   file: CapturedFile,
   importBindings: readonly CompilerImportBinding[],
   locationIds: ReadonlyMap<string, string>,
-  nodeById: ReadonlyMap<string, CompilerExtractedNode>,
+  nodeById: ReadonlyMap<string, NodeNames>,
   fileDraftIdByPath: ReadonlyMap<string, string>,
 ): CompilerReference[] {
   const bindingById = new Map(importBindings.map((binding) => [binding.id, binding]));

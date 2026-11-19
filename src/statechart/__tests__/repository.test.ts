@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../../graph/storage.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,7 +60,7 @@ it("retains historical/conflicting evidence without reconciling rules or repairi
   a.rules[0]!.evidence = ["history", "requirement"]; a.rules[0]!.provenance = "Current requirement retained unchanged; the historical disagreement is visible in evidence.";
   const p = await repo.register(a), d = repo.get("preview", p.id), saved = await repo.applySave(repo.previewSave(p.id, d.revision).token);
   const reopened = new DiagramRepository(r).get("saved", saved.id); expect(reopened.artifact.rules).toEqual(a.rules); expect(reopened.artifact.evidence).toEqual(a.evidence); expect(reopened.alignment).toBe("unverified");
-  expect(existsSync(join(r, ".mex/wiki.db"))).toBe(false); expect(existsSync(join(r, ".mex/graph.db"))).toBe(false);
+  expect(existsSync(join(r, ".mex/wiki.db"))).toBe(false); expect(existsSync(currentGraphPath(r))).toBe(false);
 });
 it("evicts only at explicit registration and keeps preview retention bounded", async () => {
   const r = root(); let time = new Date("2026-10-26T00:00:00.000Z"); const repo = new DiagramRepository(r, () => time);
