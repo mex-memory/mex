@@ -39,7 +39,7 @@ import { normalizeIncrementalReferences } from "./incremental-references.js";
 import { discoverGraphConfigSources } from "./manifest.js";
 import { recordWrittenGraphAudited } from "./maintenance.js";
 import { materializeOverlay } from "./overlay-materialize.js";
-import { writeOverlay } from "./overlay-write.js";
+import { patchOverlay, writeOverlay } from "./overlay-write.js";
 import { applyRowDelta, groupRowsByFile, INCREMENTAL_STATE_METADATA_KEY, incrementalStateMarker } from "./publication-delta.js";
 import { createGraphSnapshot, GRAPH_SNAPSHOT_METADATA_KEY, parseGraphSnapshot, readGraphGitProvenance, serializeGraphSnapshot } from "./snapshot.js";
 import {
@@ -476,7 +476,7 @@ export class WarmCheckout {
           }
           const rewritten = [...edited, ...neighbours];
           for (const path of rewritten) this.overlayFiles.add(path);
-          this.publish(writer, phase);
+          this.publish(writer, phase, rewritten);
           return done("published", rewritten);
         } finally {
           writer.release();
@@ -592,10 +592,14 @@ export class WarmCheckout {
   }
 
   /** Write the overlay of the private copy against the base, and point at it. */
-  private publish(writer: { assertOwned(): void }, phase: (name: string) => void = () => {}): void {
+  private publish(writer: { assertOwned(): void }, phase: (name: string) => void, rewritten: readonly string[]): void {
     const overlay = graphTemporary(this.location);
+    const base = join(this.location.directory, this.pointer.base);
     try {
-      const failed = writeOverlay({ base: join(this.location.directory, this.pointer.base), refreshed: this.working, target: overlay, root: this.root, files: [...this.overlayFiles].sort() });
+      // An existing overlay is copied and only the rewritten files replaced.
+      const failed = this.pointer.overlay
+        ? patchOverlay({ base, previous: join(this.location.directory, this.pointer.overlay), refreshed: this.working, target: overlay, root: this.root, files: [...rewritten].sort() })
+        : writeOverlay({ base, refreshed: this.working, target: overlay, root: this.root, files: [...this.overlayFiles].sort() });
       if (failed) throw new Cold(failed.reason);
       phase("publish.overlay");
       finalizeGraph(overlay);

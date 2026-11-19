@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { constants, copyFileSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
@@ -174,3 +174,81 @@ export function writeOverlay(input: { base: string; refreshed: string; target: s
   return undefined;
 }
 
+
+/**
+ * A new overlay from the previous one with `files` replaced (the warm path):
+ * the previous overlay is copied to `target` (a new, nonexistent file) and
+ * only the given files' rows, their shadow entries, the whole-copy tables and
+ * their source-chunk search rows are written again from `refreshed`. Returns
+ * a reason when a file changed on disk since it was staged.
+ */
+export function patchOverlay(input: { base: string; previous: string; refreshed: string; target: string; root: string; files: readonly string[] }): { reason: string } | undefined {
+  copyFileSync(input.previous, input.target, constants.COPYFILE_EXCL);
+  const db = openSqlite(input.target);
+  try {
+    db.exec("PRAGMA foreign_keys = OFF; PRAGMA journal_mode = DELETE;");
+    db.exec(`ATTACH DATABASE '${uri(input.refreshed).replaceAll("'", "''")}' AS c`);
+    db.exec(`ATTACH DATABASE '${uri(input.base).replaceAll("'", "''")}' AS b`);
+    db.exec("BEGIN");
+    db.exec("CREATE TEMP TABLE patch_files(path TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TEMP TABLE patch_nodes(id TEXT PRIMARY KEY) WITHOUT ROWID;");
+    const add = db.prepare("INSERT OR IGNORE INTO temp.patch_files VALUES (?)");
+    for (const path of input.files) add.run(path);
+    // The files' current overlay rows go; nodes last, so node-owned rows find their owners.
+    const ownedNodes = "SELECT id FROM main.nodes WHERE file_path IN (SELECT path FROM temp.patch_files)";
+    db.exec(`
+      DELETE FROM main.lsh_buckets WHERE ref IN (SELECT ref FROM main.node_fingerprints WHERE node_id IN (${ownedNodes}));
+      DELETE FROM main.node_fingerprints WHERE node_id IN (${ownedNodes});
+      DELETE FROM main.edges WHERE source IN (${ownedNodes});
+      DELETE FROM main.unresolved_refs WHERE from_node_id IN (${ownedNodes});`);
+    const store = new GraphStore(db);
+    for (const path of input.files) store.deleteSourceChunks(path);
+    for (const { table, column, owner } of OWNED_TABLES) {
+      if (owner !== "file" || table === "nodes" || table === "source_chunks" || !hasTable(db, "main", table)) continue;
+      db.exec(`DELETE FROM main.${table} WHERE ${column} IN (SELECT path FROM temp.patch_files)`);
+    }
+    db.exec(`DELETE FROM main.nodes WHERE file_path IN (SELECT path FROM temp.patch_files)`);
+    // Shadow the base's rows of the files (already shadowed ones stay).
+    db.exec(`
+      INSERT OR IGNORE INTO main.shadow_files SELECT path FROM temp.patch_files;
+      INSERT OR IGNORE INTO main.shadow_nodes SELECT id FROM b.nodes WHERE file_path IN (SELECT path FROM temp.patch_files);
+      INSERT OR IGNORE INTO main.shadow_refs SELECT ref FROM b.node_fingerprints WHERE node_id IN (SELECT id FROM b.nodes WHERE file_path IN (SELECT path FROM temp.patch_files));
+      INSERT INTO temp.patch_nodes SELECT id FROM c.nodes WHERE file_path IN (SELECT path FROM temp.patch_files);`);
+    const owned = new Set(OWNED_TABLES.map(entry => entry.table));
+    for (const { table, column, owner } of OWNED_TABLES) {
+      if (table === "source_chunks" || !hasTable(db, "c", table)) continue;
+      if (table === "node_fingerprints") {
+        db.exec(`INSERT INTO main.node_fingerprints (ref, node_id, minhash, neighbors, token_count)
+          SELECT ${shifted("ref")}, node_id, minhash, neighbors, token_count FROM c.node_fingerprints
+          WHERE node_id IN (SELECT id FROM temp.patch_nodes)`);
+        continue;
+      }
+      if (table === "lsh_buckets") {
+        db.exec(`INSERT INTO main.lsh_buckets (band, band_hash, ref)
+          SELECT band, band_hash, ${shifted("ref")} FROM c.lsh_buckets
+          WHERE ref IN (SELECT ref FROM c.node_fingerprints WHERE node_id IN (SELECT id FROM temp.patch_nodes))`);
+        continue;
+      }
+      const filter = owner === "file" ? "SELECT path FROM temp.patch_files" : "SELECT id FROM temp.patch_nodes";
+      const list = stored(db, table);
+      db.exec(`INSERT INTO main.${table} (${list}) SELECT ${list} FROM c.${table} WHERE ${column} IN (${filter})`);
+    }
+    // Tables no file owns come whole from the refreshed graph.
+    const tables = db.prepare("SELECT name FROM c.sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
+    for (const { name: tableName } of tables) {
+      if (owned.has(tableName) || FTS_TABLES.has(tableName) || tableName.startsWith("sqlite_") || FTS_SHADOW.test(tableName)) continue;
+      const name = `"${tableName.replaceAll('"', '""')}"`;
+      const list = stored(db, tableName);
+      db.exec(`DELETE FROM main.${name}; INSERT INTO main.${name} (${list}) SELECT ${list} FROM c.${name}`);
+    }
+    const indexed = db.prepare("SELECT DISTINCT file_path AS path, content_hash AS hash FROM c.source_chunks WHERE file_path IN (SELECT path FROM temp.patch_files)").all() as Array<{ path: string; hash: string }>;
+    for (const { path, hash } of indexed) {
+      let text: string;
+      try { text = readFileSync(join(input.root, path), "utf8"); } catch { db.exec("ROLLBACK"); return { reason: `${path} changed on disk during the update` }; }
+      if (createHash("sha256").update(text).digest("hex") !== hash) { db.exec("ROLLBACK"); return { reason: `${path} changed on disk during the update` }; }
+      store.replaceSourceChunks(path, text, hash);
+    }
+    db.exec("COMMIT");
+    db.exec("DETACH DATABASE c; DETACH DATABASE b;");
+  } finally { db.close(); }
+  return undefined;
+}
