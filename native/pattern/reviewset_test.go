@@ -17,6 +17,7 @@ type reviewCase struct {
 	Source     string `json:"source"`
 	Objected   string `json:"objected"`
 	Fixed      string `json:"fixed"`
+	Anchor     string `json:"anchor"`
 	Candidates []struct {
 		Type    string `json:"type"`
 		Match   string `json:"match"`
@@ -33,8 +34,8 @@ type reviewCase struct {
 // fix has merged, which is when MEX learns from a review), the share rule
 // runs too. The area files are public code too large to keep in the repo.
 var (
-	reviewSetFloor     = [2]float64{0.60, 1.00} // precision, recall: objected/fixed only
-	reviewSetAreaFloor = [2]float64{0.60, 0.85} // with the area share
+	reviewSetFloor     = [2]float64{0.90, 0.90} // precision, recall: measured 0.95, 0.95
+	reviewSetAreaFloor = [2]float64{0.90, 0.90} // with the area share: measured 0.95, 0.95
 )
 
 func reviewArea(t *testing.T, dir string, i int) Area {
@@ -87,7 +88,7 @@ func TestSelfCheckPrecisionOnTheReviewSet(t *testing.T) {
 					t.Fatalf("%s: good pattern %q doesn't match its code", rc.Source, c.Pattern)
 				}
 			}
-			v := SelfCheck(Candidate{Type: c.Type, Match: c.Match, Pattern: c.Pattern, Objected: rc.Objected, Fixed: rc.Fixed}, area)
+			v := SelfCheck(Candidate{Type: c.Type, Match: c.Match, Pattern: c.Pattern, Objected: rc.Objected, Fixed: rc.Fixed, Anchor: rc.Anchor}, area)
 			if v.Keep {
 				kept++
 				if c.Good {

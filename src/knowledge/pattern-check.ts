@@ -1,7 +1,9 @@
 /**
  * The $0 self-check for `when:` patterns learned from a review (plan sheet
  * 31). A pattern is kept only if it matches the code the reviewer objected
- * to, not the fixed code, and is rare in the entry's area; otherwise the
+ * to, not the fixed code; names something of its own (not only keywords,
+ * short names or variables the reviewed code declared); touches the lines
+ * the comment was left on; and is rare in the entry's area. Otherwise the
  * entry keeps its path scope alone. The native hook does the matching, so
  * literal and structural patterns behave exactly as they will at delivery.
  */
@@ -17,6 +19,11 @@ export interface PatternCandidate extends WhenPattern {
   objected: string;
   /** The same code after the fix. */
   fixed: string;
+  /**
+   * The line or lines the review comment was left on, as they read in
+   * `objected`. A pattern must touch them unless they are a code comment.
+   */
+  anchor?: string;
 }
 
 export interface PatternVerdict { keep: boolean; reason: string; files: number; matched: number }
@@ -38,7 +45,7 @@ export function checkPatterns(candidates: readonly PatternCandidate[], scope: re
   const run = spawnSync(binary, ["--pattern-check"], {
     input: JSON.stringify({
       checkout: project.root, project_id: project.projectId, record_directory: project.location.directory, scope,
-      candidates: candidates.map(c => ({ type: c.type, match: c.match, pattern: c.pattern, objected: c.objected, fixed: c.fixed })),
+      candidates: candidates.map(c => ({ type: c.type, match: c.match, pattern: c.pattern, objected: c.objected, fixed: c.fixed, anchor: c.anchor ?? "" })),
     }),
     encoding: "utf8", timeout: 30_000, windowsHide: true, maxBuffer: 1 << 20,
     env: { ...(options.env ?? process.env), MEX_BACKGROUND: "1" },

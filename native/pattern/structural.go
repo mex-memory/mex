@@ -108,10 +108,43 @@ func (s *Structural) Match(code string) bool {
 	return false
 }
 
+// Spans returns the byte ranges of the pattern's matches in code, leftmost
+// first and not overlapping. Used off the hook path, by the self-check.
+func (s *Structural) Spans(code string) [][2]int {
+	if s == nil {
+		return nil
+	}
+	for _, n := range s.needles {
+		if !strings.Contains(code, n) {
+			return nil
+		}
+	}
+	toks, offs := tokenizeAt(code)
+	m := matcher{pat: s.toks, toks: toks, budget: structuralBudget}
+	first := s.toks[0]
+	var out [][2]int
+	for start := 0; start < len(toks) && m.budget > 0; start++ {
+		if first.meta == "" && !sameToken(first.text, toks[start]) {
+			continue
+		}
+		if !m.at(0, start, map[string][2]int{}) {
+			continue
+		}
+		lo, hi := offs[start], offs[start]
+		if m.end > start {
+			hi = min(len(code), offs[m.end-1]+len(toks[m.end-1]))
+			start = m.end - 1
+		}
+		out = append(out, [2]int{lo, hi})
+	}
+	return out
+}
+
 type matcher struct {
 	pat    []ptok
 	toks   []string
 	budget int
+	end    int // after a match: the token index just past it
 }
 
 func (m *matcher) at(pi, ti int, bound map[string][2]int) bool {
@@ -120,6 +153,7 @@ func (m *matcher) at(pi, ti int, bound map[string][2]int) bool {
 		return false
 	}
 	if pi == len(m.pat) {
+		m.end = ti
 		return true
 	}
 	p := m.pat[pi]
@@ -234,8 +268,16 @@ func isUpperName(s string) bool {
 // punctuation characters. Whitespace and // and /* */ comments are dropped.
 // It never fails: an unterminated string or comment runs to the end.
 func tokenize(s string) []string {
+	toks, _ := tokenizeAt(s)
+	return toks
+}
+
+// tokenizeAt is tokenize with each token's byte offset in s.
+func tokenizeAt(s string) ([]string, []int) {
 	var out []string
+	var offs []int
 	for i := 0; i < len(s); {
+		at, n := i, len(out)
 		c := s[i]
 		switch {
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
@@ -286,8 +328,11 @@ func tokenize(s string) []string {
 			out = append(out, s[i:i+1])
 			i++
 		}
+		if len(out) > n {
+			offs = append(offs, at)
+		}
 	}
-	return out
+	return out, offs
 }
 
 func isWord(c byte) bool {
