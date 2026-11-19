@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,6 +119,10 @@ type group struct {
 	deliberate        map[string]bool // rules the agent went past a speed bump for this epoch
 	shellEdits        []string        // files a shell command changed against a strong rule
 }
+
+// maxPromptPointers bounds what a prompt brings: pointers, never full text,
+// because text injected mid-session is paid again on every later turn.
+const maxPromptPointers = 2
 
 // Handle must be called after checkout, consent and pause resolution. Events
 // with no moment, lifecycle or correction work return before SQLite. A bounded
@@ -497,7 +502,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 				if possible {
 					for _, r := range g.ranked {
 						if it := byID[r.ID]; it != nil {
-							g.cands = append(g.cands, candidate{item: it, moment: momentPrompt, tier: tierPrompt})
+							g.cands = append(g.cands, candidate{item: it, moment: momentPrompt, tier: tierPrompt, pointer: true})
 						}
 					}
 				}
@@ -696,9 +701,15 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		var kept []string
 		for _, id := range ids {
 			c := best[id]
-			if c.tier != tierPrompt || allowed[id] {
+			// Word overlap filters; only an exact anchor sends.
+			if c.tier != tierPrompt || (allowed[id] && promptAnchored(c.item, g.text)) {
 				kept = append(kept, id)
 			}
+		}
+		// At most two pointers per prompt, the most exact first.
+		sort.SliceStable(kept, func(i, j int) bool { return best[kept[i]].tier < best[kept[j]].tier })
+		if len(kept) > maxPromptPointers {
+			kept = kept[:maxPromptPointers]
 		}
 		ids = kept
 		if len(ids) == 0 {
@@ -747,6 +758,9 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	correctionTokens := 0
 	for _, id := range ids {
 		s := shape(best[id], verdictOf(id), senv)
+		if s.pointer && s.action == "given" && s.oneLine != "" {
+			s.full, s.fullTok = s.oneLine, s.lineTok
+		}
 		if s.action == "given" && s.moment == "prompt-arm" {
 			s.action, s.detail = "held-back", "prompt-anchor"
 		}
