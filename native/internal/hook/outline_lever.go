@@ -221,11 +221,12 @@ func outlineGuard(ev contract.Event, h home, recordDirectory string, state *leve
 			return contract.Reply{}, false
 		}
 		// The next full read gets an explicit range, so the agent receives
-		// the text again rather than a note that the file is unchanged.
+		// the text again rather than a note that the file is unchanged. The
+		// path is left as the agent wrote it, not as MEX normalized it.
 		offset, limit := 1, mark.Lines
 		trip := !mark.Forced
 		mark.Forced, mark.Ranged = true, true
-		reply := contract.Reply{ReplaceInput: &contract.ToolInput{Path: t.Input.Path, Offset: &offset, Limit: &limit}}
+		reply := contract.Reply{ReplaceInput: &contract.ToolInput{Offset: &offset, Limit: &limit}}
 		if trip && countOutline(recordDirectory, 0, 1, time.Now()) {
 			reply.PersonLine = killSwitchLine(recordDirectory)
 		}
