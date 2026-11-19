@@ -286,6 +286,23 @@ export class GraphStore {
 
   constructor(private readonly db: SqliteDatabase) {}
 
+  /**
+   * Where full-text search runs. FTS tables can't be read through the overlay
+   * views, so a connection with an attached base searches the base (minus
+   * shadowed files) and the overlay separately; files hidden for drift are
+   * left out on every side.
+   */
+  private ftsSides(pathColumn: string): Array<{ schema: string; hidden: string }> {
+    const databases = this.db.prepare("PRAGMA database_list").all() as Array<{ name: string }>;
+    const uncovered = !!this.db.prepare("SELECT 1 FROM temp.sqlite_master WHERE type = 'table' AND name = 'graph_uncovered'").get();
+    const hidden = uncovered ? ` AND ${pathColumn} NOT IN (SELECT path FROM temp.graph_uncovered)` : "";
+    if (!databases.some(database => database.name === "base")) return [{ schema: "", hidden }];
+    return [
+      { schema: "base.", hidden: ` AND ${pathColumn} NOT IN (SELECT path FROM main.shadow_files)${hidden}` },
+      { schema: "main.", hidden },
+    ];
+  }
+
   /** Run `fn` inside a single transaction (bulk-write speed + atomicity). */
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn);
@@ -595,27 +612,30 @@ export class GraphStore {
   searchSourceChunks(query: string, limit = 40): SourceChunkHit[] {
     const terms = planGraphQuery(query).terms.slice(0, 32);
     if (terms.length === 0) return [];
-    const fused = new Map<number, SourceChunkHit & { rrf: number }>();
+    const fused = new Map<string, SourceChunkHit & { rrf: number }>();
+    const sides = this.ftsSides("c.file_path");
     for (const term of terms) {
       const escaped = term.term.replaceAll('"', '');
       const match = term.term.length <= 3 ? `"${escaped}"` : `"${escaped}"*`;
-      const rows = this.db.prepare(
+      const rows = sides.flatMap(({ schema, hidden }) => (this.db.prepare(
         `SELECT c.id, c.file_path, c.start_line, c.end_line, c.content_hash,
-                bm25(source_chunks_fts, 4, 2, 1, 3) AS rank
-         FROM source_chunks_fts JOIN source_chunks c ON c.id = source_chunks_fts.rowid
-         WHERE source_chunks_fts MATCH ? ORDER BY rank, c.file_path, c.start_line LIMIT ?`,
+                bm25(source_chunks_fts, 4, 2, 1, 3) AS rank, '${schema}' AS side
+         FROM ${schema}source_chunks_fts AS source_chunks_fts JOIN ${schema}source_chunks c ON c.id = source_chunks_fts.rowid
+         WHERE source_chunks_fts MATCH ?${hidden} ORDER BY rank, c.file_path, c.start_line LIMIT ?`,
       ).all(match, Math.max(20, limit)) as Array<{
-        id: number; file_path: string; start_line: number; end_line: number; content_hash: string; rank: number;
-      }>;
+        id: number; file_path: string; start_line: number; end_line: number; content_hash: string; rank: number; side: string;
+      }>)).sort((left, right) => left.rank - right.rank || left.file_path.localeCompare(right.file_path) || left.start_line - right.start_line)
+        .slice(0, Math.max(20, limit));
       rows.forEach((row, index) => {
-        const current = fused.get(row.id) ?? {
+        const key = `${row.side}${row.id}`;
+        const current = fused.get(key) ?? {
           id: row.id, filePath: row.file_path, startLine: row.start_line,
           endLine: row.end_line, contentHash: row.content_hash, rank: 0,
           matchedTerms: [], rrf: 0,
         };
         current.rrf += term.weight / (60 + index + 1);
         current.matchedTerms.push(term.term);
-        fused.set(row.id, current);
+        fused.set(key, current);
       });
     }
     return [...fused.values()]
@@ -1040,14 +1060,16 @@ export class GraphStore {
     if (ftsQuery) {
       // bm25 column weights bias toward name matches over incidental docstring
       // mentions. bm25 returns negative scores (more negative = better).
-      const rows = this.db
+      const rows = this.ftsSides("nodes.file_path").flatMap(({ schema, hidden }) => this.db
         .prepare(
-          `SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2) AS fts_rank FROM nodes_fts
-             JOIN nodes ON nodes_fts.id = nodes.id
-             WHERE nodes_fts MATCH ?${filterClause}
+          `SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2) AS fts_rank FROM ${schema}nodes_fts AS nodes_fts
+             JOIN ${schema}nodes AS nodes ON nodes_fts.id = nodes.id
+             WHERE nodes_fts MATCH ?${hidden}${filterClause}
              ORDER BY fts_rank, nodes.id LIMIT ?`,
         )
-        .all(ftsQuery, ...filterParams, fetchLimit) as Array<NodeRow & { fts_rank: number }>;
+        .all(ftsQuery, ...filterParams, fetchLimit) as Array<NodeRow & { fts_rank: number }>)
+        .sort((left, right) => left.fts_rank - right.fts_rank || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+        .slice(0, fetchLimit);
       rows.forEach((row, index) => candidates.set(row.id, { row, ftsRank: index, exact: false }));
     }
 

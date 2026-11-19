@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../graph/storage.js";
 /**
  * The subsystem plan for setup coverage.
  *
@@ -349,7 +350,7 @@ export function rankSubsystemCandidates(inputs: SubsystemInputs): SubsystemPlan 
 
 /** Indexed source file paths and distinct file-to-file edges from the built graph; `null` when the graph cannot be read. */
 export function readGraphSubsystemInputs(projectRoot: string): SubsystemInputs | null {
-  const databasePath = resolve(projectRoot, ".mex", "graph.db");
+  const databasePath = currentGraphPath(projectRoot);
   if (!existsSync(databasePath)) return null;
   let database: ReturnType<typeof openGraphDatabase> | undefined;
   try {

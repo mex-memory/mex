@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../src/graph/storage.js";
 import {
   existsSync,
   mkdirSync,
@@ -62,7 +63,7 @@ async function built(prefix: string): Promise<Built> {
   const parent = engine.searchNodes("parent").find((node) => node.name === "parent" && node.kind === "function");
   engine.close();
   if (!leaf || !parent) throw new Error("fixture nodes missing");
-  const dbPath = join(root, ".mex", "graph.db");
+  const dbPath = currentGraphPath(root);
   for (const suffix of ["-wal", "-shm"]) {
     const path = `${dbPath}${suffix}`;
     if (existsSync(path) && statSync(path).size === 0) rmSync(path, { force: true });

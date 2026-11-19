@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { currentGraphPath } from "../../dist/graph-storage.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -181,7 +182,7 @@ try {
         beforeGraphRefresh: () => toggleSourceRefreshMarker(workingRoot),
         beforeWikiRefresh: () => toggleWikiRefreshMarker(workingRoot, baseFixture.mutableWikiPath),
       });
-      const graphDatabaseBytes = sqliteFamilySize(join(workingRoot, ".mex", "graph.db"));
+      const graphDatabaseBytes = sqliteFamilySize(currentGraphPath(workingRoot, { home: join(benchmarkEnvironment.MEX_HOME, ".mex") }));
       const wikiDatabaseBytes = sqliteFamilySize(join(workingRoot, ".mex", "wiki.db"));
       await activeServer.close();
       activeServer = undefined;

@@ -3,6 +3,7 @@ import { registerJobKind, type BatchResult } from "./jobs.js";
 import { refreshOwnUsage, type OwnUsageOptions } from "./own-usage.js";
 import "../telemetry/reporting.js";
 import "../file-index/job.js";
+import "../graph/jobs.js";
 import "../working-set/job.js";
 import "../knowledge/native-job.js";
 import "../repo-start/history/job.js";

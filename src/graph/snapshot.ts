@@ -51,6 +51,8 @@ export interface GraphSnapshotSource {
 export interface GraphGitProvenance {
   branch: string | null;
   head: string | null;
+  /** Git could not be read (a timeout or a missing executable): never evidence of a change. */
+  unreadable?: true;
 }
 
 export interface CreateGraphSnapshotInput {
@@ -186,37 +188,50 @@ export function parseGraphSnapshot(value: string | null | undefined): GraphSnaps
 }
 
 /**
- * Read branch and HEAD without taking Git's optional index-refresh lock.
- * A non-repository, unborn HEAD, detached HEAD, missing Git executable, or read
- * failure is represented by the corresponding null provenance rather than
- * making a graph build fail.
+ * Read branch and HEAD with `git symbolic-ref` and `git rev-parse`, which read
+ * refs only: no tree scan, no index lock. A non-repository, an unborn HEAD or a
+ * detached HEAD is the corresponding null provenance. A read that fails to
+ * run at all (a timeout, a missing executable) is read once more; if it still
+ * fails the result is marked `unreadable`, and callers must not compare it as
+ * a branch or HEAD change.
  */
 export function readGraphGitProvenance(rootDir: string): GraphGitProvenance {
-  const result = spawnSync(
-    "git",
-    ["--no-optional-locks", "-C", rootDir, "status", "--porcelain=v2", "--branch", "--untracked-files=no"],
-    {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
-      maxBuffer: 1024 * 1024,
-    },
-  );
-  if (result.status !== 0 || typeof result.stdout !== "string") {
-    return { branch: null, head: null };
+  for (let attempt = 0; ; attempt++) {
+    const provenance = readGitRefsOnce(rootDir);
+    if (!provenance.unreadable || attempt >= 1) return provenance;
   }
+}
 
-  let branch: string | null = null;
-  let head: string | null = null;
-  for (const line of result.stdout.split(/\r?\n/u)) {
-    if (line.startsWith("# branch.head ")) {
-      const value = line.slice("# branch.head ".length).trim();
-      branch = value && value !== "(detached)" ? value : null;
-    } else if (line.startsWith("# branch.oid ")) {
-      const value = line.slice("# branch.oid ".length).trim();
-      head = /^[a-f0-9]{40,64}$/u.test(value) ? value : null;
-    }
-  }
+/** True only when both reads succeeded and they differ. */
+export function gitProvenanceChanged(before: GraphGitProvenance, after: GraphGitProvenance): boolean {
+  if (before.unreadable || after.unreadable) return false;
+  return before.branch !== after.branch || before.head !== after.head;
+}
+
+function runGit(rootDir: string, args: readonly string[]): { status: number | null; stdout: string } {
+  const result = spawnSync("git", ["--no-optional-locks", "-C", rootDir, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 5_000,
+    maxBuffer: 64 * 1024,
+    windowsHide: true,
+  });
+  if (result.error || result.status === null) return { status: null, stdout: "" };
+  return { status: result.status, stdout: typeof result.stdout === "string" ? result.stdout.trim() : "" };
+}
+
+function readGitRefsOnce(rootDir: string): GraphGitProvenance {
+  // Exit 0: on a branch. Exit 1: detached. Anything else: not a repository.
+  const symbolic = runGit(rootDir, ["symbolic-ref", "-q", "HEAD"]);
+  if (symbolic.status === null) return { branch: null, head: null, unreadable: true };
+  if (symbolic.status !== 0 && symbolic.status !== 1) return { branch: null, head: null };
+  const branch = symbolic.status === 0 && symbolic.stdout.startsWith("refs/heads/")
+    ? symbolic.stdout.slice("refs/heads/".length) || null
+    : null;
+  // Exit 0: a commit. Exit 1 with -q: an unborn HEAD.
+  const commit = runGit(rootDir, ["rev-parse", "-q", "--verify", "HEAD^{commit}"]);
+  if (commit.status === null) return { branch: null, head: null, unreadable: true };
+  const head = commit.status === 0 && /^[a-f0-9]{40,64}$/u.test(commit.stdout) ? commit.stdout : null;
   return { branch, head };
 }
 

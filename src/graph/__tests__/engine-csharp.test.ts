@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../storage.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -103,7 +104,7 @@ describe("C# graph persistence and resolution", () => {
     const caller = symbol("Example.A.Start");
     expect(engine.getCallees(caller.id).map((node) => node.qualifiedName).sort())
       .toEqual(["Example.A.GetOther", "Example.StaticB.Run"]);
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       expect(db.prepare(`
         SELECT reference_name, receiver, status, target_id, confidence
@@ -184,7 +185,7 @@ describe("C# graph persistence and resolution", () => {
   it("does not discard the recursive overload before deciding whether a call is ambiguous", () => {
     const caller = symbol("Recursion.Overloaded.Run", "()");
     expect(engine.getCallees(caller.id)).toEqual([]);
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       const references = db.prepare(`
         SELECT reference_name, status, target_id, confidence

@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../../graph/storage.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -55,7 +56,7 @@ describe("default setup entry", () => {
     const before = snapshot(root);
     expect(await resolveDefaultEntry(root)).toBe("hub");
     expect(snapshot(root)).toEqual(before);
-    expect(existsSync(join(root, ".mex/graph.db"))).toBe(false);
+    expect(existsSync(currentGraphPath(root))).toBe(false);
     expect(existsSync(join(root, ".mex/wiki.db"))).toBe(false);
     expect(existsSync(join(root, ".mex/local"))).toBe(false);
   });

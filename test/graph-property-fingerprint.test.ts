@@ -3,6 +3,7 @@
  * about a property (its default, its visibility) can be grounded like a fact
  * about a method.
  */
+import { currentGraphPath } from "../src/graph/storage.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +41,7 @@ describe("property fingerprints", () => {
     });
     engine.close();
 
-    const db = openGraphDatabase(join(root, ".mex", "graph.db"));
+    const db = openGraphDatabase(currentGraphPath(root));
     try {
       const store = new FingerprintStore(db);
       for (const node of properties) {

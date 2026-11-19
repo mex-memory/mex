@@ -1,3 +1,5 @@
+import { enableCompilerServerProbes, ownUsage, settleCompilerServerUsage } from "./process-stats.js";
+import { graphStoragePathAllowed } from "./storage.js";
 import { existsSync, lstatSync, realpathSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { createGraphEngine, GraphSourceStagingError } from "./engine-impl.js";
@@ -22,16 +24,12 @@ function checkDirectory(path: string, expected: GraphCandidateRequest["workspace
 
 function checkPaths(request: GraphCandidateRequest): void {
   if (!isAbsolute(request.projectRoot) || !isAbsolute(request.workspace)
-    || dirname(request.candidatePath) !== join(request.projectRoot, ".mex")
-    || !/^graph\.db\.candidate-[a-f0-9]{32,128}$/u.test(basename(request.candidatePath))) {
+    || !graphStoragePathAllowed(request.projectRoot, request.candidatePath)
+    || !/^graph-tmp-\d+-[a-z0-9-]+\.db$/u.test(basename(request.candidatePath))) {
     throw new Error("Invalid candidate path.");
   }
   checkDirectory(dirname(request.candidatePath), request.mexIdentity);
   checkDirectory(request.workspace, request.workspaceIdentity);
-  const path = relative(realpathSync(request.projectRoot), request.mexIdentity.realPath);
-  if (isAbsolute(path) || path === ".." || path.startsWith("../") || path.startsWith("..\\")) {
-    throw new Error("Candidate escaped the project.");
-  }
   if (existsSync(request.candidatePath)) {
     const stats = lstatSync(request.candidatePath);
     if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("Unsafe candidate file.");
@@ -74,6 +72,7 @@ function writeFailureDiagnostic(error: unknown): void {
 async function main(): Promise<void> {
   if (!process.send || !process.connected) throw new Error("Candidate construction requires its private parent channel.");
   const stopWatchdog = await startGraphCandidateWatchdog();
+  enableCompilerServerProbes();
   process.once("message", async (raw: unknown) => {
     let engine: GraphEngine | undefined;
     let outcome: GraphCandidateMessage;
@@ -98,7 +97,13 @@ async function main(): Promise<void> {
       timeGraphPhase("candidate.close", () => engine!.close());
       engine = undefined;
       flushGraphPhaseTimings(`candidate-${request.operation}`, request.projectRoot);
-      outcome = { type: "complete", result };
+      const server = await settleCompilerServerUsage();
+      const own = ownUsage();
+      outcome = {
+        type: "complete",
+        result,
+        usage: { ...own, ...(server ? { serverCpuMs: server.cpuMs, serverPeakRssMb: server.peakRssMb } : {}) },
+      };
       if (!boundedCandidateMessage(outcome)) throw new Error("Graph result exceeded its private message bound.");
     } catch (error) {
       writeFailureDiagnostic(error);

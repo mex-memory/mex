@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../src/graph/storage.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -98,7 +99,7 @@ async function build(root: string): Promise<void> {
 }
 
 function dropEmptySidecars(root: string): void {
-  const dbPath = join(root, ".mex", "graph.db");
+  const dbPath = currentGraphPath(root);
   for (const suffix of ["-wal", "-shm"]) {
     const path = `${dbPath}${suffix}`;
     if (existsSync(path) && statSync(path).size === 0) rmSync(path, { force: true });
@@ -106,7 +107,7 @@ function dropEmptySidecars(root: string): void {
 }
 
 function query<T>(root: string, sql: string): T[] {
-  const db = openSqlite(join(root, ".mex", "graph.db"), { readOnly: true, immutable: true });
+  const db = openSqlite(currentGraphPath(root), { readOnly: true, immutable: true });
   try {
     return db.prepare(sql).all() as T[];
   } finally {
@@ -220,7 +221,7 @@ describe("path-independent TypeScript node ids (#240)", () => {
 
     // Reproduce a graph a v2 extractor published: the same rows under the
     // path-bearing ids, signatures and identity keys.
-    const db = openSqlite(join(root, ".mex", "graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     try {
       db.exec("PRAGMA foreign_keys = OFF");
       for (const [node, old] of [[page, oldPage], [app, oldApp]] as const) {

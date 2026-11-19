@@ -33,6 +33,7 @@ function fixture(): { graph: GraphEngine; seed: GraphNode; caller: GraphNode; ca
   };
   const nodes = [seed, caller, callee, ambiguous];
   const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
     build: vi.fn(), sync: vi.fn(), close: vi.fn(),
     searchNodes: vi.fn(() => [seed]),
     getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -120,6 +121,7 @@ function callPairCallbackCompletionFixture(options: {
   }
   const searchResults = [...corpusFillers, ...distractors, entry, planner];
   const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
     build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes: vi.fn(() => searchResults),
     getNode: (id) => byId.get(id) ?? null,
     getCallers: () => [], getCallees: () => [],
@@ -292,6 +294,7 @@ describe("scored scope selection", () => {
     });
     const nodes = [central, focused];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => nodes),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -325,6 +328,7 @@ describe("scored scope selection", () => {
     });
     const nodes = [aligned, aggregate];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [aggregate]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -360,6 +364,7 @@ describe("scored scope selection", () => {
     const nodes = [target, sourceDecoy];
     const query = "plan source";
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((request) => request === query || ["plan", "source"].includes(request)
         ? [target] : []),
@@ -398,6 +403,7 @@ describe("scored scope selection", () => {
     const nodes = [wrapper, aligned];
     const query = "which routine decides supported compiler options";
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [wrapper, aligned]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -428,6 +434,7 @@ describe("scored scope selection", () => {
     const nodes = [proseOnly, aligned];
     const query = "plan bounded source windows";
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((request) => request === query ? [proseOnly] : [proseOnly, aligned]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -463,6 +470,7 @@ describe("scored scope selection", () => {
     const nodes = [testHit, firstProduction, secondProduction, sourceDecoy];
     const query = "alpha beta pipeline";
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [testHit, firstProduction, secondProduction]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -522,6 +530,7 @@ describe("scored scope selection", () => {
       diagnosticCount: 0, errorCoverage: 0, nodeCount: nodes.length,
     };
     const base: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes: vi.fn(() => [file]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
       getCallers: () => [], getCallees: () => [],
@@ -589,6 +598,7 @@ describe("scored scope selection", () => {
     const laterCallsite: GraphEdge = { ...edge, line: 29, column: 4 };
     const nodes = [schedule, invalidate, ...distractors];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => query.toLowerCase() === "cache invalidation" ? [schedule] : distractors),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -628,6 +638,7 @@ describe("scored scope selection", () => {
     };
     const nodes = [source, target];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => query.toLowerCase() === "file resolution" ? [source] : []),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -679,6 +690,7 @@ describe("scored scope selection", () => {
     };
     const nodes = [source, target];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [source]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -715,6 +727,7 @@ describe("scored scope selection", () => {
     const nodes = [source, target, focused];
     const query = "locate an imported package or source file";
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((request) => request.toLowerCase() === "source file" ? [source] : [focused]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -763,6 +776,7 @@ describe("scored scope selection", () => {
     }].reverse();
     const nodes = [source, ...rejected, beyondLimit];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => query.toLowerCase() === "cache invalidation" ? [source] : []),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -799,6 +813,7 @@ describe("scored scope selection", () => {
       };
       const nodes = [source, target, distractor];
       const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
         build: vi.fn(), sync: vi.fn(), close: vi.fn(),
         searchNodes: vi.fn((query) => query.toLowerCase() === "cache invalidation" ? [source] : [distractor]),
         getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -834,6 +849,7 @@ describe("scored scope selection", () => {
     };
     const nodes = [source, target, distractor];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => query.toLowerCase() === "cache invalidation" ? [source] : [distractor]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -866,6 +882,7 @@ describe("scored scope selection", () => {
     };
     const nodes = [source, target, focused];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => query.toLowerCase() === "graph declarations" ? [source] : [focused]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -896,6 +913,7 @@ describe("scored scope selection", () => {
     });
     const nodes = [broad, correlated];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [broad]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -946,6 +964,7 @@ describe("scored scope selection", () => {
       matchedTerms: ["opaque", "memory", "pipeline"], nodeIds: [entry.id],
     });
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes: vi.fn(() => []),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
       getCallers: () => [], getCallees: () => [], getIncoming: () => [],
@@ -988,6 +1007,7 @@ describe("scored scope selection", () => {
     });
     const nodes = [sourceA, sourceB, sourceC, broad];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [broad]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -1023,6 +1043,7 @@ describe("scored scope selection", () => {
     ));
     const nodes = [framework, rare, ...broad];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => {
         const normalized = query.toLowerCase();
@@ -1068,6 +1089,7 @@ describe("scored scope selection", () => {
     const weakFiles = ["src/weak-a.ts", "src/weak-b.ts", "src/weak-c.ts"];
     const nodes = [graphA, graphB];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => nodes),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -1097,6 +1119,7 @@ describe("scored scope selection", () => {
     const distractor = node("function:stages", "stages", 1, { filePath: "src/runtime/core.ts" });
     const nodes = [distractor, target];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => nodes),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -1159,6 +1182,7 @@ describe("scored scope selection", () => {
       confidence: 1, resolutionMethod: "typescript-compiler", provenance: "typescript-compiler",
     };
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [leaf]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -1217,6 +1241,7 @@ describe("scored scope selection", () => {
       [b.id, [calls(b, d)]],
     ]);
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [seed]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -1264,6 +1289,7 @@ describe("scored scope selection", () => {
         source: bridge.id, target: gamma.id, kind: "calls", confidence: 1,
       };
       const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
         build: vi.fn(), sync: vi.fn(), close: vi.fn(),
         searchNodes: vi.fn((query) => {
           const lower = query.toLowerCase();
@@ -1328,6 +1354,7 @@ describe("scored scope selection", () => {
       source: incidental.id, target: helper.id, kind: "calls", line: 80, column: 2, confidence: 1,
     };
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [incidental]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -1397,6 +1424,7 @@ describe("scored scope selection", () => {
     const resolverCalls = [call(prepare, 40), call(load, 45), call(resolve, 50)];
     const outgoing = [...incidentalCalls, noiseCall, ...helperCalls, ...resolverCalls];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [incidental, noise, origin]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -1443,6 +1471,7 @@ describe("scored scope selection", () => {
     };
     const nodes = [privateResponse, wrapper, createResponse];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes: vi.fn(() => nodes),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
       getCallers: () => [], getCallees: () => [],
@@ -1495,6 +1524,7 @@ describe("scored scope selection", () => {
     const edges = [...helperCalls, digestCall, keyCall, skipCall];
     const nodes = [cache, digest, key, skip, ...helpers];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes: vi.fn(() => nodes),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
       getCallers: () => [], getCallees: () => [],
@@ -1540,6 +1570,7 @@ describe("scored scope selection", () => {
     };
     const nodes = [alpha, gamma, theta, callsite, target, distractor];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => {
         const exact = nodes.find((entry) => entry.name.toLowerCase() === query.toLowerCase());
@@ -1687,6 +1718,7 @@ describe("scored scope selection", () => {
     );
     const wholeQuery = [pairTarget, owner, terminal, ...selectedFillers, pairSource, ...provenanceSeeds];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes: vi.fn(() => wholeQuery),
       getNode: (id) => byId.get(id) ?? null,
       getCallers: () => [], getCallees: () => [],
@@ -1728,6 +1760,7 @@ describe("scored scope selection", () => {
     const contains: GraphEdge = { source: outer.id, target: callback.id, kind: "contains", confidence: 1 };
     const calls: GraphEdge = { source: callback.id, target: inner.id, kind: "calls", confidence: 1 };
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => query.toLowerCase() === "compose" ? [outer]
         : query.toLowerCase() === "dispatch" ? [inner] : [outer, inner]),
@@ -1767,6 +1800,7 @@ describe("scored scope selection", () => {
     };
     const nodes = [validator, callback, addValidatedData];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes: vi.fn(() => [callback]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
       getCallers: () => [], getCallees: () => [],
@@ -1834,6 +1868,7 @@ describe("scored scope selection", () => {
       [recursiveCallback.id, [{ node: dispatch, edge: recursiveDispatch }]],
     ]);
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [compose, dispatch]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -1877,6 +1912,7 @@ describe("scored scope selection", () => {
       [digest.id, [{ node: downstream, edge: digestDownstream }]],
     ]);
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => {
         const lower = query.toLowerCase();
@@ -1902,6 +1938,7 @@ describe("scored scope selection", () => {
   it("routes test-file nodes into the test quota bucket", () => {
     const testNode = node("function:seed", "seed", 2, { filePath: "src/__tests__/seed.test.ts", signature: "s" });
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn(() => [testNode]),
       getNode: (id) => id === testNode.id ? testNode : null,
@@ -1924,6 +1961,7 @@ describe("scored scope selection", () => {
     const callee = node("function:read", "readNodeSource", 20, { filePath: "src/read.ts" });
     const nodes = [plan, owner, method, caller, callee];
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => query.toLowerCase().includes("token") ? [method] : [plan]),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -1962,6 +2000,7 @@ describe("scored scope selection", () => {
       };
       const nodes = [aligned, boundary, external];
       const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
         build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes: vi.fn(() => [aligned]),
         getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
         getCallers: () => [], getCallees: () => [],
@@ -2013,6 +2052,7 @@ describe("scored scope selection", () => {
       };
       const task = "agent graph node source";
       const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
         build: vi.fn(), sync: vi.fn(), close: vi.fn(),
         searchNodes: vi.fn((query) => query === task ? [...distractors, entry, target] : []),
         getNode: (id) => nodes.find((candidate) => candidate.id === id) ?? null,
@@ -2050,6 +2090,7 @@ describe("scored scope selection", () => {
     ));
     const getOutgoing = vi.fn((_id: string, _kinds?: GraphEdge["kind"][]) => []);
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(),
       searchNodes: vi.fn((query) => query === task ? nodes : []),
       getNode: (id) => nodes.find((entry) => entry.id === id) ?? null,
@@ -2069,6 +2110,7 @@ describe("scored scope selection", () => {
     const seed = node("function:seed", "Seed", 1);
     const searchNodes = vi.fn((_query: string) => [seed]);
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes,
       getNode: (id) => id === seed.id ? seed : null,
       getCallers: () => [], getCallees: () => [], getIncoming: () => [], getOutgoing: () => [],
@@ -2086,6 +2128,7 @@ describe("scored scope selection", () => {
     });
     const getNode = vi.fn((id: string) => id === source.id ? source : null);
     const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
       build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes: vi.fn(() => []), getNode,
       getCallers: () => [], getCallees: () => [], getIncoming: () => [], getOutgoing: () => [],
       getIndexedFiles: () => [{
@@ -2125,6 +2168,7 @@ describe("scored scope selection", () => {
         edge: { source: id, target: child.id, kind: "calls" as const, confidence: 1 },
       })));
       const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
         build: vi.fn(), sync: vi.fn(), close: vi.fn(), searchNodes: vi.fn(() => [seed]),
         getNode: (id) => id === seed.id ? seed : callers.find((caller) => caller.id === id) ?? null,
         getCallers: () => [], getCallees: () => [], getIncoming: incoming, getOutgoing: outgoing,

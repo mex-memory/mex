@@ -7,6 +7,7 @@
  * GROUNDING_DRIFT warning, and `mex sync` offers the explicit review rather
  * than an AI session. Every uncertain case keeps the warning.
  */
+import { removeGraph } from "../src/graph/__tests__/plant-graph.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,7 +95,7 @@ async function buildGraph(root: string): Promise<void> {
 
 /** Delete the disposable index, cache included, and build it again. */
 async function rebuildGraphFromScratch(root: string): Promise<void> {
-  for (const suffix of ["", "-wal", "-shm"]) rmSync(join(root, ".mex", `graph.db${suffix}`), { force: true });
+  removeGraph(root);
   await buildGraph(root);
 }
 

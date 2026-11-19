@@ -22,6 +22,7 @@
  * for the wrong reason if resolution were built the obvious way.
  */
 
+import { currentGraphPath } from "../../../graph/storage.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,8 +105,8 @@ async function buildGraph(project: Project): Promise<void> {
 
 /** Open the graph and hand the callback a live grounding seam. */
 function withGraph<T>(project: Project, body: (graph: GroundingGraph, db: ReturnType<typeof openGraphDatabase>) => T): T {
-  const dbPath = join(project.root, ".mex", "graph.db");
-  const engine = createGraphEngine({ rootDir: project.root, dbPath });
+  const dbPath = currentGraphPath(project.root);
+  const engine = createGraphEngine({ rootDir: project.root });
   const db = openGraphDatabase(dbPath);
   try {
     const reconciler = new MinHashReconciler(new FingerprintStore(db));
@@ -117,7 +118,7 @@ function withGraph<T>(project: Project, body: (graph: GroundingGraph, db: Return
 }
 
 function nodeIdOf(project: Project, name: string): string {
-  const engine = createGraphEngine({ rootDir: project.root, dbPath: join(project.root, ".mex", "graph.db") });
+  const engine = createGraphEngine({ rootDir: project.root });
   try {
     const node = engine.searchNodes(name).find((entry) => entry.kind === "function");
     if (node === undefined) throw new Error(`no function node named ${name}`);

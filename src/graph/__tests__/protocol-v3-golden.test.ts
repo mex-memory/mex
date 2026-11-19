@@ -108,6 +108,7 @@ beforeAll(() => {
 
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const graph: GraphEngine = {
+      coverageFor: () => ({ indexed: false, reason: "excluded" }),
     build: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
     sync: async () => ({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 }),
     close: vi.fn(),

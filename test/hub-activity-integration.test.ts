@@ -1,3 +1,5 @@
+import { currentGraphPath } from "../src/graph/storage.js";
+import { plantGraph } from "../src/graph/__tests__/plant-graph.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -316,7 +318,7 @@ function prepareProject(options: { activitySymlinkTarget?: string } = {}): strin
   mkdirSync(join(projectRoot, ".mex", "team", "members"), { recursive: true });
   writeFileSync(join(projectRoot, ".gitignore"), ".mex/local/\n");
   writeFileSync(join(projectRoot, "README.md"), "# Activity acceptance fixture\n");
-  writeFileSync(join(projectRoot, ".mex", "graph.db"), "graph sentinel\n");
+  plantGraph(projectRoot, "graph sentinel\n");
   writeFileSync(join(projectRoot, ".mex", "wiki.db"), "wiki sentinel\n");
   writeFileSync(join(projectRoot, ".mex", "config.json"), JSON.stringify({
     scaffold_id: "activity-acceptance",
@@ -452,8 +454,9 @@ function snapshotProtectedState(projectRoot: string): {
     join(projectRoot, ".git", "index"),
     join(projectRoot, ".git", "refs", "heads"),
   ];
+  rootsToRead.push(currentGraphPath(projectRoot));
   for (const name of readdirSync(join(projectRoot, ".mex"))) {
-    if (name.startsWith("graph.db") || name.startsWith("wiki.db")) {
+    if (name.startsWith("wiki.db")) {
       rootsToRead.push(join(projectRoot, ".mex", name));
     }
   }

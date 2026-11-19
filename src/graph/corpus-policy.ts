@@ -131,7 +131,10 @@ export const GRAPH_CORPUS_GLOB_OPTIONS = Object.freeze({
  */
 export const GRAPH_CORPUS_LIMITS = Object.freeze({
   maxSourceFiles: 20_000,
-  maxSourceFileBytes: 2 * 1024 * 1024,
+  // The largest hand-written sources run to about 3 MB (TypeScript's
+  // checker.ts is 3.1 MB). A file over the bound is skipped and reported, and
+  // the compiler treats it as absent.
+  maxSourceFileBytes: 4 * 1024 * 1024,
   maxSourceBytes: 512 * 1024 * 1024,
   // The TypeScript compiler must see its TS/JS project as one semantic unit.
   // Keep that unavoidable in-memory batch substantially below the full,

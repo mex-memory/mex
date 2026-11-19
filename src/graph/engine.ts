@@ -33,7 +33,7 @@ import { NotImplementedError } from "./errors.js";
  */
 export interface SkippedSourceFile {
   filePath: string;
-  reason: "corpus-limit";
+  reason: "corpus-limit" | "binary" | "unreadable" | "missing";
   /** The bounded-policy limit the file breached. */
   limit: string;
   limitBytes: number;
@@ -157,6 +157,7 @@ export interface SourceChunkMatch {
  * layered on top (Track B) and are NOT part of this surface.
  */
 export interface GraphEngine {
+  coverageFor(path: string): { indexed: true } | { indexed: false; reason: string };
   /**
    * Build/rebuild the whole graph for the repo into `.mex/`. Deterministic.
    * Runs in `mex setup` for fresh installs and on `mex graph`. Async: lazy-loads
@@ -215,6 +216,7 @@ export interface GraphEngine {
  * integration tests can be written against the interface first.
  */
 export const notImplementedGraphEngine: GraphEngine = {
+  coverageFor() { throw new NotImplementedError("GraphEngine.coverageFor"); },
   build(): Promise<BuildResult> {
     throw new NotImplementedError("GraphEngine.build");
   },

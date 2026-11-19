@@ -14,6 +14,7 @@
  * different definite verdict is the one outcome that is never acceptable.
  */
 
+import { removeGraph } from "../src/graph/__tests__/plant-graph.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -184,7 +185,7 @@ function applyEdits(root: string, edits: Record<string, string | null>): void {
 
 /** Delete the disposable index and rebuild it: exactly what a refresh would record. */
 async function rebuild(root: string): Promise<void> {
-  for (const suffix of ["", "-wal", "-shm"]) rmSync(join(root, ".mex", `graph.db${suffix}`), { force: true });
+  removeGraph(root);
   const engine = createGraphEngine({ rootDir: root });
   await engine.build();
   engine.close();
@@ -328,7 +329,7 @@ describe("check grounds against a graph stale only by changed source (#228)", ()
   it("releases the bound graph descriptor when a read-only grounding runtime closes", async () => {
     // Stale checks now open readers too, so the leak this pins would reach
     // every check-then-refresh sequence. On Windows the open descriptor made
-    // the next in-process refresh fail to replace graph.db.
+    // the next in-process refresh fail to publish the graph.
     const { root, config } = await fixture();
     for (const stale of [false, true]) {
       if (stale) applyEdits(root, { "py/body.py": EDITS["py/body.py"]! });

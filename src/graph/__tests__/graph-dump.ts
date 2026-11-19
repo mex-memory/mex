@@ -14,6 +14,7 @@ import { GRAPH_SNAPSHOT_METADATA_KEY } from "../snapshot.js";
 
 export interface GraphDump {
   files: string[];
+  coverage: string[];
   /** `files` without the filesystem mtime, for comparing stores of different checkouts. */
   fileContents: string[];
   nodes: string[];
@@ -59,6 +60,7 @@ export function dumpGraphDatabase(path: string): GraphDump {
     db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS temp.dump_source_vocab USING fts5vocab(main, source_chunks_fts, instance)");
     db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS temp.dump_nodes_vocab USING fts5vocab(main, nodes_fts, instance)");
     return {
+      coverage: db.prepare("SELECT 1 FROM sqlite_master WHERE name='coverage'").get() ? rows(db,"SELECT path, reason FROM coverage") : [],
       files: rows(db, `SELECT path, content_hash, language, size, modified_at, node_count, errors, parse_status,
         diagnostic_count, missing_count, error_coverage, extractor_version FROM files`),
       fileContents: rows(db, `SELECT path, content_hash, language, size, node_count, errors, parse_status,

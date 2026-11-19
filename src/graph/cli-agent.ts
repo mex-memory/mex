@@ -1,3 +1,4 @@
+import { currentGraphPath } from "./storage.js";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { discoverGraphReadPaths } from "./read-discovery.js";
@@ -2298,7 +2299,7 @@ function runScopeAgentSession(
   let session: AgentGraphSession | null = null;
   const pending: string[] = [];
   try {
-    const dbPath = resolve(rootDir, ".mex", "graph.db");
+    const dbPath = currentGraphPath(rootDir);
     if (!existsSync(dbPath)) {
       writeJson(write, { type: "error", code: "GRAPH_UNAVAILABLE", message: "Run `mex graph` first." });
       return;
@@ -2341,7 +2342,7 @@ async function runFreshAgentSession(
   let session: AgentGraphSession | null = null;
   const pending: string[] = [];
   try {
-    const dbPath = resolve(rootDir, ".mex", "graph.db");
+    const dbPath = currentGraphPath(rootDir);
     const loaded = await loadFreshGraphReadSession(rootDir, {
       ...deps.__internal?.freshRead,
       dbPath,

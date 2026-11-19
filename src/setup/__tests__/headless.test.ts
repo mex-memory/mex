@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../../graph/storage.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -153,7 +154,7 @@ describe("headless setup run", () => {
     const result = await runHeadlessSetup({ projectRoot: root, tools: [], confirmPopulation: true,
       onProgress: ({ step }) => steps.push(step) });
     expect(result).toMatchObject({ mode: "code-repo", stage: "needs_population", ready: false });
-    expect(existsSync(join(root, ".mex", "graph.db"))).toBe(true);
+    expect(existsSync(currentGraphPath(root))).toBe(true);
     // A provisional index keeps the paused Wiki readable, never `migration_required` (#268).
     const { createRepositoryWikiPort } = await import("../../wiki/application-adapter.js");
     expect((await createRepositoryWikiPort(root).inspectIndex()).state).toBe("fresh");

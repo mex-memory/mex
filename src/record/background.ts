@@ -14,6 +14,7 @@ import { judgePending, queuePendingJudgements } from "../judge/pending.js";
 import { filterPending, queuePendingFilters } from "../filter/pending.js";
 import { nativePending, queuePendingNative } from "../knowledge/native-pending.js";
 import { queuePendingSetupRefresh, setupRefreshPending } from "../repo-start/refresh.js";
+import { BackgroundGraph } from "../graph/background-warm.js";
 import { compactReviewNeeded, reviewManagedCompaction } from "../compaction/control.js";
 import { compactOffersPending, publishCompactOffers } from "../compaction/notices.js";
 import { ledgerPending, settlePendingLedger } from "../ledger/background.js";
@@ -208,6 +209,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   let heartbeat: NodeJS.Timeout | undefined;
   let held = false;
+  let graph: BackgroundGraph | undefined;
   const stamp = () => new Date(clock()).toISOString();
 
   /** true: acquired; false: an older version is handing over, keep trying; "duplicate": a same-version process already runs. */
@@ -238,6 +240,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
   };
   const stop = (reason: ExitReason): ExitReason => {
     log(`stopping: ${reason}`);
+    try { graph?.stop(); } catch { /* closing */ }
     release();
     try { writer.close(); } catch { /* closing */ }
     return reason;
@@ -256,6 +259,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     heartbeat.unref();
     const recovered = recoverInterruptedJobs(writer, self);
     if (recovered) log(`resumed ${recovered} interrupted job${recovered === 1 ? "" : "s"}`);
+    graph = new BackgroundGraph(writer, queueJob, log);
     let lastWork = clock();
     let lastTelemetry = -Infinity;
     let lastFreshness = -Infinity;
@@ -270,8 +274,10 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
         try { await sendUsageReports(writer, clock()); } catch { /* Usage reporting never stops product jobs. */ }
       }
       requeueReadyJobs(writer);
-      // Files the hook saw edited get re-parsed.
+      // Files the hook saw edited land in the graph warm, then get re-parsed.
+      try { await graph.collect(); } catch { /* the next pass reads them */ }
       queuePendingRefreshes(writer);
+      try { await graph.run(clock()); } catch (error) { log(`graph: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`); }
       // Hooks request work with bounded files; only Node owns model jobs.
       try { queuePendingJudgements(writer, queueJob, clock()); } catch { /* a later pass retries */ }
       try { queuePendingFilters(writer, queueJob); } catch { /* a later pass retries */ }
@@ -296,11 +302,11 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       if (outcome === "ran") { lastWork = clock(); continue; }
       const hubOpen = row.hub_until !== null && Date.parse(row.hub_until) > clock();
       const pending = hasPendingWork({ all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never });
-      if (!pending && !hubOpen) {
+      if (!pending && !hubOpen && !graph.busy) {
         clearPending(writer);
         if (clock() - lastWork >= settings.idleMs) return stop("idle");
-      } else if (hubOpen) lastWork = clock();
-      await sleep(settings.pollMs);
+      } else if (hubOpen || graph.busy) lastWork = clock();
+      await graph.sleep(settings.pollMs);
     }
   } catch (error) {
     log(`error: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);

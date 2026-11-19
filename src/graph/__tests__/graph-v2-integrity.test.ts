@@ -1,3 +1,4 @@
+import { currentGraphPath, graphLocation } from "../storage.js";
 import { createHash } from "node:crypto";
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
@@ -201,8 +202,8 @@ describe("graph schema v2 migration and storage", () => {
     await engine.build(root);
     engine.close();
 
-    const graphDir = join(root, ".mex");
-    const dbPath = join(graphDir, "graph.db");
+    const graphDir = graphLocation(root).directory;
+    const dbPath = currentGraphPath(root);
     for (const suffix of ["-wal", "-shm"]) {
       const sidecar = `${dbPath}${suffix}`;
       if (existsSync(sidecar)) unlinkSync(sidecar);
@@ -234,10 +235,11 @@ describe("graph schema v2 migration and storage", () => {
     mkdirSync(join(root, "src"), { recursive: true });
     writeFileSync(join(root, "src", "stable.ts"),
       "export function immutableNeedle(): number { return 1; }\n");
-    const graphDir = join(root, ".mex");
-    const dbPath = join(graphDir, "graph.db");
+    const graphDir = graphLocation(root).directory;
+    let dbPath = currentGraphPath(root);
     const builder = createGraphEngine({ rootDir: root });
     await builder.build();
+    dbPath = currentGraphPath(root);
     builder.close();
     for (const suffix of ["-wal", "-shm"]) {
       const sidecar = `${dbPath}${suffix}`;
@@ -296,9 +298,10 @@ describe("graph schema v2 migration and storage", () => {
     mkdirSync(join(root, "src"), { recursive: true });
     writeFileSync(join(root, "src", "stable.ts"),
       "export function immutableWalNeedle(): number { return 1; }\n");
-    const dbPath = join(root, ".mex", "graph.db");
+    let dbPath = join(root, ".mex", "graph.db");
     const builder = createGraphEngine({ rootDir: root });
     await builder.build();
+    dbPath = currentGraphPath(root);
     builder.close();
 
     const writer = openGraphDatabase(dbPath);
@@ -311,7 +314,7 @@ describe("graph schema v2 migration and storage", () => {
         "SELECT value FROM project_metadata WHERE key = 'wal_only_marker'",
       ).get()).toEqual({ value: "visible-in-wal" });
       expect(statSync(`${dbPath}-wal`).size).toBeGreaterThan(0);
-      const before = directorySnapshot(join(root, ".mex"));
+      const before = directorySnapshot(graphLocation(root).directory);
 
       const immutable = openGraphDatabase(dbPath, { readOnly: true, immutable: true });
       expect(immutable.prepare(
@@ -325,7 +328,7 @@ describe("graph schema v2 migration and storage", () => {
       ]));
       graph.close();
 
-      expect(directorySnapshot(join(root, ".mex"))).toEqual(before);
+      expect(directorySnapshot(graphLocation(root).directory)).toEqual(before);
       expect(statSync(`${dbPath}-wal`).size).toBeGreaterThan(0);
     } finally {
       writer.close();
@@ -498,7 +501,7 @@ describe("graph construction integration", () => {
     const removedPath = join(root, "src", "removed.ts");
     const replacementPath = join(root, "src", "replacement.ts");
     writeFileSync(removedPath, "export function removed(value: number): number { return value + 1; }\n");
-    const dbPath = join(root, ".mex", "graph.db");
+    let dbPath = join(root, ".mex", "graph.db");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     const oldId = engine.searchNodes("removed").find((entry) => entry.name === "removed")!.id;
@@ -523,7 +526,7 @@ describe("graph construction integration", () => {
       join(root, "src", "second.ts"),
       "export function shared(value: number): number { return value * 2; }\n",
     );
-    const dbPath = join(root, ".mex", "graph.db");
+    let dbPath = join(root, ".mex", "graph.db");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     const oldId = engine.searchNodes("shared", { limit: 10 })
@@ -552,7 +555,7 @@ describe("graph construction integration", () => {
   return alpha + beta + gamma + delta + epsilon;
 }\n`;
     writeFileSync(source, body("legacyHandler", 1));
-    const dbPath = join(root, ".mex", "graph.db");
+    let dbPath = join(root, ".mex", "graph.db");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
     const oldId = engine.searchNodes("legacyHandler").find((entry) => entry.name === "legacyHandler")!.id;
@@ -575,9 +578,10 @@ describe("graph construction integration", () => {
     }));
     writeFileSync(join(root, "src", "entry.ts"), "export const manifestNeedle = 1;\n");
 
-    const dbPath = join(root, ".mex", "graph.db");
+    let dbPath = join(root, ".mex", "graph.db");
     const engine = createGraphEngine({ rootDir: root });
     await engine.build();
+    dbPath = currentGraphPath(root);
     const beforeDb = openGraphDatabase(dbPath);
     const before = new GraphStore(beforeDb);
     const manifestBefore = before.getMetadata("manifest_hash");
@@ -610,14 +614,14 @@ describe("graph construction integration", () => {
     expect(await refreshEngine.sync(["tsconfig.json"])).toMatchObject({ filesIndexed: 1 });
     refreshEngine.close();
 
-    const afterDb = openGraphDatabase(dbPath);
+    const afterDb = openGraphDatabase(currentGraphPath(root));
     const after = new GraphStore(afterDb);
     expect(after.getMetadata("manifest_hash")).not.toBe(manifestBefore);
     expect(after.getMetadata("config_hash")).not.toBe(configBefore);
     afterDb.close();
   });
 
-  it("aborts a failed incremental parse and preserves the last trustworthy snapshot", async () => {
+  it("publishes a per-file parse gap and withholds that file", async () => {
     const root = temporaryRoot("mex-failed-sync-");
     mkdirSync(join(root, "src"), { recursive: true });
     const source = join(root, "src", "stable.ts");
@@ -627,19 +631,13 @@ describe("graph construction integration", () => {
     const prior = engine.searchNodes("stableNeedle").find((entry) => entry.name === "stableNeedle")!;
     writeFileSync(source, "}\n");
 
-    await expect(engine.sync(["src/stable.ts"])).rejects.toMatchObject({
-      name: "GraphSourceStagingError",
-      failures: [expect.objectContaining({
-        filePath: "src/stable.ts",
-        operation: "parse",
-        code: "GRAPH_SOURCE_PARSE_FAILED",
-      })],
-    });
-    expect(engine.getNode(prior.id)).toMatchObject({ id: prior.id, bodyHash: prior.bodyHash });
+    await engine.sync(["src/stable.ts"]);
+    expect(engine.coverageFor("src/stable.ts")).toEqual({indexed:false,reason:"parse failed"});
+    expect(engine.getNode(prior.id)).toBeNull();
     engine.close();
   });
 
-  it("aborts an unreadable changed source without confusing it for a deletion", async () => {
+  it("reports an unreadable source and indexes it again once readable", async () => {
     const root = temporaryRoot("mex-unreadable-sync-");
     mkdirSync(join(root, "src"), { recursive: true });
     const source = join(root, "src", "stable.ts");
@@ -663,15 +661,9 @@ describe("graph construction integration", () => {
     writeFileSync(source, "export function stableIoNeedle(): number { return 9; }\n");
     failRead = true;
 
-    const rejected = engine.sync(["src/stable.ts"]);
-    await expect(rejected).rejects.toBeInstanceOf(GraphSourceStagingError);
-    await expect(rejected).rejects.toMatchObject({
-      code: "GRAPH_SOURCE_STAGING_FAILED",
-      failures: [{ filePath: "src/stable.ts", operation: "read", code: "EACCES" }],
-    });
-    expect(engine.getNode(prior.id)).toMatchObject({ id: prior.id, bodyHash: prior.bodyHash });
-    expect(engine.getIndexedFiles?.().map((file) => file.path)).toContain("src/stable.ts");
-
+    await engine.sync(["src/stable.ts"]);
+    expect(engine.coverageFor("src/stable.ts")).toEqual({indexed:false,reason:"unreadable"});
+    expect(engine.getNode(prior.id)).toBeNull();
     failRead = false;
     const updated = await engine.sync(["src/stable.ts"]);
     expect(updated.filesIndexed).toBe(1);

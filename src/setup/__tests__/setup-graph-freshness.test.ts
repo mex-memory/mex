@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../../graph/storage.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,7 +70,7 @@ it("keeps the setup graph replacement refusal and message at final revalidation"
   // Windows locks an open SQLite file against rename. Release its descriptor
   // before replacing it, then exercise the policy's final identity boundary.
   loaded.session!.close();
-  const db = join(root, ".mex", "graph.db");
+  const db = currentGraphPath(root);
   const bytes = readFileSync(db); renameSync(db, db + ".old"); writeFileSync(db, bytes);
   expect(await loaded.session!.revalidateFreshness()).toMatchObject({ valid: false,
     code: "GRAPH_INDEX_READER_SNAPSHOT_CHANGED",
@@ -84,7 +85,7 @@ it("records a graph replacement between batches without skipping the next scoped
   const port = createRepositoryGraphPort(root, { loadFreshSession: freshness.loadFresh });
   const read = () => port.withFreshGroundingSnapshot(graph => graph.verifySource!("linked.py"), { sourceScope: new Set() });
   await read();
-  const db = join(root, ".mex", "graph.db");
+  const db = currentGraphPath(root);
   const bytes = readFileSync(db); renameSync(db, db + ".old"); writeFileSync(db, bytes);
   await read();
   expect(freshness.changed).toBe(true);

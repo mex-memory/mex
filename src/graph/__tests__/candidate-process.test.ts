@@ -1,3 +1,4 @@
+import { currentGraphPath, graphLocation, graphTemporary } from "../storage.js";
 import { createHash } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -129,7 +130,7 @@ afterAll(() => { if (bundleDir) rmSync(bundleDir, { recursive: true, force: true
 
 function hash(path: string): string { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
 function artifacts(path: string): string[] {
-  return readdirSync(join(path, ".mex")).filter((name) => name.startsWith("graph.db.") || name === "graph.db.lock");
+  return readdirSync(graphLocation(path).directory).filter((name) => name.startsWith("graph-tmp-") || name === "graph.lock");
 }
 function processAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (error) {
@@ -140,7 +141,7 @@ function processAlive(pid: number): boolean {
 async function baseline(path: string): Promise<string> {
   const engine = createGraphEngine({ rootDir: path });
   try { await engine.build(); } finally { engine.close(); }
-  return join(path, ".mex/graph.db");
+  return currentGraphPath(path);
 }
 /**
  * Give a refresh something to publish. A refresh with nothing to publish
@@ -167,7 +168,7 @@ describe("isolated graph candidate construction", () => {
     const refreshed = await refreshGraph(path, isolated(realEntry));
     expect(refreshed.filesIndexed).toBe(1);
     expect(refreshed.status.status).toBe("fresh");
-    const db = openSqlite(join(path, ".mex/graph.db"), { readOnly: true });
+    const db = openSqlite(currentGraphPath(path), { readOnly: true });
     try {
       expect(db.prepare("PRAGMA quick_check").get()).toMatchObject({ quick_check: "ok" });
       expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -200,7 +201,7 @@ describe("isolated graph candidate construction", () => {
       expect(result.status.diagnostics).toContainEqual(expect.objectContaining({
         code: "GRAPH_SOURCE_FILE_SKIPPED", path: "generated.py",
       }));
-      const db = openSqlite(join(path, ".mex/graph.db"), { readOnly: true });
+      const db = openSqlite(currentGraphPath(path), { readOnly: true });
       try {
         const symbol = operation === "rebuild" ? "service" : "next_service";
         expect(db.prepare("SELECT name FROM nodes WHERE name = ?").all(symbol)).toEqual([{ name: symbol }]);
@@ -299,7 +300,7 @@ describe("isolated graph candidate construction", () => {
     const path = root();
     const controller = new AbortController();
     await expect(runGraphCandidateProcess({
-      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"a".repeat(48)}`), operation: "rebuild",
+      projectRoot: path, candidatePath: graphTemporary(graphLocation(path, { create: true })), operation: "rebuild",
       signal: controller.signal,
       onProgress: () => setTimeout(() => controller.abort(), 50),
       __internal: { entrypoint: lateEntry },
@@ -335,7 +336,7 @@ describe("isolated graph candidate construction", () => {
     const path = root();
     let pid = 0;
     await expect(runGraphCandidateProcess({
-      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"b".repeat(48)}`), operation: "rebuild",
+      projectRoot: path, candidatePath: graphTemporary(graphLocation(path, { create: true })), operation: "rebuild",
       __internal: { entrypoint: busyEntry, buildTimeoutMs: 500, onSpawn: (value) => { pid = value; } },
     })).rejects.toMatchObject({ category: "failed", diagnostic: { reason: "build-timeout" } });
     expect(processAlive(pid)).toBe(false);
@@ -343,7 +344,7 @@ describe("isolated graph candidate construction", () => {
 
   it("stops an orphaned busy compiler when its parent is killed without running cleanup", async () => {
     const path = root();
-    const parent = spawn(process.execPath, [parentEntry, path, join(path, ".mex", `graph.db.candidate-${"c".repeat(48)}`), busyEntry], {
+    const parent = spawn(process.execPath, [parentEntry, path, graphTemporary(graphLocation(path, { create: true })), busyEntry], {
       stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true,
     });
     children.add(parent);
@@ -382,7 +383,7 @@ describe("isolated graph candidate construction", () => {
   it("reports a worker startup crash with its exit code and bounded local stderr", async () => {
     const path = root();
     const error = await runGraphCandidateProcess({
-      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      projectRoot: path, candidatePath: graphTemporary(graphLocation(path, { create: true })), operation: "rebuild",
       __internal: { entrypoint: startupCrashEntry },
     }).catch((error: unknown) => error);
     expect(error).toBeInstanceOf(GraphCandidateProcessError);
@@ -395,7 +396,7 @@ describe("isolated graph candidate construction", () => {
   it("retains the cause when a progress observer throws", async () => {
     const path = root();
     const error = await runGraphCandidateProcess({
-      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      projectRoot: path, candidatePath: graphTemporary(graphLocation(path, { create: true })), operation: "rebuild",
       onProgress: () => { throw new Error("Progress storage is busy"); },
       __internal: { entrypoint: busyEntry },
     }).catch((error: unknown) => error);
@@ -409,7 +410,7 @@ describe("isolated graph candidate construction", () => {
   ] as const)("distinguishes a %s from graph build failure", async (_label, entrypoint, reason) => {
     const path = root();
     await expect(runGraphCandidateProcess({
-      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      projectRoot: path, candidatePath: graphTemporary(graphLocation(path, { create: true })), operation: "rebuild",
       __internal: { entrypoint: entrypoint(), ...(reason === "startup-timeout" ? { startupTimeoutMs: 100 } : {}) },
     })).rejects.toMatchObject({ category: "failed", diagnostic: { reason } });
   }, 20_000);
@@ -417,7 +418,7 @@ describe("isolated graph candidate construction", () => {
   it("drains excessive worker diagnostics, keeps useful head/tail, strips terminal controls, and reports last progress", async () => {
     const path = root();
     const error = await runGraphCandidateProcess({
-      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      projectRoot: path, candidatePath: graphTemporary(graphLocation(path, { create: true })), operation: "rebuild",
       __internal: { entrypoint: diagnosticEntry },
     }).catch((error: unknown) => error) as GraphCandidateProcessError;
     expect(error.diagnostic).toMatchObject({ reason: "worker-error", progress: { phase: "parse", completed: 1, total: 2 } });
@@ -435,7 +436,7 @@ describe("isolated graph candidate construction", () => {
   it("identifies a heap limit only from Node's explicit fatal runtime diagnostic", async () => {
     const path = root();
     const error = await runGraphCandidateProcess({
-      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      projectRoot: path, candidatePath: graphTemporary(graphLocation(path, { create: true })), operation: "rebuild",
       __internal: { entrypoint: heapLimitEntry },
     }).catch((error: unknown) => error) as GraphCandidateProcessError;
     expect(error.diagnostic).toMatchObject({ reason: "exit", exitCode: 134, resourceFailure: "heap-limit" });
@@ -446,7 +447,7 @@ describe("isolated graph candidate construction", () => {
   it("does not treat a caught worker error containing the heap marker as a fatal runtime crash", async () => {
     const path = root();
     const error = await runGraphCandidateProcess({
-      projectRoot: path, candidatePath: join(path, ".mex", `graph.db.candidate-${"d".repeat(48)}`), operation: "rebuild",
+      projectRoot: path, candidatePath: graphTemporary(graphLocation(path, { create: true })), operation: "rebuild",
       __internal: { entrypoint: reportedHeapTextEntry },
     }).catch((error: unknown) => error) as GraphCandidateProcessError;
     expect(error.diagnostic!.reason).toBe("worker-error");

@@ -9,6 +9,7 @@
  * Any change here is a breaking change — bump the major version and update
  * the doc.
  */
+import { plantGraph } from "../src/graph/__tests__/plant-graph.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -269,7 +270,7 @@ describe("public API — runDriftCheck", () => {
     mkdirSync(join(tmpDir, ".mex/context"), { recursive: true });
     mkdirSync(join(tmpDir, "src"), { recursive: true });
     writeFileSync(join(tmpDir, ".mex/context/architecture.md"), "# Architecture\n\nExisting context.\n");
-    writeFileSync(join(tmpDir, ".mex/graph.db"), "not a sqlite database");
+    plantGraph(tmpDir, "not a sqlite database");
     symlinkSync(tmpdir(), join(tmpDir, "src/unsafe.ts"), "dir");
     const warnings: string[] = [];
 

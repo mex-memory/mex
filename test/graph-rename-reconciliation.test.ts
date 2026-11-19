@@ -11,6 +11,8 @@ import { createGraphEngine } from "../src/graph/engine-impl.js";
 import { FingerprintStore } from "../src/graph/fingerprint-store.js";
 import { serializeFingerprint } from "../src/graph/fingerprint.js";
 import { rebuildGraph } from "../src/graph/maintenance.js";
+import { currentGraphPath } from "../src/graph/storage.js";
+import { removeGraph } from "../src/graph/__tests__/plant-graph.js";
 import { MinHashReconciler } from "../src/graph/reconcile-engine.js";
 import { loadGroundingRuntime, persistMovedGroundings } from "../src/graph/runtime.js";
 import { extractGroundings, writeGroundings } from "../src/markdown.js";
@@ -146,12 +148,12 @@ async function build(root: string): Promise<void> {
 
 /** A teammate's fresh clone: no graph at all, then a full build. */
 async function freshBuild(root: string): Promise<void> {
-  for (const suffix of ["", "-wal", "-shm"]) rmSync(join(root, ".mex", `graph.db${suffix}`), { force: true });
+  removeGraph(root);
   await build(root);
 }
 
 function withGraph<T>(root: string, body: (db: ReturnType<typeof openGraphDatabase>) => T): T {
-  const db = openGraphDatabase(join(root, ".mex", "graph.db"));
+  const db = openGraphDatabase(currentGraphPath(root));
   try {
     return body(db);
   } finally {
@@ -321,7 +323,7 @@ describe("one verdict for one renamed node in every reader (#229)", () => {
     expect(verdict(issues, entry.node, true)).toBe(`MOVED ${renamed}`);
 
     const wiki = withGraph(config.projectRoot, (db) => {
-      const engine = createGraphEngine({ rootDir: config.projectRoot, dbPath: join(config.projectRoot, ".mex", "graph.db") });
+      const engine = createGraphEngine({ rootDir: config.projectRoot });
       try {
         const graph = createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db);
         return resolveGrounding({ ...entry, bodyHash: entry.bodyHash! }, graph);

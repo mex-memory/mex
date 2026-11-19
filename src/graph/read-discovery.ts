@@ -1,3 +1,5 @@
+import { skippedByRule } from "../file-index/discover.js";
+import { gitignoreMatcher } from "./gitignore.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { lstatSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -31,7 +33,7 @@ const ignoredDirectories = new Set(GRAPH_CORPUS_IGNORE_GLOBS.map(pattern => patt
  * stat-based freshness cache. The original walk handles custom policies,
  * symlinks, unusual filesystems and options we cannot reproduce exactly.
  */
-export function discoverGraphReadPaths(
+function discoverGraphReadPathsUnfiltered(
   pattern: string | readonly string[], options: GlobOptions, maxFiles: number,
 ): string[] {
   const kind = pattern === GRAPH_SUPPORTED_SOURCE_GLOB ? "source"
@@ -74,4 +76,15 @@ export function discoverGraphReadPaths(
     if (error instanceof GraphCorpusLimitError) throw error;
     return discoverBoundedGraphPaths(pattern, options, maxFiles);
   }
+}
+
+/** The corpus walk, minus what `.gitignore` excludes and what the file index never reads. */
+export function discoverGraphReadPaths(pattern: string | readonly string[], options: GlobOptions, maxFiles: number): string[] {
+  const paths = discoverGraphReadPathsUnfiltered(pattern, options, maxFiles);
+  if (typeof options.cwd !== "string") return paths;
+  const ignored = gitignoreMatcher(resolve(options.cwd));
+  return paths.filter(path => {
+    const posix = path.replaceAll("\\", "/");
+    return !skippedByRule(posix) && !ignored(posix);
+  });
 }

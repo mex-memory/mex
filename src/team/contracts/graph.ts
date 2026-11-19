@@ -90,7 +90,7 @@ export interface GraphMaintenanceOptions {
  */
 export interface GraphSkippedSource {
   filePath: RepoRelativePath;
-  reason: "corpus-limit";
+  reason: "corpus-limit" | "binary" | "unreadable" | "missing";
   limit: string;
   limitBytes: number;
   observedBytes?: number;

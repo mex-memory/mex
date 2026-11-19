@@ -1,3 +1,4 @@
+import { currentGraphPath } from "../storage.js";
 import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
@@ -156,7 +157,7 @@ describe("RepositoryGraphPort", () => {
   it("counts previously omitted node fields before materializing synthesis evidence", async () => {
     const { root, port } = await fixture();
     const id = (await port.searchNodes({ query: "serviceTarget", limit: 1 })).items[0]!.ref.symbolId;
-    const db = openSqlite(join(root, ".mex/graph.db"));
+    const db = openSqlite(currentGraphPath(root));
     // Construct the oversized persisted value inside SQLite, without retaining
     // a 34 MiB JavaScript test string on the constrained runner.
     const updated = db.prepare("UPDATE nodes SET identity_key = identity_key || hex(zeroblob(?)) WHERE id = ?")
@@ -178,7 +179,7 @@ describe("RepositoryGraphPort", () => {
 
   it("binds synthesis structure and source to one fresh revocable read", async () => {
     const { root, port } = await fixture();
-    const dbPath = join(root, ".mex/graph.db");
+    const dbPath = currentGraphPath(root);
     const before = readFileSync(dbPath);
     let escaped: RepositoryGraphSynthesisReader | undefined;
     const result = await port.withFreshSynthesisSnapshot(snapshot => {
@@ -486,7 +487,7 @@ describe("RepositoryGraphPort", () => {
   it("resolves symbol and file grounding without leaking persisted rows", async () => {
     const { root, port } = await fixture();
     const target = (await port.searchNodes({ query: "serviceTarget", limit: 1 })).items[0]!;
-    const db = openSqlite(join(root, ".mex", "graph.db"), { readOnly: true, immutable: true });
+    const db = openSqlite(currentGraphPath(root), { readOnly: true, immutable: true });
     const current = new FingerprintStore(db).get(target.ref.symbolId);
     db.close();
     expect(current).not.toBeNull();
@@ -840,7 +841,7 @@ describe("RepositoryGraphPort", () => {
   it("fails closed on out-of-range confidence and unknown relation provenance", async () => {
     const { root, port } = await fixture();
     const target = (await port.searchNodes({ query: "serviceTarget", limit: 1 })).items[0]!;
-    const dbPath = join(root, ".mex", "graph.db");
+    const dbPath = currentGraphPath(root);
     const updateRelation = (confidence: number, provenance: string) => {
       const db = openSqlite(dbPath);
       try {
