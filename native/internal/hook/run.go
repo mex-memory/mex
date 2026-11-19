@@ -322,7 +322,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			canNotice = support.PersonLine
 		}
 	}
-	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Notices: canNotice, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	denv := delivery.Environment{Notices: canNotice, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)
@@ -336,13 +336,17 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			return "", ""
 		}
 		return c.ProjectID, c.Root
-	}})
+	}}
+	reply, deliveryErr := delivery.Handle(ev, denv)
 	if deliveryErr != nil {
 		if h.deliveryError != nil {
 			h.deliveryError(deliveryErr)
 		}
 		failed = true
 		reply = contract.Reply{}
+	}
+	if ev.Kind == contract.PreTool && !h.levers.raw && !h.levers.noBump {
+		reply = mergeReplies(reply, delivery.SpeedBump(ev, denv))
 	}
 	reply = mergeReplies(reply, levers(ev, h, recordDirectory, now))
 	// One line, once per session, after a commit that reads like a decision.
