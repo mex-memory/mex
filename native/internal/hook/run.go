@@ -282,6 +282,8 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	if ev.Kind == contract.SessionEnd {
 		h.endBeat(agent, ev.SessionID, now)
 	}
+	captureOn := state == switchedOn && captureEnabled(recordDirectory, ev.ProjectID, global)
+	holdout := state == switchedOn && ledgerHoldout(ev, h, recordDirectory, global.LedgerHoldout, captureOn, now)
 	if h.capture != nil {
 		h.capture(ev, recordDirectory, global)
 	}
@@ -298,15 +300,24 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 
-	if reply, handled := typedNote(ev, h); handled {
-		out, _ := profile.Render(ev, reply)
-		return out
+	if !holdout {
+		if reply, handled := typedNote(ev, h); handled {
+			out, _ := profile.Render(ev, reply)
+			return out
+		}
 	}
-	// Capture runs before delivery: typed text is saved before the reply
-	// starts, whatever delivery does next.
-	captureOn := captureEnabled(recordDirectory, ev.ProjectID, global)
+	// Both study arms keep the local capture and filter inputs.
+	captureEnv := capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env}
+	captureLifecycle := ev.Kind == contract.SessionStart || ev.Kind == contract.SessionEnd || ev.Kind == contract.PreCompact
 	if captureOn {
-		capture.Hook(ev, capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env})
+		capture.Hook(ev, captureEnv)
+	}
+	if holdout {
+		if captureOn && captureLifecycle {
+			capture.StageLedgerFinish(ev, captureEnv, global.LedgerHoldout)
+			startBackground(h, recordDirectory)
+		}
+		return profile.EmptyReply(nativeEvent)
 	}
 	noteJudgeEdits(ev, recordDirectory)
 	noteEdit(ev, recordDirectory)
@@ -402,6 +413,16 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		}
 	}
 	out, dropped := profile.Render(ev, reply)
+	if captureOn && h.afterOutput != nil && !failed {
+		first := ev.Kind == contract.SessionStart && ev.Source == "startup"
+		context := reply.Context
+		if slices.Contains(dropped, "context") || slices.Contains(dropped, "all") {
+			context = ""
+		}
+		if first || context != "" {
+			h.afterOutput(func() { recordLedgerContext(ev, h, recordDirectory, now, context, first) })
+		}
+	}
 	if measured != nil && !failed && h.afterOutput != nil && !slices.Contains(dropped, "all") {
 		if (measured.Kind != "saving" || (reply.ReplaceOutput == leverReply.ReplaceOutput && !slices.Contains(dropped, "replace_output"))) &&
 			(measured.Kind != "denial" || (leverDenied && !slices.Contains(dropped, "decision"))) {
@@ -430,8 +451,8 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	// separately, after the complete reply has reached stdout.
 	// SessionEnd too: rule files waiting for this session can be rebuilt now.
 	offerReady := captureOn && requestCompactOffer(ev, h, recordDirectory)
-	ledgerReady := captureOn && capture.StageLedgerFinish(ev, capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env})
-	if ev.Kind == contract.SessionStart || ev.Kind == contract.SessionEnd || ev.Kind == contract.PreCompact || judgeReady ||
+	ledgerReady := captureOn && capture.StageLedgerFinish(ev, captureEnv, global.LedgerHoldout)
+	if captureLifecycle || judgeReady ||
 		offerReady || ledgerReady || (ev.Kind == contract.PostCompact && watchingCompaction(recordDirectory)) {
 		startBackground(h, recordDirectory)
 	}

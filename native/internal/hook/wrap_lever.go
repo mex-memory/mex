@@ -306,13 +306,16 @@ func runWrapped(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			if checkout, where := findCheckout(recordDirectory, cwd, false, now); where == switchedOn && recordDirectory != "" &&
 				!leverOff(recordDirectory, localrecord.LeverWrapper) {
 				session := getenv("CODEX_THREAD_ID")
+				ev := contract.Event{Agent: "codex", SessionID: session, ProjectID: checkout.ProjectID, Checkout: checkout.Root}
+				if ledgerHoldout(ev, h, recordDirectory, global.LedgerHoldout, false, now) {
+					return output.Run(opts)
+				}
 				opts.Save = func(text string, code int) (int, error) {
 					return output.Save(recordDirectory, checkout.ProjectID, text, output.SavedMeta{
 						Command: command, ExitCode: code, Agent: "mex run", SessionID: session}, now)
 				}
 				if !opts.Raw && session != "" && len(session) <= 256 && output.Noisy(command) && !sessionPaused(recordDirectory, "codex", session) &&
 					captureEnabled(recordDirectory, checkout.ProjectID, global) && !capture.Scripted("codex", getenv) {
-					ev := contract.Event{Agent: "codex", SessionID: session, ProjectID: checkout.ProjectID, Checkout: checkout.Root}
 					opts.Observe = func(before, after int, elapsed time.Duration) {
 						recordLeverObservation(ev, h, recordDirectory, time.Now(), elapsed, localrecord.LeverObservation{
 							Lever: localrecord.LeverWrapper, Kind: "saving", TokensRemoved: removedTokens(before, after),

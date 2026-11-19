@@ -222,13 +222,15 @@ func compactionLedgerNotices(ev contract.Event, directory string) []ledgerPerson
 }
 
 type ledgerSettlement struct {
-	Agent    string                   `json:"agent"`
-	Session  string                   `json:"session"`
-	Project  string                   `json:"project"`
-	Checkout string                   `json:"checkout"`
-	Ended    time.Time                `json:"ended"`
-	Profile  string                   `json:"price_profile"`
-	Terms    []localrecord.LedgerTerm `json:"terms"`
+	Agent    string                            `json:"agent"`
+	Session  string                            `json:"session"`
+	Project  string                            `json:"project"`
+	Checkout string                            `json:"checkout"`
+	Ended    time.Time                         `json:"ended"`
+	Profile  string                            `json:"price_profile"`
+	Terms    []localrecord.LedgerTerm          `json:"terms"`
+	Metrics  *localrecord.LedgerSessionMetrics `json:"metrics"`
+	Trial    string                            `json:"trial"`
 }
 
 // The background worker does the transcript scan. This command owns the
@@ -251,13 +253,19 @@ func settleLedger(stdin io.Reader, stdout io.Writer, getenv Env) int {
 		_, _ = io.WriteString(stdout, "{\"saved\":false}\n")
 		return 0
 	}
+	if input.Trial != global.LedgerHoldout {
+		input.Trial = ""
+	}
+	if !safeLedgerDatabase(directory) {
+		return 1
+	}
 	hooks, err := localrecord.OpenHooks(hooksLocation(h, directory))
 	if err != nil {
 		return 1
 	}
 	defer hooks.Close()
 	saved, err := hooks.SettleLedger(localrecord.Session{SessionID: input.Session, Agent: input.Agent,
-		ProjectID: input.Project, Checkout: input.Checkout}, input.Ended, input.Profile, input.Terms)
+		ProjectID: input.Project, Checkout: input.Checkout}, input.Ended, input.Profile, input.Terms, input.Metrics, input.Trial)
 	if err != nil {
 		return 1
 	}

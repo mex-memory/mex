@@ -180,6 +180,7 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   // Uninstall must not recreate the launcher or restart pending jobs.
   if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture" || family.name() === "compact"
     || family.name() === "status" || family.name() === "doctor"
+    || (family.name() === "report" && (family.opts().ledger || family.opts().holdout))
     || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
     || (["install", "sync"].includes(family.name()) && family.opts().dryRun)) return;
   // Keep the hook shim's launcher pointing at this CLI.

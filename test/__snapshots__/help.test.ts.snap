@@ -61,8 +61,8 @@ Commands:
                                         for the interactive AI sync session
   hints                                 Explicitly refresh or expire read-only
                                         agent-memory hints
-  report [options]                      Read local advisories about advice
-                                        already used on this branch
+  report [options]                      Read local advisories or session cost
+                                        estimates
   alias [options] <id> <action> <text>  Add or remove a short name or symptom
                                         people use for an entry (kept only if it
                                         finds that entry first)

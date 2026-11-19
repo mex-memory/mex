@@ -984,14 +984,67 @@ across checkouts for `outline`, `shell-trim` or `codex-wrapper`. Only sessions
 started after the reset enter that trial. Previously outlined files retain
 their edit guards within their context.
 
-Avoided-call credit and the priced `surface_cost_checks` projection belong
-to OSS-45's holdout and report slice. Comparable completed tasks with and
-without the lever supply the request-count and usage differences needed
-to estimate avoided overflow retries and follow-up reads. Tool auto-off
-and ledger-driven compaction rollback stay report-only until that credit
-is included. Hooks migrations 0011 (ledger settlements) and 0012 (pricing)
-follow the upstream migrations for search answers, budget lanes, and
-false-send counts.
+### Holdout study and session report
+
+`mex report --ledger` shows the current checkout's local measurements. Add
+`--json` for the same data as JSON. The plain `mex report` still shows advice
+advisories. The ledger groups by host and model and shows one actual session
+at the median observed spend per group (the lower of the two middle sessions
+for even samples). Its host-compaction and MEX tool-lever nets are shown
+separately. They are estimates and can overlap. The report uses the latest
+256 measured sessions for this checkout and the current price profile.
+
+The final-context figure estimates the MEX text sent through the main hook
+since the last observed context reset and by the time of the last measured
+model request. Go counts the marked, rendered context bytes as tokens after
+successful output. The report leaves this figure unavailable when the start
+receipt is missing or a reset happened after the last request. Host pruning
+and summary text, separately loaded rule files, subagent context and tool
+output are outside that estimate.
+
+`mex report --holdout on` opts this installation into a local study.
+Enrollment is off by default. Each fresh, hook-enabled, capture-enabled
+Claude Code or Codex session gets a stable assignment at startup. A random
+study seed and the session ID assign about 10% to the holdout. A holdout
+suppresses automatic MEX hook delivery, tool rewriting and compaction
+interventions. Local journaling and capture-filter work continue under the
+existing capture settings in both arms. MEX records the assignment,
+transcript location and settlement metadata locally so it can measure the
+session. Both arms use the host's current settings, native compaction and
+already installed rules. Opting out with `mex report --holdout off` stops the
+study immediately. Re-enabling
+starts a separate study. Completed samples keep their original assignment.
+
+The report compares complete transcripts that started and finished in the
+same study without recording a different checkout. It waits for five sessions in
+each arm with the same host and model. Assignment and measurement counts
+make it visible when transcripts are incomplete, exceed the 32 MiB read cap
+or belong to sessions still in progress. It shows the median observed spend
+and request count for each arm and their interquartile ranges (the middle
+50%) in text and JSON. It labels the estimates early and noisy until each
+arm has about 20 sessions. It also shows the difference in median spend and a
+signed estimate of avoided calls valued at the median holdout session's
+observed per-request cost. That estimate describes part of the whole-session
+difference and is never added to it. Observed spend includes model requests
+with usage in the transcript. Sum-of-ledger costs can also include estimated
+compactor calls, refetches and hook time. The reference weights express
+input-equivalent tokens. The report omits subscription allowance because
+account-level utilization cannot attribute a percentage to these sessions.
+The worker reads the host transcript in memory and settles numeric
+projections, the model and the study assignment. The study calculation and
+report run without model calls.
+
+Whole-session holdouts measure request counts across all MEX hooks together.
+They provide no per-lever avoided-call credit or comparable solved-task
+cost for the `search-span` trial. The `surface_cost_checks` projection still
+requires isolated trials with completed, comparable tasks. Tool auto-off
+and ledger-driven compaction rollback stay report-only while the per-lever
+credit is pending.
+
+Hooks migrations 0011 (ledger settlements), 0012 (pricing), and 0013
+(study assignments and session metrics) follow the upstream migrations
+for search answers, budget lanes, and false-send counts. Earlier settlements
+without session metrics remain available to the per-lever ledger.
 
 Indexes cover active sessions by project/time, deliveries by session/agent/epoch/
 entry/time and by time, followups by delivery/time, journal by session/id, and

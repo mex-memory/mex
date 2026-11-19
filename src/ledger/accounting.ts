@@ -27,6 +27,7 @@ interface Request {
   at: number;
   usage: Usage;
   rates: Readonly<TokenClasses>;
+  model?: string;
 }
 
 export interface Boundary {
@@ -44,6 +45,8 @@ export interface SessionTrace {
   reads: FileRead[];
   edits: FileEdit[];
   timings: { at: number; ms: number }[];
+  incompleteUsage?: boolean;
+  leftCheckout?: boolean;
 }
 
 export interface LedgerTerm {
@@ -61,6 +64,42 @@ const MAX_FILE_EVENTS = 8192;
 const MAX_BOUNDARIES = 256;
 const MAX_USAGE = 2_000_000;
 const MAX_PRICED_TOTAL = 2 ** 49;
+
+function modelName(value: unknown): string | undefined {
+  if (typeof value === "string" && /^[a-z0-9._-]{1,120}(?:\[1m\])?$/iu.test(value)) return value.toLowerCase();
+  return undefined;
+}
+
+export interface SessionMetrics {
+  model: string;
+  requests: number;
+  spend_input_millitokens: number;
+  end_input_tokens: number;
+  mex_context_tokens: number | null;
+}
+
+/** Observed requests, before any counterfactual ledger debits or credits. */
+export function measureSessionUsage(trace: SessionTrace) {
+  if (trace.incompleteUsage || !trace.requests.length) return undefined;
+  let first = trace.requests[0]!, final = first, spend = 0;
+  const models = new Set<string>();
+  for (const request of trace.requests) {
+    models.add(request.model ?? "unknown");
+    if (request.at < first.at) first = request;
+    if (request.at >= final.at) final = request;
+    spend += pricedUsage(request.usage, request.rates);
+  }
+  const priced = Math.round(spend * INPUT_MILLITOKENS);
+  if (!Number.isSafeInteger(priced) || priced > MAX_PRICED_TOTAL) return undefined;
+  const metrics: SessionMetrics = {
+    model: models.size === 1 ? models.values().next().value! : "mixed",
+    requests: trace.requests.length,
+    spend_input_millitokens: priced,
+    end_input_tokens: inputTokens(final.usage),
+    mex_context_tokens: null,
+  };
+  return { metrics, firstAt: first.at, finalAt: final.at };
+}
 
 function usage(raw: unknown, agent: CompactAgent): Usage | undefined {
   const value = object(raw);
@@ -124,6 +163,15 @@ export function readLedgerTrace(body: string, agent: CompactAgent, session: stri
   const pendingFiles = new Map<string, { path: string; started: number; edit: boolean }>();
   let cumulative: { input: number; output: number } | undefined;
   let codexCwd = checkout;
+  let codexModel: string | undefined;
+  let lastCwd: string | undefined;
+
+  function seeCheckout(cwd: unknown) {
+    if (trace.leftCheckout || cwd === lastCwd || typeof cwd !== "string" || cwd.length > 4096 || cwd.includes("\0") || !isAbsolute(cwd)) return;
+    lastCwd = cwd;
+    const path = relative(checkout, realPath(cwd));
+    if (path === ".." || path.startsWith(".." + sep) || isAbsolute(path)) trace.leftCheckout = true;
+  }
 
   function stageFile(id: unknown, file: unknown, cwd: string, started: number, edit = false) {
     const path = checkoutFile(checkout, cwd, file);
@@ -154,6 +202,7 @@ export function readLedgerTrace(body: string, agent: CompactAgent, session: stri
     if (!Number.isFinite(at) || at > ended) continue;
     const payload = object(row.payload);
     if (agent === "claude-code") {
+      seeCheckout(row.cwd);
       if (typeof row.entrypoint === "string" && row.entrypoint.startsWith("sdk")) return undefined;
       if (row.type === "system" && row.subtype === "compact_boundary") {
         if (trace.boundaries.length >= MAX_BOUNDARIES) return undefined;
@@ -187,7 +236,7 @@ export function readLedgerTrace(body: string, agent: CompactAgent, session: stri
           (inputTokens(tokens) === inputTokens(existing.usage) && tokens.hasCacheBreakdown)) existing.usage = tokens;
         existing.usage.output = output;
       } else {
-        const next = { at, usage: tokens, rates: ledgerRates(message.model) };
+        const next = { at, usage: tokens, rates: ledgerRates(message.model), model: modelName(message.model) };
         claudeRequests.set(key, next);
         trace.requests.push(next);
       }
@@ -204,7 +253,13 @@ export function readLedgerTrace(body: string, agent: CompactAgent, session: stri
     } else {
       if (row.type === "session_meta" && (payload?.source === "exec" || object(payload?.source)?.subagent !== undefined ||
         (typeof payload?.id === "string" && payload.id !== session))) return undefined;
-      if ((row.type === "session_meta" || row.type === "turn_context") && typeof payload?.cwd === "string") codexCwd = payload.cwd;
+      if (row.type === "session_meta" || row.type === "turn_context") {
+        if (typeof payload?.cwd === "string") {
+          codexCwd = payload.cwd;
+          seeCheckout(codexCwd);
+        }
+        if (payload?.model !== undefined) codexModel = modelName(payload.model);
+      }
       if (row.type === "compacted") {
         if (trace.boundaries.length >= MAX_BOUNDARIES) return undefined;
         const latest = object(payload?.latest_token_usage_record);
@@ -247,8 +302,11 @@ export function readLedgerTrace(body: string, agent: CompactAgent, session: stri
       // Resets and duplicate snapshots do not represent another request.
       if (!inputTokens(tokens) || (cumulative && input === cumulative.input && output === cumulative.output)) continue;
       if (cumulative && (input < cumulative.input || output < cumulative.output)) return undefined;
+      if (input - (cumulative?.input ?? 0) !== inputTokens(tokens) || output - (cumulative?.output ?? 0) !== tokens.output) {
+        trace.incompleteUsage = true;
+      }
       cumulative = { input, output };
-      trace.requests.push({ at, usage: tokens, rates: ledgerRates() });
+      trace.requests.push({ at, usage: tokens, rates: ledgerRates(), model: codexModel });
     }
     if (trace.requests.length > MAX_REQUESTS || trace.boundaries.length > MAX_BOUNDARIES) return undefined;
   }

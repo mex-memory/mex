@@ -39,8 +39,26 @@ type LedgerTerm struct {
 	CostInputMillitokens  int64  `json:"cost_input_millitokens"`
 }
 
+// LedgerSessionMetrics is a transcript usage projection with no payload text.
+// The trial on the request is matched against the native start assignment.
+type LedgerSessionMetrics struct {
+	Model                 string `json:"model"`
+	Requests              int64  `json:"requests"`
+	SpendInputMillitokens int64  `json:"spend_input_millitokens"`
+	EndInputTokens        int64  `json:"end_input_tokens"`
+	MexContextTokens      *int64 `json:"mex_context_tokens"`
+}
+
 const MaxLedgerTerms = 4096
 const maxPricedTotal = 1 << 49
+
+func validLedgerMetrics(m *LedgerSessionMetrics) bool {
+	return m == nil || (len(m.Model) > 0 && len(m.Model) <= 128 && !strings.ContainsFunc(m.Model, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9') && !strings.ContainsRune("._-[]", r)
+	}) && m.Requests > 0 && m.Requests <= 32_000 && m.SpendInputMillitokens >= 0 && m.SpendInputMillitokens <= maxPricedTotal &&
+		m.EndInputTokens > 0 && m.EndInputTokens <= 2_000_000 &&
+		(m.MexContextTokens == nil || *m.MexContextTokens >= 0 && *m.MexContextTokens <= m.EndInputTokens))
+}
 
 func leverForHost(lever, host string) bool {
 	switch lever {
@@ -114,7 +132,7 @@ func validateLedgerTerms(agent string, terms []LedgerTerm) error {
 
 // SettleLedger replaces one finished session's main-actor terms atomically.
 // Rows for other actors and unrelated ledger keys are outside this writer.
-func (hooks *Hooks) SettleLedger(session Session, ended time.Time, profile string, terms []LedgerTerm) (bool, error) {
+func (hooks *Hooks) SettleLedger(session Session, ended time.Time, profile string, terms []LedgerTerm, metrics *LedgerSessionMetrics, trial string) (bool, error) {
 	if hooks.counterOnly || !leverForHost(LeverCompaction, session.Agent) || ended.IsZero() {
 		return false, errors.New("invalid ledger session")
 	}
@@ -125,6 +143,9 @@ func (hooks *Hooks) SettleLedger(session Session, ended time.Time, profile strin
 	}
 	if err := validateLedgerTerms(session.Agent, terms); err != nil {
 		return false, err
+	}
+	if !validLedgerMetrics(metrics) || (trial != "" && !ValidLedgerTrial(trial)) {
+		return false, errors.New("invalid ledger session metrics")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.writer)
 	defer cancel()
@@ -138,11 +159,11 @@ func (hooks *Hooks) SettleLedger(session Session, ended time.Time, profile strin
 	}
 	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
 	var started, seen string
-	var previous, previousProfile sql.NullString
-	err = conn.QueryRowContext(ctx, `SELECT s.started_at,s.last_seen_at,l.ended_at,l.price_profile
-		FROM sessions s LEFT JOIN ledger_settlements l USING(session_id)
+	var previous, previousProfile, measured sql.NullString
+	err = conn.QueryRowContext(ctx, `SELECT s.started_at,s.last_seen_at,l.ended_at,l.price_profile,m.session_id
+		FROM sessions s LEFT JOIN ledger_settlements l USING(session_id) LEFT JOIN ledger_session_metrics m USING(session_id)
 		WHERE s.session_id=? AND s.agent=? AND s.project_id=? AND s.checkout=? AND s.paused=0`,
-		session.SessionID, session.Agent, session.ProjectID, session.Checkout).Scan(&started, &seen, &previous, &previousProfile)
+		session.SessionID, session.Agent, session.ProjectID, session.Checkout).Scan(&started, &seen, &previous, &previousProfile, &measured)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
@@ -161,6 +182,13 @@ func (hooks *Hooks) SettleLedger(session Session, ended time.Time, profile strin
 		}
 		// A retried claim may see a file change after the original settlement.
 		if last.Equal(ended) && previousProfile.String == profile {
+			if metrics != nil && !measured.Valid {
+				if err := putLedgerMetrics(ctx, conn, session.SessionID, metrics, trial); err != nil {
+					return false, err
+				}
+				_, err := conn.ExecContext(ctx, "COMMIT")
+				return err == nil, err
+			}
 			return true, nil
 		}
 	}
@@ -191,8 +219,40 @@ func (hooks *Hooks) SettleLedger(session Session, ended time.Time, profile strin
 	if err != nil {
 		return false, err
 	}
+	if err := putLedgerMetrics(ctx, conn, session.SessionID, metrics, trial); err != nil {
+		return false, err
+	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return false, fmt.Errorf("settle ledger: %w", err)
 	}
 	return true, nil
+}
+
+func putLedgerMetrics(ctx context.Context, conn *sql.Conn, session string, m *LedgerSessionMetrics, trial string) error {
+	if _, err := conn.ExecContext(ctx, "DELETE FROM ledger_session_metrics WHERE session_id=?", session); err != nil || m == nil {
+		return err
+	}
+	_, err := conn.ExecContext(ctx, `INSERT INTO ledger_session_metrics
+		(session_id,model,requests,spend_input_millitokens,end_input_tokens,mex_context_tokens,trial,holdout)
+		SELECT s.session_id,?,?,?,?,CASE WHEN t.holdout=1 THEN 0 ELSE ? END,t.trial,t.holdout
+		FROM sessions s LEFT JOIN ledger_trials t ON t.session_id=s.session_id AND t.trial=?
+		WHERE s.session_id=? AND (t.session_id IS NOT NULL OR NOT EXISTS(
+			SELECT 1 FROM ledger_trials old WHERE old.session_id=s.session_id AND old.holdout=1))`,
+		m.Model, m.Requests, m.SpendInputMillitokens, m.EndInputTokens, m.MexContextTokens, trial, session)
+	return err
+}
+
+// RecordLedgerContext counts the rendered hook context after stdout succeeds.
+// It stores only a bounded token estimate, outside the delivery receipts.
+func (hooks *Hooks) RecordLedgerContext(session Session, at time.Time, tokens int, first bool) error {
+	if hooks.counterOnly || !leverForHost(LeverCompaction, session.Agent) || tokens < 0 || tokens > 2_000_000 || (tokens == 0 && !first) {
+		return errors.New("invalid ledger context")
+	}
+	stamp := at.UTC().Format(time.RFC3339Nano)
+	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.writer)
+	defer cancel()
+	return hooks.write(ctx, `INSERT INTO ledger_context(session_id,ts,tokens,at_start)
+		SELECT session_id,?,?,? FROM sessions
+		WHERE session_id=? AND agent=? AND project_id=? AND checkout=? AND paused=0`,
+		stamp, tokens, first, session.SessionID, session.Agent, session.ProjectID, session.Checkout)
 }

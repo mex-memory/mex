@@ -9,7 +9,8 @@ import { nativeBinary } from "../knowledge/check.js";
 import { containedDirectory, readBoundedTextFile } from "../knowledge/files.js";
 import { openHooksReadOnly, type RecordReader, type RecordWriter } from "../record/index.js";
 import { shortHash } from "../record/project.js";
-import { observationData, readLedgerTrace, settleSessionLedger, type LedgerTerm, type Observation } from "./accounting.js";
+import { LEDGER_REPORT_SCHEMA_VERSION } from "../record/schema.js";
+import { measureSessionUsage, observationData, readLedgerTrace, settleSessionLedger, type LedgerTerm, type Observation, type SessionMetrics } from "./accounting.js";
 import { LEDGER_PRICE_PROFILE } from "./pricing.js";
 import { publishLeverGates } from "./view.js";
 
@@ -24,9 +25,11 @@ const finish = z.object({
   version: z.literal(1), agent: z.enum(["claude-code", "codex"]),
   project: z.string().regex(/^[gf]-[0-9a-f]{24}$/u), checkout: z.string().min(1).max(4096),
   session: z.string().min(1).max(256), ended: z.string().datetime({ offset: true }),
+  trial: z.string().regex(/^(?:[0-9a-f]{32})?$/u).default(""),
 }).strict();
 type Finish = z.infer<typeof finish>;
-type Settlement = Omit<Finish, "version"> & { price_profile: string; terms: LedgerTerm[] };
+type Measurement = { terms: LedgerTerm[]; metrics?: SessionMetrics; trial: string };
+type Settlement = Omit<Finish, "version"> & Measurement & { price_profile: string };
 
 export function ledgerPending(directory: string): boolean {
   return existsSync(join(directory, pendingFolder));
@@ -53,7 +56,23 @@ function observe(hooks: RecordReader, input: Finish, ended: number): Observation
   return observations;
 }
 
-function measure(writer: RecordWriter, hooks: RecordReader, input: Finish): LedgerTerm[] | undefined {
+function contextFootprint(hooks: RecordReader, session: string, boundary: number, final: number, finalSize: number): number | null {
+  if (hooks.version < LEDGER_REPORT_SCHEMA_VERSION || boundary >= final) return null;
+  const rows = hooks.all<{ ts: string; at_start: 0 | 1; tokens: number }>(
+    "SELECT ts,at_start,tokens FROM ledger_context WHERE session_id=? LIMIT ?", session, MAX_OBSERVATIONS + 1);
+  if (rows.length > MAX_OBSERVATIONS) return null;
+  let covered = false, sum = 0;
+  for (const row of rows) {
+    const at = Date.parse(row.ts);
+    if (!Number.isFinite(at) || !Number.isSafeInteger(row.tokens) || row.tokens < 0) return null;
+    if (at > final) continue;
+    if (row.at_start === 1) covered = true;
+    if (at >= boundary) sum += row.tokens;
+  }
+  return covered && sum <= finalSize ? sum : null;
+}
+
+function measure(writer: RecordWriter, hooks: RecordReader, input: Finish): Measurement | undefined {
   const ended = Date.parse(input.ended);
   const checkout = writer.checkout(input.checkout);
   if (!checkout || checkout.path !== input.checkout || checkout.project_id !== input.project || checkout.state === "off" ||
@@ -84,7 +103,14 @@ function measure(writer: RecordWriter, hooks: RecordReader, input: Finish): Ledg
       trace.boundaries.push({ at });
     }
   }
-  return settleSessionLedger(trace, observations);
+  const terms = settleSessionLedger(trace, observations);
+  if (!terms) return undefined;
+  const usage = !trace.leftCheckout && measureSessionUsage(trace);
+  const trial = usage && usage.firstAt >= Date.parse(session.started_at) ? input.trial : "";
+  if (!usage) return { terms, trial };
+  const boundary = trace.boundaries.reduce((latest, item) => Math.max(latest, item.at), -Infinity);
+  usage.metrics.mex_context_tokens = contextFootprint(hooks, input.session, boundary, usage.finalAt, usage.metrics.end_input_tokens);
+  return { terms, metrics: usage.metrics, trial };
 }
 
 function persist(writer: RecordWriter, data: Settlement): Promise<void> {
@@ -140,8 +166,8 @@ export async function settlePendingLedger(writer: RecordWriter, now: number, wri
             ended >= now - MAX_PENDING_AGE && ended <= now &&
             writer.setting("global", "capture.enabled") !== "false" && writer.setting(input.project, "capture.enabled") !== "false") {
             if (now - ended < SETTLE_DELAY) continue;
-            const terms = measure(writer, hooks, parsed.data);
-            if (terms) await write(writer, { ...input, price_profile: LEDGER_PRICE_PROFILE, terms });
+            const measurement = measure(writer, hooks, parsed.data);
+            if (measurement) await write(writer, { ...input, ...measurement, price_profile: LEDGER_PRICE_PROFILE });
           }
         }
         unlinkSync(claim);

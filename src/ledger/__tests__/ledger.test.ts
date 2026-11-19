@@ -1,16 +1,19 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { acceptCompact, prepareCompact, reviewManagedCompaction, type CompactSelection } from "../../compaction/control.js";
 import { runCheckoutSwitch } from "../../controls/cli.js";
+import { setLedgerHoldout } from "../../controls/index.js";
 import { binaryFileName } from "../../hooks/shim/binary.js";
 import { openHooksReadOnly, openRecord } from "../../record/index.js";
-import { absolutePath } from "../../record/project.js";
-import { readLedgerTrace, settleSessionLedger, type Observation, type SessionTrace } from "../accounting.js";
+import { absolutePath, shortHash } from "../../record/project.js";
+import { measureSessionUsage, readLedgerTrace, settleSessionLedger, type Observation, type SessionTrace } from "../accounting.js";
 import { settlePendingLedger } from "../background.js";
 import { INPUT_MILLITOKENS, ledgerRates } from "../pricing.js";
+import { formatLedgerReport, ledgerReport } from "../report.js";
 import { ledgerShouldTurnOff, publishLeverGates, sessionLeverNet } from "../view.js";
 
 const actions = (kind: Observation["kind"], at: number, removed = 0): Observation => ({
@@ -143,6 +146,10 @@ it("deduplicates provider requests and only attributes a matched Codex summary c
     tokens(201, 0, 0, 1000, 80) + tokens(230, 600, 40, 1600, 120);
   const trace = readLedgerTrace(body, "codex", "s", 300, checkout)!;
   expect(trace.requests).toHaveLength(2);
+  expect(measureSessionUsage(trace)?.metrics).toMatchObject({ model: "mixed", requests: 2,
+    end_input_tokens: 600, spend_input_millitokens: 2_200_000 });
+  const incomplete = readLedgerTrace(body.replace('"input_tokens":1600', '"input_tokens":1601'), "codex", "s", 300, checkout)!;
+  expect(measureSessionUsage(incomplete)).toBeUndefined();
   expect(trace.edits).toEqual([{ at: 150, path: join(checkout, "src", "old.ts") }, { at: 150, path: join(checkout, "src", "new.ts") }]);
   expect(settleSessionLedger(trace, [])).toEqual([
     { lever: "compaction", tokens_removed: 480, turns_carried: 1, cost_tokens: 825, refetches: 0,
@@ -164,7 +171,7 @@ afterEach(() => {
   for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-it("reports priced losses and preserves gates and settings by default, with enforcement available for both", async () => {
+function ledgerFixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "mex-ledger-")));
   temporary.push(root);
   const checkout = join(root, "repo"), home = join(root, ".mex"), claude = join(root, "claude");
@@ -181,18 +188,23 @@ it("reports priced losses and preserves gates and settings by default, with enfo
   const hookEnv = { ...process.env, MEX_BACKGROUND: "", MEX_RAW: "", MEX_HOOK_RECORD: "", CLAUDE_CODE_ENTRYPOINT: "cli" };
   for (const key of ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "JENKINS_URL", "TF_BUILD"]) delete (hookEnv as NodeJS.ProcessEnv)[key];
   const writer = openRecord({ home, projectPath: checkout, isNetwork: () => false });
+  function hook(event: string, session: string, fields: object = {}) {
+    const out = execFileSync(binary, ["claude-code", event], { cwd: checkout, encoding: "utf8", env: hookEnv,
+      input: JSON.stringify({ cwd: checkout, session_id: session, hook_event_name: event,
+        transcript_path: join(transcripts, session + ".jsonl"), ...fields }), timeout: 5_000 });
+    return JSON.parse(out);
+  }
+  function shell(session: string, command: string, stdout: string, id: string) {
+    return hook("PostToolUse", session, { tool_name: "Bash", tool_use_id: id,
+      tool_input: { command }, tool_response: { stdout, stderr: "", interrupted: false, isImage: false } });
+  }
+  return { checkout, home, claude, transcripts, writer, hook, shell };
+}
+
+it("reports priced losses and preserves gates and settings by default, with enforcement available for both", async () => {
+  const { checkout, home, claude, transcripts, writer, hook, shell } = ledgerFixture();
   let reader: ReturnType<typeof openHooksReadOnly>;
   try {
-    function hook(event: string, session: string, fields: object = {}) {
-      const out = execFileSync(binary, ["claude-code", event], { cwd: checkout, encoding: "utf8", env: hookEnv,
-        input: JSON.stringify({ cwd: checkout, session_id: session, hook_event_name: event,
-          transcript_path: join(transcripts, session + ".jsonl"), ...fields }), timeout: 5_000 });
-      return JSON.parse(out);
-    }
-    function shell(session: string, command: string, stdout: string, id: string) {
-      return hook("PostToolUse", session, { tool_name: "Bash", tool_use_id: id,
-        tool_input: { command }, tool_response: { stdout, stderr: "", interrupted: false, isImage: false } });
-    }
     const gate = join(home, "ledger-off.shell-trim");
     const stopped = () => {
       try { return JSON.parse(readFileSync(gate, "utf8")).off; }
@@ -272,6 +284,120 @@ it("reports priced losses and preserves gates and settings by default, with enfo
     await reviewManagedCompaction(writer, "enforce");
     expect(readFileSync(path, "utf8")).toBe(original);
     expect(hook("SessionStart", "after-window", { source: "startup" }).systemMessage).toContain("restored the previous compaction setting");
+  } finally {
+    reader?.close();
+    writer.close();
+  }
+}, 60_000);
+
+it("keeps the holdout's local capture and empty replies, and reports priced medians and spread", async () => {
+  const { checkout, home, transcripts, writer, hook, shell } = ledgerFixture();
+  const current = () => ledgerReport(checkout, { home });
+  const rule = "We always use pnpm in this repo, never npm or yarn. Add lodash 4.17.21 to the dependencies.";
+  const nextRule = rule.replaceAll("pnpm", "yarn").replace("or yarn", "or pnpm");
+  function prompt(id: string, text = rule) {
+    return hook("UserPromptSubmit", id, { prompt: text });
+  }
+  function selected(trial: string, holdout: boolean, amount: number) {
+    const ids: string[] = [];
+    for (let i = 0; ids.length < amount; i++) {
+      const id = "study-" + i;
+      const hash = createHash("sha256").update([trial, "claude-code", id].join("\0")).digest();
+      if ((hash.readBigUInt64BE() % 10n === 0n) === holdout) ids.push(id);
+    }
+    return ids;
+  }
+  const longOutput = readFileSync(resolve(import.meta.dirname, "../../../native/output/testdata/outputs/jest-pass.txt"), "utf8");
+  let reader: ReturnType<typeof openHooksReadOnly>;
+  try {
+    expect(current()).toMatchObject({ holdoutEnabled: false, sessions: [], holdouts: [] });
+    hook("SessionStart", "before-opt-in", { source: "startup" });
+    expect(prompt("before-opt-in").hookSpecificOutput?.additionalContext).toContain("pnpm");
+    setLedgerHoldout(writer, true);
+    const trial = writer.setting("global", "ledger.holdout")!;
+    setLedgerHoldout(writer, true);
+    expect(writer.setting("global", "ledger.holdout")).toBe(trial);
+    const controls = selected(trial, true, 6), active = selected(trial, false, 5);
+    function count(table: "journal" | "deliveries" | "outputs" | "ledger_context", id: string) {
+      return reader!.get<{ count: number }>(`SELECT count(*) AS count FROM ${table} WHERE session_id=?`, id)!.count;
+    }
+    async function complete(id: string, control: boolean, requests: number) {
+      hook("SessionStart", id, { source: "startup" });
+      expect(JSON.parse(readFileSync(join(home, "filter-pending", shortHash(checkout) + ".json"), "utf8")).session_id).toBe(id);
+      // The end hook can omit its path. The start's scoped metadata supplies it.
+      reader ??= openHooksReadOnly({ home });
+      expect(reader!.get("SELECT holdout FROM ledger_trials WHERE session_id=?", id)).toEqual({ holdout: Number(control) });
+      const first = prompt(id);
+      const firstAt = Date.now();
+      const tool = shell(id, "npm test", longOutput, "trim");
+      const compactAt = Date.now();
+      const second = prompt(id, nextRule);
+      const secondAt = Date.now();
+      const call = (at: number, request: string) => claudeCall(at, request, 1_000, 10, [], { model: "claude-sonnet-5-5",
+        usage: { input_tokens: 1_000, cache_read_input_tokens: 2_000, output_tokens: 10 } });
+      const body = call(firstAt, "first") +
+        record(compactAt, { type: "system", subtype: "compact_boundary", compactMetadata: { preTokens: 5_000 } }) +
+        call(secondAt, "second") + Array.from({ length: requests - 2 }, (_, i) => call(secondAt, "extra-" + i)).join("");
+      writeFileSync(join(transcripts, id + ".jsonl"), body);
+      hook("SessionEnd", id, { transcript_path: "" });
+      await settlePendingLedger(writer, Date.now() + 3000);
+      if (control) {
+        expect(first).toEqual({});
+        expect(second).toEqual({});
+        expect(tool).toEqual({});
+        expect(reader!.all<{ text: string }>("SELECT text FROM journal WHERE session_id=? AND kind='typed' ORDER BY id", id)
+          .map(row => row.text)).toEqual([rule, nextRule]);
+        for (const table of ["deliveries", "outputs", "ledger_context"] as const) expect(count(table, id)).toBe(0);
+        expect(reader!.get("SELECT mex_context_tokens FROM ledger_session_metrics WHERE session_id=?", id)).toEqual({ mex_context_tokens: 0 });
+      } else {
+        expect(first.hookSpecificOutput?.additionalContext).toContain("pnpm");
+        expect(second.hookSpecificOutput?.additionalContext).toContain("yarn");
+        expect(tool.hookSpecificOutput?.updatedToolOutput?.stdout.length).toBeLessThan(longOutput.length);
+        expect(count("journal", id)).toBeGreaterThan(0);
+        const context = reader!.all<{ tokens: number }>("SELECT tokens FROM ledger_context WHERE session_id=? AND at_start=0 ORDER BY ts", id);
+        expect(context).toHaveLength(2);
+        expect(context[1]!.tokens).toBeGreaterThan(0);
+        expect(reader!.get("SELECT mex_context_tokens FROM ledger_session_metrics WHERE session_id=?", id))
+          .toEqual({ mex_context_tokens: context[1]!.tokens });
+      }
+    }
+    await complete(controls[0]!, true, 2);
+    expect(current().holdouts[0]).toMatchObject({ active: { sessions: 0, requestsIqr: null, inputEquivalentIqr: null },
+      holdout: { sessions: 1 }, avoidedRequestCredit: null });
+    await complete(controls[1]!, true, 3);
+    expect(current().holdouts[0]).toMatchObject({ holdout: { requestsIqr: { p25: 2.25, p75: 2.75 } }, observedDifference: null });
+    for (const [i, id] of active.entries()) await complete(id, false, [2, 2, 2, 3, 4][i]!);
+    for (const [i, id] of controls.slice(2, 5).entries()) await complete(id, true, [3, 4, 5][i]!);
+    const report = current();
+    expect(report.sessions).toEqual([expect.objectContaining({
+      model: "claude-sonnet-5-5", sessions: 5, requests: 2, observedInputEquivalent: 4_600, finalInputTokens: 3_000,
+      mexContextTokens: expect.any(Number), hostCompactionNet: expect.any(Number), mexToolLeversNet: expect.any(Number),
+    })]);
+    expect(report.holdouts).toEqual([expect.objectContaining({
+      active: { sessions: 5, medianRequests: 2, medianInputEquivalent: 4_600,
+        requestsIqr: { p25: 2, p75: 3 }, inputEquivalentIqr: { p25: 4_600, p75: 6_900 } },
+      holdout: { sessions: 5, medianRequests: 3, medianInputEquivalent: 6_900,
+        requestsIqr: { p25: 3, p75: 4 }, inputEquivalentIqr: { p25: 6_900, p75: 9_200 } },
+      current: true, earlyEstimate: true, observedDifference: 2_300, avoidedRequestCredit: 2_300, fewerRequests: 1,
+    })]);
+    const output = formatLedgerReport(report);
+    expect(output).toContain("Estimated avoided-request credit +2,300");
+    expect(output).toContain("MEX-on median spend 4,600 (middle 50% 4,600–6,900) · median requests 2 (middle 50% 2–3)");
+    expect(output).toContain("Holdout median spend 6,900 (middle 50% 6,900–9,200) · median requests 3 (middle 50% 3–4)");
+    expect(output).toContain("These estimates are early and noisy until each group has about 20 sessions.");
+    expect(ledgerReport(transcripts, { home })).toMatchObject({ registered: false, sessions: [], holdouts: [] });
+
+    hook("SessionStart", controls[5]!, { source: "startup" });
+    expect(prompt(controls[5]!)).toEqual({});
+    expect(current().studyProgress).toEqual([
+      { agent: "claude-code", holdout: 0, assigned: 5, measured: 5 },
+      { agent: "claude-code", holdout: 1, assigned: 6, measured: 5 },
+    ]);
+    setLedgerHoldout(writer, false);
+    expect(prompt(controls[5]!).hookSpecificOutput?.additionalContext).toContain("pnpm");
+    setLedgerHoldout(writer, true);
+    expect(writer.setting("global", "ledger.holdout")).not.toBe(trial);
+    expect(current().holdouts[0]).toMatchObject({ current: false });
   } finally {
     reader?.close();
     writer.close();

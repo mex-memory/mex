@@ -12,7 +12,7 @@ const pricedSchemaVersion = 12;
 interface LeverGate { version: 1; off: boolean; rearmed_at: number }
 
 export type LedgerMode = "report-only" | "enforce";
-// Enable enforcement after the ledger also credits avoided calls.
+// Whole-session holdouts cannot assign avoided calls to an individual lever.
 export const LEDGER_MODE: LedgerMode = "report-only";
 
 export interface LedgerNet { at: string; started: string; net_millitokens: number }
