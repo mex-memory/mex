@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // The background process does MEX's slow work (re-parsing edited files, jobs).
@@ -52,7 +53,7 @@ func (h home) launcher() (launcher, bool) {
 
 // workWaiting checks small filesystem markers without opening either database.
 func workWaiting(h home, recordDirectory string) bool {
-	return exists(filepath.Join(h.mex, "jobs-pending")) || (recordDirectory != "" &&
+	return exists(filepath.Join(h.mex, "jobs-pending")) || weeklyLearningDue(h.mex) || (recordDirectory != "" &&
 		(exists(filepath.Join(recordDirectory, "index-pending")) || exists(filepath.Join(recordDirectory, "judge-pending")) ||
 			exists(filepath.Join(recordDirectory, "filter-pending")) || exists(filepath.Join(recordDirectory, "working-set-pending")) ||
 			exists(filepath.Join(recordDirectory, "native-pending")) || exists(filepath.Join(recordDirectory, "refresh-pending")) ||
@@ -62,6 +63,11 @@ func workWaiting(h home, recordDirectory string) bool {
 
 func watchingCompaction(recordDirectory string) bool {
 	return recordDirectory != "" && exists(filepath.Join(recordDirectory, "compaction-watch"))
+}
+
+func weeklyLearningDue(home string) bool {
+	marker, err := os.Lstat(filepath.Join(home, "learning-refresh-due"))
+	return err == nil && marker.Mode().IsRegular() && marker.Size() == 0 && !marker.ModTime().After(time.Now())
 }
 
 // startBackground starts MEX's Node side detached when work is waiting.

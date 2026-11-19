@@ -255,6 +255,7 @@ func TestConfigLabelsGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cases []struct {
+		ID         string `json:"id"`
 		SourceType string `json:"source_type"`
 		Ref        string `json:"ref"`
 		Evidence   string `json:"evidence"`
@@ -265,7 +266,7 @@ func TestConfigLabelsGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range cases {
-		e := &Entry{Created: "2026-11-15", Source: Source{Type: tc.SourceType, Ref: tc.Ref}, Evidence: tc.Evidence}
+		e := &Entry{ID: tc.ID, Created: "2026-11-15", Source: Source{Type: tc.SourceType, Ref: tc.Ref}, Evidence: tc.Evidence}
 		if got := Label(e, tc.Level); got != tc.Expected {
 			t.Fatalf("%s %s: got %q, want %q", tc.Level, tc.Ref, got, tc.Expected)
 		}

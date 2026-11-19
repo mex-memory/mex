@@ -806,6 +806,8 @@ describe("no unscoped scaffold writes", () => {
       "src/events.ts": "appends to events/decisions.jsonl",
       "src/knowledge/files.ts": "publishes and replaces bounded personal notes and hints through exclusive staging, revision checks and contained local publication under the MEX project-data home; never edits a repository file",
       "src/knowledge/personal-store.ts": "copies and swaps only the bounded personal notes directory under the contained MEX project-data home; recovers through a writer-locked receipt and removes only proved flat saved copies; never a repository file",
+      "src/learn-deeper/git.ts": "stages bounded, checked-in files from an approved commit in an owned directory under the MEX home for native checks, and removes that directory after the checks; never writes the checkout",
+      "src/learn-deeper/weekly-schedule.ts": "publishes a timestamp-only wake marker in the machine MEX home through an exclusive temporary file",
       "src/review/daily-receipt.ts": "claims one private UTC-day receipt per project in existing local record storage; prunes only bounded, proved regular receipts; never writes repository files or opens a record writer",
       "src/knowledge/native-write.ts": "writes and removes only MEX-generated agent rule files (marked generated, hash-checked against its manifest, never a person's file or CLAUDE.md), its .mex/native.json manifest, and its own block in git's exclude file",
       "src/knowledge/native-pending.ts": "removes only the hook's bounded rule-file rebuild requests under the record directory's native-pending folder after queueing them; never a repository file",

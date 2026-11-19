@@ -348,6 +348,8 @@ func saveCache(path string, c cacheFile) {
 // EstimateTokens prices authored prose. Code and tool output use tokens.Code.
 func EstimateTokens(s string) int { return tokens.Prose(s) }
 
+var learnedID = lazy(`^mx_deep[a-f0-9]{32}$`)
+
 // Label is shared by every delivery form, so content hashes agree on resume.
 func Label(e *Entry, level string) string {
 	switch level {
@@ -365,6 +367,9 @@ func Label(e *Entry, level string) string {
 	default:
 		if e.Source.Type == "config" {
 			return "[repo, from " + e.Source.Ref + "]"
+		}
+		if (e.Source.Type == "review" || e.Source.Type == "docs" || e.Source.Type == "person") && learnedID().MatchString(e.ID) {
+			return "[learned, not shared]"
 		}
 		if e.Source.Type != "person" {
 			return "[personal, from " + e.Evidence + "]"

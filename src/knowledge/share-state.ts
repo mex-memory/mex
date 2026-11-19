@@ -23,6 +23,8 @@ export interface ShareState {
   baseName?: string;
   /** Exact approved notes, so recovery cannot silently accept later edits. */
   entryHashes?: Record<string, string>;
+  /** The same approved source receipts must still accompany those entries. */
+  coverageHash?: string;
   /** Exact output at the written checkpoint; null means an owned removal. */
   files?: Record<string, string | null>;
 }

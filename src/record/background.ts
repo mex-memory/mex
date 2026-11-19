@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { VERSION } from "../version.js";
 import { openRecord, type RecordWriter } from "./index.js";
 import { recordLocation, type LocationOptions } from "./location.js";
@@ -17,6 +17,7 @@ import { queuePendingSetupRefresh, setupRefreshPending } from "../repo-start/ref
 import { compactReviewNeeded, reviewManagedCompaction } from "../compaction/control.js";
 import { compactOffersPending, publishCompactOffers } from "../compaction/notices.js";
 import { ledgerPending, settlePendingLedger } from "../ledger/background.js";
+import { queueDueWeekly, weeklyWakeDue } from "../learn-deeper/weekly-schedule.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
@@ -142,7 +143,7 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
       !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer) &&
       !workingSetPending(writer.location.directory) && !nativePending(writer.location.directory) && !setupRefreshPending(writer.location.directory) &&
       !ledgerPending(writer.location.directory) &&
-      !compactReviewNeeded(writer) && !compactOffersPending(writer.location.directory)) {
+      !compactReviewNeeded(writer) && !compactOffersPending(writer.location.directory) && !weeklyWakeDue(writer.location.home)) {
       clearPending(writer);
       return { started: false, reason: "no-work" };
     }
@@ -287,6 +288,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
         try { await settlePendingLedger(writer, clock()); } catch { /* retry unacknowledged settlements */ }
         try { await reviewManagedCompaction(writer); } catch { /* leave changed settings for explicit review */ }
         try { publishCompactOffers(writer); } catch { /* a later pass retries */ }
+        try { queueDueWeekly(writer, queueJob, clock()); } catch { /* a missed pass waits for the next one */ }
       }
       // Session starts that found their working set missing or behind.
       queueWorkingSetRequests(writer);
@@ -318,6 +320,7 @@ export function noteHubActivity(writer: RecordWriter, untilMs: number): void {
 export async function runPendingInForeground(writer: RecordWriter, budgetMs = 60_000, onBatch?: () => void): Promise<number> {
   const self = ownerId("foreground");
   recoverInterruptedJobs(writer, self);
+  queueDueWeekly(writer, queueJob);
   const end = Date.now() + budgetMs;
   let batches = 0;
   while (Date.now() < end) {
@@ -337,6 +340,9 @@ export async function runPendingInForeground(writer: RecordWriter, budgetMs = 60
 /** The marker check the CLI runs after a command: no database open unless the marker exists. */
 export function restartIfPending(options: EnsureOptions = {}): EnsureResult | undefined {
   if (insideBackground()) return undefined;
-  try { if (!existsSync(pendingMarker(options))) return undefined; } catch { return undefined; }
+  try {
+    const marker = pendingMarker(options);
+    if (!existsSync(marker) && !weeklyWakeDue(dirname(marker))) return undefined;
+  } catch { return undefined; }
   return ensureBackground(options);
 }

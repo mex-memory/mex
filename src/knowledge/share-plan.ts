@@ -6,6 +6,9 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { approvedCoverage, coverageKey, MANIFEST_PATH, noteKey, parseManifest, type SharedCoverage } from "../learn-deeper/coverage.js";
+import { repositoryFromRemote } from "../learn-deeper/source.js";
+import { openRecordReadOnly } from "../record/index.js";
 import { currentVerdicts } from "./check.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { KnowledgeError } from "./contract.js";
@@ -15,6 +18,7 @@ import { personalNotes } from "./native.js";
 import { byStrength } from "./native-render.js";
 import { isBroad, type Candidate } from "./native-select.js";
 import { shareProblems, type ShareProblem } from "./share-checks.js";
+import { claimHash } from "./state.js";
 
 const STRONG = new Set(["person", "docs", "ci", "review"]);
 
@@ -33,6 +37,7 @@ export interface SharePlan {
   /** Approve exactly this. */
   revision: string;
   entries: Candidate[];
+  coverage: SharedCoverage[];
 }
 
 // Scratch worktrees live under the MEX home, deeper than the user's checkout:
@@ -86,29 +91,44 @@ export function prepareShare(options: KnowledgeOptions, choose: { skip?: string[
   const base = defaultBase(root);
   const onBase = new Set((tryGit(root, "ls-tree", "-r", "--name-only", base.sha, "--", ".mex/learned") ?? "").split("\n").filter(Boolean)
     .map(path => /(mx_[a-z0-9]{6,64})\.md$/u.exec(path)?.[1]).filter((id): id is string => !!id));
+  const covered = parseManifest(tryGit(root, "show", `${base.sha}:${MANIFEST_PATH}`))?.learn_deeper ?? [];
+  const baseClaims = new Set(covered.map(record => record.claim));
+  const baseSources = new Set(covered.flatMap(record => record.sources.map(coverageKey)));
   const notes = personalNotes(project.location.home, project.projectId, project.retired, root).sort(byStrength);
   const verdicts = notes.some(c => c.entry.mex.checks.length) ? currentVerdicts(options, project) ?? new Map() : new Map();
   const skip = new Set(choose.skip ?? []);
-  const plan: SharePlan = { root, projectId: project.projectId, base: base.sha, baseName: base.name, branch: freeBranch(root, now), share: [], blocked: [], skipped: [], revision: "", entries: [] };
-  for (const c of notes) {
-    const { id } = c.entry.mex;
-    const verdict = verdicts.get(`personal/${id}`);
-    if (skip.has(id)) plan.skipped.push({ id, reason: "you left it out" });
-    else if (onBase.has(id)) plan.skipped.push({ id, reason: `already shared on ${base.name}` });
-    else if (!STRONG.has(c.entry.mex.evidence)) plan.skipped.push({ id, reason: "evidence too weak for the team" });
-    else if (verdict === "broken" || verdict === "changed") plan.skipped.push({ id, reason: `verdict is ${verdict}` });
-    else if (c.entry.mex.checks.length && verdict !== "held") plan.skipped.push({ id, reason: "current checks have not held" });
-    else {
-      const problems = shareProblems(c.entry);
-      if (problems.length) { plan.blocked.push(...problems); continue; }
-      plan.entries.push({ level: "team", entry: c.entry });
-      plan.share.push({ id, one_line: c.entry.mex.one_line, label: entryLabel(c.entry, "personal") });
+  const plan: SharePlan = { root, projectId: project.projectId, base: base.sha, baseName: base.name, branch: freeBranch(root, now), share: [], blocked: [], skipped: [], revision: "", entries: [], coverage: [] };
+  const repo = repositoryFromRemote(tryGit(root, "remote", "get-url", "origin") ?? "");
+  const reader = openRecordReadOnly(options);
+  try {
+    for (const c of notes) {
+      const { id } = c.entry.mex;
+      const verdict = verdicts.get(`personal/${id}`);
+      if (skip.has(id)) plan.skipped.push({ id, reason: "you left it out" });
+      else if (onBase.has(id)) plan.skipped.push({ id, reason: `already shared on ${base.name}` });
+      else if (baseClaims.has(claimHash(c.entry.text))) plan.skipped.push({ id, reason: `the rule is already recorded on ${base.name}` });
+      else if (!STRONG.has(c.entry.mex.evidence)) plan.skipped.push({ id, reason: "evidence too weak for the team" });
+      else if (verdict === "broken" || verdict === "changed") plan.skipped.push({ id, reason: `verdict is ${verdict}` });
+      else if (c.entry.mex.checks.length && verdict !== "held") plan.skipped.push({ id, reason: "current checks have not held" });
+      else {
+        const problems = shareProblems(c.entry);
+        if (problems.length) { plan.blocked.push(...problems); continue; }
+        const coverage = approvedCoverage(c.entry, serializeEntry(c.entry), reader?.setting(project.projectId, noteKey(id)), repo);
+        if (coverage.sources.length && coverage.sources.every(source => baseSources.has(coverageKey(source)))) {
+          plan.skipped.push({ id, reason: `its sources are already covered on ${base.name}` }); continue;
+        }
+        plan.coverage.push(coverage);
+        plan.entries.push({ level: "team", entry: c.entry });
+        plan.share.push({ id, one_line: c.entry.mex.one_line, label: entryLabel(c.entry, "personal") });
+      }
     }
-  }
+  } finally { reader?.close(); }
   // Broad entries first: those are the rules every session sees.
   plan.entries.sort((a, b) => Number(!a.entry.mex.scope.every(isBroad)) - Number(!b.entry.mex.scope.every(isBroad)));
   plan.share = plan.entries.map(e => plan.share.find(s => s.id === e.entry.mex.id)!);
-  const digest = createHash("sha256").update(JSON.stringify({ root, base: base.sha, branch: plan.branch, entries: plan.entries.map(e => serializeEntry(e.entry)) }));
+  plan.coverage = plan.entries.map(e => plan.coverage.find(item => item.id === e.entry.mex.id)!);
+  const digest = createHash("sha256").update(JSON.stringify({ root, base: base.sha, branch: plan.branch,
+    entries: plan.entries.map(e => serializeEntry(e.entry)), coverage: plan.coverage }));
   plan.revision = digest.digest("hex").slice(0, 16);
   return plan;
 }
