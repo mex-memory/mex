@@ -4,487 +4,215 @@
   <img src="docs/diagrams/readme/banner.svg" alt="MEX" width="1200">
 </h1>
 
-**Shared project memory for engineers and their coding agents.**
+**Tell your agents once. MEX keeps it true.**
 
-Memory lives as Markdown in `.mex/`, travels with Git, and stays linked to the code. Local Hub for people. CLI + skills for agents.
-
-```bash
-npx mex-agent@0.8.5 setup
-```
-
-<p align="center"><img src="docs/diagrams/readme/agent-reads-mex.gif" alt="An agent reading .mex/ project memory and answering from grounded Wiki context" width="720" /></p>
+Agents forget between sessions, and the notes you leave them go stale when the code moves. MEX delivers your notes to every new Claude Code and Codex session and holds back the ones the code has made false.
 
 **English** | [简体中文](README.zh-CN.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md)
 
-[![npm version](https://img.shields.io/npm/v/mex-agent.svg)](https://www.npmjs.com/package/mex-agent)
+[![npm next](https://img.shields.io/npm/v/mex-agent/next.svg?label=npm%40next)](https://www.npmjs.com/package/mex-agent?activeTab=versions)
+[![npm latest](https://img.shields.io/npm/v/mex-agent.svg?label=npm%40latest)](https://www.npmjs.com/package/mex-agent)
 [![GitHub stars](https://img.shields.io/github/stars/mex-memory/mex?style=flat)](https://github.com/mex-memory/mex/stargazers)
 [![Website](https://img.shields.io/badge/website-mexmemory.com-4f7cff)](https://mexmemory.com)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/FEdNsQ4Qt4)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mex-memory/mex/blob/v0.8.5/LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/mex-memory/mex/actions/workflows/ci.yml/badge.svg)](https://github.com/mex-memory/mex/actions/workflows/ci.yml)
-[![Node.js >=22.5](https://img.shields.io/badge/Node.js-%3E%3D22.5-339933?logo=node.js&logoColor=white)](https://github.com/mex-memory/mex/blob/v0.8.5/package.json)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](https://github.com/mex-memory/mex/blob/v0.8.5/package.json)
-[![Agent memory](https://img.shields.io/badge/agent%20memory-compatible-6f8cff)](#agent-memory-mode)
-[![MCP: source only](https://img.shields.io/badge/MCP-source%20only-6f8cff)](#mcp-server)
+[![Node.js >=22.5](https://img.shields.io/badge/Node.js-%3E%3D22.5-339933?logo=node.js&logoColor=white)](package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)](package.json)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-hooks-d97757)](#install)
+[![Codex](https://img.shields.io/badge/Codex-hooks-10a37f)](#install)
 
-[Works with](#works-with) · [Team memory](#what-your-team-remembers) · [A teammate-handoff example](#from-one-engineer-to-the-next) · [Project Hub](#project-hub) · [Quick start](#quick-start) · [How it works](#how-mex-works) · [Command map](#command-map)
+[Install](#install) · [What you get](#what-you-get) · [See it work](#see-it-work) · [How it works](#how-it-works) · [Commands](#everyday-commands) · [Teams](#working-with-a-team) · [FAQ](#faq) · [Upgrading from 0.8](#upgrading-from-08)
 
 </div>
 
-### Works with
-
-| Tool | What setup installs in 0.8 |
-| --- | --- |
-| **Claude Code** | Project anchor + skills (`/mex-inbox`, `/mex-relay`, `/mex-statechart`) |
-| **Codex** | Project anchor + skills (`$mex-inbox`, `$mex-relay`, `$mex-statechart`) |
-| **Cursor, Windsurf, GitHub Copilot, OpenCode** | Instruction anchor / template only — no official mex skill commands yet |
-
-> [!IMPORTANT]
-> **[MEX 0.8.5](RELEASE_NOTES.md) turns complicated agent explanations into checked state diagrams.** Ask your agent to explain a flow, bug, or recovery path with a statechart; read it in chat or explore it in Hub. This release also adds parallel, resumable setup and faster graph builds. Existing users should [sync their project skills after upgrading](#upgrade-and-compatibility).
-
----
-
-One engineer knows why a constraint exists. Another has the debugging history. A coding agent found an important edge case in a session nobody else will read. The next teammate has to piece it together again.
-
-**What one engineer and their agent learn should become context the next teammate can use.** MEX gives that knowledge a durable home in the repository: readable Markdown, code-linked explanations, reviewed knowledge contributions, and structured handoffs. People explore and review it in a local Hub; agents retrieve and help maintain it through project instructions and the CLI.
-
-## What your team remembers
-
-| What the team needs to retain | Where it lives in MEX |
-| --- | --- |
-| How the system works, and why | Wiki architecture, decisions, conventions, and patterns, with Code Graph grounding |
-| A decision or explanation worth sharing | An Inbox proposal that adds to or corrects existing Wiki knowledge |
-| Product requirements already captured | Existing Specs, requirements, constraints, and acceptance criteria remain supported |
-| Where another engineer should continue | Relays with progress, decisions, blockers, evidence, and next actions |
-| Earlier workflow context | Existing Workstream records remain readable |
-| Who is involved, and what MEX recorded | Members and Activity history |
-
-![An engineer and their agent contribute shared team memory through Git. A teammate and their agent reuse it in a separate checkout, with their own local indexes.](docs/diagrams/readme/git-sharing.svg)
-
-Canonical memory travels with ordinary Git commit, push, and pull. Each teammate keeps their own local indexes, drafts, identity selection, and Hub. No hosted MEX service, Docker, proxy, MEX account, or MEX-owned model key is required.
-
-Working solo? The next person using that memory can be you in a new session.
-
-## From one engineer to the next
-
-An example: Alex changes webhook retry handling, and Sam will continue the work. Both are active MEX Members in a repository their team has already set up.
-
-1. **Start with the team's context.** Alex asks Codex to inspect the existing architecture, relevant decisions, and code evidence before making the change and running tests.
-2. **Keep the useful discoveries.** With Alex's direction, Codex updates the relevant Wiki explanation and code references. For a conclusion the team should review, it prepares an Inbox knowledge proposal for explicit approval.
-3. **Prepare and publish the handoff.** Alex asks `$mex-relay` to draft a Relay for Sam: what changed, which tests ran, what remains, and where to look next. She reviews the draft and publication preview in Hub, explicitly publishes it, then reviews, commits, and pushes the code and canonical MEX files through Git.
-4. **Continue from shared context.** Sam pulls the relevant branch, updates his local indexes as needed, and opens Hub. He reviews and takes the Relay, then asks his coding agent to read its context and continue. His acknowledgement is another canonical change to commit and push.
-
-![An engineer prepares and publishes a Relay, shares it through Git, and the next engineer takes the durable handoff.](docs/diagrams/readme/relay.svg)
-
-The Relay carries the explanation and observed repository state—not the uncommitted code. Publishing writes files to Alex's checkout; it does not notify Sam or deliver anything until they share through Git. See [Relay boundaries](#relay-pass-the-context-baton) for lifecycle and concurrency details.
-
-## Project Hub
-
-The Hub is where people explore and review their team's memory. Open it to explore connected project knowledge and code, review a proposed knowledge change, find an eligible handoff, or see recorded team history.
-
-![Explore Wiki and Code, review Inbox and Specs, and coordinate Relays and Team members in the local Project Hub.](docs/diagrams/readme/hub.svg)
-
-- **Understand the project:** Home, Search, Context, and Code bring explanations and implementation evidence together. The Context graph shows knowledge entities and relationships; selecting one reveals its direct code groundings and details.
-- **Review and carry work forward:** Inbox proposes additions and corrections to project knowledge; Relays preserve what the next person needs. Existing Spec proposals and Workstream records remain readable.
-- **See who and what:** Team/Members supports attribution and local identity selection. Activity shows accepted MEX workflow events and recorded project notes—not every code edit or Git action.
-- **Keep context usable:** Health and Jobs expose index status and explicit maintenance.
-
-After setup, run `mex hub`. Each engineer's Hub reads their own checkout and listens on `127.0.0.1`; it is not a shared hosted dashboard. Git brings the team's canonical records into that checkout. Hub protects mutations with a server-side session and CSRF token. Playbook and Catch Up product workflows remain future work.
-
-## Quick start
-
-MEX requires **Node.js 22.5 or newer**, SQLite FTS5 support in that Node build, and a Git repository. See [runtime compatibility](COMPATIBILITY.md#sqlite-fts5). The normal npm flow works on macOS, Linux, Windows Command Prompt, PowerShell, and WSL.
-
-### Introduce MEX to your repository
-
-Run from the repository root:
-
-```bash
-npx mex-agent@0.8.5 setup
-```
-
-This opens a keyboard-driven terminal HUD with a cyan ASCII `mex` banner. Highlight a tool with the arrow keys and press Enter to select it and begin. Space optionally selects additional integrations; the Continue row starts with your checked choices or without an agent. Long steps show elapsed time and reported work, including graph file counts and subsystem progress. Setup can launch Claude Code, Codex, and the newly supported Cursor, GitHub Copilot and OpenCode CLIs in the background. Larger repositories get per-subsystem tasks, with the shared context task running alongside them; `MEX_SETUP_PARALLEL_RUNS` sets how many agents or one-paste tasks run at once (default 3, range 1–8). MEX checks the scaffold before continuing and preserves existing instructions. Rerunning continues saved work, including after an agent usage-limit pause.
-
-After validation, setup opens the Hub for completion. Review the exact setup-file diff and choose **Commit setup** to create a local commit. A manual Git checkpoint remains available. MEX preserves unrelated staged work and never pushes or pulls.
-
-The completion screen explains how to start a fresh agent session and verify that it reads your project memory. It also offers two optional steps: install the `mex` command globally at the version running setup, and leave an email (plus an optional name) for follow-up about MEX. Contact details are sent through the embedded Web3Forms service and stay out of the repository and usage telemetry. Only a submitted/skipped preference is remembered on this computer. Choose **Open Hub** when ready; the Hub's introductory tour starts there.
-
-Connected agents have their own installation, account, and network requirements. Keep the setup terminal running while using the finishing Hub; press `q` or Ctrl+C to stop it. Use `npx mex-agent@0.8.5 setup --no-open` to show the finishing link without opening a browser; add `--port <n>` to choose a loopback port. Press `d` in the HUD to read longer status or error details.
-
-Expected setup errors include specific recovery instructions, such as correcting malformed configuration or an ignore rule that hides the scaffold. An incomplete agent session returns to recovery choices; a successful agent exit alone does not mark setup complete.
-
-Prefer browser setup?
-
-```bash
-npx mex-agent@0.8.5 setup --browser
-```
-
-The browser runs the same setup engine with the background agents listed above and a one-paste fallback. If MEX cannot launch your agent, paste this instruction into it: **Run `mex setup next --start` first, then follow its instructions until setup is complete.** Each call hands out several task files when possible, applies ready work, and continues the saved plan; prompts name source folders the code graph skips. `--browser --no-open` prints its link without launching a browser. The existing `--cli` flag remains an alias for the default terminal flow. `--tool`, `--yes`, and `--dry-run` are terminal-only, so `--browser` cannot be combined with them or with `--cli`; setup stops with an error naming the conflicting option. `mex setup --help` summarizes both modes.
-
-For scripts, use `--yes` with repeatable `--tool <name>` flags (or `--tool none`). Piped input/output and CI also use plain output. These runs reuse saved choices, default to no integrations when none are saved, and never launch an agent or browser or wait for input. Exit codes are `0` for completed preparation or a successful dry run, `2` when population is still required, `1` for failure, and `130`/`143` for interruption. After a population checkpoint, rerun `mex setup` to continue. Once preparation is complete, `mex setup --browser` opens the commit and completion page.
-
-Rerunning `mex setup` on a checkout that is already set up reports its status — entities, facts and whether the graph is current — and does no work; changed code is reported as drift with a pointer to `mex sync`. A prepared but uncommitted checkout goes straight to the commit step, and anything else is named before setup finishes only that part. `mex setup --browser` shows the same status. Use `mex setup --force` to run the full flow; authored files are always preserved. Choosing a different mode or AI tools also runs the flow.
-
-`mex setup --dry-run` remains a terminal preview without changes. Once installed, bare `mex` opens the Hub for an established code project or terminal setup for an incomplete project. `mex hub` explicitly opens the browser, while `mex tui` opens the terminal dashboard.
-
-![Three steps to a ready project: run setup, populate memory, then review and commit the checkpoint before opening Hub.](docs/diagrams/readme/setup.svg)
-
 > [!NOTE]
-> The full Hub opens when the current `.mex/config.json` is committed at `HEAD`. Its setup wizard can commit the reviewed setup files on your explicit request, preserving unrelated staged work. Repositories with unsupported Git hooks or content filters keep the manual checkpoint. MEX never pushes or pulls.
+> **This is MEX 0.9 beta**, a pre-release on npm's `next` tag. `npm i mex-agent` still installs 0.8.5.
+> The beta is a CLI for **Claude Code and Codex**. It has no Hub, MCP server or skills.
+> On 0.8? See the [0.8.5 README](https://github.com/mex-memory/mex/blob/v0.8.5/README.md) and [Upgrading from 0.8](#upgrading-from-08).
 
-Push the reviewed setup commit through your team's normal Git workflow so teammates receive the same project memory and selected agent instructions. In Hub's Team/Members page, add the people who will participate and choose your local identity. Review and apply those actions explicitly; commit and push new Member records too. Your current-member selection stays local.
+<!-- VISUAL:V2 -->
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/diagrams/readme/first-run-novu-light.gif">
+  <img src="docs/diagrams/readme/first-run-novu.gif" alt="First run of mex on a clone of Novu: hooks installed, test and build commands found, an out-of-date rule-file line flagged, then a note saved with mex note" width="720">
+</picture>
 
-### Join a repository already using MEX 0.8
+## Install
 
-Clone or pull the team's repository and branch through Git. For a completed, committed 0.8 setup, build the derived indexes in your own checkout and open Hub:
+Needs Node 22.5 or later (with `node:sqlite`) on Windows, macOS or Linux, plus Claude Code or Codex.
 
-```bash
-npx mex-agent@0.8.5 graph rebuild
-npx mex-agent@0.8.5 wiki rebuild-index
-npx mex-agent@0.8.5 hub
+```sh
+npm i -g mex-agent@next
+cd your-repo
+mex
 ```
 
-Reuse the shared project memory; do not regenerate it just to join. In Team/Members, check the effective identity and, if needed, choose your existing Member record as a local override. If you do not have a record yet, explicitly create one through the reviewed workflow and share its canonical files. Members are attribution, not a sign-in or permission system.
+Undo: `mex off` (this repo) · `mex uninstall` (everything, keeps notes)
 
-The committed instruction files and skill directories are reusable by the agents they target. Install the agent separately and start a new session in the repository. If your chosen integration was not included in the shared setup, coordinate adding it with the team; see [agent integrations](#agent-workflows). After later pulls or branch changes, inspect Graph/Wiki health and run the indicated explicit maintenance—reads do not silently update indexes.
+`mex` installs MEX's hooks in your Claude Code and Codex user settings, reads the repo, and shows what your agents get from now on. The first screen makes no model calls and adds nothing to git.
 
-Older or incomplete setups should follow [upgrade and compatibility](#upgrade-and-compatibility) first. Keep CLI versions aligned before exchanging new Relays.
+**Codex:** review and trust MEX's hooks once: `/hooks` in the Codex CLI, or **Review hooks** beside the message box in the Codex app. Until then Codex skips them, and MEX does nothing there.
 
-<details>
-<summary><strong>Prefer a global installation?</strong></summary>
+Then tell your agents something they keep getting wrong:
 
-```bash
-npm install -g mex-agent@0.8.5
-mex setup
+```sh
+mex note "<something your agents keep getting wrong here, and why>"
+# for example:
+mex note "Dates are stored in UTC because the reports job compares them across regions"
 ```
 
-The npm package is named `mex-agent`; the installed command is `mex`. Complete the review and commit checkpoint above before running `mex hub`.
+Start a new Claude Code or Codex session and ask about it.
 
-The Hub completion page, also opened after interactive terminal setup, offers an optional global installation pinned to the running MEX version. If it fails, setup remains complete and you can retry the command above. Open a new terminal afterward and run `mex --version`.
+Install globally. MEX won't install hooks from a one-off `npx` run, because npm clears that cache.
 
-</details>
+## What you get
 
-<a id="agent-memory-mode"></a>
-<details>
-<summary><strong>Using MEX for a persistent operational agent?</strong></summary>
+- **Tell it once.** `mex note` saves a fact, rule or decision in your words. It reaches every new Claude Code and Codex session, through the session start and each agent's own rule files.
+- **Never fed stale.** Each note carries checks against the code. When the code makes a note false, MEX holds it back. When the evidence behind it changes, the agent gets a pointer to the current code instead of the old claim.
+- **The right moment.** A folder's pitfall arrives when the agent first reads a file there, once. A rule you state in passing ("we always use pnpm here") is repeated to the agent for that turn. Your repo's test and build commands reach the agent without you writing them down.
+- **Yours to control.** `mex what` shows what MEX gave or held back this session. `mex off` stops it in a repo. `mex uninstall` restores your settings exactly and keeps your notes.
 
-```bash
-npx mex-agent@0.8.5 setup --mode agent-memory
-```
+## See it work
 
-This separate template applies MEX's routing and maintenance model to homelab, infrastructure, and long-running agent workspaces. It adds a `HEARTBEAT.md` contract and cleanup conventions; the Code Graph, Wiki, and team-Hub flow described in this README is the default `code-repo` mode.
+<!-- VISUAL:V3 -->
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/diagrams/readme/claude-session-light.gif">
+  <img src="docs/diagrams/readme/claude-session.gif" alt="Claude Code session in a small demo repo: mex note saves that the dev server runs on port 3000, set by PORT in src/config.ts, and Claude answers 3000. A commit moves the port to 4000. In a new session MEX says the note no longer matches the code and holds it back, Claude answers 4000 and calls the 3000 line out of date, and mex check lists the note as withheld" width="720">
+</picture>
 
-</details>
+A note said the dev server runs on port 3000, and Claude answered 3000. Then a commit changed it to 4000. In the next session MEX said the note no longer matched the code and held it back. Claude answered 4000 and called the old 3000 line out of date. Codex, asked the same question in a live run on 17 Nov 2026, answered "unknown" instead of repeating 3000. *(Summary: [release plan](docs/design/0.9.0-release-plan.md).)*
 
-Examples use `mex` for readability. Install it globally as above or replace it with `npx mex-agent@0.8.5`.
+## How it works
 
-## How MEX works
+<!-- VISUAL:V4 -->
+<p align="center"><img src="docs/diagrams/readme/how-it-works.png" alt="You tell MEX a note once, the code changes, and the next Claude Code or Codex session gets only the notes that still hold. Teams share notes through a reviewed git branch." width="1000"></p>
 
-The team's memory is shared; the machinery that retrieves it stays local. MEX separates **canonical repository files** from **rebuildable indexes** so each engineer and agent can work against their own checkout.
+- **Your notes stay on your machine.** Each one is checked against the code, and a note the code has made false is held back.
+- **Each new session gets the notes that still hold,** through Claude Code's and Codex's own hooks and rule files. If MEX fails, your session carries on untouched.
+- **MEX never edits your `CLAUDE.md` or `AGENTS.md`.** Its own rule files are git-ignored until you share (see the [FAQ](#faq)).
 
-![Repository source and Markdown feed the local MEX engine. Agents access it through the CLI; people use the Project Hub.](docs/diagrams/readme/architecture.svg)
+## Everyday commands
 
-### Canonical Markdown, local indexes
-
-Canonical knowledge is structured Markdown with metadata, relations, sources, provenance, and code groundings; accepted Wiki writes append audit records. The Code Graph and Wiki search index are rebuildable local SQLite views, not shared sources of truth.
-
-In 0.8.1, ordinary Wiki creation and synthesis capture the operation's recorded actor, time, and session as creation provenance while preserving any supplied original attribution. Migration leaves unknown, untyped `context/*.md` files untouched; declare the file's type with a root `type` key in its frontmatter (for example `type: component`) before migrating it, instead of relying on an architecture default. `mex check` and `mex wiki validate` report knowledge files that are not yet in the Wiki.
-
-| Commit and push to share | Keep local or ephemeral; never commit |
+| Command | What it does |
 | --- | --- |
-| `.mex/config.json`, `.mex/.gitignore` | `.mex/graph.db*` |
-| `.mex/AGENTS.md`, `.mex/ROUTER.md`, `.mex/SETUP.md`, `.mex/SYNC.md` | `.mex/wiki.db*` |
-| `.mex/context/**`, `.mex/patterns/**`, `.mex/specs/**`, `.mex/topics/**` | `.mex/local/**`: drafts, current-member selection, jobs, cursors, recovery state, signing key |
-| `.mex/team/members/**`, `.mex/workstreams/**`, `.mex/inbox/**`, `.mex/relays/**` | Process-memory Hub session registry and browser-held session/CSRF state |
-| `.mex/events/activity/**`, `.mex/events/operations.jsonl`, `.mex/events/decisions.jsonl` | — |
-| Setup-selected agent instruction files and `.agents/skills/mex-*` or `.claude/skills/mex-*` | — |
+| `mex note "<text>"` | Save a note in your words. Checked against the code when saved. |
+| `mex recall <words>` | Find a note, with no model call. |
+| `mex brief` | Preview what a new session will receive. |
+| `mex what` | What MEX gave or held back in this session. |
+| `mex check` | Check which notes still hold. Read-only, no AI. |
+| `mex check --diff <base>` | The same for a branch, for pre-push or CI. Stores nothing. |
+| `mex edit` · `mex wrong` · `mex forget` | Correct a note, retire a wrong one (keeping the reason), or drop it. |
+| `mex share` | Preview sharing your notes and rule files on a new git branch. |
+| `mex handoff "<line>"` | Leave a handoff for the next person on this branch. |
+| `mex doctor` | What MEX is doing here, and a fix for each problem it recorded. |
+| `mex off` · `mex on` | Turn MEX off or on in this repo (`--all` for every repo, `--for 2h` to pause). |
+| `mex uninstall --dry-run` | List every change MEX made. Without `--dry-run` it restores them and keeps your notes (`--purge` also deletes them). |
 
-Git carries the meaning; setup or explicit maintenance commands rebuild the indexes against each checkout's own branch and working tree. Code remains authoritative, and grounding drift flags code-linked explanations that need review.
+Run `mex --help` for the full list.
 
-## Wiki, Code Graph, and grounding
+### When your agent offers to save a note
 
-Shared memory needs both the team's explanation and evidence from the implementation. MEX combines two complementary views of a repository:
+Each session asks the agent to keep lasting facts, rules or decisions you state, with `mex note`. Your agent will ask you to approve that command like any other. MEX doesn't pre-approve it. Notes the agent saves are labelled `[Claude Code noted, …]` or `[Codex noted, …]` until you `mex edit` them. To save your own words directly, type `mex note: …` in the session.
 
-- The **Wiki** explains architecture, conventions, decisions, patterns, topics, and Specs in language people can review.
-- The **Code Graph** uses bundled Tree-sitter grammars to map symbols and relationships from the implementation into a local SQLite index for precise, bounded retrieval.
+## Working with a team
 
-Inspect or explicitly maintain them:
+Notes are personal until you share them. Sharing is a git branch you review like code:
 
-```bash
-mex graph status
-mex graph refresh       # Republish an existing compatible store
-mex graph rebuild       # Full replacement when status requires it
-mex wiki rebuild-index
-mex wiki query "authentication"
+```sh
+mex share                               # preview: a new branch with your notes and rule files
+mex share --apply --expect <rev>        # make the branch you previewed
+mex share --apply --expect <rev> --pr   # also push it and open a pull request
 ```
 
-Ask the Graph for a task-sized evidence set or an exact structural relationship:
+Your current branch is untouched, and nothing is pushed without `--pr`. Each shared note is one Markdown file in the PR:
 
-```bash
-mex graph scope "trace the authentication flow"
-mex graph query where-defined authenticate
-mex graph query who-calls requireSession
-mex graph get <node-id>
-mex impact requireSession
+```markdown
+<!-- .mex/learned/mx_f5a7ede674674894feeb10b3.md -->
+---
+mex:
+  id: mx_f5a7ede674674894feeb10b3
+  kind: rule
+  scope:
+    - "**"
+  source:
+    type: person
+    ref: mex note 2026-11-18
+    quote: apps/api tests use mocha, not jest, despite the root jest.config.js
+  evidence: person
+  one_line: apps/api tests use mocha, not jest, despite the root jest.config.js
+  checks: []
+  status: active
+  created: 2026-11-18
+---
+apps/api tests use mocha, not jest, despite the root jest.config.js
 ```
 
-MEX indexes TypeScript/TSX, JavaScript/JSX, Python, and Rust, with partial C# support. Module variants such as `.mts`, `.cts`, `.mjs`, and `.cjs` have partial coverage. Bounded framework resolvers cover Express, Next.js App Router, FastAPI, Flask, and NestJS; see the [support matrix](docs/code-graph-support.md) for their limits. CLI Graph reads can return bounded, clearly labelled degraded evidence when configuration drifts, parsing is incomplete, or changed files must be excluded. Incompatible engines still refuse reads, and Hub Code keeps strict freshness checks. `scope` can also return bounded live-text evidence for stale or unindexed files, marked `text-only`. `who-calls`, `what-calls` and `impact` give each call's line, list production code first, and count test-file results instead of listing them while other results exist; add `--include-tests` to list them.
+A note with checks also lists what it was checked against, with file hashes. The test and build commands MEX found at setup are shared the same way, one file each. The same PR carries the generated rule files: `.claude/rules/mex.md`, a `.claude/rules/mex-area-*.md` for a folder that already has its own `AGENTS.md`, and a new `AGENTS.md` in each other folder that gets commands. It also carries `.mex/config.json`, `.mex/sources.json` and `.mex/native.json`. After it merges, a teammate's Claude Code or Codex session gets the team notes. Each machine keeps its own databases.
 
-Hub Graph construction runs in a disposable process so compiler work can release its memory when the job exits. Refresh reuses unchanged extractions and rewrites changed rows, while still resolving the whole corpus; broad compiler or configuration changes fall back to full extraction. Process isolation improves responsiveness and releases compiler state after the job, but does not guarantee lower combined peak memory.
+`mex handoff` leaves the next person on a branch:
+- the branch;
+- uncommitted file names;
+- your last ask;
+- the last failing command;
+- one line from you.
 
-### Grounding and drift
+It passes a secret scan and is written to `.mex/handoffs/`. You commit it, and MEX never pushes. The next session on that branch gets it once.
 
-A Wiki claim can point to a deterministic graph node. MEX stores the node ID and identity fingerprint; new MEX-written groundings also carry a body hash, while compatible legacy groundings may fall back to coarser fingerprint comparison. Together these signals distinguish intact, changed, moved, missing, ambiguous, and unverified references.
+## What we tested
 
-![A Wiki claim is grounded to a code symbol. Code changes can flag the claim for review.](docs/diagrams/readme/grounding.svg)
+Live runs on Windows 11, 17 Nov 2026, with Claude Code 2.1.326 and Codex 0.165. Each was a single run on the sample named. These aren't general claims.
 
-Drift is a review signal. It does **not** prove that prose is false, that a code change is wrong, or that a model actually reasoned from retrieved context. A successful agent session no longer accepts a new baseline automatically: replacing an existing baseline requires explicit review of the selected grounding.
+- **Tell it once:** 6 notes saved with `mex note`, then a new session not allowed to use tools. Claude Code answered 6 of 6 from them, and so did Codex. With MEX off, Claude answered "unknown" to 5 of the 6.
+- **Across agents:** Claude Code (Sonnet) was told "we always use pnpm in this repo" in passing. It saved the rule with `mex note`, and a new Codex session then answered "pnpm" without tools.
 
-<a id="agent-workflows"></a>
+## Privacy, telemetry and cost
 
-## Agents help maintain the team's memory
+- **Your notes stay on your machine** until you share them through a reviewed git branch. MEX has no hosted service and needs no MEX account or API key.
+- **Telemetry is on by default.** MEX sends anonymous usage counts: never code, file paths, prompts or repo names. Turn it off with `mex telemetry off` or `DO_NOT_TRACK=1`, and see what's sent with `mex telemetry inspect`. Details: [TELEMETRY.md](TELEMETRY.md).
+- **Cost:** `mex` and the first screen are $0. Some background work, like re-checking notes, uses your agent's smallest model on your own plan, within a cap MEX enforces. `mex doctor` shows this week's use. Learning from what you type is **off** until you run `mex config set learning.statements on`.
 
-Agents are both readers and contributors: they can retrieve the team's existing context, help capture discoveries from real work, and prepare knowledge proposals or handoffs for a person to review. They do not independently decide what should be published or shared.
+## FAQ
 
-Setup installs small host-agent instructions that point to `.mex/AGENTS.md` for policy and `.mex/ROUTER.md` for task-relevant context. Agents can query Wiki and Graph evidence, provided the host follows those instructions.
+**Does this replace CLAUDE.md or AGENTS.md?**
+No. MEX reads your rule files and flags lines that look out of date, but it never edits them, and it never creates a `CLAUDE.md` or `CLAUDE.local.md`. It writes its own files beside yours: `AGENTS.md` only in folders that have none, and `.claude/rules/mex-*.md` for Claude Code.
 
-![An agent follows project instructions and the Router to retrieve context and code evidence relevant to the task.](docs/diagrams/readme/context-routing.svg)
+**What does MEX write in my repo?**
+- **Its generated rule files**, as above. Git ignores them through a MEX block in `.git/info/exclude`.
+- **Local files under `.mex/`**, also ignored.
 
-| Integration | Setup behavior | Explicit skill commands |
-| --- | --- | --- |
-| **Claude Code** | Installs or updates the project anchor and skills under `.claude/skills/` | `/mex-inbox`, `/mex-relay`, `/mex-statechart` |
-| **Codex** | Installs or updates the project anchor and skills under `.agents/skills/` | `$mex-inbox`, `$mex-relay`, `$mex-statechart` |
-| **Cursor, Windsurf, GitHub Copilot, OpenCode** | Installs the appropriate instruction anchor/template | No official MEX skill command in 0.8 |
+Nothing is tracked until you run `mex share`, which commits `.mex/learned/*.md`, the generated rule files and `.mex/config.json`, `sources.json` and `native.json` on a new branch. `mex handoff` writes `.mex/handoffs/` for you to commit. Your notes and MEX's databases live in MEX's home folder, outside the repo.
 
-For an existing setup missing your Claude Code or Codex assets, preview and sync that integration explicitly:
+**Where did the Hub, the Wiki and MCP go?**
+They aren't in the beta. A rebuilt Hub is planned for 0.9.0, and the beta has no MCP server. MEX 0.8.5 is still on npm's `latest` tag with its [README](https://github.com/mex-memory/mex/blob/v0.8.5/README.md). In a 0.8 repo, `mex hub` still opens your 0.8 pages.
 
-```bash
-mex skills sync --dry-run --tool codex
-mex skills sync --tool codex
+## Known limits
+
+- The session-start brief holds your notes up to about 1,000 characters, so a handful of short ones. The rest reach the agent through MEX's rule files.
+- A note scoped to some paths is corrected at its next delivery, not at session start.
+- Agents keep what you **state**. Things an agent works out on its own aren't saved yet. Smaller Claude models may save a rule to Claude's own memory instead.
+
+## What's coming in 0.9.0
+
+This beta is the first part of 0.9.0. The full release adds:
+
+- **Learning from your history:** notes drawn from pull requests, reviews, CI and commit history, not only from what you state.
+- **Deeper checks:** notes checked against what the code means, starting with TypeScript, so more stale notes get caught.
+- **The Hub:** a local UI for your notes and your team's.
+- **More agents:** Cursor and others, beyond Claude Code and Codex.
+
+## Upgrading from 0.8
+
+```sh
+npm i -g mex-agent@next
+cd your-0.8-repo
+mex upgrade          # preview only
 ```
 
-Use `--tool claude` for Claude Code. Review the resulting instruction and skill files, commit and push them if the team should share the integration, and start a new agent session.
+The preview lists what becomes notes and what stays as it is. Apply only the exact revision it prints: applying commits to a new local branch and pushes nothing. Add `--pr` only if you want it pushed with a pull request. A section too long for one note (over 8,192 characters) stays in the repo as a file, and the preview says so; save what still matters with `mex note`. Your 0.8 pages still open with `mex hub` while `.mex/ROUTER.md` exists, and `mex doctor --legacy` runs the 0.8 diagnostic. See [COMPATIBILITY.md](COMPATIBILITY.md).
 
-Instructions may select Inbox or Relay from clear natural-language intent, but skill activation never approves a canonical write. When MEX context materially helps, the agent mentions MEX and the relevant finding naturally, tying it to what it helped understand, decide, or verify, without a standard footer.
+## More
 
-With the 0.8.1 Inbox update, “use MEX Inbox to capture what we decided” produces a contribution to existing project knowledge. The agent checks existing records, then drafts one addition or correction. Architecture, components, conventions, decisions, patterns, and guides are supported alongside existing Spec proposals. A local draft stays in the checkout; publishing writes a Markdown proposal for review; approval updates canonical knowledge and retains the proposal as history. Git shares those files with teammates.
+- [Release notes](RELEASE_NOTES.md) · [Changelog](CHANGELOG.md) · [Compatibility](COMPATIBILITY.md) · [Security](SECURITY.md)
+- [Discord](https://discord.gg/FEdNsQ4Qt4) · [mexmemory.com](https://mexmemory.com) · [info@mexmemory.com](mailto:info@mexmemory.com)
 
-Ordinary GROW, Wiki, and context upkeep remains available without Inbox. Inbox is the explicit contribution path, not another knowledge category.
-
-### Standalone skill installation
-
-For an existing MEX project, you can manage the official Inbox, Relay, and Statechart skills with [skills.sh](https://skills.sh) instead of MEX's skill installer:
-
-```bash
-npx skills add mex-memory/mex
-```
-
-This installs agent skills only; it does not install the `mex` CLI or initialize project memory. The skills still need an available MEX CLI and a configured MEX project.
-
-Choose one installer for each agent integration. If `mex setup` or `mex skills sync` already manages its skills, keep using `mex skills sync`; do not run `skills add` over them. The external installer replaces MEX's managed directories, causing later setup or sync operations to report ownership or path conflicts.
-
-<a id="mcp-server"></a>
-<details>
-<summary><strong>MCP server — source only</strong></summary>
-
-The repository includes an [MCP workspace](https://github.com/mex-memory/mex/tree/v0.8.5/packages/mex-mcp) for local development. It is not published with MEX 0.8; the released agent interface is the `mex-agent` CLI and its project instructions and skills.
-
-</details>
-
-### Human approval boundaries
-
-| An agent can prepare | A person deliberately controls |
-| --- | --- |
-| Search and retrieve Wiki or Graph evidence | Whether retrieved evidence is sufficient |
-| Create a checkout-local Inbox draft | Publishing the proposal for repository review |
-| Preview a bounded knowledge addition or correction | Approving or rejecting the proposed canonical change |
-| Create a checkout-local Relay draft | Publishing, taking, and closing a handoff |
-| Suggest context and grounding updates | Reviewing and committing working-tree changes |
-
-Team workflows use signed previews to bind reviewed inputs and detect stale or altered plans; Wiki authoring uses a plan/`--apply` boundary. These protect mutation integrity—not authentication, OS isolation, repository permissions, or proof that a human issued the command.
-
-## Team workflows
-
-These workflows help a team decide what becomes durable knowledge and preserve enough context for someone else to continue. They sit alongside your existing code-review and issue-tracking tools.
-
-| Feature | What it is | Sharing boundary |
-| --- | --- | --- |
-| **Members** | Stable contributor records plus a checkout-local “current member” for attribution | Member records use Git; current selection stays local |
-| **Workstreams** | Durable context around an area of work and its state | Canonical Markdown through Git |
-| **Specs** | Structured product requirements, constraints, and acceptance criteria | Canonical Markdown through Git |
-| **Inbox** | Proposals for one project-knowledge addition or correction; existing Spec proposals remain supported | Draft local; published proposal and decisions through Git |
-| **Relays** | Agent-prepared, human-published context handoffs | Draft local; published/taken/closed record through Git |
-| **Activity** | Accepted MEX workflow history and custom records | Canonical records through Git |
-
-Members provide attribution and provenance. They are **not** accounts, authentication, role-based access control, or repository permissions.
-
-### Inbox: contribute to project knowledge
-
-In 0.8.1, the Inbox skill captures one durable conclusion from a discussion as an addition or correction to architecture, components, conventions, decisions, patterns, or guides. It searches existing knowledge first, saves a local draft, and publishes a Markdown proposal for review. Approval changes the existing knowledge area and retains the proposal's source evidence. Existing `spec.create` and `spec.update` proposals remain supported.
-
-![The existing Spec proposal path illustrates local drafting, publication, and explicit approval; knowledge contributions follow the same review boundary.](docs/diagrams/readme/inbox.svg)
-
-Every canonical proposal transition still needs ordinary commit/push/pull to reach another checkout. Approval, rejection, and withdrawal are terminal; a stale proposal can be repaired back to pending. An author can use the exceptional self-approval flow, so Inbox is designed for explicit approval—not guaranteed peer review.
-
-Ordinary GROW upkeep can still update project knowledge directly. Inbox is the explicit contribution-and-review path; session notes remain in the event log.
-
-### Relay: pass the context baton
-
-A Relay packages what the next person needs: a summary, progress, blockers, next actions, useful evidence, and observed repository state. The 0.8.1 update adds **Open to team**, including active Members who join later, alongside named recipients. Save a local draft before selecting anyone, or use `mex relay draft save --from draft.json --json` for the shorter agent path. Publication requires an active sender; named handoffs also require one to 32 unique active recipients. The observed state includes branch, `HEAD`, a dirty-tree flag, and timestamp; it stores no diff or dirty file contents.
-
-A Relay is a durable handoff, not chat, a live notification, task assignment, or a Jira replacement.
-
-Within one observed repository state, the first successful eligible Member becomes the sole claimant. There is no cross-clone network lock, so two unsynchronized Members can claim separately and later meet a Git conflict. Only the active recorded sender or active recorded claimant can close the Relay; deactivating either principal can block closure. In 0.8.1, reactivation restores the original Member identity so older handoffs remain usable. There is no decline, reassign, unclaim, reopen, or administrative-override flow. Teammates exchanging new open-to-team Relays need a CLI that supports schema v4.
-
-### Project notes: logging and reuse
-
-`mex log` records decisions, notes, risks, and todos in `.mex/events/decisions.jsonl`. Future agents can retrieve relevant entries with `mex timeline`; people can read them as **Project notes** in Hub Activity. These records are historical context. Durable conclusions can be promoted into maintained knowledge explicitly, with their source retained.
-
-In 0.8.1, **Settings → Agent logging** controls when agents write optional notes in this checkout:
-
-- **Significant events** (default): decisions, discoveries, and risks worth remembering.
-- **Task checkpoints**: batch useful notes when a task or session ends.
-- **Only when asked**: write optional notes on an explicit user request.
-
-The preference guides agents; explicit user requests and mandatory workflow Activity remain independent. It lives under `.mex/local/` and is not shared through Git. Start a new agent session after syncing the updated instructions.
-
-```bash
-mex logging --json
-mex logging checkpoints
-mex timeline --query "retry" --file src/client.ts --type decision --limit 20 --json
-```
-
-Timeline retrieval reads the latest 8 MiB / 10,000 log lines, returns at most 200 entries, and caps output at 64 KiB. JSON reports truncation; a filtered empty result does not prove the full history has no match. Retrieval never changes the log or initializes project identity.
-
-## Command map
-
-Run `mex <command> --help` for the complete interface.
-
-| Goal | Commands |
-| --- | --- |
-| Set up or inspect compatibility | `mex setup`, `mex setup --browser`, `mex capabilities` |
-| Use persistent-agent mode | `mex setup --mode agent-memory` |
-| Open a local interface | `mex hub` |
-| Build and retrieve code context | `mex graph status`, `mex graph refresh`, `mex graph rebuild`, `mex graph scope <task>`, `mex graph query <relation> <target>`, `mex graph get <node-id>`, `mex impact <target>` |
-| Index and retrieve knowledge | `mex wiki rebuild-index`, `mex wiki query <text>`, `mex wiki show <id>`, `mex wiki related <id>`, `mex wiki backlinks <id>`, `mex wiki for-code <node-id>` |
-| Synthesize or maintain the Wiki | `mex wiki build`, `mex wiki prepare --stage <stage> [--cluster <name>]`, `mex wiki validate` (structure only); `mex wiki propose <response-file>`, `mex wiki apply <operation-file>` and `mex wiki reground <id>` preview by default and write only with `--apply` |
-| Review team memory | `mex member --help`, `mex activity --help` |
-| Prepare and receive handoffs | `mex relay draft --help`, `mex relay publish --help`, `mex relay acknowledge --help`, `mex relay close --help` |
-| Record and retrieve project notes | `mex log <message>` |
-| Check and maintain the project | `mex check`, `mex sync`, `mex doctor` |
-
-### Keeping knowledge true to the code
-
-Use these commands to check and maintain knowledge:
-
-- `mex check` runs every deterministic check, with no AI and no writes: scaffold files, paths and commands, and every code link in the scaffold and the Wiki. Each link gets one verdict, the same one `wiki query`, `wiki for-code` and the Hub show: `fresh`, `changed-nearby` (the change is away from everything the fact names), `moved`, `changed`, `missing` or `ambiguous`. Comment-only and formatting-only edits stay fresh. A finding on a Wiki entity names its id and title.
-- `mex sync` runs the knowledge judge now on the cheap model, inside the usual cap. It uses registered 0.9 repositories without requiring a legacy scaffold. `--dry-run` previews current eligible entries without queuing work or calling a model. Paused jobs stay paused; cap or preview waits remain visible in `mex jobs`. Fixes use the same session previews and Review routing as the background judge.
-- `mex sync --deep` retains the interactive agent session for legacy scaffolds and Wiki groundings. The agent compares each flagged fact with the recorded and current code, re-records it with `mex wiki reground <id> --apply` if still true, fixes and re-records it if changed, or leaves it flagged if unsure. Sync rebuilds the Wiki index and checks again. Add `--dry-run` to see its prompt, or `--warnings` to include warning-only files.
-- `mex wiki link-sections` previews missing connections from existing section entities to their enclosing document or section. Add `--apply` to record those `refines` relationships without changing facts or code groundings. It works on existing scaffolds without setup or an AI session. Semantic dependencies still need evidence. The Hub graph remains bounded to 100 entities and 500 relationships and keeps a limited number of linked parents visible; use List for the complete knowledge collection.
-- `mex wiki upgrade` previews a bounded review of existing broad code-linked entities for one fact per entity. `--apply` starts an interactive review using the same agent chooser as `mex sync --deep`; `--tool` optionally overrides it. Without an installed CLI, copy the preview prompt into your coding agent. Review requires a fresh code graph and refuses flagged candidate groundings until check/sync has reviewed them. It preserves existing ids as overviews and does not rerun setup. Opening Hub or updating MEX never rewrites project knowledge automatically.
-
-`mex wiki query` and `mex wiki for-code` are how agents find that knowledge; `--health changed` lists what check flags.
-
-Use `mex capabilities --json` for machine-readable capability discovery and `mex --help` for the concise CLI map.
-
-## Upgrade and compatibility
-
-When upgrading to 0.8.5, follow the [0.8.5 upgrade instructions](COMPATIBILITY.md#upgrading-to-085): run `mex skills sync --dry-run`, then `mex skills sync` in each existing MEX project to install `mex-statechart`, and start a fresh agent session. Upgrading the CLI alone does not refresh project skill copies.
-
-For a global installation, upgrade the CLI and refresh the selected Claude Code/Codex skill copies:
-
-```bash
-npm install -g mex-agent@0.8.5
-mex skills sync --dry-run
-mex skills sync
-```
-
-For an already completed MEX setup, this installs `mex-statechart` and refreshes the managed skills and agent guidance; setup does not need to run again just for the package upgrade. Review any reported conflicts with locally edited instructions, then start a new agent session.
-
-> [!WARNING]
-> **Upgrade everyone sharing the scaffold to 0.8.4 or newer before committing new or updated groundings.** Since 0.8.4, MEX writes compact `mh2:` fingerprints, which earlier versions—including 0.8.3—cannot read. Existing `mh:` fingerprints remain readable; upgrading alone neither rewrites files nor changes their grounding meaning.
-
-Graph schema v4 and Wiki index v5 are unchanged from 0.8.4. Run `mex graph refresh` after upgrading: the updated TypeScript extractor rebuilds the graph once, and some declaration IDs can change. Keep the existing graph so MEX can map old IDs, then use `mex check` and `mex sync` to review affected groundings. No Wiki schema migration is required from 0.8.4. If upgrading from 0.8.3 or earlier, also follow the [maintenance steps introduced in 0.8.4](COMPATIBILITY.md#upgrading-to-084), including `mex wiki rebuild-index`. Fingerprint conversion remains optional and explicit.
-
-**Keep your existing graph when upgrading from 0.8.2 or earlier.** The TypeScript identity changes introduced in 0.8.3 can change node IDs. Refresh before syncing so MEX can map the old IDs to their replacements:
-
-```bash
-mex graph refresh
-mex sync
-```
-
-Review ambiguous or missing groundings and commit the scaffold changes through Git. Rebuild the Wiki index with `mex wiki rebuild-index` if those changes made it stale. A fresh clone or a rebuild without the old graph relies on fingerprint reconciliation and may require manual re-grounding. Follow [the compatibility guide](COMPATIBILITY.md#upgrading-to-083) for damaged or incompatible stores; ordinary reads never repair them.
-
-Package and skill upgrades alone do not make an older or incomplete repository Hub-ready. For those repositories, evaluate setup with a dry run before applying it; setup preserves authored files and still requires review of its changes:
-
-```bash
-mex setup --dry-run
-mex setup
-git status --short
-mex capabilities --json
-```
-
-Review every generated change before committing. In particular, confirm that `.mex/graph.db*`, `.mex/wiki.db*`, and `.mex/local/` are ignored.
-
-Existing Markdown scaffolds remain valid, and Graph reads never migrate a store implicitly. Compatible schema-v2 and complete schema-v3 stores can upgrade through explicit repair; schema-v1, partial, ambiguous, malformed, or corrupt stores require rebuild. Follow the exact action from `mex graph status`. Do not add a broad `.mex/` ignore rule—it would hide the canonical memory your team is meant to share.
-
-> [!WARNING]
-> Upgrade teammates to **0.8.1 before sharing new open-to-team Relays**, which use schema v4. Existing v1–v3 Relays remain supported, and named handoffs continue to use v3. Node 20 users should remain on MEX 0.6.3 until they can move to a supported Node build.
-
-## Privacy and trust model
-
-MEX does not upload its canonical records, Graph, Wiki index, drafts, identity selection, or Hub sessions to a MEX service. It provides no automatic team transport: sharing happens through normal Git actions you perform. The Hub binds to loopback, and MEX's local retrieval layer requires no model credentials.
-
-MEX sends usage counts to help improve it. Hooks, jobs and the Hub count locally; the background process sends daily summaries with numbers in ranges. Telemetry is on by default, with this explanation before sending: **MEX sends anonymous usage counts to help improve it: never code, file paths, prompts or repo names. Turn off any time: `mex telemetry off` (or `DO_NOT_TRACK=1`).** Personal reports use a random installation UUID; CI reports are counted separately and never create one. Only explicitly shared projects can include a share-created random project ID. Existing opt-outs survive an upgrade.
-
-Check or disable telemetry with:
-
-```bash
-mex telemetry inspect
-mex telemetry status
-mex telemetry off
-```
-
-`mex telemetry on` enables it again; `disable` and `enable` remain aliases. `MEX_TELEMETRY=0` and `DO_NOT_TRACK=1` disable telemetry; `MEX_OFFLINE=1` also stops update fetching. See the [telemetry policy](TELEMETRY.md) for the event catalog, random-ID privacy boundary, inspection and delivery limits. Coding agents connected to MEX may have their own network and telemetry behavior, governed by those tools.
-
-## What MEX is not
-
-MEX 0.8 does **not** provide:
-
-- a cloud-hosted Hub or hosted knowledge sync;
-- live notifications, presence, or real-time chat;
-- Git staging or commits without explicit review, or any pushes or pulls;
-- authentication, repository authorization, or RBAC;
-- Jira-style task management;
-- a shared Code Graph or Wiki SQLite database;
-- automatic proof that a model used retrieved context correctly;
-- a claimed semantic or vector-search engine—Wiki search is full-text and Graph retrieval is lexical/structural;
-- general-purpose Wiki editing through the Hub;
-- a published MCP server or MCP package—the source workspace is not a 0.8 public product surface;
-- features that appear only in future plans or design documents.
-
-MEX keeps team memory in repository files and provides local retrieval and review workflows. Git and existing engineering tools handle distribution, access, and code review.
-
-## Explore further
-
-- Read the [MEX 0.8.5 release notes](RELEASE_NOTES.md).
-- Check the [runtime and compatibility guide](https://github.com/mex-memory/mex/blob/v0.8.5/COMPATIBILITY.md) and [security policy](https://github.com/mex-memory/mex/blob/v0.8.5/SECURITY.md).
-- Review the [Code Graph support matrix](https://github.com/mex-memory/mex/blob/v0.8.5/docs/code-graph-support.md).
-- See the [extractor model and supported relationships](https://github.com/mex-memory/mex/blob/v0.8.5/docs/extractors.md).
-- Read the [graph retrieval benchmark results](https://github.com/mex-memory/mex/blob/v0.8.5/evaluate/RESULTS.md), including the blind-graded comparison against an ordinary file-search baseline.
-- Inspect the CLI locally with `mex capabilities --json` and `mex --help`.
-- Join the [MEX community on Discord](https://discord.gg/FEdNsQ4Qt4) or visit [mexmemory.com](https://mexmemory.com).
-
-### Explain behavior with a state diagram
-
-Ask your agent to “explain this lifecycle using a state diagram,” or invoke
-`$mex-statechart` in Codex / `/mex-statechart` in Claude Code. The managed skill
-uses TLA+ and TLC, delivers Mermaid in supporting chats, and supplies a readable
-terminal fallback. Relevant MEX context is retained only when it improves a
-state, condition, rule or recovery explanation.
-
-Generation stays in scratch space. Optionally register a temporary preview and
-open **Diagrams** through the normal Hub flow. **Review Save** shows the exact
-snapshot files before adding them to `.mex/diagrams/`; sharing remains a separate
-Git action. A passing model check does not prove implementation correctness or
-current evidence freshness. See [compatibility and toolchain boundaries](COMPATIBILITY.md#state-diagrams-in-085).
+MIT licensed.

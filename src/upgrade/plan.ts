@@ -47,7 +47,7 @@ export function prepareUpgrade(options: KnowledgeOptions, now = new Date()): Upg
   const cleanup = planLegacyCleanup(snapshot), conversion = convertLegacy(snapshot, created);
   const plan: UpgradePlan = { root, projectId: project.projectId, home: project.location.home, head: git(root, "rev-parse", "HEAD"), base: base.sha, baseName: base.name,
     branch: branch(root, created), created, ready: snapshot.complete, present: snapshot.present, revision: "", sources: {},
-    tracked: [], local: [], personal: [], assets, issues: [...snapshot.diagnostics.map(d => ({ code: d.code, path: d.path, blocking: true })), ...cleanup.issues, ...conversion.issues, ...assets.issues],
+    tracked: [], local: [], personal: [], assets, issues: [...snapshot.diagnostics.map(d => ({ code: d.code, path: d.path, blocking: d.severity !== "info" })), ...cleanup.issues, ...conversion.issues, ...assets.issues],
     retained: [...snapshot.retained.map(s => s.path), ...conversion.preserved, ...snapshot.excluded], entries: [], diff: "" };
   for (const source of [...snapshot.documents, ...snapshot.retained, ...snapshot.config ? [snapshot.config] : [], ...snapshot.log ? [snapshot.log] : []]) plan.sources[source.path] = source.hash;
   const staged = new Set(git(root, "diff", "--cached", "--name-only", "--no-renames").split("\n"));

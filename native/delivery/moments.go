@@ -38,29 +38,32 @@ const (
 // toolView is one tool call reduced to what moments need, with the repo
 // resolved from the touched file (or the command's folder), never the shell's.
 type toolView struct {
-	name     contract.ToolName
-	path     string // absolute, forward slashes
-	rel      string // relative to the checkout, forward slashes
-	command  string
-	removed  string // bounded old edit text
-	added    string // text the call adds: edit new, write content, patch additions
-	created  bool
-	failed   bool
-	unknown  bool // the agent gave no exit status (Codex 0.165 shell output)
-	output   *contract.ToolOutput
-	project  string
-	checkout string
+	start, end int
+	name       contract.ToolName
+	path       string // absolute, forward slashes
+	rel        string // relative to the checkout, forward slashes
+	command    string
+	removed    string // bounded old edit text
+	added      string // text the call adds: edit new, write content, patch additions
+	created    bool
+	failed     bool
+	unknown    bool // the agent gave no exit status (Codex 0.165 shell output)
+	output     *contract.ToolOutput
+	project    string
+	checkout   string
 }
 
 type candidate struct {
-	item    *entries.Item
-	moment  string
-	tier    int
-	exempt  bool // exact matches: never held back by the budget
-	reserve bool // failure fixes and corrections use the reserved lane
-	rel     string
-	resend  bool // the ledger has it, but the agent's transcript no longer does
-	control bool // the same eligible moment suppressed by epoch dedupe
+	anchorPaths   []string
+	anchorRelease bool
+	item          *entries.Item
+	moment        string
+	tier          int
+	exempt        bool // exact matches: never held back by the budget
+	reserve       bool // failure fixes and corrections use the reserved lane
+	rel           string
+	resend        bool // the ledger has it, but the agent's transcript no longer does
+	control       bool // the same eligible moment suppressed by epoch dedupe
 }
 
 // Resolver finds the registered checkout for a path. isFile is false for a
@@ -115,7 +118,13 @@ func views(ev contract.Event, resolve Resolver) []toolView {
 	var out []toolView
 	for i := range tools {
 		t := tools[i]
-		base := toolView{name: t.Name, output: t.Output, project: ev.ProjectID, checkout: ev.Checkout}
+		base := toolView{name: t.Name, output: t.Output, project: ev.ProjectID, checkout: ev.Checkout, start: 1}
+		if t.Input.Offset != nil {
+			base.start = max(1, *t.Input.Offset)
+		}
+		if t.Input.Limit != nil && *t.Input.Limit > 0 {
+			base.end = base.start + *t.Input.Limit - 1
+		}
 		base.failed = ev.Kind == contract.PostToolFailure || (t.Output != nil && codexFailed(base))
 		base.unknown = !base.failed && exitUnknown(t.Output)
 		switch t.Name {
@@ -145,7 +154,14 @@ func views(ev contract.Event, resolve Resolver) []toolView {
 					if i >= 8 {
 						break
 					}
-					v := toolView{name: contract.ToolRead, path: slash(r.Path), project: ev.ProjectID, checkout: ev.Checkout}
+					v := toolView{name: contract.ToolRead, path: slash(r.Path), project: ev.ProjectID, checkout: ev.Checkout, start: max(1, r.Offset)}
+					if r.Limit > 0 {
+						v.end = v.start + r.Limit - 1
+					}
+					if r.Tail > 0 {
+						v.start = 1
+						v.end = 0
+					}
 					if len(reads) == 1 {
 						v.output = t.Output
 					}
@@ -342,7 +358,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 			}
 			switch e.Kind {
 			case "pitfall":
-				add(momentRead, scopeTier(it, v.rel), false, false)
+				add(momentRead, scopeTier(it, v.rel), true, false)
 			case "rule":
 				if ts := triggers(it, "anti"); len(ts) > 0 && readText != "" && containsAny(readText, ts) {
 					add(momentReadRisk, tierPattern, true, false)

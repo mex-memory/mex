@@ -7,6 +7,7 @@ import { findConfig, getScaffoldIdentity } from "./config.js";
 import { reportConsole, reportQuiet, reportJSON, reportVerbose } from "./reporter.js";
 import { registerRemovedCommands, removedCommandMessage } from "./removed-commands.js";
 import { VERSION } from "./version.js";
+import { PUBLIC_COMMAND_ORDER } from "./cli-tools.js";
 import { buildKnowledgeCommands } from "./knowledge/cli.js";
 import { buildUpgradeCommand } from "./upgrade/cli.js";
 import { unsupportedNodeMessage } from "./node-version.js";
@@ -117,7 +118,8 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "what" || commandName === "report"
     || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief" || commandName === "upgrade"
     || commandName === "skills" || commandName === "install" || commandName === "uninstall"
-    || commandName === "off" || commandName === "on" || commandName === "capture" || commandName === "handoff";
+    || commandName === "off" || commandName === "on" || commandName === "capture" || commandName === "handoff"
+    || commandName === "status" || commandName === "doctor";
 }
 
 async function runBrowserCommand(options: { port?: number; open: boolean; mode?: string; setup?: boolean }): Promise<void> {
@@ -176,7 +178,7 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   let family = actionCommand;
   while (family.parent && family.parent !== program) family = family.parent;
   // Uninstall must not recreate the launcher or restart pending jobs.
-  if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture"
+  if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture" || family.name() === "status" || family.name() === "doctor"
     || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
     || (["install", "sync"].includes(family.name()) && family.opts().dryRun)) return;
   // Keep the hook shim's launcher pointing at this CLI.
@@ -222,8 +224,8 @@ program
   .version(VERSION)
   .showHelpAfterError()
   // Kept for `mex hub`, which reads them as global options.
-  .option("--port <n>", "Bind a specific loopback port (with `mex hub`)", parsePortArg)
-  .option("--no-open", "Print the Hub link without opening a browser (with `mex hub`)")
+  .addOption(new Option("--port <n>", "Bind a specific loopback port (with `mex hub`)").argParser(parsePortArg).hideHelp())
+  .addOption(new Option("--no-open", "Print the Hub link without opening a browser (with `mex hub`)").hideHelp())
   .option("--folder", "Turn MEX on in a folder that isn't a git repo, without the question")
   .option("--no-wait", "Show the first screen and leave the file index and git history to the background")
   .action(async (options: { folder?: boolean; wait?: boolean }) => {
@@ -282,7 +284,7 @@ program.command("capture <state>")
 
 program
   .command("hub")
-  .description("Launch the local Project Hub")
+  .description("Show the 0.9 Hub notice; open the Hub in a 0.8 repo")
   .option("--port <n>", "Bind a specific loopback port", parsePortArg)
   .option("--no-open", "Do not open the browser automatically")
   .action(async (_opts: { port?: number; open: boolean }, command: Command) => {
@@ -298,7 +300,7 @@ program
   });
 
 program
-  .command("capabilities")
+  .command("capabilities", { hidden: true })
   .description("Inspect installed and currently available machine capabilities")
   .option("--json", "Emit the versioned machine-readable capability manifest")
   .action(async (options: { json?: boolean }) => {
@@ -328,12 +330,12 @@ for (const command of buildTeamIdentityActivityCommands({
   service: teamIdentityActivityService,
   io: processTeamCommandIo(),
 })) {
-  program.addCommand(command);
+  program.addCommand(command, { hidden: true });
 }
 program.addCommand(buildRelayCommand({
   service: teamRelayService,
   io: processTeamCommandIo(),
-}));
+}), { hidden: true });
 
 // ── Setup: an alias of bare `mex`; the 0.8 flows stay reachable until they are removed ──
 const LEGACY_SETUP_FLAGS = ["legacy", "cli", "mode", "dryRun", "tool", "yes", "force"] as const;
@@ -342,11 +344,11 @@ const setupCommand = program
   .description("Turn MEX on for this repo (the same as `mex`)")
   .addOption(new Option("--legacy", "Run the 0.8 terminal setup").hideHelp())
   .addOption(new Option("--cli", "0.8 terminal setup").hideHelp())
-  .addOption(new Option("--browser", "Run the 0.8 setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force", "legacy"]))
+  .addOption(new Option("--browser", "Run the 0.8 setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force", "legacy"]).hideHelp())
   .addOption(new Option("--mode <mode>", "0.8 setup: template mode, code-repo or agent-memory").hideHelp())
   .addOption(new Option("--dry-run", "0.8 setup: show what would happen without making changes").hideHelp())
-  .option("--port <n>", "With --browser: bind a specific loopback port", parsePortArg)
-  .option("--no-open", "With --browser: show the Hub link without opening a browser")
+  .addOption(new Option("--port <n>", "With --browser: bind a specific loopback port").argParser(parsePortArg).hideHelp())
+  .addOption(new Option("--no-open", "With --browser: show the Hub link without opening a browser").hideHelp())
   .addOption(new Option("--tool <tool>", "0.8 setup: preselect an AI tool").argParser((value: string, previous: string[] = []) => [...previous, value]).hideHelp())
   .addOption(new Option("--yes", "0.8 setup: never wait on a question").hideHelp())
   .addOption(new Option("--force", "0.8 setup: run the full flow").hideHelp())
@@ -355,7 +357,7 @@ const setupCommand = program
   .addHelpText(
     "after",
     "\n`mex setup` does what `mex` does: it turns MEX on for this repo and shows what it\n"
-      + "found. `mex setup --browser` runs the 0.8 setup in the local browser Hub.\n",
+      + "found. Next: mex note \"<fact>\" adds a note. Undo: mex off.\n",
   )
   .action(async (_opts, command: Command) => {
     const options = command.optsWithGlobals<Parameters<typeof runSetupCommand>[0] & { legacy?: boolean; cli?: boolean }>();
@@ -369,8 +371,8 @@ const setupCommand = program
 
 setupCommand
   .command("next")
-  .option("--start", "0.8 setup: start a new chat, settling earlier tasks")
-  .option("--retry <task>", "0.8 setup: hand an abandoned running task out again (use its printed task id)")
+  .addOption(new Option("--start", "0.8 setup: start a new chat, settling earlier tasks").hideHelp())
+  .addOption(new Option("--retry <task>", "0.8 setup: hand an abandoned running task out again (use its printed task id)").hideHelp())
   .description("For your agent: turn MEX on here, print what was found, and the question to put to you")
   .addHelpText(
     "after",
@@ -492,7 +494,7 @@ async function runLegacyCheck(opts: { json?: boolean; quiet?: boolean; fix?: boo
 
 // ── Code Graph ──
 const graphCommand = program
-  .command("graph")
+  .command("graph", { hidden: true })
   .description("Ensure a current code graph: reuse fresh, refresh changed, rebuild missing or unusable")
   .option("--force", "Force a full build (also available as mex graph rebuild)")
   .option("--json", "Output the build summary as JSON")
@@ -614,7 +616,7 @@ graphCommand
 // library function does not demonstrate it. It is a thin shell over
 // `wiki/query/for-code.ts`.
 const wikiCommand = program
-  .command("wiki")
+  .command("wiki", { hidden: true })
   .description("Knowledge-graph commands over the .mex wiki");
 
 /**
@@ -965,7 +967,7 @@ graphCommand
   });
 
 program
-  .command("impact <target>")
+  .command("impact <target>", { hidden: true })
   .description("Show transitive code and scaffold blast radius for a symbol, node id, file, or indexed file:line")
   .addOption(new Option("--direction <direction>", "proven call edges: callers (default), callees, or both").choices(["callers", "callees", "both"]))
   .option("--detail <level>", "minimal | standard | source", "minimal")
@@ -985,7 +987,7 @@ program.addCommand(buildUpgradeCommand({ afterUpgrade: showFirstRunNotice }));
 
 // ── File index ──
 const indexCommand = program
-  .command("index")
+  .command("index", { hidden: true })
   .description("Build or refresh this checkout's file index now (outlines, names and pattern counts per file)")
   .option("--full", "Read every file again instead of only the changed ones")
   .option("--workers <n>", "Worker threads (0 runs in this process)", (value) => Number(value))
@@ -1098,7 +1100,7 @@ jobsCommand
   });
 if (process.env.MEX_JOBS_DEMO === "1") {
   jobsCommand
-    .command("demo")
+    .command("demo", { hidden: true })
     .description("Queue a demo job for this folder (demos and tests only)")
     .option("--batches <n>", "Number of batches", (value) => Number(value))
     .option("--delay <ms>", "Delay per batch", (value) => Number(value))
@@ -1111,14 +1113,24 @@ if (process.env.MEX_JOBS_DEMO === "1") {
     });
 }
 
+program.command("status", { hidden: true })
+  .description("Show agents, notes, background work and model use")
+  .option("--json", "Print the same status as an object")
+  .action(async (options: { json?: boolean }) => {
+    const { runStatus } = await import("./status.js");
+    runStatus(options);
+  });
+
 program
   .command("doctor")
-  .description("Run a friendly scaffold health diagnostic")
-  .action(async () => {
+  .description("Show MEX status and fixes for recorded problems")
+  .option("--json", "Print status and problems as an object")
+  .option("--legacy", "Run the 0.8 scaffold diagnostic")
+  .action(async (options: { json?: boolean; legacy?: boolean }) => {
     try {
-      const config = loadConfig();
-      const { runDoctor } = await import("./doctor.js");
-      await runDoctor(config);
+      const { runDoctor, runStatusDoctor } = await import("./doctor.js");
+      if (options.legacy) await runDoctor(loadConfig());
+      else runStatusDoctor(options);
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
@@ -1153,7 +1165,7 @@ program
   });
 
 program
-  .command("completion <shell>")
+  .command("completion <shell>", { hidden: true })
   .description("Print shell completion script for bash, zsh, or fish")
   .action((shell) => {
     try {
@@ -1287,7 +1299,7 @@ const configCmd = program
 
 configCmd
   .command("set <key> <value>")
-  .description("Set a config value (e.g. delivery.scorer tiers|bm25|fcfs|risk, delivery.aliases on|off, delivery.surface.<id>)")
+  .description("Set a config value (e.g. learning.statements on|off, telemetry on|off)")
   .option("--project", "Set delivery.scorer, delivery.surface.<id> or learning.sharing for the registered project")
   .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
@@ -1306,6 +1318,16 @@ configCmd
         const writer = openRecord();
         try { setLearningSharing(writer, value, process.cwd()); } finally { writer.close(); }
         console.log(value === "manual" ? "Learned notes stay personal until mex share." : "Eligible learned notes can reach this shared repository after their diff is shown.");
+      } else if (key === "learning.statements") {
+        if (value !== "on" && value !== "off") throw new Error("Use on or off for learning.statements.");
+        const { openRecord } = await import("./record/index.js");
+        const writer = openRecord({ create: true });
+        try {
+          writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES('global','learning.statements',?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(value);
+        } finally { writer.close(); }
+        console.log(value === "on"
+          ? "MEX now learns lasting statements from what you type, in the background with your agent's smallest model, at most 3% of your usage. Turn off: mex config set learning.statements off"
+          : "MEX no longer learns from what you type. Notes you save with mex note still get their checks.");
       } else if (key === "delivery.aliases") {
         const { openRecord } = await import("./record/index.js");
         const { setDeliveryAliases } = await import("./controls/index.js");
@@ -1340,7 +1362,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases`);
         process.exitCode = 1;
         return;
       }
@@ -1358,6 +1380,41 @@ program
   .action(() => {
     runFeedback();
   });
+
+// Commander 13 has no help groups. Order its visible command projection as a short manual.
+const publicRank = (name: string) => {
+  const rank = (PUBLIC_COMMAND_ORDER as readonly string[]).indexOf(name);
+  return rank < 0 ? PUBLIC_COMMAND_ORDER.length : rank;
+};
+const visibleCommands = program.createHelp().visibleCommands;
+program.configureHelp({
+  visibleCommands(command) {
+    const commands = visibleCommands.call(this, command);
+    return command === program ? commands.sort((a, b) => publicRank(a.name()) - publicRank(b.name())) : commands;
+  },
+});
+const publicDescriptions: Record<string, string> = {
+  install: "Install hooks for Claude Code and Codex on this machine",
+  uninstall: "Restore agent settings; keep notes unless --purge is given",
+  note: "Save a personal note and why it matters",
+  recall: "Find a note by words, without a model call",
+  expand: "Read a note, its source and its checks",
+  edit: "Correct a note; preview changes to team entries",
+  wrong: "Retire an incorrect note and keep the reason",
+  forget: "Remove a note from future sessions",
+  check: "Check which notes still hold against the code",
+  review: "Review learned notes before sharing them",
+  share: "Share notes and rule files through a reviewed git branch",
+  rules: "Read agent rule files and show lines that need review",
+  handoff: "Leave a branch handoff for a teammate",
+  upgrade: "Preview the upgrade from 0.8; apply after review",
+  what: "Show what MEX gave or held back this session",
+  brief: "Preview what a new session will receive",
+  config: "Change MEX settings",
+  telemetry: "Inspect anonymous usage counts or turn them off",
+  feedback: "Open the feedback form",
+};
+for (const command of program.commands) if (publicDescriptions[command.name()]) command.description(publicDescriptions[command.name()]);
 
 // Skip auto-parse when imported (e.g. by tests). The bin entry is built by
 // tsup as ./dist/cli.js with a shebang banner; only run program.parseAsync()
@@ -1558,11 +1615,7 @@ function isInvalidCapabilitiesJsonInvocation(argv: readonly string[]): boolean {
 }
 
 function buildCompletion(shell: string): string {
-  const commands = [
-    "setup", "capabilities", "member", "activity", "relay", "check", "graph", "wiki", "impact", "sync", "note", "log", "recall", "expand", "edit", "wrong", "forget", "report",
-    "doctor", "jobs", "completion", "hints", "what", "rules", "share", "brief", "upgrade", "handoff",
-    "telemetry", "config", "feedback", "hub",
-  ];
+  const commands = [...PUBLIC_COMMAND_ORDER];
   if (shell === "bash") {
     return `_mex_completion() {
   COMPREPLY=($(compgen -W "${commands.join(" ")}" -- "\${COMP_WORDS[COMP_CWORD]}"))

@@ -35,6 +35,16 @@ type SurfaceSummary struct {
 type SurfaceReport struct {
 	Surfaces   []SurfaceSummary `json:"surfaces"`
 	Contention ContentionReport `json:"contention"`
+	Spans      []SpanOutcome    `json:"spanOutcomes,omitempty"`
+	Lanes      []LaneContention `json:"lanes,omitempty"`
+}
+
+type SpanOutcome struct {
+	Action   string `json:"action"`
+	Windows  int    `json:"windows"`
+	Complete int    `json:"complete"`
+	Followup int    `json:"followupReads"`
+	Harm     int    `json:"readsElsewhere"`
 }
 
 func addCount(a *SurfaceCount, b SurfaceCount) {
@@ -161,7 +171,30 @@ func ReadSurfaces(file, project, checkout string) (SurfaceReport, error) {
 	if version < 7 {
 		return empty, nil
 	}
-	return surfaceSummary(ctx, db, project, checkout)
+	report, err := surfaceSummary(ctx, db, project, checkout)
+	if err != nil || version < 8 {
+		return report, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT f.action,count(*),sum(w.complete),sum(w.followup),sum(w.harm) FROM surface_windows w JOIN surface_firings f ON f.id=w.firing_id WHERE f.project_id=? AND (?='' OR f.checkout=?) AND f.surface='search-span' AND w.settled=1 GROUP BY f.action ORDER BY f.action`, project, checkout, checkout)
+	if err != nil {
+		return report, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s SpanOutcome
+		if err = rows.Scan(&s.Action, &s.Windows, &s.Complete, &s.Followup, &s.Harm); err != nil {
+			return report, err
+		}
+		report.Spans = append(report.Spans, s)
+	}
+	if err = rows.Err(); err != nil {
+		return report, err
+	}
+	rows.Close()
+	if version >= 9 {
+		report.Lanes, err = readLaneContention(ctx, db, project, checkout)
+	}
+	return report, err
 }
 
 // Evaluate in disjoint batches of at least thirty new settled live firings.
@@ -226,9 +259,11 @@ func evaluateSurfaceGates(ctx context.Context, c *sql.Conn, project string) ([]s
 			continue
 		}
 		base := SurfaceCount{}
+		baseKind := ""
 		for _, kind := range []string{"shadow", "held-back", "control"} {
 			if controls[kind].Settled > 0 {
 				base = controls[kind]
+				baseKind = kind
 				break
 			}
 		}
@@ -236,6 +271,12 @@ func evaluateSurfaceGates(ctx context.Context, c *sql.Conn, project string) ([]s
 		// cumulative first/repeat populations, while the efficacy interval uses
 		// only fresh firings so an old failure cannot be counted twice.
 		state, reason := GateDecision(total-g.evaluated, acted-g.acted, first, fa, repeats, ra, base.Settled, base.Acted, OncePerSession(g.id))
+		if state == "pass" {
+			state, reason, err = additionalSurfaceGate(ctx, c, project, g.id, baseKind, total-g.evaluated, acted-g.acted, base.Settled, base.Acted)
+			if err != nil {
+				return notices, err
+			}
+		}
 		if state == "collecting" {
 			continue
 		}

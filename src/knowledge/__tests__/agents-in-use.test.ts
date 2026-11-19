@@ -41,4 +41,12 @@ describe("agents in use", () => {
     beat(home, "claude-code", "now", root, 1000);
     expect(liveSessions(root, home)).toEqual(["claude-code"]);
   });
+
+  it("a session the agent reported ended is not live, however recent", () => {
+    const root = temp(), home = temp();
+    beat(home, "claude-code", "done", root, 1000);
+    const file = join(home, "heartbeats", "claude-code", "done");
+    writeFileSync(file, JSON.stringify({ agent: "claude-code", session_id: "done", cwd: root, started: "2026-11-15T00:00:00Z", ended: "2026-11-15T01:00:00Z" }));
+    expect(liveSessions(root, home)).toEqual([]);
+  });
 });

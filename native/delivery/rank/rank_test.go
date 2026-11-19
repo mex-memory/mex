@@ -89,3 +89,10 @@ func TestWrittenAliasesAndAsksAreOwnFields(t *testing.T) {
 		t.Fatal("aid statistics lost in the cache", got)
 	}
 }
+
+func TestPromptEnvelopeWorkBoundKeepsMachineTextOut(t *testing.T) {
+	text := "Fix the file. " + strings.Repeat("<system-reminder>MachineOnlyName</system-reminder>", 30)
+	if got := PromptText(text); got != "Fix the file." {
+		t.Fatal(got)
+	}
+}

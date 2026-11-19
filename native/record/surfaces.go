@@ -20,7 +20,7 @@ import (
 // SurfaceIDs is the closed vocabulary used by receipts, controls and reports.
 // New ids must declare a default and an acted definition before they can send.
 func SurfaceIDs() []string {
-	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "unknown"}
+	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "unknown"}
 }
 func ValidSurface(s string) bool {
 	for _, id := range SurfaceIDs() {
@@ -87,6 +87,9 @@ func TrialArm(session, agent, surface string) string {
 	return "shadow"
 }
 func SurfaceForMoment(s string) string {
+	if s == "prompt-arm" || s == "anchor-touch" {
+		return "prompt-anchor"
+	}
 	switch s {
 	case "read":
 		return "read-pitfall"
@@ -114,6 +117,9 @@ func SurfaceForMoment(s string) string {
 // Targets are immutable receipt evidence, bounded at admission. Commands are
 // exact-command digests, never command text. No event text is persisted.
 type SurfaceTarget struct {
+	Start    int      `json:"start,omitempty"`
+	End      int      `json:"end,omitempty"`
+	Origin   string   `json:"origin,omitempty"`
 	Scopes   []string `json:"scopes,omitempty"`
 	Paths    []string `json:"paths,omitempty"`
 	Names    []string `json:"names,omitempty"`
@@ -121,7 +127,14 @@ type SurfaceTarget struct {
 	Failure  string   `json:"failure,omitempty"`
 	Anti     []string `json:"anti,omitempty"`
 }
+type SurfaceRead struct {
+	Path       string
+	Start, End int
+}
+
 type SurfaceTool struct {
+	Reads               []SurfaceRead
+	Key                 string
 	Scoped              map[string]SurfaceTool // one shallow observation per checkout; one original call
 	Paths               []string
 	Names               []string
@@ -191,6 +204,8 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 	}
 	touch := func() bool { return namedTouch() || scopeTouch() }
 	switch surface {
+	case "prompt-anchor":
+		return (tool.Open || tool.Edit) && namedTouch()
 	case "read-pitfall", "read-risk", "edit":
 		if !tool.Edit || !touch() {
 			return false
@@ -225,6 +240,9 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 }
 
 func surfaceTargetJSON(t SurfaceTarget) (string, error) {
+	if t.Start < 0 || t.End < t.Start || len(t.Origin) > 128 {
+		return "", errors.New("surface span bound")
+	}
 	if len(t.Scopes) > 32 || len(t.Paths) > 32 || len(t.Names) > 4 || len(t.Commands) > 32 || len(t.Anti) > 32 {
 		return "", errors.New("surface target bound")
 	}
@@ -286,7 +304,15 @@ func addSurfaceWindow(ctx context.Context, c *sql.Conn, req DeliveryRequest, e E
 	if _, err = c.ExecContext(ctx, `UPDATE surface_firings SET pending=pending+1,tokens=tokens+? WHERE id=?`, r.Tokens, firing); err != nil {
 		return err
 	}
-	_, err = c.ExecContext(ctx, `INSERT INTO surface_windows(delivery_id,session_id,agent_id,epoch,project_id,checkout,expires,target,repeated,firing_id) VALUES(?,?,?,?,?,?,?,?,?,?)`, r.ID, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout, e.ToolCalls+40, target, repeated, firing)
+	window := 40
+	observed := 0
+	if r.Surface == "search-span" {
+		window = 3
+		if r.Target.Origin != "" {
+			observed = -1
+		}
+	}
+	_, err = c.ExecContext(ctx, `INSERT INTO surface_windows(delivery_id,session_id,agent_id,epoch,project_id,checkout,expires,target,repeated,firing_id,observed) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, r.ID, req.Session.SessionID, req.AgentID, e.Number, req.Session.ProjectID, req.Session.Checkout, e.ToolCalls+window, target, repeated, firing, observed)
 	if err != nil {
 		return err
 	}
@@ -476,18 +502,18 @@ func (h *Hooks) syncSurfacePending(ctx context.Context, c *sql.Conn, req Deliver
 
 func settleSurfaceWindows(ctx context.Context, c *sql.Conn, req DeliveryRequest, e *Epoch, close bool) error {
 	// The pending index bounds work to this agent's current 40-call window.
-	rows, err := c.QueryContext(ctx, `SELECT w.delivery_id,f.surface,f.action,w.target,w.repeated,w.acted,w.expires,w.project_id,w.checkout,w.firing_id FROM surface_windows w JOIN surface_firings f ON f.id=w.firing_id WHERE w.session_id=? AND w.agent_id=? AND w.epoch=? AND w.settled=0 ORDER BY w.expires LIMIT 1001`, req.Session.SessionID, req.AgentID, e.Number)
+	rows, err := c.QueryContext(ctx, `SELECT w.delivery_id,f.surface,f.action,w.target,w.repeated,w.acted,w.expires,w.project_id,w.checkout,w.firing_id,w.observed,w.followup,w.harm FROM surface_windows w JOIN surface_firings f ON f.id=w.firing_id WHERE w.session_id=? AND w.agent_id=? AND w.epoch=? AND w.settled=0 ORDER BY w.expires LIMIT 1001`, req.Session.SessionID, req.AgentID, e.Number)
 	if err != nil {
 		return err
 	}
 	type pending struct {
 		id, surface, action, target, project, checkout, firing string
-		repeat, acted, expires                                 int
+		repeat, acted, expires, observed, followup, harm       int
 	}
 	var pendingRows []pending
 	for rows.Next() {
 		var p pending
-		err = rows.Scan(&p.id, &p.surface, &p.action, &p.target, &p.repeat, &p.acted, &p.expires, &p.project, &p.checkout, &p.firing)
+		err = rows.Scan(&p.id, &p.surface, &p.action, &p.target, &p.repeat, &p.acted, &p.expires, &p.project, &p.checkout, &p.firing, &p.observed, &p.followup, &p.harm)
 		if err != nil {
 			break
 		}
@@ -509,12 +535,26 @@ func settleSurfaceWindows(ctx context.Context, c *sql.Conn, req DeliveryRequest,
 		if json.Unmarshal([]byte(p.target), &target) != nil {
 			return errors.New("invalid surface target")
 		}
-		for offset, tool := range req.SurfaceTools {
+		tools := req.SurfaceTools
+		if p.surface == "search-span" && p.observed < 0 && len(tools) > 0 {
+			p.observed = 0
+			for _, tool := range tools {
+				if tool.Key == target.Origin && target.Origin != "" {
+					p.expires += len(tools)
+					tools = nil
+					break
+				}
+			}
+		}
+		for offset, tool := range tools {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			if e.ToolCalls+offset >= p.expires {
 				break
+			}
+			if p.surface == "search-span" {
+				p.observed++
 			}
 			matches := p.project == req.Session.ProjectID && p.checkout == req.Session.Checkout
 			if len(tool.Scoped) > 0 {
@@ -524,6 +564,19 @@ func settleSurfaceWindows(ctx context.Context, c *sql.Conn, req DeliveryRequest,
 			}
 			if !matches {
 				continue
+			}
+			if p.surface == "search-span" && tool.Success {
+				for _, read := range tool.Reads {
+					for _, path := range target.Paths {
+						if read.Path == path {
+							if (read.End == 0 || read.End >= target.Start) && read.Start <= target.End {
+								p.followup = 1
+							} else {
+								p.harm = 1
+							}
+						}
+					}
+				}
 			}
 			if Acted(p.surface, target, tool) {
 				acted = 1
@@ -543,24 +596,37 @@ func settleSurfaceWindows(ctx context.Context, c *sql.Conn, req DeliveryRequest,
 			}
 		}
 		settled := decided || close || e.ToolCalls+len(req.SurfaceTools) >= p.expires
+		complete := 1
+		if p.surface == "search-span" {
+			complete = 0
+			if p.observed >= 3 {
+				complete = 1
+			}
+			acted = 0
+			if complete == 1 && p.followup == 0 {
+				acted = 1
+			}
+		}
 		if settled {
-			_, err = c.ExecContext(ctx, `UPDATE surface_windows SET acted=?,settled=1 WHERE delivery_id=? AND settled=0`, acted, p.id)
+			_, err = c.ExecContext(ctx, `UPDATE surface_windows SET acted=?,settled=1,observed=?,followup=?,harm=?,complete=?,expires=? WHERE delivery_id=? AND settled=0`, acted, p.observed, p.followup, p.harm, complete, p.expires, p.id)
 			if err == nil {
-				var remaining, groupActed int
-				err = c.QueryRowContext(ctx, `UPDATE surface_firings SET pending=pending-1,acted=max(acted,?) WHERE id=? AND settled=0 RETURNING pending,acted`, acted, p.firing).Scan(&remaining, &groupActed)
+				var remaining, groupActed, groupComplete int
+				err = c.QueryRowContext(ctx, `UPDATE surface_firings SET pending=pending-1,acted=max(acted,?),complete=min(complete,?) WHERE id=? AND settled=0 RETURNING pending,acted,complete`, acted, complete, p.firing).Scan(&remaining, &groupActed, &groupComplete)
 				if err == nil && remaining == 0 {
 					_, err = c.ExecContext(ctx, `UPDATE surface_firings SET settled=1 WHERE id=? AND settled=0`, p.firing)
-					if err == nil {
+					if err == nil && groupComplete == 1 {
 						_, err = c.ExecContext(ctx, `UPDATE surface_stats SET settled=settled+1,acted=acted+? WHERE project_id=? AND checkout=? AND surface=? AND action=? AND repeated=?`, groupActed, p.project, p.checkout, p.surface, p.action, p.repeat)
 					}
-					if err == nil {
+					if err == nil && groupComplete == 1 {
 						err = surfaceCounter(ctx, c, req, "settled")
 					}
-					if err == nil && groupActed == 1 {
+					if err == nil && groupActed == 1 && groupComplete == 1 {
 						err = surfaceCounter(ctx, c, req, "acted")
 					}
 				}
 			}
+		} else if p.surface == "search-span" {
+			_, err = c.ExecContext(ctx, `UPDATE surface_windows SET observed=?,followup=?,harm=?,expires=? WHERE delivery_id=? AND settled=0`, p.observed, p.followup, p.harm, p.expires, p.id)
 		} else if acted != p.acted {
 			_, err = c.ExecContext(ctx, `UPDATE surface_windows SET acted=1 WHERE delivery_id=? AND settled=0`, p.id)
 		}

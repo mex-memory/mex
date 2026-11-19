@@ -4,6 +4,9 @@ import { parseDocument } from "yaml";
 import { absolutePath, realPath } from "../record/project.js";
 import { KnowledgeError, KNOWLEDGE_LIMITS } from "./contract.js";
 import { readBoundedTextFile } from "./files.js";
+import { readNode } from "../repo-start/recipes/node.js";
+import { readCargo, readGradle, readMake, readPython } from "../repo-start/recipes/other.js";
+import { RepoFiles } from "../repo-start/recipes/source.js";
 
 export interface References {
   root: string; commands: Set<string>; links: Set<string>;
@@ -160,6 +163,13 @@ export function references(root: string): References {
   try {
     const pkg = packageFile("package.json");
     workspaces(pkg);
+    // Use the same config readers as setup for exact workspace and non-Node
+    // commands. These are local reads; no evaluator or repository command runs.
+    const config = new RepoFiles(root);
+    for (const found of [...readNode(config).found, ...readMake(config).found, ...readPython(config).found, ...readCargo(config).found, ...readGradle(config).found]) {
+      if (repoFile(root, found.origin.file)) addRuns(found.command);
+    }
+    if (config.truncated) result.truncated = true;
     walk(".github/workflows", "ci"); walk("docs", "docs");
     rootDocs();
   } catch (e) { if (!(e instanceof Full)) throw e; }

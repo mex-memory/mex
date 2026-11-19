@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,7 @@ import { openRecord, openRecordReadOnly, type RecordWriter } from "../record/ind
 import { recordLocation, type LocationOptions } from "../record/location.js";
 import { withContainedArtifactLock } from "../team/artifacts/filesystem.js";
 import { binaryFileName, findNativeBinary, selfTestBinary, type SelfTestResult } from "../hooks/shim/binary.js";
-import { launcherFile } from "../hooks/shim/launcher.js";
+import { cliEntryPath, launcherFile } from "../hooks/shim/launcher.js";
 import { assertUntracked, equalSnapshot, installPath, MAX_RUNTIME_BYTES, MAX_SETTINGS_BYTES, readSnapshot, replaceFile, samePath, snapshotBytes, type Snapshot } from "./files.js";
 import { agentSettings, AGENT_COMMANDS, CODEX_TRUST_NOTICE, FAILURE_BLOCKS, installSettings, withoutSettings, isLegacyHandler, parseSettings, removeHandlers, type Agent, type HookCommand } from "./settings.js";
 import { decodeSnapshot, restoreSettings } from "./recovery.js";
@@ -89,11 +89,39 @@ export function opencodePluginPath(user: string, env: NodeJS.ProcessEnv): string
   return join(xdg || join(user, ".config"), "opencode", "plugin", "mex.js");
 }
 
+/**
+ * Whether the agent's command is on PATH. Read from the PATH directories
+ * directly: a `where.exe` child under a 1.5 s timeout missed Claude Code on
+ * a busy Windows machine, so its hooks were silently not installed.
+ */
 function available(agent: Agent | PluginAgent, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): boolean {
-  const result = spawnSync(platform === "win32" ? "where.exe" : "which", [agent === "opencode" ? "opencode" : AGENT_COMMANDS[agent]], {
-    env, timeout: 1500, windowsHide: true, stdio: "ignore",
-  });
-  return result.status === 0;
+  const name = agent === "opencode" ? "opencode" : AGENT_COMMANDS[agent];
+  const key = Object.keys(env).find(k => k.toUpperCase() === "PATH");
+  const dirs = (key ? env[key] ?? "" : "").split(platform === "win32" ? ";" : ":").map(d => d.trim().replace(/^"(.*)"$/u, "$1")).filter(Boolean);
+  const extKey = Object.keys(env).find(k => k.toUpperCase() === "PATHEXT");
+  const exts = platform === "win32" ? ["", ...((extKey ? env[extKey] : undefined) ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)] : [""];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      try {
+        const stat = statSync(join(dir, name + ext));
+        if (stat.isFile() && (platform === "win32" || (stat.mode & 0o111) !== 0)) return true;
+      } catch { /* not in this folder */ }
+    }
+  }
+  return false;
+}
+
+/** Agents with desktop apps and editor extensions that run the same hooks without a command on PATH. */
+const APP_AGENTS: ReadonlySet<Agent> = new Set(["claude-code", "codex"]);
+
+/** Whether the agent's user settings folder (~/.claude, ~/.codex or its override) exists. */
+function configured(settingsFile: string): boolean {
+  try { return statSync(dirname(settingsFile)).isDirectory(); } catch { return false; }
+}
+
+/** npx runs a package from npm's temporary cache; hooks pointing there break when npm clears it. */
+export function fromNpxCache(entry: string | undefined): boolean {
+  return !!entry && /[\\/]_npx[\\/]/u.test(entry);
 }
 
 export const AGENT_NAMES: Record<Agent | PluginAgent, string> = { "claude-code": "Claude Code", codex: "Codex", copilot: "Copilot CLI", opencode: "OpenCode" };
@@ -128,12 +156,18 @@ export function testCommand(command: HookCommand, env: NodeJS.ProcessEnv, fallba
 
 /** Global installation only. Project registration and the first screen belong to setup. */
 export async function installAgents(options: InstallOptions = {}): Promise<InstallResult> {
+  if (!options.entry && fromNpxCache(cliEntryPath())) {
+    throw new Error("MEX is running through npx, from npm's temporary cache; hooks installed from there stop working when npm clears it. Install MEX once with `npm i -g mex-agent@next`, then run `mex install`.");
+  }
   const env = options.env ?? process.env;
   const user = options.userHome ?? homedir();
   const location = recordLocation({ home: options.home ?? mexHomeDir(), create: false });
   const platform = options.platform ?? process.platform;
   const paths = agentSettings(user, env);
-  const agents = (Object.keys(paths) as Agent[]).filter(agent => options.available?.(agent) ?? available(agent, platform, env));
+  // The desktop apps and editor extensions run the same hooks from the same
+  // user settings without putting a command on PATH; their settings folder
+  // is the sign they are in use.
+  const agents = (Object.keys(paths) as Agent[]).filter(agent => options.available?.(agent) ?? (available(agent, platform, env) || (APP_AGENTS.has(agent) && configured(paths[agent]))));
   const opencode = options.available?.("opencode") ?? available("opencode", platform, env);
   const pluginPath = opencode ? installPath(opencodePluginPath(user, env)) : null;
   const result: InstallResult = { agents: [...agents, ...(opencode ? ["opencode" as const] : [])], changes: [], notices: [], legacyTracked: [] };
@@ -151,7 +185,8 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
       const fallback = join(bin, "mex-hook.cjs");
       const source = options.fallbackFile ?? fileURLToPath(new URL("./hook-fallback.cjs", import.meta.url));
       const fallbackBytes = readFileSync(source);
-      const entry = resolve(options.entry ?? process.argv[1] ?? "");
+      // A global npm install runs MEX through a `bin/mex` symlink: use the real file.
+      const entry = resolve(options.entry ?? cliEntryPath() ?? "");
       if (!entry.endsWith(".js") || !existsSync(entry)) throw new Error("Build MEX before installing hooks; a valid CLI entry is required.");
       const node = options.node ?? process.execPath;
       const binary = options.nativeBinary === undefined ? findNativeBinary() : options.nativeBinary;
@@ -203,10 +238,7 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
       }
       // The plugin is a runtime file: uninstall deletes it only while it is unchanged.
       if (pluginPath) put(pluginPath, Buffer.from(opencodePlugin(command)), "opencode", "runtime", 0o644);
-      if (agents.includes("codex")) {
-        result.notices.push(CODEX_TRUST_NOTICE);
-        if (platform === "win32") result.notices.push("Codex starts every Windows hook through PowerShell (about 0.45 s per call on the measured Windows 11 machine). All supported events are registered.");
-      }
+      if (agents.includes("codex")) result.notices.push(CODEX_TRUST_NOTICE);
       cleanLegacyProjectSettings(options.cwd ?? process.cwd(), result, writer, options);
       return result;
   };

@@ -9,6 +9,8 @@ export interface ParsedFile {
   imports: ImportItem[];
   exports: string[];
   error?: string;
+  /** Optional, checkout-local offsets aligned with outline; never index data. */
+  sourceSpans?: Array<{ start: number; end: number }>;
 }
 
 /** The loose shape of an ESTree node from oxc; only the fields read here. */
@@ -46,7 +48,7 @@ export function loadOxc(): Oxc | null {
 const TEST_CALLS = new Set(["describe", "context", "suite", "it", "test", "specify", "bench"]);
 
 /** Parse TypeScript or JavaScript with oxc and pull out the outline, imports and exports. */
-export function parseJs(path: string, source: string, lang: "ts" | "tsx" | "js"): ParsedFile | null {
+export function parseJs(path: string, source: string, lang: "ts" | "tsx" | "js", details: { sourceSpans?: boolean } = {}): ParsedFile | null {
   const parser = loadOxc();
   if (!parser) return null;
   let result: OxcResult;
@@ -57,9 +59,10 @@ export function parseJs(path: string, source: string, lang: "ts" | "tsx" | "js")
     return { outline: [], imports: [], exports: [], error: (error as Error).message };
   }
   const starts = lineStarts(source);
-  const out = new Collector(starts);
+  const out = new Collector(starts, details.sourceSpans);
   out.statements(result.program.body, undefined);
   const parsed: ParsedFile = { outline: out.outline, imports: out.imports, exports: [...new Set(out.exports)] };
+  if (out.sourceSpans) parsed.sourceSpans = out.sourceSpans;
   if (result.errors.length > 0 && result.program.body.length === 0) parsed.error = result.errors[0]!.message;
   return parsed;
 }
@@ -107,12 +110,16 @@ class Collector {
   readonly outline: OutlineItem[] = [];
   readonly imports: ImportItem[] = [];
   readonly exports: string[] = [];
-  constructor(private readonly starts: readonly number[]) {}
+  readonly sourceSpans?: Array<{ start: number; end: number }>;
+  constructor(private readonly starts: readonly number[], spans = false) {
+    if (spans) this.sourceSpans = [];
+  }
 
   private add(name: string, kind: SymbolKind, start: number, end: number, parent: number | undefined): number {
     const item: OutlineItem = { name, kind, start: lineAt(this.starts, start), end: lineAt(this.starts, Math.max(start, end - 1)) };
     if (parent !== undefined) item.parent = parent;
     this.outline.push(item);
+    this.sourceSpans?.push({ start, end });
     return this.outline.length - 1;
   }
 

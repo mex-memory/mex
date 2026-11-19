@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/mex-memory/mex/native/internal/noteguard"
+	"github.com/mex-memory/mex/native/internal/tokens"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ import (
 
 const maxScanBytes = 8 * 1024 * 1024
 const maxChildren = 10000
-const cacheVersion = 1
+const cacheVersion = 2
 
 type Item struct {
 	Entry                     *Entry `json:"entry"`
@@ -344,9 +345,8 @@ func saveCache(path string, c cacheFile) {
 	}
 }
 
-// EstimateTokens is an estimate: the larger of UTF-8 bytes/4 and 1.3 pieces
-// per whitespace word. No tokenizer is linked into the short-lived hook.
-func EstimateTokens(s string) int { return max((len(s)+3)/4, (len(strings.Fields(s))*13+9)/10) }
+// EstimateTokens prices authored prose. Code and tool output use tokens.Code.
+func EstimateTokens(s string) int { return tokens.Prose(s) }
 
 // Label is shared by every delivery form, so content hashes agree on resume.
 func Label(e *Entry, level string) string {
@@ -363,11 +363,24 @@ func Label(e *Entry, level string) string {
 		}
 		return "[team, from " + source + "]"
 	default:
+		if e.Source.Type == "config" {
+			return "[repo, from " + e.Source.Ref + "]"
+		}
 		if e.Source.Type != "person" {
 			return "[personal, from " + e.Evidence + "]"
 		}
 		date := e.Created
 		fields := strings.Fields(e.Source.Ref)
+		// A note an agent saved with `mex note` for the person says so.
+		if len(fields) == 5 && fields[0] == "mex" && fields[1] == "note" && fields[2] == "by" {
+			if d, err := time.Parse("2006-01-02", fields[4]); err == nil {
+				name := map[string]string{"claude-code": "Claude Code", "codex": "Codex"}[fields[3]]
+				if name == "" {
+					name = fields[3]
+				}
+				return "[" + name + " noted, " + d.Format("2 Jan") + "]"
+			}
+		}
 		if len(fields) >= 2 && fields[0] == "capture" {
 			date = fields[1]
 		}

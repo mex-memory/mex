@@ -240,7 +240,7 @@ history.
 
 ## Ranking and observations
 
-`delivery.scorer` selects `tiers` (default), `bm25`, `fcfs` or `risk`.
+`delivery.scorer` selects `bm25` (default), `tiers`, `fcfs` or `risk`.
 The existing global settings and project control mirrors carry it; the
 `MEX_DELIVERY_SCORER` environment override is intended for deterministic
 comparisons. Tool misses do not read settings; only a pending acted window or
@@ -368,9 +368,10 @@ are checked around reads. The cache is disposable and lives beside hooks.db.
 Source metadata is inspected on every full load, including additions and
 removals; an in-place edit cannot be discovered from a directory timestamp
 alone. Parsed entries are reused by size/mtime with the evaluator's two-second
-race window. Full/one-line strings include derived labels. Token estimates use
-max(UTF-8 bytes/4, whitespace words x 1.3), rounded up. No offline tokenizer
-was available for calibration.
+race window. Full/one-line strings include derived labels. Token estimates are 2.3 UTF-8 bytes per
+token for code and tool output and 4 for prose, rounded up (see the cost
+instrument below for the calibration). They used max(UTF-8 bytes/4, words x 1.3)
+before the calibration.
 
 Scopes in the common shapes (a plain path, `dir/**`, `**`) match without a
 regular expression; other globs compile once per distinct scope in a load.
@@ -658,6 +659,209 @@ the newest non-merge commits of five repositories, two phrases occur in 0.0% to
 django 1.8%, flask 0.0%, requests 0.1%), so the line is rare. A proposed
 decision is delivered only once it is in force.
 
+## Prompt anchors, search answers, lanes and the cost instrument
+
+The reason for this work: in the saved sessions most of the spend goes to the
+agent's own search, so delivery now finishes that search instead of ranking
+more prose. Everything below fails open, appends only after a tool result and
+never edits an earlier message, so the prompt cache stays intact.
+
+### Surfaces added
+
+| Surface | Default | Acted means |
+|---|---|---|
+| `prompt-anchor` | trial | the agent opens or edits a file the line named, within the usual 40 calls |
+| `search-span` | trial | no ranged Read overlaps the answered span in the next 3 calls (avoided) |
+
+`prompt-anchor` covers three lines of one kind: the unique-symbol pointer, the
+arm-and-release of scoped entries (below) and the team-phrase pointer. A
+`search-span` window needs three observed calls to count as avoided; a session
+that ends sooner proves nothing and stays out of the settled denominators.
+A Read of other lines of the same file is recorded as a harm signal, not as
+acted. The gate adds three settings to delivery-06's fixed gate:
+`minimum_avoided_delta` .30 (avoided follow-up reads beat the control by at
+least 30 points), `minimum_cost_sessions` 10 and `no_harm_rise` 1 (reads
+elsewhere in the same file must not rise). The cost check comes from the
+per-task cost ledger that delivery-05 owns; replay never writes it, so without
+ten priced sessions a trial surface keeps collecting.
+
+### Prompt anchors
+
+A typed prompt (host tags and machine-written turns already stripped) is
+scanned deterministically, within 32 KiB and 24 anchors: paths and
+`path:line` (stack frames included), CamelCase and snake_case identifiers (6
+characters or more, or with a separator), quoted error strings and backticked
+commands. Only anchors the file index verifies survive: a path that exists and
+is indexed and contained in the checkout; an identifier `SymbolsNamed` resolves
+to at most 3 definitions, fresh on disk; an error string found by a bounded scan
+of the first 32 indexed files (256 KiB in all). No index is built or repaired for this.
+
+- **Pointer now.** One identifier with exactly one definition anywhere (stale
+  collisions count) sends `path:line signature`, once per prompt.
+- **Arm.** An entry whose scope (or a literal `when`) covers a verified anchor
+  is armed: a `prompt-arm` receipt held-back, released at the first successful
+  touch of its named file (`anchor-touch`), under the normal truth, coverage and
+  dedupe checks. The arm survives later prompts without rewriting the earlier
+  target.
+- **Vocabulary pointer.** When a typed prompt contains a team phrase that
+  exactly matches an entry's `aliases` value (case-insensitive, whitespace
+  collapsed, word boundaries; the alias is at least 2 words or at least 6
+  characters), one line goes out: the phrase, then the entry's verified code
+  anchors. Those are the entry's scope paths that exist in the file index (a
+  glob counts when it matches at least one indexed file) and up to three of the
+  identifiers its text names that resolve to exactly one definition. The line
+  never carries the entry's text. At most 2 such lines per prompt, inside the
+  prompt lane. An entry with no verified anchor stays silent, and an entry that
+  needs the hint gate waits for it. This path reads the written aliases itself,
+  so it does not depend on the `delivery.aliases` ranker setting.
+- The learned gate remains only as the filter for the remaining prose lane.
+
+### Search answers
+
+After a Grep, or a shell `rg`, `grep` or `git grep`, whose pattern is
+definition-shaped (`func X`, `class X`, `def X`, `type X`, `interface X`, `X =`
+and similar) or a bare identifier, and only when the file index resolves the
+name to exactly one fresh definition (per-file freshness) and the name is
+defined in at most 3 files, the hook appends the definition's signature and
+body, at most 600 characters, with `path:line-range`. It stays silent when the
+span exceeds 600 characters (a useful signature is sent instead), the name
+collides, the file is stale, the search was filtered (the index cannot prove the
+filter admits the answer), or the search already returned the whole span. One answer per event, eight tools
+inspected. The batch that produced the search is excluded from its own
+follow-up window.
+
+### Budget lanes and packing
+
+Inside the epoch budget, admission runs per lane under the writer lock:
+
+| Lane | Share | Carries |
+|---|---|---|
+| critical | 20% | failure fixes and corrections |
+| cards | 40% | `search-span`, later graph cards |
+| prompt | 15% | `prompt-anchor` and the prose lane |
+| brief | 15% | accepted and not-yet-accepted briefs |
+| ordinary | 10% | every other moment |
+
+Packing skips an item that does not fit and continues; it never stops at the
+first. A card that does not fit as full text falls back to a signature or a
+one-line form. Four explicit lane rules are exempt from the lanes and the
+scorer: exact pattern matches, failure fixes, edit violations, and a scoped
+pitfall at the first read of its file. They may exceed their reserve without
+consuming another lane. `DefaultScorer` is now `bm25`; `tiers`, `fcfs` and
+`risk` remain overrides.
+
+### Token estimates
+
+Code and tool output use 2.3 UTF-8 bytes per token (one constant per runtime,
+Go and Node, with a parity test); prose uses 4. The old estimate was
+`max(bytes/4, words x 1.3)` everywhere. Code estimates rise about 74%, and every
+token-denominated cap is unchanged, so an indexed file, a graph output or a
+card now carries about 42% fewer characters at the same cap. Entry text loses
+the 1.3-per-word fallback. The entry snapshot cache and the file-index
+extractor version were bumped so cached estimates are replaced on the next
+explicit refresh; nothing rebuilds an index on a read.
+
+### The cost instrument
+
+`scripts/delivery-replay/cost.mjs` reads saved transcripts and prices the token
+classes of each assistant response once (parallel tool calls share one usage
+block) from `prices.json`, the single model price table. Per session it reports
+price-weighted tokens, calls to the first edit, shares by tool and shell kind,
+floods, and the search-then-ranged-read chain rate (a Read whose range covers a
+line a search reported 1 to 3 calls earlier). A task counts as solved when an
+edit succeeded, unless an explicit outcome label is passed. It holds no
+transcript text.
+
+### What the saved sessions say
+
+Saved sessions measure coincidence, not effect. Numbers with their
+denominators; all of them dev data, with the test split untouched:
+
+- Cost instrument, 38 transcript files / 965 calls / 22 sessions with a
+  successful edit: exploration-only calls are 62.6% of call cost; the
+  search-then-ranged-read chain is 9.7% (103 of 203 ranged Reads); 7.6% when
+  parallel chained Reads are counted once. Tool output measures 2.31 characters
+  per token above 20k characters (n=2) and 2.20 above 5k (n=143). Median 14 calls
+  before the first edit; 81 floods of 50 lines or more and 13 of 8k characters
+  or more.
+- Anchors, 120 dev prompts: anchors extracted on 44 (36.7%), at least one
+  verified on 11 (9.2%), 13 of 89 anchors verified (14.6%), 3 potential
+  pointers. One pointer on the 47 prompts with no gold entry (2.1%, under the
+  5% line). Required entries available at the first touch of a verified
+  anchor: 21 of 77, against 16 of 77 for the prompt channel alone (a proxy, not
+  a measured on-time gain: the labels have no touch deadlines). On the 61 real
+  typed turns: extracted on 45 (73.8%), verified on 5 (8.2%), 10 of 284 anchors
+  verified, 0 pointers.
+- Vocabulary pointer, 120 dev prompts: none contain a frozen alias phrase
+  (the aliases were frozen before the prompts were written), so 0 pointers and
+  0 false sends on the 47 no-gold prompts, and 0 of 61 real typed turns.
+  As a positive control only, putting each eligible alias into a generic
+  sentence earns a pointer for 94 of the 110 entries that have eligible
+  aliases (142 pointers over 162 phrases): most entries have a scope path or a
+  unique identifier the index can verify. That shows the line can be built, not
+  that people type the phrase.
+- Search answers, 38 files / 965 calls / 103 chained Reads: 1 eligible firing
+  (0.026 per session), 55 tokens offered, 0 of 103 chain reads covered and 0
+  full ranges covered. The snapshots are today's index, not the historical
+  file bodies. The replay is flat: the answer would almost never have fired on
+  these sessions. The surface ships in trial and the live run decides.
+- Lanes, 66 labelled session epochs at the 500-token main budget: only the
+  critical lane had demand (38 lane/epoch observations, 4,096 tokens offered
+  and admitted, 0 holds). At a 25% budget, a synthetic five-lane rotation
+  admitted one 20-token item per lane (30 of 50 offers admitted, 20 capacity
+  holds, no lane starved).
+- Ceilings, 109 offers over 66 epochs replayed at a 10% budget: every offer sat
+  in the critical lane (63 given, 41 controlled as similar, 5 held back as
+  investigating), so no ceiling bound (0 of 109) and nothing followed from one.
+- Intent shortcut words on the 61 real typed turns: a changing word (replace,
+  migrate, remove, rename, deprecate) on 1 (1.6%), a reproducing word on 13
+  (21.3%), either on 14 (23.0%).
+
+### Timing
+
+Cold Windows processes, alternating pairs against a `next` binary, 200 pairs
+per row, a synthetic repository with one indexed source file, 50 and 500
+entries (`scripts/delivery-replay/answer-timing.mjs`). Milliseconds as
+p50 / p95, the per-pair difference last.
+
+| Entries | Case | `next` | This branch | Added |
+|---|---|---|---|---|
+| 50 | typed prompt with anchors | 48.9 / 64.8 | 79.9 / 97.9 | 30.4 / 45.8 |
+| 50 | search with a span answer | 51.5 / 65.9 | 74.1 / 92.2 | 22.4 / 39.7 |
+| 50 | silent search | 48.1 / 64.8 | 48.4 / 63.5 | 0.3 / 16.7 |
+| 50 | no-op tool call | 45.4 / 60.6 | 44.6 / 59.5 | -0.6 / 14.3 |
+| 50 | first touch of an armed file | 46.8 / 59.2 | 83.4 / 201.8 | 36.1 / 155.6 |
+| 50 | read of a pitfall's file, both deliver | 76.6 / 90.9 | 75.8 / 93.1 | -1.2 / 11.9 |
+| 500 | typed prompt with anchors | 54.5 / 67.2 | 81.5 / 92.1 | 27.2 / 37.6 |
+| 500 | search with a span answer | 51.5 / 64.3 | 73.9 / 87.7 | 22.4 / 34.9 |
+| 500 | silent search | 49.1 / 63.0 | 48.9 / 61.9 | -0.2 / 10.3 |
+| 500 | no-op tool call | 45.0 / 58.8 | 44.7 / 51.0 | -0.5 / 4.8 |
+| 500 | first touch of an armed file | 47.3 / 61.3 | 79.1 / 92.7 | 31.5 / 46.0 |
+| 500 | read of a pitfall's file, both deliver | 86.9 / 97.4 | 77.4 / 89.6 | -9.5 / 0.0 |
+
+`next` sends nothing in the first five cases, so their difference is the cost
+of one delivery transaction, about 22 to 36 ms at p50 on this laptop. That is
+the same cost `next` pays when it delivers (the last row: 76 to 87 ms against
+a 45 to 55 ms call that sends nothing), so the new paths cost no more than an
+existing delivery, but a firing call does not meet "about 15 ms p95". The
+paths that stay silent do: the no-op and silent-search rows add nothing at p50;
+their p95 differences are pair jitter, because the `next` lane's own p95 varies
+by about 15 ms. A repeat of 600 pairs found 3 fail-open deliveries
+(`record-commit: context deadline exceeded`, an empty reply) in 1,200 prompt
+transactions, none in 1,200 read transactions; the cause is not known, and the
+live run should watch the rate. On Linux the same four paths run in CI as
+`TestAnswerPathTiming`, which enforces 15 ms p95 there.
+
+### Daily false-send counts
+
+At the close of an epoch, once (`epochs.false_send_counted` claims it), the
+hook adds two daily counts to `counters_go` per agent:
+`knowledge.closed_deliveries` (given or replaced, not corrections) and
+`knowledge.false_send_estimate` (the same, with no followup and no later scope
+touch). Counts only; the telemetry report schema lists both names. An offline
+replay writes none. The estimate is a proxy for absence of evidence, not a
+judgement of relevance.
+
 ## Contract changes to copy
 
 - Hook events: optional normalized `model` on session start; a rendered block's
@@ -692,11 +896,38 @@ Measured surfaces and the working set:
   parse nor a recorded edit ("changed since the last parse"); the Go reader
   gains `PathsMatching`, the Node reader `importEdges`.
 
+Anchors, search answers, lanes and measurement (delivery-02, second pass):
+
+- Local record: hooks migrations 0008 (span windows, gate settings,
+  `surface_cost_checks`), 0009 (`deliveries.lane`, `lane_offers`) and 0010
+  (`epochs.false_send_counted`); hooks schema version 10, read-only in Node.
+- Settings: `prompt-anchor` and `search-span` surfaces (default `trial`);
+  `DefaultScorer` is `bm25`; `delivery.scorer` documents the override values.
+  `MEX_DELIVERY_BUDGET_PERCENT` exists only for `--delivery-replay`.
+- Hook events: none added. New moments `prompt-arm` and `anchor-touch`; the
+  span target stores start/end lines and an originating-call digest.
+- Files: derived `anchor-armed/<session-agent hash>/<checkout-path hash>`
+  hints; light entry snapshot version 2 (written aliases); entry snapshot cache
+  version 2; file-index extractor version 2 (token estimates).
+- Counters: `knowledge.closed_deliveries` and `knowledge.false_send_estimate`
+  in the daily telemetry report, counts only.
+- Token estimates: 2.3 UTF-8 bytes per token for code and tool output, 4 for
+  prose, one constant per runtime with a parity test.
+- Hook binary: `mex-hook --span-study` and `--anchor-study` are read-only
+  study entry points; they never open hooks.db.
+- Scripts: `scripts/delivery-replay/{cost,spans-replay,anchors-replay,leftovers,answer-timing}`
+  and `prices.json`.
+
 ## Left for later tickets
 
 Pattern automata,
-the speed bump and edit checks for rules and code facts (delivery-03);
-smaller reads and outputs (delivery-04); the compaction steer and the lever
-ledger (delivery-05). The start brief fills the session-start and recovery
+the speed bump and edit checks for rules and code facts (delivery-03, which
+drops its prompt symbol pointer: `prompt-anchor` carries it); smaller reads and
+outputs (delivery-04, which groups search output by file, uses the calibrated
+estimates, keeps its state in the record database, runs read-risk on the
+original text before it outlines, and handles the host's re-read stub); the
+compaction steer and the single ledger that credits avoided calls and fills
+`surface_cost_checks` (delivery-05); callers and tests cards on the
+`search-span` slot (graph-03). The start brief fills the session-start and recovery
 slots (knowledge-05); capture fills "where we left off" and writes recorded
 fixes (learning-01), which need a check to be sent.

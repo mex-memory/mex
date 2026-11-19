@@ -1,0 +1,356 @@
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { MODEL, checkPrompt, fingerprint, reviewedTransition, rescoreReport, loadFixedChecks, makePlan, proposals, runEvaluation, score, type CorpusData } from "../scripts/knowledge-bench/model-runtime.js";
+import type { ModelRequest, ModelResult } from "../src/model-runner/index.js";
+import { openRecord } from "../src/record/index.js";
+import { buildIndex } from "../src/file-index/build.js";
+
+import REVIEW from "../scripts/knowledge-bench/reviewed-v2.json";
+
+let base: string, subject: string, binary: string, corpus: CorpusData, serial = 0;
+const git = (...args: string[]) => execFileSync("git", ["-C", subject, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
+beforeAll(() => {
+  base = realpathSync(mkdtempSync(join(tmpdir(), "mex-model-bench-"))); subject = join(base, "subject"); mkdirSync(subject);
+  binary = join(base, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
+  execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
+  git("init", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
+  const commit = (version: string) => {
+    writeFileSync(join(subject, "package.json"), JSON.stringify({ name: "fixture", version }) + "\n");
+    git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", version); return git("rev-parse", "HEAD");
+  };
+  const c0 = commit("1"), c1 = commit("2"), c2 = commit("1");
+  corpus = { manifest: { dataset_sha256: "a".repeat(64) },
+    claims: [{ id: "one", file: "package.json", one_line: "The package name is fixture." }, { id: "two", file: "package.json", one_line: "The package version is 1." }],
+    checkpoints: [{ id: "C0", sha: c0 }, { id: "C1", sha: c1 }, { id: "C2", sha: c2 }],
+    labels: ["C0", "C1", "C2"].flatMap(checkpoint => [{ claim: "one", checkpoint, truth: true }, { claim: "two", checkpoint, truth: checkpoint !== "C1" }]),
+  };
+}, 300_000);
+beforeEach(() => { vi.stubEnv("MEX_HOME", join(base, `isolated-${serial++}`)); vi.stubEnv("MEX_OFF", "0"); });
+afterEach(() => vi.unstubAllEnvs());
+afterAll(() => {
+  // Remove only known temporary fixture worktrees through Git, without force.
+  if (base) {
+    const trees = git("worktree", "list", "--porcelain").split("\n").filter(l => l.startsWith("worktree ")).map(l => l.slice(9));
+    for (const tree of trees) if (tree !== subject) {
+      // These fixture files are owned by this test; make the worktree clean first.
+      rmSync(join(tree, ".mex"), { recursive: true });
+      git("worktree", "remove", tree);
+    }
+    rmSync(base, { recursive: true });
+  }
+});
+const options = () => ({ plan: makePlan(corpus, subject, "b".repeat(40)), corpus, subject, binary, work: join(base, `run-${serial++}`), refreshIndex: () => {} });
+function fakeModel(request: ModelRequest): ModelResult {
+  const evidence = JSON.parse(request.prompt.split("Evidence follows as JSON:\n")[1]!.split("\nRepair only")[0]!);
+  const results = request.purpose.startsWith("judge-bench.") ? evidence.claims.map((c: { id: string }) => ({ id: c.id, checks: [
+    { kind: "key", role: "complete", target: { file: "package.json", pointer: c.id.endsWith("one") ? "/name" : "/version" } },
+  ] })) : evidence.entries.map((e: { id: string }) => e.id.endsWith("one") ? { id: e.id, result: "still-true" } : {
+    id: e.id, result: "rewritten", one_line: "The package version is 2.", text: "The package version is 2.",
+    checks: [{ kind: "key", role: "complete", target: { file: "package.json", pointer: "/version" } }],
+  });
+  return { selectedModel: MODEL, text: JSON.stringify({ results }), usage: { input: 100, cache_write: 0, cache_read: 0, output: 30, estimated: false, model: MODEL } };
+}
+
+it("does not reveal hand-written check targets or truth labels to the writer", () => {
+  const claims = corpus.claims.map(c => ({ ...c, check: { target: "oracle-only-marker" }, truth: false }));
+  const prompt = checkPrompt(claims, '{"name":"fixture","version":"1"}');
+  expect(prompt).not.toContain("oracle-only-marker"); expect(prompt).not.toContain('"truth"'); expect(prompt).toContain("mx_kbxone");
+});
+it("binds the quote to candidate, corpus sources, prices and sample denominators", () => {
+  const first = makePlan(corpus, subject, "b".repeat(40));
+  expect(first.historical.comparable_sample).toBe(false); expect(first.check_writer_calls).toBe(1);
+  expect(first.checkpoints.map(c => [c.true, c.stale])).toEqual([[2, 0], [1, 1], [2, 0]]);
+  expect(makePlan(corpus, subject, "c".repeat(40)).approval_hash).not.toBe(first.approval_hash);
+  const changed = structuredClone(corpus); changed.claims[0]!.one_line += " Another claim.";
+  expect(makePlan(changed, subject, "b".repeat(40)).approval_hash).not.toBe(first.approval_hash);
+  const labels = structuredClone(corpus);
+  for (const row of labels.labels) if (row.checkpoint === "C1") row.truth = !row.truth;
+  expect(makePlan(labels, subject, "b".repeat(40)).approval_hash).not.toBe(first.approval_hash);
+});
+it("retains privacy-withheld cases in the plan instead of paying to send their source", () => {
+  const blocked = structuredClone(corpus); blocked.claims[0]!.one_line = 'const password = "example-placeholder-value";';
+  const plan = makePlan(blocked, subject, "b".repeat(40));
+  expect(plan.privacy_withheld).toEqual(["one", "two"]); expect(plan.check_writer_calls).toBe(0);
+  expect(plan.checkpoints[0]!.true).toBe(2);
+});
+it("refuses missing or stale approval before any model or workspace mutation", async () => {
+  const opts = options(), model = vi.fn(async request => fakeModel(request));
+  await expect(runEvaluation({ ...opts, approvalHash: "unapproved", model })).rejects.toThrow("exact approved plan");
+  expect(model).not.toHaveBeenCalled(); expect(existsSync(opts.work)).toBe(false);
+});
+it("never replaces an existing work directory", async () => {
+  const opts = options(); mkdirSync(opts.work); writeFileSync(join(opts.work, "keep"), "preserve");
+  await expect(runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model: vi.fn() })).rejects.toThrow("new work directory");
+  expect(readFileSync(join(opts.work, "keep"), "utf8")).toBe("preserve");
+});
+it("rejects duplicate, missing and escaped generated checks", () => {
+  const good = { id: "mx_kbxone", checks: [{ kind: "key", role: "complete", target: { file: "outside.json", pointer: "/name" } }] };
+  expect(() => proposals(JSON.stringify({ results: [good] }), corpus.claims)).toThrow();
+  expect(() => proposals(JSON.stringify({ results: [good, good] }), corpus.claims)).toThrow();
+  expect(() => proposals(JSON.stringify({ results: [good] }), [corpus.claims[0]!])).toThrow("escaped");
+});
+it("does not count unknown withholding as proven stale detection, or stale full text as a catch", () => {
+  const common = { check_generation_failed: false, judgement: undefined };
+  const result = score([
+    { ...common, claim: "a", truth: false, verdict: "unknown", delivery: "withheld", original: false },
+    { ...common, claim: "b", truth: false, verdict: "held", delivery: "full", original: true },
+    { ...common, claim: "c", truth: false, verdict: "broken", delivery: "withheld", original: false },
+  ]);
+  expect(result).toMatchObject({ cases: 3, stale_total: 3, stale_caught: 1, stale_served: 1, uncertain: 1 });
+});
+it("runs generated checks through the real evaluator, judge, delivery and recovery checkpoint with fake calls", async () => {
+  const opts = options(), model = vi.fn(async request => fakeModel(request));
+  const report = await runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model });
+  expect(report.complete).toBe(true);
+  expect(report.checkpoints).toEqual([
+    expect.objectContaining({ id: "C0", score: expect.objectContaining({ true_kept: 2, generation_failed: 0 }) }),
+    expect.objectContaining({ id: "C1", score: expect.objectContaining({ true_kept: 1, stale_caught: 1, stale_served: 0 }) }),
+    expect.objectContaining({ id: "C2", score: expect.objectContaining({ true_kept: 2, stale_total: 0 }) }),
+  ]);
+  expect(report.ledger.length).toBeGreaterThan(1); expect(report.charged_api_equivalent_usd).toBeGreaterThan(0);
+  expect(report.token_counts).toMatchObject({ input: report.ledger.length * 100, output: report.ledger.length * 30, unmeasured_calls: 0 });
+  expect(report.provenance.binary_sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(git("status", "--porcelain")).toBe("");
+});
+it("stops after a transport failure, retaining a non-complete cost ledger", async () => {
+  const opts = options(), model = vi.fn(async () => { throw new Error("Fixture transport failed"); });
+  await expect(runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model })).rejects.toThrow("no further paid calls");
+  expect(model).toHaveBeenCalledTimes(1);
+  const report = JSON.parse(readFileSync(join(opts.work, "report.json"), "utf8"));
+  expect(report.complete).toBe(false); expect(report.ledger[0].state).toBe("failed");
+});
+it("repairs only rejected model proposals once and keeps the initial diagnostic",async()=>{
+  const opts=options();
+  const model=vi.fn(async (request:ModelRequest)=>{
+    const response=fakeModel(request);
+    if(request.purpose==="judge-bench.checks") {
+      const value=JSON.parse(response.text);value.results[1].checks[0].target.pointer="/not-a-key";response.text=JSON.stringify(value);
+    }
+    return response;
+  });
+  const report=await runEvaluation({...opts,approvalHash:opts.plan.approval_hash,model});
+  expect(report.generation_repaired).toEqual(["two"]);
+  expect(report.generation_diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({stage:"initial-recording",claims:["two"]})]));
+  expect(model.mock.calls.filter(([r])=>r.purpose==="judge-bench.repair")).toHaveLength(1);
+  expect(report.checkpoints[0]!.score).toMatchObject({true_kept:2,generation_failed:0});
+});
+it("repairs an overstrong fingerprint role without changing an accepted model check",async()=>{
+  const opts=options(),model=vi.fn(async(request:ModelRequest)=>{
+    const response=fakeModel(request);
+    if(request.purpose==="judge-bench.checks") {
+      const value=JSON.parse(response.text);
+      value.results[0].checks=[{kind:"source",role:"complete",target:{file:"package.json"}}];
+      response.text=JSON.stringify(value);
+    }
+    return response;
+  });
+  const report=await runEvaluation({...opts,approvalHash:opts.plan.approval_hash,model});
+  expect(report.generation_repaired).toEqual(["one"]);
+  expect(report.generation_diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({claims:["one"],errors:[expect.objectContaining({reason:expect.stringContaining("supporting")})]})]));
+  const repairs=model.mock.calls.filter(([r])=>r.purpose==="judge-bench.repair");expect(repairs).toHaveLength(1);
+  expect(repairs[0]![0].prompt).toContain('"id":"mx_kbxone"');
+  expect(repairs[0]![0].prompt).not.toContain('"id":"mx_kbxtwo"');
+  expect(report.checkpoints[0]!.score).toMatchObject({true_kept:2,generation_failed:0});
+});
+it("does not transfer unused repair slots to a racing judge",async()=>{
+  const opts=options();let edits=0;
+  const model=vi.fn(async(request:ModelRequest)=>{
+    const response=fakeModel(request);
+    if(request.purpose==="judge") writeFileSync(join(request.projectRoot,"package.json"),JSON.stringify({name:"fixture",version:String(++edits+2)})+"\n");
+    return response;
+  });
+  try {
+    await expect(runEvaluation({...opts,approvalHash:opts.plan.approval_hash,model})).rejects.toThrow("approved run");
+    expect(model.mock.calls.filter(([r])=>r.purpose==="judge")).toHaveLength(opts.plan.judge_calls_max);
+    expect(model.mock.calls.filter(([r])=>r.purpose==="judge-bench.repair")).toHaveLength(0);
+    const report=JSON.parse(readFileSync(join(opts.work,"report.json"),"utf8"));
+    expect(report).toMatchObject({complete:false,stop_reason:"approved-bound"});
+    expect(report.ledger).toHaveLength(opts.plan.check_writer_calls+opts.plan.judge_calls_max);
+  } finally {execFileSync("git",["-C",join(opts.work,"checkout"),"restore","--","package.json"],{stdio:"pipe"});}
+});
+it("retains malformed generation in every denominator without hand-written fallback checks", async () => {
+  const opts = options(), model = vi.fn(async request => ({ ...fakeModel(request), text: '{"results":[]}' }));
+  const report = await runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model });
+  expect(report.checkpoints).toHaveLength(3);
+  for (const cp of report.checkpoints) expect(cp.score).toMatchObject({ cases: 2, generation_failed: 2 });
+});
+it("stops on estimated token usage before admitting any later call", async () => {
+  const opts = options(), model = vi.fn(async request => {
+    const result = fakeModel(request); result.usage.estimated = true; return result;
+  });
+  await expect(runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model })).rejects.toThrow("no further paid calls");
+  expect(model).toHaveBeenCalledTimes(1);
+  const report = JSON.parse(readFileSync(join(opts.work, "report.json"), "utf8"));
+  expect(report.token_counts.unmeasured_calls).toBe(1); expect(report.complete).toBe(false);
+});
+it("records model-proposed literal patterns and supplies their current source to the judge", async () => {
+  const opts = options();
+  const model = vi.fn(async request => {
+    const result = fakeModel(request);
+    if (request.purpose === "judge-bench.checks") {
+      const results = JSON.parse(result.text).results;
+      for (const r of results) r.checks = [{ kind: "pattern", role: "supporting", target: {
+        scope: "package.json", pattern: r.id.endsWith("one") ? '"name":"fixture"' : '"version":"1"', match: "literal",
+      } }];
+      result.text = JSON.stringify({ results });
+    }
+    return result;
+  });
+  const report = await runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model,
+    refreshIndex: async checkout => {
+      const writer = openRecord({ projectPath: checkout, isNetwork: () => false });
+      try { await buildIndex({ root: checkout, projectId: writer.checkout(checkout)!.project_id, recordDirectory: writer.location.directory, workers: 0 }); }
+      finally { writer.close(); }
+    },
+  });
+  expect(report.checkpoints[0]!.score).toMatchObject({ true_kept: 2, generation_failed: 0 });
+  expect(report.checkpoints[1]!.score).toMatchObject({ stale_caught: 1, generation_failed: 0 });
+  const judged = model.mock.calls.filter(([r]) => r.purpose === "judge");
+  expect(judged.length).toBeGreaterThan(0);
+  for (const [r] of judged) {
+    const evidence = JSON.parse(r.prompt.split("Evidence follows as JSON:\n")[1]!);
+    expect(evidence.files).toEqual(expect.arrayContaining([expect.objectContaining({ path: "package.json" })]));
+  }
+});
+
+
+it("replays frozen model targets without writer calls and binds their exact content", async () => {
+  const first = options();
+  const baseline = await runEvaluation({ ...first, approvalHash: first.plan.approval_hash, model: async r => fakeModel(r) });
+  const file = join(first.work, "report.json"), fixed = loadFixedChecks(file, corpus, subject);
+  const plan = makePlan(corpus, subject, "c".repeat(40), fixed), model = vi.fn(async r => fakeModel(r));
+  expect(plan).toMatchObject({ mode: "fixed-model-check-replay", check_writer_calls: 0, check_repair_calls_max: 0, max_calls: plan.judge_calls_max });
+  const replay = await runEvaluation({ ...options(), plan, fixed, approvalHash: plan.approval_hash, model });
+  expect(model.mock.calls.every(([r]) => !r.purpose.startsWith("judge-bench."))).toBe(true);
+  expect(replay.proposed_checks).toEqual(fixed.results);
+  expect(replay.checkpoints.map(c => c.score)).toEqual(baseline.checkpoints.map(c => c.score));
+  const changed = structuredClone(fixed); changed.results[0]!.checks[0]!.target.pointer = "/version";
+  expect(makePlan(corpus, subject, "c".repeat(40), changed).approval_hash).not.toBe(plan.approval_hash);
+  for (const mutate of [
+    (r: any) => r.complete = false,
+    (r: any) => r.complete = "false",
+    (r: any) => r.generation_failed.push("one"),
+    (r: any) => r.plan.truth_sha256 = "0".repeat(64),
+    (r: any) => r.proposed_checks.push(r.proposed_checks[0]),
+    (r: any) => r.proposed_checks[0].checks[0].target.file = "outside.json",
+  ]) {
+    const changed = structuredClone(baseline); mutate(changed);
+    const invalid = join(base, `invalid-fixed-${serial++}.json`); writeFileSync(invalid, JSON.stringify(changed));
+    expect(() => loadFixedChecks(invalid, corpus, subject)).toThrow();
+  }
+});
+it.each([false, true])("reports raw rewrite rejection and its one repair, fatal transport=%s", async fatal => {
+  const opts = options();
+  const model = vi.fn(async (request: ModelRequest) => {
+    if (request.purpose === "judge.check-repair") {
+      if (fatal) throw new Error("Transport failed during repair");
+      return { ...fakeModel({ ...request, purpose: "judge-bench.repair", prompt: 'Evidence follows as JSON:\n{"claims":[{"id":"mx_kbxtwo"}]}' }), text: JSON.stringify({ results: [{ id: "mx_kbxtwo", checks: [{ kind: "key", role: "complete", target: { file: "package.json", pointer: "/version" } }] }] }) };
+    }
+    const response = fakeModel(request);
+    if (request.purpose === "judge") {
+      const value = JSON.parse(response.text), rewrite = value.results.find((r: any) => r.result === "rewritten"); if (rewrite) rewrite.checks[0].target.pointer = "/not-a-key"; response.text = JSON.stringify(value);
+    }
+    return response;
+  });
+  if (fatal) await expect(runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model })).rejects.toThrow("did not finish");
+  else await runEvaluation({ ...opts, approvalHash: opts.plan.approval_hash, model });
+  const report = JSON.parse(readFileSync(join(opts.work, "report.json"), "utf8"));
+  expect(report.complete).toBe(!fatal);
+  expect(report.judge_diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ checkpoint: "C1", phase: "answer", model_answer: "rewritten", outcome: "cannot-tell", reason: "checks-rejected" }),
+    expect.objectContaining({ checkpoint: "C1", phase: "repair", reason: fatal ? "repair-unavailable" : "repaired" }),
+  ]));
+  expect(model.mock.calls.filter(([r]) => r.purpose === "judge.check-repair")).toHaveLength(1);
+  expect(report.ledger.at(-1).state).toBe(fatal ? "failed" : "done");
+});
+
+
+it("rejects invalid direct fixed proposals before workspace mutation", async () => {
+  const fixed = { source_candidate: "b".repeat(40), source_plan: "c".repeat(64), results: corpus.claims.map(c => ({ id: `mx_kbx${c.id}`, checks: [{ kind: "key" as const, role: "complete" as const, target: { file: c.file, pointer: c.id === "one" ? "/name" : "/version" } }] })) };
+  for (const mutate of [
+    (v: any) => v.results.push(v.results[0]),
+    (v: any) => v.results.pop(),
+    (v: any) => v.results[0].checks[0].target.file = "outside.json",
+    (v: any) => v.source_candidate = [v.source_candidate],
+  ]) {
+    const value = structuredClone(fixed); mutate(value);
+    expect(() => makePlan(corpus, subject, "d".repeat(40), value)).toThrow();
+  }
+});
+it("snapshots approved fixed targets before an asynchronous index callback can mutate caller data", async () => {
+  const fixed = { source_candidate: "b".repeat(40), source_plan: "c".repeat(64), results: corpus.claims.map(c => ({ id: `mx_kbx${c.id}`, checks: [{ kind: "key" as const, role: "complete" as const, target: { file: c.file, pointer: c.id === "one" ? "/name" : "/version" } }] })) };
+  const plan = makePlan(corpus, subject, "d".repeat(40), fixed);
+  const result = await runEvaluation({ ...options(), plan, fixed, approvalHash: plan.approval_hash, model: async r => fakeModel(r), refreshIndex: () => { fixed.results[0]!.checks[0]!.target.file = "outside.json"; } });
+  expect(result.complete).toBe(true);
+  expect(result.proposed_checks[0]!.checks[0]!.target.file).toBe("package.json");
+});
+
+it("keeps privacy-withheld claims out of fixed proposals and permits an all-withheld zero-writer plan", () => {
+  const blocked = structuredClone(corpus); blocked.claims[0]!.one_line = 'const password = "example-placeholder-value";';
+  const fixed = { source_candidate: "b".repeat(40), source_plan: "c".repeat(64), results: [{ id: "mx_kbxone", checks: [{ kind: "key" as const, role: "complete" as const, target: { file: "package.json", pointer: "/name" } }] }] };
+  expect(() => makePlan(blocked, subject, "d".repeat(40), fixed)).toThrow();
+  expect(makePlan(blocked, subject, "d".repeat(40), { ...fixed, results: [] })).toMatchObject({ privacy_withheld: ["one", "two"], check_writer_calls: 0 });
+});
+
+function reviewedFixture() {
+  const next=structuredClone(corpus), review={...REVIEW, parent_dataset_sha256:corpus.manifest.dataset_sha256, reviewed_dataset_sha256:"f".repeat(64),
+    claim_changes:[{id:"two",file:"package.json",before:corpus.claims[1]!.one_line,after:"The declared package version is exactly 1.",reason:"Scope"}],
+    label_changes:[{claim:"one",checkpoint:"C2",sha:corpus.checkpoints[2]!.sha,file:"package.json",source_sha256:"a".repeat(64),before:true,after:false,reason:"Fixture correction"}]};
+  next.claims[1]!.one_line=review.claim_changes[0]!.after;
+  next.labels.find(l=>l.claim==="one" && l.checkpoint==="C2")!.truth=false;
+  next.manifest={dataset_sha256:review.reviewed_dataset_sha256,oracle_revision:review.revision,parent_dataset_sha256:review.parent_dataset_sha256,review_sha256:fingerprint(review)};
+  return {next,review};
+}
+it("accepts only the reviewed claim and truth transition without mutating historical inputs",()=>{
+  const {next,review}=reviewedFixture(), original=structuredClone(corpus);
+  expect(reviewedTransition(corpus,next,review)).toEqual(["two"]);
+  expect(corpus).toEqual(original);
+  for(const mutate of [
+    (v:any)=>v.claims[0].one_line+=" unrelated",
+    (v:any)=>v.checkpoints[1].sha="0".repeat(40),
+    (v:any)=>v.labels.find((l:any)=>l.claim==="two" && l.checkpoint==="C1").truth=true,
+    (v:any)=>v.manifest.review_sha256="0".repeat(64),
+  ]) {const invalid=structuredClone(next);mutate(invalid);expect(()=>reviewedTransition(corpus,invalid,review)).toThrow();}
+});
+it("writes a separate free label audit with changed wording marked as unmeasured",async()=>{
+  const opts=options(), {next,review}=reviewedFixture();
+  const report=await runEvaluation({...opts,approvalHash:opts.plan.approval_hash,model:async r=>fakeModel(r)});
+  const file=join(opts.work,"report.json"), original=readFileSync(file,"utf8");
+  const audit=rescoreReport(file,corpus,next,subject,review);
+  expect(audit).toMatchObject({kind:"legacy-label-audit",model_calls:0,source_dataset:corpus.manifest.dataset_sha256});
+  expect(audit.checkpoints[2]).toMatchObject({changed_input_claims:["two"],original_score:{cases:2,true_total:2,true_kept:2},label_corrected_score:{cases:2,true_total:1,stale_total:1,stale_served:1}});
+  expect(readFileSync(file,"utf8")).toBe(original);
+  const oldest=structuredClone(report);delete (oldest as any).generation_failed;const oldPath=join(base,`old-audit-${serial++}.json`);writeFileSync(oldPath,JSON.stringify(oldest));
+  expect(rescoreReport(oldPath,corpus,next,subject,review).failure_list_inferred_from_seed).toBe(true);
+  for(const mutate of [
+    (v:any)=>v.complete=false,
+    (v:any)=>v.checkpoints.pop(),
+    (v:any)=>v.checkpoints[0].results.push(v.checkpoints[0].results[0]),
+    (v:any)=>v.checkpoints[0].results[0].truth=false,
+    (v:any)=>v.checkpoints[0].score.true_kept=0,
+    (v:any)=>v.plan.check_writer_calls++,
+  ]) {const invalid=structuredClone(report);mutate(invalid);const path=join(base,`bad-audit-${serial++}.json`);writeFileSync(path,JSON.stringify(invalid));expect(()=>rescoreReport(path,corpus,next,subject,review)).toThrow();}
+});
+it("keeps generation failures and privacy cases in a label audit",async()=>{
+  const opts=options(),{next,review}=reviewedFixture(), model=vi.fn(async r=>({...fakeModel(r),text:'{"results":[]}'}));
+  await runEvaluation({...opts,approvalHash:opts.plan.approval_hash,model});
+  const audit=rescoreReport(join(opts.work,"report.json"),corpus,next,subject,review);
+  expect(audit.checkpoints.every(c=>c.label_corrected_score.cases===2 && c.label_corrected_score.generation_failed===2)).toBe(true);
+});
+it("generates only changed claims while freezing all other model targets",async()=>{
+  const first=options();await runEvaluation({...first,approvalHash:first.plan.approval_hash,model:async r=>fakeModel(r)});
+  const frozen=loadFixedChecks(join(first.work,"report.json"),corpus,subject);
+  const fixed={...frozen,results:frozen.results.filter(r=>r.id==="mx_kbxone"),regenerate:["two"]};
+  const plan=makePlan(corpus,subject,"c".repeat(40),fixed), model=vi.fn(async r=>fakeModel(r));
+  const result=await runEvaluation({...options(),plan,fixed,approvalHash:plan.approval_hash,model});
+  const writers=model.mock.calls.filter(([r])=>r.purpose.startsWith("judge-bench."));
+  expect(writers).toHaveLength(1);expect(writers[0]![0].prompt).toContain('"id":"mx_kbxtwo"');
+  expect(writers[0]![0].prompt).not.toContain('"id":"mx_kbxone"');
+  expect(result.reused_check_claims).toEqual(["mx_kbxone"]);expect(result.regenerated_check_claims).toEqual(["two"]);
+  expect(result.proposed_checks.find(r=>r.id==="mx_kbxone")).toEqual(fixed.results[0]);
+  expect(result.checkpoints[0]!.score).toMatchObject({cases:2,true_kept:2,generation_failed:0});
+  for(const regenerate of [["two","two"],["missing"]]) expect(()=>makePlan(corpus,subject,"c".repeat(40),{...fixed,regenerate})).toThrow();
+});

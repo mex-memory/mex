@@ -1,0 +1,10 @@
+[
+  {"source_type":"config","ref":"package.json","evidence":"docs","level":"personal","expected":"[repo, from package.json]"},
+  {"source_type":"config","ref":"packages/api/package.json","evidence":"docs","level":"personal","expected":"[repo, from packages/api/package.json]"},
+  {"source_type":"config","ref":"Makefile","evidence":"docs","level":"personal","expected":"[repo, from Makefile]"},
+  {"source_type":"config","ref":"package.json","evidence":"docs","level":"team","expected":"[team, from docs]"},
+  {"source_type":"person","ref":"mex note 2026-11-15","evidence":"person","level":"personal","expected":"[you said, 15 Nov]"},
+  {"source_type":"person","ref":"mex note by claude-code 2026-11-17","evidence":"person","level":"personal","expected":"[Claude Code noted, 17 Nov]"},
+  {"source_type":"person","ref":"mex note by codex 2026-11-17","evidence":"person","level":"personal","expected":"[Codex noted, 17 Nov]"},
+  {"source_type":"person","ref":"mex edit 2026-11-18","evidence":"person","level":"personal","expected":"[you said, 18 Nov]"}
+]

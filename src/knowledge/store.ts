@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, opendirSync } from "node:fs";
+import { existsSync, opendirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { openRecord, openRecordReadOnly, projectIdentity, projectDataDirectory } from "../record/index.js";
 import { assertPersonQuote, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type EntryKind, type KnowledgeEntry } from "./entry.js";
-import { containedDirectory, createEntryFile, readEntryFile, personalReadGuard } from "./files.js";
+import { containedDirectory, createEntryFile, readEntryFile, personalReadGuard, replaceEntryFile } from "./files.js";
 import { knowledgeProject, type KnowledgeOptions, type KnowledgeProject } from "./context.js";
 import { references, type References } from "./references.js";
 import { gateEntry, sanitizeText } from "./gates.js";
@@ -11,11 +11,13 @@ import { entryLabel, KNOWLEDGE_PRIORITY, type KnowledgeLevel } from "./labels.js
 import { expandTeam, teamEntries, type TeamEntry } from "./team.js";
 import { readHints, type HintEntry } from "./hints.js";
 import { aidsEnabled, rankNative } from "./native-rank.js";
+import { deriveNoteChecks } from "./note-checks.js";
 export type { KnowledgeOptions } from "./context.js";
 
 export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
 export type StoredEntry = PersonalEntry | TeamEntry | HintEntry;
-export interface NoteInput { text: string; kind?: EntryKind; scope?: string[]; oneLine?: string; }
+/** savedBy: the agent that ran `mex note` for the person; its notes are labelled as the agent's, never "you said". */
+export interface NoteInput { text: string; kind?: EntryKind; scope?: string[]; oneLine?: string; savedBy?: "claude-code" | "codex"; }
 /** A decision that cites a commit is proposed until that commit lands on the default branch. */
 export interface DecisionInput { commit?: NonNullable<KnowledgeEntry["mex"]["commit"]>; supersedes?: string[]; }
 function readDirectory(project: KnowledgeProject): string | undefined {
@@ -25,20 +27,94 @@ function readDirectory(project: KnowledgeProject): string | undefined {
 function display(entry: KnowledgeEntry): PersonalEntry {
   return { level: "personal", label: entryLabel(entry, "personal"), entry };
 }
-/** Explicit note creation is the only operation here that opens a writer. */
+/** A reserved id namespace marks setup's entries without changing manifest provenance. */
+export function isSetupRecipe(entry: KnowledgeEntry): boolean {
+  return /^mx_setup[a-f0-9]{24}$/u.test(entry.mex.id) && entry.mex.kind === "recipe" && entry.mex.source.type === "config";
+}
+
+/**
+ * Every package's test and build, within a bound. A package's commands sit in
+ * a rule file that loads only for that package, so they cost nothing until the
+ * agent works there; the bound keeps a very large monorepo's setup quick.
+ */
+export const MAX_SETUP_RECIPES = 120;
+
+/** Refresh only setup-owned personal entries, through the note store's gates and publication locks. */
+export function refreshSetupRecipes(entries: KnowledgeEntry[], options: KnowledgeOptions, retireMissing = true, now = new Date()): number {
+  if (entries.length > MAX_SETUP_RECIPES || entries.some(entry => !isSetupRecipe(entry) || entry.mex.status !== "active"
+    || entry.mex.checks.length !== 1 || entry.mex.checks[0]?.kind !== "command" || entry.mex.checks[0]?.role !== "complete")) {
+    throw new KnowledgeError("INVALID_ENTRY", `Setup requires at most ${MAX_SETUP_RECIPES} recipes with complete command checks.`);
+  }
+  const source = references(projectIdentity(options.projectPath).rootPath);
+  const gated = entries.map(entry => {
+    const clean = gateEntry(entry, source);
+    if (clean.text !== entry.text || clean.mex.one_line !== entry.mex.one_line || clean.mex.checks.length !== 1) {
+      throw new KnowledgeError("UNVERIFIED_SOURCE", "A setup command could not be verified.");
+    }
+    serializeEntry(clean);
+    return clean;
+  });
+  const writer = openRecord({ ...options, create: true });
+  try {
+    writer.db.exec("BEGIN IMMEDIATE");
+    const projectId = writer.checkout(options.projectPath)?.project_id;
+    if (!projectId || !/^[gf]-[a-f0-9]{24}$/u.test(projectId)) throw new KnowledgeError("RECORD_UNAVAILABLE", "The project could not be registered.");
+    containedDirectory(writer.location.home, ["projects", projectId]);
+    projectDataDirectory(writer.location, projectId);
+    const directory = containedDirectory(writer.location.home, ["projects", projectId, "notes"], true)!;
+    const project = knowledgeProject(options);
+    const wanted = new Map(gated.map(entry => [entry.mex.id, entry]));
+    const names = readdirSync(directory);
+    if (names.length > KNOWLEDGE_LIMITS.entries) throw new KnowledgeError("STORE_LIMIT", "Personal note directory exceeds the scan limit.");
+    let bytes = 0, saved = 0;
+    for (const name of names.filter(name => /^mx_setup[a-f0-9]{24}\.md$/u.test(name))) {
+      const content = readEntryFile(join(directory, name));
+      if (!content) continue;
+      bytes += Buffer.byteLength(content);
+      if (bytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", "Setup recipes exceed the byte scan limit.");
+      const before = parseEntry(content), id = name.slice(0, -3), next = wanted.get(id);
+      wanted.delete(id);
+      // A person can edit or forget a setup entry. Setup never takes it back.
+      if (before.mex.id !== id || !isSetupRecipe(before) || project.retired.has(id)
+        || (before.mex.status !== "active" && before.mex.retired?.by !== "mex setup")) continue;
+      if (next) {
+        next.mex.created = before.mex.created;
+        const updated = serializeEntry(next);
+        if (updated !== content) replaceEntryFile(directory, id, content, updated);
+        saved++;
+      } else if (retireMissing && before.mex.status === "active") {
+        before.mex.status = "retired";
+        before.mex.retired = { by: "mex setup", at: now.toISOString().slice(0, 10), reason: "This command is no longer in the setup recipes." };
+        replaceEntryFile(directory, id, content, serializeEntry(before));
+      }
+    }
+    for (const entry of wanted.values()) {
+      if (project.retired.has(entry.mex.id)) continue;
+      createEntryFile(directory, entry.mex.id, serializeEntry(entry));
+      saved++;
+    }
+    return saved;
+  } finally {
+    try { writer.db.exec("ROLLBACK"); } finally { writer.close(); }
+  }
+}
+/** Explicit note creation uses the same gates and personal store as setup. */
 export function note(input: NoteInput & DecisionInput, options: KnowledgeOptions, now = new Date()): PersonalEntry {
   const created = now.toISOString().slice(0, 10);
   const entry: KnowledgeEntry = {
     mex: {
       id: `mx_${randomBytes(12).toString("hex")}`, kind: input.kind ?? "rule", scope: input.scope ?? ["**"],
-      source: { type: "person", ref: `mex note ${created}`, quote: input.text }, evidence: "person",
+      source: { type: "person", ref: input.savedBy ? `mex note by ${input.savedBy} ${created}` : `mex note ${created}`, quote: input.text }, evidence: "person",
       one_line: input.oneLine ?? input.text.trim().replace(/\s+/gu, " "), checks: [], status: input.commit ? "proposed" : "active", created,
       ...(input.commit ? { commit: input.commit } : {}), ...(input.supersedes?.length ? { supersedes: input.supersedes } : {}),
     }, text: input.text.trim().replace(/\r\n/g, "\n"),
   };
   // Reject bad input before initializing any persistent state.
   serializeEntry(entry);
-  const source = references(projectIdentity(options.projectPath).rootPath);
+  const rootPath = projectIdentity(options.projectPath).rootPath;
+  const source = references(rootPath);
+  // Free checks from what the note names; none found leaves it to the background filter.
+  if (!input.commit) entry.mex.checks = deriveNoteChecks(entry.text, rootPath);
   const gated = gateEntry(entry, source);
   const bytes = serializeEntry(gated);
   assertPersonQuote(gated, sanitizeText(input.text, source));
@@ -164,7 +240,9 @@ export function recall(query: string, options: KnowledgeOptions, limit = 20): Re
   let setting: string | undefined;
   try { setting = reader?.setting("global", "delivery.aliases"); } finally { reader?.close(); }
   const ranked = rankNative(query, [...byId.values()].map(item => item.entry), aidsEnabled(options.env ?? process.env, setting));
-  if (ranked.hits) {
+  // The ranker leaves out words most entries share, so with a few notes a word
+  // they all use ("staging") finds nothing; the literal match then answers.
+  if (ranked.hits?.length) {
     const found = ranked.hits.map(hit => ({ ...recallItem(byId.get(hit.id)!), score: hit.score, why: { matched: hit.matched, exact: hit.exact } }));
     return { entries: found.slice(0, limit), truncated: found.length > limit, withheld: team.withheld + hints.withheld, ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "native" } };
   }
@@ -174,5 +252,5 @@ export function recall(query: string, options: KnowledgeOptions, limit = 20): Re
   entries.sort((a, b) => KNOWLEDGE_PRIORITY.indexOf(a.level) - KNOWLEDGE_PRIORITY.indexOf(b.level)
     || b.created.localeCompare(a.created) || a.id.localeCompare(b.id));
   const withheld = team.withheld + hints.withheld;
-  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(withheld ? { withheld } : {}), ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "legacy", reason: ranked.reason } };
+  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(withheld ? { withheld } : {}), ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "legacy", reason: ranked.reason ?? "no-native-hits" } };
 }

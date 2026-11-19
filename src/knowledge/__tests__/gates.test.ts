@@ -52,6 +52,33 @@ describe("deterministic entry gates", () => {
       expect(sanitizeText(`Use \`${code}\` here.`, source), code).toBe("Use [unverified command removed] here.");
     }
   });
+  it("keeps a person's sentence around a real command and still checks what follows", () => {
+    const source = references(root);
+    expect(sanitizeText("Use npm run test before pushing.", source)).toBe("Use npm run test before pushing.");
+    expect(sanitizeText("Run npm test when CI fails, then read the log.", source)).toBe("Run npm test when CI fails, then read the log.");
+    expect(sanitizeText("Run npm missing before pushing.", source)).toBe("Run [unverified command removed] before pushing.");
+    expect(sanitizeText("Run npm test before rm -rf build", source)).toBe("Run npm test before [unverified command removed]");
+    expect(sanitizeText("Run npm test && rm -rf / before pushing", source)).not.toContain("rm -rf");
+    // Prose after a plain word is not a command.
+    expect(sanitizeText("Reading all JavaScript before Python changes root Python version precedence.", source)).toBe("Reading all JavaScript before Python changes root Python version precedence.");
+    // A sentence about a tool is not a command: its next word is prose or a version.
+    for (const prose of ["We always use pnpm in this repo, never npm or yarn.", "Use node 22 for builds.", "Use git with signed commits only.", "Prefer bun over node for scripts."]) {
+      expect(sanitizeText(prose, source), prose).toBe(prose);
+    }
+    expect(sanitizeText("Run npm frobnicate before pushing.", source)).toBe("Run [unverified command removed] before pushing.");
+  });
+  it("keeps a real command when the sentence goes on after it, as in the first screen's example note", () => {
+    const source = references(root);
+    for (const prose of ["Run the tests with npm run test from the repo root", "Run the tests with npm test from the repo root",
+      "Use npm run test in CI only", "Run npm test from C:\\work\\repo"]) {
+      expect(sanitizeText(prose, source), prose).toBe(prose);
+    }
+    // The prose tail must be plain: shell syntax or another program still removes the whole command.
+    expect(sanitizeText("Run npm test from the root; rm -rf /", source)).not.toContain("rm -rf");
+    expect(sanitizeText("Run npm test from the root and rm -rf build", source)).not.toContain("rm -rf");
+    expect(sanitizeText("Run npm test from $HOME", source)).toBe("Run [unverified command removed]");
+    expect(sanitizeText("Run npm missing from the repo root", source)).toBe("Run [unverified command removed]");
+  });
   it("does not let learned entries validate their own commands", () => {
     mkdirSync(join(root, ".mex/learned"), { recursive: true });
     writeFileSync(join(root, ".mex/learned/mx_self001.md"), "`npm missing`\n");

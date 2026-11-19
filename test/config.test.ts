@@ -45,7 +45,7 @@ describe("findConfig", () => {
 
   it("throws when no .mex/ scaffold found at all", () => {
     mkdirSync(join(tmpDir, ".git"));
-    expect(() => findConfig(tmpDir)).toThrow("No .mex/ scaffold found. Run: mex setup");
+    expect(() => findConfig(tmpDir)).toThrow("No .mex/ scaffold found. Run mex to turn MEX on here; mex status shows its state.");
   });
 
   it("works without .git if a complete scaffold exists", () => {

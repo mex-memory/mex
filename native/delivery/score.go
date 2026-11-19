@@ -267,12 +267,9 @@ func newScorer(name, query string, snap *entries.Snapshot, items []shaped, misse
 	}
 }
 
-// DefaultScorer is the admission scorer when no setting names one. On the
-// session replay plain BM25 tied tiers on the dev sessions and sent two fewer
-// wrong ids on the sealed test sessions, but it holds back a scoped pitfall
-// whose file shares no words with it, which breaks the read-moment promise;
-// tiers stays the default until a replay shows a real difference.
-const DefaultScorer = "tiers"
+// DefaultScorer orders the remaining non-exempt items. Deterministic first
+// touches and exact fixes are lane rules, independent of lexical scores.
+const DefaultScorer = "bm25"
 
 func validScorer(s string) bool { return s == "tiers" || s == "bm25" || s == "fcfs" || s == "risk" }
 

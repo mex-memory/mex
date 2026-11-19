@@ -7,6 +7,6 @@ describe("session receipt explanation", () => {
       { id: "mx_ruleaa", kind: "rule", level: "team", title: "Use the pool", action: "given", detail: "" },
       { id: "mx_recipe", kind: "recipe", level: "team", title: "Run unit tests", action: "given", detail: "" },
     ] };
-    expect(whatLine(s)).toBe("MEX · this session: gave 2 items (1 recipe, 1 team rule) · withheld 1 out of date · replaced 0 long outputs · details: mex hub");
+    expect(whatLine(s)).toBe("MEX · this session: gave 2 items (1 recipe, 1 team rule) · withheld 1 out of date · replaced 0 long outputs · details: mex status");
   });
 });

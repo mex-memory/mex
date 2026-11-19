@@ -5,7 +5,7 @@ export const optionalFor = (version) => Object.fromEntries(TARGETS.map((target) 
 
 export function makePlan({ event, refType, refName, dryRun = true, requireGates = true, version, platformVersions, commit }) {
   if (!['push', 'pull_request', 'workflow_dispatch'].includes(event)) throw new Error('Unsupported release event');
-  if (!/^0\.9\.0(?:-(?:beta|rc)\.(?:0|[1-9]\d*))?$/.test(version)) throw new Error('Unsupported release version');
+  if (!/^0\.9\.0(?:-(?:beta\.(?:0|[1-9]\d*)(?:\.[1-9]\d*)?|rc\.(?:0|[1-9]\d*)))?$/.test(version)) throw new Error('Unsupported release version');
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid release commit');
   if (typeof dryRun !== 'boolean' || typeof requireGates !== 'boolean') throw new Error('Release switches must be booleans');
   if (platformVersions.length !== 6 || platformVersions.some((value) => value !== version)) throw new Error('Platform package versions must equal the root version');
@@ -14,7 +14,8 @@ export function makePlan({ event, refType, refName, dryRun = true, requireGates 
   const dry = event === 'pull_request' || (event === 'workflow_dispatch' && dryRun);
   const required = event === 'pull_request' ? false : event === 'push' ? true : requireGates;
   if (!dry && !required) throw new Error('A real publish cannot bypass gates');
-  const beta = /^0\.9\.0-beta\.(\d+)$/.exec(version);
+  // A fix release on a beta (0.9.0-beta.1.1) passes that beta's gates.
+  const beta = /^0\.9\.0-beta\.(\d+)(?:\.\d+)?$/.exec(version);
   return { version, commit, dryRun: dry, requireGates: required, distTag: version.includes('-') ? 'next' : 'latest',
     prerelease: version.includes('-'), release: beta ? (+beta[1] <= 1 ? 'beta.1' : 'beta.2') : 'final', tag: `v${version}`, packages: packagesFor(version) };
 }

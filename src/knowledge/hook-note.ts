@@ -20,7 +20,7 @@ export async function hookNote(input: string): Promise<HookNoteResult> {
     const { note } = await import("./store.js");
     const saved = note({ text: request.text }, { projectPath: request.project });
     const { queueNativeRebuild } = await import("./native-queue.js");
-    queueNativeRebuild(request.project);
+    queueNativeRebuild(request.project, { local: true });
     return { ok: true, id: saved.entry.mex.id };
   } catch (error) {
     if (error instanceof KnowledgeError) return { ok: false, message: `MEX didn't save that note: ${error.message}` };

@@ -10,7 +10,7 @@
  */
 
 export type FindingState = "ok" | "background" | "attention";
-export interface Finding { state: FindingState; text: string; }
+export interface Finding { state: FindingState; text: string; details?: string[]; }
 export interface ScreenModel {
   name: string;
   /** Measured from command start to the screen. */
@@ -136,11 +136,13 @@ export function renderFindings(findings: readonly Finding[], mode: ScreenMode): 
   for (const finding of findings) {
     const mark = MARKS[finding.state][mode.ascii ? 1 : 0];
     const wrapped = wrap(`${mark} ${finding.text}`, width, mark.length + 1);
-    if (!mode.color) { lines.push(...wrapped); continue; }
+    const details = (finding.details ?? []).flatMap(detail => wrap(`    ${mode.ascii ? detail.replace(/…/gu, "...") : detail}`, width, 4));
+    if (!mode.color) { lines.push(...wrapped, ...details); continue; }
     if (finding.state === "background") { for (const line of wrapped) lines.push(margin + paint.dim(line)); continue; }
     const style = finding.state === "ok" ? paint.green : paint.yellow;
     lines.push(margin + style(mark) + wrapped[0]!.slice(mark.length));
     lines.push(...wrapped.slice(1).map(line => margin + line));
+    lines.push(...details.map(line => margin + line));
   }
   return lines;
 }
@@ -156,6 +158,29 @@ export function renderNotes(notes: readonly string[], mode: ScreenMode): string[
 export function renderDone(ms: number, mode: ScreenMode): string[] {
   const text = `Done in ${formatSeconds(ms)}${mode.ascii ? " - " : " · "}$0`;
   return mode.color ? ["", MARGIN + paint.dim(text)] : [text];
+}
+
+/**
+ * The first note a person tries. It is their own fact: setup already gives the
+ * agents everything the repo's files say, such as its test command, so a note
+ * repeating one of those would show nothing. Double quotes keep `<` and `>`
+ * literal in every shell, cmd.exe included.
+ */
+export const NOTE_EXAMPLE = 'mex note "<something your agents keep getting wrong here, and why>"';
+
+export function renderNext(options: { short: boolean; learning?: string }, mode: ScreenMode): string[] {
+  if (options.short) return renderNotes(['Saved notes reach new sessions; mex note "<fact>" adds one.'], mode);
+  // Learning from typed statements is opt-in; anything but "on" is off.
+  const learning = options.learning === "on"
+    ? "Learning from what you type runs in the background with your agent's smallest model, at most 3% of your usage. Off: mex config set learning.statements off"
+    : 'Save a note with mex note, or type "mex note: …" in a session. Learning from everything you type is off until you turn it on: mex config set learning.statements on';
+  return renderNotes([
+    "", "From now on, in Claude Code and Codex",
+    "· Notes you save reach every new session. A note the code has made false is held back.", `· ${learning}`,
+    "", "Try it", `  ${NOTE_EXAMPLE}`,
+    "  Then start a new Claude Code or Codex session and ask about it.",
+    "", "Undo: mex off (this repo) · mex uninstall (everything)",
+  ].map(line => mode.ascii ? line.replace(/·/gu, "-").replace(/…/gu, "...") : line), mode);
 }
 
 export function renderScreen(model: ScreenModel, mode: ScreenMode): string[] {

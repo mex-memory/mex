@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "revision": "reviewed-v2",
+  "parent_dataset_sha256": "6d693e9985c432356f6f0f1bf5319bc87559bece082cbb40314ce6637c69b687",
+  "scope_policy": "Behavior claims use the stated normal/default path. Explicit overrides and pre-existing outputs are controls, not implicit universal assertions. Conditions needed to make a seed claim true are stated in its text.",
+  "claim_changes": [
+    {
+      "id": "b06",
+      "file": "src/middleware/etag/index.ts",
+      "before": "etag emits weak validators (W/) when the weak option is on.",
+      "after": "When generating an ETag, etag prefixes it with W/ when the weak option is on.",
+      "reason": "An existing ETag is preserved; the weak option governs generation."
+    },
+    {
+      "id": "b10",
+      "file": "src/middleware/body-limit/index.ts",
+      "before": "bodyLimit answers 413 when the body is over the limit.",
+      "after": "With Content-Length above maxSize, bodyLimit returns 413 using its default onError handler.",
+      "reason": "Early checkpoints do not enforce unknown-length bodies; a custom onError may return another response."
+    },
+    {
+      "id": "b12",
+      "file": "src/middleware/compress/index.ts",
+      "before": "compress skips responses smaller than its 1024-byte threshold.",
+      "after": "With the default threshold, compress skips a response whose Content-Length is below 1024 bytes.",
+      "reason": "Without Content-Length, even a small response is compressed."
+    },
+    {
+      "id": "k09",
+      "file": "package.json",
+      "before": "Before a release the Deno tests run and the package is built.",
+      "after": "The prerelease npm script is exactly `bun test:deno && bun run build`.",
+      "reason": "The claim concerns the configured npm hook, not every possible release path."
+    },
+    {
+      "id": "k10",
+      "file": "package.json",
+      "before": "Every build is followed by publint.",
+      "after": "The postbuild npm script is exactly `publint`.",
+      "reason": "The npm hook is not a universal claim about direct build-tool invocations."
+    },
+    {
+      "id": "k12",
+      "file": "package.json",
+      "before": "The package supports Node 16.9.0 and later.",
+      "after": "The declared Node engine range is exactly `>=16.9.0`.",
+      "reason": "The manifest declaration does not independently prove runtime compatibility."
+    },
+    {
+      "id": "v01",
+      "file": "src/router.ts",
+      "before": "The router knows the methods get, post, put, delete, options and patch.",
+      "after": "The router method-name list is exactly get, post, put, delete, options and patch, in that order.",
+      "reason": "Adding a method does not make the old subset unknown; this structural claim concerns the exact declared list."
+    },
+    {
+      "id": "v06",
+      "file": "src/utils/mime.ts",
+      "before": "CSV files are served as text/csv.",
+      "after": "The MIME mapping for CSV is exactly 'text/csv', without parameters.",
+      "reason": "The later value adds a charset parameter without changing the MIME essence; this structural claim concerns the exact mapping string."
+    },
+    {
+      "id": "v07",
+      "file": "src/utils/mime.ts",
+      "before": ".mjs files are served as text/javascript.",
+      "after": "The MIME mapping for .mjs is exactly 'text/javascript', without parameters.",
+      "reason": "The later value adds a charset parameter without changing the MIME essence; this structural claim concerns the exact mapping string."
+    },
+    {
+      "id": "v08",
+      "file": "src/utils/mime.ts",
+      "before": "SVG files are served as image/svg+xml.",
+      "after": "The MIME mapping for .svg is exactly 'image/svg+xml', without parameters.",
+      "reason": "The later value adds a charset parameter without changing the MIME essence; this structural claim concerns the exact mapping string."
+    }
+  ],
+  "label_changes": [
+    {
+      "claim": "b13",
+      "checkpoint": "C4",
+      "sha": "0c45036d6b0ddf42ab2fa44639dc8710825d5c0f",
+      "file": "src/utils/cookie.ts",
+      "source_sha256": "e84350dc1452ce04dc0c104b69f2388878b138f0acad4e67381d63dd44fb4909",
+      "before": true,
+      "after": false,
+      "reason": "parse() uses relaxedCookieNameRegEx; validCookieNameRegEx survives only in _serialize()."
+    },
+    {
+      "claim": "b13",
+      "checkpoint": "C5",
+      "sha": "52febbcc30bc509d5e4987577e63906fe08fc471",
+      "file": "src/utils/cookie.ts",
+      "source_sha256": "69b56c33f52927288e40a5bcb07512cf723be968b3e012e4f8d99584933b510b",
+      "before": true,
+      "after": false,
+      "reason": "parse() uses relaxedCookieNameRegEx; validCookieNameRegEx survives only in _serialize()."
+    }
+  ],
+  "reviewed_dataset_sha256": "b8199a29a86bf9b6b89f31852f232a0b25bf7179cc0b8644ea412330c83294cd"
+}

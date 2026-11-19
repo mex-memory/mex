@@ -6,6 +6,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, isAbsolute } from "node:path";
 import { realPath } from "../record/project.js";
+import { installationChanges } from "../install/index.js";
 import type { Agent } from "./rule-files.js";
 
 /** Native files are written for these; the rest come with their adapters. */
@@ -21,7 +22,7 @@ const SIGNS: Record<NativeAgent, string[]> = {
   copilot: [".github/copilot-instructions.md", ".github/instructions"],
 };
 
-interface Heartbeat { agent: string; cwd: string; mtimeMs: number; }
+interface Heartbeat { agent: string; cwd: string; mtimeMs: number; ended?: boolean; }
 
 function heartbeats(mexHome: string): Heartbeat[] {
   const root = join(mexHome, "heartbeats");
@@ -36,8 +37,8 @@ function heartbeats(mexHome: string): Heartbeat[] {
       try {
         const stat = statSync(path);
         if (!stat.isFile() || stat.size > 64 * 1024) continue;
-        const body = JSON.parse(readFileSync(path, "utf8")) as { agent?: unknown; cwd?: unknown };
-        if (typeof body.cwd === "string") out.push({ agent: typeof body.agent === "string" ? body.agent : agent, cwd: body.cwd, mtimeMs: stat.mtimeMs });
+        const body = JSON.parse(readFileSync(path, "utf8")) as { agent?: unknown; cwd?: unknown; ended?: unknown };
+        if (typeof body.cwd === "string") out.push({ agent: typeof body.agent === "string" ? body.agent : agent, cwd: body.cwd, mtimeMs: stat.mtimeMs, ended: typeof body.ended === "string" && body.ended !== "" });
       } catch { /* a half-written heartbeat is skipped */ }
     }
   }
@@ -60,8 +61,20 @@ export function agentsInUse(root: string, mexHome?: string): NativeAgent[] {
     for (const beat of heartbeats(mexHome)) {
       if ((NATIVE_AGENTS as readonly string[]).includes(beat.agent) && inside(realRoot, beat.cwd)) seen.add(beat.agent as NativeAgent);
     }
+    // A fresh repo shows no sign yet: the agents MEX installed hooks for on
+    // this machine are the ones its sessions will use, so a note written
+    // before the first session is already in their rule files.
+    if (!seen.size) for (const agent of installedAgents(mexHome)) seen.add(agent);
   }
   return NATIVE_AGENTS.filter(agent => seen.has(agent));
+}
+
+/** Agents with MEX hooks installed on this machine, from the install record. Never throws. */
+function installedAgents(mexHome: string): NativeAgent[] {
+  try {
+    const rows = installationChanges({ home: mexHome });
+    return NATIVE_AGENTS.filter(agent => rows.some(row => row.agent === agent));
+  } catch { return []; }
 }
 
 /** Agents with a session running in this checkout now. */
@@ -69,7 +82,8 @@ export function liveSessions(root: string, mexHome: string, now = Date.now()): A
   const realRoot = realPath(root);
   const live = new Set<Agent>();
   for (const beat of heartbeats(mexHome)) {
-    if (now - beat.mtimeMs < LIVE_SESSION_MS && inside(realRoot, beat.cwd)) live.add(beat.agent as Agent);
+    // A session the agent reported ended is not live, so rule files can be rebuilt at once.
+    if (!beat.ended && now - beat.mtimeMs < LIVE_SESSION_MS && inside(realRoot, beat.cwd)) live.add(beat.agent as Agent);
   }
   return [...live];
 }

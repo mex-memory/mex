@@ -128,17 +128,21 @@ describe("CLI smoke test against a fixture scaffold", { timeout: testTimeoutMs }
     const root = project();
     scaffold(root);
 
-    const result = mex(root, ["doctor"]);
+    // The 0.8 scaffold check lives behind --legacy; plain doctor shows 0.9 health.
+    const result = mex(root, ["doctor", "--legacy"]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("mex doctor");
     expect(result.stdout).toContain("Drift");
+    const current = mex(root, ["doctor"]);
+    expect(current.stdout).toContain("Agents");
+    expect(current.stderr).not.toMatch(/Error|heartbeat/u);
   });
 
   it("help lists the top-level commands the docs promise", () => {
     const root = project();
     const result = mex(root, ["--help"]);
     expect(result.status).toBe(0);
-    for (const command of ["check", "doctor", "log", "graph"]) {
+    for (const command of ["check", "doctor", "note", "recall", "share"]) {
       expect(result.stdout).toContain(command);
     }
   });

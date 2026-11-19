@@ -198,7 +198,7 @@ func TestEmptyHooksInitializationIsAtomic(t *testing.T) {
 	}
 	defer db.Close()
 	var steps []migration
-	for i, name := range []string{"0001_init.sql", "0002_delivery.sql", "0003_followups.sql", "0004_rendering.sql", "0005_probes.sql", "0006_intent.sql", "0007_surfaces.sql"} {
+	for i, name := range []string{"0001_init.sql", "0002_delivery.sql", "0003_followups.sql", "0004_rendering.sql", "0005_probes.sql", "0006_intent.sql", "0007_surfaces.sql", "0008_search_answers.sql", "0009_budget_lanes.sql", "0010_false_send_counts.sql"} {
 		data, err := schemas.ReadFile("schema/hooks/" + name)
 		if err != nil {
 			t.Fatal(err)

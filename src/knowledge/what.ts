@@ -44,7 +44,7 @@ export function whatLine(s: SessionSummary): string {
   }
   const detail = [...kinds].sort(([a], [b]) => a.localeCompare(b)).map(([name, n]) => `${n} ${name}${n === 1 ? "" : "s"}`).join(", ");
   const qualifier = s.partial ? "at least " : "";
-  return `MEX · this session: gave ${qualifier}${s.gave} items${detail ? ` (${detail})` : ""} · withheld ${qualifier}${s.withheld} out of date · replaced ${qualifier}${s.replaced} long outputs · details: mex hub`;
+  return `MEX · this session: gave ${qualifier}${s.gave} items${detail ? ` (${detail})` : ""} · withheld ${qualifier}${s.withheld} out of date · replaced ${qualifier}${s.replaced} long outputs · details: mex status`;
 }
 /** Read only: no migrations, registration or snapshot work. Old receipts have no title. */
 export function what(options: KnowledgeOptions, session = ""): SessionSummary {
@@ -90,6 +90,8 @@ export function what(options: KnowledgeOptions, session = ""): SessionSummary {
       empty,
       ...it
     } of rows.slice(0, 400)) {
+      // Internal markers (the start brief's slot) are bookkeeping, not knowledge given.
+      if (it.id.startsWith("mex:")) continue;
       it.title = it.title.replace(/\s+/gu, " ").slice(0, 1024);
       out.items.push(it);
       if (["given", "replaced"].includes(it.action)) {

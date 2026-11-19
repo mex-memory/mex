@@ -58,7 +58,9 @@ type Result struct {
 	Checks  []CheckResult `json:"checks"`
 	// Inputs maps every file the evaluation read to its hash today
 	// ("missing" or "unreadable" when it couldn't be read).
-	Inputs map[string]string `json:"inputs"`
+	Inputs         map[string]string `json:"inputs"`
+	EvaluationHash string            `json:"evaluation_hash,omitempty"`
+	Label          string            `json:"label,omitempty"`
 }
 
 // Evaluator evaluates entries against one checkout. It reads each file once.
@@ -158,6 +160,11 @@ func (ev *Evaluator) floor(c Check, inputs map[string]string) []string {
 	// still names every explicit target read, without changing floor semantics.
 	if file := str(c.Target, "file"); file != "" {
 		inputs[file] = inputState(ev.files.read(file))
+	}
+	if c.Kind == "pattern" {
+		if file := exactPatternFile(c.Target); file != "" {
+			inputs[file] = inputState(ev.files.read(file))
+		}
 	}
 	sort.Strings(changed)
 	return changed

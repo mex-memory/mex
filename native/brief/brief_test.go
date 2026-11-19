@@ -2,10 +2,12 @@ package brief
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mex-memory/mex/native/check"
 )
@@ -38,7 +40,7 @@ func build(t *testing.T, opts Options) Result {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Tokens != TokenBound(r.Text) || r.Tokens > MaxTokens {
+	if r.Tokens != TokenBound(r.Text) || r.Tokens > MaxNoteTokens {
 		t.Fatalf("budget: %+v", r)
 	}
 	return r
@@ -67,6 +69,62 @@ func TestBriefPriorityPersonalThenAtMostThreeAreaClaims(t *testing.T) {
 	}
 	if again := build(t, opts); again.Text != r.Text {
 		t.Fatal("same inputs changed the brief")
+	}
+}
+
+// A session that starts on a busy machine can pass the deadline before the
+// first entry is looked at. The person's own notes still go out; team
+// entries are what waits for the moments.
+func TestBriefKeepsThePersonsNotesPastTheDeadline(t *testing.T) {
+	opts := setup(t)
+	put(t, opts.Checkout, ".mex/learned/mx_rule01.md", entry("mx_rule01", "Team claim.", "rule", "**", "[]"))
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_note01.md", entry("mx_note01", "Small commits.", "rule", "**", "[]"))
+	opts.Deadline = time.Now().Add(-time.Second)
+	r := build(t, opts)
+	if len(r.Items) != 1 || r.Items[0].ID != "mx_note01" || strings.Contains(r.Text, "Team claim") {
+		t.Fatal(r.Text)
+	}
+	// Bounded: past the deadline at most maxLateNotes notes are checked. Notes
+	// too long to fit use those checks up, so the short one after them waits.
+	for i := 0; i < maxLateNotes+2; i++ {
+		id := fmt.Sprintf("mx_long%02d", i)
+		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", entry(id, strings.Repeat("x", 950), "rule", "**", "[]"))
+	}
+	if r = build(t, opts); len(r.Items) != 0 {
+		t.Fatal(r.Text)
+	}
+	opts.Deadline = time.Time{}
+	if r = build(t, opts); len(r.Items) == 0 || r.Items[0].ID != "mx_note01" {
+		t.Fatal(r.Text)
+	}
+}
+
+// Notes no rule file carries for this agent (just saved, or Codex in a repo
+// whose AGENTS.md is the person's) get room beyond MaxTokens; team entries
+// still stop at MaxTokens.
+func TestBriefGivesThePersonsNotesTheirOwnRoom(t *testing.T) {
+	opts := setup(t)
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("mx_note%02d", i)
+		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", entry(id, fmt.Sprintf("Note %d: deploys from the release branch only, after the QA sign-off.", i), "rule", "**", "[]"))
+	}
+	put(t, opts.Checkout, ".mex/learned/mx_team01.md", entry("mx_team01", "Team claim.", "rule", "**", "[]"))
+	r := build(t, opts)
+	notes := 0
+	for _, item := range r.Items {
+		if item.Level == "personal" {
+			notes++
+		}
+	}
+	if notes != 6 || strings.Contains(r.Text, "Team claim") || r.Tokens <= MaxTokens {
+		t.Fatal(r.Text)
+	}
+	// With room left under MaxTokens a team entry still follows the notes.
+	opts2 := setup(t)
+	put(t, opts2.MexHome, "projects/"+project+"/notes/mx_note01.md", entry("mx_note01", "Small commits.", "rule", "**", "[]"))
+	put(t, opts2.Checkout, ".mex/learned/mx_team01.md", entry("mx_team01", "Team claim.", "rule", "**", "[]"))
+	if r := build(t, opts2); !strings.Contains(r.Text, "Team claim") || r.Tokens > MaxTokens {
+		t.Fatal(r.Text)
 	}
 }
 
@@ -100,6 +158,32 @@ func TestBrokenAndChangedRecipesNeverEnterTheBrief(t *testing.T) {
 	put(t, opts.Checkout, "package.json", `{"scripts":{}}`)
 	if r := build(t, opts); len(r.Items) != 0 {
 		t.Fatal(r)
+	}
+}
+
+func TestSetupRecipesLeaveRoomForPersonalNotes(t *testing.T) {
+	opts := setup(t)
+	for _, id := range []string{"mx_setup0123456789abcdef01234567", "mx_setup1123456789abcdef01234567"} {
+		body := strings.Replace(entry(id, "Build command.", "recipe", "**", "[]"), "type: docs, ref: README.md", "type: config, ref: package.json", 1)
+		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", body)
+	}
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_person.md", entry("mx_person", "My tests.", "recipe", "**", "[]"))
+	r := build(t, opts)
+	if len(r.Items) != 1 || r.Items[0].ID != "mx_person" || strings.Contains(r.Text, "Build command") {
+		t.Fatal(r.Text)
+	}
+	// A stale setup recipe already in native files still asks for a rebuild,
+	// but its correction must not displace the person's note from the brief.
+	id := "mx_setup0123456789abcdef01234567"
+	checks := "\n    - kind: command\n      role: complete\n      target: {file: package.json, pointer: /scripts/build, run: npm run build}\n      saw: {exists: true}\n      files: {}"
+	body := strings.Replace(entry(id, "Build command.", "recipe", "**", checks), "type: docs, ref: README.md", "type: config, ref: package.json", 1)
+	put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", body)
+	text := "<!-- mex:generated -->\n- Build command. <!-- mex:" + id + " -->\n"
+	put(t, opts.Checkout, "AGENTS.md", text)
+	manifest(t, opts.MexHome, "projects/"+project+"/native-local.json", "AGENTS.md", text)
+	r = build(t, opts)
+	if !r.NativeStale || len(r.Corrections) != 0 || len(r.Items) != 1 || r.Items[0].ID != "mx_person" {
+		t.Fatalf("setup recipe consumed brief room: %+v", r)
 	}
 }
 
@@ -246,5 +330,65 @@ func TestRuleCacheIsBoundToCurrentCheckoutAndRuleBytes(t *testing.T) {
 	put(t, opts.Checkout, "CLAUDE.md", "Changed since the scan.")
 	if r := build(t, opts); len(r.Items) != 0 {
 		t.Fatal(r)
+	}
+}
+
+func TestStaleNoteInMexRuleFilesIsRetractedAndRebuildAsked(t *testing.T) {
+	opts := setup(t)
+	opts.Agent = "claude-code"
+	checks := "\n    - kind: key\n      role: complete\n      target: {file: package.json, pointer: /scripts/test}\n      saw: {value: vitest}\n      files: {}"
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_note02.md", entry("mx_note02", "Tests run with vitest.", "fact", "**", checks))
+	text := "<!-- mex:generated -->\n- Tests run with vitest. <!-- mx_note02 -->\n"
+	put(t, opts.Checkout, ".claude/rules/mex-local.md", text)
+	manifest(t, opts.MexHome, "projects/"+project+"/native-local.json", ".claude/rules/mex-local.md", text)
+	put(t, opts.Checkout, "package.json", `{"scripts":{"test":"vitest"}}`)
+	if r := build(t, opts); len(r.Corrections) != 0 || r.NativeStale || len(r.Items) != 0 {
+		t.Fatalf("a held note the agent already loads needs nothing: %+v", r)
+	}
+	// The code moved on: the agent loaded a note that no longer holds.
+	put(t, opts.Checkout, "package.json", `{"scripts":{"test":"jest"}}`)
+	r := build(t, opts)
+	if !r.NativeStale || len(r.Corrections) != 1 || r.Corrections[0].ID != "mx_note02" || len(r.Items) != 0 {
+		t.Fatalf("stale loaded note not retracted: %+v", r)
+	}
+	if !strings.Contains(r.Text, "Correction: the MEX note mx_note02") || strings.Contains(r.Text, "vitest") {
+		t.Fatalf("correction must name the note without repeating it: %q", r.Text)
+	}
+}
+
+func TestChangedPersonalFactIsNotRestatedInTheBrief(t *testing.T) {
+	opts := setup(t)
+	checks := "\n    - kind: key\n      role: supporting\n      target: {file: package.json, pointer: /scripts/test}\n      saw: {value: vitest}\n      files: {}"
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_note03.md", entry("mx_note03", "Tests run with vitest.", "fact", "**", checks))
+	put(t, opts.Checkout, "package.json", `{"scripts":{"test":"vitest"}}`)
+	if r := build(t, opts); len(r.Items) != 1 {
+		t.Fatalf("a held personal fact is given: %+v", r)
+	}
+	put(t, opts.Checkout, "package.json", `{"scripts":{"test":"jest"}}`)
+	if r := build(t, opts); len(r.Items) != 0 {
+		t.Fatalf("a changed personal fact was restated: %+v", r)
+	}
+}
+
+// A repo with its own AGENTS.md: MEX writes no rule file there, so the root
+// command reaches Codex in the brief, after the person's note, while it holds.
+func TestRootCommandReachesAnAgentWithNoRuleFileForIt(t *testing.T) {
+	opts := setup(t)
+	opts.Agent = "codex"
+	put(t, opts.Checkout, "package.json", `{"scripts":{"lint":"eslint ."}}`)
+	put(t, opts.Checkout, "AGENTS.md", "# Our own rules\n")
+	id := "mx_setup2123456789abcdef01234567"
+	checks := "\n    - kind: command\n      role: complete\n      target: {file: package.json, pointer: /scripts/lint, run: npm run lint}\n      saw: {exists: true}\n      files: {}"
+	body := strings.Replace(entry(id, "Lint: `npm run lint`", "recipe", "**", checks), "type: docs, ref: README.md", "type: config, ref: package.json", 1)
+	put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", body)
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_person.md", entry("mx_person", "My tests.", "rule", "**", "[]"))
+	r := build(t, opts)
+	if len(r.Items) != 2 || r.Items[0].ID != "mx_person" || r.Items[1].ID != id {
+		t.Fatalf("root command missing or ahead of the person's note: %+v", r.Items)
+	}
+	// Gone from package.json: never sent.
+	put(t, opts.Checkout, "package.json", `{"scripts":{}}`)
+	if r := build(t, opts); len(r.Items) != 1 {
+		t.Fatalf("a command whose script is gone was sent: %+v", r.Items)
 	}
 }

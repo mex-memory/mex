@@ -6,7 +6,7 @@
  */
 import { createHash } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { KNOWLEDGE_LIMITS } from "./contract.js";
@@ -116,16 +116,34 @@ function scopeOf(path: string, format: RuleFile["format"], data: Record<string, 
   }
 }
 
-/** Who loads a file. Claude reads AGENTS.md only where its folder has no CLAUDE.md. OpenCode reads only the root AGENTS.md. */
-function agentsFor(path: string, format: RuleFile["format"], present: Set<string>): Agent[] {
+const CLAUDE_FILES = ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"];
+
+/**
+ * Whether Claude Code reads the AGENTS.md files of this folder ("" is the
+ * root). By default it reads AGENTS.md only when no CLAUDE.md, CLAUDE.local.md
+ * or .claude/CLAUDE.md is in the working directory or above it, and a
+ * subfolder's only when that subfolder has none of its own. Every folder from
+ * the root down is checked, so a repo with a root CLAUDE.md gets MEX's own
+ * Claude rule files instead of an AGENTS.md that Claude never reads.
+ */
+export function claudeReadsAgentsIn(root: string, folder: string): boolean {
+  const parts = folder && folder !== "." ? folder.split("/") : [];
+  for (let i = 0; i <= parts.length; i++) {
+    const dir = parts.slice(0, i).join("/");
+    if (CLAUDE_FILES.some(name => existsSync(join(root, dir, name)))) return false;
+  }
+  return true;
+}
+
+/** Who loads a file. Claude reads AGENTS.md only with no CLAUDE.md at the root or on the way. OpenCode reads only the root AGENTS.md. */
+function agentsFor(root: string, path: string, format: RuleFile["format"]): Agent[] {
   const folder = posix.dirname(path);
-  const sibling = (name: string) => present.has(folder === "." ? name : `${folder}/${name}`);
   switch (format) {
     case "claude": case "claude-rules": return ["claude-code"];
     case "agents": {
       const agents: Agent[] = ["codex", "cursor", "copilot"];
       if (folder === ".") agents.push("opencode");
-      if (basename(path) === "AGENTS.md" && !sibling("CLAUDE.md") && !sibling("CLAUDE.local.md")) agents.unshift("claude-code");
+      if (basename(path) === "AGENTS.md" && claudeReadsAgentsIn(root, folder === "." ? "" : folder)) agents.unshift("claude-code");
       return agents;
     }
     case "cursor-rules": case "cursorrules": return ["cursor"];
@@ -155,7 +173,7 @@ export function discoverRuleFiles(root: string, listed?: readonly string[]): Arr
     } catch { continue; }
     if (text.includes(GENERATED_MARK)) continue; // MEX wrote it; the entries are the source.
     const { data } = frontmatter(text);
-    out.push({ path, format, agents: agentsFor(path, format, present), scope: scopeOf(path, format, data), hash: fileHash(Buffer.from(text)), text, data });
+    out.push({ path, format, agents: agentsFor(root, path, format), scope: scopeOf(path, format, data), hash: fileHash(Buffer.from(text)), text, data });
   }
   return out;
 }
@@ -169,16 +187,36 @@ function kindOf(body: string): "recipe" | "rule" {
   return fenced || (lines.length > 0 && commands * 2 >= lines.length) ? "recipe" : "rule";
 }
 
+/**
+ * Markdown markers off, identifiers intact: an underscore is emphasis only
+ * when it wraps words at a word edge, so NODE_ENV and snake_case survive.
+ */
 function plain(line: string): string {
-  return line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/u, "").replace(/[*_`]/gu, "").trim();
+  return line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/u, "").replace(/[*`]/gu, "")
+    .replace(/(^|[^\p{L}\p{N}_])_{1,2}(?=[^\s_])(.+?)(?<=[^\s_])_{1,2}(?![\p{L}\p{N}_])/gu, "$1$2").trim();
 }
 
-/** The claim in one line: the first sentence of the body when it is short, else the heading. */
+/**
+ * The claim in one line: the first sentence of the body's prose when it is
+ * short; for a section that is only a code block, its first command; else the
+ * heading. A fenced block is never prose (its language tag is not a claim).
+ */
 function oneLine(heading: string, body: string, path: string): string {
-  const first = body.split("\n").map(plain).find(l => l && !l.startsWith("```") && !l.startsWith("<!--")) ?? "";
+  let fenced = false, first = "", code = "";
+  for (const raw of body.split("\n")) {
+    if (/^\s*(?:```|~~~)/u.test(raw)) { fenced = !fenced; continue; }
+    const text = raw.trim();
+    if (fenced) {
+      if (!code && text && !/^(?:#|\/\/)/u.test(text)) code = text.replace(/^\$\s+/u, "");
+      continue;
+    }
+    const prose = plain(raw);
+    if (!first && prose && !prose.startsWith("<!--")) first = prose;
+  }
   const sentence = /^(.{8,280}?[.!?])(?:\s|$)/u.exec(first)?.[1] ?? (first.length <= 280 ? first : "");
   const title = heading ? `${heading}: ` : "";
-  const line = sentence ? `${title}${sentence}` : heading || basename(path);
+  const line = sentence ? `${title}${sentence}`
+    : code && !code.includes("`") && code.length <= 160 ? `${title}\`${code}\`` : heading || basename(path);
   return line.length <= KNOWLEDGE_LIMITS.oneLineCharacters ? line : heading || basename(path);
 }
 
@@ -229,9 +267,11 @@ function sectionFull(text: string, heading: string): string {
 const normalize = (text: string) => text.toLowerCase().replace(/[`*_>#-]/gu, " ").replace(/\s+/gu, " ").trim();
 
 /** Same topic, different words in two files: a person decides. Commands or paths that don't exist: stale. */
-export function reviewItems(entries: RuleEntry[], root: string): ReviewItem[] {
+export function reviewItems(entries: RuleEntry[], root: string, listed?: readonly string[]): ReviewItem[] {
   const review: ReviewItem[] = [];
-  const scripts = definedScripts(root);
+  const scripts = definedScripts(root, listed);
+  const tracked = listed ?? [];
+  const ignored = ignoredByRoot(root);
   const byTopic = new Map<string, RuleEntry[]>();
   for (const e of entries) {
     const heading = /^([^:]+):/u.exec(e.entry.mex.one_line)?.[1];
@@ -255,10 +295,13 @@ export function reviewItems(entries: RuleEntry[], root: string): ReviewItem[] {
     }
     for (const match of e.entry.text.matchAll(/`([\w.-]+(?:\/[\w.-]+)+\.[a-z0-9]{1,5})`/giu)) {
       const ref = match[1].replace(/^\.\//u, "");
-      try { statSync(join(root, ref)); } catch {
-        try { statSync(join(root, dirname(e.path), ref)); } catch {
-          review.push({ kind: "stale", paths: [e.path], heading, message: `Mentions ${ref}, which doesn't exist.` });
-        }
+      // Installed dependencies and files a command in the same section writes
+      // are not expected in a checkout: only a confident miss is reported.
+      if (/(?:^|\/)node_modules\//u.test(ref) || writtenBy(e.entry.text, ref) || ignored(ref)) continue;
+      const bases = new Set(["", dirname(e.path), ...scopeBases(e.entry.mex.scope)]);
+      // A path that exists under that name somewhere in the repo is ambiguous, not missing.
+      if (![...bases].some(base => exists(join(root, base, ref))) && !tracked.some(file => file.endsWith(`/${ref}`))) {
+        review.push({ kind: "stale", paths: [e.path], heading, message: `Mentions ${ref}, which doesn't exist.` });
       }
     }
   }
@@ -267,18 +310,73 @@ export function reviewItems(entries: RuleEntry[], root: string): ReviewItem[] {
 
 interface Scripts { npm: Set<string> | undefined; make: Set<string> | undefined; }
 
-/** Package scripts and Makefile targets. Rule files can't vouch for their own commands. */
-function definedScripts(root: string): Scripts {
+function exists(path: string): boolean {
+  try { statSync(path); return true; } catch { return false; }
+}
+
+/**
+ * Plain folder or file names the root .gitignore lists: a mention of a local,
+ * ignored path (`.agents-local/README.md`) is not a stale claim. Wildcard
+ * patterns are left out; this only needs to avoid confident false alarms.
+ */
+function ignoredByRoot(root: string): (ref: string) => boolean {
+  let names: string[] = [];
+  try {
+    names = readFileSync(join(root, ".gitignore"), "utf8").split(/\r?\n/u).map(line => line.trim())
+      .filter(line => line && !line.startsWith("#") && !line.startsWith("!") && !/[*?[\]]/u.test(line))
+      .map(line => line.replace(/^\/+|\/+$/gu, "")).filter(Boolean);
+  } catch { /* no .gitignore */ }
+  return ref => names.some(name => ref === name || ref.startsWith(`${name}/`) || (!name.includes("/") && ref.split("/").includes(name)));
+}
+
+/** The fixed folder a scope glob starts from (`apps/api/**` → `apps/api`). */
+function scopeBases(scope: readonly string[] | undefined): string[] {
+  return (scope ?? []).map(glob => glob.split("/").filter(Boolean)).map(parts => {
+    const fixed: string[] = [];
+    for (const part of parts) { if (/[*?[\]{}]/u.test(part)) break; fixed.push(part); }
+    return fixed.join("/");
+  }).filter(Boolean);
+}
+
+/** A path the section's own command writes (`--out x`, `--write-report x`, `> x`) is an output, not a claim. */
+function writtenBy(text: string, ref: string): boolean {
+  const escaped = ref.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&");
+  return new RegExp(`(?:--?[\\w-]+[ =]|>\\s*)(?:\\./)?${escaped}`, "u").test(text);
+}
+
+/**
+ * Package scripts and Makefile targets, across every tracked package in the
+ * repo: a rule scoped to `apps/api` names that package's scripts. Rule files
+ * can't vouch for their own commands.
+ */
+function definedScripts(root: string, listed?: readonly string[]): Scripts {
   const out: Scripts = { npm: undefined, make: undefined };
-  try {
-    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts?: Record<string, unknown> };
-    out.npm = new Set(Object.keys(pkg.scripts ?? {}));
-  } catch { /* no package.json: npm commands aren't judged */ }
-  try {
-    const make = readFileSync(join(root, "Makefile"), "utf8");
-    out.make = new Set([...make.matchAll(/^([A-Za-z0-9_.-]+)\s*::?(?!=)/gmu)].map(m => m[1]));
-  } catch { /* no Makefile */ }
+  const manifests = new Set(["package.json"]), makefiles = new Set(["Makefile"]);
+  for (const file of listed ?? []) {
+    if (/(?:^|\/)node_modules\//u.test(file)) continue;
+    if (file === "package.json" || file.endsWith("/package.json")) manifests.add(file);
+    if (file === "Makefile" || file.endsWith("/Makefile")) makefiles.add(file);
+  }
+  for (const file of [...manifests].slice(0, 2000)) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(root, file), "utf8")) as { scripts?: Record<string, unknown> };
+      out.npm ??= new Set();
+      for (const name of Object.keys(pkg.scripts ?? {})) out.npm.add(name);
+    } catch { /* no package.json there: npm commands aren't judged by it */ }
+  }
+  for (const file of [...makefiles].slice(0, 200)) {
+    try {
+      const make = readFileSync(join(root, file), "utf8");
+      out.make ??= new Set();
+      for (const m of make.matchAll(/^([A-Za-z0-9_.-]+)\s*::?(?!=)/gmu)) out.make.add(m[1]);
+    } catch { /* no Makefile there */ }
+  }
   return out;
+}
+
+/** `pnpm --filter api build`, `npm run x -w api`: workspace flags are not the script. */
+function withoutWorkspaceFlags(command: string): string {
+  return command.replace(/\s(?:--filter|-F|--workspace|-w|--prefix|-C|--cwd|--dir)(?:=|\s+)\S+/gu, "").replace(/\s(?:-r|--recursive|--if-present|-s|--silent)(?=\s|$)/gu, "");
 }
 
 const NPM_RUN = /^(?:npm run|npm run-script|pnpm run|pnpm|yarn run|yarn|bun run)\s+([\w:.-]+)/u;
@@ -288,19 +386,20 @@ const NPM_BUILTIN = new Set(["install", "i", "ci", "add", "remove", "exec", "dlx
 function missingScripts(text: string, scripts: Scripts): string[] {
   const missing: string[] = [];
   for (const match of text.matchAll(/`([^`\n]+)`/gu)) {
-    const command = match[1].trim().replace(/^\$\s+/u, "");
+    const shown = match[1].trim().replace(/^\$\s+/u, ""), command = withoutWorkspaceFlags(shown);
     const npm = NPM_RUN.exec(command);
-    if (npm && scripts.npm && !(NPM_BUILTIN.has(npm[1]) && !/ run /u.test(` ${command} `)) && !scripts.npm.has(npm[1])) missing.push(command);
+    if (npm && scripts.npm && !(NPM_BUILTIN.has(npm[1]) && !/ run /u.test(` ${command} `)) && !scripts.npm.has(npm[1])) missing.push(shown);
     const npmTest = /^npm (test|start)\b/u.exec(command);
-    if (npmTest && scripts.npm && !scripts.npm.has(npmTest[1])) missing.push(command);
+    if (npmTest && scripts.npm && !scripts.npm.has(npmTest[1])) missing.push(shown);
     const make = /^make\s+([\w.-]+)/u.exec(command);
-    if (make && scripts.make && !scripts.make.has(make[1])) missing.push(command);
+    if (make && scripts.make && !scripts.make.has(make[1])) missing.push(shown);
   }
   return [...new Set(missing)];
 }
 
 /** Read every rule file in a checkout. Pure: writes nothing. */
 export function scanRuleFiles(root: string, created = new Date().toISOString().slice(0, 10), listed?: readonly string[]): RuleScan {
+  listed ??= listFiles(root);
   const found = discoverRuleFiles(root, listed);
   const entries: RuleEntry[] = [], review: ReviewItem[] = [];
   for (const file of found) {
@@ -308,7 +407,7 @@ export function scanRuleFiles(root: string, created = new Date().toISOString().s
     entries.push(...result.entries);
     review.push(...result.review);
   }
-  review.push(...reviewItems(entries, root));
+  review.push(...reviewItems(entries, root, listed));
   return { files: found.map(({ text: _text, data: _data, ...file }) => file), entries, review };
 }
 

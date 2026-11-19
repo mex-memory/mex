@@ -91,10 +91,23 @@ func surfaceCommand(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func toolKey(tool contract.Tool) string {
+	data, _ := json.Marshal(struct {
+		Name  contract.ToolName
+		Input contract.ToolInput
+	}{tool.Name, tool.Input})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 func surfaceTargets(plan []planned, vs []toolView, cs []record.DeliveryCandidate) {
 	for i := range cs {
 		e := plan[i].item.Entry
 		t := record.SurfaceTarget{Scopes: append([]string{}, e.Scope...)}
+		if len(plan[i].anchorPaths) > 0 {
+			cs[i].Target = record.SurfaceTarget{Paths: plan[i].anchorPaths}
+			continue
+		}
 		for _, scope := range e.Scope {
 			if !strings.ContainsAny(scope, "*?{[") {
 				t.Paths = append(t.Paths, scope)
@@ -151,7 +164,7 @@ func surfaceTools(ev contract.Event, env Environment) []record.SurfaceTool {
 		one := ev
 		one.Batch = nil
 		one.Tool = &tool
-		observation := record.SurfaceTool{Success: ev.Kind != contract.PostToolFailure && tool.Output != nil && tool.Output.OK}
+		observation := record.SurfaceTool{Key: toolKey(tool), Success: ev.Kind != contract.PostToolFailure && tool.Output != nil && tool.Output.OK}
 		// A failed command still ran. Only successful-rerun evidence needs a
 		// proven success: Claude batches declare success, Codex needs an exit code.
 		if tool.Name == contract.ToolShell {
@@ -175,6 +188,7 @@ func surfaceTools(ev contract.Event, env Environment) []record.SurfaceTool {
 			}
 			key := v.project + "\n" + v.checkout
 			scoped := observation.Scoped[key]
+			scoped.Key = observation.Key
 			scoped.Success = observation.Success
 			scoped.Tested = observation.Tested
 			if v.name == contract.ToolShell {
@@ -184,6 +198,9 @@ func surfaceTools(ev contract.Event, env Environment) []record.SurfaceTool {
 			if v.name == contract.ToolRead || isEdit(v) {
 				scoped.Paths = append(scoped.Paths, v.rel)
 				scoped.Open = scoped.Open || v.name == contract.ToolRead
+				if v.name == contract.ToolRead {
+					scoped.Reads = append(scoped.Reads, record.SurfaceRead{Path: v.rel, Start: max(1, v.start), End: v.end})
+				}
 				scoped.Edit = scoped.Edit || isEdit(v)
 				scoped.Added += boundedText(v.added, 32768-len(scoped.Added))
 			}

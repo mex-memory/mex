@@ -54,6 +54,7 @@ type spec struct {
 	when                                     []string // "type:pattern"
 	checks                                   []string // raw YAML list items
 	companions                               []string
+	aliases                                  []string
 	level                                    string // team (default), personal, hint
 	source                                   string // source type, default person
 	ref                                      string
@@ -95,6 +96,12 @@ func (f *fixture) entry(s spec) {
 		b.WriteString("  checks:\n")
 		for _, c := range s.checks {
 			b.WriteString(c)
+		}
+	}
+	if len(s.aliases) > 0 {
+		b.WriteString("  aliases:\n")
+		for _, a := range s.aliases {
+			fmt.Fprintf(&b, "    - %q\n", a)
 		}
 	}
 	if len(s.companions) > 0 {
@@ -406,6 +413,9 @@ func TestVerdictTable(t *testing.T) {
 		cell{"recipe", "team", held, "full"}, cell{"recipe", "team", changed, "full"}, cell{"recipe", "team", broken, "rederived"}, cell{"recipe", "team", unknown, "full"},
 		cell{"hint", "hint", held, "full"}, cell{"hint", "hint", changed, "withheld"}, cell{"hint", "hint", broken, "withheld"}, cell{"hint", "hint", unknown, "full"},
 		cell{"rule", "personal", held, "full"}, cell{"rule", "personal", changed, "full"}, cell{"rule", "personal", broken, "withheld"}, cell{"rule", "personal", unknown, "full"},
+		// A personal fact follows the code-fact row once its checks say the
+		// code changed; not yet evaluated, it is the user's own words.
+		cell{"fact", "personal", held, "full"}, cell{"fact", "personal", changed, "pointer"}, cell{"fact", "personal", broken, "withheld"}, cell{"fact", "personal", unknown, "full"},
 	)
 	for _, c := range cells {
 		t.Run(c.kind+"/"+c.level+"/"+c.verdict, func(t *testing.T) {
@@ -549,11 +559,11 @@ func TestBudgetRisingBarAndExemptions(t *testing.T) {
 	f := newFixture(t)
 	long := strings.Repeat("word ", 300)
 	for i := 0; i < 40; i++ {
-		f.entry(spec{id: fmt.Sprintf("mx_pf%04d", i), kind: "pitfall", scope: fmt.Sprintf("src/f%d.ts", i), evidence: "mined", source: "docs", oneLine: fmt.Sprintf("Pitfall %d short form.", i), text: fmt.Sprintf("Pitfall %d. %s", i, long)})
+		f.entry(spec{id: fmt.Sprintf("mx_pf%04d", i), kind: "procedure", scope: fmt.Sprintf("src/f%d.ts", i), evidence: "mined", source: "docs", oneLine: fmt.Sprintf("Pitfall %d short form.", i), text: fmt.Sprintf("Pitfall %d. %s", i, long)})
 	}
 	sent := 0
 	for i := 0; i < 40; i++ {
-		ctx := f.send(f.event(contract.PostToolBatch, read(f.file(fmt.Sprintf("src/f%d.ts", i), "x"), "x")))
+		ctx := f.send(f.event(contract.PostToolBatch, write(f.file(fmt.Sprintf("src/f%d.ts", i), "x"), "x", `{"type":"create"}`)))
 		if ctx != "" {
 			sent++
 		}
@@ -794,4 +804,17 @@ func TestPathThroughAnInsideLinkCannotEscapeCheckout(t *testing.T) {
 			t.Fatal("accepted an outside target", r)
 		}
 	}
+}
+
+// Claude Code reads no AGENTS.md while a CLAUDE.md sits at the root (its
+// default), so a generated area AGENTS.md does not cover Claude there.
+func TestRootClaudeFileMeansClaudeReadsNoAgentsFile(t *testing.T) {
+	f := newFixture(t)
+	f.file("src/gen/AGENTS.md", "# Gen\n- Edit schema.graphql, not this folder. <!-- mex:mx_genpit -->\n")
+	f.entry(spec{id: "mx_genpit", kind: "pitfall", scope: "src/gen/**", oneLine: "Edit schema.graphql, not this folder."})
+	// No CLAUDE.md anywhere: Claude reads src/gen/AGENTS.md itself.
+	mustBeEmpty(t, f.send(f.event(contract.PostToolBatch, read(f.file("src/gen/a.ts", "a"), "a"))))
+	f.file("CLAUDE.md", "# Ours\n")
+	f.session = "s2"
+	mustHave(t, f.send(f.event(contract.PostToolBatch, read(f.file("src/gen/b.ts", "b"), "b"))), "Edit schema.graphql")
 }

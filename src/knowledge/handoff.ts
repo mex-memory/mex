@@ -60,7 +60,9 @@ function uncommitted(root: string): string[] {
     if (part.length < 4) continue;
     if (part[0] === "R" || part[0] === "C") i++;
     const name = part.slice(3);
-    if (!name.startsWith(`${HANDOFF_DIR}/`)) names.push(name);
+    // Git folds a new folder into one line (".mex/"); the handoff folder is never "uncommitted work".
+    const folderOfHandoffs = name.endsWith("/") && `${HANDOFF_DIR}/`.startsWith(name);
+    if (!name.startsWith(`${HANDOFF_DIR}/`) && !folderOfHandoffs) names.push(name);
   }
   return names;
 }
