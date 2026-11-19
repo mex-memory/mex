@@ -17,6 +17,9 @@ import { renderNext } from "./screen.js";
 import { Rich, RichStep, RICH_MIN_COLUMNS } from "./rich.js";
 import { readBoundedTextFile } from "../knowledge/files.js";
 import type { RuleScan } from "../knowledge/rule-files.js";
+import type { NativeAgent } from "../knowledge/agents-in-use.js";
+import type { PluginAgent } from "../install/index.js";
+import type { Agent } from "../install/settings.js";
 import type { FinishJob } from "./finish.js";
 
 /** Test-only: kill the process at a step boundary to prove each one leaves a clean state. */
@@ -84,7 +87,7 @@ function message(error: unknown): string {
   return text.split(/\r?\n/u)[0]!.slice(0, 200);
 }
 
-interface HookSummary { note?: string; notices: string[]; agents?: Array<"claude-code" | "codex">; }
+interface HookSummary { note?: string; notices: string[]; agents?: Array<Agent | PluginAgent>; }
 async function installHooks(): Promise<HookSummary> {
   try {
     const { installAgents, AGENT_NAMES } = await import("../install/index.js");
@@ -408,8 +411,10 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   }
   if (rebuildRules) {
     try {
-      const { rebuildNative } = await import("../knowledge/native.js");
-      const rebuilt = rebuildNative({ projectPath: checkout.path, env }, { agents: hooks.agents });
+      const [{ rebuildNative }, { NATIVE_AGENTS }] = await Promise.all([import("../knowledge/native.js"), import("../knowledge/agents-in-use.js")]);
+      // Agents without native rule files (OpenCode) get theirs from their adapters.
+      const agents = hooks.agents?.filter((agent): agent is NativeAgent => (NATIVE_AGENTS as readonly string[]).includes(agent));
+      const rebuilt = rebuildNative({ projectPath: checkout.path, env }, { agents });
       if (rebuilt.deferred) {
         const { queueNativeRebuild } = await import("../knowledge/native-queue.js");
         if (!queueNativeRebuild(checkout.path)) throw new Error("rebuild was not queued");
