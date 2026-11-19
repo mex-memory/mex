@@ -20,7 +20,8 @@ import (
 //   - Everything else matches itself. A string matches a string with the
 //     same content whichever quotes it uses.
 type Structural struct {
-	toks []ptok
+	toks    []ptok
+	needles []string // words any match must contain, checked before tokenizing
 }
 
 type ptok struct {
@@ -57,7 +58,15 @@ func CompileStructural(p string) (*Structural, error) {
 	if len(out) == 0 || depth != 0 {
 		return nil, ErrPattern
 	}
-	return &Structural{toks: out}, nil
+	s := &Structural{toks: out}
+	for _, t := range out {
+		// Words must appear verbatim in any code the pattern matches; strings
+		// are left out because a match may use the other quote.
+		if t.meta == "" && len(t.text) > 1 && isWord(t.text[0]) {
+			s.needles = append(s.needles, t.text)
+		}
+	}
+	return s, nil
 }
 
 // Match reports whether the pattern occurs anywhere in code.
@@ -65,9 +74,21 @@ func (s *Structural) Match(code string) bool {
 	if s == nil {
 		return false
 	}
+	// Most code lacks one of the pattern's words: reject it without
+	// tokenizing.
+	for _, n := range s.needles {
+		if !strings.Contains(code, n) {
+			return false
+		}
+	}
 	toks := tokenize(code)
 	m := matcher{pat: s.toks, toks: toks, budget: structuralBudget}
+	first := s.toks[0]
 	for start := range toks {
+		// A pattern that starts with a literal token can only start there.
+		if first.meta == "" && !sameToken(first.text, toks[start]) {
+			continue
+		}
 		if m.at(0, start, map[string]string{}) {
 			return true
 		}
