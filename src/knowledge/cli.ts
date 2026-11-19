@@ -3,7 +3,7 @@ import { ENTRY_KINDS, KnowledgeError } from "./contract.js";
 import { buildReviewCommand } from "../review/cli.js";
 
 export function buildKnowledgeCommands(): Command[] {
-  const adviceReport = new Command("report").description("Read local advisories, patterns that never fire, or session cost estimates")
+  const adviceReport = new Command("report").description("Read local advisories or session cost estimates")
     .option("--json", "Print the report as JSON")
     .option("--ledger", "Show session cost, context footprint and holdout comparisons")
     .addOption(new Option("--holdout <on|off>", "Set the local randomized holdout study").choices(["on", "off"]))
