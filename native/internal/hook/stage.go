@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mex-memory/mex/native/check"
+	"github.com/mex-memory/mex/native/delivery"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/shellparse"
 	localrecord "github.com/mex-memory/mex/native/record"
@@ -111,6 +112,9 @@ func freeStage(ev contract.Event, h home, recordDirectory string) {
 	if err != nil || needsJudge(report) {
 		requestJudge(ev, recordDirectory, paths)
 	}
+	if err == nil {
+		rebuildOnFlip(report, recordDirectory, ev.ProjectID, ev.Checkout)
+	}
 	if err == nil && report.Unfinished && takeStageLock(recordDirectory, ev.Checkout, time.Now()) && !startDetachedStage(ev.ProjectID, ev.Checkout) {
 		_ = os.Remove(stageLockPath(recordDirectory, ev.Checkout))
 	}
@@ -190,4 +194,15 @@ func checkStage(args []string, getenv Env) int {
 		startBackground(h, recordDirectory)
 	}
 	return 0
+}
+
+// rebuildOnFlip asks the background process to rebuild MEX's rule files when
+// a check flipped an entry's verdict, so a rule file never keeps a line the
+// code stopped supporting (or leaves out one it supports again) until some
+// later session start notices. The person's own files are rewritten at once;
+// shared ones wait for the session to end.
+func rebuildOnFlip(report check.StageReport, recordDirectory, projectID, checkout string) {
+	if len(report.Flipped) > 0 && recordDirectory != "" && projectID != "" && checkout != "" {
+		_ = delivery.RequestNativeRebuild(recordDirectory, projectID, checkout)
+	}
 }

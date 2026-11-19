@@ -94,6 +94,9 @@ func checkRun(stdin io.Reader, stdout io.Writer) int {
 			_ = enc.Encode(checkFailure{Error: err.Error()})
 			return 1
 		}
+		if opts.Store != nil {
+			rebuildOnFlip(report, req.RecordDirectory, req.ProjectID, req.Checkout)
+		}
 		_ = enc.Encode(struct {
 			OK     bool `json:"ok"`
 			Stored bool `json:"stored"`

@@ -117,10 +117,14 @@ func TestStage(t *testing.T) {
 	if r.Evaluated != 1 || r.Results[0].EntryID != "mx_devbox" || r.Results[0].Verdict != Broken || store.rows["mx_devbox"].Verdict != Broken {
 		t.Fatalf("edit: %+v", r)
 	}
-	// Editing the entry itself re-runs it.
+	// Held to broken is a flip: rule files carrying the entry get rebuilt.
+	if len(r.Flipped) != 1 || r.Flipped[0] != "mx_devbox" {
+		t.Fatalf("flipped: %v", r.Flipped)
+	}
+	// Editing the entry itself re-runs it, and back to held flips again.
 	teamEntry(t, root, "mx_devbox", record(t, root, "section", Complete, map[string]any{"file": "CONTRIBUTING.md", "heading": "Dev container"}))
 	edited.Paths = []string{".mex/learned/mx_devbox.md"}
-	if r, _ := RunStage(edited); r.Evaluated != 1 || store.rows["mx_devbox"].Verdict != Held {
+	if r, _ := RunStage(edited); r.Evaluated != 1 || store.rows["mx_devbox"].Verdict != Held || len(r.Flipped) != 1 {
 		t.Fatalf("entry edit: %+v", r)
 	}
 
