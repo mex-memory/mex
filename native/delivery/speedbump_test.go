@@ -227,3 +227,30 @@ func epochIntent(t *testing.T, f *fixture) string {
 	}
 	return intent
 }
+
+// The speed bump's own cost on a pre-edit, in process (no process start):
+// an edit no rule cares about, and one that is stopped. Run with
+// go test ./delivery/ -run ^$ -bench SpeedBump.
+func BenchmarkSpeedBump(b *testing.B) {
+	t := &testing.T{}
+	f := newFixture(t)
+	f.t = t
+	datesRule(f)
+	for i := 0; i < 50; i++ { // a repo with more rules than the demo
+		f.entry(spec{id: "mx_other" + strings.Repeat("a", 1) + string(rune('a'+i%26)) + string(rune('a'+i/26)), kind: "rule", scope: "src/**", oneLine: "Another rule.", when: []string{"anti:legacyCall("}})
+	}
+	f.start("startup")
+	quiet := edited(f, "apps/api/q.ts", "export {}", "export const x = 1")
+	stop := edited(f, "apps/api/s.ts", "export {}", "import m from 'moment'")
+	b.Run("no-rule-matches", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			SpeedBump(f.event(contract.PreTool, quiet), f.env())
+		}
+	})
+	b.Run("stopped", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			f.session = "bench" + strings.Repeat("x", i%3) + string(rune('a'+i%26))
+			SpeedBump(f.event(contract.PreTool, stop), f.env())
+		}
+	})
+}
