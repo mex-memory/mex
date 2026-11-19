@@ -787,6 +787,8 @@ describe("no unscoped scaffold writes", () => {
     const KNOWN: Readonly<Record<string, string>> = {
       "src/agent-prompt.ts": "writes and removes one private prompt file for an oversized agent brief (interactive setup, sync)",
       "src/agent-skills/installer.ts": "atomically installs fixed packaged skill trees and marker-scoped root instructions",
+      "src/compaction/notices.ts": "consumes offer requests and publishes bounded notice markers inside the machine record directory",
+      "src/ledger/background.ts": "claims and removes bounded session-ledger requests inside the contained machine record directory",
       "src/graph/audit-record.ts": "writes only the local audited-digest record beside the graph index it describes",
       "src/graph/candidate-entry.ts": "writes bounded worker failure diagnostics only to stderr (fd 2), never scaffold files",
       "src/graph/candidate-process.ts": "removes only the identity-bound parent-owned temporary workspace after the candidate child closes",

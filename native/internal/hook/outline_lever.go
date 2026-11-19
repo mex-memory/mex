@@ -13,6 +13,7 @@ import (
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/outline"
+	localrecord "github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
@@ -132,7 +133,7 @@ func outlineRead(ev contract.Event, h home, recordDirectory string, state *lever
 	if len(resp.File.Content)/4 <= outline.MinTokens || namedIn(state.Words, path) {
 		return contract.Reply{}, false
 	}
-	if readOutlineStats(recordDirectory).Off {
+	if readOutlineStats(recordDirectory).Off || leverOff(recordDirectory, localrecord.LeverOutline) {
 		return contract.Reply{}, false
 	}
 	info, err := os.Stat(path)

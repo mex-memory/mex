@@ -17,7 +17,7 @@ import (
 	"modernc.org/sqlite"
 )
 
-const SchemaVersion = 10
+const SchemaVersion = 13
 
 // Node's additive model-admission migration does not change the tables read here.
 const RecordSchemaVersion = 5
@@ -44,6 +44,13 @@ func UseBehaviorTestBudget() {
 
 //go:embed schema/hooks/*.sql
 var schemas embed.FS
+
+var hookMigrationFiles = [...]string{
+	"0001_init.sql", "0002_delivery.sql", "0003_followups.sql", "0004_rendering.sql",
+	"0005_probes.sql", "0006_intent.sql", "0007_surfaces.sql", "0008_search_answers.sql",
+	"0009_budget_lanes.sql", "0010_false_send_counts.sql", "0011_ledger_settlements.sql", "0012_ledger_pricing.sql",
+	"0013_ledger_session_metrics.sql",
+}
 
 type migration struct {
 	version int
@@ -118,7 +125,7 @@ func migrate(ctx context.Context, db *sql.DB, migrations []migration) error {
 }
 
 // A genuinely empty database has no intermediate versions to preserve. Build
-// the same embedded schema atomically, avoiding seven first-use commits. An
+// the same embedded schema atomically, avoiding a commit per first-use migration. An
 // existing store still upgrades one numbered transaction at a time.
 func initializeEmptyHooks(ctx context.Context, db *sql.DB, steps []migration) (bool, error) {
 	conn, err := db.Conn(ctx)
@@ -315,7 +322,7 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 	}
 	if err == nil && version < SchemaVersion {
 		var steps []migration
-		for i, name := range []string{"0001_init.sql", "0002_delivery.sql", "0003_followups.sql", "0004_rendering.sql", "0005_probes.sql", "0006_intent.sql", "0007_surfaces.sql", "0008_search_answers.sql", "0009_budget_lanes.sql", "0010_false_send_counts.sql"} {
+		for i, name := range hookMigrationFiles {
 			var data []byte
 			data, err = schemas.ReadFile("schema/hooks/" + name)
 			if err != nil {

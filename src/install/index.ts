@@ -15,6 +15,7 @@ import { decodeSnapshot, restoreSettings } from "./recovery.js";
 import { opencodePlugin } from "./opencode-plugin.js";
 import { journaledExcludeFiles, restoreExcludeBlocks } from "../repo-start/exclude.js";
 import { journaledMarkers, restoreFolderMarkers } from "../repo-start/folder.js";
+import { compactSettingFiles, undoManagedCompaction } from "../compaction/control.js";
 
 const PREFIX = "file-v1:";
 const MAX_CHANGES = 512;
@@ -284,13 +285,13 @@ export function installationChanges(options: LocationOptions = {}): InstallRow[]
   } finally { reader.close(); }
 }
 
-/** Exclude files in repositories where `mex` hid `.mex/`; uninstall removes MEX's blocks from them. */
-export function excludeChanges(options: LocationOptions = {}): string[] {
+/** Additional local changes that uninstall restores along with the installed hooks. */
+export function additionalUninstallPaths(options: LocationOptions = {}): string[] {
   const reader = openRecordReadOnly(options);
   if (!reader) return [];
   try {
     if (reader.diagnostic) throw new Error(reader.diagnostic);
-    return [...journaledExcludeFiles(reader), ...journaledMarkers(reader)];
+    return [...compactSettingFiles(reader), ...journaledExcludeFiles(reader), ...journaledMarkers(reader)];
   } finally { reader.close(); }
 }
 
@@ -323,6 +324,9 @@ export async function uninstallAgents(options: LocationOptions & { purge?: boole
   try {
     await withContainedArtifactLock(location.home, "install", ".install.lock", () => {
       writer.db.prepare("UPDATE background SET request='exit' WHERE id=1 AND owner IS NOT NULL").run();
+      const compaction = undoManagedCompaction(writer);
+      result.restored.push(...compaction.restored);
+      result.conflicts.push(...compaction.conflicts);
       // Repository exclude-file blocks don't depend on the hooks; undo them first.
       for (const undone of [restoreExcludeBlocks(writer), restoreFolderMarkers(writer)]) {
         result.restored.push(...undone.restored);

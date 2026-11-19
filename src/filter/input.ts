@@ -37,7 +37,7 @@ export function filterAllowed(writer: RecordWriter, project: string, params: Fil
     && automaticWorkEnabled(writer, project) && writer.setting("global", "capture.enabled") !== "false"
     && writer.setting(project, "capture.enabled") !== "false" && sessionWorkEnabled(writer, params.agent, params.sessionId);
 }
-export function filterSession(writer: RecordWriter, project: string, checkout: string, session: string) {
+export function filterSession(writer: Pick<RecordWriter, "location">, project: string, checkout: string, session: string) {
   const dir = containedDirectory(writer.location.directory, ["filter-sessions"]);
   if (!dir) return undefined;
   const raw = readBoundedTextFile(join(dir, `${shortHash(project + "\0" + session)}.json`), 16 << 10);

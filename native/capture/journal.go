@@ -300,6 +300,9 @@ func Hook(ev contract.Event, env Env) {
 	if ev.Kind == contract.SessionStart {
 		_ = SessionStart(ev, env)
 		prunePending(env)
+		if ev.Source != "compact" {
+			pruneCompactionRecovery(env)
+		}
 	}
 	_ = Save(ev, env)
 	_ = filterMetadata(ev, env)
