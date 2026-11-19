@@ -1,12 +1,13 @@
 package delivery
 
 // The speed bump (plan sheet 31): before an edit runs, an edit that adds a
-// strong rule's anti-pattern inside the rule's scope is stopped once, with
-// the reason. If the agent makes such an edit again in the same epoch it
-// passes, and the rule counts as deliberately changed. Only on agents whose
-// pre-edit hook sees the new text and can deny: Claude Code's Edit and
-// Write, Codex's apply_patch. Never on a crash, never twice for one rule in
-// one epoch, never for a weak rule, never when the state can't be recorded.
+// strong rule's anti-pattern inside the rule's scope, or brings back an
+// option a decision rejected, is stopped once, with the reason. If the agent
+// makes such an edit again in the same epoch it passes, and the rule counts
+// as deliberately changed. On every agent whose pre-edit hook sees the new
+// text and can deny (the caller checks the agent's profile). Never on a
+// crash, never twice for one rule in one epoch, never twice for one edit,
+// never for a weak rule, never when the state can't be recorded.
 
 import (
 	"crypto/sha256"
@@ -29,10 +30,15 @@ const (
 	bumpOldBytes = 1 << 20
 	// bumpMinLiteral is the shortest literal precise enough to stop an edit.
 	bumpMinLiteral = 4
+	// bumpMaxReasons bounds the rules one stop names in full; any more are
+	// named by their one line.
+	bumpMaxReasons = 3
 )
 
 // strongEvidence: rules a person stated, or that come from docs, reviews or
-// CI. Mined and observed ones are weak and never stop an edit.
+// CI. Observed ones never stop an edit. Mined ones (a layer rule found in the
+// code) stop one only while the code agrees with them in full: a complete
+// check that holds today.
 var strongEvidence = map[string]bool{"person": true, "docs": true, "review": true, "ci": true}
 
 type bump struct {
@@ -44,11 +50,12 @@ type bump struct {
 }
 
 // SpeedBump decides one pre-tool event. The empty reply lets the call run.
+// The caller passes only events from agents whose profile can deny a tool.
 func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 	if ev.Kind != contract.PreTool || ev.Tool == nil || ev.SessionID == "" || env.RecordDirectory == "" {
 		return contract.Reply{}
 	}
-	if !bumpTool(ev.Agent, ev.Tool.Name) {
+	if t := ev.Tool.Name; t != contract.ToolEdit && t != contract.ToolWrite && t != contract.ToolPatch {
 		return contract.Reply{}
 	}
 	found := bumpCandidates(ev, env)
@@ -66,35 +73,79 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 	}
 	file := bumpStatePath(env.RecordDirectory, ev)
 	state := loadBumpState(file, epoch.Number)
+	var full map[string]*entries.Item // loaded once, only when needed
+	fullItem := func(b bump) *entries.Item {
+		if full == nil {
+			full = map[string]*entries.Item{}
+			if snap, err := entries.Load(env.RecordDirectory, env.Home, b.project, b.check); err == nil {
+				for i := range snap.Items {
+					full[snap.Items[i].Entry.ID] = &snap.Items[i]
+				}
+			}
+		}
+		return full[b.item.Entry.ID]
+	}
+	var stop []bump
+	passed, seen := false, map[string]bool{}
 	for _, b := range found {
 		id := b.item.Entry.ID
-		if v, ok, err := h.VerdictOf(b.project, b.check, id); err != nil || (ok && (v.Verdict == broken || v.Verdict == changed)) {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		v, ok, err := h.VerdictOf(b.project, b.check, id)
+		if err != nil || (ok && (v.Verdict == broken || v.Verdict == changed)) {
 			continue // a rule the code no longer supports never stops an edit
+		}
+		if b.item.Entry.Evidence == "mined" && !(ok && v.Verdict == held && completeCheck(fullItem(b))) {
+			continue
 		}
 		if state.Stopped[id] {
 			// The agent went ahead: this rule is being changed on purpose.
 			if !state.Passed[id] {
-				state.Passed[id] = true
-				_ = state.save(file)
+				state.Passed[id], passed = true, true
 			}
 			continue
 		}
-		state.Stopped[id] = true
-		if state.save(file) != nil {
-			return contract.Reply{} // without a record it could stop twice
-		}
-		noteViolation(env.RecordDirectory, b.project, id, env.Now)
-		return contract.Reply{Decision: contract.Deny, Reason: bumpReason(b, fullText(env, b))}
+		stop = append(stop, b)
 	}
-	return contract.Reply{}
+	if len(stop) == 0 {
+		if passed {
+			_ = state.save(file)
+		}
+		return contract.Reply{}
+	}
+	// One stop names every rule this edit breaks, so making the edit again
+	// never meets a second stop.
+	for _, b := range stop {
+		state.Stopped[b.item.Entry.ID] = true
+	}
+	if state.save(file) != nil {
+		return contract.Reply{} // without a record it could stop twice
+	}
+	reasons := make([]string, 0, len(stop))
+	for i, b := range stop {
+		noteViolation(env.RecordDirectory, b.project, b.item.Entry.ID, env.Now)
+		text := ""
+		if i < bumpMaxReasons {
+			if it := fullItem(b); it != nil {
+				text = it.Full
+			}
+		}
+		reasons = append(reasons, bumpReason(b, text))
+	}
+	return contract.Reply{Decision: contract.Deny, Reason: bumpMessage(reasons)}
 }
 
-func bumpTool(agent string, tool contract.ToolName) bool {
-	switch agent {
-	case "claude-code":
-		return tool == contract.ToolEdit || tool == contract.ToolWrite
-	case "codex":
-		return tool == contract.ToolPatch
+// completeCheck: the entry carries a check that pins its whole claim.
+func completeCheck(it *entries.Item) bool {
+	if it == nil || it.Entry == nil {
+		return false
+	}
+	for _, c := range it.Entry.Checks {
+		if c.Role == "complete" {
+			return true
+		}
 	}
 	return false
 }
@@ -130,16 +181,21 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 		p := snap.Patterns()
 		for i := range snap.Items {
 			it := &snap.Items[i]
-			if !strongRule(it) || !inScope(it, v.rel) || !p.InEdit(added, it, "anti") {
+			typ := bumpType(it)
+			if typ == "" || !p.InEdit(added, it, typ) {
+				continue
+			}
+			// A rule within its scope; a rejected option within the decision's
+			// scope or in a manifest, where a dependency comes back.
+			if !inScope(it, v.rel) && !(typ == "rejected" && isManifest(v.rel)) {
 				continue
 			}
 			for _, t := range it.Entry.When {
-				if t.Type != "anti" || !precise(t) {
+				if t.Type != typ || !precise(t) {
 					continue
 				}
-				m, err := pattern.Matcher(t.Match, t.Pattern)
-				if err != nil || !m(added) || m(old) {
-					continue // only an edit that introduces the pattern
+				if occurrences(t, added) <= occurrences(t, old) {
+					continue // only an edit that adds the pattern
 				}
 				out = append(out, bump{item: it, trigger: t, rel: v.rel, project: v.project, check: v.checkout})
 				break
@@ -149,9 +205,34 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 	return out
 }
 
-func strongRule(it *entries.Item) bool {
+// bumpType is the trigger type that can stop an edit for this entry: a
+// strong rule's anti-pattern, or a strong decision's rejected option. ""
+// when the entry can't stop one.
+func bumpType(it *entries.Item) string {
 	e := it.Entry
-	return e != nil && e.Kind == "rule" && e.Status == "active" && !it.NeedsHintGate && strongEvidence[e.Evidence]
+	if e == nil || e.Status != "active" || it.NeedsHintGate || !(strongEvidence[e.Evidence] || e.Evidence == "mined") {
+		return ""
+	}
+	switch e.Kind {
+	case "rule":
+		return "anti"
+	case "decision":
+		return "rejected"
+	}
+	return ""
+}
+
+// occurrences counts a pattern in text: an edit adds it when the new text
+// has more than the text it replaces, so moving or re-indenting code that
+// already had it, or editing beside an existing use, never stops.
+func occurrences(t entries.Trigger, text string) int {
+	if text == "" {
+		return 0
+	}
+	if t.Match == "literal" {
+		return strings.Count(text, t.Pattern)
+	}
+	return len(pattern.Spans(t.Match, t.Pattern, text))
 }
 
 // precise: a literal long enough not to fire by accident, or a structural
@@ -179,28 +260,23 @@ func currentText(path string) string {
 	return string(data)
 }
 
-// fullText is the stopped rule's full form, with its label and reason.
-func fullText(env Environment, b bump) string {
-	snap, err := entries.Load(env.RecordDirectory, env.Home, b.project, b.check)
-	if err != nil {
-		return ""
-	}
-	for i := range snap.Items {
-		if snap.Items[i].Entry.ID == b.item.Entry.ID {
-			return snap.Items[i].Full
-		}
-	}
-	return ""
-}
-
+// bumpReason is one stopped rule: its full form (label and reason) when
+// given, else its one line, and what the edit adds where.
 func bumpReason(b bump, full string) string {
-	// The full form carries the label and the reason; without it, the one line.
 	why := strings.TrimSpace(full)
 	if why == "" {
 		why = strings.TrimSpace(b.item.Entry.OneLine)
 	}
-	return fmt.Sprintf("MEX stopped this edit once. %s\n`%s` is added in %s. If this change is deliberate, make the edit again and it will go through.",
-		why, b.trigger.Pattern, b.rel)
+	what := "is added"
+	if b.trigger.Type == "rejected" {
+		what = "brings back a rejected option"
+	}
+	return fmt.Sprintf("%s\n`%s` %s in %s.", why, b.trigger.Pattern, what, b.rel)
+}
+
+func bumpMessage(reasons []string) string {
+	return "MEX stopped this edit once. " + strings.Join(reasons, "\n\n") +
+		"\nIf this change is deliberate, make the edit again and it will go through."
 }
 
 // bumpState is kept per session and agent, and reset when the epoch moves.

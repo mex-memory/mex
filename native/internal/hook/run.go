@@ -361,8 +361,11 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		failed = true
 		reply = contract.Reply{}
 	}
-	if ev.Kind == contract.PreTool && !h.levers.raw && !h.levers.noBump {
-		reply = mergeReplies(reply, delivery.SpeedBump(ev, denv))
+	// The speed bump, on every agent whose pre-tool hook can deny a call.
+	if ev.Kind == contract.PreTool && !h.levers.raw && !h.levers.noBump && !failed {
+		if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.Deny {
+			reply = mergeReplies(reply, delivery.SpeedBump(ev, denv))
+		}
 	}
 	leverStart := time.Now()
 	leverReply, measured := levers(ev, h, recordDirectory, now, captureOn)

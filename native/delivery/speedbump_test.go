@@ -132,10 +132,12 @@ func TestSpeedBumpAgentsAndTools(t *testing.T) {
 	if r := preEdit(f, shell("echo console.log >> apps/api/log.ts", "", true)); r.Decision != "" {
 		t.Fatal("a shell command")
 	}
-	// Agents whose pre-edit hook can't deny with the new text: never.
-	f.agent = "copilot"
-	if r := preEdit(f, add); r.Decision != "" {
-		t.Fatal("copilot")
+	// Any agent's edit tool: the hook passes only agents whose profile can
+	// deny a tool (see internal/hook), so delivery doesn't filter by name.
+	f.agent, f.session = "copilot", "cp1"
+	f.start("startup")
+	if r := preEdit(f, add); r.Decision != contract.Deny {
+		t.Fatalf("copilot: %+v", r)
 	}
 	// Codex apply_patch, with a structural pattern.
 	f.agent, f.session = "codex", "c1"
@@ -253,4 +255,91 @@ func BenchmarkSpeedBump(b *testing.B) {
 			SpeedBump(f.event(contract.PreTool, stop), f.env())
 		}
 	})
+}
+
+// One stop names every rule an edit breaks, so making the edit again never
+// meets a second stop for the other rule.
+func TestSpeedBumpOneStopForEveryRuleTheEditBreaks(t *testing.T) {
+	f := newFixture(t)
+	datesRule(f)
+	f.entry(spec{id: "mx_logs01", kind: "rule", scope: "apps/api/**", oneLine: "No console.log in the API; use the logger.", when: []string{"anti:console.log("}})
+	f.start("startup")
+	add := edited(f, "apps/api/dates.ts", "export {}", "import m from 'moment'\nconsole.log(m())\nexport {}")
+	r := preEdit(f, add)
+	if r.Decision != contract.Deny || !strings.Contains(r.Reason, "date-fns") || !strings.Contains(r.Reason, "logger") {
+		t.Fatalf("one stop for both rules: %+v", r)
+	}
+	if strings.Count(r.Reason, "MEX stopped this edit once") != 1 || strings.Count(r.Reason, "make the edit again") != 1 {
+		t.Fatalf("one message, not two:\n%s", r.Reason)
+	}
+	if r := preEdit(f, add); r.Decision != "" {
+		t.Fatalf("the repeat met a second stop: %+v", r)
+	}
+	ev := f.event(contract.PreTool, add)
+	if d := Deliberate(f.dir, ev, currentEpoch(t, f)); !d["mx_dates1"] || !d["mx_logs01"] {
+		t.Fatalf("both rules deliberate after the repeat: %v", d)
+	}
+}
+
+// An edit that brings back what a decision rejected is stopped too, in the
+// decision's scope or in a manifest, where a dependency comes back.
+func TestSpeedBumpRejectedDecision(t *testing.T) {
+	f := newFixture(t)
+	f.entry(spec{id: "mx_orm001", kind: "decision", scope: "apps/api/**", oneLine: "We chose Drizzle over Prisma for the API.",
+		text: "The API uses Drizzle, not Prisma: Prisma's engine binary broke the Lambda builds.", when: []string{"rejected:\"prisma\""}})
+	f.start("startup")
+	manifest := edited(f, "package.json", "{\n  \"dependencies\": {}\n}", "{\n  \"dependencies\": {\"prisma\": \"^6\"}\n}")
+	r := preEdit(f, manifest)
+	if r.Decision != contract.Deny || !strings.Contains(r.Reason, "Drizzle") || !strings.Contains(r.Reason, "brings back a rejected option") {
+		t.Fatalf("rejected option in a manifest: %+v", r)
+	}
+	// Outside the scope and not a manifest: never.
+	g := newFixture(t)
+	g.entry(spec{id: "mx_orm001", kind: "decision", scope: "apps/api/**", oneLine: "Drizzle over Prisma.", when: []string{"rejected:\"prisma\""}})
+	g.start("startup")
+	if r := preEdit(g, edited(g, "docs/notes.md", "x", "x \"prisma\" y")); r.Decision != "" {
+		t.Fatalf("out of scope: %+v", r)
+	}
+}
+
+// A mined rule (a layer rule found in the code) stops an edit only while a
+// complete check holds: the code agrees with it in full today.
+func TestSpeedBumpMinedRuleNeedsAHeldCompleteCheck(t *testing.T) {
+	mined := func(s *spec) {
+		s.evidence, s.source = "mined", "mined"
+		s.checks = []string{"    - kind: value\n      role: complete\n      target: {file: apps/api/dates.ts, symbol: x}\n      saw: {value: 1}\n      files: {}\n"}
+	}
+	f := newFixture(t)
+	datesRule(f, mined)
+	f.start("startup")
+	add := edited(f, "apps/api/dates.ts", "export {}", "import m from 'moment'")
+	if r := preEdit(f, add); r.Decision != "" {
+		t.Fatalf("no verdict yet: %+v", r)
+	}
+	f.verdict("mx_dates1", "held")
+	if r := preEdit(f, add); r.Decision != contract.Deny {
+		t.Fatalf("held complete check: %+v", r)
+	}
+	// A supporting check alone isn't enough.
+	g := newFixture(t)
+	datesRule(g, mined, func(s *spec) { s.checks = []string{strings.Replace(s.checks[0], "complete", "supporting", 1)} })
+	g.verdict("mx_dates1", "held")
+	g.start("startup")
+	if r := preEdit(g, edited(g, "apps/api/dates.ts", "export {}", "import m from 'moment'")); r.Decision != "" {
+		t.Fatalf("supporting check only: %+v", r)
+	}
+}
+
+// Added means more uses after the edit than before: editing a line that
+// already had the pattern never stops, adding a second use does.
+func TestSpeedBumpCountsUses(t *testing.T) {
+	f := newFixture(t)
+	datesRule(f)
+	f.start("startup")
+	if r := preEdit(f, edited(f, "apps/api/a.ts", "import m from 'moment'\nm()", "import m from 'moment'\nm(1)")); r.Decision != "" {
+		t.Fatalf("same uses: %+v", r)
+	}
+	if r := preEdit(f, edited(f, "apps/api/b.ts", "import m from 'moment'", "import m from 'moment'\nimport n from 'moment'")); r.Decision != contract.Deny {
+		t.Fatalf("a second use: %+v", r)
+	}
 }

@@ -3,8 +3,9 @@ package delivery
 // Edits made by shell scripts can't be stopped before they run: the hook sees
 // only the command. They are caught afterwards (plan sheet 31): after a shell
 // command, a file in a strong rule's scope that changed outside any recorded
-// edit and now holds the rule's literal anti-pattern, which the file index
-// counted zero of at its last parse, brings the rule as an edit moment.
+// edit and now holds the rule's literal anti-pattern (or a decision's
+// rejected option), which the file index counted zero of at its last parse,
+// brings the entry as an edit moment.
 
 import (
 	"io"
@@ -41,12 +42,13 @@ func shellCaught(v toolView, env Environment, snap *entries.Snapshot) []candidat
 	var rules []rule
 	for i := range snap.Items {
 		it := &snap.Items[i]
-		if !strongRule(it) {
+		typ := bumpType(it)
+		if typ == "" {
 			continue
 		}
 		var ps []string
 		for _, t := range it.Entry.When {
-			if t.Type == "anti" && t.Match == "literal" && precise(t) {
+			if t.Type == typ && t.Match == "literal" && precise(t) {
 				ps = append(ps, t.Pattern)
 			}
 		}

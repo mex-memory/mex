@@ -32,6 +32,7 @@ func TestPatternCheckReadsTheAreaFromTheIndex(t *testing.T) {
 		"apps/api/b.ts": "export const b = 1\n",
 		"apps/api/c.ts": "console.log('debug')\n",
 		"apps/api/d.ts": "console.log('more')\n",
+		"apps/api/f.ts": "console.log('again')\n",
 		"apps/web/e.ts": "import moment from 'moment'\n",
 	}
 	for p, text := range files {
@@ -54,17 +55,17 @@ func TestPatternCheckReadsTheAreaFromTheIndex(t *testing.T) {
 	req := patternCheckRequest{Checkout: root, ProjectID: "p1", RecordDirectory: mex, Scope: []string{"apps/api/**"}, Candidates: []pattern.Candidate{
 		// Not in apps/api (only apps/web has it): kept.
 		{Type: "anti", Match: "literal", Pattern: "from 'moment'", Objected: "import m from 'moment'", Fixed: "import { format } from 'date-fns'"},
-		// In 2 of apps/api's 4 files: the area's normal code, dropped.
+		// In 3 of apps/api's 5 files: the area's normal code, dropped.
 		{Type: "anti", Match: "structural", Pattern: "console.log($$$)", Objected: "console.log(x)", Fixed: "logger.info(x)"},
 	}}
 	code, got := runPatternCheck(t, req)
 	if code != 0 || len(got) != 2 {
 		t.Fatalf("code %d, %+v", code, got)
 	}
-	if !got[0].Keep || got[0].Files != 4 || got[0].Matched != 0 {
+	if !got[0].Keep || got[0].Files != 5 || got[0].Matched != 0 {
 		t.Fatalf("moment: %+v", got[0])
 	}
-	if got[1].Keep || got[1].Matched != 2 || !strings.Contains(got[1].Reason, "2 of the area's 4 files") {
+	if got[1].Keep || got[1].Matched != 3 || !strings.Contains(got[1].Reason, "3 of the area's 5 files") {
 		t.Fatalf("console.log: %+v", got[1])
 	}
 
