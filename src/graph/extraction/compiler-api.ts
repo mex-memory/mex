@@ -831,7 +831,12 @@ class ApiProjectSession implements ProjectSession {
     if (!this.hasSourceFile(absolute)) return undefined;
     try {
       const output = timeGraphPhase("compiler.signatures", () => this.program.getDeclarationEmit([absolute]));
-      const texts = [...output.outputFiles.values()].map((file) => file.text);
+      // The declaration text alone: a declaration map (`declarationMap`)
+      // records where each body ends, so a line added inside a body would
+      // change it although nothing an importer sees changed.
+      const texts = [...output.outputFiles.entries()]
+        .filter(([name]) => /\.d\.[cm]?ts$/iu.test(name))
+        .map(([, file]) => file.text);
       if (texts.length === 0) return undefined;
       return helpers.sha256Base64(texts.join("\u0000"));
     } catch {
