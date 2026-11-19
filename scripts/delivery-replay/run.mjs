@@ -17,7 +17,7 @@ const distribution = xs => ({
   p95: quantile(xs, .95),
   runs: xs.length
 });
-function driver(binary, home, scorer, surfaceMode = "") {
+function driver(binary, home, scorer, surfaceMode = "",budgetPercent=100) {
   const p = spawn(binary, ["--delivery-replay"], {
     windowsHide: true,
     env: {
@@ -25,7 +25,8 @@ function driver(binary, home, scorer, surfaceMode = "") {
       MEX_HOME: home,
       MEX_TELEMETRY: "0",
       MEX_DELIVERY_SCORER: scorer,
-      MEX_DELIVERY_SURFACES: surfaceMode
+      MEX_DELIVERY_SURFACES: surfaceMode,
+ MEX_DELIVERY_BUDGET_PERCENT:String(budgetPercent)
     },
     stdio: ["pipe", "pipe", "pipe"]
   });
@@ -301,7 +302,11 @@ export async function replay() {
   const variants = [],
     timings = [];
   const shadow = process.argv.includes("--surfaces-shadow");
-  for (const scorer of (shadow ? ["tiers"] : ["tiers", "bm25", "fcfs", "risk"])) {
+ const budgetPercent=Number(arg("--budget-percent","100"));
+ if (!Number.isInteger(budgetPercent)||budgetPercent<1||budgetPercent>100) throw Error("budget percent must be 1..100");
+ const onlyScorer=arg("--scorer");
+ if(onlyScorer && !["tiers","bm25","fcfs","risk"].includes(onlyScorer)) throw Error("invalid scorer");
+  for (const scorer of (onlyScorer ? [onlyScorer] : shadow ? ["tiers"] : ["tiers", "bm25", "fcfs", "risk"])) {
     const lanes = [];
     for (const [name, exe] of [["current", binary], ...(base ? [["base", resolve(base)]] : [])]) {
       const home = join(work, scorer, name),
@@ -314,7 +319,7 @@ export async function replay() {
         name,
         home,
         mex,
-        driver: driver(exe, home, scorer, shadow && name === "current" ? "shadow" : ""),
+        driver: driver(exe, home, scorer, shadow && name === "current" ? "shadow" : "",budgetPercent),
         times: [],
         failed: 0,
         failures: [],
@@ -362,7 +367,7 @@ export async function replay() {
     for (const lane of lanes) {
       await lane.driver.close();
       const s = summary(join(lane.mex, "hooks.db"), labels, n);
-      if (shadow && lane.name === "current") {
+      if (lane.name === "current") {
         s.surfaceLedger = {};
         for (const [repo, fixture] of Object.entries(fixtures)) {
           const report = spawnSync(binary, ["--surfaces"], {
@@ -403,7 +408,7 @@ export async function replay() {
     recursive: true
   });
   writeFileSync(join(output, "replay.json"), JSON.stringify({
-    split,
+    split,budgetPercent,
     ...(shadow ? { surfaceDefinition: "All surfaces forced to shadow. Saved sessions without MEX measure coincidence, not effect. Offline receipts cannot advance an efficacy gate." } : {}),
     definition: "Session-level useful-at-some-point labels. Helped counts sessions; wrong counts distinct unacceptable ids per session; missed counts required ids. Receipt tokens are estimates. No recorded command executed.",
     fixtures: Object.fromEntries(Object.entries(fixtures).map(([repo, f]) => [repo, {

@@ -88,6 +88,8 @@ func TestAdvisoryCorrectsExactCurrentEpochWithoutAnOrdinaryMoment(t *testing.T) 
 				t.Fatal(err)
 			}
 			req := baseRequest(f.event(contract.SessionStart), f.env(), f.project, f.root)
+			// Seed a pre-lane receipt that consumed its pooled budget.
+			req.Lanes = false
 			req.Candidates = []record.DeliveryCandidate{{EntryID: "mx_advice", Moment: "read", Form: "full", Tokens: 2000, Action: "given"}}
 			res, err := h.CheckAndMark(req)
 			if err != nil {

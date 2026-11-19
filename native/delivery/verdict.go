@@ -9,9 +9,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mex-memory/mex/native/check"
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/judgement"
 	"github.com/mex-memory/mex/native/internal/rulechange"
+	"github.com/mex-memory/mex/native/record"
 )
 
 // Verdicts as the evaluator stores them; a missing row is unknown.
@@ -46,6 +49,9 @@ type shapeEnv struct {
 	indexTried      bool
 	rules           *rulechange.Snapshot
 	rulesTried      bool
+	hooks           *record.Hooks
+	judged          *judgement.Reader
+	judgedTried     bool
 }
 
 func (s *shapeEnv) reader() *index.Reader {
@@ -59,6 +65,7 @@ func (s *shapeEnv) reader() *index.Reader {
 }
 
 func (s *shapeEnv) close() {
+	s.judged.Close()
 	if s.index != nil {
 		_ = s.index.Close()
 	}
@@ -70,6 +77,33 @@ func (s *shapeEnv) close() {
 func shape(c candidate, verdict string, env *shapeEnv) shaped {
 	it := c.item
 	s := shaped{candidate: c, verdict: verdict, action: "given", full: it.Full, oneLine: it.OneLine, fullTok: it.FullTokens, lineTok: it.OneLineTokens}
+	if verdict == held && it.Entry.Kind == "fact" && env != nil && env.hooks != nil {
+		v, ok, err := env.hooks.VerdictOf(env.project, env.checkout, it.Entry.ID)
+		if err != nil || !ok {
+			verdict = unknown
+		} else if v.Verdict != held {
+			verdict = v.Verdict
+		} else if judgement.ModelKey(v.InputsHash) {
+			if !env.judgedTried {
+				env.judgedTried = true
+				env.judged = judgement.Open(env.recordDirectory, env.project, env.checkout)
+			}
+			want, valid := env.judged.HeldInputs(it.Entry.ID, it.Hash, v.InputsHash)
+			current, fresh := "", false
+			if valid {
+				current, fresh = check.CurrentInputsHash(env.checkout, env.recordDirectory, env.project, it)
+			}
+			if valid && fresh && current == want {
+				s.full += "\n(checked by model)"
+				s.oneLine += " (checked by model)"
+				s.fullTok = entries.EstimateTokens(s.full)
+				s.lineTok = entries.EstimateTokens(s.oneLine)
+			} else {
+				verdict = changed
+			}
+		}
+		s.verdict = verdict
+	}
 	withhold := func() shaped { s.action, s.full, s.oneLine, s.fullTok, s.lineTok = "withheld", "", "", 0, 0; return s }
 	kind := it.Entry.Kind
 	if it.Level == "team" && verdict != broken && env != nil && (kind == "rule" || kind == "decision" || kind == "pitfall") {
@@ -105,6 +139,20 @@ func shape(c candidate, verdict string, env *shapeEnv) shaped {
 	if it.Level == "personal" && !legacyFact {
 		if verdict == broken {
 			return withhold()
+		}
+		// A personal fact the code has changed is the user's own claim about
+		// code that no longer reads the same: point at today's code, as for a
+		// team fact, never restate it. Without checks there is no verdict to
+		// act on, so the note goes out as written.
+		if kind == "fact" && verdict == changed && len(it.Entry.Checks) > 0 {
+			text, ok := pointer(it.Entry, env)
+			if !ok {
+				return withhold()
+			}
+			s.action, s.full, s.oneLine = "replaced", text, text
+			s.fullTok = entries.EstimateTokens(text)
+			s.lineTok = s.fullTok
+			return s
 		}
 		return s
 	}

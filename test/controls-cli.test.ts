@@ -26,7 +26,7 @@ describe("off/on CLI", () => {
     expect(Date.parse(off.offUntil)).toBeGreaterThanOrEqual(before);
     expect(Date.parse(off.offUntil)).toBeLessThanOrEqual(Date.now() + 7_200_000);
     expect(JSON.parse(f.run("on", "--json"))).toEqual({ scope: "checkout", state: "on", offUntil: null });
-    expect(f.run("off")).toContain("Shared rule files may still be loaded");
+    expect(f.run("off")).toContain("Shared rule files in git may still be loaded");
     expect(readFileSync(rule, "utf8")).toBe("Shared rules\r\n");
   });
   it("rejects malformed duration before creating a record and refuses unregistered projects", () => {

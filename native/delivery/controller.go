@@ -22,6 +22,8 @@ import (
 )
 
 type Environment struct {
+	BudgetPercent         int // explicit offline replay only; ordinary hooks leave zero
+	fileIndexes           *fileIndexCache
 	policy                *policyCache
 	Home, RecordDirectory string
 	Now                   time.Time
@@ -48,6 +50,14 @@ func EpochBudget(model string, subagent bool) int {
 		return 3000
 	}
 	return 2000
+}
+
+func replayBudget(ev contract.Event, env Environment) int {
+	budget := EpochBudget(ev.Model, ev.AgentID != "")
+	if env.BudgetPercent > 0 && env.BudgetPercent <= 100 {
+		budget = budget * env.BudgetPercent / 100
+	}
+	return budget
 }
 
 // lifecycle maps an event to the epoch change it causes, if any.
@@ -97,7 +107,9 @@ type group struct {
 	text              string     // bounded prompt text
 	views             []toolView // references only; scoring text is assembled after hard gates
 	edits             []string   // files edited in this call that some entry covers
-	reservedUsed      int        // correction tokens already sent in this moment
+	cards             []answerCard
+	cardsConsumed     bool
+	reservedUsed      int // correction tokens already sent in this moment
 }
 
 // Handle must be called after checkout, consent and pause resolution. Events
@@ -106,9 +118,15 @@ type group struct {
 // With no candidate, covered edit, pending observation, rescue, history notice
 // or lifecycle work, the event returns before SQLite.
 func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
+	if ev.Prompt != nil {
+		prompt := *ev.Prompt
+		prompt.Text = rank.PromptText(prompt.Text)
+		ev.Prompt = &prompt
+	}
 	reason, signal, isLifecycle := lifecycle(ev)
 	isMoment := momentKind(ev)
 	isEnd := ev.Kind == contract.SessionEnd
+	isSearch := searchEvent(ev)
 	var adviceIDs []string
 	if isMoment || ev.Kind == contract.SessionStart || ev.Kind == contract.SubagentStart || (ev.Kind == contract.Stop && ev.Agent == "claude-code") {
 		adviceIDs = record.AdviceIDs(env.RecordDirectory, ev.Checkout)
@@ -118,7 +136,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			return contract.Reply{}, nil
 		}
 	}
-	if !isLifecycle && !isMoment && !isEnd && len(adviceIDs) == 0 {
+	if !isLifecycle && !isMoment && !isSearch && !isEnd && len(adviceIDs) == 0 {
 		return contract.Reply{}, nil
 	}
 	if ev.SessionID == "" || env.RecordDirectory == "" {
@@ -130,11 +148,45 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	if isLifecycle && (ev.ProjectID == "" || ev.Checkout == "") {
 		isLifecycle = false
 	}
+	var indexes fileIndexCache
+	env.fileIndexes = &indexes
+	defer indexes.close()
 	var policies policyCache
 	env.policy = &policies
 	var groups []*group
+	var anchors []Anchor
+	cards := searchCards(ev, env)
 	if isMoment {
-		groups = collect(ev, env)
+		if ev.Kind == contract.Prompt && surfaceSetting(env, ev.ProjectID, "prompt-anchor") != "off" {
+			anchors = VerifyAnchors(ev, env)
+			cards = anchorCard(anchors)
+		}
+		var vocabulary []answerCard
+		var vocabularyOut *[]answerCard
+		if ev.Kind == contract.Prompt && surfaceSetting(env, ev.ProjectID, "prompt-anchor") != "off" {
+			vocabularyOut = &vocabulary
+		}
+		groups = collect(ev, env, anchors, vocabularyOut)
+		if ev.Kind == contract.Prompt {
+			var kept []*group
+			for _, g := range groups {
+				var prose []candidate
+				for _, c := range g.cands {
+					if c.moment == "prompt-arm" {
+						arm := c
+						cards = append(cards, answerCard{surface: "prompt-anchor", id: c.item.Entry.ID, arm: &arm})
+					} else {
+						prose = append(prose, c)
+					}
+				}
+				g.cands = prose
+				if len(g.cands) > 0 {
+					kept = append(kept, g)
+				}
+			}
+			groups = kept
+			cards = append(cards, vocabulary...)
+		}
 	}
 	pending := isMoment && ev.Kind != contract.Prompt && record.SurfacePending(env.RecordDirectory, ev.SessionID, ev.AgentID)
 	var stuck *rescue
@@ -143,12 +195,12 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		stuck = findRescue(ev, env)
 		history = findHistory(ev, env)
 	}
-	if !isLifecycle && !isEnd && len(groups) == 0 && len(adviceIDs) == 0 && !pending && stuck == nil && len(history) == 0 {
+	if !isLifecycle && !isEnd && len(groups) == 0 && len(cards) == 0 && len(adviceIDs) == 0 && !pending && stuck == nil && len(history) == 0 {
 		return contract.Reply{}, nil
 	}
 	// A call that delivers nothing only adds evidence to open acted windows:
 	// log it and leave SQLite closed. The next transaction settles the log.
-	if pending && !isLifecycle && !isEnd && len(groups) == 0 && len(adviceIDs) == 0 && stuck == nil && len(history) == 0 && !env.Offline {
+	if pending && !isLifecycle && !isEnd && len(groups) == 0 && len(cards) == 0 && len(adviceIDs) == 0 && stuck == nil && len(history) == 0 && !env.Offline {
 		if err := record.AppendSurfaceObservations(env.RecordDirectory, ev.SessionID, ev.AgentID, surfaceTools(ev, env)); err == nil {
 			return contract.Reply{}, nil
 		}
@@ -200,8 +252,8 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		req.Reason, req.CompactSignal = reason, signal
 		req.EndEpoch = isEnd
 		req.Notify = env.Notices
-		req.Budget = EpochBudget(ev.Model, ev.AgentID != "")
-		if ev.Model == "" && ev.AgentID == "" {
+		req.Budget = replayBudget(ev, env)
+		if ev.Model == "" && ev.AgentID == "" && env.BudgetPercent == 0 {
 			req.Budget = 0 // keep the known window across signals without model metadata
 		}
 		res, err := h.CheckAndMark(req)
@@ -227,6 +279,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 
 	adviceHandled := false
 	for _, g := range groups {
+		if ev.Kind == contract.Prompt && g.project == ev.ProjectID && g.checkout == ev.Checkout {
+			g.cards = cards
+		}
 		finish := phase(env.Trace, "record-observations")
 		obs, err := holdbackObservations(h, ev, g)
 		if err != nil {
@@ -275,12 +330,20 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			continue
 		}
 		text, err := deliver(h, ev, env, g)
+		if g.cardsConsumed {
+			cards = nil
+		}
 		if err != nil {
 			return contract.Reply{}, err
 		}
 		if text != "" {
 			blocks = append(blocks, text)
 		}
+	}
+	if text, err := deliverCards(h, ev, env, cards); err != nil {
+		return contract.Reply{}, err
+	} else if text != "" {
+		blocks = append(blocks, text)
 	}
 	if len(adviceIDs) > 0 && !adviceHandled {
 		block, err := adviceBlock(h, ev, env, adviceIDs)
@@ -315,6 +378,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 func baseRequest(ev contract.Event, env Environment, project, checkout string) record.DeliveryRequest {
 	at, _ := gitstate.Read(checkout)
 	return record.DeliveryRequest{
+		Lanes:   true,
 		Session: record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: project, Checkout: checkout},
 		AgentID: ev.AgentID,
 		Branch:  at.Branch, Head: at.Head,
@@ -327,7 +391,7 @@ func baseRequest(ev contract.Event, env Environment, project, checkout string) r
 
 // collect finds candidates per checkout without touching SQLite. Snapshots
 // load once per checkout per call.
-func collect(ev contract.Event, env Environment) []*group {
+func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[]answerCard) []*group {
 	byCheckout := map[string]*group{}
 	var order []*group
 	get := func(project, checkout string) *group {
@@ -384,6 +448,10 @@ func collect(ev contract.Event, env Environment) []*group {
 				}
 			}
 			g.text = boundedText(ev.Prompt.Text, 64*1024)
+			g.cands = append(g.cands, armAnchors(anchors, g.snap)...)
+			if vocabulary != nil {
+				*vocabulary = vocabularyCards(ev, env, g.snap, hintGate(env.RecordDirectory, g.project, ev.Agent, env.Now))
+			}
 		}
 	} else {
 		hintGates := map[string]func(*entries.Item) bool{}
@@ -420,7 +488,7 @@ func collect(ev contract.Event, env Environment) []*group {
 			}
 			g.cands = kept
 		}
-		if len(g.cands) > 0 || len(g.edits) > 0 || (ledgerErr == nil && g.snap != nil && len(g.views) > 0 && hasAdviceEffects(g.views)) {
+		if len(g.cands) > 0 || len(g.edits) > 0 || (ledgerErr == nil && g.snap != nil && len(g.views) > 0 && (hasAdviceEffects(g.views) || anchorRead(g.views, ev, env))) {
 			out = append(out, g)
 		}
 	}
@@ -512,30 +580,8 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	if len(g.cands) == 0 {
 		return "", nil
 	}
-	if g.snap.Light && ev.Kind != contract.Prompt {
-		// A light snapshot found the moment; the text comes from the full one.
-		full, err := entries.Load(env.RecordDirectory, env.Home, g.project, g.checkout)
-		if err != nil {
-			return "", err
-		}
-		byID := map[string]*entries.Item{}
-		for i := range full.Items {
-			byID[full.Items[i].Entry.ID] = &full.Items[i]
-		}
-		var kept []candidate
-		for _, c := range g.cands {
-			if it := byID[c.item.Entry.ID]; it != nil && it.Hash == c.item.Hash {
-				c.item = it
-				kept = append(kept, c)
-			}
-		}
-		g.snap, g.cands = &full, kept
-		if len(kept) == 0 {
-			return "", nil
-		}
-	}
 	cov := loadCoverage(ev.Agent, g.checkout, g.firstRel, brief.Options{Checkout: g.checkout, MexHome: env.Home, ProjectID: g.project, Agent: ev.Agent, RecordDirectory: env.RecordDirectory, SessionID: ev.SessionID, AgentID: ev.AgentID, NativeCwd: ev.Cwd})
-	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: g.project, checkout: g.checkout}
+	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: g.project, checkout: g.checkout, hooks: h}
 	defer senv.close()
 	// Strongest moment per entry, then the verdict decides the form.
 	best := map[string]candidate{}
@@ -624,7 +670,10 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	correctionTokens := 0
 	for _, id := range ids {
 		s := shape(best[id], verdictOf(id), senv)
-		if s.action == "given" && s.item.Entry.Kind == "rule" && intent == "investigating" {
+		if s.action == "given" && s.moment == "prompt-arm" {
+			s.action, s.detail = "held-back", "prompt-anchor"
+		}
+		if s.action == "given" && s.item.Entry.Kind == "rule" && intent == "investigating" && !s.anchorRelease {
 			s.action, s.detail = "held-back", "investigating"
 		}
 		if s.action == "given" && s.item.Entry.Kind == "rule" && intent == "changing" {
@@ -745,13 +794,11 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 			}
 		}
 	}
-	if scorer.BudgetOnly() {
-		for i := range items {
-			items[i].reserve = false
-			items[i].exempt = false
-		}
+	budget := replayBudget(ev, env)
+	if epoch, ok, err := h.CurrentEpoch(ev.SessionID, ev.AgentID); err == nil && ok {
+		budget = epoch.Budget
 	}
-	plan := append(corrections, packReserved(items, companion, reservedLane-g.reservedUsed-correctionTokens, scorer)...)
+	plan := append(corrections, packInto(items, companion, reservedLane-g.reservedUsed-correctionTokens, scorer, budget)...)
 	req := baseRequest(ev, env, g.project, g.checkout)
 	req.Candidates = requestCandidates(plan)
 	surfaceTargets(plan, g.views, req.Candidates)
@@ -781,28 +828,42 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		}
 		return ""
 	}
-	req.Admit = admit(plan, scorer)
-	if scorer.BudgetOnly() {
-		for i := range req.Candidates {
-			req.Candidates[i].Exempt = false
-			req.Candidates[i].Reserved = false
+	admission := admit(plan, scorer)
+	req.Admit = func(epoch record.Epoch, c record.DeliveryCandidate) bool {
+		for _, card := range g.cards {
+			if card.id == c.EntryID {
+				return true
+			}
 		}
+		return admission(epoch, c)
+	}
+	for _, card := range g.cards {
+		req.Candidates = append(req.Candidates, cardCandidate(card))
 	}
 	res, err := h.CheckAndMark(req)
 	if err != nil {
 		return "", err
 	}
+	g.cardsConsumed = true
 	if len(res.Receipts) == 0 {
 		return "", nil
 	}
-	return render(res.Receipts[0].BlockID, plan, res.Receipts), nil
+	text := render(res.Receipts[0].BlockID, plan, res.Receipts)
+	lines := cardLines(g.cards, res.Receipts)
+	if lines != "" {
+		if text == "" {
+			text = "[mex " + res.Receipts[0].BlockID + "]"
+		}
+		text += "\n" + lines
+	}
+	return text, nil
 }
 
 // releaseHeldRules offers again, at an edit, the rules this epoch held back
 // while the agent was only investigating: a rule waits for edit risk, and an
 // edit inside its scope is that risk. The rule keeps its exact-match exemption.
 func releaseHeldRules(h *record.Hooks, ev contract.Event, g *group) error {
-	if len(g.edits) == 0 {
+	if len(g.edits) == 0 && len(g.views) == 0 {
 		return nil
 	}
 	rows, err := h.HoldbackEntries(ev.SessionID, ev.AgentID, g.project, g.checkout)
@@ -810,12 +871,18 @@ func releaseHeldRules(h *record.Hooks, ev contract.Event, g *group) error {
 		return err
 	}
 	held := map[string]bool{}
+	armed := map[string][]string{}
+	armedHashes := map[string]string{}
 	for _, r := range rows {
+		if r.Detail == "prompt-anchor" {
+			armedHashes[r.EntryID] = r.ContentHash
+			armed[r.EntryID] = append(armed[r.EntryID], r.Paths...)
+		}
 		if r.Detail == "investigating" {
 			held[r.EntryID] = true
 		}
 	}
-	if len(held) == 0 {
+	if len(held) == 0 && len(armed) == 0 {
 		return nil
 	}
 	offered := map[string]bool{}
@@ -824,6 +891,18 @@ func releaseHeldRules(h *record.Hooks, ev contract.Event, g *group) error {
 	}
 	for i := range g.snap.Items {
 		it := &g.snap.Items[i]
+		for _, v := range g.views {
+			// A note this call already offers through its own moment (a pitfall at
+			// first read) goes out there; the prompt anchor's arming only adds a
+			// moment for notes nothing else would send.
+			if offered[it.Entry.ID] {
+				break
+			}
+			if (v.name == contract.ToolRead || isEdit(v)) && v.output != nil && v.output.OK && contains(armed[it.Entry.ID], v.rel) && armedHashes[it.Entry.ID] == contentHash(it.Hash+"\n") {
+				g.cands = append(g.cands, candidate{item: it, moment: "anchor-touch", tier: tierFile, rel: v.rel, anchorRelease: true, anchorPaths: []string{v.rel}})
+				break
+			}
+		}
 		if !held[it.Entry.ID] || offered[it.Entry.ID] || it.Entry.Kind != "rule" {
 			continue
 		}

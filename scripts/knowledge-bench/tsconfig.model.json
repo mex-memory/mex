@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "rootDir": "../..", "noEmit": true },
+  "include": ["model-runtime.ts"],
+  "exclude": ["../../node_modules", "../../dist"]
+}

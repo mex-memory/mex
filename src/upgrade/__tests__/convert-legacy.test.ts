@@ -5,6 +5,8 @@ import type { LegacyDocument, LegacySnapshot } from "../legacy-reader.js";
 import { parseWikiMarkdown } from "../../wiki/markdown/contract.js";
 import { KNOWLEDGE_LIMITS, serializeEntry } from "../../knowledge/entry.js";
 import { selectNative } from "../../knowledge/native-select.js";
+import { canonicalFingerprint, deserializeFingerprint } from "../../graph/fingerprint.js";
+import { K } from "../../graph/config.js";
 
 const ID = "mx_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const TODAY = "2026-11-15";
@@ -97,6 +99,19 @@ describe("legacy conversion candidates", () => {
       { kind: "legacy-grounding", role: "supporting", target: { node: "class:abcdefab12345678" }, saw: { fingerprint: "mh2:64:Original_CASE" }, files: {} },
     ]);
     expect(source.parsed.entities[0].entity.groundsTo[0].bodyHash).toBe("historical-body");
+  });
+
+  it("keeps an entry whose 0.8 fingerprint is longer than a line, in its compact lossless form", () => {
+    // A real 0.8 `mh:` fingerprint: hex of JSON, the minhash values and the neighbour ids.
+    const value = { minhash: Array.from({ length: K }, (_, i) => 4_000_000_000 - i * 7919), neighbors: Array.from({ length: 12 }, (_, i) => `function:${String(i).padStart(32, "a")}`), tokenCount: 420 };
+    const long = `mh:${K}:${Buffer.from(JSON.stringify(value)).toString("hex")}`;
+    expect(long.length).toBeGreaterThan(2048);
+    const result = convertLegacy(snapshot(document(wiki(`  grounds_to:\n    - node: function:12345678abcdefab\n      fingerprint: ${long}\n`))), TODAY);
+    expect(result.issues).toEqual([]);
+    const saw = result.candidates[0].entry.mex.checks.find(check => check.kind === "legacy-grounding")?.saw as { fingerprint: string };
+    expect(saw.fingerprint).toBe(canonicalFingerprint(long));
+    expect(saw.fingerprint.startsWith("mh2:")).toBe(true);
+    expect(deserializeFingerprint(saw.fingerprint)).toEqual(value);
   });
 
   it("reports oversized prose for review instead of truncating it", () => {

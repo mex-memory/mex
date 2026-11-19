@@ -76,13 +76,14 @@ test('dirty or changed checkouts cannot produce release evidence', async () => {
 });
 
 test('tagged releases select their actual feature scope and exact version', () => {
-  for (const [tag, release] of [['v0.9.0-beta.1', 'beta.1'], ['0.9.0-beta.2', 'beta.2'], ['v0.9.0-rc.1', 'final'], ['v0.9.0', 'final']]) {
+  for (const [tag, release] of [['v0.9.0-beta.1', 'beta.1'], ['v0.9.0-beta.1.1', 'beta.1'], ['0.9.0-beta.2', 'beta.2'], ['v0.9.0-beta.2.3', 'beta.2'], ['v0.9.0-rc.1', 'final'], ['v0.9.0', 'final']]) {
     assert.equal(releaseForTag(tag), release);
     assert.equal(selectRelease(undefined, { GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: tag }, tag.replace(/^v/, '')), release);
   }
   assert.throws(() => selectRelease('beta.1', { GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: 'v0.9.0' }, '0.9.0'), /profile/);
   assert.throws(() => selectRelease(undefined, { GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: 'v0.9.0-beta.1' }, '0.9.0-beta.0'), /version/);
   assert.throws(() => releaseForTag('v0.9.0-beta.10'));
+  assert.throws(() => releaseForTag('v0.9.0-beta.1.0'));
   assert.throws(() => selectRelease('anything', {}, '0.9.0'));
 });
 

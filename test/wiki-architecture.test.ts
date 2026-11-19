@@ -809,6 +809,8 @@ describe("no unscoped scaffold writes", () => {
       "src/knowledge/personal-store.ts": "copies and swaps only the bounded personal notes directory under the contained MEX project-data home; recovers through a writer-locked receipt and removes only proved flat saved copies; never a repository file",
       "src/review/daily-receipt.ts": "claims one private UTC-day receipt per project in existing local record storage; prunes only bounded, proved regular receipts; never writes repository files or opens a record writer",
       "src/knowledge/native-write.ts": "writes and removes only MEX-generated agent rule files (marked generated, hash-checked against its manifest, never a person's file or CLAUDE.md), its .mex/native.json manifest, and its own block in git's exclude file",
+      "src/knowledge/native-pending.ts": "removes only the hook's bounded rule-file rebuild requests under the record directory's native-pending folder after queueing them; never a repository file",
+      "src/repo-start/refresh.ts": "removes only the hook's bounded refresh requests under the record directory's refresh-pending folder and writes empty per-checkout stamp files under refresh-stamps; never a repository file",
       "src/knowledge/share.ts": "writes team entries, .mex/config.json, .mex/sources.json and rule files only inside its own temporary share worktree, and on discard deletes only the files it wrote there; never your branch or working tree",
       "src/knowledge/share-state.ts": "writes and removes only the share.json progress record under the MEX project-data home",
       "src/knowledge/rule-cache.ts": "writes only the derived rule-file scan (rule-files.json) under the MEX project-data home; never a repository file",

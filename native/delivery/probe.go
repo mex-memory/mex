@@ -36,7 +36,7 @@ func Probe(env Environment, project, checkout string, ids []string) ([]ProbeResu
 		return nil, err
 	}
 	defer h.Close()
-	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: project, checkout: checkout}
+	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: project, checkout: checkout, hooks: h}
 	defer senv.close()
 	out := make([]ProbeResult, 0, len(ids))
 	for _, id := range ids {
@@ -46,6 +46,7 @@ func Probe(env Environment, project, checkout string, ids []string) ([]ProbeResu
 		}
 		if it := byID[id]; it != nil {
 			s := shape(candidate{item: it, moment: "probe", tier: tierFile}, r.Verdict, senv)
+			r.Verdict = s.verdict
 			switch {
 			case s.action == "withheld":
 			case s.action == "replaced" && it.Entry.Kind == "fact":

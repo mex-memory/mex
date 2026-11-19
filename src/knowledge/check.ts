@@ -23,10 +23,10 @@ export type Verdict = "held" | "changed" | "broken" | "unknown";
 type Level = "team" | "personal" | "hint";
 
 export interface CheckResult { index: number; kind: string; role: string; status: "pass" | "fail" | "gone" | "floor"; reason?: string; now?: unknown; files_changed?: string[]; }
-export interface NativeItem { id: string; level: Level; path: string; kind: string; status: string; verdict: Verdict; entry_hash?: string; rule_evidence?: string[]; rule_evidence_pending?: boolean; }
+export interface NativeItem { id: string; level: Level; path: string; kind: string; status: string; verdict: Verdict; entry_hash?: string; rule_evidence?: string[]; rule_evidence_pending?: boolean; label?: "checked by model"; }
 export interface NativeReport {
   ok: true; stored: boolean; items: NativeItem[] | null;
-  results: Array<{ entry_id: string; verdict: Verdict; checks: CheckResult[]; inputs?: Record<string, string> }> | null;
+  results: Array<{ entry_id: string; verdict: Verdict; checks: CheckResult[]; inputs?: Record<string, string>; evaluation_hash?: string }> | null;
   problems: Array<{ level: Level; path: string; error: string }> | null;
 }
 
@@ -63,7 +63,7 @@ export function nativeBinary(env: NodeJS.ProcessEnv = process.env): string | nul
 }
 
 /** Ask the native evaluator. Throws KnowledgeError when it can't answer. */
-export function runNative(binary: string, request: Record<string, unknown>): NativeReport {
+export function runNative(binary: string, request: Record<string, unknown>, attempt = 0): NativeReport {
   const result = spawnSync(binary, ["--check-run"], {
     input: JSON.stringify(request), encoding: "utf8", timeout: NATIVE_TIMEOUT_MS, windowsHide: true,
     maxBuffer: 64 * 1024 * 1024, env: { ...process.env, MEX_BACKGROUND: "1" },
@@ -72,7 +72,15 @@ export function runNative(binary: string, request: Record<string, unknown>): Nat
   let parsed: { ok?: boolean; error?: string };
   try { parsed = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? ""); }
   catch { throw new KnowledgeError("CHECKS_UNAVAILABLE", "The check evaluator gave no answer."); }
-  if (!parsed.ok) throw new KnowledgeError("CHECKS_FAILED", parsed.error ?? "The check evaluator failed.");
+  if (!parsed.ok) {
+    // The record is busy (a background job is writing): try once more before reporting.
+    if (attempt === 0 && /deadline exceeded|database is locked|SQLITE_BUSY/iu.test(parsed.error ?? "")) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
+      return runNative(binary, request, 1);
+    }
+    const busy = /deadline exceeded|database is locked|SQLITE_BUSY/iu.test(parsed.error ?? "");
+    throw new KnowledgeError("CHECKS_FAILED", busy ? "MEX's record is busy with a background job; try again in a moment." : parsed.error ?? "The check evaluator failed.");
+  }
   return parsed as NativeReport;
 }
 

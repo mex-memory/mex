@@ -23,7 +23,7 @@ import (
 // listing already carries. Text and checks are loaded with Load only when a
 // moment has found a candidate.
 
-const lightVersion = 1
+const lightVersion = 2
 
 type lightFile struct {
 	Version int    `json:"version"`
@@ -246,6 +246,7 @@ func encodeLight(lf lightFile) []byte {
 		w.Strings(e.Companions)
 		w.String(e.Status)
 		w.String(e.Created)
+		w.Strings(e.Aliases)
 	}
 	return w.Bytes()
 }
@@ -277,6 +278,7 @@ func decodeLight(b []byte) (lightFile, error) {
 		}
 		e.Companions = r.Strings(maxList)
 		e.Status, e.Created = r.String(), r.String()
+		e.Aliases = r.Strings(maxList)
 		it.Entry = e
 		lf.Items = append(lf.Items, it)
 	}

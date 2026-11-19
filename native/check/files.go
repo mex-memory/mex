@@ -21,8 +21,9 @@ var (
 
 // files reads repository files once per evaluation, confined to the checkout.
 type files struct {
-	root  *os.Root
-	cache map[string]fileRead
+	root     *os.Root
+	cache    map[string]fileRead
+	maxBytes int64 // zero uses the ordinary evaluator bound
 }
 
 type fileRead struct {
@@ -85,12 +86,16 @@ func (f *files) load(path string) fileRead {
 		return fileRead{err: errUnreadable}
 	}
 	defer file.Close()
+	limit := f.maxBytes
+	if limit == 0 {
+		limit = MaxFileBytes
+	}
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxFileBytes {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
 		return fileRead{err: errUnreadable}
 	}
-	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
-	if err != nil || len(data) > MaxFileBytes {
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || int64(len(data)) > limit {
 		return fileRead{err: errUnreadable}
 	}
 	return fileRead{data: data, hash: hashBytes(data)}

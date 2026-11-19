@@ -155,6 +155,7 @@ jobs:
       - run: go vet ./...
       - name: go test
         env:
+          MEX_ANSWER_TIMING: ${{ runner.os == 'Linux' && '1' || '0' }}
           MEX_HOOK_TIMING_MODE: report
           MEX_HOOK_TIMING_OUT: ${{ runner.temp }}/hook-timing.txt
         # One package at a time: the timing test starts hundreds of processes,

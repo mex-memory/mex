@@ -1,9 +1,7 @@
 package delivery
 
 import (
-	"context"
 	"database/sql"
-	"errors"
 	"path/filepath"
 	"testing"
 
@@ -77,22 +75,12 @@ func TestControllerHoldbackObservationsAndLaterDelivery(t *testing.T) {
 		t.Fatal(followKinds(t, f))
 	}
 }
-func TestFCFSUsesBudgetWithoutExactExemptions(t *testing.T) {
+func TestLaneExemptionsDoNotDependOnScorer(t *testing.T) {
 	for _, name := range []string{"tiers", "bm25", "fcfs", "risk"} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
 			f.entry(spec{id: "mx_ruleaa", kind: "rule", scope: "src/**", oneLine: "Use the new function.", when: []string{"anti:oldCall("}})
-			// This test checks token policy, not cold schema-migration timing.
-			// Retry only deadline-expired fixture setup; actual delivery and
-			// every production open keep their existing time limits.
-			var h *record.Hooks
-			var err error
-			for attempt := 0; attempt < 3; attempt++ {
-				h, err = record.OpenHooks(record.Location{Hooks: filepath.Join(f.dir, "hooks.db")})
-				if err == nil || !errors.Is(err, context.DeadlineExceeded) {
-					break
-				}
-			}
+			h, err := record.OpenHooks(record.Location{Hooks: filepath.Join(f.dir, "hooks.db")})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,15 +97,8 @@ func TestFCFSUsesBudgetWithoutExactExemptions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if name == "fcfs" {
-				if !reply.Empty() {
-					t.Fatal("FCFS bypassed budget", reply)
-				}
-				if len(f.rows("action='held-back'")) != 1 {
-					t.Fatal(f.rows(""))
-				}
-			} else if reply.Empty() {
-				t.Fatal("exact match lost exemption")
+			if reply.Empty() {
+				t.Fatal("exact match lost its lane exemption", name)
 			}
 		})
 	}

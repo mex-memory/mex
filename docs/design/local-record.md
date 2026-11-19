@@ -1,4 +1,4 @@
-# Contract: the local record (record version 5, hooks version 7)
+# Contract: the local record (record version 5, hooks version 10)
 
 ## Surface ledger
 
@@ -23,7 +23,8 @@ Pruning receipt windows preserves their aggregate counts.
 
 Epochs gain `tool_calls`, `candidate_tokens`, `admitted_tokens` and `budget_held`.
 The last three columns reserve contention accounting in this migration.
-Node recognizes version 7 read-only; Go remains its sole writer.
+Node recognizes version 7 read-only; Go remains its sole writer (version 10 is
+current, see "Hooks schema 8 to 10").
 Empty hooks databases initialize the same embedded schema atomically in one
 transaction. Existing databases retain one transaction per numbered upgrade;
 already applied versions do not acquire redundant writer locks. Initialization
@@ -133,6 +134,55 @@ Everything MEX records about its own work belongs under the MEX home, or the
 local database cache described below. CLI, Hub, session lines and reports read
 these records. This page covers the two files, their schemas, the usage log,
 the own-usage reader, the job model and the background process.
+
+## Hooks schema 8 to 10
+
+Hooks versions 8, 9 and 10 are additive. Node recognizes version 10 read-only;
+Go remains the sole writer. An older reader that sees a newer file reports the
+version and does not write.
+
+Migration 0008 (search answers) gives `surface_windows` the columns `observed`
+(calls seen after the answer), `followup` (a Read overlapped the answered
+span), `harm` (a Read of other lines of the same file) and `complete` (the
+window saw its full 3 calls). `surface_firings` gains `complete`. A span target
+carries start and end lines and an optional digest of the originating tool
+call; it holds range numbers and paths, never code text. A window that ends
+before 3 observed calls is incomplete and is left out of the settled
+denominators. `surface_gates` gains `minimum_avoided_delta` (.30),
+`minimum_cost_sessions` (10) and `no_harm_rise` (1), which supplement the fixed
+gate; the new `surface_cost_checks` (project, surface, session, agent,
+`net_weighted_tokens`) holds the per-session qualification projected from the
+task cost ledger. The live cost producer owns its writes; offline replay never
+populates it, and without ten priced sessions a trial surface stays in
+collecting.
+
+Migration 0009 (budget lanes) adds `deliveries.lane` (default `legacy` for
+earlier receipts; otherwise `critical`, `cards`, `prompt`, `brief` or
+`ordinary`) and `lane_offers`, one row per canonical entry, checkout, lane and
+epoch with the largest rendered `tokens` offered and `budget_held`, so a
+repeated rejected offer cannot inflate demand. Budget shares are 20% critical,
+40% cards, 15% prompt, 15% brief and 10% ordinary of the epoch budget;
+admitted usage is shared across checkouts. A request made through the
+controller always uses lanes; a low-level request from before it keeps the
+pooled admission. Retention covers lane offers and cost projections. The
+read-only surface report exposes lane contention per epoch and span outcomes.
+
+Migration 0010 (false-send counts) adds `epochs.false_send_counted`, the
+once-only claim for the daily counts. When an epoch closes, the hook adds two
+`counters_go` rows per agent for the day, `agent:<agent>:knowledge.closed_deliveries`
+and `agent:<agent>:knowledge.false_send_estimate`; the estimate is closed
+deliveries (given or replaced, not corrections) with neither a followup nor a
+later scope touch. Counts only; an offline replay writes none. The telemetry
+report schema lists both names.
+
+Files the hook reads without SQLite gain one derived hint: `anchor-armed/<session-agent hash>/<checkout-path hash>`,
+which only avoids opening SQLite on an unrelated read. Receipts stay
+authoritative, and a stale hint can only cost work. The prompt-arm and
+anchor-touch moments, and the `prompt-anchor` and `search-span` surfaces, are
+new names in `moment` and `surface`; both surfaces default to `trial`. The
+light entry snapshot (`delivery-entries/<hash>.light.bin`) is version 2 and
+now stores each entry's written `aliases` so a prompt can be matched without a
+full parse.
 
 ## Two files, one writer each
 
@@ -963,6 +1013,10 @@ first ticket that opens `hooks.db` on the hook path (delivery-01) moves them
 there.
 
 ## Changes
+
+- Hooks version 10 (delivery-02, second pass): migrations 0008 span windows and gate
+  settings, 0009 budget lanes, 0010 once-only false-send count claims; two daily
+  counters; one derived anchor hint file; light entry snapshot version 2.
 
 - Version 3, foundation-03 additions (no schema change): plain files the hook
   reads without SQLite (hook checkout mirrors, the off-notice markers, the

@@ -14,13 +14,15 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "mex-knowledge-cli-")); repo = join(root, "repo"); mexBase = join(root, "user"); mkdirSync(repo);
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
-function run(args: string[], cwd = repo, interactive = false) {
+function run(args: string[], cwd = repo, interactive = false, agentEnv: NodeJS.ProcessEnv = {}) {
   const preload = "data:text/javascript,import https from 'node:https';import http from 'node:http';import{syncBuiltinESMExports}from 'node:module';const deny=()=>{throw new Error('Unexpected network')};https.request=deny;http.request=deny;globalThis.fetch=deny;syncBuiltinESMExports();Object.defineProperty(process.stderr,'isTTY',{value:true});";
   const result = spawnSync(process.execPath, [...(interactive ? ["--import", preload] : []), cli, ...args], {
     cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024,
     env: { ...process.env, CLAUDE_CONFIG_DIR: join(root, "claude-host"), CLAUDE_CODE_PROJECT_DIR_NAME: "fixture-project", CODEX_HOME: join(root, "codex-host"), MEX_HOME: mexBase, MEX_TELEMETRY: interactive ? "1" : "0", ...(interactive ? {
       DO_NOT_TRACK: "0", MEX_OFFLINE: "0", MEX_DEV: "", CI: "", CONTINUOUS_INTEGRATION: "", GITHUB_ACTIONS: "", GITLAB_CI: "", TF_BUILD: "", BUILDKITE: "", CIRCLECI: "", JENKINS_URL: "",
-    } : {}), MEX_BACKGROUND: "0", NO_COLOR: "1" },
+    } : {}), MEX_BACKGROUND: "0", NO_COLOR: "1",
+    // Run from inside an agent, these would label every note as the agent's; tests set them on purpose.
+    CLAUDECODE: "", CODEX_THREAD_ID: "", ...agentEnv },
   });
   expect(result.error, result.stderr).toBeUndefined();
   return { ...result, json: () => JSON.parse(result.stdout) };
@@ -103,6 +105,10 @@ describe("shipped knowledge commands", () => {
     expect(run(["expand", id, "--json"]).json()).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
     const second = run(["note", "A disposable note.", "--json"]).json().entry.mex.id;
     expect(run(["forget", second, "No longer useful.", "--json"]).json()).toMatchObject({ ok: true, status: "retired" });
+    // The command MEX prints after an agent saves a note has no reason.
+    const third = run(["note", "Another disposable note.", "--json"]).json().entry.mex.id;
+    expect(run(["forget", third, "--json"]).json()).toMatchObject({ ok: true, status: "retired", retired: { reason: "Removed with mex forget" } });
+    expect(run(["wrong", third]).status).not.toBe(0);
     expect(readdirSync(repo)).toEqual([]);
     expect(existsSync(join(mexBase, ".mex", "config.json"))).toBe(false);
   });
@@ -191,6 +197,21 @@ describe("shipped knowledge commands", () => {
   });
 });
 
+
+it("labels a note an agent saved as the agent's, and the person's edit makes it theirs", () => {
+  execFileSync("git",["-C",repo,"init","-q","-b","work"],{stdio:"pipe"});
+  const byAgent = run(["note", "Deploys go through npm run deploy:prod."], repo, false, { CLAUDECODE: "1" });
+  expect(byAgent.status, byAgent.stderr).toBe(0);
+  expect(byAgent.stdout).toMatch(/\[Claude Code noted, \d+ [A-Z][a-z]{2}\]/u);
+  expect(byAgent.stdout).toContain("Tell the person it is saved");
+  const id = /mx_[a-f0-9]{24}/u.exec(byAgent.stdout)![0];
+  expect(run(["recall", "deploys"]).stdout).toContain("[Claude Code noted,");
+  expect(run(["edit", id, "Deploys go through npm run deploy:prod only."]).status).toBe(0);
+  expect(run(["recall", "deploys"]).stdout).toContain("[you said,");
+  expect(run(["note", "Release notes live in CHANGES.md."], repo, false, { CODEX_THREAD_ID: "thread-1" }).stdout).toMatch(/\[Codex noted, /u);
+  const person = run(["note", "Use pnpm, not npm."]);
+  expect(person.stdout).toContain("[you said,"); expect(person.stdout).not.toContain("Tell the person");
+});
 
 it.each(["temporary path", "path with dot"])("honors wrong --all-along for a delivered hint after retiring it (%s)",spelling=>{
   if(spelling==="path with dot") repo+=`${sep}.`;

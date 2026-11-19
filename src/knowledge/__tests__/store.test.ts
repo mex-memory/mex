@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { openRecord, openRecordReadOnly, projectIdentity } from "../../record/index.js";
 import { expand, note, recall } from "../store.js";
 import { KNOWLEDGE_LIMITS, parseEntry, serializeEntry } from "../entry.js";
@@ -132,5 +132,24 @@ describe("personal knowledge", () => {
     for (const query of ["", "!!!", "x".repeat(257)]) expect(() => recall(query, options())).toThrow();
     for (const limit of [0, 101, 1.5, NaN]) expect(() => recall("fixtures", options(), limit)).toThrow();
     expect(existsSync(home)).toBe(false);
+  });
+});
+
+const realRanker = process.env.MEX_TEST_REAL_HOOK_BINARY === "1" && spawnSync("go", ["version"], { encoding: "utf8" }).status === 0;
+describe.skipIf(!realRanker)("recall through the real ranker", () => {
+  let previous: string | undefined, bin: string;
+  beforeAll(() => {
+    bin = mkdtempSync(join(tmpdir(), "mex-recall-bin-"));
+    const binary = join(bin, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
+    execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve(__dirname, "../../../native"), timeout: 240_000, stdio: "pipe" });
+    previous = process.env.MEX_HOOK_BINARY; process.env.MEX_HOOK_BINARY = binary;
+  }, 300_000);
+  afterAll(() => { if (previous === undefined) delete process.env.MEX_HOOK_BINARY; else process.env.MEX_HOOK_BINARY = previous; rmSync(bin, { recursive: true, force: true }); });
+  it("finds notes by a word they all share", () => {
+    const password = note({ text: "The staging database password rotates every Monday." }, options());
+    const payments = note({ text: "Payments use the Razorpay sandbox key in staging." }, options());
+    const found = recall("staging", options());
+    expect(found.entries.map(e => e.id).sort()).toEqual([password.entry.mex.id, payments.entry.mex.id].sort());
+    expect(recall("Razorpay", options())).toMatchObject({ entries: [{ id: payments.entry.mex.id }], ranking: { engine: "native" } });
   });
 });

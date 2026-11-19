@@ -1,5 +1,6 @@
 import { openRecord } from "../record/index.js";
 import { offDeadline, setCheckoutEnabled, setGlobalEnabled, setCaptureEnabled } from "./index.js";
+import { rebuildNative } from "../knowledge/native.js";
 
 export function runCheckoutSwitch(enabled: boolean, options: { for?: string; all?: boolean; json?: boolean }): void {
   const until = options.for === undefined ? null : offDeadline(options.for);
@@ -15,10 +16,16 @@ export function runCheckoutSwitch(enabled: boolean, options: { for?: string; all
       return;
     }
     const checkout = setCheckoutEnabled(writer, process.cwd(), enabled, until);
+    // Off removes MEX's personal rule files here; on writes them back. Best effort.
+    let personal = false;
+    try {
+      const result = rebuildNative({ projectPath: process.cwd() }, { force: true });
+      personal = (result.removed?.length ?? 0) > 0 || (result.written?.length ?? 0) > 0;
+    } catch { /* the next rebuild catches up */ }
     if (options.json) console.log(JSON.stringify({ scope: "checkout", state: checkout.state, offUntil: checkout.off_until }));
     else {
       console.log(enabled ? "MEX is on for this repo." : until ? `MEX is off for this repo until ${until}.` : "MEX is off for this repo.");
-      if (!enabled) console.log("Shared rule files may still be loaded by your agent.");
+      if (!enabled) console.log(`${personal ? "Its rule files for you are removed. " : ""}Shared rule files in git may still be loaded by your agent.`);
       if (enabled && writer.setting("global", "enabled") === "false") console.log("MEX is still off everywhere. Run `mex on --all` to clear that switch.");
       if (enabled && process.env.MEX_OFF === "1") console.log("MEX_OFF=1 still turns MEX off in this terminal.");
     }

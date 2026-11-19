@@ -66,10 +66,15 @@ export function buildKnowledgeCommands(): Command[] {
             else quoteNote = `\nThe quote wasn't found in ${facts.sha.slice(0, 7)} (confidence ${checked.confidence}), so it was left out.`;
           }
         }
-        const saved = note({ text, kind: opts.decision ? "decision" : opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine, commit, supersedes: opts.supersedes }, { projectPath: process.cwd() });
+        // Run inside an agent's shell, the note is the agent's record of what the person said:
+        // labelled as the agent's, never "you said". (A typed `mex note:` goes through __hook-note.)
+        const savedBy = process.env.CLAUDECODE?.trim() && process.env.CLAUDECODE.trim() !== "0" ? "claude-code" as const
+          : process.env.CODEX_THREAD_ID?.trim() ? "codex" as const : undefined;
+        const saved = note({ text, kind: opts.decision ? "decision" : opts.kind, scope: opts.scope.length ? opts.scope : undefined, oneLine: opts.oneLine, commit, supersedes: opts.supersedes, ...(savedBy ? { savedBy } : {}) }, { projectPath: process.cwd() });
         await queueRuleFiles();
+        const forAgent = savedBy ? `\nTell the person it is saved for new sessions in every agent. \`mex forget ${saved.entry.mex.id}\` removes it; \`mex edit ${saved.entry.mex.id} "<text>"\` makes it their own words.` : "";
         if (opts.json) console.log(JSON.stringify({ ok: true, ...saved }));
-        else console.log(`Saved personal note ${saved.entry.mex.id} ${saved.label}\n${saved.entry.mex.one_line}${commit ? `\nNot yet accepted: it comes into force when ${commit.sha.slice(0, 7)} lands on the default branch.` : ""}${quoteNote}`);
+        else console.log(`Saved personal note ${saved.entry.mex.id} ${saved.label}\n${saved.entry.mex.one_line}${commit ? `\nNot yet accepted: it comes into force when ${commit.sha.slice(0, 7)} lands on the default branch.` : ""}${quoteNote}${forAgent}`);
       });
     });
   const search = new Command("recall")
@@ -157,12 +162,15 @@ export function buildKnowledgeCommands(): Command[] {
   const retire = (["wrong", "forget"] as const).map(action => new Command(action)
     .description(action === "wrong" ? "Retire an incorrect note and keep its reason" : "Hide a note permanently, keeping a local tombstone")
     .argument("<id>", "Stable entry id")
-    .argument("<reason>", "Why this entry should no longer be used")
+    // `mex forget <id>` is what MEX tells people after an agent saves a note,
+    // so forget's reason is optional; wrong keeps it, since the reason is the point.
+    .argument(action === "wrong" ? "<reason>" : "[reason]", action === "wrong" ? "What is wrong with this entry" : "Why this entry should no longer be used (optional)")
     .option("--apply", "Apply the reviewed team-entry retirement")
     .option("--expect <revision>", "The exact revision printed by the team preview")
     .option("--json", "Print the retirement record as JSON")
     .option("--all-along", "With wrong: explicitly confirm that every past use is suspect")
-    .action(async (id, reason, opts) => {
+    .action(async (id, given: string | undefined, opts) => {
+      const reason = given?.trim() ? given : "Removed with mex forget";
       await run(opts.json, async () => {
         if (opts.allAlong && action !== "wrong") throw new KnowledgeError("INVALID_ENTRY", "--all-along is only valid with mex wrong.");
         const { forget, wrong } = await import("./mutations.js");
@@ -388,10 +396,10 @@ async function sharedRuleFiles(options: { projectPath: string }): Promise<string
   return [...result.written ?? [], ...result.removed ?? []];
 }
 
-/** Personal note changes reach the hidden local rule files between sessions. */
+/** Personal note changes reach the hidden local rule files at once, even with a session open. */
 async function queueRuleFiles(): Promise<void> {
   const { queueNativeRebuild } = await import("./native-queue.js");
-  queueNativeRebuild(process.cwd());
+  queueNativeRebuild(process.cwd(), { local: true });
 }
 
 function printPreview(preview: { revision: string; diff: string }, json: boolean | undefined): void {

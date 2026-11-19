@@ -111,6 +111,9 @@ type heartbeatFile struct {
 	SessionID string `json:"session_id"`
 	Cwd       string `json:"cwd"`
 	Started   string `json:"started"`
+	// Ended is set by SessionEnd: MEX's rule files may be rebuilt now. The
+	// file stays, so a resumed session keeps its once-per-session state.
+	Ended string `json:"ended,omitempty"`
 }
 
 // beat records that a session's hooks ran. The file's modification time is the
@@ -122,7 +125,8 @@ func (h home) beat(agent, sessionID, cwd string, sessionStart bool, now time.Tim
 	}
 	dir := h.heartbeatDir(agent)
 	file := filepath.Join(dir, safeName(sessionID))
-	if os.Chtimes(file, now, now) == nil {
+	// A (re)starting session rewrites its file, clearing an earlier end.
+	if !sessionStart && os.Chtimes(file, now, now) == nil {
 		return
 	}
 	if os.MkdirAll(dir, 0o700) != nil {
@@ -134,6 +138,26 @@ func (h home) beat(agent, sessionID, cwd string, sessionStart bool, now time.Tim
 	if sessionStart {
 		h.pruneHeartbeats(dir, now)
 	}
+}
+
+// endBeat marks a session ended. Errors are ignored.
+func (h home) endBeat(agent, sessionID string, now time.Time) {
+	if sessionID == "" {
+		return
+	}
+	file := filepath.Join(h.heartbeatDir(agent), safeName(sessionID))
+	data, err := os.ReadFile(file)
+	if err != nil || len(data) > 64*1024 {
+		return
+	}
+	var beat heartbeatFile
+	if json.Unmarshal(data, &beat) != nil {
+		return
+	}
+	beat.Ended = now.UTC().Format(time.RFC3339)
+	body, _ := json.Marshal(beat)
+	_ = os.WriteFile(file, body, 0o600)
+	_ = os.Chtimes(file, now, now)
 }
 
 func (h home) pruneHeartbeats(dir string, now time.Time) {

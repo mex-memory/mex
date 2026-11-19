@@ -21,7 +21,7 @@ test.describe("built setup activity stream", () => {
       const fixture = createFixture();
       let hub: ChildProcess | undefined;
       try {
-        hub = spawn(process.execPath, [join(repositoryRoot, "dist", "cli.js"), "hub", "--no-open"], {
+        hub = spawn(process.execPath, [join(repositoryRoot, "dist", "cli.js"), "setup", "--browser", "--no-open"], {
           cwd: fixture.project,
           env: fixture.env,
           stdio: ["ignore", "pipe", "pipe"],

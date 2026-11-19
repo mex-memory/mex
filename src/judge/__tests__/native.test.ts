@@ -8,7 +8,7 @@ import { enqueueJob, registerJobKind, runOneBatch, requeueReadyJobs } from "../.
 import { serializeEntry } from "../../knowledge/entry.js";
 import { entry } from "../../knowledge/__tests__/fixtures.js";
 import { createJudgeKind, readJudgement } from "../job.js";
-import { evaluate, recordChecks } from "../native.js";
+import { evaluate, nativeRequest, recordChecks, recordChecksDetailed } from "../native.js";
 import { hash } from "../evidence.js";
 import { pendingJudgeRequest, queuePendingJudgements } from "../pending.js";
 import { ModelWaitError } from "../../model-runner/index.js";
@@ -19,6 +19,7 @@ import { literalPattern } from "../../file-index/classify.js";
 import { indexDirectory, writePatterns } from "../../file-index/store.js";
 import { runJudgeSync } from "../sync.js";
 import { shortHash } from "../../record/project.js";
+import { resultKey } from "../result.js";
 
 let base: string, binary: string;
 beforeAll(() => {
@@ -28,6 +29,92 @@ beforeAll(() => {
 }, 300_000);
 afterEach(() => vi.unstubAllEnvs());
 afterAll(() => rmSync(base, { recursive: true, force: true }));
+
+it("restores full labelled delivery for a fresh still-true judgment and expires it on every bound input", async () => {
+  const root=join(base,"still-true-repo"),home=join(base,"still-true-home");mkdirSync(root);
+  vi.stubEnv("MEX_HOME",home);vi.stubEnv("MEX_HOOK_BINARY",binary);vi.stubEnv("CODEX_THREAD_ID","");vi.stubEnv("CLAUDECODE","");
+  const git=(...args:string[])=>execFileSync("git",["-C",root,...args],{encoding:"utf8",stdio:"pipe"}).trim();
+  git("init","-b","main");git("config","user.name","Fixture");git("config","user.email","fixture@example.invalid");
+  const source=join(root,"settings.ts");writeFileSync(source,"export const timeout = 30; // initial\n");
+  git("add",".");git("-c","commit.gpgsign=false","commit","-qm","Baseline");
+  const writer=openRecord({home,projectPath:root,isNetwork:()=>false});
+  try {
+    const projectId=writer.checkout(root)!.project_id,id="mx_stilltrue0";
+    const request={checkout:root,project_id:projectId,mex_home:home,record_directory:writer.location.directory};
+    const refreshIndex=()=>buildIndex({root,projectId,recordDirectory:writer.location.directory,workers:0});
+    await refreshIndex();
+    const checks=await recordChecks(request,[{kind:"source",role:"supporting",target:{file:"settings.ts"}},
+      {kind:"value",role:"complete",target:{file:"settings.ts",symbol:"timeout"}},
+      {kind:"symbol",role:"supporting",target:{file:"settings.ts",symbol:"timeout"}}]);
+    const path=join(root,".mex/learned",`${id}.md`);mkdirSync(join(root,".mex/learned"),{recursive:true});
+    const original=serializeEntry(entry(id,{kind:"fact",checks:checks!},"The timeout is 30 seconds."));writeFileSync(path,original);
+    const judgedCode="export const timeout = 30; // comment changed\n";writeFileSync(source,judgedCode);
+    await refreshIndex();
+    expect((await evaluate(request)).items![0]!.verdict).toBe("changed");
+    const model=vi.fn(async()=>({selectedModel:"fixture",usage:{input:100,cache_write:0,cache_read:0,output:20,model:"fixture",estimated:false},text:JSON.stringify({results:[{id,result:"still-true"}]})}));
+    registerJobKind(createJudgeKind({evaluate,recordChecks,model}));
+    const job=await runJudgeSync({home,projectPath:root},{available:()=>true,write:()=>{}});
+    expect(job?.state).toBe("done");expect(model).toHaveBeenCalledTimes(1);
+    const key=resultKey(root,id);let raw=writer.setting(projectId,key)!;
+    expect(JSON.parse(raw).evaluation_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    const verdict=async()=>{
+      const report=await nativeRequest({...request,action:"evaluate",store:true}) as {items:Array<{verdict:string;label?:string}>};
+      return report.items[0]!;
+    };
+    expect(await verdict()).toMatchObject({verdict:"held",label:"checked by model"});
+    const probe=spawnSync(binary,["--delivery-probe"],{encoding:"utf8",input:JSON.stringify({...request,entries:[id]})});
+    expect(probe.status).toBe(0);expect(JSON.parse(probe.stdout).results[0]).toMatchObject({form:"full",verdict:"held"});
+    expect(JSON.parse(probe.stdout).results[0].text).toContain("checked by model");
+    const directProbe=()=>{
+      const out=spawnSync(binary,["--delivery-probe"],{encoding:"utf8",input:JSON.stringify({...request,entries:[id]})});
+      expect(out.status).toBe(0);return JSON.parse(out.stdout).results[0];
+    };
+    expect(readFileSync(path,"utf8")).toBe(original);
+    const set=(value:string)=>writer.db.prepare("UPDATE settings SET value=? WHERE scope=? AND key=?").run(value,projectId,key);
+    for(const change of [
+      (p:any)=>delete p.evaluation_hash,
+      (p:any)=>p.evaluation_hash=hash("different checks"),
+      (p:any)=>p.entry_hash=hash("different entry"),
+      (p:any)=>p.position.head="b".repeat(40),
+      (p:any)=>p.checkout=join(base,"another-checkout"),
+      (p:any)=>p.result="cannot-tell",
+      (p:any)=>p.files=[],
+      (p:any)=>p.files[0].hash=null,
+      (p:any)=>p.files[0].path="../settings.ts",
+    ]) {
+      const p=JSON.parse(raw);change(p);set(JSON.stringify(p));
+      expect(directProbe().form).toBe("pointer");
+      expect((await verdict()).verdict).toBe("changed");set(raw);
+      expect((await verdict()).verdict).toBe("held");
+    }
+    set("x".repeat(129<<10));expect((await verdict()).verdict).toBe("changed");set(raw);
+    writeFileSync(source,"export const timeout = 60;\n");expect(directProbe().form).toBe("pointer");expect((await verdict()).verdict).toBe("broken");
+    writeFileSync(source,judgedCode);
+    // Restoring bytes is still an unindexed edit. The per-file freshness guard
+    // must refuse the old symbol/value observation until the index catches up.
+    expect(directProbe().form).toBe("withheld");expect((await verdict()).verdict).toBe("changed");
+    expect(directProbe().form).toBe("pointer");
+    await refreshIndex();
+    expect((await verdict()).verdict).toBe("changed");
+    expect((await runJudgeSync({home,projectPath:root},{available:()=>true,write:()=>{}}))?.state).toBe("done");
+    expect(model).toHaveBeenCalledTimes(2);raw=writer.setting(projectId,key)!;
+    expect((await verdict()).verdict).toBe("held");
+    writeFileSync(path,original.replace("30 seconds","60 seconds"));expect(directProbe().form).toBe("pointer");expect((await verdict()).verdict).toBe("changed");
+    writeFileSync(path,original);expect((await verdict()).verdict).toBe("held");
+    git("checkout","-b","other");expect(directProbe().form).toBe("pointer");expect((await verdict()).verdict).toBe("changed");
+    git("checkout","main");expect((await verdict()).verdict).toBe("held");
+    writer.db.prepare("DELETE FROM judgements WHERE project_id=? AND entry_id=?").run(projectId,id);
+    expect(directProbe().form).toBe("pointer");
+    expect((await verdict()).verdict).toBe("changed");
+    const saved=JSON.parse(raw);
+    writer.db.prepare("INSERT INTO judgements(project_id,entry_id,inputs_hash,result,at) VALUES(?,?,?,?,?)")
+      .run(projectId,id,saved.inputs_hash,saved.result,saved.at);
+    expect((await verdict()).verdict).toBe("held");
+    writeFileSync(join(root,"unrelated.ts"),"export const other = 1;\n");await refreshIndex();
+    expect(directProbe()).toMatchObject({form:"pointer",verdict:"changed"});
+    expect((await verdict()).verdict).toBe("changed");
+  } finally { writer.close(); }
+});
 
 it("runs sync through the real evaluator and routes a fake model's checked team rewrite to Review", async () => {
   const root = join(base, "sync-repo"), home = join(base, "sync-home"); mkdirSync(root);
@@ -236,5 +323,50 @@ it("routes a real paired hook edit through a visible preview to the same PR with
     expect(git("diff", "--name-only").split("\n")).toEqual([".mex/learned/mx_owned00.md", "package.json"]);
     expect((await evaluate(request)).items?.[0]?.verdict).toBe("held");
     expect(hook("UserPromptSubmit", { prompt: "continue" }).systemMessage).toContain("same PR");
+  } finally { writer.close(); }
+});
+
+
+it("repairs an unindexed rewrite pattern with a real symbol baseline and seals helper evidence", async () => {
+  const root = join(base, "repair-repo"), home = join(base, "repair-home"); mkdirSync(root);
+  vi.stubEnv("MEX_HOME", home); vi.stubEnv("MEX_HOOK_BINARY", binary); vi.stubEnv("CODEX_THREAD_ID", ""); vi.stubEnv("CLAUDECODE", "");
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
+  git("init", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
+  writeFileSync(join(root, "api.ts"), "import { build } from './helper';\nexport function chooseMode() { return build(); }\n");
+  writeFileSync(join(root, "helper.ts"), "export function build(_options?: object) { return { mode: 'new' }; }\n");
+  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Baseline");
+  const writer = openRecord({ home, projectPath: root, isNetwork: () => false });
+  try {
+    const projectId = writer.checkout(root)!.project_id, id = "mx_realrepair";
+    const request = { checkout: root, project_id: projectId, mex_home: home, record_directory: writer.location.directory };
+    const refresh = () => buildIndex({ root, projectId, recordDirectory: writer.location.directory, workers: 0 });
+    await refresh();
+    const checks = await recordChecks(request, [{ kind: "symbol", role: "supporting", target: { file: "api.ts", symbol: "chooseMode" } }]);
+    const path = join(root, ".mex/learned", `${id}.md`); mkdirSync(join(root, ".mex/learned"), { recursive: true });
+    const original = serializeEntry(entry(id, { kind: "fact", checks: checks! }, "The returned mode is old.")); writeFileSync(path, original);
+    writeFileSync(join(root, "api.ts"), "import { build } from './helper';\nexport function chooseMode() { return build({}); }\n"); await refresh();
+    const events: any[] = [];
+    const model = vi.fn(async (r: any) => {
+      expect(r.prompt).toContain("helper.ts");
+      const reply = r.purpose === "judge" ? { id, result: "rewritten", one_line: "The returned mode is new.", text: "The returned mode is new.", checks: [{ kind: "pattern", role: "supporting", target: { scope: "api.ts", pattern: "build({})", match: "literal" } }] }
+        : { id, checks: [{ kind: "symbol", role: "supporting", target: { file: "api.ts", symbol: "chooseMode" } }] };
+      if (r.purpose === "judge.check-repair") { expect(r.prompt).toContain("doesn't count this pattern yet"); expect(r.prompt).toContain('"indexed_symbols":["chooseMode"]'); }
+      return { selectedModel: "fixture", usage: { input: 100, cache_write: 0, cache_read: 0, output: 20, model: "fixture", estimated: false }, text: JSON.stringify({ results: [reply] }) };
+    });
+    registerJobKind(createJudgeKind({ evaluate, recordChecks, recordChecksDetailed, model, diagnostic: e => events.push(e) }));
+    await runJudgeSync({ home, projectPath: root }, { available: () => true, write: () => {} });
+    expect(model.mock.calls.map(([r]) => r.purpose)).toEqual(["judge", "judge.check-repair"]);
+    expect(events.map(e => e.reason)).toEqual(["checks-rejected", "repaired"]);
+    expect(readJudgement(writer, projectId, root, id)).toMatchObject({ result: "rewritten", rewrite: { text: "The returned mode is new." }, files: expect.arrayContaining([expect.objectContaining({ path: "helper.ts" })]) });
+    expect(writer.db.prepare("SELECT count(*) n FROM review WHERE entry_id=?").get(id)!.n).toBe(1);
+    expect(readFileSync(path, "utf8")).toBe(original);
+    // A fresh still-true attestation is accepted by Go only while the extra
+    // helper hash is fresh, even though it isn't an original check input.
+    const saved = readJudgement(writer, projectId, root, id)!; saved.result = "still-true"; delete saved.rewrite;
+    writer.db.prepare("UPDATE judgements SET result='still-true' WHERE entry_id=?").run(id);
+    writer.db.prepare("UPDATE settings SET value=? WHERE scope=? AND key=?").run(JSON.stringify(saved), projectId, resultKey(root, id));
+    expect((await evaluate(request)).items![0]!.label).toBe("checked by model");
+    writeFileSync(join(root, "helper.ts"), "export function build() { return { mode: 'other' }; }\n");
+    expect((await evaluate(request)).items![0]!.label).not.toBe("checked by model");
   } finally { writer.close(); }
 });

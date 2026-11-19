@@ -2,20 +2,35 @@ import { execFile } from "node:child_process";
 import { nativeBinary, type NativeReport } from "../knowledge/check.js";
 import { CheckSchema, type EntryCheck } from "../knowledge/entry.js";
 
-/** Background checks yield to the lease heartbeat; hooks never wait for these. */
+/**
+ * Background checks yield to the lease heartbeat; hooks never wait for these.
+ * One retry: on a busy machine the evaluator can miss a record lock or start
+ * slowly, and a missed answer would count a true claim as not kept.
+ */
 export async function nativeRequest(request: Record<string, unknown>): Promise<unknown> {
   const binary = nativeBinary();
   if (!binary) throw new Error("The judge needs the installed check evaluator.");
-  return new Promise((resolve, reject) => {
+  let reason = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const answer = await askNative(binary, request);
+    if (answer.ok) return answer.result;
+    reason = answer.reason;
+  }
+  throw new Error(`The judge's check evaluator could not answer${reason ? ` (${reason})` : ""}.`);
+}
+
+function askNative(binary: string, request: Record<string, unknown>): Promise<{ ok: true; result: unknown } | { ok: false; reason: string }> {
+  return new Promise(resolve => {
     const child = execFile(binary, ["--check-run"], {
       encoding: "utf8", timeout: 60_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
       env: { ...process.env, MEX_BACKGROUND: "1" },
     }, (error, stdout) => {
+      const failure = error ? error.message.split("\n")[0]!.slice(0, 200) : "";
       try {
-        const result = JSON.parse(stdout) as { ok?: boolean };
-        if (error || result.ok !== true) throw new Error();
-        resolve(result);
-      } catch { reject(new Error("The judge's check evaluator could not answer.")); }
+        const result = JSON.parse(stdout) as { ok?: boolean; error?: unknown };
+        if (!error && result.ok === true) { resolve({ ok: true, result }); return; }
+        resolve({ ok: false, reason: typeof result.error === "string" ? result.error.slice(0, 200) : failure || "no answer" });
+      } catch { resolve({ ok: false, reason: failure || "unreadable answer" }); }
     });
     child.stdin?.on("error", () => { /* execFile reports the failed child */ });
     child.stdin?.end(JSON.stringify(request));
@@ -30,13 +45,19 @@ export async function evaluate(request: Record<string, unknown>): Promise<Native
 
 /** The model proposes targets; only the evaluator can mint current baselines. */
 export async function recordChecks(request: Record<string, unknown>, items: unknown[]): Promise<EntryCheck[] | undefined> {
-  const result = await nativeRequest({ ...request, action: "record-batch", items }) as { results?: Array<{ ok: boolean; check?: unknown }> };
-  if (result.results?.length !== items.length) return undefined;
+  return (await recordChecksDetailed(request,items)).checks;
+}
+
+/** Recorder diagnostics for bounded proposal repair; no failed observation is minted. */
+export async function recordChecksDetailed(request: Record<string, unknown>, items: unknown[]): Promise<{checks?:EntryCheck[];errors:Array<{index:number;reason:string}>}> {
+  const result = await nativeRequest({ ...request, action: "record-batch", items }) as { results?: Array<{ ok: boolean; check?: unknown; error?:string }> };
+  if (result.results?.length !== items.length) return {errors:[{index:-1,reason:"Incomplete recorder response"}]};
   const checks: EntryCheck[] = [];
-  for (const item of result.results) {
+  const errors:Array<{index:number;reason:string}>=[];
+  for (const [index,item] of result.results.entries()) {
     const parsed = CheckSchema.safeParse(item.check);
-    if (!item.ok || !parsed.success) return undefined;
-    checks.push(parsed.data);
+    if (!item.ok || !parsed.success) errors.push({index,reason:(item.error ?? "Invalid recorded check").slice(0,512)});
+    else checks.push(parsed.data);
   }
-  return checks;
+  return errors.length ? {errors} : {checks,errors};
 }

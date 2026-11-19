@@ -102,6 +102,15 @@ files, and keeps edited generated files when their ownership cannot be verified.
 - Background rebuilds wait while a session runs in the checkout (a heartbeat in
   the last 10 minutes). The `native-files` job waits for the session to end.
   `mex rules --write --now` explicitly overrides this.
+- A personal note change (`mex note`, `mex edit`, `mex forget`, `mex wrong`, a
+  confirmed hint, `mex note:` typed in a session) queues a `native-files` job
+  marked `local`: it rewrites only the hidden local files and runs at once,
+  even during a session. The session that saved the note has it already; a new
+  session would otherwise not load it until every session here has ended.
+  Shared files keep waiting.
+- Rebuild jobs are kept apart by checkout and purpose: a request joins an
+  unfinished job only for the same checkout, never a running one, and one that
+  must run at once (`stale` or `local`) never joins one that waits.
 - A team entry change (`mex edit`, `mex wrong`, `mex forget` with `--apply`)
   rebuilds the shared files at once, so the entry, its rule file and the
   manifest are one working-tree change, including during an active session.
@@ -163,6 +172,19 @@ most three area one-liners. Claims are kept whole or left out. The hard cap is
 300 tokens, enforced using a conservative UTF-8-byte upper bound that includes
 labels, ids, separators, and room for the real delivery block marker. The
 reported `token_bound` is an upper bound, not a tokenizer measurement.
+
+The person's own notes may run past that cap, up to 1,000 tokens counted the
+same way. A note reaches the brief only when no rule file the agent loads
+carries it: one saved since the files were last written, one scoped to files
+(rule files take only repo-wide and folder scopes), or any note for Codex in a
+repository whose `AGENTS.md` is the person's own, which MEX never writes into.
+A note's scope only ranks it: one scoped to a file nobody is working on still
+goes out, after the notes linked to the work in progress. A team entry's scope
+still decides whether it is sent. Team entries and commands still stop at 300. Delivery sends these notes
+outside the start lane's budget, which the carry block shares; the brief's own
+cap bounds them. The hook's 100 ms deadline bounds the optional part only:
+once it passes, team entries and commands wait for the moments, but up to
+eight of the person's notes are still checked and sent.
 
 Canonical entries are parsed through the delivery controller's schema-v2 codec
 and evaluated against current files. Broken entries, changed team recipes, hints,

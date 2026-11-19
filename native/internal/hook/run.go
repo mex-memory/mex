@@ -86,6 +86,10 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return deliveryReplay(stdin, stdout, getenv)
 		case "--surfaces":
 			return surfaceReport(stdin, stdout, getenv)
+		case "--span-study":
+			return spanStudy(stdin, stdout)
+		case "--anchor-study":
+			return anchorStudy(stdin, stdout)
 		case "--pair-study":
 			return pairStudy(stdin, stdout)
 		case "--probe":
@@ -270,6 +274,9 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 	h.beat(agent, ev.SessionID, ev.Cwd, ev.Kind == contract.SessionStart, now)
+	if ev.Kind == contract.SessionEnd {
+		h.endBeat(agent, ev.SessionID, now)
+	}
 	if h.capture != nil {
 		h.capture(ev, recordDirectory, global)
 	}
@@ -343,6 +350,13 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		}
 		reply.Context += line
 	}
+	// A rule stated in passing, quoted back so the agent can keep it.
+	if line := delivery.RulePrompt(ev); line != "" && !failed {
+		if reply.Context != "" {
+			reply.Context += "\n\n"
+		}
+		reply.Context += line
+	}
 	noticeID := ""
 	var adviceNoticeIDs []string
 	if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.PersonLine && !failed {
@@ -384,7 +398,8 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	}
 	// Session setup and free checks precede discovery. Preview receipts wake it
 	// separately, after the complete reply has reached stdout.
-	if ev.Kind == contract.SessionStart || ev.Kind == contract.PreCompact || judgeReady {
+	// SessionEnd too: rule files waiting for this session can be rebuilt now.
+	if ev.Kind == contract.SessionStart || ev.Kind == contract.SessionEnd || ev.Kind == contract.PreCompact || judgeReady {
 		startBackground(h, recordDirectory)
 	}
 	return out

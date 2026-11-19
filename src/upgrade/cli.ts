@@ -1,6 +1,16 @@
 import { Command } from "commander";
 import { KnowledgeError } from "../knowledge/contract.js";
 
+/** The files a unified diff touches, with what happens to each. */
+export function diffFiles(diff: string): Array<{ path: string; change: "new" | "removed" | "changed" }> {
+  const out: Array<{ path: string; change: "new" | "removed" | "changed" }> = [];
+  for (const block of diff.split(/^diff --git /mu).slice(1)) {
+    const path = /^a\/(.+?) b\//u.exec(block)?.[1] ?? block.split("\n")[0]!;
+    out.push({ path, change: /^new file mode/mu.test(block) ? "new" : /^deleted file mode/mu.test(block) ? "removed" : "changed" });
+  }
+  return out;
+}
+
 export function buildUpgradeCommand(effects: { afterUpgrade?: () => void } = {}): Command {
   return new Command("upgrade").description("Preview the 0.8 upgrade; keep human documents and import their knowledge")
     .option("--apply", "Apply the approved personal/local changes and prepare a separate tracked branch")
@@ -9,6 +19,7 @@ export function buildUpgradeCommand(effects: { afterUpgrade?: () => void } = {})
     .option("--finish", "Finish an interrupted upgrade from its exact recorded outputs")
     .option("--discard", "Discard pending tracked output; applied personal/local changes stay")
     .option("--json", "Print the full preview or result as JSON")
+    .option("--diff", "Show every line of the tracked changes in the preview")
     .action(async opts => {
       try {
         const { runUpgrade, finishUpgrade, discardUpgrade, pendingUpgrade, completedUpgrade } = await import("./run.js");
@@ -39,10 +50,28 @@ export function buildUpgradeCommand(effects: { afterUpgrade?: () => void } = {})
         if (opts.json) console.log(JSON.stringify({ ok: true, applied: false, ...plan }));
         else {
           console.log(plan.present ? `Upgrade ${plan.entries.length} entries (${plan.entries.filter(e => e.level === "team").length} team, ${plan.personal.length} new personal).` : "No legacy MEX scaffold here.");
-          if (plan.diff) console.log(plan.diff);
-          if (plan.retained.length) console.log(`Kept in place: ${[...new Set(plan.retained)].join(", ")}`);
-          for (const issue of plan.issues) console.log(`${issue.blocking ? "Blocked" : "Review; source kept"}: ${issue.code} ${issue.path}`);
-          if (plan.ready && (plan.diff || plan.personal.length)) console.log(`To apply exactly this: mex upgrade --apply --expect ${plan.revision}\nAdd --pr to push and open the pull request.`);
+          if (plan.diff && opts.diff) console.log(plan.diff);
+          else if (plan.diff) {
+            // The full diff of a real repo runs to thousands of lines: list the files, keep the lines one flag away.
+            const files = diffFiles(plan.diff);
+            console.log(`Changes to tracked files, on a separate branch (${files.length}):`);
+            for (const f of files.slice(0, 15)) console.log(`  ${f.change.padEnd(7)} ${f.path}`);
+            if (files.length > 15) console.log(`  … and ${files.length - 15} more`);
+            console.log("Every line of it: mex upgrade --diff");
+          }
+          const list = (title: string, paths: string[], limit = 5) => {
+            if (!paths.length) return;
+            console.log(`${title} (${paths.length}):`);
+            for (const path of paths.slice(0, limit)) console.log(`  ${path}`);
+            if (paths.length > limit) console.log(`  … and ${paths.length - limit} more`);
+          };
+          list("Left as they are, unchanged", [...new Set(plan.retained)]);
+          for (const issue of plan.issues.filter(issue => issue.blocking)) console.log(`Blocked: ${issue.code} ${issue.path}`);
+          const open = plan.issues.filter(issue => !issue.blocking);
+          const review = [...new Set(open.filter(issue => issue.code === "ENTRY_NEEDS_REVIEW").map(issue => issue.path))];
+          list("Part of these could not become notes; the files stay as they are. Save what still matters with mex note", review);
+          for (const issue of open.filter(issue => issue.code !== "ENTRY_NEEDS_REVIEW")) console.log(`Review; source kept: ${issue.code} ${issue.path}`);
+          if (plan.ready && (plan.diff || plan.personal.length)) console.log(`To apply exactly this: mex upgrade --apply --expect ${plan.revision}\nApplying commits to a new local branch and pushes nothing. Add --pr only if you want it pushed with a pull request.`);
         }
       } catch (error) {
         const code = error instanceof KnowledgeError ? error.code : "UPGRADE_UNAVAILABLE";

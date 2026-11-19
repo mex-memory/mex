@@ -5,14 +5,17 @@
 // same clone always gives the same files and digest. No model is called.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { CLAIMS, SUBJECT } from './claims.mjs';
 
 export const CHECKPOINTS = 6;
+export const REVIEW = JSON.parse(readFileSync(new URL('./reviewed-v2.json', import.meta.url), 'utf8'));
 
 export function git(repo, ...args) {
-  return execFileSync('git', ['-c', 'safe.directory=*', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
+  const env = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' };
+  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_NAMESPACE', 'GIT_PREFIX']) delete env[key];
+  return execFileSync('git', ['--literal-pathspecs', '-c', 'safe.directory=*', '-C', repo, ...args], { env, encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 /** C0 = T0 and Ck = the first-parent commit at position round(k*N/5). */
@@ -45,7 +48,8 @@ export function datasetDigest(files) {
   return digest(['claims.json', 'checkpoints.json', 'labels.json'].map(f => `${f}:${digest(files[f])}`).join('\n'));
 }
 
-export function buildCorpus(repo) {
+export function buildCorpus(repo, { revision = 'legacy-v1' } = {}) {
+  if (!['legacy-v1', REVIEW.revision].includes(revision)) throw new Error('Unknown corpus revision');
   const cps = checkpoints(repo);
   const labels = [];
   for (const cp of cps) {
@@ -57,16 +61,35 @@ export function buildCorpus(repo) {
     }
   }
   const claims = CLAIMS.map(c => ({ id: c.id, source: 'hand', category: c.category, one_line: c.oneLine, file: c.file, check: c.check }));
-  const files = {
+  let files = {
     'claims.json': JSON.stringify(claims, null, 1) + '\n',
     'checkpoints.json': JSON.stringify(cps, null, 1) + '\n',
     'labels.json': JSON.stringify(labels, null, 1) + '\n',
   };
-  const manifest = {
+  let manifest = {
     schema_version: 2, kind: 'deterministic-hand-written', subject: SUBJECT,
     note: 'Hand-written claims with checks recorded by the evaluator at T0 and independent truth functions; not a corpus written by setup or capture.',
     claims: claims.length, checkpoints: cps.length, labels: labels.length, dataset_sha256: datasetDigest(files),
   };
+  if (revision === REVIEW.revision) {
+    if (manifest.dataset_sha256 !== REVIEW.parent_dataset_sha256) throw new Error('Unreviewed parent corpus');
+    for (const change of REVIEW.claim_changes) {
+      const claim = claims.find(c => c.id === change.id);
+      if (!claim || claim.file !== change.file || claim.one_line !== change.before) throw new Error('Reviewed claim no longer matches');
+      claim.one_line = change.after;
+    }
+    for (const change of REVIEW.label_changes) {
+      const cp = cps.find(c => c.id === change.checkpoint), label = labels.find(l => l.claim === change.claim && l.checkpoint === change.checkpoint);
+      const text = cp && shower(repo, cp.sha)(change.file);
+      if (!cp || cp.sha !== change.sha || !label || label.truth !== change.before || text === null || digest(text) !== change.source_sha256) throw new Error('Reviewed label/source no longer matches');
+      label.truth = change.after;
+    }
+    files = { ...files, 'claims.json': JSON.stringify(claims, null, 1) + '\n', 'labels.json': JSON.stringify(labels, null, 1) + '\n' };
+    manifest = { ...manifest, schema_version: 3, oracle_revision: revision, parent_dataset_sha256: REVIEW.parent_dataset_sha256,
+      review_sha256: digest(JSON.stringify(REVIEW)), dataset_sha256: datasetDigest(files),
+      note: `Versioned source/behavior review: ${REVIEW.claim_changes.length} explicit claim-scope clarifications and ${REVIEW.label_changes.length} pinned cookie-parser label corrections. Legacy inputs and reports remain separate.` };
+    if (manifest.dataset_sha256 !== REVIEW.reviewed_dataset_sha256) throw new Error('Reviewed dataset digest changed');
+  }
   return { files, manifest, corpus: { manifest, claims, checkpoints: cps, labels } };
 }
 
@@ -74,7 +97,7 @@ if (import.meta.url === `file://${process.argv[1]?.replaceAll('\\', '/')}` || pr
   const arg = name => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
   const subject = arg('--subject'), out = arg('--out');
   if (!subject || !out) { console.error('usage: build-corpus.mjs --subject <clone> --out <dir>'); process.exit(2); }
-  const { files, manifest } = buildCorpus(resolve(subject));
+  const { files, manifest } = buildCorpus(resolve(subject), { revision: arg('--revision') ?? 'legacy-v1' });
   mkdirSync(out, { recursive: true });
   for (const [name, text] of Object.entries(files)) writeFileSync(join(out, name), text);
   writeFileSync(join(out, 'manifest.json'), JSON.stringify(manifest, null, 1) + '\n');

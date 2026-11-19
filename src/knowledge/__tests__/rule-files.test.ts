@@ -85,6 +85,28 @@ describe("rule files", () => {
     expect(again.entries[1].entry.mex.id).toBe(testing.mex.id);
   });
 
+  it("never takes a code block's language tag for the claim", () => {
+    const rules = [
+      "# Safe tests", "", "Run tests only with NODE_ENV=test.", "",
+      "## Forbidden", "", "```bash", "# never: drops the dev database", "npx mocha 'src/**/*.spec.ts'", "```", "",
+      "## Notes", "", "```", "pnpm i", "```", "", "Install first, then build.", "",
+    ].join("\n");
+    const lines = scanRuleFiles(repo({ "CLAUDE.md": rules }), "2026-11-17").entries.map(e => e.entry.mex.one_line);
+    expect(lines).toContain("Forbidden: `npx mocha 'src/**/*.spec.ts'`");
+    expect(lines).toContain("Notes: Install first, then build.");
+    expect(lines.join(" ")).not.toMatch(/: bash\b/u);
+  });
+
+  it("keeps identifiers with underscores while dropping emphasis", () => {
+    const rules = [
+      "# Tests", "", "Never run tests without `NODE_ENV=test` **set**; it drops my_db.", "",
+      "## Style", "", "Use _plain_ names and __never__ snake_case_ids in URLs.", "",
+    ].join("\n");
+    const lines = scanRuleFiles(repo({ "CLAUDE.md": rules }), "2026-11-17").entries.map(e => e.entry.mex.one_line);
+    expect(lines).toContain("Tests: Never run tests without NODE_ENV=test set; it drops my_db.");
+    expect(lines).toContain("Style: Use plain names and never snake_case_ids in URLs.");
+  });
+
   it("tags who loads each file, so an agent only gets what it doesn't load", () => {
     const root = repo({
       "CLAUDE.md": "# Claude\n\nClaude only.\n",
@@ -98,7 +120,10 @@ describe("rule files", () => {
     const by = (path: string) => scan.files.find(f => f.path === path)!;
     expect(by("CLAUDE.md").agents).toEqual(["claude-code"]);
     expect(by("AGENTS.md").agents).toEqual(["codex", "cursor", "copilot", "opencode"]);
-    expect(by("apps/web/AGENTS.md")).toMatchObject({ agents: ["claude-code", "codex", "cursor", "copilot"], scope: ["apps/web/**"] });
+    // The root CLAUDE.md means Claude Code reads no AGENTS.md, so their rules are passed to Claude.
+    expect(by("apps/web/AGENTS.md")).toMatchObject({ agents: ["codex", "cursor", "copilot"], scope: ["apps/web/**"] });
+    expect(entriesFor(scan, "claude-code").map(e => e.path)).toContain("apps/web/AGENTS.md");
+    expect(scanRuleFiles(repo({ "apps/web/AGENTS.md": "# Web\n\nWeb rules.\n" })).files[0]?.agents).toEqual(["claude-code", "codex", "cursor", "copilot"]);
     expect(by(".cursor/rules/ts.mdc").scope).toEqual(["src/**/*.ts", "test/**/*.ts"]);
     expect(by(".github/instructions/db.instructions.md").scope).toEqual(["db/**"]);
     expect(by(".claude/rules/api.md").scope).toEqual(["apps/api/**"]);
@@ -116,6 +141,23 @@ describe("rule files", () => {
     expect(review).toContainEqual(expect.objectContaining({ kind: "conflict", heading: "Testing", paths: ["AGENTS.md", "CLAUDE.md"] }));
     expect(review).toContainEqual(expect.objectContaining({ kind: "stale", paths: ["AGENTS.md"], message: expect.stringContaining("pnpm test:unit") }));
     expect(review).toContainEqual(expect.objectContaining({ kind: "stale", message: "Mentions src/routes/index.ts, which doesn't exist." }));
+  });
+
+  it("reports only confident misses in a workspace: package scripts, scoped paths, installs and outputs", () => {
+    const root = repo({
+      "package.json": JSON.stringify({ scripts: { build: "turbo build" } }),
+      "apps/api/package.json": JSON.stringify({ name: "@acme/api", scripts: { "lint:openapi": "x", "build:generate": "y" } }),
+      "apps/api/e2e/setup.ts": "export {}\n",
+      ".cursor/rules/api.mdc": [
+        "---", "globs: apps/api/**/*", "---",
+        "## Commands", "", "Run `npm run lint:openapi` and `pnpm --filter @acme/api build:generate`.", "",
+        "## Setup", "", "Tests share `e2e/setup.ts`. Types come from `node_modules/next/dist/types.d.ts`.", "",
+        "## Report", "", "Read `.cursor/report.json`; if missing, run `tool scan --write-report .cursor/report.json`.", "",
+        "## Gone", "", "Use `pnpm tools:missing`. See `docs/removed/page.mdx`.", "",
+      ].join("\n"),
+    });
+    const stale = scanRuleFiles(root).review.filter(r => r.kind === "stale").map(r => r.message);
+    expect(stale).toEqual(['Names the command "pnpm tools:missing", which the repo doesn\'t define.', "Mentions docs/removed/page.mdx, which doesn't exist."]);
   });
 
   it("never reads back files MEX generated", () => {

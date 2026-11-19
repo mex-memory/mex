@@ -231,11 +231,16 @@ Input follows as JSON:\n${JSON.stringify({ candidates, notes: inventory })}`;
       continue;
     }
     const id = target ? target.mex.id : newId(), day = date(c);
-    const entry = validateEntry({ text: c.text, mex: { id, kind: c.kind, scope: c.scope, checks: c.checks,
+    // A note the person wrote with `mex note` keeps their words: the filter
+    // only adds its kind, scope, checks and aids. Rewording is for learned
+    // statements, never for what someone wrote down on purpose.
+    const explicit = !!target && c.source.note_id === target.mex.id;
+    const text = explicit ? target.text : c.text, oneLine = explicit ? target.mex.one_line : c.one_line;
+    const entry = validateEntry({ text, mex: { id, kind: c.kind, scope: c.scope, checks: c.checks,
       source: { type: "person", quote: c.quote, ref: c.source.note_id && target ? target.mex.source.ref : `capture ${day} session ${hash(c.source.session ?? "note").slice(7, 23)} row ${c.source.row ?? 0}` },
-      evidence: "person", one_line: c.one_line, created: target ? target.mex.created : day, status: "active" } });
+      evidence: "person", one_line: oneLine, created: target ? target.mex.created : day, status: "active" } });
     const gated = gateEntry(entry, refs);
-    if (gated.mex.source.quote !== c.quote || gated.text !== c.text || gated.mex.checks.length !== c.checks.length) { group.members.forEach(i => deferred.add(i)); continue; }
+    if (gated.mex.source.quote !== c.quote || gated.text !== text || gated.mex.checks.length !== c.checks.length) { group.members.forEach(i => deferred.add(i)); continue; }
     // Corrections retain a canonical retired copy with the original creation
     // date and replacement date, without extending the entry-file contract.
     if (target && normalized(target.text) !== normalized(gated.text)) {
