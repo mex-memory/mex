@@ -87,7 +87,11 @@ func (f *fixture) entry(s spec) {
 		b.WriteString("  when:\n")
 		for _, w := range s.when {
 			typ, pat, _ := strings.Cut(w, ":")
-			fmt.Fprintf(&b, "    - type: %s\n      match: literal\n      pattern: %q\n", typ, pat)
+			match := "literal"
+			if rest, ok := strings.CutPrefix(pat, "~"); ok { // "~pattern" is structural
+				match, pat = "structural", rest
+			}
+			fmt.Fprintf(&b, "    - type: %s\n      match: %s\n      pattern: %q\n", typ, match, pat)
 		}
 	}
 	if len(s.checks) == 0 {
