@@ -2,7 +2,7 @@
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { VERSION } from "./version.js";
-import { installationChanges, type InstallRow } from "./install/index.js";
+import { AGENT_NAMES as NAMES, installationChanges, type InstallRow } from "./install/index.js";
 import { MAX_SETTINGS_BYTES, readSnapshot, snapshotBytes } from "./install/files.js";
 import { EVENTS, installSettings, object, parseSettings, type Agent } from "./install/settings.js";
 import { binaryFileName, selfTestBinary } from "./hooks/shim/binary.js";
@@ -34,7 +34,6 @@ export interface StatusView {
   modelUse: { runs: number; percent: number | null; capPercent: number; estimated: true } | null;
 }
 export interface StatusOptions extends LocationOptions { cwd?: string; env?: NodeJS.ProcessEnv; now?: number; }
-const NAMES = { "claude-code": "Claude Code", codex: "Codex" };
 function attempt<T>(read: () => T): T | null { try { return read(); } catch { return null; } }
 function checkedReader(reader: RecordReader | undefined): RecordReader | undefined {
   if (reader?.diagnostic) { reader.close(); throw new Error("Unreadable record"); }
