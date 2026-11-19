@@ -1843,6 +1843,35 @@ function remapReusedLocations(
   rootPrefix: string,
 ): Set<string> {
   const remappedFiles = new Set<string>();
+  const moved = new Map<string, string | null>();
+  for (const path of incremental.modified) {
+    const previous = incremental.previous.get(path);
+    if (!previous) continue;
+    for (const [from, to] of movedLocations(previous, capturedByFile.get(`${rootPrefix}${path}`), rootPrefix)) moved.set(from, to);
+  }
+  if (moved.size === 0) return remappedFiles;
+  const remappedCaptures = new Map<string, CompilerFileCapture>();
+  for (const [absoluteFile, capture] of reusedCaptures) {
+    const remapped = remapCapture(capture, moved);
+    if (remapped === null) {
+      throw new CompilerIncrementalFallback("a changed file no longer declares a node another file refers to");
+    }
+    if (!remapped) continue;
+    reusedCaptures.delete(absoluteFile);
+    capturedByFile.set(absoluteFile, restoreCapture(remapped, rootPrefix));
+    remappedCaptures.set(absoluteFile, remapped);
+    remappedFiles.add(absoluteFile);
+  }
+  for (const [absoluteFile, remapped] of remappedCaptures) reusedCaptures.set(absoluteFile, remapped);
+  return remappedFiles;
+}
+
+/**
+ * Where each declaration location of a changed file's previous capture went
+ * in its new capture (portable locations), or null where the declaration is
+ * gone. Declarations are matched by node id, in offset order. @internal
+ */
+export function movedLocations(previous: CompilerFileCapture, current: CapturedFile | undefined, rootPrefix: string): Map<string, string | null> {
   const portable = (location: string): string =>
     location.startsWith(rootPrefix) ? `./${location.slice(rootPrefix.length)}` : location;
   const byId = (locations: Array<[string, string]>, map: (location: string) => string): Map<string, string[]> => {
@@ -1856,43 +1885,34 @@ function remapReusedLocations(
     return grouped;
   };
   const moved = new Map<string, string | null>();
-  for (const path of incremental.modified) {
-    const previous = incremental.previous.get(path);
-    if (!previous) continue;
-    const current = capturedByFile.get(`${rootPrefix}${path}`);
-    const after = current ? byId(current.locations, portable) : new Map<string, string[]>();
-    for (const [id, locations] of byId(previous.locations, (location) => location)) {
-      const next = after.get(id);
-      locations.forEach((location, index) => {
-        const target = next?.length === locations.length ? next[index] : undefined;
-        moved.set(location, target !== undefined && locationKind(target) === locationKind(location) ? target : null);
-      });
-    }
+  const after = current ? byId(current.locations, portable) : new Map<string, string[]>();
+  for (const [id, locations] of byId(previous.locations, (location) => location)) {
+    const next = after.get(id);
+    locations.forEach((location, index) => {
+      const target = next?.length === locations.length ? next[index] : undefined;
+      moved.set(location, target !== undefined && locationKind(target) === locationKind(location) ? target : null);
+    });
   }
-  if (moved.size === 0) return remappedFiles;
-  const remappedCaptures = new Map<string, CompilerFileCapture>();
-  for (const [absoluteFile, capture] of reusedCaptures) {
-    let changed = false;
-    for (const location of captureLocations(capture)) {
-      if (!moved.has(location)) continue;
-      const target = moved.get(location);
-      if (target === null) {
-        throw new CompilerIncrementalFallback("a changed file no longer declares a node another file refers to");
-      }
-      if (target !== location) changed = true;
-    }
-    if (!changed) continue;
-    const remapped: CompilerFileCapture = {
-      ...capture,
-      ...mapCaptureLocations(capture.captured, capture.bindings, capture.locations, (location) => moved.get(location) ?? location),
-    };
-    reusedCaptures.delete(absoluteFile);
-    capturedByFile.set(absoluteFile, restoreCapture(remapped, rootPrefix));
-    remappedCaptures.set(absoluteFile, remapped);
-    remappedFiles.add(absoluteFile);
+  return moved;
+}
+
+/**
+ * A stored capture with its references moved through `moved`: undefined when
+ * nothing it refers to moved, null when something it refers to is gone. @internal
+ */
+export function remapCapture(capture: CompilerFileCapture, moved: ReadonlyMap<string, string | null>): CompilerFileCapture | null | undefined {
+  let changed = false;
+  for (const location of captureLocations(capture)) {
+    if (!moved.has(location)) continue;
+    const target = moved.get(location);
+    if (target === null) return null;
+    if (target !== location) changed = true;
   }
-  for (const [absoluteFile, remapped] of remappedCaptures) reusedCaptures.set(absoluteFile, remapped);
-  return remappedFiles;
+  if (!changed) return undefined;
+  return {
+    ...capture,
+    ...mapCaptureLocations(capture.captured, capture.bindings, capture.locations, (location) => moved.get(location) ?? location),
+  };
 }
 
 function locationOffset(location: string): number {

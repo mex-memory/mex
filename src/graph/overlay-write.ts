@@ -19,6 +19,15 @@ function hasTable(db: SqliteDatabase, schema: string, table: string): boolean {
   return !!db.prepare(`SELECT 1 FROM ${schema}.sqlite_master WHERE type='table' AND name=?`).get(table);
 }
 
+/**
+ * An overlay ref: shifted past every base ref. A ref already past the offset
+ * came from an earlier overlay (the warm path writes from base plus overlay)
+ * and keeps its value, so refs never grow from one overlay to the next.
+ */
+function shifted(column: string): string {
+  return `CASE WHEN ${column} < ${OVERLAY_REF_OFFSET} THEN ${column} + ${OVERLAY_REF_OFFSET} ELSE ${column} END`;
+}
+
 /** A table's stored columns, quoted: generated columns can't be inserted. */
 function stored(db: SqliteDatabase, table: string, schema = "c"): string {
   const columns = db.prepare(`SELECT name, hidden FROM pragma_table_xinfo(?, ?)`).all(table, schema) as Array<{ name: string; hidden: number }>;
@@ -126,13 +135,13 @@ export function writeOverlay(input: { base: string; refreshed: string; target: s
       if (table === "source_chunks" || !hasTable(db, "c", table)) continue;
       if (table === "node_fingerprints") {
         db.exec(`INSERT INTO main.node_fingerprints (ref, node_id, minhash, neighbors, token_count)
-          SELECT ref + ${OVERLAY_REF_OFFSET}, node_id, minhash, neighbors, token_count FROM c.node_fingerprints
+          SELECT ${shifted("ref")}, node_id, minhash, neighbors, token_count FROM c.node_fingerprints
           WHERE node_id IN (SELECT id FROM temp.changed_nodes)`);
         continue;
       }
       if (table === "lsh_buckets") {
         db.exec(`INSERT INTO main.lsh_buckets (band, band_hash, ref)
-          SELECT band, band_hash, ref + ${OVERLAY_REF_OFFSET} FROM c.lsh_buckets
+          SELECT band, band_hash, ${shifted("ref")} FROM c.lsh_buckets
           WHERE ref IN (SELECT ref FROM c.node_fingerprints WHERE node_id IN (SELECT id FROM temp.changed_nodes))`);
         continue;
       }

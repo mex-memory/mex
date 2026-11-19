@@ -1372,14 +1372,20 @@ function stageFrameworkAndFallbackResolution(
   files: StagedFile[],
   configSources: ReadonlyMap<string, string>,
   sourceSpool: GraphSourceSpool,
+  /**
+   * The warm path stages a few files against the stored graph: `corpus` holds
+   * every other file's nodes (in corpus order) and reads its sources.
+   */
+  corpus?: WarmResolutionCorpus,
 ): void {
-  const initialNodes = files.flatMap((file) => file.nodes);
+  const ordered = (staged: readonly GraphNode[]): GraphNode[] => corpus ? corpus.merge(staged) : [...staged];
+  const initialNodes = ordered(files.flatMap((file) => file.nodes));
   const fileByPath = new Map(files.map((file) => [file.record.path, file]));
   const sourceAccess = {
-    paths: [...fileByPath.keys()],
+    paths: corpus ? corpus.paths : [...fileByPath.keys()],
     readFile: (path: string) => {
       const file = fileByPath.get(path);
-      return file ? sourceSpool.read(file.discovered) : null;
+      return file ? sourceSpool.read(file.discovered) : corpus?.readFile(path) ?? null;
     },
   };
   const detectionContext = createStagedResolutionContext(
@@ -1465,7 +1471,7 @@ function stageFrameworkAndFallbackResolution(
     file.record.nodeCount = file.nodes.length;
   }
 
-  const nodes = files.flatMap((file) => file.nodes);
+  const nodes = ordered(files.flatMap((file) => file.nodes));
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const context = createStagedResolutionContext(nodes, root, configSources, sourceAccess);
   const refs = files.flatMap((file) => file.references).filter((ref) =>
@@ -2773,3 +2779,28 @@ function compareCodePoints(left: string, right: string): number {
 function bodyHash(sourceLines: string[], startLine: number, endLine: number): string {
   return sha256(sourceLines.slice(startLine - 1, endLine).join("\n").replace(/\s+/g, " ").trim());
 }
+
+/** Every stored file but the ones being staged, for the warm path's resolution. @internal */
+export interface WarmResolutionCorpus {
+  /** Every corpus path, staged ones included, in corpus order. */
+  paths: string[];
+  /** The other files' nodes merged with the staged ones, in corpus order. */
+  merge(staged: readonly GraphNode[]): GraphNode[];
+  readFile(path: string): string | null;
+}
+
+/**
+ * The staging steps the warm path (warm.ts) runs on a few files, exactly as
+ * a build runs them on every file. @internal
+ */
+export const warmStaging = {
+  stageCompilerFile: (discovered: DiscoveredFile, source: string, compilerFile: CompilerFileExtraction): StagedFile =>
+    stageCompilerFile(discovered, source, compilerFile),
+  resolve: (root: string, files: StagedFile[], configSources: ReadonlyMap<string, string>, spool: GraphSourceSpool, corpus: WarmResolutionCorpus): void =>
+    stageFrameworkAndFallbackResolution(root, files, configSources, spool, corpus),
+  fingerprints: (files: readonly StagedFile[], spool: GraphSourceSpool, stored?: Pick<ExtractionReuse, "fingerprints" | "records">) =>
+    stageFingerprints(files, spool, stored),
+  spool: (directory?: string): GraphSourceSpool => new GraphSourceSpool(directory),
+  isCompilerPath: (path: string): boolean => COMPILER_LANGUAGES.has(detectLanguage(path)),
+};
+export type { StagedFile as WarmStagedFile, DiscoveredFile as WarmDiscoveredFile };

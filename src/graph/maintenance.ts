@@ -789,6 +789,15 @@ function acquireMaintenanceLock(paths: MaintenancePaths, _options: InternalMaint
   catch (error) { throw new GraphMaintenanceError((error as { code?: string }).code === "GRAPH_MAINTENANCE_LOCKED" ? "GRAPH_MAINTENANCE_LOCKED" : "GRAPH_MAINTENANCE_PATH_UNSAFE", errorMessage(error)); }
 }
 
+/**
+ * Record a graph file this process wrote and checked as audited, so readers
+ * need not audit it again (the warm path publishes overlays this way). @internal
+ */
+export function recordWrittenGraphAudited(path: string): void {
+  const identity = captureDatabaseIdentity(path);
+  recordAuditedDatabase(realpathSync.native(path), identity.size, identity.digest);
+}
+
 function captureDatabaseIdentity(path: string): DatabaseIdentity {
   return timeGraphPhase("envelope.dbIdentityHash", () => captureDatabaseIdentityUntimed(path));
 }

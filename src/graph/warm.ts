@@ -1,0 +1,633 @@
+// The warm path (graph-02): an edit lands in the graph in milliseconds.
+//
+// A warm checkout keeps, between edits:
+//   * a private writable copy of its graph (base plus overlay, materialized),
+//   * the compiler program of each project it has edited, alive in its server,
+//   * the corpus-wide lookups the finishing pass needs (declaration locations,
+//     node names, file nodes), built once from the extraction cache.
+// An edit re-captures only the edited file from the live program and stages
+// it with the same code a build uses. Files whose nodes gained or lost a
+// caller in the edited file (their fingerprints' neighbours change) are staged
+// again from their stored captures, as a refresh reuses them. The rows go into
+// the private copy, and a new overlay plus pointer is published. Whatever the
+// warm path cannot prove it reproduces exactly (an import that changed,
+// declarations other files depend on, a removed declaration, another language)
+// returns "cold": the caller queues an ordinary refresh instead.
+
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
+import { GraphStore, type FileRecord } from "./db/store.js";
+import { warmStaging, type WarmResolutionCorpus, type WarmStagedFile } from "./engine-impl.js";
+import { decodeCachedExtraction, encodeCachedExtraction } from "./extraction-cache.js";
+import {
+  finishWarmCapture,
+  movedLocations,
+  remapCapture,
+  restoreWarmCapture,
+  warmProjectRequest,
+  type CapturedFile,
+  type CompilerFileCapture,
+  type FileDependencies,
+} from "./extraction/compiler.js";
+import { loadTsrsServer, tsgoServer, WarmApiProject, type TypeScriptApiServer } from "./extraction/compiler-api.js";
+import { readFileFingerprints, type StoredFingerprint } from "./fingerprint-store.js";
+import { normalizeIncrementalReferences } from "./incremental-references.js";
+import { discoverGraphConfigSources } from "./manifest.js";
+import { recordWrittenGraphAudited } from "./maintenance.js";
+import { OWNED_TABLES } from "./overlay.js";
+import { writeOverlay } from "./overlay-write.js";
+import { applyRowDelta, groupRowsByFile, INCREMENTAL_STATE_METADATA_KEY, incrementalStateMarker } from "./publication-delta.js";
+import { createGraphSnapshot, GRAPH_SNAPSHOT_METADATA_KEY, parseGraphSnapshot, readGraphGitProvenance, serializeGraphSnapshot } from "./snapshot.js";
+import {
+  acquireGraphWriter,
+  cloneGraph,
+  collectGraphGarbage,
+  discardGraphTemporary,
+  finalizeGraph,
+  graphLocation,
+  graphTemporary,
+  publishGraphOverlay,
+  readGraphPointer,
+  type GraphLocation,
+  type GraphPointer,
+} from "./storage.js";
+import type { Fingerprint } from "./reconcile.js";
+import type { GraphNode } from "./types.js";
+
+export interface WarmEditResult {
+  /** published: a new overlay is live. unchanged: nothing to do. cold: queue a refresh. */
+  status: "published" | "unchanged" | "cold";
+  reason?: string;
+  /** Repository-relative files this edit rewrote, the edited ones first. */
+  files: string[];
+  /** From the call to the published pointer. */
+  ms: number;
+  phases: Record<string, number>;
+}
+
+/** What one compiler file's stored capture says, kept for every corpus file. */
+interface FileFacts {
+  projectId: string;
+  dependencies: string[];
+  failedLookups: string[];
+  globalScope: boolean;
+  /** Dependency → its declaration signature as this file's program saw it. */
+  signatures: Map<string, string>;
+  nodeIds: string[];
+  /** Absolute declaration locations this file contributes. */
+  locations: string[];
+}
+
+const CONFIG_FILE = /(^|\/)(tsconfig[^/]*\.json|jsconfig[^/]*\.json|package\.json)$/u;
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+const toPosix = (path: string): string => path.replaceAll("\\", "/");
+const byPath = (left: GraphNode, right: GraphNode): number => (left.filePath < right.filePath ? -1 : left.filePath > right.filePath ? 1 : 0);
+
+class Cold extends Error {
+  constructor(readonly reason: string) { super(reason); }
+}
+
+/** One checkout kept warm in the background process. */
+export class WarmCheckout {
+  readonly root: string;
+  readonly location: GraphLocation;
+  lastEditAt = Date.now();
+  /** An edit went cold: the private copy may no longer match what is published. */
+  dirty = false;
+  private readonly rootPrefix: string;
+  private pointer: GraphPointer;
+  private readonly working: string;
+  private readonly db: SqliteDatabase;
+  private readonly store: GraphStore;
+  private readonly facts = new Map<string, FileFacts>();
+  private readonly importers = new Map<string, Set<string>>();
+  private readonly locationIds = new Map<string, string>();
+  private readonly nodeNames = new Map<string, { name: string; qualifiedName: string }>();
+  private readonly fileDraftIds = new Map<string, string>();
+  private readonly projects = new Map<string, WarmApiProject>();
+  private readonly projectCompilers: Record<string, string>;
+  private readonly configSources: Map<string, string>;
+  private overlayFiles = new Set<string>();
+  private corpusNodes: GraphNode[] | undefined;
+  private closed = false;
+
+  private constructor(root: string, location: GraphLocation, pointer: GraphPointer, working: string, db: SqliteDatabase) {
+    this.root = root;
+    this.location = location;
+    this.rootPrefix = `${toPosix(root)}/`;
+    this.pointer = pointer;
+    this.working = working;
+    this.db = db;
+    this.store = new GraphStore(db);
+    this.configSources = discoverGraphConfigSources(root);
+    let report: { projects?: Record<string, string> } = {};
+    try { report = JSON.parse(this.store.getMetadata("typescript_compilers") ?? "{}") as typeof report; } catch { /* no report */ }
+    this.projectCompilers = report.projects ?? {};
+  }
+
+  /** Make a checkout warm: materialize its graph privately and read the lookups. */
+  static open(rootDir: string): WarmCheckout {
+    const root = resolve(rootDir);
+    const location = graphLocation(root);
+    const pointer = readGraphPointer(location);
+    if (!pointer) throw new Error("The checkout has no published graph.");
+    const working = graphTemporary(location);
+    cloneGraph(join(location.directory, pointer.base), working);
+    const db = openSqlite(working);
+    try {
+      db.exec("PRAGMA journal_mode = DELETE; PRAGMA synchronous = OFF; PRAGMA temp_store = MEMORY; PRAGMA cache_size = -16384; PRAGMA foreign_keys = OFF;");
+      const checkout = new WarmCheckout(root, location, pointer, working, db);
+      if (pointer.overlay) checkout.applyOverlay(join(location.directory, pointer.overlay));
+      db.exec("PRAGMA foreign_keys = ON;");
+      checkout.readLookups();
+      return checkout;
+    } catch (error) {
+      try { db.close(); } catch { /* closing */ }
+      discardGraphTemporary(working);
+      throw error;
+    }
+  }
+
+  /** Base plus overlay into the private copy: exactly what readers see. */
+  private applyOverlay(overlay: string): void {
+    const db = this.db;
+    db.exec(`ATTACH DATABASE '${overlay.replaceAll("'", "''")}' AS o`);
+    try {
+      db.exec("BEGIN");
+      const shadowed = (db.prepare("SELECT path FROM o.shadow_files").all() as Array<{ path: string }>).map((row) => row.path);
+      this.overlayFiles = new Set(shadowed);
+      db.exec("CREATE TEMP TABLE warm_shadow(path TEXT PRIMARY KEY) WITHOUT ROWID");
+      const add = db.prepare("INSERT INTO temp.warm_shadow VALUES (?)");
+      for (const path of shadowed) add.run(path);
+      db.exec(`
+        DELETE FROM lsh_buckets WHERE ref IN (SELECT ref FROM node_fingerprints WHERE node_id IN (SELECT id FROM nodes WHERE file_path IN (SELECT path FROM temp.warm_shadow)));
+        DELETE FROM node_fingerprints WHERE node_id IN (SELECT id FROM nodes WHERE file_path IN (SELECT path FROM temp.warm_shadow));
+        DELETE FROM edges WHERE source IN (SELECT id FROM nodes WHERE file_path IN (SELECT path FROM temp.warm_shadow));
+        DELETE FROM unresolved_refs WHERE from_node_id IN (SELECT id FROM nodes WHERE file_path IN (SELECT path FROM temp.warm_shadow));`);
+      for (const path of shadowed) this.store.deleteSourceChunks(path);
+      for (const { table, column, owner } of OWNED_TABLES) {
+        if (owner !== "file" || table === "source_chunks" || table === "nodes") continue;
+        db.exec(`DELETE FROM main.${table} WHERE ${column} IN (SELECT path FROM temp.warm_shadow)`);
+      }
+      db.exec("DELETE FROM nodes WHERE file_path IN (SELECT path FROM temp.warm_shadow)");
+      const columns = (table: string): string => (db.prepare("SELECT name, hidden FROM pragma_table_xinfo(?, 'o')").all(table) as Array<{ name: string; hidden: number }>)
+        .filter((column) => column.hidden === 0).map((column) => `"${column.name}"`).join(", ");
+      for (const table of ["nodes", ...OWNED_TABLES.map((entry) => entry.table).filter((table) => table !== "nodes" && table !== "source_chunks")]) {
+        const list = columns(table);
+        if (list) db.exec(`INSERT INTO main.${table} (${list}) SELECT ${list} FROM o.${table}`);
+      }
+      for (const table of ["project_metadata", "node_aliases", "_mex_grounded_source"]) {
+        const list = columns(table);
+        if (!list) continue;
+        db.exec(`DELETE FROM main.${table}; INSERT INTO main.${table} (${list}) SELECT ${list} FROM o.${table}`);
+      }
+      // Search rows for source chunks: from the files, which must still hold what was indexed.
+      for (const row of db.prepare("SELECT path, content_hash AS hash FROM o.files").all() as Array<{ path: string; hash: string }>) {
+        const text = this.readText(row.path);
+        if (text === undefined || sha256(text) !== row.hash) throw new Error(`${row.path} changed since the last refresh.`);
+        this.store.replaceSourceChunks(row.path, text, row.hash);
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      try { db.exec("ROLLBACK"); } catch { /* none open */ }
+      throw error;
+    } finally {
+      db.exec("DETACH DATABASE o");
+    }
+  }
+
+  /** Corpus lookups from the extraction cache, one stored capture at a time. */
+  private readLookups(): void {
+    for (const row of this.db.prepare("SELECT payload FROM file_extraction_cache").iterate() as Iterable<{ payload: Uint8Array }>) {
+      const entry = decodeCachedExtraction(row.payload);
+      if (entry?.kind === "compiler") this.learn(entry.capture);
+    }
+  }
+
+  private learn(capture: CompilerFileCapture): void {
+    const absolute = (location: string): string => location.startsWith("./") ? `${this.rootPrefix}${location.slice(2)}` : location;
+    const previous = this.facts.get(capture.filePath);
+    if (previous) {
+      for (const location of previous.locations) this.locationIds.delete(location);
+      for (const id of previous.nodeIds) this.nodeNames.delete(id);
+      for (const dependency of previous.dependencies) this.importers.get(dependency)?.delete(capture.filePath);
+    }
+    const locations: string[] = [];
+    for (const [location, id] of capture.locations) {
+      const key = absolute(location);
+      this.locationIds.set(key, id);
+      locations.push(key);
+    }
+    for (const node of capture.nodes) this.nodeNames.set(node.id, { name: node.name, qualifiedName: node.qualifiedName });
+    if (capture.fileDraftId) this.fileDraftIds.set(capture.filePath, capture.fileDraftId);
+    else this.fileDraftIds.delete(capture.filePath);
+    for (const dependency of capture.dependencies) {
+      let set = this.importers.get(dependency);
+      if (!set) this.importers.set(dependency, set = new Set());
+      set.add(capture.filePath);
+    }
+    this.facts.set(capture.filePath, {
+      projectId: capture.projectId,
+      dependencies: [...capture.dependencies],
+      failedLookups: [...capture.failedLookups],
+      globalScope: capture.globalScope,
+      signatures: new Map(capture.dependencySignatures ?? []),
+      nodeIds: capture.nodes.map((node) => node.id),
+      locations,
+    });
+  }
+
+  private readText(path: string): string | undefined {
+    try { return readFileSync(join(this.root, path), "utf8"); } catch { return undefined; }
+  }
+
+  /** The stored (portable) capture of one file, from the private copy's cache. */
+  private storedCapture(path: string): CompilerFileCapture | undefined {
+    const row = this.db.prepare("SELECT payload FROM file_extraction_cache WHERE path = ?").get(path) as { payload: Uint8Array } | undefined;
+    const entry = row ? decodeCachedExtraction(row.payload) : null;
+    return entry?.kind === "compiler" ? entry.capture : undefined;
+  }
+
+  /** The program of one project, built on first use and kept. */
+  private async project(projectId: string): Promise<WarmApiProject> {
+    const existing = this.projects.get(projectId);
+    if (existing) return existing;
+    const compiler = this.projectCompilers[projectId] ?? "";
+    let server: TypeScriptApiServer;
+    if (compiler.startsWith("tsrs-")) server = await loadTsrsServer();
+    else if (compiler.startsWith("tsgo-")) server = tsgoServer();
+    else throw new Cold("the project is not built by a TypeScript 7 server");
+    const ownedElsewhere = new Set<string>();
+    for (const [path, facts] of this.facts) if (facts.projectId !== projectId) ownedElsewhere.add(`${this.rootPrefix}${path}`);
+    const request = warmProjectRequest(this.root, [...this.facts.keys()], projectId, ownedElsewhere);
+    if (!request) throw new Cold("the project's configuration changed");
+    let project: WarmApiProject;
+    try { project = new WarmApiProject(server, request); } catch (error) { throw new Cold(`the project's program could not be built: ${(error as Error).message}`); }
+    this.projects.set(projectId, project);
+    return project;
+  }
+
+  /** Compiler servers this checkout keeps alive. */
+  get projectCount(): number {
+    return this.projects.size;
+  }
+
+  /** Every other file's nodes (plus nodes already staged), in corpus order, for resolution. */
+  private corpus(excluded: ReadonlySet<string>, extra: readonly GraphNode[]): WarmResolutionCorpus {
+    this.corpusNodes ??= this.store.getAllNodes().sort(byPath);
+    const others = [...this.corpusNodes.filter((node) => !excluded.has(node.filePath)), ...extra].sort(byPath);
+    const paths = (this.db.prepare("SELECT path FROM files ORDER BY path").all() as Array<{ path: string }>).map((row) => row.path);
+    return {
+      paths,
+      merge: (staged) => [...others, ...staged].sort(byPath),
+      readFile: (path) => this.readText(path) ?? null,
+    };
+  }
+
+  /**
+   * Apply edits to `paths` (repository-relative or absolute). Never throws for
+   * an edit it cannot handle: it returns "cold" with the reason.
+   */
+  async edit(paths: readonly string[]): Promise<WarmEditResult> {
+    const started = performance.now();
+    const phases: Record<string, number> = {};
+    let mark = started;
+    const phase = (name: string): void => { const now = performance.now(); phases[name] = Math.round((now - mark) * 10) / 10; mark = now; };
+    this.lastEditAt = Date.now();
+    const done = (status: WarmEditResult["status"], files: string[], reason?: string): WarmEditResult =>
+      ({ status, ...(reason ? { reason } : {}), files, ms: Math.round((performance.now() - started) * 10) / 10, phases });
+    try {
+      if (this.closed || this.dirty) throw new Cold("the warm checkout must be opened again");
+      const pointer = readGraphPointer(this.location);
+      if (!pointer || pointer.base !== this.pointer.base || pointer.overlay !== this.pointer.overlay) throw new Cold("the graph was published by another writer");
+      const relative = [...new Set(paths.map((path) => toPosix(path).startsWith(this.rootPrefix) ? toPosix(path).slice(this.rootPrefix.length) : toPosix(path)))].sort();
+      const texts = new Map<string, { text: string; hash: string; size: number; modifiedAt: number }>();
+      for (const path of relative) {
+        if (CONFIG_FILE.test(path)) throw new Cold(`${path} configures the build`);
+        const record = this.store.getFileRecord(path);
+        const facts = this.facts.get(path);
+        if (!record || !facts) {
+          if (!existsSync(join(this.root, path))) {
+            if (record) throw new Cold(`${path} was deleted`);
+            continue; // never in the graph, and still absent
+          }
+          throw new Cold(warmStaging.isCompilerPath(path) ? `${path} is new` : `${path} is not TypeScript or JavaScript`);
+        }
+        if (facts.globalScope) throw new Cold(`${path} declares globals`);
+        let text: string;
+        let stat;
+        try { text = readFileSync(join(this.root, path), "utf8"); stat = statSync(join(this.root, path)); } catch { throw new Cold(`${path} was deleted`); }
+        const hash = sha256(text);
+        if (hash === record.contentHash) continue;
+        texts.set(path, { text, hash, size: stat.size, modifiedAt: stat.mtimeMs });
+      }
+      if (texts.size === 0) return done("unchanged", []);
+      phase("read");
+
+      // Capture each edited file from its project's live program.
+      const captured = new Map<string, { file: CapturedFile; dependencies: FileDependencies; signatures: Array<[string, string]> }>();
+      const byProject = new Map<string, string[]>();
+      for (const path of texts.keys()) {
+        const projectId = this.facts.get(path)!.projectId;
+        byProject.set(projectId, [...(byProject.get(projectId) ?? []), path]);
+      }
+      for (const [projectId, files] of byProject) {
+        const project = await this.project(projectId);
+        project.update(new Map(files.map((path) => [`${this.rootPrefix}${path}`, texts.get(path)!.text])));
+        const session = project.session();
+        try {
+          for (const path of files) {
+            const absolute = `${this.rootPrefix}${path}`;
+            const before = this.facts.get(path)!;
+            const dependencies = session.fileDependencies(absolute);
+            if (!dependencies) throw new Cold(`${path} left its project`);
+            if (dependencies.globalScope || !sameList(dependencies.dependencies, before.dependencies) || !sameList(dependencies.failedLookups, before.failedLookups)) {
+              throw new Cold(`the edit changed what ${path} imports`);
+            }
+            const importers = [...(this.importers.get(path) ?? [])];
+            if (importers.length > 0) {
+              if (importers.some((importer) => this.facts.get(importer)?.projectId !== projectId)) throw new Cold(`${path} is imported from another compiler project`);
+              const signature = session.declarationSignature(path);
+              if (signature === undefined || importers.some((importer) => this.facts.get(importer)!.signatures.get(path) !== signature)) {
+                throw new Cold(`the edit changed declarations other files import from ${path}`);
+              }
+            }
+            const signatures: Array<[string, string]> = [];
+            let file: CapturedFile | undefined;
+            session.capture([absolute], {
+              location: () => {},
+              node: () => {},
+              dependencySignatures: () => {
+                for (const dependency of dependencies.dependencies) {
+                  const signature = session.declarationSignature(dependency);
+                  if (signature !== undefined) signatures.push([dependency, signature]);
+                }
+              },
+              file: (_absolute, value) => { file = value; },
+            });
+            if (!file) throw new Cold(`${path} was not captured`);
+            const ids = new Set(file.nodes.map((node) => node.id));
+            if (before.nodeIds.some((id) => !ids.has(id))) throw new Cold(`the edit removed or renamed a declaration in ${path}`);
+            captured.set(path, { file, dependencies, signatures });
+          }
+        } finally {
+          session.release();
+        }
+      }
+      phase("capture");
+
+      // Finish and stage each edited file as a build would.
+      const edited = new Set(texts.keys());
+      const moved = new Map<string, string | null>();
+      for (const [path, { file }] of captured) {
+        const previous = this.storedCapture(path);
+        if (!previous) throw new Cold(`${path} has no stored capture`);
+        for (const [from, to] of movedLocations(previous, file, this.rootPrefix)) moved.set(from, to);
+        for (const [location, id] of file.locations) this.locationIds.set(location, id);
+        for (const node of file.nodes) this.nodeNames.set(node.id, { name: node.name, qualifiedName: node.qualifiedName });
+        if (file.fileDraftId) this.fileDraftIds.set(path, file.fileDraftId);
+      }
+      const lookups = { locationIds: this.locationIds, nodeNames: this.nodeNames, fileDraftIds: this.fileDraftIds };
+      const spool = warmStaging.spool();
+      const staged: WarmStagedFile[] = [];
+      const payloads = new Map<string, { hash: string; payload: Uint8Array }>();
+      const sources = new Map<string, string>();
+      const learned: CompilerFileCapture[] = [];
+      try {
+        for (const [path, { file, dependencies, signatures }] of captured) {
+          const finished = finishWarmCapture(this.root, file, dependencies, signatures, lookups);
+          const { text, hash, size, modifiedAt } = texts.get(path)!;
+          spool.stage(path, text);
+          sources.set(path, text);
+          staged.push(warmStaging.stageCompilerFile({ relPath: path, contentHash: hash, size, modifiedAt }, text, finished.file));
+          payloads.set(path, { hash, payload: encodeCachedExtraction({ kind: "compiler", capture: finished.capture }) });
+          learned.push(finished.capture);
+        }
+        phase("stage");
+        warmStaging.resolve(this.root, staged, this.configSources, spool, this.corpus(edited, []));
+        phase("resolve");
+
+        // Files outside the edit whose nodes gained or lost an edited caller:
+        // their fingerprints' neighbours change, so they are staged again from
+        // their stored captures, as a refresh reuses them.
+        const neighbours = this.neighbourFiles(staged, edited);
+        const restaged: WarmStagedFile[] = [];
+        for (const path of neighbours) {
+          const record = this.store.getFileRecord(path);
+          const text = this.readText(path);
+          const stored = this.storedCapture(path);
+          if (!record || text === undefined || !stored || sha256(text) !== record.contentHash) throw new Cold(`${path} changed since the last refresh`);
+          const remapped = remapCapture(stored, moved);
+          if (remapped === null) throw new Cold(`${path} refers to a declaration the edit removed`);
+          const capture = remapped ?? stored;
+          const finished = finishWarmCapture(this.root, restoreWarmCapture(capture, this.root), {
+            dependencies: capture.dependencies, failedLookups: capture.failedLookups, globalScope: capture.globalScope,
+          }, capture.dependencySignatures ?? [], lookups);
+          spool.stage(path, text);
+          sources.set(path, text);
+          restaged.push(warmStaging.stageCompilerFile({ relPath: path, contentHash: record.contentHash, size: record.size, modifiedAt: record.modifiedAt }, text, finished.file));
+          if (remapped) payloads.set(path, { hash: record.contentHash, payload: encodeCachedExtraction({ kind: "compiler", capture: remapped }) });
+        }
+        const touched = new Set([...edited, ...neighbours]);
+        if (restaged.length > 0) {
+          warmStaging.resolve(this.root, restaged, this.configSources, spool, this.corpus(touched, staged.flatMap((file) => file.nodes)));
+          staged.push(...restaged);
+        }
+        const otherIds = (this.db.prepare("SELECT id FROM nodes WHERE file_path NOT IN (SELECT value FROM json_each(?))").all(JSON.stringify([...touched])) as Array<{ id: string }>).map((row) => ({ id: row.id }));
+        const others = { record: { path: "", language: "typescript" } as FileRecord, nodes: otherIds, edges: [], references: [], imports: [] };
+        normalizeIncrementalReferences([...staged, others]);
+        phase("neighbours");
+
+        // Fingerprints: sketches from each file's text, neighbours from the whole graph.
+        const previous = new Map<string, StoredFingerprint[]>();
+        const sketches = new Map<string, Pick<Fingerprint, "minhash" | "tokenCount">>();
+        const records = new Map<string, FileRecord>();
+        for (const path of touched) {
+          const stored = readFileFingerprints(this.db, path);
+          previous.set(path, stored);
+          for (const entry of stored) sketches.set(entry.nodeId, { minhash: entry.fingerprint.minhash, tokenCount: entry.fingerprint.tokenCount });
+          records.set(path, this.store.getFileRecord(path)!);
+        }
+        const fingerprints = warmStaging.fingerprints(staged, spool, { fingerprints: sketches, records });
+        const neighbors = this.neighbourhoods(staged, touched);
+        for (const entry of fingerprints) entry.fingerprint = { ...entry.fingerprint, neighbors: neighbors(entry.nodeId) };
+        const grouped = groupRowsByFile(staged, fingerprints);
+        if ("reason" in grouped) throw new Cold(grouped.reason);
+        phase("fingerprints");
+
+        const writer = acquireWriter(this.location);
+        if (!writer) throw new Cold("another graph writer is running");
+        try {
+          const allRecords = new Map(this.store.getAllFileRecords().map((record) => [record.path, record]));
+          for (const file of staged) allRecords.set(file.record.path, file.record);
+          this.db.exec("BEGIN");
+          try {
+            applyRowDelta(this.store, this.db, {
+              rewritten: [...grouped.groups.values()],
+              removed: [],
+              previousNodes: new Map([...touched].map((path) => [path, this.store.getNodesByFile(path)])),
+              previousFingerprints: previous,
+              vanished: [],
+            }, allRecords, (path) => sources.get(path)!);
+            for (const [path, { hash, payload }] of payloads) this.store.setExtractionCacheEntry(path, hash, payload);
+            for (const file of staged) {
+              this.db.prepare("DELETE FROM coverage WHERE path = ?").run(file.record.path);
+              if (file.record.parseStatus === "failed") this.db.prepare("INSERT INTO coverage(path, reason) VALUES (?, 'parse failed')").run(file.record.path);
+            }
+            this.updateSnapshot();
+            this.db.exec("COMMIT");
+          } catch (error) {
+            try { this.db.exec("ROLLBACK"); } catch { /* none open */ }
+            throw error;
+          }
+          phase("write");
+          for (const capture of learned) this.learn(capture);
+          if (this.corpusNodes) {
+            this.corpusNodes = [...this.corpusNodes.filter((node) => !touched.has(node.filePath)), ...staged.flatMap((file) => file.nodes)].sort(byPath);
+          }
+          const rewritten = [...edited, ...neighbours];
+          for (const path of rewritten) this.overlayFiles.add(path);
+          this.publish(writer);
+          phase("publish");
+          return done("published", rewritten);
+        } finally {
+          writer.release();
+        }
+      } finally {
+        spool.dispose();
+      }
+    } catch (error) {
+      // Lookups or the private copy may be half updated: this checkout is
+      // opened again after the cold refresh.
+      this.dirty = true;
+      if (error instanceof Cold) return done("cold", [], error.reason);
+      return done("cold", [], `the warm path failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
+    }
+  }
+
+  /** Files outside the edit owning a node whose set of edited callers changed. */
+  private neighbourFiles(staged: readonly WarmStagedFile[], edited: ReadonlySet<string>): string[] {
+    const editedJson = JSON.stringify([...edited]);
+    const before = new Map<string, Set<string>>();
+    for (const row of this.db.prepare(`SELECT e.source, e.target FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+      WHERE e.kind = 'calls' AND s.file_path IN (SELECT value FROM json_each(?)) AND t.file_path NOT IN (SELECT value FROM json_each(?))`).all(editedJson, editedJson) as Array<{ source: string; target: string }>) {
+      const set = before.get(row.target) ?? new Set<string>();
+      set.add(row.source);
+      before.set(row.target, set);
+    }
+    const editedIds = new Set(staged.flatMap((file) => file.nodes.map((node) => node.id)));
+    const after = new Map<string, Set<string>>();
+    for (const edge of staged.flatMap((file) => file.edges)) {
+      if (edge.kind !== "calls" || editedIds.has(edge.target)) continue;
+      const set = after.get(edge.target) ?? new Set<string>();
+      set.add(edge.source);
+      after.set(edge.target, set);
+    }
+    const files = new Set<string>();
+    for (const target of new Set([...before.keys(), ...after.keys()])) {
+      const left = [...(before.get(target) ?? [])].sort().join("\n");
+      const right = [...(after.get(target) ?? [])].sort().join("\n");
+      if (left === right) continue;
+      const row = this.db.prepare("SELECT file_path FROM nodes WHERE id = ?").get(target) as { file_path: string } | undefined;
+      if (!row) throw new Cold("a called node is missing from the graph");
+      files.add(row.file_path);
+    }
+    for (const path of files) if (!this.facts.has(path)) throw new Cold(`${path} is not a compiler file the warm path can stage`);
+    return [...files].sort();
+  }
+
+  /**
+   * Callers and callees of every staged node, as a build computes them over
+   * all edges: stored `calls` edges from unstaged files, plus the staged
+   * files' new edges.
+   */
+  private neighbourhoods(staged: readonly WarmStagedFile[], touched: ReadonlySet<string>): (id: string) => string[] {
+    const touchedJson = JSON.stringify([...touched]);
+    const sets = new Map<string, Set<string>>();
+    const add = (key: string, value: string): void => {
+      let set = sets.get(key);
+      if (!set) sets.set(key, set = new Set());
+      set.add(value);
+    };
+    for (const edge of staged.flatMap((file) => file.edges)) {
+      if (edge.kind !== "calls") continue;
+      add(edge.source, edge.target);
+      add(edge.target, edge.source);
+    }
+    for (const row of this.db.prepare(`SELECT e.source, e.target FROM edges e JOIN nodes s ON s.id = e.source
+      WHERE e.kind = 'calls' AND s.file_path NOT IN (SELECT value FROM json_each(?))
+        AND e.target IN (SELECT id FROM nodes WHERE file_path IN (SELECT value FROM json_each(?)))`).all(touchedJson, touchedJson) as Array<{ source: string; target: string }>) {
+      add(row.target, row.source);
+    }
+    return (id) => [...(sets.get(id) ?? [])].sort();
+  }
+
+  /** The snapshot a build would record for the private copy's current files. */
+  private updateSnapshot(): void {
+    const snapshot = parseGraphSnapshot(this.store.getMetadata(GRAPH_SNAPSHOT_METADATA_KEY));
+    if (!snapshot) throw new Cold("the graph has no snapshot");
+    const sources = this.store.getAllFileRecords().map((record) => ({ path: record.path, contentHash: record.contentHash, parseStatus: record.parseStatus ?? "ok" }));
+    const git = readGraphGitProvenance(this.root);
+    const next = createGraphSnapshot({
+      indexedAt: new Date().toISOString(),
+      git: git.unreadable ? { branch: snapshot.indexedBranch, head: snapshot.indexedHead } : git,
+      schemaVersion: snapshot.schemaVersion,
+      compilerVersion: snapshot.compilerVersion,
+      extractorVersion: snapshot.extractorVersion,
+      resolverVersion: snapshot.resolverVersion,
+      grammarHash: snapshot.grammarHash,
+      configHash: snapshot.configHash,
+      manifestHash: snapshot.manifestHash,
+      sources,
+      semanticInputs: snapshot.semanticInputs,
+    });
+    const serialized = serializeGraphSnapshot(next);
+    this.store.setMetadata(GRAPH_SNAPSHOT_METADATA_KEY, serialized);
+    this.store.setMetadata(INCREMENTAL_STATE_METADATA_KEY, incrementalStateMarker(serialized));
+  }
+
+  /** Write the overlay of the private copy against the base, and point at it. */
+  private publish(writer: { assertOwned(): void }): void {
+    const overlay = graphTemporary(this.location);
+    try {
+      const failed = writeOverlay({ base: join(this.location.directory, this.pointer.base), refreshed: this.working, target: overlay, root: this.root, files: [...this.overlayFiles].sort() });
+      if (failed) throw new Cold(failed.reason);
+      finalizeGraph(overlay);
+      writer.assertOwned();
+      const counts = this.db.prepare("SELECT (SELECT count(*) FROM nodes) nodes, (SELECT count(*) FROM edges) edges, (SELECT count(*) FROM files) files").get() as { nodes: number; edges: number; files: number };
+      const published = publishGraphOverlay(this.location, overlay, this.pointer.base, {
+        head: parseGraphSnapshot(this.store.getMetadata(GRAPH_SNAPSHOT_METADATA_KEY))?.indexedHead ?? null,
+        files: counts.files, nodes: counts.nodes, edges: counts.edges,
+        build: { finishedAt: new Date().toISOString(), overlayFiles: this.overlayFiles.size, warm: true },
+      });
+      recordWrittenGraphAudited(published);
+      const pointer = readGraphPointer(this.location);
+      if (pointer) this.pointer = pointer;
+    } finally {
+      discardGraphTemporary(overlay);
+    }
+    try { collectGraphGarbage(this.location); } catch { /* the next writer collects */ }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const project of this.projects.values()) project.close();
+    this.projects.clear();
+    try { this.db.close(); } catch { /* closing */ }
+    discardGraphTemporary(this.working);
+  }
+}
+
+function sameList(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const a = [...left].sort();
+  const b = [...right].sort();
+  return a.every((value, index) => value === b[index]);
+}
+
+function acquireWriter(location: GraphLocation): { assertOwned(): void; release(): void } | undefined {
+  try { return acquireGraphWriter(location); } catch { return undefined; }
+}

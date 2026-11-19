@@ -148,23 +148,39 @@ export function groupRowsByFile(
 }
 
 function digestRowGroup(group: FileRowGroup): string {
+  return digestRowImages({
+    contentHash: group.contentHash,
+    nodes: group.nodes.map(nodeRowImage),
+    edges: group.edges.map(edgeRowImage),
+    references: group.references.map(unresolvedRefRowImage),
+    imports: group.imports.map(importBindingRowImage),
+    fingerprints: [...group.fingerprints.entries()].map(([nodeId, fingerprint]) => fingerprintImage(nodeId, fingerprint)),
+  });
+}
+
+/**
+ * A file's row digest from its row images: references and imports in write
+ * order, the rest in any order. The warm path digests stored rows with it, so
+ * a build and the warm path share one definition.
+ */
+export function digestRowImages(images: {
+  contentHash?: string; nodes: string[]; edges: string[]; references: string[]; imports: string[]; fingerprints: string[];
+}): string {
   const hash = createHash("sha256");
   // One update per section: the same bytes as a line at a time, far fewer calls.
   const section = (name: string, lines: readonly string[]): void => {
     hash.update(lines.length === 0 ? `${name}\n` : `${name}\n${lines.join("\n")}\n`);
   };
-  section("content", [group.contentHash ?? ""]);
-  section("nodes", group.nodes.map(nodeRowImage).sort());
-  section("edges", group.edges.map(edgeRowImage).sort());
-  section("references", group.references.map(unresolvedRefRowImage));
-  section("imports", group.imports.map(importBindingRowImage));
-  section("fingerprints", [...group.fingerprints.entries()]
-    .map(([nodeId, fingerprint]) => fingerprintImage(nodeId, fingerprint))
-    .sort());
+  section("content", [images.contentHash ?? ""]);
+  section("nodes", [...images.nodes].sort());
+  section("edges", [...images.edges].sort());
+  section("references", images.references);
+  section("imports", images.imports);
+  section("fingerprints", [...images.fingerprints].sort());
   return hash.digest("hex");
 }
 
-function fingerprintImage(nodeId: string, fingerprint: Fingerprint): string {
+export function fingerprintImage(nodeId: string, fingerprint: Fingerprint): string {
   return JSON.stringify([nodeId, fingerprint.minhash, fingerprint.neighbors, fingerprint.tokenCount]);
 }
 
