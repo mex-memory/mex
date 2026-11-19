@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { recordLocation, moveProjectData, type LocationOptions, type RecordLocation } from "./location.js";
 import { projectIdentity, realPath, type ProjectIdentity, type GitRunner } from "./project.js";
-import { RECORD_SCHEMA_VERSION, recordMigrations, type Migration } from "./schema.js";
+import { HOOKS_SCHEMA_VERSION, RECORD_SCHEMA_VERSION, recordMigrations, type Migration } from "./schema.js";
 import { HOOK_CHECKOUTS_DIRECTORY, writeHookCheckouts } from "./hook-checkouts.js";
 import { repairControlMirrors } from "../controls/mirrors.js";
 
@@ -58,6 +58,20 @@ export function migrateRecord(db: DatabaseSync, migrations: readonly Migration[]
   }
 }
 
+/** Find a registered checkout without Git, stopping at an unregistered nested repo. */
+function registeredCheckout(directory: string, read: (path: string) => CheckoutRow | undefined): CheckoutRow | undefined {
+  const requested = realPath(directory);
+  let current = requested;
+  while (true) {
+    const row = read(current);
+    if (row && (current === requested || row.project_id.startsWith("g-") || row.provisional || existsSync(join(current, ".git")))) return row;
+    if (existsSync(join(current, ".git"))) return undefined;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
 /** Read-only by construction, including SQL supplied by future consumers. Never immutable: WAL stays visible. */
 export class RecordReader {
   readonly version: number;
@@ -65,12 +79,15 @@ export class RecordReader {
   constructor(protected readonly db: DatabaseSync, file: string) {
     db.exec(`PRAGMA busy_timeout=${READER_TIMEOUT_MS}; PRAGMA query_only=ON`);
     this.version = schemaVersion(db);
-    const supported = file === "hooks.db" ? 10 : RECORD_SCHEMA_VERSION;
+    const supported = file === "hooks.db" ? HOOKS_SCHEMA_VERSION : RECORD_SCHEMA_VERSION;
     this.diagnostic = this.version > supported ? newer(file, this.version, supported).message : undefined;
   }
   get<T>(sql: string, ...values: SQLInputValue[]): T | undefined { return this.db.prepare(sql).get(...values) as T | undefined; }
   all<T>(sql: string, ...values: SQLInputValue[]): T[] { return this.db.prepare(sql).all(...values) as T[]; }
   project(id: string): ProjectRow | undefined { return this.get<ProjectRow>("SELECT * FROM projects WHERE id=?", id); }
+  checkout(directory: string): CheckoutRow | undefined {
+    return registeredCheckout(directory, path => this.get<CheckoutRow>("SELECT * FROM checkouts WHERE path=?", path));
+  }
   setting(scope: string, key: string): string | undefined {
     return this.get<{ value: string }>("SELECT value FROM settings WHERE scope=? AND key=?", scope, key)?.value;
   }
@@ -85,16 +102,7 @@ export class RecordWriter {
   }
   /** Find a registered checkout without Git; stop at an unregistered nested repository. */
   checkout(directory: string): CheckoutRow | undefined {
-    const requested = realPath(directory);
-    let current = requested;
-    while (true) {
-      const row = this.db.prepare("SELECT * FROM checkouts WHERE path=?").get(current) as unknown as CheckoutRow | undefined;
-      if (row && (current === requested || row.project_id.startsWith("g-") || row.provisional || existsSync(join(current, ".git")))) return row;
-      if (existsSync(join(current, ".git"))) return undefined;
-      const parent = dirname(current);
-      if (parent === current) return undefined;
-      current = parent;
-    }
+    return registeredCheckout(directory, path => this.db.prepare("SELECT * FROM checkouts WHERE path=?").get(path) as unknown as CheckoutRow | undefined);
   }
   /** Stable registrations are authoritative, even if HEAD subsequently changes histories. */
   register(project: ProjectIdentity): ProjectRow {

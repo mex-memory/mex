@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -84,6 +85,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return briefRun(stdin, stdout)
 		case "--delivery-replay":
 			return deliveryReplay(stdin, stdout, getenv)
+		case "--ledger-settle":
+			return settleLedger(stdin, stdout, getenv)
 		case "--surfaces":
 			return surfaceReport(stdin, stdout, getenv)
 		case "--span-study":
@@ -145,16 +148,18 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 	}
 	resolveUsage := sync.OnceValues(func() (place.Location, bool) { return hookUsageLocation(h, getenv) })
 	h.usageLocation = resolveUsage
-	var afterOutput func()
-	h.afterOutput = func(done func()) { afterOutput = done }
+	var afterOutput []func()
+	h.afterOutput = func(done func()) { afterOutput = append(afterOutput, done) }
 	out := handle(agent, nativeEvent, payload, ok, h, time.Now(), func(actual string, sessionStart, failed bool) {
 		usageLocation, usageEnabled := resolveUsage()
 		if usageEnabled {
 			recordHookUsage(usageLocation, actual, sessionStart, failed, time.Since(started))
 		}
 	})
-	if n, err := stdout.Write(out); err == nil && n == len(out) && afterOutput != nil {
-		afterOutput()
+	if n, err := stdout.Write(out); err == nil && n == len(out) {
+		for _, done := range afterOutput {
+			done()
+		}
 	}
 	return 0
 }
@@ -299,7 +304,8 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	}
 	// Capture runs before delivery: typed text is saved before the reply
 	// starts, whatever delivery does next.
-	if captureEnabled(recordDirectory, ev.ProjectID, global) {
+	captureOn := captureEnabled(recordDirectory, ev.ProjectID, global)
+	if captureOn {
 		capture.Hook(ev, capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env})
 	}
 	noteJudgeEdits(ev, recordDirectory)
@@ -320,7 +326,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			canNotice = support.PersonLine
 		}
 	}
-	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Notices: canNotice, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Notices: canNotice, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)
@@ -342,7 +348,11 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		failed = true
 		reply = contract.Reply{}
 	}
-	reply = mergeReplies(reply, levers(ev, h, recordDirectory, now))
+	leverStart := time.Now()
+	leverReply, measured := levers(ev, h, recordDirectory, now, captureOn)
+	leverTime := time.Since(leverStart)
+	leverDenied := reply.Decision != contract.Deny
+	reply = mergeReplies(reply, leverReply)
 	// One line, once per session, after a commit that reads like a decision.
 	if line := delivery.DecisionPrompt(ev, recordDirectory); line != "" {
 		if reply.Context != "" {
@@ -376,8 +386,28 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			}
 			reply.PersonLine += text
 		}
+		if captureOn {
+			if text := compactOfferNotice(ev, h, recordDirectory, now); text != "" {
+				if reply.PersonLine != "" {
+					reply.PersonLine += "\n"
+				}
+				reply.PersonLine += text
+			}
+		}
+		if text := ledgerNotice(ev, h, recordDirectory, now); text != "" {
+			if reply.PersonLine != "" {
+				reply.PersonLine += "\n"
+			}
+			reply.PersonLine += text
+		}
 	}
 	out, dropped := profile.Render(ev, reply)
+	if measured != nil && !failed && h.afterOutput != nil && !slices.Contains(dropped, "all") {
+		if (measured.Kind != "saving" || (reply.ReplaceOutput == leverReply.ReplaceOutput && !slices.Contains(dropped, "replace_output"))) &&
+			(measured.Kind != "denial" || (leverDenied && !slices.Contains(dropped, "decision"))) {
+			h.afterOutput(func() { recordLeverObservation(ev, h, recordDirectory, now, leverTime, *measured) })
+		}
+	}
 	if noticeID != "" || len(adviceNoticeIDs) > 0 {
 		for _, part := range dropped {
 			if part == "person_line" {
@@ -399,7 +429,10 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	// Session setup and free checks precede discovery. Preview receipts wake it
 	// separately, after the complete reply has reached stdout.
 	// SessionEnd too: rule files waiting for this session can be rebuilt now.
-	if ev.Kind == contract.SessionStart || ev.Kind == contract.SessionEnd || ev.Kind == contract.PreCompact || judgeReady {
+	offerReady := captureOn && requestCompactOffer(ev, h, recordDirectory)
+	ledgerReady := captureOn && capture.StageLedgerFinish(ev, capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env})
+	if ev.Kind == contract.SessionStart || ev.Kind == contract.SessionEnd || ev.Kind == contract.PreCompact || judgeReady ||
+		offerReady || ledgerReady || (ev.Kind == contract.PostCompact && watchingCompaction(recordDirectory)) {
 		startBackground(h, recordDirectory)
 	}
 	return out

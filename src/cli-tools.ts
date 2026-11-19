@@ -2,10 +2,10 @@ import { execSync } from "node:child_process";
 
 /** Public help and completion order. Bare mex is described above the command list. */
 export const PUBLIC_COMMAND_ORDER = [
-  "install", "uninstall", "doctor", "off", "on", "capture", "setup",
+  "install", "uninstall", "doctor", "off", "on", "capture", "compact", "setup",
   "note", "recall", "expand", "edit", "wrong", "forget", "check", "review",
   "share", "rules", "handoff", "upgrade", "what", "brief", "jobs",
-  "config", "telemetry", "feedback", "sync", "hints", "report", "alias", "ask", "entries", "decisions", "hub",
+  "config", "telemetry", "feedback", "sync", "hints", "report", "alias", "ask", "entries", "decisions", "hub", "out", "run",
 ] as const;
 
 /**

@@ -866,7 +866,8 @@ keys exist. Session keys in this file are protected by foreign keys.
 | `aliases` | PK (`project_id`,`checkout`,`old_id`); `new_id`, different from old_id | Explicit merge identity; Go writes |
 | `followups` | INTEGER PK `id`; `delivery_id`, `ts`, `kind` (followed/missed/opened/wrong/edit/command), nullable `detail` | Delivery feedback |
 | `verdicts` | PK (`project_id`,`checkout`,`entry_id`); `verdict` (held/changed/broken/unknown), `inputs_hash`, `checked_at` | Check evaluator |
-| `ledger` | PK (`session_id`,`agent_id`,`lever`); `tokens_removed`, `turns_carried`, `cost_tokens`, `refetches`, all default 0 | Lever accounting |
+| `ledger` | PK (`session_id`,`agent_id`,`lever`), raw `tokens_removed`, `turns_carried`, `cost_tokens`, `refetches` and optional `saved_input_millitokens`, `cost_input_millitokens` | Lever accounting |
+| `ledger_settlements` | PK `session_id`, `ended_at`, optional `price_profile` | Lever accounting |
 | `journal` | AUTOINCREMENT INTEGER PK `id`; `session_id`, `ts`, `kind` (typed/command), `text`, nullable `exit_code`, `marks` | Capture hook |
 | `outputs` | AUTOINCREMENT INTEGER PK `n`; `session_id`, `path`, `bytes` | Output trimmer/wrapper |
 | `notices_shown` | PK `notice_id`; `session_id`, `ts` | Session notice display |
@@ -878,6 +879,120 @@ to implement its stated per-session meaning. `journal.marks` is one of empty
 text, `pasted`, `scripted`, `pasted,scripted` (canonical order); monotonically
 allocated journal/output numbers are never reused after pruning.
 `notices_shown` has a unique notice ID so a notice is marked once across sessions.
+The compaction check writes a `deliveries` control observation in the new
+epoch with moment `compaction-check`. Its `detail` contains `kept`, `checked`,
+and `estimated: true` and may flag `partial` evidence. The estimated kept-rate
+is kept divided by checked when checked is positive. A missing or oversized
+summary has checked equal to zero. The observation contains only counts and
+flags. Unlabeled typed rows count only beyond the session's filter
+acknowledgment. The last request stays eligible regardless of acknowledgment.
+The 400-token estimated recovery budget reserves 150 tokens for MEX notes
+when the checked items and notes can both be sent.
+
+`mex compact` uses bounded host transcript tails to estimate the window from
+three distinct qualifying sessions. It saves an accepted offer's byte snapshots
+under `record.db.settings` in scope `compaction` before updating the host file.
+Claude's window uses its canonical `modelSettings` name for dated and `[1m]`
+variants. Codex's `model_post_turn_compact_threshold_percent` is an integer
+percentage of the reported usable context window.
+
+`mex compact off` and uninstall both use the snapshots to restore prior
+settings. Uninstall reports manual compaction edits as conflicts and continues
+removing hooks. It retains the recovery record when the user requests a purge
+with an unresolved conflict. The `compaction-watch` file wakes the background
+reviewer. The kept-rate rule pauses an accepted setting if two of its last three
+complete checks since acceptance fall below 90%. Each check must cover at least
+five items. A reread spike can also pause the setting. Ledger review uses
+settled host compactions whose sessions began after acceptance in the
+applicable scope and model. A negative priced net or ten such sessions at
+break-even produces a report. Ledger rollback stays report-only while
+avoided-call credit is pending.
+
+The background worker checks qualification after session starts, compaction
+events and session ends. It stages a hint for the next main session start or
+typed prompt on that host. Codex hints are scoped to the qualifying checkout.
+`notices_shown` claims the person-line offer once per host across sessions.
+The topic nudge uses hashed prompt terms and the latest recorded request size
+and also goes only to the person.
+
+### Token lever ledger
+
+Claude Code hooks record numeric control receipts in the active main epoch
+for outline and shell-output replacements, subsequent successful reads of
+outlined files, outline denials, and explicit `mex out` refetches. The Codex
+wrapper records its before and after view when the command and session can
+be identified. Sizes include the text MEX adds to the shortened view.
+Hosts can further truncate those views before passing them to the model.
+
+After an interactive `SessionEnd`, the background reads the complete host
+transcript (up to 32 MiB) and the receipts for that checkout. It parses one
+transcript at a time and releases the body before awaiting settlement. It counts
+distinct model requests through the next context boundary or session end.
+It carries each reduction for its own request count and charges the full
+input and output of a request that consumes a refetch or denial. Multiple
+refetches or denials consumed together share that request charge per lever.
+Compaction uses the input reduction observed across the host boundary and
+accounts separately for the summary call and the first confirmed reread of
+each unchanged path from the previous context. A successful recorded edit
+since the last read rules out a charge. The checkout file must also have
+modification and change timestamps older than that read. Missing, redirected,
+or later-modified files are skipped because their earlier state is uncertain.
+The compactor's reported usage takes precedence when available. Otherwise
+MEX estimates its cost from the sizes on each side.
+
+View changes use UTF-8 bytes divided by four, rounded up per view. Carried
+context uses the observed fresh-input, cache-write and cache-read mix.
+A new tool result's first send uses the observed cache-write duration mix
+or the fresh-input rate on uncached requests. With no split, Claude's first
+send uses the five-minute write rate, Codex's first send uses fresh input,
+and later sends use the cache-read rate. Compaction can use the observed
+pre-boundary context mix for the first carry of its existing prefix. A
+refetch charges the full consuming request, including output. When summary
+usage is unavailable, the estimate values the before size as fresh input
+and the after size as output.
+
+The runtime and replay share PR #396's reference table in
+`src/shared/delivery-prices.json` under profile `saved-session-reference-2026-11-16`.
+The CLI bundles this table. Values are input-equivalent tokens at the common reference
+of $1 per million fresh input tokens. Known Claude models use their per-class
+rates. Codex and unknown models use the reference class weights of 1 for
+fresh input, 1.25 and 2 for five-minute and one-hour cache writes, 0.1 for
+cache reads, and 5 for output. Hook time is valued at the observed output
+throughput and its output rate. The fallback is 50 output tokens per second
+at the first request's rate. These are estimates of relative cost.
+
+Go atomically replaces the finished session's terms in `hooks.db.ledger`
+and records its `ended_at` and price profile in `ledger_settlements`.
+A retry of the same end and profile reuses the settled terms.
+`sessions.last_seen_at` is the hook activity clock. Each term covers
+reductions with one carry length. The base lever row holds the costs and
+refetch count, and further terms use `lever#turns`. The priced net sums
+`saved_input_millitokens - cost_input_millitokens` in thousandths of an
+input-equivalent token. Priced savings already cover every carried turn.
+Raw counts remain available for comparison. Incomplete usage and rows
+without the current price profile or complete priced values are excluded
+from priced decisions.
+
+The shared `LEDGER_MODE` switch defaults to `report-only`. When the latest
+ten evaluated sessions for a tool lever net zero or less, the worker
+publishes a separate notice for the current trial and leaves its gate
+file untouched. A losing compaction setting gets its own report per
+acceptance. The person sees each notice once. The enforcement path can
+write `ledger-off.<lever>` or restore the accepted setting's prior bytes
+when the switch is enabled. `mex on --lever <name>` starts a fresh trial
+across checkouts for `outline`, `shell-trim` or `codex-wrapper`. Only sessions
+started after the reset enter that trial. Previously outlined files retain
+their edit guards within their context.
+
+Avoided-call credit and the priced `surface_cost_checks` projection belong
+to OSS-45's holdout and report slice. Comparable completed tasks with and
+without the lever supply the request-count and usage differences needed
+to estimate avoided overflow retries and follow-up reads. Tool auto-off
+and ledger-driven compaction rollback stay report-only until that credit
+is included. Hooks migrations 0011 (ledger settlements) and 0012 (pricing)
+follow the upstream migrations for search answers, budget lanes, and
+false-send counts.
+
 Indexes cover active sessions by project/time, deliveries by session/agent/epoch/
 entry/time and by time, followups by delivery/time, journal by session/id, and
 outputs by session/number. `moment`, `lever`, agent and job kinds remain open
@@ -984,6 +1099,7 @@ missing or unreadable file means "MEX is off here", which is the safe answer.
 | `<record directory>/hook-checkouts/<key>.json` | Node, `src/record/hook-checkouts.ts`, after any change to a `checkouts` row (`RecordWriter.writeHookCheckouts()`; registration calls it, `mex off`/`on` must too) and on the first open of a record that has none | the shim, `native/internal/hook/checkout.go` | `{"version":1,"project_id","root","state","off_until","provisional"}`, one per `checkouts` row; `key` is the 24-hex short hash of `root`, the real checkout path |
 | `<record directory>/hook-notices/off-<key>` | the shim | the shim | created with exclusive-create when the "MEX is off here" notice is shown; `key` is the short hash of the repo root (nearest folder holding `.git`, else the folder) |
 | `<record directory>/counters-pending` | the shim, when a counter write misses its deadline | the shim, on its next counter write | `day<TAB>name<TAB>n` lines of hook counters only; at most 64 KiB; claimed by rename (`counters-pending.<pid>.claim`) and removed once added |
+| `<record directory>/compaction-pending/<key>/<epoch>.json` | the delivery controller on PostCompact | the delivery controller when the context resumes | One checked recovery block of up to 249 estimated tokens, scoped to the session, agent, checkout, and epoch. The claim is recorded in `notices_shown` and the file is removed after the claim. Pending blocks expire after ten minutes. |
 | `<MEX home>/bin/launcher.json` | Node CLI, after every command (`src/hooks/shim/launcher.ts`), only when the home exists and the entry is a built `.js` | the shim | `{"version":1,"node","entry"}`: how to start `node <entry> __ensure-background` |
 | `<MEX home>/heartbeats/<agent>/<session>` | the shim | `mex-hook --status` | one small JSON file per session; its modification time is the last hook call; pruned after 7 days at session start |
 | `<record directory>/index-checkouts/<key>.json` | Node, file index | the shim | see the file index contract |

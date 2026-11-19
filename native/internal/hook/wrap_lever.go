@@ -11,9 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mex-memory/mex/native/capture"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/shellparse"
 	"github.com/mex-memory/mex/native/output"
+	localrecord "github.com/mex-memory/mex/native/record"
 )
 
 // The Codex wrapper (L4). Codex can't replace a tool's output, so the hook
@@ -26,13 +28,14 @@ import (
 // Claude Code's commands are never rewritten.
 
 // wrapCodexCommand runs before a Codex tool call.
-func wrapCodexCommand(ev contract.Event, h home, state *leverState) contract.Reply {
+func wrapCodexCommand(ev contract.Event, h home, recordDirectory string, state *leverState) contract.Reply {
 	t := ev.Tool
 	if t.Name != contract.ToolShell || h.levers.raw || state.Investigating {
 		return contract.Reply{}
 	}
 	command := t.Input.Command
-	if command == "" || state.Failed[commandKey(command)] || !simpleCommand(command) || !output.Noisy(command) {
+	if command == "" || state.Failed[commandKey(command)] || !simpleCommand(command) || !output.Noisy(command) ||
+		leverOff(recordDirectory, localrecord.LeverWrapper) {
 		return contract.Reply{}
 	}
 	if leavesSandbox(t.RawInput) || codexAsks(h, ev.Checkout, command) {
@@ -292,13 +295,29 @@ func runWrapped(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	shell, command := args[2], args[4]
 	h := homeFrom(getenv)
 	opts := output.RunOptions{Shell: shell, Command: command, Stdin: stdin, Stdout: stdout, Stderr: stderr, Raw: getenv("MEX_RAW") == "1"}
-	if h.mexInstalled() && getenv("MEX_OFF") != "1" && !h.controls().Off {
+	if h.mexInstalled() && getenv("MEX_OFF") != "1" {
+		global := h.controls()
+		if global.Off {
+			return output.Run(opts)
+		}
 		if cwd, err := os.Getwd(); err == nil {
 			recordDirectory := h.recordDirectory()
 			now := time.Now()
-			if checkout, where := findCheckout(recordDirectory, cwd, false, now); where == switchedOn && recordDirectory != "" {
+			if checkout, where := findCheckout(recordDirectory, cwd, false, now); where == switchedOn && recordDirectory != "" &&
+				!leverOff(recordDirectory, localrecord.LeverWrapper) {
+				session := getenv("CODEX_THREAD_ID")
 				opts.Save = func(text string, code int) (int, error) {
-					return output.Save(recordDirectory, checkout.ProjectID, text, output.SavedMeta{Command: command, ExitCode: code, Agent: "mex run"}, now)
+					return output.Save(recordDirectory, checkout.ProjectID, text, output.SavedMeta{
+						Command: command, ExitCode: code, Agent: "mex run", SessionID: session}, now)
+				}
+				if !opts.Raw && session != "" && len(session) <= 256 && output.Noisy(command) && !sessionPaused(recordDirectory, "codex", session) &&
+					captureEnabled(recordDirectory, checkout.ProjectID, global) && !capture.Scripted("codex", getenv) {
+					ev := contract.Event{Agent: "codex", SessionID: session, ProjectID: checkout.ProjectID, Checkout: checkout.Root}
+					opts.Observe = func(before, after int, elapsed time.Duration) {
+						recordLeverObservation(ev, h, recordDirectory, time.Now(), elapsed, localrecord.LeverObservation{
+							Lever: localrecord.LeverWrapper, Kind: "saving", TokensRemoved: removedTokens(before, after),
+							TokensAdded: removedTokens(after, before)})
+					}
 				}
 			}
 		}

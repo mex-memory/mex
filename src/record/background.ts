@@ -14,6 +14,9 @@ import { judgePending, queuePendingJudgements } from "../judge/pending.js";
 import { filterPending, queuePendingFilters } from "../filter/pending.js";
 import { nativePending, queuePendingNative } from "../knowledge/native-pending.js";
 import { queuePendingSetupRefresh, setupRefreshPending } from "../repo-start/refresh.js";
+import { compactReviewNeeded, reviewManagedCompaction } from "../compaction/control.js";
+import { compactOffersPending, publishCompactOffers } from "../compaction/notices.js";
+import { ledgerPending, settlePendingLedger } from "../ledger/background.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
@@ -135,7 +138,11 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     const row = lease(writer);
     const live = leaseLive(row, settings);
     if (live && row.version === VERSION) return { started: false, reason: "running" };
-    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) && !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer) && !workingSetPending(writer.location.directory) && !nativePending(writer.location.directory) && !setupRefreshPending(writer.location.directory)) {
+    if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) &&
+      !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer) &&
+      !workingSetPending(writer.location.directory) && !nativePending(writer.location.directory) && !setupRefreshPending(writer.location.directory) &&
+      !ledgerPending(writer.location.directory) &&
+      !compactReviewNeeded(writer) && !compactOffersPending(writer.location.directory)) {
       clearPending(writer);
       return { started: false, reason: "no-work" };
     }
@@ -277,6 +284,9 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
         try { queueStaleCodeFacts(writer, queueJob, clock()); } catch { /* a missed pass waits for the next one */ }
         // Decisions that cite a commit come into force when it lands; a decision-like commit is offered at the next start.
         try { (await import("../knowledge/decisions.js")).decisionPass(writer); } catch { /* a missed pass waits for the next one */ }
+        try { await settlePendingLedger(writer, clock()); } catch { /* retry unacknowledged settlements */ }
+        try { await reviewManagedCompaction(writer); } catch { /* leave changed settings for explicit review */ }
+        try { publishCompactOffers(writer); } catch { /* a later pass retries */ }
       }
       // Session starts that found their working set missing or behind.
       queueWorkingSetRequests(writer);

@@ -68,6 +68,8 @@ type DeliveryRequest struct {
 	// CompactSignal is 1 for SessionStart and 2 for PostCompact. Different
 	// signals confirm a transition; a repeated signal starts the next cycle.
 	CompactSignal int
+	// ExpectedEpoch binds a follow-up observation to the lifecycle that produced it.
+	ExpectedEpoch *int
 	Budget        int
 	Now           time.Time
 	Candidates    []DeliveryCandidate
@@ -212,6 +214,9 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	missing := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !missing {
 		return result, err
+	}
+	if req.ExpectedEpoch != nil && (missing || e.Number != *req.ExpectedEpoch || e.Closed) {
+		return result, errors.New("delivery epoch changed")
 	}
 	if req.Budget <= 0 {
 		req.Budget = 2000
@@ -887,8 +892,8 @@ func (hooks *Hooks) EpochFiles(sessionID, agentID, projectID, checkout string, e
 }
 
 // NoteEdits records files edited in the current epoch, for the recovery block
-// after compaction. Callers pass only files some entry's scope covers. At most
-// 64 paths per call and 512 per epoch; with no epoch yet, nothing is written.
+// after compaction. At most 64 paths per call and 512 per epoch; with no
+// epoch yet, nothing is written.
 func (hooks *Hooks) NoteEdits(session Session, agentID string, paths []string) error {
 	if hooks.counterOnly || len(paths) == 0 {
 		return nil

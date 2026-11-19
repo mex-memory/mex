@@ -2,6 +2,7 @@ package hook
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/mex-memory/mex/native/internal/adapter/codex"
 	"github.com/mex-memory/mex/native/output"
+	localrecord "github.com/mex-memory/mex/native/record"
 )
 
 type codexReply struct {
@@ -183,6 +185,10 @@ func TestWrapperThroughRun(t *testing.T) {
 		t.Skip("POSIX shell syntax")
 	}
 	h, env, root := codexSetup(t)
+	env = withEnv(env, map[string]string{"CODEX_THREAD_ID": "wrapper-session"})
+	prepareStore(t, h)
+	start, _ := json.Marshal(map[string]string{"hook_event_name": "SessionStart", "session_id": "wrapper-session", "cwd": root, "source": "startup"})
+	run(t, []string{"codex", "SessionStart"}, bytes.NewReader(start), env)
 	wd, _ := os.Getwd()
 	if err := os.Chdir(root); err != nil {
 		t.Fatal(err)
@@ -204,6 +210,20 @@ func TestWrapperThroughRun(t *testing.T) {
 	saved, err := os.ReadFile(filepath.Join(output.Directory(h.mex, projectID), "1.txt"))
 	if err != nil || !strings.Contains(string(saved), " - case 350 passes") {
 		t.Fatal("full text not saved")
+	}
+	db, err := sql.Open("sqlite", filepath.Join(h.mex, "hooks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var detail string
+	if err := db.QueryRow("SELECT detail FROM deliveries WHERE session_id='wrapper-session' AND moment='lever-observation'").Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var observation localrecord.LeverObservation
+	if json.Unmarshal([]byte(detail), &observation) != nil || observation.Kind != "saving" ||
+		observation.Lever != localrecord.LeverWrapper || observation.TokensRemoved != removedTokens(len(saved), out.Len()) {
+		t.Fatalf("wrong wrapper ledger receipt: %s", detail)
 	}
 	// Bad usage never runs anything.
 	if code := Run([]string{"run", "--shell", "fish", "--", "true"}, nil, &out, &out, env); code != 2 {

@@ -118,7 +118,7 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "what" || commandName === "report"
     || commandName === "hints" || commandName === "rules" || commandName === "share" || commandName === "brief" || commandName === "upgrade"
     || commandName === "skills" || commandName === "install" || commandName === "uninstall"
-    || commandName === "off" || commandName === "on" || commandName === "capture" || commandName === "handoff"
+    || commandName === "off" || commandName === "on" || commandName === "capture" || commandName === "handoff" || commandName === "compact"
     || commandName === "status" || commandName === "doctor";
 }
 
@@ -178,7 +178,8 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   let family = actionCommand;
   while (family.parent && family.parent !== program) family = family.parent;
   // Uninstall must not recreate the launcher or restart pending jobs.
-  if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture" || family.name() === "status" || family.name() === "doctor"
+  if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture" || family.name() === "compact"
+    || family.name() === "status" || family.name() === "doctor"
     || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
     || (["install", "sync"].includes(family.name()) && family.opts().dryRun)) return;
   // Keep the hook shim's launcher pointing at this CLI.
@@ -267,9 +268,23 @@ program.command("off")
 program.command("on")
   .description("Turn MEX back on for this registered repo")
   .option("--all", "Clear global off; repo and session switches still apply")
+  .option("--lever <name>", "Turn a ledger-paused lever back on for a fresh trial")
   .option("--json", "Print the saved switch state")
-  .action(async (options: { all?: boolean; json?: boolean }) => {
+  .action(async (options: { all?: boolean; lever?: string; json?: boolean }) => {
     try { const { runCheckoutSwitch } = await import("./controls/cli.js"); runCheckoutSwitch(true, options); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+
+program.command("compact [action]")
+  .description("Review, accept, or restore measured host compaction settings")
+  .option("--agent <agent>", "Select claude-code or codex")
+  .option("--model <model>", "Select a model from measured sessions")
+  .option("--scope <scope>", "Write user settings or a Git-ignored repo settings file")
+  .option("--choice <choice>", "Choose window, idle, or post-turn")
+  .option("--offer <id>", "Accept the exact offer shown by mex compact")
+  .option("--json", "Print the offer or outcome as JSON")
+  .action(async (action: string | undefined, options) => {
+    try { const { runCompact } = await import("./compaction/command.js"); await runCompact(action, options); }
     catch (error) { console.error((error as Error).message); process.exitCode = 1; }
   });
 

@@ -25,6 +25,8 @@ Commands:
                                         repo
   capture [options] <state>             Turn capture off or on without changing
                                         delivery
+  compact [options] [action]            Review, accept, or restore measured host
+                                        compaction settings
   setup [options]                       Turn MEX on for this repo (the same as
                                         \`mex\`)
   note|log [options] <text>             Save a personal note and why it matters
@@ -74,5 +76,11 @@ Commands:
                                         on a revert
   hub [options]                         Show the 0.9 Hub notice; open the Hub in
                                         a 0.8 repo
+  out [options] [number]                Show the full output MEX saved when it
+                                        shortened a command's output; with no
+                                        number, list them
+  run [options] <command>               Run a command the way the Codex wrapper
+                                        does: print it, run it, keep its exit
+                                        code, shorten long successful output
 "
 `;
