@@ -20,7 +20,7 @@ import (
 // SurfaceIDs is the closed vocabulary used by receipts, controls and reports.
 // New ids must declare a default and an acted definition before they can send.
 func SurfaceIDs() []string {
-	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "area-digest", "prompt-vocabulary", "unknown"}
+	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "area-digest", "prompt-vocabulary", "create-sibling", "unknown"}
 }
 func ValidSurface(s string) bool {
 	for _, id := range SurfaceIDs() {
@@ -230,7 +230,7 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 		return true
 	case "prompt", "start-brief", "start-brief-working-set", "recovery", "carry":
 		return (tool.Open || tool.Edit) && scopeTouch()
-	case "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout":
+	case "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "create-sibling":
 		if namedTouch() {
 			return true
 		}
