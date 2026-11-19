@@ -13,7 +13,7 @@ type Literal struct {
 	root  [256]int32 // transitions out of the root, dense: most bytes stop here
 	edges [][]edge   // transitions out of every other state, sorted by byte
 	fail  []int32
-	out   []int32 // the pattern ending at this state, or -1
+	out   []int32    // the pattern ending at this state, or -1
 	dict  []int32    // the nearest state on the failure chain with an output, or -1
 	alias [][2]int32 // a duplicate pattern's index and the index it shares a state with
 	n     int
