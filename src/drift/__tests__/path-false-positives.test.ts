@@ -45,6 +45,11 @@ describe("MISSING_PATH false positives", () => {
     ]);
   });
 
+  it("does not claim alternation shorthand as a single path (#202 defect 4)", () => {
+    expect(missingPaths("The existing unit tests in `tests/grounding|traversal|edges|store.test.ts`.")).toEqual([]);
+    expect(missingPaths("See `src/missing.ts` and `tests/a|b.test.ts`.")).toEqual(["src/missing.ts"]);
+  });
+
   it("treats an unrooted leading slash as a route but checks paths in real directories", () => {
     expect(missingPaths("Serve `/index.html`, then load `/src/app.js` and `/src/real.js`.", { "src/real.js": "" }))
       .toEqual(["/src/app.js"]);

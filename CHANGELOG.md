@@ -85,6 +85,10 @@ Pre-release on npm's `next` tag; 0.8.5 stays on `latest`.
 - A rule stated in passing ("we always use pnpm here") is quoted back to the agent for that turn, so it can keep it with `mex note`. Agents also keep non-obvious things they verify, such as how to run something.
 - The command check no longer removes a tool named in a sentence ("use pnpm in this repo", "node 22 for builds"); it still removes commands the repo doesn't define.
 
+### Fixed
+
+- `mex check` no longer reports alternation shorthand such as `tests/grounding|traversal|edges|store.test.ts` as `MISSING_PATH`. A value containing `|` names several files at once rather than one path, so it is skipped like other notations that are not paths (#202).
+
 ## [0.8.5] - 2026-10-29
 
 ### Added

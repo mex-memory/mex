@@ -73,6 +73,10 @@ function isNotAPath(value: string): boolean {
   // Code snippets: contains =, (), ;, or other code-like characters
   if (/[=();,]/.test(value)) return true;
 
+  // Alternation shorthand: `tests/grounding|traversal|edges|store.test.ts`
+  // names several files at once, so it is not one path.
+  if (value.includes("|")) return true;
+
   // Quoted strings or attribute assignments: gather.action="...", foo="bar"
   if (/["']/.test(value)) return true;
 
