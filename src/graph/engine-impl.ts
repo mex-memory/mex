@@ -108,6 +108,7 @@ import {
   createGraphSnapshot,
   parseGraphSnapshot,
   readGraphGitProvenance,
+  gitProvenanceChanged,
   serializeGraphSnapshot,
   type GraphGitProvenance,
   type GraphSnapshot,
@@ -2700,7 +2701,7 @@ async function verifyPublicationInputs(
   // source, manifest, or indirect semantic-input verification is therefore
   // caught before snapshot construction and the publication transaction.
   const currentGit = readGraphGitProvenance(root);
-  if (gitBeforeStaging.branch !== currentGit.branch || gitBeforeStaging.head !== currentGit.head) {
+  if (gitProvenanceChanged(gitBeforeStaging, currentGit)) {
     failures.push({
       filePath: ".git/HEAD",
       operation: "discover",
@@ -2709,7 +2710,9 @@ async function verifyPublicationInputs(
   }
 
   if (failures.length > 0) throw new GraphSourceStagingError(failures);
-  return currentGit;
+  // An unreadable final read records what staging began with.
+  if (!currentGit.unreadable) return currentGit;
+  return { branch: gitBeforeStaging.branch, head: gitBeforeStaging.head };
 }
 
 function sourceStagingFailure(
