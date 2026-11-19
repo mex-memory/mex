@@ -791,6 +791,8 @@ describe("no unscoped scaffold writes", () => {
       "src/graph/candidate-entry.ts": "writes bounded worker failure diagnostics only to stderr (fd 2), never scaffold files",
       "src/graph/candidate-process.ts": "removes only the identity-bound parent-owned temporary workspace after the candidate child closes",
       "src/graph/engine-impl.ts": "writes only a private, bounded temporary source spool that is removed before graph publication",
+      "src/graph/extraction/capture-spool.ts": "writes and removes only a private temporary capture spool inside the build's own temporary workspace",
+      "src/graph/jobs.ts": "writes only graph-state.json (the warm path's on/off verdict) under the project index folder in the MEX home, atomically; never a repo file",
       "src/graph/grounding-evidence.ts": "writes only checkout-local, content-addressed grounded bodies under .mex/local/grounded-bodies",
       "src/graph/phase-timing.ts": "appends diagnostic phase timings only to the MEX_GRAPH_PHASE_TIMINGS target: the operator-named file, or the checkout-local .mex/local default for bare flag values",
       "src/graph/maintenance.ts": "publishes and recovers the disposable graph index under its maintenance lease",
