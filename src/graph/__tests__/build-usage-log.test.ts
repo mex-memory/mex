@@ -1,8 +1,8 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { openRecord, openRecordReadOnly } from "../../record/index.js";
 import { latestBuildUsage, recordBuildUsage, type BuildUsageRow } from "../../record/build-usage.js";
 import { rebuildGraph, refreshGraph } from "../maintenance.js";
@@ -11,8 +11,20 @@ import { graphLocation } from "../storage.js";
 // The usage log (record migration 6): every build and refresh records its
 // wall time, CPU time and peak memory, Node plus the compiler server.
 
+/** Temporary folders this file made, removed after its tests; an open handle on Windows only leaves one behind. */
+const temporaries: string[] = [];
+function temporary(prefix: string): string {
+  const folder = mkdtempSync(join(tmpdir(), prefix));
+  temporaries.push(folder);
+  return folder;
+}
+afterAll(() => {
+  for (const folder of temporaries.splice(0)) {
+    try { rmSync(folder, { recursive: true, force: true, maxRetries: 3 }); } catch { /* a handle still open on Windows */ }
+  }
+});
 function fixture(): string {
-  const root = mkdtempSync(join(tmpdir(), "graph-usage-"));
+  const root = temporary("graph-usage-");
   writeFileSync(join(root, "a.ts"), "export function a(): number {\n  return 1;\n}\n");
   writeFileSync(join(root, "b.ts"), "import { a } from \"./a\";\nexport const b = (): number => a();\n");
   return root;
@@ -67,7 +79,7 @@ describe("graph usage log", () => {
 
 describe("build usage rows", () => {
   function database(): DatabaseSync {
-    const writer = openRecord({ home: mkdtempSync(join(tmpdir(), "usage-record-")), isNetwork: () => false });
+    const writer = openRecord({ home: temporary("usage-record-"), isNetwork: () => false });
     return writer.db;
   }
 

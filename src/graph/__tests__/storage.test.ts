@@ -2,17 +2,29 @@ import { execFileSync } from "node:child_process";
 import { openSqlite } from "../db/sqlite.js";
 import { finalizeGraph, publishGraph } from "../storage.js";
 import { loadFreshGraphReadSession } from "../read-session.js";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { currentGraphPath, graphLocation, readGraphPointer, graphPointerFile, collectGraphGarbage, graphTemporary, whatMexStores, enforceIndexCap, acquireGraphWriter, openCurrentGraph } from "../storage.js";
 import { rebuildGraph, refreshGraph } from "../maintenance.js";
 import { createGraphEngine } from "../engine-impl.js";
 import { GRAPH_CORPUS_LIMITS } from "../corpus-policy.js";
 
+/** Temporary folders this file made, removed after its tests; an open handle on Windows only leaves one behind. */
+const temporaries: string[] = [];
+function temporary(prefix: string): string {
+  const folder = mkdtempSync(join(tmpdir(), prefix));
+  temporaries.push(folder);
+  return folder;
+}
+afterAll(() => {
+  for (const folder of temporaries.splice(0)) {
+    try { rmSync(folder, { recursive: true, force: true, maxRetries: 3 }); } catch { /* a handle still open on Windows */ }
+  }
+});
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "graph-pointer-"));
+  const root = temporary("graph-pointer-");
   writeFileSync(join(root, "example.py"), "def answer():\n    return 1\n");
   return root;
 }
@@ -157,7 +169,7 @@ describe("interrupted candidate publication", () => {
 
 
 it("shares one project index between real worktrees with independent pointers", () => {
-  const root = fixtureRepository(), second = join(mkdtempSync(join(tmpdir(), "graph-worktrees-")), "second");
+  const root = fixtureRepository(), second = join(temporary("graph-worktrees-"), "second");
   git(root, "worktree", "add", "--detach", second, "HEAD");
   try {
     const locations = [graphLocation(root,{create:true}), graphLocation(second,{create:true})];
@@ -184,7 +196,7 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
 }
 function fixtureRepository(): string {
-  const root = mkdtempSync(join(tmpdir(), "graph-repo-"));
+  const root = temporary("graph-repo-");
   writeFileSync(join(root, "a.ts"), "export function a(): number { return 1; }\n");
   git(root, "init", "-q");
   git(root, "-c", "user.name=t", "-c", "user.email=t@example.com", "add", ".");
