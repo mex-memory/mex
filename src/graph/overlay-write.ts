@@ -51,7 +51,7 @@ export function planOverlay(base: string, refreshed: string): OverlayPlan | { re
   try {
     db.exec(`ATTACH DATABASE '${uri(base).replaceAll("'", "''")}' AS b`);
     for (const [schema, label] of [["main", "the refreshed graph"], ["b", "the base"]] as const) {
-      for (const table of ["file_row_digests", "files", "coverage"]) {
+      for (const table of ["file_row_digests", "files", "coverage", "file_extraction_cache"]) {
         if (!hasTable(db, schema, table)) return { reason: `${label} has no ${table}` };
       }
     }
@@ -61,11 +61,15 @@ export function planOverlay(base: string, refreshed: string): OverlayPlan | { re
       WITH paths(path) AS (
         SELECT path FROM main.files UNION SELECT path FROM b.files
         UNION SELECT path FROM main.file_row_digests UNION SELECT path FROM b.file_row_digests
-        UNION SELECT path FROM main.coverage UNION SELECT path FROM b.coverage)
+        UNION SELECT path FROM main.coverage UNION SELECT path FROM b.coverage
+        UNION SELECT path FROM main.file_extraction_cache UNION SELECT path FROM b.file_extraction_cache)
       SELECT path FROM paths p WHERE
         (SELECT digest FROM main.file_row_digests WHERE path = p.path) IS NOT (SELECT digest FROM b.file_row_digests WHERE path = p.path)
         OR (SELECT json_array(${FILE_IDENTITY}) FROM main.files WHERE path = p.path) IS NOT (SELECT json_array(${FILE_IDENTITY}) FROM b.files WHERE path = p.path)
         OR (SELECT reason FROM main.coverage WHERE path = p.path) IS NOT (SELECT reason FROM b.coverage WHERE path = p.path)
+        -- A refresh can capture a file again only to record a new signature of
+        -- what it imports: its rows are the same, its stored capture is not.
+        OR (SELECT payload FROM main.file_extraction_cache WHERE path = p.path) IS NOT (SELECT payload FROM b.file_extraction_cache WHERE path = p.path)
       ORDER BY path`).all() as Array<{ path: string }>;
     const total = (db.prepare("SELECT count(*) AS n FROM main.files").get() as { n: number }).n;
     return { files: rows.map(row => row.path), total, whole: wholeTablesDiffer(db) };
