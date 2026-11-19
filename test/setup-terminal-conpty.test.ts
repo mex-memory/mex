@@ -180,7 +180,7 @@ describe.skipIf(Boolean(skipReason) && !requireCoverage)(`built terminal setup i
     const address = new URL(result.events[2]!.match);
     expect(await canConnect(Number(address.port))).toBe(false);
     expect(readFileSync(join(f.project, ".mex", "AGENTS.md"), "utf8")).not.toContain("[YYYY-MM-DD]");
-    expect(existsSync(currentGraphPath(f.project))).toBe(mode === "code-repo");
+    expect(existsSync(currentGraphPath(f.project, { home: join(f.env.MEX_HOME!, ".mex") }))).toBe(mode === "code-repo");
     expect(existsSync(join(f.project, ".mex", "wiki.db"))).toBe(mode === "code-repo");
     expectPromptCleaned(f);
   });

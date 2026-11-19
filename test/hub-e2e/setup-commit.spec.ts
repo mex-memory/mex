@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { plantGraph, removeGraph } from "../../src/graph/__tests__/plant-graph.js";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const branch = "codex/setup-commit-fixture";
@@ -26,7 +27,7 @@ test.describe("built setup commit checkpoint", () => {
     const fixture = createFixture({ existingScaffold: true });
     let hub: ChildProcess | undefined;
     try {
-      rmSync(join(fixture.project, ".mex/graph.db"));
+      removeGraph(fixture.project, { home: join(fixture.env.MEX_HOME!, ".mex") });
       rmSync(join(fixture.project, ".mex/wiki.db"));
       const terminal = spawnSync(process.execPath, [join(repositoryRoot, "dist/cli.js"), "setup", "--cli", "--yes", "--tool", "none"], {
         cwd: fixture.project, env: fixture.env, encoding: "utf8", timeout: 20_000,
@@ -281,7 +282,7 @@ function createFixture({ existingScaffold = false }: { existingScaffold?: boolea
   // reaches the commit checkpoint; the promoted Hub reports index health using
   // its real adapters. No Graph build, population session, or fixture API exists.
   mkdirSync(join(project, ".mex/local"), { recursive: true });
-  writeFileSync(join(project, ".mex/graph.db"), "");
+  plantGraph(project, "", { home: join(env.MEX_HOME!, ".mex") });
   writeFileSync(join(project, ".mex/wiki.db"), "");
   writeFileSync(join(project, ".mex/local/fixture-private.db"), "Private generated state must not be committed.\n");
   const providerScript = join(root, "blocked-provider.cjs");
