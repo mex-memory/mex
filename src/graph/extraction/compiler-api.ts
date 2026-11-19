@@ -34,6 +34,7 @@ import {
   type UnionType as ApiUnionType,
 } from "typescript-7/sync";
 import { recordGraphPhase, timeGraphPhase } from "../phase-timing.js";
+import { compilerServerProbesEnabled, probeCompilerServers } from "../process-stats.js";
 import {
   CompilerFallback,
   canonicalCompilerIdentity,
@@ -254,9 +255,15 @@ export class ApiProjectCompiler implements ProjectCompiler {
     this.releaseSnapshot();
     this.chunks = [];
     this.chunkOf.clear();
-    try { this.api?.close(); } catch { /* the server may already be gone */ }
+    const api = this.api;
     this.api = undefined;
     this.ledger = undefined;
+    if (!api) return;
+    const shut = (): void => { try { api.close(); } catch { /* the server may already be gone */ } };
+    // The usage log wants the server's peak memory and CPU time, which only
+    // the live process can report: probe it, then close it.
+    if (compilerServerProbesEnabled()) probeCompilerServers(shut);
+    else shut();
   }
 
   private apiFor(request: ProjectOpenRequest): API7 {

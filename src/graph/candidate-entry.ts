@@ -1,3 +1,4 @@
+import { enableCompilerServerProbes, ownUsage, settleCompilerServerUsage } from "./process-stats.js";
 import { graphStoragePathAllowed } from "./storage.js";
 import { existsSync, lstatSync, realpathSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
@@ -71,6 +72,7 @@ function writeFailureDiagnostic(error: unknown): void {
 async function main(): Promise<void> {
   if (!process.send || !process.connected) throw new Error("Candidate construction requires its private parent channel.");
   const stopWatchdog = await startGraphCandidateWatchdog();
+  enableCompilerServerProbes();
   process.once("message", async (raw: unknown) => {
     let engine: GraphEngine | undefined;
     let outcome: GraphCandidateMessage;
@@ -95,7 +97,13 @@ async function main(): Promise<void> {
       timeGraphPhase("candidate.close", () => engine!.close());
       engine = undefined;
       flushGraphPhaseTimings(`candidate-${request.operation}`, request.projectRoot);
-      outcome = { type: "complete", result };
+      const server = await settleCompilerServerUsage();
+      const own = ownUsage();
+      outcome = {
+        type: "complete",
+        result,
+        usage: { ...own, ...(server ? { serverCpuMs: server.cpuMs, serverPeakRssMb: server.peakRssMb } : {}) },
+      };
       if (!boundedCandidateMessage(outcome)) throw new Error("Graph result exceeded its private message bound.");
     } catch (error) {
       writeFailureDiagnostic(error);

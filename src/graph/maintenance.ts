@@ -1,3 +1,6 @@
+import { openRecord } from "../record/index.js";
+import { recordBuildUsage } from "../record/build-usage.js";
+import type { GraphCandidateUsage } from "./candidate-protocol.js";
 import { acquireGraphWriter, adoptSiblingBase, assertGraphDirectory, cloneGraph, collectGraphGarbage, currentGraphPath, discardGraphTemporary, enforceIndexCap, finalizeGraph, graphLocation, graphStoragePathAllowed, verifiedGraphLocation, graphTemporary, publishGraph, publishGraphOverlay, publishGraphPointer, readGraphPointer, siblingBase, withGraphStorageContext, type GraphLocation } from "./storage.js";
 import { overlayTooLarge, planOverlay, writeOverlay } from "./overlay-write.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -161,6 +164,8 @@ export type GraphMaintenanceExecutionOptions = GraphMaintenanceOptions & {
 type InternalMaintenanceOptions = GraphMaintenanceExecutionOptions & {
   /** Deterministic fault/race seams. Deliberately absent from public declarations. */
   __internal?: GraphMaintenanceInternalHooks;
+  /** Where the candidate process reports its usage for the usage log. */
+  __usage?: { candidate?: GraphCandidateUsage };
 };
 
 interface CandidatePublicationInput {
@@ -249,6 +254,7 @@ export function acquireGraphMaintenanceLease(
         ...operationOptions,
         candidateExecution: resolved.candidateExecution ?? internalOptions.candidateExecution,
         __internal: resolved.__internal ?? internalOptions.__internal,
+        __usage: {},
       } as InternalMaintenanceOptions;
       await merged.__internal?.afterLockAcquired?.();
       assertMaintenanceDirectoryUnchanged(paths);
@@ -257,9 +263,17 @@ export function acquireGraphMaintenanceLease(
       // concurrent run can own one: any candidate still present is an orphan.
       sweepOrphanCandidates(paths);
       // One operation reads each unchanged source once; see source-memo.
-      if (operation === "refresh") return await withGraphStorageContext(() => withSourceMemo(() => refreshGraphWithLease(paths, merged)));
       if (operation === "repair") return await withGraphStorageContext(() => withSourceMemo(() => repairGraphWithLease(paths, merged)));
-      return await withGraphStorageContext(() => withSourceMemo(() => rebuildGraphWithLease(paths, merged)));
+      const meter = startUsageMeter();
+      let outcome: GraphMaintenanceResult | undefined;
+      try {
+        outcome = operation === "refresh"
+          ? await withGraphStorageContext(() => withSourceMemo(() => refreshGraphWithLease(paths, merged)))
+          : await withGraphStorageContext(() => withSourceMemo(() => rebuildGraphWithLease(paths, merged)));
+        return outcome;
+      } finally {
+        logGraphUsage(paths, operation === "rebuild" ? "build" : "refresh", meter, merged.__usage?.candidate, outcome);
+      }
     } finally {
       active = false;
     }
@@ -615,6 +629,7 @@ async function runIsolatedCandidate(
         });
       },
       __internal: options.__internal?.candidateProcess,
+      onUsage: (usage) => { if (options.__usage) options.__usage.candidate = usage; },
     });
   } catch (error) {
     if (error instanceof GraphCandidateProcessError) {
@@ -1302,4 +1317,50 @@ function errorCode(error: unknown): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+interface UsageMeter { startedAt: number; cpu: NodeJS.CpuUsage }
+
+function startUsageMeter(): UsageMeter {
+  return { startedAt: performance.now(), cpu: process.cpuUsage() };
+}
+
+/**
+ * One row of the usage log per build or refresh: wall time, CPU of this
+ * process plus the candidate and its compiler servers, and peak memory of the
+ * candidate plus its server. Never fails the operation it measures.
+ */
+function logGraphUsage(
+  paths: MaintenancePaths,
+  kind: "build" | "refresh",
+  meter: UsageMeter,
+  candidate: GraphCandidateUsage | undefined,
+  outcome: GraphMaintenanceResult | undefined,
+): void {
+  try {
+    const cpu = process.cpuUsage(meter.cpu);
+    const ownCpuMs = (cpu.user + cpu.system) / 1000;
+    const unchanged = !!outcome && outcome.filesIndexed === 0 && outcome.nodesCreated === 0 && !candidate;
+    const files = outcome?.refresh?.filesChanged ?? outcome?.filesIndexed ?? 0;
+    const writer = openRecord({ busyTimeoutMs: 1000 });
+    try {
+      recordBuildUsage(writer.db, {
+        projectId: paths.location.projectId,
+        checkout: paths.location.root,
+        kind,
+        files,
+        wallMs: performance.now() - meter.startedAt,
+        cpuMs: ownCpuMs + (candidate?.cpuMs ?? 0) + (candidate?.serverCpuMs ?? 0),
+        peakRssMb: candidate
+          ? candidate.peakRssMb + (candidate.serverPeakRssMb ?? 0)
+          : process.memoryUsage().rss / 1024 ** 2,
+        ...(candidate?.serverPeakRssMb !== undefined ? { serverRssMb: candidate.serverPeakRssMb } : {}),
+        result: !outcome ? "failed" : unchanged ? "unchanged" : "ok",
+      });
+    } finally {
+      writer.close();
+    }
+  } catch {
+    // The usage log is a report; a locked or missing record never fails a build.
+  }
 }

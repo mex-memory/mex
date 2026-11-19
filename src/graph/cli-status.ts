@@ -3,6 +3,8 @@ import type { GraphStatus, GraphSourceChanges } from "../team/contracts/graph.js
 import type { Diagnostic } from "../team/contracts/shared.js";
 import type { GraphCommandOptions } from "./cli-graph.js";
 import { inspectGraphStatus } from "./status.js";
+import { openRecordReadOnly } from "../record/index.js";
+import { latestBuildUsage } from "../record/build-usage.js";
 /** Graph health and freshness. Reads only, apart from collecting unreferenced graph files. */
 export async function runGraphStatus(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
@@ -10,8 +12,25 @@ export async function runGraphStatus(options: GraphCommandOptions = {}): Promise
   collectGraphGarbage(location);
   const stores = whatMexStores(location.recordDirectory);
   const status = await inspectGraphStatus({ projectRoot: rootDir });
-  if (options.json) console.log(JSON.stringify({ ...status, stores }, null, 2));
+  const usage = lastUsage(location.projectId, location.root);
+  if (options.json) console.log(JSON.stringify({ ...status, stores, ...(usage ? { usage } : {}) }, null, 2));
   else { printStatus(status); printStores(stores, location.projectId); }
+}
+
+/** The last build and refresh in the usage log, when the record has them. */
+function lastUsage(projectId: string, checkout: string): ReturnType<typeof latestBuildUsage> | undefined {
+  try {
+    const reader = openRecordReadOnly();
+    if (!reader) return undefined;
+    try {
+      if (reader.version < 6) return undefined;
+      return latestBuildUsage(reader, projectId, checkout);
+    } finally {
+      reader.close();
+    }
+  } catch {
+    return undefined;
+  }
 }
 
 function megabytes(bytes: number): string {
