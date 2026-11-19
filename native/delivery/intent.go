@@ -44,6 +44,11 @@ func observeIntent(previous string, ev contract.Event, g *group) string {
 			if inScope(it, v.rel) && g.snap.Patterns().InEdit(boundedText(v.removed, 32768), it, "anti") && !g.snap.Patterns().InEdit(boundedText(v.added, 32768), it, "anti") {
 				return "changing"
 			}
+			// The agent went past a speed bump and made the edit: the rule
+			// is being changed on purpose.
+			if g.deliberate[it.Entry.ID] && inScope(it, v.rel) && g.snap.Patterns().InEdit(boundedText(v.added, 32768), it, "anti") {
+				return "changing"
+			}
 		}
 		if previous == "investigating" {
 			previous = "working"

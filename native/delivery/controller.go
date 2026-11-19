@@ -109,7 +109,8 @@ type group struct {
 	edits             []string   // files edited in this call that some entry covers
 	cards             []answerCard
 	cardsConsumed     bool
-	reservedUsed      int // correction tokens already sent in this moment
+	reservedUsed      int             // correction tokens already sent in this moment
+	deliberate        map[string]bool // rules the agent went past a speed bump for this epoch
 }
 
 // Handle must be called after checkout, consent and pause resolution. Events
@@ -296,6 +297,11 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			return contract.Reply{}, fmt.Errorf("record-probes: %w", err)
 		}
 		commands, failed := commandObservations(g)
+		if hasEdit(g.views) {
+			if e, _, err := h.CurrentEpoch(ev.SessionID, ev.AgentID); err == nil {
+				g.deliberate = Deliberate(env.RecordDirectory, ev, e.Number)
+			}
+		}
 		if len(commands) > 0 || len(obs) > 0 || len(probes) > 0 || len(touches) > 0 || observeIntent(previous, ev, g) != previous {
 			req := baseRequest(ev, env, g.project, g.checkout)
 			req.Observations = obs
@@ -493,6 +499,15 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 		}
 	}
 	return out
+}
+
+func hasEdit(vs []toolView) bool {
+	for _, v := range vs {
+		if isEdit(v) {
+			return true
+		}
+	}
+	return false
 }
 
 func isEdit(v toolView) bool {

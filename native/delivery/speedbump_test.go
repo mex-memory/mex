@@ -179,3 +179,51 @@ func currentEpoch(t *testing.T, f *fixture) int {
 	}
 	return n
 }
+
+// Going past a bump and making the edit marks the epoch "changing", so the
+// rule goes once as the current convention rather than as a missed rule.
+func TestSpeedBumpRepeatCountsAsChanging(t *testing.T) {
+	f := newFixture(t)
+	datesRule(f)
+	f.start("startup")
+	add := edited(f, "apps/api/dates.ts", "export {}", "import m from 'moment'\nexport {}")
+	if r := preEdit(f, add); r.Decision != contract.Deny {
+		t.Fatal("not stopped")
+	}
+	if r := preEdit(f, add); r.Decision != "" {
+		t.Fatal("repeat stopped")
+	}
+	ran := add
+	ran.Output = &contract.ToolOutput{Text: "ok", OK: true}
+	f.send(f.event(contract.PostToolBatch, ran))
+	if got := epochIntent(t, f); got != "changing" {
+		t.Fatalf("intent %q", got)
+	}
+}
+
+func TestSpeedBumpNoRepeatLeavesIntentAlone(t *testing.T) {
+	f := newFixture(t)
+	datesRule(f)
+	f.start("startup")
+	add := edited(f, "apps/api/dates.ts", "export {}", "import m from 'moment'\nexport {}")
+	ran := add
+	ran.Output = &contract.ToolOutput{Text: "ok", OK: true}
+	f.send(f.event(contract.PostToolBatch, ran)) // never bumped, never repeated
+	if got := epochIntent(t, f); got == "changing" {
+		t.Fatalf("intent %q without a bump", got)
+	}
+}
+
+func epochIntent(t *testing.T, f *fixture) string {
+	t.Helper()
+	db, err := sqlOpen(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var intent string
+	if err := db.QueryRow("SELECT intent FROM epochs WHERE session_id=? AND agent_id=? ORDER BY epoch DESC LIMIT 1", f.session, f.agentID).Scan(&intent); err != nil {
+		t.Fatal(err)
+	}
+	return intent
+}
