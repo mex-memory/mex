@@ -51,6 +51,8 @@ Commands:
   what [options]                        Show what MEX gave or held back this
                                         session
   brief [options]                       Preview what a new session will receive
+  learn [options]                       Review a quote for learning from past
+                                        reviews and docs
   jobs [options]                        List MEX's background jobs on this
                                         machine; pause, resume or cancel one
   config                                Change MEX settings

@@ -12,6 +12,10 @@ registerJobKind<IndexJobParams, { builds: number }>({
   scope: "project",
   // A build writes new snapshot files and swaps a pointer; running it twice is harmless.
   sideEffects: "idempotent",
+  joins(open, params) {
+    const current = JSON.parse(open.params) as IndexJobParams;
+    return !params.full || (current.full === true && current.checkout === params.checkout);
+  },
   async runBatch({ job, params, checkpoint, writer, progress }) {
     // Loaded here so listing jobs doesn't load the parsers.
     const { buildIndex } = await import("./build.js");

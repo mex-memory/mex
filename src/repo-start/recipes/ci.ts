@@ -100,7 +100,7 @@ function packageFor(directory: unknown, packages: Package[]): string {
   return packages.some(pkg => pkg.path === path) ? path : "";
 }
 
-export function readGitHub(files: RepoFiles, packages: Package[]): Found[] {
+export function readGitHub(files: RepoFiles, packages: Package[], disabled?: ReadonlySet<string>): Found[] {
   const directory = ".github/workflows";
   if (!files.isDirectory(directory)) return [];
   const found: Found[] = [];
@@ -109,7 +109,7 @@ export function readGitHub(files: RepoFiles, packages: Package[]): Found[] {
     const file = `${directory}/${name}`;
     const workflow = record(files.yaml(file));
     if (!workflow) continue;
-    const off = neverOnPush(workflow.on ?? workflow.true);
+    const off = disabled?.has(file) === true || neverOnPush(workflow.on ?? workflow.true);
     const workflowSecrets = secretVariables(workflow.env);
     for (const [jobName, rawJob] of Object.entries(record(workflow.jobs) ?? {})) {
       const job = record(rawJob);

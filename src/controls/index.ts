@@ -107,5 +107,9 @@ export function automaticWorkEnabled(writer: Pick<RecordWriter, "setting" | "db"
   if (process.env.MEX_OFF === "1" || writer.setting("global", "enabled") === "false") return false;
   if (!projectId) return true;
   const rows = writer.db.prepare("SELECT state,off_until FROM checkouts WHERE project_id=?").all(projectId);
-  return rows.some(row => row.state === "on" || (row.state === "off until" && Number.isFinite(Date.parse(String(row.off_until))) && Date.parse(String(row.off_until)) <= now));
+  return rows.some(row => checkoutOn(row, now));
+}
+
+export function checkoutOn(row: { state?: unknown; off_until?: unknown }, now = Date.now()): boolean {
+  return row.state === "on" || row.state === "off until" && Date.parse(String(row.off_until)) <= now;
 }

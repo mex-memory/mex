@@ -5,6 +5,7 @@ import { ModelRunError } from "./errors.js";
 import { selectModel, type ModelAgent, type ModelSelection } from "./models.js";
 import { runModelProcess, MAX_PROCESS_TIMEOUT_MS, type ModelProcessOptions, type ModelProcessResult } from "./process.js";
 import type { AutomaticModelBatch } from "./budget-queue.js";
+import type { ConsentedModelBatch } from "./consent.js";
 
 export { ModelRunError } from "./errors.js";
 export { ModelWaitError } from "./budget-queue.js";
@@ -18,6 +19,8 @@ export interface ModelRequest extends ModelSelection {
   agent: ModelAgent;
   prompt: string;
   projectRoot: string;
+  /** A private empty directory for evidence-only tasks. Accounting still belongs to projectRoot. */
+  executionDirectory?: string;
   purpose: string;
   signal?: AbortSignal;
   /** Total wall-clock budget, in addition to the shared inactivity deadline. */
@@ -25,6 +28,8 @@ export interface ModelRequest extends ModelSelection {
   allowNonGit?: boolean;
   /** Automatic work reserves allowance; explicit commands omit this and remain uncapped. */
   automatic?: AutomaticModelBatch;
+  /** A background run consented to for this job, within its durable token ceiling. */
+  consented?: ConsentedModelBatch;
   /** Tests only; product requests never supply transports. */
   __internal?: ModelProcessOptions["__internal"];
 }
@@ -63,7 +68,7 @@ export async function runModel(request: ModelRequest): Promise<ModelResult> {
     const result = await runModelProcess(request.agent, invocation, resolve(request.projectRoot), {
       prompt: request.prompt, input: request.prompt, purpose: request.purpose,
       maxLineBytes: MAX_MODEL_STREAM_BYTES,
-      requestedModel: model, automatic: request.automatic,
+      requestedModel: model, automatic: request.automatic, consented: request.consented, executionDirectory: request.executionDirectory,
       signal: controller.signal, timeoutMs: timeout,
       totalTimeoutMs: Number.isFinite(timeout) ? Math.max(1, Math.min(MAX_PROCESS_TIMEOUT_MS, timeout)) : MAX_PROCESS_TIMEOUT_MS,
       onStdoutChunk: chunk => {

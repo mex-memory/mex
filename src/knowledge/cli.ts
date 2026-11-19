@@ -310,6 +310,8 @@ export function buildKnowledgeCommands(): Command[] {
       if (opts.json) { const { entries: _entries, ...shown } = plan; console.log(JSON.stringify({ ok: true, applied: false, ...shown })); return; }
       const lines = [plan.share.length ? `Share ${plan.share.length} with the team, on a new branch ${plan.branch} from ${plan.baseName}:` : "Nothing to share yet."];
       for (const item of plan.share) lines.push(`  ${item.id}  ${item.one_line}`);
+      const covered = plan.coverage.filter(item => item.sources.length).length;
+      if (covered) lines.push(`Source IDs, hashes, and links for ${covered} selected ${covered === 1 ? "entry go" : "entries go"} in .mex/sources.json. Use --json to review them.`);
       if (plan.blocked.length) { lines.push("", "Held back:"); for (const b of plan.blocked) lines.push(`  ${b.id}  ${b.reason}`); }
       if (plan.skipped.length) { lines.push("", "Not offered:"); for (const s of plan.skipped) lines.push(`  ${s.id}  ${s.reason}`); }
       if (plan.share.length) lines.push("", "Leave one out with --skip <id>. To share exactly this:", `  mex share --apply --expect ${plan.revision}    (add --pr to open a pull request)`);

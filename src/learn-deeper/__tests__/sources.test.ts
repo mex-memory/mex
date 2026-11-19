@@ -1,0 +1,142 @@
+import { expect, it, vi } from "vitest";
+import { ForgeClient } from "../forge.js";
+import { PinnedTree } from "../git.js";
+import { githubReviews } from "../github.js";
+import { gitlabInventory, gitlabReviews } from "../gitlab.js";
+import { Reviewers } from "../reviewers.js";
+import { cleanSourceText, documentExcerpt, prioritizeReviews, repositoryFromRemote, reviewRelevance, spreadPulls } from "../source.js";
+import { weeklyHead } from "../weekly.js";
+
+const then = "2026-06-10T15:12:30Z";
+const window = { since: "2025-01-01T00:00:00Z", until: "2026-07-01T00:00:00Z" };
+const sha = "f".repeat(40);
+const tree = new PinnedTree("unused", sha, new Map([["src/runtime.ts", sha]]));
+const github = { host: "github.com", slug: "fiction/memory" } as const;
+const gitlab = { host: "gitlab.com", slug: "fiction/tools/memory" } as const;
+const empty = () => Response.json([]);
+
+it("routes only the hosted forges and accepts a GitLab subgroup", () => {
+  expect(repositoryFromRemote("git@github.com:fiction/memory.git")).toEqual(github);
+  expect(repositoryFromRemote("ssh://git@gitlab.com/fiction/tools/memory.git")).toEqual(gitlab);
+  for (const remote of ["https://gitlab.example.com/fiction/memory", "https://github.com.attacker.tld/fiction/memory",
+    "https://token:secret@github.com/fiction/memory", "ssh://git@gitlab.com:2222/fiction/memory", "git@github.com:fiction/../memory"]) {
+    expect(repositoryFromRemote(remote)).toBeUndefined();
+  }
+});
+
+it("pins GitLab's hosted default branch using its nested namespace and branch name", async () => {
+  const seen: string[] = [];
+  const request = vi.fn(async (input: RequestInfo | URL) => {
+    const path = new URL(String(input)).pathname;
+    seen.push(path);
+    return path.endsWith("/branches/release%2Fnext") ? Response.json({ commit: { id: sha } }) : Response.json({ default_branch: "release/next" });
+  });
+  await expect(weeklyHead(new ForgeClient(gitlab, "forge-fixture-token", request))).resolves.toBe(sha);
+  expect(seen).toEqual(["/api/v4/projects/fiction%2Ftools%2Fmemory", "/api/v4/projects/fiction%2Ftools%2Fmemory/repository/branches/release%2Fnext"]);
+});
+
+it("rejects suggestion-only reviews and short questions", () => {
+  expect(reviewRelevance("```suggestion\nconst answer = true\n```\n")).toBeUndefined();
+  expect(reviewRelevance("Did the compiler pass?")).toBeUndefined();
+  expect(reviewRelevance("Generated snapshots need the renderer version because the format depends on it. Did you update it?")).toContain("Generated snapshots");
+  expect(spreadPulls([[{ number: 1 }, { number: 2 }], [{ number: 9 }, { number: 8 }], [{ number: 19 }]], 4)
+    .map(pull => pull.number)).toEqual([1, 9, 19, 2]);
+});
+
+it("redacts known reviewers in prose while preserving technical terms and code spans", () => {
+  const reviewers = new Reviewers();
+  reviewers.add("testuser", "Test User");
+  reviewers.add("go", "Go");
+  reviewers.add("mark", "Mark");
+  reviewers.add("scope", "Build Maintainers");
+  const terms = "Go users can run go test ./... and npm test. Mark @types/node, @Override, @scope/pkg, and @media.";
+  const inline = "Try ``go test ./... `Test User` @testuser code@example.invalid``.";
+  const fence = "> ~~~ts\n> @testuser\n> // Test User and code@example.invalid\n> ~~~";
+  const shell = "```sh\ngo test ./... # @testuser and Test User\n```";
+  const mention = "Thanks, tEsT  uSeR and @TESTUSER. Email person@example.invalid or ask @unknown.";
+  const boundaries = "Contest User, Test Users, and a user can run the same test.";
+  expect(cleanSourceText([terms, mention, boundaries, inline, "", fence, "", shell].join("\n"), reviewers)).toBe([
+    terms, "Thanks, [reviewer] and [reviewer]. Email [reviewer] or ask @unknown.", boundaries, inline, "", fence, "", shell,
+  ].join("\n"));
+  expect(documentExcerpt(`${terms}\n${mention}`, reviewers)).toEqual({
+    text: `${terms}\nThanks, tEsT  uSeR and [reviewer]. Email [reviewer] or ask @unknown.`, coverage: "full",
+  });
+});
+
+it("reports a UTF-8-safe partial excerpt and checks the whole doc for secrets", () => {
+  const reviewers = new Reviewers();
+  const prefix = "x".repeat(4095);
+  const raw = `${prefix}🙂 remaining text`;
+  expect(documentExcerpt(`${prefix}!`, reviewers)?.coverage).toBe("full");
+  expect(documentExcerpt(raw, reviewers)).toEqual({ text: prefix, coverage: "partial" });
+  expect(documentExcerpt(`${raw}\npassword=fixtureSecret123`, reviewers)).toBeUndefined();
+});
+
+it("normalizes the public GitHub REST comment shape, withholding deleted files and bot reviews", async () => {
+  // Fields projected from GitHub's public /pulls/comments response. IDs, actor and body are fixture values.
+  const inline = { id: 101, path: "src/runtime.ts", body: "Keep the stable snapshot identifier. Nice work, @fern-owner.",
+    author_association: "OWNER", created_at: then, updated_at: then, line: null, position: null, original_position: 3,
+    user: { login: "fern-owner", type: "User" }, is_copilot_code_review: false };
+  const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    expect(new Headers(init?.headers).has("authorization")).toBe(false);
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith("/pulls/2")) return Response.json({ number: 2, merged_at: then });
+    if (path.endsWith("/pulls/2/comments")) return Response.json([inline, { ...inline, id: 102, path: "src/deleted.ts" },
+      { ...inline, id: 103, user: { login: "ci[bot]", type: "Bot" } }, { ...inline, id: 104, is_copilot_code_review: true }]);
+    if (path.endsWith("/issues/2/comments")) return Response.json([{ ...inline, id: 105, path: undefined, position: 1, body: "Before rendering, load the snapshot metadata because it defines stable IDs." }]);
+    if (path.endsWith("/reviews")) return empty();
+    throw new Error(`Unexpected URL in fixture: ${path}`);
+  });
+  const result = await githubReviews(new ForgeClient(github, undefined, request, 0), { ...window, source: github, pulls: [{ number: 2, at: then }], tree, preferred: [] });
+  expect(result.gaps).toEqual([]);
+  expect(result.reviews.map(item => item.id)).toEqual(["github:issuecomment-:105", "github:discussion_r:101"]);
+  expect(result.reviews[1]).toMatchObject({ writer: true, outdated: true, text: "Keep the stable snapshot identifier. Nice work, [reviewer].",
+    link: "https://github.com/fiction/memory/pull/2#discussion_r101" });
+  const [topLevel, outdated] = result.reviews;
+  expect(prioritizeReviews([{ ...topLevel, writer: false }, { ...outdated, outdated: false, id: "fresh" }, outdated], []).map(item => item.id))
+    .toEqual([outdated.id, "fresh", topLevel.id]);
+});
+
+it("uses GitLab's upstream and nested project permissions, and omits raw identities and tokens", async () => {
+  const fork = { ...gitlab, slug: "fork-user/memory" }, project = encodeURIComponent(gitlab.slug);
+  // Project and MR fields match the public GitLab responses; discussion/member fields follow the documented authenticated projection.
+  const author = { id: 42, username: "fern-owner", name: "Fern Example", state: "active", bot: false };
+  const note = { id: 81, body: "Keep the snapshot IDs stable. Thanks, Fern Example.", system: false, created_at: then, author,
+    type: "DiffNote", resolvable: true, position: { new_path: "src/runtime.ts", head_sha: sha, position_type: "text" } };
+  const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    expect(url.origin).toBe("https://gitlab.com");
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture-token");
+    if (url.pathname.endsWith("/projects/fork-user%2Fmemory")) return Response.json({ path_with_namespace: fork.slug, visibility: "private", forked_from_project: { id: 111 } });
+    if (url.pathname.endsWith("/projects/111")) return Response.json({ path_with_namespace: gitlab.slug, visibility: "public" });
+    const mr = { id: 928, iid: 5, state: "merged", merged_at: then, created_at: then, author };
+    if (url.pathname.endsWith(`/projects/${project}/merge_requests`)) return Response.json([mr]);
+    if (url.pathname.endsWith("/merge_requests/5")) return Response.json(mr);
+    if (url.pathname.endsWith("/merge_requests/5/discussions")) return Response.json([{ id: "c8d3", individual_note: false, notes: [note,
+      { ...note, id: 82, body: "This leaked token is glpat-abcdefghijklmnopqrst." }, { ...note, id: 83, system: true },
+      { ...note, id: 84, author: { ...author, bot: true } }] }]);
+    if (url.pathname.endsWith("/members/all/42")) return Response.json({ id: 42, access_level: 30, state: "active" });
+    throw new Error(`Unexpected URL in fixture: ${url.pathname}`);
+  });
+  const client = new ForgeClient(fork, "fixture-token", request, 0);
+  const inventory = await gitlabInventory(client, window, 12);
+  expect(inventory).toMatchObject({ source: gitlab, visibility: "private", pulls: [{ number: 5, at: then }] });
+  const result = await gitlabReviews(client, { ...window, source: inventory.source, pulls: inventory.pulls, tree, preferred: [] });
+  expect(result.reviews).toHaveLength(1);
+  expect(result.reviews[0]).toMatchObject({ id: "gitlab:note:81", writer: true, text: "Keep the snapshot IDs stable. Thanks, [reviewer]." });
+  expect(result.gaps).toEqual(["Some source text was withheld by privacy checks."]);
+});
+
+it("reports the anonymous GitLab discussion gap and respects the host's retry-after signal", async () => {
+  const request = vi.fn(async (input: RequestInfo | URL) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith("/merge_requests/1")) return Response.json({ state: "merged", merged_at: then });
+    if (path.endsWith("/discussions")) return new Response(null, { status: 401 });
+    return new Response(null, { status: 429, headers: { "retry-after": "30" } });
+  });
+  const client = new ForgeClient(gitlab, undefined, request, 0);
+  await expect(gitlabReviews(client, { ...window, source: gitlab, pulls: [{ number: 1, at: then }], tree, preferred: [] })).resolves.toMatchObject({
+    reviews: [], gaps: ["Some GitLab discussions need a login."],
+  });
+  await expect(client.get("/projects/3")).rejects.toMatchObject({ problem: "rate-limit", retryAt: expect.any(Number) });
+});
