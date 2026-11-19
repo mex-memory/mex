@@ -32,6 +32,10 @@ func observeIntent(previous string, ev contract.Event, g *group) string {
 			return "reproducing"
 		}
 	}
+	// A shell command that broke a strong rule edited files: edit risk.
+	if len(g.shellEdits) > 0 && previous == "investigating" {
+		previous = "working"
+	}
 	for _, v := range g.views {
 		if !isEdit(v) {
 			continue

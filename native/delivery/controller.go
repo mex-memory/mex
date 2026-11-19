@@ -111,6 +111,7 @@ type group struct {
 	cardsConsumed     bool
 	reservedUsed      int             // correction tokens already sent in this moment
 	deliberate        map[string]bool // rules the agent went past a speed bump for this epoch
+	shellEdits        []string        // files a shell command changed against a strong rule
 }
 
 // Handle must be called after checkout, consent and pause resolution. Events
@@ -477,6 +478,12 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 				g.firstRel = v.rel
 			}
 			g.cands = append(g.cands, found...)
+			if caught := shellCaught(v, env, g.snap); len(caught) > 0 {
+				g.cands = append(g.cands, caught...)
+				for _, c := range caught {
+					g.shellEdits = append(g.shellEdits, c.rel)
+				}
+			}
 			if isEdit(v) && covered(g.snap, v.rel) {
 				g.edits = append(g.edits, v.rel)
 			}
