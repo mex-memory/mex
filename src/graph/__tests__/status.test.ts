@@ -744,7 +744,8 @@ describe("inspectGraphStatus", () => {
       code: "GRAPH_SNAPSHOT_CONTENT_MISMATCH",
     }));
     expect(executableRemediations(inconsistent)).toContain("mex graph rebuild");
-  }, 10_000);
+    // Three full builds: about 4 s alone, over 10 s with the whole suite running.
+  }, 30_000);
 
   it("treats missing core tables and duplicate or dangling edges as corrupt", async () => {
     const missingTableRoot = temporaryRoot("mex-graph-missing-table-");
